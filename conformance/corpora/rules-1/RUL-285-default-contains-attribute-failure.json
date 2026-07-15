@@ -1,0 +1,36 @@
+{
+  "case_id": "RUL-285-default-contains-attribute-failure",
+  "contract": "rules/1",
+  "req_ids": ["RUL-285", "RUL-284", "RUL-151", "RUL-152", "RUL-290", "RUL-100"],
+  "description": "A template condition referencing an unresolvable attribute wrapped in default() contains that failure and evaluates normally to the declared fallback, passing on a truthy fallback; the identical unwrapped reference fails closed instead and is recorded as an evaluation failure.",
+  "input": {
+    "fixture": {
+      "entities": { "01J8Z3K4N5P6Q7R8S9T0V1W2Z3": { "device_class": "sensor" } },
+      "note": "entity 01J8Z3K4N5P6Q7R8S9T0V1W2Z3 has no 'battery_ok' attribute declared; attr() on it fails to evaluate"
+    },
+    "condition_variants": [
+      { "id": "wrapped", "type": "template", "expression": { "expr": "attr('01J8Z3K4N5P6Q7R8S9T0V1W2Z3', 'battery_ok') | default(true)" } },
+      { "id": "unwrapped", "type": "template", "expression": { "expr": "attr('01J8Z3K4N5P6Q7R8S9T0V1W2Z3', 'battery_ok')" } }
+    ]
+  },
+  "expected": {
+    "results": [
+      {
+        "id": "wrapped",
+        "upstream_attr_lookup_fails": true,
+        "contained_by_default": true,
+        "evaluated_value": true,
+        "condition_passes": true,
+        "recorded_as_evaluation_failure": false,
+        "reason": "default (RUL-285) contains the unresolvable-attribute failure from its upstream stage and substitutes its truthy fallback; the pipeline evaluates normally from that point, so the condition passes on the fallback value and nothing is recorded as an evaluation failure"
+      },
+      {
+        "id": "unwrapped",
+        "upstream_attr_lookup_fails": true,
+        "condition_passes": false,
+        "recorded_as_evaluation_failure": true,
+        "reason": "no default() wraps this reference, so RUL-284's ordinary fail-closed rule applies without exception: the condition evaluates not-matched/false and the failure is recorded for operator visibility"
+      }
+    ]
+  }
+}

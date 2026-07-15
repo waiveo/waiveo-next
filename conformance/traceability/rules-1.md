@@ -9,6 +9,7 @@ One row per requirement ID `contracts/rules-1.md` defines. Format: `conformance/
 | RUL-003 | `contracts/rules-1.md#rule-classification` | - | TBD-wave1 |
 | RUL-004 | `contracts/rules-1.md#rule-classification` | - | TBD-wave1 |
 | RUL-005 | `contracts/rules-1.md#rule-classification` | - | TBD-wave1 |
+| RUL-006 | `contracts/rules-1.md#rule-classification` | `RUL-182-choose-app-branch-forces-app-class` | covered |
 | RUL-010 | `contracts/rules-1.md#entity-targeting` | - | TBD-wave1 |
 | RUL-011 | `contracts/rules-1.md#entity-targeting` | - | TBD-wave1 |
 | RUL-012 | `contracts/rules-1.md#entity-targeting` | - | TBD-wave1 |
@@ -17,8 +18,9 @@ One row per requirement ID `contracts/rules-1.md` defines. Format: `conformance/
 | RUL-021 | `contracts/rules-1.md#triggers-state` | `RUL-321-scalar-expands-array-exact` | covered |
 | RUL-022 | `contracts/rules-1.md#triggers-state` | - | TBD-wave1 |
 | RUL-023 | `contracts/rules-1.md#triggers-state` | `RUL-023-attribute-only-vs-state-change` | covered |
-| RUL-024 | `contracts/rules-1.md#triggers-state` | `RUL-024-for-hold-suppresses-flap` | covered |
-| RUL-025 | `contracts/rules-1.md#triggers-state` | `RUL-300-boot-reconfirm-no-fire` | covered |
+| RUL-024 | `contracts/rules-1.md#triggers-state` | `RUL-024-for-hold-suppresses-flap`, `RUL-321-suspend-flap-for-debounce` | covered |
+| RUL-025 | `contracts/rules-1.md#triggers-state` | `RUL-300-boot-reconfirm-no-fire`, `RUL-303-generation-swap-unchanged-trigger-preserves-baseline` | covered |
+| RUL-026 | `contracts/rules-1.md#triggers-state` | - | TBD-wave1 |
 | RUL-030 | `contracts/rules-1.md#triggers-numeric` | `RUL-033-numeric-first-observation-level-check` | covered |
 | RUL-031 | `contracts/rules-1.md#triggers-numeric` | `RUL-270-number-parsing-strict` | covered |
 | RUL-032 | `contracts/rules-1.md#triggers-numeric` | - | TBD-wave1 |
@@ -35,13 +37,15 @@ One row per requirement ID `contracts/rules-1.md` defines. Format: `conformance/
 | RUL-081 | `contracts/rules-1.md#triggers-event-app-coupled` | - | TBD-wave1 |
 | RUL-090 | `contracts/rules-1.md#triggers-webhookingest-app-coupled` | - | TBD-wave1 |
 | RUL-091 | `contracts/rules-1.md#triggers-webhookingest-app-coupled` | - | TBD-wave1 |
-| RUL-100 | `contracts/rules-1.md#conditions-composition-and-cross-entity-evaluability` | `RUL-101-corroborating-and-cross-entity-conditions` | covered |
+| RUL-100 | `contracts/rules-1.md#conditions-composition-and-cross-entity-evaluability` | `RUL-101-corroborating-and-cross-entity-conditions`, `RUL-285-default-contains-attribute-failure` | covered |
 | RUL-101 | `contracts/rules-1.md#conditions-composition-and-cross-entity-evaluability` | `RUL-101-corroborating-and-cross-entity-conditions` | covered |
 | RUL-110 | `contracts/rules-1.md#conditions-state` | - | TBD-wave1 |
 | RUL-120 | `contracts/rules-1.md#conditions-numeric` | - | TBD-wave1 |
 | RUL-130 | `contracts/rules-1.md#conditions-time` | - | TBD-wave1 |
 | RUL-140 | `contracts/rules-1.md#conditions-sun` | - | TBD-wave1 |
 | RUL-150 | `contracts/rules-1.md#conditions-variable` | `RUL-150-variable-condition-constant-folded` | covered |
+| RUL-151 | `contracts/rules-1.md#conditions-template` | `RUL-285-default-contains-attribute-failure` | covered |
+| RUL-152 | `contracts/rules-1.md#conditions-template` | `RUL-285-default-contains-attribute-failure` | covered |
 | RUL-160 | `contracts/rules-1.md#actions-device-command` | - | TBD-wave1 |
 | RUL-161 | `contracts/rules-1.md#actions-device-command` | - | TBD-wave1 |
 | RUL-170 | `contracts/rules-1.md#actions-preset-batch` | `RUL-171-preset-batch-partial-failure` | covered |
@@ -77,17 +81,20 @@ One row per requirement ID `contracts/rules-1.md` defines. Format: `conformance/
 | RUL-281 | `contracts/rules-1.md#expression-grammar-and-filters` | - | TBD-wave1 |
 | RUL-282 | `contracts/rules-1.md#expression-grammar-and-filters` | `RUL-282-edge-expression-cross-entity-rejected` | covered |
 | RUL-283 | `contracts/rules-1.md#expression-grammar-and-filters` | - | TBD-wave1 |
-| RUL-284 | `contracts/rules-1.md#expression-grammar-and-filters` | - | TBD-wave1 |
-| RUL-290 | `contracts/rules-1.md#expression-grammar-and-filters` | - | TBD-wave1 |
+| RUL-284 | `contracts/rules-1.md#expression-grammar-and-filters` | `RUL-285-default-contains-attribute-failure` | covered |
+| RUL-285 | `contracts/rules-1.md#expression-grammar-and-filters` | `RUL-285-default-contains-attribute-failure` | covered |
+| RUL-290 | `contracts/rules-1.md#expression-grammar-and-filters` | `RUL-285-default-contains-attribute-failure` | covered |
 | RUL-291 | `contracts/rules-1.md#expression-grammar-and-filters` | - | TBD-wave1 |
 | RUL-292 | `contracts/rules-1.md#expression-grammar-and-filters` | - | TBD-wave1 |
-| RUL-300 | `contracts/rules-1.md#first-observation-semantics` | `RUL-300-boot-reconfirm-no-fire` | covered |
+| RUL-300 | `contracts/rules-1.md#first-observation-semantics` | `RUL-300-boot-reconfirm-no-fire`, `RUL-303-generation-swap-unchanged-trigger-preserves-baseline` | covered |
 | RUL-301 | `contracts/rules-1.md#first-observation-semantics` | `RUL-301-stabilization-window-defers-transition` | covered |
 | RUL-302 | `contracts/rules-1.md#first-observation-semantics` | `RUL-033-numeric-first-observation-level-check` | covered |
-| RUL-310 | `contracts/rules-1.md#flap-suppression` | `RUL-024-for-hold-suppresses-flap` | covered |
+| RUL-303 | `contracts/rules-1.md#first-observation-semantics` | `RUL-303-generation-swap-unchanged-trigger-preserves-baseline` | covered |
+| RUL-304 | `contracts/rules-1.md#first-observation-semantics` | `RUL-303-generation-swap-unchanged-trigger-preserves-baseline` | covered |
+| RUL-310 | `contracts/rules-1.md#flap-suppression` | `RUL-024-for-hold-suppresses-flap`, `RUL-321-suspend-flap-for-debounce` | covered |
 | RUL-311 | `contracts/rules-1.md#flap-suppression` | `RUL-245-no-implicit-dedup-window` | covered |
 | RUL-320 | `contracts/rules-1.md#state-matching-per-device-class` | `RUL-321-scalar-expands-array-exact` | covered |
-| RUL-321 | `contracts/rules-1.md#state-matching-per-device-class` | `RUL-321-scalar-expands-array-exact` | covered |
+| RUL-321 | `contracts/rules-1.md#state-matching-per-device-class` | `RUL-321-scalar-expands-array-exact`, `RUL-321-suspend-flap-for-debounce` | covered |
 | RUL-322 | `contracts/rules-1.md#state-matching-per-device-class` | - | TBD-wave1 |
 | RUL-330 | `contracts/rules-1.md#attribute-change-vs-state-change` | `RUL-023-attribute-only-vs-state-change` | covered |
 | RUL-340 | `contracts/rules-1.md#dst-semantics` | `RUL-341-dst-spring-forward-skip` | covered |
@@ -104,8 +111,9 @@ One row per requirement ID `contracts/rules-1.md` defines. Format: `conformance/
 | RUL-362 | `contracts/rules-1.md#in-flight-holds-across-restart` | `RUL-360-engine-restart-resets-hold` | covered |
 | RUL-370 | `contracts/rules-1.md#time-under-clock-trust` | - | TBD-wave1 |
 | RUL-371 | `contracts/rules-1.md#time-under-clock-trust` | - | TBD-wave1 |
-| RUL-380 | `contracts/rules-1.md#generation-swap-semantics` | `RUL-380-generation-swap-cancels-changed-rule` | covered |
-| RUL-381 | `contracts/rules-1.md#generation-swap-semantics` | `RUL-380-generation-swap-cancels-changed-rule` | covered |
+| RUL-380 | `contracts/rules-1.md#generation-swap-semantics` | `RUL-380-generation-swap-cancels-changed-rule`, `RUL-303-generation-swap-unchanged-trigger-preserves-baseline` | covered |
+| RUL-381 | `contracts/rules-1.md#generation-swap-semantics` | `RUL-380-generation-swap-cancels-changed-rule`, `RUL-303-generation-swap-unchanged-trigger-preserves-baseline` | covered |
 | RUL-390 | `contracts/rules-1.md#compile-time-closure` | `RUL-150-variable-condition-constant-folded` | covered |
 | RUL-391 | `contracts/rules-1.md#compile-time-closure` | `RUL-150-variable-condition-constant-folded` | covered |
 | RUL-392 | `contracts/rules-1.md#compile-time-closure` | - | TBD-wave1 |
+| RUL-393 | `contracts/rules-1.md#compile-time-closure` | - | TBD-wave1 |

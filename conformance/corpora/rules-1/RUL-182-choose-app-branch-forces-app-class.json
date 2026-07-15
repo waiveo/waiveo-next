@@ -1,8 +1,8 @@
 {
   "case_id": "RUL-182-choose-app-branch-forces-app-class",
   "contract": "rules/1",
-  "req_ids": ["RUL-180", "RUL-181", "RUL-182", "RUL-002"],
-  "description": "A choose action whose default branch contains an app-coupled notify action is app-class as a whole, which in turn forces the entire containing rule app-class even though its trigger and every other action would otherwise be edge-eligible.",
+  "req_ids": ["RUL-180", "RUL-181", "RUL-182", "RUL-002", "RUL-006"],
+  "description": "A choose action whose default branch contains an app-coupled notify action is app-class as a whole, which in turn forces the entire containing rule app-class even though its trigger and every other action would otherwise be edge-eligible. The classifier's per-member diagnostic (RUL-006) names the nested notify action as the specific disqualifying member.",
   "input": {
     "rule": {
       "id": "01J8Z3K4N5P6Q7R8S9T0V1RULC",
@@ -29,6 +29,9 @@
     "choose_action_execution_class": "app",
     "reason": "the default branch's notify action is app-class unconditionally",
     "rule_execution_class": "app",
-    "reason_rule": "RUL-002: a rule is edge-class only if every action is edge-class; the choose action here is not"
+    "reason_rule": "RUL-002: a rule is edge-class only if every action is edge-class; the choose action here is not",
+    "app_class_reasons": [
+      { "field": "actions[0].default[0]", "type": "notify", "reason": "notify is app-class unconditionally (RUL-210)" }
+    ]
   }
 }

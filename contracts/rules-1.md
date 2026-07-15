@@ -24,9 +24,11 @@ rules/1 defines the complete automation vocabulary — every trigger, condition,
 - **App-class** — a rule, or a vocabulary member, that requires the app's own runtime (live platform state, full expression power, or an execution mode the edge engine does not implement).
 - **Edge engine** — the executor that evaluates edge-class rules.
 - **App engine** — the executor that evaluates app-class rules and workflows.
+- **Engine restart** — the evaluating engine's process starting to run, whether its first-ever start or any later restart (crash, redeploy, or an operator-initiated restart); this contract treats every such start identically regardless of cause, and uses this one term for it throughout — including where a requirement's own wording says "boot." Not to be confused with a rule's own `restart` mode (Modes, RUL-242), which cancels and restarts a single rule's run without the evaluating engine itself stopping.
 - **Generation** — a versioned snapshot of compiled edge rules (and other desired state) produced by compiling authored rules against this contract. The snapshot's transport, signing, and pull mechanics are defined elsewhere (`relay/1`).
 - **Monotonic time** — a clock source that only advances and is never adjusted backward by a wall-clock correction; used for every duration-based mechanism in this contract (`for:`, delay, stabilization windows) so that none of them can be shortened or reset by a clock-trust change.
 - **Clock trust state** — `trusted` or `untrusted`, as attested by the evaluating engine's environment (the attestation mechanism itself is defined elsewhere, `relay/1`); this contract states only how time-based evaluation behaves under each state.
+- **Timestamp** — the wire representation of an absolute instant this contract's expression grammar produces and consumes: an integer number of milliseconds since the Unix epoch (UTC). `now()` (RUL-290) returns one; it is wall-clock-derived and subject to the clock-trust floor (Time under clock trust) — a distinct notion from Monotonic time, which this contract uses only for duration holds (`for`, delay, stabilization windows).
 - **Expression** — a value computed at evaluation time by applying zero or more filters, from this contract's closed filter list, to a source value.
 - **ULID** — as defined in `manifest/1`: a 26-character Crockford-base32, time-sortable identifier.
 
@@ -44,6 +46,8 @@ rules/1 defines the complete automation vocabulary — every trigger, condition,
 
 **[RUL-005]** A pack-declared trigger macro (`manifest/1` MAN-092, a named human-labeled shorthand resolving to a state/numeric match on a relay-polled capability or to a pack event) MUST be resolved to one of this contract's own trigger kinds — `state`/`numeric` or `event` — before a rule using it is classified; this contract's classifier operates only on that resolved form and has no separate "macro" vocabulary member. A macro resolving to `state`/`numeric` is classified exactly as an ordinary trigger of that kind; a macro resolving to a pack event is classified exactly as an ordinary `event` trigger.
 
+**[RUL-006]** For a rule classified app-class (RUL-002), the classifier MUST additionally expose which specific member(s) of the rule's `triggers`/`conditions`/`actions`/`mode` caused that classification — every trigger, condition, action, or mode value that is itself app-class or app-only, identified by its position within the rule (e.g. `actions[0].default[0]`) — not merely the rule-level `app` verdict alone. This diagnostic MUST be available anywhere a rule's execution class is surfaced (compile-time validation output, a compiled generation's own per-rule entry, CompiledRuleEntry, Wire shapes), never requiring an operator to re-derive it by manually re-checking every member against this contract's per-member class table.
+
 ### Entity targeting
 
 **[RUL-010]** Wherever this contract defines a field typed `EntityRef` (a trigger's subject entity, or a device-affecting action's target), the value MUST be exactly one of: a single `entity_id` (ULID); a `selector` string in the platform's label-selector grammar (defined elsewhere); or a bare `device_class` filter (every entity of the named device class). Exactly one of `entity_id` / `selector` / `device_class` MUST be present.
@@ -56,7 +60,7 @@ rules/1 defines the complete automation vocabulary — every trigger, condition,
 
 ### Triggers: state
 
-**[RUL-020]** A `state` trigger MUST declare an `EntityRef` (Entity targeting) and MAY declare `from`, `to`, `attribute`, and `for`. It is edge-class.
+**[RUL-020]** A `state` trigger MUST declare an `EntityRef` (Entity targeting) and MAY declare `from`, `to`, `attribute`, and `for`. It is edge-class. `for`'s meaning depends on whether the trigger is bounded or unscoped (RUL-023): RUL-024 defines it for a bounded trigger, RUL-026 for an unscoped one.
 
 **[RUL-021]** When `attribute` is absent, `from`/`to` compare the entity's canonical state string. Each of `from`/`to`, when present, is either a scalar string or an array of strings: a scalar value MUST be matched via semantic-group expansion (State matching per device class); an array value MUST be matched via exact literal membership only, with no group expansion.
 
@@ -64,9 +68,11 @@ rules/1 defines the complete automation vocabulary — every trigger, condition,
 
 **[RUL-023]** A `state` trigger's fire condition depends on which of `attribute`/`from`/`to` are present, and MUST follow exactly one of these three rules: (1) **attribute-scoped, bounded** — `attribute` present, at least one of `from`/`to` present: fires only when that attribute's own value transitions matching the declared `from`/`to`, and MUST NOT fire on a tick where only the state string changed; (2) **attribute-scoped, unbounded** — `attribute` present, neither `from` nor `to` present: fires whenever that attribute's value changes to a new value, regardless of the state string; (3) **state-scoped** — `attribute` absent, at least one of `from`/`to` present: fires only on a genuine state-string transition matching the declared `from`/`to`, and MUST NOT fire on a tick whose state string is unchanged even if that unchanged value happens to equal the declared `to`; (4) **unscoped** — `attribute`, `from`, and `to` all absent: fires on any change to the entity, whether the state string or any attribute moved.
 
-**[RUL-024]** `for`, when present, MUST be a non-negative integer number of seconds (0 behaves as if `for` were absent). A trigger declaring `for` MUST NOT fire until the matched condition (RUL-023) has held continuously for at least that many seconds of monotonic time; the hold MUST be evaluated on monotonic time only, never on wall-clock time, so that a clock-trust transition can neither shorten nor extend it. If the held condition stops holding before `for` elapses, the pending fire MUST be discarded without dispatching the rule.
+**[RUL-024]** `for`, when present, MUST be a non-negative integer number of seconds (0 behaves as if `for` were absent). A trigger declaring `for` MUST NOT fire until the matched condition (RUL-023) has held continuously for at least that many seconds of monotonic time; the hold MUST be evaluated on monotonic time only, never on wall-clock time, so that a clock-trust transition can neither shorten nor extend it. If the held condition stops holding before `for` elapses, the pending fire MUST be discarded without dispatching the rule. This paragraph defines `for` for a **bounded** trigger (RUL-023 cases 1–3, and every `numeric` trigger, RUL-033) — one with a `to`, `from`, or bound declared, whose matched condition is a level that can hold or stop holding; RUL-026 defines `for` for an **unscoped** `state` trigger (RUL-023 case 4), which has no such level to hold.
 
-**[RUL-025]** State-diffing for a `state` trigger MUST compare against the entity's durable last-recorded value; an entity's first observation after the evaluating engine boots, after the entity is newly enrolled, or after a new generation is applied, MUST NOT be treated as an absent prior value (the fuller rule is stated in First-observation semantics).
+**[RUL-025]** State-diffing for a `state` trigger MUST compare against the entity's durable last-recorded value; an entity's first observation after an engine restart, after the entity is newly enrolled, or after a qualifying new generation is applied, MUST NOT be treated as an absent prior value (the fuller rule, including which generation-apply cases qualify, is stated in First-observation semantics, RUL-300/RUL-303, which reuses Generation-swap semantics' RUL-380/381 changed/unchanged test).
+
+**[RUL-026]** On an **unscoped** `state` trigger (RUL-023 case 4: `attribute`, `from`, and `to` all absent) declaring `for`, the held condition RUL-024 refers to has no target value to hold — there is nothing to check the entity against beyond "did it change." `for` on an unscoped trigger instead means: once a qualifying change occurs, the trigger fires only if no further qualifying change to the entity occurs for the full declared duration of monotonic time — a settle/debounce, keyed to the absence of further change rather than to a value holding steady. A further qualifying change arriving before `for` elapses restarts the debounce window from that new change; this is not a fourth `for` mechanism, it is RUL-024's own "discard the pending fire and re-arm" behavior, applied to the unscoped case's different notion of what breaks the hold.
 
 ### Triggers: numeric
 
@@ -116,7 +122,7 @@ rules/1 defines the complete automation vocabulary — every trigger, condition,
 
 ### Conditions: composition and cross-entity evaluability
 
-**[RUL-100]** A condition is either a **composition** — `and` (an array of two or more conditions, all must pass), `or` (an array of two or more conditions, at least one must pass), or `not` (exactly one nested condition, inverted) — or a **leaf**: `state`, `numeric`, `time`, `sun`, or `variable` (each defined below). A composition's own execution class is edge-class if and only if every condition it contains is edge-class; a composition is otherwise app-class.
+**[RUL-100]** A condition is either a **composition** — `and` (an array of two or more conditions, all must pass), `or` (an array of two or more conditions, at least one must pass), or `not` (exactly one nested condition, inverted) — or a **leaf**: `state`, `numeric`, `time`, `sun`, `variable`, or `template` (each defined below). A composition's own execution class is edge-class if and only if every condition it contains is edge-class; a composition is otherwise app-class.
 
 **[RUL-101]** A leaf condition of type `state` or `numeric` MUST declare its own `EntityRef` (Entity targeting); it is evaluable against **any** relay-visible entity, not only the entity that fired the rule's trigger. This is unrestricted at the structured-condition level; the corresponding restriction to the triggering entity applies only within the expression grammar (Expression grammar and filters), never to a structured condition's own `EntityRef`.
 
@@ -134,11 +140,17 @@ rules/1 defines the complete automation vocabulary — every trigger, condition,
 
 ### Conditions: sun
 
-**[RUL-140]** A `sun` condition MUST declare `after` or `before` (or both) as `{event, offset?}` pairs with the same shape as a `sun` trigger's `event`/`offset`. It passes when the current instant falls within the declared bound(s), computed the same way as RUL-130's local-time range. A date on which a referenced `event` does not occur (RUL-061) MUST be resolved the same way: the condition uses the nearest defined occurrence rather than treating the day as unbounded. It is edge-class and carries no `EntityRef`.
+**[RUL-140]** A `sun` condition MUST declare `after` or `before` (or both) as `{event, offset?}` pairs with the same shape as a `sun` trigger's `event`/`offset`. It passes when the current instant falls within the declared bound(s), computed the same way as RUL-130's local-time range. A date on which a referenced `event` does not occur (RUL-061) MUST be resolved the same way: the condition uses the nearest defined occurrence rather than treating the day as unbounded. This is a deliberate asymmetry with a `sun` trigger's own polar-date handling (RUL-061), not an inconsistency: a trigger has no reasonable instant to synthesize and fire at, while a condition bounds the current instant against a nearest-occurrence fallback instead of needing to invent a firing moment. It is edge-class and carries no `EntityRef`.
 
 ### Conditions: variable
 
 **[RUL-150]** A `variable` condition MUST declare `variable` (name) and a comparison (`equals`, `above`, or `below`, with a literal value). It is edge-class: for an edge-classified rule, the variable's value observed at compile time MUST be substituted into the compiled generation as a constant (Compile-time closure) — the edge engine never performs a live variable lookup to evaluate this condition.
+
+### Conditions: template
+
+**[RUL-151]** A `template` condition MUST declare `expression`, an Expression (Expression grammar and filters) whose result is interpreted as a boolean. It is app-class unconditionally, for the same reason as a `template` trigger (RUL-070) — it is never evaluated for edge eligibility, since its purpose is expression power the edge grammar restriction (Expression grammar and filters) does not offer.
+
+**[RUL-152]** A `template` condition passes when its expression's result is truthy at the instant the condition is evaluated — a level check on the current result, not a transition: unlike a `template` trigger (RUL-071), which fires only on a falsy-to-truthy transition, a `template` condition is re-evaluated fresh every time its containing rule's conditions are checked, with no memory of a prior result. An expression that fails to evaluate MUST fail the condition (not-matched/false) per Expression grammar and filters (RUL-284), rather than pass or raise.
 
 ### Actions: device command
 
@@ -196,11 +208,11 @@ rules/1 defines the complete automation vocabulary — every trigger, condition,
 
 **[RUL-241]** `single` (the default when `mode` is omitted): while a run of this rule is in progress, a new trigger firing for the same rule MUST be dropped — no new run starts — and MUST be recorded with a `skipped` disposition (RunDisposition, Wire shapes).
 
-**[RUL-242]** `restart`: a new trigger firing for the same rule while a run is in progress MUST cancel that in-progress run, discarding any pending `for`-hold or `delay` it was waiting on, and start a fresh run from the beginning of the action sequence, using the new trigger's own context; the fresh run's own timers (any `for`-hold or `delay` it subsequently reaches) start at zero, never inheriting elapsed time from the canceled run. The canceled run's disposition MUST be recorded as `restarted`. This is a distinct mechanism from an engine/process restart (In-flight holds across restart): here, the rule's own mode causes the cancellation; the evaluating engine keeps running throughout.
+**[RUL-242]** `restart`: a new trigger firing for the same rule while a run is in progress MUST cancel that in-progress run, discarding any pending `for`-hold or `delay` it was waiting on, and start a fresh run from the beginning of the action sequence, using the new trigger's own context; the fresh run's own timers (any `for`-hold or `delay` it subsequently reaches) start at zero, never inheriting elapsed time from the canceled run. The canceled run's disposition MUST be recorded as `restarted`. This is a distinct mechanism from an engine restart (In-flight holds across restart): here, the rule's own mode causes the cancellation; the evaluating engine keeps running throughout.
 
 **[RUL-243]** `queued` (app-only): a new trigger firing while a run is in progress MUST be enqueued and run to completion, in firing order, once every earlier queued run for this rule completes; no firing is dropped.
 
-**[RUL-244]** `parallel` (app-only): a new trigger firing while a run is in progress starts a new, independent concurrent run, up to a declared `max` (a positive integer; REQUIRED when `mode` is `parallel`). A firing that would exceed `max` concurrently active runs MUST be dropped and recorded with a `skipped` disposition, identically to `single`'s overflow handling.
+**[RUL-244]** `parallel` (app-only): a new trigger firing while a run is in progress starts a new, independent concurrent run, up to a declared `max` (a positive integer; REQUIRED when `mode` is `parallel`). A firing that would exceed `max` concurrently active runs MUST be dropped and recorded with a `skipped` disposition, identically to `single`'s overflow handling. Declaring `max` with a non-null value under any `mode` other than `parallel` MUST fail compilation as a typed validation error (`MODE_MAX_NOT_APPLICABLE`) rather than being silently ignored; a `max: null` alongside a non-`parallel` mode (as the Rule wire shape, Wire shapes, always shows regardless of mode) is the field's normal absence, not a declaration of it.
 
 *draft-note: RUL-244's overflow-drops-rather-than-queues choice is a proposed default for review, not dictated by the source vocabulary — an overflow-queues alternative is equally defensible; flagged here rather than silently picked.*
 
@@ -238,11 +250,13 @@ rules/1 defines the complete automation vocabulary — every trigger, condition,
 
 **[RUL-281]** A source is one of: a literal; `state(entity_id)`; `attr(entity_id, name)`; or `now()`. `entity_id` in a source MUST be a literal entity ID string — a source's entity reference is never itself an `EntityRef` selector or device-class filter (Entity targeting governs trigger/action subjects; an expression's source is always a single, specific entity).
 
-**[RUL-282]** For an edge-classified rule, every `state(entity_id)`/`attr(entity_id, name)` source within any Expression the rule uses MUST reference the entity that is the subject of the rule's own trigger (for a multi-entity `EntityRef`, RUL-011's currently-firing matched entity) — no other entity ID is permitted, and the expression grammar offers no loop or recursion construct. This restriction does not apply to a `template` trigger/condition (RUL-070, app-class unconditionally) or to any other app-class evaluation context, where an Expression's sources may reference any relay-visible entity.
+**[RUL-282]** For an edge-classified rule, every `state(entity_id)`/`attr(entity_id, name)` source within any Expression the rule uses MUST reference the entity that is the subject of the rule's own trigger (for a multi-entity `EntityRef`, RUL-011's currently-firing matched entity) — no other entity ID is permitted, and the expression grammar offers no loop or recursion construct. This restriction does not apply to a `template` trigger/condition (RUL-070, RUL-151, both app-class unconditionally) or to any other app-class evaluation context, where an Expression's sources may reference any relay-visible entity.
 
 **[RUL-283]** The filter list (RUL-290) is exactly one shared list between edge and app evaluation; edge and app never diverge on which filters exist or what they compute — the only axis of restriction between them is the entity-reference scope of RUL-282.
 
-**[RUL-284]** An Expression that fails to evaluate — an unresolvable entity or attribute reference, a filter argument outside its accepted domain, or a number-parse failure (RUL-271) — MUST cause the containing trigger/condition to evaluate as not-matched/false (fail closed), and MUST be recorded for operator visibility (the record's own shape is out of scope of this contract) rather than silently discarded.
+**[RUL-284]** An Expression that fails to evaluate — an unresolvable entity or attribute reference, a filter argument outside its accepted domain, or a number-parse failure (RUL-271) — MUST cause the containing trigger/condition to evaluate as not-matched/false (fail closed), and MUST be recorded for operator visibility (the record's own shape is out of scope of this contract) rather than silently discarded, except as RUL-285 states for a failure `default` contains.
+
+**[RUL-285]** The `value` `default` (RUL-290) consumes is the prior pipeline stage's own output (RUL-292) — the source and any filters preceding `default` in the pipeline. When evaluating that upstream stage fails for any of RUL-284's reasons (an unresolvable entity/attribute reference, a filter argument outside its accepted domain, or a number-parse failure), `default` contains the failure and yields its own `fallback` argument in place of propagating it: the pipeline continues evaluating normally from that fallback value, the containing trigger/condition does not fail closed on account of it, and the contained failure MUST NOT itself be recorded as an evaluation failure under RUL-284. `default` is the sole exception RUL-284 admits; every other filter and source failure fails closed exactly as RUL-284 states.
 
 **[RUL-290]** The closed filter list is exactly:
 
@@ -250,16 +264,16 @@ rules/1 defines the complete automation vocabulary — every trigger, condition,
 |---|---|---|
 | `state` | `state(entity_id) -> string` | the referenced entity's current canonical state string |
 | `attr` | `attr(entity_id, name) -> value` | the referenced entity's current value for the named attribute, typed per the device-class registry |
-| `default` | `default(value, fallback) -> value` | `fallback` when `value` is null/absent, else `value` |
+| `default` | `default(value, fallback) -> value` | `fallback` when the upstream `value` is null/absent or fails to evaluate (RUL-285's contained-failure exception), else `value` |
 | `upper` | `upper(string) -> string` | uppercased |
 | `lower` | `lower(string) -> string` | lowercased |
 | `trim` | `trim(string) -> string` | leading/trailing whitespace removed |
-| `round` | `round(number, precision=0) -> number` | rounded to `precision` decimal places |
+| `round` | `round(number, precision=0) -> number` | rounded to `precision` decimal places, half rounds up (ties round toward positive infinity) |
 | `abs` | `abs(number) -> number` | absolute value |
 | `int` | `int(value) -> number` | parsed per Number parsing, truncated toward zero; fails per RUL-271 |
 | `float` | `float(value) -> number` | parsed per Number parsing; fails per RUL-271 |
-| `now` | `now() -> timestamp` | the evaluating engine's current time (edge: subject to the clock-trust floor, Time under clock trust) |
-| `elapsed` | `elapsed(timestamp) -> number` | seconds between `timestamp` and `now()` |
+| `now` | `now() -> timestamp` | the evaluating engine's current time, as a Timestamp (edge: subject to the clock-trust floor, Time under clock trust) |
+| `elapsed` | `elapsed(timestamp) -> number` | seconds between the given Timestamp and `now()` |
 | `duration` | `duration(value, unit) -> number` | `value` expressed in `unit` (RUL-291), normalized to seconds |
 | `convert` | `convert(value, from_unit, to_unit) -> number` | `value` converted between two units of the same unit class (RUL-291) |
 
@@ -271,13 +285,17 @@ rules/1 defines the complete automation vocabulary — every trigger, condition,
 
 ### First-observation semantics
 
-**[RUL-300]** A `state` trigger's first observation of its subject entity — the first observation after the evaluating engine boots, after that entity is newly enrolled, or after a new generation is applied — MUST NOT be treated as a transition, even when the observed value equals the trigger's declared `to`. The comparison MUST be made against the entity's durable last-recorded value (never an absent/reset baseline), so that a first post-boot observation which merely reconfirms an already-durable, unchanged value produces no firing.
+**[RUL-300]** A `state` trigger's first observation of its subject entity — the first observation after an engine restart, after that entity is newly enrolled, or after a new generation is applied that qualifies under RUL-303 for this trigger — MUST NOT be treated as a transition, even when the observed value equals the trigger's declared `to`. The comparison MUST be made against the entity's durable last-recorded value (never an absent/reset baseline), so that a first post-restart observation which merely reconfirms an already-durable, unchanged value produces no firing. This first-observation state is keyed per (trigger, entity), never per entity alone (RUL-304).
 
-**[RUL-301]** State and numeric triggers MUST NOT dispatch their rule's actions until a **stabilization window** has elapsed after the evaluating engine reaches a defined readiness point (boot, entity enrollment, or generation-apply, as applicable). The window MUST be bounded, config-visible, and fallback-timed — a maximum wait applies even if the readiness signal the window is keyed to never arrives, so the gate cannot wedge open indefinitely.
+**[RUL-301]** State and numeric triggers MUST NOT dispatch their rule's actions until a **stabilization window** has elapsed after the evaluating engine reaches a defined readiness point (an engine restart, entity enrollment, or generation-apply, as applicable). The window MUST be bounded, config-visible, and fallback-timed — a maximum wait applies even if the readiness signal the window is keyed to never arrives, so the gate cannot wedge open indefinitely.
 
 *draft-note: RUL-301 requires the mechanism (bounded, config-visible, fallback-timed); concrete duration defaults are not fixed by this contract version and are proposed for review separately — they are not carried over from any prior implementation's figures as binding defaults.*
 
 **[RUL-302]** A `numeric` trigger's first-ever observation of its subject (RUL-033) is exempted from RUL-300's transition-suppression rule by design: it performs a level check against the current value rather than suppressing, because a crossing requires a prior value to cross from, which does not yet exist. This is a deliberate asymmetry with RUL-300, not an inconsistency: a discrete state has no well-defined "currently past the line" reading on first sight, while a numeric threshold does.
+
+**[RUL-303]** A generation-apply resets a trigger's first-observation baseline (RUL-300) only for a trigger that is new in the applied generation or whose own compiled structure or closed-over values changed from the prior generation — the identical changed/unchanged test RUL-381 defines at the rule level, applied here at the individual trigger's level. A trigger that is unchanged across the generation swap carries its first-observation state forward exactly as if no generation had been applied: the entity's durable last-recorded value from before the swap remains what its next observation is diffed against. A routine, unrelated edit elsewhere in the same generation — a variable write, a preset edit, a selector-membership change affecting a different rule — MUST NOT reset first-observation for, or suppress a genuine subsequent transition on, a trigger the edit does not itself touch.
+
+**[RUL-304]** First-observation state (RUL-300) is keyed per (trigger, entity) pair, not per entity alone. This generalizes RUL-011's rule — that one trigger's `EntityRef` matching several entities gives each matched entity independent first-observation state — to the ordinary case of several triggers, in the same rule or different rules, watching one common entity: each such trigger carries its own first-observation state for that entity, independent of every other trigger's.
 
 ### Flap suppression
 
@@ -291,7 +309,7 @@ rules/1 defines the complete automation vocabulary — every trigger, condition,
 
 **[RUL-321]** The shared matching algorithm: a **scalar** expected value first attempts an exact string match against the actual state; failing that, it attempts membership in the actual state's device class's semantic groups (built-in groups first, then any extension-registered group for that device class, in that order — an extension-registered group MUST NOT be permitted to shadow or override a built-in group's membership). An **array** expected value matches only via exact literal membership — semantic-group expansion never applies to an array.
 
-**[RUL-322]** Semantic groups MUST be evaluated live at match time, never snapshotted at an engine's boot or at compile time — a group registered or extended after the engine starts is visible to every subsequent match.
+**[RUL-322]** Semantic groups MUST be evaluated live at match time, never snapshotted at an engine restart or at compile time — a group registered or extended after an engine restart is visible to every subsequent match.
 
 ### Attribute-change vs. state-change
 
@@ -307,15 +325,17 @@ rules/1 defines the complete automation vocabulary — every trigger, condition,
 
 *draft-note: RUL-341/RUL-342 are proposed defaults for review (skip-the-gap, fire-once-on-first-occurrence) — the source vocabulary requires that DST skipped/repeated local times be given normative semantics but does not itself dictate which resolution.*
 
+*draft-note: RUL-340–342 are written against a trigger with a single declared local time (`time`, RUL-040/041); `time_pattern` (RUL-050/051) recurs, so one calendar date can nominally place several of its occurrences inside a single DST transition's affected range. The proposed generalization, not yet normative: on a spring-forward date, every nominal `time_pattern` occurrence whose local time falls inside the removed range does not fire, exactly as RUL-341 already states for a single occurrence, applied individually to each one; on a fall-back date, every nominal `time_pattern` occurrence whose local time falls inside the duplicated range fires exactly once, each keyed to its own first absolute instant, exactly as RUL-342 already states for a single occurrence, applied individually to each one.*
+
 ### Misfire policy
 
-**[RUL-350]** `misfire` is a per-trigger enum with values `catch_up_once`, `skip`, or `fire_each`, applicable to `time`, `time_pattern`, and `sun` triggers. It governs what happens to an occurrence the evaluating engine was unable to evaluate at its scheduled instant (e.g., the engine was offline or applying a new generation across that instant). The enum and its default-selection rule (RUL-354) apply identically regardless of whether the containing rule is edge-class (evaluated by the edge engine) or app-class (evaluated by the app engine) — one policy, evaluated consistently by whichever engine a given rule compiles to.
+**[RUL-350]** `misfire` is a per-trigger enum with values `catch_up_once`, `skip`, or `fire_each`, applicable to `time`, `time_pattern`, and `sun` triggers. It governs what happens to an occurrence the evaluating engine was unable to evaluate at its scheduled instant (e.g., the engine was offline, applying a new generation across that instant, or the clock was untrusted across that instant, RUL-371). The enum and its default-selection rule (RUL-354) apply identically regardless of whether the containing rule is edge-class (evaluated by the edge engine) or app-class (evaluated by the app engine) — one policy, evaluated consistently by whichever engine a given rule compiles to.
 
 **[RUL-351]** `skip`: a missed occurrence is never fired after the fact.
 
 **[RUL-352]** `catch_up_once`: exactly one occurrence fires once evaluation resumes, collapsing any number of missed occurrences into a single firing, regardless of how many were actually missed.
 
-**[RUL-353]** `fire_each`: every missed occurrence fires once evaluation resumes, in original chronological order. `fire_each` has no default trigger kind (RUL-354) and MUST be explicitly declared to take effect.
+**[RUL-353]** `fire_each`: every missed occurrence dispatches a firing attempt once evaluation resumes, in original chronological order, each independently subject to full mode evaluation (Modes; RUL-355) — under a busy `single` or `restart` mode, an earlier occurrence's dispatch can still cause a later occurrence in the same catch-up batch to resolve `skipped`, or to itself be preempted and resolve `restarted`, exactly as any other pair of close-together firings would. `fire_each` guarantees a mode-evaluated dispatch attempt per missed occurrence, not a completed run per occurrence. `fire_each` has no default trigger kind (RUL-354) and MUST be explicitly declared to take effect.
 
 **[RUL-354]** Every `time`, `time_pattern`, and `sun` trigger in this contract's own vocabulary represents a single momentary instant, not an ongoing represented state; absent an explicit `misfire` declaration, every trigger of these kinds defaults to `skip` — a missed one-shot does not fire late. (A recurring scheduled *state*, as distinct from an instantaneous trigger, is a separate platform concern outside this contract's vocabulary and may default oppositely; that default is not this contract's to state.)
 
@@ -325,15 +345,15 @@ rules/1 defines the complete automation vocabulary — every trigger, condition,
 
 **[RUL-360]** An in-progress rule run does not survive an engine restart: no partial run state (including its position in the `actions` sequence) is reconstructed after restart. What this rule states is narrower and applies once the same rule's trigger/hold conditions occur again post-restart: any `for`-hold (RUL-024) or `delay` action (RUL-190) that a subsequent run encounters MUST count from zero, never seeded from a pre-restart elapsed value — a hold begins counting only once its underlying condition freshly re-matches after restart, and a delay begins counting only when a (new) run reaches it.
 
-**[RUL-361]** Every timed wait affected by RUL-360 MUST be evaluated on monotonic time only, both before and after a restart, so that a restart cannot be used to shorten (or a clock-trust transition to lengthen) a hold or delay's effective duration.
+**[RUL-361]** Every timed wait affected by RUL-360 MUST be evaluated on monotonic time only, both before and after an engine restart, so that an engine restart cannot be used to shorten (or a clock-trust transition to lengthen) a hold or delay's effective duration.
 
-**[RUL-362]** RUL-360's reset is distinct from misfire (Misfire policy): a hold or delay interrupted mid-count by a restart is an in-progress action interrupted, not a missed scheduled occurrence — it never itself carries the `misfire_caught` marker (RUL-246).
+**[RUL-362]** RUL-360's reset is distinct from misfire (Misfire policy): a hold or delay interrupted mid-count by an engine restart is an in-progress action interrupted, not a missed scheduled occurrence — it never itself carries the `misfire_caught` marker (RUL-246).
 
 ### Time under clock trust
 
 **[RUL-370]** While the evaluating engine's clock trust state is `untrusted`, `time`, `time_pattern`, and `sun` triggers and conditions MUST evaluate against the engine's persisted best-known time floor (defined elsewhere) rather than an unverified wall clock — never firing based on a clock reading earlier than the floor.
 
-**[RUL-371]** When the engine's clock trust state transitions from `untrusted` to `trusted`, every time-based trigger and condition MUST be re-evaluated immediately against the newly trusted time, rather than waiting for its next naturally scheduled tick.
+**[RUL-371]** When the engine's clock trust state transitions from `untrusted` to `trusted`, every time-based trigger and condition MUST be re-evaluated immediately against the newly trusted time, rather than waiting for its next naturally scheduled tick. Any `time`, `time_pattern`, or `sun` occurrence whose scheduled instant fell within the untrusted window MUST be treated as a missed occurrence governed by that trigger's declared `misfire` policy (Misfire policy, RUL-350) — the same category of handling as an occurrence missed while the engine was offline — rather than silently dropped outside the `misfire` policy or fired as an ordinary live tick.
 
 ### Generation-swap semantics
 
@@ -348,6 +368,8 @@ rules/1 defines the complete automation vocabulary — every trigger, condition,
 **[RUL-391]** While operating offline (unable to reach the app), the edge engine MUST continue evaluating every closed-over value from RUL-390 exactly as frozen — stale-but-defined, never treated as unknown or as cause to stop evaluating the rule.
 
 **[RUL-392]** A variable write, a selector/device-class membership change, or a preset edit MUST cause a new generation to be compiled, incorporating the new closed-over values; per RUL-380/RUL-381, only rules whose own closed-over values actually changed have their in-flight runs canceled by that recompilation.
+
+**[RUL-393]** An action's `params` field (`device_command` RUL-160, `pack_action` RUL-231, `notify` RUL-210, `workflow_start` RUL-230) accepts, per value, either a literal or an Expression (Expression grammar and filters). Unlike RUL-390's compile-time closures, an Expression inside `params` is **live-evaluated** at the moment the action runs, never frozen into the compiled generation — a deliberate exception to RUL-390's freeze list, not an oversight: RUL-390 enumerates exactly three things frozen at compile time (a `variable` condition's comparison value, an `EntityRef`'s matched entity set, a `preset_batch`'s command list), and an action's `params` Expression is not among them. For an edge-classified rule, a `params` Expression remains subject to the same entity-reference scope restriction as every other edge-side Expression (RUL-282) — it may source only the rule's own triggering entity, never an arbitrary one.
 
 ## Wire shapes
 
@@ -373,7 +395,7 @@ rules/1 defines the complete automation vocabulary — every trigger, condition,
 ```
 
 ```json
-// EntityRef (selector form)
+// EntityRef (selector form — illustrative; the label-selector grammar is out of scope here (Scope) and referenced only by name, the same treatment the device-class registry gets)
 { "selector": "label==lobby-screens" }
 ```
 
@@ -449,6 +471,11 @@ rules/1 defines the complete automation vocabulary — every trigger, condition,
 ```json
 // VariableCondition
 { "type": "variable", "variable": "guest_mode", "equals": false }
+```
+
+```json
+// TemplateCondition (app-coupled)
+{ "type": "template", "expression": { "expr": "attr('01J8Z3K4N5P6Q7R8S9T0V1W2Z3', 'battery_ok') | default(true)" } }
 ```
 
 ```json
@@ -531,6 +558,19 @@ rules/1 defines the complete automation vocabulary — every trigger, condition,
 }
 ```
 
+```json
+// CompiledRuleEntry — app-class case (illustrative; app_class_reasons is RUL-006's per-member "why", present when execution_class is app)
+{
+  "rule_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z8",
+  "execution_class": "app",
+  "app_class_reasons": [
+    { "field": "actions[0].default[0]", "type": "notify", "reason": "notify is app-class unconditionally (RUL-210)" },
+    { "field": "mode", "value": "queued", "reason": "queued is app-only (RUL-240)" }
+  ],
+  "closed_over": null
+}
+```
+
 ## Negotiation
 
 rules/1 has no live wire handshake of its own; it governs the authored rule shape a compiler validates and classifies, and the compiled generation that results (Compile-time closure, Generation-swap semantics). Version compatibility is expressed at the vocabulary level: adding a new trigger/condition/action/mode member, or a new filter to RUL-290, is an additive rules/1 minor; removing a member, narrowing an existing member's accepted shape, or changing an existing member's evaluation semantics is a rules/1 major. A compiled generation MUST carry the rules/1 minor version it was compiled against; an executor asked to evaluate a generation compiled against a rules/1 major it does not implement MUST refuse rather than evaluate it under a mismatched vocabulary — the wire-level mechanics of that refusal (and any N−1 tolerance) belong to the generation's own transport contract (`relay/1`); rules/1's role ends at declaring the version tag every compiled generation carries.
@@ -547,6 +587,7 @@ rules/1 has no live wire handshake of its own; it governs the authored rule shap
 | `TYPE_MISMATCH_STATIC` | A numeric or typed comparison is declared against an attribute whose registry-declared type cannot satisfy it (RUL-261). | no |
 | `TEMPLATE_PARAM_UNBOUND` | A rule-template instantiation leaves a declared parameter position unbound (RUL-250). | no |
 | `MODE_MAX_MISSING` | `mode: "parallel"` is declared without `max` (RUL-244). | no |
+| `MODE_MAX_NOT_APPLICABLE` | `max` is declared with a non-null value while `mode` is not `parallel` (RUL-244). | no |
 | `PRESET_NOT_FOUND` | A `preset_batch` action's `preset_id` does not resolve to an existing preset row at compile time. | no |
 
 ## Conformance notes

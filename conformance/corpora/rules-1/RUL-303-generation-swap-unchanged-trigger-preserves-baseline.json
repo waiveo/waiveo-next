@@ -1,0 +1,48 @@
+{
+  "case_id": "RUL-303-generation-swap-unchanged-trigger-preserves-baseline",
+  "contract": "rules/1",
+  "req_ids": ["RUL-303", "RUL-300", "RUL-025", "RUL-380", "RUL-381", "RUL-304"],
+  "description": "An unrelated preset edit recompiles a new generation; a state trigger whose own compiled structure and closed-over values are untouched by that edit carries its first-observation baseline forward and fires normally on a genuine post-swap transition, while a sibling trigger on the same entity whose own for: duration was edited in that same generation has its first-observation baseline reset and does not fire merely by reconfirming the unchanged durable value.",
+  "input": {
+    "fixture": {
+      "entities": { "01J8Z3K4N5P6Q7R8S9T0V1W2Z2": { "device_class": "media-player" } }
+    },
+    "prior_generation": {
+      "generation": 1,
+      "rules": [
+        { "rule_id": "rule-R", "trigger": { "type": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z2", "from": ["off"], "to": ["on"] } },
+        { "rule_id": "rule-S", "trigger": { "type": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z2", "from": ["off"], "to": ["on"], "for": 10 } }
+      ]
+    },
+    "new_generation": {
+      "generation": 2,
+      "note": "compiled solely because an unrelated preset (preset_id 01J8Z3K4N5P6Q7R8S9T0V1W2Z5), referenced by a different rule entirely, was edited",
+      "rules": [
+        { "rule_id": "rule-R", "trigger": { "type": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z2", "from": ["off"], "to": ["on"] }, "note": "byte-identical compiled trigger to generation 1; unrelated to the edited preset (RUL-381: unchanged)" },
+        { "rule_id": "rule-S", "trigger": { "type": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z2", "from": ["off"], "to": ["on"], "for": 20 }, "note": "for: edited 10->20 in this same generation; compiled structure changed (RUL-381: changed)" }
+      ]
+    },
+    "events": [
+      { "seq": 1, "t_ms": 0, "kind": "generation_apply", "generation": 1 },
+      { "seq": 2, "t_ms": 100, "kind": "observation", "reported_state": "off", "note": "first observation after generation 1 apply; reconfirms durable off; establishes first-observation baseline for both rule-R and rule-S" },
+      { "seq": 3, "t_ms": 5000, "kind": "generation_apply", "generation": 2, "note": "unrelated preset edit recompiles; rule-R unchanged, rule-S changed" },
+      { "seq": 4, "t_ms": 65000, "kind": "state_transition", "from": "off", "to": "on", "note": "genuine transition, well clear of any stabilization window, occurring after the generation-2 swap" }
+    ]
+  },
+  "expected": {
+    "results": [
+      {
+        "seq": 4,
+        "rule_id": "rule-R",
+        "fired": true,
+        "reason": "rule-R's trigger is unchanged across the generation swap (RUL-381, reused by RUL-303 at the trigger level); its first-observation baseline carries forward from seq 2 (off), so this off->on observation is a genuine transition against the durable last-recorded value, not a reconfirmation — the unrelated preset edit does not reset it"
+      },
+      {
+        "seq": 4,
+        "rule_id": "rule-S",
+        "fired": false,
+        "reason": "rule-S's trigger changed in generation 2 (for: 10->20), so RUL-303 resets its first-observation baseline on this generation-apply; this seq-4 observation is therefore rule-S's first observation since the reset and MUST NOT be treated as a transition (RUL-300), even though the same off->on change fired rule-R at the same instant — demonstrating first-observation state is kept independently per (trigger, entity), RUL-304, not per entity alone"
+      }
+    ]
+  }
+}

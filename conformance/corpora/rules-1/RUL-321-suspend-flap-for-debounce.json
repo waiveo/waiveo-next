@@ -1,0 +1,33 @@
+{
+  "case_id": "RUL-321-suspend-flap-for-debounce",
+  "contract": "rules/1",
+  "req_ids": ["RUL-321", "RUL-024", "RUL-310"],
+  "description": "A scalar to:\"on\" trigger with for: combines semantic-group expansion and duration-hold debounce the way the field incident it is modeled on required: the device repeatedly bounces off the off-group into an on-group member (\"suspend\") that is not the literal string \"on\", each brief bounce is discarded by the for: hold exactly as a literal on/off bounce would be, and only a later occurrence that holds continuously for the full duration dispatches.",
+  "input": {
+    "fixture": {
+      "device_classes": {
+        "screen": { "semantic_groups": { "on": ["on", "suspend", "active"], "off": ["off", "standby"] } }
+      },
+      "entities": { "01J8Z3K4N5P6Q7R8S9T0V1W2Z9": { "device_class": "screen" } }
+    },
+    "trigger": { "type": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z9", "to": "on", "for": 20 },
+    "events": [
+      { "seq": 1, "t_ms": 0, "kind": "state_transition", "from": "off", "to": "suspend", "note": "\"suspend\" is not the literal string \"on\" but is a member of the screen device class's on-group (RUL-321 scalar expansion); matches to:\"on\" and starts the hold" },
+      { "seq": 2, "t_ms": 3000, "kind": "state_transition", "from": "suspend", "to": "off", "note": "reverts after 3000ms, short of the 20000ms for:; pending fire discarded" },
+      { "seq": 3, "t_ms": 4000, "kind": "state_transition", "from": "off", "to": "suspend", "note": "bounces back into the same on-group member; matches to:\"on\" again via expansion, hold restarts" },
+      { "seq": 4, "t_ms": 6500, "kind": "state_transition", "from": "suspend", "to": "off", "note": "reverts after 2500ms; discarded again — this is the Suspend-flap shape" },
+      { "seq": 5, "t_ms": 7000, "kind": "state_transition", "from": "off", "to": "on", "note": "settles on the literal state \"on\" (also an on-group member); hold restarts" },
+      { "seq": 6, "t_ms": 27000, "kind": "hold_elapsed", "note": "on has held continuously since seq 5 (20000ms of monotonic time)" }
+    ]
+  },
+  "expected": {
+    "results": [
+      { "seq": 1, "matched": true, "reason": "off->suspend matches to:\"on\" via semantic-group expansion (RUL-321), starting the for: hold" },
+      { "seq": 2, "fired": false, "reason": "hold broke at 3000ms elapsed, short of the 20000ms requirement" },
+      { "seq": 3, "matched": true, "reason": "off->suspend matches to:\"on\" again via group expansion; hold restarts from zero" },
+      { "seq": 4, "fired": false, "reason": "hold broke at 2500ms elapsed, short of the 20000ms requirement; two flap cycles now discarded without ever dispatching" },
+      { "seq": 5, "matched": true, "reason": "off->on matches to:\"on\" by literal equality; hold restarts from zero" },
+      { "seq": 6, "fired": true, "reason": "on held continuously from t=7000 to t=27000, satisfying for: 20; this is the only dispatch across the whole sequence" }
+    ]
+  }
+}
