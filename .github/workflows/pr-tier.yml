@@ -17,3 +17,4 @@ jobs:
           node-version-file: .node-version
       - run: node scripts/validate-contracts.mjs
       - run: node scripts/check-public-hygiene.mjs
+      - run: node --test 'scripts/**/*.test.mjs'

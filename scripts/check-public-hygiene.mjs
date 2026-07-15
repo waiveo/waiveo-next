@@ -8,5 +8,11 @@ for (const f of files) {
   const text = execSync(`git show :${JSON.stringify(f).slice(1, -1)}`, { encoding: "utf8", maxBuffer: 1 << 24 });
   for (const re of banned) if (re.test(text)) hits.push(`${f}: matches ${re}`);
 }
-if (hits.length) { console.error(hits.join("\n")); process.exit(1); }
-console.log(`check-public-hygiene: OK (${files.length} files)`);
+if (hits.length) {
+  console.error(hits.join("\n"));
+  console.log(`SUMMARY: check-public-hygiene: FAILED — ${hits.length} hit(s); first: ${hits[0]}`);
+  process.exitCode = 1;
+} else {
+  console.log(`check-public-hygiene: OK (${files.length} files)`);
+  console.log(`SUMMARY: check-public-hygiene: OK (${files.length} files)`);
+}
