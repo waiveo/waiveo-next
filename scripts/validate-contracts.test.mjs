@@ -131,6 +131,33 @@ test("traceability referencing a nonexistent ID fails", () => {
   );
 });
 
+test("traceability referencing an ID owned by a different contract fails", () => {
+  withFixture(
+    (write) => {
+      write(
+        "contracts/example-1.md",
+        "# Example Contract\n\n**Contract:** example/1\n**Version:** 1.0\n**Status:** draft\n\n**[EXA-001]** The example MUST do a thing.\n"
+      );
+      write(
+        "conformance/traceability/player-1.md",
+        "| req-id | contract §anchor | case-id(s) | status |\n|---|---|---|---|\n| EXA-001 | contracts/example-1.md#normative-requirements | EXA-001-basic | covered |\n"
+      );
+    },
+    (root) => {
+      const res = runValidator(root);
+      assert.notEqual(res.status, 0);
+      const output = res.stdout + res.stderr;
+      // EXA-001 is real (defined in contracts/example-1.md) but referenced from
+      // traceability/player-1.md, which maps to contracts/player-1.md — not
+      // contracts/example-1.md. The message must name both sides of the mismatch.
+      assert.match(output, /EXA-001/);
+      assert.match(output, /contracts\/example-1\.md/);
+      assert.match(output, /contracts\/player-1\.md/);
+      assert.match(res.stdout, /SUMMARY: validate-contracts: FAILED/);
+    }
+  );
+});
+
 test("contract doc with zero requirement IDs fails", () => {
   withFixture(
     (write) => {

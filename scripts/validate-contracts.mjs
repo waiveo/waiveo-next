@@ -6,8 +6,10 @@
 //   2. Every such file contains >=1 requirement-ID anchor: a line starting with
 //      **[XXX-000]** (three uppercase letters, a hyphen, three digits).
 //   3. Requirement IDs are unique across the whole contracts corpus.
-//   4. Every requirement ID referenced from a conformance/traceability/*.md map
-//      (other than its own README.md) exists somewhere in the contracts corpus.
+//   4. Every requirement ID referenced from a conformance/traceability/<name>.md map
+//      (other than its own README.md) is defined in that map's mapped contract —
+//      conformance/traceability/<name>.md maps to contracts/<name>.md — not merely
+//      present anywhere in the contracts corpus.
 import { readdirSync, readFileSync, statSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -68,10 +70,18 @@ for (const path of walkMarkdown(CONTRACTS_ROOT)) {
   collectRequirementIds(path, lines);
 }
 
+// conformance/traceability/<name>.md maps to contracts/<name>.md by filename
+// convention alone (no directory nesting, no front-matter declaration).
+function expectedContractFor(traceabilityPath) {
+  const name = traceabilityPath.split("/").pop();
+  return join(CONTRACTS_ROOT, name);
+}
+
 // A traceability map row looks like: | XXX-001 | contract §anchor | case-id(s) | status |
 // Only the first cell is inspected; anything not shaped like a requirement ID
 // (the header row, the --- separator row, prose) is silently skipped.
 function checkTraceabilityFile(path) {
+  const expectedContract = expectedContractFor(path);
   const lines = readFileSync(path, "utf8").split("\n");
   lines.forEach((raw, i) => {
     const line = raw.trim();
@@ -81,7 +91,14 @@ function checkTraceabilityFile(path) {
       ?.trim()
       .replace(/`/g, "");
     if (!first || !TRACEABILITY_ID_RE.test(first)) return;
-    if (!idOwner.has(first)) failures.push(`${path}:${i + 1}: traceability map references undefined requirement ID ${first}`);
+    const owner = idOwner.get(first);
+    if (!owner) {
+      failures.push(`${path}:${i + 1}: traceability map references undefined requirement ID ${first}`);
+    } else if (owner !== expectedContract) {
+      failures.push(
+        `${path}:${i + 1}: traceability map references requirement ID ${first} owned by ${owner}, but ${path} maps to ${expectedContract}`
+      );
+    }
   });
 }
 
