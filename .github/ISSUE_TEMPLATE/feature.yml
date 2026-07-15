@@ -1,0 +1,10 @@
+name: Feature request
+description: Something you want
+labels: ["tier:intake"]
+body:
+  - type: textarea
+    id: want
+    attributes:
+      label: What do you want, and what problem does it solve?
+    validations:
+      required: true

@@ -1,0 +1,17 @@
+name: Bug report
+description: Something broke
+labels: ["tier:intake"]
+body:
+  - type: textarea
+    id: bundle
+    attributes:
+      label: Support bundle
+      description: If your install has the CLI, attach the output of `waiveo support-bundle`. If not, say so.
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true

@@ -1,0 +1,5 @@
+# Dormant by design: required code-owner review flips on the day developer #2
+# gets write access (an author cannot approve their own PR; enabling earlier
+# only trains admin-bypass habits). Until then, contract diffs get an
+# agent-run adversarial review by convention.
+# * @maaxton
