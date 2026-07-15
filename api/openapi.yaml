@@ -1,0 +1,1052 @@
+openapi: 3.1.0
+jsonSchemaDialect: "https://spec.openapis.org/oas/3.1/dialect/base"
+info:
+  title: Management API
+  version: 1.0.0
+  summary: The versioned management API — the single door every client (web UI, CLI, MCP server) uses to read and change platform state.
+  description: >-
+    This document is the source of truth every generated client (TypeScript
+    for the web UI, Go for the CLI and MCP server) is produced from. Every
+    operation lives under the `/api/v1` prefix. Cross-cutting conventions
+    (error shape, optimistic concurrency, pagination, idempotency, trace
+    propagation, MCP tag curation, the label-selector grammar, and the
+    evolution policy) are specified normatively in `contracts/api-1.md`;
+    this document implements those conventions as reusable components and
+    applies them to every operation below. `scope-nodes` and `automations`
+    are worked fully end to end (schemas, every verb, every error response);
+    every other tag is a path stub — summary and tag only — reserved for a
+    later minor.
+  license:
+    name: GNU Affero General Public License v3.0 only
+    identifier: AGPL-3.0-only
+servers:
+  - url: "/api/v1"
+    description: Same-origin deployment — the app serves the web UI and this API on one origin; the CLI and MCP server address it over the network binding.
+tags:
+  - name: auth
+    description: Session and API-key issuance/revocation. Path stub.
+  - name: principals
+    description: Users, API-key clients, and internal service principals. Path stub.
+  - name: scope-nodes
+    description: The org → site → group → screen tree every resource and durable event attaches to. Worked fully.
+  - name: devices
+    description: The device registry (discovery, adoption, commands). Path stub.
+  - name: entities
+    description: The entity registry and state (device-plane objects; see rules/1 for automation semantics over entities). Path stub.
+  - name: automations
+    description: Rules — triggers, conditions, actions, and modes (rules/1 defines the vocabulary; this API manages the resource envelope around it). Worked fully.
+  - name: casts
+    description: Screen content — casts, slides, and playback assignment. Path stub.
+  - name: packs
+    description: Installed packs and their declared actions. Path stub.
+  - name: system
+    description: Platform health, logs, and maintenance operations. Path stub.
+  - name: "mcp:read"
+    description: Curation tag — every operation carrying this tag is exposed as a non-mutating MCP tool. Not a resource family; see `contracts/api-1.md#mcp-operation-tag-curation`.
+  - name: "mcp:act"
+    description: Curation tag — every operation carrying this tag is exposed as a mutating MCP tool and requires the Idempotency-Key discipline. Not a resource family; see `contracts/api-1.md#mcp-operation-tag-curation`.
+security:
+  - SessionCookie: []
+  - ApiKey: []
+paths:
+  # ---------------------------------------------------------------------
+  # scope-nodes — exemplar #1, worked fully end to end.
+  # ---------------------------------------------------------------------
+  /scope-nodes:
+    get:
+      operationId: listScopeNodes
+      summary: List scope nodes
+      description: Returns a keyset-paginated, selector-filterable page of scope nodes.
+      tags: [scope-nodes, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/CursorParam"
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/SelectorParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: A page of scope nodes.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScopeNodeListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+    post:
+      operationId: createScopeNode
+      summary: Create a scope node
+      tags: [scope-nodes, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScopeNodeCreate"
+      responses:
+        "201":
+          description: The created scope node.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScopeNode"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /scope-nodes/{scope_node_id}:
+    parameters:
+      - name: scope_node_id
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/Ulid"
+    get:
+      operationId: getScopeNode
+      summary: Read a scope node
+      tags: [scope-nodes, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The scope node.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScopeNode"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateScopeNode
+      summary: Update a scope node
+      description: Partial update. Requires If-Match against the scope node's current ETag/revision.
+      tags: [scope-nodes, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IfMatchParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScopeNodeUpdate"
+      responses:
+        "200":
+          description: The updated scope node.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScopeNode"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
+    delete:
+      operationId: deleteScopeNode
+      summary: Delete a scope node
+      description: Requires If-Match against the scope node's current ETag/revision.
+      tags: [scope-nodes, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IfMatchParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "204":
+          description: Deleted. No content.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
+
+  # ---------------------------------------------------------------------
+  # automations — exemplar #2, worked fully end to end.
+  # ---------------------------------------------------------------------
+  /automations:
+    get:
+      operationId: listAutomations
+      summary: List automations
+      description: Returns a keyset-paginated, selector-filterable page of automations (rules).
+      tags: [automations, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/CursorParam"
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/SelectorParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: A page of automations.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AutomationListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+    post:
+      operationId: createAutomation
+      summary: Create an automation
+      tags: [automations, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AutomationCreate"
+      responses:
+        "201":
+          description: The created automation.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Automation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /automations/{automation_id}:
+    parameters:
+      - name: automation_id
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/Ulid"
+    get:
+      operationId: getAutomation
+      summary: Read an automation
+      tags: [automations, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The automation.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Automation"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateAutomation
+      summary: Update an automation
+      description: Partial update. Requires If-Match against the automation's current ETag/revision.
+      tags: [automations, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IfMatchParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AutomationUpdate"
+      responses:
+        "200":
+          description: The updated automation.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Automation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
+    delete:
+      operationId: deleteAutomation
+      summary: Delete an automation
+      description: Requires If-Match against the automation's current ETag/revision.
+      tags: [automations, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IfMatchParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "204":
+          description: Deleted. No content.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
+  /automations/{automation_id}/run:
+    parameters:
+      - name: automation_id
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/Ulid"
+    post:
+      operationId: runAutomation
+      summary: Run an automation now
+      description: >-
+        Manually starts one run of the automation's action sequence, subject
+        to its declared mode's normal mode-evaluation rules. A mutating POST
+        outside plain resource creation — accepts Idempotency-Key so a
+        client's retry-on-timeout cannot double-fire the run.
+      tags: [automations, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AutomationRunRequest"
+      responses:
+        "200":
+          description: The run was accepted; the response carries its mode-evaluation disposition.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AutomationRunResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  # ---------------------------------------------------------------------
+  # Tagged stubs — path + summary + tag only; full shapes land in a later
+  # minor (additive, per contracts/api-1.md's evolution policy).
+  # ---------------------------------------------------------------------
+  /auth/login:
+    post:
+      operationId: login
+      summary: Exchange credentials for a session
+      tags: [auth]
+      responses:
+        "200":
+          description: Stub — resource detail intentionally deferred.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /principals:
+    get:
+      operationId: listPrincipals
+      summary: List principals (users, API-key clients, internal service principals)
+      tags: [principals, "mcp:read"]
+      responses:
+        "200":
+          description: Stub — resource detail intentionally deferred.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /devices:
+    get:
+      operationId: listDevices
+      summary: List devices
+      tags: [devices, "mcp:read"]
+      responses:
+        "200":
+          description: Stub — resource detail intentionally deferred.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /entities:
+    get:
+      operationId: listEntities
+      summary: List entities and their current state
+      tags: [entities, "mcp:read"]
+      responses:
+        "200":
+          description: Stub — resource detail intentionally deferred.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /casts:
+    get:
+      operationId: listCasts
+      summary: List casts
+      tags: [casts, "mcp:read"]
+      responses:
+        "200":
+          description: Stub — resource detail intentionally deferred.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /packs:
+    get:
+      operationId: listPacks
+      summary: List installed packs
+      tags: [packs, "mcp:read"]
+      responses:
+        "200":
+          description: Stub — resource detail intentionally deferred.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /packs/{pack}/actions/{name}:
+    post:
+      operationId: invokePackAction
+      summary: Invoke a pack-declared action
+      description: >-
+        The auto-surfaced management-API route for every action a pack
+        declares. `pack` is the pack's `<publisher>/<name>` identity,
+        percent-encoded where it contains a literal slash.
+      tags: [packs, "mcp:act"]
+      parameters:
+        - name: pack
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+      responses:
+        "200":
+          description: Stub — resource detail intentionally deferred.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /system/health:
+    get:
+      operationId: getSystemHealth
+      summary: Platform health summary
+      tags: [system, "mcp:read"]
+      responses:
+        "200":
+          description: Stub — resource detail intentionally deferred.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+components:
+  securitySchemes:
+    SessionCookie:
+      type: apiKey
+      in: cookie
+      name: session
+      description: Browser session cookie issued by /auth/login. Mutating requests additionally require the platform's CSRF token.
+    ApiKey:
+      type: http
+      scheme: bearer
+      bearerFormat: "wv_<random>, scoped to a principal and role"
+      description: API-key principal (user-issued or internal-service), presented as a bearer token.
+
+  parameters:
+    CursorParam:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client.
+      schema:
+        $ref: "#/components/schemas/Cursor"
+    LimitParam:
+      name: limit
+      in: query
+      required: false
+      description: Maximum rows to return in this page.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    SelectorParam:
+      name: selector
+      in: query
+      required: false
+      description: >-
+        A label-selector string: comma-separated, ANDed terms (equality,
+        inequality, set-membership, set-exclusion, existence,
+        non-existence, or a `scope_node subtree <ulid>` term). See
+        `contracts/api-1.md#label-selector-grammar` for the full grammar.
+      schema:
+        type: string
+        example: "kind=screen,env in (prod,staging),scope_node subtree 01J8Z2Q1M8H8N4T0V1W2X3Y4Z5"
+    IfMatchParam:
+      name: If-Match
+      in: header
+      required: true
+      description: The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists.
+      schema:
+        type: string
+    IdempotencyKeyParam:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+    TraceIdParam:
+      name: Trace-Id
+      in: header
+      required: false
+      description: Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+      schema:
+        $ref: "#/components/schemas/TraceId"
+
+  headers:
+    ETag:
+      description: Strong validator derived solely from the resource's `revision`. Present on every response representing a single mutable resource.
+      required: true
+      schema:
+        type: string
+        example: '"3"'
+    TraceIdResponse:
+      description: The trace ID that correlates this request across every component it touched — either the caller-supplied value (if it validated) or a freshly generated one.
+      required: true
+      schema:
+        $ref: "#/components/schemas/TraceId"
+
+  # Note: the Deprecation (RFC 9745) and Sunset (RFC 8594) response headers
+  # this contract's evolution policy uses (contracts/api-1.md, API-082) are
+  # not modeled as reusable components here — nothing in this document is
+  # deprecated yet, so there is no operation to attach them to without
+  # faking a deprecation. contracts/api-1.md is their normative source; a
+  # future minor wires them onto whichever operation first deprecates.
+
+  responses:
+    BadRequest:
+      description: The request was malformed (validation failure, invalid selector, invalid cursor).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Unauthorized:
+      description: No valid principal was presented.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Forbidden:
+      description: The principal is authenticated but not authorized for this operation.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    NotFound:
+      description: No resource exists at this identifier.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Conflict:
+      description: An Idempotency-Key was reused with a different body, or is still in progress.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    PreconditionFailed:
+      description: If-Match did not match the resource's current ETag.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    PreconditionRequired:
+      description: A state-changing request omitted the required If-Match header.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    TooManyRequests:
+      description: The principal exceeded its rate limit.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+
+  schemas:
+    Ulid:
+      type: string
+      description: A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+      pattern: "^[0-9A-HJKMNP-TV-Z]{26}$"
+      examples: ["01J8Z3K4N5P6Q7R8S9T0V1W2X3"]
+
+    TraceId:
+      type: string
+      description: A ULID- or UUID-class trace identifier, 20-36 characters, restricted charset.
+      pattern: "^[A-Za-z0-9-]{20,36}$"
+      examples: ["01J8Z3K4N5P6Q7R8S9T0V1W2X4"]
+
+    Cursor:
+      type: ["string", "null"]
+      description: An opaque, URL-safe continuation token. `null` signals no further rows. Never constructed, parsed, or compared for meaning by a client.
+      pattern: "^[A-Za-z0-9_-]+$"
+      x-go-type: "*string"
+
+    Label:
+      type: object
+      description: One label term, as accepted by the label-selector grammar (`contracts/api-1.md#label-selector-grammar`).
+      required: [key, value]
+      additionalProperties: false
+      properties:
+        key:
+          type: string
+          pattern: "^([a-z0-9A-Z][a-z0-9A-Z.-]{0,251}/)?[a-z0-9A-Z][a-z0-9A-Z_.-]{0,62}$"
+        value:
+          type: string
+          pattern: "^([a-z0-9A-Z][a-z0-9A-Z_.-]{0,62})?$"
+
+    ValidationFieldError:
+      type: object
+      description: One field-level failure inside a VALIDATION_FAILED Problem's `errors` array.
+      required: [field, code, message]
+      additionalProperties: false
+      properties:
+        field:
+          type: string
+          description: Dot-path to the offending field in the request body, or the query-parameter name.
+        code:
+          type: string
+        message:
+          type: string
+
+    Problem:
+      type: object
+      description: >-
+        RFC 9457 problem+json, extended with `code` (this contract's
+        machine-readable error registry) and `trace_id`. `code` is the
+        discriminant a client asserts on; `title`/`detail` are for humans.
+      required: [type, title, status, code, trace_id]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          const: "about:blank"
+          description: Always "about:blank" in this version; `code` is the sole machine-readable discriminant api/v1 defines.
+        title:
+          type: string
+          description: A short, human-readable summary of the error, constant per `code`.
+        status:
+          type: integer
+          description: The HTTP status code, repeated here per RFC 9457.
+        detail:
+          type: string
+          description: A human-readable explanation specific to this occurrence.
+        instance:
+          type: string
+          format: uri-reference
+          description: The request's own path, unmodified.
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        trace_id:
+          $ref: "#/components/schemas/TraceId"
+        errors:
+          type: array
+          description: Present only when `code` is VALIDATION_FAILED — one entry per failing field.
+          items:
+            $ref: "#/components/schemas/ValidationFieldError"
+        current_revision:
+          type: integer
+          description: Present only when `code` is REVISION_CONFLICT — the resource's current revision, so the client can re-read and retry.
+      examples:
+        - type: "about:blank"
+          title: "Not Found"
+          status: 404
+          detail: "No scope node exists with this identifier."
+          instance: "/api/v1/scope-nodes/01J8Z3K4N5P6Q7R8S9T0V1W2X9"
+          code: "NOT_FOUND"
+          trace_id: "01J8Z3K4N5P6Q7R8S9T0V1W2X4"
+
+    ErrorCode:
+      type: string
+      description: The stable, additive-only machine-readable error registry (`contracts/api-1.md#error-taxonomy`).
+      enum:
+        - VALIDATION_FAILED
+        - UNAUTHENTICATED
+        - FORBIDDEN
+        - NOT_FOUND
+        - REVISION_CONFLICT
+        - IF_MATCH_REQUIRED
+        - CURSOR_INVALID
+        - SELECTOR_INVALID
+        - IDEMPOTENCY_KEY_REUSED
+        - IDEMPOTENCY_KEY_IN_PROGRESS
+        - RATE_LIMITED
+        - INTERNAL
+        - UNAVAILABLE
+
+    ScopeNode:
+      type: object
+      description: A node in the org → site → group → screen tree.
+      required: [id, kind, parent_id, name, labels, revision, created_at, updated_at]
+      additionalProperties: false
+      properties:
+        id:
+          $ref: "#/components/schemas/Ulid"
+        kind:
+          type: string
+          enum: [org, site, group, screen]
+        parent_id:
+          type: ["string", "null"]
+          description: The parent scope node's ULID. `null` only for the single root org node.
+          pattern: "^[0-9A-HJKMNP-TV-Z]{26}$"
+          x-go-type: "*string"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        labels:
+          type: array
+          items:
+            $ref: "#/components/schemas/Label"
+        tz:
+          type: string
+          description: IANA time zone name. Meaningful at site level and below; a screen-level value overrides its site.
+        lat:
+          type: number
+          minimum: -90
+          maximum: 90
+        long:
+          type: number
+          minimum: -180
+          maximum: 180
+        account_state:
+          type: ["string", "null"]
+          description: Present only on the org node.
+          enum: [trial, active, suspended, closed, purged, null]
+          x-go-type: "*string"
+        revision:
+          type: integer
+          minimum: 1
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ScopeNodeCreate:
+      type: object
+      required: [kind, name]
+      additionalProperties: false
+      properties:
+        kind:
+          type: string
+          enum: [org, site, group, screen]
+        parent_id:
+          type: ["string", "null"]
+          pattern: "^[0-9A-HJKMNP-TV-Z]{26}$"
+          x-go-type: "*string"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        labels:
+          type: array
+          items:
+            $ref: "#/components/schemas/Label"
+        tz:
+          type: string
+        lat:
+          type: number
+          minimum: -90
+          maximum: 90
+        long:
+          type: number
+          minimum: -180
+          maximum: 180
+
+    ScopeNodeUpdate:
+      type: object
+      description: Partial update — every field optional, at least one required.
+      minProperties: 1
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        labels:
+          type: array
+          items:
+            $ref: "#/components/schemas/Label"
+        tz:
+          type: string
+        lat:
+          type: number
+          minimum: -90
+          maximum: 90
+        long:
+          type: number
+          minimum: -180
+          maximum: 180
+
+    ScopeNodeListResponse:
+      type: object
+      required: [items, cursor]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScopeNode"
+        cursor:
+          $ref: "#/components/schemas/Cursor"
+
+    Automation:
+      type: object
+      description: >-
+        The management-API resource envelope around a rules/1 Rule. `mode`,
+        `max`, `triggers`, `conditions`, and `actions` are exactly rules/1's
+        own vocabulary (rules/1 Wire shapes); the remaining fields are this
+        API's own resource envelope (identity, placement, labels, revision).
+      required: [id, name, scope_node, labels, enabled, mode, max, triggers, conditions, actions, revision, created_at, updated_at]
+      additionalProperties: false
+      properties:
+        id:
+          $ref: "#/components/schemas/Ulid"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        scope_node:
+          $ref: "#/components/schemas/Ulid"
+        labels:
+          type: array
+          items:
+            $ref: "#/components/schemas/Label"
+        enabled:
+          type: boolean
+        mode:
+          type: string
+          enum: [single, restart, queued, parallel]
+        max:
+          type: ["integer", "null"]
+          description: Concurrency cap; meaningful only under `queued` or `parallel` mode.
+          x-go-type: "*int"
+        triggers:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: true
+          description: rules/1's Trigger vocabulary — full shape defined there, not restated here.
+        conditions:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+          description: rules/1's Condition vocabulary — full shape defined there, not restated here.
+        actions:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: true
+          description: rules/1's Action vocabulary — full shape defined there, not restated here.
+        revision:
+          type: integer
+          minimum: 1
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    AutomationCreate:
+      type: object
+      required: [name, scope_node, mode, triggers, actions]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        scope_node:
+          $ref: "#/components/schemas/Ulid"
+        labels:
+          type: array
+          items:
+            $ref: "#/components/schemas/Label"
+        enabled:
+          type: boolean
+          default: true
+        mode:
+          type: string
+          enum: [single, restart, queued, parallel]
+        max:
+          type: ["integer", "null"]
+          x-go-type: "*int"
+        triggers:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: true
+        conditions:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        actions:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: true
+
+    AutomationUpdate:
+      type: object
+      description: Partial update — every field optional, at least one required.
+      minProperties: 1
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        labels:
+          type: array
+          items:
+            $ref: "#/components/schemas/Label"
+        enabled:
+          type: boolean
+        mode:
+          type: string
+          enum: [single, restart, queued, parallel]
+        max:
+          type: ["integer", "null"]
+          x-go-type: "*int"
+        triggers:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: true
+        conditions:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        actions:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: true
+
+    AutomationListResponse:
+      type: object
+      required: [items, cursor]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Automation"
+        cursor:
+          $ref: "#/components/schemas/Cursor"
+
+    AutomationRunRequest:
+      type: object
+      description: Optional trigger-context override for this manual run.
+      additionalProperties: false
+      properties:
+        context:
+          type: object
+          additionalProperties: true
+
+    AutomationRunResult:
+      type: object
+      required: [run_id, disposition]
+      additionalProperties: false
+      properties:
+        run_id:
+          $ref: "#/components/schemas/Ulid"
+        disposition:
+          type: string
+          description: rules/1's closed RunDisposition set.
+          enum: [ran, skipped, restarted]

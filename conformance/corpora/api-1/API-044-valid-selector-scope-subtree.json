@@ -1,0 +1,28 @@
+{
+  "case_id": "API-044-valid-selector-scope-subtree",
+  "contract": "api/1",
+  "req_ids": ["API-040", "API-041", "API-042", "API-044"],
+  "description": "A selector combining an ordinary equality term with a scope_node subtree term ANDs them: only resources of the named kind AND placed at-or-under the named scope node match, even though a same-kind resource exists under a sibling subtree.",
+  "input": {
+    "collection_state": [
+      { "id": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5", "kind": "site", "parent_id": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z0" },
+      { "id": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z6", "kind": "screen", "parent_id": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5" },
+      { "id": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z7", "kind": "group", "parent_id": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5" },
+      { "id": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z8", "kind": "site", "parent_id": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z0" },
+      { "id": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z9", "kind": "screen", "parent_id": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z8" }
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/v1/scope-nodes",
+      "query": { "selector": "kind=screen,scope_node subtree 01J8Z2Q1M8H8N4T0V1W2X3Y4Z5" }
+    }
+  },
+  "expected": {
+    "status": 200,
+    "body": {
+      "items": [{ "id": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z6" }],
+      "cursor": null
+    },
+    "reason": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z7 is excluded (wrong kind, though in the subtree); 01J8Z2Q1M8H8N4T0V1W2X3Y4Z9 is excluded (right kind, but under the sibling site Z8, not the named subtree)."
+  }
+}

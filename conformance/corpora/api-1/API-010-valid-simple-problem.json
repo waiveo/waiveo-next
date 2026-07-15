@@ -1,0 +1,29 @@
+{
+  "case_id": "API-010-valid-simple-problem",
+  "contract": "api/1",
+  "req_ids": ["API-010", "API-011", "API-015", "API-016", "API-062"],
+  "description": "GET on a scope node ID that does not exist returns a single-code Problem document: about:blank type, NOT_FOUND from the registry, instance set to the request's own path, and trace_id echoing the supplied Trace-Id header.",
+  "input": {
+    "method": "GET",
+    "path": "/api/v1/scope-nodes/01J8Z3K4N5P6Q7R8S9T0V1W2X9",
+    "headers": {
+      "Trace-Id": "01J8Z3K4N5P6Q7R8S9T0V1W2X4"
+    }
+  },
+  "expected": {
+    "status": 404,
+    "content_type": "application/problem+json",
+    "headers": {
+      "Trace-Id": "01J8Z3K4N5P6Q7R8S9T0V1W2X4"
+    },
+    "body": {
+      "type": "about:blank",
+      "title": "Not Found",
+      "status": 404,
+      "detail": "No scope node exists with this identifier.",
+      "instance": "/api/v1/scope-nodes/01J8Z3K4N5P6Q7R8S9T0V1W2X9",
+      "code": "NOT_FOUND",
+      "trace_id": "01J8Z3K4N5P6Q7R8S9T0V1W2X4"
+    }
+  }
+}

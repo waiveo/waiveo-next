@@ -1,0 +1,36 @@
+{
+  "case_id": "API-023-invalid-if-match-conflict",
+  "contract": "api/1",
+  "req_ids": ["API-020", "API-021", "API-023"],
+  "description": "A PATCH carrying an If-Match value that no longer matches the resource's current ETag/revision (someone else wrote it first) is rejected with 412 Precondition Failed / REVISION_CONFLICT before the write is attempted, and the response surfaces the resource's current revision so the client can re-read and retry.",
+  "input": {
+    "method": "PATCH",
+    "path": "/api/v1/scope-nodes/01J8Z3K4N5P6Q7R8S9T0V1W2X3",
+    "headers": {
+      "If-Match": "\"2\"",
+      "Trace-Id": "01J8Z3K4N5P6Q7R8S9T0V1W2X7"
+    },
+    "body": {
+      "name": "Renamed Site"
+    },
+    "current_resource_state": {
+      "id": "01J8Z3K4N5P6Q7R8S9T0V1W2X3",
+      "name": "Original Site",
+      "revision": 3
+    }
+  },
+  "expected": {
+    "status": 412,
+    "content_type": "application/problem+json",
+    "write_executed": false,
+    "body": {
+      "type": "about:blank",
+      "title": "Precondition Failed",
+      "status": 412,
+      "detail": "If-Match \"2\" does not match the current revision, 3.",
+      "code": "REVISION_CONFLICT",
+      "trace_id": "01J8Z3K4N5P6Q7R8S9T0V1W2X7",
+      "current_revision": 3
+    }
+  }
+}

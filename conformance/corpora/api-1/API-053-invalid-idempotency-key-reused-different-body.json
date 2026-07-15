@@ -1,0 +1,44 @@
+{
+  "case_id": "API-053-invalid-idempotency-key-reused-different-body",
+  "contract": "api/1",
+  "req_ids": ["API-051", "API-053"],
+  "description": "Reusing the same Idempotency-Key with a different request body is rejected with 409 IDEMPOTENCY_KEY_REUSED and does not execute — replay-of-original-response semantics only apply when the body hash matches; a different body is a client error, not a fresh request.",
+  "input": {
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/api/v1/scope-nodes",
+        "headers": { "Idempotency-Key": "9c2a4b6e-1234-4a9b-8f2e-9d7c6b5a4321" },
+        "principal": "usr_01J8Z000000000000000000001",
+        "body": { "kind": "site", "name": "New Site" }
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/scope-nodes",
+        "headers": { "Idempotency-Key": "9c2a4b6e-1234-4a9b-8f2e-9d7c6b5a4321" },
+        "principal": "usr_01J8Z000000000000000000001",
+        "body": { "kind": "site", "name": "A Completely Different Site" }
+      }
+    ]
+  },
+  "expected": {
+    "responses": [
+      {
+        "status": 201,
+        "body": { "id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZB", "kind": "site", "name": "New Site", "revision": 1 }
+      },
+      {
+        "status": 409,
+        "content_type": "application/problem+json",
+        "body": {
+          "type": "about:blank",
+          "title": "Conflict",
+          "status": 409,
+          "detail": "Idempotency-Key \"9c2a4b6e-1234-4a9b-8f2e-9d7c6b5a4321\" was already used with a different request body.",
+          "code": "IDEMPOTENCY_KEY_REUSED"
+        }
+      }
+    ],
+    "resources_created": 1
+  }
+}

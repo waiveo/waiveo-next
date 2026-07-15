@@ -1,0 +1,32 @@
+{
+  "case_id": "API-013-valid-multi-field-validation-problem",
+  "contract": "api/1",
+  "req_ids": ["API-010", "API-011", "API-013", "API-016"],
+  "description": "Creating a scope node with two independently-invalid fields returns one VALIDATION_FAILED Problem document carrying an errors array with one entry per failing field, not the first failure alone and not two separate error responses.",
+  "input": {
+    "method": "POST",
+    "path": "/api/v1/scope-nodes",
+    "headers": {
+      "Trace-Id": "01J8Z3K4N5P6Q7R8S9T0V1W2X5"
+    },
+    "body": {
+      "kind": "building",
+      "name": ""
+    }
+  },
+  "expected": {
+    "status": 400,
+    "content_type": "application/problem+json",
+    "body": {
+      "type": "about:blank",
+      "title": "Validation Failed",
+      "status": 400,
+      "code": "VALIDATION_FAILED",
+      "trace_id": "01J8Z3K4N5P6Q7R8S9T0V1W2X5",
+      "errors": [
+        { "field": "kind", "code": "ENUM_MISMATCH", "message": "must be one of org, site, group, screen" },
+        { "field": "name", "code": "TOO_SHORT", "message": "must be at least 1 character" }
+      ]
+    }
+  }
+}

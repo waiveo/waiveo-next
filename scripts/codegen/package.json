@@ -1,0 +1,19 @@
+{
+  "name": "@waiveo-next/api-codegen",
+  "private": true,
+  "version": "1.0.0",
+  "description": "TS type generation from api/openapi.yaml (openapi-typescript) plus a type-check smoke test over the generated output. The Go side (oapi-codegen) is pinned separately via the repo's go.mod tool directive — see README.md.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "generate:ts": "openapi-typescript ../../api/openapi.yaml -o ../../api/gen/ts/api.d.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "generate": "npm run generate:ts && npm run typecheck"
+  },
+  "devDependencies": {
+    "openapi-typescript": "7.13.0",
+    "typescript": "5.9.3"
+  }
+}

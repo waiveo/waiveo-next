@@ -1,0 +1,39 @@
+{
+  "case_id": "API-052-valid-idempotency-replay",
+  "contract": "api/1",
+  "req_ids": ["API-050", "API-051", "API-052"],
+  "description": "Two POSTs presenting the same Idempotency-Key and an identical body create exactly one resource: the second request returns the first request's exact recorded response (including its 201 status and the same resource id) without re-executing the create.",
+  "input": {
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/api/v1/scope-nodes",
+        "headers": { "Idempotency-Key": "3f1b1e2a-6c4d-4a9b-8f2e-9d7c6b5a4321" },
+        "principal": "usr_01J8Z000000000000000000001",
+        "body": { "kind": "site", "name": "New Site" }
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/scope-nodes",
+        "headers": { "Idempotency-Key": "3f1b1e2a-6c4d-4a9b-8f2e-9d7c6b5a4321" },
+        "principal": "usr_01J8Z000000000000000000001",
+        "body": { "kind": "site", "name": "New Site" }
+      }
+    ]
+  },
+  "expected": {
+    "responses": [
+      {
+        "status": 201,
+        "body": { "id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZA", "kind": "site", "name": "New Site", "revision": 1 }
+      },
+      {
+        "status": 201,
+        "body": { "id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZA", "kind": "site", "name": "New Site", "revision": 1 },
+        "replayed": true
+      }
+    ],
+    "resources_created": 1,
+    "reason": "The second response is byte-identical to the first (same id, same revision) because it was replayed from the Idempotency-Key cache rather than executed — a second CreateScopeNode side effect never ran."
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "case_id": "API-022-invalid-if-match-missing",
+  "contract": "api/1",
+  "req_ids": ["API-021", "API-022"],
+  "description": "A PATCH against an existing scope node that omits If-Match is rejected with 428 Precondition Required / IF_MATCH_REQUIRED before the write is attempted — there is no unconditional-overwrite path.",
+  "input": {
+    "method": "PATCH",
+    "path": "/api/v1/scope-nodes/01J8Z3K4N5P6Q7R8S9T0V1W2X3",
+    "headers": {
+      "Trace-Id": "01J8Z3K4N5P6Q7R8S9T0V1W2X6"
+    },
+    "body": {
+      "name": "Renamed Site"
+    },
+    "current_resource_state": {
+      "id": "01J8Z3K4N5P6Q7R8S9T0V1W2X3",
+      "name": "Original Site",
+      "revision": 3
+    }
+  },
+  "expected": {
+    "status": 428,
+    "content_type": "application/problem+json",
+    "write_executed": false,
+    "body": {
+      "type": "about:blank",
+      "title": "Precondition Required",
+      "status": 428,
+      "detail": "This operation requires If-Match.",
+      "code": "IF_MATCH_REQUIRED",
+      "trace_id": "01J8Z3K4N5P6Q7R8S9T0V1W2X6"
+    }
+  }
+}

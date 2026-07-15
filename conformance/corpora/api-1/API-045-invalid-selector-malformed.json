@@ -1,0 +1,24 @@
+{
+  "case_id": "API-045-invalid-selector-malformed",
+  "contract": "api/1",
+  "req_ids": ["API-043", "API-045"],
+  "description": "A selector with whitespace around the equality operator, outside a set-membership term's parentheses, is rejected with 400 SELECTOR_INVALID naming the offending term — whitespace is tolerated only immediately inside set-membership/exclusion parentheses.",
+  "input": {
+    "request": {
+      "method": "GET",
+      "path": "/api/v1/scope-nodes",
+      "query": { "selector": "kind = screen" }
+    }
+  },
+  "expected": {
+    "status": 400,
+    "content_type": "application/problem+json",
+    "body": {
+      "type": "about:blank",
+      "title": "Bad Request",
+      "status": 400,
+      "detail": "Invalid selector term \"kind = screen\": whitespace is not permitted around an equality operator.",
+      "code": "SELECTOR_INVALID"
+    }
+  }
+}
