@@ -1,0 +1,37 @@
+{
+  "case_id": "roku-media-player",
+  "contract": "device-class-registry/1",
+  "req_ids": ["REG-002", "REG-010", "REG-011", "REG-020", "REG-022", "REG-030", "REG-040", "REG-041", "REG-043", "REG-044", "REG-050", "REG-051", "REG-060", "REG-061", "REG-062", "REG-063", "REG-064", "REG-066"],
+  "description": "The built-in media-player class's complete registry entry, authored from Roku's driver reality: an eight-member state vocabulary with off as the unknown-state fallback, on/off semantic groups matching rules/1's own RUL-321 corpus fixture exactly, six typed attributes covering the foreground-surface and raw-power-mode distinctions, and four commands; validates with no errors.",
+  "input": {
+    "device_classes": {
+      "media-player": {
+        "origin": "built-in",
+        "states": ["on", "playing", "paused", "buffering", "idle", "off", "standby", "unavailable"],
+        "unknown_state_fallback": "off",
+        "semantic_groups": {
+          "on": ["on", "playing", "idle", "paused", "buffering"],
+          "off": ["off", "standby", "unavailable"]
+        },
+        "attributes": [
+          { "name": "active_app", "type": "string", "nullable": true, "change_emission": "significant" },
+          { "name": "active_app_id", "type": "string", "nullable": true, "change_emission": "significant" },
+          { "name": "app_type", "type": "enum", "values": ["app", "screensaver", "home", "menu"], "nullable": true, "change_emission": "significant" },
+          { "name": "power_mode", "type": "string", "nullable": true, "change_emission": "significant" },
+          { "name": "is_screensaver", "type": "boolean", "nullable": false, "change_emission": "significant" },
+          { "name": "app_version", "type": "string", "nullable": true, "change_emission": "cosmetic" }
+        ],
+        "commands": [
+          { "name": "launch", "params": [{ "name": "channel", "type": "string", "required": true }] },
+          { "name": "home", "params": [] },
+          { "name": "keypress", "params": [{ "name": "key", "type": "string", "required": true }] },
+          { "name": "power", "params": [{ "name": "state", "type": "enum", "values": ["on", "off"], "required": true }] }
+        ]
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "errors": []
+  }
+}
