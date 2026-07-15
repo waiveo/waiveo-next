@@ -1,0 +1,40 @@
+{
+  "case_id": "MAN-030-invalid-egress-wildcard",
+  "contract": "manifest/1",
+  "req_ids": ["MAN-030"],
+  "description": "A manifest declaring a bare wildcard egress entry, which MAN-030 explicitly disallows; validation fails with EGRESS_ENTRY_INVALID naming the offending entry.",
+  "input": {
+    "id": "acme/greedy-egress-pack",
+    "version": "1.0.0",
+    "displayName": "msg:pack.displayName",
+    "compat": {
+      "ctx": ">=1.0 <2.0",
+      "renderer": []
+    },
+    "capabilities": [
+      { "capability": "egress.http", "scope": "*", "reason": "msg:cap.egress" }
+    ],
+    "egress": ["*"],
+    "resources": {
+      "memory": 64,
+      "cpuWeight": 100,
+      "storageQuota": 16,
+      "maxScheduledTimers": 0
+    },
+    "dataModel": {
+      "version": 1,
+      "collections": []
+    },
+    "retention": {},
+    "ui": {
+      "pages": []
+    },
+    "actions": []
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      { "code": "EGRESS_ENTRY_INVALID", "field": "egress[0]", "message": "\"*\" is a bare wildcard, which is not an allowed egress entry" }
+    ]
+  }
+}

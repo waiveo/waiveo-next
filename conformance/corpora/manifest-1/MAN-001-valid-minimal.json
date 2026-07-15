@@ -1,0 +1,36 @@
+{
+  "case_id": "MAN-001-valid-minimal",
+  "contract": "manifest/1",
+  "req_ids": ["MAN-001", "MAN-002", "MAN-003", "MAN-010"],
+  "description": "A minimal manifest declaring only the fields this contract marks MUST; every top-level required field is well-formed and it validates with no errors.",
+  "input": {
+    "id": "acme/minimal-pack",
+    "version": "0.1.0",
+    "displayName": "msg:pack.displayName",
+    "compat": {
+      "ctx": ">=1.0 <2.0",
+      "renderer": []
+    },
+    "capabilities": [],
+    "egress": [],
+    "resources": {
+      "memory": 64,
+      "cpuWeight": 100,
+      "storageQuota": 16,
+      "maxScheduledTimers": 0
+    },
+    "dataModel": {
+      "version": 1,
+      "collections": []
+    },
+    "retention": {},
+    "ui": {
+      "pages": []
+    },
+    "actions": []
+  },
+  "expected": {
+    "valid": true,
+    "errors": []
+  }
+}

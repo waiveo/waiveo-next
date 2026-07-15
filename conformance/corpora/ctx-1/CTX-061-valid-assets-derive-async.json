@@ -1,0 +1,38 @@
+{
+  "case_id": "CTX-061-valid-assets-derive-async",
+  "contract": "ctx/1",
+  "req_ids": ["CTX-061", "CTX-062"],
+  "description": "An assets.derive request with CAS-resolvable inputs and no secret material returns immediately with a job_id, and the derived output is delivered later as a separate assets.derive_complete event carrying the same job_id — never as the original call's own response body.",
+  "input": {
+    "frame": {
+      "type": "request",
+      "id": "01J8Z3K4N5P6Q7R8S9T0V1W2X6",
+      "trace_id": "01J8Z3K4N5P6Q7R8S9T0V1W2X6",
+      "verb": "assets.derive",
+      "body": {
+        "profile": "html_bundle-to-png",
+        "inputs": ["sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85"],
+        "params": { "width": 1920, "height": 1080 }
+      }
+    }
+  },
+  "expected": {
+    "immediate_response": {
+      "type": "response",
+      "id": "01J8Z3K4N5P6Q7R8S9T0V1W2X6",
+      "trace_id": "01J8Z3K4N5P6Q7R8S9T0V1W2X6",
+      "body": {
+        "job_id": "01J8Z3K4N5P6Q7R8S9T0V1W2X6"
+      }
+    },
+    "later_event": {
+      "type": "event",
+      "verb": "assets.derive_complete",
+      "trace_id": "01J8Z3K4N5P6Q7R8S9T0V1W2X6",
+      "body": {
+        "job_id": "01J8Z3K4N5P6Q7R8S9T0V1W2X6",
+        "output_ref": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+      }
+    }
+  }
+}

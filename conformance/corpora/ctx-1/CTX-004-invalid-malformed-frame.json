@@ -1,0 +1,22 @@
+{
+  "case_id": "CTX-004-invalid-malformed-frame",
+  "contract": "ctx/1",
+  "req_ids": ["CTX-003", "CTX-004"],
+  "description": "A frame missing the required trace_id envelope key fails the minimum envelope shape; the receiving peer sends one MALFORMED_FRAME error frame if the transport still permits a write, then closes the connection without attempting to resynchronize.",
+  "input": {
+    "frame": {
+      "type": "request",
+      "id": "01J8Z3K4N5P6Q7R8S9T0V1W2X9",
+      "verb": "data.query",
+      "body": { "collection": "notes" }
+    }
+  },
+  "expected": {
+    "error_frame": {
+      "type": "error",
+      "code": "MALFORMED_FRAME",
+      "message": "frame missing required key: trace_id"
+    },
+    "connection_closed": true
+  }
+}

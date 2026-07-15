@@ -1,0 +1,31 @@
+{
+  "case_id": "CTX-022-invalid-incompatible-major",
+  "contract": "ctx/1",
+  "req_ids": ["CTX-022", "CTX-023"],
+  "description": "A pack's ctx_range requires major version 2, but the host implements only major version 1 at any minor; the host refuses with INCOMPATIBLE_RANGE in place of control.hello-ack and closes the connection.",
+  "input": {
+    "host_implemented_versions": ["1.0", "1.1", "1.2", "1.3"],
+    "frame": {
+      "type": "request",
+      "id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y2",
+      "trace_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y2",
+      "verb": "control.hello",
+      "body": {
+        "manifest_id": "acme/future-pack",
+        "manifest_version": "3.0.0",
+        "ctx_range": ">=2.0 <3.0",
+        "feature_flags": []
+      }
+    }
+  },
+  "expected": {
+    "error_frame": {
+      "type": "error",
+      "id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y2",
+      "trace_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y2",
+      "code": "INCOMPATIBLE_RANGE",
+      "message": "no host-implemented ctx/1 major satisfies range >=2.0 <3.0"
+    },
+    "connection_closed": true
+  }
+}

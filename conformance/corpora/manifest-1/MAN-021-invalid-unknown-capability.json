@@ -1,0 +1,40 @@
+{
+  "case_id": "MAN-021-invalid-unknown-capability",
+  "contract": "manifest/1",
+  "req_ids": ["MAN-021"],
+  "description": "A manifest whose capabilities array names a capability absent from the host capability registry; validation fails with UNKNOWN_CAPABILITY naming the offending entry, not a silent no-op grant.",
+  "input": {
+    "id": "acme/bad-capability-pack",
+    "version": "1.0.0",
+    "displayName": "msg:pack.displayName",
+    "compat": {
+      "ctx": ">=1.0 <2.0",
+      "renderer": []
+    },
+    "capabilities": [
+      { "capability": "nonexistent.thing", "scope": "*", "reason": "msg:cap.bogus" }
+    ],
+    "egress": [],
+    "resources": {
+      "memory": 64,
+      "cpuWeight": 100,
+      "storageQuota": 16,
+      "maxScheduledTimers": 0
+    },
+    "dataModel": {
+      "version": 1,
+      "collections": []
+    },
+    "retention": {},
+    "ui": {
+      "pages": []
+    },
+    "actions": []
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      { "code": "UNKNOWN_CAPABILITY", "field": "capabilities[0].capability", "message": "capability \"nonexistent.thing\" is not in the host capability registry" }
+    ]
+  }
+}

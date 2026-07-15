@@ -1,0 +1,62 @@
+{
+  "case_id": "MAN-020-valid-full-featured",
+  "contract": "manifest/1",
+  "req_ids": ["MAN-020", "MAN-030", "MAN-040", "MAN-070", "MAN-072", "MAN-080", "MAN-081", "MAN-090", "MAN-091", "MAN-100"],
+  "description": "A full-featured manifest exercising capability/consent entries, an egress allowlist, resource limits, a device contribution with a matching compat.relay range, a fixed-duration playable contribution, automation event/action contributions, and a declared action; validates with no errors.",
+  "input": {
+    "id": "acme/weather-widget",
+    "version": "1.2.0",
+    "displayName": "msg:pack.displayName",
+    "compat": {
+      "ctx": ">=1.0 <2.0",
+      "relay": ">=1.0 <2.0",
+      "renderer": ["dashboard"],
+      "features": []
+    },
+    "capabilities": [
+      { "capability": "device.read", "scope": "media-player", "reason": "msg:cap.deviceRead" },
+      { "capability": "egress.http", "scope": "*", "reason": "msg:cap.egress" }
+    ],
+    "egress": ["api.weather.example"],
+    "resources": {
+      "memory": 96,
+      "cpuWeight": 100,
+      "storageQuota": 64,
+      "maxScheduledTimers": 4
+    },
+    "dataModel": {
+      "version": 1,
+      "collections": []
+    },
+    "retention": {},
+    "ui": {
+      "pages": [
+        { "path": "forecast", "pageType": "dashboard", "titleMsg": "msg:page.forecast.title" }
+      ]
+    },
+    "devices": [
+      { "deviceClass": "media-player", "match": [{ "ssdp": "urn:roku-com:device:player:1" }], "capabilities": ["device.read"] }
+    ],
+    "contributes": {
+      "playable": {
+        "contentType": "html_bundle",
+        "durationSemantics": "fixed",
+        "durationSeconds": 15,
+        "renderHints": {},
+        "contentId": "forecast-strip"
+      },
+      "automation": {
+        "events": [{ "name": "acme/weather-widget.forecast_updated", "payloadSchema": { "type": "object" } }],
+        "actions": [{ "name": "refresh", "fieldsSchema": { "type": "object" }, "execution": "app-service" }],
+        "triggers": []
+      }
+    },
+    "actions": [
+      { "name": "refresh", "paramsSchema": { "type": "object" }, "capabilityScope": "egress.http", "auditClass": "write", "automationCallable": true }
+    ]
+  },
+  "expected": {
+    "valid": true,
+    "errors": []
+  }
+}

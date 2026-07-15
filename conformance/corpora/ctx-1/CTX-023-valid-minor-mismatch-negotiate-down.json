@@ -1,0 +1,34 @@
+{
+  "case_id": "CTX-023-valid-minor-mismatch-negotiate-down",
+  "contract": "ctx/1",
+  "req_ids": ["CTX-023"],
+  "description": "A pack's ctx_range excludes the host's newest minor but includes an older one within the same implemented major; the host MUST negotiate down to the highest mutually satisfying minor rather than refuse.",
+  "input": {
+    "host_implemented_versions": ["1.0", "1.1", "1.2", "1.3"],
+    "frame": {
+      "type": "request",
+      "id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y1",
+      "trace_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y1",
+      "verb": "control.hello",
+      "body": {
+        "manifest_id": "acme/legacy-pack",
+        "manifest_version": "0.9.0",
+        "ctx_range": ">=1.0 <1.2",
+        "feature_flags": []
+      }
+    }
+  },
+  "expected": {
+    "frame": {
+      "type": "response",
+      "id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y1",
+      "trace_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y1",
+      "body": {
+        "negotiated_version": "1.1",
+        "feature_flags": [],
+        "deprecated": {}
+      }
+    },
+    "connection_closed": false
+  }
+}

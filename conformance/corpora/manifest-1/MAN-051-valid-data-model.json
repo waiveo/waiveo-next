@@ -1,0 +1,47 @@
+{
+  "case_id": "MAN-051-valid-data-model",
+  "contract": "manifest/1",
+  "req_ids": ["MAN-050", "MAN-051", "MAN-052", "MAN-054"],
+  "description": "A manifest declaring one data-model collection with title/searchable field annotations and a bounded per-collection retention descriptor; validates with no errors.",
+  "input": {
+    "id": "acme/notes-pack",
+    "version": "1.0.0",
+    "displayName": "msg:pack.displayName",
+    "compat": {
+      "ctx": ">=1.0 <2.0",
+      "renderer": ["list-detail"]
+    },
+    "capabilities": [],
+    "egress": [],
+    "resources": {
+      "memory": 64,
+      "cpuWeight": 100,
+      "storageQuota": 128,
+      "maxScheduledTimers": 0
+    },
+    "dataModel": {
+      "version": 1,
+      "collections": [
+        {
+          "name": "notes",
+          "fields": [
+            { "name": "title", "type": "string", "role": "title", "searchable": true },
+            { "name": "body", "type": "string", "role": "summary", "searchable": true, "lifecycle": "draft-publish" }
+          ]
+        }
+      ],
+      "migrations": []
+    },
+    "retention": {
+      "notes": { "maxAge": 365 }
+    },
+    "ui": {
+      "pages": []
+    },
+    "actions": []
+  },
+  "expected": {
+    "valid": true,
+    "errors": []
+  }
+}
