@@ -1,7 +1,11 @@
 name: pr-tier
-on: { pull_request: {} }
-permissions: { contents: read }
-concurrency: { group: pr-${{ github.ref }}, cancel-in-progress: true }
+on:
+  pull_request: {}
+permissions:
+  contents: read
+concurrency:
+  group: pr-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -9,6 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
-        with: { node-version-file: .node-version }
+        with:
+          node-version-file: .node-version
       - run: node scripts/validate-contracts.mjs
       - run: node scripts/check-public-hygiene.mjs
