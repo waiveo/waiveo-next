@@ -53,3 +53,6 @@ One row per requirement ID `contracts/api-1.md` defines. Format: `conformance/tr
 | API-082 | `contracts/api-1.md#evolution--deprecation-policy` | - | TBD-wave1 |
 | API-083 | `contracts/api-1.md#evolution--deprecation-policy` | - | TBD-wave1 |
 | API-084 | `contracts/api-1.md#evolution--deprecation-policy` | - | TBD-wave1 |
+| API-090 | `contracts/api-1.md#security-override-convention` | - | TBD-wave1 |
+| API-091 | `contracts/api-1.md#security-override-convention` | - | TBD-wave1 |
+| API-092 | `contracts/api-1.md#security-override-convention` | - | TBD-wave1 |

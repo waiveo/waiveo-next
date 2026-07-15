@@ -6,9 +6,9 @@
 
 ## Scope
 
-api/1 defines the cross-cutting conventions every operation in `api/openapi.yaml` MUST follow: the error shape, optimistic concurrency, keyset pagination, idempotency, trace propagation, the `mcp:` operation-tag curation rule, the label-selector grammar, and the evolution/deprecation policy. `api/openapi.yaml` implements these conventions as reusable OpenAPI components and applies them to every operation; this document is their normative source — where the two disagree, this document governs.
+api/1 defines the cross-cutting conventions every operation in `api/openapi.yaml` MUST follow: the error shape, optimistic concurrency, keyset pagination, idempotency, trace propagation, the `mcp:` operation-tag curation rule, the label-selector grammar, the operation-level security-override convention, and the evolution/deprecation policy. `api/openapi.yaml` implements these conventions as reusable OpenAPI components and applies them to every operation; this document is their normative source — where the two disagree, this document governs.
 
-- In scope: the Problem error shape and its error-code registry; revision/ETag/If-Match optimistic concurrency; keyset pagination (the opaque cursor grammar, referenced by name from other contracts); the label-selector grammar (equality, set-membership, existence, and scope-node subtree terms over labels); `Idempotency-Key` semantics on mutating POSTs; `Trace-Id` propagation; the `mcp:read`/`mcp:act` operation-tag curation rule; api/1's additive-evolution and deprecation policy.
+- In scope: the Problem error shape and its error-code registry; revision/ETag/If-Match optimistic concurrency; keyset pagination (the opaque cursor grammar, referenced by name from other contracts); the label-selector grammar (equality, set-membership, existence, and scope-node subtree terms over labels); `Idempotency-Key` semantics on mutating POSTs; `Trace-Id` propagation; the `mcp:read`/`mcp:act` operation-tag curation rule; the operation-level security-override convention for credential-exchange and unauthenticated-intake operations; api/1's additive-evolution and deprecation policy.
 - Out of scope: the per-resource business schema and endpoint list (`api/openapi.yaml`); the principal/role/session/audit model (a separate concern); the automation vocabulary a rule's `triggers`/`conditions`/`actions` fields hold (`rules/1`); the pack-runtime protocol an `execution: app-service` action dispatches through (`ctx/1`); the wire framing of `events/1`, api/1's sibling watch door.
 
 ## Definitions
@@ -32,6 +32,10 @@ api/1 defines the cross-cutting conventions every operation in `api/openapi.yaml
 **[API-002]** A request or success-response body, when present, MUST be `application/json` UTF-8. An error-response body MUST be `application/problem+json` (Error shape).
 
 **[API-003]** Every list operation MUST declare the pagination query parameters (Keyset pagination) and the `selector` query parameter (Label-selector grammar). A list operation's OpenAPI definition omitting either is nonconformant with this contract, not a case it exempts.
+
+A path stub whose GET operation declares no response schema does not yet meet this contract's List operation definition (Definitions) and so is not bound by API-003; it acquires the pagination and selector parameters once a response schema is defined for it.
+
+The single `/api/v1` prefix (API-001) replaces a legacy core/extension URL split, and a pack's capabilities surface as self-describing `/packs/{pack}/actions/{name}` paths in `api/openapi.yaml`; namespace and stability are signaled by this versioned prefix and this path structure, not by a per-endpoint stability tag.
 
 ### Error shape
 
@@ -142,6 +146,14 @@ api/1 defines the cross-cutting conventions every operation in `api/openapi.yaml
 **[API-083]** A generated client built against api/1's current minor, and a generated client built against the immediately preceding minor, MUST both continue to function correctly against the current server — the server MUST NOT require a client to be on the latest minor.
 
 **[API-084]** A breaking change (API-080) MUST ship as a new major-version path prefix served concurrently with the prior major for a stated overlap window, never as an in-place change to an existing major's behavior.
+
+### Security-override convention
+
+**[API-090]** An api/1 operation whose caller cannot or must not be required to present a pre-existing session cookie or API key MUST override the document-level `security` requirement by declaring its own operation-level `security: []` in `api/openapi.yaml`. An operation that declares no operation-level `security` inherits the document-level requirement (`SessionCookie` or `ApiKey`) unchanged.
+
+**[API-091]** A credential-exchange operation — one whose purpose is to mint a new session or credential for a caller that does not yet hold one (e.g. a login operation) — MUST declare `security: []` (API-090) and MUST authenticate the request from credentials carried in the request body; it MUST NOT require a pre-existing session or API key as a precondition of its own success.
+
+**[API-092]** An unauthenticated- or scoped-intake operation — one a caller invokes without holding, and without being able to obtain, a platform session or API key (e.g. an inbound webhook or callback) — MUST declare `security: []` (API-090) and MUST instead authenticate the request via exactly one operation-specific scheme: either (a) a signed-request scheme, in which an HMAC computed over the request body and keyed by a secret scoped to that one endpoint accompanies the request, or (b) a scoped, single-purpose ingest token presented by the caller. The concrete intake endpoints this platform exposes, and which of the two schemes each one uses, are defined in the contract or contract section introducing that intake feature; this section defines only the two permitted authentication patterns and the requirement (API-090) that such an operation override the document-level scheme rather than silently inherit it.
 
 ## Wire shapes
 

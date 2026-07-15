@@ -131,7 +131,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Exchange credentials for a session */
+        /**
+         * Exchange credentials for a session
+         * @description Credential-exchange operation (`contracts/api-1.md#security-override-convention`): authenticates the request from credentials in the body, not a pre-existing session or API key.
+         */
         post: operations["login"];
         delete?: never;
         options?: never;
