@@ -1,0 +1,22 @@
+{
+  "case_id": "RUL-024-for-hold-suppresses-flap",
+  "contract": "rules/1",
+  "req_ids": ["RUL-024", "RUL-310"],
+  "description": "A trigger declaring for: does not fire on a brief bounce into the target state that reverts before the hold elapses; it fires once a later occurrence holds continuously for the full declared duration, evaluated on monotonic time.",
+  "input": {
+    "fixture": { "entities": { "01J8Z3K4N5P6Q7R8S9T0V1W2Z2": { "device_class": "media-player" } } },
+    "trigger": { "type": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z2", "to": ["on"], "for": 30 },
+    "events": [
+      { "seq": 1, "t_ms": 0, "kind": "state_transition", "from": "off", "to": "on", "note": "hold timer starts" },
+      { "seq": 2, "t_ms": 5000, "kind": "state_transition", "from": "on", "to": "off", "note": "condition stops holding before the 30s for: elapses; pending fire discarded" },
+      { "seq": 3, "t_ms": 40000, "kind": "state_transition", "from": "off", "to": "on", "note": "hold timer restarts" },
+      { "seq": 4, "t_ms": 70000, "kind": "hold_elapsed", "note": "on has held continuously since seq 3 (30000ms of monotonic time)" }
+    ]
+  },
+  "expected": {
+    "results": [
+      { "seq": 2, "fired": false, "reason": "hold broke at 5000ms elapsed, short of the 30000ms requirement" },
+      { "seq": 4, "fired": true, "reason": "on held continuously from t=40000 to t=70000, satisfying for: 30" }
+    ]
+  }
+}

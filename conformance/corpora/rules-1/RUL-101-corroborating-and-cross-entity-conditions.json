@@ -1,0 +1,35 @@
+{
+  "case_id": "RUL-101-corroborating-and-cross-entity-conditions",
+  "contract": "rules/1",
+  "req_ids": ["RUL-100", "RUL-101", "RUL-002"],
+  "description": "A rule composes a weak positive trigger signal with a corroborating attribute condition on the same entity and a structured condition on a wholly different entity; both conditions are ordinary, edge-class, and the whole rule stays edge-class.",
+  "input": {
+    "rule": {
+      "id": "01J8Z3K4N5P6Q7R8S9T0V1RUL8",
+      "mode": "single",
+      "triggers": [
+        { "type": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z6", "to": ["idle"], "note": "screen reports a home-shaped foreground state" }
+      ],
+      "conditions": [
+        { "type": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z6", "attribute": "powered_on", "state": true, "note": "corroborating signal, same entity as the trigger" },
+        { "type": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z2", "state": "off", "note": "structured condition on a DIFFERENT entity than the trigger's subject" }
+      ],
+      "actions": [
+        { "type": "device_command", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z6", "command": "launch", "params": { "channel": "dev" } }
+      ]
+    },
+    "evaluations": [
+      { "id": "corroboration-fails", "powered_on": false, "other_entity_state": "off" },
+      { "id": "cross-entity-fails", "powered_on": true, "other_entity_state": "on" },
+      { "id": "both-pass", "powered_on": true, "other_entity_state": "off" }
+    ]
+  },
+  "expected": {
+    "execution_class": "edge",
+    "results": [
+      { "id": "corroboration-fails", "conditions_pass": false, "reason": "powered_on is false; a home-shaped foreground alone is not sufficient" },
+      { "id": "cross-entity-fails", "conditions_pass": false, "reason": "the second entity is not off" },
+      { "id": "both-pass", "conditions_pass": true }
+    ]
+  }
+}

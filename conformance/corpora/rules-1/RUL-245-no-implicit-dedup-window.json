@@ -1,0 +1,21 @@
+{
+  "case_id": "RUL-245-no-implicit-dedup-window",
+  "contract": "rules/1",
+  "req_ids": ["RUL-245", "RUL-311"],
+  "description": "With no for: declared, rules/1 applies no automatic exact-repeat refire-suppression window: two genuine back-to-back transitions into the target state both dispatch, even though the second follows the first within what a debounce window might otherwise have suppressed.",
+  "input": {
+    "fixture": { "entities": { "01J8Z3K4N5P6Q7R8S9T0V1W2Z2": { "device_class": "media-player" } } },
+    "trigger": { "type": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z2", "to": ["on"] },
+    "events": [
+      { "seq": 1, "t_ms": 0, "kind": "state_transition", "from": "off", "to": "on" },
+      { "seq": 2, "t_ms": 1000, "kind": "state_transition", "from": "on", "to": "off" },
+      { "seq": 3, "t_ms": 1900, "kind": "state_transition", "from": "off", "to": "on", "note": "a second genuine transition, 1900ms after the first" }
+    ]
+  },
+  "expected": {
+    "results": [
+      { "seq": 1, "fired": true },
+      { "seq": 3, "fired": true, "reason": "no automatic dedup/cooldown window exists in this contract; each genuine transition dispatches independently unless the rule author composes for: or a condition re-check explicitly" }
+    ]
+  }
+}

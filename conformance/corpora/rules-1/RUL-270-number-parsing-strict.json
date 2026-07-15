@@ -1,0 +1,34 @@
+{
+  "case_id": "RUL-270-number-parsing-strict",
+  "contract": "rules/1",
+  "req_ids": ["RUL-270", "RUL-271", "RUL-031"],
+  "description": "The one strict number-parsing rule accepts a JSON number or a plain decimal string as-is, and rejects every other shape (leading plus, exponent notation, boolean, empty string, thousands separators) as not-a-number, failing closed rather than coercing.",
+  "input": {
+    "trigger": { "type": "numeric", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z3", "attribute": "reading", "above": 10 },
+    "values": [
+      { "id": "json-number", "value": 42 },
+      { "id": "plain-decimal-string", "value": "42.5" },
+      { "id": "negative", "value": "-3" },
+      { "id": "leading-plus", "value": "+42" },
+      { "id": "exponent", "value": "1e3" },
+      { "id": "boolean", "value": true },
+      { "id": "empty-string", "value": "" },
+      { "id": "thousands-separator", "value": "12,000" },
+      { "id": "whitespace-padded", "value": " 42 " }
+    ]
+  },
+  "expected": {
+    "results": [
+      { "id": "json-number", "is_number": true, "parsed": 42, "satisfies_above_10": true },
+      { "id": "plain-decimal-string", "is_number": true, "parsed": 42.5, "satisfies_above_10": true },
+      { "id": "negative", "is_number": true, "parsed": -3, "satisfies_above_10": false },
+      { "id": "leading-plus", "is_number": false, "reason": "leading + is not in the accepted grammar" },
+      { "id": "exponent", "is_number": false, "reason": "exponent notation is not in the accepted grammar" },
+      { "id": "boolean", "is_number": false, "reason": "not a JSON number and not a string" },
+      { "id": "empty-string", "is_number": false, "reason": "does not match the accepted grammar" },
+      { "id": "thousands-separator", "is_number": false, "reason": "thousands separators are not in the accepted grammar" },
+      { "id": "whitespace-padded", "is_number": false, "reason": "leading/trailing whitespace is not in the accepted grammar" }
+    ],
+    "not_a_number_trigger_behavior": "treated as not satisfying either bound on every such observation, never an evaluation error"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "case_id": "RUL-352-misfire-catch-up-once-collapses",
+  "contract": "rules/1",
+  "req_ids": ["RUL-352", "RUL-355", "RUL-246"],
+  "description": "A time_pattern trigger explicitly declaring misfire: catch_up_once collapses any number of missed occurrences into exactly one firing on resume, dispatched through normal mode evaluation (disposition: ran, since no other run was in progress) and marked misfire_caught: true.",
+  "input": {
+    "trigger": { "type": "time_pattern", "hours": "/1", "minutes": 0, "misfire": "catch_up_once" },
+    "rule_mode": "single",
+    "events": [
+      { "seq": 1, "t": "06:00:00", "kind": "engine_offline" },
+      { "seq": 2, "t": "07:00:00", "kind": "scheduled_occurrence_missed" },
+      { "seq": 3, "t": "08:00:00", "kind": "scheduled_occurrence_missed" },
+      { "seq": 4, "t": "09:00:00", "kind": "scheduled_occurrence_missed" },
+      { "seq": 5, "t": "09:05:00", "kind": "engine_resumes" }
+    ]
+  },
+  "expected": {
+    "fire_count_on_resume": 1,
+    "disposition": "ran",
+    "misfire_caught": true,
+    "mode_evaluation_applied": true,
+    "reason": "three occurrences (07:00, 08:00, 09:00) were missed; catch_up_once collapses them into exactly one dispatch rather than three; that single dispatch is subject to the rule's declared mode like any other firing (here: ran, since no other run was in progress) and is additionally marked misfire_caught: true"
+  }
+}

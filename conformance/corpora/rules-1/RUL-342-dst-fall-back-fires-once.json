@@ -1,0 +1,25 @@
+{
+  "case_id": "RUL-342-dst-fall-back-fires-once",
+  "contract": "rules/1",
+  "req_ids": ["RUL-342"],
+  "description": "A time trigger scheduled at a local wall-clock time that a fall-back transition repeats fires exactly once for that date, keyed to the first absolute occurrence, never twice.",
+  "input": {
+    "fixture": {
+      "scope_node_tz": "America/New_York",
+      "dst_transition": {
+        "date": "2026-11-01",
+        "kind": "fall_back",
+        "local_range_repeated": ["01:00:00", "02:00:00"],
+        "first_occurrence_utc_offset": "-04:00",
+        "second_occurrence_utc_offset": "-05:00"
+      }
+    },
+    "trigger": { "type": "time", "at": "01:30:00" },
+    "date_evaluated": "2026-11-01"
+  },
+  "expected": {
+    "fire_count": 1,
+    "fired_at_utc_offset": "-04:00",
+    "reason": "01:30:00 local occurs twice on this date; the trigger is keyed to the first absolute occurrence (UTC-4) and does not fire again at the second (UTC-5) occurrence of the same local time"
+  }
+}

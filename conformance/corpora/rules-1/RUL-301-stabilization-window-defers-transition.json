@@ -1,0 +1,23 @@
+{
+  "case_id": "RUL-301-stabilization-window-defers-transition",
+  "contract": "rules/1",
+  "req_ids": ["RUL-301"],
+  "description": "A genuine state transition observed before the post-boot stabilization window elapses is held pending, not dropped and not dispatched early; it dispatches once the window elapses.",
+  "input": {
+    "fixture": {
+      "entities": { "01J8Z3K4N5P6Q7R8S9T0V1W2Z2": { "device_class": "media-player", "durable_state_before_restart": "off" } },
+      "stabilization_window_ms": 5000
+    },
+    "trigger": { "type": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z2", "from": ["off"], "to": ["on"] },
+    "events": [
+      { "seq": 1, "t_ms": 0, "kind": "engine_restart" },
+      { "seq": 2, "t_ms": 900, "kind": "observation", "reported_state": "on", "note": "genuine transition, observed before the 5000ms stabilization window elapses" }
+    ]
+  },
+  "expected": {
+    "results": [
+      { "seq": 2, "matched_at_ms": 900, "dispatched": false, "reason": "stabilization window has not yet elapsed" },
+      { "held_transition_dispatched_at_ms": 5000, "dispatched": true, "reason": "window elapsed; the already-matched transition from event 2 is released, not re-evaluated against a later observation" }
+    ]
+  }
+}

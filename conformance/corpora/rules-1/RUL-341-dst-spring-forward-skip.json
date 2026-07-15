@@ -1,0 +1,18 @@
+{
+  "case_id": "RUL-341-dst-spring-forward-skip",
+  "contract": "rules/1",
+  "req_ids": ["RUL-340", "RUL-341"],
+  "description": "A time trigger scheduled at a local wall-clock time that a spring-forward transition removes from existence does not fire for that date; it fires normally on the days immediately before and after.",
+  "input": {
+    "fixture": { "scope_node_tz": "America/New_York", "dst_transition": { "date": "2026-03-08", "kind": "spring_forward", "local_range_removed": ["02:00:00", "03:00:00"] } },
+    "trigger": { "type": "time", "at": "02:30:00" },
+    "dates_evaluated": ["2026-03-07", "2026-03-08", "2026-03-09"]
+  },
+  "expected": {
+    "results": [
+      { "date": "2026-03-07", "fired": true },
+      { "date": "2026-03-08", "fired": false, "reason": "02:30:00 local does not exist on this date; the occurrence is treated as not having occurred, never fired early, late, or at the transition boundary" },
+      { "date": "2026-03-09", "fired": true }
+    ]
+  }
+}

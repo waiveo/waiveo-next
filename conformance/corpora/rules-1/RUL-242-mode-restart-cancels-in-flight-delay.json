@@ -1,0 +1,25 @@
+{
+  "case_id": "RUL-242-mode-restart-cancels-in-flight-delay",
+  "contract": "rules/1",
+  "req_ids": ["RUL-242"],
+  "description": "Under restart mode, a trigger firing while a run is mid-delay cancels that run (the evaluating engine itself keeps running throughout — this is mode-driven cancellation, distinct from an engine restart) and starts a fresh run from the top; the fresh run's delay timer starts at zero rather than resuming the canceled run's prior elapsed time.",
+  "input": {
+    "rule": {
+      "id": "01J8Z3K4N5P6Q7R8S9T0V1RULE",
+      "mode": "restart",
+      "triggers": [{ "type": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z2", "to": ["motion"] }],
+      "actions": [{ "type": "delay", "duration_seconds": 10 }, { "type": "device_command", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z2", "command": "power_on" }]
+    },
+    "events": [
+      { "seq": 1, "t_ms": 0, "kind": "trigger_fires", "run_id": "run-1" },
+      { "seq": 2, "t_ms": 4000, "kind": "trigger_fires", "note": "run-1 is mid-delay with 4000ms of its 10000ms delay elapsed" }
+    ]
+  },
+  "expected": {
+    "results": [
+      { "seq": 2, "run-1_canceled": true, "run-1_disposition": "restarted", "new_run_started": "run-2", "new_run_delay_elapsed_at_start_ms": 0 }
+    ],
+    "run-2_delay_completes_at_ms": 14000,
+    "reason": "the delay resets to not-started rather than resuming from the 4000ms already elapsed on run-1; both runs' timing is monotonic"
+  }
+}

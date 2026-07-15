@@ -1,0 +1,28 @@
+{
+  "case_id": "RUL-150-variable-condition-constant-folded",
+  "contract": "rules/1",
+  "req_ids": ["RUL-150", "RUL-390", "RUL-391"],
+  "description": "A variable condition's value is resolved once at compile time and frozen into the compiled generation; a live variable write after compilation does not change how the already-compiled edge generation evaluates the condition until a new generation is compiled.",
+  "input": {
+    "variable": { "name": "guest_mode", "value_at_compile_time": false },
+    "rule": {
+      "id": "01J8Z3K4N5P6Q7R8S9T0V1RULA",
+      "triggers": [{ "type": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z2", "to": ["on"] }],
+      "conditions": [{ "type": "variable", "variable": "guest_mode", "equals": false }],
+      "actions": [{ "type": "device_command", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z2", "command": "launch" }]
+    },
+    "events": [
+      { "seq": 1, "t_ms": 0, "kind": "compile_generation", "generation": 1, "closed_over": { "guest_mode": false } },
+      { "seq": 2, "t_ms": 1000, "kind": "trigger_fires_offline" },
+      { "seq": 3, "t_ms": 2000, "kind": "live_variable_write", "variable": "guest_mode", "new_value": true, "note": "app-side write; generation 1 is still the applied generation on the (offline) edge engine" },
+      { "seq": 4, "t_ms": 3000, "kind": "trigger_fires_offline_again" }
+    ]
+  },
+  "expected": {
+    "results": [
+      { "seq": 2, "condition_evaluated_against": false, "conditions_pass": true, "reason": "matches the frozen compile-time value" },
+      { "seq": 4, "condition_evaluated_against": false, "conditions_pass": true, "reason": "the edge engine has not applied a new generation; it continues evaluating the stale-but-defined frozen value from generation 1, never performing a live lookup" }
+    ],
+    "note": "a new generation compiled after seq 3 would freeze guest_mode: true and this condition would then fail; that recompilation is out of this case's scope"
+  }
+}

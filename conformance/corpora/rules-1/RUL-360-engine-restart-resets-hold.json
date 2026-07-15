@@ -1,0 +1,22 @@
+{
+  "case_id": "RUL-360-engine-restart-resets-hold",
+  "contract": "rules/1",
+  "req_ids": ["RUL-360", "RUL-361", "RUL-362"],
+  "description": "When the evaluating engine itself restarts mid-hold, the in-progress for:-hold does not survive and is not reconstructed from persisted elapsed time; once the engine resumes and the underlying condition freshly re-matches, the hold counts again from zero, and its interruption is never recorded as a misfire.",
+  "input": {
+    "fixture": { "entities": { "01J8Z3K4N5P6Q7R8S9T0V1W2Z2": { "device_class": "media-player" } } },
+    "trigger": { "type": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z2", "to": ["unreachable"], "for": 300 },
+    "events": [
+      { "seq": 1, "t_ms": 0, "kind": "state_transition", "from": "on", "to": "unreachable", "note": "hold timer starts, counting toward the 300s for:" },
+      { "seq": 2, "t_ms": 120000, "kind": "engine_restart", "note": "engine restarts with 120000ms of the hold already elapsed" },
+      { "seq": 3, "t_ms": 121000, "kind": "post_restart_observation", "reported_state": "unreachable", "note": "the durable state is unchanged; per RUL-025/RUL-300 this is not itself a new transition" }
+    ]
+  },
+  "expected": {
+    "results": [
+      { "seq": 2, "hold_state_after_restart": "reset", "elapsed_carried_over_ms": 0, "reason": "no in-flight run or timer state survives an engine restart" },
+      { "seq": 3, "hold_restarted": false, "reason": "the post-restart observation reconfirms the durable unreachable state rather than producing a fresh transition into it (RUL-025/RUL-300), so the hold does not begin counting again here; it will begin only on a genuine fresh transition into unreachable" },
+      { "misfire_caught_marker_set": false, "reason": "RUL-362: an interrupted in-progress hold never itself carries the misfire_caught marker — it is a distinct mechanism from misfire policy" }
+    ]
+  }
+}

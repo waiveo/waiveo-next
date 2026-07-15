@@ -1,0 +1,24 @@
+{
+  "case_id": "RUL-033-numeric-first-observation-level-check",
+  "contract": "rules/1",
+  "req_ids": ["RUL-033", "RUL-302", "RUL-030"],
+  "description": "A numeric trigger's first-ever observation fires via a level check (no prior value to cross from); a later observation that stays in-range does not refire; only a genuine crossing refires thereafter.",
+  "input": {
+    "fixture": { "entities": { "01J8Z3K4N5P6Q7R8S9T0V1W2Z3": { "device_class": "sensor" } } },
+    "trigger": { "type": "numeric", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z3", "attribute": "cpu_temp", "above": 75 },
+    "events": [
+      { "seq": 1, "t_ms": 0, "kind": "first_observation", "value": 82 },
+      { "seq": 2, "t_ms": 60000, "kind": "observation", "value": 83, "note": "still above 75; no crossing occurred" },
+      { "seq": 3, "t_ms": 120000, "kind": "observation", "value": 60, "note": "drops below 75" },
+      { "seq": 4, "t_ms": 180000, "kind": "observation", "value": 90, "note": "genuine crossing back above 75" }
+    ]
+  },
+  "expected": {
+    "results": [
+      { "seq": 1, "fired": true, "reason": "first-ever observation, level check: 82 satisfies above:75" },
+      { "seq": 2, "fired": false, "reason": "no crossing; previous observation already satisfied the bound" },
+      { "seq": 3, "fired": false, "reason": "does not satisfy above:75" },
+      { "seq": 4, "fired": true, "reason": "crossing: previous observation (60) did not satisfy, current (90) does" }
+    ]
+  }
+}

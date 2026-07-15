@@ -1,0 +1,19 @@
+{
+  "case_id": "RUL-354-misfire-default-skip-instantaneous",
+  "contract": "rules/1",
+  "req_ids": ["RUL-350", "RUL-351", "RUL-354"],
+  "description": "A time trigger with no explicit misfire declaration defaults to skip; an occurrence missed while the engine was offline does not fire late once evaluation resumes.",
+  "input": {
+    "trigger": { "type": "time", "at": "08:00:00" },
+    "events": [
+      { "seq": 1, "t": "07:00:00", "kind": "engine_offline" },
+      { "seq": 2, "t": "08:00:00", "kind": "scheduled_occurrence", "note": "missed while offline" },
+      { "seq": 3, "t": "09:00:00", "kind": "engine_resumes" }
+    ]
+  },
+  "expected": {
+    "effective_misfire_policy": "skip",
+    "fired_late_at_resume": false,
+    "reason": "time is one of this contract's instantaneous trigger kinds; absent an explicit misfire declaration it defaults to skip"
+  }
+}

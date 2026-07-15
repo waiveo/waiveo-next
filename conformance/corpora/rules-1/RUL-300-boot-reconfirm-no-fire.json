@@ -1,0 +1,25 @@
+{
+  "case_id": "RUL-300-boot-reconfirm-no-fire",
+  "contract": "rules/1",
+  "req_ids": ["RUL-300", "RUL-025"],
+  "description": "A poller reconfirming an entity's durable pre-restart state on its first post-boot observation must not synthesize a transition, even though a later genuine transition to the same target value does fire normally.",
+  "input": {
+    "fixture": {
+      "entities": {
+        "01J8Z3K4N5P6Q7R8S9T0V1W2Z2": { "device_class": "media-player", "durable_state_before_restart": "off" }
+      }
+    },
+    "trigger": { "type": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z2", "from": ["off", "standby"], "to": ["on"] },
+    "events": [
+      { "seq": 1, "t_ms": 0, "kind": "engine_restart" },
+      { "seq": 2, "t_ms": 900, "kind": "observation", "reported_state": "off", "note": "reconfirms the durable pre-restart value; engine well past any stabilization window by the time of event 3" },
+      { "seq": 3, "t_ms": 30000, "kind": "observation", "reported_state": "on", "note": "a genuine transition" }
+    ]
+  },
+  "expected": {
+    "results": [
+      { "seq": 2, "old_state_resolved": "off", "state_changed": false, "fired": false, "reason": "first post-restart observation compared against durable last-recorded value; unchanged, not a transition" },
+      { "seq": 3, "old_state_resolved": "off", "state_changed": true, "fired": true }
+    ]
+  }
+}

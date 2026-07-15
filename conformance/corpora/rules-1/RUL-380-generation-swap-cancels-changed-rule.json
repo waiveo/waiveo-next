@@ -1,0 +1,32 @@
+{
+  "case_id": "RUL-380-generation-swap-cancels-changed-rule",
+  "contract": "rules/1",
+  "req_ids": ["RUL-380", "RUL-381"],
+  "description": "Applying a new compiled generation cancels the in-flight run of a rule whose compiled definition changed, but leaves the in-flight run of an unchanged rule uninterrupted, even though both runs belong to the same generation swap.",
+  "input": {
+    "prior_generation": {
+      "generation": 1,
+      "rules": [
+        { "rule_id": "rule-A", "actions": [{ "type": "delay", "duration_seconds": 30 }] },
+        { "rule_id": "rule-B", "actions": [{ "type": "delay", "duration_seconds": 30 }] }
+      ]
+    },
+    "new_generation": {
+      "generation": 2,
+      "rules": [
+        { "rule_id": "rule-A", "actions": [{ "type": "delay", "duration_seconds": 60 }], "note": "delay duration edited" },
+        { "rule_id": "rule-B", "actions": [{ "type": "delay", "duration_seconds": 30 }], "note": "byte-identical to generation 1" }
+      ]
+    },
+    "in_flight_runs_at_swap": [
+      { "rule_id": "rule-A", "run_id": "run-A1", "elapsed_ms": 10000 },
+      { "rule_id": "rule-B", "run_id": "run-B1", "elapsed_ms": 10000 }
+    ]
+  },
+  "expected": {
+    "results": [
+      { "run_id": "run-A1", "canceled": true, "reason": "rule-A's compiled definition changed between generation 1 and 2" },
+      { "run_id": "run-B1", "canceled": false, "reason": "rule-B's compiled structure and closed-over values are identical across generations, despite the generation number advancing" }
+    ]
+  }
+}

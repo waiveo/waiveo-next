@@ -1,0 +1,26 @@
+{
+  "case_id": "RUL-023-attribute-only-vs-state-change",
+  "contract": "rules/1",
+  "req_ids": ["RUL-023", "RUL-330"],
+  "description": "State-scoped, attribute-scoped, and unscoped state triggers on the same entity diverge correctly across an attribute-only tick, an attribute-scoped match tick, and a genuine state transition.",
+  "input": {
+    "fixture": { "entities": { "01J8Z3K4N5P6Q7R8S9T0V1W2Z2": { "device_class": "media-player" } } },
+    "triggers": [
+      { "id": "state-scoped", "type": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z2", "to": "playing" },
+      { "id": "unscoped", "type": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z2" },
+      { "id": "attribute-scoped", "type": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z2", "attribute": "volume", "from": 20, "to": 25 }
+    ],
+    "events": [
+      { "seq": 1, "t_ms": 0, "kind": "tick", "state_before": "playing", "state_after": "playing", "attributes_changed": { "media_title": ["Episode 3", "Episode 4"] }, "note": "attribute-only tick; state string unchanged and happens to equal state-scoped's to: value" },
+      { "seq": 2, "t_ms": 60000, "kind": "tick", "state_before": "playing", "state_after": "playing", "attributes_changed": { "volume": [20, 25] } },
+      { "seq": 3, "t_ms": 300000, "kind": "tick", "state_before": "playing", "state_after": "paused" }
+    ]
+  },
+  "expected": {
+    "results": [
+      { "seq": 1, "state-scoped_fired": false, "unscoped_fired": true, "attribute-scoped_fired": false, "reason": "attribute-only tick: state-scoped must not fire even though the unchanged state equals its to: value; unscoped fires on any change; attribute-scoped's own attribute (volume) did not move" },
+      { "seq": 2, "state-scoped_fired": false, "unscoped_fired": true, "attribute-scoped_fired": true, "reason": "volume transitioned 20->25, matching attribute-scoped's from/to; state string still unchanged so state-scoped stays excluded" },
+      { "seq": 3, "state-scoped_fired": false, "unscoped_fired": true, "attribute-scoped_fired": false, "reason": "genuine transition to paused, not playing, so state-scoped (to:\"playing\") does not match this transition either" }
+    ]
+  }
+}

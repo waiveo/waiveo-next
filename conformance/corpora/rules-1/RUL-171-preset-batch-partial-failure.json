@@ -1,0 +1,34 @@
+{
+  "case_id": "RUL-171-preset-batch-partial-failure",
+  "contract": "rules/1",
+  "req_ids": ["RUL-170", "RUL-171", "RUL-172"],
+  "description": "A preset batch's commands are each attempted independently; one command's failure does not prevent the remaining commands in the batch, and the batch's own partial failure does not halt the rest of the rule's action sequence.",
+  "input": {
+    "preset": {
+      "preset_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z5",
+      "commands": [
+        { "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z2", "command": "power_on" },
+        { "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z6", "command": "power_on" }
+      ]
+    },
+    "command_results": [
+      { "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z2", "ok": true },
+      { "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z6", "ok": false, "error": "unreachable" }
+    ],
+    "rule_actions": [
+      { "type": "preset_batch", "preset_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z5" },
+      { "type": "log", "message": "batch attempted" }
+    ]
+  },
+  "expected": {
+    "preset_batch_outcome": {
+      "outcome": "partial",
+      "results": [
+        { "target": "01J8Z3K4N5P6Q7R8S9T0V1W2Z2", "command": "power_on", "ok": true },
+        { "target": "01J8Z3K4N5P6Q7R8S9T0V1W2Z6", "command": "power_on", "ok": false, "error": "unreachable" }
+      ]
+    },
+    "both_commands_attempted": true,
+    "log_action_ran": true
+  }
+}

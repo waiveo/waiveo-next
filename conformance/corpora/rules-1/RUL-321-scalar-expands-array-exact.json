@@ -1,0 +1,28 @@
+{
+  "case_id": "RUL-321-scalar-expands-array-exact",
+  "contract": "rules/1",
+  "req_ids": ["RUL-320", "RUL-321", "RUL-021"],
+  "description": "A scalar to:\"on\" trigger expands through the media-player device class's built-in on-group and fires on a group-member state (playing); a to:[\"on\"] array trigger matches only the literal state and does not.",
+  "input": {
+    "fixture": {
+      "device_classes": {
+        "media-player": { "semantic_groups": { "on": ["on", "playing", "idle", "paused", "buffering"], "off": ["off", "standby", "unavailable"] } }
+      },
+      "entities": { "01J8Z3K4N5P6Q7R8S9T0V1W2Z2": { "device_class": "media-player" } }
+    },
+    "triggers": [
+      { "id": "scalar", "type": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z2", "to": "on" },
+      { "id": "array", "type": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z2", "to": ["on"] }
+    ],
+    "events": [
+      { "seq": 1, "t_ms": 0, "kind": "state_transition", "from": "off", "to": "playing" },
+      { "seq": 2, "t_ms": 60000, "kind": "state_transition", "from": "playing", "to": "on" }
+    ]
+  },
+  "expected": {
+    "results": [
+      { "seq": 1, "scalar_fired": true, "array_fired": false, "reason": "playing is a member of the on-group but not the literal string \"on\"" },
+      { "seq": 2, "scalar_fired": true, "array_fired": true, "reason": "both match on the literal state \"on\"" }
+    ]
+  }
+}

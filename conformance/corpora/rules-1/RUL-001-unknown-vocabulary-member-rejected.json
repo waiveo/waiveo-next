@@ -1,0 +1,24 @@
+{
+  "case_id": "RUL-001-unknown-vocabulary-member-rejected",
+  "contract": "rules/1",
+  "req_ids": ["RUL-001"],
+  "description": "A rule declaring a trigger type outside the closed vocabulary fails compilation with a typed error and is never silently accepted as app-class.",
+  "input": {
+    "rule": {
+      "id": "01J8Z3K4N5P6Q7R8S9T0V1RUL1",
+      "mode": "single",
+      "triggers": [
+        { "type": "geofence", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z2", "region": "home" }
+      ],
+      "conditions": [],
+      "actions": [
+        { "type": "log", "message": "unreachable" }
+      ]
+    }
+  },
+  "expected": {
+    "compiles": false,
+    "error": { "code": "UNKNOWN_VOCABULARY_MEMBER", "field": "triggers[0].type", "message": "\"geofence\" is not a member of the closed trigger vocabulary" },
+    "silently_treated_as_app_class": false
+  }
+}

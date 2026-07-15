@@ -1,0 +1,26 @@
+{
+  "case_id": "RUL-282-edge-expression-cross-entity-rejected",
+  "contract": "rules/1",
+  "req_ids": ["RUL-282", "RUL-280"],
+  "description": "An edge-classified rule's expression sourcing the triggering entity compiles; the same rule shape with an expression sourcing a different entity fails compilation, since edge-side expressions may reference only the triggering entity.",
+  "input": {
+    "rule_variants": [
+      {
+        "id": "same-entity",
+        "triggers": [{ "type": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z2", "to": ["on"] }],
+        "actions": [{ "type": "log", "message": { "expr": "state('01J8Z3K4N5P6Q7R8S9T0V1W2Z2')" } }]
+      },
+      {
+        "id": "other-entity",
+        "triggers": [{ "type": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z2", "to": ["on"] }],
+        "actions": [{ "type": "log", "message": { "expr": "state('01J8Z3K4N5P6Q7R8S9T0V1W2Z6')" } }]
+      }
+    ]
+  },
+  "expected": {
+    "results": [
+      { "id": "same-entity", "compiles": true, "execution_class": "edge" },
+      { "id": "other-entity", "compiles": false, "error": { "code": "EDGE_EXPRESSION_CROSS_ENTITY_REFERENCE", "field": "actions[0].message" } }
+    ]
+  }
+}
