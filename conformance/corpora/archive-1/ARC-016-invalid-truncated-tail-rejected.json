@@ -1,0 +1,19 @@
+{
+  "case_id": "ARC-016-invalid-truncated-tail-rejected",
+  "contract": "archive/1",
+  "req_ids": ["ARC-013", "ARC-016"],
+  "description": "The encrypted body's tail is dropped after export produced it, so EOF arrives without ever authenticating the frame whose final-flag was set; restore refuses with ARCHIVE_TRUNCATED rather than silently restoring incomplete content.",
+  "input": {
+    "frames_written_at_export": 4,
+    "final_flag_set_on_frame": 4,
+    "frames_delivered_to_restorer": 3,
+    "frames_authenticated": [1, 2, 3],
+    "reached_eof": true
+  },
+  "expected": {
+    "error": { "code": "ARCHIVE_TRUNCATED" },
+    "distinguishable_from": ["DECRYPT_FAILED", "SIGNATURE_INVALID"],
+    "final_marked_frame_authenticated": false,
+    "restore_completed": false
+  }
+}

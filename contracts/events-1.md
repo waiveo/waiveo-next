@@ -8,14 +8,14 @@
 
 events/1 defines the platform's client push channel: the durable-event envelope, the catalog of platform-registered event schemas, the two wire bindings a subscriber uses to receive events live (WebSocket and Server-Sent Events), authentication for both, scope-node filtering, resumable delivery with explicit loss marking, and outbound webhook delivery. Where api/1 is the door a client sends commands through, events/1 is the door a client watches through — a subscriber never mutates state over this contract.
 
-- In scope: the durable-event envelope and its generic fields; the platform-registered schema catalog (`entity.state_changed`, `automation.run`, `content.played`, `device.heartbeat`, `box.vitals`, `audit.event`) — fields, types, and when each is emitted; the naming rule that keeps platform schemas and pack-contributed schemas from colliding; the WS and SSE bindings; session/API-token authentication for both; scope-node filtering; resumable delivery (the resume cursor and the gap signal); outbound webhook delivery (signing, retry, dead-letter).
+- In scope: the durable-event envelope and its generic fields; the platform-registered schema catalog (`entity.state_changed`, `automation.run`, `content.played`, `device.heartbeat`, `box.vitals`, `audit.event`) — fields, types, and when each is emitted; the naming rule that keeps platform schemas and pack-contributed schemas from colliding; the WS and SSE bindings; session/API key authentication for both; scope-node filtering; resumable delivery (the resume cursor and the gap signal); outbound webhook delivery (signing, retry, dead-letter).
 - Out of scope: a pack's own `events` verb family — emitting a pack-declared event and receiving a dispatched one are `ctx/1` concerns, including payload validation against a pack's own declared schema; inbound webhook and ingest intake, a distinctly authenticated surface with its own route family (`api/1`); the Job resource and its state machine for long-running fleet operations (`api/1`); management-plane CRUD for registering a webhook endpoint or querying event history by page (`api/1`); the roles/scopes model that determines which scope nodes a principal may read — this contract consumes that as a given input, never redefines it.
 
 ## Definitions
 
 - **ULID** — as defined in `manifest/1`: a 26-character Crockford-base32, time-sortable identifier.
 - **Timestamp** — as defined in `rules/1`: an integer number of milliseconds since the Unix epoch (UTC).
-- **Principal** — as defined in `api/1`: the authenticated caller a session or API-token credential resolves to. This contract treats a principal only as an opaque identifier for authentication and scope-node visibility.
+- **Principal** — as defined in `api/1`: the authenticated caller a session or API key credential resolves to. This contract treats a principal only as an opaque identifier for authentication and scope-node visibility.
 - **Scope node** — as defined in `api/1`: a node in the platform's placement tree; every envelope carries the scope node the event's subject resource is placed under.
 - **Durable event** — one occurrence recorded by the platform under a registered or pack-declared schema, assigned a permanent ID and retained for a bounded window regardless of whether any subscriber is connected when it occurs.
 - **Envelope** — the generic wrapper (Durable-event envelope) every durable event is delivered in, regardless of binding.
@@ -118,7 +118,7 @@ events/1 defines the platform's client push channel: the durable-event envelope,
 | `completion` | enum | One of `completed`, `interrupted`, `skipped` — how it ended. |
 | `power_evidence` | object, optional | `{power_state, source}` — device-power corroboration for the playback window, when the source device class supplies one. |
 
-*draft-note: `cause`'s and `completion`'s exact member sets, and `power_evidence`'s exact shape, are this contract's own proposal — nothing normative enumerates their values beyond naming the fields.*
+*draft-note: `cause`'s and `completion`'s member sets are fixed as MUST-level enums by the table above, not open; what remains a draft proposal is their provenance and `power_evidence`'s exact shape — this contract chose these specific members itself, without deriving them from any authoritative external source, so a future minor may still need to grow either enum additively (EVT-003) once real playback-engine behavior is surveyed.*
 
 **[EVT-051]** A `content.played` event MUST be emitted once `t_end` is known for a given playback occurrence — this schema reports completed (or definitively ended) playback windows, never an in-progress one; a still-playing asset has not yet produced its event.
 
@@ -175,7 +175,7 @@ events/1 defines the platform's client push channel: the durable-event envelope,
 - authentication events: login success, login failure, and lockout;
 - enrollment/pairing grant creation and redemption;
 - consent changes;
-- session or API-token issuance and revocation;
+- session or API key issuance and revocation;
 - trust-bundle or signing-key changes;
 - entitlement changes;
 - pack install, update, and remove;
@@ -217,15 +217,15 @@ events/1 defines the platform's client push channel: the durable-event envelope,
 
 ### Authentication
 
-**[EVT-110]** A WS upgrade request MUST be authenticated by exactly one of: the platform session cookie, carried automatically as an ordinary same-origin request header; or an `Authorization: Bearer <api-token>` header, for a non-browser client.
+**[EVT-110]** A WS upgrade request MUST be authenticated by exactly one of: the platform session cookie, carried automatically as an ordinary same-origin request header; or an `Authorization: Bearer <api-key>` header, for a non-browser client.
 
-**[EVT-111]** An SSE request MUST be authenticated by exactly one of: the platform session cookie, for a browser's native `EventSource` (which cannot set custom headers); or an `Authorization: Bearer <api-token>` header, for a client library that supports one.
+**[EVT-111]** An SSE request MUST be authenticated by exactly one of: the platform session cookie, for a browser's native `EventSource` (which cannot set custom headers); or an `Authorization: Bearer <api-key>` header, for a client library that supports one.
 
-**[EVT-112]** An API token or session credential MUST NOT be accepted as a query-string parameter on either binding — a token that could ride a URL is a token that leaks into server access logs and intermediate proxies.
+**[EVT-112]** An API key or session credential MUST NOT be accepted as a query-string parameter on either binding — a token that could ride a URL is a token that leaks into server access logs and intermediate proxies.
 
 **[EVT-113]** A request that fails authentication on either binding MUST be rejected before any upgrade or stream begins, with an HTTP error response in `api/1`'s Problem shape (API-010) and the `AUTH_REQUIRED` code (Error taxonomy) — never with a WS/SSE-level frame, since no session has been established yet to frame one over.
 
-**[EVT-114]** A session or API-token credential's revocation MUST terminate every open events/1 connection authenticated by it within a bounded delay, not merely block future connections.
+**[EVT-114]** A session or API key credential's revocation MUST terminate every open events/1 connection authenticated by it within a bounded delay, not merely block future connections.
 
 *draft-note: the exact bound in EVT-114 is not fixed by any normative source yet. Proposed: within 60 seconds of revocation taking effect.*
 
@@ -265,7 +265,7 @@ events/1 defines the platform's client push channel: the durable-event envelope,
 
 **[EVT-143]** Silent loss is forbidden: a server MUST NOT drop any eligible event from a subscriber's stream without a corresponding `gap` covering it — every discontinuity a subscriber experiences is either absent (EVT-133) or explicitly marked (EVT-140–142), never simply missing.
 
-**[EVT-144]** This gap shape is the client-facing expression of a loss-marking pattern the platform applies to its other buffered channels as well (for instance, a relay's own offline telemetry queue, which marks its overflow the same way — by a bounded from/to range and a reason, never a silent drop) — a subscriber and an operator inspecting a different buffered channel's own loss markers can rely on the same three-field mental model.
+**[EVT-144]** This gap shape — `{from_id, to_id, reason}` — is specific to a subscriber stream, where the envelope `id` (Durable-event envelope) is the natural bound. The platform applies the same underlying loss-marking pattern to its other buffered channels — a bounded range plus a reason, never a silent drop — but not always this exact shape: a relay's own offline telemetry-buffer queue, for instance, marks its overflow with `{from_seq, to_seq, dropped_counts_by_schema, reason}`, a marker defined by `relay/1` that shares this shape's from/to/reason spine but is extended with per-schema drop counts and sequence-based, not `id`-based, bounds. A subscriber or operator MUST NOT assume a different buffered channel's own loss marker is this same three-field shape — only the bounded-range-plus-reason pattern is common to both.
 
 *draft-note: EVT-142's exceeded-writes timeout bound is not fixed by any normative source yet. Proposed: 30 seconds of persistently backed-up writes before disconnecting.*
 
@@ -417,7 +417,7 @@ X-Waiveo-Signature: 5f6e...a1b2
 
 | code | meaning | retryable |
 |---|---|---|
-| `AUTH_REQUIRED` | No valid session or API-token principal was presented on the WS upgrade or SSE request. | yes — after re-authenticating |
+| `AUTH_REQUIRED` | No valid session or API key principal was presented on the WS upgrade or SSE request. | yes — after re-authenticating |
 | `SELECTOR_INVALID` | The supplied `selector` failed to parse under `api/1`'s label-selector grammar. | yes — retry with a corrected selector |
 | `RESUME_FROM_INVALID` | The supplied `resume_from` was malformed or names an `id` the platform never recorded. | yes — retry without `resume_from`, or with a previously observed `id` |
 | `SLOW_CONSUMER_DISCONNECTED` | The connection's writes stayed backed up past the bounded timeout after a buffer-exceeded gap. | yes — reconnect with `resume_from` |

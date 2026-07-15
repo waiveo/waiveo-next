@@ -1,0 +1,31 @@
+{
+  "case_id": "EVT-041-valid-automation-run-misfire-caught",
+  "contract": "events/1",
+  "req_ids": ["EVT-041", "EVT-043"],
+  "description": "A deferred occurrence the evaluating engine could not run at its scheduled instant is caught and run later under the rule's own misfire policy; the automation.run event reports mode_disposition misfire-caught.",
+  "input": {
+    "rule_id": "01J8Z3K4N5P6Q7R8S9T0V1W2YC",
+    "rule_revision": 5,
+    "evaluator": "relay",
+    "trigger": { "kind": "time", "at": "08:00:00" },
+    "conditions": [{ "kind": "state", "passed": true }],
+    "actions": [{ "kind": "device-command", "status": "ok" }],
+    "mode": "single",
+    "disposition": "misfire-caught"
+  },
+  "expected": {
+    "envelope": {
+      "schema": "automation.run",
+      "origin": "relay",
+      "payload": {
+        "rule_id": "01J8Z3K4N5P6Q7R8S9T0V1W2YC",
+        "rule_revision": 5,
+        "trigger_snapshot": { "kind": "time", "at": "08:00:00" },
+        "condition_results": [{ "kind": "state", "passed": true }],
+        "action_outcomes": [{ "kind": "device-command", "status": "ok" }],
+        "mode_disposition": "misfire-caught"
+      }
+    },
+    "delivered": true
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "case_id": "EVT-041-valid-automation-run-skipped-internal",
+  "contract": "events/1",
+  "req_ids": ["EVT-041", "EVT-042", "EVT-043"],
+  "description": "An app-evaluated rule in single mode drops a new trigger firing while a run is already in progress; the internal-origin automation.run event reports mode_disposition skipped with no action outcomes.",
+  "input": {
+    "rule_id": "01J8Z3K4N5P6Q7R8S9T0V1W2YC",
+    "rule_revision": 5,
+    "evaluator": "internal",
+    "trigger": { "kind": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y9", "to": "idle" },
+    "conditions": [],
+    "actions": [],
+    "mode": "single",
+    "disposition": "skipped"
+  },
+  "expected": {
+    "envelope": {
+      "schema": "automation.run",
+      "origin": "internal",
+      "payload": {
+        "rule_id": "01J8Z3K4N5P6Q7R8S9T0V1W2YC",
+        "rule_revision": 5,
+        "trigger_snapshot": { "kind": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y9", "to": "idle" },
+        "condition_results": [],
+        "action_outcomes": [],
+        "mode_disposition": "skipped"
+      }
+    },
+    "delivered": true
+  }
+}

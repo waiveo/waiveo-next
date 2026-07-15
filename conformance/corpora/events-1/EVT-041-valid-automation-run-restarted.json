@@ -1,0 +1,31 @@
+{
+  "case_id": "EVT-041-valid-automation-run-restarted",
+  "contract": "events/1",
+  "req_ids": ["EVT-041", "EVT-043"],
+  "description": "An edge-evaluated rule in restart mode cancels its own in-flight run when a new trigger fires; the relay-origin automation.run event reports mode_disposition restarted for the canceled run.",
+  "input": {
+    "rule_id": "01J8Z3K4N5P6Q7R8S9T0V1W2YC",
+    "rule_revision": 5,
+    "evaluator": "relay",
+    "trigger": { "kind": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y9", "to": "playing" },
+    "conditions": [{ "kind": "state", "passed": true }],
+    "actions": [{ "kind": "device-command", "status": "ok" }],
+    "mode": "restart",
+    "disposition": "restarted"
+  },
+  "expected": {
+    "envelope": {
+      "schema": "automation.run",
+      "origin": "relay",
+      "payload": {
+        "rule_id": "01J8Z3K4N5P6Q7R8S9T0V1W2YC",
+        "rule_revision": 5,
+        "trigger_snapshot": { "kind": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y9", "to": "playing" },
+        "condition_results": [{ "kind": "state", "passed": true }],
+        "action_outcomes": [{ "kind": "device-command", "status": "ok" }],
+        "mode_disposition": "restarted"
+      }
+    },
+    "delivered": true
+  }
+}

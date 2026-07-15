@@ -1,0 +1,21 @@
+{
+  "case_id": "EVT-013-invalid-registered-schema-malformed-payload",
+  "contract": "events/1",
+  "req_ids": ["EVT-013"],
+  "description": "A registered schema's payload is missing a field its own field definition requires; the event is not delivered even though the schema name itself is a recognized platform-registered name.",
+  "input": {
+    "attempted_schema": "entity.state_changed",
+    "attempted_payload": {
+      "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y9",
+      "device_id": "01J8Z3K4N5P6Q7R8S9T0V1W2YA",
+      "new_state": "playing",
+      "attribute_change": false
+    }
+  },
+  "expected": {
+    "delivered": false,
+    "schema_recognized": true,
+    "payload_valid": false,
+    "violation": "missing required field old_state"
+  }
+}

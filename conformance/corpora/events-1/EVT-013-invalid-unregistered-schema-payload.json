@@ -2,9 +2,9 @@
   "case_id": "EVT-013-invalid-unregistered-schema-payload",
   "contract": "events/1",
   "req_ids": ["EVT-013", "EVT-021", "EVT-022"],
-  "description": "An attempted emission names a schema that is neither a bare platform-registered name nor a slash-qualified pack-namespaced name; it is never delivered over any binding.",
+  "description": "An attempted emission names a schema that is syntactically shaped like a bare platform-registered name (dot-separated, no slash) but is not a member of the registered-schema catalog, and is not a slash-qualified pack-namespaced name either; it is never delivered over any binding.",
   "input": {
-    "attempted_schema": "not_a_registered_schema",
+    "attempted_schema": "unknown.schema",
     "attempted_payload": { "anything": "goes" }
   },
   "expected": {

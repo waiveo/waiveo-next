@@ -14,10 +14,13 @@ One row per requirement ID `contracts/archive-1.md` defines. Format: `conformanc
 | ARC-013 | `contracts/archive-1.md#encryption` | - | TBD-wave1 |
 | ARC-014 | `contracts/archive-1.md#encryption` | `ARC-014-invalid-decrypt-failed-wrong-passphrase` | covered |
 | ARC-015 | `contracts/archive-1.md#encryption` | `ARC-014-invalid-decrypt-failed-wrong-passphrase` | covered |
+| ARC-016 | `contracts/archive-1.md#encryption` | `ARC-016-invalid-truncated-tail-rejected` | covered |
+| ARC-017 | `contracts/archive-1.md#encryption` | - | TBD-wave1 |
 | ARC-020 | `contracts/archive-1.md#signing` | `ARC-023-invalid-signature-verification-failed` | covered |
 | ARC-021 | `contracts/archive-1.md#signing` | `ARC-023-invalid-signature-verification-failed` | covered |
 | ARC-022 | `contracts/archive-1.md#signing` | - | TBD-wave1 |
 | ARC-023 | `contracts/archive-1.md#signing` | `ARC-023-invalid-signature-verification-failed` | covered |
+| ARC-024 | `contracts/archive-1.md#signing` | - | TBD-wave1 |
 | ARC-030 | `contracts/archive-1.md#manifest--general` | - | TBD-wave1 |
 | ARC-031 | `contracts/archive-1.md#manifest--general` | `ARC-031-valid-manifest-full` | covered |
 | ARC-032 | `contracts/archive-1.md#manifest--general` | - | TBD-wave1 |
@@ -44,10 +47,12 @@ One row per requirement ID `contracts/archive-1.md` defines. Format: `conformanc
 | ARC-082 | `contracts/archive-1.md#streaming-structure` | - | TBD-wave1 |
 | ARC-083 | `contracts/archive-1.md#streaming-structure` | - | TBD-wave1 |
 | ARC-084 | `contracts/archive-1.md#streaming-structure` | - | TBD-wave1 |
+| ARC-085 | `contracts/archive-1.md#streaming-structure` | - | TBD-wave1 |
 | ARC-090 | `contracts/archive-1.md#incremental-archives` | `ARC-091-valid-manifest-incremental` | covered |
 | ARC-091 | `contracts/archive-1.md#incremental-archives` | `ARC-091-valid-manifest-incremental` | covered |
 | ARC-092 | `contracts/archive-1.md#incremental-archives` | - | TBD-wave1 |
 | ARC-093 | `contracts/archive-1.md#incremental-archives` | `ARC-060-valid-assets-by-reference`, `ARC-091-valid-manifest-incremental` | covered |
+| ARC-094 | `contracts/archive-1.md#incremental-archives` | - | TBD-wave1 |
 | ARC-100 | `contracts/archive-1.md#restore-is-an-install-path` | - | TBD-wave1 |
 | ARC-101 | `contracts/archive-1.md#restore-is-an-install-path` | `ARC-102-invalid-yanked-pack-blocked` | covered |
 | ARC-102 | `contracts/archive-1.md#restore-is-an-install-path` | `ARC-102-invalid-yanked-pack-blocked` | covered |

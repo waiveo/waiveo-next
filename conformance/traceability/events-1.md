@@ -10,7 +10,7 @@ One row per requirement ID `contracts/events-1.md` defines. Format: `conformance
 | EVT-010 | `contracts/events-1.md#durable-event-envelope` | `EVT-010-valid-entity-state-changed` | covered |
 | EVT-011 | `contracts/events-1.md#durable-event-envelope` | - | TBD-wave1 |
 | EVT-012 | `contracts/events-1.md#durable-event-envelope` | - | TBD-wave1 |
-| EVT-013 | `contracts/events-1.md#durable-event-envelope` | `EVT-010-valid-entity-state-changed`, `EVT-013-invalid-unregistered-schema-payload` | covered |
+| EVT-013 | `contracts/events-1.md#durable-event-envelope` | `EVT-010-valid-entity-state-changed`, `EVT-013-invalid-unregistered-schema-payload`, `EVT-013-invalid-registered-schema-malformed-payload` | covered |
 | EVT-020 | `contracts/events-1.md#registered-schema-catalog--general` | - | TBD-wave1 |
 | EVT-021 | `contracts/events-1.md#registered-schema-catalog--general` | `EVT-013-invalid-unregistered-schema-payload` | covered |
 | EVT-022 | `contracts/events-1.md#registered-schema-catalog--general` | `EVT-013-invalid-unregistered-schema-payload` | covered |
@@ -18,9 +18,9 @@ One row per requirement ID `contracts/events-1.md` defines. Format: `conformance
 | EVT-031 | `contracts/events-1.md#entitystate_changed` | `EVT-010-valid-entity-state-changed` | covered |
 | EVT-032 | `contracts/events-1.md#entitystate_changed` | - | TBD-wave1 |
 | EVT-040 | `contracts/events-1.md#automationrun` | `EVT-040-valid-automation-run` | covered |
-| EVT-041 | `contracts/events-1.md#automationrun` | `EVT-040-valid-automation-run` | covered |
-| EVT-042 | `contracts/events-1.md#automationrun` | `EVT-040-valid-automation-run` | covered |
-| EVT-043 | `contracts/events-1.md#automationrun` | `EVT-040-valid-automation-run` | covered |
+| EVT-041 | `contracts/events-1.md#automationrun` | `EVT-040-valid-automation-run`, `EVT-041-valid-automation-run-skipped-internal`, `EVT-041-valid-automation-run-restarted`, `EVT-041-valid-automation-run-misfire-caught` | covered |
+| EVT-042 | `contracts/events-1.md#automationrun` | `EVT-040-valid-automation-run`, `EVT-041-valid-automation-run-skipped-internal` | covered |
+| EVT-043 | `contracts/events-1.md#automationrun` | `EVT-040-valid-automation-run`, `EVT-041-valid-automation-run-skipped-internal`, `EVT-041-valid-automation-run-restarted`, `EVT-041-valid-automation-run-misfire-caught` | covered |
 | EVT-050 | `contracts/events-1.md#contentplayed` | `EVT-050-valid-content-played` | covered |
 | EVT-051 | `contracts/events-1.md#contentplayed` | `EVT-050-valid-content-played` | covered |
 | EVT-052 | `contracts/events-1.md#contentplayed` | `EVT-050-valid-content-played` | covered |

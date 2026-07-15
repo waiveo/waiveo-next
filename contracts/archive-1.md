@@ -51,25 +51,31 @@ archive/1 defines the workspace archive: the one portable container file a works
 
 **[ARC-012]** The container body MUST be produced by first assembling the tar stream (Manifest — general, Streaming structure), then compressing it with zstd, then encrypting the compressed result — never compressing already-encrypted bytes, which wastes the compressor's effort against high-entropy input.
 
-**[ARC-013]** The encrypted body MUST be a sequence of independently authenticated frames, each a 4-byte big-endian length prefix followed by that many bytes of AEAD ciphertext (including its authentication tag), so a reader can decrypt and emit plaintext as frames arrive rather than buffering the whole body. Each frame's nonce MUST be derived from a per-archive base nonce (recorded in the outer header) combined with that frame's own sequence number, so no nonce repeats under the same key.
+**[ARC-013]** The encrypted body MUST be a sequence of independently authenticated frames, each a 4-byte big-endian length prefix followed by that many bytes of AEAD ciphertext (including its authentication tag), so a reader can decrypt and emit plaintext as frames arrive rather than buffering the whole body. Each frame's nonce MUST be derived from a per-archive base nonce (recorded in the outer header) combined with that frame's own sequence number, so no nonce repeats under the same key. Each frame's AEAD encryption MUST additionally bind a boolean final-flag as associated data, with exactly one frame — the last — marked final and every other frame marked non-final; ARC-016 defines what a reader does with this flag.
 
 *draft-note: the exact AEAD cipher (proposed: XChaCha20-Poly1305, for its wide nonce making per-frame nonce derivation trivially collision-free) and frame size (proposed: 1 MiB) are this contract's own proposal, not fixed by any normative source yet.*
 
-**[ARC-014]** A frame that fails AEAD authentication MUST abort the read immediately with `DECRYPT_FAILED` (Error taxonomy) — a reader MUST NOT emit any plaintext from a frame that failed to authenticate, and MUST NOT continue attempting to decrypt subsequent frames once one has failed.
+**[ARC-014]** A frame that fails AEAD authentication MUST abort the read immediately with `DECRYPT_FAILED` (Error taxonomy) — a reader MUST NOT emit any plaintext from a frame that failed to authenticate, and MUST NOT continue attempting to decrypt subsequent frames once one has failed. This authentication covers the frame's final-flag (ARC-013) exactly as it covers its ciphertext: a reader MUST treat a frame's final-flag as trustworthy once, and only once, that frame has itself authenticated.
 
 **[ARC-015]** `DECRYPT_FAILED` (a frame failing authentication, most commonly from a wrong export passphrase) MUST be distinguishable, by its own code, from `SIGNATURE_INVALID` (Signing) — the two failure modes have different remedies (wrong passphrase versus a tampered or corrupted file) and MUST NOT be reported as one undifferentiated error.
 
+**[ARC-016]** A restorer MUST refuse with `ARCHIVE_TRUNCATED` (Error taxonomy) — distinguishable from both `DECRYPT_FAILED` and `SIGNATURE_INVALID`, neither of which means content is missing — if it reaches EOF without having authenticated a frame whose final-flag (ARC-013) is set, or if any byte follows the frame whose final-flag is set. Both conditions signal a frame sequence shorter or longer than the one produced at export time; per-frame authentication (ARC-014) alone cannot catch either, since a dropped tail's remaining frames still authenticate individually and a frame appended after the final one authenticates on its own terms too.
+
+**[ARC-017]** The per-archive base nonce (ARC-013) MUST be generated fresh and uniformly at random for every archive — never derived deterministically from the export passphrase, the workspace ID, or any other value that could repeat across archives — as defense-in-depth against nonce collision, independent of and in addition to ARC-013's own per-frame sequence-number derivation.
+
 ### Signing
 
-**[ARC-020]** `digest` (ARC-002) MUST be computed over the encrypted body exactly as it appears in the container, before any decryption — this is what makes ARC-021's signature verifiable without the export passphrase.
+**[ARC-020]** `digest` (ARC-002) MUST be computed over the encrypted body exactly as it appears in the container, before any decryption. Because `digest` is itself one field of the header ARC-021's signature covers, computing it this way — over ciphertext, needing no export passphrase — is what lets that signature attest to the encrypted body's identity without decrypting it.
 
-**[ARC-021]** `signature` MUST be a signature over `digest`, verifiable against the exporting workspace's own operational signing identity. This is never the platform's software-artifact trust bundle: that bundle authenticates published pack and platform release artifacts and is an unrelated trust root from a workspace's own operational identity.
+**[ARC-021]** `signature` MUST be a signature over a canonicalization of the entire cleartext outer header (ARC-002) except the `signature` field itself — never over `digest` alone — verifiable against the exporting workspace's own operational signing identity. Covering the whole header this way authenticates `kdf`'s parameters and `base_nonce` exactly as it authenticates `digest`: a reader MUST verify this signature — and, transitively, every other header field — before invoking the KDF (ARC-010) with any `kdf`-supplied parameter, so a tampered `kdf.memory_kib` or `iterations` value fails signature verification rather than driving a memory or CPU allocation shaped by unauthenticated input. This is never the platform's software-artifact trust bundle: that bundle authenticates published pack and platform release artifacts and is an unrelated trust root from a workspace's own operational identity.
 
-*draft-note: the exact key material `signer_key_id` resolves against (which specific key in a workspace's own identity this contract expects to sign exports) is not fixed here, and depends on machinery not yet chartered elsewhere; this contract fixes only the header shape and the verification obligation (ARC-022–023).*
+*draft-note: the exact canonicalization scheme the signature covers (proposed: a fixed-key-ordering JSON canonicalization, e.g. RFC 8785) and the exact key material `signer_key_id` resolves against (which specific key in a workspace's own identity this contract expects to sign exports) are not fixed here, and depend on machinery not yet chartered elsewhere; this contract fixes only the header shape, the set of fields the signature covers (ARC-021), and the verification obligation (ARC-022–023).*
 
 **[ARC-022]** Signature verification (ARC-021) MUST be possible from the outer header alone, without decrypting any part of the encrypted body — this is the reason the outer header is cleartext rather than itself encrypted.
 
 **[ARC-023]** A restore operation MUST verify the signature (ARC-021) before decrypting or reading any part of the encrypted body, and MUST refuse with `SIGNATURE_INVALID` (Error taxonomy) on failure — a tampered or corrupted archive is rejected before any of its content is trusted enough to even attempt decrypting.
+
+**[ARC-024]** In addition to ARC-023's header-signature check, a restorer MUST recompute the sha256 digest over the encrypted body's actual bytes as they stream past — once ARC-016's frame-sequence-completeness check is satisfied — and MUST refuse with `SIGNATURE_INVALID` (Error taxonomy) if the recomputed value does not match the header's `digest` field (ARC-002). ARC-023 alone proves only that the header's own recorded `digest` value was validly signed; this recompute is what proves the bytes actually delivered are the bytes that value describes — a restore that passes both checks has verified the body, not merely the header's claim about it. A mismatch discovered this way after manifest validation (Manifest — general) has already passed falls under Restore is an install path's rollback guarantee (ARC-107) exactly as any other post-manifest failure does.
 
 ### Manifest — general
 
@@ -121,7 +127,7 @@ archive/1 defines the workspace archive: the one portable container file a works
 
 **[ARC-073]** Restore MUST, as its first step touching secret material, re-wrap `data_key_wrap`'s data key under the destination's own key hierarchy, and MUST NOT retain the export-passphrase-derived wrapping (ARC-011) as part of the destination's ongoing operational state once that re-wrap succeeds.
 
-**[ARC-074]** A restore presented with an export passphrase that fails to decrypt the container (`DECRYPT_FAILED`, ARC-014) MUST be reported distinguishably from a restore that decrypts successfully but then fails a later check (`MANIFEST_INVALID`, `SIGNATURE_INVALID`, or any other code in Error taxonomy) — an operator MUST be able to tell "wrong passphrase" from "broken or tampered file" from the error alone.
+**[ARC-074]** A restore presented with an export passphrase that fails to decrypt the container (`DECRYPT_FAILED`, ARC-014) MUST be reported distinguishably from a restore that decrypts successfully but then fails a later check (`MANIFEST_INVALID` or any other manifest-validation-class code in Error taxonomy) — an operator MUST be able to tell "wrong passphrase" from "broken or tampered file" from the error alone.
 
 ### Streaming structure
 
@@ -135,6 +141,8 @@ archive/1 defines the workspace archive: the one portable container file a works
 
 **[ARC-084]** ARC-083 constrains how the workspace snapshot entry is produced, not whether it can stream: the resulting snapshot's bytes MAY still be written into and read from the same single forward-streaming pass ARC-080–081 describe.
 
+**[ARC-085]** The workspace snapshot tar entry (`workspace.sqlite`) carries no manifest-recorded hash of its own, unlike an `embedded` asset's `asset_ref` (ARC-062) — it does not need one: the workspace snapshot is always embedded in full, inside the same encrypted body ARC-024's digest recompute already covers (ARC-091), so a restorer that has passed ARC-024's check has verified `workspace.sqlite`'s actual bytes exactly as thoroughly as ARC-062 verifies an embedded asset's.
+
 ### Incremental archives
 
 **[ARC-090]** An incremental archive's manifest MUST carry `base_archive`: `{digest, created_at}`, identifying the prior archive (by its own outer-header `digest`, ARC-002) this one deltas against.
@@ -144,6 +152,8 @@ archive/1 defines the workspace archive: the one portable container file a works
 **[ARC-092]** Restoring an incremental archive MUST have access to the complete base-archive chain back to the nearest full archive, resolving every `inherited` entry along the way. A restorer unable to resolve that chain MUST refuse with `BASE_ARCHIVE_UNAVAILABLE` (Error taxonomy) rather than restore a workspace with missing asset content.
 
 **[ARC-093]** An assets-by-reference export (`storage: by-reference`, Manifest — asset references) and an incremental export (`storage: inherited`) are independent mechanisms and MAY be combined freely in the same manifest — one entry MAY be `by-reference` against a shared asset store while a sibling entry is `inherited` from a base archive and a third is freshly `embedded`.
+
+**[ARC-094]** Every archive touched while resolving a base-archive chain (ARC-092) — not merely the terminal, most-recently-requested archive — MUST independently satisfy every requirement in Container framing, Encryption, and Signing on its own bytes: its own header parses and matches `archive_format_version` (ARC-001–004), its own encrypted-body frames authenticate and terminate on exactly one final-marked frame with nothing trailing (ARC-013–016), its own header signature verifies (ARC-021), and its own digest is recomputed against its own actual streamed bytes and matches (ARC-024). A base archive's actual bytes MUST additionally match the `base_archive.digest` its child manifest records (ARC-090) — a base archive earns trust only by satisfying these checks itself, never by inheriting a child archive's already-established trust.
 
 ### Restore is an install path
 
@@ -267,8 +277,9 @@ assets/9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
 |---|---|---|
 | `FORMAT_UNRECOGNIZED` | The outer header's `format` field was not `waiveo-archive`. | no |
 | `VERSION_UNSUPPORTED` | `archive_format_version`'s major component does not match the reader's. | no |
-| `SIGNATURE_INVALID` | The outer header's signature failed verification against the digest. | no |
+| `SIGNATURE_INVALID` | The outer header's signature failed verification against the header it covers (ARC-021) — including a tampered `kdf` parameter or `base_nonce` — or the digest recomputed over the actual streamed encrypted body did not match the header's `digest` field (ARC-024). | no |
 | `DECRYPT_FAILED` | An encrypted-body frame failed AEAD authentication (commonly a wrong export passphrase). | yes — retry with the correct export passphrase |
+| `ARCHIVE_TRUNCATED` | The encrypted body reached EOF without an authenticated final-marked frame, or bytes followed the final-marked frame (ARC-016). | yes — once a complete, untruncated copy of the archive is available |
 | `MANIFEST_INVALID` | The manifest failed a required-shape, uniqueness, or asset-completeness check. | no |
 | `EPOCH_TOO_NEW` | `platform_schema_epoch` is newer than the destination understands. | no — until the destination is upgraded |
 | `BASE_ARCHIVE_UNAVAILABLE` | An incremental archive's base-archive chain could not be fully resolved. | yes — once the missing base archive(s) are available |
