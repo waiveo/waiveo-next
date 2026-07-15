@@ -1,0 +1,31 @@
+{
+  "case_id": "EVT-040-valid-automation-run",
+  "contract": "events/1",
+  "req_ids": ["EVT-040", "EVT-041", "EVT-042", "EVT-043"],
+  "description": "An edge-classified rule runs to completion; the relay-origin automation.run event reports mode_disposition ran with its condition/action results.",
+  "input": {
+    "rule_id": "01J8Z3K4N5P6Q7R8S9T0V1W2YC",
+    "rule_revision": 4,
+    "evaluator": "relay",
+    "trigger": { "kind": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y9", "to": "playing" },
+    "conditions": [{ "kind": "state", "passed": true }],
+    "actions": [{ "kind": "device-command", "status": "ok" }],
+    "mode": "single",
+    "disposition": "ran"
+  },
+  "expected": {
+    "envelope": {
+      "schema": "automation.run",
+      "origin": "relay",
+      "payload": {
+        "rule_id": "01J8Z3K4N5P6Q7R8S9T0V1W2YC",
+        "rule_revision": 4,
+        "trigger_snapshot": { "kind": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y9", "to": "playing" },
+        "condition_results": [{ "kind": "state", "passed": true }],
+        "action_outcomes": [{ "kind": "device-command", "status": "ok" }],
+        "mode_disposition": "ran"
+      }
+    },
+    "delivered": true
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "case_id": "ARC-014-invalid-decrypt-failed-wrong-passphrase",
+  "contract": "archive/1",
+  "req_ids": ["ARC-014", "ARC-015", "ARC-074"],
+  "description": "An export passphrase that does not match the one used at export time fails AEAD authentication on the first encrypted-body frame; the read aborts immediately with a code distinguishable from a signature failure.",
+  "input": {
+    "outer_header_signature_valid": true,
+    "supplied_export_passphrase": "wrong-passphrase"
+  },
+  "expected": {
+    "error": { "code": "DECRYPT_FAILED" },
+    "distinguishable_from": "SIGNATURE_INVALID",
+    "plaintext_emitted": false,
+    "frames_attempted_after_failure": 0
+  }
+}

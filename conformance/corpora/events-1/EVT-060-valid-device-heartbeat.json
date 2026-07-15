@@ -1,0 +1,24 @@
+{
+  "case_id": "EVT-060-valid-device-heartbeat",
+  "contract": "events/1",
+  "req_ids": ["EVT-060", "EVT-061"],
+  "description": "A device heartbeat reports canonical power_state and app_state values drawn from its device class's own state vocabulary, not raw driver values.",
+  "input": {
+    "device_id": "01J8Z3K4N5P6Q7R8S9T0V1W2YA",
+    "device_class": "media-player",
+    "raw_power_state": "PowerOn",
+    "raw_app_state": "slidecast-running"
+  },
+  "expected": {
+    "envelope": {
+      "schema": "device.heartbeat",
+      "payload": {
+        "device_id": "01J8Z3K4N5P6Q7R8S9T0V1W2YA",
+        "power_state": "on",
+        "app_state": "app",
+        "now_playing_content_id": null
+      }
+    },
+    "delivered": true
+  }
+}

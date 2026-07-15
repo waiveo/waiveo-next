@@ -1,0 +1,16 @@
+{
+  "case_id": "ARC-103-invalid-dev-channel-refused",
+  "contract": "archive/1",
+  "req_ids": ["ARC-052", "ARC-103"],
+  "description": "A locked pack on the dev channel is refused at restore time on a destination without developer mode enabled; the rest of the restore proceeds since this pack is not required to boot.",
+  "input": {
+    "locked_pack": { "pack_id": "dev/scratch-widget", "version": "0.0.1", "channel": "dev" },
+    "destination_developer_mode": false,
+    "pack_required_to_boot": false
+  },
+  "expected": {
+    "error": { "code": "DEV_CHANNEL_REFUSED" },
+    "pack_restored": false,
+    "restore_overall_result": "succeeded, one pack refused"
+  }
+}

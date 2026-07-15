@@ -1,0 +1,25 @@
+{
+  "case_id": "EVT-080-valid-audit-login-failure",
+  "contract": "events/1",
+  "req_ids": ["EVT-080", "EVT-081", "EVT-083"],
+  "description": "A failed login attempt is on the mandatory emission list; the resulting audit.event carries result failure with every other field still populated.",
+  "input": {
+    "actor_principal": "01J8Z3K4N5P6Q7R8S9T0V1W2YE",
+    "action": "login.failure",
+    "result": "failure"
+  },
+  "expected": {
+    "envelope": {
+      "schema": "audit.event",
+      "retention_class": "audit-long",
+      "payload": {
+        "actor_principal": "01J8Z3K4N5P6Q7R8S9T0V1W2YE",
+        "on_behalf_of": null,
+        "action": "login.failure",
+        "target": "principal:01J8Z3K4N5P6Q7R8S9T0V1W2YE",
+        "result": "failure"
+      }
+    },
+    "delivered": true
+  }
+}

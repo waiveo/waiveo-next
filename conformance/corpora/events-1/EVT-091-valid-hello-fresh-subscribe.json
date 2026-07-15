@@ -1,0 +1,13 @@
+{
+  "case_id": "EVT-091-valid-hello-fresh-subscribe",
+  "contract": "events/1",
+  "req_ids": ["EVT-090", "EVT-091", "EVT-092", "EVT-121", "EVT-132"],
+  "description": "A WS client opens with subprotocol events.v1+json and sends a hello with no resume_from and a scope-node-narrowing selector; the server responds hello-ack with resume_result fresh.",
+  "input": {
+    "subprotocol": "events.v1+json",
+    "frame": { "type": "hello", "selector": "scope_node subtree 01J8Z2Q1M8H8N4T0V1W2X3Y4Z5" }
+  },
+  "expected": {
+    "frame": { "type": "hello-ack", "resume_result": "fresh" }
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "case_id": "ARC-031-valid-manifest-full",
+  "contract": "archive/1",
+  "req_ids": ["ARC-031", "ARC-040", "ARC-050", "ARC-060", "ARC-070", "ARC-071"],
+  "description": "A full-mode manifest satisfies the required top-level shape: platform schema epoch, a two-pack lockfile, one embedded and one by-reference asset, a secret stub, and the re-wrapped data key.",
+  "input": {
+    "outer_header": { "format": "waiveo-archive", "archive_format_version": "1.0" }
+  },
+  "expected": {
+    "manifest": {
+      "created_at": 1752537600000,
+      "mode": "full",
+      "workspace_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZC",
+      "platform_schema_epoch": 4,
+      "packs": [
+        { "pack_id": "waiveo/slidecast", "version": "2.2.0", "channel": "first-party", "source": "https://index.example/waiveo", "schema_epoch": 3 },
+        { "pack_id": "acme/weather-widget", "version": "1.2.0", "channel": "verified", "source": "https://index.example/community", "schema_epoch": 1 }
+      ],
+      "assets": [
+        { "asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85", "size": 20481, "content_type": "image/png", "storage": "embedded" },
+        { "asset_ref": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824", "size": 883220, "content_type": "video/mp4", "storage": "by-reference" }
+      ],
+      "secret_stubs": [
+        { "stub_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZD", "wrapped_value": "AQIDBAUGBwgJCgsMDQ4PEA" }
+      ],
+      "data_key_wrap": { "wrapped_value": "EBAPDg0MCwoJCAcGBQQDAgE" }
+    },
+    "valid": true
+  }
+}

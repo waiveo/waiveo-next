@@ -1,0 +1,31 @@
+{
+  "case_id": "EVT-050-valid-content-played",
+  "contract": "events/1",
+  "req_ids": ["EVT-050", "EVT-051", "EVT-052"],
+  "description": "A scheduled playback on a screen completes; the content.played event is emitted once t_end is known, carrying the compiled program revision in force at t_start.",
+  "input": {
+    "screen_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZE",
+    "asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85",
+    "program_revision": "rev-00042",
+    "t_start": 1752537000000,
+    "t_end": 1752537030000,
+    "cause": "scheduled",
+    "completion": "completed"
+  },
+  "expected": {
+    "envelope": {
+      "schema": "content.played",
+      "payload": {
+        "asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85",
+        "screen_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZE",
+        "program_revision": "rev-00042",
+        "t_start": 1752537000000,
+        "t_end": 1752537030000,
+        "cause": "scheduled",
+        "completion": "completed"
+      }
+    },
+    "delivered": true,
+    "delivered_before_t_end_known": false
+  }
+}

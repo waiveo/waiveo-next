@@ -1,0 +1,18 @@
+{
+  "case_id": "EVT-140-valid-resume-with-gap",
+  "contract": "events/1",
+  "req_ids": ["EVT-092", "EVT-140", "EVT-141", "EVT-143"],
+  "description": "A hello resumes from an event ID older than the retention window; the server acknowledges resume_result gap, delivers one gap frame naming the requested point and the oldest recoverable point, then resumes normal delivery with no further silent loss.",
+  "input": {
+    "frame": { "type": "hello", "resume_from": "01J8Z3K4N5P6Q7R8S9T0V1W2Y6" },
+    "oldest_retained_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y7"
+  },
+  "expected": {
+    "frames": [
+      { "type": "hello-ack", "resume_result": "gap" },
+      { "type": "gap", "from_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y6", "to_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y7", "reason": "retention_expired" }
+    ],
+    "delivery_resumes_at": "01J8Z3K4N5P6Q7R8S9T0V1W2Y7",
+    "silent_loss": false
+  }
+}

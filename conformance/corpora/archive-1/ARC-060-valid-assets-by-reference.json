@@ -1,0 +1,15 @@
+{
+  "case_id": "ARC-060-valid-assets-by-reference",
+  "contract": "archive/1",
+  "req_ids": ["ARC-060", "ARC-063", "ARC-093"],
+  "description": "A by-reference asset entry carries no tar bytes; restore resolves it against a content-addressed store the destination already has access to rather than the container's own byte stream.",
+  "input": {
+    "asset_entry": { "asset_ref": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824", "storage": "by-reference" },
+    "destination_cas_has_object": true
+  },
+  "expected": {
+    "tar_entry_present": false,
+    "resolved": true,
+    "resolution_source": "destination content-addressed store"
+  }
+}

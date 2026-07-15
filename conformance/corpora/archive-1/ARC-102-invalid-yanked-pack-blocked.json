@@ -1,0 +1,16 @@
+{
+  "case_id": "ARC-102-invalid-yanked-pack-blocked",
+  "contract": "archive/1",
+  "req_ids": ["ARC-101", "ARC-102"],
+  "description": "A locked pack version is checked against the destination's current trust state, not the archive's own recollection; the destination's trust state marks it yanked with no substitute available, so that pack's restore blocks and raises an operator-facing signal.",
+  "input": {
+    "locked_pack": { "pack_id": "acme/weather-widget", "version": "1.2.0", "channel": "verified" },
+    "destination_trust_state": { "acme/weather-widget@1.2.0": "yanked", "substitute_available": false }
+  },
+  "expected": {
+    "error": { "code": "PACK_YANKED_BLOCKED" },
+    "pack_restored": false,
+    "operator_signal_raised": true,
+    "trust_source_consulted": "destination current trust state"
+  }
+}

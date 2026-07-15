@@ -1,0 +1,24 @@
+{
+  "case_id": "EVT-151-valid-webhook-delivery-signed",
+  "contract": "events/1",
+  "req_ids": ["EVT-151", "EVT-156", "EVT-157"],
+  "description": "An automation.run event due for delivery to a registered webhook endpoint is POSTed with a delivery-id, timestamp, and an HMAC-SHA256 signature over timestamp.body.",
+  "input": {
+    "endpoint_signing_secret": "whsec_5f6e7a1b2c3d4e5f",
+    "delivery_id": "01J8Z3K4N5P6Q7R8S9T0V1W2YF",
+    "timestamp": 1752537603,
+    "event": { "id": "01J8Z3K4N5P6Q7R8S9T0V1W2YB", "schema": "automation.run" }
+  },
+  "expected": {
+    "request": {
+      "method": "POST",
+      "headers": {
+        "X-Waiveo-Delivery-Id": "01J8Z3K4N5P6Q7R8S9T0V1W2YF",
+        "X-Waiveo-Timestamp": "1752537603",
+        "X-Waiveo-Signature": "<hex hmac-sha256 of signed_material, keyed by endpoint_signing_secret>"
+      },
+      "body_schema": "automation.run"
+    },
+    "signed_material": "1752537603.{\"id\":\"01J8Z3K4N5P6Q7R8S9T0V1W2YB\",\"schema\":\"automation.run\"}"
+  }
+}

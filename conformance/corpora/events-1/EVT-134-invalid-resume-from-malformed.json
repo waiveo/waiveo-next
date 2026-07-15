@@ -1,0 +1,14 @@
+{
+  "case_id": "EVT-134-invalid-resume-from-malformed",
+  "contract": "events/1",
+  "req_ids": ["EVT-131", "EVT-134"],
+  "description": "A hello supplying a syntactically malformed resume_from is rejected with RESUME_FROM_INVALID before any event is delivered, rather than treated as an omitted resume_from.",
+  "input": {
+    "frame": { "type": "hello", "resume_from": "not-a-ulid!!" }
+  },
+  "expected": {
+    "error": { "code": "RESUME_FROM_INVALID" },
+    "events_delivered": 0,
+    "treated_as_fresh": false
+  }
+}

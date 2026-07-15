@@ -1,0 +1,24 @@
+{
+  "case_id": "ARC-091-valid-manifest-incremental",
+  "contract": "archive/1",
+  "req_ids": ["ARC-090", "ARC-091", "ARC-093"],
+  "description": "An incremental manifest enumerates every asset the workspace references, marking an unchanged one inherited from its base archive while a newly created one is embedded; the workspace snapshot itself is always full regardless of mode.",
+  "input": {
+    "base_archive_digest": "b5d4045c3f466fa91fe2cc6abe79232a1a57cdf104f7a26e716e0a1e2789df78",
+    "base_archive_assets": ["sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85"],
+    "new_assets": ["sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"]
+  },
+  "expected": {
+    "manifest": {
+      "mode": "incremental",
+      "base_archive": { "digest": "b5d4045c3f466fa91fe2cc6abe79232a1a57cdf104f7a26e716e0a1e2789df78", "created_at": 1752537600000 },
+      "assets": [
+        { "asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85", "storage": "inherited" },
+        { "asset_ref": "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "storage": "embedded" }
+      ],
+      "workspace_snapshot_mode": "full"
+    },
+    "tar_entries_include": ["manifest.json", "workspace.sqlite", "assets/9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"],
+    "tar_entries_exclude": ["assets/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85"]
+  }
+}

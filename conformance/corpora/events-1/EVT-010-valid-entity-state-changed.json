@@ -1,0 +1,40 @@
+{
+  "case_id": "EVT-010-valid-entity-state-changed",
+  "contract": "events/1",
+  "req_ids": ["EVT-010", "EVT-013", "EVT-030", "EVT-031"],
+  "description": "An entity's significant attribute changes with the canonical state unchanged; the delivered entity.state_changed envelope validates against the generic envelope and reports attribute_change true with the changed attribute in attributes_delta.",
+  "input": {
+    "recorded_transition": {
+      "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y9",
+      "device_id": "01J8Z3K4N5P6Q7R8S9T0V1W2YA",
+      "device_class": "media-player",
+      "old_state": "playing",
+      "new_state": "playing",
+      "changed_attributes": [
+        { "name": "active_app_id", "change_emission": "significant", "old": null, "new": "slidecast" }
+      ]
+    }
+  },
+  "expected": {
+    "envelope": {
+      "id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y7",
+      "schema": "entity.state_changed",
+      "ts": 1752537600000,
+      "scope_node": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5",
+      "trace_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y7",
+      "cost_class": "telemetry",
+      "retention_class": "telemetry-standard",
+      "origin": "relay",
+      "origin_principal": "01J8Z3K4N5P6Q7R8S9T0V1W2Y8",
+      "payload": {
+        "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y9",
+        "device_id": "01J8Z3K4N5P6Q7R8S9T0V1W2YA",
+        "old_state": "playing",
+        "new_state": "playing",
+        "attribute_change": true,
+        "attributes_delta": { "active_app_id": { "old": null, "new": "slidecast" } }
+      }
+    },
+    "delivered": true
+  }
+}

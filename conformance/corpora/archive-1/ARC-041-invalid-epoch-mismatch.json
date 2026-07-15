@@ -1,0 +1,16 @@
+{
+  "case_id": "ARC-041-invalid-epoch-mismatch",
+  "contract": "archive/1",
+  "req_ids": ["ARC-041", "ARC-104"],
+  "description": "A manifest's platform_schema_epoch is newer than the restoring destination understands; restore refuses before opening the workspace, never attempting a downgrade-open, whether restoring onto fresh infrastructure or over an already-running destination.",
+  "input": {
+    "manifest": { "platform_schema_epoch": 9 },
+    "destination_understood_epoch": 4,
+    "restore_target": "already-running destination"
+  },
+  "expected": {
+    "error": { "code": "EPOCH_TOO_NEW" },
+    "workspace_opened": false,
+    "maintenance_mode": true
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "case_id": "EVT-070-valid-box-vitals",
+  "contract": "events/1",
+  "req_ids": ["EVT-070", "EVT-071"],
+  "description": "A relay reports its own vitals with no active throttle flags; throttled_flags is present as an empty array, never omitted.",
+  "input": {
+    "relay_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZF",
+    "cpu_temp_c": 46.5,
+    "throttled": false,
+    "undervoltage": false,
+    "disk_headroom_bytes": 2147483648
+  },
+  "expected": {
+    "envelope": {
+      "schema": "box.vitals",
+      "payload": {
+        "relay_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZF",
+        "cpu_temp": 46.5,
+        "throttled_flags": [],
+        "undervoltage": false,
+        "disk_headroom": 2147483648
+      }
+    },
+    "delivered": true
+  }
+}

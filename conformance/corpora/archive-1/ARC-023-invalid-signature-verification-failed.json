@@ -1,0 +1,14 @@
+{
+  "case_id": "ARC-023-invalid-signature-verification-failed",
+  "contract": "archive/1",
+  "req_ids": ["ARC-020", "ARC-021", "ARC-023"],
+  "description": "An archive's outer-header digest does not match a signature recomputed against it (a tampered or corrupted file); restore refuses before attempting to decrypt any part of the encrypted body.",
+  "input": {
+    "outer_header": { "digest": "b5d4045c3f466fa91fe2cc6abe79232a1a57cdf104f7a26e716e0a1e2789df78", "signature": "MEUCIQDx...", "signer_key_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZB" },
+    "recomputed_digest": "0000000000000000000000000000000000000000000000000000000000000"
+  },
+  "expected": {
+    "error": { "code": "SIGNATURE_INVALID" },
+    "decryption_attempted": false
+  }
+}
