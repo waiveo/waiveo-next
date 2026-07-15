@@ -19,6 +19,7 @@ ctx/1 defines the runtime protocol between the host and a running pack process: 
 - **Verb** — a named remote operation within a verb family, invoked request/response or fire-and-forget depending on its family.
 - **Correlation ID** — the `id` field pairing a response frame to its request frame.
 - **Trace ID** — the `trace_id` field threading one logical operation across host and pack logs (and, where the operation crosses further, relay and platform logs).
+- **Principal** — a reference (ULID) to the identity on whose behalf a dispatched operation runs; the actor a pack attributes and authorizes an action's effects against. Carried today by `actions.invoke`'s `principal` field (CTX-110).
 - **ULID** — as defined in manifest/1: a 26-character Crockford-base32, time-sortable identifier.
 
 ## Normative requirements
@@ -71,11 +72,13 @@ ctx/1 defines the runtime protocol between the host and a running pack process: 
 
 ### `data` family
 
-**[CTX-040]** `data.query(collection, filter?, sort?, cursor?, limit?, revision?, state?)` MUST be scoped to collections the calling pack declared in its own `dataModel.collections` (manifest/1 MAN-051); a request naming any other pack's collection MUST fail with `COLLECTION_NOT_OWNED`. `filter` accepts the typed operators `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `in`, `contains`, composed with `and`/`or`. `state` restricts results to `draft` or `published` rows on collections declaring `lifecycle: draft-publish` (manifest/1 MAN-052); `revision`, when present, restricts to rows whose current `revision` exactly matches (a read-after-write confirmation use, not a historical-version query — this contract keeps no row history).
+**[CTX-040]** `data.query(collection, filter?, sort?, cursor?, limit?, revision?, state?)` MUST be scoped to collections the calling pack declared in its own `dataModel.collections` (manifest/1 MAN-051); a request naming any other pack's collection MUST fail with `COLLECTION_NOT_OWNED`. `filter` accepts the typed operators `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `in`, `contains`, composed with `and`/`or`. `state` restricts results to `draft` or `published` rows on collections declaring `lifecycle: draft-publish` (manifest/1 MAN-052); `revision`, when present, restricts to rows whose current `revision` exactly matches (a read-after-write confirmation use, not a historical-version query — this contract keeps no row history). `cursor`, when present, MUST be treated as an opaque continuation token: the pack MUST NOT construct, parse, or infer meaning from its contents, only pass back a value the host itself returned. A response's own `cursor` field (Wire shapes) carries the token for the next page, and is `null` once no further rows remain.
+
+*draft-note: this contract does not mint its own cursor grammar — the concrete token format aligns with the platform's keyset-pagination convention authored in `api/v1`, referenced here rather than redefined. Confirm the reference once api/v1 lands.*
 
 **[CTX-041]** `data.write(collection, entity_id?, fields, expected_revision?)` creates a row (when `entity_id` is omitted) or updates one. An update MUST supply `expected_revision`; the host MUST reject the write with `REVISION_CONFLICT` if the row's current `revision` does not match. No unconditional-overwrite path exists.
 
-**[CTX-042]** `data.aggregate(collection, op, field?, groupBy?, filter?)` MUST support `op` values `count`, `sum`, `min`, `max` (`field` required for all but `count`). Joins across collections and raw query languages are explicitly not offered by this verb or any other in the `data` family — a pack composing data from multiple collections MUST denormalize at write time.
+**[CTX-042]** `data.aggregate(collection, op, field?, groupBy?, filter?)` MUST support `op` values `count`, `sum`, `min`, `max` (`field` required for all but `count`). The response body MUST be `{value}` — the scalar aggregate result — when `groupBy` is absent, or `{groups}` — an array of `{key, value}` objects, one per distinct value of the `groupBy` field among the filtered rows — when `groupBy` is present. Joins across collections and raw query languages are explicitly not offered by this verb or any other in the `data` family — a pack composing data from multiple collections MUST denormalize at write time.
 
 ### `secrets` and `connections` families
 
@@ -121,9 +124,11 @@ ctx/1 defines the runtime protocol between the host and a running pack process: 
 
 ### `actions` family (host → pack dispatch)
 
-**[CTX-110]** The host dispatches a pack action invocation (manifest/1 MAN-100) as a `request`-type frame with `verb: "actions.invoke"` and body `{action_name, params, principal}`; the pack's response body MUST be `{result}`, or an `error` frame. This is the one direction in the `actions` family — packs never call `actions.invoke` on the host.
+**[CTX-110]** The host dispatches a pack action invocation (manifest/1 MAN-100) as a `request`-type frame with `verb: "actions.invoke"` and body `{action_name, params, principal}`; the pack's response body MUST be `{result}`, or an `error` frame. This is the one direction in the `actions` family — packs never call `actions.invoke` on the host. CTX-112 states the exception when automation invokes an `execution: relay-command` action.
 
 **[CTX-111]** An action whose manifest declaration marks it `not-idempotent` (manifest/1 MAN-103) MUST NOT be automatically retried by the host on timeout or connection loss; an `automationCallable: true` action invoked from automation carries the same idempotency contract as one invoked via the management API.
+
+**[CTX-112]** When automation invokes an action declared `execution: relay-command` (manifest/1 MAN-091), the relay executes it directly as a device command; the host MUST NOT dispatch it as an `actions.invoke` frame for that invocation. `actions.invoke` (CTX-110) is used for that same action when it is invoked via the management API or as an `execution: app-service` automation action (manifest/1 MAN-091).
 
 ### Deprecation & support window
 
@@ -179,6 +184,102 @@ ctx/1 defines the runtime protocol between the host and a running pack process: 
 ```
 
 ```json
+// data.query request
+{
+  "type": "request",
+  "id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y1",
+  "trace_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y1",
+  "verb": "data.query",
+  "body": {
+    "collection": "forecasts",
+    "cursor": "opaque-token-returned-by-a-prior-data.query-response",
+    "limit": 20
+  }
+}
+```
+
+```json
+// data.query response
+{
+  "type": "response",
+  "id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y1",
+  "trace_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y1",
+  "body": {
+    "rows": [
+      {
+        "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y2",
+        "revision": 1,
+        "lifecycle_state": "published",
+        "scope_node": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5",
+        "labels": [],
+        "template_ref": null,
+        "params": null,
+        "location": "west",
+        "summary": "Sunny"
+      }
+    ],
+    "cursor": null
+  }
+}
+```
+
+```json
+// data.aggregate request (scalar)
+{
+  "type": "request",
+  "id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y3",
+  "trace_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y3",
+  "verb": "data.aggregate",
+  "body": {
+    "collection": "forecasts",
+    "op": "count"
+  }
+}
+```
+
+```json
+// data.aggregate response (scalar)
+{
+  "type": "response",
+  "id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y3",
+  "trace_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y3",
+  "body": {
+    "value": 42
+  }
+}
+```
+
+```json
+// data.aggregate request (groupBy)
+{
+  "type": "request",
+  "id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y4",
+  "trace_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y4",
+  "verb": "data.aggregate",
+  "body": {
+    "collection": "forecasts",
+    "op": "count",
+    "groupBy": "location"
+  }
+}
+```
+
+```json
+// data.aggregate response (groupBy)
+{
+  "type": "response",
+  "id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y4",
+  "trace_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y4",
+  "body": {
+    "groups": [
+      { "key": "west", "value": 3 },
+      { "key": "east", "value": 1 }
+    ]
+  }
+}
+```
+
+```json
 // assets.derive request
 {
   "type": "request",
@@ -203,6 +304,33 @@ ctx/1 defines the runtime protocol between the host and a running pack process: 
   "body": {
     "job_id": "01J8Z3K4N5P6Q7R8S9T0V1W2X6",
     "output_ref": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+  }
+}
+```
+
+```json
+// actions.invoke request (host -> pack)
+{
+  "type": "request",
+  "id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y5",
+  "trace_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y5",
+  "verb": "actions.invoke",
+  "body": {
+    "action_name": "refresh",
+    "params": {},
+    "principal": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z6"
+  }
+}
+```
+
+```json
+// actions.invoke response (pack -> host)
+{
+  "type": "response",
+  "id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y5",
+  "trace_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y5",
+  "body": {
+    "result": { "status": "ok" }
   }
 }
 ```

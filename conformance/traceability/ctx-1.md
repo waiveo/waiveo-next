@@ -42,6 +42,7 @@ One row per requirement ID `contracts/ctx-1.md` defines. Format: `conformance/tr
 | CTX-102 | `contracts/ctx-1.md#http-family` | - | TBD-wave1 |
 | CTX-110 | `contracts/ctx-1.md#actions-family-host--pack-dispatch` | - | TBD-wave1 |
 | CTX-111 | `contracts/ctx-1.md#actions-family-host--pack-dispatch` | - | TBD-wave1 |
+| CTX-112 | `contracts/ctx-1.md#actions-family-host--pack-dispatch` | - | TBD-wave1 |
 | CTX-120 | `contracts/ctx-1.md#deprecation--support-window` | - | TBD-wave1 |
 | CTX-121 | `contracts/ctx-1.md#deprecation--support-window` | - | TBD-wave1 |
 | CTX-122 | `contracts/ctx-1.md#deprecation--support-window` | - | TBD-wave1 |

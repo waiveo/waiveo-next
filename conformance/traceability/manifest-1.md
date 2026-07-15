@@ -43,6 +43,7 @@ One row per requirement ID `contracts/manifest-1.md` defines. Format: `conforman
 | MAN-100 | `contracts/manifest-1.md#actions` | `MAN-020-valid-full-featured` | covered |
 | MAN-101 | `contracts/manifest-1.md#actions` | - | TBD-wave1 |
 | MAN-102 | `contracts/manifest-1.md#actions` | - | TBD-wave1 |
-| MAN-103 | `contracts/manifest-1.md#actions` | - | TBD-wave1 |
+| MAN-103 | `contracts/manifest-1.md#actions` | `MAN-020-valid-full-featured` | covered |
+| MAN-104 | `contracts/manifest-1.md#actions` | - | TBD-wave1 |
 | MAN-110 | `contracts/manifest-1.md#reserved-sections` | - | TBD-wave1 |
 | MAN-111 | `contracts/manifest-1.md#locale-catalogs` | - | TBD-wave1 |

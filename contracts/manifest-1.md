@@ -120,13 +120,15 @@ manifest/1 defines the declarative document every pack ships at its root: identi
 
 ### Actions
 
-**[MAN-100]** The manifest MUST declare `actions` as an array of objects `{name, paramsSchema, capabilityScope, auditClass, automationCallable}`, where `name` is unique within the pack, `paramsSchema` is a JSON Schema object describing accepted parameters, `capabilityScope` names the capability (from `capabilities`) required to invoke it, `auditClass` is one of `read`, `write`, or `privileged`, and `automationCallable` is a boolean (default `false`).
+**[MAN-100]** The manifest MUST declare `actions` as an array of objects `{name, paramsSchema, capabilityScope, auditClass, idempotencyClass, automationCallable}`, where `name` is unique within the pack, `paramsSchema` is a JSON Schema object describing accepted parameters, `capabilityScope` names the capability (from `capabilities`) required to invoke it, `auditClass` is one of `read`, `write`, or `privileged`, `idempotencyClass` is one of `safe-to-retry` or `not-idempotent` (MAN-103), and `automationCallable` is a boolean (default `false`).
 
-**[MAN-101]** Every declared action is auto-surfaced by the host at `/api/v1/packs/{pack}/actions/{name}` and dispatched to the pack's action handler (`ctx/1`); the manifest itself carries no route or transport detail beyond `name`.
+**[MAN-101]** Every declared action is auto-surfaced by the host at `/api/v1/packs/{pack}/actions/{name}` — its management-API route; the manifest itself carries no route or transport detail beyond `name`. An action invoked via that route, or as an `execution: app-service` automation action (MAN-091), is dispatched to the pack's action handler via `ctx/1` (`actions.invoke`, CTX-110); MAN-104 states the exception for an `execution: relay-command` action invoked by automation.
 
 **[MAN-102]** A `paramsSchema` field MAY use the type `asset-ref` for a parameter representing uploaded binary content; the host performs the upload-to-content-store step itself and passes the pack a content-addressed reference — a pack's action handler MUST NOT receive raw upload bytes through any other params field type.
 
 **[MAN-103]** Every action MUST declare an idempotency class, `safe-to-retry` or `not-idempotent`, alongside `auditClass`; a `not-idempotent` action MUST NOT be automatically replayed by the host's retry or job-recovery machinery.
+
+**[MAN-104]** When automation invokes an action declared `execution: relay-command` (`contributes.automation.actions`, MAN-091), the relay executes it directly as a device command; it MUST NOT be dispatched to the pack's `ctx/1` action handler (MAN-101) for that invocation. An `execution: app-service` action invoked by automation, and any action invoked via the management API, both dispatch through MAN-101 as normal.
 
 ### Reserved sections
 
@@ -205,7 +207,7 @@ manifest/1 defines the declarative document every pack ships at its root: identi
     }
   },
   "actions": [
-    { "name": "refresh", "paramsSchema": { "type": "object" }, "capabilityScope": "egress.http", "auditClass": "write", "automationCallable": true }
+    { "name": "refresh", "paramsSchema": { "type": "object" }, "capabilityScope": "egress.http", "auditClass": "write", "idempotencyClass": "safe-to-retry", "automationCallable": true }
   ],
   "drivers": [],
   "sources": [],
@@ -251,6 +253,7 @@ manifest/1 defines the declarative document every pack ships at its root: identi
   "paramsSchema": { "type": "object", "properties": {} },
   "capabilityScope": "egress.http",
   "auditClass": "write",
+  "idempotencyClass": "safe-to-retry",
   "automationCallable": true
 }
 ```
@@ -287,6 +290,7 @@ manifest/1 has no live handshake of its own — negotiation happens at install t
 | `UNKNOWN_DEVICE_MATCH_FORM` | A `devices[].match` entry does not match one of the three recognized forms. | no |
 | `TRIGGER_UNRESOLVABLE` | A `contributes.automation.triggers[].matches` cannot be resolved against the device-class registry or the pack's own declared events. | no |
 | `ACTION_NAME_DUPLICATE` | Two entries in `actions` share a `name`. | no |
+| `ACTION_IDEMPOTENCY_CLASS_INVALID` | An `actions[]` entry omits `idempotencyClass`, or its value is not `safe-to-retry`/`not-idempotent`. | no |
 | `DATAMODEL_VERSION_REGRESSION` | An update declares a `dataModel.version` lower than the currently installed version. | no |
 
 ## Conformance notes
