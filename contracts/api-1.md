@@ -91,6 +91,8 @@ api/1 defines the cross-cutting conventions every operation in `api/openapi.yaml
 
 **[API-044]** The term `scope_node subtree <ulid>` MUST restrict results to resources placed at the named scope node or at any descendant of it. The ordinary equality form applied to the reserved key `scope_node` (`scope_node=<ulid>` / `scope_node==<ulid>`) MUST restrict to that exact node only, with no subtree expansion.
 
+*draft-note: no prior art in this codebase commits to a concrete spelling for the scope-node subtree term — the three-token `scope_node subtree <ulid>` form (reusing the existing bare-word style of `in`/`notin` rather than inventing new punctuation) is this contract's own proposal, not a restatement of something decided elsewhere. The ANDed equality/set-membership/existence terms above it (API-041–043) and the Kubernetes-selector prior art they follow are the spec-mandated part; this one term's exact keyword is open to bikeshedding without touching anything else in this section.*
+
 **[API-045]** A selector string that fails to parse under API-041–044, or names a `scope_node` value that is not a syntactically valid ULID, MUST be rejected with `400 Bad Request` / `code: SELECTOR_INVALID`, identifying the offending term in `detail`.
 
 **[API-046]** This grammar is the platform's sole normative definition of a label selector. Any field elsewhere that accepts a "label selector" string — including a `recipients_selector` parameter and the selector form of an `EntityRef` — MUST accept exactly this grammar, unmodified; a reference to "the platform's label-selector grammar" from another contract resolves to this section.
