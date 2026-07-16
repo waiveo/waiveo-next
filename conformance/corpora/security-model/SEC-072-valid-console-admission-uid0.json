@@ -1,0 +1,20 @@
+{
+  "case_id": "SEC-072-valid-console-admission-uid0",
+  "contract": "security-model/1",
+  "req_ids": ["SEC-072", "SEC-073"],
+  "description": "A connection to the console binding's Unix domain socket from a peer whose effective uid is 0 is admitted without any credential exchange, and the resulting request is attributed to the synthetic system-console principal.",
+  "input": {
+    "channel": "console-binding",
+    "peer_uid": 0,
+    "socket_mode": "0700",
+    "presented_credential": null,
+    "verb": "session.revoke",
+    "params": { "session_id": "01J8Z3K4N5P6Q7R8S9T0V1W2S1" }
+  },
+  "expected": {
+    "admitted": true,
+    "attributed_principal_kind": "system-console",
+    "attributed_principal_credential_row_required": false,
+    "error": null
+  }
+}

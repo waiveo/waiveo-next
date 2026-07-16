@@ -1,0 +1,24 @@
+{
+  "case_id": "SEC-120-invalid-first-boot-claim-outside-window",
+  "contract": "security-model/1",
+  "req_ids": ["SEC-120", "SEC-031"],
+  "description": "A box's one-time setup grant has already been redeemed once (the claim window has closed); a second claim attempt against the setup endpoint — whether replaying the same code or presenting a different one — is refused rather than treated as first-come-first-served, since the setup endpoint is claimable only by redeeming the still-live setup grant.",
+  "input": {
+    "box_claim_state": "claimed",
+    "original_setup_grant": {
+      "grant_id": "01J8Z3K4N5P6Q7R8S9T0V1W2SG",
+      "purpose": "setup",
+      "redemption_mode": "one-time",
+      "redeemed": true
+    },
+    "claim_attempt": {
+      "presented_code": "WRONG-OR-REPLAYED-CODE",
+      "endpoint": "/api/v1/setup/claim"
+    }
+  },
+  "expected": {
+    "claimed": false,
+    "new_owner_principal_created": false,
+    "error": { "code": "GRANT_ALREADY_REDEEMED" }
+  }
+}

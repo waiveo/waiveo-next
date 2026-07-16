@@ -1,0 +1,21 @@
+{
+  "case_id": "SEC-035-invalid-grant-expired-rejected",
+  "contract": "security-model/1",
+  "req_ids": ["SEC-035", "SEC-032"],
+  "description": "A recovery-purpose grant is redeemed after its ~15-minute ttl has elapsed; redemption is refused as expired rather than honored, even though the code itself is otherwise well-formed and matches a real grant record.",
+  "input": {
+    "grant": {
+      "grant_id": "01J8Z3K4N5P6Q7R8S9T0V1W2GX",
+      "purpose": "recovery",
+      "ttl": "PT15M",
+      "issued_at": "2026-07-15T12:00:00Z",
+      "redemption_mode": "one-time"
+    },
+    "redemption_attempted_at": "2026-07-15T12:20:00Z"
+  },
+  "expected": {
+    "redeemed": false,
+    "session_issued": false,
+    "error": { "code": "GRANT_EXPIRED" }
+  }
+}

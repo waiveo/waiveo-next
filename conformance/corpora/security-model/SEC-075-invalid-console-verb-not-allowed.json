@@ -1,0 +1,17 @@
+{
+  "case_id": "SEC-075-invalid-console-verb-not-allowed",
+  "contract": "security-model/1",
+  "req_ids": ["SEC-075", "SEC-076"],
+  "description": "A request admitted over the console binding (uid-0 peer, so SEC-072 admission succeeds) names a verb outside the enumerated console verb set — general resource data access rather than grant issuance/redemption, session/API-key revocation, service status, restore-from-snapshot, or the clock-floor reset — and is refused even though the caller has already proven uid-0.",
+  "input": {
+    "channel": "console-binding",
+    "peer_uid": 0,
+    "verb": "workspace.query",
+    "params": { "collection": "users", "filter": {} }
+  },
+  "expected": {
+    "admitted": false,
+    "executed": false,
+    "error": { "code": "CONSOLE_VERB_NOT_ALLOWED" }
+  }
+}

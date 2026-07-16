@@ -1,0 +1,30 @@
+{
+  "case_id": "SEC-121-valid-factory-reset-destroys-key-material",
+  "contract": "security-model/1",
+  "req_ids": ["SEC-121"],
+  "description": "A factory reset on the one-box self-hosted topology destroys the workspace and its data key, the box key, and the relay's device identity and enrollment certificate/keypair; every principal must re-enroll afterward and the first-boot claim window re-opens.",
+  "input": {
+    "topology": "one-box-self-hosted",
+    "pre_reset_state": {
+      "workspace_present": true,
+      "data_key_present": true,
+      "box_key_present": true,
+      "relay_device_identity_present": true,
+      "relay_enrollment_cert_present": true,
+      "box_claim_state": "claimed"
+    },
+    "action": "factory-reset"
+  },
+  "expected": {
+    "post_reset_state": {
+      "workspace_present": false,
+      "data_key_present": false,
+      "box_key_present": false,
+      "relay_device_identity_present": false,
+      "relay_enrollment_cert_present": false,
+      "box_claim_state": "unclaimed"
+    },
+    "fresh_enrollment_required_for_every_principal": true,
+    "first_boot_claim_window_reopened": true
+  }
+}
