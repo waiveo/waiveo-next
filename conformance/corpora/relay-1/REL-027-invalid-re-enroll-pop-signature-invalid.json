@@ -1,0 +1,41 @@
+{
+  "case_id": "REL-027-invalid-re-enroll-pop-signature-invalid",
+  "contract": "relay/1",
+  "req_ids": ["REL-020", "REL-021", "REL-026", "REL-027", "REL-028", "REL-029"],
+  "description": "A relay's presented certificate serial matches the app peer's issuance record for a known relay_id (REL-021 eligible on serial alone), but the hardened re-enrollment path additionally requires proof of possession of that certificate's own private key. A first renew request omits pop_signature entirely; a second carries a pop_signature computed with an unrelated key, not the presented certificate's own. Both MUST be refused RE_ENROLL_POP_INVALID and MUST NOT issue a certificate, even though REL-021's serial-match check alone would have passed either one.",
+  "input": {
+    "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1",
+    "presented_cert": { "serial": "7a1b2c3d", "not_after": 1745020800000 },
+    "issuance_record_for_relay_id": [
+      { "serial": "7a1b2c3d", "issued_at": 1713398400000, "revoked": false, "public_key": "ed25519:1a2b3c4d5e6f70819293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e80" }
+    ],
+    "app_peer_trusted_now": 1752537600000,
+    "challenge": { "type": "challenge", "body": { "nonce": "c4a1f8e2b3d4c5f60718293a4b5c6d7e" } },
+    "requests": [
+      {
+        "type": "renew",
+        "id": "01J8Z4K4N5P6Q7R8S9T0V1W3D1",
+        "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1",
+        "body": { "csr": "-----BEGIN CERTIFICATE REQUEST-----\nMIIBazCB4wIBADAxMS8...\n-----END CERTIFICATE REQUEST-----" }
+      },
+      {
+        "type": "renew",
+        "id": "01J8Z4K4N5P6Q7R8S9T0V1W3D2",
+        "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1",
+        "body": {
+          "csr": "-----BEGIN CERTIFICATE REQUEST-----\nMIIBazCB4wIBADAxMS8...\n-----END CERTIFICATE REQUEST-----",
+          "pop_signature": "ed25519-sig-over-nonce-and-csr-signed-with-an-unrelated-key-not-the-presented-certs-key"
+        }
+      }
+    ]
+  },
+  "expected": {
+    "eligible_by_serial": true,
+    "responses": [
+      { "type": "error", "id": "01J8Z4K4N5P6Q7R8S9T0V1W3D1", "code": "RE_ENROLL_POP_INVALID", "message": "proof-of-possession signature missing" },
+      { "type": "error", "id": "01J8Z4K4N5P6Q7R8S9T0V1W3D2", "code": "RE_ENROLL_POP_INVALID", "message": "proof-of-possession signature did not verify against the certificate on record for this serial" }
+    ],
+    "certificate_issued": false,
+    "relay_id_unchanged": true
+  }
+}

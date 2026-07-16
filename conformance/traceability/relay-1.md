@@ -10,6 +10,7 @@ One row per requirement ID `contracts/relay-1.md` defines. Format: `conformance/
 | REL-004 | `contracts/relay-1.md#versioning--transport-surface` | - | TBD-wave1 |
 | REL-005 | `contracts/relay-1.md#versioning--transport-surface` | `REL-030-valid-hello-negotiate-channel-binding` | covered |
 | REL-006 | `contracts/relay-1.md#versioning--transport-surface` | `REL-110-valid-device-candidate-and-command` | covered |
+| REL-007 | `contracts/relay-1.md#versioning--transport-surface` | - | TBD-wave1 |
 | REL-010 | `contracts/relay-1.md#enrollment` | `REL-010-valid-fresh-enroll` | covered |
 | REL-011 | `contracts/relay-1.md#enrollment` | `REL-010-valid-fresh-enroll` | covered |
 | REL-012 | `contracts/relay-1.md#enrollment` | `REL-010-valid-fresh-enroll` | covered |
@@ -26,6 +27,10 @@ One row per requirement ID `contracts/relay-1.md` defines. Format: `conformance/
 | REL-023 | `contracts/relay-1.md#expired-certificate-re-enrollment` | `REL-020-valid-re-enroll-after-cert-expiry` | covered |
 | REL-024 | `contracts/relay-1.md#expired-certificate-re-enrollment` | `REL-020-valid-re-enroll-after-cert-expiry` | covered |
 | REL-025 | `contracts/relay-1.md#expired-certificate-re-enrollment` | `REL-020-valid-re-enroll-after-cert-expiry` | covered |
+| REL-026 | `contracts/relay-1.md#expired-certificate-re-enrollment` | `REL-027-invalid-re-enroll-pop-signature-invalid` | covered |
+| REL-027 | `contracts/relay-1.md#expired-certificate-re-enrollment` | `REL-027-invalid-re-enroll-pop-signature-invalid` | covered |
+| REL-028 | `contracts/relay-1.md#expired-certificate-re-enrollment` | `REL-027-invalid-re-enroll-pop-signature-invalid` | covered |
+| REL-029 | `contracts/relay-1.md#expired-certificate-re-enrollment` | `REL-027-invalid-re-enroll-pop-signature-invalid` | covered |
 | REL-030 | `contracts/relay-1.md#hello--negotiate` | `REL-030-valid-hello-negotiate-channel-binding` | covered |
 | REL-031 | `contracts/relay-1.md#hello--negotiate` | `REL-030-valid-hello-negotiate-channel-binding` | covered |
 | REL-032 | `contracts/relay-1.md#hello--negotiate` | `REL-030-valid-hello-negotiate-channel-binding` | covered |
@@ -36,6 +41,8 @@ One row per requirement ID `contracts/relay-1.md` defines. Format: `conformance/
 | REL-037 | `contracts/relay-1.md#hello--negotiate` | - | TBD-wave1 |
 | REL-038 | `contracts/relay-1.md#hello--negotiate` | `REL-030-valid-hello-negotiate-channel-binding` | covered |
 | REL-039 | `contracts/relay-1.md#hello--negotiate` | `REL-030-valid-hello-negotiate-channel-binding` | covered |
+| REL-040 | `contracts/relay-1.md#hello--negotiate` | - | TBD-wave1 |
+| REL-041 | `contracts/relay-1.md#hello--negotiate` | - | TBD-wave1 |
 | REL-050 | `contracts/relay-1.md#desired-state-pull` | `REL-056-valid-generation-apply-atomic-swap` | covered |
 | REL-051 | `contracts/relay-1.md#desired-state-pull` | `REL-056-valid-generation-apply-atomic-swap` | covered |
 | REL-052 | `contracts/relay-1.md#desired-state-pull` | `REL-056-valid-generation-apply-atomic-swap`, `REL-070-valid-generation-reapply-idempotent-noop` | covered |
@@ -57,6 +64,7 @@ One row per requirement ID `contracts/relay-1.md` defines. Format: `conformance/
 | REL-072 | `contracts/relay-1.md#idempotent-apply--enrollment-anchored-trust` | `REL-071-invalid-wrong-peer-key-snapshot-rejected` | covered |
 | REL-073 | `contracts/relay-1.md#idempotent-apply--enrollment-anchored-trust` | - | TBD-wave1 |
 | REL-074 | `contracts/relay-1.md#idempotent-apply--enrollment-anchored-trust` | - | TBD-wave1 |
+| REL-075 | `contracts/relay-1.md#idempotent-apply--enrollment-anchored-trust` | - | TBD-wave1 |
 | REL-090 | `contracts/relay-1.md#telemetry-upstream` | `REL-090-valid-telemetry-overflow-loss-marker` | covered |
 | REL-091 | `contracts/relay-1.md#telemetry-upstream` | `REL-090-valid-telemetry-overflow-loss-marker` | covered |
 | REL-092 | `contracts/relay-1.md#telemetry-upstream` | `REL-090-valid-telemetry-overflow-loss-marker` | covered |
@@ -89,6 +97,7 @@ One row per requirement ID `contracts/relay-1.md` defines. Format: `conformance/
 | REL-133 | `contracts/relay-1.md#clock-trust` | `REL-133-valid-clock-hint-bounded` | covered |
 | REL-134 | `contracts/relay-1.md#clock-trust` | - | TBD-wave1 |
 | REL-135 | `contracts/relay-1.md#clock-trust` | - | TBD-wave1 |
+| REL-136 | `contracts/relay-1.md#clock-trust` | `REL-136-valid-coldboot-skew-tolerant-connect` | covered |
 | REL-140 | `contracts/relay-1.md#gateway-posture` | - | TBD-wave1 |
 | REL-141 | `contracts/relay-1.md#gateway-posture` | - | TBD-wave1 |
 | REL-142 | `contracts/relay-1.md#gateway-posture` | - | TBD-wave1 |

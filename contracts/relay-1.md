@@ -24,6 +24,7 @@ relay/1 defines the protocol between an enrolled relay and its app peer: connect
 - **Generation** — as defined in `rules/1`: a versioned, hash-identified snapshot of compiled edge rules and other desired state. `rules/1` defers this snapshot's own transport, signing, and pull mechanics to this contract.
 - **Desired state** — the complete content of one generation, as the consolidated snapshot shape below enumerates it (Desired-state snapshot sections).
 - **Enrollment** — the process by which a relay obtains its per-relay certificate and is bound to a site (Enrollment).
+- **Proof-of-possession signature** — a signature computed with a certificate's own private key over a value binding a fresh, single-use challenge nonce to a specific request, proving the signer holds that certificate's private key rather than merely having presented or observed the certificate's own public serial (Expired-certificate re-enrollment).
 - **Channel-binding signature** — a signature the relay computes over an app-peer-supplied value at connection time, proving peer identity at the application layer independent of the transport's own mutual-TLS handshake (Hello / negotiate).
 - **Pairing grant** — a short-lived, redemption-scoped authorization a relay redeems on a screen's behalf (Player-credential authority); minted by the platform's own grant mechanism, out of this contract's scope beyond the record shape it rides in desired state.
 - **Candidate record** — a discovered-but-not-yet-adopted device observation the relay reports upstream (Device plane).
@@ -47,11 +48,13 @@ relay/1 defines the protocol between an enrolled relay and its app peer: connect
 
 **[REL-006]** A request/response-shaped relay/1 message pair MUST share one correlation `id`. Where a request represents work traceable to a single originating operation elsewhere in the platform — a device command dispatched from an operator action, for instance — it MUST carry that operation's own `trace_id`, so one identifier correlates the operation across the app peer, the relay, and any durable record the operation eventually produces.
 
+**[REL-007]** A typed refusal this contract's Error taxonomy defines, when not already carried as the `error` field of an existing ack message (e.g. `state.ack`, `device.command_result`), MUST be sent as a top-level error frame: `{type: "error", id, trace_id, code, message}` — `id` the correlation id of the request being refused, when the refused exchange has one; `trace_id` that request's own `trace_id`, when it carried one (REL-006); `code` and `message` exactly as the Error taxonomy entry being raised defines. This shape is aligned with `ctx/1`'s own frame envelope (`ctx/1` CTX-003).
+
 ### Enrollment
 
 **[REL-010]** A relay holding no valid certificate for its app peer MUST reach enrollment only through a distinct bootstrap exchange authenticated by possession of a claim credential (REL-011) — server-authenticated TLS, since the relay does not yet hold a client certificate to authenticate itself with. This is the sole exchange in this contract that proceeds without an already-enrolled identity.
 
-**[REL-011]** A claim credential MUST carry at least `claim_token`. When the relay and its app peer are not co-located, the claim credential MUST additionally carry `app_endpoint` and `trust_pin` — the address the relay dials and the server-certificate trust datum it validates that address against before completing enrollment. A co-located (loopback) deployment MAY leave both implicit.
+**[REL-011]** A claim credential MUST carry at least `claim_token`. When the relay and its app peer are not co-located, the claim credential MUST additionally carry `app_endpoint` and `trust_pin` — the address the relay dials and the server-certificate trust datum it validates that address against before completing enrollment. A co-located (loopback) deployment MAY leave both implicit. This contract inherits, rather than itself secures, the trust of whatever out-of-band channel delivers a claim credential's `claim_token` and `trust_pin` to a relay ahead of enrollment (REL-010) — a claim credential intercepted or substituted in transit before it reaches the relay is indistinguishable, from this contract's own bootstrap exchange, from a legitimately delivered one.
 
 **[REL-012]** The enrollment request MUST carry `{claim_token, csr}`, where `csr` is a certificate signing request over a keypair the relay generates and retains the private half of. On success, the app peer's response MUST carry `{relay_id, cert, not_before, not_after, desired_state_verification_key}` — `relay_id` is this relay's permanent identity going forward, `cert` is the issued per-relay certificate, and `desired_state_verification_key` is the app peer's own public key for verifying every subsequent desired-state snapshot (Idempotent apply & enrollment-anchored trust).
 
@@ -71,7 +74,7 @@ relay/1 defines the protocol between an enrolled relay and its app peer: connect
 
 ### Expired-certificate re-enrollment
 
-**[REL-020]** A relay presenting a certificate that has expired, but was never revoked, for a known `relay_id` MAY re-enroll without a fresh claim credential (REL-011), provided REL-021 and REL-022 both hold. Completion of this path MAY proceed without operator interaction, subject to a deployment-configured policy governing whether automatic completion is permitted for a given relay.
+**[REL-020]** A relay presenting a certificate that has expired, but was never revoked, for a known `relay_id` MAY re-enroll without a fresh claim credential (REL-011), provided REL-021, REL-022, and this path's proof-of-possession requirement (REL-026–029) all hold. Completion of this path MAY proceed without operator interaction, subject to a deployment-configured policy governing whether automatic completion is permitted for a given relay.
 
 **[REL-021]** The app peer MUST evaluate eligibility for this path by checking the presented certificate's serial against its own issuance record for that `relay_id` — never against a revocation list, from which an old-enough revoked entry may already have aged out. The presented certificate MUST be the most-recently-issued certificate on record for that `relay_id`.
 
@@ -83,6 +86,14 @@ relay/1 defines the protocol between an enrolled relay and its app peer: connect
 
 **[REL-025]** This path MUST be rate-limited per `relay_id` (`RE_ENROLL_RATE_LIMITED`, Error taxonomy once exceeded) — bounding how often it may be exercised within a given window — so it cannot be used to force repeated identity churn against a single relay identity.
 
+**[REL-026]** Before granting re-enrollment through this path, the app peer's bootstrap listener MUST issue a fresh, single-use challenge nonce of at least 128 bits, unique to that connection attempt — the same `challenge` message shape REL-030 defines for a post-enrollment connection, sent instead over this path's bootstrap exchange (REL-010).
+
+**[REL-027]** The `renew` request presented through this path MUST carry `pop_signature`: proof that the relay holds the private key of the certificate it is presenting for re-enrollment (REL-021), computed with that certificate's own private key — never the fresh keypair `csr` was generated from — over a value that binds together the challenge nonce (REL-026) and that same request's own `csr`, so a captured signature cannot be replayed against a substituted CSR.
+
+**[REL-028]** The app peer MUST verify `pop_signature` against the public key on record for the presented certificate's serial in its own issuance record (REL-021) before completing re-enrollment through this path. A presented serial that matches the issuance record is necessary but never sufficient by itself: REL-021's serial check and this signature verification MUST both pass.
+
+**[REL-029]** A re-enrollment attempt through this path whose `pop_signature` is absent, malformed, or fails REL-028's verification MUST be refused with a typed error (`RE_ENROLL_POP_INVALID`, Error taxonomy) in place of `renew-ack` — regardless of whether REL-021 and REL-022's own checks would otherwise have passed.
+
 ### Hello / negotiate
 
 **[REL-030]** Immediately upon opening an authenticated post-enrollment connection (REL-003), before either peer sends any other message, the app peer MUST send a `challenge` message carrying a fresh, single-use nonce of at least 128 bits, unique to that connection attempt.
@@ -90,8 +101,6 @@ relay/1 defines the protocol between an enrolled relay and its app peer: connect
 **[REL-031]** The relay's `hello` — the first message it sends on that connection — MUST carry `{relay_id, protocol_version, features, site_binding, subnet_metadata, clock_state, channel_binding_signature}`.
 
 **[REL-032]** `channel_binding_signature` MUST be a signature, computed with the relay's own enrollment private key (Enrollment), over the nonce the app peer supplied in `challenge` (REL-030). The app peer MUST verify this signature against the relay's enrollment-learned public key before accepting `hello`, and MUST refuse the connection (`CHANNEL_BINDING_INVALID`, Error taxonomy) on verification failure — regardless of whether the connection's own mutual-TLS handshake already succeeded. Transport-level authentication alone MUST NOT be treated as sufficient proof of peer identity.
-
-*draft-note: whether the challenge nonce is a plain per-connection random value or is itself derived from the TLS channel's own exporter keying material (binding the signature cryptographically to that exact TLS channel, not merely to a value that rode over it) is not fixed by any normative source yet; either satisfies REL-030–032 as written, and the stronger (exporter-derived) form is proposed for confirmation before this contract leaves draft.*
 
 **[REL-033]** `protocol_version` MUST be a `major.minor` string. If the app peer implements no minor of the relay's declared major, this is a **major mismatch**: `hello` MUST be refused with a typed error (`PROTOCOL_VERSION_UNSUPPORTED`, Error taxonomy) in place of `hello-ack`, and the connection closed. Otherwise, `hello-ack`'s `negotiated_version` MUST be the highest minor the app peer implements that is `<=` the relay's declared minor.
 
@@ -107,11 +116,15 @@ relay/1 defines the protocol between an enrolled relay and its app peer: connect
 
 **[REL-039]** The app peer's `hello-ack` MUST carry `{relay_id, negotiated_version, features, site_binding, deprecated}`, where `deprecated` is a map of message-type name to `{deprecated_in, removed_in, message}` for every message type in the negotiated version currently deprecated (possibly empty). Neither peer may send any message other than `challenge`/`hello`/`hello-ack` before this exchange completes; a peer that does MUST be treated as a protocol violation (`PROTOCOL_VIOLATION`, Error taxonomy) and the connection closed.
 
+**[REL-040]** The challenge nonce REL-030 requires MUST be derived from the TLS exporter keying material of that specific connection (RFC 5705; the TLS 1.3 exporter-derived channel-binding construction, RFC 9266) rather than an application-level value chosen independently of the TLS session. A plain per-connection random value not derived this way MUST NOT be used to satisfy REL-030: deriving the nonce from the exporter is what lets `channel_binding_signature` (REL-032) cryptographically bind to the exact TLS channel `hello` arrives on, rather than to a value that merely rode over it, which a TLS-terminating intermediary could otherwise relay unchanged.
+
+**[REL-041]** The app peer MUST look up the enrollment-learned public key it verifies `channel_binding_signature` against (REL-032) by the connection's own mTLS-authenticated client-certificate identity (REL-003) — never by the self-asserted `hello.relay_id` (REL-031). If the connection's mTLS-authenticated identity and `hello.relay_id` do not name the same relay, the app peer MUST refuse the connection with a typed error (`RELAY_IDENTITY_MISMATCH`, Error taxonomy) rather than proceed using either identity alone.
+
 ### Desired-state pull
 
 **[REL-050]** Desired state moves downstream by pull only: the relay requests it with a `state.pull` message; the app peer never sends an unsolicited snapshot. `state.pull` MAY carry `since_generation` — the relay's own last-applied generation number — letting the app peer answer efficiently when nothing has changed.
 
-**[REL-051]** The app peer's response to `state.pull` MUST be exactly one of: `state.unchanged {generation}`, when `since_generation` already names the current generation; or `state.snapshot {generation, hash, sections}` (Desired-state snapshot sections), otherwise.
+**[REL-051]** The app peer's response to `state.pull` MUST be exactly one of: `state.unchanged {generation}`, when `since_generation` already names the current generation; or `state.snapshot {generation, hash, signature, sections}` (Desired-state snapshot sections; `signature`'s signed scope is REL-075), otherwise. `state.snapshot` MAY additionally carry `signed_with_key`, identifying which key the signature was computed with, for diagnostic purposes only (REL-075).
 
 **[REL-052]** `generation` MUST be a per-relay monotonically increasing integer, assigned by the app peer. A relay MUST NOT accept a `state.snapshot` whose `generation` is lower than its own last-applied generation. A `generation` equal to its own last-applied generation — a redelivery of an already-applied snapshot, for instance after a lost acknowledgment — MUST be accepted and handled under REL-070's no-op rule, exactly as a higher `generation` carrying identical `sections` content is.
 
@@ -129,7 +142,7 @@ relay/1 defines the protocol between an enrolled relay and its app peer: connect
 
 **[REL-061]** `screen_programs` MUST be an array of `{screen_id, program_revision, content}`, where `content` is an array of signed content references `{asset_ref, url, expires_at}` — `asset_ref` a content-addressed `sha256:` URI in the same form `ctx/1`'s `assets` family uses. This contract carries these references opaquely from app peer to relay to screen; it does not define how a screen resolves or fetches them (`player/1`, Scope).
 
-**[REL-062]** `edge_rules` MUST be `{rules_minor_version, rules}` — `rules_minor_version` the `rules/1` minor this generation was compiled against (`rules/1` Negotiation), `rules` an array of `rules/1` CompiledRuleEntry objects (`rules/1` Wire shapes), unmodified and unreinterpreted by this contract. A relay presented a generation whose `rules_minor_version` names a `rules/1` major it does not implement MUST refuse to apply that generation (`RULES_MAJOR_UNSUPPORTED`, Error taxonomy) rather than evaluate it under a mismatched vocabulary — the refusal `rules/1`'s own Negotiation section requires an executor to make, carried out here at this contract's transport layer.
+**[REL-062]** `edge_rules` MUST be `{rules_minor_version, rules}` — `rules_minor_version` a `major.minor` string (mirroring REL-033's `protocol_version` format) naming the `rules/1` minor this generation was compiled against (`rules/1` Negotiation), `rules` an array of `rules/1` CompiledRuleEntry objects (`rules/1` Wire shapes), unmodified and unreinterpreted by this contract. A relay presented a generation whose `rules_minor_version` major component names a `rules/1` major it does not implement MUST refuse to apply that generation (`RULES_MAJOR_UNSUPPORTED`, Error taxonomy) rather than evaluate it under a mismatched vocabulary — the comparison is against the major component only, exactly as REL-033's own protocol-version negotiation compares majors before minors; the refusal `rules/1`'s own Negotiation section requires an executor to make, carried out here at this contract's transport layer.
 
 **[REL-063]** `device_inventory` MUST be an object `{devices, pack_match_patterns}`. `devices` MUST be an array of adopted-device entries, each `{device_id, driver, native_id, poll_cadence_seconds, entities}`, where `entities` is an array of `{entity_id, device_class, enabled, hidden, display_name, category}` — `category` one of `primary` or `diagnostic`. A `device_id`'s identity is the tuple `(site, driver, native_id)`: re-adopting the same physical device for the same site under a different relay MUST resolve to the same `device_id`.
 
@@ -154,6 +167,8 @@ relay/1 defines the protocol between an enrolled relay and its app peer: connect
 **[REL-073]** The relay's persisted `desired_state_verification_key` MUST be stored beside its persisted `{generation, hash}` (REL-055), so that both survive a power cycle and remain usable for offline verification without contacting the app peer.
 
 **[REL-074]** A relay MUST discard its previously persisted `desired_state_verification_key` and adopt the one delivered by a fresh enrollment response (REL-012) whenever re-enrollment occurs (REL-017) — a snapshot signed under a key from before that re-enrollment MUST NOT verify against the newly persisted key and MUST be rejected under REL-072.
+
+**[REL-075]** `state.snapshot`'s `signature` field MUST be present on every snapshot and MUST be computed over a canonicalization that includes `generation` together with `hash` — `{generation, hash, ...}`, never `hash` alone — so that a snapshot's signature is bound to the specific generation number it was issued under: relabeling an old, validly-signed snapshot under a higher `generation` changes the signed content and fails REL-071's verification. `signed_with_key`, when present, identifies which key the app peer used only for diagnostic purposes; it MUST NOT be treated as authoritative in place of REL-071's own verification against the relay's persisted `desired_state_verification_key`.
 
 ### Telemetry upstream
 
@@ -235,13 +250,15 @@ relay/1 defines the protocol between an enrolled relay and its app peer: connect
 
 **[REL-135]** A relay's clock floor and `clock_state` MUST be evaluated independently of certificate validity for the purposes of Expired-certificate re-enrollment (REL-023) — an untrusted or stale relay clock MUST NOT block that path, since eligibility there is decided entirely from the app peer's own trusted time and issuance record.
 
+**[REL-136]** A relay whose own `clock_state` is `untrusted` at connection time — including at cold boot, before any clock floor has ever been persisted (REL-130) — MUST still be able to complete the mutually authenticated connection REL-003 requires: the relay's own validation of the app peer's server certificate MUST be skew-tolerant, either applying a bounded skew grace to that certificate's `notBefore`/`notAfter` window or deferring temporal validation of it entirely until the relay's own clock becomes trusted (Clock trust) — relying meanwhile on the app peer's certificate matching the trust anchor established at enrollment (REL-003) to establish the app peer's identity, independent of temporal validity. This MUST hold identically for a loopback connection and for a relay dialing outbound to its app peer (REL-003), and MUST let a clock-less relay complete the handshake, reach `hello`, report `clock_state: untrusted` (REL-038), and receive a `clock.hint` (REL-133) — the handshake MUST NOT fail solely because the relay's own clock cannot yet validate the peer certificate's temporal window.
+
 ### Gateway posture
 
 **[REL-140]** A relay/1 message MUST NOT carry asset bytes, and this contract defines no verb or field for a relay to fetch, cache, or serve content bytes on the app peer's behalf. Every content reference this contract carries (`screen_programs`, REL-061) is a signed pointer a screen resolves directly against its own content origin — the relay is never in that data path.
 
 **[REL-141]** This contract defines no storage-capacity negotiation, no lease-pinned eviction, and no disk-fits-check message of any kind — a relay has no asset store for the app peer to negotiate space in.
 
-**[REL-142]** The relay's own durable local storage under this contract is limited to: its enrollment identity and certificate material, its persisted last-applied `{generation, hash}` and `desired_state_verification_key`, and its bounded telemetry buffer (Telemetry upstream). This contract defines no other durable local state for a relay to hold.
+**[REL-142]** The relay's own durable local storage under this contract is limited to: its enrollment identity and certificate material — including the private key of its most-recently-issued certificate, which the relay MUST retain even after that certificate expires (never discard it at expiry) so it remains able to prove possession of it at a later Expired-certificate re-enrollment (REL-027), until a fresh enrollment or a completed renewal supersedes it — its persisted last-applied `{generation, hash}` and `desired_state_verification_key`, and its bounded telemetry buffer (Telemetry upstream). This contract defines no other durable local state for a relay to hold.
 
 **[REL-143]** A `box.vitals` entry's low-disk signal (an `events/1`-defined field this contract merely carries, REL-095) reports on the health of the relay's own small operational storage (REL-142), never on any content-store capacity — because none exists under this contract to report on.
 
@@ -256,6 +273,17 @@ relay/1 defines the protocol between an enrolled relay and its app peer: connect
 **[REL-153]** A device's own identity (`device_id`, REL-063) is scoped to `(site, driver, native_id)`, never to the relay that happens to currently report it — re-homing an already-adopted device to a different relay serving the same site MUST resolve to the same `device_id`; the app peer's own records reflect only which relay most recently reported it.
 
 ## Wire shapes
+
+```json
+// ErrorFrame — the shape for a typed refusal not carried in an existing ack (REL-007; aligned with ctx/1 CTX-003)
+{
+  "type": "error",
+  "id": "01J8Z4K4N5P6Q7R8S9T0V1W3E0",
+  "trace_id": "01J8Z4K4N5P6Q7R8S9T0V1W3E0",
+  "code": "PROTOCOL_VIOLATION",
+  "message": "a message other than challenge/hello/hello-ack was sent before the handshake completed"
+}
+```
 
 ```json
 // Claim credential (delivered to a relay ahead of enrollment, out of band — REL-011; non-loopback form shown)
@@ -294,7 +322,7 @@ relay/1 defines the protocol between an enrolled relay and its app peer: connect
 ```
 
 ```json
-// RenewRequest / RenewResponse (in-band, over the authenticated connection, REL-015; Expired-certificate re-enrollment presents this same shape over the bootstrap exchange above instead of in-band)
+// RenewRequest / RenewResponse (in-band, over the authenticated connection, REL-015 — no pop_signature required; the connection's own mTLS handshake already proves possession)
 { "type": "renew", "id": "01J8Z4K4N5P6Q7R8S9T0V1W3A2", "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1", "body": { "csr": "-----BEGIN CERTIFICATE REQUEST-----\nMIIBaz...\n-----END CERTIFICATE REQUEST-----" } }
 ```
 
@@ -303,7 +331,25 @@ relay/1 defines the protocol between an enrolled relay and its app peer: connect
 ```
 
 ```json
-// Challenge (app peer -> relay, first message on a fresh authenticated connection, REL-030)
+// RenewRequest over the bootstrap exchange (Expired-certificate re-enrollment, REL-020, REL-027 — pop_signature is required here, computed with the presented expired certificate's own private key over {nonce, csr})
+{
+  "type": "renew",
+  "id": "01J8Z4K4N5P6Q7R8S9T0V1W3C1",
+  "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1",
+  "body": {
+    "csr": "-----BEGIN CERTIFICATE REQUEST-----\nMIIBaz...\n-----END CERTIFICATE REQUEST-----",
+    "pop_signature": "ed25519-sig-over-nonce-c4a1f8e2b3d4c5f60718293a4b5c6d7e-and-csr-signed-with-presented-certs-private-key"
+  }
+}
+```
+
+```json
+// RenewResponse — rejected (REL-029, pop_signature absent or invalid)
+{ "type": "error", "id": "01J8Z4K4N5P6Q7R8S9T0V1W3C1", "trace_id": "01J8Z4K4N5P6Q7R8S9T0V1W3C1", "code": "RE_ENROLL_POP_INVALID", "message": "proof-of-possession signature missing or did not verify against the certificate on record for this serial" }
+```
+
+```json
+// Challenge (app peer -> relay, first message on a fresh authenticated connection, REL-030; the app peer's bootstrap listener reuses this same shape for Expired-certificate re-enrollment's proof-of-possession nonce, REL-026)
 { "type": "challenge", "body": { "nonce": "b3f1c2a9d4e5f60718293a4b5c6d7e8f" } }
 ```
 
@@ -350,6 +396,8 @@ relay/1 defines the protocol between an enrolled relay and its app peer: connect
   "body": {
     "generation": 42,
     "hash": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+    "signature": "ed25519-sig-over-generation-42-and-hash-sha256-2cf24dba-signed-with-app-peers-desired-state-signing-key",
+    "signed_with_key": "ed25519:8f14e45fceea4b3e8c1e1a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1",
     "sections": {
       "screen_programs": [
         {
@@ -466,7 +514,7 @@ relay/1 defines the protocol between an enrolled relay and its app peer: connect
 - **Version selection** — a relay declares its `major.minor` in `hello` (`protocol_version`, REL-031/033); the app peer negotiates down within a shared major (REL-033) or refuses on a major mismatch. There is no separate transport-level version header — `protocol_version` is the sole signal.
 - **N−1 compatibility** — an app peer implementing minor `M` MUST also implement minor `M-1` (REL-034), so a relay running one minor behind never sees a spurious major-mismatch refusal.
 - **Capability flags** — `features` (REL-035) is the sole additive-capability signal; an app peer silently drops a flag it does not recognize rather than refusing the connection, so a relay running a newer minor than its app peer degrades gracefully to the flags both sides share.
-- **Channel-binding** — every connection re-proves relay identity at the application layer (REL-030–032) independent of the transport's own mutual-TLS handshake; this is re-established on every fresh connection, never cached across a reconnect.
+- **Channel-binding** — every connection re-proves relay identity at the application layer (REL-030–032, REL-040–041) independent of the transport's own mutual-TLS handshake; the binding nonce is derived from that connection's own TLS exporter keying material (REL-040), and the verification key is looked up by the connection's mTLS-authenticated identity, never the self-asserted `hello.relay_id` (REL-041); this is re-established on every fresh connection, never cached across a reconnect.
 - **Desired-state trust** — a relay verifies every snapshot against the `desired_state_verification_key` learned at enrollment (REL-012, REL-071), never against the platform's software-artifact trust bundle; this key is re-anchored only by a fresh enrollment or re-enrollment event (REL-017, REL-074), never by an ordinary desired-state pull.
 - **Offline continuity** — a relay's own persisted last-applied generation (REL-055), persisted verification key (REL-073), and clock floor (REL-130) are together what let it keep evaluating and enforcing correctly across a restart or an extended disconnection, without contacting its app peer.
 
@@ -478,7 +526,9 @@ relay/1 defines the protocol between an enrolled relay and its app peer: connect
 | `CERT_REVOKED` | The certificate presented at connect has been revoked (REL-016). | no — re-enroll |
 | `CERT_EXPIRED_INELIGIBLE` | An expired certificate was presented but does not qualify for Expired-certificate re-enrollment (REL-021/022) — superseded, revoked, or not the most-recently-issued certificate on record. | no — a fresh claim credential is required |
 | `RE_ENROLL_RATE_LIMITED` | Expired-certificate re-enrollment (REL-025) was attempted more often than this `relay_id`'s bound permits. | yes — after the bound's window elapses |
+| `RE_ENROLL_POP_INVALID` | The `renew` request presented through Expired-certificate re-enrollment lacked a proof-of-possession signature that verifies for the presented certificate's private key (REL-027–029). | no — a fresh claim credential is required |
 | `CHANNEL_BINDING_INVALID` | `hello`'s `channel_binding_signature` did not verify against the relay's enrollment-learned public key (REL-032). | no — reconnect and retry the handshake |
+| `RELAY_IDENTITY_MISMATCH` | `hello.relay_id` does not name the same relay as the connection's own mTLS-authenticated client-certificate identity (REL-041). | no — reconnect and retry the handshake |
 | `PROTOCOL_VERSION_UNSUPPORTED` | No minor of the relay's declared major is implemented by the app peer (REL-033). | no |
 | `PROTOCOL_VIOLATION` | A message other than `challenge`/`hello`/`hello-ack` was sent before the handshake completed, or another message-ordering rule was broken (REL-039). | no |
 | `SNAPSHOT_SIGNATURE_INVALID` | A `state.snapshot` did not verify against the relay's persisted `desired_state_verification_key` (REL-071/072). | yes — after re-pulling; a persistent failure indicates the relay needs re-enrollment |

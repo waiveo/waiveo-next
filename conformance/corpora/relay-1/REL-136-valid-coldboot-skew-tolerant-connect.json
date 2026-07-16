@@ -1,0 +1,34 @@
+{
+  "case_id": "REL-136-valid-coldboot-skew-tolerant-connect",
+  "contract": "relay/1",
+  "req_ids": ["REL-003", "REL-038", "REL-130", "REL-133", "REL-136"],
+  "description": "A relay cold-boots with no persisted clock floor and a local clock reading a few seconds after the Unix epoch, so a naive temporal check of the app peer's server certificate against that clock would fail outright (the certificate's real notBefore is decades later). Because the relay's own clock_state is untrusted, it applies skew-tolerant/deferred validation to the app peer's certificate — relying on the trust anchor established at enrollment for identity instead of the certificate's temporal window — completes the handshake, and reaches hello reporting clock_state untrusted; a subsequent clock.hint then adjusts its runtime clock but not its persisted floor.",
+  "input": {
+    "relay_persisted_floor": null,
+    "relay_local_clock_reading": 5000,
+    "relay_dials_outbound": true,
+    "app_peer_server_cert": { "not_before": 1719792000000, "not_after": 1782950400000 },
+    "app_peer_cert_matches_enrollment_trust_anchor": true,
+    "hello": {
+      "type": "hello",
+      "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1",
+      "body": {
+        "protocol_version": "1.0",
+        "features": [],
+        "site_binding": { "scope_node": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5", "tz": "America/Chicago", "lat": 41.8781, "long": -87.6298 },
+        "subnet_metadata": { "advertised_address": "192.168.50.12" },
+        "clock_state": { "state": "untrusted", "source": "cold_boot" },
+        "channel_binding_signature": "ed25519-sig-over-tls-exporter-derived-nonce-signed-with-relay-enrollment-key"
+      }
+    },
+    "clock_hint": { "type": "clock.hint", "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1", "body": { "ts": 1752537600000 } }
+  },
+  "expected": {
+    "peer_cert_validation": "skew_tolerant_deferred",
+    "handshake_completed": true,
+    "connection_refused": false,
+    "hello_accepted": true,
+    "hello_ack_sent": true,
+    "clock_hint_result": { "runtime_clock_adjusted": true, "persisted_floor_advanced": false }
+  }
+}
