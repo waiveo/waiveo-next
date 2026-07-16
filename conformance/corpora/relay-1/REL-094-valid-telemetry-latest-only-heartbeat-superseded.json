@@ -6,14 +6,14 @@
   "input": {
     "buffered_entries_same_device": [
       { "seq": 2001, "schema": "device.heartbeat", "payload": { "device_id": "01J8Z3K4N5P6Q7R8S9T0V1W2YA", "power_state": "on", "app_state": "idle", "now_playing_content_id": null } },
-      { "seq": 2002, "schema": "device.heartbeat", "payload": { "device_id": "01J8Z3K4N5P6Q7R8S9T0V1W2YA", "power_state": "on", "app_state": "playing", "now_playing_content_id": "01J8Z3K4N5P6Q7R8S9T0V1W2X6" } }
+      { "seq": 2002, "schema": "device.heartbeat", "payload": { "device_id": "01J8Z3K4N5P6Q7R8S9T0V1W2YA", "power_state": "on", "app_state": "app", "now_playing_content_id": "01J8Z3K4N5P6Q7R8S9T0V1W2X6" } }
     ],
     "telemetry_push": {
       "type": "telemetry.push",
       "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1",
       "body": {
         "entries": [
-          { "seq": 2002, "schema": "device.heartbeat", "payload": { "device_id": "01J8Z3K4N5P6Q7R8S9T0V1W2YA", "power_state": "on", "app_state": "playing", "now_playing_content_id": "01J8Z3K4N5P6Q7R8S9T0V1W2X6" } }
+          { "seq": 2002, "schema": "device.heartbeat", "payload": { "device_id": "01J8Z3K4N5P6Q7R8S9T0V1W2YA", "power_state": "on", "app_state": "app", "now_playing_content_id": "01J8Z3K4N5P6Q7R8S9T0V1W2X6" } }
         ],
         "loss_markers": []
       }
@@ -24,6 +24,6 @@
     "seq_2001_pushed": false,
     "loss_marker_generated": false,
     "dropped_counts_by_schema_includes_device_heartbeat": false,
-    "app_peer_final_view_of_device": { "power_state": "on", "app_state": "playing", "now_playing_content_id": "01J8Z3K4N5P6Q7R8S9T0V1W2X6" }
+    "app_peer_final_view_of_device": { "power_state": "on", "app_state": "app", "now_playing_content_id": "01J8Z3K4N5P6Q7R8S9T0V1W2X6" }
   }
 }
