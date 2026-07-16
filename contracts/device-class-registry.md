@@ -72,9 +72,7 @@ device-class-registry/1 defines the format every device class's registry entry M
 
 **[REG-044]** `change_emission` MUST be exactly one of `significant` or `cosmetic` (Change-emission class). A change to a `significant` attribute's value alone, with the entity's canonical state string unchanged, MUST cause that observation to report an attribute-only change; a change to a `cosmetic` attribute's value alone, with the canonical state string unchanged, MUST NOT.
 
-**[REG-045]** `change_emission` governs only the aggregate any-attribute-changed signal REG-044 describes. An attribute-scoped trigger or condition naming a specific attribute directly (`rules/1` RUL-022/RUL-023) MUST evaluate that attribute's own value transition regardless of its declared `change_emission` — a `cosmetic` classification MUST NOT be used to suppress a match a rule author explicitly scoped to that attribute by name.
-
-*draft-note: REG-044/REG-045's split between an aggregate any-attribute-changed signal and a directly-addressed attribute-scoped match is this contract's proposed reconciliation of the change-emission requirement with `rules/1` RUL-330, which states the any-attribute-changed fact in aggregate terms and does not itself say whether every attribute participates equally. Confirm this reconciliation against `rules/1` before this contract leaves draft — an alternative resolution (e.g., `change_emission` also gating a directly-addressed match) would change RUL-330's actual behavior, not just this registry's data shape.*
+**[REG-045]** `change_emission` governs only the aggregate any-attribute-changed signal REG-044 describes. An attribute-scoped trigger or condition naming a specific attribute directly (`rules/1` RUL-022/RUL-023) MUST evaluate that attribute's own value transition regardless of its declared `change_emission` — a `cosmetic` classification MUST NOT be used to suppress a match a rule author explicitly scoped to that attribute by name. This registry is the canonical source of `change_emission`: `rules/1`'s aggregate any-attribute-changed signal reads this classification directly rather than restating it (`rules/1` RUL-330), so the two contracts cannot diverge on which attribute changes contribute to that signal.
 
 ### Command vocabulary
 
@@ -187,13 +185,16 @@ An extension-registered class, or an extension-registered semantic group added t
 |---|---|---|
 | `DEVICE_CLASS_UNKNOWN` | A `device_class` reference does not resolve to any entry in `device_classes`. | no |
 | `CLASS_IDENTIFIER_INVALID` | A class's key in `device_classes` is not a valid Class identifier. | no |
+| `SNAKE_IDENTIFIER_INVALID` | A state, semantic-group, attribute, command, or command-param name is not a valid Snake identifier (REG-020/030/040/050/051). | no |
 | `CLASS_IDENTIFIER_COLLISION` | An extension-registered class's identifier collides with an existing entry's identifier (REG-012). | no |
+| `ORIGIN_INVALID` | A ClassEntry's `origin` is neither `built-in` nor `extension-registered` (REG-011). | no |
 | `STATE_LIST_EMPTY` | A ClassEntry declares zero `states`. | no |
 | `UNKNOWN_STATE_FALLBACK_INVALID` | `unknown_state_fallback` is missing, or is not a member of the same ClassEntry's own `states`. | no |
 | `GROUP_MEMBER_NOT_IN_VOCABULARY` | A `semantic_groups` entry's member value is not present in the same ClassEntry's own `states` (REG-030). | no |
 | `GROUP_NAME_COLLISION` | A group registration's name already exists for that class (REG-031). | no |
 | `ATTRIBUTE_NAME_COLLISION` | Two entries in the same ClassEntry's `attributes` share a `name`. | no |
 | `ATTRIBUTE_TYPE_INVALID` | An attribute's `type` is outside the closed vocabulary (REG-041), `type: "enum"` is declared without a non-empty `values`, or `values` is present with any other `type`. | no |
+| `CHANGE_EMISSION_INVALID` | An attribute's `change_emission` is neither `significant` nor `cosmetic` (REG-044). | no |
 | `ATTRIBUTE_UNIT_NOT_APPLICABLE` | `unit` is declared on an attribute whose `type` is not `number` (REG-042). | no |
 | `COMMAND_NAME_COLLISION` | Two entries in the same ClassEntry's `commands` share a `name`. | no |
 | `COMMAND_UNKNOWN` | A `device_command` action's `command` does not resolve to any entry in the target entity's class's `commands` (REG-052). | no |

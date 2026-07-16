@@ -6,23 +6,25 @@ Roll-up of the contract corpus: every contract, its requirement-ID count, its se
 
 | Contract | Requirements | Seed cases | covered | TBD-wave1 | Open draft-notes |
 |---|---|---|---|---|---|
-| manifest/1 | 43 | 5 | 20 | 23 | 1 |
+| manifest/1 | 44 | 5 | 20 | 24 | 1 |
 | ctx/1 | 43 | 5 | 8 | 35 | 3 |
-| rules/1 | 113 | 25 | 58 | 55 | 7 |
-| device-class-registry | 29 | 1 | 18 | 11 | 1 |
+| rules/1 | 113 | 25 | 58 | 55 | 6 |
+| device-class-registry | 29 | 1 | 18 | 11 | 0 |
+| data-model/1 | 59 | 7 | 39 | 20 | 2 |
 | api/1 | 70 | 12 | 35 | 35 | 1 |
 | events/1 | 73 | 15 | 33 | 40 | 10 |
 | archive/1 | 66 | 9 | 23 | 43 | 4 |
-| relay/1 | 103 | 14 | 66 | 37 | 4 |
-| player/1 | 121 | 7 | 46 | 75 | 12 |
-| surface/1 | 50 | 8 | 17 | 33 | 3 |
-| channel-index | 45 | 10 | 22 | 23 | 1 |
+| relay/1 | 104 | 14 | 66 | 38 | 2 |
+| player/1 | 123 | 7 | 46 | 77 | 9 |
+| surface/1 | 50 | 8 | 17 | 33 | 1 |
+| channel-index | 48 | 11 | 23 | 25 | 0 |
+| marketplace/1 | 48 | 14 | 26 | 22 | 5 |
 | ui-schema/1 | 71 | 9 | 22 | 49 | 3 |
 | security-model | 80 | 6 | 12 | 68 | 8 |
-| **Total** | **907** | **126** | **380** | **527** | **58** |
+| **Total** | **1021** | **148** | **446** | **575** | **55** |
 
 **Companion artifacts:**
 - `../fixtures/automation-builder/` — the ui-schema/1 go/no-go fixture (a complete declarative automation-builder document + render-walkthrough), gated by `../fixtures/fixture-lint.mjs` (wired into the pr/merge CI tiers; asserts every widget/binding/vocabRef the fixture uses is defined in ui-schema/1).
 - `../../docs/capacity-sli-catalog.md` — the published capacity-envelope + SLI catalog (a companion reference doc, not a contract; carries no requirement IDs).
 
-**Status:** every contract is `Status: draft`. The 58 open `draft-note` markers are the pending decisions/confirmations to resolve before any contract advances to `normative`.
+**Status:** every contract is `Status: draft`. The 55 open `draft-note` markers are the pending decisions/confirmations to resolve before any contract advances to `normative`.

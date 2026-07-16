@@ -115,9 +115,7 @@ channel-index defines the signed, host-agnostic release-artifact index a client 
 
 **[CHI-060]** Every role's metadata (timestamp, snapshot, and each channel's own index) MUST carry a monotonically increasing `version` integer, scoped independently per role and, for the targets/index layer, per channel (CHI-064). A verifier MUST persist the highest `version` it has successfully verified for each such scope and MUST refuse — never merely warn on — any subsequently-fetched metadata for that same scope carrying a `version` lower than its own persisted high-water mark.
 
-**[CHI-061]** The timestamp role's metadata MUST additionally carry its own signing time and a stated max-age. A verifier MUST treat timestamp metadata older than its max-age as stale and MUST refuse to proceed past step 2 of the verification order (CHI-050) on a stale timestamp — even where its signature and version both otherwise check out.
-
-*draft-note: no normative source yet fixes the timestamp role's own max-age value; propose a short bound (on the order of hours, not days), consistent with the timestamp role's purpose of bounding how long a stale-but-validly-signed metadata set could otherwise be replayed — revisit once real numbers exist.*
+**[CHI-061]** The timestamp role's metadata MUST additionally carry its own signing time and a stated max-age. A verifier MUST treat timestamp metadata older than its max-age as stale and MUST refuse to proceed past step 2 of the verification order (CHI-050) on a stale timestamp — even where its signature and version both otherwise check out. The stated max-age MUST NOT exceed 6 hours: the timestamp role is re-fetched and re-verified on every update check, so a few hours bounds how long a stale-but-validly-signed metadata set could be replayed to a verifier while staying well clear of any single refresh's own round trip.
 
 **[CHI-062]** A verifier's persisted high-water-mark version state (CHI-060) MUST survive a process or device restart — an attacker MUST NOT be able to reset rollback protection merely by causing the verifying process or device to restart.
 

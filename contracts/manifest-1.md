@@ -96,6 +96,8 @@ manifest/1 defines the declarative document every pack ships at its root: identi
 
 **[MAN-062]** The manifest MAY declare `ui.slots` as an array of named slot points `{name, accepts}` (`accepts` an array of page-type strings) that this pack's own pages expose for other packs' `fragment: card` pages to bind into. A binding attempt of a page type not listed in `accepts` MUST fail at render-registration time.
 
+**[MAN-063]** The manifest MAY declare `ui.surfaces` as an array of surface-declaration objects, each `{name, entry}` — `name` a pack-unique identifier for the surface, `entry` the path of exactly one bundled frontend entry point the surface mounts from. A pack that ships a surface (`surface/1` SUR-001) MUST declare it here, and a mount resolves a declared surface to that single `entry`; a declaration whose `entry` names no file in the pack's bundle MUST fail manifest validation. A pack shipping no surface omits `ui.surfaces`.
+
 ### Device contributions
 
 **[MAN-070]** The manifest MAY declare `devices` as an array of device-class contribution objects, each `{deviceClass, match, capabilities}` where `deviceClass` names an entry in the host's device-class registry, `match` is an array of discovery-match patterns, and `capabilities` lists the command/entity capabilities requested for that class.

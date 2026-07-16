@@ -59,6 +59,7 @@ One row per requirement ID `contracts/player-1.md` defines. Format: `conformance
 | PLY-063 | `contracts/player-1.md#steady-state-pinning` | - | TBD-wave1 |
 | PLY-064 | `contracts/player-1.md#steady-state-pinning` | - | TBD-wave1 |
 | PLY-065 | `contracts/player-1.md#steady-state-pinning` | - | TBD-wave1 |
+| PLY-066 | `contracts/player-1.md#steady-state-pinning` | - | TBD-wave1 |
 | PLY-070 | `contracts/player-1.md#channel-tokens` | - | TBD-wave1 |
 | PLY-071 | `contracts/player-1.md#channel-tokens` | `PLY-050-valid-pairing-happy-path-tofu-same-network` | covered |
 | PLY-072 | `contracts/player-1.md#channel-tokens` | `PLY-136-valid-token-revoked-reconnect-clears-token-only` | covered |
@@ -105,6 +106,7 @@ One row per requirement ID `contracts/player-1.md` defines. Format: `conformance
 | PLY-121 | `contracts/player-1.md#status-telemetry` | - | TBD-wave1 |
 | PLY-122 | `contracts/player-1.md#status-telemetry` | - | TBD-wave1 |
 | PLY-123 | `contracts/player-1.md#status-telemetry` | - | TBD-wave1 |
+| PLY-124 | `contracts/player-1.md#status-telemetry` | - | TBD-wave1 |
 | PLY-130 | `contracts/player-1.md#reconnect-state-machine` | `PLY-130-valid-server-moved-relocate-never-wipe` | covered |
 | PLY-131 | `contracts/player-1.md#reconnect-state-machine` | `PLY-130-valid-server-moved-relocate-never-wipe` | covered |
 | PLY-132 | `contracts/player-1.md#reconnect-state-machine` | `PLY-130-valid-server-moved-relocate-never-wipe` | covered |

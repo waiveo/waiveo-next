@@ -99,6 +99,7 @@ One row per requirement ID `contracts/relay-1.md` defines. Format: `conformance/
 | REL-134 | `contracts/relay-1.md#clock-trust` | - | TBD-wave1 |
 | REL-135 | `contracts/relay-1.md#clock-trust` | - | TBD-wave1 |
 | REL-136 | `contracts/relay-1.md#clock-trust` | `REL-136-valid-coldboot-skew-tolerant-connect` | covered |
+| REL-137 | `contracts/relay-1.md#clock-trust` | - | TBD-wave1 |
 | REL-140 | `contracts/relay-1.md#gateway-posture` | - | TBD-wave1 |
 | REL-141 | `contracts/relay-1.md#gateway-posture` | - | TBD-wave1 |
 | REL-142 | `contracts/relay-1.md#gateway-posture` | - | TBD-wave1 |
