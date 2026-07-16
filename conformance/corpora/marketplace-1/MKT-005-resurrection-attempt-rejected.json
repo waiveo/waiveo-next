@@ -1,0 +1,16 @@
+{
+  "case_id": "MKT-005-resurrection-attempt-rejected",
+  "contract": "marketplace/1",
+  "req_ids": ["MKT-005"],
+  "description": "A publisher-registration request for oldco, a namespace whose prior registration was deleted two years earlier, is refused permanently: a deleted namespace is never re-registrable by any party (including a party who could plausibly claim to be the original publisher), independent of and in addition to the confusable-collision check, and with no expiry window after which it would become claimable again.",
+  "input": {
+    "deleted_publishers": [
+      { "name": "oldco", "deleted_at": "2024-06-01T00:00:00Z" }
+    ],
+    "registration_request": { "requested_namespace": "oldco", "requesting_key_id": "ed25519:newclaimant-2026-07" }
+  },
+  "expected": {
+    "accepted": false,
+    "error": { "code": "RESURRECTION_ATTEMPT", "formerly_registered_to": "oldco", "deleted_at": "2024-06-01T00:00:00Z" }
+  }
+}

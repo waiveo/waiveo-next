@@ -1,0 +1,29 @@
+{
+  "case_id": "MKT-071-verified-attestation-revoked",
+  "contract": "marketplace/1",
+  "req_ids": ["MKT-070", "MKT-071", "MKT-072", "MKT-073"],
+  "description": "acme/weather-widget 1.2.0 was previously granted verified status; a fresh, validly-signed revocation feed now carries a revoked_artifacts entry for the synthetic subject verified-attestation:acme/weather-widget at channel verified, version 1.2.0 -- reusing channel-index/1's own revoked_artifacts shape unmodified. The host must stop presenting that version as verified, but must not treat this as ARTIFACT_YANKED against the pack's own release artifact_id: the same version remains installable under the community channel its channel pointer also names.",
+  "input": {
+    "resolved_pack_version": { "pack_id": "acme/weather-widget", "version": "1.2.0" },
+    "channel_pointer": {
+      "pack_id": "acme/weather-widget",
+      "channels": { "verified": "1.2.0", "community": "1.2.0" }
+    },
+    "revocation_feed": {
+      "signed": {
+        "role": "revocation",
+        "version": 22,
+        "revoked_artifacts": [
+          { "artifact_id": "verified-attestation:acme/weather-widget", "channel": "verified", "version": "1.2.0", "revoked_at": 1752640000000, "reason": "egress-host parity check regressed post-publish" }
+        ]
+      }
+    },
+    "revocation_feed_freshness": "fresh"
+  },
+  "expected": {
+    "still_treated_as_verified": false,
+    "error_on_verified_display": { "code": "VERIFIED_ATTESTATION_REVOKED" },
+    "pack_release_artifact_yanked": false,
+    "installable_under_community_channel": true
+  }
+}

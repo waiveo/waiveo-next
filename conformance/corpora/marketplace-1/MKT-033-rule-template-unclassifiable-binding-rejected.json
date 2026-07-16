@@ -1,0 +1,18 @@
+{
+  "case_id": "MKT-033-rule-template-unclassifiable-binding-rejected",
+  "contract": "marketplace/1",
+  "req_ids": ["MKT-033"],
+  "description": "A rule-template content-package declares a parameter, extra_config, whose binding_site points at a path that does not correspond to any real field in the template's own trigger/condition/action structure, so its target field type cannot be statically resolved. The verified bar's template-specific check refuses promotion as RULE_TEMPLATE_BINDING_UNCLASSIFIABLE, distinct from a generic VERIFIED_BAR_NOT_MET.",
+  "input": {
+    "pack_id": "acme/night-light-routine",
+    "subtype": "rule-template",
+    "template_parameters": [
+      { "name": "target_light", "binding_site": "actions[0].entity_id", "target_field_type": "EntityRef" },
+      { "name": "extra_config", "binding_site": "actions[0].nonexistent_field", "target_field_type": null }
+    ]
+  },
+  "expected": {
+    "verified_channel_granted": false,
+    "error": { "code": "RULE_TEMPLATE_BINDING_UNCLASSIFIABLE", "unclassifiable_parameter": "extra_config", "binding_site": "actions[0].nonexistent_field" }
+  }
+}

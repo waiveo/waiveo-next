@@ -1,0 +1,24 @@
+{
+  "case_id": "MKT-061-source-order-not-trust-rejected",
+  "contract": "marketplace/1",
+  "req_ids": ["MKT-060", "MKT-061", "MKT-062"],
+  "description": "A client is configured with two ordered registry sources: source A (listed first, preferred by order) and source B (listed second). Both serve a waiveo/settings entry, but only source B's configured signing key-id chains to the waiveo first-party publisher delegation -- source A's key-id is bound in client config to an ordinary third-party delegation only. Source order must never substitute for trust: the reserved-namespace entry from source A is refused despite being first in the list, while the same pack_id resolved from source B is accepted.",
+  "input": {
+    "ordered_sources": [
+      { "source": "https://mirror-a.example/", "configured_signer_key_id": "ed25519:mirror-a-thirdparty-2026", "chains_to_first_party_delegation": false },
+      { "source": "https://index.example/", "configured_signer_key_id": "ed25519:waiveo-first-party-2026", "chains_to_first_party_delegation": true }
+    ],
+    "requested_pack_id": "waiveo/settings",
+    "entry_offered_by": [
+      { "source": "https://mirror-a.example/", "signed_by": "ed25519:mirror-a-thirdparty-2026" },
+      { "source": "https://index.example/", "signed_by": "ed25519:waiveo-first-party-2026" }
+    ]
+  },
+  "expected": {
+    "results": [
+      { "source": "https://mirror-a.example/", "accepted": false, "error": { "code": "REGISTRY_SOURCE_NOT_DELEGATED" } },
+      { "source": "https://index.example/", "accepted": true }
+    ],
+    "source_list_order_affected_trust_outcome": false
+  }
+}

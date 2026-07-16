@@ -1,0 +1,18 @@
+{
+  "case_id": "MKT-025-dev-channel-reserved-namespace-rejected",
+  "contract": "marketplace/1",
+  "req_ids": ["MKT-023", "MKT-025"],
+  "description": "A dev-channel (unsigned, side-loaded) pack declares pack_id waiveo/settings -- a reserved first-party namespace -- attempting to shadow a real first-party pack under developer mode. Refused: a dev-channel identity's own pack_id publisher segment must itself be the reserved dev publisher or a local- prefixed name, never a registered or reserved third-party/first-party namespace, regardless of developer mode being enabled.",
+  "input": {
+    "developer_mode_enabled": true,
+    "dev_pack": {
+      "pack_id": "waiveo/settings",
+      "trust_channel": "dev",
+      "signed": false
+    }
+  },
+  "expected": {
+    "accepted": false,
+    "error": { "code": "DEV_CHANNEL_RESERVED_NAMESPACE", "attempted_namespace": "waiveo", "reason": "reserved first-party namespace, not the dev publisher or a local- prefix" }
+  }
+}

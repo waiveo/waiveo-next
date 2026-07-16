@@ -1,0 +1,22 @@
+{
+  "case_id": "MKT-006-key-rebind-unauthenticated-rejected",
+  "contract": "marketplace/1",
+  "req_ids": ["MKT-006"],
+  "description": "A rebind request for publisher acme names a new key-id but is signed by neither the currently-bound outgoing key (the routine path) nor completed through the identity-proofed fallback path -- an incoming key's own signature over the request is not by itself sufficient to claim the namespace. Refused; the existing key-id delegation is unchanged.",
+  "input": {
+    "publisher": "acme",
+    "current_key_id": "ed25519:acme-2026-07",
+    "rebind_request": {
+      "from_key_id": "ed25519:acme-2026-07",
+      "to_key_id": "ed25519:attacker-2026-08",
+      "mode": "old-key-signed",
+      "signature_verifies_against_outgoing_key": false,
+      "identity_proofed_fallback_completed": false
+    }
+  },
+  "expected": {
+    "rebind_accepted": false,
+    "delegation_unchanged": true,
+    "error": { "code": "REBIND_UNAUTHENTICATED" }
+  }
+}

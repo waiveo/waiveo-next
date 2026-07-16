@@ -1,0 +1,14 @@
+{
+  "case_id": "MKT-004-confusable-collision-rejected",
+  "contract": "marketplace/1",
+  "req_ids": ["MKT-004"],
+  "description": "A publisher-registration request for acme1 is refused because it is a Levenshtein edit-distance-1 confusable of the already-registered publisher namespace acme, even though acme1 is not itself on the fixed reserved-prefix list -- confusable-collision protection is cumulative over every prior successful registration, not limited to the fixed reserved set MKT-003 checks.",
+  "input": {
+    "already_registered_namespaces": ["acme"],
+    "registration_request": { "requested_namespace": "acme1", "requesting_key_id": "ed25519:impersonator-2026-07" }
+  },
+  "expected": {
+    "accepted": false,
+    "error": { "code": "CONFUSABLE_COLLISION", "confusable_with": "acme", "edit_distance": 1 }
+  }
+}

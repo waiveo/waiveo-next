@@ -1,0 +1,13 @@
+{
+  "case_id": "MKT-003-namespace-squat-reserved-prefix-rejected",
+  "contract": "marketplace/1",
+  "req_ids": ["MKT-003"],
+  "description": "A publisher-registration request for the namespace waiveo-tools is refused: it matches the globally reserved leftmost prefix waiveo-, which is never registrable by any third party regardless of whether the exact name is otherwise unclaimed.",
+  "input": {
+    "registration_request": { "requested_namespace": "waiveo-tools", "requesting_key_id": "ed25519:someone-2026-07" }
+  },
+  "expected": {
+    "accepted": false,
+    "error": { "code": "NAMESPACE_RESERVED", "matched_reserved_prefix": "waiveo-" }
+  }
+}

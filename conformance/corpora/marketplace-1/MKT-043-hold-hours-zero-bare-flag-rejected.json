@@ -1,0 +1,28 @@
+{
+  "case_id": "MKT-043-hold-hours-zero-bare-flag-rejected",
+  "contract": "marketplace/1",
+  "req_ids": ["MKT-042", "MKT-043"],
+  "description": "A pack-kind entry carrying hold_hours: 24 is republished with security_flagged: true, authenticated by nothing beyond the same routine targets-role signature already covering the rest of the entry -- for pack/content-package kind this bare publisher-signed flag must not zero the hold. Refused; the hold remains in force until either a matching security-class revocation-feed entry or a manual-approval countersignature is additionally present.",
+  "input": {
+    "artifact_entry": {
+      "artifact_id": "acme/weather-widget",
+      "kind": "pack",
+      "version": "1.2.1",
+      "status": "active",
+      "published_at": 1752620000000,
+      "hold_hours": 24,
+      "security_flagged": true
+    },
+    "authentication_present": {
+      "routine_targets_role_signature": true,
+      "matching_revocation_feed_security_class_entry": false,
+      "manual_approval_countersignature": false
+    },
+    "evaluation_time": 1752621000000
+  },
+  "expected": {
+    "hold_zeroed": false,
+    "eligible_for_new_resolution": false,
+    "error": { "code": "HOLD_HOURS_ZERO_UNAUTHENTICATED" }
+  }
+}

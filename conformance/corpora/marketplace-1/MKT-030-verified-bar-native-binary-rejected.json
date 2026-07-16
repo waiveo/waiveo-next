@@ -1,0 +1,24 @@
+{
+  "case_id": "MKT-030-verified-bar-native-binary-rejected",
+  "contract": "marketplace/1",
+  "req_ids": ["MKT-030"],
+  "description": "A pack version otherwise passing every other verified-bar check (namespace proof, egress-host parity, install-time script freedom, SBOM populated, size/entropy sanity) is refused verified-channel promotion because its sealed artifact bundles a host-architecture-specific compiled .so file -- a single failing check refuses promotion in full rather than granting a partial verified status.",
+  "input": {
+    "pack_id": "acme/media-scanner",
+    "version": "3.0.0",
+    "verified_bar_checks": {
+      "namespace_proof": "pass",
+      "manifest_bundle_consistency_egress_host_parity": "pass",
+      "no_native_binaries": "fail",
+      "install_time_script_freedom": "pass",
+      "sbom_slot_populated": "pass",
+      "size_entropy_sanity": "pass"
+    },
+    "conformance_pass": "pass",
+    "native_binary_found": "lib/scan-accel.so"
+  },
+  "expected": {
+    "verified_channel_granted": false,
+    "error": { "code": "VERIFIED_BAR_NOT_MET", "failed_checks": ["no_native_binaries"] }
+  }
+}

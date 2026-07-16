@@ -1,0 +1,32 @@
+{
+  "case_id": "MKT-040-valid-pack-index-entry",
+  "contract": "marketplace/1",
+  "req_ids": ["MKT-040", "MKT-041", "MKT-046", "MKT-047", "MKT-049"],
+  "description": "A registry source's signed index carries a kind: pack entry for acme/weather-widget plus a channel pointer naming which version the verified trust channel currently resolves to; resolution reuses channel-index/1's own per-version fields unmodified and follows the channel pointer back to the matching artifact entry for the actual digest/size/download_url, never trusting the pointer's version string by itself.",
+  "input": {
+    "registry_source": "https://index.example/",
+    "channel_index_entry": {
+      "artifact_id": "acme/weather-widget",
+      "kind": "pack",
+      "version": "1.2.0",
+      "status": "active",
+      "digest": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+      "size": 1048576,
+      "download_url": "https://index.example/acme/weather-widget-1.2.0.tar.zst",
+      "published_at": 1752620000000,
+      "hold_hours": 24
+    },
+    "channel_pointer": {
+      "pack_id": "acme/weather-widget",
+      "channels": { "verified": "1.2.0" }
+    },
+    "requested_resolution": { "pack_id": "acme/weather-widget", "trust_channel": "verified" }
+  },
+  "expected": {
+    "pointer_lookup": { "channel": "verified", "resolved_version": "1.2.0" },
+    "matching_artifact_entry_found": true,
+    "verification_order_delegated_to": "channel-index/1 CHI-050",
+    "artifact_accepted": true,
+    "artifact_kind_recognized": "pack"
+  }
+}

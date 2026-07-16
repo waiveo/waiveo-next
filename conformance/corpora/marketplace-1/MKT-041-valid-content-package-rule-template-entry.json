@@ -1,0 +1,29 @@
+{
+  "case_id": "MKT-041-valid-content-package-rule-template-entry",
+  "contract": "marketplace/1",
+  "req_ids": ["MKT-041", "MKT-049", "MKT-080", "MKT-033"],
+  "description": "A content-package kind entry for a rule-template subtype (acme/night-light-routine) is accepted: its kind/subtype pair is recognized, it carries no manifest/1 PackManifest of its own, and its declared parameters each resolve to a classifiable binding site (an EntityRef-shaped position and a typed scalar field) so the verified-bar's template-specific check passes.",
+  "input": {
+    "channel_index_entry": {
+      "artifact_id": "acme/night-light-routine",
+      "kind": "content-package",
+      "subtype": "rule-template",
+      "version": "2.1.0",
+      "status": "active",
+      "digest": "sha256:bbbb2222cccc3333dddd4444eeee5555ffff666600007777888899990000",
+      "size": 4096,
+      "download_url": "https://index.example/acme/night-light-routine-2.1.0.json.zst"
+    },
+    "template_parameters": [
+      { "name": "target_light", "binding_site": "actions[0].entity_id", "target_field_type": "EntityRef" },
+      { "name": "activate_at", "binding_site": "triggers[0].at", "target_field_type": "time-of-day" }
+    ]
+  },
+  "expected": {
+    "kind_recognized": "content-package",
+    "subtype_recognized": "rule-template",
+    "requires_manifest_pack_manifest": false,
+    "binding_sites_classifiable": true,
+    "verified_bar_template_check": "pass"
+  }
+}
