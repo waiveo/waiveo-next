@@ -1,0 +1,37 @@
+{
+  "case_id": "SUR-001-valid-mount-scoped-token-exchange",
+  "contract": "surface/1",
+  "req_ids": ["SUR-001", "SUR-002", "SUR-004", "SUR-005", "SUR-006", "SUR-040", "SUR-050"],
+  "description": "A first-party-channel pack's surface completes a full mount: the host page mints a SurfaceSession over an authenticated management-API call, the iframe sends bridge.ready, and the host page replies with a bridge.token carrying an audience-scoped surface_token.",
+  "input": {
+    "pack": { "pack_id": "waiveo/slidecast", "trust_channel": "first-party", "artifact_signature_valid": true },
+    "host_page_session": { "principal": "01J8Z3K4N5P6Q7R8S9T0V1W2X3", "valid": true },
+    "surface_session_request": { "pack_id": "waiveo/slidecast" },
+    "bridge_ready": {
+      "type": "event",
+      "mount_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y4",
+      "verb": "bridge.ready",
+      "body": { "bridge_version": "1.0" },
+      "trace_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y5"
+    }
+  },
+  "expected": {
+    "surface_session": {
+      "surface_token": "sft_8f14e45fceea4b3e8c1e1a1b2c3d4e5f6a7b8c9d",
+      "audience": {
+        "principal": "01J8Z3K4N5P6Q7R8S9T0V1W2X3",
+        "pack_id": "waiveo/slidecast",
+        "mount_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y4"
+      },
+      "isolation_origin": "https://studio.box.local:8443",
+      "mount_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y4"
+    },
+    "bridge_token_sent": {
+      "type": "event",
+      "mount_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y4",
+      "verb": "bridge.token",
+      "target_origin": "https://studio.box.local:8443"
+    },
+    "mount_established": true
+  }
+}

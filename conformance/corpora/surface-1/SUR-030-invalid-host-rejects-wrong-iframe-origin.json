@@ -1,0 +1,25 @@
+{
+  "case_id": "SUR-030-invalid-host-rejects-wrong-iframe-origin",
+  "contract": "surface/1",
+  "req_ids": ["SUR-030"],
+  "description": "The host page's own bridge listener MUST discard a message whose event.origin does not exactly equal the mount's isolation_origin, before parsing its data as a bridge message at all -- the parent-verifies-iframe-origin half of the postMessage origin check.",
+  "input": {
+    "mount": { "mount_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y4", "isolation_origin": "https://studio.box.local:8443" },
+    "inbound_message_event": {
+      "origin": "https://evil.example",
+      "data": {
+        "type": "request",
+        "mount_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y4",
+        "verb": "bridge.token_renew",
+        "body": {},
+        "trace_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y8"
+      }
+    }
+  },
+  "expected": {
+    "origin_check_passed": false,
+    "data_parsed": false,
+    "dispatched_to_handler": false,
+    "response_sent": false
+  }
+}

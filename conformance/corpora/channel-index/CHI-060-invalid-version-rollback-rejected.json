@@ -1,0 +1,23 @@
+{
+  "case_id": "CHI-060-invalid-version-rollback-rejected",
+  "contract": "channel-index/1",
+  "req_ids": ["CHI-060", "CHI-062"],
+  "description": "A validly-signed, fresh channel-index file whose own version is lower than the verifier's persisted high-water mark for that channel (for instance replayed from a compromised or rolled-back hosting backend) MUST be refused at verification-order step 6, even though its signature checks out -- the persisted high-water mark survived the verifier's own restart and is not reset by re-fetching.",
+  "input": {
+    "trust_bundle": { "recognized_keys": { "ed25519:platform-train-targets-2026": { "role": "targets", "delegated_channels": ["platform-train/stable"] } } },
+    "verifier_persisted_high_water_marks": { "platform-train/stable": 96 },
+    "verifier_restarted_since_last_check": true,
+    "fetched_channel_index": {
+      "signed": { "role": "targets", "channel": "platform-train/stable", "version": 94, "artifacts": [] },
+      "signatures": [{ "key_id": "ed25519:platform-train-targets-2026", "sig": "valid-sig" }]
+    }
+  },
+  "expected": {
+    "steps": [
+      { "step": 5, "name": "targets signature + namespace delegation", "result": "pass" },
+      { "step": 6, "name": "targets/index rollback", "result": "fail", "error": { "code": "VERSION_ROLLBACK_REJECTED" } }
+    ],
+    "artifact_accepted": false,
+    "high_water_mark_unchanged": true
+  }
+}

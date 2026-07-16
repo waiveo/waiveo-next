@@ -1,0 +1,25 @@
+{
+  "case_id": "CHI-061-invalid-stale-timestamp-rejected",
+  "contract": "channel-index/1",
+  "req_ids": ["CHI-061"],
+  "description": "A validly-signed, non-regressed timestamp whose signing_time is older than its own stated max-age MUST be refused at verification-order step 2, before the verifier ever fetches the snapshot it references -- signature and version alone do not establish freshness.",
+  "input": {
+    "trust_bundle": { "recognized_keys": { "ed25519:timestamp-2026-07": { "role": "timestamp" } } },
+    "verifier_persisted_high_water_marks": { "timestamp": 480 },
+    "fetched_timestamp": {
+      "signed": { "role": "timestamp", "version": 481, "signing_time": 1752600000000, "expires_at": 1752600900000, "snapshot_ref": { "version": 216, "digest": "sha256:aaaa" } },
+      "signatures": [{ "key_id": "ed25519:timestamp-2026-07", "sig": "valid-sig" }]
+    },
+    "timestamp_max_age_seconds": 900,
+    "evaluation_time": 1752623300000,
+    "clock_trusted": true
+  },
+  "expected": {
+    "steps": [
+      { "step": 1, "name": "timestamp signature", "result": "pass" },
+      { "step": 2, "name": "timestamp freshness/rollback", "result": "fail", "error": { "code": "TIMESTAMP_STALE" } }
+    ],
+    "snapshot_fetch_attempted": false,
+    "artifact_accepted": false
+  }
+}

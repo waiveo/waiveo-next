@@ -1,0 +1,27 @@
+{
+  "case_id": "CHI-021-invalid-digest-mismatch-rejected",
+  "contract": "channel-index/1",
+  "req_ids": ["CHI-021", "CHI-023", "CHI-051"],
+  "description": "An artifact whose downloaded bytes hash to a digest different from the one the fully-verified, trusted channel-index entry recorded (for instance a substituted or corrupted download from an untrusted hosting backend) MUST be refused at verification-order step 8 -- the earlier steps' success (a correctly-signed, fresh, non-regressed index) does not excuse the digest failure.",
+  "input": {
+    "verification_order_steps_1_through_6": "all passed",
+    "trusted_entry": {
+      "artifact_id": "waiveo-app",
+      "digest": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+      "size": 184320000
+    },
+    "downloaded_artifact": {
+      "artifact_id": "waiveo-app",
+      "computed_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000",
+      "downloaded_size": 184320000
+    }
+  },
+  "expected": {
+    "steps": [
+      { "step": 7, "name": "artifact download", "result": "pass" },
+      { "step": 8, "name": "digest/size verification", "result": "fail", "error": { "code": "DIGEST_MISMATCH" } }
+    ],
+    "artifact_accepted": false,
+    "earlier_step_success_does_not_excuse_failure": true
+  }
+}

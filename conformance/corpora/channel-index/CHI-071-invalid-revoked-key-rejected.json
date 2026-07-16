@@ -1,0 +1,30 @@
+{
+  "case_id": "CHI-071-invalid-revoked-key-rejected",
+  "contract": "channel-index/1",
+  "req_ids": ["CHI-071"],
+  "description": "A channel-index signed by a key-id the revocation feed lists under revoked_keys (a key/trust-class revocation, e.g. a stale or compromised targets key) MUST be refused outright regardless of an otherwise-valid signature, current version, and matching digest -- distinct from an artifact-class (yanked) revocation, which blocks only a specific version rather than every artifact that key ever signed.",
+  "input": {
+    "fetched_channel_index": {
+      "signed": { "role": "targets", "channel": "platform-train/stable", "version": 96, "artifacts": [{ "artifact_id": "waiveo-app", "version": "1.4.2", "digest": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824", "size": 184320000 }] },
+      "signatures": [{ "key_id": "ed25519:platform-train-targets-2025-stale", "sig": "otherwise-valid-sig" }]
+    },
+    "signature_verifies_against_key": true,
+    "version_is_current_not_a_rollback": true,
+    "revocation_feed": {
+      "signed": {
+        "role": "revocation",
+        "version": 14,
+        "revoked_keys": [
+          { "key_id": "ed25519:platform-train-targets-2025-stale", "revoked_at": 1752600000000, "reason": "key rotation" }
+        ]
+      }
+    }
+  },
+  "expected": {
+    "key_revoked": true,
+    "artifact_accepted": false,
+    "error": { "code": "KEY_REVOKED" },
+    "applies_to_every_artifact_that_key_signed": true,
+    "distinct_from_artifact_class_yank": true
+  }
+}

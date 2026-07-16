@@ -1,0 +1,24 @@
+{
+  "case_id": "SUR-031-invalid-surface-rejects-wrong-host-origin",
+  "contract": "surface/1",
+  "req_ids": ["SUR-031"],
+  "description": "The surface's own bridge listener MUST symmetrically discard a message whose event.origin does not exactly equal the host page's own origin, before parsing its data -- the iframe-verifies-parent-origin half of the postMessage origin check, proving the check is enforced on both sides, not just the host page's.",
+  "input": {
+    "mount": { "mount_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y4", "host_page_origin": "https://app.box.local" },
+    "inbound_message_event": {
+      "origin": "https://attacker.example",
+      "data": {
+        "type": "event",
+        "mount_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y4",
+        "verb": "bridge.token",
+        "body": { "surface_token": "sft_attacker-supplied-token", "expires_at": 9999999999999 },
+        "trace_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y9"
+      }
+    }
+  },
+  "expected": {
+    "origin_check_passed": false,
+    "data_parsed": false,
+    "surface_token_accepted": false
+  }
+}

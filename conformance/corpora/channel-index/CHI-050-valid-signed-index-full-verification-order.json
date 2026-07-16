@@ -1,0 +1,55 @@
+{
+  "case_id": "CHI-050-valid-signed-index-full-verification-order",
+  "contract": "channel-index/1",
+  "req_ids": ["CHI-001", "CHI-003", "CHI-004", "CHI-005", "CHI-007", "CHI-009", "CHI-020", "CHI-050", "CHI-052"],
+  "description": "A verifier walks the complete nine-step verification order for the platform-train/stable channel: timestamp signature and freshness, snapshot signature and rollback check, targets (channel-index) signature and namespace delegation and rollback check, artifact digest/size, then revocation -- every step passes against the trust bundle's own recognized keys, and the resolved waiveo-app artifact is accepted.",
+  "input": {
+    "trust_bundle": {
+      "root_version": 3,
+      "recognized_keys": {
+        "ed25519:timestamp-2026-07": { "role": "timestamp" },
+        "ed25519:snapshot-2026-07": { "role": "snapshot" },
+        "ed25519:platform-train-targets-2026": { "role": "targets", "delegated_channels": ["platform-train/stable"] }
+      }
+    },
+    "verifier_persisted_high_water_marks": { "timestamp": 481, "snapshot": 216, "platform-train/stable": 95 },
+    "fetched_timestamp": {
+      "signed": { "role": "timestamp", "version": 482, "signing_time": 1752623000000, "expires_at": 1752623900000, "snapshot_ref": { "version": 217, "digest": "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" } },
+      "signatures": [{ "key_id": "ed25519:timestamp-2026-07", "sig": "valid-sig" }]
+    },
+    "evaluation_time": 1752623300000,
+    "fetched_snapshot": {
+      "signed": { "role": "snapshot", "version": 217, "signing_time": 1752623000000, "targets_refs": { "platform-train/stable": { "version": 96, "digest": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" } } },
+      "signatures": [{ "key_id": "ed25519:snapshot-2026-07", "sig": "valid-sig" }]
+    },
+    "fetched_channel_index": {
+      "signed": {
+        "role": "targets",
+        "format_version": "1.0",
+        "channel": "platform-train/stable",
+        "version": 96,
+        "artifacts": [
+          { "artifact_id": "waiveo-app", "kind": "platform-release", "version": "1.4.2", "arch": "linux/amd64", "status": "active", "digest": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824", "size": 184320000, "download_url": "https://github.com/waiveo/waiveo-next/releases/download/v1.4.2/waiveo-app-linux-amd64.tar.zst", "compression": "zstd" }
+        ]
+      },
+      "signatures": [{ "key_id": "ed25519:platform-train-targets-2026", "sig": "valid-sig" }]
+    },
+    "downloaded_artifact": { "artifact_id": "waiveo-app", "reassembled_digest": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824", "reassembled_size": 184320000 },
+    "revocation_feed": { "signed": { "role": "revocation", "version": 14, "revoked_keys": [], "revoked_artifacts": [] } }
+  },
+  "expected": {
+    "steps": [
+      { "step": 1, "name": "timestamp signature", "result": "pass" },
+      { "step": 2, "name": "timestamp freshness/rollback", "result": "pass" },
+      { "step": 3, "name": "snapshot signature", "result": "pass" },
+      { "step": 4, "name": "snapshot rollback", "result": "pass" },
+      { "step": 5, "name": "targets signature + namespace delegation", "result": "pass" },
+      { "step": 6, "name": "targets/index rollback", "result": "pass" },
+      { "step": 7, "name": "artifact download", "result": "pass" },
+      { "step": 8, "name": "digest/size verification", "result": "pass" },
+      { "step": 9, "name": "revocation check", "result": "pass" }
+    ],
+    "artifact_accepted": true,
+    "new_high_water_marks": { "timestamp": 482, "snapshot": 217, "platform-train/stable": 96 }
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "case_id": "CHI-072-invalid-yanked-artifact-rejected",
+  "contract": "channel-index/1",
+  "req_ids": ["CHI-072", "CHI-027"],
+  "description": "A version marked status: yanked in a fully-verified, fresh channel-index MUST be refused for a NEW resolution decision at verification-order step 9 -- the entry remains present and digest/size-verifiable (it is not removed from the index), but resolution-time revocation checking blocks it from being selected for a new install/update.",
+  "input": {
+    "verification_order_steps_1_through_8": "all passed",
+    "resolved_entry": {
+      "artifact_id": "waiveo-app",
+      "channel": "platform-train/stable",
+      "version": "1.4.1",
+      "status": "yanked",
+      "digest": "sha256:aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666000077778888",
+      "digest_verified": true
+    },
+    "revocation_feed": {
+      "signed": {
+        "role": "revocation",
+        "version": 14,
+        "revoked_artifacts": [
+          { "artifact_id": "waiveo-app", "channel": "platform-train/stable", "version": "1.4.1", "revoked_at": 1752610000000, "reason": "security" }
+        ]
+      }
+    },
+    "resolution_context": "new_install"
+  },
+  "expected": {
+    "steps": [
+      { "step": 9, "name": "revocation check", "result": "fail", "error": { "code": "ARTIFACT_YANKED" } }
+    ],
+    "artifact_accepted": false,
+    "entry_removed_from_index": false,
+    "already_installed_same_version_unaffected": true
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "case_id": "SUR-032-invalid-same-origin-different-mount-source-rejected",
+  "contract": "surface/1",
+  "req_ids": ["SUR-032"],
+  "description": "An origin match alone is not sufficient: two concurrent mounts of the same pack share an isolation_origin, so the host page's listener MUST additionally verify event.source equals the exact contentWindow captured for that mount_id at construction time -- a message whose origin matches but whose source is the OTHER mount's window MUST be discarded exactly as an origin mismatch is.",
+  "input": {
+    "mounts": [
+      { "mount_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZA", "isolation_origin": "https://studio.box.local:8443", "content_window_ref": "window-ref-A" },
+      { "mount_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZB", "isolation_origin": "https://studio.box.local:8443", "content_window_ref": "window-ref-B" }
+    ],
+    "inbound_message_event": {
+      "origin": "https://studio.box.local:8443",
+      "source": "window-ref-B",
+      "data": {
+        "type": "request",
+        "mount_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZA",
+        "verb": "bridge.token_renew",
+        "body": {},
+        "trace_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZC"
+      }
+    }
+  },
+  "expected": {
+    "origin_check_passed": true,
+    "source_check_passed": false,
+    "dispatched_to_handler": false,
+    "reason": "event.source (window-ref-B) does not match the contentWindow captured for mount_id 01J8Z3K4N5P6Q7R8S9T0V1W2ZA (window-ref-A)"
+  }
+}
