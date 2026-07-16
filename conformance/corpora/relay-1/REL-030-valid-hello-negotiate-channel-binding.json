@@ -1,0 +1,37 @@
+{
+  "case_id": "REL-030-valid-hello-negotiate-channel-binding",
+  "contract": "relay/1",
+  "req_ids": ["REL-005", "REL-030", "REL-031", "REL-032", "REL-033", "REL-034", "REL-035", "REL-036", "REL-038", "REL-039"],
+  "description": "On a freshly authenticated connection the app peer issues a challenge nonce; the relay's hello signs it with its enrollment key alongside site binding, subnet metadata, and clock_state, declaring one minor behind the app peer's current; the app peer accepts, verifies the channel-binding signature, negotiates down to the relay's minor (N-1 compatibility), and grants the shared feature subset.",
+  "input": {
+    "app_peer_implemented_minors": ["1.0", "1.1"],
+    "challenge": { "type": "challenge", "body": { "nonce": "b3f1c2a9d4e5f60718293a4b5c6d7e8f" } },
+    "hello": {
+      "type": "hello",
+      "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1",
+      "body": {
+        "protocol_version": "1.0",
+        "features": ["telemetry.latest_only_v1", "an-unrecognized-future-flag"],
+        "site_binding": { "scope_node": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5", "tz": "America/Chicago", "lat": 41.8781, "long": -87.6298 },
+        "subnet_metadata": { "advertised_address": "192.168.50.12" },
+        "clock_state": { "state": "trusted", "source": "ntp" },
+        "channel_binding_signature": "ed25519-sig-over-nonce-b3f1c2a9d4e5f60718293a4b5c6d7e8f-signed-with-relay-enrollment-key"
+      }
+    }
+  },
+  "expected": {
+    "channel_binding_verified": true,
+    "hello_ack": {
+      "type": "hello-ack",
+      "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1",
+      "body": {
+        "negotiated_version": "1.0",
+        "features": ["telemetry.latest_only_v1"],
+        "site_binding": { "scope_node": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5", "tz": "America/Chicago", "lat": 41.8781, "long": -87.6298 },
+        "deprecated": {}
+      }
+    },
+    "unrecognized_feature_flag_dropped_silently": true,
+    "connection_refused": false
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "case_id": "REL-020-valid-re-enroll-after-cert-expiry",
+  "contract": "relay/1",
+  "req_ids": ["REL-014", "REL-017", "REL-020", "REL-021", "REL-023", "REL-024", "REL-025"],
+  "description": "A relay long powered off presents a certificate that expired six months ago, for a known relay_id, with an untrusted local clock. The app peer's issuance record shows this is still the most-recently-issued certificate for that relay_id and it was never revoked, so it re-enrolls the relay automatically under the same relay_id, without relying on the relay's own clock, and re-anchors the desired-state verification key.",
+  "input": {
+    "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1",
+    "relay_clock_state": "untrusted",
+    "presented_cert": { "serial": "7a1b2c3d", "not_after": 1745020800000 },
+    "app_peer_trusted_now": 1752537600000,
+    "issuance_record_for_relay_id": [ { "serial": "7a1b2c3d", "issued_at": 1713398400000, "revoked": false } ],
+    "auto_completion_policy": "auto",
+    "renew_request": { "type": "renew", "id": "01J8Z4K4N5P6Q7R8S9T0V1W3C1", "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1", "body": { "csr": "-----BEGIN CERTIFICATE REQUEST-----\nMIIBazCB4wIBADAxMS8...\n-----END CERTIFICATE REQUEST-----" } }
+  },
+  "expected": {
+    "eligible": true,
+    "most_recently_issued": true,
+    "human_approval_required": false,
+    "renew_ack": {
+      "type": "renew-ack",
+      "id": "01J8Z4K4N5P6Q7R8S9T0V1W3C1",
+      "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1",
+      "body": { "serial": "9e0f1a2b", "not_before": 1752537600000, "not_after": 1784073600000 }
+    },
+    "desired_state_verification_key_reanchored": true,
+    "relay_id_unchanged": true
+  }
+}

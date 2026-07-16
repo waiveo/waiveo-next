@@ -1,0 +1,26 @@
+{
+  "case_id": "REL-070-valid-generation-reapply-idempotent-noop",
+  "contract": "relay/1",
+  "req_ids": ["REL-052", "REL-070"],
+  "description": "The relay has already applied generation 42 with a given hash. The app peer answers a later state.pull with a state.snapshot that carries a higher generation number (43) but sections content byte-identical to generation 42, producing the same hash. Applying it MUST be a no-op: no apply-time side effect re-runs and no in-flight rule run is canceled, even though the generation number advanced.",
+  "input": {
+    "relay_last_applied": { "generation": 42, "hash": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" },
+    "state_snapshot": {
+      "type": "state.snapshot",
+      "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1",
+      "body": {
+        "generation": 43,
+        "hash": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+        "sections_content_identical_to_generation_42": true
+      }
+    },
+    "rule_run_in_progress_at_apply_time": true
+  },
+  "expected": {
+    "treated_as_noop": true,
+    "apply_time_side_effects_rerun": false,
+    "in_flight_run_canceled": false,
+    "state_ack": { "type": "state.ack", "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1", "body": { "applied_generation": 43 } },
+    "persisted_last_applied_hash_unchanged": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+  }
+}

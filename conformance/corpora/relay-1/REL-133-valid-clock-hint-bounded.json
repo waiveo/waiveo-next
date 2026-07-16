@@ -1,0 +1,20 @@
+{
+  "case_id": "REL-133-valid-clock-hint-bounded",
+  "contract": "relay/1",
+  "req_ids": ["REL-130", "REL-132", "REL-133"],
+  "description": "A relay's persisted clock floor is 1752537000000. The app peer sends two clock.hint messages: one within the relay's certificate not_after plus grace, and one beyond it. The first adjusts the relay's runtime clock only, without advancing the persisted floor; the second is rejected outright and neither adjusts the runtime clock nor advances the floor.",
+  "input": {
+    "relay_persisted_floor": 1752537000000,
+    "relay_cert_not_after": 1784073600000,
+    "bounded_grace_ms": 300000,
+    "hints": [
+      { "type": "clock.hint", "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1", "body": { "ts": 1752537600000 } },
+      { "type": "clock.hint", "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1", "body": { "ts": 1784074200001 } }
+    ]
+  },
+  "expected": {
+    "hint_1": { "accepted": true, "runtime_clock_adjusted": true, "persisted_floor_advanced": false },
+    "hint_2": { "accepted": false, "runtime_clock_adjusted": false, "persisted_floor_advanced": false, "reason": "hint ts exceeds cert not_after plus bounded grace" },
+    "persisted_floor_after_both_hints": 1752537000000
+  }
+}

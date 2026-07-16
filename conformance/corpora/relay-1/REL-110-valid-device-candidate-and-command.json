@@ -1,0 +1,32 @@
+{
+  "case_id": "REL-110-valid-device-candidate-and-command",
+  "contract": "relay/1",
+  "req_ids": ["REL-006", "REL-110", "REL-111", "REL-112", "REL-113"],
+  "description": "The relay reports its current candidate set as a full-set replace (one pending SSDP discovery, one mDNS discovery ignored forever). The app peer then dispatches a trace-correlated device.command against an already-resolved entity_id, which the relay executes and acknowledges ok; a second command naming a command not in the target's device class is rejected as unresolved rather than attempted.",
+  "input": {
+    "device_candidates_report": {
+      "type": "device.candidates",
+      "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1",
+      "body": {
+        "candidates": [
+          { "match": { "ssdp": "urn:roku-com:device:player:1" }, "provenance": "discovered", "status": "pending", "ignored_until": null, "first_seen": 1752537000000, "last_seen": 1752537600000 },
+          { "match": { "mdns": "_googlecast._tcp" }, "provenance": "discovered", "status": "ignored", "ignored_until": "forever", "first_seen": 1752530000000, "last_seen": 1752537600000 }
+        ]
+      }
+    },
+    "commands": [
+      { "type": "device.command", "id": "01J8Z4K4N5P6Q7R8S9T0V1W3B1", "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1", "trace_id": "01J8Z4K4N5P6Q7R8S9T0V1W3B0", "body": { "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y2", "command": "launch", "params": { "channel": "dev" } } },
+      { "type": "device.command", "id": "01J8Z4K4N5P6Q7R8S9T0V1W3B2", "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1", "body": { "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y2", "command": "blast", "params": {} } }
+    ],
+    "target_entity_device_class": "media-player",
+    "media_player_commands": ["launch", "home", "keypress", "power"]
+  },
+  "expected": {
+    "candidate_view_replaces_prior_view": true,
+    "results": [
+      { "type": "device.command_result", "id": "01J8Z4K4N5P6Q7R8S9T0V1W3B1", "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1", "trace_id": "01J8Z4K4N5P6Q7R8S9T0V1W3B0", "body": { "ok": true } },
+      { "type": "device.command_result", "id": "01J8Z4K4N5P6Q7R8S9T0V1W3B2", "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1", "body": { "ok": false, "error": { "code": "COMMAND_UNRESOLVED", "message": "\"blast\" is not a command media-player declares" } } }
+    ],
+    "unresolved_command_attempted_against_device": false
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "case_id": "REL-071-invalid-wrong-peer-key-snapshot-rejected",
+  "contract": "relay/1",
+  "req_ids": ["REL-054", "REL-071", "REL-072"],
+  "description": "A state.snapshot at generation 43 arrives signed under a key that is not the relay's persisted desired_state_verification_key (learned at enrollment) — e.g. an impostor app peer, or a snapshot signed before a re-enrollment rotated the key. The relay MUST reject it outright: no section is applied, partially or wholly, and its last-applied generation stays at 42.",
+  "input": {
+    "relay_persisted_verification_key": "ed25519:8f14e45fceea4b3e8c1e1a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1",
+    "relay_last_applied": { "generation": 42, "hash": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" },
+    "state_snapshot": {
+      "type": "state.snapshot",
+      "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1",
+      "body": {
+        "generation": 43,
+        "hash": "sha256:9e1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f",
+        "signature": "ed25519-sig-computed-with-a-different-key",
+        "signed_with_key": "ed25519:7c6b5a4938271605f4e3d2c1b0a9887766554433221100ffeeddccbbaa9988"
+      }
+    }
+  },
+  "expected": {
+    "signature_verifies": false,
+    "sections_applied": false,
+    "state_ack": {
+      "type": "state.ack",
+      "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1",
+      "body": {
+        "applied_generation": 42,
+        "error": { "code": "SNAPSHOT_SIGNATURE_INVALID", "message": "signature did not verify against the persisted desired-state verification key" }
+      }
+    },
+    "persisted_last_applied_unchanged": { "generation": 42, "hash": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" }
+  }
+}

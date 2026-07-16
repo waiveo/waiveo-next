@@ -1,0 +1,22 @@
+{
+  "case_id": "REL-022-invalid-re-enroll-superseded-cert",
+  "contract": "relay/1",
+  "req_ids": ["REL-022"],
+  "description": "A relay presents an expired, unrevoked certificate for a known relay_id, but the app peer's issuance record shows a newer certificate has since been issued for that same relay_id (this one is superseded, not the most recent) — a credential-theft-shaped signal. Re-enrollment through the hardened expired-certificate path MUST be refused outright, never silently granted.",
+  "input": {
+    "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1",
+    "presented_cert": { "serial": "5c6d7e8f", "not_after": 1730419200000 },
+    "issuance_record_for_relay_id": [
+      { "serial": "5c6d7e8f", "issued_at": 1699920000000, "revoked": false },
+      { "serial": "7a1b2c3d", "issued_at": 1713398400000, "revoked": false }
+    ],
+    "app_peer_trusted_now": 1752537600000
+  },
+  "expected": {
+    "eligible": false,
+    "most_recently_issued": false,
+    "error": { "code": "CERT_EXPIRED_INELIGIBLE", "message": "presented certificate serial 5c6d7e8f is superseded by 7a1b2c3d for this relay_id" },
+    "certificate_issued": false,
+    "operator_facing_condition_raised": true
+  }
+}

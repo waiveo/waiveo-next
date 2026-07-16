@@ -1,0 +1,34 @@
+{
+  "case_id": "REL-010-valid-fresh-enroll",
+  "contract": "relay/1",
+  "req_ids": ["REL-010", "REL-011", "REL-012", "REL-013", "REL-014"],
+  "description": "A relay holding no certificate redeems a one-time claim credential via the pre-enrollment bootstrap exchange, receiving a relay_id, certificate, and the app peer's desired-state verification key; a second attempt reusing the same claim_token is refused.",
+  "input": {
+    "claim_credential": { "claim_token": "9f2c7b1e4a3d4f5b8c6e7a9b1c2d3e4f" },
+    "requests": [
+      { "type": "enroll", "id": "01J8Z4K4N5P6Q7R8S9T0V1W3A0", "body": { "claim_token": "9f2c7b1e4a3d4f5b8c6e7a9b1c2d3e4f", "csr": "-----BEGIN CERTIFICATE REQUEST-----\nMIIBazCB4wIBADAxMS8...\n-----END CERTIFICATE REQUEST-----" } },
+      { "type": "enroll", "id": "01J8Z4K4N5P6Q7R8S9T0V1W3A9", "body": { "claim_token": "9f2c7b1e4a3d4f5b8c6e7a9b1c2d3e4f", "csr": "-----BEGIN CERTIFICATE REQUEST-----\nMIIBazCB4wIBADAxMS8...\n-----END CERTIFICATE REQUEST-----" } }
+    ]
+  },
+  "expected": {
+    "responses": [
+      {
+        "type": "enroll-ack",
+        "id": "01J8Z4K4N5P6Q7R8S9T0V1W3A0",
+        "body": {
+          "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1",
+          "not_before": 1752537600000,
+          "not_after": 1784073600000,
+          "desired_state_verification_key": "ed25519:8f14e45fceea4b3e8c1e1a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1"
+        }
+      },
+      {
+        "type": "error",
+        "id": "01J8Z4K4N5P6Q7R8S9T0V1W3A9",
+        "code": "CLAIM_TOKEN_INVALID",
+        "message": "claim_token has already been redeemed"
+      }
+    ],
+    "relay_id_stable_across_attempts": true
+  }
+}

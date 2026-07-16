@@ -1,0 +1,37 @@
+{
+  "case_id": "REL-090-valid-telemetry-overflow-loss-marker",
+  "contract": "relay/1",
+  "req_ids": ["REL-090", "REL-091", "REL-092", "REL-093", "REL-096", "REL-100", "REL-101", "REL-103", "REL-105"],
+  "description": "While disconnected, the relay's bounded durable buffer fills; drop-oldest discards durable-class seq 980-999 (12 content.played + 8 entity.state_changed entries) to make room for newer ones. On reconnect, telemetry.push carries the surviving entries plus a loss marker accounting for exactly the drop, shaped {from_seq, to_seq, dropped_counts_by_schema, reason} with no fifth field — the same shape events/1 EVT-144 names as relay/1's own.",
+  "input": {
+    "buffer_capacity": 500,
+    "durable_entries_recorded_while_disconnected": 520,
+    "dropped_range": { "from_seq": 980, "to_seq": 999 },
+    "dropped_breakdown": { "content.played": 12, "entity.state_changed": 8 },
+    "telemetry_push": {
+      "type": "telemetry.push",
+      "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1",
+      "body": {
+        "entries": [
+          { "seq": 1001, "schema": "automation.run", "payload": { "rule_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z1", "rule_revision": 4, "mode_disposition": "ran" } },
+          { "seq": 1002, "schema": "content.played", "payload": { "asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85", "screen_id": "01J8Z3K4N5P6Q7R8S9T0V1W2X6" } }
+        ],
+        "loss_markers": [
+          { "from_seq": 980, "to_seq": 999, "dropped_counts_by_schema": { "content.played": 12, "entity.state_changed": 8 }, "reason": "buffer_exceeded" }
+        ]
+      }
+    }
+  },
+  "expected": {
+    "loss_marker_field_count": 4,
+    "loss_marker_fields": ["from_seq", "to_seq", "dropped_counts_by_schema", "reason"],
+    "loss_marker_matches_events_1_evt_144_named_exception": true,
+    "dropped_counts_sum_matches_dropped_range": true,
+    "silent_loss": false,
+    "telemetry_ack": {
+      "type": "telemetry.ack",
+      "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1",
+      "body": { "ack_through_seq": 1002, "loss_markers_acked": [ { "from_seq": 980, "to_seq": 999 } ] }
+    }
+  }
+}
