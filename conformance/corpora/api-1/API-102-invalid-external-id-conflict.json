@@ -1,0 +1,40 @@
+{
+  "case_id": "API-102-invalid-external-id-conflict",
+  "contract": "api/1",
+  "req_ids": ["API-100", "API-101", "API-102"],
+  "description": "Creating a scope node whose external_id is already used by another scope node of the same kind under the same parent scope node is rejected with 400 Bad Request / EXTERNAL_ID_CONFLICT before the write executes; the collision rule is scoped by placement, so this says nothing about external_id reuse elsewhere in the tree.",
+  "input": {
+    "method": "POST",
+    "path": "/api/v1/scope-nodes",
+    "headers": {
+      "Trace-Id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y1"
+    },
+    "body": {
+      "kind": "screen",
+      "name": "Lobby Screen 2",
+      "parent_id": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5",
+      "external_id": "lobby-screen-1"
+    },
+    "collection_state": [
+      {
+        "id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y0",
+        "kind": "screen",
+        "parent_id": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5",
+        "external_id": "lobby-screen-1"
+      }
+    ]
+  },
+  "expected": {
+    "status": 400,
+    "content_type": "application/problem+json",
+    "write_executed": false,
+    "body": {
+      "type": "about:blank",
+      "title": "Bad Request",
+      "status": 400,
+      "detail": "external_id \"lobby-screen-1\" is already in use by another screen under this parent.",
+      "code": "EXTERNAL_ID_CONFLICT",
+      "trace_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y1"
+    }
+  }
+}

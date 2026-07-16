@@ -118,6 +118,7 @@ func (e AutomationUpdateMode) Valid() bool {
 // Defines values for ErrorCode.
 const (
 	CURSORINVALID            ErrorCode = "CURSOR_INVALID"
+	EXTERNALIDCONFLICT       ErrorCode = "EXTERNAL_ID_CONFLICT"
 	FORBIDDEN                ErrorCode = "FORBIDDEN"
 	IDEMPOTENCYKEYINPROGRESS ErrorCode = "IDEMPOTENCY_KEY_IN_PROGRESS"
 	IDEMPOTENCYKEYREUSED     ErrorCode = "IDEMPOTENCY_KEY_REUSED"
@@ -136,6 +137,8 @@ const (
 func (e ErrorCode) Valid() bool {
 	switch e {
 	case CURSORINVALID:
+		return true
+	case EXTERNALIDCONFLICT:
 		return true
 	case FORBIDDEN:
 		return true
@@ -160,6 +163,57 @@ func (e ErrorCode) Valid() bool {
 	case UNAVAILABLE:
 		return true
 	case VALIDATIONFAILED:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for JobState.
+const (
+	JobStateFailed    JobState = "failed"
+	JobStatePartial   JobState = "partial"
+	JobStatePending   JobState = "pending"
+	JobStateRunning   JobState = "running"
+	JobStateSucceeded JobState = "succeeded"
+)
+
+// Valid indicates whether the value is a known member of the JobState enum.
+func (e JobState) Valid() bool {
+	switch e {
+	case JobStateFailed:
+		return true
+	case JobStatePartial:
+		return true
+	case JobStatePending:
+		return true
+	case JobStateRunning:
+		return true
+	case JobStateSucceeded:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for JobTargetState.
+const (
+	JobTargetStateFailed    JobTargetState = "failed"
+	JobTargetStatePending   JobTargetState = "pending"
+	JobTargetStateRunning   JobTargetState = "running"
+	JobTargetStateSucceeded JobTargetState = "succeeded"
+)
+
+// Valid indicates whether the value is a known member of the JobTargetState enum.
+func (e JobTargetState) Valid() bool {
+	switch e {
+	case JobTargetStateFailed:
+		return true
+	case JobTargetStatePending:
+		return true
+	case JobTargetStateRunning:
+		return true
+	case JobTargetStateSucceeded:
 		return true
 	default:
 		return false
@@ -224,11 +278,14 @@ type Automation struct {
 	CreatedAt  time.Time                `json:"created_at"`
 	Enabled    bool                     `json:"enabled"`
 
+	// ExternalId Client-assigned identifier (contracts/api-1.md#client-assignable-external_id). Optional; unique within this resource's scope node among resources of the same type; MAY be used in place of `id` in a cross-reference; preserved unchanged through an export/apply round trip.
+	ExternalId **string `json:"external_id,omitempty"`
+
 	// Id A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
 	Id     Ulid    `json:"id"`
 	Labels []Label `json:"labels"`
 
-	// Max Concurrency cap; meaningful only under `queued` or `parallel` mode.
+	// Max Concurrency cap; meaningful only under `parallel` mode.
 	Max      *int           `json:"max"`
 	Mode     AutomationMode `json:"mode"`
 	Name     string         `json:"name"`
@@ -245,15 +302,27 @@ type Automation struct {
 // AutomationMode defines model for Automation.Mode.
 type AutomationMode string
 
+// AutomationBulkEnableRequest The request body for a fleet-mutating bulk enable/disable over a selector-matched set of automations.
+type AutomationBulkEnableRequest struct {
+	// Enabled The `enabled` value to apply to every automation the selector matches.
+	Enabled bool `json:"enabled"`
+
+	// Selector Label-selector grammar (contracts/api-1.md#label-selector-grammar) — this operation's fleet-mutating target predicate, not a list operation's result filter.
+	Selector string `json:"selector"`
+}
+
 // AutomationCreate defines model for AutomationCreate.
 type AutomationCreate struct {
 	Actions    []map[string]interface{}  `json:"actions"`
 	Conditions *[]map[string]interface{} `json:"conditions,omitempty"`
 	Enabled    *bool                     `json:"enabled,omitempty"`
+	ExternalId **string                  `json:"external_id,omitempty"`
 	Labels     *[]Label                  `json:"labels,omitempty"`
-	Max        **int                     `json:"max,omitempty"`
-	Mode       AutomationCreateMode      `json:"mode"`
-	Name       string                    `json:"name"`
+
+	// Max Concurrency cap; meaningful only under `parallel` mode.
+	Max  **int                `json:"max,omitempty"`
+	Mode AutomationCreateMode `json:"mode"`
+	Name string               `json:"name"`
 
 	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
 	ScopeNode Ulid                     `json:"scope_node"`
@@ -292,11 +361,14 @@ type AutomationUpdate struct {
 	Actions    *[]map[string]interface{} `json:"actions,omitempty"`
 	Conditions *[]map[string]interface{} `json:"conditions,omitempty"`
 	Enabled    *bool                     `json:"enabled,omitempty"`
+	ExternalId **string                  `json:"external_id,omitempty"`
 	Labels     *[]Label                  `json:"labels,omitempty"`
-	Max        **int                     `json:"max,omitempty"`
-	Mode       *AutomationUpdateMode     `json:"mode,omitempty"`
-	Name       *string                   `json:"name,omitempty"`
-	Triggers   *[]map[string]interface{} `json:"triggers,omitempty"`
+
+	// Max Concurrency cap; meaningful only under `parallel` mode.
+	Max      **int                     `json:"max,omitempty"`
+	Mode     *AutomationUpdateMode     `json:"mode,omitempty"`
+	Name     *string                   `json:"name,omitempty"`
+	Triggers *[]map[string]interface{} `json:"triggers,omitempty"`
 }
 
 // AutomationUpdateMode defines model for AutomationUpdate.Mode.
@@ -308,6 +380,35 @@ type Cursor = *string
 // ErrorCode The stable, additive-only machine-readable error registry (`contracts/api-1.md#error-taxonomy`).
 type ErrorCode string
 
+// Job The accepted-work resource returned by 202 Accepted. A client polls this resource (`GET /jobs/{job_id}`) until `state` reaches a terminal value (`succeeded`, `failed`, or `partial`).
+type Job struct {
+	CreatedAt time.Time `json:"created_at"`
+
+	// CreatedBy The submitting principal (opaque identifier; the principal/role model itself is out of this contract's scope).
+	CreatedBy string `json:"created_by"`
+
+	// Id A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	Id Ulid `json:"id"`
+
+	// State pending/running are non-terminal; succeeded/failed/partial are terminal. `partial` is job-level only — never a JobTarget.state value.
+	State   JobState    `json:"state"`
+	Targets []JobTarget `json:"targets"`
+}
+
+// JobState pending/running are non-terminal; succeeded/failed/partial are terminal. `partial` is job-level only — never a JobTarget.state value.
+type JobState string
+
+// JobTarget One resource this Job acts on, and that resource's own per-target progress.
+type JobTarget struct {
+	State JobTargetState `json:"state"`
+
+	// TargetId The acted-on resource's `id` or `external_id`, exactly as the fleet-mutating request identified it.
+	TargetId string `json:"target_id"`
+}
+
+// JobTargetState defines model for JobTarget.State.
+type JobTargetState string
+
 // Label One label term, as accepted by the label-selector grammar (`contracts/api-1.md#label-selector-grammar`).
 type Label struct {
 	Key   string `json:"key"`
@@ -318,6 +419,9 @@ type Label struct {
 type Problem struct {
 	// Code The stable, additive-only machine-readable error registry (`contracts/api-1.md#error-taxonomy`).
 	Code ErrorCode `json:"code"`
+
+	// CurrentRevision Present only when `code` is REVISION_CONFLICT — the resource's current revision, so the client can re-read and retry.
+	CurrentRevision *int `json:"current_revision,omitempty"`
 
 	// Detail A human-readable explanation specific to this occurrence.
 	Detail *string `json:"detail,omitempty"`
@@ -347,6 +451,9 @@ type ScopeNode struct {
 	AccountState **string  `json:"account_state,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 
+	// ExternalId Client-assigned identifier (contracts/api-1.md#client-assignable-external_id). Optional; unique within this resource's scope node among resources of the same type; MAY be used in place of `id` in a cross-reference; preserved unchanged through an export/apply round trip. Every resource in this API carries this same convention, not only scope-nodes and automations.
+	ExternalId **string `json:"external_id,omitempty"`
+
 	// Id A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
 	Id     Ulid          `json:"id"`
 	Kind   ScopeNodeKind `json:"kind"`
@@ -369,13 +476,14 @@ type ScopeNodeKind string
 
 // ScopeNodeCreate defines model for ScopeNodeCreate.
 type ScopeNodeCreate struct {
-	Kind     ScopeNodeCreateKind `json:"kind"`
-	Labels   *[]Label            `json:"labels,omitempty"`
-	Lat      *float32            `json:"lat,omitempty"`
-	Long     *float32            `json:"long,omitempty"`
-	Name     string              `json:"name"`
-	ParentId **string            `json:"parent_id,omitempty"`
-	Tz       *string             `json:"tz,omitempty"`
+	ExternalId **string            `json:"external_id,omitempty"`
+	Kind       ScopeNodeCreateKind `json:"kind"`
+	Labels     *[]Label            `json:"labels,omitempty"`
+	Lat        *float32            `json:"lat,omitempty"`
+	Long       *float32            `json:"long,omitempty"`
+	Name       string              `json:"name"`
+	ParentId   **string            `json:"parent_id,omitempty"`
+	Tz         *string             `json:"tz,omitempty"`
 }
 
 // ScopeNodeCreateKind defines model for ScopeNodeCreate.Kind.
@@ -390,11 +498,12 @@ type ScopeNodeListResponse struct {
 
 // ScopeNodeUpdate Partial update — every field optional, at least one required.
 type ScopeNodeUpdate struct {
-	Labels *[]Label `json:"labels,omitempty"`
-	Lat    *float32 `json:"lat,omitempty"`
-	Long   *float32 `json:"long,omitempty"`
-	Name   *string  `json:"name,omitempty"`
-	Tz     *string  `json:"tz,omitempty"`
+	ExternalId **string `json:"external_id,omitempty"`
+	Labels     *[]Label `json:"labels,omitempty"`
+	Lat        *float32 `json:"lat,omitempty"`
+	Long       *float32 `json:"long,omitempty"`
+	Name       *string  `json:"name,omitempty"`
+	Tz         *string  `json:"tz,omitempty"`
 }
 
 // TraceId A ULID- or UUID-class trace identifier, 20-36 characters, restricted charset.
@@ -484,6 +593,15 @@ type CreateAutomationParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// BulkEnableAutomationsParams defines parameters for BulkEnableAutomations.
+type BulkEnableAutomationsParams struct {
+	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
+	IdempotencyKey *IdempotencyKeyParam `json:"Idempotency-Key,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // DeleteAutomationParams defines parameters for DeleteAutomation.
 type DeleteAutomationParams struct {
 	// IfMatch The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists.
@@ -513,6 +631,12 @@ type RunAutomationParams struct {
 	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
 	IdempotencyKey *IdempotencyKeyParam `json:"Idempotency-Key,omitempty"`
 
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// GetJobParams defines parameters for GetJob.
+type GetJobParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
@@ -571,8 +695,29 @@ type UpdateScopeNodeParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// DeleteWorkspaceParams defines parameters for DeleteWorkspace.
+type DeleteWorkspaceParams struct {
+	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
+	IdempotencyKey *IdempotencyKeyParam `json:"Idempotency-Key,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// ExportWorkspaceParams defines parameters for ExportWorkspace.
+type ExportWorkspaceParams struct {
+	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
+	IdempotencyKey *IdempotencyKeyParam `json:"Idempotency-Key,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // CreateAutomationJSONRequestBody defines body for CreateAutomation for application/json ContentType.
 type CreateAutomationJSONRequestBody = AutomationCreate
+
+// BulkEnableAutomationsJSONRequestBody defines body for BulkEnableAutomations for application/json ContentType.
+type BulkEnableAutomationsJSONRequestBody = AutomationBulkEnableRequest
 
 // UpdateAutomationJSONRequestBody defines body for UpdateAutomation for application/json ContentType.
 type UpdateAutomationJSONRequestBody = AutomationUpdate
@@ -670,6 +815,11 @@ type ClientInterface interface {
 
 	CreateAutomation(ctx context.Context, params *CreateAutomationParams, body CreateAutomationJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// BulkEnableAutomationsWithBody request with any body
+	BulkEnableAutomationsWithBody(ctx context.Context, params *BulkEnableAutomationsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	BulkEnableAutomations(ctx context.Context, params *BulkEnableAutomationsParams, body BulkEnableAutomationsJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// DeleteAutomation request
 	DeleteAutomation(ctx context.Context, automationId Ulid, params *DeleteAutomationParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -694,6 +844,9 @@ type ClientInterface interface {
 
 	// ListEntities request
 	ListEntities(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetJob request
+	GetJob(ctx context.Context, jobId Ulid, params *GetJobParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListPacks request
 	ListPacks(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -725,6 +878,12 @@ type ClientInterface interface {
 
 	// GetSystemHealth request
 	GetSystemHealth(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteWorkspace request
+	DeleteWorkspace(ctx context.Context, params *DeleteWorkspaceParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ExportWorkspace request
+	ExportWorkspace(ctx context.Context, params *ExportWorkspaceParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 }
 
 func (c *Client) Login(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -765,6 +924,30 @@ func (c *Client) CreateAutomationWithBody(ctx context.Context, params *CreateAut
 
 func (c *Client) CreateAutomation(ctx context.Context, params *CreateAutomationParams, body CreateAutomationJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewCreateAutomationRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) BulkEnableAutomationsWithBody(ctx context.Context, params *BulkEnableAutomationsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewBulkEnableAutomationsRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) BulkEnableAutomations(ctx context.Context, params *BulkEnableAutomationsParams, body BulkEnableAutomationsJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewBulkEnableAutomationsRequest(c.Server, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -873,6 +1056,18 @@ func (c *Client) ListDevices(ctx context.Context, reqEditors ...RequestEditorFn)
 
 func (c *Client) ListEntities(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListEntitiesRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetJob(ctx context.Context, jobId Ulid, params *GetJobParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetJobRequest(c.Server, jobId, params)
 	if err != nil {
 		return nil, err
 	}
@@ -1005,6 +1200,30 @@ func (c *Client) UpdateScopeNode(ctx context.Context, scopeNodeId Ulid, params *
 
 func (c *Client) GetSystemHealth(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetSystemHealthRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) DeleteWorkspace(ctx context.Context, params *DeleteWorkspaceParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteWorkspaceRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ExportWorkspace(ctx context.Context, params *ExportWorkspaceParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewExportWorkspaceRequest(c.Server, params)
 	if err != nil {
 		return nil, err
 	}
@@ -1156,6 +1375,72 @@ func NewCreateAutomationRequestWithBody(server string, params *CreateAutomationP
 	}
 
 	operationPath := fmt.Sprintf("/automations")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.IdempotencyKey != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Idempotency-Key", *params.IdempotencyKey, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Idempotency-Key", headerParam0)
+		}
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewBulkEnableAutomationsRequest calls the generic BulkEnableAutomations builder with application/json body
+func NewBulkEnableAutomationsRequest(server string, params *BulkEnableAutomationsParams, body BulkEnableAutomationsJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewBulkEnableAutomationsRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewBulkEnableAutomationsRequestWithBody generates requests for BulkEnableAutomations with any type of body
+func NewBulkEnableAutomationsRequestWithBody(server string, params *BulkEnableAutomationsParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/automations/bulk-enable")
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -1528,6 +1813,55 @@ func NewListEntitiesRequest(server string) (*http.Request, error) {
 	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
 	if err != nil {
 		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetJobRequest generates requests for GetJob
+func NewGetJobRequest(server string, jobId Ulid, params *GetJobParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "job_id", jobId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/jobs/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
 	}
 
 	return req, nil
@@ -2007,6 +2341,112 @@ func NewGetSystemHealthRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
+// NewDeleteWorkspaceRequest generates requests for DeleteWorkspace
+func NewDeleteWorkspaceRequest(server string, params *DeleteWorkspaceParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/workspace/delete")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.IdempotencyKey != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Idempotency-Key", *params.IdempotencyKey, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Idempotency-Key", headerParam0)
+		}
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewExportWorkspaceRequest generates requests for ExportWorkspace
+func NewExportWorkspaceRequest(server string, params *ExportWorkspaceParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/workspace/export")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.IdempotencyKey != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Idempotency-Key", *params.IdempotencyKey, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Idempotency-Key", headerParam0)
+		}
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
 func (c *Client) applyEditors(ctx context.Context, req *http.Request, additionalEditors []RequestEditorFn) error {
 	for _, r := range c.RequestEditors {
 		if err := r(ctx, req); err != nil {
@@ -2061,6 +2501,11 @@ type ClientWithResponsesInterface interface {
 
 	CreateAutomationWithResponse(ctx context.Context, params *CreateAutomationParams, body CreateAutomationJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateAutomationResponse, error)
 
+	// BulkEnableAutomationsWithBodyWithResponse request with any body
+	BulkEnableAutomationsWithBodyWithResponse(ctx context.Context, params *BulkEnableAutomationsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*BulkEnableAutomationsResponse, error)
+
+	BulkEnableAutomationsWithResponse(ctx context.Context, params *BulkEnableAutomationsParams, body BulkEnableAutomationsJSONRequestBody, reqEditors ...RequestEditorFn) (*BulkEnableAutomationsResponse, error)
+
 	// DeleteAutomationWithResponse request
 	DeleteAutomationWithResponse(ctx context.Context, automationId Ulid, params *DeleteAutomationParams, reqEditors ...RequestEditorFn) (*DeleteAutomationResponse, error)
 
@@ -2085,6 +2530,9 @@ type ClientWithResponsesInterface interface {
 
 	// ListEntitiesWithResponse request
 	ListEntitiesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListEntitiesResponse, error)
+
+	// GetJobWithResponse request
+	GetJobWithResponse(ctx context.Context, jobId Ulid, params *GetJobParams, reqEditors ...RequestEditorFn) (*GetJobResponse, error)
 
 	// ListPacksWithResponse request
 	ListPacksWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListPacksResponse, error)
@@ -2116,6 +2564,12 @@ type ClientWithResponsesInterface interface {
 
 	// GetSystemHealthWithResponse request
 	GetSystemHealthWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetSystemHealthResponse, error)
+
+	// DeleteWorkspaceWithResponse request
+	DeleteWorkspaceWithResponse(ctx context.Context, params *DeleteWorkspaceParams, reqEditors ...RequestEditorFn) (*DeleteWorkspaceResponse, error)
+
+	// ExportWorkspaceWithResponse request
+	ExportWorkspaceWithResponse(ctx context.Context, params *ExportWorkspaceParams, reqEditors ...RequestEditorFn) (*ExportWorkspaceResponse, error)
 }
 
 type LoginResponse struct {
@@ -2209,6 +2663,40 @@ func (r CreateAutomationResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r CreateAutomationResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type BulkEnableAutomationsResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON202                   *Job
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON429 *TooManyRequests
+}
+
+// Status returns HTTPResponse.Status
+func (r BulkEnableAutomationsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r BulkEnableAutomationsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r BulkEnableAutomationsResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -2437,6 +2925,38 @@ func (r ListEntitiesResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r ListEntitiesResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetJobResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *Job
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON404 *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r GetJobResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetJobResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetJobResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -2733,6 +3253,72 @@ func (r GetSystemHealthResponse) ContentType() string {
 	return ""
 }
 
+type DeleteWorkspaceResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON202                   *Job
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON429 *TooManyRequests
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteWorkspaceResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteWorkspaceResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r DeleteWorkspaceResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ExportWorkspaceResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON202                   *Job
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON429 *TooManyRequests
+}
+
+// Status returns HTTPResponse.Status
+func (r ExportWorkspaceResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ExportWorkspaceResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ExportWorkspaceResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 // LoginWithResponse request returning *LoginResponse
 func (c *ClientWithResponses) LoginWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*LoginResponse, error) {
 	rsp, err := c.Login(ctx, reqEditors...)
@@ -2766,6 +3352,23 @@ func (c *ClientWithResponses) CreateAutomationWithResponse(ctx context.Context, 
 		return nil, err
 	}
 	return ParseCreateAutomationResponse(rsp)
+}
+
+// BulkEnableAutomationsWithBodyWithResponse request with arbitrary body returning *BulkEnableAutomationsResponse
+func (c *ClientWithResponses) BulkEnableAutomationsWithBodyWithResponse(ctx context.Context, params *BulkEnableAutomationsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*BulkEnableAutomationsResponse, error) {
+	rsp, err := c.BulkEnableAutomationsWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseBulkEnableAutomationsResponse(rsp)
+}
+
+func (c *ClientWithResponses) BulkEnableAutomationsWithResponse(ctx context.Context, params *BulkEnableAutomationsParams, body BulkEnableAutomationsJSONRequestBody, reqEditors ...RequestEditorFn) (*BulkEnableAutomationsResponse, error) {
+	rsp, err := c.BulkEnableAutomations(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseBulkEnableAutomationsResponse(rsp)
 }
 
 // DeleteAutomationWithResponse request returning *DeleteAutomationResponse
@@ -2845,6 +3448,15 @@ func (c *ClientWithResponses) ListEntitiesWithResponse(ctx context.Context, reqE
 		return nil, err
 	}
 	return ParseListEntitiesResponse(rsp)
+}
+
+// GetJobWithResponse request returning *GetJobResponse
+func (c *ClientWithResponses) GetJobWithResponse(ctx context.Context, jobId Ulid, params *GetJobParams, reqEditors ...RequestEditorFn) (*GetJobResponse, error) {
+	rsp, err := c.GetJob(ctx, jobId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetJobResponse(rsp)
 }
 
 // ListPacksWithResponse request returning *ListPacksResponse
@@ -2942,6 +3554,24 @@ func (c *ClientWithResponses) GetSystemHealthWithResponse(ctx context.Context, r
 		return nil, err
 	}
 	return ParseGetSystemHealthResponse(rsp)
+}
+
+// DeleteWorkspaceWithResponse request returning *DeleteWorkspaceResponse
+func (c *ClientWithResponses) DeleteWorkspaceWithResponse(ctx context.Context, params *DeleteWorkspaceParams, reqEditors ...RequestEditorFn) (*DeleteWorkspaceResponse, error) {
+	rsp, err := c.DeleteWorkspace(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteWorkspaceResponse(rsp)
+}
+
+// ExportWorkspaceWithResponse request returning *ExportWorkspaceResponse
+func (c *ClientWithResponses) ExportWorkspaceWithResponse(ctx context.Context, params *ExportWorkspaceParams, reqEditors ...RequestEditorFn) (*ExportWorkspaceResponse, error) {
+	rsp, err := c.ExportWorkspace(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseExportWorkspaceResponse(rsp)
 }
 
 // ParseLoginResponse parses an HTTP response from a LoginWithResponse call
@@ -3065,6 +3695,60 @@ func ParseCreateAutomationResponse(rsp *http.Response) (*CreateAutomationRespons
 			return nil, err
 		}
 		response.ApplicationproblemJSON409 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseBulkEnableAutomationsResponse parses an HTTP response from a BulkEnableAutomationsWithResponse call
+func ParseBulkEnableAutomationsResponse(rsp *http.Response) (*BulkEnableAutomationsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &BulkEnableAutomationsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 202:
+		var dest Job
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON202 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
 
 	}
 
@@ -3373,6 +4057,46 @@ func ParseListEntitiesResponse(rsp *http.Response) (*ListEntitiesResponse, error
 			return nil, err
 		}
 		response.ApplicationproblemJSON401 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetJobResponse parses an HTTP response from a GetJobWithResponse call
+func ParseGetJobResponse(rsp *http.Response) (*GetJobResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetJobResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest Job
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
 
 	}
 
@@ -3747,6 +4471,100 @@ func ParseGetSystemHealthResponse(rsp *http.Response) (*GetSystemHealthResponse,
 			return nil, err
 		}
 		response.ApplicationproblemJSON401 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseDeleteWorkspaceResponse parses an HTTP response from a DeleteWorkspaceWithResponse call
+func ParseDeleteWorkspaceResponse(rsp *http.Response) (*DeleteWorkspaceResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteWorkspaceResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 202:
+		var dest Job
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON202 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseExportWorkspaceResponse parses an HTTP response from a ExportWorkspaceWithResponse call
+func ParseExportWorkspaceResponse(rsp *http.Response) (*ExportWorkspaceResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ExportWorkspaceResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 202:
+		var dest Job
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON202 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
 
 	}
 

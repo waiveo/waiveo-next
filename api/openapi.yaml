@@ -39,6 +39,17 @@ tags:
     description: Screen content — casts, slides, and playback assignment. Path stub.
   - name: packs
     description: Installed packs and their declared actions. Path stub.
+  - name: jobs
+    description: >-
+      The async Job resource a fleet-mutating or otherwise
+      not-synchronously-completable operation returns via `202 Accepted`;
+      see `contracts/api-1.md#fleet-mutating-operations--the-job-resource`.
+      Path stub beyond the representative flows that return one.
+  - name: workspace
+    description: >-
+      Workspace-level data-subject export and delete; see
+      `contracts/api-1.md#data-subject-export--delete`. Specced; full
+      data-subject-request workflow tooling is a deferred implementation.
   - name: system
     description: Platform health, logs, and maintenance operations. Path stub.
   - name: "mcp:read"
@@ -405,6 +416,146 @@ paths:
           $ref: "#/components/responses/Conflict"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+  /automations/bulk-enable:
+    post:
+      operationId: bulkEnableAutomations
+      summary: Enable or disable a selector-matched set of automations
+      description: >-
+        Fleet-mutating operation
+        (`contracts/api-1.md#fleet-mutating-operations--the-job-resource`):
+        targets every automation the selector matches, accepts the same
+        label-selector grammar a list operation does as its target
+        predicate, and returns 202 with a Job resource rather than
+        blocking until every target finishes.
+      tags: [automations, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AutomationBulkEnableRequest"
+      responses:
+        "202":
+          description: Accepted; poll the returned Job resource for completion.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  # ---------------------------------------------------------------------
+  # jobs — the async Job resource a fleet-mutating or otherwise
+  # not-synchronously-completable operation returns via 202 Accepted
+  # (contracts/api-1.md#fleet-mutating-operations--the-job-resource).
+  # ---------------------------------------------------------------------
+  /jobs/{job_id}:
+    parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/Ulid"
+    get:
+      operationId: getJob
+      summary: Read a Job resource
+      description: A client polls this operation until the returned Job's `state` reaches a terminal value.
+      tags: [jobs, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The job.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ---------------------------------------------------------------------
+  # workspace — data-subject export/delete, specced at the shape level
+  # (contracts/api-1.md#data-subject-export--delete). Both return 202 with
+  # a Job resource, exactly like a fleet-mutating operation, since neither
+  # completes within its own request/response cycle.
+  # ---------------------------------------------------------------------
+  /workspace/export:
+    post:
+      operationId: exportWorkspace
+      summary: Export the workspace as a portable archive
+      description: >-
+        Data-subject export operation
+        (`contracts/api-1.md#data-subject-export--delete`): delegates to
+        the archive/1 container format. Specced; full data-subject-request
+        workflow tooling beyond this operation's own shape is a deferred
+        implementation.
+      tags: [workspace, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "202":
+          description: Export accepted; poll the returned Job resource for completion.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+  /workspace/delete:
+    post:
+      operationId: deleteWorkspace
+      summary: Erase the workspace's data via key-material destruction
+      description: >-
+        Data-subject delete operation
+        (`contracts/api-1.md#data-subject-export--delete`): triggers the
+        workspace's key-material destruction path. Specced; full
+        data-subject-request workflow tooling beyond this operation's own
+        shape is a deferred implementation.
+      tags: [workspace, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "202":
+          description: Deletion accepted; poll the returned Job resource for completion.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
 
   # ---------------------------------------------------------------------
   # Tagged stubs — path + summary + tag only; full shapes land in a later
@@ -759,6 +910,7 @@ components:
         - SELECTOR_INVALID
         - IDEMPOTENCY_KEY_REUSED
         - IDEMPOTENCY_KEY_IN_PROGRESS
+        - EXTERNAL_ID_CONFLICT
         - RATE_LIMITED
         - INTERNAL
         - UNAVAILABLE
@@ -771,6 +923,16 @@ components:
       properties:
         id:
           $ref: "#/components/schemas/Ulid"
+        external_id:
+          type: ["string", "null"]
+          description: >-
+            Client-assigned identifier (contracts/api-1.md#client-assignable-external_id).
+            Optional; unique within this resource's scope node among
+            resources of the same type; MAY be used in place of `id` in a
+            cross-reference; preserved unchanged through an export/apply
+            round trip. Every resource in this API carries this same
+            convention, not only scope-nodes and automations.
+          x-go-type: "*string"
         kind:
           type: string
           enum: [org, site, group, screen]
@@ -818,6 +980,9 @@ components:
       required: [kind, name]
       additionalProperties: false
       properties:
+        external_id:
+          type: ["string", "null"]
+          x-go-type: "*string"
         kind:
           type: string
           enum: [org, site, group, screen]
@@ -850,6 +1015,9 @@ components:
       minProperties: 1
       additionalProperties: false
       properties:
+        external_id:
+          type: ["string", "null"]
+          x-go-type: "*string"
         name:
           type: string
           minLength: 1
@@ -893,6 +1061,15 @@ components:
       properties:
         id:
           $ref: "#/components/schemas/Ulid"
+        external_id:
+          type: ["string", "null"]
+          description: >-
+            Client-assigned identifier (contracts/api-1.md#client-assignable-external_id).
+            Optional; unique within this resource's scope node among
+            resources of the same type; MAY be used in place of `id` in a
+            cross-reference; preserved unchanged through an export/apply
+            round trip.
+          x-go-type: "*string"
         name:
           type: string
           minLength: 1
@@ -910,7 +1087,7 @@ components:
           enum: [single, restart, queued, parallel]
         max:
           type: ["integer", "null"]
-          description: Concurrency cap; meaningful only under `queued` or `parallel` mode.
+          description: Concurrency cap; meaningful only under `parallel` mode.
           x-go-type: "*int"
         triggers:
           type: array
@@ -947,6 +1124,9 @@ components:
       required: [name, scope_node, mode, triggers, actions]
       additionalProperties: false
       properties:
+        external_id:
+          type: ["string", "null"]
+          x-go-type: "*string"
         name:
           type: string
           minLength: 1
@@ -965,6 +1145,7 @@ components:
           enum: [single, restart, queued, parallel]
         max:
           type: ["integer", "null"]
+          description: Concurrency cap; meaningful only under `parallel` mode.
           x-go-type: "*int"
         triggers:
           type: array
@@ -990,6 +1171,9 @@ components:
       minProperties: 1
       additionalProperties: false
       properties:
+        external_id:
+          type: ["string", "null"]
+          x-go-type: "*string"
         name:
           type: string
           minLength: 1
@@ -1005,6 +1189,7 @@ components:
           enum: [single, restart, queued, parallel]
         max:
           type: ["integer", "null"]
+          description: Concurrency cap; meaningful only under `parallel` mode.
           x-go-type: "*int"
         triggers:
           type: array
@@ -1056,3 +1241,64 @@ components:
           type: string
           description: rules/1's closed RunDisposition set.
           enum: [ran, skipped, restarted]
+
+    AutomationBulkEnableRequest:
+      type: object
+      description: The request body for a fleet-mutating bulk enable/disable over a selector-matched set of automations.
+      required: [selector, enabled]
+      additionalProperties: false
+      properties:
+        selector:
+          type: string
+          description: >-
+            Label-selector grammar (contracts/api-1.md#label-selector-grammar)
+            — this operation's fleet-mutating target predicate, not a list
+            operation's result filter.
+          example: "env in (prod,staging),scope_node subtree 01J8Z2Q1M8H8N4T0V1W2X3Y4Z5"
+        enabled:
+          type: boolean
+          description: The `enabled` value to apply to every automation the selector matches.
+
+    # -----------------------------------------------------------------
+    # Job — the async resource a fleet-mutating or otherwise
+    # not-synchronously-completable operation returns via 202 Accepted
+    # (contracts/api-1.md#fleet-mutating-operations--the-job-resource).
+    # -----------------------------------------------------------------
+    Job:
+      type: object
+      description: >-
+        The accepted-work resource returned by 202 Accepted. A client
+        polls this resource (`GET /jobs/{job_id}`) until `state` reaches a
+        terminal value (`succeeded`, `failed`, or `partial`).
+      required: [id, targets, created_by, state, created_at]
+      additionalProperties: false
+      properties:
+        id:
+          $ref: "#/components/schemas/Ulid"
+        targets:
+          type: array
+          items:
+            $ref: "#/components/schemas/JobTarget"
+        created_by:
+          type: string
+          description: The submitting principal (opaque identifier; the principal/role model itself is out of this contract's scope).
+        state:
+          type: string
+          description: pending/running are non-terminal; succeeded/failed/partial are terminal. `partial` is job-level only — never a JobTarget.state value.
+          enum: [pending, running, succeeded, failed, partial]
+        created_at:
+          type: string
+          format: date-time
+
+    JobTarget:
+      type: object
+      description: One resource this Job acts on, and that resource's own per-target progress.
+      required: [target_id, state]
+      additionalProperties: false
+      properties:
+        target_id:
+          type: string
+          description: The acted-on resource's `id` or `external_id`, exactly as the fleet-mutating request identified it.
+        state:
+          type: string
+          enum: [pending, running, succeeded, failed]

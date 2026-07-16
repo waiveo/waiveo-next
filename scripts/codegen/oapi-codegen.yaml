@@ -2,6 +2,6 @@ package: apiv1
 generate:
   models: true
   client: true
-output: ../../api/gen/go/api.gen.go
+output: api/gen/go/api.gen.go
 output-options:
   skip-prune: false

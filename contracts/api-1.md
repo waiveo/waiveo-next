@@ -6,9 +6,9 @@
 
 ## Scope
 
-api/1 defines the cross-cutting conventions every operation in `api/openapi.yaml` MUST follow: the error shape, optimistic concurrency, keyset pagination, idempotency, trace propagation, the `mcp:` operation-tag curation rule, the label-selector grammar, the operation-level security-override convention, and the evolution/deprecation policy. `api/openapi.yaml` implements these conventions as reusable OpenAPI components and applies them to every operation; this document is their normative source — where the two disagree, this document governs.
+api/1 defines the cross-cutting conventions every operation in `api/openapi.yaml` MUST follow: the error shape, optimistic concurrency, keyset pagination, idempotency, trace propagation, the `mcp:` operation-tag curation rule, the label-selector grammar, the client-assignable `external_id` convention, the operation-level security-override convention, the Job resource fleet-mutating operations return, the data-subject export/delete operations, and the evolution/deprecation policy. `api/openapi.yaml` implements these conventions as reusable OpenAPI components and applies them to every operation; this document is their normative source — where the two disagree, this document governs.
 
-- In scope: the Problem error shape and its error-code registry; revision/ETag/If-Match optimistic concurrency; keyset pagination (the opaque cursor grammar, referenced by name from other contracts); the label-selector grammar (equality, set-membership, existence, and scope-node subtree terms over labels); `Idempotency-Key` semantics on mutating POSTs; `Trace-Id` propagation; the `mcp:read`/`mcp:act` operation-tag curation rule; the operation-level security-override convention for credential-exchange and unauthenticated-intake operations; api/1's additive-evolution and deprecation policy.
+- In scope: the Problem error shape and its error-code registry; revision/ETag/If-Match optimistic concurrency; keyset pagination (the opaque cursor grammar, referenced by name from other contracts); the label-selector grammar (equality, set-membership, existence, and scope-node subtree terms over labels), including its extension to a fleet-mutating operation's own target predicate; the client-assignable `external_id` convention every resource carries; `Idempotency-Key` semantics on mutating POSTs; `Trace-Id` propagation; the `mcp:read`/`mcp:act` operation-tag curation rule; the operation-level security-override convention for credential-exchange and unauthenticated-intake operations; the Job resource and its high-level state machine, returned by `202 Accepted` from a fleet-mutating or otherwise not-synchronously-completable operation; the data-subject export and delete operations and their self-hosted realization; api/1's additive-evolution and deprecation policy.
 - Out of scope: the per-resource business schema and endpoint list (`api/openapi.yaml`); the principal/role/session/audit model (a separate concern); the automation vocabulary a rule's `triggers`/`conditions`/`actions` fields hold (`rules/1`); the pack-runtime protocol an `execution: app-service` action dispatches through (`ctx/1`); the wire framing of `events/1`, api/1's sibling watch door.
 
 ## Definitions
@@ -22,6 +22,9 @@ api/1 defines the cross-cutting conventions every operation in `api/openapi.yaml
 - **Selector** — a string in this contract's label-selector grammar (Label-selector grammar), accepted by every list operation's `selector` query parameter and by other contracts' selector-typed fields.
 - **Scope node** — a node in the platform's org → site → group → screen tree; every resource this API exposes carries the ID of the scope node it is placed under.
 - **List operation** — any GET operation whose success response is a page of zero or more resources (an `items` array plus a `cursor`).
+- **External ID** — a client-assigned string a resource MAY carry in its `external_id` field, usable in place of `id` (ULID) wherever this contract or another contract accepts a reference to that resource (Client-assignable external_id).
+- **Job** — the resource a fleet-mutating or otherwise not-synchronously-completable operation returns via `202 Accepted`, polled by the client until it reaches a terminal state (Fleet-mutating operations & the Job resource). Distinct from `ctx/1`'s own internal job envelope for `assets.derive`.
+- **Workspace** — as defined in `archive/1`: the complete owned state — relational data, content-addressed assets, and installed packs — a single deployment's data comprises.
 
 ## Normative requirements
 
@@ -155,6 +158,48 @@ The single `/api/v1` prefix (API-001) replaces a legacy core/extension URL split
 
 **[API-092]** An unauthenticated- or scoped-intake operation — one a caller invokes without holding, and without being able to obtain, a platform session or API key (e.g. an inbound webhook or callback) — MUST declare `security: []` (API-090) and MUST instead authenticate the request via exactly one operation-specific scheme: either (a) a signed-request scheme, in which an HMAC computed over the request body and keyed by a secret scoped to that one endpoint accompanies the request, or (b) a scoped, single-purpose ingest token presented by the caller. The concrete intake endpoints this platform exposes, and which of the two schemes each one uses, are defined in the contract or contract section introducing that intake feature; this section defines only the two permitted authentication patterns and the requirement (API-090) that such an operation override the document-level scheme rather than silently inherit it.
 
+### Client-assignable external_id
+
+**[API-100]** Every resource `api/openapi.yaml` defines MUST accept an optional `external_id` field: a client-assigned string (External ID), distinct from the server-assigned `id` (ULID), that a client MAY set when creating the resource.
+
+**[API-101]** `external_id`, when set, MUST be unique among resources of the same type placed under the same scope node (Scope node); the same value used by a different resource type, or by the same type under a different scope node, is not a collision.
+
+**[API-102]** A create or update request whose `external_id` collides under API-101 MUST be rejected with `400 Bad Request` / `code: EXTERNAL_ID_CONFLICT`, without executing the write.
+
+**[API-103]** A field elsewhere in this contract, or in another contract, that references a resource by its `id` MAY instead accept that resource's `external_id`. An operation supporting this MUST resolve the supplied value as `id` first, falling back to `external_id` within the same scope node, and MUST reject a value resolving to neither with the same `code: NOT_FOUND` an unresolvable `id` produces.
+
+**[API-104]** `external_id` MUST appear, unchanged, in every representation of a resource this contract's operations return, and MUST be accepted back unchanged by a create or update operation given that same representation — so a client that reads a resource and later re-submits what it read (an export/apply round trip) preserves `external_id`, and every cross-reference expressed through it (API-103) continues to resolve to the same resource.
+
+### Fleet-mutating operations & the Job resource
+
+**[API-110]** An operation that mutates more than one resource in a single request (a fleet-mutating operation) MUST accept the label-selector grammar (Label-selector grammar) to designate its target set, applying API-040–045 unchanged — the same `selector` convention a list operation uses to filter a read, extended here to a mutating operation's own target predicate.
+
+**[API-111]** A fleet-mutating operation, and any other operation whose work cannot complete within its own request/response cycle, MUST respond `202 Accepted` with a Job resource (Job) representing the accepted, not-yet-complete work, rather than blocking the request until every target finishes.
+
+**[API-112]** A Job resource MUST carry at least: `id` (ULID), `targets` (an array of `{target_id, state}`, one entry per resource the job acts on — `target_id` MAY be either the target's `id` or its `external_id`, API-103), `created_by` (Principal), `state` (API-113), and `created_at`. A client determines completion by reading the Job resource again and inspecting `state`, not by any signal delivered on the original request.
+
+**[API-113]** A Job's own `state`, and each `targets[].state`, MUST progress through the closed sequence `pending` → `running` → a terminal value. A target's own terminal value MUST be one of `succeeded` or `failed`. The job-level `state`'s terminal value MUST be `succeeded` when every target succeeded, `failed` when every target failed, and `partial` when its targets' outcomes were mixed — `partial` is a job-level-only outcome, never a valid `targets[].state`.
+
+**[API-114]** A Job in a non-terminal state (`pending` or `running`) MAY be canceled. Canceling MUST stop any target not yet started from starting and MUST mark it `failed` with a cancellation-attributed error, but MUST NOT roll back a target that already reached a terminal state before the cancel was received. Canceling a Job already in a terminal state MUST be a no-op, returning the Job's current state unchanged rather than an error.
+
+**[API-115]** A per-target failure MUST be reported using this contract's own error-code registry (API-014), never a parallel vocabulary, so a Job's `targets[].state: failed` entries are diagnosable the same way any other api/1 error is.
+
+**[API-116]** A Job's per-target progress MUST be durable: a server crash or restart MUST NOT lose a target's already-reached terminal state, and MUST resume any target left `running` rather than silently drop it — the same at-least-once, no-silent-loss discipline `events/1` applies to durable-event delivery (`events/1` EVT-135, EVT-150–155) governs a Job's own execution record; this contract inherits that discipline rather than restating it.
+
+**[API-117]** This Job resource is api/1's own fleet-operation resource. It MUST NOT be conflated or cross-resolved with `ctx/1`'s internal job envelope for `assets.derive` (`ctx/1` CTX-061) — the two are distinct identifiers, minted by distinct systems, for distinct purposes.
+
+### Data-subject export & delete
+
+**[API-120]** api/1 exposes an export operation and a delete operation, each scoped to a workspace (Workspace) as a whole, for fulfilling a data-subject's request to receive or erase the data that workspace holds.
+
+**[API-121]** The export operation MUST produce exactly the container `archive/1` defines — this operation is the API-facing trigger for that same export, not a distinct export format or a second code path (`archive/1`'s own Scope already treats backup, migration, and a data-subject export as one file operation under one format).
+
+**[API-122]** The delete operation MUST trigger the workspace's key-material destruction path (`security-model.md` SEC-121) — deleting a workspace's data, at the self-hosted realization this section specifies, is that same destruction, not a separate deletion mechanism.
+
+**[API-123]** Both operations MUST respond `202 Accepted` with a Job resource (Job) a client polls for completion (API-111) — neither a full workspace export nor an irreversible key-material destruction completes within its own request/response cycle. Each operation's target is the workspace itself, implicit in the request path; API-110's selector convention does not apply, since neither operation takes a selector-chosen subset.
+
+**[API-124]** This section specifies the export and delete operations' request/response shape and their self-hosted realization (API-121–122) only; a fuller data-subject-request workflow — intake and tracking for a request that arrives outside this API — is a deferred implementation this contract does not itself define.
+
 ## Wire shapes
 
 ```json
@@ -243,6 +288,7 @@ api/1 has no connection-time handshake — it is negotiated once, structurally, 
 | `SELECTOR_INVALID` | The supplied `selector` failed to parse under the label-selector grammar. | yes — retry with a corrected selector |
 | `IDEMPOTENCY_KEY_REUSED` | The same `Idempotency-Key` scope was presented with a different request body. | no — use a new key or the original body |
 | `IDEMPOTENCY_KEY_IN_PROGRESS` | The same `Idempotency-Key` scope's original request has not yet completed. | yes — after a short backoff |
+| `EXTERNAL_ID_CONFLICT` | A create or update request's `external_id` collided with an existing resource of the same type under the same scope node. | no — choose a different `external_id` |
 | `RATE_LIMITED` | The principal exceeded its rate limit. | yes — after the stated backoff |
 | `INTERNAL` | An unclassified server-side failure. | yes — with backoff |
 | `UNAVAILABLE` | The server or a dependency it needs is temporarily unable to serve the request. | yes — with backoff |
@@ -251,6 +297,6 @@ api/1 has no connection-time handshake — it is negotiated once, structurally, 
 
 - Traceability map: `conformance/traceability/api-1.md` — maps every `API-NNN` above to the case(s) that exercise it.
 - Corpus: `conformance/corpora/api-1/` — one JSON case file per `case-id` referenced from the traceability map.
-- `api/openapi.yaml` is this contract's machine-readable companion: it implements every component named above (`Problem`, the pagination parameters, the `selector` parameter, `If-Match`, `Idempotency-Key`, `Trace-Id`) and applies them to the `scope-nodes` and `automations` resource families end to end; every other resource family is a path stub pending a later minor.
+- `api/openapi.yaml` is this contract's machine-readable companion: it implements every component named above (`Problem`, the pagination parameters, the `selector` parameter, `If-Match`, `Idempotency-Key`, `Trace-Id`, `external_id`, `Job`) and applies them to the `scope-nodes` and `automations` resource families end to end, plus the `Job` resource and the data-subject export/delete operations at the shape level (Fleet-mutating operations & the Job resource, Data-subject export & delete); every other resource family is a path stub pending a later minor.
 - The 24-hour Idempotency-Key retention window (API-052) and the additive-evolution/deprecation timeline (Evolution & deprecation policy) are both time-dependent properties; corpus cases exercise the request/response shapes these rules produce, not elapsed real time — retention-window and deprecation-timeline behavior are exercised against an injectable clock in a driver harness, not a static corpus.
 - The principal/role/session model that `Principal` (Definitions) and `FORBIDDEN`/`UNAUTHENTICATED` (Error taxonomy) presuppose is out of this contract's scope (Scope) and is not exercised by this corpus; cases that need a principal treat one as a given, opaque input.

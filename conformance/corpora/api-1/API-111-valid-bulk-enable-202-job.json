@@ -1,0 +1,40 @@
+{
+  "case_id": "API-111-valid-bulk-enable-202-job",
+  "contract": "api/1",
+  "req_ids": ["API-110", "API-111", "API-112", "API-113"],
+  "description": "A bulk-enable request over a selector-matched set of automations is accepted immediately with 202 and a pending Job resource carrying one target per matched automation, rather than blocking the request until every automation is updated.",
+  "input": {
+    "method": "POST",
+    "path": "/api/v1/automations/bulk-enable",
+    "headers": {
+      "Trace-Id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y2",
+      "Idempotency-Key": "bulk-enable-lobby-prod-1"
+    },
+    "body": {
+      "selector": "env=prod,scope_node subtree 01J8Z2Q1M8H8N4T0V1W2X3Y4Z5",
+      "enabled": true
+    },
+    "collection_state": [
+      { "id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z1", "scope_node": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z6", "labels": [{ "key": "env", "value": "prod" }] },
+      { "id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z2", "scope_node": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z6", "labels": [{ "key": "env", "value": "prod" }] }
+    ]
+  },
+  "expected": {
+    "status": 202,
+    "content_type": "application/json",
+    "headers": {
+      "Trace-Id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y2"
+    },
+    "body": {
+      "id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y3",
+      "targets": [
+        { "target_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z1", "state": "pending" },
+        { "target_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z2", "state": "pending" }
+      ],
+      "created_by": "01J8Z3K4N5P6Q7R8S9T0V1W2X1",
+      "state": "pending",
+      "created_at": "2026-07-15T00:00:00Z"
+    },
+    "reason": "Both automations carry env=prod under the named subtree, so the selector (API-110, applying API-040-045's grammar as a target predicate) matches both and the Job's targets array has one pending entry per match."
+  }
+}

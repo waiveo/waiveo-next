@@ -122,6 +122,88 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/automations/bulk-enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Enable or disable a selector-matched set of automations
+         * @description Fleet-mutating operation (`contracts/api-1.md#fleet-mutating-operations--the-job-resource`): targets every automation the selector matches, accepts the same label-selector grammar a list operation does as its target predicate, and returns 202 with a Job resource rather than blocking until every target finishes.
+         */
+        post: operations["bulkEnableAutomations"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Read a Job resource
+         * @description A client polls this operation until the returned Job's `state` reaches a terminal value.
+         */
+        get: operations["getJob"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workspace/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Export the workspace as a portable archive
+         * @description Data-subject export operation (`contracts/api-1.md#data-subject-export--delete`): delegates to the archive/1 container format. Specced; full data-subject-request workflow tooling beyond this operation's own shape is a deferred implementation.
+         */
+        post: operations["exportWorkspace"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workspace/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Erase the workspace's data via key-material destruction
+         * @description Data-subject delete operation (`contracts/api-1.md#data-subject-export--delete`): triggers the workspace's key-material destruction path. Specced; full data-subject-request workflow tooling beyond this operation's own shape is a deferred implementation.
+         */
+        post: operations["deleteWorkspace"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/login": {
         parameters: {
             query?: never;
@@ -332,10 +414,12 @@ export interface components {
          * @description The stable, additive-only machine-readable error registry (`contracts/api-1.md#error-taxonomy`).
          * @enum {string}
          */
-        ErrorCode: "VALIDATION_FAILED" | "UNAUTHENTICATED" | "FORBIDDEN" | "NOT_FOUND" | "REVISION_CONFLICT" | "IF_MATCH_REQUIRED" | "CURSOR_INVALID" | "SELECTOR_INVALID" | "IDEMPOTENCY_KEY_REUSED" | "IDEMPOTENCY_KEY_IN_PROGRESS" | "RATE_LIMITED" | "INTERNAL" | "UNAVAILABLE";
+        ErrorCode: "VALIDATION_FAILED" | "UNAUTHENTICATED" | "FORBIDDEN" | "NOT_FOUND" | "REVISION_CONFLICT" | "IF_MATCH_REQUIRED" | "CURSOR_INVALID" | "SELECTOR_INVALID" | "IDEMPOTENCY_KEY_REUSED" | "IDEMPOTENCY_KEY_IN_PROGRESS" | "EXTERNAL_ID_CONFLICT" | "RATE_LIMITED" | "INTERNAL" | "UNAVAILABLE";
         /** @description A node in the org → site → group → screen tree. */
         ScopeNode: {
             id: components["schemas"]["Ulid"];
+            /** @description Client-assigned identifier (contracts/api-1.md#client-assignable-external_id). Optional; unique within this resource's scope node among resources of the same type; MAY be used in place of `id` in a cross-reference; preserved unchanged through an export/apply round trip. Every resource in this API carries this same convention, not only scope-nodes and automations. */
+            external_id?: string | null;
             /** @enum {string} */
             kind: "org" | "site" | "group" | "screen";
             /** @description The parent scope node's ULID. `null` only for the single root org node. */
@@ -358,6 +442,7 @@ export interface components {
             updated_at: string;
         };
         ScopeNodeCreate: {
+            external_id?: string | null;
             /** @enum {string} */
             kind: "org" | "site" | "group" | "screen";
             parent_id?: string | null;
@@ -369,6 +454,7 @@ export interface components {
         };
         /** @description Partial update — every field optional, at least one required. */
         ScopeNodeUpdate: {
+            external_id?: string | null;
             name?: string;
             labels?: components["schemas"]["Label"][];
             tz?: string;
@@ -382,13 +468,15 @@ export interface components {
         /** @description The management-API resource envelope around a rules/1 Rule. `mode`, `max`, `triggers`, `conditions`, and `actions` are exactly rules/1's own vocabulary (rules/1 Wire shapes); the remaining fields are this API's own resource envelope (identity, placement, labels, revision). */
         Automation: {
             id: components["schemas"]["Ulid"];
+            /** @description Client-assigned identifier (contracts/api-1.md#client-assignable-external_id). Optional; unique within this resource's scope node among resources of the same type; MAY be used in place of `id` in a cross-reference; preserved unchanged through an export/apply round trip. */
+            external_id?: string | null;
             name: string;
             scope_node: components["schemas"]["Ulid"];
             labels: components["schemas"]["Label"][];
             enabled: boolean;
             /** @enum {string} */
             mode: "single" | "restart" | "queued" | "parallel";
-            /** @description Concurrency cap; meaningful only under `queued` or `parallel` mode. */
+            /** @description Concurrency cap; meaningful only under `parallel` mode. */
             max: number | null;
             /** @description rules/1's Trigger vocabulary — full shape defined there, not restated here. */
             triggers: {
@@ -409,6 +497,7 @@ export interface components {
             updated_at: string;
         };
         AutomationCreate: {
+            external_id?: string | null;
             name: string;
             scope_node: components["schemas"]["Ulid"];
             labels?: components["schemas"]["Label"][];
@@ -416,6 +505,7 @@ export interface components {
             enabled: boolean;
             /** @enum {string} */
             mode: "single" | "restart" | "queued" | "parallel";
+            /** @description Concurrency cap; meaningful only under `parallel` mode. */
             max?: number | null;
             triggers: {
                 [key: string]: unknown;
@@ -429,11 +519,13 @@ export interface components {
         };
         /** @description Partial update — every field optional, at least one required. */
         AutomationUpdate: {
+            external_id?: string | null;
             name?: string;
             labels?: components["schemas"]["Label"][];
             enabled?: boolean;
             /** @enum {string} */
             mode?: "single" | "restart" | "queued" | "parallel";
+            /** @description Concurrency cap; meaningful only under `parallel` mode. */
             max?: number | null;
             triggers?: {
                 [key: string]: unknown;
@@ -462,6 +554,37 @@ export interface components {
              * @enum {string}
              */
             disposition: "ran" | "skipped" | "restarted";
+        };
+        /** @description The request body for a fleet-mutating bulk enable/disable over a selector-matched set of automations. */
+        AutomationBulkEnableRequest: {
+            /**
+             * @description Label-selector grammar (contracts/api-1.md#label-selector-grammar) — this operation's fleet-mutating target predicate, not a list operation's result filter.
+             * @example env in (prod,staging),scope_node subtree 01J8Z2Q1M8H8N4T0V1W2X3Y4Z5
+             */
+            selector: string;
+            /** @description The `enabled` value to apply to every automation the selector matches. */
+            enabled: boolean;
+        };
+        /** @description The accepted-work resource returned by 202 Accepted. A client polls this resource (`GET /jobs/{job_id}`) until `state` reaches a terminal value (`succeeded`, `failed`, or `partial`). */
+        Job: {
+            id: components["schemas"]["Ulid"];
+            targets: components["schemas"]["JobTarget"][];
+            /** @description The submitting principal (opaque identifier; the principal/role model itself is out of this contract's scope). */
+            created_by: string;
+            /**
+             * @description pending/running are non-terminal; succeeded/failed/partial are terminal. `partial` is job-level only — never a JobTarget.state value.
+             * @enum {string}
+             */
+            state: "pending" | "running" | "succeeded" | "failed" | "partial";
+            /** Format: date-time */
+            created_at: string;
+        };
+        /** @description One resource this Job acts on, and that resource's own per-target progress. */
+        JobTarget: {
+            /** @description The acted-on resource's `id` or `external_id`, exactly as the fleet-mutating request identified it. */
+            target_id: string;
+            /** @enum {string} */
+            state: "pending" | "running" | "succeeded" | "failed";
         };
     };
     responses: {
@@ -934,6 +1057,126 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    bulkEnableAutomations: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AutomationBulkEnableRequest"];
+            };
+        };
+        responses: {
+            /** @description Accepted; poll the returned Job resource for completion. */
+            202: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    getJob: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                job_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The job. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    exportWorkspace: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Export accepted; poll the returned Job resource for completion. */
+            202: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    deleteWorkspace: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deletion accepted; poll the returned Job resource for completion. */
+            202: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
             429: components["responses"]["TooManyRequests"];
         };
     };
