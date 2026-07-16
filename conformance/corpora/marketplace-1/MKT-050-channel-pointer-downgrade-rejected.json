@@ -1,0 +1,32 @@
+{
+  "case_id": "MKT-050-channel-pointer-downgrade-rejected",
+  "contract": "marketplace/1",
+  "req_ids": ["MKT-050", "MKT-090"],
+  "description": "An install auto-tracks (acme/weather-widget, verified), currently resolved at 1.2.0 (its persisted resolved-version high-water mark). A newly published, validly-signed index carries a HIGHER index-document metadata version -- so channel-index/1 CHI-060's monotonic-metadata-version check passes -- but its channel pointer sets verified: 1.1.0, an older, non-yanked, since-superseded version. Auto-tracking must not follow the pointer backward: refused as POINTER_ROLLBACK_REJECTED, because CHI-060 guards only the index's own metadata version, never the pack version a pointer names. The current 1.2.0 is not itself revoked, so MKT-050's revert-to-known-good exception does not apply and no downgrade is performed.",
+  "input": {
+    "pack_id": "acme/weather-widget",
+    "trust_channel": "verified",
+    "persisted_resolved_version_high_water_mark": "1.2.0",
+    "current_install_version": "1.2.0",
+    "current_version_still_resolvable": true,
+    "fetched_index": {
+      "index_metadata_version": 97,
+      "prior_verified_index_metadata_version": 96,
+      "channel_pointer": {
+        "pack_id": "acme/weather-widget",
+        "channels": { "verified": "1.1.0" }
+      }
+    },
+    "pointer_named_version_yanked": false,
+    "evaluation_time": 1752700000000
+  },
+  "expected": {
+    "index_metadata_version_monotonic_ok": true,
+    "pointer_named_pack_version": "1.1.0",
+    "is_downgrade_below_high_water_mark": true,
+    "revert_to_known_good_exception_applies": false,
+    "resolution_accepted": false,
+    "downgrade_applied": false,
+    "error": { "code": "POINTER_ROLLBACK_REJECTED" }
+  }
+}

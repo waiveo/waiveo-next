@@ -1,0 +1,33 @@
+{
+  "case_id": "MKT-009-forged-namespace-undelegated-source-rejected",
+  "contract": "marketplace/1",
+  "req_ids": ["MKT-002", "MKT-009"],
+  "description": "A client has legitimately added a community mirror source M and bound M's index-signing key in config (MKT-061). M serves a kind: pack entry claiming the acme namespace, but acme never signed it: the entry's publisher_signature does not chain, through channel-index/1 CHI-012's root-signed publisher-namespace delegation, to the key acme's namespace is delegated. channel-index/1 CHI-050 passes (M's index is validly signed by M's own configured channel key) and the digest/size verify, yet the per-publisher check MKT-009 fails -- the entry is refused as PUBLISHER_SIGNATURE_UNVERIFIED, proving a source's own index signature never establishes entitlement to a namespace it was never delegated. An otherwise-identical entry whose publisher_signature chains to acme's delegated key would be accepted.",
+  "input": {
+    "registry_source": "https://mirror-m.example/",
+    "source_index_signature_valid": true,
+    "source_configured_channel_key_id": "ed25519:mirror-m-2026",
+    "channel_index_entry": {
+      "artifact_id": "acme/anything",
+      "kind": "pack",
+      "version": "1.0.0",
+      "status": "active",
+      "digest": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+      "size": 1048576,
+      "download_url": "https://mirror-m.example/acme/anything-1.0.0.tar.zst",
+      "publisher_signature": "ed25519:mirror-m-2026/MEUCIQD0forged...not-acme-delegated"
+    },
+    "publisher_namespace_delegation": {
+      "namespace": "acme",
+      "authorized_key_id": "ed25519:acme-2026-07"
+    },
+    "digest_size_verified": true
+  },
+  "expected": {
+    "channel_index_verification_passed": true,
+    "publisher_signature_chains_to_namespace_delegation": false,
+    "artifact_accepted": false,
+    "error": { "code": "PUBLISHER_SIGNATURE_UNVERIFIED" },
+    "source_index_signature_substituted_for_namespace_proof": false
+  }
+}

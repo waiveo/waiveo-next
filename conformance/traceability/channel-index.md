@@ -15,6 +15,7 @@ One row per requirement ID `contracts/channel-index.md` defines. Format: `confor
 | CHI-009 | `contracts/channel-index.md#signed-index-roles` | `CHI-050-valid-signed-index-full-verification-order` | covered |
 | CHI-010 | `contracts/channel-index.md#signed-index-roles` | `CHI-010-invalid-key-not-delegated-to-channel-rejected` | covered |
 | CHI-011 | `contracts/channel-index.md#signed-index-roles` | `CHI-050-valid-signed-index-full-verification-order`, `CHI-011-invalid-revocation-feed-signature-rejected` | covered |
+| CHI-012 | `contracts/channel-index.md#signed-index-roles` | - | TBD-wave1 |
 | CHI-020 | `contracts/channel-index.md#index-schema` | `CHI-050-valid-signed-index-full-verification-order` | covered |
 | CHI-021 | `contracts/channel-index.md#index-schema` | `CHI-021-invalid-digest-mismatch-rejected` | covered |
 | CHI-022 | `contracts/channel-index.md#index-schema` | - | TBD-wave1 |
@@ -26,6 +27,8 @@ One row per requirement ID `contracts/channel-index.md` defines. Format: `confor
 | CHI-028 | `contracts/channel-index.md#index-schema` | - | TBD-wave1 |
 | CHI-029 | `contracts/channel-index.md#index-schema` | - | TBD-wave1 |
 | CHI-030 | `contracts/channel-index.md#index-schema` | - | TBD-wave1 |
+| CHI-031 | `contracts/channel-index.md#index-schema` | `CHI-031-unknown-kind-entry-skipped-not-index-refused` | covered |
+| CHI-032 | `contracts/channel-index.md#index-schema` | - | TBD-wave1 |
 | CHI-040 | `contracts/channel-index.md#channel-namespaces` | - | TBD-wave1 |
 | CHI-041 | `contracts/channel-index.md#channel-namespaces` | - | TBD-wave1 |
 | CHI-042 | `contracts/channel-index.md#channel-namespaces` | - | TBD-wave1 |

@@ -1,0 +1,36 @@
+{
+  "case_id": "CHI-031-unknown-kind-entry-skipped-not-index-refused",
+  "contract": "channel-index/1",
+  "req_ids": ["CHI-031"],
+  "description": "A channel-index verifier that does not implement the companion marketplace contract fetches a validly-signed index carrying a mix of entries: a recognized platform-release entry and an entry whose kind is the companion-defined value 'pack' the verifier does not recognize. Per CHI-031, the verifier must skip the unrecognized-kind entry (treat it as not-resolvable, as if absent) and still resolve the recognized entry -- never refusing the whole index over the unknown kind, extending CHI-090's additive-tolerance from an unknown field to an unknown value of the required kind field. An unrecognized status value must likewise never be read as 'active'.",
+  "input": {
+    "verifier_implements_companion_contract": false,
+    "index_signature_valid": true,
+    "artifacts": [
+      {
+        "artifact_id": "waiveo-app",
+        "kind": "platform-release",
+        "version": "1.4.2",
+        "status": "active",
+        "digest": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+        "size": 184320000,
+        "download_url": "https://index.example/waiveo-app-1.4.2.tar.zst"
+      },
+      {
+        "artifact_id": "acme/weather-widget",
+        "kind": "pack",
+        "version": "1.2.0",
+        "status": "active",
+        "digest": "sha256:aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666000077778888",
+        "size": 1048576,
+        "download_url": "https://index.example/acme/weather-widget-1.2.0.tar.zst"
+      }
+    ]
+  },
+  "expected": {
+    "index_refused": false,
+    "resolvable_entries": ["waiveo-app"],
+    "skipped_unknown_kind_entries": ["acme/weather-widget"],
+    "unknown_kind_caused_index_refusal": false
+  }
+}
