@@ -16,7 +16,7 @@
         "protocol_version": "1.0",
         "features": [],
         "site_binding": { "scope_node": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5", "tz": "America/Chicago", "lat": 41.8781, "long": -87.6298 },
-        "subnet_metadata": { "advertised_address": "192.168.50.12" },
+        "subnet_metadata": { "advertised_address": "192.0.2.12" },
         "clock_state": { "state": "untrusted", "source": "cold_boot" },
         "channel_binding_signature": "ed25519-sig-over-tls-exporter-derived-nonce-signed-with-relay-enrollment-key"
       }

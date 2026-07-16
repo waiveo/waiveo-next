@@ -95,9 +95,10 @@ events/1 defines the platform's client push channel: the durable-event envelope,
 | `trigger_snapshot` | object | The trigger occurrence that started this evaluation, captured at the time it fired. |
 | `condition_results` | array | One entry per evaluated condition, in declared order, with at least that condition's pass/fail outcome. |
 | `action_outcomes` | array | One entry per attempted action, in execution order, with at least that action's outcome. |
-| `mode_disposition` | enum | One of `ran`, `skipped`, `restarted`, `misfire-caught` — the rule's mode-level disposition for this occurrence. |
+| `mode_disposition` | enum | One of `ran`, `skipped`, `restarted` — the rule's mode-level disposition for this occurrence. |
+| `misfire_caught` | boolean | Whether this occurrence's firing originated from a caught-up misfire (`rules/1` RUL-355) — orthogonal to `mode_disposition`, never a fourth disposition value (`rules/1` RUL-246). |
 
-**[EVT-041]** `mode_disposition` MUST report `skipped` for an occurrence a rule's mode dropped without running any action, `restarted` for one that canceled and replaced an in-flight run, and `misfire-caught` for a deferred occurrence a rule's misfire policy ran later than scheduled — never conflating any of these with a normal `ran` disposition.
+**[EVT-041]** `mode_disposition` MUST report `skipped` for an occurrence a rule's mode dropped without running any action, and `restarted` for one that canceled and replaced an in-flight run — never conflating either with a normal `ran` disposition. `misfire_caught` MUST be `true` for a deferred occurrence a rule's misfire policy ran later than scheduled (`rules/1` RUL-355), and `false` otherwise; it is an orthogonal marker of a firing's own origin, never a fourth `mode_disposition` value (`rules/1` RUL-246) — a caught-up misfire still resolves to `ran`, `skipped`, or `restarted` on its own merits, per whichever mode-evaluation outcome that firing would otherwise reach.
 
 **[EVT-042]** An `automation.run` event's `origin` (Durable-event envelope) MUST reflect which evaluator produced it: `relay` for an edge-classified rule evaluated at the relay, `internal` for an app-side evaluation — the same schema serves both, distinguished only by `origin`.
 
@@ -132,10 +133,10 @@ events/1 defines the platform's client push channel: the durable-event envelope,
 |---|---|---|
 | `device_id` | ULID | The device this heartbeat is about. |
 | `power_state` | string | The device's canonical power state, drawn from its device class's state vocabulary (`device-class-registry`). |
-| `app_state` | string | The device's canonical foreground-app state, drawn from its device class's state vocabulary. |
+| `app_state` | string | The device's canonical foreground-app state, drawn from its device class's `app_type` attribute enum (`device-class-registry` REG-064). |
 | `now_playing_content_id` | string, nullable | The content identifier currently playing on the device, or `null` when nothing is. |
 
-**[EVT-061]** `power_state` and `app_state` MUST each be a member of the reporting device's own device class's `states` (`device-class-registry` REG-020) — never a raw driver-reported value that hasn't been classified.
+**[EVT-061]** `power_state` MUST be a member of the reporting device's own device class's `states` (`device-class-registry` REG-020) — never a raw driver-reported value that hasn't been classified. `app_state` MUST be a member of the reporting device's own device class's `app_type` attribute enum (`device-class-registry` REG-064), matching `player/1`'s own PLY-121 — the registry carries no second, `states`-shaped list for foreground-app identity; only `app_type` expresses it.
 
 *draft-note: this schema's emission cadence is not fixed by any normative source yet. Proposed: at least once per 60 seconds of connectivity, plus immediately on any `power_state` or `app_state` transition — subject to revision once real fleet data exists.*
 
@@ -341,7 +342,8 @@ events/1 defines the platform's client push channel: the durable-event envelope,
     "trigger_snapshot": { "kind": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y9", "to": "playing" },
     "condition_results": [{ "kind": "state", "passed": true }],
     "action_outcomes": [{ "kind": "device-command", "status": "ok" }],
-    "mode_disposition": "ran"
+    "mode_disposition": "ran",
+    "misfire_caught": false
   }
 }
 ```

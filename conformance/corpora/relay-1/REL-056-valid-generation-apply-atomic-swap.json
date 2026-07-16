@@ -19,6 +19,7 @@
               "screen_id": "01J8Z3K4N5P6Q7R8S9T0V1W2X6",
               "program_revision": "rev-17",
               "priority": "scheduled",
+              "display": "content",
               "content": [
                 { "asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85", "url": "https://app.example/cas/e3b0c4...", "expires_at": 1752541200000 }
               ]
@@ -35,7 +36,7 @@
               {
                 "device_id": "01J8Z3K4N5P6Q7R8S9T0V1W2YA",
                 "driver": "roku",
-                "native_id": "192.168.50.40",
+                "native_id": "192.0.2.40",
                 "poll_cadence_seconds": 10,
                 "entities": [
                   { "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y2", "device_class": "media-player", "enabled": true, "hidden": false, "display_name": "Lobby TV", "category": "primary" }

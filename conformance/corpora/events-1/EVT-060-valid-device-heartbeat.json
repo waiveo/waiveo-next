@@ -2,7 +2,7 @@
   "case_id": "EVT-060-valid-device-heartbeat",
   "contract": "events/1",
   "req_ids": ["EVT-060", "EVT-061"],
-  "description": "A device heartbeat reports canonical power_state and app_state values drawn from its device class's own state vocabulary, not raw driver values.",
+  "description": "A device heartbeat reports a canonical power_state (drawn from the device class's states) and app_state (drawn from the device class's app_type attribute enum), not raw driver values.",
   "input": {
     "device_id": "01J8Z3K4N5P6Q7R8S9T0V1W2YA",
     "device_class": "media-player",

@@ -11,7 +11,8 @@
     "conditions": [{ "kind": "state", "passed": true }],
     "actions": [{ "kind": "device-command", "status": "ok" }],
     "mode": "single",
-    "disposition": "ran"
+    "disposition": "ran",
+    "misfire_caught": false
   },
   "expected": {
     "envelope": {
@@ -23,7 +24,8 @@
         "trigger_snapshot": { "kind": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y9", "to": "playing" },
         "condition_results": [{ "kind": "state", "passed": true }],
         "action_outcomes": [{ "kind": "device-command", "status": "ok" }],
-        "mode_disposition": "ran"
+        "mode_disposition": "ran",
+        "misfire_caught": false
       }
     },
     "delivered": true

@@ -13,7 +13,7 @@
         "protocol_version": "1.0",
         "features": ["telemetry.latest_only_v1", "an-unrecognized-future-flag"],
         "site_binding": { "scope_node": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5", "tz": "America/Chicago", "lat": 41.8781, "long": -87.6298 },
-        "subnet_metadata": { "advertised_address": "192.168.50.12" },
+        "subnet_metadata": { "advertised_address": "192.0.2.12" },
         "clock_state": { "state": "trusted", "source": "ntp" },
         "channel_binding_signature": "ed25519-sig-over-nonce-b3f1c2a9d4e5f60718293a4b5c6d7e8f-signed-with-relay-enrollment-key"
       }

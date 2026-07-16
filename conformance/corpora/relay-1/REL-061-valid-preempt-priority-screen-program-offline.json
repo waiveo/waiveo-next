@@ -2,7 +2,7 @@
   "case_id": "REL-061-valid-preempt-priority-screen-program-offline",
   "contract": "relay/1",
   "req_ids": ["REL-055", "REL-061"],
-  "description": "A relay disconnected from its app peer continues serving a screen's program pull purely from its own last-applied, durably persisted desired-state snapshot. That snapshot's screen_programs entry carries priority: preempt, so the emergency-takeover assignment reaches the screen through the relay's own offline continuity alone, with no live app-peer connection required at the moment the screen needs it.",
+  "description": "A relay disconnected from its app peer continues serving a screen's program pull purely from its own last-applied, durably persisted desired-state snapshot. That snapshot's screen_programs entry carries priority: preempt and display: content, so the emergency-takeover assignment — including its display state — reaches the screen through the relay's own offline continuity alone, with no live app-peer connection required at the moment the screen needs it.",
   "input": {
     "relay_app_peer_connectivity": "disconnected",
     "relay_persisted_last_applied": {
@@ -14,6 +14,7 @@
         "screen_id": "01J8Z3K4N5P6Q7R8S9T0V1W2X6",
         "program_revision": "rev-99",
         "priority": "preempt",
+        "display": "content",
         "content": [
           { "asset_ref": "sha256:cccc000000000000000000000000000000000000000000000000000000cc", "url": "https://app.example/cas/cccc0000", "expires_at": 1752545000000 }
         ]
@@ -23,6 +24,7 @@
   "expected": {
     "served_from_persisted_snapshot_without_app_peer": true,
     "screen_program_entry_priority": "preempt",
+    "screen_program_entry_display": "content",
     "program_revision_delivered": "rev-99",
     "requires_live_app_peer_connection": false
   }

@@ -140,7 +140,7 @@ relay/1 defines the protocol between an enrolled relay and its app peer: connect
 
 **[REL-060]** `sections` MUST be an object carrying exactly the following keys, every one of them present in every snapshot (an empty array or an explicit empty placeholder where a site currently has nothing to populate a section with, never an omitted key): `screen_programs`, `edge_rules`, `device_inventory`, `schedule`, `revocation_and_site`, `pairing_grants`, `workflow_generation`.
 
-**[REL-061]** `screen_programs` MUST be an array of `{screen_id, program_revision, priority, content}` — `priority` one of `scheduled` or `preempt`, mirroring `player/1`'s own Lease `priority` field (`player/1` PLY-100) — and `content` an array of signed content references `{asset_ref, url, expires_at}`, `asset_ref` a content-addressed `sha256:` URI in the same form `ctx/1`'s `assets` family uses. This contract carries `content` and `priority` alike opaquely from app peer to relay to screen; it does not define how a screen resolves or fetches content, or adopts a priority class, itself (`player/1`, Scope). Carrying `priority` here is what lets a `preempt`-priority assignment reach a relay's screen through its own offline-cached last-applied snapshot (Idempotent apply & enrollment-anchored trust) without requiring the relay's app-peer connection to be live at the moment a screen needs it.
+**[REL-061]** `screen_programs` MUST be an array of `{screen_id, program_revision, priority, display, content}` — `priority` one of `scheduled` or `preempt`, mirroring `player/1`'s own Lease `priority` field (`player/1` PLY-100); `display` one of `content` or `blank`, mirroring `player/1`'s own Lease `display` field (`player/1` PLY-093) — and `content` an array of signed content references `{asset_ref, url, expires_at}`, `asset_ref` a content-addressed `sha256:` URI in the same form `ctx/1`'s `assets` family uses. This contract carries `content`, `priority`, and `display` alike opaquely from app peer to relay to screen; it does not define how a screen resolves or fetches content, or adopts a priority class or display state, itself (`player/1`, Scope). Carrying `priority` here is what lets a `preempt`-priority assignment reach a relay's screen through its own offline-cached last-applied snapshot (Idempotent apply & enrollment-anchored trust) without requiring the relay's app-peer connection to be live at the moment a screen needs it; carrying `display` here is what lets a `blank` assignment reach a relay's screen the same way — riding the same offline-cached snapshot, so a blank assignment survives a WAN outage exactly as a preemption does.
 
 **[REL-062]** `edge_rules` MUST be `{rules_minor_version, rules}` — `rules_minor_version` a `major.minor` string (mirroring REL-033's `protocol_version` format) naming the `rules/1` minor this generation was compiled against (`rules/1` Negotiation), `rules` an array of `rules/1` CompiledRuleEntry objects (`rules/1` Wire shapes), unmodified and unreinterpreted by this contract. A relay presented a generation whose `rules_minor_version` major component names a `rules/1` major it does not implement MUST refuse to apply that generation (`RULES_MAJOR_UNSUPPORTED`, Error taxonomy) rather than evaluate it under a mismatched vocabulary — the comparison is against the major component only, exactly as REL-033's own protocol-version negotiation compares majors before minors; the refusal `rules/1`'s own Negotiation section requires an executor to make, carried out here at this contract's transport layer.
 
@@ -202,7 +202,7 @@ relay/1 defines the protocol between an enrolled relay and its app peer: connect
 
 **[REL-104]** `dropped_counts_by_schema` MUST count only durable-class entries (REL-093); a latest-only entry discarded under REL-094's supersession rule MUST NOT appear in any loss marker's counts, since REL-094 does not classify that discard as loss.
 
-**[REL-105]** The loss-marker object itself MUST carry exactly the four fields REL-100 names, no more — matching `events/1` EVT-144 exactly is what lets a consumer handling both channels' loss markers share one shape. Reliable delivery of the marker itself (REL-102's resend-until-acknowledged rule) is carried entirely by the telemetry-ack envelope's own `loss_markers_acked` field (REL-092), never by adding a sequence field to the marker shape itself.
+**[REL-105]** The loss-marker object itself MUST carry exactly the four fields REL-100 names, no more — sharing `events/1` EVT-144's from/to/reason spine (not its exact 3-field subscriber-stream shape) is what lets a consumer handling both channels' loss markers recognize the common bounded-range-plus-reason pattern, without conflating this contract's own extended, sequence-keyed shape with EVT-144's own three-field, id-keyed one. Reliable delivery of the marker itself (REL-102's resend-until-acknowledged rule) is carried entirely by the telemetry-ack envelope's own `loss_markers_acked` field (REL-092), never by adding a sequence field to the marker shape itself.
 
 ### Device plane
 
@@ -222,7 +222,7 @@ relay/1 defines the protocol between an enrolled relay and its app peer: connect
 
 **[REL-120]** A relay is the sole issuer of player certificates and channel tokens for its own site's screens, and the sole verifier of a screen's per-connection credential; this contract does not define the player/1-facing messages that issuance and verification ride on (`player/1`, Scope) — this section defines only the inputs this contract's own channels deliver those decisions from.
 
-**[REL-121]** A pairing-grant record (`pairing_grants`, REL-067) MUST carry at least `{grant_id, purpose, resulting_principal_kind, ttl, redemption_mode, issued_at}` — `redemption_mode` one of `one-time` or `multi`.
+**[REL-121]** A pairing-grant record (`pairing_grants`, REL-067) MUST carry at least `{grant_id, purpose, resulting_principal_kind, ttl, redemption_mode, issued_at}` — `redemption_mode` one of `one-time` or `multi`. This record is a specialization of `security-model/1`'s own canonical grant shape (`security-model/1` SEC-030), carrying only the subset of fields a relay itself must enforce, never a competing grant shape of its own.
 
 **[REL-122]** A pairing grant delivered via `pairing_grants` MUST remain redeemable by the relay for the whole of its `ttl` even while the relay is disconnected from its app peer: the relay's own last-applied snapshot (Idempotent apply & enrollment-anchored trust) is authoritative for redemption eligibility until a newer generation supersedes it.
 
@@ -366,7 +366,7 @@ relay/1 defines the protocol between an enrolled relay and its app peer: connect
     "protocol_version": "1.0",
     "features": ["telemetry.latest_only_v1"],
     "site_binding": { "scope_node": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5", "tz": "America/Chicago", "lat": 41.8781, "long": -87.6298 },
-    "subnet_metadata": { "advertised_address": "192.168.50.12" },
+    "subnet_metadata": { "advertised_address": "192.0.2.12" },
     "clock_state": { "state": "trusted", "source": "ntp" },
     "channel_binding_signature": "ed25519-sig:5f6e7a1b2c3d4e5f8091a2b3c4d5e6f7"
   }
@@ -408,6 +408,7 @@ relay/1 defines the protocol between an enrolled relay and its app peer: connect
           "screen_id": "01J8Z3K4N5P6Q7R8S9T0V1W2X6",
           "program_revision": "rev-17",
           "priority": "scheduled",
+          "display": "content",
           "content": [
             { "asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85", "url": "https://app.example/cas/e3b0c4...", "expires_at": 1752541200000 }
           ]
@@ -424,7 +425,7 @@ relay/1 defines the protocol between an enrolled relay and its app peer: connect
           {
             "device_id": "01J8Z3K4N5P6Q7R8S9T0V1W2YA",
             "driver": "roku",
-            "native_id": "192.168.50.40",
+            "native_id": "192.0.2.40",
             "poll_cadence_seconds": 10,
             "entities": [
               { "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y2", "device_class": "media-player", "enabled": true, "hidden": false, "display_name": "Lobby TV", "category": "primary" }

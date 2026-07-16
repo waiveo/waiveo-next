@@ -259,6 +259,8 @@ This residual is structural to trust-on-first-contact pairing generally — a fu
 
 **[PLY-108]** A Lease's `priority` (PLY-100), when a relay's assignment derives from a `screen_programs` entry (`relay/1` REL-061), MUST reflect that entry's own `priority` field unmodified. This is the mechanism by which a `preempt`-priority assignment reaches a player through a relay's own offline-cached desired-state snapshot (`relay/1` Idempotent apply & enrollment-anchored trust), without requiring a relay's app-peer connection to be live at the moment a screen needs it. PLY-103's silence on what causes a relay to grant either priority class governs only the upstream decision behind a `screen_programs` entry's own `priority` value, never this field's propagation once assigned.
 
+**[PLY-109]** A Lease's `display` (PLY-093), when a relay's assignment derives from a `screen_programs` entry (`relay/1` REL-061), MUST reflect that entry's own `display` field unmodified — mirroring PLY-108's identical rule for `priority`. This is the mechanism by which a `blank` assignment reaches a player through a relay's own offline-cached desired-state snapshot (`relay/1` Idempotent apply & enrollment-anchored trust), without requiring a relay's app-peer connection to be live at the moment a screen needs it.
+
 ### Render acknowledgement
 
 **[PLY-110]** A player MUST report the start of rendering a content item via `POST /player/v1/render/start`, `{lease_id, asset_ref, ts}`, at the moment it begins presenting that item on screen.

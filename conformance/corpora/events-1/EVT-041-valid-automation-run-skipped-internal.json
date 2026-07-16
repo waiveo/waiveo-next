@@ -11,7 +11,8 @@
     "conditions": [],
     "actions": [],
     "mode": "single",
-    "disposition": "skipped"
+    "disposition": "skipped",
+    "misfire_caught": false
   },
   "expected": {
     "envelope": {
@@ -23,7 +24,8 @@
         "trigger_snapshot": { "kind": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y9", "to": "idle" },
         "condition_results": [],
         "action_outcomes": [],
-        "mode_disposition": "skipped"
+        "mode_disposition": "skipped",
+        "misfire_caught": false
       }
     },
     "delivered": true

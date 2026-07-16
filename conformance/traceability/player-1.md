@@ -93,6 +93,7 @@ One row per requirement ID `contracts/player-1.md` defines. Format: `conformance
 | PLY-106 | `contracts/player-1.md#priority-and-preemption` | - | TBD-wave1 |
 | PLY-107 | `contracts/player-1.md#priority-and-preemption` | `PLY-101-valid-lease-preemption-interrupt-now` | covered |
 | PLY-108 | `contracts/player-1.md#priority-and-preemption` | - | TBD-wave1 |
+| PLY-109 | `contracts/player-1.md#priority-and-preemption` | - | TBD-wave1 |
 | PLY-110 | `contracts/player-1.md#render-acknowledgement` | `PLY-101-valid-lease-preemption-interrupt-now` | covered |
 | PLY-111 | `contracts/player-1.md#render-acknowledgement` | `PLY-101-valid-lease-preemption-interrupt-now` | covered |
 | PLY-112 | `contracts/player-1.md#render-acknowledgement` | `PLY-101-valid-lease-preemption-interrupt-now` | covered |
