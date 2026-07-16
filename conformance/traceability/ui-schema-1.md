@@ -12,6 +12,8 @@ One row per requirement ID `contracts/ui-schema-1.md` defines. Format: `conforma
 | UIS-020 | `contracts/ui-schema-1.md#page-types-list-detail` | `UIS-020-valid-list-detail-presets` | covered |
 | UIS-021 | `contracts/ui-schema-1.md#page-types-list-detail` | - | TBD-wave1 |
 | UIS-022 | `contracts/ui-schema-1.md#page-types-list-detail` | `UIS-020-valid-list-detail-presets` | covered |
+| UIS-023 | `contracts/ui-schema-1.md#page-types-list-detail` | - | TBD-wave1 |
+| UIS-024 | `contracts/ui-schema-1.md#page-types-list-detail` | - | TBD-wave1 |
 | UIS-030 | `contracts/ui-schema-1.md#page-types-settings-form` | `UIS-030-valid-settings-form` | covered |
 | UIS-031 | `contracts/ui-schema-1.md#page-types-settings-form` | `UIS-030-valid-settings-form` | covered |
 | UIS-040 | `contracts/ui-schema-1.md#page-types-dashboard` | `UIS-040-valid-dashboard` | covered |
@@ -31,6 +33,7 @@ One row per requirement ID `contracts/ui-schema-1.md` defines. Format: `conforma
 | UIS-072 | `contracts/ui-schema-1.md#widget-catalog` | - | TBD-wave1 |
 | UIS-073 | `contracts/ui-schema-1.md#widget-catalog` | - | TBD-wave1 |
 | UIS-074 | `contracts/ui-schema-1.md#widget-catalog` | - | TBD-wave1 |
+| UIS-075 | `contracts/ui-schema-1.md#widget-catalog` | - | TBD-wave1 |
 | UIS-100 | `contracts/ui-schema-1.md#binding-grammar-data-paths` | `UIS-100-invalid-malformed-binding-rejected` | covered |
 | UIS-101 | `contracts/ui-schema-1.md#binding-grammar-data-paths` | `UIS-101-valid-predicate-index-binding` | covered |
 | UIS-102 | `contracts/ui-schema-1.md#binding-grammar-data-paths` | - | TBD-wave1 |
@@ -40,6 +43,8 @@ One row per requirement ID `contracts/ui-schema-1.md` defines. Format: `conforma
 | UIS-106 | `contracts/ui-schema-1.md#binding-grammar-data-paths` | - | TBD-wave1 |
 | UIS-107 | `contracts/ui-schema-1.md#binding-grammar-data-paths` | - | TBD-wave1 |
 | UIS-108 | `contracts/ui-schema-1.md#binding-grammar-data-paths` | `UIS-101-valid-predicate-index-binding` | covered |
+| UIS-109 | `contracts/ui-schema-1.md#binding-grammar-data-paths` | - | TBD-wave1 |
+| UIS-110 | `contracts/ui-schema-1.md#binding-grammar-data-paths` | - | TBD-wave1 |
 | UIS-120 | `contracts/ui-schema-1.md#binding-grammar-vocabulary-references` | `UIS-132-valid-vocab-option-source` | covered |
 | UIS-121 | `contracts/ui-schema-1.md#binding-grammar-vocabulary-references` | `UIS-132-valid-vocab-option-source` | covered |
 | UIS-122 | `contracts/ui-schema-1.md#binding-grammar-vocabulary-references` | - | TBD-wave1 |
@@ -52,6 +57,7 @@ One row per requirement ID `contracts/ui-schema-1.md` defines. Format: `conforma
 | UIS-140 | `contracts/ui-schema-1.md#binding-grammar-computed-values` | - | TBD-wave1 |
 | UIS-141 | `contracts/ui-schema-1.md#binding-grammar-computed-values` | `UIS-050-valid-wizard` | covered |
 | UIS-142 | `contracts/ui-schema-1.md#binding-grammar-computed-values` | - | TBD-wave1 |
+| UIS-143 | `contracts/ui-schema-1.md#binding-grammar-computed-values` | - | TBD-wave1 |
 | UIS-150 | `contracts/ui-schema-1.md#context-feeds` | - | TBD-wave1 |
 | UIS-151 | `contracts/ui-schema-1.md#context-feeds` | - | TBD-wave1 |
 | UIS-152 | `contracts/ui-schema-1.md#context-feeds` | - | TBD-wave1 |
