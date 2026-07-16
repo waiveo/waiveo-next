@@ -1,0 +1,27 @@
+{
+  "case_id": "SUR-051-invalid-token-replayed-against-different-pack-rejected",
+  "contract": "surface/1",
+  "req_ids": ["SUR-051"],
+  "description": "A surface_token minted for one mount of pack A (audience.pack_id: waiveo/slidecast) is presented against a management-API request attributable to a different pack B (waiveo/weather) -- even though the token is otherwise unexpired, unrevoked, and was validly issued, a server MUST refuse it with SURFACE_TOKEN_AUDIENCE_MISMATCH because the request's own target pack does not match the token's audience.pack_id.",
+  "input": {
+    "surface_token": {
+      "value": "sft_8f14e45fceea4b3e8c1e1a1b2c3d4e5f6a7b8c9d",
+      "audience": { "principal": "01J8Z3K4N5P6Q7R8S9T0V1W2X3", "pack_id": "waiveo/slidecast", "mount_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y4" },
+      "expires_at": 1752623600000,
+      "revoked": false
+    },
+    "request": {
+      "path": "/api/v1/packs/waiveo~weather/actions/save",
+      "target_pack_id": "waiveo/weather"
+    },
+    "evaluation_time": 1752623100000
+  },
+  "expected": {
+    "authenticated": false,
+    "audience_pack_id": "waiveo/slidecast",
+    "request_target_pack_id": "waiveo/weather",
+    "match": false,
+    "error": { "code": "SURFACE_TOKEN_AUDIENCE_MISMATCH" },
+    "reason": "token audience.pack_id does not match the pack the request targets; the token is otherwise valid (unexpired, unrevoked) but its authority does not extend to a different pack"
+  }
+}

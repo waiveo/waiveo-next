@@ -1,0 +1,33 @@
+{
+  "case_id": "CHI-010-invalid-key-not-delegated-to-channel-rejected",
+  "contract": "channel-index/1",
+  "req_ids": ["CHI-010"],
+  "description": "A signing key the trust bundle recognizes and has delegated authority to sign platform-train/stable's own index entries attempts to sign an entry for a different channel (relay-channel/stable) it holds no delegation for -- even though the key is validly recognized and the two channels are operationally related (a platform-train channel and the independent relay channel), the mismatched channel MUST be rejected exactly as an unrecognized key would be: delegation is scoped per channel, never inherited by naming similarity or relatedness.",
+  "input": {
+    "trust_bundle": {
+      "recognized_keys": {
+        "ed25519:platform-train-targets-2026": { "role": "targets", "delegated_channels": ["platform-train/stable"] }
+      }
+    },
+    "fetched_channel_index": {
+      "signed": {
+        "role": "targets",
+        "channel": "relay-channel/stable",
+        "version": 41,
+        "artifacts": [
+          { "artifact_id": "waiveo-relay", "kind": "relay-release", "version": "1.4.2", "digest": "sha256:aaaabbbbccccddddeeeeffff00001111222233334444555566667777888899", "size": 9437184 }
+        ]
+      },
+      "signatures": [{ "key_id": "ed25519:platform-train-targets-2026", "sig": "otherwise-valid-sig" }]
+    },
+    "signature_cryptographically_valid": true
+  },
+  "expected": {
+    "steps": [
+      { "step": 5, "name": "targets signature + namespace delegation", "result": "fail", "error": { "code": "NAMESPACE_NOT_DELEGATED" } }
+    ],
+    "artifact_accepted": false,
+    "key_recognized_but_not_delegated_to_this_channel": true,
+    "delegation_scoped_per_channel_not_inherited": true
+  }
+}

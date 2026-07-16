@@ -1,0 +1,27 @@
+{
+  "case_id": "CHI-074-invalid-revocation-feed-stale-replayed-rejected",
+  "contract": "channel-index/1",
+  "req_ids": ["CHI-074"],
+  "description": "A revocation feed whose signature verifies correctly but whose own version is lower than the verifier's previously-observed high-water mark for the feed (a captured-and-replayed earlier feed) and whose signing_time exceeds its own stated max-age (the same freeze an attacker withholding a fresher feed would produce) MUST be refused at verification-order step 9 before revoked_keys/revoked_artifacts are consulted -- CHI-074 ties the feed's own freshness and rollback protection to the same monotonic-version and max-age discipline as every other role, independent of any one channel's own index version.",
+  "input": {
+    "trust_bundle": { "recognized_keys": { "ed25519:revocation-2026-07": { "role": "revocation" } } },
+    "verifier_persisted_high_water_marks": { "revocation": 14 },
+    "verification_order_steps_1_through_8": "all passed",
+    "fetched_revocation_feed": {
+      "signed": { "role": "revocation", "version": 11, "signing_time": 1752500000000, "revoked_keys": [], "revoked_artifacts": [] },
+      "signatures": [{ "key_id": "ed25519:revocation-2026-07", "sig": "valid-sig" }]
+    },
+    "revocation_feed_max_age_seconds": 3600,
+    "evaluation_time": 1752623300000,
+    "clock_trusted": true
+  },
+  "expected": {
+    "steps": [
+      { "step": 9, "name": "revocation feed freshness/rollback", "result": "fail", "error": { "code": "REVOCATION_FEED_INVALID" } }
+    ],
+    "revoked_keys_and_artifacts_evaluated": false,
+    "artifact_accepted": false,
+    "treated_as_clean": false,
+    "high_water_mark_unchanged": true
+  }
+}

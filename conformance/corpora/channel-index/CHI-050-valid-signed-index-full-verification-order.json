@@ -1,18 +1,19 @@
 {
   "case_id": "CHI-050-valid-signed-index-full-verification-order",
   "contract": "channel-index/1",
-  "req_ids": ["CHI-001", "CHI-003", "CHI-004", "CHI-005", "CHI-007", "CHI-009", "CHI-020", "CHI-050", "CHI-052"],
-  "description": "A verifier walks the complete nine-step verification order for the platform-train/stable channel: timestamp signature and freshness, snapshot signature and rollback check, targets (channel-index) signature and namespace delegation and rollback check, artifact digest/size, then revocation -- every step passes against the trust bundle's own recognized keys, and the resolved waiveo-app artifact is accepted.",
+  "req_ids": ["CHI-001", "CHI-003", "CHI-004", "CHI-005", "CHI-007", "CHI-009", "CHI-011", "CHI-020", "CHI-050", "CHI-052"],
+  "description": "A verifier walks the complete nine-step verification order for the platform-train/stable channel: timestamp signature and freshness, snapshot signature and rollback check, targets (channel-index) signature and namespace delegation and rollback check, artifact digest/size, then revocation-feed signature and freshness followed by the revoked-list check -- every step passes against the trust bundle's own recognized keys, and the resolved waiveo-app artifact is accepted.",
   "input": {
     "trust_bundle": {
       "root_version": 3,
       "recognized_keys": {
         "ed25519:timestamp-2026-07": { "role": "timestamp" },
         "ed25519:snapshot-2026-07": { "role": "snapshot" },
-        "ed25519:platform-train-targets-2026": { "role": "targets", "delegated_channels": ["platform-train/stable"] }
+        "ed25519:platform-train-targets-2026": { "role": "targets", "delegated_channels": ["platform-train/stable"] },
+        "ed25519:revocation-2026-07": { "role": "revocation" }
       }
     },
-    "verifier_persisted_high_water_marks": { "timestamp": 481, "snapshot": 216, "platform-train/stable": 95 },
+    "verifier_persisted_high_water_marks": { "timestamp": 481, "snapshot": 216, "platform-train/stable": 95, "revocation": 13 },
     "fetched_timestamp": {
       "signed": { "role": "timestamp", "version": 482, "signing_time": 1752623000000, "expires_at": 1752623900000, "snapshot_ref": { "version": 217, "digest": "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" } },
       "signatures": [{ "key_id": "ed25519:timestamp-2026-07", "sig": "valid-sig" }]
@@ -35,7 +36,10 @@
       "signatures": [{ "key_id": "ed25519:platform-train-targets-2026", "sig": "valid-sig" }]
     },
     "downloaded_artifact": { "artifact_id": "waiveo-app", "reassembled_digest": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824", "reassembled_size": 184320000 },
-    "revocation_feed": { "signed": { "role": "revocation", "version": 14, "revoked_keys": [], "revoked_artifacts": [] } }
+    "revocation_feed": {
+      "signed": { "role": "revocation", "version": 14, "signing_time": 1752623100000, "revoked_keys": [], "revoked_artifacts": [] },
+      "signatures": [{ "key_id": "ed25519:revocation-2026-07", "sig": "valid-sig" }]
+    }
   },
   "expected": {
     "steps": [
@@ -47,9 +51,9 @@
       { "step": 6, "name": "targets/index rollback", "result": "pass" },
       { "step": 7, "name": "artifact download", "result": "pass" },
       { "step": 8, "name": "digest/size verification", "result": "pass" },
-      { "step": 9, "name": "revocation check", "result": "pass" }
+      { "step": 9, "name": "revocation feed signature + freshness, then revoked-list check", "result": "pass" }
     ],
     "artifact_accepted": true,
-    "new_high_water_marks": { "timestamp": 482, "snapshot": 217, "platform-train/stable": 96 }
+    "new_high_water_marks": { "timestamp": 482, "snapshot": 217, "platform-train/stable": 96, "revocation": 14 }
   }
 }

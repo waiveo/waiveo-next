@@ -2,11 +2,11 @@
   "case_id": "SUR-030-invalid-host-rejects-wrong-iframe-origin",
   "contract": "surface/1",
   "req_ids": ["SUR-030"],
-  "description": "The host page's own bridge listener MUST discard a message whose event.origin does not exactly equal the mount's isolation_origin, before parsing its data as a bridge message at all -- the parent-verifies-iframe-origin half of the postMessage origin check.",
+  "description": "The host page's own bridge listener MUST discard a message whose event.origin does not exactly equal the mount's isolation_origin, before parsing its data as a bridge message at all -- the parent-verifies-iframe-origin half of the postMessage origin check. The attacker origin here is deliberately prefix-confusable (the real isolation_origin as an exact leading substring, with an attacker-controlled registrable domain appended as a fake subdomain) to prove the check is exact string equality, never a prefix, suffix, or other partial/substring match a naive comparison could satisfy.",
   "input": {
-    "mount": { "mount_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y4", "isolation_origin": "https://studio.box.local:8443" },
+    "mount": { "mount_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y4", "isolation_origin": "https://studio.box.local" },
     "inbound_message_event": {
-      "origin": "https://evil.example",
+      "origin": "https://studio.box.local.attacker.example",
       "data": {
         "type": "request",
         "mount_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y4",
@@ -20,6 +20,8 @@
     "origin_check_passed": false,
     "data_parsed": false,
     "dispatched_to_handler": false,
-    "response_sent": false
+    "response_sent": false,
+    "attacker_origin_shares_isolation_origin_as_exact_prefix": true,
+    "would_incorrectly_pass_under_prefix_or_substring_match": true
   }
 }

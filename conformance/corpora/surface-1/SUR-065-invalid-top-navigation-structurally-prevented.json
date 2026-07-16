@@ -1,0 +1,17 @@
+{
+  "case_id": "SUR-065-invalid-top-navigation-structurally-prevented",
+  "contract": "surface/1",
+  "req_ids": ["SUR-023", "SUR-065"],
+  "description": "A surface's own code attempts window.top.location assignment to forcibly navigate the host page, bypassing the advisory bridge.navigate_intent channel entirely -- the host page constructed the mount's iframe with a sandbox attribute excluding allow-top-navigation, so the navigation attempt is structurally blocked by the browser's own sandbox enforcement before any bridge message, host-page logic, or origin check is even involved.",
+  "input": {
+    "mount": { "mount_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y4", "isolation_origin": "https://studio.box.local:8443" },
+    "iframe_sandbox_attribute": "allow-scripts allow-same-origin allow-forms",
+    "surface_attempted_action": "window.top.location = 'https://attacker.example/phish'"
+  },
+  "expected": {
+    "sandbox_excludes_allow_top_navigation": true,
+    "navigation_blocked": true,
+    "blocked_by": "browser sandbox enforcement (structural), not application-level bridge logic",
+    "bridge_navigate_intent_remains_sole_path": true
+  }
+}

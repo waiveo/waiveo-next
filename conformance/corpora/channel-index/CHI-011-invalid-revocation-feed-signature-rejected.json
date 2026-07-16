@@ -1,0 +1,27 @@
+{
+  "case_id": "CHI-011-invalid-revocation-feed-signature-rejected",
+  "contract": "channel-index/1",
+  "req_ids": ["CHI-011"],
+  "description": "A revocation feed arriving with a signature that does not verify against the trust bundle's delegated revocation-role key -- for instance a MITM of only the feed's own transport fabricating a validly-shaped 'nothing revoked' response while the rest of the index chain verifies normally -- MUST be refused at verification-order step 9 before its revoked_keys/revoked_artifacts are ever consulted; an unsigned or wrongly-signed feed is never treated as equivalent to a validly-signed 'nothing revoked' feed.",
+  "input": {
+    "trust_bundle": {
+      "recognized_keys": {
+        "ed25519:revocation-2026-07": { "role": "revocation" }
+      }
+    },
+    "verification_order_steps_1_through_8": "all passed",
+    "fetched_revocation_feed": {
+      "signed": { "role": "revocation", "version": 15, "signing_time": 1752623200000, "revoked_keys": [], "revoked_artifacts": [] },
+      "signatures": [{ "key_id": "ed25519:attacker-injected-key", "sig": "fabricated-sig" }]
+    },
+    "resolved_entry": { "artifact_id": "waiveo-app", "channel": "platform-train/stable", "version": "1.4.2" }
+  },
+  "expected": {
+    "steps": [
+      { "step": 9, "name": "revocation feed signature", "result": "fail", "error": { "code": "REVOCATION_FEED_INVALID" } }
+    ],
+    "revoked_keys_and_artifacts_evaluated": false,
+    "artifact_accepted": false,
+    "treated_as_clean": false
+  }
+}

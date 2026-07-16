@@ -23,7 +23,7 @@ channel-index defines the signed, host-agnostic release-artifact index a client 
 - **Trust bundle** ("the platform's software-artifact trust bundle") — the root role's current metadata plus every key-id it has delegated authority to; sufficient, held alone, to verify every other role's signature with no network fetch. This is the trust root every other contract's own reference to "the platform's software-artifact trust bundle" resolves to (`relay/1`'s desired-state verification and `archive/1`'s export-container signing both explicitly name it only to state that they are a *different*, unrelated trust root from this one — this contract is where that name is actually defined).
 - **Delegation** — the root role's assignment of a channel identifier to the specific targets key-id(s) authorized to sign that channel's own index entries.
 - **Monotonic version** — a role's own strictly-increasing integer version counter (Freshness and rollback protection), independent per role and per channel.
-- **Revocation feed** — the separately-fetched, separately-signed document enumerating revoked signing keys and revoked artifact versions (Revocation classes).
+- **Revocation feed** — the separately-fetched, separately-signed document — signed by the delegated revocation role (Signed index roles, CHI-011) — enumerating revoked signing keys and revoked artifact versions (Revocation classes).
 
 ## Normative requirements
 
@@ -31,7 +31,7 @@ channel-index defines the signed, host-agnostic release-artifact index a client 
 
 **[CHI-001]** An index MUST be verifiable through exactly four signed role layers: a root role, a targets role (with any number of role-delegated sub-namespaces), a snapshot role, and a timestamp role — each layer's metadata signed independently of the others, so that a compromise of one role's key does not by itself forge another role's signature.
 
-**[CHI-002]** The root role's own metadata MUST be signed by a threshold of independently-held root keys, and is the sole role authorized to reassign which key-id(s) back the targets, snapshot, and timestamp roles. A root role update (a rotation of any key it assigns, including its own) MUST itself carry threshold signatures spanning both the outgoing and the incoming root key sets — a rotation is never authorized by the incoming keys alone.
+**[CHI-002]** The root role's own metadata MUST be signed by a threshold of independently-held root keys, and is the sole role authorized to reassign which key-id(s) back the targets, snapshot, timestamp, and revocation roles. A root role update (a rotation of any key it assigns, including its own) MUST itself carry threshold signatures spanning both the outgoing and the incoming root key sets — a rotation is never authorized by the incoming keys alone.
 
 **[CHI-003]** The targets role — or a namespace explicitly delegated from it (Delegation) — MUST be the sole role authorized to sign an individual artifact entry's own `digest` (Index schema) into an index. A snapshot- or timestamp-role signature MUST NOT be treated as sufficient authority for an artifact's own digest, even where the document that signature covers otherwise appears well-formed.
 
@@ -48,6 +48,8 @@ channel-index defines the signed, host-agnostic release-artifact index a client 
 **[CHI-009]** Root metadata MUST carry namespace delegations: an explicit mapping from a channel identifier (Channel namespaces) to the targets key-id(s) authorized to sign entries for it. A verifier MUST reject an index entry whose channel is not covered by its own signer's delegated namespace — regardless of which URL or hosting backend served the index it arrived in (Hosting and size envelope).
 
 **[CHI-010]** A channel's delegated signing key MUST NOT be treated as authorized for a different channel's own entries, even where the two channels are related (for instance a platform-train channel and a relay-release entry traveling inside that same train's index, Channel namespaces) — delegation is scoped per channel exactly as declared in root metadata, never inherited across channels by naming similarity or operational proximity.
+
+**[CHI-011]** Root metadata MUST additionally delegate a **revocation role**, distinct from the targets/snapshot/timestamp roles (CHI-001), authorized to sign the revocation feed (Definitions) — delegated from root exactly as a channel's targets key-id is delegated (CHI-009), never assumed or inferred from any other role's own key. The revocation feed MUST be signed by this delegated key; a verifier MUST reject a revocation feed signed by any key-id root metadata has not delegated this role to, regardless of which URL or hosting backend served it (Hosting and size envelope).
 
 ### Index schema
 
@@ -66,6 +68,12 @@ channel-index defines the signed, host-agnostic release-artifact index a client 
 **[CHI-026]** An artifact MAY be published compressed for transport (`compression`, naming the scheme, e.g. `zstd`); `digest` and `size` (CHI-021, CHI-023) always describe the artifact's decompressed bytes. Compression is a transport-layer concern this contract's integrity checks see through — it MUST NOT be used as, or mistaken for, a substitute for CHI-021/023's own checks.
 
 **[CHI-027]** An entry's `status: yanked` MUST NOT be removed from its channel's index — a yanked entry remains present, still digest/size-verifiable, so that a client already holding a reference to it (for instance an already-completed download awaiting a later step) can still distinguish "yanked" from "never existed." Resolution-time handling of a yanked entry is defined in Revocation classes.
+
+**[CHI-028]** Where `compression` (CHI-026) is present, a verifier MUST decompress the downloaded bytes — an unsplit artifact's, or, where split, one part's at a time (CHI-024, CHI-025) — through a bounded, streaming decompressor that tracks decompressed output size as it is produced and ABORTS decompression the instant that running total would exceed the corresponding trusted `size` field (the entry's own `size`, CHI-023, or that specific part's own `size`, CHI-025) — a bound itself never more than 2 GiB per single `download_url` (CHI-082) — rather than buffering a complete decompressed payload into memory before ever comparing its length against that `size`. This guard MUST execute before, and independent of, CHI-023's (or CHI-025's) own post-decompression byte-count comparison: `download_url` (CHI-022) names untrusted transport fetched pre-authentication, ahead of CHI-050 step 8's digest/size check, so an unbounded decompressor is itself an attack surface a malicious host's compressed payload (a decompression bomb) exploits regardless of what a fully-decompressed byte count would eventually compare to. An abort under this guard MUST be treated as the same `SIZE_MISMATCH` (or, for a part, `PART_INVALID`) outcome (Error taxonomy) as a post-decompression size mismatch — the artifact is refused either way.
+
+**[CHI-029]** An artifact entry (Index schema) MAY carry `hold_hours`: a non-negative integer of hours a staged rollout holds that entry from new-install eligibility (CHI-030), and, whenever `hold_hours` is present, MUST also carry `published_at` — the entry's own publication timestamp (Unix epoch milliseconds) `hold_hours` is measured from. An entry carrying no `hold_hours` is immediately install-eligible on its signed metadata alone, equivalent to `hold_hours: 0`. `hold_hours` and `published_at` apply only to an entry whose `kind` (CHI-020) is `platform-release` or `relay-release`.
+
+**[CHI-030]** A verifier MUST treat an artifact entry carrying a nonzero `hold_hours` (CHI-029) as ineligible for selection in a NEW install or update decision until at least `hold_hours` hours have elapsed since its `published_at` — checked at *resolution* time, the moment a verifier is about to select a version for a new decision, exactly as CHI-072 checks artifact-class revocation; it MUST NOT be checked only once, at original publish time. An entry the signing targets role additionally marks `security_flagged: true` MAY be selected before its own hold elapses — the sole exception this contract defines to CHI-029's hold, for a release superseding a since-disclosed vulnerability. A version already installed before its own hold elapsed is unaffected by this requirement, exactly as CHI-072 states for a later yank: this requirement governs only whether the index may resolve a held entry for a new decision, never an already-running artifact's own lifecycle (Scope).
 
 ### Channel namespaces
 
@@ -89,11 +97,11 @@ channel-index defines the signed, host-agnostic release-artifact index a client 
 6. Check the index's own `version` against the verifier's last-persisted version for that channel (Freshness and rollback protection) — refuse to proceed if this is a regression.
 7. Only once steps 1–6 all succeed, locate the specific artifact entry within the now-trusted index and download its bytes (and every part's bytes, where split).
 8. Verify the downloaded (and reassembled, if split) bytes against the now-trusted entry's own `digest` and `size` (Index schema) — refuse the artifact on either mismatch.
-9. Consult the revocation feed (Revocation classes) for the resolved artifact's key-id, `artifact_id`, and `version` as a final gate before the artifact is used.
+9. Verify the revocation feed's own signature against the trust bundle's delegated revocation-role key (CHI-011); check the feed's own freshness against its stated max-age (CHI-074). Only once both of those succeed, evaluate the now-trusted feed's `revoked_keys` and `revoked_artifacts` (Revocation classes) for the resolved artifact's key-id, `artifact_id`, and `version` as a final gate before the artifact is used. A revocation feed failing either its signature or its freshness check MUST be refused exactly as CHI-073's unreachable-feed case is refused — fail-closed, never treated as "nothing revoked."
 
 **[CHI-051]** A failure at any step of CHI-050 MUST abort verification at that step; no later step's success MAY be used to compensate for, or excuse, an earlier step's failure — a correct artifact digest (step 8) MUST NOT cause a verifier to overlook a targets-role signature that failed to verify at step 5 against the metadata that named that digest in the first place.
 
-**[CHI-052]** Every signature check in CHI-050 (steps 1, 3, 5) MUST validate against only the trust bundle's own currently-recognized key-ids (CHI-007) — never against a key-id supplied by the fetched metadata itself as though the metadata could self-authorize its own signer.
+**[CHI-052]** Every signature check in CHI-050 (steps 1, 3, 5, 9) MUST validate against only the trust bundle's own currently-recognized key-ids (CHI-007) — never against a key-id supplied by the fetched metadata itself as though the metadata could self-authorize its own signer.
 
 **[CHI-053]** Where a verifier's already-cached copy of a role's metadata already matches the exact `{version, digest}` its parent role currently references, the verifier MAY skip re-fetching that role's file — but MUST NOT skip re-verifying that cached copy's own signature and version against the newly-fetched parent's reference. A cache hit shortens the fetch; it never shortens the verification.
 
@@ -192,7 +200,9 @@ channel-index defines the signed, host-agnostic release-artifact index a client 
         "digest": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
         "size": 184320000,
         "download_url": "https://github.com/waiveo/waiveo-next/releases/download/v1.4.2/waiveo-app-linux-amd64.tar.zst",
-        "compression": "zstd"
+        "compression": "zstd",
+        "published_at": 1752619000000,
+        "hold_hours": 24
       },
       {
         "artifact_id": "waiveo-relay",
@@ -272,6 +282,7 @@ A `ChannelIndex`'s `format_version` field (Index format versioning, CHI-090) is 
 | `KEY_REVOKED` | Metadata or an artifact was signed by a key-id present in the revocation feed's `revoked_keys` (CHI-071). | no |
 | `ARTIFACT_YANKED` | The resolved `{artifact_id, channel, version}` is present in the revocation feed's `revoked_artifacts` (CHI-072). | no — resolve a different, non-yanked version |
 | `REVOCATION_FEED_UNAVAILABLE` | The revocation feed could not be fetched at all for this resolution (CHI-073). | yes — per the deployment's own fallback policy |
+| `REVOCATION_FEED_INVALID` | The revocation feed was fetched but failed its own signature verification against the trust bundle's delegated revocation-role key, or failed its own freshness/rollback check (CHI-050 step 9, CHI-074) — refused fail-closed, distinct from `REVOCATION_FEED_UNAVAILABLE`'s fetch-failure case. | no — the served feed is untrusted or stale; retry only once a validly-signed, current feed is reachable |
 | `CHANNEL_KIND_MISMATCH` | A relay channel's index carried a `platform-release` entry, or a `kind` value otherwise violated Channel namespaces (CHI-041). | no |
 
 ## Conformance notes
@@ -280,5 +291,5 @@ A `ChannelIndex`'s `format_version` field (Index format versioning, CHI-090) is 
 - Corpus: `conformance/corpora/channel-index/` — one JSON case file per `case-id` referenced from the traceability map.
 - The operational custody of any role's signing key (an offline root-key ceremony, an online signer's own key-management mechanics, CHI-006) is out of this contract's scope (Scope) and is not exercised by this corpus; cases that need a signature treat the signing key's own legitimacy as a given, already-established input, and exercise only whether a verifier's stated logic reaches the correct accept/refuse outcome from it.
 - A marketplace pack or content-package's own index entry is a distinct concern, reserved to a separate contract that may reuse this same signed-index envelope (Scope); this corpus exercises only `platform-release` and `relay-release` entries.
-- CHI-061's timestamp max-age and CHI-074's revocation-feed freshness are both time-dependent properties; corpus cases exercise the accept/refuse decisions these rules produce for a given (signing_time, evaluation_time) pair, not elapsed real time — timing behavior is exercised against an injectable clock in a driver harness, consistent with this platform's other contracts.
+- CHI-030's `hold_hours` eligibility, CHI-061's timestamp max-age, and CHI-074's revocation-feed freshness are all time-dependent properties; corpus cases exercise the accept/refuse decisions these rules produce for a given (`published_at`/signing_time, evaluation_time) pair, not elapsed real time — timing behavior is exercised against an injectable clock in a driver harness, consistent with this platform's other contracts.
 - The concrete on-the-wire field names this contract's Wire shapes use (`signed`/`signatures`, `snapshot_ref`, `targets_refs`, etc.) express the semantic role structure and verification order this contract requires; they are not asserted to be byte-identical to any specific underlying metadata-format library's own file shape, which this contract does not name (Scope, CHI-006's custody carve-out extends to implementation-library choice).

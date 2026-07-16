@@ -17,7 +17,7 @@ One row per requirement ID `contracts/surface-1.md` defines. Format: `conformanc
 | SUR-020 | `contracts/surface-1.md#verb-allowlist` | `SUR-020-invalid-verb-not-allowlisted-rejected` | covered |
 | SUR-021 | `contracts/surface-1.md#verb-allowlist` | - | TBD-wave1 |
 | SUR-022 | `contracts/surface-1.md#verb-allowlist` | - | TBD-wave1 |
-| SUR-023 | `contracts/surface-1.md#verb-allowlist` | - | TBD-wave1 |
+| SUR-023 | `contracts/surface-1.md#verb-allowlist` | `SUR-065-invalid-top-navigation-structurally-prevented` | covered |
 | SUR-024 | `contracts/surface-1.md#verb-allowlist` | - | TBD-wave1 |
 | SUR-025 | `contracts/surface-1.md#verb-allowlist` | - | TBD-wave1 |
 | SUR-030 | `contracts/surface-1.md#origin-verification` | `SUR-030-invalid-host-rejects-wrong-iframe-origin` | covered |
@@ -32,7 +32,7 @@ One row per requirement ID `contracts/surface-1.md` defines. Format: `conformanc
 | SUR-044 | `contracts/surface-1.md#token-issuance` | - | TBD-wave1 |
 | SUR-045 | `contracts/surface-1.md#token-issuance` | `SUR-045-invalid-cookie-as-credential-rejected` | covered |
 | SUR-050 | `contracts/surface-1.md#token-scope-audience-and-expiry` | `SUR-001-valid-mount-scoped-token-exchange` | covered |
-| SUR-051 | `contracts/surface-1.md#token-scope-audience-and-expiry` | - | TBD-wave1 |
+| SUR-051 | `contracts/surface-1.md#token-scope-audience-and-expiry` | `SUR-051-invalid-token-replayed-against-different-pack-rejected` | covered |
 | SUR-052 | `contracts/surface-1.md#token-scope-audience-and-expiry` | - | TBD-wave1 |
 | SUR-053 | `contracts/surface-1.md#token-scope-audience-and-expiry` | - | TBD-wave1 |
 | SUR-054 | `contracts/surface-1.md#token-scope-audience-and-expiry` | - | TBD-wave1 |
@@ -40,6 +40,11 @@ One row per requirement ID `contracts/surface-1.md` defines. Format: `conformanc
 | SUR-061 | `contracts/surface-1.md#isolation-mechanism` | `SUR-045-invalid-cookie-as-credential-rejected` | covered |
 | SUR-062 | `contracts/surface-1.md#isolation-mechanism` | - | TBD-wave1 |
 | SUR-063 | `contracts/surface-1.md#isolation-mechanism` | - | TBD-wave1 |
+| SUR-064 | `contracts/surface-1.md#isolation-mechanism` | - | TBD-wave1 |
+| SUR-065 | `contracts/surface-1.md#iframe-sandbox` | `SUR-065-invalid-top-navigation-structurally-prevented` | covered |
+| SUR-066 | `contracts/surface-1.md#iframe-sandbox` | - | TBD-wave1 |
+| SUR-067 | `contracts/surface-1.md#iframe-sandbox` | - | TBD-wave1 |
+| SUR-068 | `contracts/surface-1.md#iframe-sandbox` | - | TBD-wave1 |
 | SUR-070 | `contracts/surface-1.md#csp-posture` | - | TBD-wave1 |
 | SUR-071 | `contracts/surface-1.md#csp-posture` | - | TBD-wave1 |
 | SUR-072 | `contracts/surface-1.md#csp-posture` | - | TBD-wave1 |

@@ -1,0 +1,21 @@
+{
+  "case_id": "CHI-073-invalid-revocation-feed-unreachable-not-treated-as-clean",
+  "contract": "channel-index/1",
+  "req_ids": ["CHI-073"],
+  "description": "A verifier unable to fetch the revocation feed at all for this resolution MUST NOT default to treating the artifact as un-revoked -- fetch failure and an explicit signed 'nothing revoked' feed are distinct outcomes, and this deployment's chosen fallback (blocking the pending install/update) MUST run rather than silently proceeding as clean.",
+  "input": {
+    "verification_order_steps_1_through_8": "all passed",
+    "revocation_feed_fetch_attempted": true,
+    "revocation_feed_fetch_result": "network_unreachable",
+    "resolved_entry": { "artifact_id": "waiveo-app", "channel": "platform-train/stable", "version": "1.4.2" },
+    "deployment_fallback_policy": "block_pending_install"
+  },
+  "expected": {
+    "steps": [
+      { "step": 9, "name": "revocation feed fetch", "result": "fail", "error": { "code": "REVOCATION_FEED_UNAVAILABLE" } }
+    ],
+    "treated_as_clean": false,
+    "artifact_accepted": false,
+    "fetch_failure_distinguished_from_explicit_clean_feed": true
+  }
+}

@@ -24,7 +24,9 @@
         "mount_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y4"
       },
       "isolation_origin": "https://studio.box.local:8443",
-      "mount_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y4"
+      "mount_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y4",
+      "issued_at": 1752623000000,
+      "expires_at": 1752623600000
     },
     "bridge_token_sent": {
       "type": "event",
