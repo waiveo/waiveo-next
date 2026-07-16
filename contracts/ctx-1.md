@@ -114,6 +114,12 @@ ctx/1 defines the runtime protocol between the host and a running pack process: 
 
 **[CTX-091]** `detail`, when present, MUST be a `{code, message}` object identifying the degraded subsystem; `code` values are pack-defined strings, opaque to the host beyond display and aggregation into its own operator-facing health surfaces.
 
+### Backpressure signal
+
+**[CTX-092]** ctx/1 reserves a host→pack backpressure/throttle signal — a `control.backpressure` event frame (host → pack), reusing the same `control.*` connection-level verb namespace `control.hello`/`control.ping` already establish (Hello / negotiate, Transport bindings) — that a conformant host MAY dispatch to tell a pack to slow or pause its own outbound call rate. A pack that does not act on it is not in protocol violation for v1: this requirement reserves only the verb name and its direction; its full body shape is left to a future ctx/1 minor, the same additive-reservation treatment CTX-030 already gives the `config`/`services`/`entities`/`log`/`schedule` verb families.
+
+*draft-note: once specified, `control.backpressure`'s throttle scope is expected to key on the same `cost_class` classification `events/1`'s durable-event envelope already carries (`events/1` Durable-event envelope) — the vocabulary this platform uses elsewhere to classify queued, throttleable work, which would include a host's own queued `assets.derive` jobs (CTX-061). This note states the expected scoping axis only; it defines no new field on `assets.derive` or any other verb today, and the signal's own concrete body shape remains reserved to the future minor CTX-092 describes.*
+
 ### `http` family
 
 **[CTX-100]** `http.request(method, url, headers?, body?, secretHandle?)` is the pack's only sanctioned network egress path. The host MUST reject any `url` whose host does not match an entry in the pack's manifest `egress` allowlist (manifest/1 MAN-030) with `EGRESS_NOT_ALLOWLISTED`, and MUST re-validate the allowlist match on every redirect hop rather than only the initial URL.

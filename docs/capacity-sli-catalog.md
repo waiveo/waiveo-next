@@ -27,7 +27,7 @@
 | Resident-pack envelope | **≤512 MiB total**: assumes ~5 required packs idling ≈70 MiB (~350) + 1–2 active at full heap; low-traffic packs idle-exit — the envelope is NOT 5×MemoryMax | See memory budget | Nightly capacity lane |
 
 **Reference-box memory budget (against measured MemTotal ≥1,900 MiB, not nominal 2,048):**
-OS+journald ≈250 + app ≤300 + relay ≤64 + resident packs ≤512 + derive idle 0 (socket-activated; **peak ≈600 transient; cost-class clamp = 1 concurrent render on the reference box**) → **≤1,726 MiB peak, ≥150 MiB headroom** (174 actual) — headroom target ≥150 MiB at derive peak. SQLite page cache and web-UI serving live **inside** app ≤300. App gates, unambiguously: **idle RSS soft/burn-in gate ≤200 MiB** (legacy all-in-one monolith idles ~189 MiB; a pure-Node app with packs out-of-process idling above it is a defect) and **sustained cap 300 MiB = the enforced P1**. ⚑ Relay ≤64 MiB and the bare arm64 lite-image idle RSS are pending hardware-bench measurements; if the Zero 2 W busts the budget, the tier-1 floor moves before the number does.
+OS+journald ≈250 + app ≤300 + relay ≤64 + resident packs ≤512 + derive idle 0 (socket-activated; **peak ≈600 transient; cost-class clamp = 1 concurrent render on the reference box**) → **≤1,726 MiB peak, ≥150 MiB headroom** (174 actual) — headroom target ≥150 MiB at derive peak. SQLite page cache and web-UI serving live **inside** app ≤300. App gates, unambiguously: **idle RSS soft/burn-in gate ≤200 MiB** (an all-in-one process hosting extensions in-process establishes the rough idle floor a pure-Node, out-of-process design must beat) and **sustained cap 300 MiB = the enforced P1**. ⚑ Relay ≤64 MiB and the bare arm64 lite-image idle RSS are pending hardware-bench measurements; if the Zero 2 W busts the budget, the tier-1 floor moves before the number does.
 
 ## SLI catalog
 
@@ -47,8 +47,8 @@ OS+journald ≈250 + app ≤300 + relay ≤64 + resident packs ≤512 + derive i
 
 ## Non-promises (on the record)
 
-- **No offline playback guarantee:** the relay caches no content; a screen plays only what its player buffered. Yodeck's ~35-day offline caching is a deliberately unmatched capability — the 7-day figure here is *telemetry retention*, a different claim.
-- No cloud-tier numbers: that program writes its own catalog on these SLI definitions.
+- **No offline playback guarantee:** the relay caches no content; a screen plays only what its player buffered. A multi-day offline content-caching capability offered by some signage products is a deliberately unmatched capability here — the 7-day figure is *telemetry retention*, a different claim.
+- No cloud-tier numbers: cloud-tier capacity is out of scope for this catalog.
 - Targets are per-site (self-hosted = one relay); nothing here implies multi-relay scaling claims.
 
 ## Measurement plan

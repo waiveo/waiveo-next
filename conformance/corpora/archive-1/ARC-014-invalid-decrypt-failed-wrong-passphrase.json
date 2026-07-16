@@ -9,7 +9,7 @@
   },
   "expected": {
     "error": { "code": "DECRYPT_FAILED" },
-    "distinguishable_from": "SIGNATURE_INVALID",
+    "distinguishable_from": "ARCHIVE_SIGNATURE_INVALID",
     "plaintext_emitted": false,
     "frames_attempted_after_failure": 0
   }

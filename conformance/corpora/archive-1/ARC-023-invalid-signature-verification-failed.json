@@ -8,7 +8,7 @@
     "recomputed_digest": "0000000000000000000000000000000000000000000000000000000000000"
   },
   "expected": {
-    "error": { "code": "SIGNATURE_INVALID" },
+    "error": { "code": "ARCHIVE_SIGNATURE_INVALID" },
     "decryption_attempted": false
   }
 }

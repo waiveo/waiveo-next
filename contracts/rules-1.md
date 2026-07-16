@@ -315,6 +315,8 @@ rules/1 defines the complete automation vocabulary — every trigger, condition,
 
 **[RUL-330]** Every entity observation carries two independent facts: whether the canonical state string changed, and whether any attribute's value changed. A `state` trigger or `state` condition's fire/pass behavior with respect to this distinction is governed exactly by RUL-023's four-way rule (attribute-scoped bounded/unbounded, state-scoped, unscoped) — restated here as the general principle: **state-scoped** matching (`attribute` absent, `from`/`to` present) MUST NOT be satisfied by an attribute-only change, regardless of what the unchanged state string equals; **unscoped** matching (`attribute`, `from`, `to` all absent) MUST be satisfied by either kind of change.
 
+*draft-note: whether a `cosmetic`-classified attribute (`device-class-registry/1` REG-044/045) participates in this section's aggregate any-attribute-changed signal is an open reconciliation between this contract and device-class-registry/1, not settled by the paragraph above. REG-044/045 proposes a specific default — `change_emission` gates only the aggregate signal this section states, never a directly-addressed, attribute-scoped match (RUL-022/RUL-023, which REG-045 requires to keep evaluating an attribute's own transition regardless of its declared `change_emission`) — but REG-044/045's own draft-note flags that default as pending confirmation against this contract; this contract has not yet independently confirmed it.*
+
 ### DST semantics
 
 **[RUL-340]** `time` and `time_pattern` triggers (Triggers: time, Triggers: time_pattern) are evaluated as local wall-clock instants converted to an absolute instant via the owning scope node's effective timezone.

@@ -32,6 +32,8 @@ One row per requirement ID `contracts/events-1.md` defines. Format: `conformance
 | EVT-081 | `contracts/events-1.md#auditevent` | `EVT-080-valid-audit-login-failure` | covered |
 | EVT-082 | `contracts/events-1.md#auditevent` | - | TBD-wave1 |
 | EVT-083 | `contracts/events-1.md#auditevent` | `EVT-080-valid-audit-login-failure` | covered |
+| EVT-084 | `contracts/events-1.md#variablechanged` | - | TBD-wave1 |
+| EVT-085 | `contracts/events-1.md#variablechanged` | - | TBD-wave1 |
 | EVT-090 | `contracts/events-1.md#ws-binding` | `EVT-091-valid-hello-fresh-subscribe` | covered |
 | EVT-091 | `contracts/events-1.md#ws-binding` | `EVT-091-valid-hello-fresh-subscribe` | covered |
 | EVT-092 | `contracts/events-1.md#ws-binding` | `EVT-091-valid-hello-fresh-subscribe`, `EVT-140-valid-resume-with-gap` | covered |

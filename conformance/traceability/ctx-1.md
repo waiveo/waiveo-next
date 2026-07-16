@@ -37,6 +37,7 @@ One row per requirement ID `contracts/ctx-1.md` defines. Format: `conformance/tr
 | CTX-081 | `contracts/ctx-1.md#notify-family` | - | TBD-wave1 |
 | CTX-090 | `contracts/ctx-1.md#health-family` | - | TBD-wave1 |
 | CTX-091 | `contracts/ctx-1.md#health-family` | - | TBD-wave1 |
+| CTX-092 | `contracts/ctx-1.md#backpressure-signal` | - | TBD-wave1 |
 | CTX-100 | `contracts/ctx-1.md#http-family` | - | TBD-wave1 |
 | CTX-101 | `contracts/ctx-1.md#http-family` | - | TBD-wave1 |
 | CTX-102 | `contracts/ctx-1.md#http-family` | - | TBD-wave1 |

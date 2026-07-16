@@ -272,7 +272,7 @@ A `ChannelIndex`'s `format_version` field (Index format versioning, CHI-090) is 
 
 | code | meaning | retryable |
 |---|---|---|
-| `SIGNATURE_INVALID` | A role's metadata (timestamp, snapshot, or a channel index) did not verify against the trust bundle's recognized key-id(s) for that role (CHI-050 steps 1/3/5). | no — the served content is untrusted; retry only after the underlying key/hosting issue is resolved |
+| `CHANNEL_INDEX_SIGNATURE_INVALID` | A role's metadata (timestamp, snapshot, or a channel index) did not verify against the trust bundle's recognized key-id(s) for that role (CHI-050 steps 1/3/5). | no — the served content is untrusted; retry only after the underlying key/hosting issue is resolved |
 | `NAMESPACE_NOT_DELEGATED` | An index entry's channel is not covered by its signer's namespace delegation (CHI-009). | no |
 | `VERSION_ROLLBACK_REJECTED` | A role's fetched `version` was lower than the verifier's own persisted high-water mark for that role/channel scope (CHI-060, CHI-064). | no |
 | `TIMESTAMP_STALE` | The timestamp role's metadata is older than its stated max-age (CHI-061). | yes — after a fresher timestamp is fetched |

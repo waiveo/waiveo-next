@@ -12,7 +12,7 @@
   },
   "expected": {
     "error": { "code": "ARCHIVE_TRUNCATED" },
-    "distinguishable_from": ["DECRYPT_FAILED", "SIGNATURE_INVALID"],
+    "distinguishable_from": ["DECRYPT_FAILED", "ARCHIVE_SIGNATURE_INVALID"],
     "final_marked_frame_authenticated": false,
     "restore_completed": false
   }

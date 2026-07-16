@@ -61,7 +61,7 @@ events/1 defines the platform's client push channel: the durable-event envelope,
 
 ### Registered-schema catalog — general
 
-**[EVT-020]** The catalog of platform-registered schemas — `entity.state_changed`, `automation.run`, `content.played`, `device.heartbeat`, `box.vitals`, `audit.event` — is additive-only: a new registered schema MAY be added by a later events/1 minor; a published schema's already-defined field MUST NOT change type or meaning, and MUST NOT be removed, within major version 1.
+**[EVT-020]** The catalog of platform-registered schemas — `entity.state_changed`, `automation.run`, `content.played`, `device.heartbeat`, `box.vitals`, `audit.event`, `variable.changed` — is additive-only: a new registered schema MAY be added by a later events/1 minor; a published schema's already-defined field MUST NOT change type or meaning, and MUST NOT be removed, within major version 1.
 
 **[EVT-021]** A registered schema's `schema` value MUST be a bare `<domain>.<name>` string (lowercase, `.`-separated, no `/`). A pack-contributed schema's `schema` value is the pack-namespaced event name `manifest/1` MAN-090 defines (`<publisher>/<name>.<local-name>`), which always contains a `/` from its owning pack ID. These two forms are mutually exclusive by construction, so the registered and pack-contributed namespaces never collide.
 
@@ -185,6 +185,18 @@ events/1 defines the platform's client push channel: the durable-event envelope,
 **[EVT-082]** `retention_class` (Durable-event envelope) on an `audit.event` event MUST be set to a value the platform's retention configuration treats as long-lived relative to the other registered schemas — an audit trail outliving the operational telemetry recorded alongside it is the property this field exists to express, even though this contract does not itself enumerate retention-class values or their durations.
 
 **[EVT-083]** `result: failure` MUST still carry every other field (EVT-080) — a failed action is exactly as auditable as a successful one, never elided for having failed.
+
+### `variable.changed`
+
+**[EVT-084]** The `variable.changed` schema publishes one committed change to a platform-owned typed variable's value. Its payload MUST validate against:
+
+| field | type | notes |
+|---|---|---|
+| `variable` | string | The changed variable's own name. |
+| `old_value` | string, number, or boolean; nullable | The variable's value immediately before this change; `null` when the variable was previously unset. |
+| `new_value` | string, number, or boolean; nullable | The variable's value immediately after this change; `null` when this change unsets it. |
+
+**[EVT-085]** A `variable.changed` event MUST be emitted once per committed variable write, in write order. This is the durable event an `event`-kind trigger addresses by its platform-reserved unnamespaced name to fire a rule immediately on a variable's own value changing (`rules/1` RUL-080) — a distinct mechanism from a `variable` condition (`rules/1` RUL-150), which reads a variable's compile-time-closed value without itself needing this event.
 
 ### WS binding
 
