@@ -1,0 +1,36 @@
+{
+  "case_id": "PLY-057-invalid-oob-authentication-mismatch-rejected",
+  "contract": "player/1",
+  "req_ids": ["PLY-050", "PLY-052", "PLY-057", "PLY-058"],
+  "description": "A player fetches trust-anchor material during the verification-disabled bootstrap request and receives a fingerprint authenticator, but the SHA-256 digest it computes over the received bytes does not match trust_anchor_fingerprint - consistent with a substituted or corrupted response. The player MUST discard the material, MUST NOT persist or pin it, MUST NOT proceed to a status poll or use any credential from this attempt, and the pairing grant remains retryable for a fresh attempt.",
+  "input": {
+    "pairing_request": {
+      "hardware_id": "hw-9f2c7b1e4a3d4f5b",
+      "capabilities": { "content_types": ["image", "video"], "player_version": "3.0.0" }
+    },
+    "pairing_response": {
+      "trust_anchors": [
+        { "covers": ["player"], "pem": "-----BEGIN CERTIFICATE-----\nMIIB00SUBSTITUTEDLEAF00AwIBAgIUJf...\n-----END CERTIFICATE-----" }
+      ],
+      "authenticator_path": "fingerprint",
+      "trust_anchor_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85",
+      "pairing_status": "redeemed",
+      "channel_token": "ct_shouldneverbeused00000000000000",
+      "screen_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZM",
+      "issued_at": 1752537000000,
+      "expires_at": 1752623400000
+    },
+    "player_computed_fingerprint_of_received_trust_anchors": "9f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f"
+  },
+  "expected": {
+    "fingerprint_match": false,
+    "trust_anchor_persisted": false,
+    "trust_anchor_pinned": false,
+    "channel_token_used": false,
+    "status_poll_attempted": false,
+    "pairing_attempt_result": "rejected",
+    "player_state": "returns_to_server_locating",
+    "grant_invalidated": false,
+    "error_code": "TRUST_ANCHOR_AUTH_FAILED"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "case_id": "PLY-136-valid-server-moved-relocate-never-wipe",
+  "contract": "player/1",
+  "req_ids": ["PLY-022", "PLY-026", "PLY-130", "PLY-131", "PLY-132", "PLY-133"],
+  "description": "A paired player's relay moves to a new address on the same network. The player's connections to the old address fail (classified unreachable); it retries with capped backoff, and on its scheduled re-discovery attempt receives a fresh discovery response naming the relay's new address (re-announced under PLY-022), reconnects successfully, and at no point clears its persisted trust anchor or channel token.",
+  "input": {
+    "player_persisted_state": {
+      "relay_address": { "host": "198.51.100.12", "port": 5173 },
+      "trust_anchor_present": true,
+      "channel_token_present": true
+    },
+    "connection_attempts": [
+      { "attempt": 1, "address": { "host": "198.51.100.12", "port": 5173 }, "result": "no_response" },
+      { "attempt": 2, "address": { "host": "198.51.100.12", "port": 5173 }, "result": "no_response" },
+      { "attempt": 3, "address": { "host": "198.51.100.12", "port": 5173 }, "result": "no_response" },
+      {
+        "attempt": 4,
+        "address": { "host": "198.51.100.12", "port": 5173 },
+        "result": "no_response",
+        "re_discovery_triggered": true,
+        "discovery_response": { "st": "urn:waiveo:service:player:1", "location": "https://198.51.100.45:5173/player/v1" }
+      },
+      { "attempt": 5, "address": { "host": "198.51.100.45", "port": 5173 }, "result": "success" }
+    ]
+  },
+  "expected": {
+    "failure_classification_attempts_1_to_4": "unreachable",
+    "backoff_capped": true,
+    "re_discovery_fired_on_attempt": 4,
+    "relay_address_updated_to": { "host": "198.51.100.45", "port": 5173 },
+    "trust_anchor_cleared": false,
+    "channel_token_cleared": false,
+    "retries_indefinitely": true,
+    "reconnect_result": "success"
+  }
+}

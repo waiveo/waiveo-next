@@ -1,0 +1,42 @@
+{
+  "case_id": "PLY-101-valid-lease-preemption-interrupt-now",
+  "contract": "player/1",
+  "req_ids": ["PLY-090", "PLY-091", "PLY-094", "PLY-100", "PLY-101", "PLY-107", "PLY-110", "PLY-111", "PLY-112"],
+  "description": "A screen is mid-render of a scheduled-priority asset when its relay grants a preempt-priority lease carrying an emergency-takeover asset. The player acknowledges the new lease, interrupts the currently rendering asset immediately rather than waiting for its natural end, renders the takeover asset, and its render-end reports for both the interrupted asset and the takeover asset carry the correct cause and completion values.",
+  "input": {
+    "active_lease_before": { "lease_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZF", "priority": "scheduled", "program_revision": "rev-17" },
+    "currently_rendering": { "asset_ref": "sha256:aaaa000000000000000000000000000000000000000000000000000000aa", "render_start_ts": 1752537960000 },
+    "new_lease": {
+      "lease_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZG",
+      "screen_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZE",
+      "program_revision": "rev-18",
+      "priority": "preempt",
+      "display": "content",
+      "content": [
+        { "type": "image", "asset_ref": "sha256:cccc000000000000000000000000000000000000000000000000000000cc", "url": "https://198.51.100.20/cas/cccc0000", "expires_at": 1752541800000 }
+      ],
+      "issued_at": 1752538000000,
+      "valid_until": 1752538300000,
+      "signature": "ed25519-sig-computed-with-the-relays-player-facing-signing-key"
+    },
+    "delivery_time": 1752538000500
+  },
+  "expected": {
+    "lease_ack": { "lease_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZG", "accepted": true },
+    "interrupted_immediately": true,
+    "waited_for_natural_end": false,
+    "previous_asset_render_end": {
+      "asset_ref": "sha256:aaaa000000000000000000000000000000000000000000000000000000aa",
+      "t_end": 1752538000500,
+      "cause": "scheduled",
+      "completion": "interrupted"
+    },
+    "takeover_render_start": {
+      "lease_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZG",
+      "asset_ref": "sha256:cccc000000000000000000000000000000000000000000000000000000cc",
+      "ts": 1752538000600
+    },
+    "takeover_render_end_cause": "preempted",
+    "active_lease_after": "01J8Z3K4N5P6Q7R8S9T0V1W2ZG"
+  }
+}

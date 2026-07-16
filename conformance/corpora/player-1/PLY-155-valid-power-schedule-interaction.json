@@ -1,0 +1,29 @@
+{
+  "case_id": "PLY-155-valid-power-schedule-interaction",
+  "contract": "player/1",
+  "req_ids": ["PLY-093", "PLY-104", "PLY-151", "PLY-152", "PLY-155", "PLY-156", "PLY-157"],
+  "description": "A screen's most recently assigned lease has display: blank (an intentional off-air state). Its relay's screen-liveness recovery logic evaluates whether to attempt foreground recovery and must suppress it purely due to the blank display state, independent of the device's own reported power/app state already passing both recovery gates. Separately, a preempt-priority lease targeting this same screen arrives and must not force the display out of blank.",
+  "input": {
+    "active_lease": { "lease_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZK", "priority": "scheduled", "display": "blank", "content": [] },
+    "device_status": { "state": "on", "app_type": "home" },
+    "display_power_schedule_state": "blank_window",
+    "recovery_evaluation_triggered": true,
+    "incoming_preempt_lease": {
+      "lease_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZL",
+      "priority": "preempt",
+      "display": "content",
+      "content": [
+        { "type": "image", "asset_ref": "sha256:dddd000000000000000000000000000000000000000000000000000000dd", "url": "https://198.51.100.20/cas/dddd0000", "expires_at": 1752545000000 }
+      ]
+    }
+  },
+  "expected": {
+    "recovery_would_pass_state_check": true,
+    "recovery_would_pass_app_type_check": true,
+    "recovery_suppressed_due_to_blank_display": true,
+    "recovery_attempted": false,
+    "preempt_lease_accepted": true,
+    "display_remains": "blank",
+    "preempt_forces_visible": false
+  }
+}
