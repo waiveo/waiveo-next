@@ -95,64 +95,135 @@
           {
             "when": "type",
             "render": {
-              "type": "switch",
-              "id": "condition-leaf-kind-switch",
-              "props": {
-                "discriminant": "item.type",
-                "cases": [
-                  {
-                    "when": "state",
-                    "render": {
-                      "type": "section",
-                      "children": [
-                        { "type": "entity-picker", "bind": "item.entity_id" },
-                        {
-                          "type": "multi-select",
-                          "bind": "item.state",
-                          "props": {
-                            "options": {
-                              "kind": "literal",
-                              "items": [
-                                { "value": "on", "labelMsg": "msg:state.on" },
-                                { "value": "off", "labelMsg": "msg:state.off" }
-                              ]
-                            }
-                          }
-                        }
-                      ]
-                    }
-                  },
-                  {
-                    "when": "numeric",
-                    "render": {
-                      "type": "section",
-                      "children": [
-                        { "type": "entity-picker", "bind": "item.entity_id" },
-                        { "type": "number-input", "bind": "item.above" },
-                        { "type": "number-input", "bind": "item.below" }
-                      ]
-                    }
-                  },
-                  {
-                    "when": "variable",
-                    "render": {
-                      "type": "section",
-                      "children": [
-                        { "type": "text-input", "bind": "item.variable" },
-                        { "type": "number-input", "bind": "item.equals" }
-                      ]
-                    }
-                  },
-                  {
-                    "when": "template",
-                    "render": {
-                      "type": "text-input",
-                      "bind": "item.expression.expr",
-                      "props": { "multiline": true, "placeholderMsg": "msg:automations.detail.expressionPlaceholder" }
+              "type": "section",
+              "id": "condition-leaf-fields",
+              "children": [
+                {
+                  "type": "select",
+                  "id": "condition-leaf-kind-select",
+                  "bind": "item.type",
+                  "props": {
+                    "options": {
+                      "kind": "vocab",
+                      "ref": "rules/1:condition-leaf-kind",
+                      "labels": {
+                        "state": "msg:vocab.condition.state",
+                        "numeric": "msg:vocab.condition.numeric",
+                        "time": "msg:vocab.condition.time",
+                        "sun": "msg:vocab.condition.sun",
+                        "variable": "msg:vocab.condition.variable",
+                        "template": "msg:vocab.condition.template"
+                      }
                     }
                   }
-                ]
-              }
+                },
+                {
+                  "type": "switch",
+                  "id": "condition-leaf-kind-switch",
+                  "props": {
+                    "discriminant": "item.type",
+                    "cases": [
+                      {
+                        "when": "state",
+                        "render": {
+                          "type": "section",
+                          "children": [
+                            { "type": "entity-picker", "bind": "item.entity_id" },
+                            {
+                              "type": "multi-select",
+                              "bind": "item.state",
+                              "props": {
+                                "options": {
+                                  "kind": "literal",
+                                  "items": [
+                                    { "value": "on", "labelMsg": "msg:state.on" },
+                                    { "value": "off", "labelMsg": "msg:state.off" }
+                                  ]
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "when": "numeric",
+                        "render": {
+                          "type": "section",
+                          "children": [
+                            { "type": "entity-picker", "bind": "item.entity_id" },
+                            { "type": "number-input", "bind": "item.above" },
+                            { "type": "number-input", "bind": "item.below" }
+                          ]
+                        }
+                      },
+                      {
+                        "when": "time",
+                        "render": {
+                          "type": "section",
+                          "children": [
+                            { "type": "time-of-day", "bind": "item.after" },
+                            { "type": "time-of-day", "bind": "item.before" }
+                          ]
+                        }
+                      },
+                      {
+                        "when": "sun",
+                        "render": {
+                          "type": "section",
+                          "children": [
+                            {
+                              "type": "select",
+                              "bind": "item.after.event",
+                              "props": {
+                                "options": {
+                                  "kind": "literal",
+                                  "items": [
+                                    { "value": "sunrise", "labelMsg": "msg:sun.sunrise" },
+                                    { "value": "sunset", "labelMsg": "msg:sun.sunset" }
+                                  ]
+                                }
+                              }
+                            },
+                            { "type": "number-input", "bind": "item.after.offset" },
+                            {
+                              "type": "select",
+                              "bind": "item.before.event",
+                              "props": {
+                                "options": {
+                                  "kind": "literal",
+                                  "items": [
+                                    { "value": "sunrise", "labelMsg": "msg:sun.sunrise" },
+                                    { "value": "sunset", "labelMsg": "msg:sun.sunset" }
+                                  ]
+                                }
+                              }
+                            },
+                            { "type": "number-input", "bind": "item.before.offset" }
+                          ]
+                        }
+                      },
+                      {
+                        "when": "variable",
+                        "render": {
+                          "type": "section",
+                          "children": [
+                            { "type": "text-input", "bind": "item.variable" },
+                            { "type": "number-input", "bind": "item.equals" }
+                          ]
+                        }
+                      },
+                      {
+                        "when": "template",
+                        "render": {
+                          "type": "text-input",
+                          "bind": "item.expression.expr",
+                          "props": { "multiline": true, "placeholderMsg": "msg:automations.detail.expressionPlaceholder" }
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
             }
           }
         ]

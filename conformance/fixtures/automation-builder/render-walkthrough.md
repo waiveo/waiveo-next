@@ -96,7 +96,7 @@ blank state trigger — `repeat-add`'s `target` IS an ordinary array Binding,
 resolved here in the outer (section) scope where `triggers` is directly
 addressable, the asymmetry with `repeat-remove` that UIS-162 states.
 
-## Conditions section — nested and/or/not groups
+## Conditions section — nested and/or/not groups + 6-kind leaf picker
 
 This is the fixture's hardest stress test, and the one that forced two
 mid-draft revisions to the contract (below). `rules/1`'s own Condition wire
@@ -115,7 +115,11 @@ referenced recursively) handles this with:
 (UIS-070, widened for this same reason; UIS-142 states the rationale
 normatively). Sample data: `conditions[0]` is `{"and": [<leaf>, {"or":
 [<leaf>, {"not": <leaf>}]}]}` — three levels deep, exercising `and`, `or`,
-`not`, and a leaf all in one tree.
+`not`, and two distinct leaf kinds (`state` at `and[0]` and at `not`'s
+nested leaf, `sun` at `or[0]`) all in one tree. Every leaf in this tree now
+renders under the leaf-kind coverage below, including the `sun` leaf, which
+a prior revision of this fixture's `condition-editor` left unrenderable
+(Gaps, item 5).
 
 Per `switch` case:
 
@@ -144,12 +148,45 @@ Per `switch` case:
   non-transparent form — `not` wraps exactly one nested condition, not an
   array, so this establishes a new Scope directly at that single nested
   object rather than iterating).
-- **`type`** — a second, nested `switch` (`discriminant: "item.type"`, an
-  ordinary bare Binding this time — leaf conditions really do share one
-  value-typed field) with cases `state`, `numeric`, `variable`, `template`,
-  rendering `entity-picker`+`multi-select`, `entity-picker`+two
-  `number-input`s, `text-input`+`number-input`, and a `text-input` on
-  `item.expression.expr` respectively.
+- **`type`** — first, a `select` (UIS-070) bound to `item.type`, `options` a
+  `vocab`-kind OptionSource (UIS-132) referencing the new
+  **`rules/1:condition-leaf-kind`** vocabRef (UIS-120) — a 6-member subset of
+  `rules/1:condition-kind`'s full 9, deliberately holding back the three
+  composition keys (`and`/`or`/`not`). This is necessary, not merely tidy:
+  `rules/1`'s Condition shape (RUL-100) tells composition from leaf apart by
+  **key presence**, not by any field's value — a composition object carries
+  no `type` key at all — so a `type`-bound picker offering `and`/`or`/`not`
+  as candidate values would let an author drive the UI into writing a `type:
+  "and"` leaf that no leaf-kind `case` below (nor the `rules/1` compiler)
+  would ever recognize; that would be actively wrong, not just incomplete.
+  `rules/1:condition-kind` itself is untouched and still exactly as broad as
+  `rules/1` defines it (it still feeds `firstKey`'s four candidate keys,
+  above, unchanged); `condition-leaf-kind` is a new, additive UIS-120 table
+  row scoped to this one picker, per UIS-122's general rule that a picker
+  needing only part of an existing vocabRef's set gets its own
+  exhaustively-listed row rather than a partial restatement of the wider one.
+  Second, a nested `switch` (`discriminant: "item.type"`, an ordinary bare
+  Binding this time — leaf conditions really do share one value-typed field)
+  with one `case` per leaf kind — all six now render, closing the gap a
+  prior revision of this fixture left open (Gaps, item 5):
+
+  | `when` | rendered fields | widgets used | sample value exercised |
+  |---|---|---|---|
+  | `state` | entity, `state` (multi-value) | `entity-picker`, `multi-select` (`literal` OptionSource) | `state: "off"` |
+  | `numeric` | entity, `above`, `below` | `entity-picker`, `number-input` ×2 | *(not in sample data)* |
+  | `time` | `after`, `before` — RUL-130's local-time-of-day bounds; **not** a `time` *trigger*'s `at`/`misfire` fields (RUL-040/041) | `time-of-day` ×2 | *(not in sample data)* |
+  | `sun` | `after.event`/`after.offset`, `before.event`/`before.offset` — RUL-140's `{event, offset?}` bound pairs; **not** a `sun` *trigger*'s flat `event`/`offset` (RUL-060) | `select` (`literal`: `sunrise`/`sunset`) + `number-input`, twice | `after: {event: "sunset"}` |
+  | `variable` | `variable`, `equals` | `text-input`, `number-input` | *(not in sample data)* |
+  | `template` | `expression.expr` | `text-input` (`multiline: true`) | *(not in sample data)* |
+
+  `time`/`sun` deliberately do **not** reuse the triggers section's own
+  `at`/`misfire`/flat-`event`/`offset` field names, even though both widget
+  sets read similarly (a time-of-day input; an event select plus an offset
+  number) — `rules/1`'s *condition* shapes for `time`/`sun` (RUL-130,
+  RUL-140) are genuinely different wire shapes from the *trigger* versions (a
+  bounded range check against the current instant, not a single scheduled
+  instant with a misfire policy), so binding to the trigger section's field
+  names would target fields that do not exist on a condition leaf at all.
 
 At the top level, `detail.root`'s conditions section repeats this same
 wrapper pattern once more (`repeat` bound to `conditions`, `fragment` ref with
@@ -222,10 +259,11 @@ resolves to) needs no explicit `target` field.
 $ node conformance/fixtures/fixture-lint.mjs
 fixture-lint: OK (automation-builder) — 15 widget type(s) used [badge, button, duration-input,
 entity-picker, fragment, multi-select, number-input, repeat, section, select, switch, table,
-text-input, time-of-day, toggle], 71 binding(s) checked, 4 vocabRef(s) used [rules/1:action-kind,
-rules/1:misfire, rules/1:mode, rules/1:trigger-kind], 5 action verb(s) used [create, repeat-add,
-repeat-remove, set, submit], 4 compute fn(s) used [count, eq, firstKey, label], 3 option kind(s)
-used [data, literal, vocab], 1 fragment ref(s) used [condition-editor] — zero undefined references
+text-input, time-of-day, toggle], 78 binding(s) checked, 5 vocabRef(s) used [rules/1:action-kind,
+rules/1:condition-leaf-kind, rules/1:misfire, rules/1:mode, rules/1:trigger-kind], 5 action verb(s)
+used [create, repeat-add, repeat-remove, set, submit], 4 compute fn(s) used [count, eq, firstKey,
+label], 3 option kind(s) used [data, literal, vocab], 1 fragment ref(s) used [condition-editor] —
+zero undefined references
 SUMMARY: fixture-lint: OK (0 undefined references)
 ```
 
@@ -289,3 +327,27 @@ directly).
    `{"compute": …}` = Computed) applied to every literal-or-Binding position,
    with the fixture's `eq` now written `["mode", {"lit": "parallel"}]`. Also
    surfaced by the same adversarial review.
+5. **The condition leaf branch had no kind-picker and only 4 of its 6 leaf
+   cases wired, while the triggers section already had both.** `item.type`
+   was fixed at leaf-creation time (`itemDefault: {"type": "state"}`) with no
+   `select` to change it — unlike the triggers section's `select`-then-`switch`
+   shape — and the nested leaf `switch` had cases for only `state`, `numeric`,
+   `variable`, `template` (no `time`, no `sun`, no `default`). Per UIS-202, a
+   `switch` with no matching `case` and no `default` renders nothing at that
+   position — so `sample-data.json`'s own `sun` leaf
+   (`conditions[0].and[1].or[0]`, `{"type": "sun", "after": {"event":
+   "sunset"}}`) rendered as a silent gap, a self-contradiction between the
+   fixture and the very data it claims to illustrate. **Closed by:** a `select`
+   bound to `item.type` using a new vocabRef, `rules/1:condition-leaf-kind`
+   (UIS-120, UIS-122) — a 6-member leaf-only subset of `rules/1:condition-kind`,
+   necessary rather than cosmetic because `rules/1`'s Condition shape (RUL-100)
+   discriminates composition-vs-leaf by key presence, not by `type`'s value, so
+   offering `and`/`or`/`not` as selectable `type` values (the naive fix — reuse
+   `condition-kind` as-is) would have been actively wrong, not merely
+   incomplete — plus `time`/`sun` cases using the *condition* wire shapes
+   (RUL-130/RUL-140: `after`/`before` bounds), deliberately not the trigger
+   section's `at`/`misfire`/flat-`event`/`offset` fields for the
+   same-named kinds, since those fields don't exist on a condition leaf. No
+   grammar change was needed — `vocab`-kind OptionSource, `switch`/`case`, and
+   dotted nested Bindings (`item.after.event`) were all already sufficient;
+   this was a fixture-completeness gap, not a contract-mechanism gap.
