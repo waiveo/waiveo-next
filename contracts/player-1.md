@@ -502,7 +502,7 @@ USN: relay:01J8Z4K4N5P6Q7R8S9T0V1W3A1
   "screen_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZE",
   "ts": 1752538035000,
   "power_state": "on",
-  "app_state": "playing",
+  "app_state": "app",
   "now_playing_content_id": null
 }
 ```

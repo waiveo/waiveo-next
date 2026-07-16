@@ -468,7 +468,7 @@ relay/1 defines the protocol between an enrolled relay and its app peer: connect
   "body": {
     "entries": [
       { "seq": 1001, "schema": "automation.run", "payload": { "rule_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z1", "rule_revision": 4, "mode_disposition": "ran" } },
-      { "seq": 1002, "schema": "device.heartbeat", "payload": { "device_id": "01J8Z3K4N5P6Q7R8S9T0V1W2YA", "power_state": "on", "app_state": "playing", "now_playing_content_id": null } }
+      { "seq": 1002, "schema": "device.heartbeat", "payload": { "device_id": "01J8Z3K4N5P6Q7R8S9T0V1W2YA", "power_state": "on", "app_state": "app", "now_playing_content_id": null } }
     ],
     "loss_markers": [
       { "from_seq": 980, "to_seq": 999, "dropped_counts_by_schema": { "content.played": 12, "entity.state_changed": 8 }, "reason": "buffer_exceeded" }
