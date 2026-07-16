@@ -24,12 +24,16 @@ One row per requirement ID `contracts/security-model.md` defines. Format: `confo
 | SEC-033 | `contracts/security-model.md#grants` | - | TBD-wave1 |
 | SEC-034 | `contracts/security-model.md#grants` | - | TBD-wave1 |
 | SEC-035 | `contracts/security-model.md#grants` | `SEC-035-invalid-grant-expired-rejected` | covered |
+| SEC-036 | `contracts/security-model.md#grants` | - | TBD-wave1 |
 | SEC-040 | `contracts/security-model.md#key-hierarchy` | - | TBD-wave1 |
 | SEC-041 | `contracts/security-model.md#key-hierarchy` | - | TBD-wave1 |
 | SEC-042 | `contracts/security-model.md#key-hierarchy` | - | TBD-wave1 |
 | SEC-043 | `contracts/security-model.md#key-hierarchy` | - | TBD-wave1 |
 | SEC-044 | `contracts/security-model.md#key-hierarchy` | - | TBD-wave1 |
 | SEC-045 | `contracts/security-model.md#key-hierarchy` | - | TBD-wave1 |
+| SEC-046 | `contracts/security-model.md#key-hierarchy` | - | TBD-wave1 |
+| SEC-047 | `contracts/security-model.md#key-hierarchy` | - | TBD-wave1 |
+| SEC-048 | `contracts/security-model.md#key-hierarchy` | - | TBD-wave1 |
 | SEC-050 | `contracts/security-model.md#credential-reset-grants` | `SEC-050-valid-credential-reset-grant-flow` | covered |
 | SEC-051 | `contracts/security-model.md#credential-reset-grants` | `SEC-050-valid-credential-reset-grant-flow` | covered |
 | SEC-052 | `contracts/security-model.md#credential-reset-grants` | - | TBD-wave1 |
@@ -64,6 +68,7 @@ One row per requirement ID `contracts/security-model.md` defines. Format: `confo
 | SEC-110 | `contracts/security-model.md#self-signed-fallback` | - | TBD-wave1 |
 | SEC-111 | `contracts/security-model.md#self-signed-fallback` | - | TBD-wave1 |
 | SEC-112 | `contracts/security-model.md#self-signed-fallback` | - | TBD-wave1 |
+| SEC-113 | `contracts/security-model.md#self-signed-fallback` | - | TBD-wave1 |
 | SEC-120 | `contracts/security-model.md#first-boot-claim-window-and-factory-reset` | `SEC-120-invalid-first-boot-claim-outside-window` | covered |
 | SEC-121 | `contracts/security-model.md#first-boot-claim-window-and-factory-reset` | `SEC-121-valid-factory-reset-destroys-key-material` | covered |
 | SEC-122 | `contracts/security-model.md#first-boot-claim-window-and-factory-reset` | - | TBD-wave1 |
