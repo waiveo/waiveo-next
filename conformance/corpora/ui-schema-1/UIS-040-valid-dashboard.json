@@ -1,0 +1,15 @@
+{
+  "case_id": "UIS-040-valid-dashboard",
+  "contract": "ui-schema/1",
+  "req_ids": ["UIS-003", "UIS-040", "UIS-041", "UIS-070", "UIS-185"],
+  "description": "A dashboard page with two stat-tiles and a slot tile validates with no errors, exercising the stat-tile and cross-pack Slot widgets the automation-builder fixture does not need.",
+  "input": {
+    "pageType": "dashboard",
+    "tiles": [
+      { "size": "small", "widget": { "type": "stat-tile", "props": { "labelMsg": "msg:dashboard.onlineScreens", "value": { "compute": "count", "args": ["screens"] } } } },
+      { "size": "small", "widget": { "type": "stat-tile", "props": { "labelMsg": "msg:dashboard.activeAutomations", "value": { "compute": "count", "args": ["automations"] } } } },
+      { "size": "medium", "widget": { "type": "slot", "props": { "name": "dashboard-cards" } } }
+    ]
+  },
+  "expected": { "valid": true, "errors": [] }
+}

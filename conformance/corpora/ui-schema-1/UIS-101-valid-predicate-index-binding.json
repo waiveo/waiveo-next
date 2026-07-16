@@ -1,0 +1,20 @@
+{
+  "case_id": "UIS-101-valid-predicate-index-binding",
+  "contract": "ui-schema/1",
+  "req_ids": ["UIS-101"],
+  "description": "A predicate-index Binding (automations[id=$ui.selected]) resolves to the array element whose id field equals the current value of $ui.selected, first match in array order — the mechanism list-detail's detail.source conventionally uses (UIS-022).",
+  "input": {
+    "binding": "automations[id=$ui.selected]",
+    "data": {
+      "automations": [
+        { "id": "01J8Z3K4N5P6Q7R8S9T0V1W2A1", "name": "Lobby evening wind-down" },
+        { "id": "01J8Z3K4N5P6Q7R8S9T0V1W2A2", "name": "Morning open" }
+      ],
+      "$ui": { "selected": "01J8Z3K4N5P6Q7R8S9T0V1W2A2" }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "resolved": { "id": "01J8Z3K4N5P6Q7R8S9T0V1W2A2", "name": "Morning open" }
+  }
+}

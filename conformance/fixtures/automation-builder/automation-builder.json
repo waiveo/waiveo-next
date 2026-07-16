@@ -1,0 +1,527 @@
+{
+  "pageType": "list-detail",
+  "context": {
+    "presets": { "collection": "presets" }
+  },
+  "fragments": {
+    "condition-editor": {
+      "type": "switch",
+      "id": "condition-kind-switch",
+      "props": {
+        "discriminant": { "compute": "firstKey", "args": ["item", ["and", "or", "not", "type"]] },
+        "cases": [
+          {
+            "when": "and",
+            "render": {
+              "type": "section",
+              "props": { "titleMsg": "msg:automations.detail.andGroup" },
+              "children": [
+                {
+                  "type": "repeat",
+                  "bind": "item.and",
+                  "props": {
+                    "itemTemplate": {
+                      "type": "section",
+                      "children": [
+                        { "type": "fragment", "props": { "ref": "condition-editor" } },
+                        {
+                          "type": "button",
+                          "props": { "labelMsg": "msg:automations.detail.removeCondition", "style": "destructive" },
+                          "on": { "press": { "verb": "repeat-remove", "target": "item" } }
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "button",
+                  "props": { "labelMsg": "msg:automations.detail.addCondition", "style": "secondary" },
+                  "on": { "press": { "verb": "repeat-add", "target": "item.and", "itemDefault": { "type": "state" } } }
+                },
+                {
+                  "type": "button",
+                  "props": { "labelMsg": "msg:automations.detail.addConditionGroup", "style": "secondary" },
+                  "on": { "press": { "verb": "repeat-add", "target": "item.and", "itemDefault": { "or": [] } } }
+                }
+              ]
+            }
+          },
+          {
+            "when": "or",
+            "render": {
+              "type": "section",
+              "props": { "titleMsg": "msg:automations.detail.orGroup" },
+              "children": [
+                {
+                  "type": "repeat",
+                  "bind": "item.or",
+                  "props": {
+                    "itemTemplate": {
+                      "type": "section",
+                      "children": [
+                        { "type": "fragment", "props": { "ref": "condition-editor" } },
+                        {
+                          "type": "button",
+                          "props": { "labelMsg": "msg:automations.detail.removeCondition", "style": "destructive" },
+                          "on": { "press": { "verb": "repeat-remove", "target": "item" } }
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "button",
+                  "props": { "labelMsg": "msg:automations.detail.addCondition", "style": "secondary" },
+                  "on": { "press": { "verb": "repeat-add", "target": "item.or", "itemDefault": { "type": "state" } } }
+                },
+                {
+                  "type": "button",
+                  "props": { "labelMsg": "msg:automations.detail.addConditionGroup", "style": "secondary" },
+                  "on": { "press": { "verb": "repeat-add", "target": "item.or", "itemDefault": { "and": [] } } }
+                }
+              ]
+            }
+          },
+          {
+            "when": "not",
+            "render": {
+              "type": "section",
+              "props": { "titleMsg": "msg:automations.detail.notGroup" },
+              "children": [
+                { "type": "fragment", "bind": "item.not", "props": { "ref": "condition-editor" } }
+              ]
+            }
+          },
+          {
+            "when": "type",
+            "render": {
+              "type": "switch",
+              "id": "condition-leaf-kind-switch",
+              "props": {
+                "discriminant": "item.type",
+                "cases": [
+                  {
+                    "when": "state",
+                    "render": {
+                      "type": "section",
+                      "children": [
+                        { "type": "entity-picker", "bind": "item.entity_id" },
+                        {
+                          "type": "multi-select",
+                          "bind": "item.state",
+                          "props": {
+                            "options": {
+                              "kind": "literal",
+                              "items": [
+                                { "value": "on", "labelMsg": "msg:state.on" },
+                                { "value": "off", "labelMsg": "msg:state.off" }
+                              ]
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "when": "numeric",
+                    "render": {
+                      "type": "section",
+                      "children": [
+                        { "type": "entity-picker", "bind": "item.entity_id" },
+                        { "type": "number-input", "bind": "item.above" },
+                        { "type": "number-input", "bind": "item.below" }
+                      ]
+                    }
+                  },
+                  {
+                    "when": "variable",
+                    "render": {
+                      "type": "section",
+                      "children": [
+                        { "type": "text-input", "bind": "item.variable" },
+                        { "type": "number-input", "bind": "item.equals" }
+                      ]
+                    }
+                  },
+                  {
+                    "when": "template",
+                    "render": {
+                      "type": "text-input",
+                      "bind": "item.expression.expr",
+                      "props": { "multiline": true, "placeholderMsg": "msg:automations.detail.expressionPlaceholder" }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "list": {
+    "source": "automations",
+    "display": {
+      "type": "table",
+      "id": "automations-table",
+      "props": {
+        "source": "automations",
+        "columns": [
+          { "headerMsg": "msg:automations.list.name", "cell": "item.name" },
+          { "headerMsg": "msg:automations.list.mode", "cell": { "compute": "label", "args": ["rules/1:mode", "item.mode"] } },
+          { "headerMsg": "msg:automations.list.triggerCount", "cell": { "compute": "count", "args": ["item.triggers"] } }
+        ]
+      },
+      "on": {
+        "rowPress": { "verb": "set", "target": "$ui.selected", "value": "item.id" }
+      }
+    }
+  },
+  "detail": {
+    "source": "automations[id=$ui.selected]",
+    "emptyMsg": "msg:automations.detail.empty",
+    "root": {
+      "type": "section",
+      "id": "rule-editor-root",
+      "children": [
+        {
+          "type": "text-input",
+          "id": "rule-name",
+          "bind": "name",
+          "props": { "placeholderMsg": "msg:automations.detail.namePlaceholder" }
+        },
+        {
+          "type": "toggle",
+          "id": "rule-enabled",
+          "bind": "enabled",
+          "props": { "onLabelMsg": "msg:automations.detail.enabledOn", "offLabelMsg": "msg:automations.detail.enabledOff" }
+        },
+        {
+          "type": "badge",
+          "id": "trigger-count-badge",
+          "props": { "value": { "compute": "count", "args": ["triggers"] }, "tone": "neutral" }
+        },
+        {
+          "type": "section",
+          "id": "triggers-section",
+          "props": { "titleMsg": "msg:automations.detail.triggersTitle", "collapsible": true },
+          "children": [
+            {
+              "type": "repeat",
+              "bind": "triggers",
+              "props": {
+                "itemTemplate": {
+                  "type": "section",
+                  "children": [
+                    {
+                      "type": "select",
+                      "bind": "item.type",
+                      "props": {
+                        "options": {
+                          "kind": "vocab",
+                          "ref": "rules/1:trigger-kind",
+                          "labels": {
+                            "state": "msg:vocab.trigger.state",
+                            "numeric": "msg:vocab.trigger.numeric",
+                            "time": "msg:vocab.trigger.time",
+                            "time_pattern": "msg:vocab.trigger.timePattern",
+                            "sun": "msg:vocab.trigger.sun",
+                            "template": "msg:vocab.trigger.template",
+                            "event": "msg:vocab.trigger.event",
+                            "webhook": "msg:vocab.trigger.webhook"
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "type": "switch",
+                      "id": "trigger-kind-switch",
+                      "props": {
+                        "discriminant": "item.type",
+                        "cases": [
+                          {
+                            "when": "state",
+                            "render": {
+                              "type": "section",
+                              "children": [
+                                { "type": "entity-picker", "bind": "item.entity_id" },
+                                {
+                                  "type": "multi-select",
+                                  "bind": "item.to",
+                                  "props": {
+                                    "options": {
+                                      "kind": "literal",
+                                      "items": [
+                                        { "value": "on", "labelMsg": "msg:state.on" },
+                                        { "value": "playing", "labelMsg": "msg:state.playing" },
+                                        { "value": "paused", "labelMsg": "msg:state.paused" },
+                                        { "value": "off", "labelMsg": "msg:state.off" }
+                                      ]
+                                    }
+                                  }
+                                },
+                                { "type": "duration-input", "bind": "item.for", "props": { "displayUnit": "s" } }
+                              ]
+                            }
+                          },
+                          {
+                            "when": "numeric",
+                            "render": {
+                              "type": "section",
+                              "children": [
+                                { "type": "entity-picker", "bind": "item.entity_id", "props": { "modes": ["entity", "selector"] } },
+                                { "type": "text-input", "bind": "item.attribute", "props": { "placeholderMsg": "msg:automations.detail.attributePlaceholder" } },
+                                { "type": "number-input", "bind": "item.above" },
+                                { "type": "duration-input", "bind": "item.for" }
+                              ]
+                            }
+                          },
+                          {
+                            "when": "time",
+                            "render": {
+                              "type": "section",
+                              "children": [
+                                { "type": "time-of-day", "bind": "item.at" },
+                                {
+                                  "type": "select",
+                                  "bind": "item.misfire",
+                                  "props": {
+                                    "options": {
+                                      "kind": "vocab",
+                                      "ref": "rules/1:misfire",
+                                      "labels": {
+                                        "catch_up_once": "msg:vocab.misfire.catchUpOnce",
+                                        "skip": "msg:vocab.misfire.skip",
+                                        "fire_each": "msg:vocab.misfire.fireEach"
+                                      }
+                                    }
+                                  }
+                                }
+                              ]
+                            }
+                          },
+                          {
+                            "when": "sun",
+                            "render": {
+                              "type": "section",
+                              "children": [
+                                {
+                                  "type": "select",
+                                  "bind": "item.event",
+                                  "props": {
+                                    "options": {
+                                      "kind": "literal",
+                                      "items": [
+                                        { "value": "sunrise", "labelMsg": "msg:sun.sunrise" },
+                                        { "value": "sunset", "labelMsg": "msg:sun.sunset" }
+                                      ]
+                                    }
+                                  }
+                                },
+                                { "type": "number-input", "bind": "item.offset" }
+                              ]
+                            }
+                          },
+                          {
+                            "when": "template",
+                            "render": {
+                              "type": "text-input",
+                              "bind": "item.expression.expr",
+                              "props": { "multiline": true, "placeholderMsg": "msg:automations.detail.expressionPlaceholder" }
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "type": "button",
+                      "props": { "labelMsg": "msg:automations.detail.removeTrigger", "style": "destructive" },
+                      "on": { "press": { "verb": "repeat-remove", "target": "item" } }
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "button",
+              "id": "add-trigger",
+              "props": { "labelMsg": "msg:automations.detail.addTrigger", "style": "secondary" },
+              "on": { "press": { "verb": "repeat-add", "target": "triggers", "itemDefault": { "type": "state" } } }
+            }
+          ]
+        },
+        {
+          "type": "section",
+          "id": "conditions-section",
+          "props": { "titleMsg": "msg:automations.detail.conditionsTitle", "collapsible": true },
+          "children": [
+            {
+              "type": "repeat",
+              "bind": "conditions",
+              "props": {
+                "itemTemplate": {
+                  "type": "section",
+                  "children": [
+                    { "type": "fragment", "props": { "ref": "condition-editor" } },
+                    {
+                      "type": "button",
+                      "props": { "labelMsg": "msg:automations.detail.removeCondition", "style": "destructive" },
+                      "on": { "press": { "verb": "repeat-remove", "target": "item" } }
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "button",
+              "id": "add-condition",
+              "props": { "labelMsg": "msg:automations.detail.addCondition", "style": "secondary" },
+              "on": { "press": { "verb": "repeat-add", "target": "conditions", "itemDefault": { "type": "state" } } }
+            },
+            {
+              "type": "button",
+              "id": "add-condition-group",
+              "props": { "labelMsg": "msg:automations.detail.addConditionGroup", "style": "secondary" },
+              "on": { "press": { "verb": "repeat-add", "target": "conditions", "itemDefault": { "and": [] } } }
+            }
+          ]
+        },
+        {
+          "type": "section",
+          "id": "actions-section",
+          "props": { "titleMsg": "msg:automations.detail.actionsTitle", "collapsible": true },
+          "children": [
+            {
+              "type": "repeat",
+              "bind": "actions",
+              "props": {
+                "itemTemplate": {
+                  "type": "section",
+                  "children": [
+                    {
+                      "type": "select",
+                      "bind": "item.type",
+                      "props": {
+                        "options": {
+                          "kind": "vocab",
+                          "ref": "rules/1:action-kind",
+                          "labels": {
+                            "device_command": "msg:vocab.action.deviceCommand",
+                            "preset_batch": "msg:vocab.action.presetBatch",
+                            "choose": "msg:vocab.action.choose",
+                            "delay": "msg:vocab.action.delay",
+                            "log": "msg:vocab.action.log",
+                            "notify": "msg:vocab.action.notify",
+                            "variable_write": "msg:vocab.action.variableWrite",
+                            "workflow_start": "msg:vocab.action.workflowStart",
+                            "pack_action": "msg:vocab.action.packAction"
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "type": "switch",
+                      "id": "action-kind-switch",
+                      "props": {
+                        "discriminant": "item.type",
+                        "cases": [
+                          {
+                            "when": "device_command",
+                            "render": {
+                              "type": "section",
+                              "children": [
+                                { "type": "entity-picker", "bind": "item.entity_id" },
+                                { "type": "text-input", "bind": "item.command", "props": { "placeholderMsg": "msg:automations.detail.commandPlaceholder" } }
+                              ]
+                            }
+                          },
+                          {
+                            "when": "preset_batch",
+                            "render": {
+                              "type": "select",
+                              "bind": "item.preset_id",
+                              "props": {
+                                "options": { "kind": "data", "source": "$context.presets", "valuePath": "id", "labelPath": "name" }
+                              }
+                            }
+                          },
+                          {
+                            "when": "delay",
+                            "render": { "type": "duration-input", "bind": "item.duration_seconds" }
+                          },
+                          {
+                            "when": "log",
+                            "render": { "type": "text-input", "bind": "item.message", "props": { "multiline": true } }
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "type": "button",
+                      "props": { "labelMsg": "msg:automations.detail.removeAction", "style": "destructive" },
+                      "on": { "press": { "verb": "repeat-remove", "target": "item" } }
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "button",
+              "id": "add-action",
+              "props": { "labelMsg": "msg:automations.detail.addAction", "style": "secondary" },
+              "on": { "press": { "verb": "repeat-add", "target": "actions", "itemDefault": { "type": "device_command" } } }
+            }
+          ]
+        },
+        {
+          "type": "section",
+          "id": "mode-section",
+          "props": { "titleMsg": "msg:automations.detail.modeTitle" },
+          "children": [
+            {
+              "type": "select",
+              "id": "mode-select",
+              "bind": "mode",
+              "props": {
+                "options": {
+                  "kind": "vocab",
+                  "ref": "rules/1:mode",
+                  "labels": {
+                    "single": "msg:vocab.mode.single",
+                    "restart": "msg:vocab.mode.restart",
+                    "queued": "msg:vocab.mode.queued",
+                    "parallel": "msg:vocab.mode.parallel"
+                  }
+                }
+              }
+            },
+            {
+              "type": "number-input",
+              "id": "mode-max",
+              "bind": "max",
+              "props": { "min": 1 },
+              "visibleIf": { "compute": "eq", "args": ["mode", { "lit": "parallel" }] }
+            }
+          ]
+        },
+        {
+          "type": "button",
+          "id": "save-button",
+          "props": { "labelMsg": "msg:automations.detail.save", "style": "primary" },
+          "on": { "press": { "verb": "submit" } }
+        }
+      ]
+    }
+  },
+  "newAction": {
+    "verb": "create",
+    "target": "automations",
+    "itemDefault": {
+      "mode": "single",
+      "enabled": true,
+      "triggers": [{ "type": "state" }],
+      "conditions": [],
+      "actions": [{ "type": "device_command" }]
+    }
+  }
+}

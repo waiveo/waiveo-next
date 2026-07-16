@@ -1,0 +1,26 @@
+{
+  "case_id": "UIS-100-invalid-malformed-binding-rejected",
+  "contract": "ui-schema/1",
+  "req_ids": ["UIS-100"],
+  "description": "A bind value with an empty path segment (a double dot) fails validation as BINDING_PATH_INVALID rather than being accepted and failing only at render time.",
+  "input": {
+    "pageType": "settings-form",
+    "source": "site",
+    "sections": [
+      {
+        "fields": [
+          { "type": "text-input", "bind": "general..displayName" }
+        ]
+      }
+    ],
+    "actions": [
+      { "type": "button", "props": { "labelMsg": "msg:settings.save" }, "on": { "press": { "verb": "submit" } } }
+    ]
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      { "code": "BINDING_PATH_INVALID", "field": "sections[0].fields[0].bind", "message": "\"general..displayName\" does not match the UIS-100 data-path grammar (empty segment)" }
+    ]
+  }
+}

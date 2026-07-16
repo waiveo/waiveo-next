@@ -1,0 +1,34 @@
+{
+  "case_id": "UIS-020-valid-list-detail-presets",
+  "contract": "ui-schema/1",
+  "req_ids": ["UIS-003", "UIS-020", "UIS-022", "UIS-065", "UIS-070"],
+  "description": "A minimal but complete list-detail page (a presets list + detail panel) validates with no errors, exercising the predicate-index detail.source pattern and the table/text-input/text display widgets the automation-builder fixture does not need in this exact combination.",
+  "input": {
+    "pageType": "list-detail",
+    "list": {
+      "source": "presets",
+      "display": {
+        "type": "table",
+        "props": {
+          "source": "presets",
+          "columns": [
+            { "headerMsg": "msg:presets.list.name", "cell": "item.name" }
+          ]
+        },
+        "on": { "rowPress": { "verb": "set", "target": "$ui.selected", "value": "item.id" } }
+      }
+    },
+    "detail": {
+      "source": "presets[id=$ui.selected]",
+      "emptyMsg": "msg:presets.detail.empty",
+      "root": {
+        "type": "section",
+        "children": [
+          { "type": "text-input", "bind": "name" },
+          { "type": "text", "props": { "value": "id" } }
+        ]
+      }
+    }
+  },
+  "expected": { "valid": true, "errors": [] }
+}

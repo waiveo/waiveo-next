@@ -1,0 +1,47 @@
+{
+  "_comment": "Illustrative bound data for the render-walkthrough only — not part of the ui-schema/1 document, not read by fixture-lint. Shaped to match api/openapi.yaml's Automation schema exactly (id, name, scope_node, labels, enabled, mode, max, triggers, conditions, actions, revision, created_at, updated_at) and this fixture's own $context.presets collection.",
+  "automations": [
+    {
+      "id": "01J8Z3K4N5P6Q7R8S9T0V1W2A1",
+      "name": "Lobby evening wind-down",
+      "scope_node": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5",
+      "labels": ["lobby", "evening"],
+      "enabled": true,
+      "mode": "parallel",
+      "max": 3,
+      "triggers": [
+        { "type": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2D1", "to": ["off", "standby"], "for": 300 },
+        { "type": "numeric", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2D2", "attribute": "cpu_temp", "above": 80, "for": 60 },
+        { "type": "time", "at": "22:00:00", "misfire": "catch_up_once" },
+        { "type": "sun", "event": "sunset", "offset": -900 },
+        { "type": "template", "expression": { "expr": "state('01J8Z3K4N5P6Q7R8S9T0V1W2D1') | upper" } }
+      ],
+      "conditions": [
+        {
+          "and": [
+            { "type": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2D1", "state": "off" },
+            {
+              "or": [
+                { "type": "sun", "after": { "event": "sunset" } },
+                { "not": { "type": "state", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2D3", "state": "playing" } }
+              ]
+            }
+          ]
+        }
+      ],
+      "actions": [
+        { "type": "device_command", "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2D1", "command": "power", "params": { "state": "off" } },
+        { "type": "preset_batch", "preset_id": "01J8Z3K4N5P6Q7R8S9T0V1W2P1" },
+        { "type": "delay", "duration_seconds": 30 },
+        { "type": "log", "message": "Lobby wind-down complete", "level": "info" }
+      ],
+      "revision": 4,
+      "created_at": "2026-06-01T08:00:00Z",
+      "updated_at": "2026-07-14T21:03:00Z"
+    }
+  ],
+  "presets": [
+    { "id": "01J8Z3K4N5P6Q7R8S9T0V1W2P1", "name": "Evening scene" },
+    { "id": "01J8Z3K4N5P6Q7R8S9T0V1W2P2", "name": "Movie mode" }
+  ]
+}

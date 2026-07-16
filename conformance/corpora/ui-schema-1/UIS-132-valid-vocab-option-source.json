@@ -1,0 +1,36 @@
+{
+  "case_id": "UIS-132-valid-vocab-option-source",
+  "contract": "ui-schema/1",
+  "req_ids": ["UIS-120", "UIS-121", "UIS-130", "UIS-132"],
+  "description": "A select widget's options using a complete vocab-kind OptionSource over rules/1:mode (all four members labeled) validates with no errors.",
+  "input": {
+    "pageType": "settings-form",
+    "source": "automations/01J8Z3K4N5P6Q7R8S9T0V1W2A1",
+    "sections": [
+      {
+        "fields": [
+          {
+            "type": "select",
+            "bind": "mode",
+            "props": {
+              "options": {
+                "kind": "vocab",
+                "ref": "rules/1:mode",
+                "labels": {
+                  "single": "msg:mode.single",
+                  "restart": "msg:mode.restart",
+                  "queued": "msg:mode.queued",
+                  "parallel": "msg:mode.parallel"
+                }
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "actions": [
+      { "type": "button", "props": { "labelMsg": "msg:settings.save" }, "on": { "press": { "verb": "submit" } } }
+    ]
+  },
+  "expected": { "valid": true, "errors": [] }
+}

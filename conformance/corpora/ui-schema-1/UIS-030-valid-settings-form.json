@@ -1,0 +1,23 @@
+{
+  "case_id": "UIS-030-valid-settings-form",
+  "contract": "ui-schema/1",
+  "req_ids": ["UIS-003", "UIS-030", "UIS-031"],
+  "description": "A minimal settings-form page with one section and a submit-wired save button validates with no errors.",
+  "input": {
+    "pageType": "settings-form",
+    "source": "site",
+    "sections": [
+      {
+        "titleMsg": "msg:settings.general.title",
+        "fields": [
+          { "type": "text-input", "bind": "displayName" },
+          { "type": "toggle", "bind": "quietHours" }
+        ]
+      }
+    ],
+    "actions": [
+      { "type": "button", "props": { "labelMsg": "msg:settings.save", "style": "primary" }, "on": { "press": { "verb": "submit" } } }
+    ]
+  },
+  "expected": { "valid": true, "errors": [] }
+}

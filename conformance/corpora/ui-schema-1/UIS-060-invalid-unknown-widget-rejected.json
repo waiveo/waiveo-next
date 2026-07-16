@@ -1,0 +1,26 @@
+{
+  "case_id": "UIS-060-invalid-unknown-widget-rejected",
+  "contract": "ui-schema/1",
+  "req_ids": ["UIS-060"],
+  "description": "A widget node using a type outside the closed Widget catalog fails validation as UNKNOWN_WIDGET_TYPE, naming the offending field path, rather than being rendered as an unstyled container or silently skipped.",
+  "input": {
+    "pageType": "settings-form",
+    "source": "site",
+    "sections": [
+      {
+        "fields": [
+          { "type": "carousel", "bind": "photos" }
+        ]
+      }
+    ],
+    "actions": [
+      { "type": "button", "props": { "labelMsg": "msg:settings.save" }, "on": { "press": { "verb": "submit" } } }
+    ]
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      { "code": "UNKNOWN_WIDGET_TYPE", "field": "sections[0].fields[0].type", "message": "\"carousel\" is not a member of the ui-schema/1 Widget catalog" }
+    ]
+  }
+}

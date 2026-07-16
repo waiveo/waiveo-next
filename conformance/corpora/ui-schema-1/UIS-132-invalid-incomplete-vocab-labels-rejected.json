@@ -1,0 +1,36 @@
+{
+  "case_id": "UIS-132-invalid-incomplete-vocab-labels-rejected",
+  "contract": "ui-schema/1",
+  "req_ids": ["UIS-132"],
+  "description": "A vocab-kind OptionSource whose labels map omits a member of the referenced vocabRef's closed set (here, \"parallel\" is missing from rules/1:mode's four members) fails validation as OPTION_SOURCE_INVALID.",
+  "input": {
+    "pageType": "settings-form",
+    "source": "automations/01J8Z3K4N5P6Q7R8S9T0V1W2A1",
+    "sections": [
+      {
+        "fields": [
+          {
+            "type": "select",
+            "bind": "mode",
+            "props": {
+              "options": {
+                "kind": "vocab",
+                "ref": "rules/1:mode",
+                "labels": { "single": "msg:mode.single", "restart": "msg:mode.restart", "queued": "msg:mode.queued" }
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "actions": [
+      { "type": "button", "props": { "labelMsg": "msg:settings.save" }, "on": { "press": { "verb": "submit" } } }
+    ]
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      { "code": "OPTION_SOURCE_INVALID", "field": "sections[0].fields[0].props.options.labels", "message": "labels map is missing an entry for vocabRef rules/1:mode member \"parallel\"" }
+    ]
+  }
+}

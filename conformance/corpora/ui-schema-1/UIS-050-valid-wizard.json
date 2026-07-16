@@ -1,0 +1,24 @@
+{
+  "case_id": "UIS-050-valid-wizard",
+  "contract": "ui-schema/1",
+  "req_ids": ["UIS-003", "UIS-050", "UIS-051", "UIS-052", "UIS-141"],
+  "description": "A two-step wizard with no draftSource (so both steps share the implicit $ui.draft scope, letting the review step read what the name step wrote) and a bare-Binding canAdvanceIf validates with no errors.",
+  "input": {
+    "pageType": "wizard",
+    "steps": [
+      {
+        "id": "name",
+        "titleMsg": "msg:wizard.step.name",
+        "root": { "type": "text-input", "bind": "name" },
+        "canAdvanceIf": "name"
+      },
+      {
+        "id": "review",
+        "titleMsg": "msg:wizard.step.review",
+        "root": { "type": "text", "props": { "value": "name" } }
+      }
+    ],
+    "onFinish": { "verb": "call-action", "action": "createFromDraft" }
+  },
+  "expected": { "valid": true, "errors": [] }
+}

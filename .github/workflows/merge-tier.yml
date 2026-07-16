@@ -19,6 +19,8 @@ jobs:
           go-version-file: go.mod
       - run: node scripts/validate-contracts.mjs
       - run: node scripts/check-public-hygiene.mjs
+      - name: ui-schema/1 — automation-builder fixture-lint
+        run: node conformance/fixtures/fixture-lint.mjs
       - run: node --test 'scripts/**/*.test.mjs'
       - name: api/1 — OpenAPI 3.1 validity
         run: npx --yes @redocly/cli@2.39.0 lint api/openapi.yaml
