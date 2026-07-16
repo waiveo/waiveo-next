@@ -1,0 +1,37 @@
+{
+  "case_id": "DAT-092-valid-preset-batch-partial-failure",
+  "contract": "data-model/1",
+  "req_ids": ["DAT-090", "DAT-091", "DAT-092", "DAT-093"],
+  "description": "A preset-batch row's commands list is attempted independently against two entities; one command fails, and the row's own last_outcome records the partial disposition in the identical three-value vocabulary and per-command result shape rules/1's own PresetBatchOutcome uses.",
+  "input": {
+    "preset_batch": {
+      "preset_id": "01JPRESET1N8GAWV07492Q9V82",
+      "scope_node": "01JGRPNDE1PG2X7R5JQC42EJ5E",
+      "name": "Power Down Lobby Devices",
+      "commands": [
+        { "entity_id": "01JENTTYAKQ2PDF6PT9FABT1BN", "command": "power", "params": { "state": "off" } },
+        { "entity_id": "01JENTTYBTFHA6R2YECXPKEE1C", "command": "power", "params": { "state": "off" } }
+      ],
+      "last_outcome": null,
+      "revision": 3,
+      "created_at": 1752537600000,
+      "updated_at": 1752537600000
+    },
+    "invocation_results": [
+      { "entity_id": "01JENTTYAKQ2PDF6PT9FABT1BN", "command": "power", "ok": true },
+      { "entity_id": "01JENTTYBTFHA6R2YECXPKEE1C", "command": "power", "ok": false, "error": "unreachable" }
+    ]
+  },
+  "expected": {
+    "valid": true,
+    "errors": [],
+    "both_commands_attempted": true,
+    "last_outcome": {
+      "outcome": "partial",
+      "results": [
+        { "target": "01JENTTYAKQ2PDF6PT9FABT1BN", "command": "power", "ok": true },
+        { "target": "01JENTTYBTFHA6R2YECXPKEE1C", "command": "power", "ok": false, "error": "unreachable" }
+      ]
+    }
+  }
+}

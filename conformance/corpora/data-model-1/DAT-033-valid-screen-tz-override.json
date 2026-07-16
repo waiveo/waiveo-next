@@ -1,0 +1,22 @@
+{
+  "case_id": "DAT-033-valid-screen-tz-override",
+  "contract": "data-model/1",
+  "req_ids": ["DAT-030", "DAT-031", "DAT-032", "DAT-033", "DAT-034"],
+  "description": "A site declares the required non-null tz/lat/long default; a group beneath it declares no override and resolves to the site's own values; a screen beneath the same group declares its own override and resolves to its own values instead.",
+  "input": {
+    "scope_nodes": [
+      { "id": "01JSTEBPVTX363SN6FCCW8VBHX", "kind": "site", "parent_id": "01JRGNDE171HFE865V215DE1CT", "name": "Multi-Region HQ", "tz": "America/Denver", "lat": 39.7392, "long": -104.9903, "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 },
+      { "id": "01JGRP2GFHZFHW4JFHNM589ER9", "kind": "group", "parent_id": "01JSTEBPVTX363SN6FCCW8VBHX", "name": "East Concourse", "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 },
+      { "id": "01JSCRNVERRDEF4W6305FATZYD", "kind": "screen", "parent_id": "01JGRP2GFHZFHW4JFHNM589ER9", "name": "Times Square Kiosk", "tz": "America/New_York", "lat": 40.7128, "long": -74.0060, "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 }
+    ]
+  },
+  "expected": {
+    "valid": true,
+    "errors": [],
+    "effective_geo": {
+      "01JSTEBPVTX363SN6FCCW8VBHX": { "tz": "America/Denver", "lat": 39.7392, "long": -104.9903, "source": "own" },
+      "01JGRP2GFHZFHW4JFHNM589ER9": { "tz": "America/Denver", "lat": 39.7392, "long": -104.9903, "source": "ancestor-site:01JSTEBPVTX363SN6FCCW8VBHX" },
+      "01JSCRNVERRDEF4W6305FATZYD": { "tz": "America/New_York", "lat": 40.7128, "long": -74.0060, "source": "own" }
+    }
+  }
+}

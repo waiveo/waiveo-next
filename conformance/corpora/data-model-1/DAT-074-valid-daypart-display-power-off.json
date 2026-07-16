@@ -1,0 +1,56 @@
+{
+  "case_id": "DAT-074-valid-daypart-display-power-off",
+  "contract": "data-model/1",
+  "req_ids": ["DAT-070", "DAT-071", "DAT-072", "DAT-073", "DAT-074", "DAT-075", "DAT-076", "DAT-112", "DAT-113", "DAT-115", "DAT-116"],
+  "description": "A schedule's two dayparts partition a full day without overlap: a daytime window with display_power: on projecting to a content Lease, and an overnight window (wrapping local midnight) with display_power: off projecting to a blank Lease plus a bound preset-batch for the actual device power-off -- the off/blank distinction stays visible as this row's own display_power even though both project to the identical Lease display: blank.",
+  "input": {
+    "schedule": { "id": "01JSCHED1S3AR0RGXJVZ9CJD33", "scope_node": "01JGRPNDE1PG2X7R5JQC42EJ5E", "name": "Weekday Lobby", "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 },
+    "dayparts": [
+      {
+        "id": "01JDAYPART2MV7RCG2V0CQV4NM",
+        "schedule_id": "01JSCHED1S3AR0RGXJVZ9CJD33",
+        "scope_node": "01JGRPNDE1PG2X7R5JQC42EJ5E",
+        "name": "Business Hours",
+        "days_of_week": [1, 2, 3, 4, 5],
+        "start_time": "06:00:00",
+        "end_time": "22:00:00",
+        "display_power": "on",
+        "playlist_id": "01JPAYST15TMGDMFGS8KXM40X6",
+        "preset_batch_id": null,
+        "misfire": null,
+        "revision": 1,
+        "created_at": 1752537600000,
+        "updated_at": 1752537600000
+      },
+      {
+        "id": "01JDAYPART1M33YA35B44FS7F2",
+        "schedule_id": "01JSCHED1S3AR0RGXJVZ9CJD33",
+        "scope_node": "01JGRPNDE1PG2X7R5JQC42EJ5E",
+        "name": "Overnight",
+        "days_of_week": [0, 1, 2, 3, 4, 5, 6],
+        "start_time": "22:00:00",
+        "end_time": "06:00:00",
+        "display_power": "off",
+        "playlist_id": null,
+        "preset_batch_id": "01JPRESET1N8GAWV07492Q9V82",
+        "misfire": null,
+        "revision": 1,
+        "created_at": 1752537600000,
+        "updated_at": 1752537600000
+      }
+    ],
+    "evaluated_at_local": "2026-07-14T23:30:00"
+  },
+  "expected": {
+    "valid": true,
+    "errors": [],
+    "dayparts_overlap": false,
+    "overnight_window_wraps_midnight": true,
+    "currently_holding_daypart_id": "01JDAYPART1M33YA35B44FS7F2",
+    "lease_projection": {
+      "for_business_hours_daypart": { "display": "content", "content_source": "playlist:01JPAYST15TMGDMFGS8KXM40X6" },
+      "for_overnight_daypart": { "display": "blank", "device_power_off_via": "preset_batch:01JPRESET1N8GAWV07492Q9V82" }
+    },
+    "effective_misfire_both_dayparts": "catch_up_once"
+  }
+}

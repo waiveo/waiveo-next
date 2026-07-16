@@ -1,0 +1,23 @@
+{
+  "case_id": "DAT-101-invalid-pack-owned-scheduler-rejected",
+  "contract": "data-model/1",
+  "req_ids": ["DAT-100", "DAT-101", "DAT-102"],
+  "description": "A schedule row submitted with a row-level pack_id field, asserting pack ownership of a scheduler row this contract defines as platform-owned only, is rejected outright.",
+  "input": {
+    "schedule": {
+      "id": "01JSCHEDBADQA7AK61KRSC4F6K",
+      "scope_node": "01JGRPNDE1PG2X7R5JQC42EJ5E",
+      "name": "Vendor-Shipped Rotation",
+      "pack_id": "acme-weather",
+      "revision": 1,
+      "created_at": 1752537600000,
+      "updated_at": 1752537600000
+    }
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      { "field": "pack_id", "code": "SCHEDULER_ROW_PACK_OWNED", "message": "a schedule row MUST NOT carry a row-level pack-identifying field; a pack's sole route to schedulable content is a playlist item's source: playable reference" }
+    ]
+  }
+}

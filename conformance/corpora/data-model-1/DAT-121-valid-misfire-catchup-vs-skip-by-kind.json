@@ -1,0 +1,43 @@
+{
+  "case_id": "DAT-121-valid-misfire-catchup-vs-skip-by-kind",
+  "contract": "data-model/1",
+  "req_ids": ["DAT-050", "DAT-076", "DAT-094", "DAT-120", "DAT-121", "DAT-122", "DAT-123"],
+  "description": "Neither a schedule nor its daypart declares an explicit misfire, so each defaults to catch_up_once and a relay resuming after an offline gap re-resolves the currently-holding daypart immediately; a rules/1 preset_batch action fired from a one-shot time trigger with no misfire declaration of its own is a distinct path that keeps rules/1's own skip default, entirely unchanged by this contract.",
+  "input": {
+    "schedule": { "id": "01JSCHED2SNH4HPSN17GBG26VP", "scope_node": "01JGRPNDE1PG2X7R5JQC42EJ5E", "name": "Standard Lobby", "misfire": null, "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 },
+    "daypart": {
+      "id": "01JDAYPART37KKTMSJ8CTRBKS0",
+      "schedule_id": "01JSCHED2SNH4HPSN17GBG26VP",
+      "scope_node": "01JGRPNDE1PG2X7R5JQC42EJ5E",
+      "days_of_week": [0, 1, 2, 3, 4, 5, 6],
+      "start_time": "08:00:00",
+      "end_time": "20:00:00",
+      "display_power": "on",
+      "playlist_id": "01JPAYST15TMGDMFGS8KXM40X6",
+      "misfire": null,
+      "revision": 1,
+      "created_at": 1752537600000,
+      "updated_at": 1752537600000
+    },
+    "gap_events": [
+      { "seq": 1, "t": "07:00:00", "kind": "relay_offline" },
+      { "seq": 2, "t": "08:00:00", "kind": "daypart_boundary_missed", "note": "the 08:00:00 transition into the daytime daypart was missed while offline" },
+      { "seq": 3, "t": "10:00:00", "kind": "relay_resumes" }
+    ],
+    "unrelated_rules_1_context": {
+      "note": "a separate automation rule, not a row this contract defines, referenced here only for contrast",
+      "trigger": { "type": "time", "at": "08:00:00", "misfire": null },
+      "action": { "type": "preset_batch", "preset_id": "01JPBATCH2KJDVMXWWDYA5JN5F" }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "errors": [],
+    "schedule_effective_misfire": "catch_up_once",
+    "daypart_effective_misfire": "catch_up_once",
+    "daypart_state_at_relay_resume": { "t": "10:00:00", "currently_holding_daypart_id": "01JDAYPART37KKTMSJ8CTRBKS0", "resolved_immediately": true, "reason": "catch_up_once: current state re-resolved fresh, not queued" },
+    "rules_1_time_trigger_effective_misfire": "skip",
+    "rules_1_time_trigger_fired_late_at_resume": false,
+    "reason": "the schedule/daypart default (catch_up_once) is this contract's own; the rules/1 time trigger's default (skip) is rules/1 RUL-354's, unchanged"
+  }
+}

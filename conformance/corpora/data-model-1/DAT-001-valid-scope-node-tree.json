@@ -1,0 +1,23 @@
+{
+  "case_id": "DAT-001-valid-scope-node-tree",
+  "contract": "data-model/1",
+  "req_ids": ["DAT-001", "DAT-002", "DAT-003", "DAT-004", "DAT-005", "DAT-006", "DAT-008"],
+  "description": "A complete org -> site -> group -> screen scope-node tree, each node's kind a permitted child of its parent's per the closed table, plus a device row and a screen resource row both placed under the group node rather than the deeper screen-kind node -- proving attachment is independent of a scope node's own kind.",
+  "input": {
+    "scope_nodes": [
+      { "id": "01JRGNDE171HFE865V215DE1CT", "kind": "org", "parent_id": null, "name": "Acme Signage", "account_state": "active", "entitlements": {}, "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 },
+      { "id": "01JSTENDE1EWH0AVNH9DN65R6P", "kind": "site", "parent_id": "01JRGNDE171HFE865V215DE1CT", "name": "Denver Flagship", "tz": "America/Denver", "lat": 39.7392, "long": -104.9903, "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 },
+      { "id": "01JGRPNDE1PG2X7R5JQC42EJ5E", "kind": "group", "parent_id": "01JSTENDE1EWH0AVNH9DN65R6P", "name": "Lobby", "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 },
+      { "id": "01JSCRNDE16RHXQAQPDH4AFAXR", "kind": "screen", "parent_id": "01JGRPNDE1PG2X7R5JQC42EJ5E", "name": "Lobby Panel 1", "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 }
+    ],
+    "device": { "device_id": "01JDEVCE1HEM3E2MSH4DMDZSX9", "scope_node": "01JGRPNDE1PG2X7R5JQC42EJ5E", "driver": "roku", "native_id": "192.0.2.40" },
+    "screen_resource": { "screen_id": "01JSCREENRES1G8FGVSQE8Z537", "scope_node": "01JGRPNDE1PG2X7R5JQC42EJ5E" }
+  },
+  "expected": {
+    "valid": true,
+    "errors": [],
+    "device_attachment_kind": "group",
+    "screen_resource_attachment_kind": "group",
+    "note": "both the device and the screen resource resolve to the group node, one level shallower than the tree's own screen-kind leaf -- attachment does not require kind: screen"
+  }
+}
