@@ -19,10 +19,12 @@ player/1 defines the protocol between a screen's player and its relay: capabilit
 - **Relay** — as defined in `relay/1`: the LAN-gateway peer a screen's player exchanges every message this contract defines with. A screen's player is always the connecting party; a relay never dials a player.
 - **Player** — the client software, running on or for a Screen, that implements this contract's screen-facing role. No requirement in this contract presumes a specific client platform, runtime, or rendering technology (Scope).
 - **Pairing grant** — as defined in `relay/1` (REL-121): a short-lived, redemption-scoped authorization a relay redeems on a screen's behalf. This contract defines the exchange a player uses to redeem one and the credentials that redemption produces.
-- **Pairing code** — a short, human-enterable value a player accepts as manual pairing input (Server-locating, Pairing redemption). Distinct from a machine-delivered pairing payload, which carries no code a human types.
+- **Pairing code** — a short, human-enterable value a player accepts as manual pairing input (Server-locating, Pairing redemption), decoding to a relay dial address (PLY-024) together with a `grant_selector` and a `fingerprint_commitment` (Out-of-band cert authentication). Distinct from a machine-delivered pairing payload, which carries no code a human types.
+- **Grant selector** — the public component a pairing code decodes to, alongside a `fingerprint_commitment` (Out-of-band cert authentication): an identifying value a `PairingRequest` sends to a relay so it can resolve which pairing grant (`relay/1` REL-121) the code names. A grant selector authenticates nothing by itself and MAY be observed by any on-path party without weakening Out-of-band cert authentication.
+- **Fingerprint commitment** — a truncated hash over a relay's own trust-anchor public key, delivered to a player only through a channel independent of the bootstrap fetch — concretely, alongside a `grant_selector` within a human-typed pairing code (PLY-024, PLY-053) — and never transmitted onward to a relay (PLY-054). A pairing attempt for which a player holds one authenticates fetched trust-anchor material against it (Out-of-band cert authentication); an attempt for which it holds none instead proceeds under trust-on-first-use.
 - **Trust anchor** — the certificate-authority material a player pins its post-bootstrap relay and content-origin connections to, once TLS bootstrap fetch and Out-of-band cert authentication both complete.
 - **Bootstrap fetch** — the single, verification-disabled request a player is permitted to make in order to obtain unauthenticated trust-anchor material ahead of Out-of-band cert authentication (TLS bootstrap fetch).
-- **Out-of-band authenticator** — a value or keyed computation, obtained through a channel independent of the bootstrap fetch itself, that a player uses to authenticate fetched trust-anchor material before installing it (Out-of-band cert authentication).
+- **Out-of-band authenticator** — this contract's general term for the value that authenticates fetched trust-anchor material at pairing time: concretely, a `fingerprint_commitment`. A pairing attempt holding one (Out-of-band cert authentication) authenticates against it; an attempt holding none instead proceeds under trust-on-first-use.
 - **Player certificate** — the TLS server certificate a relay issues, from its own trust anchor, for its player-facing listener; reissued over a relay's lifetime (for instance on rotation), never a per-screen credential. The per-screen credential is the channel token.
 - **Channel token** — a per-screen, revocable bearer credential a player presents on every request after pairing redemption completes (Channel tokens).
 - **Content reference** — a content-addressed `sha256:` URI in the same form `ctx/1`'s `assets` family and `relay/1`'s `screen_programs` section use, paired with a signed, time-limited fetch URL a player resolves directly against its content origin.
@@ -77,7 +79,7 @@ player/1 defines the protocol between a screen's player and its relay: capabilit
 
 **[PLY-024]** A pairing code (Pairing redemption) MUST deterministically decode, by the player accepting it, to a relay dial address `{host, port}` — a player MUST be able to reach a relay from a pairing code alone, with no dependency on same-network discovery having succeeded.
 
-*draft-note: the pairing code's own character grammar and length are not fixed by any normative source yet, beyond PLY-024's functional requirement (decodes to a dial address) and PLY-052's (also serves as an out-of-band authentication key). Proposed: a fixed-length alphanumeric string, grouped for manual entry (e.g. hyphen-separated blocks), short enough for a bounded-input remote-control-style entry method — subject to revision once a concrete encoding is chosen.*
+*draft-note: the pairing code's own character grammar and length are not fixed by any normative source yet, beyond PLY-024's functional requirement (decodes to a dial address) and PLY-053's (also decodes to a `grant_selector` and a `fingerprint_commitment`, Out-of-band cert authentication). Proposed: a fixed-length alphanumeric string, grouped for manual entry (e.g. hyphen-separated blocks), short enough for a bounded-input remote-control-style entry method even carrying all three decoded components — subject to revision once a concrete encoding is chosen, and to PLY-052's own commitment-length draft-note (Out-of-band cert authentication) for how much of that length the commitment itself consumes.*
 
 **[PLY-025]** A relay MUST accept a player's manual entry of its dial address (`{host, port}`) as functionally equivalent, from that point forward, to an address obtained via discovery (PLY-021) or a pairing code (PLY-024): the same Pairing redemption exchange proceeds next, over whichever address-acquisition path was used. Manual entry supplies an address only — it MUST NOT be treated as pairing credential material by itself (Pairing redemption).
 
@@ -85,11 +87,11 @@ player/1 defines the protocol between a screen's player and its relay: capabilit
 
 ### Pairing redemption
 
-**[PLY-030]** A player pairs by sending a `PairingRequest` (Wire shapes) to a relay's `/player/v1/pair` path, over the verification-disabled bootstrap connection this section and TLS bootstrap fetch together define. `PairingRequest` MUST carry `hardware_id`, `capabilities` (PLY-012), and — on the manual, human-entered path only — `pairing_code`.
+**[PLY-030]** A player pairs by sending a `PairingRequest` (Wire shapes) to a relay's `/player/v1/pair` path, over the verification-disabled bootstrap connection this section and TLS bootstrap fetch together define. `PairingRequest` MUST carry `hardware_id`, `capabilities` (PLY-012), and — on the human-typed pairing-code path only — `grant_selector`, the value a player decodes from its pairing code (PLY-024, PLY-053) alongside a `fingerprint_commitment` it keeps local (Out-of-band cert authentication, PLY-054).
 
 **[PLY-031]** `hardware_id` MUST be a value stable across a player's own reinstall or upgrade. A value that changes when a player's own software is reinstalled or upgraded (an application-instance-generated identifier, for instance) MUST NOT be used to populate `hardware_id`, and MUST NOT be relied on elsewhere in this contract as a screen's continuity key across a re-pair.
 
-**[PLY-032]** A relay's `PairingResponse` (Wire shapes) to a `PairingRequest` MUST carry `trust_anchors` (TLS bootstrap fetch), `authenticator_path` (Out-of-band cert authentication), and `pairing_status`, one of `pending` or `redeemed`.
+**[PLY-032]** A relay's `PairingResponse` (Wire shapes) to a `PairingRequest` MUST carry `trust_anchors` (TLS bootstrap fetch) and `pairing_status`, one of `pending` or `redeemed`. A relay MUST NOT include any relay-computed authenticator field alongside them (PLY-056).
 
 **[PLY-033]** `pairing_status: pending` MUST additionally carry `poll_token`, an opaque value a player presents on `PairingStatus` polls (PLY-034) while awaiting redemption; `pairing_status: redeemed` MUST additionally carry the terminal pairing result directly, `{channel_token, screen_id, issued_at, expires_at}` (Channel tokens), with no further poll required.
 
@@ -99,7 +101,7 @@ player/1 defines the protocol between a screen's player and its relay: capabilit
 
 **[PLY-035]** A `screen_id` first comes into existence, from a player's perspective, only in a `redeemed` pairing result (PLY-033) — a player MUST NOT assume or fabricate a `screen_id` before that point, and MUST use `hardware_id` as its sole self-identifying field until then.
 
-**[PLY-036]** A relay MUST reject a `PairingRequest` whose `pairing_code` is absent, malformed, expired, or already redeemed under a `redemption_mode: one-time` grant (`relay/1` REL-121) with a typed error (`PAIRING_CODE_INVALID` or `PAIRING_EXPIRED`, Error taxonomy) rather than a `pending` status that can never resolve.
+**[PLY-036]** A relay MUST reject a `PairingRequest` whose `grant_selector` is absent, malformed, unresolvable against any pairing grant (`relay/1` REL-121), expired, or already redeemed under a `redemption_mode: one-time` grant with a typed error (`PAIRING_CODE_INVALID` or `PAIRING_EXPIRED`, Error taxonomy) rather than a `pending` status that can never resolve.
 
 **[PLY-037]** A `redemption_mode: multi` grant (`relay/1` REL-121) MAY be redeemed by more than one player's `PairingRequest`, each producing its own independent `screen_id` and `channel_token` — this contract does not itself decide when a deployment uses `one-time` versus `multi`, only that both grant behaviors (`relay/1` REL-121) are honored identically by the exchange this section defines.
 
@@ -127,31 +129,39 @@ player/1 defines the protocol between a screen's player and its relay: capabilit
 
 ### Out-of-band cert authentication
 
-**[PLY-050]** A player MUST authenticate `trust_anchors` (TLS bootstrap fetch) against an out-of-band authenticator before persisting or pinning any of it. A player that persists or pins trust-anchor material without completing this authentication is nonconformant with this contract — the bootstrap fetch (TLS bootstrap fetch) supplies bytes; this section is what makes trusting them conformant.
+**[PLY-050]** A player MUST bring `trust_anchors` (TLS bootstrap fetch) to one of exactly two trust outcomes before persisting or pinning any of it: commitment-verified trust (PLY-052), when the player holds a `fingerprint_commitment` for this pairing attempt (PLY-051), or trust-on-first-use (PLY-055), when it does not. A player that persists or pins trust-anchor material without reaching one of these two outcomes is nonconformant with this contract — the bootstrap fetch (TLS bootstrap fetch) supplies bytes; this section is what makes trusting them conformant, under whichever outcome genuinely applies to this attempt.
 
-**[PLY-051]** `PairingResponse`'s `authenticator_path` (PLY-032) MUST be exactly one of `fingerprint` or `pairing_code_hmac`, and MUST match the path implied by the `PairingRequest` that produced it: `fingerprint` when no `pairing_code` was sent (a same-network or manually-addressed exchange proceeding without a human-entered code), `pairing_code_hmac` when one was. A player MUST treat a mismatch between the `authenticator_path` a relay declares and the path implied by its own request as an authentication failure (PLY-057) — never proceed under the relay's claimed path if it disagrees with the player's own record of what it sent.
+**[PLY-051]** A player holds a `fingerprint_commitment` for a pairing attempt when either: (a) the human-typed pairing code (PLY-024) it decoded to reach this attempt itself carried one, alongside the `grant_selector` it also decodes to (PLY-053) — the primary case this contract normatively defines; or (b) a `fingerprint_commitment` reached the player ahead of this attempt through some other channel independent of the bootstrap fetch, by a delivery mechanism this contract does not itself define. A player holding neither proceeds under trust-on-first-use (PLY-055) instead.
 
-**[PLY-052]** Under `authenticator_path: fingerprint`, `PairingResponse` MUST additionally carry `trust_anchor_fingerprint`: a SHA-256 digest, computed over the canonical byte concatenation of every `trust_anchors` entry's `pem` in array order, expressed as a lowercase hex string. A player MUST compute the same digest over the `trust_anchors` bytes it received and compare it byte-exact against `trust_anchor_fingerprint`; any mismatch is an authentication failure (PLY-057).
+**[PLY-052]** Under commitment-verified trust, a player MUST compute a SHA-256 digest over the canonical concatenation, in `trust_anchors` array order, of each entry's trust-anchor public key (the SubjectPublicKeyInfo its `pem` certifies — not the surrounding certificate's other fields), truncate that digest to its leading `fingerprint_commitment`-length bits, and compare the result byte-exact against the `fingerprint_commitment` it holds (PLY-051). A match is this attempt's positive trust decision; any mismatch is an authentication failure (PLY-057).
 
-**[PLY-053]** Under `authenticator_path: pairing_code_hmac`, a player MUST compute an HMAC-SHA256 over the canonical byte concatenation of every `trust_anchors` entry's `pem` in array order, keyed by the UTF-8 bytes of the `pairing_code` it sent in `PairingRequest`, and compare the result byte-exact against `expected_authenticator`, a field `PairingResponse` MUST carry under this path. Any mismatch is an authentication failure (PLY-057).
+*draft-note: `fingerprint_commitment`'s own bit-length is not fixed by any normative source yet — it trades human-typeable pairing-code length (UX) against forgery-resistance (the second-preimage search an attacker would need to find trust-anchor material whose SPKI hashes to a given commitment). Proposed: not less than 64 bits — long enough that such a search is not a practical attack, while still encodable in a short additional block of the pairing code. Confirm before this contract leaves draft.*
 
-**[PLY-054]** `authenticator_path: fingerprint` MUST be used whenever `trust_anchors` was delivered to a player over a connection it did not reach by a human keying in the authenticating material itself — a same-network discovery response (Server-locating) followed by a `PairingResponse` a relay already recognizes this player for, or an address obtained by manual entry (PLY-025) followed by a relay-initiated grant delivered the same way — because such a channel can carry a full digest without a human transcription step.
+**[PLY-053]** A pairing code (PLY-024) MUST decode, in addition to a relay dial address, to exactly two further values: a `grant_selector` and a `fingerprint_commitment`. A human reads both off the same out-of-band code; only `grant_selector` is a value this contract's own `PairingRequest` ever carries (PLY-030) — `fingerprint_commitment` is retained by the player locally, for PLY-052's own comparison, and MUST NOT be placed on the wire toward a relay (PLY-054).
 
-**[PLY-055]** `authenticator_path: pairing_code_hmac` MUST be used whenever the pairing material a player is authenticating against was, at any point in this pairing attempt, obtained by a human typing it in — most concretely, the pairing code itself, which by PLY-024 must be short enough for manual entry and therefore cannot itself carry a fingerprint-length value. The pairing code doubles as this path's authentication key precisely because it is already the one value a human transcribed.
+**[PLY-054]** A player MUST NOT include `fingerprint_commitment`, or any value computed from it, in `PairingRequest`, a `PairingStatus` poll, or any other message a relay receives, at any point during or after a pairing attempt. Only `grant_selector` — a public value that identifies which pairing grant (`relay/1` REL-121) a `PairingRequest` is redeeming, and that authenticates nothing by itself — crosses that wire.
 
-**[PLY-056]** A relay MUST NOT offer a player any authenticator path beyond the two PLY-051 names. A future minor extending this set (PLY-003) MUST assign the new path its own distinct `authenticator_path` value rather than overload either existing one.
+**[PLY-055]** A player holding no `fingerprint_commitment` for a pairing attempt (PLY-051) — concretely, same-network discovery (Server-locating) or manual address-only entry (PLY-025), with nothing pre-delivered — MUST proceed under trust-on-first-use: the fetched `trust_anchors` is trusted and pinned without any commitment comparison, because this contract has no out-of-band value to compare it against for this attempt. This is not an authentication step that happens to pass; it is the explicit absence of one, and MUST be reasoned about as such (Residual risk), never represented by an implementation as verified.
 
-**[PLY-057]** On an authentication failure under this section — a computed value mismatch (PLY-052–053), an `authenticator_path` mismatch (PLY-051), or a `PairingResponse` missing a field this section requires for its declared path — a player MUST discard the fetched `trust_anchors` immediately, MUST NOT persist or pin any part of it, MUST NOT proceed to any `PairingStatus` poll or use any credential from this pairing attempt, and MUST return to Server-locating for a fresh attempt. A player is not required to report this failure upstream over a connection it has just determined it cannot trust; it MAY surface a local, operator-facing indication through means outside this contract's scope.
+**[PLY-056]** A relay MUST NOT include, and a player MUST NOT consult, any relay-computed digest, checksum, or other self-attested value carried in a `PairingResponse` as though it authenticated that same response's `trust_anchors` — a value computed by the same party, and delivered over the same connection, as the material it would check proves only that party's own arithmetic was consistent with its own bytes, never that those bytes are genuine. No such value MAY be called or treated as an out-of-band authenticator by either party.
+
+**[PLY-057]** On a commitment mismatch (PLY-052) — the only authentication failure this section defines, since trust-on-first-use (PLY-055) has no comparison to fail — a player MUST discard the fetched `trust_anchors` immediately, MUST NOT persist or pin any part of it, MUST NOT proceed to any `PairingStatus` poll or use any credential from this pairing attempt, and MUST return to Server-locating for a fresh attempt. A player is not required to report this failure upstream over a connection it has just determined it cannot trust; it MAY surface a local, operator-facing indication through means outside this contract's scope.
 
 **[PLY-058]** An authentication failure (PLY-057) MUST NOT itself invalidate the pairing grant or pairing code that produced it, beyond whatever redemption-count or expiry rule already governs that grant (`relay/1` REL-121) — a transient failure (for instance, a mistyped pairing code later corrected) MUST remain retryable within the grant's own `ttl` and `redemption_mode`.
 
-**[PLY-059]** A relay MUST NOT complete pairing redemption (Pairing redemption) for any player whose Out-of-band cert authentication it cannot itself verify was possible to perform — concretely, a relay MUST always deliver a `trust_anchor_fingerprint` (PLY-052) or `expected_authenticator` (PLY-053) matching the `authenticator_path` it declares; a relay that cannot compute one for a given pairing attempt MUST refuse the attempt outright rather than omit the field.
+**[PLY-059]** Commitment-verified trust (PLY-052) is only as strong as the guarantee that a `fingerprint_commitment` a player decodes from a pairing code was genuinely computed over that relay's own trust-anchor material at the time the code was minted — a guarantee `relay/1`'s own pairing-code-formation requirement supplies (`relay/1` REL-126), not something this section's own bootstrap-and-compare exchange can independently confirm. This contract's role is limited to performing PLY-052's comparison correctly and refusing to proceed on a mismatch (PLY-057); it does not itself mint pairing codes or their commitments.
 
 #### Residual risk: MITM at first pairing
 
-Out-of-band cert authentication (PLY-050–059) closes the specific gap the underlying bootstrap-fetch-verify-persist mechanism leaves open — it stops an on-path party from substituting its own trust-anchor material during the one verification-disabled request TLS bootstrap fetch requires, because that substituted material would then fail the digest or HMAC comparison this section requires before anything is trusted. It does not, and cannot, eliminate every risk at first pairing: the safety of a given pairing attempt still depends entirely on the secrecy and integrity of whatever out-of-band value authenticates it — a fingerprint carried in a machine-delivered pairing payload, or a pairing code a human transcribes. A party that can both observe the bootstrap connection and also obtain or intercept that same out-of-band value ahead of the legitimate player — by reading a discovery-linked grant it was never meant to see, or by learning a pairing code before the intended installer enters it — can still complete a first pairing this contract cannot distinguish from a legitimate one. The channel that delivers a pairing code or a machine-delivered grant to its intended player is therefore part of this contract's own security boundary, not a detail external to it, even though this contract does not itself define that delivery channel's own protection (Pairing redemption references it only as a given input). This residual is structural to any trust-on-first-contact design and is not expected to close through a future minor of this section alone.
+The two pairing paths this contract defines leave genuinely different residuals, and this section states each honestly rather than as one blended claim.
 
-*draft-note: PLY-052's digest computation and PLY-053's keyed HMAC computation are, as specified, ordinary SHA-256 and HMAC-SHA256 over well-defined byte inputs — standard, widely implemented primitives — but neither this contract nor any source it draws on has yet confirmed both primitives are available, standard-conformant, and performant enough on every client platform this contract must run on. Confirm on real client hardware, against a published test vector, before this section leaves draft.*
+Commitment-verified trust (PLY-051, PLY-052) is MITM-resistant against a party active during the bootstrap fetch itself: because `fingerprint_commitment` reaches the player exclusively through the human-read pairing code — never over the attacked connection (PLY-054) — an on-path party substituting `trust_anchors` during TLS bootstrap fetch cannot make its substitution match a commitment it cannot observe, short of a second-preimage search against `fingerprint_commitment`'s own digest (sized per PLY-052's draft-note). This path's remaining exposure is therefore the pairing code's own delivery: a party that intercepts or reads the human-read code before or instead of its intended installer — not the bootstrap connection this section otherwise defends — can still complete a pairing this contract cannot distinguish from legitimate. That delivery channel (the relay's or app's own display surface, and the human reading it) is part of this contract's security boundary even though this contract does not itself define or secure it (Pairing redemption references it only as a given input).
+
+Trust-on-first-use (PLY-055) closes nothing at the bootstrap fetch itself, and this contract does not claim otherwise: with no out-of-band value to compare against, a party on-path on the local network at the exact moment of first pairing can substitute its own trust-anchor material, and this section has no mechanism capable of detecting it. What trust-on-first-use does provide is bounded to two things: the substitution opportunity is limited to physical presence on the local segment at that one moment (Steady-state pinning's persistence then holds the door shut afterward — a party absent at first pairing cannot later substitute a pinned relay's trust anchor), and a `fingerprint_commitment` pre-delivered through a genuinely independent channel upgrades a given attempt out of trust-on-first-use and into commitment-verified trust (PLY-051) whenever one is actually supplied. Absent that, first-contact trust-on-first-use is the residual this contract carries, not a gap this mechanism was ever positioned to close.
+
+This residual is structural to trust-on-first-contact pairing generally — a future minor of this section can extend which attempts carry a pre-delivered commitment (narrowing how often PLY-055 applies), but cannot make trust-on-first-use itself into an authenticated exchange without introducing an out-of-band channel where none exists.
+
+*draft-note: PLY-052's digest computation is, as specified, ordinary SHA-256 over a well-defined byte input, truncated to a length PLY-052's own draft-note leaves open — a standard, widely implemented primitive, but neither this contract nor any source it draws on has yet confirmed it is available, standard-conformant, and performant enough on every client platform this contract must run on, at whatever truncation length is eventually confirmed. Confirm on real client hardware, against a published test vector, before this section leaves draft.*
 
 ### Steady-state pinning
 
@@ -225,6 +235,8 @@ Out-of-band cert authentication (PLY-050–059) closes the specific gap the unde
 
 **[PLY-097]** `lease_id` MUST be a ULID, unique per issuance — a reissued Lease carrying otherwise-identical `program_revision` and `content` still receives a fresh `lease_id`, so that Render acknowledgement's own records unambiguously attribute a specific playback occurrence to a specific issuance.
 
+**[PLY-098]** A player MUST evaluate a Lease's `valid_until` (PLY-092) against its own local clock, whatever that clock's own trust or verification state — this contract defines no clock-floor, clock-trust-state, or other clock-verification mechanism for a player's own lease-validity evaluation, unlike `relay/1`'s own clock-trust exchange for its desired-state evaluation (`relay/1` Clock trust). This is a deliberate design choice, not an oversight: a screen whose local clock is stale or wrong still plays whatever its most recently accepted Lease assigns, for as long as that Lease's `valid_until` — evaluated against the screen's own possibly-incorrect clock — has not yet passed. This contract chooses content availability over any staleness-prevention guarantee a clock-floor mechanism might otherwise provide.
+
 ### Priority and preemption
 
 **[PLY-100]** `priority` MUST be exactly one of `scheduled` or `preempt`. Growth of this vocabulary beyond these two members is an additive minor (PLY-003).
@@ -244,6 +256,8 @@ Out-of-band cert authentication (PLY-050–059) closes the specific gap the unde
 **[PLY-106]** A player MUST NOT itself originate a priority value or select which Lease to request — `priority` is exclusively a relay-assigned field on a Lease this contract's Program delivery pull returns; a player's own role is limited to PLY-101–104's adoption behavior.
 
 **[PLY-107]** Render acknowledgement (Render acknowledgement) MUST report which priority class a rendered occurrence was assigned under via its own `cause` field (Render acknowledgement) — `cause: "preempted"` for an occurrence rendered under a `preempt`-priority Lease, `cause: "scheduled"` for one under a `scheduled`-priority Lease with no other cause applying.
+
+**[PLY-108]** A Lease's `priority` (PLY-100), when a relay's assignment derives from a `screen_programs` entry (`relay/1` REL-061), MUST reflect that entry's own `priority` field unmodified. This is the mechanism by which a `preempt`-priority assignment reaches a player through a relay's own offline-cached desired-state snapshot (`relay/1` Idempotent apply & enrollment-anchored trust), without requiring a relay's app-peer connection to be live at the moment a screen needs it. PLY-103's silence on what causes a relay to grant either priority class governs only the upstream decision behind a `screen_programs` entry's own `priority` value, never this field's propagation once assigned.
 
 ### Render acknowledgement
 
@@ -338,29 +352,32 @@ USN: relay:01J8Z4K4N5P6Q7R8S9T0V1W3A1
 
 ```json
 // PairingRequest (player -> relay, verification-disabled bootstrap connection, PLY-030)
-// — human-entered cross-network path (pairing_code present)
+// — human-typed pairing-code path (grant_selector present; the same code's
+// fingerprint_commitment is decoded and kept local, never sent — PLY-054)
 {
   "hardware_id": "opaque-stable-device-id-9f2c7b1e",
-  "pairing_code": "7K3M9-QX2F8",
+  "grant_selector": "gs_7f3c9a1b2d4e5f60",
   "capabilities": { "content_types": ["image", "video"], "player_version": "3.0.0" }
 }
 ```
 
 ```json
-// PairingResponse — pairing_code_hmac path, pending redemption
+// PairingResponse — pending redemption (no in-response authenticator field: a
+// player holding a fingerprint_commitment checks it locally per PLY-052; PLY-056
+// forbids a relay from sending anything that would claim to authenticate this
+// same response's trust_anchors)
 {
   "trust_anchors": [
     { "covers": ["player", "content"], "pem": "-----BEGIN CERTIFICATE-----\nMIIB6jCCAW+gAwIBAgI...\n-----END CERTIFICATE-----" }
   ],
-  "authenticator_path": "pairing_code_hmac",
-  "expected_authenticator": "b3f1c2a9d4e5f60718293a4b5c6d7e8f091a2b3c4d5e6f708192a3b4c5d6e7f",
   "pairing_status": "pending",
   "poll_token": "9c8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f"
 }
 ```
 
 ```json
-// PairingRequest — same-network path (no pairing_code)
+// PairingRequest — same-network path (no grant_selector; nothing was decoded
+// from a pairing code, so this attempt proceeds under trust-on-first-use, PLY-055)
 {
   "hardware_id": "opaque-stable-device-id-9f2c7b1e",
   "capabilities": { "content_types": ["image", "video", "composed"], "player_version": "3.0.0" }
@@ -368,14 +385,13 @@ USN: relay:01J8Z4K4N5P6Q7R8S9T0V1W3A1
 ```
 
 ```json
-// PairingResponse — fingerprint path, redeemed immediately
+// PairingResponse — redeemed immediately (trust-on-first-use path; same shape
+// as the pending example above, no authenticator field either way)
 {
   "trust_anchors": [
     { "covers": ["player"], "pem": "-----BEGIN CERTIFICATE-----\nMIIB6jCCAW+gAwIBAgI...\n-----END CERTIFICATE-----" },
     { "covers": ["content"], "pem": "-----BEGIN CERTIFICATE-----\nMIIB7kCCAW+gAwIBAgJ...\n-----END CERTIFICATE-----" }
   ],
-  "authenticator_path": "fingerprint",
-  "trust_anchor_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85",
   "pairing_status": "redeemed",
   "channel_token": "ct_5f6e7a1b2c3d4e5f8091a2b3c4d5e6f7",
   "screen_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZE",
@@ -397,16 +413,6 @@ USN: relay:01J8Z4K4N5P6Q7R8S9T0V1W3A1
   "screen_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZE",
   "issued_at": 1752537000000,
   "expires_at": 1752623400000
-}
-```
-
-```json
-// PairingResponse — malformed for its declared path (missing expected_authenticator; PLY-059 forbids a relay from sending this)
-{
-  "trust_anchors": [ { "covers": ["player"], "pem": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----" } ],
-  "authenticator_path": "pairing_code_hmac",
-  "pairing_status": "pending",
-  "poll_token": "9c8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f"
 }
 ```
 
@@ -516,7 +522,7 @@ USN: relay:01J8Z4K4N5P6Q7R8S9T0V1W3A1
   "status": 401,
   "code": "TRUST_ANCHOR_AUTH_FAILED",
   "trace_id": "01J8Z4K4N5P6Q7R8S9T0V1W3E1",
-  "detail": "the computed pairing-code HMAC did not match expected_authenticator"
+  "detail": "the computed trust-anchor SPKI digest did not match the pairing code's fingerprint_commitment"
 }
 ```
 
@@ -525,7 +531,7 @@ USN: relay:01J8Z4K4N5P6Q7R8S9T0V1W3A1
 - **Version selection** — a player declares its `major.minor` in `protocol_version` on every request this contract's capability fields apply to (PLY-010); a relay refuses on a major mismatch and otherwise proceeds under the shared major. There is no separate connection-level handshake distinct from the request itself, since this contract's transport is ordinary request/response, never a persistent connection.
 - **N−1 compatibility** — a relay implementing minor `M` also implements minor `M-1` (PLY-011), so a player running one minor behind never sees a spurious major-mismatch refusal.
 - **Capability declaration, not negotiation** — `content_types` (PLY-012–016) is a one-directional declaration a relay filters program assignment against; there is no bidirectional capability-flag exchange comparable to `relay/1`'s `features`, since a player's content-type support is a fixed property of its own build, not something a relay's own support varies by.
-- **Out-of-band authenticator path selection** — `authenticator_path` (PLY-051) is determined by which of Server-locating's address-acquisition paths a pairing attempt used, never independently negotiated; a relay's declared path and a player's own record of what it sent must agree (PLY-051) or the attempt fails closed.
+- **Trust-outcome selection** — whether a pairing attempt reaches commitment-verified trust or trust-on-first-use (PLY-050–055) is determined entirely by whether the player itself already holds a `fingerprint_commitment` for that attempt — never by a value the relay declares in-band — so the decision cannot be steered by whichever party is on-path during the bootstrap fetch.
 - **Credential renewal without re-pairing** — a channel token renews (PLY-074–075) without repeating Pairing redemption or Out-of-band cert authentication, for as long as a player's underlying trust-anchor material and screen identity remain valid; only trust-anchor loss (PLY-063), token revocation (PLY-073), or an unrecognized `screen_id` (PLY-075) forces a fresh pairing attempt.
 
 ## Error taxonomy
@@ -549,8 +555,8 @@ USN: relay:01J8Z4K4N5P6Q7R8S9T0V1W3A1
 
 - Traceability map: `conformance/traceability/player-1.md` — maps every `PLY-NNN` above to the case(s) that exercise it.
 - Corpus: `conformance/corpora/player-1/` — one JSON case file per `case-id` referenced from the traceability map.
-- **Residual risk, restated:** the Out-of-band cert authentication section (PLY-050–059) is a MUST-level requirement of this contract and is not optional in any conformant implementation; the MITM-at-first-pairing residual documented alongside it (Residual risk: MITM at first pairing) is a property of trust-on-first-contact pairing generally, not a gap this contract's own mechanism leaves unaddressed by omission — it is called out here so a reviewer does not mistake the mechanism's presence for the residual's absence.
-- The pairing code's own character grammar (PLY-024's draft-note), the channel-token expiry duration (PLY-071), the ordinary and long-poll pull cadences (PLY-082), the status-report interval (PLY-120), the reconnect backoff curve and re-locate multiple (PLY-131–132), and the recovery settle delay (PLY-154) are all draft-note proposals pending real measurement; corpus cases exercise the shapes and orderings these rules produce, not elapsed real time.
+- **Residual risk, restated:** the Out-of-band cert authentication section (PLY-050–059) is a MUST-level requirement of this contract and is not optional in any conformant implementation; the MITM-at-first-pairing residual documented alongside it (Residual risk: MITM at first pairing) is a property of trust-on-first-contact pairing generally for the path with no pre-delivered commitment (PLY-055), not a gap this contract's own commitment-verified mechanism (PLY-052) leaves unaddressed by omission — it is called out here so a reviewer does not mistake either path's own properties for the other's.
+- The pairing code's own character grammar (PLY-024's draft-note), the out-of-band fingerprint-commitment length (PLY-052's draft-note), the channel-token expiry duration (PLY-071), the ordinary and long-poll pull cadences (PLY-082), the status-report interval (PLY-120), the reconnect backoff curve and re-locate multiple (PLY-131–132), and the recovery settle delay (PLY-154) are all draft-note proposals pending real measurement; corpus cases exercise the shapes and orderings these rules produce, not elapsed real time.
 - Whether a given screen's status reports are also forwarded as `events/1` `device.heartbeat` events depends on an open screen-to-device linkage question (PLY-121's draft-note); corpus cases exercise `content.played` sourcing (unconditional, PLY-113) and status-report shape and cadence (unconditional, PLY-120–123), not `device.heartbeat` forwarding specifically.
-- The Out-of-band cert authentication primitives (a SHA-256 digest, an HMAC-SHA256) are confirmed only as ordinary, well-specified cryptographic constructions (Residual risk's draft-note); their availability and correctness on any specific client platform is not exercised by this static corpus and remains a hardware-verification item.
+- The Out-of-band cert authentication primitive (a SHA-256 digest, truncated) is confirmed only as an ordinary, well-specified cryptographic construction (Residual risk's draft-note); its availability and correctness on any specific client platform is not exercised by this static corpus and remains a hardware-verification item.
 - A relay's own foreground-recovery command (Screen liveness and recovery, PLY-150) rides `relay/1`'s device plane (REL-112) and `device-class-registry`'s `launch` command (REG-066); this corpus exercises player/1's own gating requirements (PLY-151–157) against a given device-state input, not the device-plane command's own delivery, which those other contracts' corpora cover.

@@ -48,10 +48,10 @@ One row per requirement ID `contracts/relay-1.md` defines. Format: `conformance/
 | REL-052 | `contracts/relay-1.md#desired-state-pull` | `REL-056-valid-generation-apply-atomic-swap`, `REL-070-valid-generation-reapply-idempotent-noop` | covered |
 | REL-053 | `contracts/relay-1.md#desired-state-pull` | `REL-056-valid-generation-apply-atomic-swap` | covered |
 | REL-054 | `contracts/relay-1.md#desired-state-pull` | `REL-056-valid-generation-apply-atomic-swap`, `REL-071-invalid-wrong-peer-key-snapshot-rejected` | covered |
-| REL-055 | `contracts/relay-1.md#desired-state-pull` | `REL-056-valid-generation-apply-atomic-swap` | covered |
+| REL-055 | `contracts/relay-1.md#desired-state-pull` | `REL-056-valid-generation-apply-atomic-swap`, `REL-061-valid-preempt-priority-screen-program-offline` | covered |
 | REL-056 | `contracts/relay-1.md#desired-state-pull` | `REL-056-valid-generation-apply-atomic-swap` | covered |
 | REL-060 | `contracts/relay-1.md#desired-state-snapshot-sections` | `REL-056-valid-generation-apply-atomic-swap` | covered |
-| REL-061 | `contracts/relay-1.md#desired-state-snapshot-sections` | `REL-056-valid-generation-apply-atomic-swap` | covered |
+| REL-061 | `contracts/relay-1.md#desired-state-snapshot-sections` | `REL-056-valid-generation-apply-atomic-swap`, `REL-061-valid-preempt-priority-screen-program-offline` | covered |
 | REL-062 | `contracts/relay-1.md#desired-state-snapshot-sections` | `REL-056-valid-generation-apply-atomic-swap` | covered |
 | REL-063 | `contracts/relay-1.md#desired-state-snapshot-sections` | `REL-056-valid-generation-apply-atomic-swap` | covered |
 | REL-064 | `contracts/relay-1.md#desired-state-snapshot-sections` | `REL-056-valid-generation-apply-atomic-swap` | covered |
@@ -91,6 +91,7 @@ One row per requirement ID `contracts/relay-1.md` defines. Format: `conformance/
 | REL-123 | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
 | REL-124 | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
 | REL-125 | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
+| REL-126 | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
 | REL-130 | `contracts/relay-1.md#clock-trust` | `REL-133-valid-clock-hint-bounded` | covered |
 | REL-131 | `contracts/relay-1.md#clock-trust` | - | TBD-wave1 |
 | REL-132 | `contracts/relay-1.md#clock-trust` | `REL-133-valid-clock-hint-bounded` | covered |

@@ -1,5 +1,5 @@
 {
-  "case_id": "PLY-136-valid-server-moved-relocate-never-wipe",
+  "case_id": "PLY-130-valid-server-moved-relocate-never-wipe",
   "contract": "player/1",
   "req_ids": ["PLY-022", "PLY-026", "PLY-130", "PLY-131", "PLY-132", "PLY-133"],
   "description": "A paired player's relay moves to a new address on the same network. The player's connections to the old address fail (classified unreachable); it retries with capped backoff, and on its scheduled re-discovery attempt receives a fresh discovery response naming the relay's new address (re-announced under PLY-022), reconnects successfully, and at no point clears its persisted trust anchor or channel token.",

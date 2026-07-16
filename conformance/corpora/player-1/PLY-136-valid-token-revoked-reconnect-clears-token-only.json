@@ -1,0 +1,26 @@
+{
+  "case_id": "PLY-136-valid-token-revoked-reconnect-clears-token-only",
+  "contract": "player/1",
+  "req_ids": ["PLY-072", "PLY-073", "PLY-136"],
+  "description": "A player reconnecting to its relay after an ordinary disconnect presents its persisted channel token. The relay's response is neither a network-level failure nor ordinary success, but an explicit CHANNEL_TOKEN_REVOKED indication because the screen record no longer exists. The player clears only its channel token, leaves its persisted relay address and trust-anchor material untouched, and re-enters Pairing redemption - contrasted with an unreachable/unavailable connection failure, which this section requires clear nothing at all.",
+  "input": {
+    "player_persisted_state": {
+      "relay_address": { "host": "198.51.100.12", "port": 5173 },
+      "trust_anchor_present": true,
+      "channel_token_present": true
+    },
+    "reconnect_attempt": {
+      "classification": "response_received",
+      "relay_response": { "error_code": "CHANNEL_TOKEN_REVOKED", "reason": "screen_record_no_longer_exists" }
+    }
+  },
+  "expected": {
+    "failure_classification": "explicit_credential_rejection",
+    "network_level_failure": false,
+    "channel_token_cleared": true,
+    "trust_anchor_cleared": false,
+    "relay_address_cleared": false,
+    "player_state": "returns_to_pairing_redemption",
+    "error_code": "CHANNEL_TOKEN_REVOKED"
+  }
+}

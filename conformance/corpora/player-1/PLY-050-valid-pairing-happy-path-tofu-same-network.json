@@ -1,31 +1,29 @@
 {
-  "case_id": "PLY-050-valid-pairing-happy-path-fingerprint",
+  "case_id": "PLY-050-valid-pairing-happy-path-tofu-same-network",
   "contract": "player/1",
-  "req_ids": ["PLY-021", "PLY-030", "PLY-032", "PLY-033", "PLY-035", "PLY-042", "PLY-044", "PLY-050", "PLY-051", "PLY-052", "PLY-059", "PLY-060", "PLY-071"],
-  "description": "A player discovers its relay via a same-network discovery response, sends a PairingRequest with no pairing_code (a machine-delivered path), receives trust_anchors plus a fingerprint authenticator, locally verifies the SHA-256 digest byte-exact before persisting, is redeemed immediately with a channel token and screen_id, and its first steady-state connection succeeds under the newly pinned CA-level trust anchor.",
+  "req_ids": ["PLY-021", "PLY-030", "PLY-032", "PLY-033", "PLY-035", "PLY-042", "PLY-044", "PLY-050", "PLY-051", "PLY-055", "PLY-060", "PLY-071"],
+  "description": "A player discovers its relay via a same-network discovery response and sends a PairingRequest carrying no grant_selector - no pairing code was ever involved. Holding no fingerprint_commitment for this attempt, the player proceeds under trust-on-first-use: the fetched trust_anchors is trusted and pinned with no commitment comparison, is redeemed immediately with a channel token and screen_id, and its first steady-state connection succeeds under the newly pinned CA-level trust anchor.",
   "input": {
     "discovery_response": { "st": "urn:waiveo:service:player:1", "location": "https://198.51.100.12:5173/player/v1" },
     "pairing_request": {
       "hardware_id": "hw-9f2c7b1e4a3d4f5b",
       "capabilities": { "content_types": ["image", "video"], "player_version": "3.0.0" }
     },
+    "player_holds_fingerprint_commitment_for_attempt": false,
     "pairing_response": {
       "trust_anchors": [
         { "covers": ["player", "content"], "pem": "-----BEGIN CERTIFICATE-----\nMIIB6jCCAW+gAwIBAgIUJf...\n-----END CERTIFICATE-----" }
       ],
-      "authenticator_path": "fingerprint",
-      "trust_anchor_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85",
       "pairing_status": "redeemed",
       "channel_token": "ct_5f6e7a1b2c3d4e5f8091a2b3c4d5e6f7",
       "screen_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZE",
       "issued_at": 1752537000000,
       "expires_at": 1752623400000
-    },
-    "player_computed_fingerprint_of_received_trust_anchors": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85"
+    }
   },
   "expected": {
-    "authenticator_path_matches_request_shape": true,
-    "fingerprint_match": true,
+    "trust_outcome": "trust_on_first_use",
+    "commitment_comparison_performed": false,
     "trust_anchor_persisted": true,
     "trust_anchor_pinning_granularity": "ca-level",
     "screen_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZE",

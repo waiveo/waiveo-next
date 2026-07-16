@@ -19,50 +19,50 @@ One row per requirement ID `contracts/player-1.md` defines. Format: `conformance
 | PLY-015 | `contracts/player-1.md#capability-handshake` | - | TBD-wave1 |
 | PLY-016 | `contracts/player-1.md#capability-handshake` | - | TBD-wave1 |
 | PLY-020 | `contracts/player-1.md#server-locating` | - | TBD-wave1 |
-| PLY-021 | `contracts/player-1.md#server-locating` | `PLY-050-valid-pairing-happy-path-fingerprint` | covered |
-| PLY-022 | `contracts/player-1.md#server-locating` | `PLY-136-valid-server-moved-relocate-never-wipe` | covered |
+| PLY-021 | `contracts/player-1.md#server-locating` | `PLY-050-valid-pairing-happy-path-tofu-same-network` | covered |
+| PLY-022 | `contracts/player-1.md#server-locating` | `PLY-130-valid-server-moved-relocate-never-wipe` | covered |
 | PLY-023 | `contracts/player-1.md#server-locating` | - | TBD-wave1 |
-| PLY-024 | `contracts/player-1.md#server-locating` | `PLY-055-valid-cross-vlan-manual-entry-pairing-code-hmac` | covered |
-| PLY-025 | `contracts/player-1.md#server-locating` | `PLY-055-valid-cross-vlan-manual-entry-pairing-code-hmac` | covered |
-| PLY-026 | `contracts/player-1.md#server-locating` | `PLY-136-valid-server-moved-relocate-never-wipe` | covered |
-| PLY-030 | `contracts/player-1.md#pairing-redemption` | `PLY-050-valid-pairing-happy-path-fingerprint` | covered |
-| PLY-031 | `contracts/player-1.md#pairing-redemption` | `PLY-055-valid-cross-vlan-manual-entry-pairing-code-hmac` | covered |
-| PLY-032 | `contracts/player-1.md#pairing-redemption` | `PLY-050-valid-pairing-happy-path-fingerprint` | covered |
-| PLY-033 | `contracts/player-1.md#pairing-redemption` | `PLY-050-valid-pairing-happy-path-fingerprint` | covered |
-| PLY-034 | `contracts/player-1.md#pairing-redemption` | `PLY-055-valid-cross-vlan-manual-entry-pairing-code-hmac` | covered |
-| PLY-035 | `contracts/player-1.md#pairing-redemption` | `PLY-050-valid-pairing-happy-path-fingerprint` | covered |
+| PLY-024 | `contracts/player-1.md#server-locating` | `PLY-055-valid-cross-vlan-manual-entry-pairing-code-commitment` | covered |
+| PLY-025 | `contracts/player-1.md#server-locating` | `PLY-055-valid-cross-vlan-manual-entry-pairing-code-commitment` | covered |
+| PLY-026 | `contracts/player-1.md#server-locating` | `PLY-130-valid-server-moved-relocate-never-wipe` | covered |
+| PLY-030 | `contracts/player-1.md#pairing-redemption` | `PLY-050-valid-pairing-happy-path-tofu-same-network` | covered |
+| PLY-031 | `contracts/player-1.md#pairing-redemption` | `PLY-055-valid-cross-vlan-manual-entry-pairing-code-commitment` | covered |
+| PLY-032 | `contracts/player-1.md#pairing-redemption` | `PLY-050-valid-pairing-happy-path-tofu-same-network` | covered |
+| PLY-033 | `contracts/player-1.md#pairing-redemption` | `PLY-050-valid-pairing-happy-path-tofu-same-network` | covered |
+| PLY-034 | `contracts/player-1.md#pairing-redemption` | `PLY-055-valid-cross-vlan-manual-entry-pairing-code-commitment` | covered |
+| PLY-035 | `contracts/player-1.md#pairing-redemption` | `PLY-050-valid-pairing-happy-path-tofu-same-network` | covered |
 | PLY-036 | `contracts/player-1.md#pairing-redemption` | - | TBD-wave1 |
 | PLY-037 | `contracts/player-1.md#pairing-redemption` | - | TBD-wave1 |
 | PLY-038 | `contracts/player-1.md#pairing-redemption` | - | TBD-wave1 |
 | PLY-040 | `contracts/player-1.md#tls-bootstrap-fetch` | - | TBD-wave1 |
 | PLY-041 | `contracts/player-1.md#tls-bootstrap-fetch` | - | TBD-wave1 |
-| PLY-042 | `contracts/player-1.md#tls-bootstrap-fetch` | `PLY-050-valid-pairing-happy-path-fingerprint` | covered |
+| PLY-042 | `contracts/player-1.md#tls-bootstrap-fetch` | `PLY-050-valid-pairing-happy-path-tofu-same-network` | covered |
 | PLY-043 | `contracts/player-1.md#tls-bootstrap-fetch` | - | TBD-wave1 |
-| PLY-044 | `contracts/player-1.md#tls-bootstrap-fetch` | `PLY-050-valid-pairing-happy-path-fingerprint` | covered |
+| PLY-044 | `contracts/player-1.md#tls-bootstrap-fetch` | `PLY-050-valid-pairing-happy-path-tofu-same-network` | covered |
 | PLY-045 | `contracts/player-1.md#tls-bootstrap-fetch` | - | TBD-wave1 |
 | PLY-046 | `contracts/player-1.md#tls-bootstrap-fetch` | - | TBD-wave1 |
 | PLY-047 | `contracts/player-1.md#tls-bootstrap-fetch` | - | TBD-wave1 |
 | PLY-048 | `contracts/player-1.md#tls-bootstrap-fetch` | - | TBD-wave1 |
-| PLY-050 | `contracts/player-1.md#out-of-band-cert-authentication` | `PLY-050-valid-pairing-happy-path-fingerprint`, `PLY-057-invalid-oob-authentication-mismatch-rejected` | covered |
-| PLY-051 | `contracts/player-1.md#out-of-band-cert-authentication` | `PLY-050-valid-pairing-happy-path-fingerprint`, `PLY-055-valid-cross-vlan-manual-entry-pairing-code-hmac` | covered |
-| PLY-052 | `contracts/player-1.md#out-of-band-cert-authentication` | `PLY-050-valid-pairing-happy-path-fingerprint`, `PLY-057-invalid-oob-authentication-mismatch-rejected` | covered |
-| PLY-053 | `contracts/player-1.md#out-of-band-cert-authentication` | `PLY-055-valid-cross-vlan-manual-entry-pairing-code-hmac` | covered |
-| PLY-054 | `contracts/player-1.md#out-of-band-cert-authentication` | - | TBD-wave1 |
-| PLY-055 | `contracts/player-1.md#out-of-band-cert-authentication` | `PLY-055-valid-cross-vlan-manual-entry-pairing-code-hmac` | covered |
+| PLY-050 | `contracts/player-1.md#out-of-band-cert-authentication` | `PLY-050-valid-pairing-happy-path-tofu-same-network`, `PLY-055-valid-cross-vlan-manual-entry-pairing-code-commitment`, `PLY-057-invalid-oob-authentication-mismatch-rejected` | covered |
+| PLY-051 | `contracts/player-1.md#out-of-band-cert-authentication` | `PLY-050-valid-pairing-happy-path-tofu-same-network`, `PLY-055-valid-cross-vlan-manual-entry-pairing-code-commitment`, `PLY-057-invalid-oob-authentication-mismatch-rejected` | covered |
+| PLY-052 | `contracts/player-1.md#out-of-band-cert-authentication` | `PLY-055-valid-cross-vlan-manual-entry-pairing-code-commitment`, `PLY-057-invalid-oob-authentication-mismatch-rejected` | covered |
+| PLY-053 | `contracts/player-1.md#out-of-band-cert-authentication` | `PLY-055-valid-cross-vlan-manual-entry-pairing-code-commitment` | covered |
+| PLY-054 | `contracts/player-1.md#out-of-band-cert-authentication` | `PLY-055-valid-cross-vlan-manual-entry-pairing-code-commitment`, `PLY-057-invalid-oob-authentication-mismatch-rejected` | covered |
+| PLY-055 | `contracts/player-1.md#out-of-band-cert-authentication` | `PLY-050-valid-pairing-happy-path-tofu-same-network` | covered |
 | PLY-056 | `contracts/player-1.md#out-of-band-cert-authentication` | - | TBD-wave1 |
 | PLY-057 | `contracts/player-1.md#out-of-band-cert-authentication` | `PLY-057-invalid-oob-authentication-mismatch-rejected` | covered |
 | PLY-058 | `contracts/player-1.md#out-of-band-cert-authentication` | `PLY-057-invalid-oob-authentication-mismatch-rejected` | covered |
-| PLY-059 | `contracts/player-1.md#out-of-band-cert-authentication` | `PLY-050-valid-pairing-happy-path-fingerprint` | covered |
-| PLY-060 | `contracts/player-1.md#steady-state-pinning` | `PLY-050-valid-pairing-happy-path-fingerprint` | covered |
+| PLY-059 | `contracts/player-1.md#out-of-band-cert-authentication` | - | TBD-wave1 |
+| PLY-060 | `contracts/player-1.md#steady-state-pinning` | `PLY-050-valid-pairing-happy-path-tofu-same-network` | covered |
 | PLY-061 | `contracts/player-1.md#steady-state-pinning` | - | TBD-wave1 |
 | PLY-062 | `contracts/player-1.md#steady-state-pinning` | - | TBD-wave1 |
 | PLY-063 | `contracts/player-1.md#steady-state-pinning` | - | TBD-wave1 |
 | PLY-064 | `contracts/player-1.md#steady-state-pinning` | - | TBD-wave1 |
 | PLY-065 | `contracts/player-1.md#steady-state-pinning` | - | TBD-wave1 |
 | PLY-070 | `contracts/player-1.md#channel-tokens` | - | TBD-wave1 |
-| PLY-071 | `contracts/player-1.md#channel-tokens` | `PLY-050-valid-pairing-happy-path-fingerprint` | covered |
-| PLY-072 | `contracts/player-1.md#channel-tokens` | - | TBD-wave1 |
-| PLY-073 | `contracts/player-1.md#channel-tokens` | - | TBD-wave1 |
+| PLY-071 | `contracts/player-1.md#channel-tokens` | `PLY-050-valid-pairing-happy-path-tofu-same-network` | covered |
+| PLY-072 | `contracts/player-1.md#channel-tokens` | `PLY-136-valid-token-revoked-reconnect-clears-token-only` | covered |
+| PLY-073 | `contracts/player-1.md#channel-tokens` | `PLY-136-valid-token-revoked-reconnect-clears-token-only` | covered |
 | PLY-074 | `contracts/player-1.md#channel-tokens` | - | TBD-wave1 |
 | PLY-075 | `contracts/player-1.md#channel-tokens` | - | TBD-wave1 |
 | PLY-076 | `contracts/player-1.md#channel-tokens` | - | TBD-wave1 |
@@ -83,6 +83,7 @@ One row per requirement ID `contracts/player-1.md` defines. Format: `conformance
 | PLY-095 | `contracts/player-1.md#leases` | - | TBD-wave1 |
 | PLY-096 | `contracts/player-1.md#leases` | - | TBD-wave1 |
 | PLY-097 | `contracts/player-1.md#leases` | - | TBD-wave1 |
+| PLY-098 | `contracts/player-1.md#leases` | - | TBD-wave1 |
 | PLY-100 | `contracts/player-1.md#priority-and-preemption` | `PLY-101-valid-lease-preemption-interrupt-now` | covered |
 | PLY-101 | `contracts/player-1.md#priority-and-preemption` | `PLY-101-valid-lease-preemption-interrupt-now` | covered |
 | PLY-102 | `contracts/player-1.md#priority-and-preemption` | - | TBD-wave1 |
@@ -91,6 +92,7 @@ One row per requirement ID `contracts/player-1.md` defines. Format: `conformance
 | PLY-105 | `contracts/player-1.md#priority-and-preemption` | - | TBD-wave1 |
 | PLY-106 | `contracts/player-1.md#priority-and-preemption` | - | TBD-wave1 |
 | PLY-107 | `contracts/player-1.md#priority-and-preemption` | `PLY-101-valid-lease-preemption-interrupt-now` | covered |
+| PLY-108 | `contracts/player-1.md#priority-and-preemption` | - | TBD-wave1 |
 | PLY-110 | `contracts/player-1.md#render-acknowledgement` | `PLY-101-valid-lease-preemption-interrupt-now` | covered |
 | PLY-111 | `contracts/player-1.md#render-acknowledgement` | `PLY-101-valid-lease-preemption-interrupt-now` | covered |
 | PLY-112 | `contracts/player-1.md#render-acknowledgement` | `PLY-101-valid-lease-preemption-interrupt-now` | covered |
@@ -102,13 +104,13 @@ One row per requirement ID `contracts/player-1.md` defines. Format: `conformance
 | PLY-121 | `contracts/player-1.md#status-telemetry` | - | TBD-wave1 |
 | PLY-122 | `contracts/player-1.md#status-telemetry` | - | TBD-wave1 |
 | PLY-123 | `contracts/player-1.md#status-telemetry` | - | TBD-wave1 |
-| PLY-130 | `contracts/player-1.md#reconnect-state-machine` | `PLY-136-valid-server-moved-relocate-never-wipe` | covered |
-| PLY-131 | `contracts/player-1.md#reconnect-state-machine` | `PLY-136-valid-server-moved-relocate-never-wipe` | covered |
-| PLY-132 | `contracts/player-1.md#reconnect-state-machine` | `PLY-136-valid-server-moved-relocate-never-wipe` | covered |
-| PLY-133 | `contracts/player-1.md#reconnect-state-machine` | `PLY-136-valid-server-moved-relocate-never-wipe` | covered |
+| PLY-130 | `contracts/player-1.md#reconnect-state-machine` | `PLY-130-valid-server-moved-relocate-never-wipe` | covered |
+| PLY-131 | `contracts/player-1.md#reconnect-state-machine` | `PLY-130-valid-server-moved-relocate-never-wipe` | covered |
+| PLY-132 | `contracts/player-1.md#reconnect-state-machine` | `PLY-130-valid-server-moved-relocate-never-wipe` | covered |
+| PLY-133 | `contracts/player-1.md#reconnect-state-machine` | `PLY-130-valid-server-moved-relocate-never-wipe` | covered |
 | PLY-134 | `contracts/player-1.md#reconnect-state-machine` | - | TBD-wave1 |
 | PLY-135 | `contracts/player-1.md#reconnect-state-machine` | - | TBD-wave1 |
-| PLY-136 | `contracts/player-1.md#reconnect-state-machine` | - | TBD-wave1 |
+| PLY-136 | `contracts/player-1.md#reconnect-state-machine` | `PLY-136-valid-token-revoked-reconnect-clears-token-only` | covered |
 | PLY-137 | `contracts/player-1.md#reconnect-state-machine` | - | TBD-wave1 |
 | PLY-138 | `contracts/player-1.md#reconnect-state-machine` | - | TBD-wave1 |
 | PLY-139 | `contracts/player-1.md#reconnect-state-machine` | - | TBD-wave1 |
