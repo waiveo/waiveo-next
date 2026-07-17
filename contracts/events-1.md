@@ -80,7 +80,7 @@ events/1 defines the platform's client push channel: the durable-event envelope,
 | `attribute_change` | boolean | Whether any attribute value also changed on this same observation, independent of whether the canonical state string did (`rules/1` RUL-330). |
 | `attributes_delta` | object | Present (possibly empty) whenever `attribute_change` is `true`; maps each changed attribute's name to `{old, new}`. Omitted when `attribute_change` is `false`. |
 
-**[EVT-031]** An `entity.state_changed` event MUST be emitted when an entity's canonical state string changes, or when a `significant`-class attribute's value changes (`device-class-registry` REG-044); a change limited to `cosmetic`-class attributes MUST NOT alone trigger emission.
+**[EVT-031]** An `entity.state_changed` event MUST be emitted when an entity's canonical state string changes, or when a `significant`-class attribute's value changes (`device-class-registry/1` REG-044); a change limited to `cosmetic`-class attributes MUST NOT alone trigger emission.
 
 **[EVT-032]** This schema is a change feed, never a snapshot poll: it MUST be emitted once per qualifying observation (EVT-031), in the order those observations occurred, and MUST NOT be used to represent an entity's full current state — a subscriber reconstructing current state does so by folding the feed from a known baseline, not by treating any single event as authoritative of anything but that one transition.
 

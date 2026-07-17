@@ -29,9 +29,9 @@ data-model/1 defines the platform's core relational data model: the scope-node t
 
 ### Scope-node tree
 
-**[DAT-001]** A scope node MUST be `{id, kind, parent_id, name, external_id?, labels?, revision, created_at, updated_at}` at minimum (ScopeNode, Wire shapes), plus the additional columns Org node: account state and entitlements and Time as data define. `kind` MUST be exactly one of `org`, `site`, `group`, or `screen` — the platform's complete, closed scope-node kind vocabulary; `group` is the generic grouping kind (for instance, a floor, wing, or department — an "area"), carrying no meaning beyond its place in the tree.
+**[DAT-001]** A scope node MUST be `{id, kind, parent_id, name, external_id?, labels?, revision, created_at, updated_at}` at minimum (ScopeNode, Wire shapes), plus the additional columns Org node: account state and entitlements and Time as data define. `kind` MUST be exactly one of `org`, `site`, `group`, or `screen` — the platform's complete, closed scope-node kind vocabulary; a value outside it MUST be rejected (`SCOPE_NODE_KIND_INVALID`, Error taxonomy). `group` is the generic grouping kind (for instance, a floor, wing, or department — an "area"), carrying no meaning beyond its place in the tree.
 
-**[DAT-002]** `parent_id` MUST be null if and only if `kind` is `org`; every non-`org` scope node's `parent_id` MUST reference an existing scope node. A conformant scope-node tree MUST contain exactly one `org`-kind node, which MUST be its own root — no node's ancestor chain reaches a second `org`-kind node.
+**[DAT-002]** `parent_id` MUST be null if and only if `kind` is `org`; every non-`org` scope node's `parent_id` MUST reference an existing scope node (a violation rejected `SCOPE_NODE_PARENT_INVALID`, Error taxonomy). A conformant scope-node tree MUST contain exactly one `org`-kind node, which MUST be its own root — no node's ancestor chain reaches a second `org`-kind node (a second `org` node rejected `SCOPE_NODE_MULTIPLE_ORG`, Error taxonomy).
 
 **[DAT-003]** A scope node's `kind` MUST be a permitted child of its `parent_id`'s own `kind`, per the closed table below; a creation or re-parenting request violating it MUST be rejected (`SCOPE_NODE_PARENT_INVALID`, Error taxonomy).
 
@@ -135,6 +135,8 @@ data-model/1 defines the platform's core relational data model: the scope-node t
 
 **[DAT-075]** `playlist_id`, when present, MUST reference a Playlist row's own `id` (Scheduling core: playlist) — the content this daypart shows while `display_power` is `on`. `preset_batch_id`, when present, MUST reference a Preset-batch row's own `preset_id` (Scheduling core: preset batch) — invoked once at the instant this daypart becomes the currently-holding daypart for its `scope_node`.
 
+*Note: this version intentionally leaves `playlist_id` presence unconstrained against `display_power` — an `off`/`blank` daypart may carry a `playlist_id` and an `on` daypart may omit one; no validation rule ties the two fields together.*
+
 **[DAT-076]** A daypart row's own effective `misfire` (Schedule-side misfire default), when it does not declare one itself, is its owning schedule's own `misfire`; when neither declares one, it is `catch_up_once`.
 
 ### Scheduling core: fallback
@@ -183,13 +185,13 @@ data-model/1 defines the platform's core relational data model: the scope-node t
 
 **[DAT-115]** A currently holding daypart, or a resolved fallback, whose `display_power` is `off` projects to a Lease `display` of `blank` (`player/1` PLY-093) as well — `player/1`'s own `display` vocabulary has no third, device-power-off value (`player/1` PLY-093 is explicit that `blank` does not itself request any device-level power-off). An actual device-level power-off is realized separately, as a device command (`device-class-registry` REG-066's `power` command, `state: "off"`) dispatched through whatever preset-batch a transition into this daypart invokes (DAT-075) — not through the Lease at all.
 
-**[DAT-116]** `display_power`'s own three-value distinction between `off` and `blank` is preserved as platform state even though both project to the identical Lease `display: "blank"` (DAT-114–115) — this is what lets a consumer distinguish an intentionally powered-down or blanked screen from one that is simply down. `player/1` PLY-155 already suppresses its own screen-liveness recovery for a `blank`-display Lease; `player/1` PLY-156 already suppresses it identically for a screen the platform's own display-power schedule most recently commanded off, naming this contract's row shape as the definition it itself defers. Daypart (DAT-070–076) and Fallback (DAT-080–082) are that deferred definition.
+**[DAT-116]** `display_power`'s own three-value distinction between `off` and `blank` is preserved as platform state even though both project to the identical Lease `display: "blank"` (DAT-114–115) — this is what lets a consumer distinguish an intentionally powered-down or blanked screen from one that is simply down. `player/1` PLY-155 already suppresses its own screen-liveness recovery for a `blank`-display Lease; `player/1` PLY-156 already suppresses it identically for a screen the display-power schedule most recently commanded `off`, deferring the row shape it honors generically — it does not name this contract. Daypart (DAT-070–076) and Fallback (DAT-080–082) are that deferred row shape.
 
 ### Schedule-side misfire default
 
 **[DAT-120]** `misfire` (Scheduling core: schedule, DAT-050; Scheduling core: daypart, DAT-070) MUST be exactly one of `catch_up_once`, `skip`, or `fire_each` — the identical closed vocabulary `rules/1` RUL-350 defines, byte-exact; this contract adds no fourth value and changes none of the three's own meaning (`rules/1` RUL-351–353).
 
-**[DAT-121]** A schedule or daypart row's own `misfire`, absent an explicit declaration, defaults to `catch_up_once` (DAT-076) — on resuming evaluation after any gap (an offline relay, a generation apply spanning the gap, an untrusted clock, `rules/1` RUL-350), a scope node's currently holding daypart (DAT-110) is resolved fresh against the current instant and its `display_power`/content applied immediately, collapsing any number of missed transitions into the single, currently-correct state — never left showing a stale daypart's state until its own next natural boundary.
+**[DAT-121]** A schedule or daypart row's own `misfire`, absent an explicit declaration, defaults to `catch_up_once` (DAT-076; the recurring-state opposite default `rules/1` RUL-354 reserves to this contract, DAT-122) — on resuming evaluation after any gap (an offline relay, a generation apply spanning the gap, an untrusted clock, `rules/1` RUL-350), a scope node's currently holding daypart (DAT-110) is resolved fresh against the current instant and its `display_power`/content applied immediately, collapsing any number of missed transitions into the single, currently-correct state — never left showing a stale daypart's state until its own next natural boundary.
 
 **[DAT-122]** This default is deliberately the opposite of `rules/1` RUL-354's own default for a `time`, `time_pattern`, or `sun` trigger (`skip`) — RUL-354 itself carves out exactly this exception, reserving a recurring scheduled state's own default as a separate platform concern outside its own vocabulary that may default oppositely. Schedule and daypart rows are that concern; RUL-354's own `skip` default is otherwise unchanged, and continues to govern every `time`/`time_pattern`/`sun` trigger this contract does not itself define a row for — including a `preset_batch` action fired from one (DAT-094).
 
@@ -358,6 +360,7 @@ This contract has no live wire handshake of its own; `api/1`'s CRUD operations a
 |---|---|---|
 | `SCOPE_NODE_KIND_INVALID` | A scope node's `kind` is not one of `org`, `site`, `group`, `screen` (DAT-001). | no |
 | `SCOPE_NODE_PARENT_INVALID` | A scope node's `kind` is not a permitted child of its `parent_id`'s own `kind` (DAT-003), or `parent_id` is null on a non-`org` node or non-null on an `org` node (DAT-002). | no |
+| `SCOPE_NODE_MULTIPLE_ORG` | A scope-node tree contains more than one `org`-kind node, or a node's ancestor chain reaches a second `org`-kind node (DAT-002). | no |
 | `SCOPE_NODE_GEO_REQUIRED` | A `site`-kind scope node's `tz`/`lat`/`long` is missing or null (DAT-031). | no |
 | `SCOPE_NODE_ACCOUNT_STATE_INVALID` | `account_state` is missing or invalid on an `org`-kind node, or present on a non-`org`-kind node (DAT-010). | no |
 | `SCOPE_NODE_ENTITLEMENTS_INVALID` | `entitlements` is missing on an `org`-kind node, or present on a non-`org`-kind node (DAT-013). | no |

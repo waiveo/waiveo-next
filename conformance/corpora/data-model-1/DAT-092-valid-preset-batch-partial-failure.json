@@ -31,7 +31,8 @@
       "results": [
         { "target": "01JENTTYAKQ2PDF6PT9FABT1BN", "command": "power", "ok": true },
         { "target": "01JENTTYBTFHA6R2YECXPKEE1C", "command": "power", "ok": false, "error": "unreachable" }
-      ]
+      ],
+      "evaluated_at": 1752537600000
     }
   }
 }
