@@ -2,7 +2,7 @@
 
 **Contract:** channel-index/1
 **Version:** 1.1
-**Status:** draft
+**Status:** review
 
 ## Scope
 
