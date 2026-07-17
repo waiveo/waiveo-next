@@ -1,0 +1,57 @@
+# waiveo-dev — local dev VM recipe (Lima), the macOS-side twin of the
+# Proxmox `waiveo-dev-tpl` template: Ubuntu 24.04 + latest-stable Go +
+# Node 24 (matching .node-version). `make dev` must pass identically here
+# and in a clone of the Proxmox template.
+#
+#   limactl start --name=waiveo-dev lima/waiveo-dev.yaml
+#   limactl shell waiveo-dev
+#
+# Node major is pinned to .node-version (24); Go tracks latest stable
+# (go.mod requires >= 1.26, and the Go toolchain auto-upgrades per go.mod).
+
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+    arch: "x86_64"
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: "aarch64"
+
+cpus: 2
+memory: "4GiB"
+disk: "20GiB"
+
+mounts:
+  - location: "~/waiveo/waiveo-next"
+    writable: true
+
+provision:
+  - mode: system
+    script: |
+      #!/usr/bin/env bash
+      set -eux -o pipefail
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update
+      apt-get install -y git make curl ca-certificates
+      # Go — latest stable (satisfies go.mod's `go 1.26`; toolchain self-upgrades)
+      GOVER=$(curl -fsSL "https://go.dev/VERSION?m=text" | head -1)
+      ARCH=$(dpkg --print-architecture)
+      curl -fsSL "https://go.dev/dl/${GOVER}.linux-${ARCH}.tar.gz" -o /tmp/go.tgz
+      rm -rf /usr/local/go
+      tar -C /usr/local -xzf /tmp/go.tgz
+      echo 'export PATH=$PATH:/usr/local/go/bin' > /etc/profile.d/go.sh
+      # Node 24 — pinned major, matches .node-version
+      curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
+      apt-get install -y nodejs
+
+probes:
+  - description: "Go and Node 24 are on PATH"
+    script: |
+      #!/usr/bin/env bash
+      set -eu -o pipefail
+      if ! timeout 60s bash -c "until [ -x /usr/local/go/bin/go ] && command -v node >/dev/null 2>&1; do sleep 2; done"; then
+        echo >&2 "waiveo-dev: go/node did not install"
+        exit 1
+      fi
+      case "$(node --version)" in
+        v24.*) : ;;
+        *) echo >&2 "waiveo-dev: node major != 24 ($(node --version))"; exit 1 ;;
+      esac
