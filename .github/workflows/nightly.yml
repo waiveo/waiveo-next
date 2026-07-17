@@ -24,7 +24,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          SUMMARY=$(tail -1 lane.log | cut -c1-120)
-          gh issue create -R "$GITHUB_REPOSITORY" -l ci-failure \
-            -t "nightly: lane failure $(date -u +%F)" \
-            -b "Failing check: see run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. Summary: ${SUMMARY}. (One-line summary only by policy — no raw log excerpts.)"
+          # Consume the structured SUMMARY: marker each validator emits (prefer a FAILED
+          # one, which names the failing lane), not the last log line by position.
+          SUMMARY=$(grep -h '^SUMMARY:' lane.log | grep -m1 FAILED || grep -h -m1 '^SUMMARY:' lane.log || tail -1 lane.log)
+          SUMMARY=$(printf '%s' "$SUMMARY" | cut -c1-200)
+          BODY="Failing check: see run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. ${SUMMARY} (Structured one-line summary only by policy — no raw log excerpts.)"
+          # Dedup: comment on the existing open ci-failure issue rather than opening a new one nightly.
+          EXISTING=$(gh issue list -R "$GITHUB_REPOSITORY" -l ci-failure --state open --json number -q '.[0].number' 2>/dev/null || true)
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" -R "$GITHUB_REPOSITORY" -b "$(date -u +%F): ${BODY}"
+          else
+            gh issue create -R "$GITHUB_REPOSITORY" -l ci-failure \
+              -t "nightly: lane failure $(date -u +%F)" \
+              -b "$BODY"
+          fi

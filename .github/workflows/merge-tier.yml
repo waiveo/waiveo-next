@@ -5,6 +5,9 @@ on:
       - main
 permissions:
   contents: read
+concurrency:
+  group: merge-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
   validate:
     runs-on: ubuntu-latest

@@ -9,11 +9,16 @@
 # Node major is pinned to .node-version (24); Go tracks latest stable
 # (go.mod requires >= 1.26, and the Go toolchain auto-upgrades per go.mod).
 
+# Pinned to a dated Ubuntu 24.04 build with integrity digests (reproducible; the
+# mutable release/ path would silently change under us). Bump the date + both
+# digests periodically to pick up patched base images.
 images:
-  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release-20260705/ubuntu-24.04-server-cloudimg-amd64.img"
     arch: "x86_64"
-  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    digest: "sha256:ffe6203da54deeb6db5d2a98a83f9ec8e55f149d3f7ba622e1abe5fa966ee3d6"
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release-20260705/ubuntu-24.04-server-cloudimg-arm64.img"
     arch: "aarch64"
+    digest: "sha256:7df0201546f75b8bcc1044594c806c35749421ad3c9bc1be2a3ab806cfae39cc"
 
 cpus: 2
 memory: "4GiB"
