@@ -1,0 +1,47 @@
+{
+  "case_id": "DAT-073-invalid-midnight-wrap-collides-next-weekday",
+  "contract": "data-model/1",
+  "req_ids": ["DAT-073", "DAT-077"],
+  "description": "Two dayparts of one schedule whose days_of_week arrays are DISJOINT ([1]=Monday vs [2]=Tuesday) still overlap because the first wraps past local midnight: a Monday 22:00-06:00 daypart (DAT-072 wrap) carries a post-midnight tail onto Tuesday [00:00,06:00), which collides with a Tuesday 05:00-07:00 daypart on [05:00,06:00). Under the (weekday, time-of-day)-segment overlap test (DAT-073) this is rejected DAYPART_OVERLAP -- both would hold at Tue 05:30, and rejecting it preserves the single-holding-daypart-per-schedule precondition (DAT-077). A naive independent (days intersect) AND (time intersect) test would miss it, since {1} and {2} do not intersect.",
+  "input": {
+    "schedule": { "id": "01JSCHED1S3AR0RGXJVZ9CJD33", "scope_node": "01JGRPNDE1PG2X7R5JQC42EJ5E", "name": "Wrapping Overnight", "priority": 0, "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 },
+    "dayparts": [
+      {
+        "id": "01JDAYPART1MONNIGHT4FS7F2",
+        "schedule_id": "01JSCHED1S3AR0RGXJVZ9CJD33",
+        "scope_node": "01JGRPNDE1PG2X7R5JQC42EJ5E",
+        "name": "Monday Overnight",
+        "days_of_week": [1],
+        "start_time": "22:00:00",
+        "end_time": "06:00:00",
+        "display_power": "on",
+        "playlist_id": "01JPAYST15TMGDMFGS8KXM40X6",
+        "preset_batch_id": null,
+        "revision": 1,
+        "created_at": 1752537600000,
+        "updated_at": 1752537600000
+      },
+      {
+        "id": "01JDAYPART2TUEDAWN44FS7F2",
+        "schedule_id": "01JSCHED1S3AR0RGXJVZ9CJD33",
+        "scope_node": "01JGRPNDE1PG2X7R5JQC42EJ5E",
+        "name": "Tuesday Dawn",
+        "days_of_week": [2],
+        "start_time": "05:00:00",
+        "end_time": "07:00:00",
+        "display_power": "on",
+        "playlist_id": "01JPAYST15TMGDMFGS8KXM40X6",
+        "preset_batch_id": null,
+        "revision": 1,
+        "created_at": 1752537600000,
+        "updated_at": 1752537600000
+      }
+    ]
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      { "field": "dayparts", "code": "DAYPART_OVERLAP", "message": "the Monday 22:00:00-06:00:00 daypart wraps past midnight (DAT-072) and its tail segment (weekday 2, [00:00:00,06:00:00)) intersects the Tuesday 05:00:00-07:00:00 daypart's segment (weekday 2, [05:00:00,07:00:00)) on [05:00:00,06:00:00); two dayparts of one schedule share a weekday and an intersecting half-open time-of-day range and MUST partition time, not layer" }
+    ]
+  }
+}

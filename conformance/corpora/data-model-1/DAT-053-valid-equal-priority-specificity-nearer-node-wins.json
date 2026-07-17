@@ -1,0 +1,59 @@
+{
+  "case_id": "DAT-053-valid-equal-priority-specificity-nearer-node-wins",
+  "contract": "data-model/1",
+  "req_ids": ["DAT-051", "DAT-053", "DAT-111"],
+  "description": "Two schedules are applicable to the same screen at the same instant with equal priority: a site-level base and a screen-level schedule, both priority 5, each holding a daypart at the instant. Priority ties, so the strict precedence order falls to key 2 (specificity): the schedule whose scope_node is nearest the resolved screen on the parent_id chain wins. The screen-level daypart (ancestor-distance 0) drives the Lease; the site-level daypart (ancestor-distance 1) is layered beneath it and does not show.",
+  "input": {
+    "scope_nodes": [
+      { "id": "01JORGNDE1PG2X7R5JQC42EJ00", "kind": "org", "parent_id": null },
+      { "id": "01JSITENDE1EWH0AVNH9DN6R00", "kind": "site", "parent_id": "01JORGNDE1PG2X7R5JQC42EJ00", "tz": "America/Denver", "lat": 39.7392, "long": -104.9903 },
+      { "id": "01JSCRNVERRDEF4W6305FAT000", "kind": "screen", "parent_id": "01JSITENDE1EWH0AVNH9DN6R00" }
+    ],
+    "schedules": [
+      { "id": "01JSCHEDSITE0RGXJVZ9CJD000", "scope_node": "01JSITENDE1EWH0AVNH9DN6R00", "name": "Site Base", "priority": 5, "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 },
+      { "id": "01JSCHEDSCRN0RGXJVZ9CJD000", "scope_node": "01JSCRNVERRDEF4W6305FAT000", "name": "Screen Local", "priority": 5, "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 }
+    ],
+    "dayparts": [
+      {
+        "id": "01JDAYPARTSITE7RCG2V0CQV00",
+        "schedule_id": "01JSCHEDSITE0RGXJVZ9CJD000",
+        "scope_node": "01JSITENDE1EWH0AVNH9DN6R00",
+        "name": "Site Business Hours",
+        "days_of_week": [1, 2, 3, 4, 5],
+        "start_time": "06:00:00",
+        "end_time": "22:00:00",
+        "display_power": "on",
+        "playlist_id": "01JPAYSTSITE1MGDMFGS8KX00",
+        "preset_batch_id": null,
+        "revision": 1,
+        "created_at": 1752537600000,
+        "updated_at": 1752537600000
+      },
+      {
+        "id": "01JDAYPARTSCRN7RCG2V0CQV00",
+        "schedule_id": "01JSCHEDSCRN0RGXJVZ9CJD000",
+        "scope_node": "01JSCRNVERRDEF4W6305FAT000",
+        "name": "Screen Business Hours",
+        "days_of_week": [1, 2, 3, 4, 5],
+        "start_time": "06:00:00",
+        "end_time": "22:00:00",
+        "display_power": "on",
+        "playlist_id": "01JPAYSTSCRN1MGDMFGS8KX00",
+        "preset_batch_id": null,
+        "revision": 1,
+        "created_at": 1752537600000,
+        "updated_at": 1752537600000
+      }
+    ],
+    "resolve_for_scope_node": "01JSCRNVERRDEF4W6305FAT000",
+    "evaluated_at_local": "2026-07-14T12:00:00"
+  },
+  "expected": {
+    "valid": true,
+    "applicable_schedule_ids_by_precedence": ["01JSCHEDSCRN0RGXJVZ9CJD000", "01JSCHEDSITE0RGXJVZ9CJD000"],
+    "precedence_tiebreak": "specificity",
+    "winning_schedule_id": "01JSCHEDSCRN0RGXJVZ9CJD000",
+    "currently_holding_daypart_id": "01JDAYPARTSCRN7RCG2V0CQV00",
+    "lease_projection": { "display": "content", "content_source": "playlist:01JPAYSTSCRN1MGDMFGS8KX00" }
+  }
+}
