@@ -1,0 +1,65 @@
+{
+  "case_id": "DAT-117-valid-layered-fallback-through-precedence",
+  "contract": "data-model/1",
+  "req_ids": ["DAT-081", "DAT-117"],
+  "description": "At an overnight instant no applicable schedule has a holding daypart, so resolution falls to the fallback layer. The highest-precedence applicable schedule (the override) declares no fallback_id and is skipped; the next in precedence order (the base) declares one, which supplies the resolved fallback -- the fallback layer falls through the same strict precedence order the daypart layer uses.",
+  "input": {
+    "scope_nodes": [
+      { "id": "01JORGNDE1PG2X7R5JQC42EJ00", "kind": "org", "parent_id": null },
+      { "id": "01JSITENDE1EWH0AVNH9DN6R00", "kind": "site", "parent_id": "01JORGNDE1PG2X7R5JQC42EJ00", "tz": "America/Denver", "lat": 39.7392, "long": -104.9903 },
+      { "id": "01JSCRNVERRDEF4W6305FAT000", "kind": "screen", "parent_id": "01JSITENDE1EWH0AVNH9DN6R00" }
+    ],
+    "schedules": [
+      { "id": "01JSCHEDBASE0RGXJVZ9CJD000", "scope_node": "01JSITENDE1EWH0AVNH9DN6R00", "name": "Base", "fallback_id": "01JFABACKBASE9HJDNDGZG300", "priority": 0, "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 },
+      { "id": "01JSCHEDOVER0RGXJVZ9CJD000", "scope_node": "01JSCRNVERRDEF4W6305FAT000", "name": "Override (no fallback)", "priority": 50, "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 }
+    ],
+    "dayparts": [
+      {
+        "id": "01JDAYPARTBASE7RCG2V0CQV00",
+        "schedule_id": "01JSCHEDBASE0RGXJVZ9CJD000",
+        "scope_node": "01JSITENDE1EWH0AVNH9DN6R00",
+        "name": "Base Daytime",
+        "days_of_week": [0, 1, 2, 3, 4, 5, 6],
+        "start_time": "06:00:00",
+        "end_time": "22:00:00",
+        "display_power": "on",
+        "playlist_id": "01JPAYSTBASE1MGDMFGS8KX00",
+        "preset_batch_id": null,
+        "revision": 1,
+        "created_at": 1752537600000,
+        "updated_at": 1752537600000
+      },
+      {
+        "id": "01JDAYPARTOVER7RCG2V0CQV00",
+        "schedule_id": "01JSCHEDOVER0RGXJVZ9CJD000",
+        "scope_node": "01JSCRNVERRDEF4W6305FAT000",
+        "name": "Override Feature",
+        "days_of_week": [0, 1, 2, 3, 4, 5, 6],
+        "start_time": "09:00:00",
+        "end_time": "17:00:00",
+        "display_power": "on",
+        "playlist_id": "01JPAYSTOVER1MGDMFGS8KX00",
+        "preset_batch_id": null,
+        "revision": 1,
+        "created_at": 1752537600000,
+        "updated_at": 1752537600000
+      }
+    ],
+    "fallbacks": [
+      { "id": "01JFABACKBASE9HJDNDGZG300", "scope_node": "01JSITENDE1EWH0AVNH9DN6R00", "name": "Base Fallback", "display_power": "on", "playlist_id": "01JPAYSTFALL1MGDMFGS8KX00", "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 }
+    ],
+    "resolve_for_scope_node": "01JSCRNVERRDEF4W6305FAT000",
+    "evaluated_at_local": "2026-07-14T03:00:00"
+  },
+  "expected": {
+    "valid": true,
+    "applicable_schedule_ids_by_precedence": ["01JSCHEDOVER0RGXJVZ9CJD000", "01JSCHEDBASE0RGXJVZ9CJD000"],
+    "currently_holding_daypart_id": null,
+    "fallback_selection": {
+      "skipped_schedule_id_no_fallback": "01JSCHEDOVER0RGXJVZ9CJD000",
+      "resolved_fallback_id": "01JFABACKBASE9HJDNDGZG300",
+      "resolved_from_schedule_id": "01JSCHEDBASE0RGXJVZ9CJD000"
+    },
+    "lease_projection": { "display": "content", "content_source": "playlist:01JPAYSTFALL1MGDMFGS8KX00" }
+  }
+}

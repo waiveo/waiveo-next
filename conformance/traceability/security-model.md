@@ -44,6 +44,9 @@ One row per requirement ID `contracts/security-model.md` defines. Format: `confo
 | SEC-063 | `contracts/security-model.md#break-glass-recovery` | - | TBD-wave1 |
 | SEC-064 | `contracts/security-model.md#break-glass-recovery` | - | TBD-wave1 |
 | SEC-065 | `contracts/security-model.md#break-glass-recovery` | - | TBD-wave1 |
+| SEC-066 | `contracts/security-model.md#app-tier-clock-trust` | `SEC-066-valid-monotonic-floor-survives-restart` | covered |
+| SEC-067 | `contracts/security-model.md#app-tier-clock-trust` | `SEC-067-invalid-unauthenticated-time-claim-does-not-advance-floor` | covered |
+| SEC-068 | `contracts/security-model.md#app-tier-clock-trust` | `SEC-067-invalid-unauthenticated-time-claim-does-not-advance-floor` | covered |
 | SEC-070 | `contracts/security-model.md#the-console-binding` | - | TBD-wave1 |
 | SEC-071 | `contracts/security-model.md#the-console-binding` | - | TBD-wave1 |
 | SEC-072 | `contracts/security-model.md#the-console-binding` | `SEC-072-valid-console-admission-uid0` | covered |

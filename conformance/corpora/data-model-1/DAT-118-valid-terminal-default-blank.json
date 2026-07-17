@@ -1,0 +1,46 @@
+{
+  "case_id": "DAT-118-valid-terminal-default-blank",
+  "contract": "data-model/1",
+  "req_ids": ["DAT-118"],
+  "description": "At an instant when the one applicable schedule is out of force (its validity window has ended) so no schedule is applicable-and-in-force at the screen, resolution reaches neither a daypart nor a fallback -- the scheduling core asserts the terminal default of a display: blank Lease (powered on, no content, distinct from off), never leaving state unresolved and never deferring to box-local content.",
+  "input": {
+    "scope_nodes": [
+      { "id": "01JORGNDE1PG2X7R5JQC42EJ00", "kind": "org", "parent_id": null },
+      { "id": "01JSITENDE1EWH0AVNH9DN6R00", "kind": "site", "parent_id": "01JORGNDE1PG2X7R5JQC42EJ00", "tz": "America/Denver", "lat": 39.7392, "long": -104.9903 },
+      { "id": "01JSCRNVERRDEF4W6305FAT000", "kind": "screen", "parent_id": "01JSITENDE1EWH0AVNH9DN6R00" }
+    ],
+    "schedules": [
+      { "id": "01JSCHEDEXPD0RGXJVZ9CJD000", "scope_node": "01JSCRNVERRDEF4W6305FAT000", "name": "Seasonal (expired)", "priority": 0, "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 }
+    ],
+    "validity_windows": [
+      { "id": "01JVAWNEXPD4DG8P4FQJAWK000", "schedule_id": "01JSCHEDEXPD0RGXJVZ9CJD000", "scope_node": "01JSCRNVERRDEF4W6305FAT000", "starts_at": 1735707600000, "ends_at": 1738386000000, "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 }
+    ],
+    "dayparts": [
+      {
+        "id": "01JDAYPARTEXPD7RCG2V0CQV00",
+        "schedule_id": "01JSCHEDEXPD0RGXJVZ9CJD000",
+        "scope_node": "01JSCRNVERRDEF4W6305FAT000",
+        "name": "Daytime",
+        "days_of_week": [0, 1, 2, 3, 4, 5, 6],
+        "start_time": "06:00:00",
+        "end_time": "22:00:00",
+        "display_power": "on",
+        "playlist_id": "01JPAYSTEXPD1MGDMFGS8KX00",
+        "preset_batch_id": null,
+        "revision": 1,
+        "created_at": 1752537600000,
+        "updated_at": 1752537600000
+      }
+    ],
+    "resolve_for_scope_node": "01JSCRNVERRDEF4W6305FAT000",
+    "evaluated_at": 1752537600000,
+    "evaluated_at_local": "2026-07-14T12:00:00"
+  },
+  "expected": {
+    "valid": true,
+    "applicable_in_force_schedule_ids": [],
+    "currently_holding_daypart_id": null,
+    "resolved_fallback_id": null,
+    "lease_projection": { "display": "blank", "content": [] }
+  }
+}

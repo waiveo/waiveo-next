@@ -1,0 +1,21 @@
+{
+  "case_id": "SEC-067-invalid-unauthenticated-time-claim-does-not-advance-floor",
+  "contract": "security-model/1",
+  "req_ids": ["SEC-067", "SEC-068"],
+  "description": "Two candidate time values are offered to advance the app's clock floor: an unauthenticated client-supplied wall-clock claim and an authenticated-network-time value. The unauthenticated claim MUST NOT advance the floor or flip the assessment to trusted; the independently verifiable value MAY advance the floor and turn the assessment trusted.",
+  "input": {
+    "persisted_clock_floor_ms": 1752537600000,
+    "assessment_before": "untrusted",
+    "candidates": [
+      { "source": "unauthenticated-client-claim", "verifiable": false, "ts_ms": 1900000000000 },
+      { "source": "authenticated-network-time", "verifiable": true, "ts_ms": 1752624000000 }
+    ]
+  },
+  "expected": {
+    "floor_after_unauthenticated_claim_ms": 1752537600000,
+    "unauthenticated_claim_advanced_floor": false,
+    "floor_after_verifiable_value_ms": 1752624000000,
+    "verifiable_value_advanced_floor": true,
+    "assessment_after": "trusted"
+  }
+}

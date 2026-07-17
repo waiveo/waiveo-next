@@ -1,0 +1,18 @@
+{
+  "case_id": "SEC-066-valid-monotonic-floor-survives-restart",
+  "contract": "security-model/1",
+  "req_ids": ["SEC-066"],
+  "description": "After a restart the host wall-clock reads earlier than the app's persisted monotonic clock floor (a rolled-back or reset host clock). The app MUST NOT adopt the earlier reading: its notion of current time stays clamped at or above the persisted floor, so a time-windowed check cannot be defeated by turning the host clock back.",
+  "input": {
+    "persisted_clock_floor_ms": 1752537600000,
+    "restart": {
+      "host_wall_clock_reading_ms": 1700000000000,
+      "note": "host wall-clock reads earlier than the persisted floor"
+    }
+  },
+  "expected": {
+    "adopted_time_ms": 1752537600000,
+    "adopted_below_floor": false,
+    "clock_assessment": "untrusted"
+  }
+}

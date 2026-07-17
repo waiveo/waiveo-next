@@ -20,6 +20,7 @@ One row per requirement ID `contracts/marketplace-1.md` defines. Format: `confor
 | MKT-023 | `contracts/marketplace-1.md#trust-channels-and-production-install` | - | TBD-wave1 |
 | MKT-024 | `contracts/marketplace-1.md#trust-channels-and-production-install` | - | TBD-wave1 |
 | MKT-025 | `contracts/marketplace-1.md#trust-channels-and-production-install` | `MKT-025-dev-channel-reserved-namespace-rejected` | covered |
+| MKT-026 | `contracts/marketplace-1.md#trust-channels-and-production-install` | - | TBD-wave1 |
 | MKT-030 | `contracts/marketplace-1.md#the-verified-bar` | `MKT-030-verified-bar-native-binary-rejected` | covered |
 | MKT-031 | `contracts/marketplace-1.md#the-verified-bar` | - | TBD-wave1 |
 | MKT-032 | `contracts/marketplace-1.md#the-verified-bar` | - | TBD-wave1 |

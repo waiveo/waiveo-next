@@ -1,0 +1,47 @@
+{
+  "case_id": "DAT-073-invalid-within-schedule-daypart-overlap-rejected",
+  "contract": "data-model/1",
+  "req_ids": ["DAT-073", "DAT-077"],
+  "description": "Two dayparts of the same schedule share an intersecting day (Wednesday) and intersecting half-open local time-of-day intervals (09:00-13:00 and 12:00-17:00 overlap on [12:00,13:00)) in the schedule's one effective tz -- the create is rejected DAYPART_OVERLAP, preserving the single-holding-daypart-per-schedule precondition that makes cross-schedule layering well-defined.",
+  "input": {
+    "schedule": { "id": "01JSCHED1S3AR0RGXJVZ9CJD33", "scope_node": "01JGRPNDE1PG2X7R5JQC42EJ5E", "name": "Overlapping Dayparts", "priority": 0, "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 },
+    "dayparts": [
+      {
+        "id": "01JDAYPART1MORNING44FS7F2",
+        "schedule_id": "01JSCHED1S3AR0RGXJVZ9CJD33",
+        "scope_node": "01JGRPNDE1PG2X7R5JQC42EJ5E",
+        "name": "Morning",
+        "days_of_week": [1, 3, 5],
+        "start_time": "09:00:00",
+        "end_time": "13:00:00",
+        "display_power": "on",
+        "playlist_id": "01JPAYST15TMGDMFGS8KXM40X6",
+        "preset_batch_id": null,
+        "revision": 1,
+        "created_at": 1752537600000,
+        "updated_at": 1752537600000
+      },
+      {
+        "id": "01JDAYPART2AFTERNOON4FS7F2",
+        "schedule_id": "01JSCHED1S3AR0RGXJVZ9CJD33",
+        "scope_node": "01JGRPNDE1PG2X7R5JQC42EJ5E",
+        "name": "Afternoon",
+        "days_of_week": [3, 4],
+        "start_time": "12:00:00",
+        "end_time": "17:00:00",
+        "display_power": "on",
+        "playlist_id": "01JPAYST15TMGDMFGS8KXM40X6",
+        "preset_batch_id": null,
+        "revision": 1,
+        "created_at": 1752537600000,
+        "updated_at": 1752537600000
+      }
+    ]
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      { "field": "dayparts", "code": "DAYPART_OVERLAP", "message": "two dayparts of the same schedule intersect on days_of_week (Wednesday) AND on the half-open [start_time, end_time) interval ([12:00:00,13:00:00)) in the schedule's effective tz; a schedule's dayparts MUST partition time, not layer" }
+    ]
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "case_id": "DAT-051-valid-site-schedule-cascades-to-screen",
+  "contract": "data-model/1",
+  "req_ids": ["DAT-051", "DAT-110"],
+  "description": "A site-level schedule is applicable to a screen beneath it that carries no schedule of its own: the screen's governing state cascades down the parent_id chain from the site node, so the site schedule's holding daypart drives the screen's Lease even though nothing is attached directly at the screen.",
+  "input": {
+    "scope_nodes": [
+      { "id": "01JORGNDE1PG2X7R5JQC42EJ00", "kind": "org", "parent_id": null },
+      { "id": "01JSITENDE1EWH0AVNH9DN6R00", "kind": "site", "parent_id": "01JORGNDE1PG2X7R5JQC42EJ00", "tz": "America/Denver", "lat": 39.7392, "long": -104.9903 },
+      { "id": "01JSCRNVERRDEF4W6305FAT000", "kind": "screen", "parent_id": "01JSITENDE1EWH0AVNH9DN6R00" }
+    ],
+    "schedules": [
+      { "id": "01JSCHEDSITE0RGXJVZ9CJD000", "scope_node": "01JSITENDE1EWH0AVNH9DN6R00", "name": "Site Base", "priority": 0, "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 }
+    ],
+    "dayparts": [
+      {
+        "id": "01JDAYPARTSITE7RCG2V0CQV00",
+        "schedule_id": "01JSCHEDSITE0RGXJVZ9CJD000",
+        "scope_node": "01JSITENDE1EWH0AVNH9DN6R00",
+        "name": "Business Hours",
+        "days_of_week": [1, 2, 3, 4, 5],
+        "start_time": "06:00:00",
+        "end_time": "22:00:00",
+        "display_power": "on",
+        "playlist_id": "01JPAYST15TMGDMFGS8KXM40X6",
+        "preset_batch_id": null,
+        "revision": 1,
+        "created_at": 1752537600000,
+        "updated_at": 1752537600000
+      }
+    ],
+    "resolve_for_scope_node": "01JSCRNVERRDEF4W6305FAT000",
+    "evaluated_at_local": "2026-07-14T12:00:00"
+  },
+  "expected": {
+    "valid": true,
+    "applicable_schedule_ids": ["01JSCHEDSITE0RGXJVZ9CJD000"],
+    "currently_holding_daypart_id": "01JDAYPARTSITE7RCG2V0CQV00",
+    "lease_projection": { "display": "content", "content_source": "playlist:01JPAYST15TMGDMFGS8KXM40X6" }
+  }
+}
