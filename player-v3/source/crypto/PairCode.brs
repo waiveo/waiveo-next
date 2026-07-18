@@ -38,45 +38,45 @@ function wvPairCodeDecode(code as String) as Object
     buf = dec.bytes
     total = buf.Count()
 
-    pos = 0
+    at = 0
 
     ' host (length-prefixed).
-    hostRes = wvReadLenPrefixed(buf, pos, total)
+    hostRes = wvReadLenPrefixed(buf, at, total)
     if not hostRes.ok
         r.error = "host: " + hostRes.error
         return r
     end if
     r.host = wvBytesToAscii(hostRes.value)
-    pos = hostRes.nextPos
+    at = hostRes.nextPos
 
     ' port (2 bytes big-endian).
-    if pos + 2 > total
+    if at + 2 > total
         r.error = "port: truncated"
         return r
     end if
-    r.port = (buf[pos] * 256) + buf[pos + 1]
-    pos = pos + 2
+    r.port = (buf[at] * 256) + buf[at + 1]
+    at = at + 2
 
     ' grant_selector (length-prefixed).
-    gsRes = wvReadLenPrefixed(buf, pos, total)
+    gsRes = wvReadLenPrefixed(buf, at, total)
     if not gsRes.ok
         r.error = "grant_selector: " + gsRes.error
         return r
     end if
     r.grantSelector = wvBytesToAscii(gsRes.value)
-    pos = gsRes.nextPos
+    at = gsRes.nextPos
 
     ' commitment (length-prefixed) — kept as bytes, returned as hex.
-    cRes = wvReadLenPrefixed(buf, pos, total)
+    cRes = wvReadLenPrefixed(buf, at, total)
     if not cRes.ok
         r.error = "commitment: " + cRes.error
         return r
     end if
     r.commitmentHex = LCase(cRes.value.ToHexString())
-    pos = cRes.nextPos
+    at = cRes.nextPos
 
-    if pos <> total
-        r.error = (total - pos).toStr() + " trailing byte(s) after all fields"
+    if at <> total
+        r.error = (total - at).toStr() + " trailing byte(s) after all fields"
         return r
     end if
 
@@ -86,14 +86,14 @@ end function
 
 ' wvReadLenPrefixed reads a [1-byte length][value] field. Returns
 ' { ok, value: roByteArray, nextPos, error }.
-function wvReadLenPrefixed(buf as Object, pos as Integer, total as Integer) as Object
-    out = { ok: false, value: CreateObject("roByteArray"), nextPos: pos, error: "" }
-    if pos + 1 > total
+function wvReadLenPrefixed(buf as Object, at as Integer, total as Integer) as Object
+    out = { ok: false, value: CreateObject("roByteArray"), nextPos: at, error: "" }
+    if at + 1 > total
         out.error = "missing length prefix"
         return out
     end if
-    n = buf[pos]
-    valStart = pos + 1
+    n = buf[at]
+    valStart = at + 1
     if valStart + n > total
         out.error = "value (declared length " + n.toStr() + ") overruns buffer"
         return out

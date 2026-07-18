@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!-- PhotonScene: a black backdrop, a full-screen Poster for the first photon,
+     and a status Label shown until the image renders. pairingCode is set by
+     Main from the launch args; the scene starts the PlayerTask once it has a
+     code (or is already paired). Storage is included for wvStorageLoad (component
+     scopes do not inherit pkg:/source globals). -->
+<component name="PhotonScene" extends="Scene">
+  <interface>
+    <field id="pairingCode" type="string" />
+  </interface>
+  <script type="text/brightscript" uri="pkg:/components/PhotonScene.brs" />
+  <script type="text/brightscript" uri="pkg:/source/Storage.brs" />
+  <children>
+    <Rectangle id="bg" width="1920" height="1080" color="0x000000FF" />
+    <Poster id="contentPoster" width="1920" height="1080" loadDisplayMode="scaleToFill" visible="false" />
+    <Label id="statusLabel" text="Waiveo Player v3" translation="[80,960]" width="1760" />
+  </children>
+</component>

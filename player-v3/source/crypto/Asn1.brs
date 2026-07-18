@@ -16,22 +16,22 @@
 ' tag (0xA0) it is child index 6, else index 5 — then take that child's full TLV
 ' bytes (tag+length+value), which IS RawSubjectPublicKeyInfo.
 
-' wvAsn1ReadTLV parses one DER TLV at byte offset `pos` in `ba`.
+' wvAsn1ReadTLV parses one DER TLV at byte offset `at` in `ba`.
 ' Returns { ok, tag, hdrLen, len, valuePos, nextPos, error }.
 ' valuePos = offset of the value; nextPos = offset just past this TLV.
-function wvAsn1ReadTLV(ba as Object, pos as Integer) as Object
+function wvAsn1ReadTLV(ba as Object, at as Integer) as Object
     r = { ok: false, tag: 0, hdrLen: 0, len: 0, valuePos: 0, nextPos: 0, error: "" }
 
     total = ba.Count()
-    if pos < 0 or pos >= total
-        r.error = "TLV start " + pos.toStr() + " out of range (len " + total.toStr() + ")"
+    if at < 0 or at >= total
+        r.error = "TLV start " + at.toStr() + " out of range (len " + total.toStr() + ")"
         return r
     end if
 
-    r.tag = ba[pos]
-    lenPos = pos + 1
+    r.tag = ba[at]
+    lenPos = at + 1
     if lenPos >= total
-        r.error = "truncated: no length byte after tag at " + pos.toStr()
+        r.error = "truncated: no length byte after tag at " + at.toStr()
         return r
     end if
 
@@ -44,11 +44,11 @@ function wvAsn1ReadTLV(ba as Object, pos as Integer) as Object
         ' Long form: low 7 bits = number of subsequent length bytes.
         numBytes = first - 128
         if numBytes = 0 or numBytes > 4
-            r.error = "unsupported long-form length (" + numBytes.toStr() + " bytes) at " + pos.toStr()
+            r.error = "unsupported long-form length (" + numBytes.toStr() + " bytes) at " + at.toStr()
             return r
         end if
         if lenPos + numBytes >= total
-            r.error = "truncated long-form length at " + pos.toStr()
+            r.error = "truncated long-form length at " + at.toStr()
             return r
         end if
         acc = 0
@@ -59,7 +59,7 @@ function wvAsn1ReadTLV(ba as Object, pos as Integer) as Object
         r.valuePos = lenPos + 1 + numBytes
     end if
 
-    r.hdrLen = r.valuePos - pos
+    r.hdrLen = r.valuePos - at
     r.nextPos = r.valuePos + r.len
     if r.nextPos > total
         r.error = "TLV value overruns buffer: nextPos " + r.nextPos.toStr() + " > len " + total.toStr()

@@ -1,18 +1,13 @@
 ' Main.brs — player-v3 entry point (waiveo-next first photon).
 '
-' CURRENT INCREMENT: crypto core + on-device self-check only. Main runs the
-' golden-vector crypto self-check (SelfCheck.brs) and idles so the debug console
-' stays attachable. This is the §10 on-hardware confirmation of the pairing pin
-' primitives BEFORE the pairing state machine and SceneGraph render depend on
-' them.
-'
-' NEXT INCREMENTS (not yet wired here):
-'   - Pairing.brs: decode code -> bootstrap fetch -> local OOB pin -> redeem ->
-'     persist channel token (never-wipe, PLY-026).
-'   - Program.brs + PhotonScene: program poll -> lease -> direct image fetch ->
-'     Poster render.
-' Main will then create an roSGScreen and drive the pairing/program flow; the
-' self-check stays reachable via launch arg selfcheck=1.
+' Two modes:
+'   - launched with selfcheck=1 -> run the golden-vector crypto self-check
+'     (SelfCheck.brs) console-only and idle. This is the §10 on-hardware
+'     confirmation of the pairing-pin primitives, readable entirely from the
+'     debug console (no screen needed).
+'   - otherwise -> run the SceneGraph app: show PhotonScene, hand it the pairing
+'     code from the launch args (deep link launch/dev?pairingCode=...), and let
+'     it pair, pull its program, fetch the image direct, and render it.
 
 sub Main(args as Dynamic)
     print "###################################################################"
@@ -21,35 +16,33 @@ sub Main(args as Dynamic)
 
     params = wvNormalizeArgs(args)
 
-    runSelfCheck = false
-    #if DEBUG
-        runSelfCheck = true
-    #end if
-    if params <> invalid
-        if type(params) = "roAssociativeArray"
-            if params.DoesExist("selfcheck")
-                if params.selfcheck = "1" then runSelfCheck = true
-                if params.selfcheck = "0" then runSelfCheck = false
-            end if
-        end if
-    end if
-
-    if runSelfCheck
+    if wvArgEquals(params, "selfcheck", "1")
         try
             wvRunSelfCheck()
         catch e
             print "[main] EXCEPTION during self-check: " + e.message
         end try
+        wvIdle()
+        return
     end if
 
-    ' TODO(next increment): create roSGScreen + PhotonScene and drive
-    ' Pairing/Program here. For now, idle to keep the console attachable.
-    print "###################################################################"
-    print "# player-v3 idling (Home to exit). Pairing/render land next increment."
-    print "###################################################################"
+    screen = CreateObject("roSGScreen")
     port = CreateObject("roMessagePort")
+    screen.SetMessagePort(port)
+    scene = screen.CreateScene("PhotonScene")
+    screen.Show()
+
+    code = wvArgValue(params, "pairingCode")
+    if code <> ""
+        print "[main] pairing code supplied via launch args"
+        scene.pairingCode = code
+    end if
+
     while true
         msg = wait(0, port)
+        if type(msg) = "roSGScreenEvent"
+            if msg.isScreenClosed() then return
+        end if
     end while
 end sub
 
@@ -61,3 +54,29 @@ function wvNormalizeArgs(args as Dynamic) as Dynamic
     end if
     return args
 end function
+
+function wvArgEquals(params as Dynamic, key as String, value as String) as Boolean
+    if params = invalid then return false
+    if type(params) <> "roAssociativeArray" then return false
+    if not params.DoesExist(key) then return false
+    return (params[key] = value)
+end function
+
+function wvArgValue(params as Dynamic, key as String) as String
+    if params = invalid then return ""
+    if type(params) <> "roAssociativeArray" then return ""
+    if not params.DoesExist(key) then return ""
+    v = params[key]
+    if v = invalid then return ""
+    return v
+end function
+
+sub wvIdle()
+    print "###################################################################"
+    print "# player-v3 idling (Home to exit)."
+    print "###################################################################"
+    p = CreateObject("roMessagePort")
+    while true
+        msg = wait(0, p)
+    end while
+end sub

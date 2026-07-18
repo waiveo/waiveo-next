@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!-- PlayerTask runs the full player/1 client thread (pair -> program -> fetch)
+     off the render thread. SceneGraph component scopes do NOT inherit pkg:/source
+     globals, so every shared helper the thread calls is included here explicitly. -->
+<component name="PlayerTask" extends="Task">
+  <interface>
+    <field id="pairingCode" type="string" />
+    <field id="photonResult" type="assocarray" />
+  </interface>
+  <script type="text/brightscript" uri="pkg:/components/PlayerTask.brs" />
+  <script type="text/brightscript" uri="pkg:/source/Storage.brs" />
+  <script type="text/brightscript" uri="pkg:/source/Http.brs" />
+  <script type="text/brightscript" uri="pkg:/source/Pairing.brs" />
+  <script type="text/brightscript" uri="pkg:/source/Program.brs" />
+  <script type="text/brightscript" uri="pkg:/source/crypto/Base32.brs" />
+  <script type="text/brightscript" uri="pkg:/source/crypto/Asn1.brs" />
+  <script type="text/brightscript" uri="pkg:/source/crypto/PairCode.brs" />
+  <script type="text/brightscript" uri="pkg:/source/crypto/Commitment.brs" />
+</component>
