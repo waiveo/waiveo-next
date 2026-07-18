@@ -21,12 +21,14 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"time"
 
 	"github.com/maaxton/waiveo-next/internal/rules/clock"
 	"github.com/maaxton/waiveo-next/internal/rules/compile"
 	"github.com/maaxton/waiveo-next/internal/rules/eval"
 	"github.com/maaxton/waiveo-next/internal/rules/model"
 	"github.com/maaxton/waiveo-next/internal/rules/registry"
+	"github.com/maaxton/waiveo-next/internal/rules/schedule"
 	"github.com/maaxton/waiveo-next/internal/rules/state"
 )
 
@@ -79,6 +81,24 @@ type Engine struct {
 	// run is the single in-flight run, non-nil while a `delay` tail is pending
 	// (RUL-190). One run at a time is tracked for the mode layer (next part).
 	run *runState
+
+	// loc is the effective evaluation environment for wall-clock (schedule)
+	// triggers: the owning scope node's timezone (RUL-340) and the geographic
+	// coordinates the `sun` astronomy reads (RUL-060/061). It is engine-level
+	// configuration set via SetLocation, independent of any one loaded rule, so
+	// Load does not clear it. The zero Location (nil TZ) means "not yet set".
+	loc schedule.Location
+
+	// lastTickWall is the last wall instant Tick evaluated schedule triggers
+	// through: the exclusive lower bound of the next Tick's enumeration interval.
+	// It advances only forward to each Tick's wall reading (RUL-340).
+	lastTickWall int64
+
+	// scheduleFloor is the persisted best-known time floor (RUL-370): a schedule
+	// occurrence at or below it is never enumerated, so no firing rests on a
+	// clock reading earlier than the floor. It is the resume cursor after
+	// downtime — SeedScheduleFloor supplies the last-evaluated instant.
+	scheduleFloor int64
 }
 
 // runState is the single in-flight run's continuation: the flattened tail of
@@ -93,11 +113,19 @@ type runState struct {
 // next observation against. This part supports the entity_id form only; the
 // selector/device_class fan-out forms are a later concern.
 type triggerRuntime struct {
-	kind     string // "state" | "numeric"
+	kind     string // "state" | "numeric" | "time" | "time_pattern" | "sun"
 	entityID string
 
 	st *eval.StateTrigger
 	nt *eval.NumericTrigger
+
+	// sched is the wall-clock occurrence enumerator for a schedule trigger
+	// ("time"/"time_pattern"/"sun"), nil for a state/numeric trigger. Tick
+	// enumerates its occurrences over the elapsed wall interval and routes each
+	// through fire() (RUL-041/051/340). misfire is its declared misfire policy
+	// (RUL-350), applied by a later task; unset until then.
+	sched   schedule.ScheduleTrigger
+	misfire string
 
 	hold       *eval.Hold
 	holdKind   eval.HoldKind
@@ -210,6 +238,33 @@ func parseForSeconds(raw json.RawMessage) int {
 	return spec.For
 }
 
+// SetLocation sets the engine's effective evaluation environment for wall-clock
+// (schedule) triggers: the timezone by IANA name (RUL-340, resolved through
+// time.LoadLocation against the host tz database) and the geographic latitude/
+// longitude (decimal degrees, north/east positive) the `sun` astronomy reads
+// (RUL-060/061). It returns time.LoadLocation's error for an unknown zone name,
+// leaving the previous location unchanged. Location is engine-level configuration
+// and may be set before or after Load; Load does not reset it.
+func (e *Engine) SetLocation(tzName string, lat, lon float64) error {
+	tz, err := time.LoadLocation(tzName)
+	if err != nil {
+		return err
+	}
+	e.loc = schedule.Location{TZ: tz, Lat: lat, Lon: lon}
+	return nil
+}
+
+// SeedScheduleFloor sets the persisted best-known time floor (RUL-370): the
+// last-evaluated wall instant (Unix ms) below which no schedule occurrence is
+// enumerated. It is how the caller supplies the resume cursor after downtime so
+// occurrences missed while the engine was down are bounded from this instant
+// rather than from the epoch, and so no firing ever rests on a clock reading
+// earlier than the floor. The floor is the exclusive lower bound of the next
+// Tick's enumeration interval when it exceeds the last Tick's wall cursor.
+func (e *Engine) SeedScheduleFloor(wallMs int64) {
+	e.scheduleFloor = wallMs
+}
+
 // SeedEntityState seeds the durable prior state of an entity (RUL-304): the
 // value a state trigger on that entity diffs its very next observation against.
 // It is how the caller supplies a pre-restart durable value on an engine
@@ -288,7 +343,50 @@ func (e *Engine) Tick(now clock.Clock) []RunDisposition {
 			out = append(out, e.fire()...)
 		}
 	}
+	out = append(out, e.dispatchSchedule(now)...)
 	e.resumeDelay(now)
+	return out
+}
+
+// dispatchSchedule enumerates each schedule trigger's nominal occurrences over
+// the wall interval elapsed since the last Tick and routes each through fire()
+// (RUL-041/051/340). The interval is half-open: (max(lastTickWall, floor),
+// nowWall] — exclusive of the last-evaluated instant (or the persisted trust
+// floor, whichever is later, so nothing rests on a clock reading earlier than
+// the floor, RUL-370) and inclusive of the current wall reading. The wall cursor
+// then advances to nowWall so the next Tick continues from here with no gap or
+// overlap. When no schedule trigger is registered the wall clock is not read and
+// the cursor is left untouched. Misfire collapse/replay and the misfire_caught
+// marker layer onto this path in later tasks (RUL-350–355); here every live
+// occurrence fires with misfire_caught=false.
+func (e *Engine) dispatchSchedule(now clock.Clock) []RunDisposition {
+	hasSchedule := false
+	for _, tr := range e.triggers {
+		if tr.sched != nil {
+			hasSchedule = true
+			break
+		}
+	}
+	if !hasSchedule {
+		return nil
+	}
+
+	nowWall := now.WallMillis()
+	from := e.lastTickWall
+	if e.scheduleFloor > from {
+		from = e.scheduleFloor
+	}
+
+	var out []RunDisposition
+	for _, tr := range e.triggers {
+		if tr.sched == nil {
+			continue
+		}
+		for range tr.sched.Occurrences(e.loc, from, nowWall) {
+			out = append(out, e.fire()...)
+		}
+	}
+	e.lastTickWall = nowWall
 	return out
 }
 
