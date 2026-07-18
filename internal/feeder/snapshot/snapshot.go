@@ -4,30 +4,33 @@
 // screen-program that shows one image, over the feeder's own signing
 // identity (internal/feeder/signing).
 //
-// Canonicalization (there is no separate spec to consult beyond this
-// package's own behavior — a later relay-side verifier reproduces both
-// by marshaling the same Go struct shapes this package does):
+// Canonicalization (no separate spec to consult beyond this package's own
+// behavior — a later relay-side verifier, internal/relay/desiredstate,
+// reproduces both by calling the exact same shared helpers this package
+// does, so the two sides cannot drift apart):
 //
 //   - `hash` (REL-053) is sha256 over encoding/json's marshaling of the
-//     wire.Sections value. encoding/json marshals struct fields in their
-//     Go declaration order, so byte-identical Sections content always
-//     marshals to byte-identical bytes, and therefore the same hash;
-//     struct-marshal order IS the canonical form for this wire version.
+//     wire.Sections value, computed via wire.HashSections. encoding/json
+//     marshals struct fields in their Go declaration order, so
+//     byte-identical Sections content always marshals to byte-identical
+//     bytes, and therefore the same hash; struct-marshal order IS the
+//     canonical form for this wire version.
 //   - `signature` (REL-075) is an ed25519 signature over
-//     encoding/json's marshaling of {generation, hash} (in that
-//     declaration order) — never hash alone — so relabeling a validly
-//     signed snapshot under a different generation number changes the
-//     signed bytes and invalidates the old signature. The signature is
-//     encoded for the wire via wire.EncodeSignature (base64-standard;
-//     relay/1 gives no explicit signature-field grammar beyond "a
-//     signature" — base64-std is this codec's own choice). That codec
-//     lives in internal/shared/wire, not here, so this package's signing
-//     side and a later relay-side verifier cannot drift apart on it.
+//     wire.SignedScopeBytes(generation, hash) — encoding/json's marshaling
+//     of {generation, hash} in that declaration order — never hash alone —
+//     so relabeling a validly signed snapshot under a different generation
+//     number changes the signed bytes and invalidates the old signature.
+//     The signature is encoded for the wire via wire.EncodeSignature
+//     (base64-standard; relay/1 gives no explicit signature-field grammar
+//     beyond "a signature" — base64-std is this codec's own choice).
+//
+// wire.HashSections, wire.SignedScopeBytes, and wire.EncodeSignature all
+// live in internal/shared/wire, not here, so this package's signing side
+// and internal/relay/desiredstate's verifying side call the exact same
+// functions and cannot drift apart on any of the three.
 package snapshot
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -131,35 +134,20 @@ func Build(img []byte, contentBaseURL string, id *signing.Identity, grants []wir
 	}, nil
 }
 
-// hashSections computes REL-053's `hash`: sha256 over the canonicalized
-// (struct-marshaled) bytes of sections, expressed `sha256:<hex>` in the
-// same grammar signhash.ContentID uses.
+// hashSections computes REL-053's `hash` by delegating to
+// wire.HashSections — THE single shared canonicalization a later
+// relay-side verifier (internal/relay/desiredstate) also calls, so signing
+// and verifying cannot drift apart on it.
 func hashSections(sections wire.Sections) (string, error) {
-	b, err := json.Marshal(sections)
-	if err != nil {
-		return "", fmt.Errorf("snapshot: marshal sections: %w", err)
-	}
-	sum := sha256.Sum256(b)
-	return "sha256:" + hex.EncodeToString(sum[:]), nil
-}
-
-// generationHashCanon is the small struct {generation, hash} REL-075
-// requires the signature's signed scope to cover — declaration order
-// (generation, then hash) is the canonicalization.
-type generationHashCanon struct {
-	Generation int64  `json:"generation"`
-	Hash       string `json:"hash"`
+	return wire.HashSections(sections)
 }
 
 // generationHashCanonBytes marshals the REL-075 signed scope for a given
-// generation and hash — the exact bytes Build signs (and a verifier must
-// reproduce to check a signature).
+// generation and hash by delegating to wire.SignedScopeBytes — the exact
+// bytes Build signs (and a verifier must reproduce to check a signature),
+// from the same shared helper a later relay-side verifier calls.
 func generationHashCanonBytes(generation int64, hash string) ([]byte, error) {
-	b, err := json.Marshal(generationHashCanon{Generation: generation, Hash: hash})
-	if err != nil {
-		return nil, fmt.Errorf("snapshot: marshal {generation,hash}: %w", err)
-	}
-	return b, nil
+	return wire.SignedScopeBytes(generation, hash)
 }
 
 // signGenerationHash computes REL-075's `signature`: an ed25519 signature

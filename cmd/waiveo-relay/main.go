@@ -1,13 +1,16 @@
 // Command waiveo-relay is the Wave-1 skeleton for the relay component: a Go
 // process that will speak the relay/1 protocol (contracts/relay-1.md) to an
 // app peer and the player over its own future channels. On start, it opens
-// its persistent operational identity store (internal/relay/identity) and
+// its persistent operational identity store (internal/relay/identity),
 // enrolls against the co-located feeder (internal/relay/enroll, relay/1
 // REL-010–014) if it hasn't already — persisting the feeder's own
 // desired-state signing key as its enrollment-anchored trust anchor
-// (REL-071, `#28`). It otherwise only exposes a /healthz probe so the dev
-// loop (`make dev`) has something real to build and run in place of the
-// Wave-0 stub.
+// (REL-071, `#28`) — and pulls + verifies the feeder's signed desired-state
+// snapshot (internal/relay/desiredstate, REL-051/052/055/071/072),
+// persisting last-applied and holding the resulting applied screen-program
+// in memory for a later player/1 server (Task 9) to serve. It otherwise
+// only exposes a /healthz probe so the dev loop (`make dev`) has something
+// real to build and run in place of the Wave-0 stub.
 package main
 
 import (
@@ -17,6 +20,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/maaxton/waiveo-next/internal/relay/desiredstate"
 	"github.com/maaxton/waiveo-next/internal/relay/enroll"
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
 )
@@ -59,6 +63,18 @@ func main() {
 	} else if ok {
 		log.Printf("waiveo-relay trust anchor learned (desired_state_verification_key %s)", hex.EncodeToString(key))
 	}
+
+	// Pull + verify the feeder's signed desired-state snapshot against the
+	// trust anchor enrollment just persisted. A failure here (bad
+	// signature, tampered sections, or a regressed generation) is fatal —
+	// Wave-1 first-photon's relay has nothing useful to serve without a
+	// verified desired-state generation applied.
+	applied, err := desiredstate.Pull(feederBaseURL, store)
+	if err != nil {
+		log.Fatalf("waiveo-relay: pull desired state: %v", err)
+	}
+	log.Printf("waiveo-relay applied desired state generation %d (screen %s, program %s, image %s)",
+		applied.Generation, applied.ScreenID, applied.ProgramRevision, applied.Image.AssetRef)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthz)
