@@ -79,7 +79,8 @@ func scheduleRule(t *testing.T, reg registry.Registry, e *Engine, id string) {
 // white-box plumbing: Tasks 2–3 will build these from the rule's own
 // time/time_pattern/sun members via buildTrigger).
 func registerSchedule(e *Engine, sched schedule.ScheduleTrigger, misfire string) {
-	e.triggers = append(e.triggers, &triggerRuntime{kind: "time", sched: sched, misfire: misfire})
+	ri := e.rules[len(e.rules)-1]
+	ri.triggers = append(ri.triggers, &triggerRuntime{kind: "time", sched: sched, misfire: misfire})
 }
 
 // primeLiveTick marks the engine as already having ticked live up to wall instant

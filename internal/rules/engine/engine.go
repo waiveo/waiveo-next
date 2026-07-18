@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/rules/clock"
+	"github.com/maaxton/waiveo-next/internal/rules/closure"
 	"github.com/maaxton/waiveo-next/internal/rules/compile"
 	"github.com/maaxton/waiveo-next/internal/rules/eval"
 	"github.com/maaxton/waiveo-next/internal/rules/model"
@@ -58,29 +59,24 @@ type RunDisposition struct {
 	MisfireCaught bool        `json:"misfire_caught"`
 }
 
-// Engine drives exactly one loaded edge rule. It is not safe for concurrent
-// use: Observe and Tick advance the same trigger/hold/run state serially, as a
-// relay's single evaluation loop drives them.
+// Engine drives the rules of one applied generation. It is not safe for
+// concurrent use: Observe and Tick advance every rule's trigger/hold/run state
+// serially, as a relay's single evaluation loop drives them.
 type Engine struct {
 	reg     registry.Registry
 	clk     clock.Clock
 	sink    eval.CommandSink
 	presets eval.PresetStore
 
-	loaded bool
-	ruleID string
-	mode   string
-	rule   model.Rule
-
-	triggers []*triggerRuntime
+	// rules are the driven rule instances of the applied generation (RUL-390);
+	// gen is that generation's number. Load applies a one-rule generation, so
+	// the single-rule path is just rules with one element.
+	rules []*ruleInstance
+	gen   int
 
 	// snap is the engine's running view of every entity it has observed, the
 	// point-in-time snapshot RUL-101 condition evaluation resolves against.
 	snap state.Snapshot
-
-	// run is the single in-flight run, non-nil while a `delay` tail is pending
-	// (RUL-190). One run at a time is tracked for the mode layer (next part).
-	run *runState
 
 	// loc is the effective evaluation environment for wall-clock (schedule)
 	// triggers: the owning scope node's timezone (RUL-340) and the geographic
@@ -173,27 +169,17 @@ func New(reg registry.Registry, clk clock.Clock, sink eval.CommandSink, presets 
 // Load prepares the engine to evaluate one compiled rule. It refuses an
 // app-classified entry (RUL-240): queued/parallel run management, and any other
 // app-causing member, belong to the app engine, never this relay's edge engine.
-// A single Engine holds one rule at a time; Load replaces any previously loaded
-// rule and its in-flight state.
+// Load is a thin wrapper over ApplyGeneration of a one-rule generation carrying
+// an empty closure (its caller performs no compile-time resolution) — it
+// replaces any previously applied generation and its in-flight state.
 func (e *Engine) Load(entry compile.CompiledRuleEntry, rule model.Rule) error {
 	if entry.ExecutionClass != "edge" {
 		return errors.New("engine: refusing to load a non-edge rule (execution_class=" + entry.ExecutionClass + ")")
 	}
-	e.loaded = true
-	e.ruleID = rule.ID
-	e.mode = rule.Mode
-	if e.mode == "" {
-		e.mode = "single"
-	}
-	e.rule = rule
-	e.snap = state.Snapshot{}
-	e.run = nil
-	e.triggers = e.triggers[:0]
-	for _, m := range rule.Triggers {
-		if tr := newTriggerRuntime(m); tr != nil {
-			e.triggers = append(e.triggers, tr)
-		}
-	}
+	e.ApplyGeneration(Generation{
+		Number: e.gen + 1,
+		Rules:  []CompiledRule{{Entry: entry, Rule: rule, Closure: closure.Closure{}}},
+	})
 	return nil
 }
 
@@ -203,30 +189,13 @@ func (e *Engine) Load(entry compile.CompiledRuleEntry, rule model.Rule) error {
 // triggers fire from Observe; `time`/`time_pattern`/`sun` triggers carry no
 // EntityRef and fire from Tick via their schedule enumerator (RUL-040/050/060/340).
 func newTriggerRuntime(m model.Member) *triggerRuntime {
+	switch m.Type {
+	case "state", "numeric":
+		// entity_id form: the subject comes from the member's own EntityRef.
+		return newStateOrNumericRuntime(m, "")
+	}
 	tr := &triggerRuntime{kind: m.Type, forSeconds: parseForSeconds(m.Raw)}
 	switch m.Type {
-	case "state":
-		st, err := eval.NewStateTrigger(m)
-		if err != nil || st.EntityID == "" {
-			return nil
-		}
-		tr.st = st
-		tr.entityID = st.EntityID
-		// RUL-023: an unscoped state trigger (no attribute, no from/to) debounces
-		// its `for` (RUL-026); cases 1-3 are bounded level holds (RUL-024).
-		if st.Attribute == "" && !st.HasFrom && !st.HasTo {
-			tr.holdKind = eval.DebounceHold
-		} else {
-			tr.holdKind = eval.BoundedHold
-		}
-	case "numeric":
-		nt, err := eval.NewNumericTrigger(m)
-		if err != nil || nt.EntityID == "" {
-			return nil
-		}
-		tr.nt = nt
-		tr.entityID = nt.EntityID
-		tr.holdKind = eval.BoundedHold // every numeric trigger is bounded (RUL-033)
 	case "time":
 		// A `time` trigger carries no EntityRef (RUL-040): it fires from the wall
 		// clock through Tick, never from an observation. A malformed `at` drops
@@ -264,6 +233,54 @@ func newTriggerRuntime(m model.Member) *triggerRuntime {
 		tr.sched = st
 		tr.misfire = parseMisfire(m.Raw)
 		return tr
+	default:
+		return nil
+	}
+}
+
+// newStateOrNumericRuntime builds a state/numeric trigger's per-(trigger,entity)
+// runtime. overrideEntity, when non-empty, is the subject a selector/device-class
+// fan-out (RUL-011/013) resolved from the frozen closure — it supersedes the
+// member's own (empty) entity_id; an empty overrideEntity uses the member's
+// entity_id form. Returns nil for a malformed trigger or one with no resolvable
+// subject.
+func newStateOrNumericRuntime(m model.Member, overrideEntity string) *triggerRuntime {
+	tr := &triggerRuntime{kind: m.Type, forSeconds: parseForSeconds(m.Raw)}
+	switch m.Type {
+	case "state":
+		st, err := eval.NewStateTrigger(m)
+		if err != nil {
+			return nil
+		}
+		tr.entityID = overrideEntity
+		if tr.entityID == "" {
+			tr.entityID = st.EntityID
+		}
+		if tr.entityID == "" {
+			return nil
+		}
+		tr.st = st
+		// RUL-023: an unscoped state trigger (no attribute, no from/to) debounces
+		// its `for` (RUL-026); cases 1-3 are bounded level holds (RUL-024).
+		if st.Attribute == "" && !st.HasFrom && !st.HasTo {
+			tr.holdKind = eval.DebounceHold
+		} else {
+			tr.holdKind = eval.BoundedHold
+		}
+	case "numeric":
+		nt, err := eval.NewNumericTrigger(m)
+		if err != nil {
+			return nil
+		}
+		tr.entityID = overrideEntity
+		if tr.entityID == "" {
+			tr.entityID = nt.EntityID
+		}
+		if tr.entityID == "" {
+			return nil
+		}
+		tr.nt = nt
+		tr.holdKind = eval.BoundedHold // every numeric trigger is bounded (RUL-033)
 	default:
 		return nil
 	}
@@ -391,27 +408,37 @@ func (e *Engine) SeedEntityState(entityID, st string) {
 	}
 	cur.State = st
 	e.snap[entityID] = cur
-	for _, tr := range e.triggers {
-		if tr.entityID != entityID {
-			continue
+	for _, ri := range e.rules {
+		for _, tr := range ri.triggers {
+			if tr.entityID != entityID {
+				continue
+			}
+			e.seedTriggerBaseline(tr, st, cur)
 		}
-		tr.baseline = eval.TriggerBaseline{Known: true, State: st}
-		// Seeding flips `seen`, which disables the first-observation
-		// hold-seed branch in stepTriggerObservation. So seed the bounded
-		// hold's remembered level here too (RUL-360): the durable pre-restart
-		// level must be recorded so the boot reconfirmation of unchanged
-		// durable state (RUL-025/300) is read as the level continuing to hold,
-		// NOT as a fresh rising edge that would arm the `for`-hold and
-		// spuriously fire `for` seconds after boot. A bounded hold begins
-		// counting again only once its condition FRESHLY re-matches after
-		// restart (RUL-360/361). Restricted to `state` triggers to mirror
-		// RUL-302's numeric exemption from RUL-300 suppression.
-		if tr.kind == "state" && tr.hold != nil {
-			tr.lastLevelHolds = e.stateLevelHolds(tr, cur)
-			tr.hold.Seed(tr.lastLevelHolds)
-		}
-		tr.seen = true
 	}
+}
+
+// seedTriggerBaseline seeds one (trigger,entity) runtime's durable baseline from
+// a pre-restart / self-describing state value (RUL-304), and — for a bounded
+// state hold — its remembered level so a boot reconfirm of unchanged durable
+// state is not read as a fresh rising edge (RUL-300/360).
+func (e *Engine) seedTriggerBaseline(tr *triggerRuntime, st string, cur state.Entity) {
+	tr.baseline = eval.TriggerBaseline{Known: true, State: st}
+	// Seeding flips `seen`, which disables the first-observation
+	// hold-seed branch in stepTriggerObservation. So seed the bounded
+	// hold's remembered level here too (RUL-360): the durable pre-restart
+	// level must be recorded so the boot reconfirmation of unchanged
+	// durable state (RUL-025/300) is read as the level continuing to hold,
+	// NOT as a fresh rising edge that would arm the `for`-hold and
+	// spuriously fire `for` seconds after boot. A bounded hold begins
+	// counting again only once its condition FRESHLY re-matches after
+	// restart (RUL-360/361). Restricted to `state` triggers to mirror
+	// RUL-302's numeric exemption from RUL-300 suppression.
+	if tr.kind == "state" && tr.hold != nil {
+		tr.lastLevelHolds = e.stateLevelHolds(tr, cur)
+		tr.hold.Seed(tr.lastLevelHolds)
+	}
+	tr.seen = true
 }
 
 // Observe advances the engine by one entity observation: it updates the
@@ -420,18 +447,20 @@ func (e *Engine) SeedEntityState(entityID, st string) {
 // they pass, starts a run of the action sequence. It returns the dispositions
 // of any firings that reached mode evaluation.
 func (e *Engine) Observe(obs state.Observation) []RunDisposition {
-	if !e.loaded {
+	if len(e.rules) == 0 {
 		return nil
 	}
 	e.snap[obs.Entity.ID] = obs.Entity
 
 	var out []RunDisposition
-	for _, tr := range e.triggers {
-		if tr.entityID != obs.Entity.ID {
-			continue
-		}
-		if e.stepTriggerObservation(tr, obs) {
-			out = append(out, e.fire()...)
+	for _, ri := range e.rules {
+		for _, tr := range ri.triggers {
+			if tr.entityID != obs.Entity.ID {
+				continue
+			}
+			if e.stepTriggerObservation(tr, obs) {
+				out = append(out, e.fireRule(ri)...)
+			}
 		}
 	}
 	return out
@@ -443,20 +472,24 @@ func (e *Engine) Observe(obs state.Observation) []RunDisposition {
 // pending delay whose resume instant has been reached dispatches its tail (no
 // new disposition — the firing that scheduled it already recorded `ran`).
 func (e *Engine) Tick(now clock.Clock) []RunDisposition {
-	if !e.loaded {
+	if len(e.rules) == 0 {
 		return nil
 	}
 	var out []RunDisposition
-	for _, tr := range e.triggers {
-		if tr.forSeconds <= 0 || tr.hold == nil {
-			continue // nothing to advance between observations
-		}
-		if e.stepTriggerTick(tr, now) {
-			out = append(out, e.fire()...)
+	for _, ri := range e.rules {
+		for _, tr := range ri.triggers {
+			if tr.forSeconds <= 0 || tr.hold == nil {
+				continue // nothing to advance between observations
+			}
+			if e.stepTriggerTick(tr, now) {
+				out = append(out, e.fireRule(ri)...)
+			}
 		}
 	}
 	out = append(out, e.dispatchSchedule(now)...)
-	e.resumeDelay(now)
+	for _, ri := range e.rules {
+		e.resumeDelay(ri, now)
+	}
 	return out
 }
 
@@ -486,10 +519,12 @@ func (e *Engine) Tick(now clock.Clock) []RunDisposition {
 // wall clock is not read and the cursor is left untouched.
 func (e *Engine) dispatchSchedule(now clock.Clock) []RunDisposition {
 	hasSchedule := false
-	for _, tr := range e.triggers {
-		if tr.sched != nil {
-			hasSchedule = true
-			break
+	for _, ri := range e.rules {
+		for _, tr := range ri.triggers {
+			if tr.sched != nil {
+				hasSchedule = true
+				break
+			}
 		}
 	}
 	if !hasSchedule {
@@ -521,12 +556,14 @@ func (e *Engine) dispatchSchedule(now clock.Clock) []RunDisposition {
 	}
 
 	var out []RunDisposition
-	for _, tr := range e.triggers {
-		if tr.sched == nil {
-			continue
-		}
-		for range tr.sched.Occurrences(e.loc, from, nowWall) {
-			out = append(out, e.fire()...)
+	for _, ri := range e.rules {
+		for _, tr := range ri.triggers {
+			if tr.sched == nil {
+				continue
+			}
+			for range tr.sched.Occurrences(e.loc, from, nowWall) {
+				out = append(out, e.fireRule(ri)...)
+			}
 		}
 	}
 	// The wall cursor only ever advances forward. A trusted backward wall step
@@ -666,8 +703,9 @@ func (e *Engine) numericLevelHolds(tr *triggerRuntime, ent state.Entity) bool {
 	return true
 }
 
-// fire resolves one trigger firing against the rule's conditions and mode
-// (RUL-004/241/242/246), returning the disposition(s) that firing produces.
+// fireRule resolves one trigger firing of rule instance ri against ri's
+// conditions and mode (RUL-004/241/242/246), returning the disposition(s) that
+// firing produces.
 //
 // A firing whose conditions (implicit AND, RUL-004) do not all pass never
 // reaches mode evaluation: it starts no run and records no disposition.
@@ -686,37 +724,38 @@ func (e *Engine) numericLevelHolds(tr *triggerRuntime, ent state.Entity) bool {
 // Every firing that reaches this point resolves to exactly one disposition per
 // run it affects (RUL-246): the closed set is `ran`, `skipped`, `restarted`.
 // (queued/parallel are app-class and never reach this edge engine, RUL-240.)
-func (e *Engine) fire() []RunDisposition {
-	return e.fireWith(false)
+func (e *Engine) fireRule(ri *ruleInstance) []RunDisposition {
+	return e.fireRuleWith(ri, false)
 }
 
-// fireWith is fire's implementation with the orthogonal misfire_caught marker
-// threaded through (RUL-355): a live observation fires with misfireCaught=false,
-// a caught-up misfired occurrence (catch_up_once/fire_each, dispatchMisfire) with
-// misfireCaught=true. The marker is stamped on every disposition this firing
-// produces — it records how the firing arose, orthogonal to whichever mode
-// disposition (`ran`/`skipped`/`restarted`) each records — so a caught-up fire
-// dropped by single or preempting under restart still carries it (RUL-246/355).
-func (e *Engine) fireWith(misfireCaught bool) []RunDisposition {
-	if !e.conditionsPass() {
+// fireRuleWith is fireRule's implementation with the orthogonal misfire_caught
+// marker threaded through (RUL-355): a live observation fires with
+// misfireCaught=false, a caught-up misfired occurrence (catch_up_once/fire_each,
+// dispatchMisfire) with misfireCaught=true. The marker is stamped on every
+// disposition this firing produces — it records how the firing arose, orthogonal
+// to whichever mode disposition (`ran`/`skipped`/`restarted`) each records — so a
+// caught-up fire dropped by single or preempting under restart still carries it
+// (RUL-246/355).
+func (e *Engine) fireRuleWith(ri *ruleInstance, misfireCaught bool) []RunDisposition {
+	if !e.conditionsPass(ri) {
 		return nil
 	}
 	var out []RunDisposition
 	switch {
-	case e.run != nil && e.mode == "restart":
+	case ri.run != nil && ri.mode == "restart":
 		// Cancel the in-flight run, discarding its pending delay/hold (RUL-242),
 		// then start a fresh run whose own timers start at zero from the current
 		// monotonic instant.
-		e.run = nil
-		restarted := RunDisposition{RuleID: e.ruleID, Disposition: Restarted, Mode: e.mode}
-		e.startRun(e.rule.Actions)
-		out = []RunDisposition{restarted, {RuleID: e.ruleID, Disposition: Ran, Mode: e.mode}}
-	case e.run != nil:
+		ri.run = nil
+		restarted := RunDisposition{RuleID: ri.ruleID, Disposition: Restarted, Mode: ri.mode}
+		e.startRun(ri, ri.rule.Actions)
+		out = []RunDisposition{restarted, {RuleID: ri.ruleID, Disposition: Ran, Mode: ri.mode}}
+	case ri.run != nil:
 		// single (RUL-241): drop the firing; the in-flight run is left untouched.
-		out = []RunDisposition{{RuleID: e.ruleID, Disposition: Skipped, Mode: e.mode}}
+		out = []RunDisposition{{RuleID: ri.ruleID, Disposition: Skipped, Mode: ri.mode}}
 	default:
-		e.startRun(e.rule.Actions)
-		out = []RunDisposition{{RuleID: e.ruleID, Disposition: Ran, Mode: e.mode}}
+		e.startRun(ri, ri.rule.Actions)
+		out = []RunDisposition{{RuleID: ri.ruleID, Disposition: Ran, Mode: ri.mode}}
 	}
 	if misfireCaught {
 		for i := range out {
@@ -737,7 +776,7 @@ func (e *Engine) fireWith(misfireCaught bool) []RunDisposition {
 // (RUL-370). The wall cursor advances to toInclusive so a subsequent live Tick
 // does not re-enumerate these same occurrences.
 func (e *Engine) replayMissedSchedules(fromExclusive, toInclusive int64) []RunDisposition {
-	if !e.loaded {
+	if len(e.rules) == 0 {
 		return nil
 	}
 	from := fromExclusive
@@ -745,12 +784,14 @@ func (e *Engine) replayMissedSchedules(fromExclusive, toInclusive int64) []RunDi
 		from = e.scheduleFloor
 	}
 	var out []RunDisposition
-	for _, tr := range e.triggers {
-		if tr.sched == nil {
-			continue
+	for _, ri := range e.rules {
+		for _, tr := range ri.triggers {
+			if tr.sched == nil {
+				continue
+			}
+			missed := tr.sched.Occurrences(e.loc, from, toInclusive)
+			out = append(out, e.dispatchMisfire(ri, tr, missed)...)
 		}
-		missed := tr.sched.Occurrences(e.loc, from, toInclusive)
-		out = append(out, e.dispatchMisfire(tr, missed)...)
 	}
 	if toInclusive > e.lastTickWall {
 		e.lastTickWall = toInclusive
@@ -765,70 +806,95 @@ func (e *Engine) replayMissedSchedules(fromExclusive, toInclusive int64) []RunDi
 // each in chronological order — each independently subject to full mode evaluation
 // like any other firing (RUL-353/355), so an earlier caught-up dispatch can leave a
 // later one `skipped`/`restarted` under a busy single/restart mode.
-func (e *Engine) dispatchMisfire(tr *triggerRuntime, missed []int64) []RunDisposition {
+func (e *Engine) dispatchMisfire(ri *ruleInstance, tr *triggerRuntime, missed []int64) []RunDisposition {
 	var out []RunDisposition
 	for _, f := range schedule.ApplyMisfire(tr.misfire, missed) {
-		out = append(out, e.fireWith(f.MisfireCaught)...)
+		out = append(out, e.fireRuleWith(ri, f.MisfireCaught)...)
 	}
 	return out
 }
 
-// conditionsPass evaluates the rule's conditions array as an implicit AND
-// (RUL-004): every entry must pass; an empty array always passes. Each entry is
-// evaluated against the engine's current snapshot (RUL-101).
-func (e *Engine) conditionsPass() bool {
-	for _, c := range e.rule.Conditions {
-		if !eval.EvalConditionAt(e.reg, e.snap, e.effectiveClk(), e.loc, nil, c) {
+// conditionsPass evaluates rule instance ri's conditions array as an implicit
+// AND (RUL-004): every entry must pass; an empty array always passes. Each entry
+// is evaluated against the engine's current snapshot (RUL-101); a `variable`
+// condition reads its comparison value from ri's frozen closure — the
+// compile-time value substituted as a constant (RUL-150/391), never a live
+// lookup.
+func (e *Engine) conditionsPass(ri *ruleInstance) bool {
+	for _, c := range ri.rule.Conditions {
+		if !eval.EvalConditionAt(e.reg, e.snap, e.effectiveClk(), e.loc, ri.closure.Variables, c) {
 			return false
 		}
 	}
 	return true
 }
 
-// startRun executes an action sequence, capturing a `delay`'s deferred tail as
-// the single in-flight run when one is reached (RUL-190). A sequence that runs
-// to completion leaves no in-flight run.
-func (e *Engine) startRun(actions []model.Member) {
-	err := eval.RunActions(e.actionContext(), actions)
+// startRun executes rule instance ri's action sequence, capturing a `delay`'s
+// deferred tail as ri's single in-flight run when one is reached (RUL-190). A
+// sequence that runs to completion leaves no in-flight run.
+func (e *Engine) startRun(ri *ruleInstance, actions []model.Member) {
+	err := eval.RunActions(e.actionContext(ri), actions)
 	var dp *eval.DelayPending
 	if errors.As(err, &dp) {
-		e.run = &runState{pending: dp}
+		ri.run = &runState{pending: dp}
 		return
 	}
-	e.run = nil
+	ri.run = nil
 }
 
-// resumeDelay resumes the in-flight run's deferred tail once the monotonic
-// resume instant has been reached (RUL-190). If the tail hits another delay it
-// is re-deferred; otherwise the run completes.
-func (e *Engine) resumeDelay(now clock.Clock) {
-	if e.run == nil || e.run.pending == nil {
+// resumeDelay resumes rule instance ri's deferred tail once the monotonic resume
+// instant has been reached (RUL-190). If the tail hits another delay it is
+// re-deferred; otherwise the run completes.
+func (e *Engine) resumeDelay(ri *ruleInstance, now clock.Clock) {
+	if ri.run == nil || ri.run.pending == nil {
 		return
 	}
-	if now.Mono() < e.run.pending.ResumeAtMono {
+	if now.Mono() < ri.run.pending.ResumeAtMono {
 		return
 	}
-	tail := e.run.pending.RemainingActions
-	err := eval.RunActions(e.actionContext(), tail)
+	tail := ri.run.pending.RemainingActions
+	err := eval.RunActions(e.actionContext(ri), tail)
 	var dp *eval.DelayPending
 	if errors.As(err, &dp) {
-		e.run.pending = dp
+		ri.run.pending = dp
 		return
 	}
-	e.run = nil
+	ri.run = nil
 }
 
-// actionContext assembles the ActionContext RunActions executes against. This
-// part wires no selector/device_class fan-out resolver (entity_id targets
-// only) and no outcome/log recording slots; later parts add them.
-func (e *Engine) actionContext() eval.ActionContext {
+// actionContext assembles the ActionContext RunActions executes rule instance
+// ri's actions against. Its frozen closure drives the action side (RUL-390):
+// Vars supplies a nested `choose` guard's `variable` value (RUL-150), Resolve
+// expands a selector/device-class device_command over the frozen matched set
+// (RUL-011/012/013), and Presets dispatches a preset_batch's frozen command list
+// (RUL-173). No outcome/log recording slots are wired here; a later part adds
+// them.
+func (e *Engine) actionContext(ri *ruleInstance) eval.ActionContext {
 	return eval.ActionContext{
 		Reg:     e.reg,
 		Snap:    e.snap,
 		Clk:     e.effectiveClk(),
 		Loc:     e.loc,
-		Vars:    nil,
+		Vars:    ri.closure.Variables,
 		Sink:    e.sink,
-		Presets: e.presets,
+		Presets: closurePresetStore{frozen: ri.closure.PresetBatches, live: e.presets},
+		Resolve: closureResolver(ri.closure),
+	}
+}
+
+// closureResolver expands a device-affecting action's selector/device-class
+// EntityRef to its frozen matched entity set (RUL-011/012/013), keyed by the
+// filter string exactly as closure.Compute froze it. An entity_id ref resolves
+// to itself; an unfrozen filter resolves to no targets (fail-closed).
+func closureResolver(cl closure.Closure) func(ref model.EntityRef) []string {
+	return func(ref model.EntityRef) []string {
+		if ref.EntityID != "" {
+			return []string{ref.EntityID}
+		}
+		key := ref.Selector
+		if key == "" {
+			key = ref.DeviceClass
+		}
+		return cl.Selectors[key]
 	}
 }

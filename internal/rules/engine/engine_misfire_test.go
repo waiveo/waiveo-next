@@ -144,7 +144,7 @@ func TestMisfireCaughtOrthogonalToModeSkip(t *testing.T) {
 	// in-flight run: off -> on arms the delay (nothing dispatched yet).
 	e.Observe(state.NewObservation(reg, ent(subjectEntity, "off"), ent(subjectEntity, "off")))
 	e.Observe(state.NewObservation(reg, ent(subjectEntity, "off"), ent(subjectEntity, "on")))
-	if e.run == nil {
+	if e.rules[0].run == nil {
 		t.Fatalf("expected an in-flight delayed run after Observe")
 	}
 
