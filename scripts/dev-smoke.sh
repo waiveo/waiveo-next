@@ -1,21 +1,9 @@
 #!/usr/bin/env bash
-# scripts/dev-smoke.sh — asserts the dev stack answers on both ports.
-# Owns readiness: retries each port for ~10s so it does not depend on a fixed
-# start-up sleep in the Makefile (cold Node / freshly-built Go can be slow).
+# scripts/dev-smoke.sh — asserts the dev stack (feeder + relay) answers /healthz.
+# Delegates to the Go probe (scripts/devsmoke): the feeder serves an ed25519-leaf
+# TLS cert that some system curl builds (macOS LibreSSL) cannot handshake, so the
+# probe is Go — matching the all-Go, all-ed25519 stack. It owns readiness (retries
+# each endpoint ~10s) and prints SMOKE OK / SMOKE FAIL.
 set -euo pipefail
-fail() { echo "SMOKE FAIL: $1" >&2; exit 1; }
-
-probe() {
-  local port=$1 body deadline=$(( SECONDS + 10 ))
-  while :; do
-    if body=$(curl -fsS -m 3 "http://127.0.0.1:${port}/healthz" 2>/dev/null); then
-      echo "$body" | grep -q '"status":"ok"' || fail ":${port} wrong payload: $body"
-      return 0
-    fi
-    [ "$SECONDS" -ge "$deadline" ] && fail "no listener on :${port} after ~10s"
-    sleep 0.25
-  done
-}
-
-for port in 7420 7421; do probe "$port"; done
-echo "SMOKE OK"
+cd "$(dirname "$0")/.."
+exec go run ./scripts/devsmoke
