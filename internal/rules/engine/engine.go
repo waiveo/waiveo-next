@@ -529,7 +529,15 @@ func (e *Engine) dispatchSchedule(now clock.Clock) []RunDisposition {
 			out = append(out, e.fire()...)
 		}
 	}
-	e.lastTickWall = nowWall
+	// The wall cursor only ever advances forward. A trusted backward wall step
+	// (routine NTP/admin correction on RTC-less appliances) must NOT regress the
+	// cursor: a later recovery Tick would otherwise re-enumerate the intervening
+	// span and re-fire occurrences that already fired once (RUL-041/RUL-051 — a
+	// schedule occurrence fires once per its instant). Mirrors the forward-only
+	// guard in replayMissedSchedules.
+	if nowWall > e.lastTickWall {
+		e.lastTickWall = nowWall
+	}
 	return out
 }
 

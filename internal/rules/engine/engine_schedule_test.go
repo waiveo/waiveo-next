@@ -35,6 +35,26 @@ func (s *spyEnumerator) Occurrences(loc schedule.Location, from, to int64) []int
 	return s.emit
 }
 
+// windowedEnumerator is a schedule.ScheduleTrigger test double that, unlike
+// spyEnumerator's fixed list, returns only those occurrence instants that fall in
+// the half-open enumeration window (from, to] it is asked about — exactly as a
+// real enumerator does. It is what makes the backward-wall-step regression test
+// meaningful: a regressed cursor would re-enumerate an interval that re-covers an
+// already-fired instant, and only a window-aware double surfaces the double-fire.
+type windowedEnumerator struct {
+	instants []int64
+}
+
+func (w *windowedEnumerator) Occurrences(_ schedule.Location, from, to int64) []int64 {
+	var out []int64
+	for _, t := range w.instants {
+		if t > from && t <= to {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 // scheduleRule is a minimal edge rule (empty conditions, one device_command)
 // used as the fire()-target host for a manually-registered schedule trigger. Its
 // own state trigger never fires during a Tick — it is inert plumbing for the
@@ -179,6 +199,55 @@ func TestTickAdvancesWallCursorAcrossTicks(t *testing.T) {
 	}
 	if spy.calls[1].from != 10_000 || spy.calls[1].to != 20_000 {
 		t.Fatalf("second interval = (%d, %d], want (10000, 20000]", spy.calls[1].from, spy.calls[1].to)
+	}
+}
+
+// TestBackwardWallStepDoesNotRefire: the wall cursor only advances forward. A
+// trusted backward wall step (a routine NTP/admin clock correction on an
+// RTC-less appliance) must not regress lastTickWall, or a later recovery Tick
+// re-enumerates the intervening span and re-fires an already-fired occurrence
+// (RUL-041/RUL-051 — a schedule occurrence fires once per its instant). The
+// backward-step instant here (4_000) sits above the static floor (1_000), so the
+// floor offers no protection; only the forward-only cursor guard does.
+func TestBackwardWallStepDoesNotRefire(t *testing.T) {
+	reg := registry.FixtureRegistry{}
+	clk := clock.NewFakeClock()
+	sink := &recordingSink{}
+
+	e := New(reg, clk, sink, nil)
+	if err := e.SetLocation("UTC", 0, 0); err != nil {
+		t.Fatalf("SetLocation: %v", err)
+	}
+	scheduleRule(t, reg, e, "RULEBACKSTEP")
+	e.SeedScheduleFloor(1_000)
+	primeLiveTick(e, 1_000) // engine already ticking live from the floor
+
+	// One occurrence at 5_000, enumerated only when it falls in the tick window.
+	registerSchedule(e, &windowedEnumerator{instants: []int64{5_000}}, "skip")
+
+	// Live tick to wall=10_000 fires occurrence 5_000 once, cursor -> 10_000.
+	clk.SetWall(10_000)
+	if disps := e.Tick(clk); len(disps) != 1 {
+		t.Fatalf("first tick: want 1 dispatch, got %d (%+v)", len(disps), disps)
+	}
+
+	// Trusted backward wall step to 4_000 (above the floor). The cursor must NOT
+	// regress: (4_000, 4_000] enumerates nothing and lastTickWall stays 10_000.
+	clk.SetWall(4_000)
+	if disps := e.Tick(clk); len(disps) != 0 {
+		t.Fatalf("backward tick: want 0 dispatches, got %d (%+v)", len(disps), disps)
+	}
+
+	// Wall recovers to 10_000. With a forward-only cursor the window is
+	// (10_000, 10_000] (empty); a regressed cursor would enumerate (4_000, 10_000]
+	// and re-fire occurrence 5_000 a second time.
+	clk.SetWall(10_000)
+	if disps := e.Tick(clk); len(disps) != 0 {
+		t.Fatalf("recovery tick: occurrence re-fired after backward wall step, got %d dispatch(es) (%+v)", len(disps), disps)
+	}
+
+	if len(sink.calls) != 1 {
+		t.Fatalf("occurrence 5_000 must fire exactly once across the backward step; got %d dispatch(es)", len(sink.calls))
 	}
 }
 
