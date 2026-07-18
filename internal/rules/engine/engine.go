@@ -111,6 +111,13 @@ type Engine struct {
 	// dispatchSchedule); the untrusted-window occurrences are replayed through each
 	// trigger's misfire policy on the untrusted->trusted transition (SetClockTrust).
 	clockUntrusted bool
+
+	// stabWindowMs is the stabilization window (RUL-301) in monotonic
+	// milliseconds: the bounded, fallback-timed span a state/numeric trigger made
+	// newly eligible by a readiness point defers its first dispatch through. Zero
+	// disables the gate (the effective default) — see SetStabilizationWindow and
+	// stabilization.go.
+	stabWindowMs int64
 }
 
 // runState is the single in-flight run's continuation: the flattened tail of
@@ -162,6 +169,17 @@ type triggerRuntime struct {
 	prevParsed *float64
 
 	seen bool // has this trigger ever processed an observation of its subject?
+
+	// stabilization window (RUL-301), per (trigger, entity). stabArmed marks the
+	// trigger as gated by a window opened at a readiness point (a generation-apply
+	// that made it new/changed, or a fresh engine's first apply — an engine
+	// restart); stabDeadline is the monotonic instant that window elapses; a fire
+	// arriving while gated sets stabPending, held until the window elapses (on a
+	// Tick, or disarmed lazily by an Observe past the deadline). See
+	// stabilization.go. Unarmed (the default and the elapsed state) never gates.
+	stabArmed    bool
+	stabDeadline int64
+	stabPending  bool
 
 	// lastLevelHolds carries whether the bounded hold's target level held at
 	// the most recent observation, so Tick can advance an armed bounded hold
@@ -485,7 +503,7 @@ func (e *Engine) Observe(obs state.Observation) []RunDisposition {
 				continue
 			}
 			if e.stepTriggerObservation(tr, obs) {
-				out = append(out, e.fireRule(ri)...)
+				out = append(out, e.dispatchFire(ri, tr)...)
 			}
 		}
 	}
@@ -508,10 +526,14 @@ func (e *Engine) Tick(now clock.Clock) []RunDisposition {
 				continue // nothing to advance between observations
 			}
 			if e.stepTriggerTick(tr, now) {
-				out = append(out, e.fireRule(ri)...)
+				out = append(out, e.dispatchFire(ri, tr)...)
 			}
 		}
 	}
+	// Release any stabilization-held fire whose window has now elapsed (RUL-301):
+	// the bounded, fallback-timed gate opens even if no further readiness signal
+	// arrives, so a held transition dispatches once its monotonic deadline passes.
+	out = append(out, e.releaseStabilized()...)
 	out = append(out, e.dispatchSchedule(now)...)
 	for _, ri := range e.rules {
 		e.resumeDelay(ri, now)

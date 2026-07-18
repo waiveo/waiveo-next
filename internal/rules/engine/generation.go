@@ -83,6 +83,12 @@ func (e *Engine) ApplyGeneration(gen Generation) []RunDisposition {
 			// New or changed (RUL-381): build a fresh instance. A changed rule's
 			// prior in-flight run is canceled (RUL-380).
 			fresh := newRuleInstance(cr)
+			// RUL-301: this generation-apply is a readiness point — arm a
+			// stabilization window for the fresh instance's newly-eligible
+			// state/numeric triggers. Done BEFORE carryUnchangedTriggers so a
+			// trigger carried forward unchanged overwrites its armed slot and is not
+			// re-gated (RUL-303).
+			e.armStabilization(fresh)
 			if existed && !kept[id] {
 				if old.run != nil {
 					out = append(out, RunDisposition{RuleID: id, Disposition: Canceled, Mode: old.mode})
