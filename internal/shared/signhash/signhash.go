@@ -35,7 +35,15 @@ func Sign(priv ed25519.PrivateKey, msg []byte) []byte {
 }
 
 // Verify reports whether sig is a valid ed25519 signature of msg under pub.
+// It returns false (never panics) when pub is not exactly
+// ed25519.PublicKeySize bytes — crypto/ed25519.Verify panics on a
+// wrong-length key, and callers here include the relay verifying an
+// untrusted, wire-decoded `desired_state_verification_key` (relay/1
+// REL-012, REL-071), which must fail closed rather than crash the process.
 func Verify(pub ed25519.PublicKey, msg, sig []byte) bool {
+	if len(pub) != ed25519.PublicKeySize {
+		return false
+	}
 	return ed25519.Verify(pub, msg, sig)
 }
 
