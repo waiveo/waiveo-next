@@ -18,6 +18,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/feeder/grant"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
+	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/signhash"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
@@ -65,7 +66,7 @@ func newTestServer(t *testing.T) (*Server, *httptest.Server, *signing.Identity, 
 
 	mux := http.NewServeMux()
 	srv.Register(mux)
-	ts := httptest.NewTLSServer(mux)
+	ts := httptest.NewTLSServer(apihttp.WithTraceID(mux))
 	t.Cleanup(ts.Close)
 
 	return srv, ts, id, g
@@ -217,9 +218,55 @@ func TestEnrollRefusesAlreadyRedeemedClaimToken(t *testing.T) {
 	if err2.Code != "CLAIM_TOKEN_INVALID" {
 		t.Errorf("second enroll error code = %q, want %q (REL-013)", err2.Code, "CLAIM_TOKEN_INVALID")
 	}
+	assertProblemResponse(t, resp2, err2, "CLAIM_TOKEN_INVALID", "/enroll")
 }
 
-func postEnrollError(t *testing.T, client *http.Client, baseURL, claimToken, csrPEM string) (*http.Response, *errorBody) {
+// problemBody is the RFC 9457 Problem shape (api/1 API-010/API-016) every
+// error response now carries — this test package's own decode target,
+// since apihttp's own struct is unexported.
+type problemBody struct {
+	Type     string `json:"type"`
+	Title    string `json:"title"`
+	Status   int    `json:"status"`
+	Code     string `json:"code"`
+	TraceID  string `json:"trace_id"`
+	Instance string `json:"instance"`
+}
+
+// assertProblemResponse asserts resp/body is a conformant Problem response
+// (API-010/API-015/API-016/API-062): application/problem+json content type,
+// code == wantCode, instance == wantPath, type == "about:blank", a non-empty
+// title, and a trace_id that equals the response's own Trace-Id header.
+func assertProblemResponse(t *testing.T, resp *http.Response, body *problemBody, wantCode, wantPath string) {
+	t.Helper()
+	if ct := resp.Header.Get("Content-Type"); ct != apihttp.ProblemContentType {
+		t.Errorf("Content-Type = %q, want %q", ct, apihttp.ProblemContentType)
+	}
+	if body.Type != "about:blank" {
+		t.Errorf("type = %q, want %q (API-016)", body.Type, "about:blank")
+	}
+	if body.Title == "" {
+		t.Error("title is empty, want a short human string")
+	}
+	if body.Status != resp.StatusCode {
+		t.Errorf("body status = %d, want %d (the response's own status)", body.Status, resp.StatusCode)
+	}
+	if body.Code != wantCode {
+		t.Errorf("code = %q, want %q", body.Code, wantCode)
+	}
+	if body.Instance != wantPath {
+		t.Errorf("instance = %q, want %q (API-015)", body.Instance, wantPath)
+	}
+	headerTraceID := resp.Header.Get(apihttp.TraceIDHeader)
+	if headerTraceID == "" {
+		t.Fatal("response carries no Trace-Id header (API-060)")
+	}
+	if body.TraceID != headerTraceID {
+		t.Errorf("body trace_id = %q, want it to equal the Trace-Id header %q (API-062)", body.TraceID, headerTraceID)
+	}
+}
+
+func postEnrollError(t *testing.T, client *http.Client, baseURL, claimToken, csrPEM string) (*http.Response, *problemBody) {
 	t.Helper()
 	reqBody, err := json.Marshal(enrollRequest{ClaimToken: claimToken, CSR: csrPEM})
 	if err != nil {
@@ -233,11 +280,11 @@ func postEnrollError(t *testing.T, client *http.Client, baseURL, claimToken, csr
 	if resp.StatusCode == http.StatusOK {
 		return resp, nil
 	}
-	var eb errorBody
-	if err := json.NewDecoder(resp.Body).Decode(&eb); err != nil {
-		t.Fatalf("decode error body: %v", err)
+	var pb problemBody
+	if err := json.NewDecoder(resp.Body).Decode(&pb); err != nil {
+		t.Fatalf("decode problem body: %v", err)
 	}
-	return resp, &eb
+	return resp, &pb
 }
 
 // TestEnrollRefusesUnknownClaimToken asserts a claim_token the server never
@@ -255,6 +302,99 @@ func TestEnrollRefusesUnknownClaimToken(t *testing.T) {
 	}
 	if errBody.Code != "CLAIM_TOKEN_INVALID" {
 		t.Errorf("error code = %q, want %q", errBody.Code, "CLAIM_TOKEN_INVALID")
+	}
+	assertProblemResponse(t, resp, errBody, "CLAIM_TOKEN_INVALID", "/enroll")
+}
+
+// TestEnrollTraceIDValidSuppliedEchoed asserts a request carrying a valid
+// Trace-Id header (API-061) gets that exact value echoed back on the
+// response header, and the error Problem body's trace_id agrees (API-062).
+func TestEnrollTraceIDValidSuppliedEchoed(t *testing.T) {
+	_, ts, _, _ := newTestServer(t)
+	client := ts.Client()
+
+	const supplied = "01J8Z3K4N5P6Q7R8S9T0V1W2X4" // a 26-char ULID shape
+	reqBody, err := json.Marshal(enrollRequest{ClaimToken: "never-issued-token", CSR: ""})
+	if err != nil {
+		t.Fatalf("marshal enroll request: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/enroll", bytes.NewReader(reqBody))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(apihttp.TraceIDHeader, supplied)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("POST /enroll: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if got := resp.Header.Get(apihttp.TraceIDHeader); got != supplied {
+		t.Errorf("response Trace-Id header = %q, want the supplied valid value %q echoed back (API-061)", got, supplied)
+	}
+	var pb problemBody
+	if err := json.NewDecoder(resp.Body).Decode(&pb); err != nil {
+		t.Fatalf("decode problem body: %v", err)
+	}
+	if pb.TraceID != supplied {
+		t.Errorf("body trace_id = %q, want %q", pb.TraceID, supplied)
+	}
+}
+
+// TestEnrollTraceIDInvalidSuppliedReplaced asserts a request carrying an
+// invalid Trace-Id header (too short) is never rejected — it still
+// completes, receiving a freshly generated, valid replacement (API-061)
+// rather than the invalid value echoed back.
+func TestEnrollTraceIDInvalidSuppliedReplaced(t *testing.T) {
+	_, ts, _, _ := newTestServer(t)
+	client := ts.Client()
+
+	const supplied = "too-short"
+	reqBody, err := json.Marshal(enrollRequest{ClaimToken: "never-issued-token", CSR: ""})
+	if err != nil {
+		t.Fatalf("marshal enroll request: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/enroll", bytes.NewReader(reqBody))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(apihttp.TraceIDHeader, supplied)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("POST /enroll: %v", err)
+	}
+	defer resp.Body.Close()
+
+	got := resp.Header.Get(apihttp.TraceIDHeader)
+	if got == "" {
+		t.Fatal("response carries no Trace-Id header, want a freshly generated replacement")
+	}
+	if got == supplied {
+		t.Errorf("response Trace-Id header echoed the invalid supplied value %q back, want a fresh replacement (API-061)", supplied)
+	}
+}
+
+// TestClaimTokenSuccessCarriesTraceID asserts an ordinary success response
+// (GET /claim-token) still carries a Trace-Id header (API-060: every
+// response, success or error).
+func TestClaimTokenSuccessCarriesTraceID(t *testing.T) {
+	_, ts, _, _ := newTestServer(t)
+	client := ts.Client()
+
+	resp, err := client.Get(ts.URL + "/claim-token")
+	if err != nil {
+		t.Fatalf("GET /claim-token: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /claim-token status = %d, want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get(apihttp.TraceIDHeader); got == "" {
+		t.Error("success response carries no Trace-Id header (API-060)")
 	}
 }
 

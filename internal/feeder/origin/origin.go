@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/signhash"
 )
 
@@ -66,7 +67,7 @@ func (s *Store) Handler() http.Handler {
 		hexDigest := strings.TrimPrefix(r.URL.Path, contentPathPrefix)
 		b := s.Serve(hexDigest)
 		if b == nil {
-			http.NotFound(w, r)
+			apihttp.WriteProblem(w, r, apihttp.TraceID(r), http.StatusNotFound, "NOT_FOUND", "Not Found")
 			return
 		}
 		http.ServeContent(w, r, hexDigest, time.Time{}, bytes.NewReader(b))

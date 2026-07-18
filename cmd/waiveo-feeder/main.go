@@ -23,6 +23,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/feeder/origin"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
+	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
@@ -64,7 +65,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:      addr,
-		Handler:   mux,
+		Handler:   apihttp.WithTraceID(mux),
 		TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}},
 	}
 

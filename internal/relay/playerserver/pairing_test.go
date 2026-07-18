@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/paircode"
 	"github.com/maaxton/waiveo-next/internal/shared/tlsboot"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
@@ -53,13 +54,22 @@ func newTestServer(t *testing.T, grants ...wire.PairingGrant) (*Server, []byte, 
 	return srv, certPEM, certDER
 }
 
+// newPairingTestServer mounts srv's routes behind apihttp.WithTraceID — the
+// same wiring cmd/waiveo-relay's real player/1 mux uses — so every response
+// this test package exercises carries a Trace-Id header (API-060).
+func newPairingTestServer(t *testing.T, srv *Server) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	srv.Register(mux)
+	ts := httptest.NewServer(apihttp.WithTraceID(mux))
+	t.Cleanup(ts.Close)
+	return ts
+}
+
 func doPair(t *testing.T, srv *Server, req PairingRequest) (*http.Response, map[string]json.RawMessage) {
 	t.Helper()
 
-	mux := http.NewServeMux()
-	srv.Register(mux)
-	ts := httptest.NewServer(mux)
-	t.Cleanup(ts.Close)
+	ts := newPairingTestServer(t, srv)
 
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -329,11 +339,7 @@ func TestPairingMultiGrantRedeemableMoreThanOnce(t *testing.T) {
 // be faithful to PLY-034 rather than absent or panicking.
 func TestPairStatusRejectsUnknownPollToken(t *testing.T) {
 	srv, _, _ := newTestServer(t)
-
-	mux := http.NewServeMux()
-	srv.Register(mux)
-	ts := httptest.NewServer(mux)
-	t.Cleanup(ts.Close)
+	ts := newPairingTestServer(t, srv)
 
 	resp, err := http.Get(ts.URL + "/player/v1/pair/status?poll_token=unknown-token")
 	if err != nil {
@@ -349,9 +355,11 @@ func TestPairStatusRejectsUnknownPollToken(t *testing.T) {
 	assertTypedError(t, resp, raw, "PAIRING_CODE_INVALID")
 }
 
-// assertTypedError confirms resp/raw is a non-2xx response carrying the
-// typed error shape {code, message} with code == wantCode — never a
-// pairing_status: pending shape that can never resolve (PLY-036).
+// assertTypedError confirms resp/raw is a non-2xx response carrying player/1's
+// PLY-005 Problem shape (api/1 API-010) with `code` == wantCode — never a
+// pairing_status: pending shape that can never resolve (PLY-036). It also
+// confirms the Trace-Id response header (PLY-006/API-060) is present and
+// equals the body's own trace_id extension member (API-062).
 func assertTypedError(t *testing.T, resp *http.Response, raw map[string]json.RawMessage, wantCode string) {
 	t.Helper()
 
@@ -361,14 +369,128 @@ func assertTypedError(t *testing.T, resp *http.Response, raw map[string]json.Raw
 	if _, isPending := raw["pairing_status"]; isPending {
 		t.Fatalf("response carries pairing_status %s, want a typed error instead (PLY-036 forbids a never-resolving pending)", raw["pairing_status"])
 	}
-
-	var eb struct {
-		Code    string `json:"code"`
-		Message string `json:"message"`
+	if ct := resp.Header.Get("Content-Type"); ct != apihttp.ProblemContentType {
+		t.Errorf("Content-Type = %q, want %q (PLY-005/API-002)", ct, apihttp.ProblemContentType)
 	}
-	remarshal(t, raw, &eb)
-	if eb.Code != wantCode {
-		t.Errorf("error code = %q, want %q (message: %q)", eb.Code, wantCode, eb.Message)
+
+	var pb struct {
+		Type     string `json:"type"`
+		Title    string `json:"title"`
+		Status   int    `json:"status"`
+		Code     string `json:"code"`
+		TraceID  string `json:"trace_id"`
+		Instance string `json:"instance"`
+	}
+	remarshal(t, raw, &pb)
+	if pb.Code != wantCode {
+		t.Errorf("error code = %q, want %q (title: %q)", pb.Code, wantCode, pb.Title)
+	}
+	if pb.Type != "about:blank" {
+		t.Errorf("type = %q, want %q (API-016)", pb.Type, "about:blank")
+	}
+	if pb.Status != resp.StatusCode {
+		t.Errorf("body status = %d, want %d", pb.Status, resp.StatusCode)
+	}
+	wantInstance := resp.Request.URL.Path
+	if pb.Instance != wantInstance {
+		t.Errorf("instance = %q, want %q (API-015)", pb.Instance, wantInstance)
+	}
+
+	headerTraceID := resp.Header.Get(apihttp.TraceIDHeader)
+	if headerTraceID == "" {
+		t.Fatal("response carries no Trace-Id header (PLY-006/API-060)")
+	}
+	if pb.TraceID != headerTraceID {
+		t.Errorf("body trace_id = %q, want it to equal the Trace-Id header %q (API-062)", pb.TraceID, headerTraceID)
+	}
+}
+
+// TestPairSuccessCarriesTraceID asserts a redeemed (success) PairingResponse
+// still carries a Trace-Id header (PLY-006/API-060: every response, success
+// or error) — and that the header carries a valid API-061 value even though
+// no request-side Trace-Id was supplied.
+func TestPairSuccessCarriesTraceID(t *testing.T) {
+	grant := testGrant()
+	srv, _, _ := newTestServer(t, grant)
+
+	resp, _ := doPair(t, srv, PairingRequest{
+		HardwareID:    "hw-0001",
+		GrantSelector: grant.GrantID,
+		Capabilities:  Capabilities{ContentTypes: []string{"image", "video"}, PlayerVersion: "1.0.0"},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get(apihttp.TraceIDHeader); got == "" {
+		t.Error("success response carries no Trace-Id header (PLY-006/API-060)")
+	}
+}
+
+// TestPairTraceIDValidSuppliedEchoed asserts a request carrying a valid
+// Trace-Id header (API-061) gets that exact value echoed back on the
+// response header (API-060) and the error Problem body's trace_id agrees
+// (API-062).
+func TestPairTraceIDValidSuppliedEchoed(t *testing.T) {
+	grant := testGrant()
+	srv, _, _ := newTestServer(t, grant)
+	ts := newPairingTestServer(t, srv)
+
+	const supplied = "01J8Z3K4N5P6Q7R8S9T0V1W2X4"                    // a 26-char ULID shape
+	body, err := json.Marshal(PairingRequest{HardwareID: "hw-0001"}) // absent grant_selector -> PAIRING_CODE_INVALID
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/player/v1/pair", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(apihttp.TraceIDHeader, supplied)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /player/v1/pair: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if got := resp.Header.Get(apihttp.TraceIDHeader); got != supplied {
+		t.Errorf("response Trace-Id header = %q, want the supplied valid value %q echoed back (API-061)", got, supplied)
+	}
+}
+
+// TestPairTraceIDInvalidSuppliedReplaced asserts a request carrying an
+// invalid Trace-Id header (bad charset) is never rejected — it still
+// completes, receiving a freshly generated, valid replacement (API-061)
+// rather than the invalid value echoed back.
+func TestPairTraceIDInvalidSuppliedReplaced(t *testing.T) {
+	grant := testGrant()
+	srv, _, _ := newTestServer(t, grant)
+	ts := newPairingTestServer(t, srv)
+
+	const supplied = "not a valid trace id!!"
+	body, err := json.Marshal(PairingRequest{HardwareID: "hw-0001"})
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/player/v1/pair", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(apihttp.TraceIDHeader, supplied)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /player/v1/pair: %v", err)
+	}
+	defer resp.Body.Close()
+
+	got := resp.Header.Get(apihttp.TraceIDHeader)
+	if got == "" {
+		t.Fatal("response carries no Trace-Id header, want a freshly generated replacement")
+	}
+	if got == supplied {
+		t.Errorf("response Trace-Id header echoed the invalid supplied value %q back, want a fresh replacement (API-061)", supplied)
 	}
 }
 

@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
+	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
@@ -141,16 +142,6 @@ type enrollResponse struct {
 	DesiredStateVerificationKey string `json:"desired_state_verification_key"`
 }
 
-// errorBody is this server's typed-refusal shape (REL-013's
-// `CLAIM_TOKEN_INVALID` and REL-007's `{code, message}` core, adapted to
-// this package's plain-HTTP framing rather than the full relay/1
-// `{type,id,trace_id,code,message}` error frame — this endpoint predates
-// the enrolled, correlated connection REL-007's envelope presumes).
-type errorBody struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-}
-
 // handleEnroll implements REL-012: on a valid, not-yet-redeemed
 // claim_token and a well-formed CSR, issues the relay a certificate under
 // the feeder's in-memory CA and hands back this feeder's own desired-state
@@ -163,31 +154,33 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	traceID := apihttp.TraceID(r)
+
 	var req enrollRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "CLAIM_TOKEN_INVALID", "malformed enrollment request body")
+		apihttp.WriteProblem(w, r, traceID, http.StatusBadRequest, "CLAIM_TOKEN_INVALID", "Claim Token Invalid")
 		return
 	}
 
 	if !s.redeemToken(req.ClaimToken) {
-		writeError(w, http.StatusForbidden, "CLAIM_TOKEN_INVALID", "claim_token is unknown or already redeemed")
+		apihttp.WriteProblem(w, r, traceID, http.StatusForbidden, "CLAIM_TOKEN_INVALID", "Claim Token Invalid")
 		return
 	}
 
 	block, _ := pem.Decode([]byte(req.CSR))
 	if block == nil || block.Type != "CERTIFICATE REQUEST" {
-		writeError(w, http.StatusBadRequest, "CLAIM_TOKEN_INVALID", "csr did not PEM-decode to a CERTIFICATE REQUEST block")
+		apihttp.WriteProblem(w, r, traceID, http.StatusBadRequest, "CLAIM_TOKEN_INVALID", "Claim Token Invalid")
 		return
 	}
 	csr, err := x509.ParseCertificateRequest(block.Bytes)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "CLAIM_TOKEN_INVALID", "csr did not parse: "+err.Error())
+		apihttp.WriteProblem(w, r, traceID, http.StatusBadRequest, "CLAIM_TOKEN_INVALID", "Claim Token Invalid")
 		return
 	}
 	if err := csr.CheckSignature(); err != nil {
 		// Proof of possession: the CSR must be signed by the private key
 		// matching the public key it carries.
-		writeError(w, http.StatusBadRequest, "CLAIM_TOKEN_INVALID", "csr signature did not verify: "+err.Error())
+		apihttp.WriteProblem(w, r, traceID, http.StatusBadRequest, "CLAIM_TOKEN_INVALID", "Claim Token Invalid")
 		return
 	}
 
@@ -195,7 +188,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 
 	certPEM, notBefore, notAfter, err := s.issueRelayCert(csr, relayID)
 	if err != nil {
-		http.Error(w, "internal error issuing certificate", http.StatusInternalServerError)
+		apihttp.WriteProblem(w, r, traceID, http.StatusInternalServerError, "INTERNAL", "Internal Error")
 		return
 	}
 
@@ -356,8 +349,4 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, code, message string) {
-	writeJSON(w, status, errorBody{Code: code, Message: message})
 }

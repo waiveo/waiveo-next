@@ -27,6 +27,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/paircode"
 	"github.com/maaxton/waiveo-next/internal/shared/tlsboot"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
@@ -79,19 +80,6 @@ type PairingResponse struct {
 	ScreenID      string        `json:"screen_id,omitempty"`
 	IssuedAt      int64         `json:"issued_at,omitempty"`
 	ExpiresAt     int64         `json:"expires_at,omitempty"`
-}
-
-// errorBody is this server's typed-refusal shape (PLY-036's
-// PAIRING_CODE_INVALID/PAIRING_EXPIRED), matching the {code, message} core
-// internal/feeder/enroll and internal/relay/enroll already use for their
-// own bootstrap-phase typed refusals — this package's operations are, like
-// theirs, pre-credential exchanges that predate api/1's full Problem
-// envelope (PLY-005 reuses that shape at the contract level; this
-// package's own dev-stage wire form mirrors this codebase's existing
-// convention for it rather than hand-rolling api/1's fuller envelope here).
-type errorBody struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
 }
 
 // Sentinel errors redeem returns — checked with errors.Is, and mapped to
@@ -196,15 +184,18 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	traceID := apihttp.TraceID(r)
+
 	var req PairingRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "PAIRING_CODE_INVALID", "malformed pairing request body")
+		apihttp.WriteProblem(w, r, traceID, http.StatusBadRequest, "PAIRING_CODE_INVALID", "Pairing Code Invalid")
 		return
 	}
 
 	rec, err := s.redeem(req.GrantSelector)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, errorCode(err), err.Error())
+		code := errorCode(err)
+		apihttp.WriteProblem(w, r, traceID, http.StatusBadRequest, code, problemTitle(code))
 		return
 	}
 
@@ -243,7 +234,7 @@ func (s *Server) handlePairStatus(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	if pollToken == "" || !known {
-		writeError(w, http.StatusBadRequest, "PAIRING_CODE_INVALID", "poll_token is unknown or was never issued")
+		apihttp.WriteProblem(w, r, apihttp.TraceID(r), http.StatusBadRequest, "PAIRING_CODE_INVALID", "Pairing Code Invalid")
 		return
 	}
 
@@ -314,6 +305,16 @@ func errorCode(err error) string {
 	return "PAIRING_CODE_INVALID"
 }
 
+// problemTitle maps a PLY-036 registry code to the short human-readable
+// Problem `title` this package writes for it (Wire shapes' own worked
+// examples are Title Case of the code's meaning, e.g. "Not Found").
+func problemTitle(code string) string {
+	if code == "PAIRING_EXPIRED" {
+		return "Pairing Expired"
+	}
+	return "Pairing Code Invalid"
+}
+
 // FormPairingCode forms a relay/1 REL-126 pairing code for grant: the
 // relay's own dial address (host, port), grant's own grant_id as the
 // grant_selector a PairingRequest later presents, and a
@@ -354,8 +355,4 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, code, message string) {
-	writeJSON(w, status, errorBody{Code: code, Message: message})
 }

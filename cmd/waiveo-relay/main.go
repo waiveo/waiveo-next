@@ -31,6 +31,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/enroll"
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
 	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
+	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 )
 
 const addr = "127.0.0.1:7421"
@@ -116,7 +117,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:      addr,
-		Handler:   mux,
+		Handler:   apihttp.WithTraceID(mux),
 		TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}},
 	}
 
