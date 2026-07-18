@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/rules/clock"
+	"github.com/maaxton/waiveo-next/internal/rules/closure"
 	"github.com/maaxton/waiveo-next/internal/rules/compile"
 	"github.com/maaxton/waiveo-next/internal/rules/engine"
 	"github.com/maaxton/waiveo-next/internal/rules/eval"
@@ -156,22 +157,27 @@ func firstDelaySeconds(actions []model.Member) int64 {
 // dir is deferred + logged: it needs a later part (time/DST/misfire
 // triggers+conditions, expression grammar, generation swap, stabilization).
 var evalCorpusHandlers = map[string]func(t *testing.T, path string){
-	"RUL-023-attribute-only-vs-state-change":            runRUL023,
-	"RUL-024-for-hold-suppresses-flap":                  runRUL024,
-	"RUL-033-numeric-first-observation-level-check":     runRUL033,
-	"RUL-101-corroborating-and-cross-entity-conditions": runRUL101,
-	"RUL-171-preset-batch-partial-failure":              runRUL171,
-	"RUL-241-mode-single-drops-concurrent-fire":         runRUL241,
-	"RUL-242-mode-restart-cancels-in-flight-delay":      runRUL242,
-	"RUL-245-no-implicit-dedup-window":                  runRUL245,
-	"RUL-270-number-parsing-strict":                     runRUL270,
-	"RUL-300-boot-reconfirm-no-fire":                    runRUL300,
-	"RUL-321-scalar-expands-array-exact":                runRUL321Scalar,
-	"RUL-321-suspend-flap-for-debounce":                 runRUL321Suspend,
-	"RUL-341-dst-spring-forward-skip":                   runRUL341,
-	"RUL-342-dst-fall-back-fires-once":                  runRUL342,
-	"RUL-352-misfire-catch-up-once-collapses":           runRUL352,
-	"RUL-354-misfire-default-skip-instantaneous":        runRUL354,
+	"RUL-023-attribute-only-vs-state-change":                       runRUL023,
+	"RUL-024-for-hold-suppresses-flap":                             runRUL024,
+	"RUL-033-numeric-first-observation-level-check":                runRUL033,
+	"RUL-101-corroborating-and-cross-entity-conditions":            runRUL101,
+	"RUL-150-variable-condition-constant-folded":                   runRUL150,
+	"RUL-171-preset-batch-partial-failure":                         runRUL171,
+	"RUL-241-mode-single-drops-concurrent-fire":                    runRUL241,
+	"RUL-242-mode-restart-cancels-in-flight-delay":                 runRUL242,
+	"RUL-245-no-implicit-dedup-window":                             runRUL245,
+	"RUL-270-number-parsing-strict":                                runRUL270,
+	"RUL-300-boot-reconfirm-no-fire":                               runRUL300,
+	"RUL-301-stabilization-window-defers-transition":               runRUL301,
+	"RUL-303-generation-swap-unchanged-trigger-preserves-baseline": runRUL303,
+	"RUL-321-scalar-expands-array-exact":                           runRUL321Scalar,
+	"RUL-321-suspend-flap-for-debounce":                            runRUL321Suspend,
+	"RUL-341-dst-spring-forward-skip":                              runRUL341,
+	"RUL-342-dst-fall-back-fires-once":                             runRUL342,
+	"RUL-352-misfire-catch-up-once-collapses":                      runRUL352,
+	"RUL-354-misfire-default-skip-instantaneous":                   runRUL354,
+	"RUL-360-engine-restart-resets-hold":                           runRUL360,
+	"RUL-380-generation-swap-cancels-changed-rule":                 runRUL380,
 }
 
 // TestRulesEvaluationCorpusDriver is the §10 differential oracle: it replays
@@ -1681,5 +1687,666 @@ func runRUL354(t *testing.T, path string) {
 	}
 	if len(sink.calls) != 0 && !c.Expected.FiredLateAtResume {
 		t.Errorf("fired_late_at_resume=false but sink dispatched: %+v", sink.calls)
+	}
+}
+
+// --- RUL-150: variable condition constant-folded across a live write --------
+
+type rul150Case struct {
+	Input struct {
+		Variable struct {
+			Name               string `json:"name"`
+			ValueAtCompileTime bool   `json:"value_at_compile_time"`
+		} `json:"variable"`
+		Rule   json.RawMessage `json:"rule"`
+		Events []struct {
+			Seq      int    `json:"seq"`
+			TMs      int64  `json:"t_ms"`
+			Kind     string `json:"kind"`
+			Variable string `json:"variable"`
+			NewValue any    `json:"new_value"`
+		} `json:"events"`
+	} `json:"input"`
+	Expected struct {
+		Results []struct {
+			Seq            int  `json:"seq"`
+			ConditionsPass bool `json:"conditions_pass"`
+		} `json:"results"`
+	} `json:"expected"`
+}
+
+// runRUL150 drives the corpus's rule through the real compile+closure+engine
+// front door: closure.Compute freezes the `variable` condition's compile-time
+// value into generation 1's Closure (RUL-150/390), and the engine evaluates
+// every subsequent firing against that frozen Closure — never a live lookup.
+// The seq-3 live_variable_write event mutates only the driver's own "live"
+// variable map (modeling an app-side write), which the already-applied
+// generation 1 never re-reads (RUL-391/392): seq 4's firing still resolves the
+// variable condition against the frozen false and still passes, proving the
+// live write after seq 3 had no effect on it.
+func runRUL150(t *testing.T, path string) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var c rul150Case
+	if err := json.Unmarshal(b, &c); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	entry, cerr := compile.Compile(c.Input.Rule)
+	if cerr != nil {
+		t.Fatalf("compile: %v", cerr)
+	}
+	rule, err := model.ParseRule(c.Input.Rule)
+	if err != nil {
+		t.Fatalf("parse rule: %v", err)
+	}
+
+	// liveVars models the app-side variable store: it starts at the corpus's
+	// value_at_compile_time and is the ONLY thing seq 3's live_variable_write
+	// touches. closure.Compute reads it exactly once, at "compile time" (seq
+	// 1), to freeze generation 1's Closure — the engine never consults
+	// liveVars again after that.
+	liveVars := map[string]any{c.Input.Variable.Name: c.Input.Variable.ValueAtCompileTime}
+	cl, cerr2 := closure.Compute(rule, closure.Env{Variables: liveVars})
+	if cerr2 != nil {
+		t.Fatalf("closure.Compute: %v", cerr2)
+	}
+
+	reg := registry.FixtureRegistry{}
+	clk := clock.NewFakeClock()
+	sink := &corpusSink{}
+	e := engine.New(reg, clk, sink, nil)
+	e.ApplyGeneration(engine.Generation{Number: 1, Rules: []engine.CompiledRule{{Entry: entry, Rule: rule, Closure: cl}}})
+
+	entityID := rule.Triggers[0].EntityRef.EntityID
+	e.Observe(state.NewObservation(reg, mediaEnt(entityID, "off"), mediaEnt(entityID, "off")))
+
+	var lastT int64
+	var isOn bool
+	for _, ev := range c.Input.Events {
+		clk.Advance(ev.TMs - lastT)
+		lastT = ev.TMs
+		switch ev.Kind {
+		case "live_variable_write":
+			// App-side write to the live store only; generation 1's frozen
+			// Closure (cl.Variables) is untouched (RUL-391/392).
+			liveVars[ev.Variable] = ev.NewValue
+		case "trigger_fires_offline", "trigger_fires_offline_again":
+			// A genuine off->on transition each time the corpus's own trigger
+			// fires; toggle back to off first so a second firing is a fresh
+			// edge, not a same-state reconfirm (RUL-020/300).
+			if isOn {
+				e.Observe(state.NewObservation(reg, mediaEnt(entityID, "on"), mediaEnt(entityID, "off")))
+			}
+			disps := e.Observe(state.NewObservation(reg, mediaEnt(entityID, "off"), mediaEnt(entityID, "on")))
+			isOn = true
+			for _, want := range c.Expected.Results {
+				if want.Seq != ev.Seq {
+					continue
+				}
+				gotPass := len(disps) == 1 && disps[0].Disposition == engine.Ran
+				if gotPass != want.ConditionsPass {
+					t.Errorf("seq %d: fired(conditions_pass) = %v, want %v: %+v", ev.Seq, gotPass, want.ConditionsPass, disps)
+				}
+			}
+		}
+	}
+}
+
+// --- RUL-301: stabilization window defers a genuine transition --------------
+
+type rul301Case struct {
+	Input struct {
+		Fixture struct {
+			Entities map[string]struct {
+				DeviceClass string `json:"device_class"`
+			} `json:"entities"`
+			StabilizationWindowMs int64 `json:"stabilization_window_ms"`
+		} `json:"fixture"`
+		Trigger json.RawMessage `json:"trigger"`
+		Events  []struct {
+			Seq           int    `json:"seq"`
+			TMs           int64  `json:"t_ms"`
+			Kind          string `json:"kind"`
+			ReportedState string `json:"reported_state"`
+		} `json:"events"`
+	} `json:"input"`
+	Expected struct {
+		Results []struct {
+			Seq                          int  `json:"seq"`
+			MatchedAtMs                  *int `json:"matched_at_ms"`
+			Dispatched                   bool `json:"dispatched"`
+			HeldTransitionDispatchedAtMs *int `json:"held_transition_dispatched_at_ms"`
+		} `json:"results"`
+	} `json:"expected"`
+}
+
+// runRUL301 replays the corpus's post-restart transition on the real engine
+// with the fixture's own stabilization_window_ms configured via
+// SetStabilizationWindow: seq 2's genuine off->on observation, arriving before
+// the window elapses, matches but does not dispatch (held pending, RUL-301);
+// the window's own bounded elapse (a Tick at the fixture's window instant)
+// then releases exactly that already-matched transition — never re-evaluating
+// it against a later observation.
+func runRUL301(t *testing.T, path string) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var c rul301Case
+	if err := json.Unmarshal(b, &c); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	reg := registry.FixtureRegistry{}
+	clk := clock.NewFakeClock()
+	sink := &corpusSink{}
+	e := engine.New(reg, clk, sink, nil)
+	e.SetStabilizationWindow(time.Duration(c.Input.Fixture.StabilizationWindowMs) * time.Millisecond)
+
+	var entityID string
+	for id := range c.Input.Fixture.Entities {
+		entityID = id
+	}
+
+	ruleJSON := []byte(`{"id":"01J8Z3K4N5P6Q7R8S9T0V1RUL301","triggers":[` + string(c.Input.Trigger) + `],"actions":[{"type":"device_command","entity_id":"` + entityID + `","command":"power"}]}`)
+	entry, cerr := compile.Compile(ruleJSON)
+	if cerr != nil {
+		t.Fatalf("compile: %v", cerr)
+	}
+	rule, err := model.ParseRule(ruleJSON)
+	if err != nil {
+		t.Fatalf("parse rule: %v", err)
+	}
+	// The engine_restart readiness point (seq 1) is modeled by a fresh engine
+	// (New) applying its first generation (Load), stabilization window armed
+	// from the start, seeded with the entity's durable pre-restart state.
+	if err := e.Load(entry, rule); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	e.SeedEntityState(entityID, "off")
+
+	var lastT int64
+	for _, ev := range c.Input.Events {
+		if ev.Kind != "observation" {
+			continue
+		}
+		clk.Advance(ev.TMs - lastT)
+		lastT = ev.TMs
+		disps := e.Observe(state.NewObservation(reg, mediaEnt(entityID, "off"), mediaEnt(entityID, ev.ReportedState)))
+		for _, want := range c.Expected.Results {
+			if want.Seq != ev.Seq {
+				continue
+			}
+			gotDispatched := len(sink.calls) != 0
+			if gotDispatched != want.Dispatched {
+				t.Errorf("seq %d: dispatched = %v, want %v: %+v", ev.Seq, gotDispatched, want.Dispatched, disps)
+			}
+			if !want.Dispatched && len(disps) != 0 {
+				t.Errorf("seq %d: held transition produced a disposition early: %+v", ev.Seq, disps)
+			}
+		}
+	}
+
+	// The window's own bounded elapse (fixture's own stabilization_window_ms,
+	// on the monotonic clock) releases the held transition: exactly one Ran,
+	// exactly one dispatch — the already-matched seq-2 firing, not a
+	// re-evaluation against any later observation.
+	for _, want := range c.Expected.Results {
+		if want.HeldTransitionDispatchedAtMs == nil {
+			continue
+		}
+		target := int64(*want.HeldTransitionDispatchedAtMs)
+		if target > lastT {
+			clk.Advance(target - lastT)
+			lastT = target
+		}
+		d := e.Tick(clk)
+		if len(d) != 1 || d[0].Disposition != engine.Ran {
+			t.Fatalf("window elapse: want one Ran, got %+v", d)
+		}
+		if len(sink.calls) != 1 || sink.calls[0].EntityID != entityID {
+			t.Fatalf("released transition should dispatch once for %s, got %+v", entityID, sink.calls)
+		}
+	}
+}
+
+// --- RUL-303: generation-swap trigger-level baseline carry-forward ----------
+
+type rul303GenRule struct {
+	RuleID  string          `json:"rule_id"`
+	Trigger json.RawMessage `json:"trigger"`
+}
+
+type rul303Case struct {
+	Input struct {
+		Fixture struct {
+			Entities map[string]struct {
+				DeviceClass string `json:"device_class"`
+			} `json:"entities"`
+		} `json:"fixture"`
+		PriorGeneration struct {
+			Generation int             `json:"generation"`
+			Rules      []rul303GenRule `json:"rules"`
+		} `json:"prior_generation"`
+		NewGeneration struct {
+			Generation int             `json:"generation"`
+			Rules      []rul303GenRule `json:"rules"`
+		} `json:"new_generation"`
+		Events []struct {
+			Seq           int    `json:"seq"`
+			TMs           int64  `json:"t_ms"`
+			Kind          string `json:"kind"`
+			ReportedState string `json:"reported_state"`
+			From          string `json:"from"`
+			To            string `json:"to"`
+		} `json:"events"`
+	} `json:"input"`
+	Expected struct {
+		Results []struct {
+			Seq    int    `json:"seq"`
+			RuleID string `json:"rule_id"`
+			Fired  bool   `json:"fired"`
+		} `json:"results"`
+	} `json:"expected"`
+}
+
+// compileRUL303Rule wraps one generation-declared trigger with a device_command
+// action into a full rule and compiles it through the real front door
+// (compile.Compile + model.ParseRule + closure.Compute — this case has no
+// variable/selector/preset, so its Closure is empty, but it is still computed
+// through the real closure package for parity with every other generation this
+// driver builds).
+func compileRUL303Rule(t *testing.T, gr rul303GenRule, entityID string) engine.CompiledRule {
+	t.Helper()
+	ruleJSON := []byte(`{"id":"` + gr.RuleID + `","triggers":[` + string(gr.Trigger) + `],"actions":[{"type":"device_command","entity_id":"` + entityID + `","command":"power"}]}`)
+	entry, cerr := compile.Compile(ruleJSON)
+	if cerr != nil {
+		t.Fatalf("compile %s: %v", gr.RuleID, cerr)
+	}
+	rule, err := model.ParseRule(ruleJSON)
+	if err != nil {
+		t.Fatalf("parse %s: %v", gr.RuleID, err)
+	}
+	cl, cerr2 := closure.Compute(rule, closure.Env{})
+	if cerr2 != nil {
+		t.Fatalf("closure.Compute %s: %v", gr.RuleID, cerr2)
+	}
+	return engine.CompiledRule{Entry: entry, Rule: rule, Closure: cl}
+}
+
+// runRUL303 replays the corpus's two-generation swap on the real engine: an
+// unrelated preset edit (never modeled here beyond the generation-number bump,
+// since neither rule's Closure references a preset) recompiles generation 2
+// with rule-R's trigger byte-identical (RUL-381: unchanged) and rule-S's
+// `for:` edited 10->20 (RUL-381: changed). ApplyGeneration's own carried-
+// forward/reset behavior (RUL-303/304) then decides, independently per rule,
+// whether the seq-4 off->on transition is a genuine fire against a preserved
+// baseline (rule-R) or an unfireable first-observation-since-reset (rule-S) —
+// this handler only drives Observe/ApplyGeneration and diffs the returned
+// dispositions against the corpus's own per-rule expectations.
+func runRUL303(t *testing.T, path string) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var c rul303Case
+	if err := json.Unmarshal(b, &c); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	var entityID string
+	for id := range c.Input.Fixture.Entities {
+		entityID = id
+	}
+
+	reg := registry.FixtureRegistry{}
+	clk := clock.NewFakeClock()
+	sink := &corpusSink{}
+	e := engine.New(reg, clk, sink, nil)
+
+	buildGen := func(num int, rules []rul303GenRule) engine.Generation {
+		crs := make([]engine.CompiledRule, 0, len(rules))
+		for _, gr := range rules {
+			crs = append(crs, compileRUL303Rule(t, gr, entityID))
+		}
+		return engine.Generation{Number: num, Rules: crs}
+	}
+
+	var lastT int64
+	dispsBySeq := map[int][]engine.RunDisposition{}
+	for _, ev := range c.Input.Events {
+		clk.Advance(ev.TMs - lastT)
+		lastT = ev.TMs
+		switch ev.Kind {
+		case "generation_apply":
+			if ev.Seq == 1 {
+				e.ApplyGeneration(buildGen(c.Input.PriorGeneration.Generation, c.Input.PriorGeneration.Rules))
+			} else {
+				e.ApplyGeneration(buildGen(c.Input.NewGeneration.Generation, c.Input.NewGeneration.Rules))
+			}
+		case "observation":
+			dispsBySeq[ev.Seq] = e.Observe(state.NewObservation(reg, mediaEnt(entityID, "off"), mediaEnt(entityID, ev.ReportedState)))
+		case "state_transition":
+			dispsBySeq[ev.Seq] = e.Observe(state.NewObservation(reg, mediaEnt(entityID, ev.From), mediaEnt(entityID, ev.To)))
+		}
+	}
+
+	for _, want := range c.Expected.Results {
+		disps := dispsBySeq[want.Seq]
+		var fired bool
+		for _, d := range disps {
+			if d.RuleID == want.RuleID && d.Disposition == engine.Ran {
+				fired = true
+			}
+		}
+		if fired != want.Fired {
+			t.Errorf("seq %d rule %s: fired = %v, want %v: %+v", want.Seq, want.RuleID, fired, want.Fired, disps)
+		}
+	}
+
+	// Beyond the corpus's own checked instant: rule-S's non-fire at seq 4 alone
+	// is consistent with more than one cause (its `for`-bounded level simply
+	// hasn't held long enough yet, independent of whether its baseline was
+	// correctly reset) — so also prove the reset is what's actually
+	// suppressing it, not remaining hold-arm latency: a genuinely fresh
+	// (trigger,entity) runtime seeds a first observation already AT the target
+	// level as "continuing to hold", per RUL-300, so it must not arm from
+	// this transition even given unbounded further time — only a SUBSEQUENT
+	// fresh entry into the level (off, then on again) can ever arm it. A
+	// buggy carry-forward that wrongly reused rule-S's prior (armed-capable)
+	// runtime would instead fire once its OLD `for` elapsed.
+	lastSeq := c.Input.Events[len(c.Input.Events)-1].Seq
+	for _, want := range c.Expected.Results {
+		if want.Seq != lastSeq || want.Fired {
+			continue
+		}
+		var forSec int
+		for _, gr := range c.Input.NewGeneration.Rules {
+			if gr.RuleID == want.RuleID {
+				forSec = rawFor(gr.Trigger)
+			}
+		}
+		if forSec == 0 {
+			continue
+		}
+		clk.Advance(int64(forSec) * 2000) // well past even the OLD for: duration
+		if d := e.Tick(clk); len(d) != 0 {
+			t.Errorf("rule %s: fired from the seq-%d transition with no fresh subsequent entry into the level (baseline not reset?): %+v", want.RuleID, lastSeq, d)
+		}
+	}
+}
+
+// --- RUL-360: an engine restart resets an in-progress hold ------------------
+
+type rul360Case struct {
+	Input struct {
+		Fixture struct {
+			Entities map[string]struct {
+				DeviceClass string `json:"device_class"`
+			} `json:"entities"`
+		} `json:"fixture"`
+		Trigger json.RawMessage `json:"trigger"`
+		Events  []struct {
+			Seq           int    `json:"seq"`
+			TMs           int64  `json:"t_ms"`
+			Kind          string `json:"kind"`
+			From          string `json:"from"`
+			To            string `json:"to"`
+			ReportedState string `json:"reported_state"`
+		} `json:"events"`
+	} `json:"input"`
+	Expected struct {
+		Results []struct {
+			Seq                    int   `json:"seq"`
+			HoldRestarted          *bool `json:"hold_restarted"`
+			MisfireCaughtMarkerSet *bool `json:"misfire_caught_marker_set"`
+		} `json:"results"`
+	} `json:"expected"`
+}
+
+// runRUL360 models "the evaluating engine itself restarts mid-hold" the only
+// way that phrase can mean anything against this package's Engine type: no
+// in-flight timer state survives an engine restart because nothing persists it
+// (RUL-360/361) — there is no API to carry a Hold's elapsed time across two
+// Engine values, so the pre-restart engine (which arms the hold and advances
+// it 120000ms) and the post-restart engine (a wholly fresh Engine + FakeClock,
+// seeded only with the durable entity state that DOES survive, exactly like
+// SeedEntityState models on every other restart-adjacent corpus case) are
+// deliberately two separate values. seq 3's post-restart reconfirm of the
+// unchanged durable "unreachable" state is not itself a fresh transition
+// (RUL-025/300), so it must not restart the hold's countdown (hold_restarted:
+// false) — and because it produces no disposition at all, it carries no
+// misfire_caught marker either (RUL-362: a distinct mechanism, never touched
+// by this scenario).
+func runRUL360(t *testing.T, path string) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var c rul360Case
+	if err := json.Unmarshal(b, &c); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	var entityID string
+	for id := range c.Input.Fixture.Entities {
+		entityID = id
+	}
+
+	ruleJSON := []byte(`{"id":"01J8Z3K4N5P6Q7R8S9T0V1RUL360","triggers":[` + string(c.Input.Trigger) + `],"actions":[{"type":"device_command","entity_id":"` + entityID + `","command":"power"}]}`)
+	entry, cerr := compile.Compile(ruleJSON)
+	if cerr != nil {
+		t.Fatalf("compile: %v", cerr)
+	}
+	rule, err := model.ParseRule(ruleJSON)
+	if err != nil {
+		t.Fatalf("parse rule: %v", err)
+	}
+
+	reg := registry.FixtureRegistry{}
+
+	// Pre-restart engine: seq 1's on->unreachable transition arms the 300s
+	// hold; it must not fire immediately (only 0ms has elapsed toward it).
+	preClk := clock.NewFakeClock()
+	pre := engine.New(reg, preClk, &corpusSink{}, nil)
+	if err := pre.Load(entry, rule); err != nil {
+		t.Fatalf("Load (pre): %v", err)
+	}
+	pre.Observe(state.NewObservation(reg, mediaEnt(entityID, "on"), mediaEnt(entityID, "on")))
+	if d := pre.Observe(state.NewObservation(reg, mediaEnt(entityID, "on"), mediaEnt(entityID, "unreachable"))); len(d) != 0 {
+		t.Fatalf("seq 1: hold arming on a 300s for: must not fire immediately, got %+v", d)
+	}
+	preClk.Advance(120000) // "the engine restarts with 120000ms of the hold already elapsed"
+
+	// seq 2, engine_restart: no in-flight run or timer state survives — a
+	// wholly fresh Engine + FakeClock (mono resets to 0 too, exactly like a
+	// real reboot), never the pre-restart engine's elapsed hold.
+	postClk := clock.NewFakeClock()
+	postSink := &corpusSink{}
+	post := engine.New(reg, postClk, postSink, nil)
+	if err := post.Load(entry, rule); err != nil {
+		t.Fatalf("Load (post): %v", err)
+	}
+	// The durable value is the entity's own last-known state, not the hold's
+	// timer, so it DOES survive the restart (RUL-300/304), seeded exactly like
+	// SeedEntityState.
+	post.SeedEntityState(entityID, "unreachable")
+	if d := post.Tick(postClk); len(d) != 0 {
+		t.Fatalf("seq 2: a freshly restarted engine ticking immediately produced dispositions (hold must reset to zero elapsed): %+v", d)
+	}
+
+	// seq 3, post_restart_observation @ t=121000 (1000ms after the restart):
+	// reconfirms the unchanged durable "unreachable" value.
+	postClk.Advance(1000)
+	disps := post.Observe(state.NewObservation(reg, mediaEnt(entityID, "unreachable"), mediaEnt(entityID, "unreachable")))
+
+	for _, want := range c.Expected.Results {
+		if want.Seq != 3 {
+			continue
+		}
+		if want.HoldRestarted != nil {
+			restarted := len(disps) != 0
+			if restarted != *want.HoldRestarted {
+				t.Errorf("seq 3: hold_restarted = %v, want %v: %+v", restarted, *want.HoldRestarted, disps)
+			}
+		}
+	}
+	for _, want := range c.Expected.Results {
+		if want.MisfireCaughtMarkerSet == nil {
+			continue
+		}
+		// No disposition this scenario ever produces carries a misfire_caught
+		// marker: seq 3's own reconfirm above is the concrete evidence — an
+		// empty disposition list carries none.
+		if len(disps) != 0 {
+			t.Errorf("misfire_caught_marker_set: got dispositions %+v, want none (no marker possible)", disps)
+		}
+	}
+}
+
+// --- RUL-380: generation-swap cancels a changed rule's in-flight run -------
+
+type rul380GenRule struct {
+	RuleID  string            `json:"rule_id"`
+	Actions []json.RawMessage `json:"actions"`
+}
+
+type rul380Case struct {
+	Input struct {
+		PriorGeneration struct {
+			Generation int             `json:"generation"`
+			Rules      []rul380GenRule `json:"rules"`
+		} `json:"prior_generation"`
+		NewGeneration struct {
+			Generation int             `json:"generation"`
+			Rules      []rul380GenRule `json:"rules"`
+		} `json:"new_generation"`
+		InFlightRunsAtSwap []struct {
+			RuleID    string `json:"rule_id"`
+			RunID     string `json:"run_id"`
+			ElapsedMs int64  `json:"elapsed_ms"`
+		} `json:"in_flight_runs_at_swap"`
+	} `json:"input"`
+	Expected struct {
+		Results []struct {
+			RunID    string `json:"run_id"`
+			Canceled bool   `json:"canceled"`
+		} `json:"results"`
+	} `json:"expected"`
+}
+
+// rul380Entity is the fixture ULID both of this case's rules trigger on: the
+// corpus itself declares no fixture (it specifies each rule only by its
+// actions and its in-flight run), so a single shared subject entity is this
+// driver's own minimal fixture, driving both rules' runs in-flight together
+// exactly as the corpus's "both runs belong to the same generation swap"
+// framing describes.
+const rul380Entity = "01J8Z3K4N5P6Q7R8S9T0V1RL380"
+
+// compileRUL380Rule wraps one generation-declared rule_id + actions (the
+// corpus's own JSON, verbatim — including its actual delay duration) with a
+// state trigger on rul380Entity, compiled through the real front door.
+func compileRUL380Rule(t *testing.T, gr rul380GenRule) engine.CompiledRule {
+	t.Helper()
+	actionsJSON, err := json.Marshal(gr.Actions)
+	if err != nil {
+		t.Fatalf("marshal %s actions: %v", gr.RuleID, err)
+	}
+	ruleJSON := []byte(`{"id":"` + gr.RuleID + `","triggers":[{"type":"state","entity_id":"` + rul380Entity + `","to":["on"]}],"actions":` + string(actionsJSON) + `}`)
+	entry, cerr := compile.Compile(ruleJSON)
+	if cerr != nil {
+		t.Fatalf("compile %s: %v", gr.RuleID, cerr)
+	}
+	rule, err := model.ParseRule(ruleJSON)
+	if err != nil {
+		t.Fatalf("parse %s: %v", gr.RuleID, err)
+	}
+	cl, cerr2 := closure.Compute(rule, closure.Env{})
+	if cerr2 != nil {
+		t.Fatalf("closure.Compute %s: %v", gr.RuleID, cerr2)
+	}
+	return engine.CompiledRule{Entry: entry, Rule: rule, Closure: cl}
+}
+
+// runRUL380 replays the corpus's two-generation swap on the real engine: both
+// rule-A and rule-B fire their own in-flight [delay] run together (one
+// Observe, since both trigger on the same shared entity), then generation 2
+// edits rule-A's delay duration (changed, RUL-381) while leaving rule-B
+// byte-identical (unchanged) — ApplyGeneration's own returned Canceled
+// dispositions are diffed directly against the corpus's own per-run
+// expectations (joined here via each run's declared rule_id, since the engine
+// tracks no run-ID concept of its own).
+func runRUL380(t *testing.T, path string) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var c rul380Case
+	if err := json.Unmarshal(b, &c); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	reg := registry.FixtureRegistry{}
+	clk := clock.NewFakeClock()
+	sink := &corpusSink{}
+	e := engine.New(reg, clk, sink, nil)
+
+	buildGen := func(num int, rules []rul380GenRule) engine.Generation {
+		crs := make([]engine.CompiledRule, 0, len(rules))
+		for _, gr := range rules {
+			crs = append(crs, compileRUL380Rule(t, gr))
+		}
+		return engine.Generation{Number: num, Rules: crs}
+	}
+
+	e.ApplyGeneration(buildGen(c.Input.PriorGeneration.Generation, c.Input.PriorGeneration.Rules))
+
+	// Establish the shared entity's baseline, then a genuine off->on
+	// transition starts BOTH rules' in-flight [delay] runs at once.
+	e.Observe(state.NewObservation(reg, mediaEnt(rul380Entity, "off"), mediaEnt(rul380Entity, "off")))
+	started := e.Observe(state.NewObservation(reg, mediaEnt(rul380Entity, "off"), mediaEnt(rul380Entity, "on")))
+	if len(started) != len(c.Input.PriorGeneration.Rules) {
+		t.Fatalf("expected %d run(s) to start, got %+v", len(c.Input.PriorGeneration.Rules), started)
+	}
+	for _, d := range started {
+		if d.Disposition != engine.Ran {
+			t.Fatalf("expected every rule to start its in-flight run, got %+v", started)
+		}
+	}
+
+	// Advance the clock by the corpus's own declared in-flight elapsed time
+	// before the swap.
+	var elapsed int64
+	for _, r := range c.Input.InFlightRunsAtSwap {
+		elapsed = r.ElapsedMs
+		break
+	}
+	clk.Advance(elapsed)
+
+	out := e.ApplyGeneration(buildGen(c.Input.NewGeneration.Generation, c.Input.NewGeneration.Rules))
+
+	ruleIDByRunID := map[string]string{}
+	for _, r := range c.Input.InFlightRunsAtSwap {
+		ruleIDByRunID[r.RunID] = r.RuleID
+	}
+	canceledRuleIDs := map[string]bool{}
+	for _, d := range out {
+		if d.Disposition == engine.Canceled {
+			canceledRuleIDs[d.RuleID] = true
+		}
+	}
+
+	for _, want := range c.Expected.Results {
+		ruleID, ok := ruleIDByRunID[want.RunID]
+		if !ok {
+			t.Fatalf("no rule_id mapping for run_id %q", want.RunID)
+		}
+		got := canceledRuleIDs[ruleID]
+		if got != want.Canceled {
+			t.Errorf("run_id %s (rule %s): canceled = %v, want %v: %+v", want.RunID, ruleID, got, want.Canceled, out)
+		}
 	}
 }
