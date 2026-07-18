@@ -9,6 +9,8 @@ import (
 
 	"github.com/maaxton/waiveo-next/internal/rules/clock"
 	"github.com/maaxton/waiveo-next/internal/rules/model"
+	"github.com/maaxton/waiveo-next/internal/rules/registry"
+	"github.com/maaxton/waiveo-next/internal/rules/state"
 )
 
 // --- test doubles ------------------------------------------------------------
@@ -262,6 +264,142 @@ func TestRunActionsDeviceCommandMultiEntityFanOutOutcomes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// --- RUL-160: device_command/preset_batch command-vocabulary enforcement ---
+
+func TestRunActionsDeviceCommandRejectsCommandNotInDeviceClassVocabulary(t *testing.T) {
+	const entityID = "01J8Z3K4N5P6Q7R8S9T0V1W2Z2"
+	sink := &fakeSink{}
+	snap := state.Snapshot{entityID: state.Entity{ID: entityID, DeviceClass: "media-player"}}
+	ctx := ActionContext{Clk: clock.NewFakeClock(), Sink: sink, Reg: registry.FixtureRegistry{}, Snap: snap}
+
+	// "reboot" is not in media-player's command vocabulary (fixture.go,
+	// registry_test.go's own CommandExists("media-player","reboot")==false
+	// assertion) — RUL-160 requires this be rejected, never dispatched as if
+	// valid.
+	a := parseAction(t, `{"type":"device_command","entity_id":"`+entityID+`","command":"reboot"}`)
+	if err := RunActions(ctx, []model.Member{a}); err != nil {
+		t.Fatalf("RunActions: %v", err)
+	}
+	if len(sink.calls) != 0 {
+		t.Fatalf("RUL-160: sink.calls = %+v, want none (command not in media-player's vocabulary)", sink.calls)
+	}
+}
+
+func TestRunActionsDeviceCommandAllowsCommandInDeviceClassVocabulary(t *testing.T) {
+	const entityID = "01J8Z3K4N5P6Q7R8S9T0V1W2Z2"
+	sink := &fakeSink{}
+	snap := state.Snapshot{entityID: state.Entity{ID: entityID, DeviceClass: "media-player"}}
+	ctx := ActionContext{Clk: clock.NewFakeClock(), Sink: sink, Reg: registry.FixtureRegistry{}, Snap: snap}
+
+	// "power" IS in media-player's fixture vocabulary — a positive control
+	// proving the RUL-160 check does not block a valid command.
+	a := parseAction(t, `{"type":"device_command","entity_id":"`+entityID+`","command":"power"}`)
+	if err := RunActions(ctx, []model.Member{a}); err != nil {
+		t.Fatalf("RunActions: %v", err)
+	}
+	if len(sink.calls) != 1 || sink.calls[0].Command != "power" {
+		t.Fatalf("sink.calls = %+v, want one dispatch of power", sink.calls)
+	}
+}
+
+func TestRunActionsDeviceCommandUncheckedWhenNoRegistryConfigured(t *testing.T) {
+	// ctx.Reg == nil means no registry has been wired in at all (the same
+	// "not configured" posture ctx.Sink/ctx.Presets already carry elsewhere
+	// in this package) — the RUL-160 check is skipped, not treated as a
+	// violation, so a caller that hasn't wired a registry yet keeps its prior
+	// (unchecked) dispatch behavior.
+	const entityID = "01J8Z3K4N5P6Q7R8S9T0V1W2Z2"
+	sink := &fakeSink{}
+	ctx := ActionContext{Clk: clock.NewFakeClock(), Sink: sink}
+
+	a := parseAction(t, `{"type":"device_command","entity_id":"`+entityID+`","command":"reboot"}`)
+	if err := RunActions(ctx, []model.Member{a}); err != nil {
+		t.Fatalf("RunActions: %v", err)
+	}
+	if len(sink.calls) != 1 {
+		t.Fatalf("sink.calls = %+v, want one dispatch (no registry configured, nothing to enforce)", sink.calls)
+	}
+}
+
+func TestRunActionsDeviceCommandMultiEntityRejectsInvalidCommandPerTarget(t *testing.T) {
+	targets := []string{"e1", "e2"}
+	resolve := func(ref model.EntityRef) []string {
+		if ref.Selector == "label==all" {
+			return targets
+		}
+		return nil
+	}
+	snap := state.Snapshot{
+		"e1": state.Entity{ID: "e1", DeviceClass: "media-player"}, // has "power"
+		"e2": state.Entity{ID: "e2", DeviceClass: "not-a-class"},  // no vocabulary at all
+	}
+	sink := &fakeSink{}
+	var outcomes []PresetBatchOutcome
+	ctx := ActionContext{Clk: clock.NewFakeClock(), Sink: sink, Resolve: resolve, Reg: registry.FixtureRegistry{}, Snap: snap, Outcomes: &outcomes}
+
+	a := parseAction(t, `{"type":"device_command","selector":"label==all","command":"power"}`)
+	if err := RunActions(ctx, []model.Member{a}); err != nil {
+		t.Fatalf("RunActions: %v", err)
+	}
+
+	// Only e1's dispatch (a valid command for its device class) should ever
+	// reach the sink — e2's is rejected before dispatch (RUL-160).
+	if len(sink.calls) != 1 || sink.calls[0].EntityID != "e1" {
+		t.Fatalf("sink.calls = %+v, want exactly one call for e1", sink.calls)
+	}
+	if len(outcomes) != 1 {
+		t.Fatalf("outcomes = %+v, want 1", outcomes)
+	}
+	if outcomes[0].Outcome != "partial" {
+		t.Errorf("outcome = %q, want partial (one valid target, one vocabulary rejection)", outcomes[0].Outcome)
+	}
+	for _, r := range outcomes[0].Results {
+		if r.Target == "e1" && !r.OK {
+			t.Errorf("e1 result = %+v, want OK (valid command)", r)
+		}
+		if r.Target == "e2" && r.OK {
+			t.Errorf("e2 result = %+v, want rejected (command not in device class's vocabulary)", r)
+		}
+	}
+}
+
+func TestRunActionsPresetBatchRejectsInvalidCommandInPresetList(t *testing.T) {
+	const presetID = "01J8Z3K4N5P6Q7R8S9T0V1W2Z5"
+	snap := state.Snapshot{
+		"e1": state.Entity{ID: "e1", DeviceClass: "media-player"}, // "launch" is valid
+		"e2": state.Entity{ID: "e2", DeviceClass: "media-player"}, // "reboot" is not
+	}
+	presets := &fakePresets{byID: map[string][]PresetCommand{
+		presetID: {
+			{EntityID: "e1", Command: "launch"},
+			{EntityID: "e2", Command: "reboot"},
+		},
+	}}
+	sink := &fakeSink{}
+	var outcomes []PresetBatchOutcome
+	ctx := ActionContext{Clk: clock.NewFakeClock(), Sink: sink, Presets: presets, Reg: registry.FixtureRegistry{}, Snap: snap, Outcomes: &outcomes}
+
+	a := parseAction(t, `{"type":"preset_batch","preset_id":"`+presetID+`"}`)
+	if err := RunActions(ctx, []model.Member{a}); err != nil {
+		t.Fatalf("RunActions: %v", err)
+	}
+
+	if len(sink.calls) != 1 || sink.calls[0].EntityID != "e1" {
+		t.Fatalf("sink.calls = %+v, want exactly one call for e1 (RUL-160 rejects e2's reboot before dispatch)", sink.calls)
+	}
+	if len(outcomes) != 1 {
+		t.Fatalf("outcomes = %+v, want 1", outcomes)
+	}
+	if outcomes[0].Outcome != "partial" {
+		t.Errorf("outcome = %q, want partial", outcomes[0].Outcome)
+	}
+	for _, r := range outcomes[0].Results {
+		if r.Target == "e2" && r.OK {
+			t.Errorf("e2 result = %+v, want rejected (reboot not in media-player's vocabulary)", r)
+		}
 	}
 }
 

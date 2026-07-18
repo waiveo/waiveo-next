@@ -282,9 +282,15 @@ func resolveTargets(ctx ActionContext, ref model.EntityRef) []string {
 }
 
 // dispatchOne performs a single-entity, atomic dispatch (RUL-161) — its
-// pass/fail is not recorded into ctx.Outcomes.
+// pass/fail is not recorded into ctx.Outcomes. A command not drawn from the
+// entity's device class's command vocabulary (RUL-160) is rejected the same
+// way a nil Sink is: no dispatch happens, and the rejection is silently
+// absorbed (single-entity dispatch has no result channel to report into).
 func dispatchOne(ctx ActionContext, entityID, command string, params map[string]any) {
 	if ctx.Sink == nil {
+		return
+	}
+	if !commandAllowed(ctx, entityID, command) {
 		return
 	}
 	_ = ctx.Sink.Dispatch(entityID, command, params)
@@ -301,15 +307,43 @@ func dispatchAll(ctx ActionContext, targets []string, command string, params map
 	return results
 }
 
-// dispatchResult dispatches one command and reports its CommandResult.
+// dispatchResult dispatches one command and reports its CommandResult. A
+// command not drawn from the entity's device class's command vocabulary
+// (RUL-160, device-class-registry/1 REG-050/052) is rejected before ever
+// reaching ctx.Sink — reported as a failed CommandResult, same as any other
+// dispatch failure (RUL-171/172).
 func dispatchResult(ctx ActionContext, entityID, command string, params map[string]any) CommandResult {
 	if ctx.Sink == nil {
 		return CommandResult{Target: entityID, Command: command, OK: false, Error: "no command sink configured"}
+	}
+	if !commandAllowed(ctx, entityID, command) {
+		return CommandResult{Target: entityID, Command: command, OK: false, Error: "command not declared in entity's device class command vocabulary"}
 	}
 	if err := ctx.Sink.Dispatch(entityID, command, params); err != nil {
 		return CommandResult{Target: entityID, Command: command, OK: false, Error: err.Error()}
 	}
 	return CommandResult{Target: entityID, Command: command, OK: true}
+}
+
+// commandAllowed implements RUL-160's command-vocabulary restriction: command
+// MUST be drawn from entityID's resolved device class's command vocabulary,
+// declared in the device-class registry (registry.Registry.CommandExists).
+// ctx.Reg == nil means no registry has been wired into this ActionContext at
+// all — the same "not configured, nothing to enforce" posture ctx.Sink and
+// ctx.Presets already carry elsewhere in this file — so the check is skipped
+// rather than treated as a violation. Once a registry IS configured, an
+// entityID that does not resolve in ctx.Snap is an unresolvable reference and
+// fails closed (never permitted), per this contract's fail-closed posture for
+// unresolvable references.
+func commandAllowed(ctx ActionContext, entityID, command string) bool {
+	if ctx.Reg == nil {
+		return true
+	}
+	e, ok := ctx.Snap.Get(entityID)
+	if !ok {
+		return false
+	}
+	return ctx.Reg.CommandExists(e.DeviceClass, command)
 }
 
 // recordOutcome appends a PresetBatchOutcome computed from results into
