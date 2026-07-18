@@ -6,14 +6,15 @@
 // actions through the injectable sinks of package eval — resolving each firing
 // that reaches the action sequence to a RunDisposition.
 //
-// This part (Task 8) implements the base run machine: trigger -> conditions ->
-// actions, with a `delay` action's tail deferred and resumed on monotonic time
-// via Tick (RUL-190). The `single`/`restart` mode disposition logic
-// (RUL-241/242/245/246) is layered on top of this machine in the next part; a
-// firing that reaches a fresh run here records a `ran` disposition, and a
-// firing that arrives while a run is already in flight is, for now, dropped
-// without a disposition (the mode layer replaces that drop with the correct
-// per-mode outcome).
+// The base run machine drives trigger -> conditions -> actions, with a `delay`
+// action's tail deferred and resumed on monotonic time via Tick (RUL-190). The
+// `single`/`restart` mode disposition logic (RUL-241/242/245/246) sits on top:
+// a firing that starts a fresh run records `ran`; under single a firing that
+// arrives while a run is in flight is dropped and records `skipped`, leaving
+// the in-flight run untouched (RUL-241); under restart such a firing cancels
+// the in-flight run — recording `restarted` — and starts a fresh run recording
+// `ran` with timers zeroed (RUL-242). queued/parallel are app-class and are
+// refused at Load (RUL-240).
 package engine
 
 import (
@@ -31,18 +32,16 @@ import (
 
 // Disposition is the closed outcome a firing (or a dropped/preempted firing)
 // resolves to for mode evaluation (RUL-246): `ran`, `skipped`, or `restarted`.
-// This part produces only `ran`; the mode layer (next part) produces the other
-// two.
 type Disposition string
 
 const (
 	// Ran — a new run started normally (RUL-246).
 	Ran Disposition = "ran"
-	// Skipped — a firing dropped per single's / parallel's overflow handling
-	// (RUL-241/244). Produced by the mode layer.
+	// Skipped — a firing dropped per single's overflow handling (RUL-241; the
+	// app engine's parallel overflow, RUL-244, records it too but never reaches
+	// this edge engine).
 	Skipped Disposition = "skipped"
-	// Restarted — the run a restart-mode firing preempted (RUL-242). Produced
-	// by the mode layer.
+	// Restarted — the run a restart-mode firing preempted (RUL-242).
 	Restarted Disposition = "restarted"
 )
 
@@ -251,9 +250,7 @@ func (e *Engine) Observe(obs state.Observation) []RunDisposition {
 			continue
 		}
 		if e.stepTriggerObservation(tr, obs) {
-			if d := e.fire(); d != nil {
-				out = append(out, *d)
-			}
+			out = append(out, e.fire()...)
 		}
 	}
 	return out
@@ -274,9 +271,7 @@ func (e *Engine) Tick(now clock.Clock) []RunDisposition {
 			continue // nothing to advance between observations
 		}
 		if e.stepTriggerTick(tr, now) {
-			if d := e.fire(); d != nil {
-				out = append(out, *d)
-			}
+			out = append(out, e.fire()...)
 		}
 	}
 	e.resumeDelay(now)
@@ -408,23 +403,47 @@ func (e *Engine) numericLevelHolds(tr *triggerRuntime, ent state.Entity) bool {
 	return true
 }
 
-// fire resolves one trigger firing: it evaluates the rule's conditions as an
-// implicit AND (RUL-004) and, when they pass and no run is already in flight,
-// starts a run of the action sequence — recording a `ran` disposition. A
-// firing whose conditions fail starts no run and records no disposition
-// (RUL-004: every condition must pass for the actions to run). A firing that
-// arrives while a run is in flight is, in this part, dropped without a
-// disposition; the mode layer (next part) replaces that with the per-mode
-// outcome.
-func (e *Engine) fire() *RunDisposition {
+// fire resolves one trigger firing against the rule's conditions and mode
+// (RUL-004/241/242/246), returning the disposition(s) that firing produces.
+//
+// A firing whose conditions (implicit AND, RUL-004) do not all pass never
+// reaches mode evaluation: it starts no run and records no disposition.
+//
+// A firing that passes its conditions is resolved by the rule's mode:
+//   - no run in flight: a fresh run starts and the firing records `ran`.
+//   - single (RUL-241): while a run is in progress the firing is dropped —
+//     no new run starts, the in-flight run is untouched — and records
+//     `skipped`. This is the default when `mode` is omitted.
+//   - restart (RUL-242): while a run is in progress the firing cancels that
+//     run (discarding its pending `delay`/`for`-hold), which records
+//     `restarted`, and starts a fresh run from the top with timers zeroed —
+//     the fresh run records `ran`. Both dispositions are returned, the
+//     canceled run's first.
+//
+// Every firing that reaches this point resolves to exactly one disposition per
+// run it affects (RUL-246): the closed set is `ran`, `skipped`, `restarted`.
+// (queued/parallel are app-class and never reach this edge engine, RUL-240.)
+func (e *Engine) fire() []RunDisposition {
 	if !e.conditionsPass() {
 		return nil
 	}
 	if e.run != nil {
-		return nil // a run is in flight; the mode layer owns this case
+		switch e.mode {
+		case "restart":
+			// Cancel the in-flight run, discarding its pending delay/hold
+			// (RUL-242), then start a fresh run whose own timers start at zero
+			// from the current monotonic instant.
+			e.run = nil
+			restarted := RunDisposition{RuleID: e.ruleID, Disposition: Restarted, Mode: e.mode}
+			e.startRun(e.rule.Actions)
+			return []RunDisposition{restarted, {RuleID: e.ruleID, Disposition: Ran, Mode: e.mode}}
+		default: // single (RUL-241)
+			// Drop the firing; the in-flight run is left running untouched.
+			return []RunDisposition{{RuleID: e.ruleID, Disposition: Skipped, Mode: e.mode}}
+		}
 	}
 	e.startRun(e.rule.Actions)
-	return &RunDisposition{RuleID: e.ruleID, Disposition: Ran, Mode: e.mode}
+	return []RunDisposition{{RuleID: e.ruleID, Disposition: Ran, Mode: e.mode}}
 }
 
 // conditionsPass evaluates the rule's conditions array as an implicit AND
