@@ -2,6 +2,9 @@ package tlsboot
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/x509"
+	"encoding/pem"
 	"testing"
 )
 
@@ -71,22 +74,120 @@ func TestVerifyCommitmentRejectsSubstitutedCert(t *testing.T) {
 }
 
 // TestGenSelfSignedProducesParsableCertAndKey confirms GenSelfSigned's
-// output is well-formed PEM for both the cert and the ed25519 private key,
-// and that the key pairs with the cert's public key.
+// output actually parses as a real X.509 certificate and a real PKCS8
+// ed25519 private key, and that the key pairs with the cert's public key —
+// not merely that the PEM bytes are non-empty and mention the right words.
 func TestGenSelfSignedProducesParsableCertAndKey(t *testing.T) {
 	certPEM, keyPEM := GenSelfSigned()
 
-	if len(certPEM) == 0 {
-		t.Fatal("GenSelfSigned() returned empty certPEM")
+	certBlock, _ := pem.Decode(certPEM)
+	if certBlock == nil || certBlock.Type != "CERTIFICATE" {
+		t.Fatalf("certPEM did not decode to a CERTIFICATE block: %s", certPEM)
 	}
-	if len(keyPEM) == 0 {
-		t.Fatal("GenSelfSigned() returned empty keyPEM")
+	cert, err := x509.ParseCertificate(certBlock.Bytes)
+	if err != nil {
+		t.Fatalf("x509.ParseCertificate(certBlock.Bytes) error: %v", err)
 	}
 
-	if !bytes.Contains(certPEM, []byte("CERTIFICATE")) {
-		t.Fatalf("certPEM does not look like a PEM certificate block: %s", certPEM)
+	keyBlock, _ := pem.Decode(keyPEM)
+	if keyBlock == nil || keyBlock.Type != "PRIVATE KEY" {
+		t.Fatalf("keyPEM did not decode to a PRIVATE KEY block: %s", keyPEM)
 	}
-	if !bytes.Contains(keyPEM, []byte("PRIVATE KEY")) {
-		t.Fatalf("keyPEM does not look like a PEM private key block: %s", keyPEM)
+	key, err := x509.ParsePKCS8PrivateKey(keyBlock.Bytes)
+	if err != nil {
+		t.Fatalf("x509.ParsePKCS8PrivateKey(keyBlock.Bytes) error: %v", err)
+	}
+
+	priv, ok := key.(ed25519.PrivateKey)
+	if !ok {
+		t.Fatalf("parsed private key is %T, want ed25519.PrivateKey", key)
+	}
+
+	certPub, ok := cert.PublicKey.(ed25519.PublicKey)
+	if !ok {
+		t.Fatalf("cert.PublicKey is %T, want ed25519.PublicKey", cert.PublicKey)
+	}
+
+	if !priv.Public().(ed25519.PublicKey).Equal(certPub) {
+		t.Fatal("parsed private key's public half does not match the cert's public key")
+	}
+}
+
+// TestFingerprintCommitmentMatchesDERCore confirms the PEM-holding
+// convenience FingerprintCommitment agrees exactly with the DER core
+// FingerprintCommitmentDER when both are fed the same certificate — the
+// interop guarantee that lets a non-Go verifier (which only ever sees DER)
+// reproduce the same commitment the relay computed from PEM.
+func TestFingerprintCommitmentMatchesDERCore(t *testing.T) {
+	certPEM, _ := GenSelfSigned()
+
+	block, _ := pem.Decode(certPEM)
+	if block == nil || block.Type != "CERTIFICATE" {
+		t.Fatalf("certPEM did not decode to a CERTIFICATE block: %s", certPEM)
+	}
+
+	fromPEM := FingerprintCommitment(certPEM)
+	fromDER := FingerprintCommitmentDER(block.Bytes)
+
+	if !bytes.Equal(fromPEM, fromDER) {
+		t.Fatalf("FingerprintCommitment(certPEM) = %x, FingerprintCommitmentDER(der) = %x, want equal", fromPEM, fromDER)
+	}
+}
+
+// TestVerifyCommitmentDERRejectsSubstitutedCert is the DER-variant
+// equivalent of TestVerifyCommitmentRejectsSubstitutedCert: the same
+// PLY-056 MITM property, exercised via the raw-DER path a non-Go player
+// (which only ever holds DER, never PEM) would actually call.
+func TestVerifyCommitmentDERRejectsSubstitutedCert(t *testing.T) {
+	certA, _ := GenSelfSigned()
+	certB, _ := GenSelfSigned()
+
+	blockA, _ := pem.Decode(certA)
+	blockB, _ := pem.Decode(certB)
+	if blockA == nil || blockB == nil {
+		t.Fatal("failed to PEM-decode one of the generated certs; test fixture invalid")
+	}
+
+	derA, err := x509.ParseCertificate(blockA.Bytes)
+	if err != nil {
+		t.Fatalf("x509.ParseCertificate(certA) error: %v", err)
+	}
+	derB, err := x509.ParseCertificate(blockB.Bytes)
+	if err != nil {
+		t.Fatalf("x509.ParseCertificate(certB) error: %v", err)
+	}
+
+	if bytes.Equal(derA.Raw, derB.Raw) {
+		t.Fatal("GenSelfSigned() produced identical cert DER on two calls; test fixture invalid")
+	}
+
+	commitmentA := FingerprintCommitmentDER(derA.Raw)
+
+	if VerifyCommitmentDER(derB.Raw, commitmentA) {
+		t.Fatal("VerifyCommitmentDER(derB.Raw, commitmentA) = true, want false (MITM-substituted cert must be rejected)")
+	}
+
+	// Sanity: the original pairing still verifies correctly.
+	if !VerifyCommitmentDER(derA.Raw, commitmentA) {
+		t.Fatal("VerifyCommitmentDER(derA.Raw, commitmentA) = false, want true")
+	}
+}
+
+// TestVerifyCommitmentRejectsGarbagePEM confirms VerifyCommitment fails
+// closed — returns false, never panics — when certPEM is not decodable PEM
+// (or not a CERTIFICATE block) at all, e.g. a truncated or corrupted fetch.
+func TestVerifyCommitmentRejectsGarbagePEM(t *testing.T) {
+	garbage := []byte("this is not PEM at all")
+
+	commitment := make([]byte, commitmentBytes) // arbitrary non-empty commitment
+
+	if VerifyCommitment(garbage, commitment) {
+		t.Fatal("VerifyCommitment(garbage, commitment) = true, want false")
+	}
+
+	// Also confirm FingerprintCommitment itself returns nil rather than
+	// panicking on undecodable input.
+	if got := FingerprintCommitment(garbage); got != nil {
+		t.Fatalf("FingerprintCommitment(garbage) = %x, want nil", got)
 	}
 }
