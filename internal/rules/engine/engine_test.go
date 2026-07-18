@@ -292,6 +292,55 @@ func TestSeedEntityStateEnablesFirstFire(t *testing.T) {
 	}
 }
 
+// TestSeedEntityStateBootReconfirmNoSpuriousForHold: on engine restart the
+// durable pre-restart level is supplied via SeedEntityState, then the boot
+// reconfirmation of unchanged durable state (StateChanged=false) is observed.
+// A bounded `for`-hold must NOT read that reconfirmation as a fresh rising edge
+// — it must not arm, so no Tick after the span may fire. RUL-300 forbids a bare
+// boot reconfirm of unchanged durable state from firing; RUL-360 requires a
+// hold to begin counting only once its condition FRESHLY re-matches post-restart.
+func TestSeedEntityStateBootReconfirmNoSpuriousForHold(t *testing.T) {
+	reg := registry.FixtureRegistry{}
+	clk := clock.NewFakeClock()
+	sink := &recordingSink{}
+
+	entry, rule := compileRule(t, `{
+		"id":"RULEBOOT",
+		"triggers":[{"type":"state","entity_id":"`+subjectEntity+`","to":["on"],"for":30}],
+		"actions":[{"type":"device_command","entity_id":"`+subjectEntity+`","command":"power"}]
+	}`)
+	e := New(reg, clk, sink, nil)
+	if err := e.Load(entry, rule); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// Restart path: supply the durable pre-restart level (already "on").
+	e.SeedEntityState(subjectEntity, "on")
+	// Boot reconfirm of unchanged durable state: on -> on, StateChanged=false.
+	if d := e.Observe(state.NewObservation(reg, ent(subjectEntity, "on"), ent(subjectEntity, "on"))); len(d) != 0 {
+		t.Fatalf("boot reconfirm of unchanged state fired (RUL-300): %+v", d)
+	}
+	// Advance well past the 30s span: an armed hold would fire here. It must not.
+	clk.Advance(30_000)
+	if d := e.Tick(clk); len(d) != 0 {
+		t.Fatalf("bare boot reconfirm armed a for-hold and fired via Tick (RUL-360): %+v", d)
+	}
+	if len(sink.calls) != 0 {
+		t.Fatalf("boot reconfirm spuriously dispatched: %+v", sink.calls)
+	}
+
+	// A genuine fresh re-match AFTER restart must still arm and fire (RUL-360).
+	e.Observe(state.NewObservation(reg, ent(subjectEntity, "off"), ent(subjectEntity, "off")))
+	e.Observe(state.NewObservation(reg, ent(subjectEntity, "off"), ent(subjectEntity, "on")))
+	clk.Advance(30_000)
+	disps := e.Tick(clk)
+	if len(disps) != 1 || disps[0].Disposition != Ran {
+		t.Fatalf("fresh post-restart re-match should fire after span: %+v", disps)
+	}
+	if len(sink.calls) != 1 {
+		t.Fatalf("fresh re-match should dispatch once, got %+v", sink.calls)
+	}
+}
+
 // TestForHoldSuppressesFlapAndFiresViaTick: a bounded `for`-hold on the
 // monotonic clock does not fire while the level flaps back before the span
 // elapses, and does fire once the level has held continuously for the span,

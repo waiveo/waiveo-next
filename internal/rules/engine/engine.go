@@ -229,6 +229,20 @@ func (e *Engine) SeedEntityState(entityID, st string) {
 			continue
 		}
 		tr.baseline = eval.TriggerBaseline{Known: true, State: st}
+		// Seeding flips `seen`, which disables the first-observation
+		// hold-seed branch in stepTriggerObservation. So seed the bounded
+		// hold's remembered level here too (RUL-360): the durable pre-restart
+		// level must be recorded so the boot reconfirmation of unchanged
+		// durable state (RUL-025/300) is read as the level continuing to hold,
+		// NOT as a fresh rising edge that would arm the `for`-hold and
+		// spuriously fire `for` seconds after boot. A bounded hold begins
+		// counting again only once its condition FRESHLY re-matches after
+		// restart (RUL-360/361). Restricted to `state` triggers to mirror
+		// RUL-302's numeric exemption from RUL-300 suppression.
+		if tr.kind == "state" && tr.hold != nil {
+			tr.lastLevelHolds = e.stateLevelHolds(tr, cur)
+			tr.hold.Seed(tr.lastLevelHolds)
+		}
 		tr.seen = true
 	}
 }
