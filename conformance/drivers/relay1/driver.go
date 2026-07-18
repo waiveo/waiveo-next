@@ -237,8 +237,12 @@ func driveREL070(rep *report.Report, client RelayClient, feeder Feeder, cases ma
 	}
 	gen2, hash2, _, _ := store.LastAppliedGeneration()
 
-	// state_ack.body.applied_generation == 43.
-	if wantGen := expectInt(c, "state_ack.body.applied_generation"); wantGen != 0 && gen2 != wantGen {
+	// state_ack.body.applied_generation == 43. The corpus case declares this
+	// field, so its absence is itself a failure — not a silently-skipped
+	// assertion.
+	if wantGen, present := expectInt(c, "state_ack.body.applied_generation"); !present {
+		diffs = append(diffs, report.Diff{Field: "state_ack.body.applied_generation", Expected: "<declared in corpus expected block>", Actual: "absent from corpus fixture"})
+	} else if gen2 != wantGen {
 		diffs = append(diffs, report.Diff{Field: "state_ack.body.applied_generation", Expected: wantGen, Actual: gen2})
 	}
 	// persisted_last_applied_hash_unchanged: the hash must not have moved even
@@ -304,7 +308,12 @@ func driveREL071(rep *report.Report, client RelayClient, feeder Feeder, cases ma
 	// sections_applied=false + persisted_last_applied_unchanged: last-applied
 	// must still be exactly {42, hashBefore}.
 	genAfter, hashAfter, _, _ := store.LastAppliedGeneration()
-	if wantGen := expectInt(c, "persisted_last_applied_unchanged.generation"); wantGen != 0 && genAfter != wantGen {
+	// persisted_last_applied_unchanged.generation is declared by the corpus
+	// case, so its absence is itself a failure — not a silently-skipped
+	// assertion.
+	if wantGen, present := expectInt(c, "persisted_last_applied_unchanged.generation"); !present {
+		diffs = append(diffs, report.Diff{Field: "persisted_last_applied_unchanged.generation (sections_applied=false)", Expected: "<declared in corpus expected block>", Actual: "absent from corpus fixture"})
+	} else if genAfter != wantGen {
 		diffs = append(diffs, report.Diff{Field: "persisted_last_applied_unchanged.generation (sections_applied=false)", Expected: wantGen, Actual: genAfter})
 	}
 	if genAfter != genBefore || hashAfter != hashBefore {
@@ -358,26 +367,38 @@ func reEnrollRefusalCode(enrollBaseURL, token string) (string, error) {
 	return pb.Code, nil
 }
 
-// expectInt reads an integer expected field (JSON numbers decode as float64),
-// returning 0 when absent.
-func expectInt(c corpus.Case, path string) int64 {
+// expectInt reads an integer expected field (JSON numbers decode as
+// float64), also reporting whether the field was PRESENT — a case that
+// declares the field must have it asserted, never silently skipped just
+// because it happens to be missing from the corpus fixture.
+func expectInt(c corpus.Case, path string) (n int64, present bool) {
 	v, ok := c.Expect(path)
 	if !ok {
-		return 0
+		return 0, false
 	}
-	switch n := v.(type) {
+	switch v := v.(type) {
 	case float64:
-		return int64(n)
+		return int64(v), true
 	case int64:
-		return n
+		return v, true
 	case int:
-		return int64(n)
+		return int64(v), true
 	default:
-		return 0
+		return 0, false
 	}
 }
 
 func corpusDir() string {
 	_, self, _, _ := runtime.Caller(0)
 	return filepath.Join(filepath.Dir(self), "..", "..", "corpora", "relay-1")
+}
+
+// LoadCorpus loads every frozen relay-1 corpus case, keyed by case_id — the
+// exact set Run itself reads. It is exported so the driver's own tests can
+// independently verify every case_id present in the corpus DIRECTORY is
+// accounted for by Run as either driven or pending (§10 "no silent caps"
+// extended to a NEW case someone freezes later: it must be triaged, not
+// silently uncovered).
+func LoadCorpus() (map[string]corpus.Case, error) {
+	return corpus.LoadDir(corpusDir())
 }

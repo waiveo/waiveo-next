@@ -227,8 +227,11 @@ func drivePLY057(rep *report.Report, target PlayerTarget, relay Relay, cases map
 	res := target.Pair(mismatched)
 
 	var diffs []report.Diff
-	// pairing_attempt_result=rejected.
-	if want := c.ExpectString("pairing_attempt_result"); want == "rejected" && !res.Rejected {
+	// pairing_attempt_result=rejected. The corpus case declares this field, so
+	// its absence is itself a failure — not a silently-skipped assertion.
+	if v, ok := c.Expect("pairing_attempt_result"); !ok {
+		diffs = append(diffs, report.Diff{Field: "pairing_attempt_result", Expected: "<declared in corpus expected block>", Actual: "absent from corpus fixture"})
+	} else if want, _ := v.(string); want == "rejected" && !res.Rejected {
 		diffs = append(diffs, report.Diff{Field: "pairing_attempt_result", Expected: want, Actual: "not-rejected"})
 	}
 	// commitment_match (expected false).
@@ -322,6 +325,16 @@ func drivePLY050(rep *report.Report, target PlayerTarget, relay Relay, cases map
 func corpusDir() string {
 	_, self, _, _ := runtime.Caller(0)
 	return filepath.Join(filepath.Dir(self), "..", "..", "corpora", "player-1")
+}
+
+// LoadCorpus loads every frozen player-1 corpus case, keyed by case_id — the
+// exact set Run itself reads. It is exported so the driver's own tests can
+// independently verify every case_id present in the corpus DIRECTORY is
+// accounted for by Run as either driven or pending (§10 "no silent caps"
+// extended to a NEW case someone freezes later: it must be triaged, not
+// silently uncovered).
+func LoadCorpus() (map[string]corpus.Case, error) {
+	return corpus.LoadDir(corpusDir())
 }
 
 // jsonHasKey reports whether body decodes as a JSON object carrying key at

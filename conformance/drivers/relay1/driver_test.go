@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"reflect"
+	"sort"
 	"testing"
 	"time"
 
@@ -83,6 +84,63 @@ func TestRelay1DriverHasTeeth(t *testing.T) {
 	}
 	if rep.OK() {
 		t.Errorf("driver reported OK against a broken client — the oracle has no teeth")
+	}
+}
+
+// TestRelay1CorpusFullyAccountedFor extends the §10 "no silent caps"
+// guarantee to cases nobody has wired into the driver yet: it enumerates
+// every case_id actually present in the frozen relay-1 corpus DIRECTORY
+// (independent of expectedDriven/expectedPending above) and asserts that set
+// is EXACTLY Driven() ∪ PendingIDs(). Freezing a new corpus/relay-1/*.json
+// case without triaging it (driving it, or adding it to the driver's Pending
+// list with a reason) fails this test by name, instead of silently shipping
+// uncovered.
+func TestRelay1CorpusFullyAccountedFor(t *testing.T) {
+	feeder, err := relay1.NewInProcessFeeder()
+	if err != nil {
+		t.Fatalf("NewInProcessFeeder: %v", err)
+	}
+	defer feeder.Close()
+
+	rep := relay1.Run(relay1.NewRealRelayClient(), feeder)
+
+	cases, err := relay1.LoadCorpus()
+	if err != nil {
+		t.Fatalf("LoadCorpus: %v", err)
+	}
+
+	inCorpus := make(map[string]bool, len(cases))
+	for id := range cases {
+		inCorpus[id] = true
+	}
+
+	accounted := map[string]bool{}
+	for _, id := range rep.Driven() {
+		accounted[id] = true
+	}
+	for _, id := range rep.PendingIDs() {
+		accounted[id] = true
+	}
+
+	var uncovered, phantom []string
+	for id := range inCorpus {
+		if !accounted[id] {
+			uncovered = append(uncovered, id)
+		}
+	}
+	for id := range accounted {
+		if !inCorpus[id] {
+			phantom = append(phantom, id)
+		}
+	}
+	sort.Strings(uncovered)
+	sort.Strings(phantom)
+
+	if len(uncovered) > 0 {
+		t.Errorf("corpus case(s) frozen under conformance/corpora/relay-1 but NEITHER driven NOR pending in the relay1 driver — triage: drive it in Run, or mark it Pending with a reason: %v", uncovered)
+	}
+	if len(phantom) > 0 {
+		t.Errorf("driver Driven()/PendingIDs() name case id(s) that do not exist in the frozen relay-1 corpus (phantom id, or corpus file renamed/removed): %v", phantom)
 	}
 }
 
