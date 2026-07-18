@@ -28,4 +28,5 @@ const (
 	codeEntityRefAmbiguous      = "ENTITY_REF_AMBIGUOUS"
 	codeModeMaxMissing          = "MODE_MAX_MISSING"
 	codeModeMaxNotApplicable    = "MODE_MAX_NOT_APPLICABLE"
+	codeMisfireInvalid          = "MISFIRE_INVALID"
 )

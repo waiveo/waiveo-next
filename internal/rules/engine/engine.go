@@ -640,26 +640,89 @@ func (e *Engine) numericLevelHolds(tr *triggerRuntime, ent state.Entity) bool {
 // run it affects (RUL-246): the closed set is `ran`, `skipped`, `restarted`.
 // (queued/parallel are app-class and never reach this edge engine, RUL-240.)
 func (e *Engine) fire() []RunDisposition {
+	return e.fireWith(false)
+}
+
+// fireWith is fire's implementation with the orthogonal misfire_caught marker
+// threaded through (RUL-355): a live observation fires with misfireCaught=false,
+// a caught-up misfired occurrence (catch_up_once/fire_each, dispatchMisfire) with
+// misfireCaught=true. The marker is stamped on every disposition this firing
+// produces — it records how the firing arose, orthogonal to whichever mode
+// disposition (`ran`/`skipped`/`restarted`) each records — so a caught-up fire
+// dropped by single or preempting under restart still carries it (RUL-246/355).
+func (e *Engine) fireWith(misfireCaught bool) []RunDisposition {
 	if !e.conditionsPass() {
 		return nil
 	}
-	if e.run != nil {
-		switch e.mode {
-		case "restart":
-			// Cancel the in-flight run, discarding its pending delay/hold
-			// (RUL-242), then start a fresh run whose own timers start at zero
-			// from the current monotonic instant.
-			e.run = nil
-			restarted := RunDisposition{RuleID: e.ruleID, Disposition: Restarted, Mode: e.mode}
-			e.startRun(e.rule.Actions)
-			return []RunDisposition{restarted, {RuleID: e.ruleID, Disposition: Ran, Mode: e.mode}}
-		default: // single (RUL-241)
-			// Drop the firing; the in-flight run is left running untouched.
-			return []RunDisposition{{RuleID: e.ruleID, Disposition: Skipped, Mode: e.mode}}
+	var out []RunDisposition
+	switch {
+	case e.run != nil && e.mode == "restart":
+		// Cancel the in-flight run, discarding its pending delay/hold (RUL-242),
+		// then start a fresh run whose own timers start at zero from the current
+		// monotonic instant.
+		e.run = nil
+		restarted := RunDisposition{RuleID: e.ruleID, Disposition: Restarted, Mode: e.mode}
+		e.startRun(e.rule.Actions)
+		out = []RunDisposition{restarted, {RuleID: e.ruleID, Disposition: Ran, Mode: e.mode}}
+	case e.run != nil:
+		// single (RUL-241): drop the firing; the in-flight run is left untouched.
+		out = []RunDisposition{{RuleID: e.ruleID, Disposition: Skipped, Mode: e.mode}}
+	default:
+		e.startRun(e.rule.Actions)
+		out = []RunDisposition{{RuleID: e.ruleID, Disposition: Ran, Mode: e.mode}}
+	}
+	if misfireCaught {
+		for i := range out {
+			out[i].MisfireCaught = true
 		}
 	}
-	e.startRun(e.rule.Actions)
-	return []RunDisposition{{RuleID: e.ruleID, Disposition: Ran, Mode: e.mode}}
+	return out
+}
+
+// replayMissedSchedules re-evaluates each schedule trigger over a window in which
+// the engine could not evaluate at the scheduled instant — an offline span, or
+// (Task 5) an untrusted-clock window — treating every occurrence in
+// (fromExclusive, toInclusive] as a MISSED occurrence governed by that trigger's
+// declared `misfire` policy (RUL-350/371), never a silent drop nor an ordinary
+// live tick. The window's lower bound is clamped up to the persisted trust floor
+// so no caught-up fire ever rests on a clock reading earlier than the floor
+// (RUL-370). The wall cursor advances to toInclusive so a subsequent live Tick
+// does not re-enumerate these same occurrences.
+func (e *Engine) replayMissedSchedules(fromExclusive, toInclusive int64) []RunDisposition {
+	if !e.loaded {
+		return nil
+	}
+	from := fromExclusive
+	if e.scheduleFloor > from {
+		from = e.scheduleFloor
+	}
+	var out []RunDisposition
+	for _, tr := range e.triggers {
+		if tr.sched == nil {
+			continue
+		}
+		missed := tr.sched.Occurrences(e.loc, from, toInclusive)
+		out = append(out, e.dispatchMisfire(tr, missed)...)
+	}
+	if toInclusive > e.lastTickWall {
+		e.lastTickWall = toInclusive
+	}
+	return out
+}
+
+// dispatchMisfire applies one schedule trigger's declared misfire policy to its
+// missed occurrences (RUL-350–354) and routes each resulting Fire through the
+// firing path, stamping misfire_caught (RUL-355). `skip` (and the "" default,
+// RUL-354) yields no Fire; `catch_up_once` collapses to one; `fire_each` dispatches
+// each in chronological order — each independently subject to full mode evaluation
+// like any other firing (RUL-353/355), so an earlier caught-up dispatch can leave a
+// later one `skipped`/`restarted` under a busy single/restart mode.
+func (e *Engine) dispatchMisfire(tr *triggerRuntime, missed []int64) []RunDisposition {
+	var out []RunDisposition
+	for _, f := range schedule.ApplyMisfire(tr.misfire, missed) {
+		out = append(out, e.fireWith(f.MisfireCaught)...)
+	}
+	return out
 }
 
 // conditionsPass evaluates the rule's conditions array as an implicit AND

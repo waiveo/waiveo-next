@@ -1,9 +1,11 @@
 package compile
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/maaxton/waiveo-next/internal/rules/model"
+	"github.com/maaxton/waiveo-next/internal/rules/schedule"
 	"github.com/maaxton/waiveo-next/internal/rules/vocab"
 )
 
@@ -76,6 +78,15 @@ func validateMember(m model.Member, kind vocab.Kind, path string) *CompileError 
 		}
 	}
 
+	// A schedule trigger (time/time_pattern/sun) may carry a `misfire` policy; a
+	// PRESENT value MUST be one of the closed set (RUL-350). An absent field is
+	// legal and defaults to skip (RUL-354). Only triggers carry misfire.
+	if kind == vocab.TriggerKind && (m.Type == "time" || m.Type == "time_pattern" || m.Type == "sun") {
+		if e := validateMisfire(m, path); e != nil {
+			return e
+		}
+	}
+
 	// choose: recurse branch conditions, branch actions, and default actions.
 	if kind == vocab.ActionKind && m.Type == "choose" {
 		for j, b := range m.Branches {
@@ -95,6 +106,27 @@ func validateMember(m model.Member, kind vocab.Kind, path string) *CompileError 
 		}
 	}
 	return nil
+}
+
+// validateMisfire enforces MISFIRE_INVALID (RUL-350): a schedule trigger's
+// `misfire`, when PRESENT, must be one of `catch_up_once`, `skip`, `fire_each`.
+// An absent field is legal (defaults to skip, RUL-354), so presence is decided by
+// a pointer probe against the trigger's raw JSON.
+func validateMisfire(m model.Member, path string) *CompileError {
+	var probe struct {
+		Misfire *string `json:"misfire"`
+	}
+	if err := json.Unmarshal(m.Raw, &probe); err != nil {
+		return nil // malformed JSON is not this check's concern (parse handled it)
+	}
+	if probe.Misfire == nil || schedule.ValidMisfire(*probe.Misfire) {
+		return nil
+	}
+	return &CompileError{
+		Code:    codeMisfireInvalid,
+		Field:   path + ".misfire",
+		Message: fmt.Sprintf("%q is not one of catch_up_once, skip, fire_each", *probe.Misfire),
+	}
 }
 
 // validateModeMax enforces RUL-244: parallel requires max; a non-null max under

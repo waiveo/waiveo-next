@@ -50,6 +50,34 @@ func TestValidateRejectsUnknownMode(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidMisfire(t *testing.T) {
+	for _, kind := range []string{
+		`{"type":"time","at":"08:00:00","misfire":"always"}`,
+		`{"type":"time_pattern","minutes":"/15","misfire":"catch_up_twice"}`,
+		`{"type":"sun","event":"sunrise","misfire":"nope"}`,
+	} {
+		r := mustRule(t, `{"id":"01J8Z3K4N5P6Q7R8S9T0V1RUL1","mode":"single","triggers":[`+kind+`],"conditions":[],"actions":[{"type":"log","message":"x"}]}`)
+		e := Validate(r)
+		if e == nil || e.Code != "MISFIRE_INVALID" || e.Field != "triggers[0].misfire" {
+			t.Fatalf("trigger %s: got %+v, want MISFIRE_INVALID at triggers[0].misfire", kind, e)
+		}
+	}
+}
+
+func TestValidateAcceptsValidAndAbsentMisfire(t *testing.T) {
+	for _, kind := range []string{
+		`{"type":"time","at":"08:00:00"}`,                  // absent -> default skip, valid
+		`{"type":"time","at":"08:00:00","misfire":"skip"}`, // explicit skip
+		`{"type":"time_pattern","minutes":"/15","misfire":"catch_up_once"}`,
+		`{"type":"sun","event":"sunset","misfire":"fire_each"}`,
+	} {
+		r := mustRule(t, `{"id":"01J8Z3K4N5P6Q7R8S9T0V1RUL1","mode":"single","triggers":[`+kind+`],"conditions":[],"actions":[{"type":"log","message":"x"}]}`)
+		if e := Validate(r); e != nil {
+			t.Fatalf("trigger %s: unexpected error %+v", kind, e)
+		}
+	}
+}
+
 func TestValidateFindsUnknownNestedInChooseDefault(t *testing.T) {
 	r := mustRule(t, `{"id":"01J8Z3K4N5P6Q7R8S9T0V1RUL1","mode":"single","triggers":[{"type":"state","entity_id":"01J8Z3K4N5P6Q7R8S9T0V1W2Z2"}],"conditions":[],"actions":[{"type":"choose","branches":[{"condition":{"type":"state","entity_id":"01J8Z3K4N5P6Q7R8S9T0V1W2Z2","state":"on"},"actions":[{"type":"log","message":"x"}]}],"default":[{"type":"teleport"}]}]}`)
 	e := Validate(r)
