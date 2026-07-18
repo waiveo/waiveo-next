@@ -149,8 +149,8 @@ func TestProgramReturnsSignedLeaseWithImage(t *testing.T) {
 	var lease LeaseResponse
 	remarshal(t, raw, &lease)
 
-	if lease.LeaseID == "" {
-		t.Error("lease_id is empty, want a fresh id per issuance (PLY-097)")
+	if !validULIDForTest(lease.LeaseID) {
+		t.Errorf("lease_id = %q, want a valid ULID (26 chars, Crockford base32) per PLY-097", lease.LeaseID)
 	}
 	if lease.ScreenID == "" {
 		t.Error("screen_id is empty, want the token's own screen_id")
@@ -199,6 +199,27 @@ func TestProgramReturnsSignedLeaseWithImage(t *testing.T) {
 	if signhash.Verify(otherPub, canon, sigBytes) {
 		t.Error("signature verifies against an UNRELATED public key, want false")
 	}
+}
+
+// ulidCrockfordAlphabet mirrors internal/shared/ulid's own (unexported)
+// encoding alphabet, duplicated here rather than imported so this test
+// checks the wire-level shape a real ULID must have, independent of
+// whichever internal constant the mint site happens to use.
+const ulidCrockfordAlphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+// validULIDForTest reports whether id has the syntactic shape PLY-097
+// requires of a Lease's lease_id: exactly 26 characters, every one drawn
+// from the Crockford base32 alphabet (uppercase; I, L, O, U excluded).
+func validULIDForTest(id string) bool {
+	if len(id) != 26 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		if !strings.ContainsRune(ulidCrockfordAlphabet, rune(id[i])) {
+			return false
+		}
+	}
+	return true
 }
 
 // TestProgramContentTypeGateExcludesUndeclaredType confirms PLY-013/096: a

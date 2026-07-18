@@ -22,6 +22,7 @@ import (
 
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/signhash"
+	"github.com/maaxton/waiveo-next/internal/shared/ulid"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
@@ -174,7 +175,13 @@ func (s *Server) handleProgram(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	lease := wire.Lease{
-		LeaseID:         newOpaqueToken("lease"),
+		// PLY-097: lease_id MUST be a ULID (unique per issuance), unlike
+		// this codebase's other opaque ids (screen_id, channel_token,
+		// grant_id, relay_id) whose own contracts only require
+		// opaqueness — newOpaqueToken's `<prefix>-<hex>` shape doesn't
+		// satisfy the ULID requirement, so this mint site alone uses the
+		// shared ulid package instead.
+		LeaseID:         ulid.New(),
 		ScreenID:        screenID,
 		ProgramRevision: prog.ProgramRevision,
 		Priority:        prog.Priority,
