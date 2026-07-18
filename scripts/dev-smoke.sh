@@ -17,5 +17,5 @@ probe() {
   done
 }
 
-for port in 7400 7401; do probe "$port"; done
+for port in 7420 7421; do probe "$port"; done
 echo "SMOKE OK"
