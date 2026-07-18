@@ -7,6 +7,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/rules/clock"
 	"github.com/maaxton/waiveo-next/internal/rules/model"
 	"github.com/maaxton/waiveo-next/internal/rules/registry"
+	"github.com/maaxton/waiveo-next/internal/rules/schedule"
 	"github.com/maaxton/waiveo-next/internal/rules/state"
 )
 
@@ -79,6 +80,7 @@ type ActionContext struct {
 	Reg      registry.Registry
 	Snap     state.Snapshot
 	Clk      clock.Clock
+	Loc      schedule.Location
 	Vars     map[string]any
 	Sink     CommandSink
 	Presets  PresetStore
@@ -161,7 +163,7 @@ func mergeDelayTail(err error, tail []model.Member) error {
 // `default`, the action performs no work.
 func runChoose(ctx ActionContext, m model.Member) error {
 	for _, b := range m.Branches {
-		if EvalCondition(ctx.Reg, ctx.Snap, ctx.Clk, ctx.Vars, b.Condition) {
+		if EvalConditionAt(ctx.Reg, ctx.Snap, ctx.Clk, ctx.Loc, ctx.Vars, b.Condition) {
 			return RunActions(ctx, b.Actions)
 		}
 	}

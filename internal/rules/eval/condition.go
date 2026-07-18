@@ -7,6 +7,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/rules/clock"
 	"github.com/maaxton/waiveo-next/internal/rules/model"
 	"github.com/maaxton/waiveo-next/internal/rules/registry"
+	"github.com/maaxton/waiveo-next/internal/rules/schedule"
 	"github.com/maaxton/waiveo-next/internal/rules/state"
 )
 
@@ -38,20 +39,38 @@ import (
 // missing/absent variable, a malformed field, or an unparseable value,
 // exactly as RUL-262/271/284 require throughout this contract — never an
 // error, never a coercion. A composition leaf type this evaluation core does
-// not yet implement (`sun`, `template` — later parts per this task's plan)
-// also evaluates false.
+// not implement (`template`, RUL-151 — an app-class later part) evaluates
+// false.
+//
+// EvalCondition evaluates against the zero Location (no scope timezone or
+// latitude/longitude), which is all a state/numeric/time/variable leaf needs.
+// A `sun` leaf (RUL-140) needs the scope node's effective latitude/longitude
+// and timezone; call EvalConditionAt directly with a populated
+// schedule.Location to evaluate a rule that contains one.
 func EvalCondition(reg registry.Registry, snap state.Snapshot, clk clock.Clock, vars map[string]any, m model.Member) bool {
+	return EvalConditionAt(reg, snap, clk, schedule.Location{}, vars, m)
+}
+
+// EvalConditionAt is EvalCondition with the owning scope node's effective
+// evaluation environment supplied explicitly (RUL-340): loc carries the
+// timezone and the latitude/longitude a `sun` condition's solar computation
+// reads (RUL-140), reusing the identical algorithm the `sun` trigger uses so
+// the two never diverge. Every other leaf ignores loc. loc's zero value (nil
+// TZ) means "no scope location", under which a `sun` leaf fails closed (it has
+// no coordinates to compute against) while all other leaves behave exactly as
+// EvalCondition.
+func EvalConditionAt(reg registry.Registry, snap state.Snapshot, clk clock.Clock, loc schedule.Location, vars map[string]any, m model.Member) bool {
 	switch m.Composition {
 	case "and":
 		for _, c := range m.Children {
-			if !EvalCondition(reg, snap, clk, vars, c) {
+			if !EvalConditionAt(reg, snap, clk, loc, vars, c) {
 				return false
 			}
 		}
 		return true
 	case "or":
 		for _, c := range m.Children {
-			if EvalCondition(reg, snap, clk, vars, c) {
+			if EvalConditionAt(reg, snap, clk, loc, vars, c) {
 				return true
 			}
 		}
@@ -60,7 +79,7 @@ func EvalCondition(reg registry.Registry, snap state.Snapshot, clk clock.Clock, 
 		if len(m.Children) != 1 {
 			return false // malformed; fail-closed
 		}
-		return !EvalCondition(reg, snap, clk, vars, m.Children[0])
+		return !EvalConditionAt(reg, snap, clk, loc, vars, m.Children[0])
 	}
 
 	switch m.Type {
@@ -70,11 +89,13 @@ func EvalCondition(reg registry.Registry, snap state.Snapshot, clk clock.Clock, 
 		return evalNumericCondition(snap, m)
 	case "time":
 		return evalTimeCondition(clk, m)
+	case "sun":
+		return evalSunCondition(loc, clk, m)
 	case "variable":
 		return evalVariableCondition(vars, m)
 	default:
-		// sun/template conditions (RUL-140/151) and any unrecognized leaf are
-		// out of this task's scope; fail closed rather than error.
+		// A `template` condition (RUL-151) is app-class and any unrecognized
+		// leaf is malformed; both fail closed rather than error.
 		return false
 	}
 }
@@ -198,6 +219,124 @@ func evalTimeCondition(clk clock.Clock, m model.Member) bool {
 	default: // hasBefore only
 		return nowSec <= beforeSec
 	}
+}
+
+// evalSunCondition implements RUL-140: a `sun` condition declares `after`
+// and/or `before` as `{event, offset?}` pairs (the same event/offset shape a
+// `sun` trigger uses, RUL-060), and passes when the current instant falls
+// within the resulting window — computed the same way as RUL-130's local-time
+// range (both bounds present form an inclusive range; a range whose `after`
+// resolves later than its `before` wraps past the day). Each bound's instant is
+// the solar event computed for the current local date via schedule.SunInstant —
+// the identical algorithm the trigger uses, so trigger and condition never
+// diverge.
+//
+// Deliberate asymmetry with a `sun` trigger's polar handling (RUL-061 vs
+// RUL-140): where a trigger has no reasonable instant to synthesize and simply
+// does not fire, a condition MUST still bound the current instant, so on a date
+// where a referenced event does not occur it falls back to that event's nearest
+// defined occurrence rather than treating the day as unbounded. Fails closed
+// when neither bound is declared, when a bound's event is malformed, or when
+// loc carries no coordinates/timezone to compute against.
+func evalSunCondition(loc schedule.Location, clk clock.Clock, m model.Member) bool {
+	var spec struct {
+		After  *sunBoundSpec `json:"after"`
+		Before *sunBoundSpec `json:"before"`
+	}
+	if len(m.Raw) > 0 {
+		if err := json.Unmarshal(m.Raw, &spec); err != nil {
+			return false
+		}
+	}
+	if spec.After == nil && spec.Before == nil {
+		return false
+	}
+	if loc.TZ == nil {
+		return false // no scope location to compute a solar instant against
+	}
+
+	now := clk.WallMillis()
+
+	var afterInstant, beforeInstant int64
+	if spec.After != nil {
+		v, ok := sunBoundInstant(loc, now, *spec.After)
+		if !ok {
+			return false // malformed event or no defined occurrence anywhere
+		}
+		afterInstant = v
+	}
+	if spec.Before != nil {
+		v, ok := sunBoundInstant(loc, now, *spec.Before)
+		if !ok {
+			return false
+		}
+		beforeInstant = v
+	}
+
+	switch {
+	case spec.After != nil && spec.Before != nil:
+		if afterInstant <= beforeInstant {
+			return now >= afterInstant && now <= beforeInstant
+		}
+		// after resolves later than before: the window wraps past the day
+		// boundary (RUL-130's after > before case).
+		return now >= afterInstant || now <= beforeInstant
+	case spec.After != nil:
+		return now >= afterInstant
+	default: // before only
+		return now <= beforeInstant
+	}
+}
+
+// sunBoundSpec is one `{event, offset?}` bound of a sun condition (RUL-140).
+type sunBoundSpec struct {
+	Event  string `json:"event"`
+	Offset int    `json:"offset"`
+}
+
+// sunBoundInstant resolves a sun condition bound to an absolute instant for the
+// local date containing `now` (RUL-140). When the event does not occur on that
+// date (polar day/night, RUL-061) it searches outward day by day for the
+// nearest date whose event is defined and returns that instant — the
+// nearest-defined-occurrence fallback RUL-140 mandates. ok=false only for a
+// malformed event or when no occurrence exists within the search bound.
+func sunBoundInstant(loc schedule.Location, now int64, b sunBoundSpec) (int64, bool) {
+	y, mo, d := time.UnixMilli(now).In(loc.TZ).Date()
+	if ms, ok := schedule.SunInstant(loc, y, mo, d, b.Event, b.Offset); ok {
+		return ms, true
+	}
+	// Nearest-defined-occurrence fallback (RUL-140): expand the search outward
+	// from the current local date, taking the defined occurrence nearest `now`.
+	base := time.Date(y, mo, d, 0, 0, 0, 0, loc.TZ)
+	const maxDaysOut = 200 // Earth's poles always see the Sun near an equinox
+	var best int64
+	found := false
+	for delta := 1; delta <= maxDaysOut; delta++ {
+		for _, sign := range []int{-1, 1} {
+			cand := base.AddDate(0, 0, sign*delta)
+			cy, cmo, cd := cand.Date()
+			ms, ok := schedule.SunInstant(loc, cy, cmo, cd, b.Event, b.Offset)
+			if !ok {
+				continue
+			}
+			if !found || absInt64(ms-now) < absInt64(best-now) {
+				best = ms
+				found = true
+			}
+		}
+		if found {
+			return best, true
+		}
+	}
+	return 0, false
+}
+
+// absInt64 is the absolute value of an int64 delta.
+func absInt64(v int64) int64 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 // secondsOfDayFromString parses an HH:MM:SS local time-of-day string

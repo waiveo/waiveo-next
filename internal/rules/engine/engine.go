@@ -190,11 +190,10 @@ func (e *Engine) Load(entry compile.CompiledRuleEntry, rule model.Rule) error {
 }
 
 // newTriggerRuntime builds the runtime for one trigger member, or nil for a
-// trigger kind this evaluation core does not yet drive (`sun` is a later part),
-// a state/numeric trigger lacking an entity_id subject, or a malformed
-// wall-clock spec. State/numeric triggers fire from Observe; `time`/`time_pattern`
-// triggers carry no EntityRef and fire from Tick via their schedule enumerator
-// (RUL-040/050/340).
+// trigger kind this evaluation core does not drive, a state/numeric trigger
+// lacking an entity_id subject, or a malformed wall-clock spec. State/numeric
+// triggers fire from Observe; `time`/`time_pattern`/`sun` triggers carry no
+// EntityRef and fire from Tick via their schedule enumerator (RUL-040/050/060/340).
 func newTriggerRuntime(m model.Member) *triggerRuntime {
 	tr := &triggerRuntime{kind: m.Type, forSeconds: parseForSeconds(m.Raw)}
 	switch m.Type {
@@ -244,6 +243,19 @@ func newTriggerRuntime(m model.Member) *triggerRuntime {
 		tr.sched = pt
 		tr.misfire = parseMisfire(m.Raw)
 		return tr
+	case "sun":
+		// A `sun` trigger carries no EntityRef (RUL-060): it fires from the wall
+		// clock through Tick, its instants computed by the solar algorithm over
+		// the engine's effective latitude/longitude (SetLocation). A malformed
+		// event drops the trigger (fail-closed) rather than firing on garbage.
+		event, offset := scheduleSunSpec(m.Raw)
+		st, err := schedule.NewSunTrigger(event, offset)
+		if err != nil {
+			return nil
+		}
+		tr.sched = st
+		tr.misfire = parseMisfire(m.Raw)
+		return tr
 	default:
 		return nil
 	}
@@ -291,6 +303,18 @@ func canonPatternField(raw json.RawMessage) string {
 		return str
 	}
 	return s
+}
+
+// scheduleSunSpec reads a `sun` trigger's event and optional offset (RUL-060):
+// `event` is "sunrise"/"sunset" and `offset` is an integer number of seconds
+// (positive or negative), absent decoding as 0.
+func scheduleSunSpec(raw json.RawMessage) (event string, offset int) {
+	var spec struct {
+		Event  string `json:"event"`
+		Offset int    `json:"offset"`
+	}
+	_ = json.Unmarshal(raw, &spec)
+	return spec.Event, spec.Offset
 }
 
 // parseMisfire reads a schedule trigger's optional `misfire` policy (RUL-350).
@@ -643,7 +667,7 @@ func (e *Engine) fire() []RunDisposition {
 // evaluated against the engine's current snapshot (RUL-101).
 func (e *Engine) conditionsPass() bool {
 	for _, c := range e.rule.Conditions {
-		if !eval.EvalCondition(e.reg, e.snap, e.clk, nil, c) {
+		if !eval.EvalConditionAt(e.reg, e.snap, e.clk, e.loc, nil, c) {
 			return false
 		}
 	}
@@ -691,6 +715,7 @@ func (e *Engine) actionContext() eval.ActionContext {
 		Reg:     e.reg,
 		Snap:    e.snap,
 		Clk:     e.clk,
+		Loc:     e.loc,
 		Vars:    nil,
 		Sink:    e.sink,
 		Presets: e.presets,
