@@ -8,14 +8,21 @@
 // (REL-071, `#28`) — and pulls + verifies the feeder's signed desired-state
 // snapshot (internal/relay/desiredstate, REL-051/052/055/071/072),
 // persisting last-applied and holding the resulting applied screen-program
-// in memory for a later player/1 server (Task 9) to serve. It otherwise
-// only exposes a /healthz probe so the dev loop (`make dev`) has something
-// real to build and run in place of the Wave-0 stub.
+// in memory. It then serves player/1's pairing surface
+// (internal/relay/playerserver, PLY-030–037) over its own HTTPS listener,
+// using the exact same certificate — the enrollment identity persisted in
+// its identity store — that FormPairingCode's commitment (REL-126) is
+// computed over, so a player's local PLY-052 comparison is always checking
+// the cert this listener actually presents.
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -23,9 +30,18 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/desiredstate"
 	"github.com/maaxton/waiveo-next/internal/relay/enroll"
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
+	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
 )
 
 const addr = "127.0.0.1:7421"
+
+// pairingCodeHost/pairingCodePort are the dial address a formed pairing
+// code (REL-126) encodes — Wave-1 first-photon's loopback deployment, the
+// same host:port a player/1 client reaches this listener at.
+const (
+	pairingCodeHost = "127.0.0.1"
+	pairingCodePort = 7421
+)
 
 // feederBaseURL is the co-located feeder's own HTTPS listener
 // (cmd/waiveo-feeder's addr) — Wave-1 first-photon's loopback deployment
@@ -76,11 +92,84 @@ func main() {
 	log.Printf("waiveo-relay applied desired state generation %d (screen %s, program %s, image %s)",
 		applied.Generation, applied.ScreenID, applied.ProgramRevision, applied.Image.AssetRef)
 
+	relayID, ok, err := store.Identity()
+	if err != nil {
+		log.Fatalf("waiveo-relay: read identity for TLS certificate: %v", err)
+	}
+	if !ok {
+		log.Fatalf("waiveo-relay: no persisted identity after enrollment — cannot serve player/1")
+	}
+	cert, certDER, err := relayTLSCertificate(relayID)
+	if err != nil {
+		log.Fatalf("waiveo-relay: build TLS certificate from enrollment identity: %v", err)
+	}
+
+	pairingSrv, err := playerserver.NewServer(relayID.CertPEM, applied.PairingGrants)
+	if err != nil {
+		log.Fatalf("waiveo-relay: build player/1 pairing server: %v", err)
+	}
+	logPairingCodes(applied, certDER)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthz)
+	pairingSrv.Register(mux)
 
-	log.Printf("waiveo-relay listening on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, mux))
+	server := &http.Server{
+		Addr:      addr,
+		Handler:   mux,
+		TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}},
+	}
+
+	log.Printf("waiveo-relay listening (HTTPS) on %s", addr)
+	log.Fatal(server.ListenAndServeTLS("", ""))
+}
+
+// relayTLSCertificate builds a crypto/tls.Certificate (for serving player/1
+// over HTTPS) from id's enrollment identity, and returns its raw DER
+// alongside it — the same DER FormPairingCode computes a REL-126
+// fingerprint_commitment over, so the certificate this listener actually
+// presents is always the one a formed pairing code commits to.
+//
+// id is the relay's feeder-issued enrollment identity (internal/relay/enroll,
+// internal/relay/identity) — Wave-1 first-photon reuses it as the relay's
+// player/1 TLS identity too, rather than minting a separate self-signed
+// bootstrap cert: PLY-040's bootstrap fetch is verification-disabled by
+// construction, so a player never chain-validates this certificate before
+// Out-of-band cert authentication (PLY-052) — only its SubjectPublicKeyInfo,
+// via the commitment, matters.
+func relayTLSCertificate(id identity.RelayIdentity) (tls.Certificate, []byte, error) {
+	keyDER, err := x509.MarshalPKCS8PrivateKey(id.PrivateKey)
+	if err != nil {
+		return tls.Certificate{}, nil, err
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
+
+	cert, err := tls.X509KeyPair(id.CertPEM, keyPEM)
+	if err != nil {
+		return tls.Certificate{}, nil, err
+	}
+
+	block, _ := pem.Decode(id.CertPEM)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return tls.Certificate{}, nil, fmt.Errorf("waiveo-relay: identity cert did not PEM-decode to a CERTIFICATE block")
+	}
+
+	return cert, block.Bytes, nil
+}
+
+// logPairingCodes forms and logs (dev-console-only stand-in for a real
+// display surface, out of player/1's own scope) a REL-126 pairing code for
+// every applied pairing grant, so a developer can read one off the relay's
+// own log and hand it to a later player/1 client task.
+func logPairingCodes(applied desiredstate.Applied, relayCertDER []byte) {
+	for _, grant := range applied.PairingGrants {
+		code, err := playerserver.FormPairingCode(pairingCodeHost, pairingCodePort, grant, relayCertDER)
+		if err != nil {
+			log.Printf("waiveo-relay: form pairing code for grant %s: %v", grant.GrantID, err)
+			continue
+		}
+		log.Printf("waiveo-relay pairing code (grant %s): %s", grant.GrantID, code)
+	}
 }
 
 // enrollWithRetry calls enroll.Run against the co-located feeder, retrying

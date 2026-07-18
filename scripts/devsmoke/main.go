@@ -1,14 +1,17 @@
 // Command devsmoke is the `make dev` health check: it confirms the feeder and
-// relay booted and answer /healthz. It is written in Go on purpose — the feeder
-// serves its relay/1 surface over an ed25519-leaf TLS cert, and some system
-// curl builds (e.g. macOS LibreSSL) cannot complete an ed25519 TLS handshake,
-// so a curl-based probe would spuriously fail against a perfectly healthy
-// server. Go's TLS stack handles ed25519, matching the all-Go, all-ed25519
-// stack this checks.
+// relay booted and answer /healthz. It is written in Go on purpose — both the
+// feeder and (as of Task 9's player/1 pairing surface) the relay serve their
+// respective listeners over an ed25519-leaf TLS cert, and some system curl
+// builds (e.g. macOS LibreSSL) cannot complete an ed25519 TLS handshake, so a
+// curl-based probe would spuriously fail against a perfectly healthy server.
+// Go's TLS stack handles ed25519, matching the all-Go, all-ed25519 stack this
+// checks.
 //
 // Endpoints (dev tooling only, not contract surfaces):
 //   - feeder: https://127.0.0.1:7420/healthz  (self-signed dev cert → skip verify)
-//   - relay:  http://127.0.0.1:7421/healthz
+//   - relay:  https://127.0.0.1:7421/healthz  (relay's enrollment-identity cert,
+//     served over the same HTTPS listener player/1's pairing surface uses →
+//     skip verify, same reasoning as the feeder)
 //
 // Each endpoint is retried for ~10s (cold Go start / no start ordering between
 // the backgrounded binaries). Exits 0 on "SMOKE OK", non-zero otherwise.
@@ -36,14 +39,13 @@ func main() {
 		Timeout:   3 * time.Second,
 		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
 	}
-	plain := &http.Client{Timeout: 3 * time.Second}
 
 	targets := []struct {
 		target
 		client *http.Client
 	}{
 		{target{"feeder", "https://127.0.0.1:7420/healthz"}, insecure},
-		{target{"relay", "http://127.0.0.1:7421/healthz"}, plain},
+		{target{"relay", "https://127.0.0.1:7421/healthz"}, insecure},
 	}
 
 	for _, t := range targets {

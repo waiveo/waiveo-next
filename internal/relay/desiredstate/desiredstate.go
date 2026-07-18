@@ -70,11 +70,20 @@ var (
 // server (Task 9) serves to the screen, plus the generation it came from.
 // The zero value (Applied{}) is what Pull returns alongside every rejection
 // error above — never a partially-populated value.
+//
+// PairingGrants carries the verified snapshot's sections.pairing_grants
+// (REL-067) unmodified — the pairing server (internal/relay/playerserver)
+// resolves a PairingRequest's grant_selector against these, exactly as
+// REL-121/REL-126 require. Because this whole struct is only ever produced
+// by an already-hash-and-signature-verified snapshot, a caller holding an
+// Applied value can trust its PairingGrants exactly as much as it trusts
+// the rest of the struct — no separate verification step applies here.
 type Applied struct {
 	Generation      int64
 	ScreenID        string
 	ProgramRevision string
 	Image           wire.ContentRef
+	PairingGrants   []wire.PairingGrant
 }
 
 // Pull fetches the feeder's signed desired-state snapshot from
@@ -230,5 +239,6 @@ func extractApplied(generation int64, sections wire.Sections) (Applied, error) {
 		ScreenID:        prog.ScreenID,
 		ProgramRevision: prog.ProgramRevision,
 		Image:           prog.Content[0],
+		PairingGrants:   sections.PairingGrants,
 	}, nil
 }

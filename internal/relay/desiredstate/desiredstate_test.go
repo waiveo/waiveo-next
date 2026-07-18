@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	feederenroll "github.com/maaxton/waiveo-next/internal/feeder/enroll"
@@ -115,6 +116,9 @@ func TestPullAppliesScreenProgram(t *testing.T) {
 	if applied.Image.URL == "" {
 		t.Error("Image.URL is empty, want the signed content URL")
 	}
+	if !reflect.DeepEqual(applied.PairingGrants, snap.Sections.PairingGrants) {
+		t.Errorf("PairingGrants = %+v, want %+v (the verified snapshot's sections.pairing_grants, unmodified)", applied.PairingGrants, snap.Sections.PairingGrants)
+	}
 
 	gen, hash, ok, err := store.LastAppliedGeneration()
 	if err != nil {
@@ -165,7 +169,7 @@ func TestPullRejectsWrongKeySignedSnapshot(t *testing.T) {
 	if !errors.Is(err, ErrSnapshotSignatureInvalid) {
 		t.Fatalf("Pull error = %v, want ErrSnapshotSignatureInvalid", err)
 	}
-	if applied != (Applied{}) {
+	if !reflect.DeepEqual(applied, Applied{}) {
 		t.Errorf("Pull returned a non-zero Applied on rejection: %+v", applied)
 	}
 
@@ -203,7 +207,7 @@ func TestPullRejectsTamperedSections(t *testing.T) {
 	if !errors.Is(err, ErrSnapshotHashMismatch) {
 		t.Fatalf("Pull error = %v, want ErrSnapshotHashMismatch", err)
 	}
-	if applied != (Applied{}) {
+	if !reflect.DeepEqual(applied, Applied{}) {
 		t.Errorf("Pull returned a non-zero Applied on rejection: %+v", applied)
 	}
 
@@ -245,7 +249,7 @@ func TestPullSameGenerationIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second (idempotent) Pull: %v", err)
 	}
-	if second != first {
+	if !reflect.DeepEqual(second, first) {
 		t.Errorf("second Pull = %+v, want identical to first %+v", second, first)
 	}
 
@@ -286,7 +290,7 @@ func TestPullRejectsLowerGeneration(t *testing.T) {
 	if !errors.Is(err, ErrGenerationRegressed) {
 		t.Fatalf("Pull error = %v, want ErrGenerationRegressed", err)
 	}
-	if applied != (Applied{}) {
+	if !reflect.DeepEqual(applied, Applied{}) {
 		t.Errorf("Pull returned a non-zero Applied on rejection: %+v", applied)
 	}
 
