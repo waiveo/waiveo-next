@@ -78,12 +78,13 @@ type enrollResponse struct {
 	DesiredStateVerificationKey string `json:"desired_state_verification_key"`
 }
 
-// errorBody mirrors internal/feeder/enroll's errorBody: this bootstrap
-// exchange's `{code, message}` typed-refusal shape (e.g. REL-013's
-// CLAIM_TOKEN_INVALID).
+// errorBody decodes the feeder's RFC-9457 problem+json refusal (api/1
+// API-010, emitted via internal/shared/apihttp.WriteProblem): the `code`
+// extension member carries the typed reason (e.g. REL-013's
+// CLAIM_TOKEN_INVALID) and `title` the human-readable summary.
 type errorBody struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code  string `json:"code"`
+	Title string `json:"title"`
 }
 
 // Run enrolls the relay identified by store against the feeder at
@@ -224,15 +225,15 @@ func postEnroll(client *http.Client, feederBaseURL, claimToken, csrPEM string) (
 	return body, nil
 }
 
-// decodeFeederError best-effort decodes the feeder's `{code, message}`
-// typed-refusal body (internal/feeder/enroll's errorBody) into a Go error,
-// falling back to a generic error if the body isn't that shape.
+// decodeFeederError best-effort decodes the feeder's RFC-9457 problem+json
+// refusal body into a Go error, falling back to a generic error if the body
+// isn't that shape.
 func decodeFeederError(r io.Reader) error {
 	var eb errorBody
 	if err := json.NewDecoder(r).Decode(&eb); err != nil || eb.Code == "" {
 		return fmt.Errorf("enrollment request refused")
 	}
-	return fmt.Errorf("%s: %s", eb.Code, eb.Message)
+	return fmt.Errorf("%s: %s", eb.Code, eb.Title)
 }
 
 // decodeVerificationKey decodes a `desired_state_verification_key` value
