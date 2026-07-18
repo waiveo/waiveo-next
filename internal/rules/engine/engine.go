@@ -99,6 +99,14 @@ type Engine struct {
 	// clock reading earlier than the floor. It is the resume cursor after
 	// downtime — SeedScheduleFloor supplies the last-evaluated instant.
 	scheduleFloor int64
+
+	// clockUntrusted is the engine's clock trust state (RUL-370/371): false is
+	// `trusted` (the default), true is `untrusted`. While untrusted the wall clock
+	// is unverified, so schedule triggers do not fire live and time-based conditions
+	// evaluate against the persisted floor rather than the wall (see effectiveClk /
+	// dispatchSchedule); the untrusted-window occurrences are replayed through each
+	// trigger's misfire policy on the untrusted->trusted transition (SetClockTrust).
+	clockUntrusted bool
 }
 
 // runState is the single in-flight run's continuation: the flattened tail of
@@ -488,6 +496,15 @@ func (e *Engine) dispatchSchedule(now clock.Clock) []RunDisposition {
 		return nil
 	}
 
+	// While the clock is untrusted the wall reading is unverified (RUL-370): no
+	// schedule occurrence fires live and the wall clock is not even read, so the
+	// cursor does not advance. Every occurrence whose instant falls in the untrusted
+	// window is instead replayed through its misfire policy on the untrusted->trusted
+	// transition (SetClockTrust, RUL-371) — never a live tick, never a silent drop.
+	if e.clockUntrusted {
+		return nil
+	}
+
 	nowWall := now.WallMillis()
 
 	// First Tick after (re)start: catch the downtime span up through the misfire
@@ -753,7 +770,7 @@ func (e *Engine) dispatchMisfire(tr *triggerRuntime, missed []int64) []RunDispos
 // evaluated against the engine's current snapshot (RUL-101).
 func (e *Engine) conditionsPass() bool {
 	for _, c := range e.rule.Conditions {
-		if !eval.EvalConditionAt(e.reg, e.snap, e.clk, e.loc, nil, c) {
+		if !eval.EvalConditionAt(e.reg, e.snap, e.effectiveClk(), e.loc, nil, c) {
 			return false
 		}
 	}
@@ -800,7 +817,7 @@ func (e *Engine) actionContext() eval.ActionContext {
 	return eval.ActionContext{
 		Reg:     e.reg,
 		Snap:    e.snap,
-		Clk:     e.clk,
+		Clk:     e.effectiveClk(),
 		Loc:     e.loc,
 		Vars:    nil,
 		Sink:    e.sink,
