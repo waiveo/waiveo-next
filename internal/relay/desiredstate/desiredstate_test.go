@@ -110,6 +110,12 @@ func TestPullAppliesScreenProgram(t *testing.T) {
 	if applied.ProgramRevision != snap.Sections.ScreenPrograms[0].ProgramRevision {
 		t.Errorf("ProgramRevision = %q, want %q", applied.ProgramRevision, snap.Sections.ScreenPrograms[0].ProgramRevision)
 	}
+	if applied.Priority != snap.Sections.ScreenPrograms[0].Priority {
+		t.Errorf("Priority = %q, want %q (REL-061/PLY-108, unmodified)", applied.Priority, snap.Sections.ScreenPrograms[0].Priority)
+	}
+	if applied.Display != snap.Sections.ScreenPrograms[0].Display {
+		t.Errorf("Display = %q, want %q (REL-061/PLY-109, unmodified)", applied.Display, snap.Sections.ScreenPrograms[0].Display)
+	}
 	if applied.Image.AssetRef != wantAssetRef {
 		t.Errorf("Image.AssetRef = %q, want %q", applied.Image.AssetRef, wantAssetRef)
 	}

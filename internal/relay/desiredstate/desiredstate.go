@@ -67,9 +67,18 @@ var (
 
 // Applied is the relay's locally-applied Wave-1 first-photon desired-state
 // result: the one screen-program's one image content item a later player/1
-// server (Task 9) serves to the screen, plus the generation it came from.
-// The zero value (Applied{}) is what Pull returns alongside every rejection
-// error above — never a partially-populated value.
+// server (Task 9, and Task 10's program delivery) serves to the screen,
+// plus the generation it came from. The zero value (Applied{}) is what
+// Pull returns alongside every rejection error above — never a
+// partially-populated value.
+//
+// Priority and Display carry the applied screen-program's own
+// `priority`/`display` fields (REL-061) UNMODIFIED — a later player/1
+// Lease's own same-named fields MUST reflect these exactly (`player/1`
+// PLY-108/109), which is the mechanism by which a preempt/blank assignment
+// reaches a screen through this relay's own offline-cached last-applied
+// snapshot, without requiring a live app-peer connection at the moment a
+// screen needs it.
 //
 // PairingGrants carries the verified snapshot's sections.pairing_grants
 // (REL-067) unmodified — the pairing server (internal/relay/playerserver)
@@ -82,6 +91,8 @@ type Applied struct {
 	Generation      int64
 	ScreenID        string
 	ProgramRevision string
+	Priority        string
+	Display         string
 	Image           wire.ContentRef
 	PairingGrants   []wire.PairingGrant
 }
@@ -238,6 +249,8 @@ func extractApplied(generation int64, sections wire.Sections) (Applied, error) {
 		Generation:      generation,
 		ScreenID:        prog.ScreenID,
 		ProgramRevision: prog.ProgramRevision,
+		Priority:        prog.Priority,
+		Display:         prog.Display,
 		Image:           prog.Content[0],
 		PairingGrants:   sections.PairingGrants,
 	}, nil

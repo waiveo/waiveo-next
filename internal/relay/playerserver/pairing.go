@@ -17,6 +17,7 @@
 package playerserver
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -112,6 +113,12 @@ type redemption struct {
 // hash-and-signature-verified desired-state snapshot applied
 // (internal/relay/desiredstate.Applied.PairingGrants), and mints a channel
 // token on a valid redemption. Safe for concurrent use.
+//
+// This same Server also holds Task 10's program-delivery state (program,
+// signingKey — configured by SetProgram) and lease/ack records: it is one
+// player/1 server surface (pairing + program delivery + lease
+// acknowledgement), not two, since PLY-070's channel token issued here is
+// exactly the credential program.go's handlers validate.
 type Server struct {
 	relayCertPEM []byte
 
@@ -120,6 +127,10 @@ type Server struct {
 	redeemedGrants map[string]bool              // grant_id -> redeemed (enforced only for one-time grants)
 	tokens         map[string]channelTokenRecord
 	pollResults    map[string]redemption // poll_token -> completed result (PLY-034; see handlePairStatus doc)
+
+	program    program                    // Task 10: SetProgram's own configured state
+	signingKey ed25519.PrivateKey         // Task 10: relay's own key, signs every issued Lease (PLY-090)
+	leaseAcks  map[string]LeaseAckRequest // Task 10: lease_id -> most recent LeaseAck (PLY-091)
 }
 
 // NewServer builds a pairing Server that redeems against grants (the
@@ -146,17 +157,20 @@ func NewServer(relayCertPEM []byte, grants []wire.PairingGrant) (*Server, error)
 		redeemedGrants: map[string]bool{},
 		tokens:         map[string]channelTokenRecord{},
 		pollResults:    map[string]redemption{},
+		leaseAcks:      map[string]LeaseAckRequest{},
 	}, nil
 }
 
-// Register mounts the pairing routes onto mux. Callers serve mux over the
-// relay's own HTTPS player/1 listener, using the same certificate as
-// relayCertPEM (NewServer) — PLY-001's stable /player/v1 path prefix,
-// player/1's ordinary-HTTPS transport (PLY-001), never a persistent framed
-// connection.
+// Register mounts the pairing AND program-delivery routes onto mux.
+// Callers serve mux over the relay's own HTTPS player/1 listener, using the
+// same certificate as relayCertPEM (NewServer) — PLY-001's stable
+// /player/v1 path prefix, player/1's ordinary-HTTPS transport (PLY-001),
+// never a persistent framed connection.
 func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/player/v1/pair", s.handlePair)
 	mux.HandleFunc("/player/v1/pair/status", s.handlePairStatus)
+	mux.HandleFunc("/player/v1/program", s.handleProgram)
+	mux.HandleFunc("/player/v1/lease/ack", s.handleLeaseAck)
 }
 
 // LookupChannelToken reports the screen_id and expires_at a previously

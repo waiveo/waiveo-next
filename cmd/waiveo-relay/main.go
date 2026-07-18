@@ -32,6 +32,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
 	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
+	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
 const addr = "127.0.0.1:7421"
@@ -110,6 +111,22 @@ func main() {
 		log.Fatalf("waiveo-relay: build player/1 pairing server: %v", err)
 	}
 	logPairingCodes(applied, certDER)
+
+	// Task 10: configure program delivery (GET /player/v1/program) from the
+	// SAME verified Applied value pairing already sourced its grants from —
+	// Wave-1 first-photon carries exactly one content kind (image), so the
+	// relay/1 -> player/1 `type` annotation (relay/1's own ContentRef has
+	// no `type` field, player/1's Content reference requires one, PLY-083)
+	// is a constant here, not a lookup. signingKey is the SAME enrollment
+	// private key relayID.CertPEM certifies, so a player's PLY-090
+	// signature check against its pinned trust anchor lines up with the
+	// cert this listener actually presents.
+	pairingSrv.SetProgram(applied.ProgramRevision, applied.Priority, applied.Display, []wire.LeaseContent{{
+		Type:      "image",
+		AssetRef:  applied.Image.AssetRef,
+		URL:       applied.Image.URL,
+		ExpiresAt: applied.Image.ExpiresAt,
+	}}, relayID.PrivateKey)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthz)
