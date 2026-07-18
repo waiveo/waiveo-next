@@ -6,14 +6,23 @@
 package main
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"log"
 	"net/http"
+
+	"github.com/maaxton/waiveo-next/internal/feeder/signing"
 )
 
 const addr = "127.0.0.1:7420"
 
 func main() {
+	id, err := signing.LoadOrCreate(signing.DefaultDir)
+	if err != nil {
+		log.Fatalf("waiveo-feeder: load identity: %v", err)
+	}
+	log.Printf("waiveo-feeder identity loaded (signing pub %s)", hex.EncodeToString(id.SigningPub()))
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthz)
 
