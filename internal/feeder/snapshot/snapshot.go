@@ -18,15 +18,15 @@
 //     declaration order) — never hash alone — so relabeling a validly
 //     signed snapshot under a different generation number changes the
 //     signed bytes and invalidates the old signature. The signature is
-//     base64-standard-encoded for the wire (relay/1 gives no explicit
-//     signature-field grammar beyond "a signature"; base64-std is this
-//     package's own choice, applied consistently by both Build and this
-//     package's own verification helpers).
+//     encoded for the wire via wire.EncodeSignature (base64-standard;
+//     relay/1 gives no explicit signature-field grammar beyond "a
+//     signature" — base64-std is this codec's own choice). That codec
+//     lives in internal/shared/wire, not here, so this package's signing
+//     side and a later relay-side verifier cannot drift apart on it.
 package snapshot
 
 import (
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -151,23 +151,14 @@ func generationHashCanonBytes(generation int64, hash string) ([]byte, error) {
 }
 
 // signGenerationHash computes REL-075's `signature`: an ed25519 signature
-// over generationHashCanonBytes(generation, hash), base64-std-encoded for
-// the wire.
+// over generationHashCanonBytes(generation, hash), encoded for the wire via
+// wire.EncodeSignature — the shared codec both this (signing) side and a
+// later relay-side verifier must use, so they cannot drift.
 func signGenerationHash(generation int64, hash string, id *signing.Identity) (string, error) {
 	canon, err := generationHashCanonBytes(generation, hash)
 	if err != nil {
 		return "", err
 	}
 	sig := signhash.Sign(id.SigningPriv(), canon)
-	return base64.StdEncoding.EncodeToString(sig), nil
-}
-
-// decodeSignature reverses signGenerationHash's base64-std encoding,
-// yielding the raw ed25519 signature bytes signhash.Verify expects.
-func decodeSignature(signature string) ([]byte, error) {
-	b, err := base64.StdEncoding.DecodeString(signature)
-	if err != nil {
-		return nil, fmt.Errorf("snapshot: decode signature: %w", err)
-	}
-	return b, nil
+	return wire.EncodeSignature(sig), nil
 }

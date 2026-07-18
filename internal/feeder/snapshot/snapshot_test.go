@@ -1,11 +1,13 @@
 package snapshot
 
 import (
+	"encoding/json"
 	"os"
 	"testing"
 
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/shared/signhash"
+	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
 const testImagePath = "../origin/testdata/photon.png"
@@ -76,6 +78,41 @@ func TestBuildShape(t *testing.T) {
 	if snap.Sections.PairingGrants == nil || len(snap.Sections.PairingGrants) != 0 {
 		t.Errorf("PairingGrants = %#v, want a non-nil empty slice (present, empty — REL-060/REL-067)", snap.Sections.PairingGrants)
 	}
+
+	// Direct end-to-end wire-shape check: marshal Build's actual output to
+	// JSON and confirm sections carries exactly the 7 REL-060 keys —
+	// complementing wire.TestStateSnapshotBodyFieldNames (which checks the
+	// shared type in isolation) with a check against this package's real
+	// Build output.
+	raw, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatalf("json.Marshal(snap): %v", err)
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("Unmarshal into map: %v", err)
+	}
+	var sections map[string]json.RawMessage
+	if err := json.Unmarshal(body["sections"], &sections); err != nil {
+		t.Fatalf("Unmarshal sections: %v", err)
+	}
+	wantKeys := []string{
+		"screen_programs",
+		"edge_rules",
+		"device_inventory",
+		"schedule",
+		"revocation_and_site",
+		"pairing_grants",
+		"workflow_generation",
+	}
+	if len(sections) != len(wantKeys) {
+		t.Fatalf("sections marshaled to %d keys, want exactly %d (%v); got %s", len(sections), len(wantKeys), wantKeys, body["sections"])
+	}
+	for _, k := range wantKeys {
+		if _, ok := sections[k]; !ok {
+			t.Errorf("sections JSON missing REL-060 key %q; got %s", k, body["sections"])
+		}
+	}
 }
 
 // TestBuildSignatureVerifies asserts the snapshot's signature verifies
@@ -94,9 +131,9 @@ func TestBuildSignatureVerifies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generationHashCanonBytes: %v", err)
 	}
-	sigBytes, err := decodeSignature(snap.Signature)
+	sigBytes, err := wire.DecodeSignature(snap.Signature)
 	if err != nil {
-		t.Fatalf("decodeSignature: %v", err)
+		t.Fatalf("wire.DecodeSignature: %v", err)
 	}
 
 	if !signhash.Verify(id.SigningPub(), canon, sigBytes) {
@@ -121,9 +158,9 @@ func TestBuildSignatureBindsGeneration(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 
-	sigBytes, err := decodeSignature(snap.Signature)
+	sigBytes, err := wire.DecodeSignature(snap.Signature)
 	if err != nil {
-		t.Fatalf("decodeSignature: %v", err)
+		t.Fatalf("wire.DecodeSignature: %v", err)
 	}
 
 	// Relabel under a different generation, same hash: the old signature
