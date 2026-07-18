@@ -3,73 +3,231 @@ package tlsboot
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/pem"
+	"math/big"
 	"testing"
+	"time"
 )
 
-// TestFingerprintCommitmentDeterministic confirms FingerprintCommitment
-// returns the exact same bytes every time it is computed over a fixed cert.
-func TestFingerprintCommitmentDeterministic(t *testing.T) {
+// certDER returns the raw DER of a fresh GenSelfSigned certificate,
+// discarding the key PEM. Most tests below work directly with DER (the form
+// SPKIFromCertDER / CommitmentForCertDER / VerifyCommitmentForCertDER take)
+// since that is the wire form every TLS stack, Go included, actually hands
+// callers.
+func certDER(t *testing.T) []byte {
+	t.Helper()
 	certPEM, _ := GenSelfSigned()
+	block, _ := pem.Decode(certPEM)
+	if block == nil || block.Type != "CERTIFICATE" {
+		t.Fatalf("certPEM did not decode to a CERTIFICATE block: %s", certPEM)
+	}
+	return block.Bytes
+}
 
-	c1 := FingerprintCommitment(certPEM)
-	c2 := FingerprintCommitment(certPEM)
+// spkiOf parses der and returns its SubjectPublicKeyInfo, failing the test
+// on any error.
+func spkiOf(t *testing.T, der []byte) []byte {
+	t.Helper()
+	spki, err := SPKIFromCertDER(der)
+	if err != nil {
+		t.Fatalf("SPKIFromCertDER() error: %v", err)
+	}
+	return spki
+}
+
+// TestCommitmentDeterministic confirms Commitment returns the exact same
+// bytes every time it is computed over the same SPKI.
+func TestCommitmentDeterministic(t *testing.T) {
+	spki := spkiOf(t, certDER(t))
+
+	c1 := Commitment(spki)
+	c2 := Commitment(spki)
 
 	if !bytes.Equal(c1, c2) {
-		t.Fatalf("FingerprintCommitment() not deterministic: %x != %x", c1, c2)
+		t.Fatalf("Commitment() not deterministic: %x != %x", c1, c2)
 	}
 }
 
-// TestFingerprintCommitmentLength confirms the commitment meets the banked
-// PLY-052 floor of >=80 bits (>=10 bytes) of truncated-SHA-256 material.
-func TestFingerprintCommitmentLength(t *testing.T) {
-	certPEM, _ := GenSelfSigned()
+// TestCommitmentLength confirms the commitment meets the banked PLY-052
+// floor of >=80 bits (>=10 bytes) of truncated-SHA-256 material.
+func TestCommitmentLength(t *testing.T) {
+	spki := spkiOf(t, certDER(t))
 
-	c := FingerprintCommitment(certPEM)
+	c := Commitment(spki)
 
 	if len(c) < 10 {
-		t.Fatalf("FingerprintCommitment() length = %d bytes (%d bits), want >= 10 bytes (>=80 bits)", len(c), len(c)*8)
+		t.Fatalf("Commitment() length = %d bytes (%d bits), want >= 10 bytes (>=80 bits)", len(c), len(c)*8)
 	}
 }
 
-// TestVerifyCommitmentAcceptsMatchingCert confirms VerifyCommitment returns
-// true when recomputing the commitment over the same cert it was made from.
-func TestVerifyCommitmentAcceptsMatchingCert(t *testing.T) {
-	certPEM, _ := GenSelfSigned()
+// TestVerifyCommitmentAcceptsMatchingSPKI confirms VerifyCommitment returns
+// true when recomputing the commitment over the same SPKI it was made from.
+func TestVerifyCommitmentAcceptsMatchingSPKI(t *testing.T) {
+	spki := spkiOf(t, certDER(t))
 
-	commitment := FingerprintCommitment(certPEM)
+	commitment := Commitment(spki)
 
-	if !VerifyCommitment(certPEM, commitment) {
-		t.Fatal("VerifyCommitment() = false for the matching cert, want true")
+	if !VerifyCommitment(commitment, spki) {
+		t.Fatal("VerifyCommitment() = false for the matching SPKI, want true")
 	}
 }
 
 // TestVerifyCommitmentRejectsSubstitutedCert is the PLY-056 property made
 // concrete: a pairing code carries a commitment computed over the real
-// relay cert. A MITM who substitutes their own self-signed cert during the
-// verification-disabled fetch must NOT be able to pass local verification.
-// The commitment is never recomputed from wire material supplied by the
-// substituted party — only from the cert the player actually fetched — so a
+// relay cert's SPKI. A MITM who substitutes their own self-signed cert
+// during the verification-disabled fetch (a distinct key, hence a distinct
+// SPKI) must NOT be able to pass local verification. The commitment is
+// never recomputed from wire material supplied by the substituted party —
+// only from the SPKI of the cert the player actually fetched — so a
 // distinct cert (even another legitimately-generated self-signed cert) must
 // fail VerifyCommitment against the original commitment.
 func TestVerifyCommitmentRejectsSubstitutedCert(t *testing.T) {
-	certA, _ := GenSelfSigned()
-	certB, _ := GenSelfSigned()
+	derA := certDER(t)
+	derB := certDER(t)
 
-	if bytes.Equal(certA, certB) {
-		t.Fatal("GenSelfSigned() produced identical cert bytes on two calls; test fixture invalid")
+	if bytes.Equal(derA, derB) {
+		t.Fatal("GenSelfSigned() produced identical cert DER on two calls; test fixture invalid")
 	}
 
-	commitmentA := FingerprintCommitment(certA)
+	spkiA := spkiOf(t, derA)
+	spkiB := spkiOf(t, derB)
+	if bytes.Equal(spkiA, spkiB) {
+		t.Fatal("two distinct GenSelfSigned() certs produced identical SPKI; test fixture invalid")
+	}
 
-	if VerifyCommitment(certB, commitmentA) {
-		t.Fatal("VerifyCommitment(certB, commitmentA) = true, want false (MITM-substituted cert must be rejected)")
+	commitmentA := Commitment(spkiA)
+
+	if VerifyCommitment(commitmentA, spkiB) {
+		t.Fatal("VerifyCommitment(commitmentA, spkiB) = true, want false (MITM-substituted cert must be rejected)")
 	}
 
 	// Sanity: the original pairing still verifies correctly.
-	if !VerifyCommitment(certA, commitmentA) {
-		t.Fatal("VerifyCommitment(certA, commitmentA) = false, want true")
+	if !VerifyCommitment(commitmentA, spkiA) {
+		t.Fatal("VerifyCommitment(commitmentA, spkiA) = false, want true")
+	}
+}
+
+// TestCommitmentSameKeyDifferentCertificatesMatch is the key-pinning
+// property this fix exists to establish: PLY-052 commits to the
+// SubjectPublicKeyInfo a certificate certifies, NOT the surrounding
+// certificate's other fields (serial number, validity window, ...). Two
+// certificates minted over the SAME public key — different serial numbers
+// and different validity windows, e.g. across a cert renewal that keeps the
+// same key — MUST produce the SAME commitment, because their SPKI is
+// identical.
+//
+// A commitment computed over the full certificate DER (the pre-fix
+// behavior) would FAIL this test: the differing serial/validity bytes would
+// hash to two different digests. An SPKI-based commitment passes, because
+// SPKI depends only on the public key, not on any other certificate field.
+// This is the regression guard proving the fix is correct, not merely that
+// it compiles.
+func TestCommitmentSameKeyDifferentCertificatesMatch(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("ed25519.GenerateKey() error: %v", err)
+	}
+
+	mkCert := func(serial int64, notAfterYears int) []byte {
+		t.Helper()
+		template := &x509.Certificate{
+			SerialNumber: big.NewInt(serial),
+			Subject: pkix.Name{
+				CommonName: "waiveo-relay",
+			},
+			NotBefore:             time.Now().Add(-time.Hour),
+			NotAfter:              time.Now().AddDate(notAfterYears, 0, 0),
+			KeyUsage:              x509.KeyUsageDigitalSignature,
+			ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+			BasicConstraintsValid: true,
+		}
+		der, err := x509.CreateCertificate(rand.Reader, template, template, pub, priv)
+		if err != nil {
+			t.Fatalf("x509.CreateCertificate() error: %v", err)
+		}
+		return der
+	}
+
+	derOld := mkCert(1, 1)  // serial 1, expires in 1 year
+	derNew := mkCert(2, 10) // serial 2 (renewal), expires in 10 years — same key
+
+	if bytes.Equal(derOld, derNew) {
+		t.Fatal("the two certificates have identical DER; test fixture invalid (expected differing serial/validity)")
+	}
+
+	spkiOld := spkiOf(t, derOld)
+	spkiNew := spkiOf(t, derNew)
+	if !bytes.Equal(spkiOld, spkiNew) {
+		t.Fatalf("SPKI differs across a same-key renewal: %x != %x (SPKI should depend only on the public key)", spkiOld, spkiNew)
+	}
+
+	commitmentOld := Commitment(spkiOld)
+	commitmentNew := Commitment(spkiNew)
+
+	if !bytes.Equal(commitmentOld, commitmentNew) {
+		t.Fatalf("Commitment() differs across a same-key cert renewal: %x != %x — commitment is pinning the certificate, not the key (this is the exact defect this fix corrects)", commitmentOld, commitmentNew)
+	}
+
+	// And CommitmentForCertDER (the whole-certificate convenience path)
+	// must agree with the manual SPKI-extraction path above.
+	viaDERold, err := CommitmentForCertDER(derOld)
+	if err != nil {
+		t.Fatalf("CommitmentForCertDER(derOld) error: %v", err)
+	}
+	viaDERnew, err := CommitmentForCertDER(derNew)
+	if err != nil {
+		t.Fatalf("CommitmentForCertDER(derNew) error: %v", err)
+	}
+	if !bytes.Equal(viaDERold, viaDERnew) {
+		t.Fatalf("CommitmentForCertDER() differs across a same-key cert renewal: %x != %x", viaDERold, viaDERnew)
+	}
+
+	// And the renewed cert must still verify against the commitment minted
+	// from the original.
+	ok, err := VerifyCommitmentForCertDER(derNew, commitmentOld)
+	if err != nil {
+		t.Fatalf("VerifyCommitmentForCertDER(derNew, commitmentOld) error: %v", err)
+	}
+	if !ok {
+		t.Fatal("VerifyCommitmentForCertDER(derNew, commitmentOld) = false, want true (same key across renewal must still verify)")
+	}
+}
+
+// TestCommitmentOrderMatters confirms Commitment's ordered-concatenation
+// property (PLY-052: "in trust_anchors array order"): committing to the
+// same two SPKIs in a different order MUST produce a different commitment.
+func TestCommitmentOrderMatters(t *testing.T) {
+	spkiA := spkiOf(t, certDER(t))
+	spkiB := spkiOf(t, certDER(t))
+
+	forward := Commitment(spkiA, spkiB)
+	reverse := Commitment(spkiB, spkiA)
+
+	if bytes.Equal(forward, reverse) {
+		t.Fatal("Commitment(spkiA, spkiB) == Commitment(spkiB, spkiA), want distinct (array order must matter per PLY-052)")
+	}
+}
+
+// TestCommitmentMultiAnchorRoundTrip confirms VerifyCommitment accepts a
+// multi-anchor commitment when given the same ordered SPKIs, and rejects it
+// under any reordering or subset.
+func TestCommitmentMultiAnchorRoundTrip(t *testing.T) {
+	spkiA := spkiOf(t, certDER(t))
+	spkiB := spkiOf(t, certDER(t))
+
+	commitment := Commitment(spkiA, spkiB)
+
+	if !VerifyCommitment(commitment, spkiA, spkiB) {
+		t.Fatal("VerifyCommitment(commitment, spkiA, spkiB) = false, want true")
+	}
+	if VerifyCommitment(commitment, spkiB, spkiA) {
+		t.Fatal("VerifyCommitment(commitment, spkiB, spkiA) = true, want false (reordered anchors must not verify)")
+	}
+	if VerifyCommitment(commitment, spkiA) {
+		t.Fatal("VerifyCommitment(commitment, spkiA) = true, want false (subset of anchors must not verify)")
 	}
 }
 
@@ -113,81 +271,110 @@ func TestGenSelfSignedProducesParsableCertAndKey(t *testing.T) {
 	}
 }
 
-// TestFingerprintCommitmentMatchesDERCore confirms the PEM-holding
-// convenience FingerprintCommitment agrees exactly with the DER core
-// FingerprintCommitmentDER when both are fed the same certificate — the
-// interop guarantee that lets a non-Go verifier (which only ever sees DER)
-// reproduce the same commitment the relay computed from PEM.
-func TestFingerprintCommitmentMatchesDERCore(t *testing.T) {
-	certPEM, _ := GenSelfSigned()
+// TestCommitmentForCertDERMatchesManualSPKI confirms the single-cert
+// convenience CommitmentForCertDER agrees exactly with the manual
+// SPKIFromCertDER + Commitment path — the interop guarantee that lets a
+// non-Go verifier (which only ever sees DER) reproduce the same commitment
+// the relay computed.
+func TestCommitmentForCertDERMatchesManualSPKI(t *testing.T) {
+	der := certDER(t)
 
-	block, _ := pem.Decode(certPEM)
-	if block == nil || block.Type != "CERTIFICATE" {
-		t.Fatalf("certPEM did not decode to a CERTIFICATE block: %s", certPEM)
+	viaConvenience, err := CommitmentForCertDER(der)
+	if err != nil {
+		t.Fatalf("CommitmentForCertDER() error: %v", err)
 	}
+	viaManual := Commitment(spkiOf(t, der))
 
-	fromPEM := FingerprintCommitment(certPEM)
-	fromDER := FingerprintCommitmentDER(block.Bytes)
-
-	if !bytes.Equal(fromPEM, fromDER) {
-		t.Fatalf("FingerprintCommitment(certPEM) = %x, FingerprintCommitmentDER(der) = %x, want equal", fromPEM, fromDER)
+	if !bytes.Equal(viaConvenience, viaManual) {
+		t.Fatalf("CommitmentForCertDER(der) = %x, Commitment(SPKIFromCertDER(der)) = %x, want equal", viaConvenience, viaManual)
 	}
 }
 
-// TestVerifyCommitmentDERRejectsSubstitutedCert is the DER-variant
-// equivalent of TestVerifyCommitmentRejectsSubstitutedCert: the same
-// PLY-056 MITM property, exercised via the raw-DER path a non-Go player
-// (which only ever holds DER, never PEM) would actually call.
-func TestVerifyCommitmentDERRejectsSubstitutedCert(t *testing.T) {
-	certA, _ := GenSelfSigned()
-	certB, _ := GenSelfSigned()
+// TestVerifyCommitmentForCertDERRejectsSubstitutedCert is the
+// CommitmentForCertDER/VerifyCommitmentForCertDER-variant equivalent of
+// TestVerifyCommitmentRejectsSubstitutedCert: the same PLY-056 MITM
+// property, exercised via the single-cert convenience path the feeder,
+// relay, and virtual player actually call.
+func TestVerifyCommitmentForCertDERRejectsSubstitutedCert(t *testing.T) {
+	derA := certDER(t)
+	derB := certDER(t)
 
-	blockA, _ := pem.Decode(certA)
-	blockB, _ := pem.Decode(certB)
-	if blockA == nil || blockB == nil {
-		t.Fatal("failed to PEM-decode one of the generated certs; test fixture invalid")
-	}
-
-	derA, err := x509.ParseCertificate(blockA.Bytes)
-	if err != nil {
-		t.Fatalf("x509.ParseCertificate(certA) error: %v", err)
-	}
-	derB, err := x509.ParseCertificate(blockB.Bytes)
-	if err != nil {
-		t.Fatalf("x509.ParseCertificate(certB) error: %v", err)
-	}
-
-	if bytes.Equal(derA.Raw, derB.Raw) {
+	if bytes.Equal(derA, derB) {
 		t.Fatal("GenSelfSigned() produced identical cert DER on two calls; test fixture invalid")
 	}
 
-	commitmentA := FingerprintCommitmentDER(derA.Raw)
+	commitmentA, err := CommitmentForCertDER(derA)
+	if err != nil {
+		t.Fatalf("CommitmentForCertDER(derA) error: %v", err)
+	}
 
-	if VerifyCommitmentDER(derB.Raw, commitmentA) {
-		t.Fatal("VerifyCommitmentDER(derB.Raw, commitmentA) = true, want false (MITM-substituted cert must be rejected)")
+	ok, err := VerifyCommitmentForCertDER(derB, commitmentA)
+	if err != nil {
+		t.Fatalf("VerifyCommitmentForCertDER(derB, commitmentA) error: %v", err)
+	}
+	if ok {
+		t.Fatal("VerifyCommitmentForCertDER(derB, commitmentA) = true, want false (MITM-substituted cert must be rejected)")
 	}
 
 	// Sanity: the original pairing still verifies correctly.
-	if !VerifyCommitmentDER(derA.Raw, commitmentA) {
-		t.Fatal("VerifyCommitmentDER(derA.Raw, commitmentA) = false, want true")
+	ok, err = VerifyCommitmentForCertDER(derA, commitmentA)
+	if err != nil {
+		t.Fatalf("VerifyCommitmentForCertDER(derA, commitmentA) error: %v", err)
+	}
+	if !ok {
+		t.Fatal("VerifyCommitmentForCertDER(derA, commitmentA) = false, want true")
 	}
 }
 
-// TestVerifyCommitmentRejectsGarbagePEM confirms VerifyCommitment fails
-// closed — returns false, never panics — when certPEM is not decodable PEM
-// (or not a CERTIFICATE block) at all, e.g. a truncated or corrupted fetch.
-func TestVerifyCommitmentRejectsGarbagePEM(t *testing.T) {
-	garbage := []byte("this is not PEM at all")
+// TestSPKIFromCertDERRejectsGarbage confirms SPKIFromCertDER fails closed —
+// returns an error, never panics — when der is not a parsable certificate at
+// all, e.g. a truncated or corrupted fetch.
+func TestSPKIFromCertDERRejectsGarbage(t *testing.T) {
+	garbage := []byte("this is not a certificate at all")
 
+	spki, err := SPKIFromCertDER(garbage)
+	if err == nil {
+		t.Fatal("SPKIFromCertDER(garbage) error = nil, want non-nil")
+	}
+	if spki != nil {
+		t.Fatalf("SPKIFromCertDER(garbage) spki = %x, want nil", spki)
+	}
+}
+
+// TestCommitmentForCertDERRejectsGarbage confirms CommitmentForCertDER and
+// VerifyCommitmentForCertDER fail closed on undecodable DER — an error, not
+// a panic, and VerifyCommitmentForCertDER never reports a match.
+func TestCommitmentForCertDERRejectsGarbage(t *testing.T) {
+	garbage := []byte("this is not a certificate at all")
 	commitment := make([]byte, commitmentBytes) // arbitrary non-empty commitment
 
-	if VerifyCommitment(garbage, commitment) {
-		t.Fatal("VerifyCommitment(garbage, commitment) = true, want false")
+	if _, err := CommitmentForCertDER(garbage); err == nil {
+		t.Fatal("CommitmentForCertDER(garbage) error = nil, want non-nil")
 	}
 
-	// Also confirm FingerprintCommitment itself returns nil rather than
-	// panicking on undecodable input.
-	if got := FingerprintCommitment(garbage); got != nil {
-		t.Fatalf("FingerprintCommitment(garbage) = %x, want nil", got)
+	ok, err := VerifyCommitmentForCertDER(garbage, commitment)
+	if err == nil {
+		t.Fatal("VerifyCommitmentForCertDER(garbage, commitment) error = nil, want non-nil")
+	}
+	if ok {
+		t.Fatal("VerifyCommitmentForCertDER(garbage, commitment) ok = true, want false")
+	}
+}
+
+// TestVerifyCommitmentRejectsEmptyInput confirms VerifyCommitment fails
+// closed — returns false, never panics — on empty or malformed input: no
+// SPKIs at all, or an SPKI that is itself empty.
+func TestVerifyCommitmentRejectsEmptyInput(t *testing.T) {
+	commitment := make([]byte, commitmentBytes)
+
+	if VerifyCommitment(commitment) {
+		t.Fatal("VerifyCommitment(commitment) with no SPKIs = true, want false")
+	}
+	if VerifyCommitment(commitment, []byte{}) {
+		t.Fatal("VerifyCommitment(commitment, <empty SPKI>) = true, want false")
+	}
+	spki := spkiOf(t, certDER(t))
+	if VerifyCommitment(commitment, spki, []byte{}) {
+		t.Fatal("VerifyCommitment(commitment, spki, <empty SPKI>) = true, want false")
 	}
 }
