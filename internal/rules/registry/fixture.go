@@ -29,6 +29,8 @@ package registry
 //	app_version     String   cosmetic     (REG-064)
 //	volume          Number   significant  (corpus-only, not REG-064-pinned)
 //	media_title     String   cosmetic     (corpus-only, not REG-064-pinned)
+//	powered_on      Boolean  significant  (corpus-only, not REG-064-pinned;
+//	                                      RUL-101-corroborating-and-cross-entity-conditions)
 //
 // media-player commands (device-class-registry/1 REG-066): launch, home,
 // keypress, power.
@@ -69,6 +71,7 @@ var fixtureAttributes = map[string]map[string]fixtureAttr{
 		"app_version":    {valueType: String, changeEmission: "cosmetic"},
 		"volume":         {valueType: Number, changeEmission: "significant"},
 		"media_title":    {valueType: String, changeEmission: "cosmetic"},
+		"powered_on":     {valueType: Boolean, changeEmission: "significant"},
 	},
 }
 
