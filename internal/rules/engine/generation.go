@@ -5,7 +5,6 @@ import (
 	"github.com/maaxton/waiveo-next/internal/rules/compile"
 	"github.com/maaxton/waiveo-next/internal/rules/eval"
 	"github.com/maaxton/waiveo-next/internal/rules/model"
-	"github.com/maaxton/waiveo-next/internal/rules/state"
 )
 
 // CompiledRule is one rule of a compiled generation: its classification entry
@@ -29,31 +28,83 @@ type Generation struct {
 	Rules  []CompiledRule
 }
 
-// ApplyGeneration makes gen the engine's applied generation: it builds a driven
-// rule instance for every edge-classified rule in gen — fanning each selector /
-// device-class trigger out over its frozen matched entity set (RUL-011/013) and
-// wiring each rule's frozen closure (variables, selectors, preset batches) into
-// evaluation — and returns the dispositions of any firings the apply itself
-// produces (none in this part; firings arise from Observe/Tick).
+// ApplyGeneration makes gen the engine's applied generation, diffing it against
+// the currently-applied one to decide which in-flight runs survive the swap
+// (RUL-380/381). For each edge-classified rule in gen:
 //
-// This part applies a generation fresh — it replaces the driven rule set and
-// resets the snapshot, exactly as Load did for a single rule. Generation-swap
-// preservation of an unchanged rule's in-flight run and per-(trigger,entity)
-// baseline (RUL-380/381/303) is a later task; here every apply starts clean.
+//   - a rule that is UNCHANGED from the applied generation (identical canonical
+//     compiled structure AND identical frozen closure, RUL-381) carries its
+//     existing driven instance forward untouched — its in-flight run continues
+//     uninterrupted and its per-(trigger,entity) baseline/hold state is preserved
+//     (RUL-303). A bare generation-number bump therefore cancels nothing.
+//   - a rule that is NEW, or CHANGED (compiled structure or any closed-over value
+//     differs), gets a fresh instance; a changed rule's prior in-flight run is
+//     canceled (RUL-380), recorded as a Canceled disposition.
+//
+// A rule present in the applied generation but absent from gen is REMOVED; its
+// in-flight run is canceled too (RUL-380). Each selector/device-class trigger of
+// a new/changed rule is fanned out over its frozen matched entity set
+// (RUL-011/013) and its frozen closure (variables, selectors, preset batches) is
+// wired into evaluation. The engine snapshot is NOT reset: entity state observed
+// under the prior generation persists across the swap, so a preserved run's
+// deferred tail and an unchanged trigger's durable baseline remain resolvable
+// (RUL-303/391).
+//
+// It returns the Canceled dispositions of every changed-or-removed rule whose
+// in-flight run the swap tore down; a swap that cancels nothing returns none.
+// (No firing arises from the apply itself — firings arise from Observe/Tick.)
 //
 // An app-classified rule in gen is skipped (never driven by this edge engine,
 // RUL-240) rather than erroring — the generation as a whole still applies.
 func (e *Engine) ApplyGeneration(gen Generation) []RunDisposition {
-	e.gen = gen.Number
-	e.rules = e.rules[:0]
-	e.snap = state.Snapshot{}
+	// Index the currently-applied instances by rule ID so each incoming rule can
+	// be diffed against its prior compiled form (RUL-380/381).
+	prior := make(map[string]*ruleInstance, len(e.rules))
+	for _, ri := range e.rules {
+		prior[ri.ruleID] = ri
+	}
+
+	var out []RunDisposition
+	next := make([]*ruleInstance, 0, len(gen.Rules))
+	kept := make(map[string]bool, len(gen.Rules))
+
 	for _, cr := range gen.Rules {
 		if cr.Entry.ExecutionClass != "edge" {
+			continue // app-classified: never driven by this edge engine (RUL-240).
+		}
+		id := cr.Rule.ID
+		old, existed := prior[id]
+		switch {
+		case existed && !kept[id] && !ruleChanged(old.rule, old.closure, cr.Rule, cr.Closure):
+			// Unchanged across the swap (RUL-380/381): carry the existing instance
+			// forward untouched — in-flight run and (trigger,entity) state preserved.
+			next = append(next, old)
+		default:
+			// New or changed (RUL-381): build a fresh instance. A changed rule's
+			// prior in-flight run is canceled (RUL-380).
+			if existed && !kept[id] && old.run != nil {
+				out = append(out, RunDisposition{RuleID: id, Disposition: Canceled, Mode: old.mode})
+			}
+			next = append(next, newRuleInstance(cr))
+		}
+		kept[id] = true
+	}
+
+	// A prior rule absent from the new generation is removed: cancel its
+	// in-flight run (RUL-380). Rules replaced/canceled above are marked kept and
+	// are not double-counted here.
+	for _, ri := range e.rules {
+		if kept[ri.ruleID] {
 			continue
 		}
-		e.rules = append(e.rules, newRuleInstance(cr))
+		if ri.run != nil {
+			out = append(out, RunDisposition{RuleID: ri.ruleID, Disposition: Canceled, Mode: ri.mode})
+		}
 	}
-	return nil
+
+	e.rules = next
+	e.gen = gen.Number
+	return out
 }
 
 // ruleInstance is one rule the engine currently drives: its identity/mode, its

@@ -35,6 +35,9 @@ import (
 
 // Disposition is the closed outcome a firing (or a dropped/preempted firing)
 // resolves to for mode evaluation (RUL-246): `ran`, `skipped`, or `restarted`.
+// Canceled is the orthogonal generation-swap outcome (RUL-380): it is not a
+// firing outcome but the record that an in-flight run was torn down when a
+// changed or removed rule's generation was superseded.
 type Disposition string
 
 const (
@@ -46,6 +49,11 @@ const (
 	Skipped Disposition = "skipped"
 	// Restarted — the run a restart-mode firing preempted (RUL-242).
 	Restarted Disposition = "restarted"
+	// Canceled — the in-flight run of a rule that was changed or removed by a
+	// generation swap (RUL-380/381), torn down when ApplyGeneration superseded
+	// the generation it belonged to. Unlike ran/skipped/restarted it does not
+	// arise from a trigger firing; ApplyGeneration is its only producer.
+	Canceled Disposition = "canceled"
 )
 
 // RunDisposition is the recorded outcome of one trigger firing that reached
