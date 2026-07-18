@@ -79,11 +79,15 @@ func TestParsePipelineStateUpper(t *testing.T) {
 	if e.Pipeline == nil {
 		t.Fatalf("expected non-nil Pipeline")
 	}
-	if e.Pipeline.Source.Name != "state" {
-		t.Fatalf("source = %q, want state", e.Pipeline.Source.Name)
+	if e.Pipeline.Source.Literal != nil {
+		t.Fatalf("expected a source call, got literal source")
 	}
-	if len(e.Pipeline.Source.Args) != 1 || e.Pipeline.Source.Args[0].Value != id {
-		t.Fatalf("source args = %#v, want [%q]", e.Pipeline.Source.Args, id)
+	src := e.Pipeline.Source.Call
+	if src == nil || src.Name != "state" {
+		t.Fatalf("source = %#v, want state", e.Pipeline.Source)
+	}
+	if len(src.Args) != 1 || src.Args[0].Value != id {
+		t.Fatalf("source args = %#v, want [%q]", src.Args, id)
 	}
 	if len(e.Pipeline.Filters) != 1 {
 		t.Fatalf("filters = %d, want 1", len(e.Pipeline.Filters))
@@ -102,9 +106,9 @@ func TestParsePipelineAttrDefault(t *testing.T) {
 	if e.Pipeline == nil {
 		t.Fatalf("expected non-nil Pipeline")
 	}
-	src := e.Pipeline.Source
-	if src.Name != "attr" {
-		t.Fatalf("source = %q, want attr", src.Name)
+	src := e.Pipeline.Source.Call
+	if src == nil || src.Name != "attr" {
+		t.Fatalf("source = %#v, want attr", e.Pipeline.Source)
 	}
 	if len(src.Args) != 2 || src.Args[0].Value != id || src.Args[1].Value != "battery" {
 		t.Fatalf("attr args = %#v, want [%q battery]", src.Args, id)
@@ -123,14 +127,95 @@ func TestParseNowSource(t *testing.T) {
 	if e.Pipeline == nil {
 		t.Fatalf("expected non-nil Pipeline")
 	}
-	if e.Pipeline.Source.Name != "now" {
-		t.Fatalf("source = %q, want now", e.Pipeline.Source.Name)
+	src := e.Pipeline.Source.Call
+	if src == nil || src.Name != "now" {
+		t.Fatalf("source = %#v, want now", e.Pipeline.Source)
 	}
-	if len(e.Pipeline.Source.Args) != 0 {
-		t.Fatalf("now() args = %#v, want none", e.Pipeline.Source.Args)
+	if len(src.Args) != 0 {
+		t.Fatalf("now() args = %#v, want none", src.Args)
 	}
 	if len(e.Pipeline.Filters) != 0 {
 		t.Fatalf("filters = %d, want 0", len(e.Pipeline.Filters))
+	}
+}
+
+func TestParseLiteralSourceNumber(t *testing.T) {
+	// RUL-281: a source may itself be a literal, then piped through filters.
+	// Failing scenario from the defect: `5 | round(2)`.
+	e := mustParse(t, `{"expr":"5 | round(2)"}`)
+	if e.Pipeline == nil {
+		t.Fatalf("expected pipeline")
+	}
+	if e.Pipeline.Source.Call != nil {
+		t.Fatalf("expected a literal source, got call %#v", e.Pipeline.Source.Call)
+	}
+	if e.Pipeline.Source.Literal == nil {
+		t.Fatalf("expected non-nil literal source")
+	}
+	if got := *e.Pipeline.Source.Literal; got != float64(5) {
+		t.Fatalf("literal source = %v (%T), want float64(5)", got, got)
+	}
+	if len(e.Pipeline.Filters) != 1 || e.Pipeline.Filters[0].Name != "round" ||
+		e.Pipeline.Filters[0].Args[0].Value != float64(2) {
+		t.Fatalf("filters = %#v, want [round(2)]", e.Pipeline.Filters)
+	}
+}
+
+func TestParseLiteralSourceString(t *testing.T) {
+	// RUL-281: a quoted-string literal source. Failing scenario: `'on' | upper`.
+	e := mustParse(t, `{"expr":"'on' | upper"}`)
+	if e.Pipeline == nil {
+		t.Fatalf("expected pipeline")
+	}
+	if e.Pipeline.Source.Literal == nil {
+		t.Fatalf("expected non-nil literal source")
+	}
+	if got := *e.Pipeline.Source.Literal; got != "on" {
+		t.Fatalf("literal source = %v (%T), want \"on\"", got, got)
+	}
+	if len(e.Pipeline.Filters) != 1 || e.Pipeline.Filters[0].Name != "upper" {
+		t.Fatalf("filters = %#v, want [upper]", e.Pipeline.Filters)
+	}
+}
+
+func TestParseLiteralSourceBoolAndNull(t *testing.T) {
+	// RUL-281/280: boolean and null keyword literals are valid sources; a null
+	// source is a non-nil Literal pointing to a nil value (mirrors Expr).
+	eb := mustParse(t, `{"expr":"true | default(false)"}`)
+	if eb.Pipeline == nil || eb.Pipeline.Source.Literal == nil {
+		t.Fatalf("expected a boolean literal source, got %#v", eb)
+	}
+	if got := *eb.Pipeline.Source.Literal; got != true {
+		t.Fatalf("literal source = %v (%T), want true", got, got)
+	}
+
+	en := mustParse(t, `{"expr":"null | default(0)"}`)
+	if en.Pipeline == nil || en.Pipeline.Source.Literal == nil {
+		t.Fatalf("expected a non-nil literal source for null")
+	}
+	if got := *en.Pipeline.Source.Literal; got != nil {
+		t.Fatalf("null literal source = %v (%T), want nil", got, got)
+	}
+}
+
+func TestParseLiteralSourceBare(t *testing.T) {
+	// A literal with no following filters is still a valid pipeline source.
+	e := mustParse(t, `{"expr":"42"}`)
+	if e.Pipeline == nil || e.Pipeline.Source.Literal == nil {
+		t.Fatalf("expected a bare literal source, got %#v", e)
+	}
+	if got := *e.Pipeline.Source.Literal; got != float64(42) {
+		t.Fatalf("literal source = %v (%T), want float64(42)", got, got)
+	}
+	if len(e.Pipeline.Filters) != 0 {
+		t.Fatalf("filters = %#v, want none", e.Pipeline.Filters)
+	}
+}
+
+func TestParseLiteralSourceRejectsCallSyntax(t *testing.T) {
+	// A literal source carries no argument list; `5(2)` is malformed, not a call.
+	if _, perr := Parse(json.RawMessage(`{"expr":"5(2)"}`)); perr == nil {
+		t.Fatalf("expected error for literal followed by call syntax")
 	}
 }
 

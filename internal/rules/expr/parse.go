@@ -8,9 +8,10 @@ import (
 
 // Parser-surfaced failure codes. CodeUnknownFilter maps directly to the
 // rules/1 UNKNOWN_FILTER taxonomy code (contracts/rules-1.md Error taxonomy);
-// the compile front-end maps the others. CodeInvalidSource covers a source
-// that is not state/attr/now (RUL-281/292); CodeMalformedExpr covers any other
-// shape/syntax violation of the Expression grammar (RUL-280).
+// the compile front-end maps the others. CodeInvalidSource covers a named
+// source call that is not state/attr/now (a literal source is valid, RUL-281;
+// RUL-292); CodeMalformedExpr covers any other shape/syntax violation of the
+// Expression grammar (RUL-280).
 const (
 	CodeUnknownFilter = "UNKNOWN_FILTER"
 	CodeInvalidSource = "INVALID_SOURCE"
@@ -52,8 +53,9 @@ var filterNames = map[string]bool{
 // Parse turns a raw rules/1 Expression (RUL-280) into an Expr: a JSON literal
 // (string/number/boolean/null, used as-is) or an {"expr": "<pipeline>"} object
 // whose pipeline string is parsed into a source + filter AST. It surfaces
-// UNKNOWN_FILTER for a filter outside RUL-290, INVALID_SOURCE for a source
-// outside state/attr/now (RUL-281/292), and MALFORMED_EXPRESSION otherwise.
+// UNKNOWN_FILTER for a filter outside RUL-290, INVALID_SOURCE for a named
+// source call outside state/attr/now (RUL-281/292), and MALFORMED_EXPRESSION
+// otherwise.
 func Parse(raw json.RawMessage) (Expr, *ParseError) {
 	trimmed := strings.TrimSpace(string(raw))
 	if trimmed == "" {
@@ -107,13 +109,9 @@ func parsePipeline(s string) (*Pipeline, *ParseError) {
 	}
 	p := &parser{toks: toks}
 
-	src, perr := p.parseStage()
+	src, perr := p.parseSource()
 	if perr != nil {
 		return nil, perr
-	}
-	if !sourceNames[src.Name] {
-		return nil, &ParseError{CodeInvalidSource,
-			fmt.Sprintf("a pipeline source must be state, attr, or now, not %q (RUL-281/292)", src.Name)}
 	}
 
 	pl := &Pipeline{Source: src}
@@ -137,6 +135,44 @@ func parsePipeline(s string) (*Pipeline, *ParseError) {
 		return nil, &ParseError{CodeMalformedExpr, "unexpected trailing tokens after pipeline"}
 	}
 	return pl, nil
+}
+
+// parseSource parses a pipeline's source (RUL-281): a literal
+// (string/number/boolean/null) used as-is, or a state/attr/now source call. A
+// literal source carries no argument list; any other named call in source
+// position is INVALID_SOURCE (RUL-281/292).
+func (p *parser) parseSource() (Source, *ParseError) {
+	t := p.peek()
+	switch {
+	case t.kind == tString || t.kind == tNumber:
+		p.next()
+		v := t.val
+		return Source{Literal: &v}, nil
+	case t.kind == tIdent && isLiteralKeyword(t.text):
+		p.next()
+		var v any
+		switch t.text {
+		case "true":
+			v = true
+		case "false":
+			v = false
+		case "null":
+			v = nil
+		}
+		return Source{Literal: &v}, nil
+	case t.kind == tIdent:
+		call, perr := p.parseStage()
+		if perr != nil {
+			return Source{}, perr
+		}
+		if !sourceNames[call.Name] {
+			return Source{}, &ParseError{CodeInvalidSource,
+				fmt.Sprintf("a pipeline source must be a literal or state/attr/now, not %q (RUL-281/292)", call.Name)}
+		}
+		return Source{Call: &call}, nil
+	default:
+		return Source{}, &ParseError{CodeMalformedExpr, "expected a source (a literal or state/attr/now)"}
+	}
 }
 
 // parseStage parses one stage: an identifier, optionally followed by a

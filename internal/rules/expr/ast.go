@@ -2,10 +2,11 @@
 // parser turning a JSON literal or an {"expr": "<pipeline>"} object into an
 // AST, plus (in later parts) a fail-closed evaluator. An Expression is either a
 // JSON literal used as-is or a `source (| filter(args...))*` pipeline whose
-// source is one of state/attr/now (RUL-281/292) and whose every filter stage
-// draws from the closed 14-filter list (RUL-290). The grammar is one shared
-// list between edge and app evaluation (RUL-283); only the entity-reference
-// scope (RUL-282) restricts the edge side.
+// source is a literal or one of state/attr/now (RUL-281) — RUL-292 only
+// restricts which named filters may hold the source position (state/attr/now)
+// — and whose every filter stage draws from the closed 14-filter list
+// (RUL-290). The grammar is one shared list between edge and app evaluation
+// (RUL-283); only the entity-reference scope (RUL-282) restricts the edge side.
 package expr
 
 // Expr is a parsed rules/1 Expression (RUL-280): either a JSON literal used
@@ -18,15 +19,28 @@ type Expr struct {
 }
 
 // Pipeline is a source followed by zero or more filter stages (RUL-280/292):
-// `source (| filter(args...))*`. Source is always one of state/attr/now; each
-// Filters entry is a non-source filter from the RUL-290 closed list.
+// `source (| filter(args...))*`. Source is a literal or one of the source calls
+// state/attr/now (RUL-281); each Filters entry is a non-source filter from the
+// RUL-290 closed list.
 type Pipeline struct {
-	Source  Call
+	Source  Source
 	Filters []Call
 }
 
-// Call is one pipeline stage — a source or a filter — carrying its name and its
-// parsed literal arguments (RUL-281/290).
+// Source is a pipeline's source (RUL-281): either a literal value or one of the
+// three source calls state(entity_id)/attr(entity_id,name)/now(). Exactly one
+// of Literal / Call is set. A non-nil Literal marks the literal form — a null
+// source literal is a non-nil Literal pointing to a nil value, mirroring Expr
+// (RUL-280) — otherwise Call holds the state/attr/now source call. RUL-292
+// governs only the Call form: among named filters, state/attr/now are the sole
+// names admitted in the source position, and they may not appear as filters.
+type Source struct {
+	Literal *any
+	Call    *Call
+}
+
+// Call is one pipeline stage — a source call or a filter — carrying its name
+// and its parsed literal arguments (RUL-281/290).
 type Call struct {
 	Name string
 	Args []Arg
