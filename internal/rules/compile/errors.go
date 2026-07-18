@@ -24,9 +24,11 @@ func (e *CompileError) Error() string {
 
 // Taxonomy codes this front-end emits (contracts/rules-1.md Error taxonomy).
 const (
-	codeUnknownVocabularyMember = "UNKNOWN_VOCABULARY_MEMBER"
-	codeEntityRefAmbiguous      = "ENTITY_REF_AMBIGUOUS"
-	codeModeMaxMissing          = "MODE_MAX_MISSING"
-	codeModeMaxNotApplicable    = "MODE_MAX_NOT_APPLICABLE"
-	codeMisfireInvalid          = "MISFIRE_INVALID"
+	codeUnknownVocabularyMember   = "UNKNOWN_VOCABULARY_MEMBER"
+	codeUnknownFilter             = "UNKNOWN_FILTER"
+	codeEdgeExpressionCrossEntity = "EDGE_EXPRESSION_CROSS_ENTITY_REFERENCE"
+	codeEntityRefAmbiguous        = "ENTITY_REF_AMBIGUOUS"
+	codeModeMaxMissing            = "MODE_MAX_MISSING"
+	codeModeMaxNotApplicable      = "MODE_MAX_NOT_APPLICABLE"
+	codeMisfireInvalid            = "MISFIRE_INVALID"
 )

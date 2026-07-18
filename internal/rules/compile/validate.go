@@ -39,6 +39,12 @@ func Validate(r model.Rule) *CompileError {
 	if e := validateModeMax(r); e != nil {
 		return e
 	}
+	// Expression-level checks (RUL-200/393 sites): an unknown filter (RUL-290)
+	// and, for edge rules, the cross-entity source restriction (RUL-282). Run
+	// last, after every structural member/mode reject.
+	if e := validateExpressions(r); e != nil {
+		return e
+	}
 	return nil
 }
 

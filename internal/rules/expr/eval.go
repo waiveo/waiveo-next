@@ -25,6 +25,22 @@ type Env struct {
 	Clk                 clock.Clock
 	ClockUntrustedFloor int64
 	TrustUntrusted      bool
+
+	// EdgeScoped/ScopeEntity enforce the edge cross-entity restriction (RUL-282)
+	// at eval time as defense in depth behind compile.Validate: when EdgeScoped
+	// is set, a state/attr source referencing any entity other than ScopeEntity
+	// — the firing trigger's subject — fails closed (RUL-284), even if that
+	// entity resolves in the snapshot. App-class evaluation leaves EdgeScoped
+	// false and reads any relay-visible entity (RUL-282/283).
+	EdgeScoped  bool
+	ScopeEntity string
+}
+
+// inScope reports whether an entity reference is admissible under the edge
+// cross-entity restriction (RUL-282): always true off the edge (EdgeScoped
+// false), otherwise only the firing trigger's own subject entity.
+func (env Env) inScope(id string) bool {
+	return !env.EdgeScoped || id == env.ScopeEntity
 }
 
 // nowMillis is the effective current wall instant for now()/elapsed on the edge
@@ -83,6 +99,9 @@ func evalSource(s Source, env Env) (any, bool) {
 		if !ok {
 			return nil, true
 		}
+		if !env.inScope(id) {
+			return nil, true // outside the edge entity scope (RUL-282/284)
+		}
 		ent, ok := env.Snapshot.Get(id)
 		if !ok {
 			return nil, true // unresolvable entity (RUL-284)
@@ -96,6 +115,9 @@ func evalSource(s Source, env Env) (any, bool) {
 		name, nameOK := c.Args[1].Value.(string)
 		if !idOK || !nameOK {
 			return nil, true
+		}
+		if !env.inScope(id) {
+			return nil, true // outside the edge entity scope (RUL-282/284)
 		}
 		ent, ok := env.Snapshot.Get(id)
 		if !ok {
