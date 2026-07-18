@@ -1,0 +1,10 @@
+# Waiveo Player v3 — waiveo-next first-photon build.
+# Current increment: crypto core + on-device self-check (console-only, no
+# SceneGraph yet). Channel icons/splash + ui_resolutions return with the
+# SceneGraph render increment.
+title=Waiveo Player v3
+major_version=3
+minor_version=0
+build_version=0
+bs_const=DEBUG=true
+run_as_process=1
