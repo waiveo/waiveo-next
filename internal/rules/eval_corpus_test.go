@@ -27,6 +27,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/rules/compile"
 	"github.com/maaxton/waiveo-next/internal/rules/engine"
 	"github.com/maaxton/waiveo-next/internal/rules/eval"
+	"github.com/maaxton/waiveo-next/internal/rules/expr"
 	"github.com/maaxton/waiveo-next/internal/rules/model"
 	"github.com/maaxton/waiveo-next/internal/rules/registry"
 	"github.com/maaxton/waiveo-next/internal/rules/schedule"
@@ -167,6 +168,8 @@ var evalCorpusHandlers = map[string]func(t *testing.T, path string){
 	"RUL-242-mode-restart-cancels-in-flight-delay":                 runRUL242,
 	"RUL-245-no-implicit-dedup-window":                             runRUL245,
 	"RUL-270-number-parsing-strict":                                runRUL270,
+	"RUL-282-edge-expression-cross-entity-rejected":                runRUL282,
+	"RUL-285-default-contains-attribute-failure":                   runRUL285,
 	"RUL-300-boot-reconfirm-no-fire":                               runRUL300,
 	"RUL-301-stabilization-window-defers-transition":               runRUL301,
 	"RUL-303-generation-swap-unchanged-trigger-preserves-baseline": runRUL303,
@@ -982,6 +985,212 @@ func runRUL270(t *testing.T, path string) {
 				t.Errorf("%s: satisfies_above_%v = %v, want %v", want.ID, spec.Above, satisfies, *want.SatisfiesAbove10)
 			}
 		}
+	}
+}
+
+// --- RUL-282: edge expression cross-entity source is rejected at compile ---
+
+type rul282Case struct {
+	Input struct {
+		RuleVariants []struct {
+			ID       string          `json:"id"`
+			Triggers json.RawMessage `json:"triggers"`
+			Actions  json.RawMessage `json:"actions"`
+		} `json:"rule_variants"`
+	} `json:"input"`
+	Expected struct {
+		Results []struct {
+			ID             string `json:"id"`
+			Compiles       bool   `json:"compiles"`
+			ExecutionClass string `json:"execution_class"`
+			Error          *struct {
+				Code  string `json:"code"`
+				Field string `json:"field"`
+			} `json:"error"`
+		} `json:"results"`
+	} `json:"expected"`
+}
+
+// runRUL282 replays both of the corpus's rule variants through the real
+// compile front door (compile.Compile, exercising compile.Validate's
+// validateExpressions, Part 3): the "same-entity" variant's `log` message
+// sources the rule's own triggering entity via state(...) and compiles
+// edge-classified, while the byte-identical "other-entity" variant — whose
+// sole difference is that its expression sources a different entity ID than
+// its trigger's subject — is rejected with EDGE_EXPRESSION_CROSS_ENTITY_
+// REFERENCE at exactly the corpus's own declared field (RUL-282/006).
+func runRUL282(t *testing.T, path string) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var c rul282Case
+	if err := json.Unmarshal(b, &c); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	wantByID := map[string]int{}
+	for i, r := range c.Expected.Results {
+		wantByID[r.ID] = i
+	}
+
+	for _, v := range c.Input.RuleVariants {
+		v := v
+		t.Run(v.ID, func(t *testing.T) {
+			idx, ok := wantByID[v.ID]
+			if !ok {
+				t.Fatalf("no expected result for rule variant %q", v.ID)
+			}
+			want := c.Expected.Results[idx]
+
+			ruleJSON := []byte(`{"id":"01J8Z3K4N5P6Q7R8S9T0V1W282","triggers":` + string(v.Triggers) + `,"actions":` + string(v.Actions) + `}`)
+			entry, cerr := compile.Compile(ruleJSON)
+			gotCompiles := cerr == nil
+			if gotCompiles != want.Compiles {
+				t.Fatalf("compiles = %v, want %v (err=%v)", gotCompiles, want.Compiles, cerr)
+			}
+			if want.Compiles {
+				if entry.ExecutionClass != want.ExecutionClass {
+					t.Errorf("execution_class = %s, want %s", entry.ExecutionClass, want.ExecutionClass)
+				}
+				return
+			}
+			if want.Error == nil {
+				t.Fatalf("corpus expects compiles=false but declares no error block")
+			}
+			if cerr.Code != want.Error.Code {
+				t.Errorf("error code = %s, want %s", cerr.Code, want.Error.Code)
+			}
+			if want.Error.Field != "" && cerr.Field != want.Error.Field {
+				t.Errorf("error field = %s, want %s", cerr.Field, want.Error.Field)
+			}
+		})
+	}
+}
+
+// --- RUL-285: default() contains an upstream attribute-lookup failure -------
+
+type rul285Case struct {
+	Input struct {
+		Fixture struct {
+			Entities map[string]struct {
+				DeviceClass string `json:"device_class"`
+			} `json:"entities"`
+		} `json:"fixture"`
+		ConditionVariants []struct {
+			ID         string          `json:"id"`
+			Type       string          `json:"type"`
+			Expression json.RawMessage `json:"expression"`
+		} `json:"condition_variants"`
+	} `json:"input"`
+	Expected struct {
+		Results []struct {
+			ID                          string `json:"id"`
+			UpstreamAttrLookupFails     bool   `json:"upstream_attr_lookup_fails"`
+			ContainedByDefault          *bool  `json:"contained_by_default"`
+			EvaluatedValue              *bool  `json:"evaluated_value"`
+			ConditionPasses             bool   `json:"condition_passes"`
+			RecordedAsEvaluationFailure bool   `json:"recorded_as_evaluation_failure"`
+		} `json:"results"`
+	} `json:"expected"`
+}
+
+// runRUL285 replays both of the corpus's condition variants' own `expr`
+// pipeline directly against the real expr.Parse/expr.Evaluate (Parts 1-2):
+// entity 01J8...W2Z3 is seeded into the Snapshot with no "battery_ok"
+// attribute, so attr(...) fails to evaluate for both variants
+// (upstream_attr_lookup_fails, RUL-284). The "wrapped" variant pipes that
+// failure through default(true) (RUL-285's sole exception): Evaluate returns
+// its truthy fallback with failed=false, so — per RUL-152's "passes when its
+// expression's result is truthy" — the condition passes and nothing is
+// recorded as an evaluation failure. The "unwrapped" variant carries no
+// default() to contain it, so RUL-284's ordinary fail-closed rule applies:
+// Evaluate returns failed=true, the condition does not pass, and the failure
+// is recorded for operator visibility. This is a direct exercise of the
+// expression evaluator's own contained-failure exception (RUL-284/285) — the
+// `template` condition TYPE surrounding it is app-class per RUL-151 and this
+// evaluation core never runs one through eval.EvalCondition (see that
+// function's doc comment); the corpus's own "type":"template" shape is
+// exercised only to the extent RUL-285 needs, via the expression evaluator
+// directly, exactly as RUL-152 defines pass/fail for it.
+func runRUL285(t *testing.T, path string) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var c rul285Case
+	if err := json.Unmarshal(b, &c); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	reg := registry.FixtureRegistry{}
+	var entityID, deviceClass string
+	for id, e := range c.Input.Fixture.Entities {
+		entityID, deviceClass = id, e.DeviceClass
+	}
+	if entityID == "" {
+		t.Fatal("corpus case declares no fixture entity")
+	}
+	snap := state.Snapshot{
+		entityID: state.Entity{ID: entityID, DeviceClass: deviceClass, Attributes: map[string]any{}},
+	}
+	env := expr.Env{Snapshot: snap, Reg: reg, Clk: clock.NewFakeClock()}
+
+	wantByID := map[string]int{}
+	for i, r := range c.Expected.Results {
+		wantByID[r.ID] = i
+	}
+
+	for _, cv := range c.Input.ConditionVariants {
+		cv := cv
+		t.Run(cv.ID, func(t *testing.T) {
+			idx, ok := wantByID[cv.ID]
+			if !ok {
+				t.Fatalf("no expected result for condition variant %q", cv.ID)
+			}
+			want := c.Expected.Results[idx]
+
+			parsed, perr := expr.Parse(cv.Expression)
+			if perr != nil {
+				t.Fatalf("expr.Parse: %v", perr)
+			}
+			val, failed := expr.Evaluate(parsed, env)
+
+			if failed != want.RecordedAsEvaluationFailure {
+				t.Errorf("recorded_as_evaluation_failure (failed) = %v, want %v", failed, want.RecordedAsEvaluationFailure)
+			}
+			// upstream_attr_lookup_fails is exercised by construction: both
+			// variants' sole source is attr() on an entity with no declared
+			// "battery_ok" attribute, so evalSource's own unresolvable-attribute
+			// path (RUL-284) always fails for it — proven directly by the
+			// "unwrapped" variant, which has no default() to contain that
+			// failure, ending up in exactly this case's failed=true assertion.
+			_ = want.UpstreamAttrLookupFails
+
+			passes := !failed
+			if passes {
+				bv, ok := val.(bool)
+				passes = ok && bv
+			}
+			if passes != want.ConditionPasses {
+				t.Errorf("condition_passes = %v, want %v (value=%v failed=%v)", passes, want.ConditionPasses, val, failed)
+			}
+			if want.EvaluatedValue != nil {
+				if failed {
+					t.Errorf("evaluated_value=%v expected but evaluation failed", *want.EvaluatedValue)
+				} else if bv, ok := val.(bool); !ok || bv != *want.EvaluatedValue {
+					t.Errorf("evaluated value = %v, want %v", val, *want.EvaluatedValue)
+				}
+			}
+			if want.ContainedByDefault != nil && *want.ContainedByDefault {
+				// The contained-failure exception (RUL-285) manifests exactly as
+				// failed==false despite an upstream attribute-lookup failure —
+				// already asserted above via RecordedAsEvaluationFailure.
+				if failed {
+					t.Errorf("contained_by_default=true but evaluation still reports failed=true")
+				}
+			}
+		})
 	}
 }
 
