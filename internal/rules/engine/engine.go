@@ -306,9 +306,17 @@ func (e *Engine) stepTriggerObservation(tr *triggerRuntime, obs state.Observatio
 		raw = edge
 	} else {
 		raw = level
-		if !tr.seen {
+		if !tr.seen && tr.kind == "state" {
 			// Suppress a first-ever observation that already sits at the level
 			// from being read as a fresh entry that would arm a hold (RUL-300).
+			// This applies ONLY to `state` triggers. A numeric trigger's
+			// first-ever observation is deliberately EXEMPTED from RUL-300's
+			// suppression (RUL-302): if it already satisfies the bound the hold
+			// arms from that first sample and fires once the level has held
+			// continuously for the declared `for` (RUL-033/RUL-024). Seeding a
+			// numeric hold here would defeat Step's rising-edge test and the
+			// trigger would never arm on a first-observation-already-satisfying
+			// value — a deliberate asymmetry with RUL-300, not an inconsistency.
 			tr.hold.Seed(level)
 		}
 	}

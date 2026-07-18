@@ -340,6 +340,46 @@ func TestForHoldSuppressesFlapAndFiresViaTick(t *testing.T) {
 	}
 }
 
+// TestNumericFirstObservationAlreadySatisfyingWithForFires exercises RUL-302's
+// deliberate asymmetry with RUL-300: a numeric trigger's very first-ever
+// observation is EXEMPTED from first-observation suppression. When that first
+// sample already satisfies the bound and the trigger declares a `for`, the
+// bounded hold must arm from that first sample and fire once the level has held
+// continuously for the declared span (RUL-033/RUL-024) — it must NOT require an
+// artificial drop-then-re-cross to arm.
+func TestNumericFirstObservationAlreadySatisfyingWithForFires(t *testing.T) {
+	reg := registry.FixtureRegistry{}
+	clk := clock.NewFakeClock()
+	sink := &recordingSink{}
+
+	entry, rule := compileRule(t, `{
+		"id":"RULENUMFIRST",
+		"triggers":[{"type":"numeric","entity_id":"`+subjectEntity+`","attribute":"temp","above":30,"for":10}],
+		"actions":[{"type":"device_command","entity_id":"`+subjectEntity+`","command":"power"}]
+	}`)
+	e := New(reg, clk, sink, nil)
+	if err := e.Load(entry, rule); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// First-ever observation already above the bound (temp=35): arms the hold,
+	// does not fire yet.
+	obs := entAttr(subjectEntity, "on", map[string]any{"temp": 35})
+	if d := e.Observe(state.NewObservation(reg, obs, obs)); len(d) != 0 {
+		t.Fatalf("first observation fired immediately: %+v", d)
+	}
+
+	// Level held continuously for the full 10s span: fires via Tick.
+	clk.Advance(15_000)
+	disps := e.Tick(clk)
+	if len(disps) != 1 || disps[0].Disposition != Ran {
+		t.Fatalf("numeric first-satisfying hold should fire via Tick: %+v", disps)
+	}
+	if len(sink.calls) != 1 {
+		t.Fatalf("held numeric hold should dispatch once, got %+v", sink.calls)
+	}
+}
+
 // TestAttributeUnboundedNoForFires exercises the RUL-023 case-2 wiring end to
 // end: an attribute-scoped unbounded trigger fires whenever its named
 // attribute changes (independent of the state string), gating a dispatch.
