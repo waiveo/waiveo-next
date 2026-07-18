@@ -190,8 +190,11 @@ func (e *Engine) Load(entry compile.CompiledRuleEntry, rule model.Rule) error {
 }
 
 // newTriggerRuntime builds the runtime for one trigger member, or nil for a
-// trigger kind this evaluation core does not drive (time/time_pattern/sun are
-// later parts) or one lacking an entity_id subject.
+// trigger kind this evaluation core does not yet drive (`sun` is a later part),
+// a state/numeric trigger lacking an entity_id subject, or a malformed
+// wall-clock spec. State/numeric triggers fire from Observe; `time`/`time_pattern`
+// triggers carry no EntityRef and fire from Tick via their schedule enumerator
+// (RUL-040/050/340).
 func newTriggerRuntime(m model.Member) *triggerRuntime {
 	tr := &triggerRuntime{kind: m.Type, forSeconds: parseForSeconds(m.Raw)}
 	switch m.Type {
@@ -217,11 +220,88 @@ func newTriggerRuntime(m model.Member) *triggerRuntime {
 		tr.nt = nt
 		tr.entityID = nt.EntityID
 		tr.holdKind = eval.BoundedHold // every numeric trigger is bounded (RUL-033)
+	case "time":
+		// A `time` trigger carries no EntityRef (RUL-040): it fires from the wall
+		// clock through Tick, never from an observation. A malformed `at` drops
+		// the trigger (fail-closed) rather than firing on garbage.
+		tt, err := schedule.NewTimeTrigger(scheduleTimeAt(m.Raw))
+		if err != nil {
+			return nil
+		}
+		tr.sched = tt
+		tr.misfire = parseMisfire(m.Raw)
+		return tr
+	case "time_pattern":
+		// A `time_pattern` trigger carries no EntityRef (RUL-050) and fires from
+		// the wall clock through Tick. Its component fields are number-or-string on
+		// the wire; scheduleTimePatternFields canonicalizes each to the string form
+		// schedule.NewTimePatternTrigger parses. A malformed spec drops the trigger.
+		h, mi, s := scheduleTimePatternFields(m.Raw)
+		pt, err := schedule.NewTimePatternTrigger(h, mi, s)
+		if err != nil {
+			return nil
+		}
+		tr.sched = pt
+		tr.misfire = parseMisfire(m.Raw)
+		return tr
 	default:
 		return nil
 	}
 	tr.hold = eval.NewHold(tr.holdKind, tr.forSeconds)
 	return tr
+}
+
+// scheduleTimeAt reads a `time` trigger's `at` local time-of-day (RUL-040).
+func scheduleTimeAt(raw json.RawMessage) string {
+	var spec struct {
+		At string `json:"at"`
+	}
+	_ = json.Unmarshal(raw, &spec)
+	return spec.At
+}
+
+// scheduleTimePatternFields reads a `time_pattern` trigger's three component
+// fields (RUL-050) and canonicalizes each to its string form: an omitted (or
+// null) field is "", a JSON string ("/N" or "N") is taken verbatim, and a JSON
+// number is rendered as its decimal digits. This lets schedule.parsePatternField
+// treat the exact-int and `/N`-divisor wire forms uniformly.
+func scheduleTimePatternFields(raw json.RawMessage) (hours, minutes, seconds string) {
+	var spec struct {
+		Hours   json.RawMessage `json:"hours"`
+		Minutes json.RawMessage `json:"minutes"`
+		Seconds json.RawMessage `json:"seconds"`
+	}
+	_ = json.Unmarshal(raw, &spec)
+	return canonPatternField(spec.Hours), canonPatternField(spec.Minutes), canonPatternField(spec.Seconds)
+}
+
+// canonPatternField normalizes one raw time_pattern component to its string form
+// (see scheduleTimePatternFields): "" for absent/null, the unquoted contents of a
+// JSON string, or a JSON number verbatim.
+func canonPatternField(raw json.RawMessage) string {
+	s := string(raw)
+	if s == "" || s == "null" {
+		return ""
+	}
+	if len(s) > 0 && s[0] == '"' {
+		var str string
+		if err := json.Unmarshal(raw, &str); err != nil {
+			return ""
+		}
+		return str
+	}
+	return s
+}
+
+// parseMisfire reads a schedule trigger's optional `misfire` policy (RUL-350).
+// The policy is applied by a later task; wiring it here keeps the trigger runtime
+// complete. An absent field decodes as "" (the default policy, resolved later).
+func parseMisfire(raw json.RawMessage) string {
+	var spec struct {
+		Misfire string `json:"misfire"`
+	}
+	_ = json.Unmarshal(raw, &spec)
+	return spec.Misfire
 }
 
 // parseForSeconds reads a trigger's optional `for` field (RUL-024: a
