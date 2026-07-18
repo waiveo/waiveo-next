@@ -58,13 +58,23 @@ type PresetBatchOutcome struct {
 	Results []CommandResult `json:"results"`
 }
 
-// LogEntry is one `log` action's recorded output (RUL-200): this part
-// supports only a literal string message — an Expression-shaped message is
-// Part 2b's concern (see runLog).
+// LogEntry is one `log` action's recorded output (RUL-200): a level plus the
+// message an Expression evaluated to (runLog / ctx.EvalExpr).
 type LogEntry struct {
 	Level   string
 	Message string
 }
+
+// ExprEvaluator live-evaluates one Expression-valued action field — a `log`
+// action's `message` (RUL-200) or a `params` value (RUL-393) — against the
+// firing context at the instant the action runs, returning ok=false when the
+// Expression fails closed (RUL-284). The engine wires the real closed-grammar
+// evaluator (package expr), baking in the firing trigger's subject entity as
+// the edge scope (RUL-282); eval itself never imports expr, so the evaluator is
+// injected rather than called directly. Per RUL-393 the evaluation is LIVE at
+// dispatch — the engine never freezes a params/message Expression into the
+// compiled generation (contrast RUL-390).
+type ExprEvaluator func(raw json.RawMessage) (value any, ok bool)
 
 // ActionContext carries everything RunActions needs to execute one action
 // sequence: the registry/snapshot/clock/vars a nested `choose` condition
@@ -87,6 +97,14 @@ type ActionContext struct {
 	Resolve  func(ref model.EntityRef) []string
 	Outcomes *[]PresetBatchOutcome
 	Logs     *[]LogEntry
+
+	// EvalExpr live-evaluates a `log` message (RUL-200) and each `params` value
+	// (RUL-393) at dispatch. The engine supplies the closed-grammar evaluator with
+	// the firing trigger's subject entity as the edge scope (RUL-282). When nil —
+	// a caller with no Expression support (Part-1/2 unit contexts) — an
+	// Expression-valued field is treated as a plain JSON literal used as-is, so a
+	// literal message/param still dispatches unchanged.
+	EvalExpr ExprEvaluator
 }
 
 // DelayPending is RunActions' signal that a `delay` action (RUL-190) was
@@ -190,23 +208,28 @@ func runDelay(ctx ActionContext, m model.Member) *DelayPending {
 	return &DelayPending{ResumeAtMono: ctx.Clk.Mono() + int64(spec.DurationSeconds)*1000}
 }
 
-// runLog implements RUL-200 for a literal message (an Expression-shaped
-// message is Part 2b's concern): message MUST decode as a JSON string or the
-// action is skipped (fail-closed — no fabricated log entry), never an error.
-// level defaults to "info" when absent.
+// runLog implements RUL-200: `message` is an Expression evaluated to a string at
+// dispatch (ctx.EvalExpr). A plain literal string message is a literal
+// Expression (RUL-280) that evaluates to itself; an {"expr":...} message is
+// evaluated live. The action is skipped (fail-closed — no fabricated log entry,
+// RUL-284), never an error, when the message Expression fails closed OR
+// evaluates to a non-string value (RUL-200 requires a string). level defaults to
+// "info" when absent.
 func runLog(ctx ActionContext, m model.Member) {
 	var spec struct {
 		Message json.RawMessage `json:"message"`
 		Level   string          `json:"level"`
 	}
-	if err := json.Unmarshal(m.Raw, &spec); err != nil {
+	if err := json.Unmarshal(m.Raw, &spec); err != nil || len(spec.Message) == 0 {
 		return
 	}
-	var msg string
-	if err := json.Unmarshal(spec.Message, &msg); err != nil {
-		// Not a literal string (e.g. an Expression object) — out of scope
-		// this part.
-		return
+	v, ok := evalParam(ctx, spec.Message)
+	if !ok {
+		return // message Expression failed closed (RUL-284) — no fabricated entry
+	}
+	msg, ok := v.(string)
+	if !ok {
+		return // evaluated to a non-string; RUL-200 requires a string (fail-closed)
 	}
 	level := spec.Level
 	if level == "" {
@@ -215,6 +238,44 @@ func runLog(ctx ActionContext, m model.Member) {
 	if ctx.Logs != nil {
 		*ctx.Logs = append(*ctx.Logs, LogEntry{Level: level, Message: msg})
 	}
+}
+
+// evalParam live-evaluates one Expression-valued action field (RUL-200/393): a
+// `log` message or a `params` value, each a literal OR an {"expr":...} pipeline,
+// resolved at dispatch through ctx.EvalExpr (never a frozen closure, RUL-393).
+// When no evaluator is wired (ctx.EvalExpr == nil) the raw JSON is used as a
+// plain literal — the degenerate no-Expression path that keeps literal
+// messages/params dispatching unchanged. ok=false means the Expression failed
+// closed (RUL-284) and the caller must skip the field.
+func evalParam(ctx ActionContext, raw json.RawMessage) (any, bool) {
+	if ctx.EvalExpr != nil {
+		return ctx.EvalExpr(raw)
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil, false
+	}
+	return v, true
+}
+
+// evalParams live-evaluates every `params` value (RUL-393): each is a literal or
+// an Expression evaluated at dispatch, subject to the edge entity-scope
+// (RUL-282). A single value failing closed (RUL-284) fails the whole map
+// (ok=false) — a device command is never dispatched on a partially-evaluated or
+// fabricated parameter set. An absent/empty params map yields a nil map, ok.
+func evalParams(ctx ActionContext, raw map[string]json.RawMessage) (map[string]any, bool) {
+	if len(raw) == 0 {
+		return nil, true
+	}
+	out := make(map[string]any, len(raw))
+	for k, v := range raw {
+		pv, ok := evalParam(ctx, v)
+		if !ok {
+			return nil, false
+		}
+		out[k] = pv
+	}
+	return out, true
 }
 
 // runDeviceCommand implements RUL-160/161/012: a device_command's EntityRef
@@ -228,10 +289,17 @@ func runDeviceCommand(ctx ActionContext, m model.Member) {
 		return
 	}
 	var spec struct {
-		Command string         `json:"command"`
-		Params  map[string]any `json:"params"`
+		Command string                     `json:"command"`
+		Params  map[string]json.RawMessage `json:"params"`
 	}
 	if err := json.Unmarshal(m.Raw, &spec); err != nil || spec.Command == "" {
+		return
+	}
+	// RUL-393: each params value is a literal or an Expression, live-evaluated at
+	// dispatch (never frozen). A fail-closed params Expression (RUL-284) skips the
+	// whole dispatch rather than sending a command on a fabricated parameter set.
+	params, ok := evalParams(ctx, spec.Params)
+	if !ok {
 		return
 	}
 
@@ -240,10 +308,10 @@ func runDeviceCommand(ctx ActionContext, m model.Member) {
 		return
 	}
 	if len(targets) == 1 {
-		dispatchOne(ctx, targets[0], spec.Command, spec.Params)
+		dispatchOne(ctx, targets[0], spec.Command, params)
 		return
 	}
-	recordOutcome(ctx, dispatchAll(ctx, targets, spec.Command, spec.Params))
+	recordOutcome(ctx, dispatchAll(ctx, targets, spec.Command, params))
 }
 
 // runPresetBatch implements RUL-170/171/172: every command in the referenced

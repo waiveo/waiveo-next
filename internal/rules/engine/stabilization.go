@@ -92,7 +92,9 @@ func (e *Engine) dispatchFire(ri *ruleInstance, tr *triggerRuntime) []RunDisposi
 	if e.stabilizationHeld(tr) {
 		return nil
 	}
-	return e.fireRule(ri)
+	// tr.entityID is the firing trigger's subject entity — the edge Expression
+	// scope for this firing's log/params (RUL-282).
+	return e.fireRule(ri, tr.entityID)
 }
 
 // stabilizationHeld reports whether a firing of tr must be held for its
@@ -131,7 +133,8 @@ func (e *Engine) releaseStabilized() []RunDisposition {
 			tr.stabArmed = false
 			if tr.stabPending {
 				tr.stabPending = false
-				out = append(out, e.fireRule(ri)...)
+				// The held firing's subject entity scopes its Expressions (RUL-282).
+				out = append(out, e.fireRule(ri, tr.entityID)...)
 			}
 		}
 	}

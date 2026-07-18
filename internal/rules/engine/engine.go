@@ -27,6 +27,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/rules/closure"
 	"github.com/maaxton/waiveo-next/internal/rules/compile"
 	"github.com/maaxton/waiveo-next/internal/rules/eval"
+	"github.com/maaxton/waiveo-next/internal/rules/expr"
 	"github.com/maaxton/waiveo-next/internal/rules/model"
 	"github.com/maaxton/waiveo-next/internal/rules/registry"
 	"github.com/maaxton/waiveo-next/internal/rules/schedule"
@@ -121,10 +122,13 @@ type Engine struct {
 }
 
 // runState is the single in-flight run's continuation: the flattened tail of
-// actions a `delay` deferred, and the monotonic instant at which to resume it
-// (RUL-190).
+// actions a `delay` deferred, the monotonic instant at which to resume it
+// (RUL-190), and the firing trigger's subject entity that scopes the run's
+// Expressions (RUL-282) so a resumed tail live-evaluates its `log`/`params`
+// Expressions against the same edge scope as the firing that deferred it.
 type runState struct {
 	pending *eval.DelayPending
+	scope   string
 }
 
 // triggerRuntime is one trigger's per-(trigger,entity) evaluation state: the
@@ -610,7 +614,8 @@ func (e *Engine) dispatchSchedule(now clock.Clock) []RunDisposition {
 				continue
 			}
 			for range tr.sched.Occurrences(e.loc, from, nowWall) {
-				out = append(out, e.fireRule(ri)...)
+				// Schedule firing: no entity subject, empty edge scope (RUL-282).
+				out = append(out, e.fireRule(ri, "")...)
 			}
 		}
 	}
@@ -772,8 +777,8 @@ func (e *Engine) numericLevelHolds(tr *triggerRuntime, ent state.Entity) bool {
 // Every firing that reaches this point resolves to exactly one disposition per
 // run it affects (RUL-246): the closed set is `ran`, `skipped`, `restarted`.
 // (queued/parallel are app-class and never reach this edge engine, RUL-240.)
-func (e *Engine) fireRule(ri *ruleInstance) []RunDisposition {
-	return e.fireRuleWith(ri, false)
+func (e *Engine) fireRule(ri *ruleInstance, scope string) []RunDisposition {
+	return e.fireRuleWith(ri, scope, false)
 }
 
 // fireRuleWith is fireRule's implementation with the orthogonal misfire_caught
@@ -784,7 +789,7 @@ func (e *Engine) fireRule(ri *ruleInstance) []RunDisposition {
 // to whichever mode disposition (`ran`/`skipped`/`restarted`) each records — so a
 // caught-up fire dropped by single or preempting under restart still carries it
 // (RUL-246/355).
-func (e *Engine) fireRuleWith(ri *ruleInstance, misfireCaught bool) []RunDisposition {
+func (e *Engine) fireRuleWith(ri *ruleInstance, scope string, misfireCaught bool) []RunDisposition {
 	if !e.conditionsPass(ri) {
 		return nil
 	}
@@ -796,13 +801,13 @@ func (e *Engine) fireRuleWith(ri *ruleInstance, misfireCaught bool) []RunDisposi
 		// monotonic instant.
 		ri.run = nil
 		restarted := RunDisposition{RuleID: ri.ruleID, Disposition: Restarted, Mode: ri.mode}
-		e.startRun(ri, ri.rule.Actions)
+		e.startRun(ri, ri.rule.Actions, scope)
 		out = []RunDisposition{restarted, {RuleID: ri.ruleID, Disposition: Ran, Mode: ri.mode}}
 	case ri.run != nil:
 		// single (RUL-241): drop the firing; the in-flight run is left untouched.
 		out = []RunDisposition{{RuleID: ri.ruleID, Disposition: Skipped, Mode: ri.mode}}
 	default:
-		e.startRun(ri, ri.rule.Actions)
+		e.startRun(ri, ri.rule.Actions, scope)
 		out = []RunDisposition{{RuleID: ri.ruleID, Disposition: Ran, Mode: ri.mode}}
 	}
 	if misfireCaught {
@@ -857,7 +862,9 @@ func (e *Engine) replayMissedSchedules(fromExclusive, toInclusive int64) []RunDi
 func (e *Engine) dispatchMisfire(ri *ruleInstance, tr *triggerRuntime, missed []int64) []RunDisposition {
 	var out []RunDisposition
 	for _, f := range schedule.ApplyMisfire(tr.misfire, missed) {
-		out = append(out, e.fireRuleWith(ri, f.MisfireCaught)...)
+		// A schedule trigger has no entity subject (RUL-040/050/060), so its
+		// firing carries an empty edge scope (RUL-282).
+		out = append(out, e.fireRuleWith(ri, "", f.MisfireCaught)...)
 	}
 	return out
 }
@@ -880,11 +887,11 @@ func (e *Engine) conditionsPass(ri *ruleInstance) bool {
 // startRun executes rule instance ri's action sequence, capturing a `delay`'s
 // deferred tail as ri's single in-flight run when one is reached (RUL-190). A
 // sequence that runs to completion leaves no in-flight run.
-func (e *Engine) startRun(ri *ruleInstance, actions []model.Member) {
-	err := eval.RunActions(e.actionContext(ri), actions)
+func (e *Engine) startRun(ri *ruleInstance, actions []model.Member, scope string) {
+	err := eval.RunActions(e.actionContext(ri, scope), actions)
 	var dp *eval.DelayPending
 	if errors.As(err, &dp) {
-		ri.run = &runState{pending: dp}
+		ri.run = &runState{pending: dp, scope: scope}
 		return
 	}
 	ri.run = nil
@@ -901,7 +908,7 @@ func (e *Engine) resumeDelay(ri *ruleInstance, now clock.Clock) {
 		return
 	}
 	tail := ri.run.pending.RemainingActions
-	err := eval.RunActions(e.actionContext(ri), tail)
+	err := eval.RunActions(e.actionContext(ri, ri.run.scope), tail)
 	var dp *eval.DelayPending
 	if errors.As(err, &dp) {
 		ri.run.pending = dp
@@ -915,18 +922,57 @@ func (e *Engine) resumeDelay(ri *ruleInstance, now clock.Clock) {
 // Vars supplies a nested `choose` guard's `variable` value (RUL-150), Resolve
 // expands a selector/device-class device_command over the frozen matched set
 // (RUL-011/012/013), and Presets dispatches a preset_batch's frozen command list
-// (RUL-173). No outcome/log recording slots are wired here; a later part adds
-// them.
-func (e *Engine) actionContext(ri *ruleInstance) eval.ActionContext {
+// (RUL-173). EvalExpr, by contrast, is the LIVE side (RUL-393): a `log` message
+// (RUL-200) and each `params` value are Expressions evaluated at dispatch, never
+// frozen — scoped to the firing trigger's subject entity (RUL-282). scope is
+// that subject ("" for a subjectless schedule firing, whose Expressions may then
+// reference no entity — every state/attr source is out of scope and fails
+// closed). No outcome/log recording slots are wired here; a later part adds them.
+func (e *Engine) actionContext(ri *ruleInstance, scope string) eval.ActionContext {
 	return eval.ActionContext{
-		Reg:     e.reg,
-		Snap:    e.snap,
-		Clk:     e.effectiveClk(),
-		Loc:     e.loc,
-		Vars:    ri.closure.Variables,
-		Sink:    e.sink,
-		Presets: closurePresetStore{frozen: ri.closure.PresetBatches, live: e.presets},
-		Resolve: closureResolver(ri.closure),
+		Reg:      e.reg,
+		Snap:     e.snap,
+		Clk:      e.effectiveClk(),
+		Loc:      e.loc,
+		Vars:     ri.closure.Variables,
+		Sink:     e.sink,
+		Presets:  closurePresetStore{frozen: ri.closure.PresetBatches, live: e.presets},
+		Resolve:  closureResolver(ri.closure),
+		EvalExpr: e.exprEvaluator(scope),
+	}
+}
+
+// exprEvaluator builds the live Expression evaluator the action context routes a
+// `log` message (RUL-200) and each `params` value (RUL-393) through, closing over
+// the current snapshot/registry/clock and the firing trigger's subject entity as
+// the edge scope (RUL-282). Every rule this engine drives is edge-classified
+// (Load refuses non-edge, RUL-240), so evaluation is always edge-scoped: a
+// state/attr source referencing any entity other than scope fails closed
+// (defense in depth behind compile.Validate's EDGE_EXPRESSION_CROSS_ENTITY_REFERENCE
+// check, RUL-282/284). now() is subject to the clock-trust floor exactly as the
+// engine's condition/schedule clock is (RUL-370/275): while untrusted the wall is
+// unverified and now() reports the persisted floor. A parse failure or a
+// fail-closed evaluation (RUL-284) reports ok=false, and the caller skips the
+// field.
+func (e *Engine) exprEvaluator(scope string) eval.ExprEvaluator {
+	return func(raw json.RawMessage) (any, bool) {
+		parsed, perr := expr.Parse(raw)
+		if perr != nil {
+			return nil, false
+		}
+		val, failed := expr.Evaluate(parsed, expr.Env{
+			Snapshot:            e.snap,
+			Reg:                 e.reg,
+			Clk:                 e.clk,
+			ClockUntrustedFloor: e.scheduleFloor,
+			TrustUntrusted:      e.clockUntrusted,
+			EdgeScoped:          true,
+			ScopeEntity:         scope,
+		})
+		if failed {
+			return nil, false
+		}
+		return val, true
 	}
 }
 
