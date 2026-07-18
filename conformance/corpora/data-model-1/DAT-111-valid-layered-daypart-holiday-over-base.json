@@ -58,13 +58,13 @@
       {
         "label": "noon",
         "winning_schedule_id": "01JSCHEDHOLI0RGXJVZ9CJD000",
-        "currently_holding_daypart_id": "01JDAYPARTHOLI7RCG2V0CQV00",
+        "effective_daypart_id": "01JDAYPARTHOLI7RCG2V0CQV00",
         "lease_projection": { "display": "content", "content_source": "playlist:01JPAYSTHOLI1MGDMFGS8KX00" }
       },
       {
         "label": "late-afternoon",
         "winning_schedule_id": "01JSCHEDBASE0RGXJVZ9CJD000",
-        "currently_holding_daypart_id": "01JDAYPARTBASE7RCG2V0CQV00",
+        "effective_daypart_id": "01JDAYPARTBASE7RCG2V0CQV00",
         "lease_projection": { "display": "content", "content_source": "playlist:01JPAYSTBASE1MGDMFGS8KX00" }
       }
     ]

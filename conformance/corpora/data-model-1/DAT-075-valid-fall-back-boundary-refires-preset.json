@@ -1,0 +1,81 @@
+{
+  "case_id": "DAT-075-valid-fall-back-boundary-refires-preset",
+  "contract": "data-model/1",
+  "req_ids": ["DAT-075", "DAT-119"],
+  "description": "One schedule partitions the fall-back night into two adjacent dayparts, D1 00:30:00-01:30:00 and D2 01:30:00-02:30:00 local, on a screen in America/New_York on 2026-11-01 (when 02:00 EDT falls back to 01:00 EST and local 01:00-01:59 repeats). The D1/D2 boundary at 01:30 local sits inside the repeated hour, so N's effective-daypart identity flickers D1->D2->D1->D2 across the repeat and each daypart's preset batch fires on EVERY rising edge -- including the fall-back re-entry -- with no de-duplication by wall-clock ambiguity (DAT-075): a preset batch expresses desired device state (DAT-091) and is safely re-applied, exactly as a fall-through re-fires. This pins the design call that DAT-119's spanning-window no-re-fire statement is scoped to a single daypart spanning the whole repeated hour, not to a boundary landing inside it.",
+  "input": {
+    "scope_nodes": [
+      { "id": "01JORGNDE1PG2X7R5JQC42EJ00", "kind": "org", "parent_id": null },
+      { "id": "01JSCRNYCDE1EWH0AVNH9DN600", "kind": "screen", "parent_id": "01JORGNDE1PG2X7R5JQC42EJ00", "tz": "America/New_York", "lat": 40.7128, "long": -74.0060 }
+    ],
+    "schedules": [
+      { "id": "01JSCHEDBDRY0RGXJVZ9CJD000", "scope_node": "01JSCRNYCDE1EWH0AVNH9DN600", "name": "Overnight Boundary", "priority": 0, "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 }
+    ],
+    "dayparts": [
+      {
+        "id": "01JDAYPARTD1A7RCG2V0CQV000",
+        "schedule_id": "01JSCHEDBDRY0RGXJVZ9CJD000",
+        "scope_node": "01JSCRNYCDE1EWH0AVNH9DN600",
+        "name": "D1 Early",
+        "days_of_week": [0],
+        "start_time": "00:30:00",
+        "end_time": "01:30:00",
+        "display_power": "on",
+        "playlist_id": "01JPAYSTD1A7RCG2V0CQVAB000",
+        "preset_batch_id": "01JPBATCHD1A7RCG2V0CQV0000",
+        "revision": 1,
+        "created_at": 1752537600000,
+        "updated_at": 1752537600000
+      },
+      {
+        "id": "01JDAYPARTD2B7RCG2V0CQV000",
+        "schedule_id": "01JSCHEDBDRY0RGXJVZ9CJD000",
+        "scope_node": "01JSCRNYCDE1EWH0AVNH9DN600",
+        "name": "D2 Late",
+        "days_of_week": [0],
+        "start_time": "01:30:00",
+        "end_time": "02:30:00",
+        "display_power": "on",
+        "playlist_id": "01JPAYSTD2B7RCG2V0CQVAB000",
+        "preset_batch_id": "01JPBATCHD2B7RCG2V0CQV0000",
+        "revision": 1,
+        "created_at": 1752537600000,
+        "updated_at": 1752537600000
+      }
+    ],
+    "preset_batches": [
+      { "preset_id": "01JPBATCHD1A7RCG2V0CQV0000", "scope_node": "01JSCRNYCDE1EWH0AVNH9DN600", "name": "D1 Scene", "commands": [{ "entity_id": "01JENTTYAKQ2PDF6PT9FABT1BN", "command": "power", "params": { "state": "on" } }], "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 },
+      { "preset_id": "01JPBATCHD2B7RCG2V0CQV0000", "scope_node": "01JSCRNYCDE1EWH0AVNH9DN600", "name": "D2 Scene", "commands": [{ "entity_id": "01JENTTYAKQ2PDF6PT9FABT1BN", "command": "power", "params": { "state": "on" } }], "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 }
+    ],
+    "resolve_for_scope_node": "01JSCRNYCDE1EWH0AVNH9DN600",
+    "tz_transition": { "kind": "fall_back", "date": "2026-11-01", "at_utc": "2026-11-01T06:00:00Z", "from_offset": "-04:00", "to_offset": "-05:00", "repeated_local_range": ["01:00:00", "02:00:00"] },
+    "evaluations": [
+      { "at_utc": "2026-11-01T04:30:00Z", "expected_local_reading": "2026-11-01T00:30:00-04:00", "label": "d1-enter-edt" },
+      { "at_utc": "2026-11-01T05:30:00Z", "expected_local_reading": "2026-11-01T01:30:00-04:00", "label": "d1-to-d2-edt" },
+      { "at_utc": "2026-11-01T06:00:00Z", "expected_local_reading": "2026-11-01T01:00:00-05:00", "label": "fall-back-reenter-d1-est" },
+      { "at_utc": "2026-11-01T06:30:00Z", "expected_local_reading": "2026-11-01T01:30:00-05:00", "label": "d1-to-d2-est" },
+      { "at_utc": "2026-11-01T07:30:00Z", "expected_local_reading": "2026-11-01T02:30:00-05:00", "label": "d2-end-est" }
+    ]
+  },
+  "expected": {
+    "valid": true,
+    "errors": [],
+    "applicable_schedule_ids_by_precedence": ["01JSCHEDBDRY0RGXJVZ9CJD000"],
+    "effective_daypart_identity_sequence": ["01JDAYPARTD1A7RCG2V0CQV000", "01JDAYPARTD2B7RCG2V0CQV000", "01JDAYPARTD1A7RCG2V0CQV000", "01JDAYPARTD2B7RCG2V0CQV000", null],
+    "results": [
+      { "label": "d1-enter-edt", "holds": true, "effective_daypart_id": "01JDAYPARTD1A7RCG2V0CQV000", "rising_edge": true, "preset_fired": "01JPBATCHD1A7RCG2V0CQV0000", "reason": "rising edge: effective daypart transitions to D1" },
+      { "label": "d1-to-d2-edt", "holds": true, "effective_daypart_id": "01JDAYPARTD2B7RCG2V0CQV000", "rising_edge": true, "preset_fired": "01JPBATCHD2B7RCG2V0CQV0000", "reason": "rising edge: D1 ended, D2 becomes effective" },
+      { "label": "fall-back-reenter-d1-est", "holds": true, "effective_daypart_id": "01JDAYPARTD1A7RCG2V0CQV000", "rising_edge": true, "re_fire": true, "preset_fired": "01JPBATCHD1A7RCG2V0CQV0000", "reason": "fall-back re-entry: reading 01:00 EST falls back into D1, a genuine effective-daypart identity change and a rising edge; D1's preset re-fires with no de-duplication by wall-clock ambiguity (DAT-075)" },
+      { "label": "d1-to-d2-est", "holds": true, "effective_daypart_id": "01JDAYPARTD2B7RCG2V0CQV000", "rising_edge": true, "re_fire": true, "preset_fired": "01JPBATCHD2B7RCG2V0CQV0000", "reason": "reading 01:30 EST crosses the D1/D2 boundary again; D2's preset re-fires on this second rising edge" },
+      { "label": "d2-end-est", "holds": false, "effective_daypart_id": null, "rising_edge": false, "preset_fired": null, "reason": "reading 02:30 EST is at D2's exclusive end; no daypart holds, no preset" }
+    ],
+    "preset_invocations_in_order": [
+      { "at_utc": "2026-11-01T04:30:00Z", "preset_batch_id": "01JPBATCHD1A7RCG2V0CQV0000" },
+      { "at_utc": "2026-11-01T05:30:00Z", "preset_batch_id": "01JPBATCHD2B7RCG2V0CQV0000" },
+      { "at_utc": "2026-11-01T06:00:00Z", "preset_batch_id": "01JPBATCHD1A7RCG2V0CQV0000" },
+      { "at_utc": "2026-11-01T06:30:00Z", "preset_batch_id": "01JPBATCHD2B7RCG2V0CQV0000" }
+    ],
+    "no_dedup_by_fall_back_ambiguity": true,
+    "contrast_dat_119_spanning_case": { "note": "DAT-119's 'identity does not change across the repeat, so the preset does not re-fire' is scoped to a SINGLE daypart whose window spans the whole repeated hour; here a D1/D2 boundary lands inside the repeated hour, so the identity flickers and each preset re-fires per DAT-075." }
+  }
+}

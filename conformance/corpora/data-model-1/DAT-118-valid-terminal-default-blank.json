@@ -39,7 +39,7 @@
   "expected": {
     "valid": true,
     "applicable_in_force_schedule_ids": [],
-    "currently_holding_daypart_id": null,
+    "effective_daypart_id": null,
     "resolved_fallback_id": null,
     "lease_projection": { "display": "blank", "content": [] }
   }

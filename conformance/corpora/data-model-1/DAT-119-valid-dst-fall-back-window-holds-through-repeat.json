@@ -1,7 +1,7 @@
 {
   "case_id": "DAT-119-valid-dst-fall-back-window-holds-through-repeat",
   "contract": "data-model/1",
-  "req_ids": ["DAT-119", "DAT-110", "DAT-072"],
+  "req_ids": ["DAT-119", "DAT-110"],
   "description": "A daypart window 00:30:00-02:30:00 local on a screen in America/New_York on the fall-back date (2026-11-01, when 02:00 EDT falls back to 01:00 EST and local 01:00-01:59 repeats). A daypart is a state, so membership is decided per absolute instant by that instant's own unambiguous local reading: the window holds continuously through BOTH occurrences of the repeated hour, a longer window that date. This contrasts with rules/1 RUL-342, under which a one-shot trigger at a repeated local time fires exactly once, keyed to the first occurrence only.",
   "input": {
     "scope_nodes": [

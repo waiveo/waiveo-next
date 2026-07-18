@@ -53,7 +53,7 @@
     "applicable_schedule_ids_by_precedence": ["01JSCHEDAA0RGXJVZ9CJD00000", "01JSCHEDZZ0RGXJVZ9CJD00000"],
     "precedence_tiebreak": "lowest_id",
     "winning_schedule_id": "01JSCHEDAA0RGXJVZ9CJD00000",
-    "currently_holding_daypart_id": "01JDAYPARTALPHA7RCG2V0CQV0",
+    "effective_daypart_id": "01JDAYPARTALPHA7RCG2V0CQV0",
     "lease_projection": { "display": "content", "content_source": "playlist:01JPAYSTALPHA1MGDMFGS8KX0" }
   }
 }

@@ -35,7 +35,7 @@
     "errors": [],
     "schedule_effective_misfire": "catch_up_once",
     "daypart_effective_misfire": "catch_up_once",
-    "daypart_state_at_relay_resume": { "t": "10:00:00", "currently_holding_daypart_id": "01JDAYPART37KKTMSJ8CTRBKS0", "resolved_immediately": true, "reason": "catch_up_once: current state re-resolved fresh, not queued" },
+    "daypart_state_at_relay_resume": { "t": "10:00:00", "effective_daypart_id": "01JDAYPART37KKTMSJ8CTRBKS0", "resolved_immediately": true, "reason": "catch_up_once: current state re-resolved fresh, not queued" },
     "rules_1_time_trigger_effective_misfire": "skip",
     "rules_1_time_trigger_fired_late_at_resume": false,
     "reason": "the schedule/daypart default (catch_up_once) is this contract's own; the rules/1 time trigger's default (skip) is rules/1 RUL-354's, unchanged"

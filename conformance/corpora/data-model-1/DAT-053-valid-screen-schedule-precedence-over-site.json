@@ -52,7 +52,7 @@
     "valid": true,
     "applicable_schedule_ids_by_precedence": ["01JSCHEDSCRN0RGXJVZ9CJD000", "01JSCHEDSITE0RGXJVZ9CJD000"],
     "winning_schedule_id": "01JSCHEDSCRN0RGXJVZ9CJD000",
-    "currently_holding_daypart_id": "01JDAYPARTSCRN7RCG2V0CQV00",
+    "effective_daypart_id": "01JDAYPARTSCRN7RCG2V0CQV00",
     "lease_projection": { "display": "content", "content_source": "playlist:01JPAYSTSCRN1MGDMFGS8KX00" }
   }
 }

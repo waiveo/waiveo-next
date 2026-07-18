@@ -2,7 +2,7 @@
   "case_id": "DAT-051-valid-site-schedule-cascades-to-screen",
   "contract": "data-model/1",
   "req_ids": ["DAT-051", "DAT-110"],
-  "description": "A site-level schedule is applicable to a screen beneath it that carries no schedule of its own: the screen's governing state cascades down the parent_id chain from the site node, so the site schedule's holding daypart drives the screen's Lease even though nothing is attached directly at the screen.",
+  "description": "A site-level schedule is applicable to a screen beneath it that carries no schedule of its own: the screen's governing state cascades down the parent_id chain from the site node, so the site schedule's effective daypart drives the screen's Lease even though nothing is attached directly at the screen.",
   "input": {
     "scope_nodes": [
       { "id": "01JORGNDE1PG2X7R5JQC42EJ00", "kind": "org", "parent_id": null },
@@ -35,7 +35,7 @@
   "expected": {
     "valid": true,
     "applicable_schedule_ids": ["01JSCHEDSITE0RGXJVZ9CJD000"],
-    "currently_holding_daypart_id": "01JDAYPARTSITE7RCG2V0CQV00",
+    "effective_daypart_id": "01JDAYPARTSITE7RCG2V0CQV00",
     "lease_projection": { "display": "content", "content_source": "playlist:01JPAYST15TMGDMFGS8KXM40X6" }
   }
 }

@@ -46,7 +46,7 @@
     "errors": [],
     "dayparts_overlap": false,
     "overnight_window_wraps_midnight": true,
-    "currently_holding_daypart_id": "01JDAYPART1M33YA35B44FS7F2",
+    "effective_daypart_id": "01JDAYPART1M33YA35B44FS7F2",
     "lease_projection": {
       "for_business_hours_daypart": { "display": "content", "content_source": "playlist:01JPAYST15TMGDMFGS8KXM40X6" },
       "for_overnight_daypart": { "display": "blank", "device_power_off_via": "preset_batch:01JPRESET1N8GAWV07492Q9V82" }

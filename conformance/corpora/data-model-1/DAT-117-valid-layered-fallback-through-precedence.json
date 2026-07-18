@@ -54,7 +54,7 @@
   "expected": {
     "valid": true,
     "applicable_schedule_ids_by_precedence": ["01JSCHEDOVER0RGXJVZ9CJD000", "01JSCHEDBASE0RGXJVZ9CJD000"],
-    "currently_holding_daypart_id": null,
+    "effective_daypart_id": null,
     "fallback_selection": {
       "skipped_schedule_id_no_fallback": "01JSCHEDOVER0RGXJVZ9CJD000",
       "resolved_fallback_id": "01JFABACKBASE9HJDNDGZG300",
