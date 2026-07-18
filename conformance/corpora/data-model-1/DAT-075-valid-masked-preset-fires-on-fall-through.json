@@ -1,0 +1,76 @@
+{
+  "case_id": "DAT-075-valid-masked-preset-fires-on-fall-through",
+  "contract": "data-model/1",
+  "req_ids": ["DAT-075", "DAT-111", "DAT-053", "DAT-051"],
+  "description": "A lower-precedence base daypart (06:00-22:00) and a higher-precedence holiday daypart (10:00-14:00) apply to one screen. The preset batch is an event on the node's effective-daypart identity (DAT-075): the base preset fires when base becomes effective at 06:00; at 10:00 the holiday daypart becomes effective and its preset fires while the base daypart, still its own schedule's currently holding daypart but now masked, invokes no preset; at 14:00 the holiday daypart ends and base shows through -- a fall-through, itself a rising edge of the effective daypart -- so the base preset fires again. At most one preset fires per node per effective-daypart transition, never a masked schedule's.",
+  "input": {
+    "scope_nodes": [
+      { "id": "01JORGNDE1PG2X7R5JQC42EJ00", "kind": "org", "parent_id": null },
+      { "id": "01JSITENDE1EWH0AVNH9DN6R00", "kind": "site", "parent_id": "01JORGNDE1PG2X7R5JQC42EJ00", "tz": "America/Denver", "lat": 39.7392, "long": -104.9903 },
+      { "id": "01JSCRNVERRDEF4W6305FAT000", "kind": "screen", "parent_id": "01JSITENDE1EWH0AVNH9DN6R00" }
+    ],
+    "schedules": [
+      { "id": "01JSCHEDBASE0RGXJVZ9CJD000", "scope_node": "01JSCRNVERRDEF4W6305FAT000", "name": "Base", "priority": 0, "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 },
+      { "id": "01JSCHEDHOLI0RGXJVZ9CJD000", "scope_node": "01JSCRNVERRDEF4W6305FAT000", "name": "Holiday", "priority": 100, "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 }
+    ],
+    "dayparts": [
+      {
+        "id": "01JDAYPARTBASE7RCG2V0CQV00",
+        "schedule_id": "01JSCHEDBASE0RGXJVZ9CJD000",
+        "scope_node": "01JSCRNVERRDEF4W6305FAT000",
+        "name": "Base Daytime",
+        "days_of_week": [0, 1, 2, 3, 4, 5, 6],
+        "start_time": "06:00:00",
+        "end_time": "22:00:00",
+        "display_power": "on",
+        "playlist_id": "01JPAYSTBASE1MGDMFGS8KX00",
+        "preset_batch_id": "01JPBATCHBASE7RCG2V0CQV00",
+        "revision": 1,
+        "created_at": 1752537600000,
+        "updated_at": 1752537600000
+      },
+      {
+        "id": "01JDAYPARTHOLI7RCG2V0CQV00",
+        "schedule_id": "01JSCHEDHOLI0RGXJVZ9CJD000",
+        "scope_node": "01JSCRNVERRDEF4W6305FAT000",
+        "name": "Holiday Midday",
+        "days_of_week": [0, 1, 2, 3, 4, 5, 6],
+        "start_time": "10:00:00",
+        "end_time": "14:00:00",
+        "display_power": "on",
+        "playlist_id": "01JPAYSTHOLI1MGDMFGS8KX00",
+        "preset_batch_id": "01JPBATCHHOLI7RCG2V0CQV00",
+        "revision": 1,
+        "created_at": 1752537600000,
+        "updated_at": 1752537600000
+      }
+    ],
+    "preset_batches": [
+      { "preset_id": "01JPBATCHBASE7RCG2V0CQV00", "scope_node": "01JSCRNVERRDEF4W6305FAT000", "name": "Base Scene", "commands": [{ "entity_id": "01JENTTYAKQ2PDF6PT9FABT1BN", "command": "power", "params": { "state": "on" } }], "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 },
+      { "preset_id": "01JPBATCHHOLI7RCG2V0CQV00", "scope_node": "01JSCRNVERRDEF4W6305FAT000", "name": "Holiday Scene", "commands": [{ "entity_id": "01JENTTYAKQ2PDF6PT9FABT1BN", "command": "power", "params": { "state": "on" } }], "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 }
+    ],
+    "resolve_for_scope_node": "01JSCRNVERRDEF4W6305FAT000",
+    "evaluations": [
+      { "at_local": "2026-07-14T05:00:00", "label": "pre-open" },
+      { "at_local": "2026-07-14T06:00:00", "label": "base-start" },
+      { "at_local": "2026-07-14T10:00:00", "label": "holiday-start" },
+      { "at_local": "2026-07-14T14:00:00", "label": "holiday-end-fall-through" }
+    ]
+  },
+  "expected": {
+    "valid": true,
+    "errors": [],
+    "applicable_schedule_ids_by_precedence": ["01JSCHEDHOLI0RGXJVZ9CJD000", "01JSCHEDBASE0RGXJVZ9CJD000"],
+    "results": [
+      { "label": "pre-open", "effective_daypart_id": null, "winning_schedule_id": null, "preset_fired": null },
+      { "label": "base-start", "effective_daypart_id": "01JDAYPARTBASE7RCG2V0CQV00", "winning_schedule_id": "01JSCHEDBASE0RGXJVZ9CJD000", "preset_fired": "01JPBATCHBASE7RCG2V0CQV00", "reason": "rising edge: effective daypart transitions to base" },
+      { "label": "holiday-start", "effective_daypart_id": "01JDAYPARTHOLI7RCG2V0CQV00", "winning_schedule_id": "01JSCHEDHOLI0RGXJVZ9CJD000", "preset_fired": "01JPBATCHHOLI7RCG2V0CQV00", "masked_daypart_id": "01JDAYPARTBASE7RCG2V0CQV00", "masked_daypart_preset_fired": false, "reason": "rising edge into holiday; base is still its schedule's currently holding daypart but is masked and invokes no preset" },
+      { "label": "holiday-end-fall-through", "effective_daypart_id": "01JDAYPARTBASE7RCG2V0CQV00", "winning_schedule_id": "01JSCHEDBASE0RGXJVZ9CJD000", "preset_fired": "01JPBATCHBASE7RCG2V0CQV00", "reason": "fall-through is a rising edge: holiday ended, base becomes effective again, base preset fires" }
+    ],
+    "preset_invocations_in_order": [
+      { "at_local": "2026-07-14T06:00:00", "preset_batch_id": "01JPBATCHBASE7RCG2V0CQV00" },
+      { "at_local": "2026-07-14T10:00:00", "preset_batch_id": "01JPBATCHHOLI7RCG2V0CQV00" },
+      { "at_local": "2026-07-14T14:00:00", "preset_batch_id": "01JPBATCHBASE7RCG2V0CQV00" }
+    ]
+  }
+}
