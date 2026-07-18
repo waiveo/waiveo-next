@@ -128,6 +128,17 @@ type triggerRuntime struct {
 	kind     string // "state" | "numeric" | "time" | "time_pattern" | "sun"
 	entityID string
 
+	// sig is this trigger's per-(trigger,entity) canonical fingerprint (RUL-303/
+	// 304): the canonical JSON of its authored member plus its resolved subject
+	// entity. ApplyGeneration matches an incoming trigger against a prior one by
+	// this signature to decide, at trigger granularity, whether the trigger is
+	// unchanged across a generation swap and so carries its first-observation
+	// baseline forward, or is new/changed and resets it (RUL-381 at the trigger
+	// level). Two selector-matched entities of one member differ only by their
+	// entity, so each carries its own signature and its own first-observation
+	// state (RUL-011/304).
+	sig string
+
 	st *eval.StateTrigger
 	nt *eval.NumericTrigger
 
@@ -202,7 +213,9 @@ func newTriggerRuntime(m model.Member) *triggerRuntime {
 		// entity_id form: the subject comes from the member's own EntityRef.
 		return newStateOrNumericRuntime(m, "")
 	}
-	tr := &triggerRuntime{kind: m.Type, forSeconds: parseForSeconds(m.Raw)}
+	// A schedule trigger carries no EntityRef (RUL-040/050/060), so its
+	// per-(trigger,entity) signature is keyed on an empty subject (RUL-303).
+	tr := &triggerRuntime{kind: m.Type, forSeconds: parseForSeconds(m.Raw), sig: triggerSig(m.Raw, "")}
 	switch m.Type {
 	case "time":
 		// A `time` trigger carries no EntityRef (RUL-040): it fires from the wall
@@ -293,6 +306,11 @@ func newStateOrNumericRuntime(m model.Member, overrideEntity string) *triggerRun
 		return nil
 	}
 	tr.hold = eval.NewHold(tr.holdKind, tr.forSeconds)
+	// Key the trigger's first-observation signature on its authored member plus
+	// its resolved subject entity (the selector/device-class fan-out's per-entity
+	// override, or the member's own entity_id) so an unchanged (trigger,entity)
+	// carries its baseline across a generation swap (RUL-303/304).
+	tr.sig = triggerSig(m.Raw, tr.entityID)
 	return tr
 }
 

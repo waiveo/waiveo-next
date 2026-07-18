@@ -64,6 +64,51 @@ func ruleSignature(rule model.Rule, cl closure.Closure) []byte {
 	return b
 }
 
+// triggerSig is one trigger's per-(trigger,entity) fingerprint (RUL-303/304):
+// the canonical JSON of its authored member joined with its resolved subject
+// entity. It is the trigger-level analogue of ruleSignature — the identical
+// changed/unchanged test RUL-381 defines at the rule level, applied here at an
+// individual trigger's granularity. A trigger whose authored member and subject
+// entity both match a prior generation's trigger shares its signature and so
+// carries its first-observation baseline forward across a generation swap; any
+// change to the member (or a selector-membership change that fans it out to a
+// different entity) yields a different signature and resets that baseline. The
+// NUL separator cannot appear in canonical JSON or a ULID entity id, so the two
+// fields cannot collide across the join.
+func triggerSig(raw json.RawMessage, entityID string) string {
+	return string(canonRaw(raw)) + "\x00" + entityID
+}
+
+// carryUnchangedTriggers preserves first-observation state at trigger
+// granularity across a generation swap (RUL-303/304). It is applied when a rule
+// present in both generations is CHANGED as a whole (so its fresh instance was
+// rebuilt and its in-flight run canceled, RUL-380/381) but some of its
+// individual triggers are untouched by the edit: each fresh trigger whose
+// per-(trigger,entity) signature matches a prior trigger reuses that prior
+// runtime, carrying its durable baseline/hold/seen state forward exactly as if
+// no generation had been applied — so a routine edit elsewhere in the same rule
+// (or generation) neither resets its baseline nor suppresses a genuine
+// subsequent transition. A fresh trigger with no signature match is new or
+// changed and keeps its reset runtime. Each prior runtime is consumed on first
+// match so two identical fresh triggers never alias one prior runtime's state.
+func carryUnchangedTriggers(fresh, old *ruleInstance) {
+	if len(old.triggers) == 0 || len(fresh.triggers) == 0 {
+		return
+	}
+	bySig := make(map[string]*triggerRuntime, len(old.triggers))
+	for _, tr := range old.triggers {
+		if _, seen := bySig[tr.sig]; !seen {
+			bySig[tr.sig] = tr
+		}
+	}
+	for i, tr := range fresh.triggers {
+		if prev, ok := bySig[tr.sig]; ok {
+			fresh.triggers[i] = prev
+			delete(bySig, tr.sig)
+		}
+	}
+}
+
 // canonMembers renders a member slice to its canonical raw-JSON forms so that a
 // byte-different but semantically identical authored element compares equal.
 func canonMembers(ms []model.Member) []json.RawMessage {

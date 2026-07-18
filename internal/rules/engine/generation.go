@@ -82,10 +82,20 @@ func (e *Engine) ApplyGeneration(gen Generation) []RunDisposition {
 		default:
 			// New or changed (RUL-381): build a fresh instance. A changed rule's
 			// prior in-flight run is canceled (RUL-380).
-			if existed && !kept[id] && old.run != nil {
-				out = append(out, RunDisposition{RuleID: id, Disposition: Canceled, Mode: old.mode})
+			fresh := newRuleInstance(cr)
+			if existed && !kept[id] {
+				if old.run != nil {
+					out = append(out, RunDisposition{RuleID: id, Disposition: Canceled, Mode: old.mode})
+				}
+				// RUL-303/304: the changed/unchanged test applies at the individual
+				// trigger's granularity, not just the rule's. Even though the rule as
+				// a whole changed, carry the first-observation baseline forward for
+				// every trigger the edit did NOT itself touch — only new/changed
+				// triggers reset. (An unchanged rule takes the branch above and
+				// preserves all of its triggers wholesale.)
+				carryUnchangedTriggers(fresh, old)
 			}
-			next = append(next, newRuleInstance(cr))
+			next = append(next, fresh)
 		}
 		kept[id] = true
 	}
