@@ -1,0 +1,28 @@
+# waiveo-feeder — relay/1 server + content origin (Wave-1 first photon).
+# Runs beside the legacy stack on a non-conflicting port. Replace the 192.0.2.x
+# placeholder in WAIVEO_FEEDER_CONTENT_URL with THIS box's real LAN IP — it is
+# baked into the signed snapshot's content URL, which a screen fetches DIRECT,
+# so it must be an address the screen can reach (never 127.0.0.1).
+[Unit]
+Description=Waiveo-next feeder (relay/1 server + content origin)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=waiveo
+Group=waiveo
+# Identity + signing keys persist under WorkingDirectory/.dev (see repo
+# .gitignore). Keep this path stable across restarts or the feeder re-keys.
+WorkingDirectory=/opt/waiveo-next
+ExecStart=/opt/waiveo-next/bin/waiveo-feeder
+Environment=WAIVEO_FEEDER_LISTEN=0.0.0.0:7420
+Environment=WAIVEO_FEEDER_CONTENT_URL=https://192.0.2.10:7420
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/waiveo-next
+
+[Install]
+WantedBy=multi-user.target

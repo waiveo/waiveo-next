@@ -1,0 +1,31 @@
+# waiveo-relay — relay/1 client + player/1 server (Wave-1 first photon).
+# Enrolls against the co-located feeder over loopback, then serves pairing +
+# program to screens. Replace the 192.0.2.x placeholder in WAIVEO_RELAY_PAIR_HOST
+# with THIS box's real LAN IP — it is what the pairing code tells a screen to
+# dial, so it must be reachable from the screen (never 127.0.0.1).
+[Unit]
+Description=Waiveo-next relay (relay/1 client + player/1 server)
+After=network-online.target waiveo-feeder.service
+Wants=network-online.target
+Requires=waiveo-feeder.service
+
+[Service]
+Type=simple
+User=waiveo
+Group=waiveo
+# Operational SQLite (enrollment identity + learned feeder key + last-applied)
+# persists under WorkingDirectory/.dev. Keep stable or the relay re-enrolls.
+WorkingDirectory=/opt/waiveo-next
+ExecStart=/opt/waiveo-next/bin/waiveo-relay
+Environment=WAIVEO_RELAY_LISTEN=0.0.0.0:7421
+Environment=WAIVEO_FEEDER_URL=https://127.0.0.1:7420
+Environment=WAIVEO_RELAY_PAIR_HOST=192.0.2.10
+Environment=WAIVEO_RELAY_PAIR_PORT=7421
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/waiveo-next
+
+[Install]
+WantedBy=multi-user.target
