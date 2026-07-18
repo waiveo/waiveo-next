@@ -30,7 +30,9 @@ func TestBuildSunTriggerDispatchesOnTick(t *testing.T) {
 		t.Fatalf("precondition: expected a sunset on the test date")
 	}
 
-	e.SeedScheduleFloor(time.Date(2023, time.June, 21, 0, 0, 0, 0, time.UTC).UnixMilli())
+	floor := time.Date(2023, time.June, 21, 0, 0, 0, 0, time.UTC).UnixMilli()
+	e.SeedScheduleFloor(floor)
+	primeLiveTick(e, floor)    // engine already ticking live; this Tick evaluates sunset live
 	clk.SetWall(sunset + 1000) // one second after sunset
 
 	disps := e.Tick(clk)
@@ -69,8 +71,10 @@ func TestBuildSunTriggerOffsetShiftsInstant(t *testing.T) {
 	loc := schedule.Location{TZ: time.UTC, Lat: 51.4779, Lon: 0.0}
 	sunset, _ := schedule.SunInstant(loc, 2023, time.June, 21, "sunset", 0)
 
-	e.SeedScheduleFloor(sunset - 3600*1000) // one hour before bare sunset
-	clk.SetWall(sunset - 60*1000)           // one minute before bare sunset
+	floor := sunset - 3600*1000 // one hour before bare sunset
+	e.SeedScheduleFloor(floor)
+	primeLiveTick(e, floor)       // engine already ticking live; this Tick evaluates the offset instant live
+	clk.SetWall(sunset - 60*1000) // one minute before bare sunset
 
 	disps := e.Tick(clk)
 	if len(disps) != 1 || disps[0].Disposition != Ran {

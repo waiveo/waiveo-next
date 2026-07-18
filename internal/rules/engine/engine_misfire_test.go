@@ -160,6 +160,105 @@ func TestMisfireCaughtOrthogonalToModeSkip(t *testing.T) {
 	}
 }
 
+// TestFirstTickSkipDoesNotFireLate is the RUL-351/354 oracle on the PUBLIC Tick
+// path (the running engine's only schedule integration point): a `time` trigger
+// with no explicit misfire (defaults to skip) whose 08:00 occurrence was missed
+// while the engine was down does NOT fire late on the first Tick after restart —
+// that first Tick is a resume that routes the missed span through the misfire
+// policy, not a live tick firing every enumerated occurrence (RUL-350/351/354).
+func TestFirstTickSkipDoesNotFireLate(t *testing.T) {
+	reg := registry.FixtureRegistry{}
+	clk := clock.NewFakeClock()
+	sink := &recordingSink{}
+
+	e := New(reg, clk, sink, nil)
+	if err := e.SetLocation("UTC", 0, 0); err != nil {
+		t.Fatalf("SetLocation: %v", err)
+	}
+	loadTimeRule(t, reg, e, "01J8Z3K4N5P6Q7R8S9T0MISFR6", `{"type":"time","at":"08:00:00"}`)
+
+	// Engine down from before 08:00; the first Tick after restart lands at 09:00.
+	e.SeedScheduleFloor(utcMillis(t, 2026, 6, 1, 7, 0, 0))
+	clk.SetWall(utcMillis(t, 2026, 6, 1, 9, 0, 0))
+
+	if d := e.Tick(clk); len(d) != 0 {
+		t.Fatalf("missed skip occurrence fired late on the first Tick: %+v", d)
+	}
+	if len(sink.calls) != 0 {
+		t.Fatalf("missed skip occurrence dispatched on the first Tick: %+v", sink.calls)
+	}
+}
+
+// TestFirstTickCatchUpOnceCollapses is the RUL-352/355 oracle on the PUBLIC Tick
+// path: a `time_pattern` hourly trigger declaring catch_up_once whose 07:00/08:00/
+// 09:00 occurrences were all missed while the engine was down collapses to EXACTLY
+// ONE caught-up firing on the first Tick after restart, marked misfire_caught.
+func TestFirstTickCatchUpOnceCollapses(t *testing.T) {
+	reg := registry.FixtureRegistry{}
+	clk := clock.NewFakeClock()
+	sink := &recordingSink{}
+
+	e := New(reg, clk, sink, nil)
+	if err := e.SetLocation("UTC", 0, 0); err != nil {
+		t.Fatalf("SetLocation: %v", err)
+	}
+	loadTimeRule(t, reg, e, "01J8Z3K4N5P6Q7R8S9T0MISFR7",
+		`{"type":"time_pattern","hours":"/1","minutes":0,"seconds":0,"misfire":"catch_up_once"}`)
+
+	e.SeedScheduleFloor(utcMillis(t, 2026, 6, 1, 6, 0, 0)) // exclude 06:00
+	clk.SetWall(utcMillis(t, 2026, 6, 1, 9, 5, 0))         // 07/08/09 missed
+
+	disps := e.Tick(clk)
+	if len(disps) != 1 {
+		t.Fatalf("catch_up_once did not collapse on the first Tick: got %d (%+v)", len(disps), disps)
+	}
+	if disps[0].Disposition != Ran || !disps[0].MisfireCaught {
+		t.Fatalf("caught-up fire = %+v, want ran + misfire_caught", disps[0])
+	}
+	if len(sink.calls) != 1 {
+		t.Fatalf("want one caught-up dispatch, got %+v", sink.calls)
+	}
+}
+
+// TestFirstTickResumeThenLiveTick proves the two-phase Tick behavior: the first
+// Tick after restart is a misfire resume (a `skip` schedule catches nothing up),
+// and a SUBSEQUENT live Tick fires the same schedule normally at its instant with
+// misfire_caught=false — a skip schedule fires live while the engine is up, and is
+// suppressed only when missed across downtime (RUL-354/041/340).
+func TestFirstTickResumeThenLiveTick(t *testing.T) {
+	reg := registry.FixtureRegistry{}
+	clk := clock.NewFakeClock()
+	sink := &recordingSink{}
+
+	e := New(reg, clk, sink, nil)
+	if err := e.SetLocation("UTC", 0, 0); err != nil {
+		t.Fatalf("SetLocation: %v", err)
+	}
+	loadTimeRule(t, reg, e, "01J8Z3K4N5P6Q7R8S9T0MISFR8", `{"type":"time_pattern","hours":"/1","minutes":0,"seconds":0}`)
+
+	// First Tick: the resume window (08:30, 08:45] holds no hourly occurrence, so
+	// skip catches nothing up; the wall cursor advances to 08:45.
+	e.SeedScheduleFloor(utcMillis(t, 2026, 6, 1, 8, 30, 0))
+	clk.SetWall(utcMillis(t, 2026, 6, 1, 8, 45, 0))
+	if d := e.Tick(clk); len(d) != 0 {
+		t.Fatalf("first-Tick resume fired unexpectedly: %+v", d)
+	}
+
+	// Second Tick is live: the 09:00 occurrence fires normally, not misfire_caught,
+	// even though the trigger has no explicit misfire (defaults to skip).
+	clk.SetWall(utcMillis(t, 2026, 6, 1, 9, 0, 1))
+	disps := e.Tick(clk)
+	if len(disps) != 1 || disps[0].Disposition != Ran {
+		t.Fatalf("live Tick did not fire the 09:00 occurrence: %+v", disps)
+	}
+	if disps[0].MisfireCaught {
+		t.Fatalf("a live-tick fire must not be misfire_caught: %+v", disps[0])
+	}
+	if len(sink.calls) != 1 {
+		t.Fatalf("want one live dispatch, got %+v", sink.calls)
+	}
+}
+
 // TestReplayMissedRespectsFloor: no missed occurrence is enumerated below the
 // persisted trust floor, so no caught-up fire ever rests on a clock reading
 // earlier than the floor (RUL-370).

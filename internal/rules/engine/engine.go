@@ -452,17 +452,30 @@ func (e *Engine) Tick(now clock.Clock) []RunDisposition {
 	return out
 }
 
-// dispatchSchedule enumerates each schedule trigger's nominal occurrences over
-// the wall interval elapsed since the last Tick and routes each through fire()
-// (RUL-041/051/340). The interval is half-open: (max(lastTickWall, floor),
-// nowWall] — exclusive of the last-evaluated instant (or the persisted trust
-// floor, whichever is later, so nothing rests on a clock reading earlier than
-// the floor, RUL-370) and inclusive of the current wall reading. The wall cursor
-// then advances to nowWall so the next Tick continues from here with no gap or
-// overlap. When no schedule trigger is registered the wall clock is not read and
-// the cursor is left untouched. Misfire collapse/replay and the misfire_caught
-// marker layer onto this path in later tasks (RUL-350–355); here every live
-// occurrence fires with misfire_caught=false.
+// dispatchSchedule advances the wall-clock (schedule) triggers on a Tick.
+//
+// The FIRST Tick after the engine (re)starts — no live evaluation has happened
+// yet, so lastTickWall is still zero — is a RESUME, not a live tick: across the
+// whole span from the persisted trust floor up to now the engine was down and
+// could not evaluate at any scheduled instant (RUL-350), so every occurrence in
+// it is a MISSED occurrence caught up through its trigger's declared `misfire`
+// policy via replayMissedSchedules — `skip` (and the "" default) fires nothing (a
+// missed one-shot does not fire late, RUL-351/354), `catch_up_once` collapses to
+// one, `fire_each` replays each, and every caught-up fire carries misfire_caught
+// (RUL-352/353/355). This is precisely why a `skip` schedule missed across
+// downtime never fires live after the fact.
+//
+// Every SUBSEQUENT Tick is a live tick: the engine has been evaluating
+// continuously, so the occurrences enumerated over the half-open interval
+// (max(lastTickWall, floor), nowWall] fire live through fire() with
+// misfire_caught=false (RUL-041/051/340) — a `skip` schedule therefore fires
+// normally at its instant while the engine is up, the misfire policy governing
+// only what was missed while it was down. The interval's lower bound is the
+// last-evaluated instant (or the floor, whichever is later, so nothing rests on a
+// clock reading earlier than the floor, RUL-370) and its upper bound the current
+// wall reading; the wall cursor then advances to nowWall so the next Tick
+// continues with no gap or overlap. When no schedule trigger is registered the
+// wall clock is not read and the cursor is left untouched.
 func (e *Engine) dispatchSchedule(now clock.Clock) []RunDisposition {
 	hasSchedule := false
 	for _, tr := range e.triggers {
@@ -476,6 +489,15 @@ func (e *Engine) dispatchSchedule(now clock.Clock) []RunDisposition {
 	}
 
 	nowWall := now.WallMillis()
+
+	// First Tick after (re)start: catch the downtime span up through the misfire
+	// policy rather than firing every missed occurrence live (RUL-350/351/354).
+	// replayMissedSchedules clamps the lower bound up to the floor (RUL-370) and
+	// advances the wall cursor, so subsequent Ticks resume live from here.
+	if e.lastTickWall == 0 {
+		return e.replayMissedSchedules(e.scheduleFloor, nowWall)
+	}
+
 	from := e.lastTickWall
 	if e.scheduleFloor > from {
 		from = e.scheduleFloor
@@ -680,8 +702,9 @@ func (e *Engine) fireWith(misfireCaught bool) []RunDisposition {
 }
 
 // replayMissedSchedules re-evaluates each schedule trigger over a window in which
-// the engine could not evaluate at the scheduled instant — an offline span, or
-// (Task 5) an untrusted-clock window — treating every occurrence in
+// the engine could not evaluate at the scheduled instant — the first-Tick resume
+// span after a (re)start (dispatchSchedule), or (Task 5) an untrusted-clock
+// window — treating every occurrence in
 // (fromExclusive, toInclusive] as a MISSED occurrence governed by that trigger's
 // declared `misfire` policy (RUL-350/371), never a silent drop nor an ordinary
 // live tick. The window's lower bound is clamped up to the persisted trust floor

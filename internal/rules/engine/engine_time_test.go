@@ -47,7 +47,9 @@ func TestBuildTimeTriggerDispatchesOnTick(t *testing.T) {
 	loadTimeRule(t, reg, e, "01J8Z3K4N5P6Q7R8S9T0TIMETR", `{"type":"time","at":"09:00:00"}`)
 
 	// Floor to the start of the target day so enumeration is bounded, not from epoch.
-	e.SeedScheduleFloor(utcMillis(t, 2026, 6, 1, 0, 0, 0))
+	floor := utcMillis(t, 2026, 6, 1, 0, 0, 0)
+	e.SeedScheduleFloor(floor)
+	primeLiveTick(e, floor) // engine already ticking live; this Tick evaluates the occurrence live
 	clk.SetWall(utcMillis(t, 2026, 6, 1, 9, 0, 1))
 
 	disps := e.Tick(clk)
@@ -83,8 +85,10 @@ func TestBuildTimePatternTriggerDispatchesEachOccurrence(t *testing.T) {
 	}
 	loadTimeRule(t, reg, e, "01J8Z3K4N5P6Q7R8S9T0PATTRN", `{"type":"time_pattern","minutes":"/15","seconds":0}`)
 
-	e.SeedScheduleFloor(utcMillis(t, 2026, 6, 1, 10, 0, 0)) // exclude the 10:00:00 fire
-	clk.SetWall(utcMillis(t, 2026, 6, 1, 11, 0, 0))         // include the 11:00:00 fire
+	floor := utcMillis(t, 2026, 6, 1, 10, 0, 0) // exclude the 10:00:00 fire
+	e.SeedScheduleFloor(floor)
+	primeLiveTick(e, floor)                         // engine already ticking live; these occurrences fire live
+	clk.SetWall(utcMillis(t, 2026, 6, 1, 11, 0, 0)) // include the 11:00:00 fire
 
 	disps := e.Tick(clk)
 	// 10:15, 10:30, 10:45, 11:00 -> 4 occurrences.
@@ -117,7 +121,9 @@ func TestBuildTimeTriggerSpringForwardSkipDispatch(t *testing.T) {
 	loadTimeRule(t, reg, e, "01J8Z3K4N5P6Q7R8S9T0DSTSKP", `{"type":"time","at":"02:30:00"}`)
 
 	ny, _ := time.LoadLocation("America/New_York")
-	e.SeedScheduleFloor(time.Date(2026, 3, 7, 0, 0, 0, 0, ny).UnixMilli())
+	floor := time.Date(2026, 3, 7, 0, 0, 0, 0, ny).UnixMilli()
+	e.SeedScheduleFloor(floor)
+	primeLiveTick(e, floor) // engine already ticking live across the spring-forward window
 	clk.SetWall(time.Date(2026, 3, 10, 0, 0, 0, 0, ny).UnixMilli())
 
 	disps := e.Tick(clk)
@@ -146,7 +152,9 @@ func TestBuildTimeTriggerFallBackSingleDispatch(t *testing.T) {
 	loadTimeRule(t, reg, e, "01J8Z3K4N5P6Q7R8S9T0DSTFBK", `{"type":"time","at":"01:30:00"}`)
 
 	ny, _ := time.LoadLocation("America/New_York")
-	e.SeedScheduleFloor(time.Date(2026, 11, 1, 0, 0, 0, 0, ny).UnixMilli())
+	floor := time.Date(2026, 11, 1, 0, 0, 0, 0, ny).UnixMilli()
+	e.SeedScheduleFloor(floor)
+	primeLiveTick(e, floor) // engine already ticking live across the fall-back window
 	clk.SetWall(time.Date(2026, 11, 2, 0, 0, 0, 0, ny).UnixMilli())
 
 	disps := e.Tick(clk)

@@ -62,6 +62,14 @@ func registerSchedule(e *Engine, sched schedule.ScheduleTrigger, misfire string)
 	e.triggers = append(e.triggers, &triggerRuntime{kind: "time", sched: sched, misfire: misfire})
 }
 
+// primeLiveTick marks the engine as already having ticked live up to wall instant
+// `at` — the wall cursor a prior live Tick would have left. It makes the NEXT Tick
+// a live tick (occurrences fire at their instant, RUL-041/340) rather than the
+// first-Tick resume that catches a downtime span up through the misfire policy
+// (RUL-354). Setting it to the enumeration floor keeps the live tick's half-open
+// interval identical to the floor-bounded window under test.
+func primeLiveTick(e *Engine, at int64) { e.lastTickWall = at }
+
 // TestSetLocationLoadsNamedZone: SetLocation resolves an IANA zone name and
 // stores the coordinates (RUL-340/060); an unknown zone errors and leaves the
 // prior location unchanged.
@@ -84,13 +92,15 @@ func TestSetLocationLoadsNamedZone(t *testing.T) {
 	}
 }
 
-// TestTickEnumeratesScheduleIntervalAndDispatches is the Task-1 plumbing oracle:
-// on Tick the engine enumerates each schedule trigger's occurrences over the
-// half-open wall interval (max(lastTickWall, floor), nowWall], passing the
-// effective location, and routes each returned occurrence through fire() — so a
-// single synthesized occurrence dispatches the rule's action exactly once with a
-// `ran` disposition (RUL-041/340). The floor is the exclusive lower bound
-// (RUL-370).
+// TestTickEnumeratesScheduleIntervalAndDispatches is the Task-1 plumbing oracle
+// for a LIVE tick: with the engine already ticking (wall cursor primed), a Tick
+// enumerates each schedule trigger's occurrences over the half-open wall interval
+// (max(lastTickWall, floor), nowWall], passing the effective location, and routes
+// each returned occurrence through fire() — so a single synthesized occurrence
+// dispatches the rule's action exactly once with a `ran` disposition and
+// misfire_caught=false (RUL-041/340). The floor is the exclusive lower bound
+// (RUL-370). (A missed occurrence caught up on a first-Tick resume instead routes
+// through the misfire policy — see engine_misfire_test.go.)
 func TestTickEnumeratesScheduleIntervalAndDispatches(t *testing.T) {
 	reg := registry.FixtureRegistry{}
 	clk := clock.NewFakeClock()
@@ -102,6 +112,7 @@ func TestTickEnumeratesScheduleIntervalAndDispatches(t *testing.T) {
 	}
 	scheduleRule(t, reg, e, "01J8Z3K4N5P6Q7R8S9T0V1SCHED")
 	e.SeedScheduleFloor(1_000)
+	primeLiveTick(e, 1_000) // engine already ticking live from the floor; this Tick is live
 
 	spy := &spyEnumerator{emit: []int64{5_000}} // one occurrence in the window
 	registerSchedule(e, spy, "skip")
@@ -171,10 +182,12 @@ func TestTickAdvancesWallCursorAcrossTicks(t *testing.T) {
 	}
 }
 
-// TestTickDispatchesEachOccurrence: multiple occurrences in a single interval
-// each route through fire() independently, in order — the plumbing Tasks 4/5
-// layer misfire policy on top of (RUL-041/353). With no in-flight run between
-// them (the action is synchronous), each records `ran` and dispatches once.
+// TestTickDispatchesEachOccurrence: on a LIVE tick, multiple occurrences in a
+// single interval each route through fire() independently, in order (RUL-041/051).
+// With no in-flight run between them (the action is synchronous), each records
+// `ran` and dispatches once, misfire_caught=false. (The misfire policy governs
+// only occurrences MISSED across downtime — caught up on a first-Tick resume, see
+// engine_misfire_test.go — not the live-tick path exercised here.)
 func TestTickDispatchesEachOccurrence(t *testing.T) {
 	reg := registry.FixtureRegistry{}
 	clk := clock.NewFakeClock()
@@ -186,6 +199,7 @@ func TestTickDispatchesEachOccurrence(t *testing.T) {
 	}
 	scheduleRule(t, reg, e, "RULEEACH")
 	e.SeedScheduleFloor(0)
+	primeLiveTick(e, 1_000) // engine already ticking live; this Tick is live, not a resume
 
 	spy := &spyEnumerator{emit: []int64{5_000, 6_000, 7_000}}
 	registerSchedule(e, spy, "skip")
