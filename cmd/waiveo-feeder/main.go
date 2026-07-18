@@ -17,6 +17,7 @@ import (
 	"image/png"
 	"log"
 	"net/http"
+	"os"
 
 	"github.com/maaxton/waiveo-next/internal/feeder/enroll"
 	"github.com/maaxton/waiveo-next/internal/feeder/grant"
@@ -27,9 +28,37 @@ import (
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
-const addr = "127.0.0.1:7420"
+// config is the feeder's deployment-time addressing. Defaults keep the Wave-1
+// loopback dev/CI behavior byte-identical; the on-box deployment overrides them
+// so the content URL a screen fetches direct (contentBaseURL, baked into the
+// signed snapshot -> lease) resolves to a LAN-reachable host rather than the
+// box's own loopback.
+type config struct {
+	listen         string // TCP bind address for the HTTPS listener
+	contentBaseURL string // scheme+host the direct-fetch content URL is built from
+}
+
+// loadConfig reads the feeder config from env (via `env`, os.Getenv in main),
+// falling back to the loopback defaults. contentBaseURL defaults to the listen
+// address so an unconfigured feeder behaves exactly as before.
+func loadConfig(env func(string) string) config {
+	listen := envOr(env, "WAIVEO_FEEDER_LISTEN", "127.0.0.1:7420")
+	return config{
+		listen:         listen,
+		contentBaseURL: envOr(env, "WAIVEO_FEEDER_CONTENT_URL", "https://"+listen),
+	}
+}
+
+func envOr(env func(string) string, key, def string) string {
+	if v := env(key); v != "" {
+		return v
+	}
+	return def
+}
 
 func main() {
+	cfg := loadConfig(os.Getenv)
+
 	id, err := signing.LoadOrCreate(signing.DefaultDir)
 	if err != nil {
 		log.Fatalf("waiveo-feeder: load identity: %v", err)
@@ -40,7 +69,7 @@ func main() {
 	img := placeholderImage()
 	contentStore.Add(img)
 
-	contentBaseURL := "https://" + addr
+	contentBaseURL := cfg.contentBaseURL
 	g := grant.Mint()
 
 	snap, err := snapshot.Build(img, contentBaseURL, id, []wire.PairingGrant{g})
@@ -64,12 +93,12 @@ func main() {
 	}
 
 	server := &http.Server{
-		Addr:      addr,
+		Addr:      cfg.listen,
 		Handler:   apihttp.WithTraceID(mux),
 		TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}},
 	}
 
-	log.Printf("waiveo-feeder listening (HTTPS) on %s", addr)
+	log.Printf("waiveo-feeder listening (HTTPS) on %s (content base %s)", cfg.listen, cfg.contentBaseURL)
 	log.Fatal(server.ListenAndServeTLS("", ""))
 }
 

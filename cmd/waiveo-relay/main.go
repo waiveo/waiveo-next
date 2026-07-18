@@ -25,6 +25,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/relay/desiredstate"
@@ -35,20 +37,42 @@ import (
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
-const addr = "127.0.0.1:7421"
+// config is the relay's deployment-time addressing. Defaults keep the Wave-1
+// loopback dev/CI behavior byte-identical; the on-box deployment overrides
+// listen (bind LAN-reachable) and pairHost/pairPort (what a formed pairing code
+// tells a screen to dial, REL-126/PLY-024) so a Roku on the LAN can actually
+// reach this relay and use the code. feederURL stays loopback on-box (the relay
+// and feeder are co-located).
+type config struct {
+	listen    string // TCP bind address for the player/1 HTTPS listener
+	feederURL string // co-located feeder base URL for enroll + desired-state pull
+	pairHost  string // dial host a formed pairing code encodes
+	pairPort  int    // dial port a formed pairing code encodes
+}
 
-// pairingCodeHost/pairingCodePort are the dial address a formed pairing
-// code (REL-126) encodes — Wave-1 first-photon's loopback deployment, the
-// same host:port a player/1 client reaches this listener at.
-const (
-	pairingCodeHost = "127.0.0.1"
-	pairingCodePort = 7421
-)
+// loadConfig reads the relay config from env (os.Getenv in main), falling back
+// to loopback defaults. Returns an error only on an unparseable pair port, so a
+// misconfiguration fails fast at startup rather than emitting an unusable code.
+func loadConfig(env func(string) string) (config, error) {
+	portStr := envOr(env, "WAIVEO_RELAY_PAIR_PORT", "7421")
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return config{}, fmt.Errorf("WAIVEO_RELAY_PAIR_PORT %q is not an integer: %w", portStr, err)
+	}
+	return config{
+		listen:    envOr(env, "WAIVEO_RELAY_LISTEN", "127.0.0.1:7421"),
+		feederURL: envOr(env, "WAIVEO_FEEDER_URL", "https://127.0.0.1:7420"),
+		pairHost:  envOr(env, "WAIVEO_RELAY_PAIR_HOST", "127.0.0.1"),
+		pairPort:  port,
+	}, nil
+}
 
-// feederBaseURL is the co-located feeder's own HTTPS listener
-// (cmd/waiveo-feeder's addr) — Wave-1 first-photon's loopback deployment
-// (REL-011's co-located claim credential MAY leave app_endpoint implicit).
-const feederBaseURL = "https://127.0.0.1:7420"
+func envOr(env func(string) string, key, def string) string {
+	if v := env(key); v != "" {
+		return v
+	}
+	return def
+}
 
 // enrollRetryBudget/enrollRetryInterval tolerate the feeder not being up
 // yet the instant the relay process starts: the Makefile's dev-up backgrounds
@@ -61,13 +85,18 @@ const (
 )
 
 func main() {
+	cfg, err := loadConfig(os.Getenv)
+	if err != nil {
+		log.Fatalf("waiveo-relay: config: %v", err)
+	}
+
 	store, err := identity.Open(identity.DefaultPath)
 	if err != nil {
 		log.Fatalf("waiveo-relay: open identity store: %v", err)
 	}
 	defer store.Close()
 
-	if err := enrollWithRetry(store); err != nil {
+	if err := enrollWithRetry(cfg.feederURL, store); err != nil {
 		log.Fatalf("waiveo-relay: enroll: %v", err)
 	}
 
@@ -87,7 +116,7 @@ func main() {
 	// signature, tampered sections, or a regressed generation) is fatal —
 	// Wave-1 first-photon's relay has nothing useful to serve without a
 	// verified desired-state generation applied.
-	applied, err := desiredstate.Pull(feederBaseURL, store)
+	applied, err := desiredstate.Pull(cfg.feederURL, store)
 	if err != nil {
 		log.Fatalf("waiveo-relay: pull desired state: %v", err)
 	}
@@ -110,7 +139,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("waiveo-relay: build player/1 pairing server: %v", err)
 	}
-	logPairingCodes(applied, certDER)
+	logPairingCodes(cfg, applied, certDER)
 
 	// Task 10: configure program delivery (GET /player/v1/program) from the
 	// SAME verified Applied value pairing already sourced its grants from —
@@ -133,12 +162,12 @@ func main() {
 	pairingSrv.Register(mux)
 
 	server := &http.Server{
-		Addr:      addr,
+		Addr:      cfg.listen,
 		Handler:   apihttp.WithTraceID(mux),
 		TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}},
 	}
 
-	log.Printf("waiveo-relay listening (HTTPS) on %s", addr)
+	log.Printf("waiveo-relay listening (HTTPS) on %s (pairing code dial %s:%d)", cfg.listen, cfg.pairHost, cfg.pairPort)
 	log.Fatal(server.ListenAndServeTLS("", ""))
 }
 
@@ -179,9 +208,9 @@ func relayTLSCertificate(id identity.RelayIdentity) (tls.Certificate, []byte, er
 // display surface, out of player/1's own scope) a REL-126 pairing code for
 // every applied pairing grant, so a developer can read one off the relay's
 // own log and hand it to a later player/1 client task.
-func logPairingCodes(applied desiredstate.Applied, relayCertDER []byte) {
+func logPairingCodes(cfg config, applied desiredstate.Applied, relayCertDER []byte) {
 	for _, grant := range applied.PairingGrants {
-		code, err := playerserver.FormPairingCode(pairingCodeHost, pairingCodePort, grant, relayCertDER)
+		code, err := playerserver.FormPairingCode(cfg.pairHost, cfg.pairPort, grant, relayCertDER)
 		if err != nil {
 			log.Printf("waiveo-relay: form pairing code for grant %s: %v", grant.GrantID, err)
 			continue
@@ -196,11 +225,11 @@ func logPairingCodes(applied desiredstate.Applied, relayCertDER []byte) {
 // already holds a persisted identity returns immediately without a network
 // call — so a retry here only ever costs real work on a genuinely fresh
 // store.
-func enrollWithRetry(store *identity.Store) error {
+func enrollWithRetry(feederURL string, store *identity.Store) error {
 	deadline := time.Now().Add(enrollRetryBudget)
 	var lastErr error
 	for {
-		if err := enroll.Run(feederBaseURL, store); err == nil {
+		if err := enroll.Run(feederURL, store); err == nil {
 			return nil
 		} else {
 			lastErr = err
