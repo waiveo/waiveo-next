@@ -37,7 +37,7 @@ func TestBuildShape(t *testing.T) {
 	img := loadTestImage(t)
 	id := testIdentity(t)
 
-	snap, err := Build(img, "https://origin.example", id)
+	snap, err := Build(img, "https://origin.example", id, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestBuildSignatureVerifies(t *testing.T) {
 	img := loadTestImage(t)
 	id := testIdentity(t)
 
-	snap, err := Build(img, "https://origin.example", id)
+	snap, err := Build(img, "https://origin.example", id, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestBuildSignatureBindsGeneration(t *testing.T) {
 	img := loadTestImage(t)
 	id := testIdentity(t)
 
-	snap, err := Build(img, "https://origin.example", id)
+	snap, err := Build(img, "https://origin.example", id, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestHashDeterministic(t *testing.T) {
 	img := loadTestImage(t)
 	id := testIdentity(t)
 
-	snap, err := Build(img, "https://origin.example", id)
+	snap, err := Build(img, "https://origin.example", id, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestHashDeterministic(t *testing.T) {
 
 	otherImg := append([]byte(nil), img...)
 	otherImg = append(otherImg, 0x00) // perturb bytes -> different content
-	otherSnap, err := Build(otherImg, "https://origin.example", id)
+	otherSnap, err := Build(otherImg, "https://origin.example", id, nil)
 	if err != nil {
 		t.Fatalf("Build (other image): %v", err)
 	}
@@ -212,7 +212,56 @@ func TestHashDeterministic(t *testing.T) {
 
 func TestBuildRejectsNilIdentity(t *testing.T) {
 	img := loadTestImage(t)
-	if _, err := Build(img, "https://origin.example", nil); err == nil {
+	if _, err := Build(img, "https://origin.example", nil, nil); err == nil {
 		t.Error("Build(nil identity) succeeded, want an error")
+	}
+}
+
+// TestBuildWithGrantsRidesAndVerifies asserts a populated grants slice
+// rides into `sections.pairing_grants` verbatim, and that the snapshot's
+// hash/signature still verify with grants present (REL-053: grants are
+// part of `sections`, so they're covered by `hash`; REL-075 transitively).
+// This is the Task 6 carry — grant.Mint()'s one pairing grant rides the
+// snapshot to the relay.
+func TestBuildWithGrantsRidesAndVerifies(t *testing.T) {
+	img := loadTestImage(t)
+	id := testIdentity(t)
+
+	g := wire.PairingGrant{
+		GrantID:                "grant-test-1",
+		Purpose:                "pairing",
+		ResultingPrincipalKind: "screen",
+		TTL:                    900,
+		RedemptionMode:         "one-time",
+		IssuedAt:               1752537000000,
+	}
+
+	snap, err := Build(img, "https://origin.example", id, []wire.PairingGrant{g})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	if len(snap.Sections.PairingGrants) != 1 || snap.Sections.PairingGrants[0] != g {
+		t.Fatalf("Sections.PairingGrants = %#v, want exactly [%#v]", snap.Sections.PairingGrants, g)
+	}
+
+	recomputed, err := hashSections(snap.Sections)
+	if err != nil {
+		t.Fatalf("hashSections: %v", err)
+	}
+	if recomputed != snap.Hash {
+		t.Errorf("recomputed hash %q != snapshot hash %q — grants must be covered by hash (REL-053)", recomputed, snap.Hash)
+	}
+
+	canon, err := generationHashCanonBytes(snap.Generation, snap.Hash)
+	if err != nil {
+		t.Fatalf("generationHashCanonBytes: %v", err)
+	}
+	sigBytes, err := wire.DecodeSignature(snap.Signature)
+	if err != nil {
+		t.Fatalf("wire.DecodeSignature: %v", err)
+	}
+	if !signhash.Verify(id.SigningPub(), canon, sigBytes) {
+		t.Error("signature did not verify with a populated pairing_grants section")
 	}
 }

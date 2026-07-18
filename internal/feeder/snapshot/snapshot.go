@@ -59,9 +59,21 @@ const (
 // (signhash.ContentID) and whose `url` resolves to the content origin's
 // `/content/<hex>` route under contentBaseURL. It signs with id's
 // signing private key.
-func Build(img []byte, contentBaseURL string, id *signing.Identity) (SignedSnapshot, error) {
+//
+// grants populates `sections.pairing_grants` (REL-067) — typically the
+// single grant.Mint() record a later Task 6 rides to the relay. A nil
+// grants is normalized to a non-nil empty slice, so the section always
+// marshals as `[]`, never `null` (REL-060). grants is included in
+// `sections` ahead of hashing/signing, so it is covered by `hash`
+// (REL-053) and transitively by `signature` (REL-075) exactly like every
+// other section.
+func Build(img []byte, contentBaseURL string, id *signing.Identity, grants []wire.PairingGrant) (SignedSnapshot, error) {
 	if id == nil {
 		return SignedSnapshot{}, fmt.Errorf("snapshot: Build: id must not be nil")
+	}
+
+	if grants == nil {
+		grants = []wire.PairingGrant{}
 	}
 
 	assetRef := signhash.ContentID(img)
@@ -95,8 +107,8 @@ func Build(img []byte, contentBaseURL string, id *signing.Identity) (SignedSnaps
 			Revoked:       []string{},
 			SiteEffective: wire.SiteEffective{},
 		},
-		PairingGrants:      []wire.PairingGrant{}, // populated by a later Player-credential-authority task
-		WorkflowGeneration: nil,                   // RESERVED, REL-068
+		PairingGrants:      grants,
+		WorkflowGeneration: nil, // RESERVED, REL-068
 	}
 
 	hash, err := hashSections(sections)
