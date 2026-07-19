@@ -21,19 +21,23 @@ import (
 // report — the honesty anchor: if a future task implements one of these
 // features but forgets to move its case from PENDING to driven, this test
 // fails, and if it drives a case it should not yet, this test also fails.
-var expectedPending = []string{
-	"PLY-101-valid-lease-preemption-interrupt-now",
-	"PLY-130-valid-server-moved-relocate-never-wipe",
-	"PLY-136-valid-token-revoked-reconnect-clears-token-only",
-	"PLY-155-valid-power-schedule-interaction",
-}
+//
+// Task 5 drives every remaining Phase-2 case (PLY-101/130/136/155), so this
+// set is now empty — full player/1 conformance, zero pending.
+var expectedPending []string
 
-// expectedDriven is the set of cases the first-photon driver actually
-// exercises against the live stack.
+// expectedDriven is the full set of cases the driver exercises against the
+// live stack: the first-photon subset (PLY-050/055/057) plus every Phase-2
+// case Task 5 wires in (PLY-101/130/136/155) — the entire frozen player-1
+// corpus.
 var expectedDriven = []string{
 	"PLY-050-valid-pairing-happy-path-tofu-same-network",
 	"PLY-055-valid-cross-vlan-manual-entry-pairing-code-commitment",
 	"PLY-057-invalid-oob-authentication-mismatch-rejected",
+	"PLY-101-valid-lease-preemption-interrupt-now",
+	"PLY-130-valid-server-moved-relocate-never-wipe",
+	"PLY-136-valid-token-revoked-reconnect-clears-token-only",
+	"PLY-155-valid-power-schedule-interaction",
 }
 
 // TestPlayer1DriverGreen boots the live in-process feeder+relay and runs the

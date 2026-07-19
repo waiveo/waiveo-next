@@ -1,24 +1,31 @@
 // Package player1 is the executable player/1 conformance driver: the §10
-// differential oracle for the player/1 contract. It replays the
-// FIRST-PHOTON-APPLICABLE cases of the frozen player-1 corpus
-// (conformance/corpora/player-1) against a LIVE relay, driving a pluggable
-// PlayerTarget (the player/1 client under test), and diffs the target's
-// actual behavior against each case's own declared `expected` block.
+// differential oracle for the player/1 contract. It replays EVERY case of the
+// frozen player-1 corpus (conformance/corpora/player-1) — the first-photon
+// pairing subset (PLY-050/055/057) against a LIVE relay, driving a pluggable
+// PlayerTarget (the player/1 client under test), plus the Phase-2/3 lease
+// preemption, reconnect/relocate, revocation, and off-air liveness cases
+// (PLY-101/130/136/155) against the exact committed decision functions the
+// virtual player and relay themselves run — and diffs the observed behavior
+// against each case's own declared `expected` block.
 //
-// The target is pluggable ON PURPOSE (§10 "drivers take ANY target, diff
-// behavior"): the first-photon target is the in-process virtual player
-// (VirtualPlayerTarget, wrapping internal/virtualplayer.Photon), and the
-// SAME driver validates a real BrightScript player in a later wave by
+// The target is pluggable ON PURPOSE for the pairing subset (§10 "drivers
+// take ANY target, diff behavior"): the first-photon target is the in-process
+// virtual player (VirtualPlayerTarget, wrapping internal/virtualplayer.Photon),
+// and the SAME driver validates a real BrightScript player in a later wave by
 // plugging in a different PlayerTarget — the corpus, the assertions, and the
-// oracle stay identical; only the client changes.
+// oracle stay identical; only the client changes. Task 5's four Phase-2/3
+// cases are deliberately driven at the decision-function level rather than
+// through PlayerTarget (see each drivePLY10*/drivePLY136/drivePLY155's own
+// doc): a BrightScript player-v3 exercising these same behaviors on-device is
+// a deliberately deferred hardware target (this plan proves the player/1
+// SEMANTICS in software); each Phase-2/3 case's Pass note also points at the
+// package's own live end-to-end test proving the identical function wired to
+// a real relay over the wire.
 //
-// Applicability triage (§10 "no silent caps"): Run DRIVES the cases the
-// first-photon relay + virtual player actually implement (PLY-050, PLY-055,
-// PLY-057) and marks every other player-1 case PENDING with an explicit
-// reason. The returned Report enumerates all of them, so a reader sees
-// exactly what is and isn't covered, and a future task that builds a pending
-// feature must move its case from PENDING to driven for the harness's own
-// honesty check to keep passing.
+// §10 "no silent caps": Run drives every case in the frozen corpus — nothing
+// is PENDING. TestPlayer1CorpusFullyAccountedFor independently re-derives the
+// corpus directory's own case set and fails loudly if a future corpus
+// addition is ever left untriaged.
 package player1
 
 import (
@@ -29,6 +36,9 @@ import (
 
 	"github.com/maaxton/waiveo-next/conformance/drivers/corpus"
 	"github.com/maaxton/waiveo-next/conformance/drivers/report"
+	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
+	"github.com/maaxton/waiveo-next/internal/shared/wire"
+	"github.com/maaxton/waiveo-next/internal/virtualplayer"
 )
 
 // PlayerTarget is the pluggable player/1 client the driver drives. A single
@@ -104,11 +114,12 @@ type Relay interface {
 // contract is the corpus contract name every player-1 case declares.
 const contract = "player/1"
 
-// Run replays the first-photon-applicable player/1 corpus cases against relay,
-// driving target, and returns the differential-oracle Report. It reads each
-// case's `expected` block from the frozen corpus (never a value hard-coded
-// here) and asserts every field the live surface can observe, noting the
-// fields it cannot rather than faking a pass.
+// Run replays every player-1 corpus case and returns the differential-oracle
+// Report: the first-photon pairing subset against relay, driving target, plus
+// the Phase-2/3 cases against their own committed decision functions. It
+// reads each case's `expected` block from the frozen corpus (never a value
+// hard-coded here) and asserts every field the live surface can observe,
+// noting the fields it cannot rather than faking a pass.
 func Run(target PlayerTarget, relay Relay) report.Report {
 	rep := report.Report{Driver: "player1", Target: target.Name()}
 
@@ -122,22 +133,443 @@ func Run(target PlayerTarget, relay Relay) report.Report {
 	drivePLY057(&rep, target, relay, cases)
 	drivePLY050(&rep, target, relay, cases)
 
-	// PENDING — features not built in first-photon (§10 "no silent caps"):
-	// each is a real player/1 case this wave's relay + virtual player do not
-	// implement, enumerated with its reason so coverage is explicit.
-	pend := func(short, reason string) {
-		id := short
-		if c, ok := corpus.ByID(cases, short); ok {
-			id = c.CaseID
-		}
-		rep.Pending(id, contract, reason)
-	}
-	pend("PLY-101", "lease preemption / interrupt-now is Phase-2 program-delivery; the first-photon relay serves one static program with no preemption path to drive.")
-	pend("PLY-130", "server-moved relocate / never-wipe reconnection is Phase-2 steady-state; the virtual player is a single-shot pairing thread with no persisted server-locating state to relocate.")
-	pend("PLY-136", "token revocation / reconnect-clears-token is Phase-2 credential-lifecycle; first-photon issues a channel token but has no revocation surface to exercise.")
-	pend("PLY-155", "power-schedule interaction is Phase-3 scheduling; no schedule section is applied or delivered in first-photon.")
+	// Phase-2/3 cases (Task 5): each drives the exact committed decision
+	// function the virtual player / relay itself uses — no logic
+	// reimplemented here — against the frozen corpus's own input, asserting
+	// every field of its own expected block. §10 "no silent caps": nothing
+	// remains PENDING.
+	drivePLY101(&rep, cases)
+	drivePLY130(&rep, cases)
+	drivePLY136(&rep, cases)
+	drivePLY155(&rep, cases)
 
 	return rep
+}
+
+// decodeField re-marshals a corpus case's generic map[string]any input (or
+// any sub-object of it) into a concrete typed value — the driver's own
+// fields are JSON-tagged to match the frozen corpus's field names exactly,
+// so this is a lossless re-decode, not a schema translation.
+func decodeField(m map[string]any, v any) error {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return fmt.Errorf("marshal corpus field: %w", err)
+	}
+	return json.Unmarshal(b, v)
+}
+
+// expectInt64 returns an integer expected field at path, defaulting to 0
+// when absent — JSON numbers decode as float64 through corpus.Case.Expect,
+// so this is the int64 counterpart to ExpectBool/ExpectString.
+func expectInt64(c corpus.Case, path string) int64 {
+	v, ok := c.Expect(path)
+	if !ok {
+		return 0
+	}
+	switch n := v.(type) {
+	case float64:
+		return int64(n)
+	case int64:
+		return n
+	case int:
+		return int64(n)
+	}
+	return 0
+}
+
+// ply101Input mirrors conformance/corpora/player-1/
+// PLY-101-valid-lease-preemption-interrupt-now.json's own `input` block,
+// field for field.
+type ply101Input struct {
+	ActiveLeaseBefore struct {
+		LeaseID         string `json:"lease_id"`
+		Priority        string `json:"priority"`
+		ProgramRevision string `json:"program_revision"`
+	} `json:"active_lease_before"`
+	CurrentlyRendering struct {
+		AssetRef      string `json:"asset_ref"`
+		RenderStartTS int64  `json:"render_start_ts"`
+	} `json:"currently_rendering"`
+	NewLease struct {
+		LeaseID         string              `json:"lease_id"`
+		ScreenID        string              `json:"screen_id"`
+		ProgramRevision string              `json:"program_revision"`
+		Priority        string              `json:"priority"`
+		Display         string              `json:"display"`
+		Content         []wire.LeaseContent `json:"content"`
+		IssuedAt        int64               `json:"issued_at"`
+		ValidUntil      int64               `json:"valid_until"`
+	} `json:"new_lease"`
+	DeliveryTime int64 `json:"delivery_time"`
+}
+
+// drivePLY101 drives virtualplayer.AdoptionOf — the exact, committed,
+// network-free priority-adoption decision a player runs on every delivered
+// Lease (PLY-094/100/101/102/107) — against the frozen PLY-101 case's own
+// input, and diffs every field of its expected block: the lease
+// acknowledgement (PLY-091), the interrupt-now timing (PLY-101), the
+// interrupted asset's render/end (PLY-107/111/112), the takeover asset's
+// render/start (PLY-110), and the new sole active lease (PLY-094).
+func drivePLY101(rep *report.Report, cases map[string]corpus.Case) {
+	c, ok := corpus.ByID(cases, "PLY-101")
+	if !ok {
+		rep.Fail("PLY-101", contract, "case not found in frozen corpus")
+		return
+	}
+
+	var in ply101Input
+	if err := decodeField(c.Input, &in); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode input: %v", err))
+		return
+	}
+
+	active := virtualplayer.ActiveRender{
+		LeaseID:         in.ActiveLeaseBefore.LeaseID,
+		Priority:        in.ActiveLeaseBefore.Priority,
+		ProgramRevision: in.ActiveLeaseBefore.ProgramRevision,
+		AssetRef:        in.CurrentlyRendering.AssetRef,
+		RenderStartTS:   in.CurrentlyRendering.RenderStartTS,
+	}
+	next := wire.Lease{
+		LeaseID:         in.NewLease.LeaseID,
+		ScreenID:        in.NewLease.ScreenID,
+		ProgramRevision: in.NewLease.ProgramRevision,
+		Priority:        in.NewLease.Priority,
+		Display:         in.NewLease.Display,
+		Content:         in.NewLease.Content,
+		IssuedAt:        in.NewLease.IssuedAt,
+		ValidUntil:      in.NewLease.ValidUntil,
+	}
+
+	got := virtualplayer.AdoptionOf(active, next, in.DeliveryTime)
+
+	var diffs []report.Diff
+	assertStr := func(field, want, actual string) {
+		if want != actual {
+			diffs = append(diffs, report.Diff{Field: field, Expected: want, Actual: actual})
+		}
+	}
+	assertBool := func(field string, want, actual bool) {
+		if want != actual {
+			diffs = append(diffs, report.Diff{Field: field, Expected: want, Actual: actual})
+		}
+	}
+	assertInt := func(field string, want, actual int64) {
+		if want != actual {
+			diffs = append(diffs, report.Diff{Field: field, Expected: want, Actual: actual})
+		}
+	}
+
+	assertStr("lease_ack.lease_id", c.ExpectString("lease_ack.lease_id"), got.AckLeaseID)
+	assertBool("lease_ack.accepted", c.ExpectBool("lease_ack.accepted"), got.AckAccepted)
+	assertBool("interrupted_immediately", c.ExpectBool("interrupted_immediately"), got.InterruptedImmediately)
+	assertBool("waited_for_natural_end", c.ExpectBool("waited_for_natural_end"), got.WaitedForNaturalEnd)
+	assertStr("previous_asset_render_end.asset_ref", c.ExpectString("previous_asset_render_end.asset_ref"), got.PreviousRenderEnd.AssetRef)
+	assertInt("previous_asset_render_end.t_end", expectInt64(c, "previous_asset_render_end.t_end"), got.PreviousRenderEnd.TEnd)
+	assertStr("previous_asset_render_end.cause", c.ExpectString("previous_asset_render_end.cause"), got.PreviousRenderEnd.Cause)
+	assertStr("previous_asset_render_end.completion", c.ExpectString("previous_asset_render_end.completion"), got.PreviousRenderEnd.Completion)
+	assertStr("takeover_render_start.lease_id", c.ExpectString("takeover_render_start.lease_id"), got.TakeoverRenderStart.LeaseID)
+	assertStr("takeover_render_start.asset_ref", c.ExpectString("takeover_render_start.asset_ref"), got.TakeoverRenderStart.AssetRef)
+	assertInt("takeover_render_start.ts", expectInt64(c, "takeover_render_start.ts"), got.TakeoverRenderStart.TS)
+	assertStr("takeover_render_end_cause", c.ExpectString("takeover_render_end_cause"), got.TakeoverCause)
+	assertStr("active_lease_after", c.ExpectString("active_lease_after"), got.ActiveLeaseAfter)
+
+	if len(diffs) > 0 {
+		rep.Fail(c.CaseID, contract, "preempt-priority interrupt-now adoption diverged", diffs...)
+		return
+	}
+	rep.Pass(c.CaseID, contract,
+		"driven via virtualplayer.AdoptionOf directly — the exact, committed, network-free priority-adoption decision (PLY-094/100/101/102/107); the live wire round-trip (redeem, pull, ack, render/start+end over a real preempt-priority relay) is exercised end to end in internal/virtualplayer/preempt_test.go's TestPreemptInterruptNowEndToEnd, reusing the same function.")
+}
+
+// ply130Input mirrors conformance/corpora/player-1/
+// PLY-130-valid-server-moved-relocate-never-wipe.json's own `input` block.
+type ply130Input struct {
+	PlayerPersistedState struct {
+		RelayAddress struct {
+			Host string `json:"host"`
+			Port int    `json:"port"`
+		} `json:"relay_address"`
+		TrustAnchorPresent  bool `json:"trust_anchor_present"`
+		ChannelTokenPresent bool `json:"channel_token_present"`
+	} `json:"player_persisted_state"`
+	ConnectionAttempts []struct {
+		Attempt int `json:"attempt"`
+		Address struct {
+			Host string `json:"host"`
+			Port int    `json:"port"`
+		} `json:"address"`
+		Result               string `json:"result"`
+		ReDiscoveryTriggered bool   `json:"re_discovery_triggered"`
+		DiscoveryResponse    *struct {
+			ST       string `json:"st"`
+			Location string `json:"location"`
+		} `json:"discovery_response"`
+	} `json:"connection_attempts"`
+}
+
+// drivePLY130 drives virtualplayer.RelocateDecision — the committed,
+// network-free Reconnect/relocate never-wipe state machine
+// (PLY-022/026/130/131/132/133) — against the frozen PLY-130 case's own
+// connection-attempt sweep, and diffs every field of its expected block.
+func drivePLY130(rep *report.Report, cases map[string]corpus.Case) {
+	c, ok := corpus.ByID(cases, "PLY-130")
+	if !ok {
+		rep.Fail("PLY-130", contract, "case not found in frozen corpus")
+		return
+	}
+
+	var in ply130Input
+	if err := decodeField(c.Input, &in); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode input: %v", err))
+		return
+	}
+
+	state := virtualplayer.PersistedState{
+		RelayAddress: virtualplayer.RelayAddress{
+			Host: in.PlayerPersistedState.RelayAddress.Host,
+			Port: in.PlayerPersistedState.RelayAddress.Port,
+		},
+		TrustAnchorPresent:  in.PlayerPersistedState.TrustAnchorPresent,
+		ChannelTokenPresent: in.PlayerPersistedState.ChannelTokenPresent,
+	}
+	attempts := make([]virtualplayer.ConnectionAttempt, 0, len(in.ConnectionAttempts))
+	for _, a := range in.ConnectionAttempts {
+		at := virtualplayer.ConnectionAttempt{
+			Attempt:              a.Attempt,
+			Address:              virtualplayer.RelayAddress{Host: a.Address.Host, Port: a.Address.Port},
+			Result:               a.Result,
+			ReDiscoveryTriggered: a.ReDiscoveryTriggered,
+		}
+		if a.DiscoveryResponse != nil {
+			at.DiscoveryResponse = &virtualplayer.DiscoveryResponse{
+				ST:       a.DiscoveryResponse.ST,
+				Location: a.DiscoveryResponse.Location,
+			}
+		}
+		attempts = append(attempts, at)
+	}
+
+	got := virtualplayer.RelocateDecision(state, attempts)
+
+	var diffs []report.Diff
+	if want := c.ExpectString("failure_classification_attempts_1_to_4"); got.FailureClassificationBeforeRelocate != want {
+		diffs = append(diffs, report.Diff{Field: "failure_classification_attempts_1_to_4", Expected: want, Actual: got.FailureClassificationBeforeRelocate})
+	}
+	if want := c.ExpectBool("backoff_capped"); got.BackoffCapped != want {
+		diffs = append(diffs, report.Diff{Field: "backoff_capped", Expected: want, Actual: got.BackoffCapped})
+	}
+	if want := int(expectInt64(c, "re_discovery_fired_on_attempt")); got.ReDiscoveryFiredOnAttempt != want {
+		diffs = append(diffs, report.Diff{Field: "re_discovery_fired_on_attempt", Expected: want, Actual: got.ReDiscoveryFiredOnAttempt})
+	}
+	wantAddr := virtualplayer.RelayAddress{
+		Host: c.ExpectString("relay_address_updated_to.host"),
+		Port: int(expectInt64(c, "relay_address_updated_to.port")),
+	}
+	if got.RelayAddressUpdatedTo != wantAddr {
+		diffs = append(diffs, report.Diff{Field: "relay_address_updated_to", Expected: wantAddr, Actual: got.RelayAddressUpdatedTo})
+	}
+	if want := c.ExpectBool("trust_anchor_cleared"); got.TrustAnchorCleared != want {
+		diffs = append(diffs, report.Diff{Field: "trust_anchor_cleared", Expected: want, Actual: got.TrustAnchorCleared})
+	}
+	if want := c.ExpectBool("channel_token_cleared"); got.ChannelTokenCleared != want {
+		diffs = append(diffs, report.Diff{Field: "channel_token_cleared", Expected: want, Actual: got.ChannelTokenCleared})
+	}
+	if want := c.ExpectBool("retries_indefinitely"); got.RetriesIndefinitely != want {
+		diffs = append(diffs, report.Diff{Field: "retries_indefinitely", Expected: want, Actual: got.RetriesIndefinitely})
+	}
+	if want := c.ExpectString("reconnect_result"); got.ReconnectResult != want {
+		diffs = append(diffs, report.Diff{Field: "reconnect_result", Expected: want, Actual: got.ReconnectResult})
+	}
+
+	if len(diffs) > 0 {
+		rep.Fail(c.CaseID, contract, "reconnect/relocate never-wipe sweep diverged", diffs...)
+		return
+	}
+	rep.Pass(c.CaseID, contract,
+		"driven via virtualplayer.RelocateDecision directly — the exact, committed, network-free Reconnect/relocate state machine (PLY-022/026/130-133); the live wire round-trip (a real address move across two listeners on one relay identity) is exercised end to end in internal/virtualplayer/relocate_test.go's TestRelocateLiveNeverWipeAcrossMovedAddress, reusing virtualplayer.Pair/Session.PullProgram/Session.Relocate.")
+}
+
+// ply136Input mirrors conformance/corpora/player-1/
+// PLY-136-valid-token-revoked-reconnect-clears-token-only.json's own `input`
+// block.
+type ply136Input struct {
+	PlayerPersistedState struct {
+		RelayAddress struct {
+			Host string `json:"host"`
+			Port int    `json:"port"`
+		} `json:"relay_address"`
+		TrustAnchorPresent  bool `json:"trust_anchor_present"`
+		ChannelTokenPresent bool `json:"channel_token_present"`
+	} `json:"player_persisted_state"`
+	ReconnectAttempt struct {
+		Classification string `json:"classification"`
+		RelayResponse  struct {
+			ErrorCode string `json:"error_code"`
+			Reason    string `json:"reason"`
+		} `json:"relay_response"`
+	} `json:"reconnect_attempt"`
+}
+
+// drivePLY136 drives virtualplayer.ReconnectDecision — the committed,
+// network-free credential-clearing decision (PLY-072/073/133/135/136) — against
+// the frozen PLY-136 case's own reconnect attempt, and diffs every field of its
+// expected block: CHANNEL_TOKEN_REVOKED clears ONLY the channel token, keeping
+// the persisted relay address and trust anchor (never-wipe), and returns the
+// player to Pairing redemption.
+func drivePLY136(rep *report.Report, cases map[string]corpus.Case) {
+	c, ok := corpus.ByID(cases, "PLY-136")
+	if !ok {
+		rep.Fail("PLY-136", contract, "case not found in frozen corpus")
+		return
+	}
+
+	var in ply136Input
+	if err := decodeField(c.Input, &in); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode input: %v", err))
+		return
+	}
+
+	state := virtualplayer.PersistedState{
+		RelayAddress: virtualplayer.RelayAddress{
+			Host: in.PlayerPersistedState.RelayAddress.Host,
+			Port: in.PlayerPersistedState.RelayAddress.Port,
+		},
+		TrustAnchorPresent:  in.PlayerPersistedState.TrustAnchorPresent,
+		ChannelTokenPresent: in.PlayerPersistedState.ChannelTokenPresent,
+	}
+	attempt := virtualplayer.ReconnectAttempt{
+		Classification: in.ReconnectAttempt.Classification,
+		RelayResponse: virtualplayer.RelayResponse{
+			ErrorCode: in.ReconnectAttempt.RelayResponse.ErrorCode,
+			Reason:    in.ReconnectAttempt.RelayResponse.Reason,
+		},
+	}
+
+	got := virtualplayer.ReconnectDecision(state, attempt)
+
+	var diffs []report.Diff
+	if want := c.ExpectString("failure_classification"); got.FailureClassification != want {
+		diffs = append(diffs, report.Diff{Field: "failure_classification", Expected: want, Actual: got.FailureClassification})
+	}
+	if want := c.ExpectBool("network_level_failure"); got.NetworkLevelFailure != want {
+		diffs = append(diffs, report.Diff{Field: "network_level_failure", Expected: want, Actual: got.NetworkLevelFailure})
+	}
+	if want := c.ExpectBool("channel_token_cleared"); got.ChannelTokenCleared != want {
+		diffs = append(diffs, report.Diff{Field: "channel_token_cleared", Expected: want, Actual: got.ChannelTokenCleared})
+	}
+	if want := c.ExpectBool("trust_anchor_cleared"); got.TrustAnchorCleared != want {
+		diffs = append(diffs, report.Diff{Field: "trust_anchor_cleared", Expected: want, Actual: got.TrustAnchorCleared})
+	}
+	if want := c.ExpectBool("relay_address_cleared"); got.RelayAddressCleared != want {
+		diffs = append(diffs, report.Diff{Field: "relay_address_cleared", Expected: want, Actual: got.RelayAddressCleared})
+	}
+	if want := c.ExpectString("player_state"); got.PlayerState != want {
+		diffs = append(diffs, report.Diff{Field: "player_state", Expected: want, Actual: got.PlayerState})
+	}
+	if want := c.ExpectString("error_code"); got.ErrorCode != want {
+		diffs = append(diffs, report.Diff{Field: "error_code", Expected: want, Actual: got.ErrorCode})
+	}
+
+	if len(diffs) > 0 {
+		rep.Fail(c.CaseID, contract, "token-revocation reconnect decision diverged", diffs...)
+		return
+	}
+	rep.Pass(c.CaseID, contract,
+		"driven via virtualplayer.ReconnectDecision directly — the exact, committed, network-free credential-clearing decision (PLY-072/073/133/135/136); the live wire round-trip (a real relay-side revocation via RevokeScreen, surfaced through Session.PullProgram as CHANNEL_TOKEN_REVOKED) is exercised end to end in internal/virtualplayer/revocation_test.go's TestReconnectRevokedClearsTokenOnlyEndToEnd, reusing this same function.")
+}
+
+// ply155Input mirrors conformance/corpora/player-1/
+// PLY-155-valid-power-schedule-interaction.json's own `input` block.
+type ply155Input struct {
+	ActiveLease struct {
+		LeaseID  string              `json:"lease_id"`
+		Priority string              `json:"priority"`
+		Display  string              `json:"display"`
+		Content  []wire.LeaseContent `json:"content"`
+	} `json:"active_lease"`
+	DeviceStatus struct {
+		State   string `json:"state"`
+		AppType string `json:"app_type"`
+	} `json:"device_status"`
+	DisplayPowerScheduleState   string `json:"display_power_schedule_state"`
+	RecoveryEvaluationTriggered bool   `json:"recovery_evaluation_triggered"`
+	IncomingPreemptLease        struct {
+		LeaseID  string              `json:"lease_id"`
+		Priority string              `json:"priority"`
+		Display  string              `json:"display"`
+		Content  []wire.LeaseContent `json:"content"`
+	} `json:"incoming_preempt_lease"`
+}
+
+// drivePLY155 drives BOTH committed relay-side decisions the case exercises —
+// playerserver.EvaluateRecovery (the screen-liveness recovery gate,
+// PLY-150-157) and playerserver.AdoptPreemptDisplay (the preempt-into-blank
+// never-force-visible rule, PLY-104) — against the frozen PLY-155 case's own
+// input, and diffs every field of its expected block: an intentional
+// display:blank lease suppresses foreground recovery even though the device's
+// own state/app-type gates would otherwise pass, and a preempt lease targeting
+// that same screen is still accepted but does not force it visible.
+func drivePLY155(rep *report.Report, cases map[string]corpus.Case) {
+	c, ok := corpus.ByID(cases, "PLY-155")
+	if !ok {
+		rep.Fail("PLY-155", contract, "case not found in frozen corpus")
+		return
+	}
+
+	var in ply155Input
+	if err := decodeField(c.Input, &in); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode input: %v", err))
+		return
+	}
+
+	sig := playerserver.LivenessSignal{
+		ActiveDisplay: in.ActiveLease.Display,
+		DeviceStatus: playerserver.DeviceStatus{
+			State:   in.DeviceStatus.State,
+			AppType: in.DeviceStatus.AppType,
+		},
+		PowerScheduleState: in.DisplayPowerScheduleState,
+	}
+	evalGot := playerserver.EvaluateRecovery(sig)
+
+	incoming := wire.Lease{
+		LeaseID:  in.IncomingPreemptLease.LeaseID,
+		Priority: in.IncomingPreemptLease.Priority,
+		Display:  in.IncomingPreemptLease.Display,
+		Content:  in.IncomingPreemptLease.Content,
+	}
+	preemptGot := playerserver.AdoptPreemptDisplay(in.ActiveLease.Display, incoming)
+
+	var diffs []report.Diff
+	if want := c.ExpectBool("recovery_would_pass_state_check"); evalGot.WouldPassStateCheck != want {
+		diffs = append(diffs, report.Diff{Field: "recovery_would_pass_state_check", Expected: want, Actual: evalGot.WouldPassStateCheck})
+	}
+	if want := c.ExpectBool("recovery_would_pass_app_type_check"); evalGot.WouldPassAppTypeCheck != want {
+		diffs = append(diffs, report.Diff{Field: "recovery_would_pass_app_type_check", Expected: want, Actual: evalGot.WouldPassAppTypeCheck})
+	}
+	if want := c.ExpectBool("recovery_suppressed_due_to_blank_display"); evalGot.SuppressedDueToBlankDisplay != want {
+		diffs = append(diffs, report.Diff{Field: "recovery_suppressed_due_to_blank_display", Expected: want, Actual: evalGot.SuppressedDueToBlankDisplay})
+	}
+	if want := c.ExpectBool("recovery_attempted"); evalGot.RecoveryAttempted != want {
+		diffs = append(diffs, report.Diff{Field: "recovery_attempted", Expected: want, Actual: evalGot.RecoveryAttempted})
+	}
+	if want := c.ExpectBool("preempt_lease_accepted"); preemptGot.PreemptLeaseAccepted != want {
+		diffs = append(diffs, report.Diff{Field: "preempt_lease_accepted", Expected: want, Actual: preemptGot.PreemptLeaseAccepted})
+	}
+	if want := c.ExpectString("display_remains"); preemptGot.DisplayRemains != want {
+		diffs = append(diffs, report.Diff{Field: "display_remains", Expected: want, Actual: preemptGot.DisplayRemains})
+	}
+	if want := c.ExpectBool("preempt_forces_visible"); preemptGot.PreemptForcesVisible != want {
+		diffs = append(diffs, report.Diff{Field: "preempt_forces_visible", Expected: want, Actual: preemptGot.PreemptForcesVisible})
+	}
+
+	if len(diffs) > 0 {
+		rep.Fail(c.CaseID, contract, "off-air liveness-recovery / preempt-into-blank interaction diverged", diffs...)
+		return
+	}
+	rep.Pass(c.CaseID, contract,
+		"driven via playerserver.EvaluateRecovery + playerserver.AdoptPreemptDisplay directly — the exact, committed, network-free relay-side decisions (PLY-093/104/150-157); this case's recovery_evaluation_triggered input gates WHEN a relay runs the evaluation (a scheduling concern outside these pure functions' own scope) and is not itself asserted as a field these functions produce.")
 }
 
 // drivePLY055 drives the cross-VLAN manual-entry pairing-code commitment
