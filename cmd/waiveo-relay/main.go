@@ -160,9 +160,24 @@ func main() {
 	// is hardware-gated and deferred, so the live binary loads the rules and stands
 	// ready rather than driving a synthetic observation (the e2e test drives the
 	// synthetic source to prove the wired stack fires).
-	if err := bootAutomationStack(store, relayID, applied, site); err != nil {
+	host, err := bootAutomationStack(store, relayID, applied, site)
+	if err != nil {
 		log.Fatalf("waiveo-relay: boot automation stack: %v", err)
 	}
+
+	// Own the connection-layer clock-trust state (internal/relay/clocktrust,
+	// REL-132/134/136/038) in one controller: it boots untrusted (the clock_state
+	// this relay declared at hello above), owns the runtime clock a clock.hint
+	// adjusts, and drives the engine's immediate re-evaluation of time-based rules
+	// on an untrusted->trusted transition (REL-134 -> RUL-371) via
+	// host.Engine().SetClockTrust. A hint NEVER trips that transition (REL-132) —
+	// only a VERIFIED time (a desired-state-key-signed timestamp, or authenticated
+	// NTP) applied via the controller does. The concrete verified-time source is a
+	// deliberate later concern; the controller stands wired for it.
+	clockCtl := clocktrust.NewController(store, clocktrust.NewRuntimeClock(), func(state string) error {
+		_, err := host.Engine().SetClockTrust(state)
+		return err
+	})
 
 	cert, certDER, err := relayTLSCertificate(relayID)
 	if err != nil {
@@ -202,7 +217,7 @@ func main() {
 	// never make the relay believe its expired credential is still valid, and
 	// never touching the persisted floor (REL-132). The relay boots with this
 	// runtime clock untrusted (the clock_state it declared at hello, REL-038).
-	if _, err := registerClockHint(mux, certDER); err != nil {
+	if err := registerClockHint(mux, certDER, clockCtl); err != nil {
 		log.Fatalf("waiveo-relay: register clock.hint receiver: %v", err)
 	}
 
@@ -249,21 +264,23 @@ func relayTLSCertificate(id identity.RelayIdentity) (tls.Certificate, []byte, er
 	return cert, block.Bytes, nil
 }
 
-// registerClockHint mounts the relay/1 clock.hint receiver (REL-133) on mux
-// over a fresh, untrusted runtime clock (internal/relay/clocktrust), bounding
-// accepted hints to this relay's own certificate not_after (parsed from
-// certDER) plus clocktrust.DefaultBoundedGraceMs. It returns the receiver so
-// the wiring is observable in tests. This is the connection-layer path that
-// makes the runtime clock reachable end-to-end: a real clock.hint on the wire
-// reaches AcceptHint here, never a direct call.
-func registerClockHint(mux *http.ServeMux, certDER []byte) (*clocktrust.HintReceiver, error) {
+// registerClockHint mounts the relay/1 clock.hint receiver (REL-133) on mux over
+// the clock-trust controller's own runtime clock (internal/relay/clocktrust), so
+// a wire clock.hint adjusts the very clock the controller tracks — never the
+// persisted floor and never the trust state (REL-132). Accepted hints are bounded
+// to this relay's own certificate not_after (parsed from certDER) plus
+// clocktrust.DefaultBoundedGraceMs, so a hint alone can never make the relay
+// believe its expired credential is still valid. This is the connection-layer
+// path that makes the runtime clock reachable end-to-end: a real clock.hint on
+// the wire reaches AcceptHint here, never a direct call.
+func registerClockHint(mux *http.ServeMux, certDER []byte, ctl *clocktrust.Controller) error {
 	leaf, err := x509.ParseCertificate(certDER)
 	if err != nil {
-		return nil, fmt.Errorf("parse enrollment cert for clock.hint bound: %w", err)
+		return fmt.Errorf("parse enrollment cert for clock.hint bound: %w", err)
 	}
-	recv := clocktrust.NewHintReceiver(clocktrust.NewRuntimeClock(), leaf.NotAfter.UnixMilli(), clocktrust.DefaultBoundedGraceMs)
+	recv := clocktrust.NewHintReceiver(ctl.Clock(), leaf.NotAfter.UnixMilli(), clocktrust.DefaultBoundedGraceMs)
 	mux.HandleFunc("/relay/v1/clock-hint", recv.ServeHTTP)
-	return recv, nil
+	return nil
 }
 
 // logPairingCodes forms and logs (dev-console-only stand-in for a real
@@ -314,22 +331,22 @@ func enrollWithRetry(feederURL string, store *identity.Store) error {
 // plane's own store) are hardware/data-model concerns that land later. The
 // registry is the media-player FixtureRegistry for now — the real
 // device-class-registry/1 content is a later data-model concern.
-func bootAutomationStack(store *identity.Store, relayID identity.RelayIdentity, applied desiredstate.Applied, site hello.SiteBinding) error {
+func bootAutomationStack(store *identity.Store, relayID identity.RelayIdentity, applied desiredstate.Applied, site hello.SiteBinding) (*automationhost.Host, error) {
 	host, err := automationhost.New(store, registry.FixtureRegistry{}, loopbackController{}, loopbackResolver, relayID.RelayID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// Adopt the app peer's authoritative site_binding (REL-036) into the engine
 	// before loading rules, so the edge engine's schedule/sun triggers evaluate
 	// against the site's real timezone and coordinates from the first tick.
 	if err := host.SetLocation(site.TZ, site.Lat, site.Long); err != nil {
-		return fmt.Errorf("adopt site_binding tz %q into engine: %w", site.TZ, err)
+		return nil, fmt.Errorf("adopt site_binding tz %q into engine: %w", site.TZ, err)
 	}
 	if err := host.ApplyEdgeRules(applied.EdgeRules, int(applied.Generation)); err != nil {
-		return err
+		return nil, err
 	}
 	log.Printf("waiveo-relay automation engine loaded: %d edge rule(s); device plane + durable telemetry ready", host.EdgeRuleCount())
-	return nil
+	return host, nil
 }
 
 // helloWithRetry performs the relay/1 connection handshake against the
@@ -345,7 +362,7 @@ func helloWithRetry(cfg config, relayIdent identity.RelayIdentity) (hello.SiteBi
 		Features:        []string{"telemetry.latest_only_v1"},
 		SiteBinding:     hello.SiteBinding{}, // no cached site pre-pull; the relay adopts the app peer's authoritative copy
 		SubnetMetadata:  hello.SubnetMetadata{AdvertisedAddress: cfg.listen},
-		ClockState:      hello.ClockState{State: "untrusted", Source: "none"},
+		ClockState:      hello.ClockState{State: "untrusted", Source: "cold_boot"},
 	}
 
 	deadline := time.Now().Add(enrollRetryBudget)

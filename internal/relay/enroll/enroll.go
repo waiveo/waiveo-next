@@ -146,7 +146,7 @@ func run(feederBaseURL string, store *identity.Store, now time.Time) error {
 		return fmt.Errorf("enroll: Run: fetch claim token: %w", err)
 	}
 
-	resp, err := postEnroll(client, feederBaseURL, claimToken, csrPEM)
+	resp, appPeerSPKI, err := postEnroll(client, feederBaseURL, claimToken, csrPEM)
 	if err != nil {
 		return fmt.Errorf("enroll: Run: POST /enroll: %w", err)
 	}
@@ -161,6 +161,20 @@ func run(feederBaseURL string, store *identity.Store, now time.Time) error {
 	}
 	if err := store.SetDesiredStateVerificationKey(verKey); err != nil {
 		return fmt.Errorf("enroll: Run: persist desired_state_verification_key: %w", err)
+	}
+	// REL-011: learn and persist the app peer's server-cert SubjectPublicKeyInfo
+	// as the trust pin the connection-layer clock-trust exchange pins against
+	// (REL-136/137, internal/relay/clocktrust). In this co-located (loopback)
+	// deployment the pin is learned at enrollment rather than provisioned
+	// out-of-band — the bootstrap TLS is server-authenticated even though the
+	// relay holds no CA to chain-validate it against, so the leaf SPKI observed
+	// here is the app peer's, captured for every subsequent connection to pin
+	// key-for-key. A missing SPKI (e.g. an HTTP-only test transport) is not fatal
+	// to enrollment: the pin is a later-connection concern, not an enrollment one.
+	if len(appPeerSPKI) > 0 {
+		if err := store.SetAppPeerTrustPin(appPeerSPKI); err != nil {
+			return fmt.Errorf("enroll: Run: persist app-peer trust pin: %w", err)
+		}
 	}
 
 	return nil
@@ -242,28 +256,44 @@ func fetchClaimToken(client *http.Client, feederBaseURL string) (string, error) 
 }
 
 // postEnroll performs REL-012's `POST /enroll` against the feeder's
-// loopback enrollment server, returning its decoded success body.
-func postEnroll(client *http.Client, feederBaseURL, claimToken, csrPEM string) (enrollResponse, error) {
+// loopback enrollment server, returning its decoded success body and the app
+// peer's server-cert leaf SubjectPublicKeyInfo observed on the TLS connection —
+// the REL-011 trust pin learned at enrollment. The SPKI is empty when the
+// transport carried no peer certificate (e.g. a plain-HTTP test server); a
+// caller treats that as "no pin learned", never an error.
+func postEnroll(client *http.Client, feederBaseURL, claimToken, csrPEM string) (enrollResponse, []byte, error) {
 	reqBody, err := json.Marshal(enrollRequest{ClaimToken: claimToken, CSR: csrPEM})
 	if err != nil {
-		return enrollResponse{}, fmt.Errorf("marshal enroll request: %w", err)
+		return enrollResponse{}, nil, fmt.Errorf("marshal enroll request: %w", err)
 	}
 
 	resp, err := client.Post(feederBaseURL+"/enroll", "application/json", bytes.NewReader(reqBody))
 	if err != nil {
-		return enrollResponse{}, fmt.Errorf("POST /enroll: %w", err)
+		return enrollResponse{}, nil, fmt.Errorf("POST /enroll: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return enrollResponse{}, fmt.Errorf("status %d: %w", resp.StatusCode, decodeFeederError(resp.Body))
+		return enrollResponse{}, nil, fmt.Errorf("status %d: %w", resp.StatusCode, decodeFeederError(resp.Body))
 	}
 
 	var body enrollResponse
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return enrollResponse{}, fmt.Errorf("decode enroll response: %w", err)
+		return enrollResponse{}, nil, fmt.Errorf("decode enroll response: %w", err)
 	}
-	return body, nil
+	return body, appPeerLeafSPKI(resp), nil
+}
+
+// appPeerLeafSPKI returns the DER SubjectPublicKeyInfo of the leaf certificate
+// the app peer presented on resp's TLS connection, or nil when the response
+// carried no TLS peer certificate. This is the exact key material the REL-137
+// connection pin compares against (internal/relay/clocktrust), captured over the
+// server-authenticated bootstrap TLS at enrollment.
+func appPeerLeafSPKI(resp *http.Response) []byte {
+	if resp.TLS == nil || len(resp.TLS.PeerCertificates) == 0 {
+		return nil
+	}
+	return resp.TLS.PeerCertificates[0].RawSubjectPublicKeyInfo
 }
 
 // decodeFeederError best-effort decodes the feeder's RFC-9457 problem+json

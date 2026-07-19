@@ -12,6 +12,9 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/maaxton/waiveo-next/internal/relay/clocktrust"
+	"github.com/maaxton/waiveo-next/internal/relay/identity"
 )
 
 // TestRegisterClockHintReceivesWireHint proves the relay/1 clock.hint receiver
@@ -23,7 +26,13 @@ func TestRegisterClockHintReceivesWireHint(t *testing.T) {
 	certDER := selfSignedCertDER(t, notAfter)
 
 	mux := http.NewServeMux()
-	if _, err := registerClockHint(mux, certDER); err != nil {
+	store, err := identity.Open(":memory:")
+	if err != nil {
+		t.Fatalf("identity.Open(:memory:): %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctl := clocktrust.NewController(store, clocktrust.NewRuntimeClock(), nil)
+	if err := registerClockHint(mux, certDER, ctl); err != nil {
 		t.Fatalf("registerClockHint: %v", err)
 	}
 	srv := httptest.NewServer(mux)

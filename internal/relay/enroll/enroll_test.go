@@ -1,6 +1,7 @@
 package enroll
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/hex"
 	"net/http"
@@ -235,5 +236,31 @@ func TestDecodeVerificationKeyAccepts(t *testing.T) {
 	}
 	if !got.Equal(pub) {
 		t.Errorf("decodeVerificationKey(%q) = %x, want %x", in, []byte(got), []byte(pub))
+	}
+}
+
+// TestRunLearnsAndPersistsAppPeerTrustPin: on a fresh loopback enrollment the
+// relay learns and persists the app peer's server-cert SubjectPublicKeyInfo as
+// its trust pin (REL-011 `trust_pin`, the REL-137 key pin) — the co-located
+// deployment's "learned at enrollment" path. The persisted pin equals the
+// feeder server certificate's own leaf SPKI.
+func TestRunLearnsAndPersistsAppPeerTrustPin(t *testing.T) {
+	ts, _ := newTestFeeder(t)
+	store := openStore(t)
+
+	if err := Run(ts.URL, store); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	pin, ok, err := store.AppPeerTrustPin()
+	if err != nil {
+		t.Fatalf("AppPeerTrustPin(): %v", err)
+	}
+	if !ok {
+		t.Fatal("AppPeerTrustPin() ok = false after enrollment, want the learned pin (REL-011)")
+	}
+	wantSPKI := ts.Certificate().RawSubjectPublicKeyInfo
+	if !bytes.Equal(pin, wantSPKI) {
+		t.Errorf("persisted app-peer trust pin = %x, want the feeder server cert leaf SPKI %x", pin, wantSPKI)
 	}
 }

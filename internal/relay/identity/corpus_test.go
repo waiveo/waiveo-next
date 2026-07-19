@@ -278,6 +278,7 @@ func assertNoMediaTable(t *testing.T, store *Store) {
 	sort.Strings(tables)
 
 	want := []string{
+		"app_peer_trust_pin",
 		"clock_floor",
 		"desired_state_verification_key",
 		"last_applied_generation",

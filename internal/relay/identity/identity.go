@@ -9,9 +9,10 @@
 //
 // This is deliberately a narrow, operational store — relay/1 REL-142 scopes
 // a relay's durable local state to exactly this identity/trust/progress
-// data, its persisted clock floor (REL-130/132, below), and a bounded
-// telemetry buffer (the telemetry_queue + telemetry_loss_marker tables plus
-// the telemetry_seq_high_water cursor, REL-090/091, see telemetrystore.go),
+// data, its persisted clock floor (REL-130/132, below), the enrollment-anchored
+// app-peer trust pin (REL-011 `trust_pin`, the REL-137 key pin, below), and a
+// bounded telemetry buffer (the telemetry_queue + telemetry_loss_marker tables
+// plus the telemetry_seq_high_water cursor, REL-090/091, see telemetrystore.go),
 // and nothing else. In particular, `#52`'s
 // gateway posture means the relay MUST NOT cache asset/media bytes anywhere:
 // the schema this package creates has no table capable of holding them (the
@@ -49,12 +50,12 @@ type Store struct {
 	db *sql.DB
 }
 
-// schema creates the four singleton operational tables REL-142/REL-130 scope
-// a relay's durable local state to (the bounded telemetry queue is created
+// schema creates the five singleton operational tables REL-142/REL-130/REL-011
+// scope a relay's durable local state to (the bounded telemetry queue is created
 // separately by telemetrySchema, see telemetrystore.go). Each is a singleton
 // (a single row keyed by the fixed id=1), since a relay holds exactly one
-// identity, one verification key, one last-applied generation, and one clock
-// floor at a time.
+// identity, one verification key, one last-applied generation, one clock floor,
+// and one app-peer trust pin at a time.
 const schema = `
 CREATE TABLE IF NOT EXISTS relay_identity (
 	id               INTEGER PRIMARY KEY CHECK (id = 1),
@@ -74,6 +75,10 @@ CREATE TABLE IF NOT EXISTS last_applied_generation (
 CREATE TABLE IF NOT EXISTS clock_floor (
 	id          INTEGER PRIMARY KEY CHECK (id = 1),
 	floor_ms    INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS app_peer_trust_pin (
+	id    INTEGER PRIMARY KEY CHECK (id = 1),
+	spki  BLOB NOT NULL
 );
 `
 
@@ -358,6 +363,40 @@ func (s *Store) ClockFloor() (ms int64, ok bool, err error) {
 		return 0, false, fmt.Errorf("identity: ClockFloor: %w", err)
 	}
 	return ms, true, nil
+}
+
+// SetAppPeerTrustPin persists (replacing any previously persisted value) the
+// enrollment-anchored app-peer leaf SubjectPublicKeyInfo the relay pins its app
+// peer's server certificate against (relay/1 REL-011 `trust_pin`, the REL-137
+// key pin). In a co-located (loopback) deployment REL-011 lets this pin be
+// learned at enrollment rather than provisioned out-of-band; a re-anchored key
+// at re-enrollment (REL-017) replaces it. The pin is a public key's
+// SubjectPublicKeyInfo, never a secret.
+func (s *Store) SetAppPeerTrustPin(spki []byte) error {
+	_, err := s.db.Exec(
+		`INSERT INTO app_peer_trust_pin (id, spki) VALUES (1, ?)
+		 ON CONFLICT (id) DO UPDATE SET spki = excluded.spki`,
+		spki,
+	)
+	if err != nil {
+		return fmt.Errorf("identity: SetAppPeerTrustPin: %w", err)
+	}
+	return nil
+}
+
+// AppPeerTrustPin returns the persisted app-peer trust pin (REL-011) and whether
+// one has been learned yet (never persisted returns ok=false, not an error). The
+// connect-time peer-cert validation (internal/relay/clocktrust, REL-136/137)
+// compares the app peer's presented leaf SPKI against this pin, key-for-key.
+func (s *Store) AppPeerTrustPin() (spki []byte, ok bool, err error) {
+	err = s.db.QueryRow(`SELECT spki FROM app_peer_trust_pin WHERE id = 1`).Scan(&spki)
+	if err == sql.ErrNoRows {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("identity: AppPeerTrustPin: %w", err)
+	}
+	return spki, true, nil
 }
 
 // marshalPrivateKey PKCS8/PEM-encodes priv, matching the encoding
