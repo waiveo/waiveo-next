@@ -70,31 +70,40 @@ func (b *Buffer) Record(schema string, payload json.RawMessage, subject string, 
 	return e
 }
 
-// persistRecord mirrors one Record into the durable store (REL-090): the new
-// durable-class entry is appended (a latest-only entry is skipped by the
-// store's own class gate), and any overflow-evicted lowest-seq durable entries
-// (REL-096) are pruned from the store by their highest evicted seq — drop-oldest
-// removes a contiguous run of the lowest durable seqs, so every remaining
-// durable entry sits above that cursor — with the updated loss-marker set
-// written through so the drop is durably accounted for (REL-103). Write-through
-// errors are surfaced via StoreErr, never silently swallowed. The caller holds
-// b.mu; a nil store makes this a no-op (plain in-memory buffer).
+// persistRecord mirrors one Record into the durable store (REL-090). When the
+// Record did NOT overflow the buffer, the new durable-class entry is appended
+// (a latest-only entry is skipped by the store's own class gate). When it DID
+// overflow, the append, the prune of the overflow-evicted lowest-seq durable
+// run (REL-096 — drop-oldest removes a contiguous run of the lowest durable
+// seqs, so every remaining durable entry sits above their highest seq), and the
+// rewrite of the loss-marker set are committed as ONE atomic transaction via
+// AppendWithEviction: splitting them into separate durable writes (append,
+// then prune, then save-markers) let an abrupt kill between the prune and the
+// marker write leave an evicted durable entry gone from the queue with no loss
+// marker accounting for it — the silent, unrecoverable durable-class loss
+// REL-103 forbids. Every Record additionally advances the persisted seq
+// high-water so a restart resumes above every seq ever issued, including a
+// latest-only seq whose body is not itself persisted (REL-091/094; see
+// SaveSeqHighWater). Write-through errors are surfaced via StoreErr, never
+// silently swallowed. The caller holds b.mu; a nil store makes this a no-op
+// (plain in-memory buffer).
 func (b *Buffer) persistRecord(e Entry, evicted []Entry) {
 	if b.store == nil {
 		return
 	}
-	b.noteStoreErr(b.store.AppendTelemetry(e))
 	if len(evicted) == 0 {
-		return
-	}
-	var maxEvicted int64
-	for _, ev := range evicted {
-		if ev.Seq > maxEvicted {
-			maxEvicted = ev.Seq
+		b.noteStoreErr(b.store.AppendTelemetry(e))
+	} else {
+		var maxEvicted int64
+		for _, ev := range evicted {
+			if ev.Seq > maxEvicted {
+				maxEvicted = ev.Seq
+			}
 		}
+		// One transaction: append + prune-evicted + rewrite markers (REL-103).
+		b.noteStoreErr(b.store.AppendWithEviction(e, maxEvicted, b.lossMarkers))
 	}
-	b.noteStoreErr(b.store.PruneTelemetry(maxEvicted))
-	b.noteStoreErr(b.store.SaveLossMarkers(b.lossMarkers))
+	b.noteStoreErr(b.store.SaveSeqHighWater(e.Seq))
 }
 
 // enforceCapacity applies REL-096's bounded drop-oldest overflow policy: the

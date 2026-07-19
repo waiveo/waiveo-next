@@ -255,6 +255,106 @@ func TestSaveLossMarkersReplacesPriorSet(t *testing.T) {
 	}
 }
 
+// TestAppendWithEvictionIsAtomic is the REL-096/103 atomicity property: the
+// append + evict-prune + loss-marker rewrite are ONE transaction, so a failure
+// in any step rolls back the others — a crash can never durably delete the
+// evicted durable entry while leaving its loss marker unwritten (silent durable
+// loss). Here the append step is forced to fail (a seq that collides with an
+// existing queue PRIMARY KEY); the prune of seq1 and the marker write MUST then
+// both roll back, leaving the pre-existing queue and (empty) marker set intact.
+func TestAppendWithEvictionIsAtomic(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "relay.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	for _, seq := range []int64{1, 2, 3} {
+		e := telemetry.Entry{Seq: seq, Schema: telemetry.SchemaContentPlayed, Payload: json.RawMessage(`{"asset_ref":"sha256:aa","screen_id":"s"}`), Subject: "s", RecordedAt: seq}
+		if err := store.AppendTelemetry(e); err != nil {
+			t.Fatalf("AppendTelemetry(seq=%d): %v", seq, err)
+		}
+	}
+
+	// appended.Seq = 2 collides with the existing seq-2 PRIMARY KEY, so the
+	// INSERT inside the transaction fails and the whole call must roll back.
+	collide := telemetry.Entry{Seq: 2, Schema: telemetry.SchemaContentPlayed, Payload: json.RawMessage(`{"asset_ref":"sha256:bb","screen_id":"s"}`), Subject: "s", RecordedAt: 99}
+	markers := []telemetry.LossMarker{{FromSeq: 1, ToSeq: 1, DroppedCountsBySchema: map[string]int{telemetry.SchemaContentPlayed: 1}, Reason: telemetry.ReasonBufferExceeded}}
+	if err := store.AppendWithEviction(collide, 1, markers); err == nil {
+		t.Fatalf("AppendWithEviction with a colliding seq returned nil, want an error (the append step must fail)")
+	}
+
+	// The prune of seq1 and the marker write must both have rolled back.
+	entries, gotMarkers, err := store.LoadTelemetry()
+	if err != nil {
+		t.Fatalf("LoadTelemetry: %v", err)
+	}
+	var seqs []int64
+	for _, e := range entries {
+		seqs = append(seqs, e.Seq)
+	}
+	if len(seqs) != 3 || seqs[0] != 1 || seqs[1] != 2 || seqs[2] != 3 {
+		t.Fatalf("after a failed AppendWithEviction, queue seqs = %v, want [1 2 3] unchanged (the prune rolled back, REL-103)", seqs)
+	}
+	if len(gotMarkers) != 0 {
+		t.Fatalf("after a failed AppendWithEviction, markers = %+v, want none (the marker write rolled back, REL-103)", gotMarkers)
+	}
+}
+
+// TestSeqHighWaterSurvivesReopenAcrossLatestOnly is the REL-091 monotonicity
+// property across a restart: a latest-only entry (device.heartbeat) consumes a
+// seq from the shared counter but is NOT persisted to the queue (REL-094), so
+// the persisted seq high-water — not the durable queue's max — is what a
+// restart must resume above. A durable seq1 then a latest-only seq2 are
+// recorded; after an abrupt-style reopen the buffer's next Record MUST be seq3,
+// never a second seq2 the app peer already observed on the pre-crash push.
+func TestSeqHighWaterSurvivesReopenAcrossLatestOnly(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "relay.db")
+
+	store1, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	buf, err := telemetry.NewDurableBuffer(store1, 500)
+	if err != nil {
+		t.Fatalf("NewDurableBuffer: %v", err)
+	}
+	d := buf.Record(telemetry.SchemaContentPlayed, json.RawMessage(`{"asset_ref":"sha256:a","screen_id":"s"}`), "s", 1)
+	h := buf.Record(telemetry.SchemaDeviceHeartbeat, json.RawMessage(`{"device_id":"dev","power_state":"on"}`), "dev", 2)
+	if d.Seq != 1 || h.Seq != 2 {
+		t.Fatalf("recorded seqs = (%d, %d), want (1, 2)", d.Seq, h.Seq)
+	}
+	if err := buf.StoreErr(); err != nil {
+		t.Fatalf("StoreErr: %v", err)
+	}
+	// Persisted high-water must be 2 even though only seq1 is in the queue.
+	hw, err := store1.LoadSeqHighWater()
+	if err != nil {
+		t.Fatalf("LoadSeqHighWater: %v", err)
+	}
+	if hw != 2 {
+		t.Fatalf("persisted seq high-water = %d, want 2 (latest-only seq2 must advance it, REL-091)", hw)
+	}
+	if err := store1.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	store2, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = store2.Close() })
+
+	buf2, err := telemetry.NewDurableBuffer(store2, 500)
+	if err != nil {
+		t.Fatalf("NewDurableBuffer (reopen): %v", err)
+	}
+	next := buf2.Record(telemetry.SchemaAutomationRun, json.RawMessage(`{"rule_id":"r","mode_disposition":"ran"}`), "r", 3)
+	if next.Seq != 3 {
+		t.Fatalf("post-reopen seq = %d, want 3 — must not reissue the latest-only seq 2 (REL-091)", next.Seq)
+	}
+}
+
 // TestDurableBufferPrunesStoreOnOverflow confirms REL-096 drop-oldest overflow
 // write-through: when a durable-backed Buffer overflows, the evicted
 // lowest-seq durable entries are durably removed from the queue and the

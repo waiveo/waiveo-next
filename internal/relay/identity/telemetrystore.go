@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 
@@ -19,6 +20,15 @@ import (
 //
 // seq is the queue's own primary key: per-relay monotonic (REL-091) and unique,
 // so a durable entry is written exactly once.
+//
+// telemetry_seq_high_water is a singleton (id=1) holding the highest seq the
+// relay has ever assigned — durable OR latest-only. It is part of the bounded
+// telemetry queue's durable cursor state, not a media/asset store: the queue
+// row itself only records durable-class seqs (a latest-only entry is never
+// persisted, REL-094), so the queue's max(seq) alone cannot tell a restart that
+// a latest-only entry consumed a higher seq. Persisting the high-water on every
+// record lets a restart resume strictly above every issued seq and never
+// reissue one the app peer may already have observed (REL-091).
 const telemetrySchema = `
 CREATE TABLE IF NOT EXISTS telemetry_queue (
 	seq          INTEGER PRIMARY KEY,
@@ -33,6 +43,10 @@ CREATE TABLE IF NOT EXISTS telemetry_loss_marker (
 	dropped_counts_by_schema  TEXT NOT NULL,
 	reason                    TEXT NOT NULL,
 	PRIMARY KEY (from_seq, to_seq)
+);
+CREATE TABLE IF NOT EXISTS telemetry_seq_high_water (
+	id   INTEGER PRIMARY KEY CHECK (id = 1),
+	seq  INTEGER NOT NULL
 );
 `
 
@@ -54,6 +68,90 @@ func (s *Store) AppendTelemetry(e telemetry.Entry) error {
 		return fmt.Errorf("identity: AppendTelemetry(seq=%d): %w", e.Seq, err)
 	}
 	return nil
+}
+
+// AppendWithEviction commits one overflow-triggering Record as a SINGLE
+// transaction (REL-096/103): it appends the durable-class entry (a latest-only
+// or unknown entry is gated out, exactly as AppendTelemetry gates it), prunes
+// every queued entry at or below pruneThroughSeq (the drop-oldest-evicted
+// lowest durable run), and replaces the persisted loss-marker set with markers.
+// Wrapping all three in one WAL-committed transaction is what closes the
+// silent-durable-loss window: a power-pull can no longer land the prune (the
+// evicted durable row durably deleted) while the loss marker that accounts for
+// it is never written — either the whole eviction is durable or none of it is.
+func (s *Store) AppendWithEviction(appended telemetry.Entry, pruneThroughSeq int64, markers []telemetry.LossMarker) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("identity: AppendWithEviction: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if class, ok := telemetry.ClassOf(appended.Schema); ok && class == telemetry.Durable {
+		if _, err := tx.Exec(
+			`INSERT INTO telemetry_queue (seq, schema, payload, subject, recorded_at) VALUES (?, ?, ?, ?, ?)`,
+			appended.Seq, appended.Schema, []byte(appended.Payload), appended.Subject, appended.RecordedAt,
+		); err != nil {
+			return fmt.Errorf("identity: AppendWithEviction: append(seq=%d): %w", appended.Seq, err)
+		}
+	}
+
+	if _, err := tx.Exec(`DELETE FROM telemetry_queue WHERE seq <= ?`, pruneThroughSeq); err != nil {
+		return fmt.Errorf("identity: AppendWithEviction: prune(%d): %w", pruneThroughSeq, err)
+	}
+
+	if _, err := tx.Exec(`DELETE FROM telemetry_loss_marker`); err != nil {
+		return fmt.Errorf("identity: AppendWithEviction: clear markers: %w", err)
+	}
+	for _, m := range markers {
+		counts, err := json.Marshal(m.DroppedCountsBySchema)
+		if err != nil {
+			return fmt.Errorf("identity: AppendWithEviction: marshal counts: %w", err)
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO telemetry_loss_marker (from_seq, to_seq, dropped_counts_by_schema, reason) VALUES (?, ?, ?, ?)`,
+			m.FromSeq, m.ToSeq, string(counts), m.Reason,
+		); err != nil {
+			return fmt.Errorf("identity: AppendWithEviction: insert marker [%d,%d]: %w", m.FromSeq, m.ToSeq, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("identity: AppendWithEviction: commit: %w", err)
+	}
+	return nil
+}
+
+// SaveSeqHighWater durably advances the persisted per-relay seq high-water to
+// seq (REL-091), but ONLY if seq exceeds the currently persisted high-water —
+// an equal-or-lower value leaves it untouched (advance-only, mirroring the
+// clock floor's monotonic discipline). It is written on every Record, including
+// a latest-only entry whose body is not persisted (REL-094), so a restart can
+// resume above every seq the relay ever issued and never reissue one.
+func (s *Store) SaveSeqHighWater(seq int64) error {
+	_, err := s.db.Exec(
+		`INSERT INTO telemetry_seq_high_water (id, seq) VALUES (1, ?)
+		 ON CONFLICT (id) DO UPDATE SET seq = excluded.seq WHERE excluded.seq > telemetry_seq_high_water.seq`,
+		seq,
+	)
+	if err != nil {
+		return fmt.Errorf("identity: SaveSeqHighWater(%d): %w", seq, err)
+	}
+	return nil
+}
+
+// LoadSeqHighWater returns the persisted per-relay seq high-water, or 0 if none
+// has been persisted yet (REL-091) — the resume point a restarting Buffer
+// assigns the next seq strictly above.
+func (s *Store) LoadSeqHighWater() (int64, error) {
+	var seq int64
+	err := s.db.QueryRow(`SELECT seq FROM telemetry_seq_high_water WHERE id = 1`).Scan(&seq)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("identity: LoadSeqHighWater: %w", err)
+	}
+	return seq, nil
 }
 
 // PruneTelemetry durably discards every queued entry whose seq is at or below

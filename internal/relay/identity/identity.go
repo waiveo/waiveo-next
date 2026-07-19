@@ -10,8 +10,9 @@
 // This is deliberately a narrow, operational store — relay/1 REL-142 scopes
 // a relay's durable local state to exactly this identity/trust/progress
 // data, its persisted clock floor (REL-130/132, below), and a bounded
-// telemetry buffer (the telemetry_queue + telemetry_loss_marker tables,
-// REL-090, see telemetrystore.go), and nothing else. In particular, `#52`'s
+// telemetry buffer (the telemetry_queue + telemetry_loss_marker tables plus
+// the telemetry_seq_high_water cursor, REL-090/091, see telemetrystore.go),
+// and nothing else. In particular, `#52`'s
 // gateway posture means the relay MUST NOT cache asset/media bytes anywhere:
 // the schema this package creates has no table capable of holding them (the
 // telemetry_queue holds only small event bodies, never content), and
