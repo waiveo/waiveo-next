@@ -14,6 +14,12 @@ dev: dev-up
 # Wave 1: no app component yet (Wave 2) — dev is feeder + relay only.
 dev-up: dev-down
 	@mkdir -p $(RUNDIR)
+	@# Fresh enrollment each run: the connection handshake (REL-030) verifies the
+	@# relay's channel binding against the enrollment key the (fresh-per-process,
+	@# in-memory-CA) feeder recorded at enroll, so a relay identity persisted
+	@# against a prior feeder process could no longer bind. Clearing it keeps the
+	@# self-contained dev check deterministic across repeated runs.
+	@rm -rf $(RUNDIR)/relay-identity
 	@go build -o $(FEEDER_BIN) ./cmd/waiveo-feeder
 	@go build -o $(RELAY_BIN) ./cmd/waiveo-relay
 	@{ $(FEEDER_BIN) >$(RUNDIR)/feeder.log 2>&1 & echo $$! > $(RUNDIR)/feeder.pid; }

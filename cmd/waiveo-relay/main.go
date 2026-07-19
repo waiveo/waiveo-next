@@ -22,6 +22,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -32,6 +33,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/automationhost"
 	"github.com/maaxton/waiveo-next/internal/relay/desiredstate"
 	"github.com/maaxton/waiveo-next/internal/relay/enroll"
+	"github.com/maaxton/waiveo-next/internal/relay/hello"
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
 	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
 	"github.com/maaxton/waiveo-next/internal/rules/registry"
@@ -102,15 +104,32 @@ func main() {
 		log.Fatalf("waiveo-relay: enroll: %v", err)
 	}
 
-	if id, ok, err := store.Identity(); err != nil {
+	relayIdent, ok, err := store.Identity()
+	if err != nil {
 		log.Fatalf("waiveo-relay: read identity after enroll: %v", err)
-	} else if ok {
-		log.Printf("waiveo-relay enrolled (relay_id %s)", id.RelayID)
 	}
+	if !ok {
+		log.Fatalf("waiveo-relay: no persisted identity after enrollment")
+	}
+	log.Printf("waiveo-relay enrolled (relay_id %s)", relayIdent.RelayID)
 	if key, ok, err := store.DesiredStateVerificationKey(); err != nil {
 		log.Fatalf("waiveo-relay: read desired_state_verification_key after enroll: %v", err)
 	} else if ok {
 		log.Printf("waiveo-relay trust anchor learned (desired_state_verification_key %s)", hex.EncodeToString(key))
+	}
+
+	// Perform the relay/1 connection handshake immediately after enrollment and
+	// before the desired-state pull (REL-030): the app peer challenges, this
+	// relay signs the nonce with its enrollment key (channel binding, REL-032),
+	// declares its version/features/site/subnet/clock, and adopts the app peer's
+	// authoritative site_binding from hello-ack (REL-036). The adopted site
+	// drives the edge engine's schedule/sun evaluation once the automation stack
+	// boots below. A refusal here — a channel binding the app peer will not
+	// accept, or an unsupported protocol version — is fatal: the relay has no
+	// authenticated connection to proceed on.
+	site, err := helloWithRetry(cfg, relayIdent)
+	if err != nil {
+		log.Fatalf("waiveo-relay: hello: %v", err)
 	}
 
 	// Pull + verify the feeder's signed desired-state snapshot against the
@@ -125,13 +144,10 @@ func main() {
 	log.Printf("waiveo-relay applied desired state generation %d (screen %s, program %s, image %s)",
 		applied.Generation, applied.ScreenID, applied.ProgramRevision, applied.Image.AssetRef)
 
-	relayID, ok, err := store.Identity()
-	if err != nil {
-		log.Fatalf("waiveo-relay: read identity for TLS certificate: %v", err)
-	}
-	if !ok {
-		log.Fatalf("waiveo-relay: no persisted identity after enrollment — cannot serve player/1")
-	}
+	// Reuse the enrollment identity read above (relayIdent) as the relay's
+	// player/1 TLS identity too — the same certificate the handshake channel-
+	// bound with.
+	relayID := relayIdent
 
 	// Boot the edge-automation stack from the SAME verified Applied value: compile
 	// + load the signed edge_rules (REL-062) into the engine, wired to the device
@@ -143,7 +159,7 @@ func main() {
 	// is hardware-gated and deferred, so the live binary loads the rules and stands
 	// ready rather than driving a synthetic observation (the e2e test drives the
 	// synthetic source to prove the wired stack fires).
-	if err := bootAutomationStack(store, relayID, applied); err != nil {
+	if err := bootAutomationStack(store, relayID, applied, site); err != nil {
 		log.Fatalf("waiveo-relay: boot automation stack: %v", err)
 	}
 
@@ -266,16 +282,58 @@ func enrollWithRetry(feederURL string, store *identity.Store) error {
 // plane's own store) are hardware/data-model concerns that land later. The
 // registry is the media-player FixtureRegistry for now — the real
 // device-class-registry/1 content is a later data-model concern.
-func bootAutomationStack(store *identity.Store, relayID identity.RelayIdentity, applied desiredstate.Applied) error {
+func bootAutomationStack(store *identity.Store, relayID identity.RelayIdentity, applied desiredstate.Applied, site hello.SiteBinding) error {
 	host, err := automationhost.New(store, registry.FixtureRegistry{}, loopbackController{}, loopbackResolver, relayID.RelayID)
 	if err != nil {
 		return err
+	}
+	// Adopt the app peer's authoritative site_binding (REL-036) into the engine
+	// before loading rules, so the edge engine's schedule/sun triggers evaluate
+	// against the site's real timezone and coordinates from the first tick.
+	if err := host.SetLocation(site.TZ, site.Lat, site.Long); err != nil {
+		return fmt.Errorf("adopt site_binding tz %q into engine: %w", site.TZ, err)
 	}
 	if err := host.ApplyEdgeRules(applied.EdgeRules, int(applied.Generation)); err != nil {
 		return err
 	}
 	log.Printf("waiveo-relay automation engine loaded: %d edge rule(s); device plane + durable telemetry ready", host.EdgeRuleCount())
 	return nil
+}
+
+// helloWithRetry performs the relay/1 connection handshake against the
+// co-located app peer, retrying a transport failure (e.g. the feeder's
+// listener not up yet, or its handshake routes mid-registration) until
+// enrollRetryBudget elapses — mirroring enrollWithRetry's tolerance of the
+// dev harness starting both binaries with no ordering. A typed *hello.RefusedError
+// (a channel-binding or protocol-version refusal) is decisive and returned
+// immediately, never retried: the app peer answered and declined.
+func helloWithRetry(cfg config, relayIdent identity.RelayIdentity) (hello.SiteBinding, error) {
+	decl := hello.Declaration{
+		ProtocolVersion: "1.0",
+		Features:        []string{"telemetry.latest_only_v1"},
+		SiteBinding:     hello.SiteBinding{}, // no cached site pre-pull; the relay adopts the app peer's authoritative copy
+		SubnetMetadata:  hello.SubnetMetadata{AdvertisedAddress: cfg.listen},
+		ClockState:      hello.ClockState{State: "untrusted", Source: "none"},
+	}
+
+	deadline := time.Now().Add(enrollRetryBudget)
+	var lastErr error
+	for {
+		ack, err := hello.PerformHello(cfg.feederURL, relayIdent.PrivateKey, relayIdent.RelayID, decl)
+		if err == nil {
+			log.Printf("waiveo-relay hello negotiated version %s; site %s", ack.Body.NegotiatedVersion, ack.Body.SiteBinding.TZ)
+			return ack.Body.SiteBinding, nil
+		}
+		var refused *hello.RefusedError
+		if errors.As(err, &refused) {
+			return hello.SiteBinding{}, err // decisive refusal, not a transport hiccup
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			return hello.SiteBinding{}, lastErr
+		}
+		time.Sleep(enrollRetryInterval)
+	}
 }
 
 // loopbackController is the Wave-1 stand-in DeviceController: it accepts every

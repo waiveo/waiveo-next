@@ -182,6 +182,18 @@ func (h *Host) ApplyEdgeRules(edgeRules []json.RawMessage, generation int) error
 // binary logs it as "automation engine loaded: N edge rule(s)".
 func (h *Host) EdgeRuleCount() int { return h.loadedEdge }
 
+// SetLocation adopts the site this relay is bound to — its effective timezone
+// and coordinates — into the running engine (relay/1 REL-036 → rules/1
+// engine.SetLocation), so the edge engine's time-based and sun-based triggers
+// and conditions (RUL-060/061/340) evaluate against the site's real placement
+// rather than a default. The relay learns these authoritative values from the
+// app peer's hello-ack (internal/relay/hello) and feeds them here. It returns
+// the loader's error for an unknown IANA zone name, leaving the prior location
+// unchanged.
+func (h *Host) SetLocation(tzName string, lat, lon float64) error {
+	return h.engine.SetLocation(tzName, lat, lon)
+}
+
 // Engine exposes the loaded engine so a device-state source (Observe/Run) can
 // feed it observations. It is the seam the synthetic source drives in tests/demo
 // and the real polling/ECP source will feed on hardware.

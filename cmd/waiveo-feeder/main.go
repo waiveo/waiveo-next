@@ -24,9 +24,29 @@ import (
 	"github.com/maaxton/waiveo-next/internal/feeder/origin"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
+	"github.com/maaxton/waiveo-next/internal/relay/hello"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
+
+// firstPhotonSite is the app peer's authoritative site_binding for Wave-1
+// first-photon (relay/1 REL-036): the site a relay is bound to, and that
+// site's effective timezone and coordinates, reported as canonical in every
+// hello-ack so the relay adopts it into its edge engine's schedule/sun
+// evaluation. A real IANA zone, so a relay can feed it straight into
+// rules/1's engine.SetLocation. The persisted per-site record this stands in
+// for lands with the data-model site source in a later wave.
+var firstPhotonSite = hello.SiteBinding{
+	ScopeNode: "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5",
+	TZ:        "America/Chicago",
+	Lat:       41.8781,
+	Long:      -87.6298,
+}
+
+// firstPhotonRecognizedFeatures are the relay/1 capability flags this app peer
+// understands, for the hello-ack shared-feature subset (REL-035); a relay flag
+// outside this set is dropped from the subset silently, never a refusal.
+var firstPhotonRecognizedFeatures = []string{"telemetry.latest_only_v1"}
 
 // config is the feeder's deployment-time addressing. Defaults keep the Wave-1
 // loopback dev/CI behavior byte-identical; the on-box deployment overrides them
@@ -82,10 +102,25 @@ func main() {
 		log.Fatalf("waiveo-feeder: enrollment server: %v", err)
 	}
 
+	// The connection handshake's app-peer server (relay/1 REL-030–039): it
+	// issues the challenge nonce and answers a relay's hello, verifying the
+	// channel binding against the enrollment key the enroll server recorded
+	// (REL-032, RelayEnrollmentKey), negotiating the version (REL-033/034,
+	// N−1 via AppPeerImplementedMinors), and returning this feeder's
+	// authoritative site_binding (REL-036).
+	helloSrv := hello.NewAppPeerServer(
+		enrollSrv.RelayEnrollmentKey,
+		firstPhotonSite,
+		hello.AppPeerImplementedMinors(1, 1),
+		firstPhotonRecognizedFeatures,
+		nil,
+	)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthz)
 	mux.Handle("/content/", contentStore.Handler())
 	enrollSrv.Register(mux)
+	helloSrv.Register(mux)
 
 	cert, err := tls.X509KeyPair(id.TLSCertPEM(), id.TLSKeyPEM())
 	if err != nil {

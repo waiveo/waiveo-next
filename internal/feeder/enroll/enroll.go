@@ -53,9 +53,10 @@ type Server struct {
 	caCert *x509.Certificate
 	caKey  ed25519.PrivateKey
 
-	mu       sync.Mutex
-	pending  string          // the currently unredeemed claim token, or "" if none minted yet
-	redeemed map[string]bool // every token ever minted -> whether it has been redeemed
+	mu        sync.Mutex
+	pending   string                       // the currently unredeemed claim token, or "" if none minted yet
+	redeemed  map[string]bool              // every token ever minted -> whether it has been redeemed
+	relayKeys map[string]ed25519.PublicKey // relay_id -> the enrollment public key this feeder issued a cert over
 }
 
 // NewServer builds an enroll.Server that issues relay certificates under a
@@ -75,11 +76,12 @@ func NewServer(identity *signing.Identity, snapshot wire.StateSnapshotBody) (*Se
 	}
 
 	return &Server{
-		identity: identity,
-		snapshot: snapshot,
-		caCert:   caCert,
-		caKey:    caKey,
-		redeemed: map[string]bool{},
+		identity:  identity,
+		snapshot:  snapshot,
+		caCert:    caCert,
+		caKey:     caKey,
+		redeemed:  map[string]bool{},
+		relayKeys: map[string]ed25519.PublicKey{},
 	}, nil
 }
 
@@ -192,6 +194,18 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Record the relay's enrollment public key against its relay_id — the
+	// connection handshake's channel-binding verification (REL-032, via
+	// internal/relay/hello) looks it up here to check hello's signature over
+	// the challenge nonce. csr.PublicKey is an ed25519 key for every CSR this
+	// deployment's relay client (internal/relay/enroll) generates; a non-ed25519
+	// CSR simply records nothing and a later hello for it fails to bind.
+	if pub, ok := csr.PublicKey.(ed25519.PublicKey); ok {
+		s.mu.Lock()
+		s.relayKeys[relayID] = pub
+		s.mu.Unlock()
+	}
+
 	writeJSON(w, http.StatusOK, enrollResponse{
 		RelayID:                     relayID,
 		Cert:                        string(certPEM),
@@ -225,6 +239,20 @@ func (s *Server) redeemToken(token string) bool {
 		s.pending = ""
 	}
 	return true
+}
+
+// RelayEnrollmentKey returns the enrollment public key this feeder recorded
+// for relayID when it issued that relay's certificate (REL-012), and whether
+// one is on record. It is the RelayKeyLookup the connection handshake's
+// app-peer server (internal/relay/hello) verifies a hello's
+// channel_binding_signature against (REL-032) — never a key derived from the
+// hello itself. A relay this feeder process never enrolled returns ok=false,
+// which the handshake treats as an unverifiable binding and refuses.
+func (s *Server) RelayEnrollmentKey(relayID string) (ed25519.PublicKey, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pub, ok := s.relayKeys[relayID]
+	return pub, ok
 }
 
 // handleStatePull implements relay/1's desired-state pull (REL-051),
