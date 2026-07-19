@@ -87,6 +87,13 @@ var (
 // by an already-hash-and-signature-verified snapshot, a caller holding an
 // Applied value can trust its PairingGrants exactly as much as it trusts
 // the rest of the struct — no separate verification step applies here.
+// EdgeRules carries the verified snapshot's sections.edge_rules.rules
+// (REL-062) unmodified — the raw rules/1 authored-rule JSON objects the
+// feeder signed, which internal/relay/automationhost compiles + loads into
+// the edge engine (Task 2). Because this whole struct is only ever produced
+// by an already-hash-and-signature-verified snapshot, EdgeRules rides the
+// SAME trust as everything else here — there is no separate verification
+// step for it, exactly as REL-062's signed-section discipline requires.
 type Applied struct {
 	Generation      int64
 	ScreenID        string
@@ -95,6 +102,7 @@ type Applied struct {
 	Display         string
 	Image           wire.ContentRef
 	PairingGrants   []wire.PairingGrant
+	EdgeRules       []json.RawMessage
 }
 
 // Pull fetches the feeder's signed desired-state snapshot from
@@ -253,5 +261,6 @@ func extractApplied(generation int64, sections wire.Sections) (Applied, error) {
 		Display:         prog.Display,
 		Image:           prog.Content[0],
 		PairingGrants:   sections.PairingGrants,
+		EdgeRules:       sections.EdgeRules.Rules,
 	}, nil
 }

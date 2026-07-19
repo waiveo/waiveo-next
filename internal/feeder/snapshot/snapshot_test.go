@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
+	"github.com/maaxton/waiveo-next/internal/rules/compile"
 	"github.com/maaxton/waiveo-next/internal/shared/signhash"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
@@ -112,6 +113,85 @@ func TestBuildShape(t *testing.T) {
 		if _, ok := sections[k]; !ok {
 			t.Errorf("sections JSON missing REL-060 key %q; got %s", k, body["sections"])
 		}
+	}
+}
+
+// TestBuildEmitsDemoEdgeRule asserts Build populates the `edge_rules`
+// section (REL-062) with the Wave-1 first-automation demo rule: a
+// `rules_minor_version` naming the rules/1 minor ("1.0") and exactly one
+// authored rule that compiles to a genuine EDGE-class rule (a state
+// trigger to:["on"] driving a device_command launch). The rule rides the
+// same `sections` value everything else does, so it is covered by `hash`
+// (REL-053) and transitively by `signature` (REL-075) — asserted here by
+// recomputing the hash and verifying the signature with the section present.
+func TestBuildEmitsDemoEdgeRule(t *testing.T) {
+	img := loadTestImage(t)
+	id := testIdentity(t)
+
+	snap, err := Build(img, "https://origin.example", id, nil)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	er := snap.Sections.EdgeRules
+	if er.RulesMinorVersion != "1.0" {
+		t.Errorf("EdgeRules.RulesMinorVersion = %q, want %q (REL-062)", er.RulesMinorVersion, "1.0")
+	}
+	if len(er.Rules) != 1 {
+		t.Fatalf("len(EdgeRules.Rules) = %d, want exactly 1 demo rule", len(er.Rules))
+	}
+
+	// The demo rule must be a REAL edge rule the relay's compiler accepts and
+	// classifies edge (not app) — otherwise Task 2 could not load it into the
+	// edge engine.
+	entry, cerr := compile.Compile(er.Rules[0])
+	if cerr != nil {
+		t.Fatalf("demo edge rule did not compile: %v", cerr)
+	}
+	if entry.ExecutionClass != "edge" {
+		t.Fatalf("demo rule ExecutionClass = %q, want edge", entry.ExecutionClass)
+	}
+
+	// It must carry a state trigger and a device_command launch action
+	// (the Wave-1 first automation).
+	var authored struct {
+		Triggers []struct {
+			Type string `json:"type"`
+			To   []any  `json:"to"`
+		} `json:"triggers"`
+		Actions []struct {
+			Type    string `json:"type"`
+			Command string `json:"command"`
+		} `json:"actions"`
+	}
+	if err := json.Unmarshal(er.Rules[0], &authored); err != nil {
+		t.Fatalf("unmarshal demo rule: %v", err)
+	}
+	if len(authored.Triggers) != 1 || authored.Triggers[0].Type != "state" {
+		t.Errorf("demo rule triggers = %+v, want a single state trigger", authored.Triggers)
+	}
+	if len(authored.Actions) != 1 || authored.Actions[0].Type != "device_command" || authored.Actions[0].Command != "launch" {
+		t.Errorf("demo rule actions = %+v, want a single device_command launch", authored.Actions)
+	}
+
+	// Section rides hash + signature exactly like every other section.
+	recomputed, err := hashSections(snap.Sections)
+	if err != nil {
+		t.Fatalf("hashSections: %v", err)
+	}
+	if recomputed != snap.Hash {
+		t.Errorf("recomputed hash %q != snapshot hash %q — edge_rules must be covered by hash (REL-053)", recomputed, snap.Hash)
+	}
+	canon, err := generationHashCanonBytes(snap.Generation, snap.Hash)
+	if err != nil {
+		t.Fatalf("generationHashCanonBytes: %v", err)
+	}
+	sigBytes, err := wire.DecodeSignature(snap.Signature)
+	if err != nil {
+		t.Fatalf("wire.DecodeSignature: %v", err)
+	}
+	if !signhash.Verify(id.SigningPub(), canon, sigBytes) {
+		t.Error("signature did not verify with a populated edge_rules section (REL-075)")
 	}
 }
 

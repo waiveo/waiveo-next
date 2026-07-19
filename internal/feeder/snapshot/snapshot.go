@@ -56,12 +56,44 @@ const (
 	firstPhotonExpiresAt       = 0 // no TTL policy defined yet this wave
 )
 
+// Wave-1 first-automation edge_rules placeholders (REL-062). The feeder
+// emits one hard-coded demo edge rule ahead of any real
+// automation-authoring surface: "when the screen entity turns on, launch
+// the dev channel on it" — a state trigger (to:["on"]) driving a
+// device_command launch, which the rules/1 compiler classifies edge-class.
+// The entity/rule IDs are the same fixture ULIDs the internal/relay/
+// automation end-to-end proof uses, so the relay can resolve the trigger's
+// entity to a media-player device via the fixture registry.
+//
+// rulesMinorVersion names the rules/1 minor this rule was authored against
+// (contracts/rules-1.md is Version 1.0), carried in the section's
+// rules_minor_version per REL-062.
+const (
+	demoRuleEntityID  = "01J8Z3K4N5P6Q7R8S9T0V1SCRN"
+	demoRuleID        = "01J8Z3K4N5P6Q7R8S9T0V1AUTO"
+	rulesMinorVersion = "1.0"
+)
+
+// demoEdgeRuleJSON is the single authored rules/1 rule the Wave-1 feeder
+// signs into every generation's edge_rules section (REL-062). It is carried
+// opaquely to the relay, which compiles + loads it (Task 2). Kept as a
+// package var (not a const) so it can be marshaled to json.RawMessage once
+// at Build time.
+var demoEdgeRuleJSON = json.RawMessage(`{"id":"` + demoRuleID + `","mode":"single","triggers":[{"type":"state","entity_id":"` + demoRuleEntityID + `","to":["on"]}],"conditions":[],"actions":[{"type":"device_command","entity_id":"` + demoRuleEntityID + `","command":"launch","params":{"channel":"dev"}}]}`)
+
 // Build builds and signs generation 1 of a relay/1 desired-state
 // snapshot carrying exactly one screen-program that shows img: one
 // `content` item whose `asset_ref` is img's sha256 content ID
 // (signhash.ContentID) and whose `url` resolves to the content origin's
 // `/content/<hex>` route under contentBaseURL. It signs with id's
 // signing private key.
+//
+// The `sections.edge_rules` section (REL-062) carries the Wave-1
+// first-automation demo rule (demoEdgeRuleJSON) under rules_minor_version
+// "1.0" — one edge rule the relay compiles + loads into its edge engine
+// (internal/relay/automationhost, Task 2). Like every other section it is
+// included ahead of hashing/signing, so a tampered edge_rules section is
+// caught by the same hash/signature check as any other.
 //
 // grants populates `sections.pairing_grants` (REL-067) — typically the
 // single grant.Mint() record a later Task 6 rides to the relay. A nil
@@ -99,8 +131,8 @@ func Build(img []byte, contentBaseURL string, id *signing.Identity, grants []wir
 			},
 		},
 		EdgeRules: wire.EdgeRules{
-			RulesMinorVersion: "",
-			Rules:             []json.RawMessage{},
+			RulesMinorVersion: rulesMinorVersion,
+			Rules:             []json.RawMessage{demoEdgeRuleJSON},
 		},
 		DeviceInventory: wire.DeviceInventory{
 			Devices:           []json.RawMessage{},

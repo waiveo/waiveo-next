@@ -1,6 +1,7 @@
 package desiredstate
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -135,6 +136,96 @@ func TestPullAppliesScreenProgram(t *testing.T) {
 	}
 	if gen != 1 || hash != snap.Hash {
 		t.Errorf("LastAppliedGeneration = (%d, %q), want (1, %q)", gen, hash, snap.Hash)
+	}
+}
+
+// TestPullExposesEdgeRules asserts a verified snapshot's edge_rules section
+// (REL-062) is surfaced on Applied.EdgeRules unmodified — the raw rules/1
+// authored-rule JSON the feeder signed, which Task 2's automationhost
+// compiles + loads into the edge engine. It rides the SAME hash/signature
+// verification as the screen-program: no separate trust step applies to it.
+func TestPullExposesEdgeRules(t *testing.T) {
+	img := loadTestImage(t)
+	id := testFeederIdentity(t)
+
+	snap, err := snapshot.Build(img, "https://origin.example", id, nil)
+	if err != nil {
+		t.Fatalf("snapshot.Build: %v", err)
+	}
+	if len(snap.Sections.EdgeRules.Rules) == 0 {
+		t.Fatal("precondition: snapshot.Build emitted no edge rules")
+	}
+
+	ts := newTestFeeder(t, id, snap)
+	store := enrolledStore(t, ts)
+
+	applied, err := Pull(ts.URL, store)
+	if err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+
+	if !reflect.DeepEqual(applied.EdgeRules, []json.RawMessage(snap.Sections.EdgeRules.Rules)) {
+		t.Errorf("applied.EdgeRules = %s, want %s (the verified snapshot's edge_rules, unmodified)",
+			applied.EdgeRules, snap.Sections.EdgeRules.Rules)
+	}
+}
+
+// TestPullRejectsWrongKeyEdgeRulesSnapshot is the signed-section-discipline
+// test (REL-062/056): a snapshot whose edge_rules section was tampered and
+// then re-signed under a key OTHER than the enrollment-learned trust anchor
+// MUST be rejected by the SAME signature check that rejects a wrong-key
+// screen-program — there is NO second trust path for edge_rules. Nothing is
+// applied and last-applied is left untouched.
+func TestPullRejectsWrongKeyEdgeRulesSnapshot(t *testing.T) {
+	img := loadTestImage(t)
+	id := testFeederIdentity(t)
+
+	snap, err := snapshot.Build(img, "https://origin.example", id, nil)
+	if err != nil {
+		t.Fatalf("snapshot.Build: %v", err)
+	}
+	if len(snap.Sections.EdgeRules.Rules) == 0 {
+		t.Fatal("precondition: snapshot.Build emitted no edge rules to tamper with")
+	}
+
+	// Tamper the edge_rules section (swap in an attacker-authored rule), then
+	// re-hash and re-sign the whole snapshot under a fresh, unrelated key —
+	// hash stays internally consistent, only `signature` now verifies under a
+	// key the relay never learned at enrollment.
+	tampered := snap
+	tampered.Sections.EdgeRules = wire.EdgeRules{
+		RulesMinorVersion: "1.0",
+		Rules:             []json.RawMessage{json.RawMessage(`{"id":"attacker","mode":"single","triggers":[],"conditions":[],"actions":[]}`)},
+	}
+	rehash, err := wire.HashSections(tampered.Sections)
+	if err != nil {
+		t.Fatalf("wire.HashSections: %v", err)
+	}
+	tampered.Hash = rehash
+	_, attackerPriv := signhash.GenerateKey()
+	canon, err := wire.SignedScopeBytes(tampered.Generation, tampered.Hash)
+	if err != nil {
+		t.Fatalf("wire.SignedScopeBytes: %v", err)
+	}
+	tampered.Signature = wire.EncodeSignature(signhash.Sign(attackerPriv, canon))
+
+	ts := newTestFeeder(t, id, tampered)
+	store := enrolledStore(t, ts)
+
+	applied, err := Pull(ts.URL, store)
+	if !errors.Is(err, ErrSnapshotSignatureInvalid) {
+		t.Fatalf("Pull error = %v, want ErrSnapshotSignatureInvalid (edge_rules rides the same trust path)", err)
+	}
+	if !reflect.DeepEqual(applied, Applied{}) {
+		t.Errorf("Pull returned a non-zero Applied on rejection: %+v", applied)
+	}
+
+	_, _, ok, err := store.LastAppliedGeneration()
+	if err != nil {
+		t.Fatalf("LastAppliedGeneration: %v", err)
+	}
+	if ok {
+		t.Error("LastAppliedGeneration ok = true after a wrong-key edge_rules rejection, want false (nothing applied)")
 	}
 }
 
