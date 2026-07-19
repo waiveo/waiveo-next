@@ -21,6 +21,8 @@
 package main
 
 import (
+	"context"
+	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
@@ -34,15 +36,20 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/maaxton/waiveo-next/internal/datamodel"
+	"github.com/maaxton/waiveo-next/internal/relay/automation"
 	"github.com/maaxton/waiveo-next/internal/relay/automationhost"
 	"github.com/maaxton/waiveo-next/internal/relay/clocktrust"
+	"github.com/maaxton/waiveo-next/internal/relay/deviceplane"
 	"github.com/maaxton/waiveo-next/internal/relay/desiredstate"
 	"github.com/maaxton/waiveo-next/internal/relay/enroll"
 	"github.com/maaxton/waiveo-next/internal/relay/hello"
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
 	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
+	"github.com/maaxton/waiveo-next/internal/relay/schedulehost"
 	"github.com/maaxton/waiveo-next/internal/rules/registry"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
+	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
 // config is the relay's deployment-time addressing. Defaults keep the Wave-1
@@ -237,6 +244,24 @@ func main() {
 	}
 	pairingSrv.SetServedProgram(served[0], relayID.PrivateKey)
 
+	// Boot the schedule resolver (internal/relay/schedulehost, REL-065/DAT-113-118)
+	// from the SAME verified Applied value bootAutomationStack read above: it
+	// parses applied.Schedule into a data-model/1 RowStore and, for every screen
+	// the carried schedule GOVERNS, resolves + serves that screen's Lease over
+	// pairingSrv, replacing the app-authored screen_programs baseline
+	// SetServedProgram just configured. A screen the schedule does not govern
+	// (no carried scope node, or no applicable schedule) is left exactly as
+	// SetServedProgram configured it — the additive serving policy. The device
+	// plane's command surface mirrors bootAutomationStack's own construction
+	// (same loopback controller, fixture registry vocabulary, and entity
+	// resolver) so a fired preset batch dispatches through the identical
+	// resolve -> serialize -> dispatch path (REL-113/114/115) an edge rule does.
+	scheduleSink := automation.NewCommandSink(
+		deviceplane.NewCommandSurface(loopbackController{}, registry.FixtureRegistry{}, loopbackResolver),
+		relayID.RelayID,
+	)
+	bootScheduleResolver(applied, pairingSrv, scheduleSink, site, relayID.PrivateKey)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthz)
 	pairingSrv.Register(mux)
@@ -402,6 +427,107 @@ func bootAutomationStack(store *identity.Store, relayID identity.RelayIdentity, 
 	}
 	log.Printf("waiveo-relay automation engine loaded: %d edge rule(s); device plane + durable telemetry ready", host.EdgeRuleCount())
 	return host, nil
+}
+
+// scheduleResolverTickInterval is the cadence the running relay re-resolves
+// each governed screen's effective state at (internal/relay/schedulehost's
+// Loop), catching daypart boundaries (DAT-119: a daypart is a holding STATE,
+// re-resolved every tick, never a one-shot event). It is comfortably tighter
+// than a daypart's own minute-granularity boundaries while staying well
+// clear of a busy-loop, matching the coarse cadence player/1's own program
+// poll already runs at.
+const scheduleResolverTickInterval = 30 * time.Second
+
+// bootScheduleResolver builds the relay's schedule-resolution driver
+// (internal/relay/schedulehost, REL-065/DAT-113-118) from the SAME verified
+// Applied value bootAutomationStack read, using the real wall clock for the
+// one-time boot resolve. It is a thin wrapper over bootScheduleResolverAt —
+// which takes nowMs explicitly — so a test can drive a deterministic instant
+// without any wall-clock dependency.
+func bootScheduleResolver(applied desiredstate.Applied, srv *playerserver.Server, sink *automation.CommandSink, site hello.SiteBinding, signingKey ed25519.PrivateKey) []*schedulehost.Resolver {
+	return bootScheduleResolverAt(applied, srv, sink, site, signingKey, time.Now().UnixMilli())
+}
+
+// bootScheduleResolverAt parses applied.Schedule into a data-model/1 RowStore
+// (schedulehost.BuildStore — degrade-safe: a parse/validation error is logged
+// but never fatal) and, for every carried scope node of kind "screen" the
+// schedule GOVERNS (schedulehost.Governs, the stated additive serving
+// policy), builds a schedulehost.Resolver serving it over srv: one Tick at
+// nowMs runs immediately (resolving + serving the current Lease and firing
+// any boot-time rising-edge preset through sink, DAT-075), and a background
+// ticker keeps re-resolving at scheduleResolverTickInterval so a later
+// daypart boundary is caught without a restart.
+//
+// A screen the schedule does not govern (no carried scope node for it, or no
+// applicable schedule) is left exactly as it was: the app-authored
+// screen_programs SetServedProgram already configured on srv stays served,
+// unchanged — this function builds no Resolver for it and calls SetProgram
+// for it not at all. The same holds, vacuously, when applied.Schedule carries
+// no scope nodes at all (today's first-photon empty-schedule state): the
+// returned slice is empty and every screen's serving is untouched.
+//
+// site is the app peer's authoritative site_binding (REL-036, the same value
+// bootAutomationStack adopts into the edge engine) — carried through only for
+// the boot log line's context; the resolved schedule's own effective tz comes
+// from the carried scope tree exclusively (datamodel.EffectiveTZ via
+// datamodel.Resolve), never from site or any box-local clock (DAT-034/118).
+func bootScheduleResolverAt(applied desiredstate.Applied, srv *playerserver.Server, sink *automation.CommandSink, site hello.SiteBinding, signingKey ed25519.PrivateKey, nowMs int64) []*schedulehost.Resolver {
+	store, errs := schedulehost.BuildStore(applied.Schedule)
+	for _, e := range errs {
+		log.Printf("waiveo-relay: schedule section: %s: %s: %s", e.Field, e.Code, e.Message)
+	}
+
+	var resolvers []*schedulehost.Resolver
+	for _, screenID := range scheduleScreenNodeIDs(applied.Schedule) {
+		if !schedulehost.Governs(store, screenID) {
+			continue
+		}
+
+		display, _, content, _, err := schedulehost.ProjectLease(store, screenID, nowMs)
+		if err != nil {
+			// An unresolvable effective tz (DAT-034) degrades to the app-authored
+			// program already served — never a box-local substitution.
+			log.Printf("waiveo-relay: schedule resolver: screen %s: resolve at boot: %v; serving app-authored program", screenID, err)
+			continue
+		}
+
+		r := schedulehost.NewResolver(store, screenID, srv, signingKey)
+		r.Tick(nowMs, sink) // the level-triggered STATE projection + any boot-time rising-edge preset (DAT-075/119).
+		resolvers = append(resolvers, r)
+
+		if display == "content" && len(content) > 0 {
+			log.Printf("SCHEDULE RESOLVER OK (screen %s: display:content, asset %s; site tz %s)", screenID, content[0].AssetRef, site.TZ)
+		} else {
+			log.Printf("SCHEDULE RESOLVER OK (screen %s: display:%s; site tz %s)", screenID, display, site.TZ)
+		}
+
+		ticker := time.NewTicker(scheduleResolverTickInterval)
+		go r.Loop(context.Background(), ticker.C, sink)
+	}
+
+	if len(resolvers) == 0 {
+		log.Printf("SCHEDULE RESOLVER OK (no governing schedule; serving app-authored program)")
+	}
+	return resolvers
+}
+
+// scheduleScreenNodeIDs returns the id of every carried scope node of kind
+// "screen" in sec — the candidate screens bootScheduleResolverAt checks
+// schedulehost.Governs against. A node that fails to unmarshal is skipped
+// (schedulehost.BuildStore already reports it as a ROW_MALFORMED error above)
+// rather than aborting the whole scan.
+func scheduleScreenNodeIDs(sec wire.ScheduleSection) []string {
+	var ids []string
+	for _, raw := range sec.ScopeNodes {
+		var n datamodel.ScopeNode
+		if err := json.Unmarshal(raw, &n); err != nil {
+			continue
+		}
+		if n.Kind == "screen" {
+			ids = append(ids, n.ID)
+		}
+	}
+	return ids
 }
 
 // helloWithRetry performs the relay/1 connection handshake against the
