@@ -9,11 +9,12 @@ import (
 )
 
 // TestOpenCreatesExactOperationalTableSet asserts the relay's operational
-// SQLite holds exactly the three tables relay/1 REL-142 scopes durable
-// local state to — enrollment identity, last-applied generation, and the
-// desired-state verification key — and nothing else. In particular, no
-// table here is capable of holding asset/media bytes (`#52` gateway
-// posture): the relay's own content is never cached in this store.
+// SQLite holds exactly the four tables relay/1 REL-142/REL-130 scope durable
+// local state to — enrollment identity, last-applied generation, the
+// desired-state verification key, and the persisted clock floor — and
+// nothing else. In particular, no table here is capable of holding
+// asset/media bytes (`#52` gateway posture): the relay's own content is
+// never cached in this store.
 func TestOpenCreatesExactOperationalTableSet(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "relay.db")
 
@@ -30,6 +31,7 @@ func TestOpenCreatesExactOperationalTableSet(t *testing.T) {
 	sort.Strings(tables)
 
 	want := []string{
+		"clock_floor",
 		"desired_state_verification_key",
 		"last_applied_generation",
 		"relay_identity",

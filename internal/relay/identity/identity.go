@@ -9,11 +9,12 @@
 //
 // This is deliberately a narrow, operational store — relay/1 REL-142 scopes
 // a relay's durable local state to exactly this identity/trust/progress
-// data (plus a bounded telemetry buffer this package does not yet hold) and
-// nothing else. In particular, `#52`'s gateway posture means the relay MUST
-// NOT cache asset/media bytes anywhere: the schema this package creates has
-// no table capable of holding them, and TestOpenCreatesExactOperationalTableSet
-// pins the table set to guard against one ever being added by accident.
+// data, its persisted clock floor (REL-130/132, below), and a bounded
+// telemetry buffer this package does not yet hold, and nothing else. In
+// particular, `#52`'s gateway posture means the relay MUST NOT cache
+// asset/media bytes anywhere: the schema this package creates has no table
+// capable of holding them, and TestOpenCreatesExactOperationalTableSet pins
+// the table set to guard against one ever being added by accident.
 //
 // Backed by modernc.org/sqlite — a pure-Go SQLite driver (no cgo), keeping
 // the relay binary's pure-Go, no-`.node` release-gate posture (Wave-0's
@@ -45,10 +46,11 @@ type Store struct {
 	db *sql.DB
 }
 
-// schema creates exactly the three operational tables REL-142 scopes a
-// relay's durable local state to. Each is a singleton (a single row keyed
+// schema creates exactly the four operational tables REL-142/REL-130 scope
+// a relay's durable local state to. Each is a singleton (a single row keyed
 // by the fixed id=1), since a relay holds exactly one identity, one
-// verification key, and one last-applied generation at a time.
+// verification key, one last-applied generation, and one clock floor at a
+// time.
 const schema = `
 CREATE TABLE IF NOT EXISTS relay_identity (
 	id               INTEGER PRIMARY KEY CHECK (id = 1),
@@ -64,6 +66,10 @@ CREATE TABLE IF NOT EXISTS last_applied_generation (
 	id          INTEGER PRIMARY KEY CHECK (id = 1),
 	generation  INTEGER NOT NULL,
 	hash        TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS clock_floor (
+	id          INTEGER PRIMARY KEY CHECK (id = 1),
+	floor_ms    INTEGER NOT NULL
 );
 `
 
@@ -305,6 +311,45 @@ func (s *Store) LastAppliedGeneration() (generation int64, hash string, ok bool,
 		return 0, "", false, fmt.Errorf("identity: LastAppliedGeneration: %w", err)
 	}
 	return generation, hash, true, nil
+}
+
+// SetClockFloor persists ms as the relay's clock floor (REL-130) — the
+// latest time value it has ever verified independently or previously
+// observed as current — but ONLY if ms is strictly greater than whatever
+// floor is currently persisted (or no floor has ever been persisted yet).
+// This enforces REL-130/132's "advance only, never regress" rule at the
+// store itself: an equal or lower value leaves the persisted floor
+// untouched and reports advanced=false. The caller remains responsible for
+// REL-132's independent-verification requirement (the store persists
+// whatever value it's given, refusing only a non-advancing one).
+func (s *Store) SetClockFloor(ms int64) (advanced bool, err error) {
+	res, err := s.db.Exec(
+		`INSERT INTO clock_floor (id, floor_ms) VALUES (1, ?)
+		 ON CONFLICT (id) DO UPDATE SET floor_ms = excluded.floor_ms WHERE excluded.floor_ms > clock_floor.floor_ms`,
+		ms,
+	)
+	if err != nil {
+		return false, fmt.Errorf("identity: SetClockFloor: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("identity: SetClockFloor: %w", err)
+	}
+	return n > 0, nil
+}
+
+// ClockFloor returns the persisted clock floor in milliseconds (REL-130),
+// and whether one has been persisted yet (SetClockFloor has never advanced
+// the floor returns ok=false, not an error).
+func (s *Store) ClockFloor() (ms int64, ok bool, err error) {
+	err = s.db.QueryRow(`SELECT floor_ms FROM clock_floor WHERE id = 1`).Scan(&ms)
+	if err == sql.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("identity: ClockFloor: %w", err)
+	}
+	return ms, true, nil
 }
 
 // marshalPrivateKey PKCS8/PEM-encodes priv, matching the encoding
