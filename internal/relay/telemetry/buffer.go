@@ -18,10 +18,11 @@ import (
 // by the entry producer (the engine / device plane) and the flusher (the
 // upstream Channel).
 type Buffer struct {
-	mu       sync.Mutex
-	capacity int
-	nextSeq  int64
-	entries  []Entry
+	mu          sync.Mutex
+	capacity    int
+	nextSeq     int64
+	entries     []Entry
+	lossMarkers []LossMarker
 }
 
 // NewBuffer returns a Buffer bounded to capacity durable-class entries
@@ -59,7 +60,85 @@ func (b *Buffer) Record(schema string, payload json.RawMessage, subject string, 
 	b.nextSeq++
 	e := Entry{Seq: b.nextSeq, Schema: schema, Payload: payload, Subject: subject}
 	b.entries = append(b.entries, e)
+	b.enforceCapacity()
 	return e
+}
+
+// enforceCapacity applies REL-096's bounded drop-oldest overflow policy: the
+// Buffer is bounded to capacity DURABLE-class entries (latest-only entries are
+// periodic snapshots, kept bounded per subject by supersession (REL-094), and
+// are never counted toward capacity nor evicted by overflow). While the durable
+// count exceeds capacity, the lowest-seq durable entry is evicted first
+// (drop-oldest) and accounted for in a loss marker; a latest-only entry is never
+// evicted here and never counted in a marker (REL-104). The caller holds b.mu.
+func (b *Buffer) enforceCapacity() {
+	for b.durableCount() > b.capacity {
+		idx := b.lowestDurableIndex()
+		if idx < 0 {
+			return // no durable entry to evict (should not happen while over capacity)
+		}
+		b.recordDrop(b.entries[idx])
+		b.removeAt(idx)
+	}
+}
+
+// durableCount returns how many buffered entries are durable-class (REL-093) —
+// the only entries capacity bounds (REL-096). The caller holds b.mu.
+func (b *Buffer) durableCount() int {
+	n := 0
+	for _, e := range b.entries {
+		if class, _ := ClassOf(e.Schema); class == Durable {
+			n++
+		}
+	}
+	return n
+}
+
+// lowestDurableIndex returns the index of the lowest-seq durable-class entry
+// (entries are held in ascending seq order, so it is the first durable one), or
+// -1 if none is buffered. The caller holds b.mu.
+func (b *Buffer) lowestDurableIndex() int {
+	for i, e := range b.entries {
+		if class, _ := ClassOf(e.Schema); class == Durable {
+			return i
+		}
+	}
+	return -1
+}
+
+// recordDrop accounts for one evicted durable-class entry in the buffer's loss
+// markers (REL-100/103): silent loss of a durable entry is forbidden, so each
+// eviction extends the current open marker (drops are monotonic in seq, so the
+// contiguous overflow run coalesces into one bounded-range marker whose range
+// may span gaps left by superseded latest-only entries) or opens the first one.
+// Reason is always buffer_exceeded (REL-101). The caller holds b.mu.
+func (b *Buffer) recordDrop(e Entry) {
+	if n := len(b.lossMarkers); n > 0 {
+		m := &b.lossMarkers[n-1]
+		if e.Seq < m.FromSeq {
+			m.FromSeq = e.Seq
+		}
+		if e.Seq > m.ToSeq {
+			m.ToSeq = e.Seq
+		}
+		m.DroppedCountsBySchema[e.Schema]++
+		return
+	}
+	b.lossMarkers = append(b.lossMarkers, LossMarker{
+		FromSeq:               e.Seq,
+		ToSeq:                 e.Seq,
+		DroppedCountsBySchema: map[string]int{e.Schema: 1},
+		Reason:                ReasonBufferExceeded,
+	})
+}
+
+// removeAt drops the entry at index i, preserving ascending seq order, and zeros
+// the freed tail slot so the evicted Entry (and its payload) is not retained by
+// the backing array. The caller holds b.mu.
+func (b *Buffer) removeAt(i int) {
+	copy(b.entries[i:], b.entries[i+1:])
+	b.entries[len(b.entries)-1] = Entry{}
+	b.entries = b.entries[:len(b.entries)-1]
 }
 
 // supersede drops any buffered entry of the given (latest-only) schema and
@@ -91,5 +170,31 @@ func (b *Buffer) Pending() []Entry {
 
 	out := make([]Entry, len(b.entries))
 	copy(out, b.entries)
+	return out
+}
+
+// PendingLossMarkers returns the buffer's not-yet-acknowledged loss markers
+// (REL-096/100), which ride the next telemetry.push alongside Pending entries so
+// no durable-class drop is ever silently lost (REL-103). Each returned marker is
+// a deep copy — including its DroppedCountsBySchema map — so the caller may
+// freely mutate it without affecting the buffer's internal accounting; the
+// result is a non-nil (possibly empty) slice.
+func (b *Buffer) PendingLossMarkers() []LossMarker {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	out := make([]LossMarker, len(b.lossMarkers))
+	for i, m := range b.lossMarkers {
+		counts := make(map[string]int, len(m.DroppedCountsBySchema))
+		for k, v := range m.DroppedCountsBySchema {
+			counts[k] = v
+		}
+		out[i] = LossMarker{
+			FromSeq:               m.FromSeq,
+			ToSeq:                 m.ToSeq,
+			DroppedCountsBySchema: counts,
+			Reason:                m.Reason,
+		}
+	}
 	return out
 }
