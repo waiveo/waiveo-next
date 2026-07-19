@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
+	"github.com/maaxton/waiveo-next/internal/relay/reenroll"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
@@ -43,6 +44,16 @@ import (
 // for. Wave-1 first-photon has no in-band renewal (REL-015) yet, so this
 // is generous rather than tuned.
 const relayCertValidity = 365 * 24 * time.Hour
+
+// reEnrollRateLimit / reEnrollRateWindowMs bound how often a single relay_id
+// may exercise the Expired-certificate re-enrollment path (REL-025), so it
+// cannot be used to force repeated identity churn. Generous relative to the
+// once-in-a-long-power-off legitimate use; the window is fixed and per
+// relay_id (internal/relay/reenroll.RateLimiter).
+const (
+	reEnrollRateLimit    = 20
+	reEnrollRateWindowMs = 60_000
+)
 
 // Server is the feeder's relay/1 enrollment + desired-state-pull server.
 // Safe for concurrent use (its claim-token bookkeeping is mutex-guarded).
@@ -53,11 +64,16 @@ type Server struct {
 	caCert *x509.Certificate
 	caKey  ed25519.PrivateKey
 
-	mu        sync.Mutex
-	pending   string                       // the currently unredeemed claim token, or "" if none minted yet
-	redeemed  map[string]bool              // every token ever minted -> whether it has been redeemed
-	relayKeys map[string]ed25519.PublicKey // relay_id -> the enrollment public key this feeder issued a cert over
-	issuances map[string][]issuance        // relay_id -> certs this feeder has issued, most-recently-issued first
+	// reLimiter bounds the Expired-certificate re-enrollment path per relay_id
+	// (REL-025). Not guarded by mu — it has its own internal lock.
+	reLimiter *reenroll.RateLimiter
+
+	mu            sync.Mutex
+	pending       string                       // the currently unredeemed claim token, or "" if none minted yet
+	redeemed      map[string]bool              // every token ever minted -> whether it has been redeemed
+	relayKeys     map[string]ed25519.PublicKey // relay_id -> the enrollment public key this feeder issued a cert over
+	issuances     map[string][]issuance        // relay_id -> certs this feeder has issued, most-recently-issued first
+	reOutstanding string                       // the currently-issued, not-yet-consumed re-enroll challenge nonce (REL-026)
 }
 
 // issuance is one certificate this feeder issued under a relay_id: its serial
@@ -94,6 +110,7 @@ func NewServer(identity *signing.Identity, snapshot wire.StateSnapshotBody) (*Se
 		snapshot:  snapshot,
 		caCert:    caCert,
 		caKey:     caKey,
+		reLimiter: reenroll.NewRateLimiter(reEnrollRateLimit, reEnrollRateWindowMs),
 		redeemed:  map[string]bool{},
 		relayKeys: map[string]ed25519.PublicKey{},
 		issuances: map[string][]issuance{},
@@ -108,6 +125,11 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/claim-token", s.handleClaimToken)
 	mux.HandleFunc("/enroll", s.handleEnroll)
 	mux.HandleFunc("/state/pull", s.handleStatePull)
+	// Expired-certificate re-enrollment bootstrap surface (REL-020/024/026):
+	// a challenge issuer and the pop-guarded renew handler, served over the
+	// same server-authenticated bootstrap TLS as the rest of enrollment.
+	mux.HandleFunc("/reenroll/challenge", s.handleReEnrollChallenge)
+	mux.HandleFunc("/reenroll/renew", s.handleReEnrollRenew)
 }
 
 // claimTokenResponse is this package's loopback claim-token endpoint
