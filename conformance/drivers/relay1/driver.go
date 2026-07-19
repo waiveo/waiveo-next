@@ -19,7 +19,10 @@
 // first-photon implements (REL-010 fresh enroll, REL-020/022/027
 // Expired-certificate re-enrollment, REL-030 hello/negotiate, REL-056
 // durable atomic generation-apply swap, REL-070 idempotent reapply, REL-071
-// wrong-peer-key rejection, REL-133 bounded clock.hint, REL-136/137
+// wrong-peer-key rejection, REL-090/094 telemetry buffer overflow /
+// latest-only heartbeat supersession against internal/relay/telemetry,
+// REL-110/112/113 device-candidate report + command resolve/dispatch
+// against internal/relay/deviceplane, REL-133 bounded clock.hint, REL-136/137
 // cold-boot skew-tolerant/deferred connect) and marks
 // every other relay-1 case PENDING with an explicit reason.
 package relay1
@@ -124,6 +127,9 @@ func Run(client RelayClient, feeder Feeder) report.Report {
 	driveREL056(&rep, cases)
 	driveREL070(&rep, client, feeder, cases)
 	driveREL071(&rep, client, feeder, cases)
+	driveREL090(&rep, cases)
+	driveREL094(&rep, cases)
+	driveREL110(&rep, cases)
 	driveREL133(&rep, cases)
 	driveREL136(&rep, client, feeder, cases)
 
@@ -135,9 +141,6 @@ func Run(client RelayClient, feeder Feeder) report.Report {
 		rep.Pending(id, contract, reason)
 	}
 	pend("REL-061", "preempt screen-program (priority/offline) is Phase-2 program-delivery semantics; first-photon applies a single static screen-program with no preemption.")
-	pend("REL-090", "telemetry overflow / loss-marker is the Phase-2 telemetry plane; first-photon has no telemetry ingest surface.")
-	pend("REL-094", "telemetry latest-only heartbeat supersession is the Phase-2 telemetry plane; not built in first-photon.")
-	pend("REL-110", "device-candidate + command is the Phase-3 device plane; first-photon carries an empty device_inventory and no command path.")
 
 	return rep
 }
