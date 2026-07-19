@@ -16,6 +16,12 @@ type Entry struct {
 	Schema  string          `json:"schema"`
 	Payload json.RawMessage `json:"payload"`
 	Subject string          `json:"-"`
+	// RecordedAt is the relay's record-time wall-clock reading (the atMs
+	// passed to Record), retained as durable retention/backoff bookkeeping
+	// (the recorded_at column of a durable-backed queue) — like Subject, it is
+	// a Buffer/store bookkeeping field only and never part of the
+	// {seq,schema,payload} wire shape REL-090 defines (`json:"-"`).
+	RecordedAt int64 `json:"-"`
 }
 
 // LossMarker is REL-100's loss-marker shape: exactly `{from_seq, to_seq,

@@ -178,6 +178,12 @@ func (b *Buffer) applyAck(ackThroughSeq int64, markersAcked []SeqRange) {
 	}
 	b.entries = kept
 
+	// Mirror the retention prune into the durable store (REL-092): the
+	// acknowledged backlog must not outlive its ack across a restart.
+	if b.store != nil {
+		b.noteStoreErr(b.store.PruneTelemetry(ackThroughSeq))
+	}
+
 	if len(markersAcked) == 0 {
 		return
 	}
@@ -196,4 +202,10 @@ func (b *Buffer) applyAck(ackThroughSeq int64, markersAcked []SeqRange) {
 		b.lossMarkers[i] = LossMarker{}
 	}
 	b.lossMarkers = keptM
+
+	// Persist the retired-marker set so an acknowledged loss marker (REL-092/102)
+	// does not resurface after a restart.
+	if b.store != nil {
+		b.noteStoreErr(b.store.SaveLossMarkers(b.lossMarkers))
+	}
 }

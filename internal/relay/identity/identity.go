@@ -10,11 +10,13 @@
 // This is deliberately a narrow, operational store — relay/1 REL-142 scopes
 // a relay's durable local state to exactly this identity/trust/progress
 // data, its persisted clock floor (REL-130/132, below), and a bounded
-// telemetry buffer this package does not yet hold, and nothing else. In
-// particular, `#52`'s gateway posture means the relay MUST NOT cache
-// asset/media bytes anywhere: the schema this package creates has no table
-// capable of holding them, and TestOpenCreatesExactOperationalTableSet pins
-// the table set to guard against one ever being added by accident.
+// telemetry buffer (the telemetry_queue + telemetry_loss_marker tables,
+// REL-090, see telemetrystore.go), and nothing else. In particular, `#52`'s
+// gateway posture means the relay MUST NOT cache asset/media bytes anywhere:
+// the schema this package creates has no table capable of holding them (the
+// telemetry_queue holds only small event bodies, never content), and
+// TestOpenCreatesExactOperationalTableSet pins the table set to guard against
+// one ever being added by accident.
 //
 // Backed by modernc.org/sqlite — a pure-Go SQLite driver (no cgo), keeping
 // the relay binary's pure-Go, no-`.node` release-gate posture (Wave-0's
@@ -46,11 +48,12 @@ type Store struct {
 	db *sql.DB
 }
 
-// schema creates exactly the four operational tables REL-142/REL-130 scope
-// a relay's durable local state to. Each is a singleton (a single row keyed
-// by the fixed id=1), since a relay holds exactly one identity, one
-// verification key, one last-applied generation, and one clock floor at a
-// time.
+// schema creates the four singleton operational tables REL-142/REL-130 scope
+// a relay's durable local state to (the bounded telemetry queue is created
+// separately by telemetrySchema, see telemetrystore.go). Each is a singleton
+// (a single row keyed by the fixed id=1), since a relay holds exactly one
+// identity, one verification key, one last-applied generation, and one clock
+// floor at a time.
 const schema = `
 CREATE TABLE IF NOT EXISTS relay_identity (
 	id               INTEGER PRIMARY KEY CHECK (id = 1),
@@ -123,6 +126,10 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("identity: create schema: %w", err)
+	}
+	if _, err := db.Exec(telemetrySchema); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("identity: create telemetry schema: %w", err)
 	}
 
 	return &Store{db: db}, nil

@@ -23,6 +23,13 @@ type Buffer struct {
 	nextSeq     int64
 	entries     []Entry
 	lossMarkers []LossMarker
+	// store, when non-nil (NewDurableBuffer), is the durable backing this
+	// Buffer mirrors durable-class entries and loss markers into so they
+	// survive a power-pull (REL-090). A nil store is a plain in-memory buffer.
+	store DurableStore
+	// storeErr holds the first durable write-through error since the last
+	// StoreErr() read (Record/overflow/ack-prune cannot return one directly).
+	storeErr error
 }
 
 // NewBuffer returns a Buffer bounded to capacity durable-class entries
@@ -48,8 +55,6 @@ func NewBuffer(capacity int) *Buffer {
 // entry is discarded (the newer one already reports everything it would have),
 // and — per REL-104 — the discard is NOT loss and produces no loss marker.
 func (b *Buffer) Record(schema string, payload json.RawMessage, subject string, atMs int64) Entry {
-	_ = atMs
-
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -58,10 +63,38 @@ func (b *Buffer) Record(schema string, payload json.RawMessage, subject string, 
 	}
 
 	b.nextSeq++
-	e := Entry{Seq: b.nextSeq, Schema: schema, Payload: payload, Subject: subject}
+	e := Entry{Seq: b.nextSeq, Schema: schema, Payload: payload, Subject: subject, RecordedAt: atMs}
 	b.entries = append(b.entries, e)
-	b.enforceCapacity()
+	evicted := b.enforceCapacity()
+	b.persistRecord(e, evicted)
 	return e
+}
+
+// persistRecord mirrors one Record into the durable store (REL-090): the new
+// durable-class entry is appended (a latest-only entry is skipped by the
+// store's own class gate), and any overflow-evicted lowest-seq durable entries
+// (REL-096) are pruned from the store by their highest evicted seq — drop-oldest
+// removes a contiguous run of the lowest durable seqs, so every remaining
+// durable entry sits above that cursor — with the updated loss-marker set
+// written through so the drop is durably accounted for (REL-103). Write-through
+// errors are surfaced via StoreErr, never silently swallowed. The caller holds
+// b.mu; a nil store makes this a no-op (plain in-memory buffer).
+func (b *Buffer) persistRecord(e Entry, evicted []Entry) {
+	if b.store == nil {
+		return
+	}
+	b.noteStoreErr(b.store.AppendTelemetry(e))
+	if len(evicted) == 0 {
+		return
+	}
+	var maxEvicted int64
+	for _, ev := range evicted {
+		if ev.Seq > maxEvicted {
+			maxEvicted = ev.Seq
+		}
+	}
+	b.noteStoreErr(b.store.PruneTelemetry(maxEvicted))
+	b.noteStoreErr(b.store.SaveLossMarkers(b.lossMarkers))
 }
 
 // enforceCapacity applies REL-096's bounded drop-oldest overflow policy: the
@@ -71,15 +104,19 @@ func (b *Buffer) Record(schema string, payload json.RawMessage, subject string, 
 // count exceeds capacity, the lowest-seq durable entry is evicted first
 // (drop-oldest) and accounted for in a loss marker; a latest-only entry is never
 // evicted here and never counted in a marker (REL-104). The caller holds b.mu.
-func (b *Buffer) enforceCapacity() {
+func (b *Buffer) enforceCapacity() []Entry {
+	var evicted []Entry
 	for b.durableCount() > b.capacity {
 		idx := b.lowestDurableIndex()
 		if idx < 0 {
-			return // no durable entry to evict (should not happen while over capacity)
+			break // no durable entry to evict (should not happen while over capacity)
 		}
-		b.recordDrop(b.entries[idx])
+		e := b.entries[idx]
+		b.recordDrop(e)
+		evicted = append(evicted, e)
 		b.removeAt(idx)
 	}
+	return evicted
 }
 
 // durableCount returns how many buffered entries are durable-class (REL-093) —
