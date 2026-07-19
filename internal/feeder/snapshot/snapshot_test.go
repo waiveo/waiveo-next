@@ -115,9 +115,11 @@ func TestBuildShape(t *testing.T) {
 		}
 	}
 
-	// The schedule section (REL-065) is emitted empty-but-typed this task: an
-	// object carrying exactly the seven scheduling-core row arrays, each `[]`
-	// (present, non-null — REL-060), never `{}` and never null.
+	// The schedule section (REL-065) now carries the real two-daypart demo
+	// schedule (Task 2): exactly the seven scheduling-core row arrays are
+	// present, none ever `null` (REL-060). scope_nodes/playlists/schedules/
+	// dayparts/preset_batches are populated by the demo schedule;
+	// validity_windows/fallbacks are unused by the demo and stay `[]`.
 	var sched map[string]json.RawMessage
 	if err := json.Unmarshal(sections["schedule"], &sched); err != nil {
 		t.Fatalf("Unmarshal schedule section: %v; got %s", err, sections["schedule"])
@@ -134,9 +136,16 @@ func TestBuildShape(t *testing.T) {
 	if len(sched) != len(schedKeys) {
 		t.Errorf("schedule section marshaled to %d keys, want exactly %d (%v); got %s", len(sched), len(schedKeys), schedKeys, sections["schedule"])
 	}
-	for _, k := range schedKeys {
+	emptyKeys := []string{"validity_windows", "fallbacks"}
+	for _, k := range emptyKeys {
 		if string(sched[k]) != "[]" {
 			t.Errorf("schedule.%s = %s, want [] (empty array, never null — REL-060/065)", k, sched[k])
+		}
+	}
+	populatedKeys := []string{"scope_nodes", "playlists", "schedules", "dayparts", "preset_batches"}
+	for _, k := range populatedKeys {
+		if string(sched[k]) == "[]" || string(sched[k]) == "null" {
+			t.Errorf("schedule.%s = %s, want a populated array (the Task 2 demo schedule rows)", k, sched[k])
 		}
 	}
 }

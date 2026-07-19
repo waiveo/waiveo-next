@@ -127,6 +127,11 @@ func Build(img []byte, contentBaseURL string, id *signing.Identity, grants []wir
 	assetRef := signhash.ContentID(img)
 	hexDigest := strings.TrimPrefix(assetRef, "sha256:")
 
+	scheduleSection, err := buildDemoScheduleSection(assetRef)
+	if err != nil {
+		return SignedSnapshot{}, fmt.Errorf("snapshot: Build: demo schedule: %w", err)
+	}
+
 	sections := wire.Sections{
 		ScreenPrograms: []wire.ScreenProgram{
 			{
@@ -151,12 +156,14 @@ func Build(img []byte, contentBaseURL string, id *signing.Identity, grants []wir
 			Devices:           []json.RawMessage{},
 			PackMatchPatterns: []json.RawMessage{},
 		},
-		// The schedule section (REL-065) is emitted empty-but-typed this
-		// wave: all seven scheduling-core row arrays present and non-null
-		// (REL-060), no rows yet. Normalized() guarantees each marshals as
-		// `[]`, riding the same hash/signature as every other section; a later
-		// task authors real daypart rows here for the relay to resolve.
-		Schedule: wire.ScheduleSection{}.Normalized(),
+		// The schedule section (REL-065) carries the Wave-2 demo schedule
+		// (buildDemoScheduleSection): a two-daypart schedule on the
+		// first-photon screen's scope node the relay resolves per-instant
+		// (internal/relay/schedulehost, a later task) into a time-varying
+		// display:content/display:blank Lease. All seven scheduling-core row
+		// arrays are present and non-null (REL-060) — Normalized() guarantees
+		// each unused array (validity_windows, fallbacks) marshals as `[]`.
+		Schedule: scheduleSection,
 		RevocationAndSite: wire.RevocationAndSite{
 			Revoked:       []string{},
 			SiteEffective: firstPhotonSiteEffective,

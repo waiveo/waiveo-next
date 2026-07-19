@@ -489,23 +489,22 @@ func TestPullExposesSchedule(t *testing.T) {
 		t.Fatalf("snapshot.Build: %v", err)
 	}
 
-	// snapshot.Build emits an empty-but-typed schedule: all seven arrays
-	// present and non-nil (REL-060/065).
-	empty := snap.Sections.Schedule
+	// snapshot.Build now emits its own real (Wave-2 demo) schedule: all
+	// seven arrays present and non-nil (REL-060/065). This test overwrites
+	// the section with its own fixture rows below, so only presence is
+	// asserted here — not emptiness (Task 2 authors a real demo schedule).
+	built := snap.Sections.Schedule
 	for name, arr := range map[string][]json.RawMessage{
-		"scope_nodes":      empty.ScopeNodes,
-		"playlists":        empty.Playlists,
-		"schedules":        empty.Schedules,
-		"validity_windows": empty.ValidityWindows,
-		"dayparts":         empty.Dayparts,
-		"fallbacks":        empty.Fallbacks,
-		"preset_batches":   empty.PresetBatches,
+		"scope_nodes":      built.ScopeNodes,
+		"playlists":        built.Playlists,
+		"schedules":        built.Schedules,
+		"validity_windows": built.ValidityWindows,
+		"dayparts":         built.Dayparts,
+		"fallbacks":        built.Fallbacks,
+		"preset_batches":   built.PresetBatches,
 	} {
 		if arr == nil {
-			t.Errorf("snapshot.Build emitted a nil schedule.%s, want a present empty slice (REL-060/065)", name)
-		}
-		if len(arr) != 0 {
-			t.Errorf("snapshot.Build emitted a non-empty schedule.%s = %v, want empty this task", name, arr)
+			t.Errorf("snapshot.Build emitted a nil schedule.%s, want a present (possibly empty) slice (REL-060/065)", name)
 		}
 	}
 
