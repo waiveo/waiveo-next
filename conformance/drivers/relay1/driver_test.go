@@ -26,6 +26,7 @@ var expectedDriven = []string{
 	"REL-022-invalid-re-enroll-superseded-cert",
 	"REL-027-invalid-re-enroll-pop-signature-invalid",
 	"REL-030-valid-hello-negotiate-channel-binding",
+	"REL-056-valid-generation-apply-atomic-swap",
 	"REL-070-valid-generation-reapply-idempotent-noop",
 	"REL-071-invalid-wrong-peer-key-snapshot-rejected",
 	"REL-133-valid-clock-hint-bounded",
@@ -33,7 +34,6 @@ var expectedDriven = []string{
 }
 
 var expectedPending = []string{
-	"REL-056-valid-generation-apply-atomic-swap",
 	"REL-061-valid-preempt-priority-screen-program-offline",
 	"REL-090-valid-telemetry-overflow-loss-marker",
 	"REL-094-valid-telemetry-latest-only-heartbeat-superseded",

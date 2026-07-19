@@ -17,9 +17,10 @@
 //
 // Applicability triage (§10 "no silent caps"): Run DRIVES the cases
 // first-photon implements (REL-010 fresh enroll, REL-020/022/027
-// Expired-certificate re-enrollment, REL-030 hello/negotiate, REL-070
-// idempotent reapply, REL-071 wrong-peer-key rejection, REL-133 bounded
-// clock.hint, REL-136/137 cold-boot skew-tolerant/deferred connect) and marks
+// Expired-certificate re-enrollment, REL-030 hello/negotiate, REL-056
+// durable atomic generation-apply swap, REL-070 idempotent reapply, REL-071
+// wrong-peer-key rejection, REL-133 bounded clock.hint, REL-136/137
+// cold-boot skew-tolerant/deferred connect) and marks
 // every other relay-1 case PENDING with an explicit reason.
 package relay1
 
@@ -120,6 +121,7 @@ func Run(client RelayClient, feeder Feeder) report.Report {
 	driveREL022(&rep, client, feeder, cases)
 	driveREL027(&rep, client, feeder, cases)
 	driveREL030(&rep, client, feeder, cases)
+	driveREL056(&rep, cases)
 	driveREL070(&rep, client, feeder, cases)
 	driveREL071(&rep, client, feeder, cases)
 	driveREL133(&rep, cases)
@@ -132,7 +134,6 @@ func Run(client RelayClient, feeder Feeder) report.Report {
 		}
 		rep.Pending(id, contract, reason)
 	}
-	pend("REL-056", "multi-generation atomic swap needs >1 concurrently-staged generation with sectioned apply; first-photon serves one generation and applies it whole.")
 	pend("REL-061", "preempt screen-program (priority/offline) is Phase-2 program-delivery semantics; first-photon applies a single static screen-program with no preemption.")
 	pend("REL-090", "telemetry overflow / loss-marker is the Phase-2 telemetry plane; first-photon has no telemetry ingest surface.")
 	pend("REL-094", "telemetry latest-only heartbeat supersession is the Phase-2 telemetry plane; not built in first-photon.")
