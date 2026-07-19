@@ -24,10 +24,12 @@ const TakeoverStartLatencyMillis int64 = 100
 // is mid-render of — the "before" state a newly delivered Lease preempts
 // (PLY-094: a player holds exactly one active Lease at a time). Its fields
 // mirror the PLY-101 corpus case's own active_lease_before + currently_rendering
-// inputs.
+// inputs, plus the active lease's own display (PLY-093) — without which a
+// takeover cannot honor PLY-104's off-air rule.
 type ActiveRender struct {
 	LeaseID         string // the active lease's lease_id
 	Priority        string // the active lease's priority: "scheduled" or "preempt" (PLY-100)
+	Display         string // the active lease's display (PLY-093): "content" or "blank"
 	ProgramRevision string // the active lease's program_revision (PLY-095), stamped on its render/end
 	AssetRef        string // the asset currently on screen
 	RenderStartTS   int64  // when that asset's render/start was reported (PLY-110)
@@ -91,29 +93,50 @@ type Adoption struct {
 //     content (PLY-104), so no takeover render begins.
 //   - next becomes the player's sole active Lease (PLY-094).
 //
+// PLY-104 off-air rule: when the active Lease's own display was blank, that
+// blank is an intentional off-air state (PLY-155) and a preempt-priority next
+// MUST NOT force the screen out of it — the screen keeps rendering blank until
+// a SUBSEQUENT Lease's own display says otherwise. In that case nothing is
+// rendering to interrupt and nothing starts: no interrupted render/end and no
+// takeover render/start occur, though the new Lease is still accepted and
+// becomes the sole active Lease (PLY-091/094). This is the virtualplayer
+// sibling of the relay-side AdoptPreemptDisplay (playerserver, PLY-104); the
+// two MUST agree, and the one that drives real render I/O (Preempt) is this one.
+//
 // It performs no I/O (TakeoverBytes stays nil); Preempt drives this against a
 // live relay and fills in the verified bytes.
 func AdoptionOf(active ActiveRender, next wire.Lease, deliveryTime int64) Adoption {
 	preempt := next.Priority == "preempt"
 
+	a := Adoption{
+		AckLeaseID:       next.LeaseID,
+		AckAccepted:      true,
+		ActiveLeaseAfter: next.LeaseID,
+		TakeoverCause:    causeForPriority(next.Priority),
+	}
+
+	// PLY-104: a preempt Lease arriving at a screen whose active Lease had
+	// display:blank does not force it visible. There is no foreground render
+	// to interrupt and none begins — the lease is accepted and active
+	// (PLY-091/094) but the screen keeps rendering blank. Leaving
+	// InterruptedImmediately/WaitedForNaturalEnd/PreviousRenderEnd/
+	// TakeoverRenderStart at their zero values is exactly this "no render
+	// transition" outcome.
+	if preempt && active.Display == "blank" {
+		return a
+	}
+
 	completion := "completed"
 	if preempt {
 		completion = "interrupted"
 	}
-
-	a := Adoption{
-		AckLeaseID:             next.LeaseID,
-		AckAccepted:            true,
-		InterruptedImmediately: preempt,
-		WaitedForNaturalEnd:    !preempt,
-		ActiveLeaseAfter:       next.LeaseID,
-		TakeoverCause:          causeForPriority(next.Priority),
-		PreviousRenderEnd: RenderEndReport{
-			AssetRef:   active.AssetRef,
-			TEnd:       deliveryTime,
-			Cause:      causeForPriority(active.Priority),
-			Completion: completion,
-		},
+	a.InterruptedImmediately = preempt
+	a.WaitedForNaturalEnd = !preempt
+	a.PreviousRenderEnd = RenderEndReport{
+		AssetRef:   active.AssetRef,
+		TEnd:       deliveryTime,
+		Cause:      causeForPriority(active.Priority),
+		Completion: completion,
 	}
 
 	if next.Display == "content" && len(next.Content) > 0 {

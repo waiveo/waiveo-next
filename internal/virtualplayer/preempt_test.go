@@ -262,6 +262,7 @@ func TestPreemptInterruptNowEndToEnd(t *testing.T) {
 	active := virtualplayer.ActiveRender{
 		LeaseID:         "01J8Z3K4N5P6Q7R8S9T0V1W2ZF",
 		Priority:        "scheduled",
+		Display:         "content",
 		ProgramRevision: "rev-17",
 		AssetRef:        "sha256:" + "aa" + "00",
 		RenderStartTS:   1752537960000,
@@ -313,5 +314,166 @@ func TestPreemptInterruptNowEndToEnd(t *testing.T) {
 	}
 	if starts[0].TS != deliveryTime+virtualplayer.TakeoverStartLatencyMillis {
 		t.Errorf("takeover render/start ts = %d, want delivery+latency %d (PLY-110)", starts[0].TS, deliveryTime+virtualplayer.TakeoverStartLatencyMillis)
+	}
+}
+
+// ply155Case mirrors the fields conformance/corpora/player-1/
+// PLY-155-valid-power-schedule-interaction.json declares that this task's
+// interrupt-now takeover consumes: the screen's currently active (blank) lease
+// and the incoming preempt lease, plus the expected off-air outcome. The test
+// parses that frozen file directly rather than hard-coding its values.
+type ply155Case struct {
+	Input struct {
+		ActiveLease struct {
+			LeaseID  string              `json:"lease_id"`
+			Priority string              `json:"priority"`
+			Display  string              `json:"display"`
+			Content  []wire.LeaseContent `json:"content"`
+		} `json:"active_lease"`
+		IncomingPreemptLease struct {
+			LeaseID  string              `json:"lease_id"`
+			Priority string              `json:"priority"`
+			Display  string              `json:"display"`
+			Content  []wire.LeaseContent `json:"content"`
+		} `json:"incoming_preempt_lease"`
+	} `json:"input"`
+	Expected struct {
+		PreemptLeaseAccepted bool   `json:"preempt_lease_accepted"`
+		DisplayRemains       string `json:"display_remains"`
+		PreemptForcesVisible bool   `json:"preempt_forces_visible"`
+	} `json:"expected"`
+}
+
+// loadPLY155 reads the frozen PLY-155 corpus case relative to THIS source file.
+func loadPLY155(t *testing.T) ply155Case {
+	t.Helper()
+	_, self, _, _ := runtime.Caller(0)
+	path := filepath.Join(filepath.Dir(self), "..", "..", "conformance", "corpora", "player-1", "PLY-155-valid-power-schedule-interaction.json")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read PLY-155 corpus case: %v", err)
+	}
+	var c ply155Case
+	if err := json.Unmarshal(b, &c); err != nil {
+		t.Fatalf("unmarshal PLY-155 corpus case: %v", err)
+	}
+	return c
+}
+
+// TestAdoptionOfPLY104BlankSuppressesTakeover drives virtualplayer.AdoptionOf
+// against the frozen PLY-155 oracle: the active lease is display:blank (an
+// intentional off-air state) and the incoming lease is preempt-priority carrying
+// display:content. PLY-104 forbids the preemption from forcing the screen out of
+// blank — the new lease is accepted and becomes the sole active lease
+// (PLY-091/094) but NO takeover render/start is emitted and NO interrupted
+// render/end is reported, because nothing was rendering in the foreground and
+// nothing starts. This is the case the corpus-passing suite did not previously
+// exercise through AdoptionOf, and it MUST agree with the relay-side
+// AdoptPreemptDisplay (playerserver, PLY-104).
+func TestAdoptionOfPLY104BlankSuppressesTakeover(t *testing.T) {
+	c := loadPLY155(t)
+
+	active := virtualplayer.ActiveRender{
+		LeaseID:  c.Input.ActiveLease.LeaseID,
+		Priority: c.Input.ActiveLease.Priority,
+		Display:  c.Input.ActiveLease.Display,
+	}
+	next := wire.Lease{
+		LeaseID:  c.Input.IncomingPreemptLease.LeaseID,
+		Priority: c.Input.IncomingPreemptLease.Priority,
+		Display:  c.Input.IncomingPreemptLease.Display,
+		Content:  c.Input.IncomingPreemptLease.Content,
+	}
+	const deliveryTime int64 = 1752538000500
+
+	got := virtualplayer.AdoptionOf(active, next, deliveryTime)
+
+	// The new preempt lease is still accepted and becomes the sole active
+	// lease (PLY-091/094).
+	if !got.AckAccepted || got.AckLeaseID != next.LeaseID {
+		t.Errorf("preempt lease not accepted: accepted=%v ack=%q, want true/%q (PLY-091)", got.AckAccepted, got.AckLeaseID, next.LeaseID)
+	}
+	if got.ActiveLeaseAfter != next.LeaseID {
+		t.Errorf("active_lease_after = %q, want %q (PLY-094)", got.ActiveLeaseAfter, next.LeaseID)
+	}
+
+	// PLY-104 off-air rule: the preemption MUST NOT force the screen out of
+	// blank, so no takeover render/start is emitted (Preempt would otherwise
+	// POST render/start + fetch the takeover bytes, driving the screen visible).
+	if got.TakeoverRenderStart != (virtualplayer.RenderStartReport{}) {
+		t.Errorf("takeover_render_start = %+v, want zero — a preempt MUST NOT force a blanked screen visible (PLY-104)", got.TakeoverRenderStart)
+	}
+	// Nothing was rendering in the foreground, so no interrupted render/end.
+	if got.PreviousRenderEnd != (virtualplayer.RenderEndReport{}) {
+		t.Errorf("previous_asset_render_end = %+v, want zero — an intentional blank has no foreground render to interrupt (PLY-104/155)", got.PreviousRenderEnd)
+	}
+	if got.InterruptedImmediately {
+		t.Errorf("interrupted_immediately = true, want false — there was no foreground render to interrupt (PLY-104)")
+	}
+
+	// Cross-check the frozen expected off-air outcome.
+	if !c.Expected.PreemptLeaseAccepted || c.Expected.DisplayRemains != "blank" || c.Expected.PreemptForcesVisible {
+		t.Fatalf("PLY-155 corpus expected block changed: accepted=%v display_remains=%q forces_visible=%v (want true/blank/false)", c.Expected.PreemptLeaseAccepted, c.Expected.DisplayRemains, c.Expected.PreemptForcesVisible)
+	}
+}
+
+// TestPreemptIntoBlankHonorsPLY104EndToEnd drives virtualplayer.Preempt end to
+// end against a live relay serving a preempt-priority content program, but with
+// the screen's active render being display:blank (an intentional off-air state,
+// PLY-155). PLY-104 forbids the preemption from forcing the screen visible, so —
+// unlike TestPreemptInterruptNowEndToEnd — NO render/start and NO render/end may
+// cross the wire and no takeover bytes are fetched, even though the pulled
+// preempt lease itself carries display:content. The relay-side records prove the
+// player did not drive the screen out of blank.
+func TestPreemptIntoBlankHonorsPLY104EndToEnd(t *testing.T) {
+	feederBaseURL, _ := bootTestFeeder(t)
+	host, port, certDER, applied, relayServer := bootPreemptRelay(t, feederBaseURL)
+
+	if len(applied.PairingGrants) == 0 {
+		t.Fatalf("applied desired state carried no pairing_grants")
+	}
+	code, err := playerserver.FormPairingCode(host, port, applied.PairingGrants[0], certDER)
+	if err != nil {
+		t.Fatalf("FormPairingCode: %v", err)
+	}
+
+	// The screen is intentionally off-air: its active lease is display:blank
+	// with nothing rendering in the foreground (PLY-155).
+	active := virtualplayer.ActiveRender{
+		LeaseID:  "01J8Z3K4N5P6Q7R8S9T0V1W2ZK",
+		Priority: "scheduled",
+		Display:  "blank",
+	}
+	const deliveryTime int64 = 1752538000500
+
+	adopt, err := virtualplayer.Preempt(code, active, deliveryTime)
+	if err != nil {
+		t.Fatalf("Preempt: unexpected error: %v", err)
+	}
+
+	// The preempt lease is still acked and becomes active (PLY-091/094)...
+	if !adopt.AckAccepted || adopt.AckLeaseID == "" {
+		t.Errorf("preempt lease not acked: %+v (PLY-091)", adopt)
+	}
+	if adopt.ActiveLeaseAfter != adopt.AckLeaseID {
+		t.Errorf("active_lease_after %q != acked lease %q (PLY-094)", adopt.ActiveLeaseAfter, adopt.AckLeaseID)
+	}
+	// ...but the screen stays blank: no takeover render, no bytes fetched (PLY-104).
+	if adopt.TakeoverRenderStart != (virtualplayer.RenderStartReport{}) {
+		t.Errorf("takeover_render_start = %+v, want zero (PLY-104)", adopt.TakeoverRenderStart)
+	}
+	if adopt.TakeoverBytes != nil {
+		t.Errorf("takeover bytes fetched (%d bytes), want none — a preempt MUST NOT force a blanked screen visible (PLY-104)", len(adopt.TakeoverBytes))
+	}
+
+	// The wire is the real oracle: the ack crossed it, but neither render report did.
+	if rec, ok := relayServer.LeaseAck(adopt.AckLeaseID); !ok || !rec.Accepted {
+		t.Errorf("relay did not record an accepted ack for %q (PLY-091)", adopt.AckLeaseID)
+	}
+	if starts := relayServer.RenderStarts(); len(starts) != 0 {
+		t.Errorf("relay recorded %d render/start reports, want 0 — the screen must stay blank (PLY-104)", len(starts))
+	}
+	if ends := relayServer.RenderEnds(); len(ends) != 0 {
+		t.Errorf("relay recorded %d render/end reports, want 0 — nothing was rendering to interrupt (PLY-104/155)", len(ends))
 	}
 }
