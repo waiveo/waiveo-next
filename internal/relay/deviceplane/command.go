@@ -3,6 +3,7 @@ package deviceplane
 import (
 	"errors"
 	"fmt"
+	"sync"
 )
 
 // This file (Task 3) carries the device-command surface: the app-dispatched
@@ -113,22 +114,88 @@ type DeviceCommandResult struct {
 	Body    CommandResultBody `json:"body"`
 }
 
+// CommandRecord is the redacted, credential-free descriptor of a command the
+// surface handed to its observability/persistence sinks (REL-114): it names the
+// target entity, the command, and the outcome — and deliberately carries NO
+// params field, so a device.command's per-dispatch credential material can never
+// reach a log sink or a durable store through it.
+type CommandRecord struct {
+	EntityID  string
+	Command   string
+	OK        bool
+	ErrorCode string // the taxonomy code when OK is false; empty otherwise
+}
+
+// CommandLog is the surface's log sink: it receives a redacted CommandRecord for
+// every command the surface handles, for operational observability. REL-114: a
+// device.command's params (which MAY carry credential material) are NEVER passed
+// to a CommandLog — only the credential-free CommandRecord is.
+type CommandLog interface {
+	LogCommand(rec CommandRecord)
+}
+
+// CommandJournal is the surface's durable sink — the relay's own operational
+// store / persisted desired state. It receives the same redacted CommandRecord
+// as the log. REL-114: credential material MUST NOT be written to any durable
+// store, so params never reach a CommandJournal.
+type CommandJournal interface {
+	PersistCommand(rec CommandRecord)
+}
+
+// CommandOption configures an optional CommandSurface collaborator (a log sink
+// or a durable journal). Options are applied by NewCommandSurface; omitting them
+// leaves the corresponding sink absent (a no-op).
+type CommandOption func(*CommandSurface)
+
+// WithCommandLog wires a log sink the surface emits a redacted CommandRecord to
+// for every command it handles (REL-114: never the params).
+func WithCommandLog(log CommandLog) CommandOption {
+	return func(s *CommandSurface) { s.log = log }
+}
+
+// WithCommandJournal wires a durable operational store the surface persists a
+// redacted CommandRecord to for every command it handles (REL-114: never the
+// params).
+func WithCommandJournal(journal CommandJournal) CommandOption {
+	return func(s *CommandSurface) { s.journal = journal }
+}
+
 // CommandSurface resolves and executes app-dispatched device.commands against
 // physical devices (REL-112/113). It resolves each command's entity to a
 // device class, checks the command against that class's vocabulary, and only
 // then dispatches through the DeviceController — never touching a device for a
-// command it could not resolve.
+// command it could not resolve. Dispatch to a single physical device is
+// serialized (REL-115), and a dispatch's params credential material is carried
+// only in memory to the controller, never to the log or journal sinks (REL-114).
 type CommandSurface struct {
 	controller   DeviceController
 	vocab        CommandVocab
 	resolveClass DeviceClassResolver
+
+	log     CommandLog
+	journal CommandJournal
+
+	// locksMu guards locks; each entry is the per-device dispatch lock a
+	// command to that entity holds across its physical dispatch (REL-115).
+	locksMu sync.Mutex
+	locks   map[string]*sync.Mutex
 }
 
 // NewCommandSurface builds a CommandSurface from the physical-device adapter,
 // the device-class command-vocabulary source (REL-113 / REG-052 — e.g. the
 // engine's registry), and the entity_id→device-class resolver (REL-112).
-func NewCommandSurface(controller DeviceController, vocab CommandVocab, resolveClass DeviceClassResolver) *CommandSurface {
-	return &CommandSurface{controller: controller, vocab: vocab, resolveClass: resolveClass}
+// Optional CommandOptions wire the redacted log/journal sinks (REL-114).
+func NewCommandSurface(controller DeviceController, vocab CommandVocab, resolveClass DeviceClassResolver, opts ...CommandOption) *CommandSurface {
+	s := &CommandSurface{
+		controller:   controller,
+		vocab:        vocab,
+		resolveClass: resolveClass,
+		locks:        make(map[string]*sync.Mutex),
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // Execute resolves cmd against the target entity's device-class command
@@ -143,6 +210,30 @@ func NewCommandSurface(controller DeviceController, vocab CommandVocab, resolveC
 // relay_id, and trace_id (REL-006). cmd.Body.Params is passed straight to the
 // controller and never logged or persisted here (REL-114).
 func (s *CommandSurface) Execute(cmd DeviceCommand) DeviceCommandResult {
+	res := s.execute(cmd)
+	// Observability/persistence carry only a redacted, credential-free record —
+	// the command's params (which MAY be credential material) never reach the
+	// log or the durable store (REL-114).
+	rec := CommandRecord{
+		EntityID: cmd.Body.EntityID,
+		Command:  cmd.Body.Command,
+		OK:       res.Body.OK,
+	}
+	if res.Body.Error != nil {
+		rec.ErrorCode = res.Body.Error.Code
+	}
+	if s.log != nil {
+		s.log.LogCommand(rec)
+	}
+	if s.journal != nil {
+		s.journal.PersistCommand(rec)
+	}
+	return res
+}
+
+// execute performs the resolve→serialized-dispatch→result path for a single
+// command (REL-112/113/115); Execute wraps it to emit the redacted record.
+func (s *CommandSurface) execute(cmd DeviceCommand) DeviceCommandResult {
 	deviceClass, ok := s.resolveClass(cmd.Body.EntityID)
 	if !ok {
 		// No adopted entity for this id → nothing to resolve the command
@@ -156,6 +247,15 @@ func (s *CommandSurface) Execute(cmd DeviceCommand) DeviceCommandResult {
 		return s.reject(cmd, codeCommandUnresolved,
 			fmt.Sprintf("%q is not a command %s declares", cmd.Body.Command, deviceClass))
 	}
+
+	// REL-115: serialize per target device. Hold the entity's dispatch lock
+	// across the physical dispatch so a second command to the same device
+	// queues behind this one rather than interleaving delivery to one device.
+	// The lock is taken only for a resolved command — an unresolved one never
+	// reaches here and never touches the device (REL-113).
+	lock := s.deviceLock(cmd.Body.EntityID)
+	lock.Lock()
+	defer lock.Unlock()
 
 	// Resolved: dispatch to the physical device. params is carried into this
 	// call only (REL-114) — never written to a store or a log by this surface.
@@ -174,6 +274,21 @@ func (s *CommandSurface) Execute(cmd DeviceCommand) DeviceCommandResult {
 		TraceID: cmd.TraceID,
 		Body:    CommandResultBody{OK: true},
 	}
+}
+
+// deviceLock returns the per-device dispatch mutex for entityID, creating it on
+// first use. Serializing on the resolved entity (relay/1 accepts only a single
+// already-resolved entity_id per command, REL-112) is how the surface enforces
+// REL-115's one-outstanding-command-per-device rule.
+func (s *CommandSurface) deviceLock(entityID string) *sync.Mutex {
+	s.locksMu.Lock()
+	defer s.locksMu.Unlock()
+	l, ok := s.locks[entityID]
+	if !ok {
+		l = &sync.Mutex{}
+		s.locks[entityID] = l
+	}
+	return l
 }
 
 // reject builds a {ok:false} device.command_result carrying the given typed
