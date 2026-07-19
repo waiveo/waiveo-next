@@ -16,9 +16,10 @@
 // oracle actually needs to reproduce a case.
 //
 // Applicability triage (§10 "no silent caps"): Run DRIVES the cases
-// first-photon implements (REL-010 fresh enroll, REL-070 idempotent reapply,
-// REL-071 wrong-peer-key rejection) and marks every other relay-1 case
-// PENDING with an explicit reason.
+// first-photon implements (REL-010 fresh enroll, REL-020/022/027
+// Expired-certificate re-enrollment, REL-030 hello/negotiate, REL-070
+// idempotent reapply, REL-071 wrong-peer-key rejection) and marks every other
+// relay-1 case PENDING with an explicit reason.
 package relay1
 
 import (
@@ -58,6 +59,15 @@ type RelayClient interface {
 	// returning the app peer's hello-ack or a typed refusal
 	// (*hello.RefusedError).
 	Hello(feederBaseURL string, store *identity.Store, decl hello.Declaration) (hello.HelloAck, error)
+	// ReEnroll drives the Expired-certificate re-enrollment path
+	// (REL-020/024) for store's already-persisted identity against
+	// feederBaseURL: proving possession of its current certificate's own
+	// private key over the app peer's bootstrap challenge (REL-026/027) and,
+	// on success, persisting a fresh certificate under the SAME relay_id
+	// (REL-014) plus a re-anchored desired_state_verification_key (REL-017).
+	// A typed refusal (CERT_EXPIRED_INELIGIBLE / RE_ENROLL_POP_INVALID /
+	// RE_ENROLL_RATE_LIMITED) is returned as a *reenroll.ReEnrollError.
+	ReEnroll(feederBaseURL string, store *identity.Store) error
 }
 
 // Feeder is the LIVE counterparty the driver stages each case against: the
@@ -99,6 +109,9 @@ func Run(client RelayClient, feeder Feeder) report.Report {
 	}
 
 	driveREL010(&rep, client, feeder, cases)
+	driveREL020(&rep, client, feeder, cases)
+	driveREL022(&rep, client, feeder, cases)
+	driveREL027(&rep, client, feeder, cases)
 	driveREL030(&rep, client, feeder, cases)
 	driveREL070(&rep, client, feeder, cases)
 	driveREL071(&rep, client, feeder, cases)
@@ -110,9 +123,6 @@ func Run(client RelayClient, feeder Feeder) report.Report {
 		}
 		rep.Pending(id, contract, reason)
 	}
-	pend("REL-020", "re-enrollment after cert expiry is Phase-2 identity-lifecycle; first-photon has no in-band renewal/re-enrollment path (REL-015/017).")
-	pend("REL-022", "re-enrollment with a superseded cert is Phase-2 identity-lifecycle; no re-enrollment path in first-photon.")
-	pend("REL-027", "re-enrollment PoP-signature rejection is Phase-2 identity-lifecycle; no re-enrollment path in first-photon.")
 	pend("REL-056", "multi-generation atomic swap needs >1 concurrently-staged generation with sectioned apply; first-photon serves one generation and applies it whole.")
 	pend("REL-061", "preempt screen-program (priority/offline) is Phase-2 program-delivery semantics; first-photon applies a single static screen-program with no preemption.")
 	pend("REL-090", "telemetry overflow / loss-marker is the Phase-2 telemetry plane; first-photon has no telemetry ingest surface.")

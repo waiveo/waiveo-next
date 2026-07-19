@@ -7,6 +7,7 @@ import (
 	relayenroll "github.com/maaxton/waiveo-next/internal/relay/enroll"
 	"github.com/maaxton/waiveo-next/internal/relay/hello"
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
+	"github.com/maaxton/waiveo-next/internal/relay/reenroll"
 )
 
 // RealRelayClient is the first-photon RelayClient: it delegates straight to
@@ -46,4 +47,10 @@ func (RealRelayClient) Hello(feederBaseURL string, store *identity.Store, decl h
 		return hello.HelloAck{}, fmt.Errorf("real-relay: Hello: no enrolled identity")
 	}
 	return hello.PerformHello(feederBaseURL, id.PrivateKey, id.RelayID, decl)
+}
+
+// ReEnroll implements RelayClient via internal/relay/reenroll.ReEnroll — the
+// Expired-certificate re-enrollment client under test (REL-020/027).
+func (RealRelayClient) ReEnroll(feederBaseURL string, store *identity.Store) error {
+	return reenroll.ReEnroll(feederBaseURL, store)
 }

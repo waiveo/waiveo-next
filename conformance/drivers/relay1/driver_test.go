@@ -16,20 +16,21 @@ import (
 	relayenroll "github.com/maaxton/waiveo-next/internal/relay/enroll"
 	"github.com/maaxton/waiveo-next/internal/relay/hello"
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
+	"github.com/maaxton/waiveo-next/internal/relay/reenroll"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
 var expectedDriven = []string{
 	"REL-010-valid-fresh-enroll",
+	"REL-020-valid-re-enroll-after-cert-expiry",
+	"REL-022-invalid-re-enroll-superseded-cert",
+	"REL-027-invalid-re-enroll-pop-signature-invalid",
 	"REL-030-valid-hello-negotiate-channel-binding",
 	"REL-070-valid-generation-reapply-idempotent-noop",
 	"REL-071-invalid-wrong-peer-key-snapshot-rejected",
 }
 
 var expectedPending = []string{
-	"REL-020-valid-re-enroll-after-cert-expiry",
-	"REL-022-invalid-re-enroll-superseded-cert",
-	"REL-027-invalid-re-enroll-pop-signature-invalid",
 	"REL-056-valid-generation-apply-atomic-swap",
 	"REL-061-valid-preempt-priority-screen-program-offline",
 	"REL-090-valid-telemetry-overflow-loss-marker",
@@ -180,6 +181,13 @@ func (brokenSkipVerifyClient) Hello(feederBaseURL string, store *identity.Store,
 		return hello.HelloAck{}, fmt.Errorf("brokenSkipVerifyClient: no enrolled identity")
 	}
 	return hello.PerformHello(feederBaseURL, id.PrivateKey, id.RelayID, decl)
+}
+
+// ReEnroll delegates to the real Expired-certificate re-enrollment client —
+// REL-071 is the only vulnerability this strawman stages; it has no broken
+// re-enroll behavior of its own to prove.
+func (brokenSkipVerifyClient) ReEnroll(feederBaseURL string, store *identity.Store) error {
+	return reenroll.ReEnroll(feederBaseURL, store)
 }
 
 func (brokenSkipVerifyClient) Pull(feederBaseURL string, store *identity.Store) (desiredstate.Applied, error) {
