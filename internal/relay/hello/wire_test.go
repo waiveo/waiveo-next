@@ -1,7 +1,10 @@
 package hello
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"os"
 	"reflect"
 	"testing"
@@ -15,17 +18,26 @@ import (
 const rel030Corpus = "../../../conformance/corpora/relay-1/REL-030-valid-hello-negotiate-channel-binding.json"
 
 // rel030Doc decodes exactly the sub-documents this file's tests replay:
-// the challenge and hello the corpus hands the relay/feeder, and the
-// hello-ack it expects back. Kept as json.RawMessage so each test can
-// unmarshal (and separately, round-trip re-marshal) them against this
-// package's own typed structs rather than a hand-copied literal.
+// the challenge and hello the corpus hands the relay/feeder, the app
+// peer's own declared implemented-minors set, and the hello-ack plus the
+// three scalar verdict fields (channel_binding_verified,
+// unrecognized_feature_flag_dropped_silently, connection_refused) it
+// expects back. Kept as json.RawMessage for the message shapes (so each
+// test can unmarshal, and separately round-trip re-marshal, them against
+// this package's own typed structs rather than a hand-copied literal); the
+// scalar verdict fields are decoded directly since TestREL030EndToEnd
+// asserts against them by value, not by shape.
 type rel030Doc struct {
 	Input struct {
-		Challenge json.RawMessage `json:"challenge"`
-		Hello     json.RawMessage `json:"hello"`
+		AppPeerImplementedMinors []string        `json:"app_peer_implemented_minors"`
+		Challenge                json.RawMessage `json:"challenge"`
+		Hello                    json.RawMessage `json:"hello"`
 	} `json:"input"`
 	Expected struct {
-		HelloAck json.RawMessage `json:"hello_ack"`
+		ChannelBindingVerified                 bool            `json:"channel_binding_verified"`
+		HelloAck                               json.RawMessage `json:"hello_ack"`
+		UnrecognizedFeatureFlagDroppedSilently bool            `json:"unrecognized_feature_flag_dropped_silently"`
+		ConnectionRefused                      bool            `json:"connection_refused"`
 	} `json:"expected"`
 }
 
@@ -236,4 +248,196 @@ func TestHelloAckDeprecatedNoticeFieldNames(t *testing.T) {
 			t.Errorf("DeprecationNotice JSON missing field %q; got %s", k, raw)
 		}
 	}
+}
+
+// TestREL030EndToEndChannelBindingVerifiedAndNegotiated drives the REL-030
+// corpus case through the actual negotiation/verification logic
+// (BuildHelloAck), rather than round-tripping a pre-computed literal —
+// closing the gap where TestHelloAckMatchesCorpusFieldNames alone would
+// pass identically whether Negotiate/IntersectFeatures/VerifyChannelBinding
+// were correct, wrong, or entirely absent.
+//
+// The corpus's own `channel_binding_signature` string
+// ("ed25519-sig-over-nonce-...-signed-with-relay-enrollment-key") is a
+// human-readable description, not a real signature — the same convention
+// the REL-027 and REL-071 corpus fixtures use for their own `pop_signature`/
+// `signature` fields (relay-1's frozen corpus never embeds a working
+// keypair). This test substitutes a REAL ed25519 signature, computed with
+// SignChannelBinding over the corpus's own challenge nonce, for that
+// placeholder — everything else (protocol_version, features,
+// app_peer_implemented_minors, site_binding) is exactly the corpus's own
+// data — and asserts the corpus's declared verdict fields
+// (channel_binding_verified, unrecognized_feature_flag_dropped_silently,
+// connection_refused) against BuildHelloAck's actual behavior.
+func TestREL030EndToEndChannelBindingVerifiedAndNegotiated(t *testing.T) {
+	doc := loadRel030(t)
+
+	var c Challenge
+	if err := json.Unmarshal(doc.Input.Challenge, &c); err != nil {
+		t.Fatalf("unmarshal Challenge: %v", err)
+	}
+	var h Hello
+	if err := json.Unmarshal(doc.Input.Hello, &h); err != nil {
+		t.Fatalf("unmarshal Hello: %v", err)
+	}
+	var wantAck HelloAck
+	if err := json.Unmarshal(doc.Expected.HelloAck, &wantAck); err != nil {
+		t.Fatalf("unmarshal expected HelloAck: %v", err)
+	}
+
+	relayPub, relayPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("ed25519.GenerateKey: %v", err)
+	}
+	realSig, err := SignChannelBinding(relayPriv, c.Body.Nonce)
+	if err != nil {
+		t.Fatalf("SignChannelBinding: %v", err)
+	}
+	h.Body.ChannelBindingSignature = realSig
+
+	// appPeerRecognizedFeatures: the app peer recognizes exactly
+	// "telemetry.latest_only_v1" — the corpus's expected hello-ack features
+	// set — and nothing else, so "an-unrecognized-future-flag" is dropped
+	// for being unrecognized, not for any other reason.
+	appPeerRecognizedFeatures := []string{"telemetry.latest_only_v1"}
+
+	ack, err := BuildHelloAck(
+		h,
+		c.Body.Nonce,
+		relayPub,
+		doc.Input.AppPeerImplementedMinors,
+		appPeerRecognizedFeatures,
+		wantAck.Body.SiteBinding,
+		wantAck.Body.Deprecated,
+	)
+
+	gotRefused := err != nil
+	if gotRefused != doc.Expected.ConnectionRefused {
+		t.Fatalf("BuildHelloAck refused = %v (err=%v), want connection_refused = %v", gotRefused, err, doc.Expected.ConnectionRefused)
+	}
+	if err != nil {
+		// connection_refused is expected true in this branch; nothing further
+		// to assert against hello-ack since none is produced.
+		return
+	}
+
+	if !doc.Expected.ChannelBindingVerified {
+		t.Fatal("BuildHelloAck accepted the connection, but the corpus declares channel_binding_verified = false")
+	}
+
+	if !reflect.DeepEqual(ack, wantAck) {
+		t.Errorf("BuildHelloAck result:\n got  %+v\n want %+v", ack, wantAck)
+	}
+
+	droppedUnrecognized := !containsString(ack.Body.Features, "an-unrecognized-future-flag")
+	if droppedUnrecognized != doc.Expected.UnrecognizedFeatureFlagDroppedSilently {
+		t.Errorf("unrecognized flag dropped = %v, want %v (features = %v)", droppedUnrecognized, doc.Expected.UnrecognizedFeatureFlagDroppedSilently, ack.Body.Features)
+	}
+}
+
+// TestREL030EndToEndRefusesWrongChannelBindingSignature is the negative
+// counterpart to TestREL030EndToEndChannelBindingVerifiedAndNegotiated: the
+// exact same corpus-derived hello, but signed with a DIFFERENT relay's
+// private key than the one the app peer looks up (simulating an impostor,
+// or a relay presenting a signature computed with the wrong key). REL-032
+// mandates refusal (CHANNEL_BINDING_INVALID) here EVEN THOUGH every other
+// field — protocol_version, features, site_binding — is identical to the
+// accepted case, and even though (per REL-032's own wording) this MUST hold
+// regardless of whether the connection's own mutual-TLS handshake already
+// succeeded.
+func TestREL030EndToEndRefusesWrongChannelBindingSignature(t *testing.T) {
+	doc := loadRel030(t)
+
+	var c Challenge
+	if err := json.Unmarshal(doc.Input.Challenge, &c); err != nil {
+		t.Fatalf("unmarshal Challenge: %v", err)
+	}
+	var h Hello
+	if err := json.Unmarshal(doc.Input.Hello, &h); err != nil {
+		t.Fatalf("unmarshal Hello: %v", err)
+	}
+	var wantAck HelloAck
+	if err := json.Unmarshal(doc.Expected.HelloAck, &wantAck); err != nil {
+		t.Fatalf("unmarshal expected HelloAck: %v", err)
+	}
+
+	// The app peer's enrollment-learned key for this relay ...
+	relayPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("ed25519.GenerateKey: %v", err)
+	}
+	// ... but the hello is signed with an UNRELATED key.
+	_, wrongPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("ed25519.GenerateKey: %v", err)
+	}
+	sig, err := SignChannelBinding(wrongPriv, c.Body.Nonce)
+	if err != nil {
+		t.Fatalf("SignChannelBinding: %v", err)
+	}
+	h.Body.ChannelBindingSignature = sig
+
+	_, err = BuildHelloAck(
+		h,
+		c.Body.Nonce,
+		relayPub,
+		doc.Input.AppPeerImplementedMinors,
+		[]string{"telemetry.latest_only_v1"},
+		wantAck.Body.SiteBinding,
+		wantAck.Body.Deprecated,
+	)
+	if !errors.Is(err, ErrChannelBindingInvalid) {
+		t.Fatalf("BuildHelloAck(wrong-key signature) = %v, want ErrChannelBindingInvalid — the connection MUST be refused even though mutual-TLS is assumed to have already succeeded (REL-032)", err)
+	}
+}
+
+// TestREL030EndToEndRefusesAbsentChannelBindingSignature is a second
+// negative counterpart: the same corpus-derived hello with
+// channel_binding_signature simply blanked out, as a relay that never
+// signed at all would send. REL-032 requires refusal here exactly as for a
+// wrong signature — an absent signature is not treated as "unauthenticated
+// but otherwise fine".
+func TestREL030EndToEndRefusesAbsentChannelBindingSignature(t *testing.T) {
+	doc := loadRel030(t)
+
+	var h Hello
+	if err := json.Unmarshal(doc.Input.Hello, &h); err != nil {
+		t.Fatalf("unmarshal Hello: %v", err)
+	}
+	var c Challenge
+	if err := json.Unmarshal(doc.Input.Challenge, &c); err != nil {
+		t.Fatalf("unmarshal Challenge: %v", err)
+	}
+	var wantAck HelloAck
+	if err := json.Unmarshal(doc.Expected.HelloAck, &wantAck); err != nil {
+		t.Fatalf("unmarshal expected HelloAck: %v", err)
+	}
+
+	relayPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("ed25519.GenerateKey: %v", err)
+	}
+	h.Body.ChannelBindingSignature = ""
+
+	_, err = BuildHelloAck(
+		h,
+		c.Body.Nonce,
+		relayPub,
+		doc.Input.AppPeerImplementedMinors,
+		[]string{"telemetry.latest_only_v1"},
+		wantAck.Body.SiteBinding,
+		wantAck.Body.Deprecated,
+	)
+	if !errors.Is(err, ErrChannelBindingInvalid) {
+		t.Fatalf("BuildHelloAck(absent signature) = %v, want ErrChannelBindingInvalid", err)
+	}
+}
+
+func containsString(ss []string, s string) bool {
+	for _, v := range ss {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
