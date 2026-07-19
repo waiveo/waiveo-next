@@ -57,6 +57,8 @@ var validMisfire = map[string]bool{"catch_up_once": true, "skip": true, "fire_ea
 //   - platform ownership (DAT-100/101): no row carries a row-level pack field;
 //   - closed vocabularies (DAT-074 display_power, DAT-120 misfire);
 //   - row-shape MUSTs (DAT-061 validity range, DAT-091 non-empty commands);
+//   - within-schedule daypart partition (DAT-073, DAYPART_OVERLAP via
+//     ValidateNoOverlap): a schedule's dayparts MUST NOT overlap;
 //   - referential integrity: a daypart/validity-window scope_node equals its
 //     owning schedule's scope_node (DAT-007), and every playlist/fallback/
 //     preset/schedule id reference resolves to a present row (DAT-050/070/075/080).
@@ -153,6 +155,9 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 	}
 
 	errs = append(errs, validateReferences(rs)...)
+	if e := ValidateNoOverlap(rs.Dayparts); e != nil {
+		errs = append(errs, *e)
+	}
 	return rs, errs
 }
 
