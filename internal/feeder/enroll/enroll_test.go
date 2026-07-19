@@ -18,6 +18,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/feeder/grant"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
+	"github.com/maaxton/waiveo-next/internal/relay/reenroll"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/signhash"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
@@ -185,6 +186,58 @@ func TestEnrollIssuesRelayCertAndSigningKey(t *testing.T) {
 	}
 	if !ed25519.PublicKey(gotKey).Equal(id.SigningPub()) {
 		t.Error("desired_state_verification_key != the feeder identity's own SigningPub()")
+	}
+}
+
+// TestEnrollRecordsIssuanceForEligibility asserts Task 1's feeder-side
+// issuance record (REL-021): after a relay enrolls, the Server records the
+// issued certificate's serial + public key under that relay_id as the
+// most-recently-issued entry, in the exact serial string form a relay would
+// present (the issued cert's own SerialNumber), and reports it not-revoked —
+// so reenroll.Eligible admits the presented serial. The Server IS the
+// reenroll.IssuanceRecord the re-enroll path evaluates eligibility against.
+func TestEnrollRecordsIssuanceForEligibility(t *testing.T) {
+	srv, ts, _, _ := newTestServer(t)
+	client := ts.Client()
+
+	claimToken := fetchClaimToken(t, client, ts.URL)
+	relayPub, _, csrPEM := generateCSR(t, "test-relay")
+
+	resp, body := postEnroll(t, client, ts.URL, claimToken, csrPEM)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /enroll status = %d, want 200", resp.StatusCode)
+	}
+
+	// The serial a relay would present is its issued cert's own SerialNumber.
+	block, _ := pem.Decode([]byte(body.Cert))
+	if block == nil {
+		t.Fatalf("issued cert did not PEM-decode: %q", body.Cert)
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("x509.ParseCertificate: %v", err)
+	}
+	presentedSerial := cert.SerialNumber.Text(16)
+
+	// Server satisfies reenroll.IssuanceRecord structurally.
+	var rec reenroll.IssuanceRecord = srv
+
+	gotSerial, gotPub, ok := rec.MostRecentSerial(body.RelayID)
+	if !ok {
+		t.Fatalf("MostRecentSerial(%q) ok = false, want an issuance on record", body.RelayID)
+	}
+	if gotSerial != presentedSerial {
+		t.Errorf("recorded serial = %q, want the issued cert's own serial %q", gotSerial, presentedSerial)
+	}
+	if !gotPub.Equal(relayPub) {
+		t.Error("recorded public key != the relay's own CSR public key")
+	}
+	if rec.IsRevoked(body.RelayID, presentedSerial) {
+		t.Error("freshly issued serial reported revoked, want not-revoked")
+	}
+
+	if err := reenroll.Eligible(rec, body.RelayID, presentedSerial); err != nil {
+		t.Errorf("reenroll.Eligible for the just-issued serial = %v, want nil (most-recently-issued, REL-021)", err)
 	}
 }
 

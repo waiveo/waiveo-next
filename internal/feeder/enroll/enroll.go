@@ -57,6 +57,20 @@ type Server struct {
 	pending   string                       // the currently unredeemed claim token, or "" if none minted yet
 	redeemed  map[string]bool              // every token ever minted -> whether it has been redeemed
 	relayKeys map[string]ed25519.PublicKey // relay_id -> the enrollment public key this feeder issued a cert over
+	issuances map[string][]issuance        // relay_id -> certs this feeder has issued, most-recently-issued first
+}
+
+// issuance is one certificate this feeder issued under a relay_id: its serial
+// (the same string form a relay presents, its cert's own SerialNumber), the
+// public key it was issued over, when it was issued, and whether it has since
+// been revoked. The Expired-certificate re-enrollment path's eligibility
+// check (internal/relay/reenroll, REL-021/022) reads this record — never a
+// revocation list.
+type issuance struct {
+	serial   string
+	pub      ed25519.PublicKey
+	issuedAt int64
+	revoked  bool
 }
 
 // NewServer builds an enroll.Server that issues relay certificates under a
@@ -82,6 +96,7 @@ func NewServer(identity *signing.Identity, snapshot wire.StateSnapshotBody) (*Se
 		caKey:     caKey,
 		redeemed:  map[string]bool{},
 		relayKeys: map[string]ed25519.PublicKey{},
+		issuances: map[string][]issuance{},
 	}, nil
 }
 
@@ -188,7 +203,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 
 	relayID := newRelayID()
 
-	certPEM, notBefore, notAfter, err := s.issueRelayCert(csr, relayID)
+	certPEM, serial, notBefore, notAfter, err := s.issueRelayCert(csr, relayID)
 	if err != nil {
 		apihttp.WriteProblem(w, r, traceID, http.StatusInternalServerError, "INTERNAL", "Internal Error")
 		return
@@ -200,9 +215,15 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	// the challenge nonce. csr.PublicKey is an ed25519 key for every CSR this
 	// deployment's relay client (internal/relay/enroll) generates; a non-ed25519
 	// CSR simply records nothing and a later hello for it fails to bind.
+	//
+	// Also record the issuance (serial + public key + issued-at) as the
+	// most-recently-issued certificate for this relay_id — the issuance record
+	// the Expired-certificate re-enrollment path evaluates eligibility against
+	// (internal/relay/reenroll, REL-021/022), never a revocation list.
 	if pub, ok := csr.PublicKey.(ed25519.PublicKey); ok {
 		s.mu.Lock()
 		s.relayKeys[relayID] = pub
+		s.recordIssuance(relayID, serial, pub, notBefore)
 		s.mu.Unlock()
 	}
 
@@ -255,6 +276,52 @@ func (s *Server) RelayEnrollmentKey(relayID string) (ed25519.PublicKey, bool) {
 	return pub, ok
 }
 
+// recordIssuance prepends a freshly issued certificate to relayID's issuance
+// list so the head is always the most-recently-issued (REL-021). The caller
+// holds s.mu.
+func (s *Server) recordIssuance(relayID, serial string, pub ed25519.PublicKey, issuedAt int64) {
+	s.issuances[relayID] = append([]issuance{{
+		serial:   serial,
+		pub:      pub,
+		issuedAt: issuedAt,
+	}}, s.issuances[relayID]...)
+}
+
+// MostRecentSerial returns the serial + public key of the
+// most-recently-issued certificate this feeder issued for relayID, and whether
+// any issuance is on record — satisfying reenroll.IssuanceRecord (REL-021).
+// serial is the certificate's own SerialNumber in the exact string form a
+// relay presents it (see issueRelayCert).
+func (s *Server) MostRecentSerial(relayID string) (string, ed25519.PublicKey, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	list := s.issuances[relayID]
+	if len(list) == 0 {
+		return "", nil, false
+	}
+	head := list[0]
+	return head.serial, head.pub, true
+}
+
+// IsRevoked reports whether the certificate with this serial, issued to
+// relayID, is recorded as revoked — satisfying reenroll.IssuanceRecord
+// (REL-022). An unknown relay_id/serial pair is reported not-revoked; the
+// caller's most-recently-issued check (reenroll.Eligible) is what refuses an
+// unknown serial. Wave-1 first-photon has no revocation surface yet (REL-016
+// is a deferred follow-up), so no issuance is ever marked revoked today; this
+// method exists so the eligibility oracle is complete and honours a revoked
+// entry the moment that surface lands.
+func (s *Server) IsRevoked(relayID, serial string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, iss := range s.issuances[relayID] {
+		if iss.serial == serial {
+			return iss.revoked
+		}
+	}
+	return false
+}
+
 // handleStatePull implements relay/1's desired-state pull (REL-051),
 // serving this server's one signed generation verbatim.
 func (s *Server) handleStatePull(w http.ResponseWriter, r *http.Request) {
@@ -269,10 +336,10 @@ func (s *Server) handleStatePull(w http.ResponseWriter, r *http.Request) {
 // csr's own public key (proof of possession already checked by the
 // caller), returning it PEM-encoded plus its validity window as epoch
 // milliseconds.
-func (s *Server) issueRelayCert(csr *x509.CertificateRequest, relayID string) (certPEM []byte, notBefore, notAfter int64, err error) {
+func (s *Server) issueRelayCert(csr *x509.CertificateRequest, relayID string) (certPEM []byte, serialStr string, notBefore, notAfter int64, err error) {
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
-		return nil, 0, 0, fmt.Errorf("enroll: issueRelayCert: generate serial: %w", err)
+		return nil, "", 0, 0, fmt.Errorf("enroll: issueRelayCert: generate serial: %w", err)
 	}
 
 	now := time.Now()
@@ -291,11 +358,15 @@ func (s *Server) issueRelayCert(csr *x509.CertificateRequest, relayID string) (c
 
 	der, err := x509.CreateCertificate(rand.Reader, template, s.caCert, csr.PublicKey, s.caKey)
 	if err != nil {
-		return nil, 0, 0, fmt.Errorf("enroll: issueRelayCert: create certificate: %w", err)
+		return nil, "", 0, 0, fmt.Errorf("enroll: issueRelayCert: create certificate: %w", err)
 	}
 
 	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	return certPEM, nb.UnixMilli(), na.UnixMilli(), nil
+	// serialStr is the certificate's own SerialNumber rendered exactly as a
+	// relay presenting that certificate later renders it (big.Int.Text(16),
+	// lowercase hex, no leading zeros) — so the issuance record and a
+	// presented serial compare as equal strings in reenroll.Eligible (REL-021).
+	return certPEM, serial.Text(16), nb.UnixMilli(), na.UnixMilli(), nil
 }
 
 // generateCA generates a fresh, in-memory, self-signed ed25519 CA
