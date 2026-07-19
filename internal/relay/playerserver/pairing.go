@@ -132,6 +132,14 @@ type Server struct {
 	signingKey ed25519.PrivateKey         // Task 10: relay's own key, signs every issued Lease (PLY-090)
 	leaseAcks  map[string]LeaseAckRequest // Task 10: lease_id -> most recent LeaseAck (PLY-091)
 
+	// revokedScreens is the relay's own last-synced view of the screen_ids in
+	// relay/1 REL-066's revocation_and_site.revoked (PLY-072): a channel token
+	// naming a screen_id present here is rejected CHANNEL_TOKEN_REVOKED, checked
+	// against this local copy even while disconnected from the app peer, exactly
+	// as REL-123 requires. A screen record the relay no longer recognizes at all
+	// (PLY-075) is modeled the same way — RevokeScreen marks it revoked.
+	revokedScreens map[string]bool
+
 	// Playback telemetry a player posts (PLY-110/111): recorded in order of
 	// arrival. Wave-1 records them in memory only — REL-090/093's durable
 	// upstream forward of each as an events/1 content.played (PLY-113) is a
@@ -166,6 +174,7 @@ func NewServer(relayCertPEM []byte, grants []wire.PairingGrant) (*Server, error)
 		tokens:         map[string]channelTokenRecord{},
 		pollResults:    map[string]redemption{},
 		leaseAcks:      map[string]LeaseAckRequest{},
+		revokedScreens: map[string]bool{},
 	}, nil
 }
 
@@ -195,6 +204,29 @@ func (s *Server) LookupChannelToken(token string) (screenID string, expiresAt in
 		return "", 0, false
 	}
 	return rec.ScreenID, rec.ExpiresAt, true
+}
+
+// RevokeScreen marks screenID revoked in the relay's own last-synced view of
+// relay/1 REL-066's revocation_and_site.revoked (PLY-072): every channel token
+// naming this screen_id is thereafter rejected CHANNEL_TOKEN_REVOKED, and the
+// player it belongs to is driven to re-enter Pairing redemption (PLY-073),
+// never to a futile renewal. This is the relay-side revocation surface a
+// screen-record deletion or an explicit revocation entry drives; it also models
+// PLY-075's "screen_id the relay no longer recognizes at all". Safe for
+// concurrent use.
+func (s *Server) RevokeScreen(screenID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.revokedScreens[screenID] = true
+}
+
+// isScreenRevoked reports whether screenID is present in the relay's own
+// last-synced revocation view (PLY-072) — the check handleProgram runs on a
+// presented token's screen_id before serving a Lease.
+func (s *Server) isScreenRevoked(screenID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.revokedScreens[screenID]
 }
 
 // handlePair implements POST /player/v1/pair (PLY-030–033): decodes a

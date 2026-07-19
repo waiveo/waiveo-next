@@ -212,6 +212,16 @@ func (s *Server) handleProgram(w http.ResponseWriter, r *http.Request) {
 		apihttp.WriteProblem(w, r, traceID, http.StatusUnauthorized, "CHANNEL_TOKEN_INVALID", "Channel Token Invalid")
 		return
 	}
+	// Revocation (PLY-072) is checked BEFORE expiry: it is terminal (PLY-073's
+	// re-pair path), so a token that is both revoked and expired reports
+	// CHANNEL_TOKEN_REVOKED — driving the player to re-pair rather than to a
+	// renewal (PLY-074) of a credential whose screen no longer validates
+	// (PLY-075). The check reads the relay's own last-synced revocation view,
+	// valid even while disconnected from the app peer (REL-123).
+	if s.isScreenRevoked(screenID) {
+		apihttp.WriteProblem(w, r, traceID, http.StatusUnauthorized, "CHANNEL_TOKEN_REVOKED", "Channel Token Revoked")
+		return
+	}
 	if time.Now().UnixMilli() > expiresAt {
 		apihttp.WriteProblem(w, r, traceID, http.StatusUnauthorized, "CHANNEL_TOKEN_EXPIRED", "Channel Token Expired")
 		return

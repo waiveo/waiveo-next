@@ -310,6 +310,29 @@ type problemBody struct {
 	Code  string `json:"code"`
 }
 
+// ProblemError is a non-2xx relay response decoded into api/1's Problem shape
+// (API-010): its typed Code lets a caller branch on the relay's error taxonomy
+// rather than string-match an opaque message — specifically CHANNEL_TOKEN_REVOKED
+// vs CHANNEL_TOKEN_EXPIRED (PLY-072/073), which drive different reconnect
+// behavior (re-pair vs renew). It is returned by decodeOrProblem and recovered
+// with errors.As. Body carries the raw response text when it did not decode as a
+// Problem at all. Its Error() string is unchanged from the pre-typed
+// formulation, so existing error-message expectations still hold.
+type ProblemError struct {
+	StatusCode int
+	Code       string
+	Title      string
+	Body       string
+}
+
+// Error implements error, reproducing decodeOrProblem's original message shape.
+func (e *ProblemError) Error() string {
+	if e.Code != "" {
+		return fmt.Sprintf("status %d: %s: %s", e.StatusCode, e.Code, e.Title)
+	}
+	return fmt.Sprintf("status %d: %s", e.StatusCode, e.Body)
+}
+
 // redeem performs PLY-030–033: POST /player/v1/pair with grantSelector,
 // returning the decoded PairingResponse.
 func redeem(client *http.Client, base, grantSelector string) (pairingResponse, error) {
@@ -437,9 +460,9 @@ func decodeOrProblem(resp *http.Response, out any) error {
 		b, _ := io.ReadAll(resp.Body)
 		var pb problemBody
 		if json.Unmarshal(b, &pb) == nil && pb.Code != "" {
-			return fmt.Errorf("status %d: %s: %s", resp.StatusCode, pb.Code, pb.Title)
+			return &ProblemError{StatusCode: resp.StatusCode, Code: pb.Code, Title: pb.Title}
 		}
-		return fmt.Errorf("status %d: %s", resp.StatusCode, string(b))
+		return &ProblemError{StatusCode: resp.StatusCode, Body: string(b)}
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
