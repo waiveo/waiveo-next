@@ -105,6 +105,40 @@ func (s *Server) SetProgram(programRevision, priority, display string, content [
 	s.signingKey = signingKey
 }
 
+// SetServedProgram configures program delivery from a PERSISTED
+// screen_programs entry (relay/1 REL-061) — the wire.ScreenProgram
+// desiredstate.ServedProgram returns from the relay's durable operational
+// store, NOT a live desired-state pull. This is the offline-continuity serve
+// path (REL-055/061): a relay whose app peer is disconnected still delivers
+// its last-applied program, carrying sp's priority/display/program_revision
+// and content pointers UNMODIFIED onto every issued Lease (PLY-108/109) —
+// so a preempt/content (or blank) assignment reaches the screen through the
+// relay's own offline continuity with no app-peer connection live.
+//
+// sp's content references (relay/1's own ContentRef, REL-061 — no `type`
+// field) are annotated with player/1's required content `type` (PLY-083) as
+// they become Lease content items. Wave-1 first-photon carries exactly one
+// content kind (`image`), so that annotation is a constant here, not a
+// lookup, exactly as cmd/waiveo-relay's own hand-off already treats it. Each
+// URL is the screen's DIRECT content-origin fetch target (never a
+// relay-hosted one, REL-140) — this server never touches the bytes.
+//
+// signingKey MUST be the relay's own enrollment private key, as SetProgram
+// documents — the same trust anchor a player pins its Lease-signature check
+// against (PLY-090).
+func (s *Server) SetServedProgram(sp wire.ScreenProgram, signingKey ed25519.PrivateKey) {
+	content := make([]wire.LeaseContent, 0, len(sp.Content))
+	for _, c := range sp.Content {
+		content = append(content, wire.LeaseContent{
+			Type:      "image",
+			AssetRef:  c.AssetRef,
+			URL:       c.URL,
+			ExpiresAt: c.ExpiresAt,
+		})
+	}
+	s.SetProgram(sp.ProgramRevision, sp.Priority, sp.Display, content, signingKey)
+}
+
 // LeaseAck returns a previously recorded lease/ack for leaseID, and
 // whether one has been recorded — exposed for tests and any later task
 // wanting to inspect ack state (a real relay/1 upstream forward of

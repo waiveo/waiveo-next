@@ -221,14 +221,53 @@ func Pull(feederBaseURL string, store *identity.Store) (Applied, error) {
 		return Applied{}, fmt.Errorf("desiredstate: Pull: %w", err)
 	}
 
-	// 4/5. Persist {generation, hash} as last-applied (REL-055) and return
-	// the applied screen-program. Only reached once hash + signature have
-	// both verified and the generation has not regressed.
+	// 4/5. Persist {generation, hash} as last-applied (REL-055), then persist
+	// the applied screen_programs beside it so the relay can serve its screen
+	// program purely from durable local storage across a restart or an
+	// extended disconnection, without contacting its app peer (Offline
+	// continuity, REL-055/061 — see ServedProgram). Only reached once hash +
+	// signature have both verified and the generation has not regressed.
 	if err := store.SetLastAppliedGeneration(body.Generation, body.Hash); err != nil {
 		return Applied{}, fmt.Errorf("desiredstate: Pull: persist last-applied generation: %w", err)
 	}
+	programsJSON, err := json.Marshal(applied.ScreenPrograms)
+	if err != nil {
+		return Applied{}, fmt.Errorf("desiredstate: Pull: marshal applied screen_programs: %w", err)
+	}
+	if err := store.SetServedScreenPrograms(programsJSON); err != nil {
+		return Applied{}, fmt.Errorf("desiredstate: Pull: persist applied screen_programs: %w", err)
+	}
 
 	return applied, nil
+}
+
+// ServedProgram returns the relay's persisted last-applied screen_programs
+// (REL-061) from store, decoded — the relay's OFFLINE serve path. Its sole
+// input is the durable operational store: it performs no network I/O and
+// contacts no app peer, so a relay disconnected from its app peer continues
+// serving a screen's program purely from its own last-applied, durably
+// persisted desired-state snapshot (REL-055/061). A relay that has never
+// applied a generation returns an empty slice (the REL-060 empty
+// placeholder), not an error.
+//
+// The returned entries carry priority/display/content EXACTLY as the verified
+// snapshot applied them — an emergency-takeover `preempt`/`content`
+// assignment reaches a screen through the relay's own offline continuity
+// without requiring a live app-peer connection at the moment the screen needs
+// it (opaque carriage, REL-061/062/065).
+func ServedProgram(store *identity.Store) ([]wire.ScreenProgram, error) {
+	if store == nil {
+		return nil, fmt.Errorf("desiredstate: ServedProgram: store must not be nil")
+	}
+	raw, err := store.LastAppliedScreenPrograms()
+	if err != nil {
+		return nil, fmt.Errorf("desiredstate: ServedProgram: read persisted screen_programs: %w", err)
+	}
+	var programs []wire.ScreenProgram
+	if err := json.Unmarshal(raw, &programs); err != nil {
+		return nil, fmt.Errorf("desiredstate: ServedProgram: decode persisted screen_programs: %w", err)
+	}
+	return programs, nil
 }
 
 // fetchSnapshot performs relay/1's desired-state pull (`GET /state/pull`,

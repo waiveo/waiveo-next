@@ -68,9 +68,10 @@ CREATE TABLE IF NOT EXISTS desired_state_verification_key (
 	public_key  BLOB NOT NULL
 );
 CREATE TABLE IF NOT EXISTS last_applied_generation (
-	id          INTEGER PRIMARY KEY CHECK (id = 1),
-	generation  INTEGER NOT NULL,
-	hash        TEXT NOT NULL
+	id              INTEGER PRIMARY KEY CHECK (id = 1),
+	generation      INTEGER NOT NULL,
+	hash            TEXT NOT NULL,
+	screen_programs BLOB NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS clock_floor (
 	id          INTEGER PRIMARY KEY CHECK (id = 1),
@@ -324,6 +325,57 @@ func (s *Store) LastAppliedGeneration() (generation int64, hash string, ok bool,
 		return 0, "", false, fmt.Errorf("identity: LastAppliedGeneration: %w", err)
 	}
 	return generation, hash, true, nil
+}
+
+// SetServedScreenPrograms persists screenProgramsJSON — the applied
+// snapshot's `screen_programs` array (relay/1 REL-061), a JSON array of
+// `{screen_id, program_revision, priority, display, content}` entries — as a
+// facet of the last-applied generation record (REL-055), so a relay serves
+// its last-applied screen program purely from durable local storage across a
+// restart or an extended disconnection, without first contacting its app peer
+// (Offline continuity, REL-055/061). These are the signed content POINTERS a
+// screen resolves against its own origin (`{asset_ref, url, expires_at}`),
+// never asset bytes (REL-140) — nothing here caches media, keeping the store
+// within REL-142's operational-footprint scope.
+//
+// This is a facet of the singleton last-applied row, so a last-applied
+// generation MUST already be persisted (SetLastAppliedGeneration) when this is
+// called; in the desired-state apply path (internal/relay/desiredstate.Pull)
+// that ordering always holds. An empty or nil screenProgramsJSON is stored as
+// the REL-060 empty placeholder (`[]`).
+func (s *Store) SetServedScreenPrograms(screenProgramsJSON []byte) error {
+	if len(screenProgramsJSON) == 0 {
+		screenProgramsJSON = []byte("[]")
+	}
+	if _, err := s.db.Exec(
+		`UPDATE last_applied_generation SET screen_programs = ? WHERE id = 1`,
+		screenProgramsJSON,
+	); err != nil {
+		return fmt.Errorf("identity: SetServedScreenPrograms: %w", err)
+	}
+	return nil
+}
+
+// LastAppliedScreenPrograms returns the persisted last-applied
+// `screen_programs` array as its raw JSON bytes (REL-061). A store that has
+// never applied a generation — or one whose applied generation carried no
+// screen_programs — returns the REL-060 empty placeholder (`[]`), never a nil
+// or an error, so the offline serve path
+// (internal/relay/desiredstate.ServedProgram) decodes cleanly to an empty
+// program set rather than failing.
+func (s *Store) LastAppliedScreenPrograms() ([]byte, error) {
+	var raw []byte
+	err := s.db.QueryRow(`SELECT screen_programs FROM last_applied_generation WHERE id = 1`).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return []byte("[]"), nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("identity: LastAppliedScreenPrograms: %w", err)
+	}
+	if len(raw) == 0 {
+		return []byte("[]"), nil
+	}
+	return raw, nil
 }
 
 // SetClockFloor persists ms as the relay's clock floor (REL-130) — the

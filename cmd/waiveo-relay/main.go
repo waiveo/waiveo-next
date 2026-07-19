@@ -39,7 +39,6 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
 	"github.com/maaxton/waiveo-next/internal/rules/registry"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
-	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
 // config is the relay's deployment-time addressing. Defaults keep the Wave-1
@@ -190,21 +189,24 @@ func main() {
 	}
 	logPairingCodes(cfg, applied, certDER)
 
-	// Task 10: configure program delivery (GET /player/v1/program) from the
-	// SAME verified Applied value pairing already sourced its grants from —
-	// Wave-1 first-photon carries exactly one content kind (image), so the
-	// relay/1 -> player/1 `type` annotation (relay/1's own ContentRef has
-	// no `type` field, player/1's Content reference requires one, PLY-083)
-	// is a constant here, not a lookup. signingKey is the SAME enrollment
-	// private key relayID.CertPEM certifies, so a player's PLY-090
-	// signature check against its pinned trust anchor lines up with the
-	// cert this listener actually presents.
-	pairingSrv.SetProgram(applied.ProgramRevision, applied.Priority, applied.Display, []wire.LeaseContent{{
-		Type:      "image",
-		AssetRef:  applied.Image.AssetRef,
-		URL:       applied.Image.URL,
-		ExpiresAt: applied.Image.ExpiresAt,
-	}}, relayID.PrivateKey)
+	// Configure program delivery (GET /player/v1/program) from the relay's
+	// OWN persisted last-applied screen_programs (REL-055/061), not directly
+	// from the live Applied value — the same durable copy Pull just wrote, so
+	// the serve path reads what a restart with a disconnected app peer would
+	// read (Offline continuity). ServedProgram's sole input is the operational
+	// store; it contacts no app peer. Wave-1 first-photon carries exactly one
+	// applied screen-program system-wide, so SetServedProgram takes entry [0].
+	// signingKey is the SAME enrollment private key relayID.CertPEM certifies,
+	// so a player's PLY-090 signature check against its pinned trust anchor
+	// lines up with the cert this listener actually presents.
+	served, err := desiredstate.ServedProgram(store)
+	if err != nil {
+		log.Fatalf("waiveo-relay: read persisted screen_programs for offline serve: %v", err)
+	}
+	if len(served) == 0 {
+		log.Fatalf("waiveo-relay: persisted last-applied snapshot carried no screen_programs to serve")
+	}
+	pairingSrv.SetServedProgram(served[0], relayID.PrivateKey)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthz)
