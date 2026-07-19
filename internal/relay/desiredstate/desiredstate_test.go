@@ -400,6 +400,172 @@ func TestPullRejectsLowerGeneration(t *testing.T) {
 	}
 }
 
+// newRawPullServer serves rawBody verbatim from /state/pull over an
+// httptest TLS listener — used to exercise Pull against a hand-crafted
+// snapshot body (e.g. one with a section key omitted) that the typed
+// wire.StateSnapshotBody could never itself marshal.
+func newRawPullServer(t *testing.T, rawBody []byte) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/state/pull", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(rawBody)
+	})
+	ts := httptest.NewTLSServer(mux)
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// TestPullExposesSiteEffective asserts a verified snapshot's
+// revocation_and_site.site_effective (REL-066) is surfaced on
+// Applied.SiteEffective unmodified — the persisted site placement a relay's
+// dayparting/sun evaluation uses across a restart, riding the same
+// hash/signature verification as everything else.
+func TestPullExposesSiteEffective(t *testing.T) {
+	img := loadTestImage(t)
+	id := testFeederIdentity(t)
+
+	snap, err := snapshot.Build(img, "https://origin.example", id, nil)
+	if err != nil {
+		t.Fatalf("snapshot.Build: %v", err)
+	}
+	want := snap.Sections.RevocationAndSite.SiteEffective
+	if want.TZ == "" {
+		t.Fatal("precondition: snapshot.Build emitted an empty site_effective")
+	}
+
+	ts := newTestFeeder(t, id, snap)
+	store := enrolledStore(t, ts)
+
+	applied, err := Pull(ts.URL, store)
+	if err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+	if applied.SiteEffective != want {
+		t.Errorf("applied.SiteEffective = %+v, want %+v (REL-066, unmodified)", applied.SiteEffective, want)
+	}
+}
+
+// TestPullExposesScreenPrograms asserts a verified snapshot's full
+// screen_programs array (REL-061) is surfaced on Applied.ScreenPrograms
+// unmodified — carrying priority/display/content through for Task 2's
+// offline program delivery.
+func TestPullExposesScreenPrograms(t *testing.T) {
+	img := loadTestImage(t)
+	id := testFeederIdentity(t)
+
+	snap, err := snapshot.Build(img, "https://origin.example", id, nil)
+	if err != nil {
+		t.Fatalf("snapshot.Build: %v", err)
+	}
+
+	ts := newTestFeeder(t, id, snap)
+	store := enrolledStore(t, ts)
+
+	applied, err := Pull(ts.URL, store)
+	if err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+	if !reflect.DeepEqual(applied.ScreenPrograms, snap.Sections.ScreenPrograms) {
+		t.Errorf("applied.ScreenPrograms = %+v, want %+v (REL-061, unmodified)", applied.ScreenPrograms, snap.Sections.ScreenPrograms)
+	}
+}
+
+// TestPullRejectsIncompleteSections asserts a snapshot whose `sections`
+// object omits any one of the seven REL-060 keys is rejected outright
+// (ErrSectionsIncomplete) — the structural completeness gate fires before
+// hash/signature verification, and nothing is applied.
+func TestPullRejectsIncompleteSections(t *testing.T) {
+	img := loadTestImage(t)
+	id := testFeederIdentity(t)
+
+	snap, err := snapshot.Build(img, "https://origin.example", id, nil)
+	if err != nil {
+		t.Fatalf("snapshot.Build: %v", err)
+	}
+
+	// Enroll against a real feeder so the store holds the trust anchor.
+	realTS := newTestFeeder(t, id, snap)
+	store := enrolledStore(t, realTS)
+
+	// Craft a body whose sections omits `schedule` (any one key would do).
+	raw, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatalf("Marshal snap: %v", err)
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("Unmarshal body: %v", err)
+	}
+	var sections map[string]json.RawMessage
+	if err := json.Unmarshal(body["sections"], &sections); err != nil {
+		t.Fatalf("Unmarshal sections: %v", err)
+	}
+	delete(sections, "schedule")
+	body["sections"], err = json.Marshal(sections)
+	if err != nil {
+		t.Fatalf("Marshal sections-without-schedule: %v", err)
+	}
+	rawBody, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("Marshal incomplete body: %v", err)
+	}
+
+	ts := newRawPullServer(t, rawBody)
+	applied, err := Pull(ts.URL, store)
+	if !errors.Is(err, ErrSectionsIncomplete) {
+		t.Fatalf("Pull error = %v, want ErrSectionsIncomplete (REL-060)", err)
+	}
+	if !reflect.DeepEqual(applied, Applied{}) {
+		t.Errorf("Pull returned a non-zero Applied on rejection: %+v", applied)
+	}
+	if _, _, ok, err := store.LastAppliedGeneration(); err != nil {
+		t.Fatalf("LastAppliedGeneration: %v", err)
+	} else if ok {
+		t.Error("LastAppliedGeneration ok = true after an incomplete-sections rejection, want false (nothing applied)")
+	}
+}
+
+// TestPullIgnoresWorkflowGeneration asserts the relay accepts and
+// structurally ignores a non-empty workflow_generation section (REL-068,
+// RESERVED): a snapshot carrying arbitrary content there — re-hashed and
+// re-signed under the feeder's own key — still applies its screen-program
+// exactly as one carrying the reserved null placeholder.
+func TestPullIgnoresWorkflowGeneration(t *testing.T) {
+	img := loadTestImage(t)
+	id := testFeederIdentity(t)
+
+	snap, err := snapshot.Build(img, "https://origin.example", id, nil)
+	if err != nil {
+		t.Fatalf("snapshot.Build: %v", err)
+	}
+
+	// Put arbitrary reserved content in workflow_generation, then re-hash +
+	// re-sign under the feeder's own signing key so the snapshot is valid.
+	snap.Sections.WorkflowGeneration = map[string]any{"future_reserved": []any{"anything", 42.0}}
+	snap.Hash, err = wire.HashSections(snap.Sections)
+	if err != nil {
+		t.Fatalf("wire.HashSections: %v", err)
+	}
+	canon, err := wire.SignedScopeBytes(snap.Generation, snap.Hash)
+	if err != nil {
+		t.Fatalf("wire.SignedScopeBytes: %v", err)
+	}
+	snap.Signature = wire.EncodeSignature(signhash.Sign(id.SigningPriv(), canon))
+
+	ts := newTestFeeder(t, id, snap)
+	store := enrolledStore(t, ts)
+
+	applied, err := Pull(ts.URL, store)
+	if err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+	if applied.Generation != 1 || applied.ScreenID != snap.Sections.ScreenPrograms[0].ScreenID {
+		t.Errorf("applied = %+v, want the screen-program applied despite non-empty workflow_generation (REL-068)", applied)
+	}
+}
+
 // TestPullFailsWithoutTrustAnchor asserts Pull refuses to even attempt
 // verification when the store holds no persisted
 // desired_state_verification_key yet (never enrolled) — there is no trust

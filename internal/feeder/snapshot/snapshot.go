@@ -74,6 +74,19 @@ const (
 	rulesMinorVersion = "1.0"
 )
 
+// firstPhotonSiteEffective is the Wave-1 first-photon site's placement data
+// the feeder persists into every snapshot's revocation_and_site.site_effective
+// (REL-066), so a relay's dayparting and sun/time evaluation stay correct
+// across a restart from the persisted snapshot alone, without first
+// completing a fresh hello. It mirrors cmd/waiveo-feeder's firstPhotonSite
+// (REL-036) — a real IANA zone and coordinates — standing in for the
+// per-site record the data-model site source supplies in a later wave.
+var firstPhotonSiteEffective = wire.SiteEffective{
+	TZ:   "America/Chicago",
+	Lat:  41.8781,
+	Long: -87.6298,
+}
+
 // demoEdgeRuleJSON is the single authored rules/1 rule the Wave-1 feeder
 // signs into every generation's edge_rules section (REL-062). It is carried
 // opaquely to the relay, which compiles + loads it (Task 2). Kept as a
@@ -140,7 +153,7 @@ func Build(img []byte, contentBaseURL string, id *signing.Identity, grants []wir
 		},
 		RevocationAndSite: wire.RevocationAndSite{
 			Revoked:       []string{},
-			SiteEffective: wire.SiteEffective{},
+			SiteEffective: firstPhotonSiteEffective,
 		},
 		PairingGrants:      grants,
 		WorkflowGeneration: nil, // RESERVED, REL-068

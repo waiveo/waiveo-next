@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -63,6 +64,16 @@ var (
 	// generation (REL-052) — desired-state generations are monotonically
 	// non-decreasing; a lower one is rejected outright, never applied.
 	ErrGenerationRegressed = errors.New("desiredstate: snapshot generation is lower than the persisted last-applied generation")
+
+	// ErrSectionsIncomplete is returned when a pulled snapshot's `sections`
+	// object omits any one of the seven REL-060 keys — every snapshot MUST
+	// carry all seven, present even when empty. This is a structural gate on
+	// the raw wire bytes that fires BEFORE hash/signature verification (a
+	// Go-decoded Sections struct always materializes all seven fields, so an
+	// omission is only observable in the original JSON), and like every
+	// rejection here it leaves the persisted last-applied generation
+	// untouched — nothing is applied.
+	ErrSectionsIncomplete = errors.New("desiredstate: snapshot sections is missing a required REL-060 key")
 )
 
 // Applied is the relay's locally-applied Wave-1 first-photon desired-state
@@ -103,6 +114,23 @@ type Applied struct {
 	Image           wire.ContentRef
 	PairingGrants   []wire.PairingGrant
 	EdgeRules       []json.RawMessage
+
+	// ScreenPrograms is the verified snapshot's full sections.screen_programs
+	// array (REL-061), carried unmodified — every entry's priority/display/
+	// content preserved opaquely for a later player/1 program delivery
+	// (Task 2), which serves this persisted copy offline without a live
+	// app-peer connection. The convenience fields above (ScreenID, Priority,
+	// …) mirror ScreenPrograms[0] for the Wave-1 single-program case; this
+	// array is the complete source of truth.
+	ScreenPrograms []wire.ScreenProgram
+
+	// SiteEffective is the verified snapshot's
+	// sections.revocation_and_site.site_effective (REL-066), carried
+	// unmodified — the site's persisted {tz, lat, long} a relay's dayparting
+	// and sun/time evaluation apply verified wall-clock time against, so they
+	// stay correct across a restart from the persisted snapshot alone without
+	// first completing a fresh hello.
+	SiteEffective wire.SiteEffective
 }
 
 // Pull fetches the feeder's signed desired-state snapshot from
@@ -130,9 +158,19 @@ func Pull(feederBaseURL string, store *identity.Store) (Applied, error) {
 		return Applied{}, ErrNoTrustAnchor
 	}
 
-	body, err := fetchSnapshot(feederBaseURL)
+	body, rawSections, err := fetchSnapshot(feederBaseURL)
 	if err != nil {
 		return Applied{}, fmt.Errorf("desiredstate: Pull: fetch snapshot: %w", err)
+	}
+
+	// 0. REL-060 structural completeness: the raw `sections` object MUST
+	// carry all seven keys. This gate runs on the original wire bytes,
+	// BEFORE hash recompute or signature verification — a Go-decoded
+	// Sections struct always materializes all seven fields (missing ones as
+	// zero values), so an omitted key is only observable here. A snapshot
+	// missing any key is rejected outright; nothing is applied.
+	if err := wire.ValidateSectionsComplete(rawSections); err != nil {
+		return Applied{}, fmt.Errorf("%w: %v", ErrSectionsIncomplete, err)
 	}
 
 	// 1. Recompute `hash` from the received `sections` using the SAME
@@ -199,24 +237,43 @@ func Pull(feederBaseURL string, store *identity.Store) (Applied, error) {
 // Wave-1 first-photon — internal/feeder/enroll's handler implements no
 // `since_generation`/`state.unchanged` branch, so none is coded against
 // here.
-func fetchSnapshot(feederBaseURL string) (wire.StateSnapshotBody, error) {
+// It returns both the decoded typed body AND the raw `sections` JSON bytes:
+// the raw bytes are what REL-060's structural completeness gate
+// (wire.ValidateSectionsComplete) checks, since a Go-decoded Sections struct
+// always materializes all seven fields and so cannot reveal an omitted key.
+func fetchSnapshot(feederBaseURL string) (wire.StateSnapshotBody, json.RawMessage, error) {
 	client := bootstrapClient()
 
 	resp, err := client.Get(feederBaseURL + "/state/pull")
 	if err != nil {
-		return wire.StateSnapshotBody{}, fmt.Errorf("GET /state/pull: %w", err)
+		return wire.StateSnapshotBody{}, nil, fmt.Errorf("GET /state/pull: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return wire.StateSnapshotBody{}, fmt.Errorf("GET /state/pull: unexpected status %d", resp.StatusCode)
+		return wire.StateSnapshotBody{}, nil, fmt.Errorf("GET /state/pull: unexpected status %d", resp.StatusCode)
+	}
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return wire.StateSnapshotBody{}, nil, fmt.Errorf("read /state/pull response: %w", err)
 	}
 
 	var body wire.StateSnapshotBody
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return wire.StateSnapshotBody{}, fmt.Errorf("decode /state/pull response: %w", err)
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return wire.StateSnapshotBody{}, nil, fmt.Errorf("decode /state/pull response: %w", err)
 	}
-	return body, nil
+
+	// Re-extract the `sections` value as raw bytes for the REL-060
+	// completeness gate — from the same response bytes, so it reflects
+	// exactly what the feeder sent.
+	var envelope struct {
+		Sections json.RawMessage `json:"sections"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return wire.StateSnapshotBody{}, nil, fmt.Errorf("decode /state/pull sections: %w", err)
+	}
+	return body, envelope.Sections, nil
 }
 
 // bootstrapClient returns an http.Client for the desired-state pull
@@ -262,5 +319,7 @@ func extractApplied(generation int64, sections wire.Sections) (Applied, error) {
 		Image:           prog.Content[0],
 		PairingGrants:   sections.PairingGrants,
 		EdgeRules:       sections.EdgeRules.Rules,
+		ScreenPrograms:  sections.ScreenPrograms,
+		SiteEffective:   sections.RevocationAndSite.SiteEffective,
 	}, nil
 }

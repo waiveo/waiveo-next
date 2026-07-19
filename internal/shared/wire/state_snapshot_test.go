@@ -107,3 +107,78 @@ func TestStateSnapshotBodyFieldNames(t *testing.T) {
 		t.Fatalf("round-trip Unmarshal: %v", err)
 	}
 }
+
+// TestValidateSectionsComplete asserts the REL-060 structural completeness
+// gate: a raw `sections` object carrying all seven keys passes, one missing
+// ANY single key fails, and a key present with a JSON `null` value (as
+// `workflow_generation` carries in this version, REL-068) counts as present.
+func TestValidateSectionsComplete(t *testing.T) {
+	full := Sections{
+		ScreenPrograms:     []ScreenProgram{},
+		EdgeRules:          EdgeRules{Rules: []json.RawMessage{}},
+		DeviceInventory:    DeviceInventory{Devices: []json.RawMessage{}, PackMatchPatterns: []json.RawMessage{}},
+		RevocationAndSite:  RevocationAndSite{Revoked: []string{}, SiteEffective: SiteEffective{}},
+		PairingGrants:      []PairingGrant{},
+		WorkflowGeneration: nil, // marshals as JSON null — REL-068 empty placeholder
+	}
+	rawFull, err := json.Marshal(full)
+	if err != nil {
+		t.Fatalf("Marshal full sections: %v", err)
+	}
+
+	if err := ValidateSectionsComplete(rawFull); err != nil {
+		t.Fatalf("ValidateSectionsComplete(full) = %v, want nil (all seven keys present)", err)
+	}
+
+	// workflow_generation is present but null — must still count as present.
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(rawFull, &m); err != nil {
+		t.Fatalf("Unmarshal full sections into map: %v", err)
+	}
+	if string(m["workflow_generation"]) != "null" {
+		t.Fatalf("precondition: workflow_generation marshaled to %q, want null", m["workflow_generation"])
+	}
+
+	// Removing ANY one of the seven keys must fail the gate.
+	for _, k := range SectionKeys {
+		var missing map[string]json.RawMessage
+		if err := json.Unmarshal(rawFull, &missing); err != nil {
+			t.Fatalf("Unmarshal for %q removal: %v", k, err)
+		}
+		delete(missing, k)
+		rawMissing, err := json.Marshal(missing)
+		if err != nil {
+			t.Fatalf("Marshal sections without %q: %v", k, err)
+		}
+		if err := ValidateSectionsComplete(rawMissing); err == nil {
+			t.Errorf("ValidateSectionsComplete(sections without %q) = nil, want an error (REL-060)", k)
+		}
+	}
+
+	// A non-object sections value is refused rather than panicking.
+	if err := ValidateSectionsComplete(json.RawMessage(`[]`)); err == nil {
+		t.Error("ValidateSectionsComplete(non-object) = nil, want an error")
+	}
+}
+
+// TestSectionKeysAreTheSevenRELKeys asserts SectionKeys is exactly the seven
+// REL-060 keys, in the contract's declared order.
+func TestSectionKeysAreTheSevenRELKeys(t *testing.T) {
+	want := []string{
+		"screen_programs",
+		"edge_rules",
+		"device_inventory",
+		"schedule",
+		"revocation_and_site",
+		"pairing_grants",
+		"workflow_generation",
+	}
+	if len(SectionKeys) != len(want) {
+		t.Fatalf("SectionKeys = %v, want %v", SectionKeys, want)
+	}
+	for i, k := range want {
+		if SectionKeys[i] != k {
+			t.Errorf("SectionKeys[%d] = %q, want %q", i, SectionKeys[i], k)
+		}
+	}
+}

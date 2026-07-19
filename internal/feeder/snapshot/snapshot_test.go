@@ -195,6 +195,54 @@ func TestBuildEmitsDemoEdgeRule(t *testing.T) {
 	}
 }
 
+// TestBuildEmitsSiteEffective asserts Build populates
+// revocation_and_site.site_effective (REL-066) with the first-photon site's
+// real timezone and coordinates — not an empty placeholder — so a relay's
+// dayparting and sun/time evaluation survive a restart from the persisted
+// snapshot alone. The section rides the same hash/signature as everything
+// else (recompute + verify with it populated).
+func TestBuildEmitsSiteEffective(t *testing.T) {
+	img := loadTestImage(t)
+	id := testIdentity(t)
+
+	snap, err := Build(img, "https://origin.example", id, nil)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	se := snap.Sections.RevocationAndSite.SiteEffective
+	if se.TZ == "" {
+		t.Error("SiteEffective.TZ is empty, want the first-photon site's real IANA zone (REL-066)")
+	}
+	if se.Lat == 0 && se.Long == 0 {
+		t.Errorf("SiteEffective = %+v, want real first-photon coordinates (REL-066)", se)
+	}
+	// revoked must still be a present, non-nil empty slice (REL-066/060).
+	if snap.Sections.RevocationAndSite.Revoked == nil {
+		t.Error("RevocationAndSite.Revoked is nil, want a present empty slice (REL-060)")
+	}
+
+	// The section rides hash + signature exactly like every other section.
+	recomputed, err := hashSections(snap.Sections)
+	if err != nil {
+		t.Fatalf("hashSections: %v", err)
+	}
+	if recomputed != snap.Hash {
+		t.Errorf("recomputed hash %q != snapshot hash %q — site_effective must be covered by hash (REL-053)", recomputed, snap.Hash)
+	}
+	canon, err := generationHashCanonBytes(snap.Generation, snap.Hash)
+	if err != nil {
+		t.Fatalf("generationHashCanonBytes: %v", err)
+	}
+	sigBytes, err := wire.DecodeSignature(snap.Signature)
+	if err != nil {
+		t.Fatalf("wire.DecodeSignature: %v", err)
+	}
+	if !signhash.Verify(id.SigningPub(), canon, sigBytes) {
+		t.Error("signature did not verify with a populated site_effective section (REL-075)")
+	}
+}
+
 // TestBuildSignatureVerifies asserts the snapshot's signature verifies
 // under the feeder's own signing public key over {generation, hash}, and
 // fails under a different key (REL-075).

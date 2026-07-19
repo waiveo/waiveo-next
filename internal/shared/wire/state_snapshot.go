@@ -1,6 +1,48 @@
 package wire
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
+
+// SectionKeys is the exact set of REL-060 `sections` keys, in the contract's
+// declared order: every `state.snapshot` MUST carry all seven, present even
+// when empty (an empty array or explicit empty placeholder, never an omitted
+// key). Both this package's own field-shape tests and the relay's
+// completeness gate (ValidateSectionsComplete, internal/relay/desiredstate)
+// derive their key set from this one list so they cannot drift apart.
+var SectionKeys = []string{
+	"screen_programs",
+	"edge_rules",
+	"device_inventory",
+	"schedule",
+	"revocation_and_site",
+	"pairing_grants",
+	"workflow_generation",
+}
+
+// ValidateSectionsComplete is REL-060's structural completeness gate: it
+// reports an error unless rawSections is a JSON object carrying every one of
+// the seven SectionKeys. A key present with a JSON `null` value (as
+// `workflow_generation` carries in this version, REL-068) counts as present —
+// only an OMITTED key fails. This is a purely structural check on the raw
+// wire bytes, distinct from and prior to hash/signature verification: a
+// Go-decoded Sections struct always materializes all seven fields (missing
+// ones as zero values), so completeness can only be checked against the
+// original JSON, before it is decoded into the typed struct. Callers wrap the
+// returned error in their own typed rejection reason.
+func ValidateSectionsComplete(rawSections json.RawMessage) error {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(rawSections, &m); err != nil {
+		return fmt.Errorf("wire: sections is not a JSON object: %w", err)
+	}
+	for _, k := range SectionKeys {
+		if _, ok := m[k]; !ok {
+			return fmt.Errorf("wire: sections is missing REL-060 key %q", k)
+		}
+	}
+	return nil
+}
 
 // StateSnapshotBody is the relay/1 `state.snapshot` message body
 // (relay/1 REL-051): `{generation, hash, signature, sections}`.
