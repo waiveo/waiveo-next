@@ -50,12 +50,20 @@ type CommandVocab interface {
 	CommandExists(deviceClass, command string) bool
 }
 
-// DeviceClassResolver maps an already-resolved entity_id (REL-112) to the
-// device class whose command vocabulary governs it, reporting ok=false when no
-// adopted entity is known for the id — in which case the command cannot
+// EntityResolver maps an already-resolved entity_id (REL-112) to the physical
+// device that exposes it and the device class whose command vocabulary governs
+// it — both read from the one adopted-entity record. It reports ok=false when
+// no adopted entity is known for the id, in which case the command cannot
 // resolve against any vocabulary and is rejected without touching a device
 // (REL-113).
-type DeviceClassResolver func(entityID string) (deviceClass string, ok bool)
+//
+// deviceID names the physical (or virtual) device the entity belongs to
+// (data-model/1: a device exposes one or more entities). Because one device
+// fans out to many entity_ids, deviceID — not entity_id — is the key
+// REL-115's per-device serialization must use: two commands to two DIFFERENT
+// entities of the SAME physical device still contend for that one device and
+// MUST NOT be dispatched concurrently.
+type EntityResolver func(entityID string) (deviceID, deviceClass string, ok bool)
 
 // ControllerError is the typed error a DeviceController returns to surface a
 // specific relay/1 Error-taxonomy code (e.g. COMMAND_TARGET_UNREACHABLE) in the
@@ -168,29 +176,32 @@ func WithCommandJournal(journal CommandJournal) CommandOption {
 // serialized (REL-115), and a dispatch's params credential material is carried
 // only in memory to the controller, never to the log or journal sinks (REL-114).
 type CommandSurface struct {
-	controller   DeviceController
-	vocab        CommandVocab
-	resolveClass DeviceClassResolver
+	controller    DeviceController
+	vocab         CommandVocab
+	resolveEntity EntityResolver
 
 	log     CommandLog
 	journal CommandJournal
 
-	// locksMu guards locks; each entry is the per-device dispatch lock a
-	// command to that entity holds across its physical dispatch (REL-115).
+	// locksMu guards locks; each entry is the per-device dispatch lock keyed by
+	// device_id (REL-115) — every command to any entity of that one physical
+	// device holds this same lock across its dispatch, so a second command to
+	// the device queues rather than interleaving.
 	locksMu sync.Mutex
 	locks   map[string]*sync.Mutex
 }
 
 // NewCommandSurface builds a CommandSurface from the physical-device adapter,
 // the device-class command-vocabulary source (REL-113 / REG-052 — e.g. the
-// engine's registry), and the entity_id→device-class resolver (REL-112).
-// Optional CommandOptions wire the redacted log/journal sinks (REL-114).
-func NewCommandSurface(controller DeviceController, vocab CommandVocab, resolveClass DeviceClassResolver, opts ...CommandOption) *CommandSurface {
+// engine's registry), and the entity_id→(device_id, device-class) resolver
+// (REL-112; the device_id it returns is REL-115's serialization key). Optional
+// CommandOptions wire the redacted log/journal sinks (REL-114).
+func NewCommandSurface(controller DeviceController, vocab CommandVocab, resolveEntity EntityResolver, opts ...CommandOption) *CommandSurface {
 	s := &CommandSurface{
-		controller:   controller,
-		vocab:        vocab,
-		resolveClass: resolveClass,
-		locks:        make(map[string]*sync.Mutex),
+		controller:    controller,
+		vocab:         vocab,
+		resolveEntity: resolveEntity,
+		locks:         make(map[string]*sync.Mutex),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -234,7 +245,7 @@ func (s *CommandSurface) Execute(cmd DeviceCommand) DeviceCommandResult {
 // execute performs the resolve→serialized-dispatch→result path for a single
 // command (REL-112/113/115); Execute wraps it to emit the redacted record.
 func (s *CommandSurface) execute(cmd DeviceCommand) DeviceCommandResult {
-	deviceClass, ok := s.resolveClass(cmd.Body.EntityID)
+	deviceID, deviceClass, ok := s.resolveEntity(cmd.Body.EntityID)
 	if !ok {
 		// No adopted entity for this id → nothing to resolve the command
 		// against → unresolved, and the device is never touched (REL-113).
@@ -248,12 +259,13 @@ func (s *CommandSurface) execute(cmd DeviceCommand) DeviceCommandResult {
 			fmt.Sprintf("%q is not a command %s declares", cmd.Body.Command, deviceClass))
 	}
 
-	// REL-115: serialize per target device. Hold the entity's dispatch lock
-	// across the physical dispatch so a second command to the same device
-	// queues behind this one rather than interleaving delivery to one device.
+	// REL-115: serialize per target device_id — NOT per entity_id. A device
+	// exposes one or more entities (data-model/1), so two commands to two
+	// different entities of the same physical device must contend for one lock;
+	// keying on entity_id would let them interleave delivery to that one device.
 	// The lock is taken only for a resolved command — an unresolved one never
 	// reaches here and never touches the device (REL-113).
-	lock := s.deviceLock(cmd.Body.EntityID)
+	lock := s.deviceLock(deviceID)
 	lock.Lock()
 	defer lock.Unlock()
 
@@ -276,17 +288,19 @@ func (s *CommandSurface) execute(cmd DeviceCommand) DeviceCommandResult {
 	}
 }
 
-// deviceLock returns the per-device dispatch mutex for entityID, creating it on
-// first use. Serializing on the resolved entity (relay/1 accepts only a single
-// already-resolved entity_id per command, REL-112) is how the surface enforces
-// REL-115's one-outstanding-command-per-device rule.
-func (s *CommandSurface) deviceLock(entityID string) *sync.Mutex {
+// deviceLock returns the per-device dispatch mutex for deviceID, creating it on
+// first use. Keying on the physical device_id (the entity's owning device, from
+// resolveEntity) — not the entity_id — is what enforces REL-115's
+// one-outstanding-command-per-device rule: every entity of one device shares
+// this one lock, so a second command to that device can never be dispatched
+// while an earlier one to any of its entities is still outstanding.
+func (s *CommandSurface) deviceLock(deviceID string) *sync.Mutex {
 	s.locksMu.Lock()
 	defer s.locksMu.Unlock()
-	l, ok := s.locks[entityID]
+	l, ok := s.locks[deviceID]
 	if !ok {
 		l = &sync.Mutex{}
-		s.locks[entityID] = l
+		s.locks[deviceID] = l
 	}
 	return l
 }

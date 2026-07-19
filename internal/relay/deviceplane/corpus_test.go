@@ -183,7 +183,7 @@ func TestREL110CorpusEndToEnd(t *testing.T) {
 	}
 
 	controller := &recordingController{}
-	resolve := func(entityID string) (string, bool) {
+	resolve := func(entityID string) (string, string, bool) {
 		// The corpus dispatches every command against the one adopted entity
 		// its commands name; anything else resolves to no device class.
 		for _, raw := range c.Input.Commands {
@@ -194,10 +194,10 @@ func TestREL110CorpusEndToEnd(t *testing.T) {
 			}
 			_ = json.Unmarshal(raw, &cmd)
 			if cmd.Body.EntityID == entityID {
-				return c.Input.TargetEntityDeviceClass, true
+				return entityID, c.Input.TargetEntityDeviceClass, true
 			}
 		}
-		return "", false
+		return "", "", false
 	}
 	surface := NewCommandSurface(controller, registry.FixtureRegistry{}, resolve)
 

@@ -70,12 +70,12 @@ func loadRel110Commands(t *testing.T) corpusCommandsFile {
 func rel110Surface(t *testing.T, controller DeviceController) *CommandSurface {
 	t.Helper()
 	f := loadRel110Commands(t)
-	resolve := func(entityID string) (string, bool) {
+	resolve := func(entityID string) (string, string, bool) {
 		// The corpus dispatches both commands against the one adopted entity.
 		if entityID == "01J8Z3K4N5P6Q7R8S9T0V1W2Y2" {
-			return f.Input.TargetEntityDeviceClass, true
+			return entityID, f.Input.TargetEntityDeviceClass, true
 		}
-		return "", false
+		return "", "", false
 	}
 	return NewCommandSurface(controller, registry.FixtureRegistry{}, resolve)
 }
@@ -177,7 +177,7 @@ func TestExecuteUnresolvedBlastRejectedWithoutTouchingDevice(t *testing.T) {
 // and omitted when the request carried none (REL-006/112).
 func TestExecuteEchoesEnvelope(t *testing.T) {
 	surface := NewCommandSurface(&recordingController{}, registry.FixtureRegistry{},
-		func(string) (string, bool) { return "media-player", true })
+		func(entityID string) (string, string, bool) { return entityID, "media-player", true })
 
 	withTrace := surface.Execute(DeviceCommand{
 		Type: "device.command", ID: "cmd-1", RelayID: "relay-1", TraceID: "trace-1",
@@ -223,7 +223,7 @@ func indexOf(s, sub string) int {
 func TestExecuteUnknownEntityIsUnresolvedWithoutTouchingDevice(t *testing.T) {
 	controller := &recordingController{}
 	surface := NewCommandSurface(controller, registry.FixtureRegistry{},
-		func(string) (string, bool) { return "", false })
+		func(string) (string, string, bool) { return "", "", false })
 
 	got := surface.Execute(DeviceCommand{
 		Type: "device.command", ID: "cmd-9", RelayID: "relay-1",
@@ -247,7 +247,7 @@ func TestExecuteControllerTypedErrorPropagates(t *testing.T) {
 		Code: "COMMAND_TARGET_UNREACHABLE", Message: "no route to device",
 	}}
 	surface := NewCommandSurface(typed, registry.FixtureRegistry{},
-		func(string) (string, bool) { return "media-player", true })
+		func(entityID string) (string, string, bool) { return entityID, "media-player", true })
 	got := surface.Execute(DeviceCommand{
 		ID: "c", RelayID: "r", Body: CommandBody{EntityID: "e", Command: "power"},
 	})
@@ -264,7 +264,7 @@ func TestExecuteControllerTypedErrorPropagates(t *testing.T) {
 	// An untyped error is bucketed as INTERNAL (the unclassified taxonomy code).
 	plain := &recordingController{retErr: errors.New("boom")}
 	surface2 := NewCommandSurface(plain, registry.FixtureRegistry{},
-		func(string) (string, bool) { return "media-player", true })
+		func(entityID string) (string, string, bool) { return entityID, "media-player", true })
 	got2 := surface2.Execute(DeviceCommand{
 		ID: "c", RelayID: "r", Body: CommandBody{EntityID: "e", Command: "power"},
 	})

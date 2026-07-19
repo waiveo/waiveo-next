@@ -57,7 +57,7 @@ func TestCredentialReachesDeviceButNeverLogOrDurableStore(t *testing.T) {
 	logSpy := &spyCommandLog{}
 	journalSpy := &spyCommandJournal{}
 	surface := NewCommandSurface(controller, registry.FixtureRegistry{},
-		func(string) (string, bool) { return "media-player", true },
+		func(entityID string) (string, string, bool) { return entityID, "media-player", true },
 		WithCommandLog(logSpy), WithCommandJournal(journalSpy))
 
 	res := surface.Execute(DeviceCommand{
@@ -104,7 +104,7 @@ func TestCredentialInRejectedCommandNeverLogged(t *testing.T) {
 	controller := &recordingController{}
 	logSpy := &spyCommandLog{}
 	surface := NewCommandSurface(controller, registry.FixtureRegistry{},
-		func(string) (string, bool) { return "media-player", true },
+		func(entityID string) (string, string, bool) { return entityID, "media-player", true },
 		WithCommandLog(logSpy))
 
 	res := surface.Execute(DeviceCommand{
