@@ -452,11 +452,14 @@ func bootScheduleResolver(applied desiredstate.Applied, srv *playerserver.Server
 // (schedulehost.BuildStore — degrade-safe: a parse/validation error is logged
 // but never fatal) and, for every carried scope node of kind "screen" the
 // schedule GOVERNS (schedulehost.Governs, the stated additive serving
-// policy), builds a schedulehost.Resolver serving it over srv: one Tick at
-// nowMs runs immediately (resolving + serving the current Lease and firing
-// any boot-time rising-edge preset through sink, DAT-075), and a background
-// ticker keeps re-resolving at scheduleResolverTickInterval so a later
-// daypart boundary is caught without a restart.
+// policy), builds a schedulehost.Resolver serving it over srv: one resume
+// tick (schedulehost.Resolver.TickBoot) at nowMs runs immediately, resolving
+// and serving the current Lease and firing the effective daypart's rising-edge
+// preset through sink UNLESS its effective misfire is "skip" (DAT-075/076/
+// 094/121 — this is the boot resume edge those clauses name, not an ordinary
+// tick) — and a background ticker keeps re-resolving at
+// scheduleResolverTickInterval so a later daypart boundary is caught without a
+// restart, firing unconditionally on every ordinary rising edge from then on.
 //
 // A screen the schedule does not govern (no carried scope node for it, or no
 // applicable schedule) is left exactly as it was: the app-authored
@@ -492,7 +495,7 @@ func bootScheduleResolverAt(applied desiredstate.Applied, srv *playerserver.Serv
 		}
 
 		r := schedulehost.NewResolver(store, screenID, srv, signingKey)
-		r.Tick(nowMs, sink) // the level-triggered STATE projection + any boot-time rising-edge preset (DAT-075/119).
+		r.TickBoot(nowMs, sink) // the level-triggered STATE projection + the misfire-governed boot resume-edge preset (DAT-075/076/094/119/121).
 		resolvers = append(resolvers, r)
 
 		if display == "content" && len(content) > 0 {

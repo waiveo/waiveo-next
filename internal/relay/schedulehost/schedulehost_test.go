@@ -872,3 +872,96 @@ func TestLoopDrivesTickOnInjectedTicks(t *testing.T) {
 		t.Fatalf("Loop over the injected ticks dispatched %v, want exactly [%s/launch]", calls, demoRuleEntityID)
 	}
 }
+
+// resumeMisfire fixture constants: a single schedule + one all-day daypart
+// (00:00:00-23:59:59, so ANY test instant lands inside it — modeling a relay
+// restart landing inside an already-active daypart's window, DAT-075's boot/
+// resume case) bound to one preset batch.
+const (
+	resumeMisfireSiteID     = "01J8ZRMISFIRESITE00000001"
+	resumeMisfireScreenID   = "01J8ZRMISFIRESCREEN0000001"
+	resumeMisfireScheduleID = "01J8ZRMISFIRESCHEDULE00001"
+	resumeMisfireDaypartID  = "01J8ZRMISFIREDAYPART000001"
+	resumeMisfirePresetID   = "01J8ZRMISFIREPRESET0000001"
+	resumeMisfireEntity     = "01J8ZRMISFIREENTITY0000001"
+)
+
+// resumeMisfireStore builds a single-screen store with one all-day daypart
+// whose effective misfire is daypartMisfire (empty string for the DAT-121
+// catch_up_once default) bound to a preset batch — the DAT-075/076/094/121
+// boot/resume-misfire regression fixture.
+func resumeMisfireStore(t *testing.T, daypartMisfire string) datamodel.RowStore {
+	t.Helper()
+	tz := demoSiteTZ
+	lat := 41.8781
+	long := -87.6298
+	orgBound := "01J8ZRMISFIREORGBOUND00001"
+	siteParent := resumeMisfireSiteID
+
+	nodes := []datamodel.ScopeNode{
+		{ID: resumeMisfireSiteID, Kind: "site", ParentID: &orgBound, Name: "Resume Misfire Site", TZ: &tz, Lat: &lat, Long: &long, Revision: 1, CreatedAt: 1, UpdatedAt: 1},
+		{ID: resumeMisfireScreenID, Kind: "screen", ParentID: &siteParent, Name: "Resume Misfire Screen", Revision: 1, CreatedAt: 1, UpdatedAt: 1},
+	}
+	tree, treeErrs := datamodel.BuildScopeTree(nodes)
+	if len(treeErrs) != 0 {
+		t.Fatalf("BuildScopeTree(resume misfire fixture) errs = %+v, want none", treeErrs)
+	}
+
+	allWeek := []int{0, 1, 2, 3, 4, 5, 6}
+	return datamodel.RowStore{
+		Tree: tree,
+		Rows: datamodel.RowSet{
+			Schedules: []datamodel.Schedule{
+				{ID: resumeMisfireScheduleID, ScopeNode: resumeMisfireScreenID, Name: "Resume Misfire Schedule", Revision: 1, CreatedAt: 1, UpdatedAt: 1},
+			},
+			Dayparts: []datamodel.Daypart{
+				{ID: resumeMisfireDaypartID, ScheduleID: resumeMisfireScheduleID, ScopeNode: resumeMisfireScreenID, DaysOfWeek: allWeek, StartTime: "00:00:00", EndTime: "23:59:59", DisplayPower: "on", PresetBatchID: resumeMisfirePresetID, Misfire: daypartMisfire, Name: "All Day", Revision: 1, CreatedAt: 1, UpdatedAt: 1},
+			},
+			PresetBatches: []datamodel.PresetBatch{
+				{PresetID: resumeMisfirePresetID, ScopeNode: resumeMisfireScreenID, Name: "Resume Misfire Preset", Commands: []datamodel.PresetCommand{{EntityID: resumeMisfireEntity, Command: "home"}}, Revision: 1, CreatedAt: 1, UpdatedAt: 1},
+			},
+		},
+	}
+}
+
+// TestTickBootSkipMisfireSuppressesResumeFireButStillProjectsState is the
+// DAT-075/076/094/121 boot-resume regression: a daypart declaring
+// misfire:"skip" MUST NOT re-fire its bound preset batch on a boot/resume
+// tick that lands inside its already-active window (a site declares "skip"
+// specifically so a relay restart never re-toggles a device) — while the
+// level-triggered STATE projection (DAT-119) still resolves and is tracked
+// exactly as an ordinary Tick would; only the preset fire is gated.
+func TestTickBootSkipMisfireSuppressesResumeFireButStillProjectsState(t *testing.T) {
+	store := resumeMisfireStore(t, "skip")
+	srv, priv, _ := newTestPlayerServer(t)
+	r := NewResolver(store, resumeMisfireScreenID, srv, priv)
+	sink, ctrl := newFakeSink(t)
+
+	r.TickBoot(demoLocalInstant(t, 12, 0), sink)
+
+	if calls := ctrl.calls(); len(calls) != 0 {
+		t.Fatalf("TickBoot with misfire:skip dispatched %v, want nothing — a skip misfire suppresses the resume-edge fire (DAT-075/076/121)", calls)
+	}
+	if r.prev == nil || r.prev.Daypart == nil || r.prev.Daypart.ID != resumeMisfireDaypartID {
+		t.Fatalf("TickBoot did not resolve/track the STATE projection even though the preset fire was suppressed (DAT-119: STATE is level-triggered, only the preset is edge-gated)")
+	}
+}
+
+// TestTickBootDefaultMisfireStillFiresResumeEdge asserts TickBoot's misfire
+// gate suppresses ONLY an explicit "skip" — the DAT-121 default
+// (catch_up_once, an unset misfire) still fires the resume edge exactly as
+// Tick always has, so a boot/resume landing inside a preset-bound daypart
+// that declares no misfire keeps collapsing any missed transitions into one
+// current-state fire, unchanged from today's behavior.
+func TestTickBootDefaultMisfireStillFiresResumeEdge(t *testing.T) {
+	store := resumeMisfireStore(t, "") // no explicit misfire -> catch_up_once (DAT-121)
+	srv, priv, _ := newTestPlayerServer(t)
+	r := NewResolver(store, resumeMisfireScreenID, srv, priv)
+	sink, ctrl := newFakeSink(t)
+
+	r.TickBoot(demoLocalInstant(t, 12, 0), sink)
+
+	if calls := ctrl.calls(); len(calls) != 1 || calls[0] != resumeMisfireEntity+"/home" {
+		t.Fatalf("TickBoot with the default (catch_up_once) misfire dispatched %v, want exactly [%s/home] (DAT-121 default still fires the resume edge)", calls, resumeMisfireEntity)
+	}
+}

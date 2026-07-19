@@ -421,6 +421,62 @@ func (r *Resolver) Tick(nowMs int64, sink *automation.CommandSink) {
 	r.FirePreset(fired, sink)
 }
 
+// TickBoot is the ONE resume-governed tick a Resolver performs — at boot,
+// generation apply, or clock-trust resume (DAT-075's final sentence: "On
+// boot, generation apply, or clock-trust resume the current effective
+// daypart's preset batch fires once, governed by its effective misfire"). It
+// resolves and serves the current instant's Lease exactly as Tick does (the
+// level-triggered STATE projection, DAT-119, via ResolveNow) — that part is
+// never suppressed — but the preset-batch rising edge ResolveNow surfaces is
+// dispatched only when the newly-effective daypart's own effective misfire
+// (datamodel.Daypart.EffectiveMisfire, DAT-076/094/121) is NOT "skip": a
+// "skip" misfire means a site declared this daypart's preset must never fire
+// late, so the resume edge that would otherwise re-dispatch its device
+// commands on every relay restart landing inside the daypart's window is
+// suppressed instead. "catch_up_once" (the DAT-121 default) and "fire_each"
+// both still fire — for a resume, where at most one currently-effective
+// daypart is observable, both collapse to the same single fire TickBoot
+// already performs.
+//
+// TickBoot is used ONLY for this one boot resolve; every ordinary live tick
+// afterward (Resolver.Tick, driven by Loop) fires unconditionally on every
+// rising edge regardless of misfire — misfire governs only the resume edge
+// named in DAT-075, never an ordinary dayparting transition.
+func (r *Resolver) TickBoot(nowMs int64, sink *automation.CommandSink) {
+	fired, err := r.ResolveNow(nowMs)
+	if err != nil {
+		return
+	}
+	if fired != nil && r.misfireFor(fired.DaypartID) == "skip" {
+		return // DAT-075/076/121: a "skip" misfire suppresses this resume-edge fire.
+	}
+	r.FirePreset(fired, sink)
+}
+
+// misfireFor resolves daypartID's effective misfire (datamodel.Daypart.
+// EffectiveMisfire, DAT-076/121) by looking the daypart and its owning
+// schedule up in the store — a referential lookup over already-validated
+// rows, not a re-derivation of the misfire-default rule itself (data-model/1
+// line 391, that rule lives in datamodel.Daypart.EffectiveMisfire alone). A
+// daypartID datamodel.PresetTransition just returned always resolves here
+// (ValidateRows's own referential-integrity guarantee covers schedule_id,
+// DAT-075); a lookup miss (a degraded store) falls back to catch_up_once —
+// TickBoot's safe default of firing rather than silently suppressing.
+func (r *Resolver) misfireFor(daypartID string) string {
+	for _, d := range r.store.Rows.Dayparts {
+		if d.ID != daypartID {
+			continue
+		}
+		for _, s := range r.store.Rows.Schedules {
+			if s.ID == d.ScheduleID {
+				return d.EffectiveMisfire(s)
+			}
+		}
+		return d.EffectiveMisfire(datamodel.Schedule{})
+	}
+	return "catch_up_once"
+}
+
 // Loop drives Tick once per tick delivered on ticks, resolving the screen's
 // effective state at the wall-clock instant each tick carries (t.UnixMilli()) —
 // the periodic re-resolve that catches daypart boundaries (a daypart is a

@@ -12,9 +12,11 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/maaxton/waiveo-next/internal/datamodel"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
 	"github.com/maaxton/waiveo-next/internal/relay/automation"
@@ -398,5 +400,142 @@ func TestBootScheduleResolverEmptyScheduleLeavesAppAuthoredProgramUnchanged(t *t
 	}
 	if lease.Display != appAuthored.Display || lease.Priority != appAuthored.Priority {
 		t.Errorf("served display/priority = %q/%q, want unchanged app-authored %q/%q", lease.Display, lease.Priority, appAuthored.Display, appAuthored.Priority)
+	}
+}
+
+// recordingController records every physical dispatch it receives, in order —
+// the same fake-controller pattern internal/relay/schedulehost's own tests use
+// (recordController) — so a test can observe whether a boot-time preset batch
+// actually reached the device plane.
+type recordingController struct {
+	mu   sync.Mutex
+	seen []string // "entity/command", in dispatch order
+}
+
+func (c *recordingController) Dispatch(entityID, command string, params map[string]any) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.seen = append(c.seen, entityID+"/"+command)
+	return nil
+}
+
+func (c *recordingController) calls() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]string, len(c.seen))
+	copy(out, c.seen)
+	return out
+}
+
+// recordingScheduleSink builds a real *automation.CommandSink — the SAME
+// constructor the running binary and fakeScheduleSink both use — wired to a
+// recordingController so a test can observe exactly which preset commands a
+// boot resolve dispatched.
+func recordingScheduleSink(ctrl *recordingController) *automation.CommandSink {
+	surface := deviceplane.NewCommandSurface(
+		ctrl,
+		registry.FixtureRegistry{},
+		func(entityID string) (string, string, bool) { return entityID + "-device", "media-player", true },
+	)
+	return automation.NewCommandSink(surface, "01J8ZTESTSCHEDSINKRECORD01")
+}
+
+// marshalRows marshals each value to json.RawMessage — building a
+// wire.ScheduleSection's opaquely-carried row arrays by hand (REL-065),
+// mirroring internal/feeder/snapshot's own unexported marshalEachRow helper
+// (which this package cannot reach directly).
+func marshalRows(t *testing.T, vs ...any) []json.RawMessage {
+	t.Helper()
+	out := make([]json.RawMessage, 0, len(vs))
+	for _, v := range vs {
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatalf("marshal row %+v: %v", v, err)
+		}
+		out = append(out, b)
+	}
+	return out
+}
+
+// skipMisfire fixture constants: a single schedule + one all-day daypart
+// (00:00:00-23:59:59, so ANY boot instant lands inside it — modeling a relay
+// restart landing inside an already-active daypart's window) declaring
+// misfire:"skip" and bound to a preset batch.
+const (
+	skipMisfireSiteID     = "01J8ZBOOTSKIPSITE0000001"
+	skipMisfireScreenID   = "01J8ZBOOTSKIPSCREEN000001"
+	skipMisfireScheduleID = "01J8ZBOOTSKIPSCHEDULE0001"
+	skipMisfireDaypartID  = "01J8ZBOOTSKIPDAYPART00001"
+	skipMisfirePresetID   = "01J8ZBOOTSKIPPRESET000001"
+	skipMisfireEntity     = "01J8ZBOOTSKIPENTITY000001"
+)
+
+// buildSkipMisfireAppliedForTest builds a minimal desiredstate.Applied whose
+// carried schedule section governs one screen with a single all-day daypart
+// declaring misfire:"skip" and bound to a preset batch — the DAT-075/076/
+// 094/121 boot-resume regression fixture for bootScheduleResolverAt itself
+// (the exact call site the fix touches).
+func buildSkipMisfireAppliedForTest(t *testing.T) desiredstate.Applied {
+	t.Helper()
+	tz := "America/Chicago"
+	lat := 41.8781
+	long := -87.6298
+	orgBound := "01J8ZBOOTSKIPORGBOUND0001"
+	siteParent := skipMisfireSiteID
+
+	siteNode := datamodel.ScopeNode{ID: skipMisfireSiteID, Kind: "site", ParentID: &orgBound, Name: "Skip Misfire Site", TZ: &tz, Lat: &lat, Long: &long, Revision: 1, CreatedAt: 1, UpdatedAt: 1}
+	screenNode := datamodel.ScopeNode{ID: skipMisfireScreenID, Kind: "screen", ParentID: &siteParent, Name: "Skip Misfire Screen", Revision: 1, CreatedAt: 1, UpdatedAt: 1}
+	schedule := datamodel.Schedule{ID: skipMisfireScheduleID, ScopeNode: skipMisfireScreenID, Name: "Skip Misfire Schedule", Revision: 1, CreatedAt: 1, UpdatedAt: 1}
+	daypart := datamodel.Daypart{
+		ID: skipMisfireDaypartID, ScheduleID: skipMisfireScheduleID, ScopeNode: skipMisfireScreenID,
+		DaysOfWeek: []int{0, 1, 2, 3, 4, 5, 6}, StartTime: "00:00:00", EndTime: "23:59:59",
+		DisplayPower: "on", PresetBatchID: skipMisfirePresetID, Misfire: "skip", Name: "All Day",
+		Revision: 1, CreatedAt: 1, UpdatedAt: 1,
+	}
+	presetBatch := datamodel.PresetBatch{
+		PresetID: skipMisfirePresetID, ScopeNode: skipMisfireScreenID, Name: "Skip Misfire Preset",
+		Commands: []datamodel.PresetCommand{{EntityID: skipMisfireEntity, Command: "home"}},
+		Revision: 1, CreatedAt: 1, UpdatedAt: 1,
+	}
+
+	sec := wire.ScheduleSection{
+		ScopeNodes:    marshalRows(t, siteNode, screenNode),
+		Schedules:     marshalRows(t, schedule),
+		Dayparts:      marshalRows(t, daypart),
+		PresetBatches: marshalRows(t, presetBatch),
+	}.Normalized()
+
+	return desiredstate.Applied{Schedule: sec}
+}
+
+// TestBootScheduleResolverSkipMisfireDoesNotResumeFire is the Task-6
+// DAT-075/076/094/121 regression at the exact call site the fix touches
+// (bootScheduleResolverAt): a daypart declaring misfire:"skip" MUST NOT
+// re-dispatch its bound preset batch's device commands on a boot resolve that
+// lands inside its already-active window — a site declares "skip" precisely
+// so a relay restart (redeploy, crash-loop, box reboot) never re-toggles a
+// device. The resolver is still built and governs the screen (the STATE
+// projection, DAT-119, is unaffected); only the resume-edge preset dispatch
+// is suppressed.
+func TestBootScheduleResolverSkipMisfireDoesNotResumeFire(t *testing.T) {
+	applied := buildSkipMisfireAppliedForTest(t)
+	srv, priv, _ := newTestPlayerServer(t)
+	ctrl := &recordingController{}
+	sink := recordingScheduleSink(ctrl)
+	site := hello.SiteBinding{TZ: "America/Chicago", Lat: 41.8781, Long: -87.6298}
+
+	loc, err := time.LoadLocation("America/Chicago")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	nowMs := time.Date(2026, time.January, 15, 12, 0, 0, 0, loc).UnixMilli() // inside the all-day daypart
+
+	resolvers := bootScheduleResolverAt(applied, srv, sink, site, priv, nowMs)
+	if len(resolvers) != 1 {
+		t.Fatalf("bootScheduleResolverAt returned %d resolver(s), want 1 (the fixture schedule governs exactly one screen)", len(resolvers))
+	}
+
+	if calls := ctrl.calls(); len(calls) != 0 {
+		t.Fatalf("boot resolve with misfire:skip dispatched %v to the device plane, want nothing (DAT-075/076/121: a skip misfire suppresses the boot resume-edge fire)", calls)
 	}
 }
