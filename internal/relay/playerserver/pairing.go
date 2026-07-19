@@ -131,6 +131,14 @@ type Server struct {
 	program    program                    // Task 10: SetProgram's own configured state
 	signingKey ed25519.PrivateKey         // Task 10: relay's own key, signs every issued Lease (PLY-090)
 	leaseAcks  map[string]LeaseAckRequest // Task 10: lease_id -> most recent LeaseAck (PLY-091)
+
+	// Playback telemetry a player posts (PLY-110/111): recorded in order of
+	// arrival. Wave-1 records them in memory only — REL-090/093's durable
+	// upstream forward of each as an events/1 content.played (PLY-113) is a
+	// later task's scope; this record is what lets the interrupt-now swap's
+	// own render reports be observed end to end today.
+	renderStarts []RenderStartRequest
+	renderEnds   []RenderEndRequest
 }
 
 // NewServer builds a pairing Server that redeems against grants (the
@@ -171,6 +179,8 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/player/v1/pair/status", s.handlePairStatus)
 	mux.HandleFunc("/player/v1/program", s.handleProgram)
 	mux.HandleFunc("/player/v1/lease/ack", s.handleLeaseAck)
+	mux.HandleFunc("/player/v1/render/start", s.handleRenderStart)
+	mux.HandleFunc("/player/v1/render/end", s.handleRenderEnd)
 }
 
 // LookupChannelToken reports the screen_id and expires_at a previously

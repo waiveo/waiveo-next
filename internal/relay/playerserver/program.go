@@ -64,6 +64,30 @@ type LeaseAckRequest struct {
 	Reason   string `json:"reason,omitempty"`
 }
 
+// RenderStartRequest is player/1's RenderStart body (PLY-110):
+// `{lease_id, asset_ref, ts}` — a player reports the moment it begins
+// presenting a content item on screen.
+type RenderStartRequest struct {
+	LeaseID  string `json:"lease_id"`
+	AssetRef string `json:"asset_ref"`
+	TS       int64  `json:"ts"`
+}
+
+// RenderEndRequest is player/1's RenderEnd body (PLY-111): exactly events/1's
+// content.played payload shape (EVT-050), field for field —
+// `{screen_id, asset_ref, program_revision, t_start, t_end, cause,
+// completion, power_evidence?}`. `cause` and `completion` are PLY-112's
+// enumerations. power_evidence is optional and out of this task's scope.
+type RenderEndRequest struct {
+	ScreenID        string `json:"screen_id"`
+	AssetRef        string `json:"asset_ref"`
+	ProgramRevision string `json:"program_revision"`
+	TStart          int64  `json:"t_start"`
+	TEnd            int64  `json:"t_end"`
+	Cause           string `json:"cause"`
+	Completion      string `json:"completion"`
+}
+
 // program is the relay's one served screen-program (Wave-1 first-photon:
 // exactly one applied screen-program system-wide, `relay/1` REL-061),
 // carried unmodified from the verified desired-state snapshot
@@ -269,6 +293,81 @@ func (s *Server) handleLeaseAck(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleRenderStart implements POST /player/v1/render/start (PLY-110):
+// records a player's report that it has begun presenting a content item on
+// screen. Wave-1 records it in memory only — REL-090/093's durable upstream
+// forward is a later task (PLY-113 scope) — so this record is what makes the
+// interrupt-now swap's own render/start observable end to end.
+func (s *Server) handleRenderStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	traceID := apihttp.TraceID(r)
+
+	var req RenderStartRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		apihttp.WriteProblem(w, r, traceID, http.StatusBadRequest, "VALIDATION_FAILED", "Validation Failed")
+		return
+	}
+	if req.LeaseID == "" || req.AssetRef == "" {
+		apihttp.WriteProblem(w, r, traceID, http.StatusBadRequest, "VALIDATION_FAILED", "Validation Failed")
+		return
+	}
+
+	s.mu.Lock()
+	s.renderStarts = append(s.renderStarts, req)
+	s.mu.Unlock()
+
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleRenderEnd implements POST /player/v1/render/end (PLY-111): records a
+// player's report that a content item's playback has completed or been
+// definitively interrupted, in events/1's content.played payload shape
+// (EVT-050). Recorded in memory only for now, as handleRenderStart documents.
+func (s *Server) handleRenderEnd(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	traceID := apihttp.TraceID(r)
+
+	var req RenderEndRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		apihttp.WriteProblem(w, r, traceID, http.StatusBadRequest, "VALIDATION_FAILED", "Validation Failed")
+		return
+	}
+	if req.AssetRef == "" || req.Cause == "" || req.Completion == "" {
+		apihttp.WriteProblem(w, r, traceID, http.StatusBadRequest, "VALIDATION_FAILED", "Validation Failed")
+		return
+	}
+
+	s.mu.Lock()
+	s.renderEnds = append(s.renderEnds, req)
+	s.mu.Unlock()
+
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// RenderStarts returns a copy of the render/start reports recorded so far
+// (PLY-110), in arrival order — exposed for tests and any later task
+// forwarding them upstream (PLY-113).
+func (s *Server) RenderStarts() []RenderStartRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]RenderStartRequest(nil), s.renderStarts...)
+}
+
+// RenderEnds returns a copy of the render/end reports recorded so far
+// (PLY-111), in arrival order — exposed for tests and any later task
+// forwarding them upstream as content.played (PLY-113).
+func (s *Server) RenderEnds() []RenderEndRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]RenderEndRequest(nil), s.renderEnds...)
 }
 
 // filterContentTypes returns only the content items whose Type is present
