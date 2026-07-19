@@ -432,7 +432,7 @@ relay/1 defines the protocol between an enrolled relay and its app peer: connect
         ],
         "pack_match_patterns": [ { "deviceClass": "media-player", "match": [{ "ssdp": "urn:roku-com:device:player:1" }] } ]
       },
-      "schedule": { "playlists": [], "dayparts": [], "presets": [] },
+      "schedule": { "scope_nodes": [], "playlists": [], "schedules": [], "validity_windows": [], "dayparts": [], "fallbacks": [], "preset_batches": [] },
       "revocation_and_site": { "revoked": [], "site_effective": { "tz": "America/Chicago", "lat": 41.8781, "long": -87.6298 } },
       "pairing_grants": [
         { "grant_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZB", "purpose": "pairing", "resulting_principal_kind": "screen", "ttl": 900, "redemption_mode": "one-time", "issued_at": 1752537000000 }
