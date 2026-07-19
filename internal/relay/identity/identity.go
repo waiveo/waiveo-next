@@ -314,6 +314,43 @@ func (s *Store) SetLastAppliedGeneration(generation int64, hash string) error {
 	return nil
 }
 
+// ApplyGeneration persists the relay's last-applied desired-state generation
+// number, section hash, AND the applied screen_programs array as ONE atomic
+// row write (REL-055/056): the generation swap completes entirely against
+// either the prior or the new generation, never a torn cross-generation mix
+// where last-applied reports the new {generation, hash} while the served
+// screen_programs are still the prior generation's array.
+//
+// This is the single apply-unit primitive the desired-state apply path
+// (internal/relay/desiredstate.Pull) MUST use instead of a separate
+// SetLastAppliedGeneration + SetServedScreenPrograms pair: those are two
+// distinct, un-transacted row writes, so a process killed between their two
+// commits (a power-pull) surfaces exactly the torn state REL-056 forbids — the
+// relay believing itself caught up on the new generation while still serving
+// the old generation's screen_programs, silently never applying an emergency
+// preempt/blank the new generation carried. Because all three fields ride a
+// single INSERT … ON CONFLICT statement against the singleton row, SQLite's
+// own statement-level atomicity (under the store's WAL + synchronous=FULL write
+// discipline) guarantees they commit together or not at all — there is no
+// intermediate row state where generation and screen_programs disagree.
+//
+// An empty or nil screenProgramsJSON is stored as the REL-060 empty
+// placeholder (`[]`), matching SetServedScreenPrograms.
+func (s *Store) ApplyGeneration(generation int64, hash string, screenProgramsJSON []byte) error {
+	if len(screenProgramsJSON) == 0 {
+		screenProgramsJSON = []byte("[]")
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO last_applied_generation (id, generation, hash, screen_programs) VALUES (1, ?, ?, ?)
+		 ON CONFLICT (id) DO UPDATE SET generation = excluded.generation, hash = excluded.hash, screen_programs = excluded.screen_programs`,
+		generation, hash, screenProgramsJSON,
+	)
+	if err != nil {
+		return fmt.Errorf("identity: ApplyGeneration: %w", err)
+	}
+	return nil
+}
+
 // LastAppliedGeneration returns the persisted last-applied generation and
 // hash, and whether one has been persisted yet.
 func (s *Store) LastAppliedGeneration() (generation int64, hash string, ok bool, err error) {

@@ -221,21 +221,27 @@ func Pull(feederBaseURL string, store *identity.Store) (Applied, error) {
 		return Applied{}, fmt.Errorf("desiredstate: Pull: %w", err)
 	}
 
-	// 4/5. Persist {generation, hash} as last-applied (REL-055), then persist
-	// the applied screen_programs beside it so the relay can serve its screen
-	// program purely from durable local storage across a restart or an
-	// extended disconnection, without contacting its app peer (Offline
-	// continuity, REL-055/061 — see ServedProgram). Only reached once hash +
-	// signature have both verified and the generation has not regressed.
-	if err := store.SetLastAppliedGeneration(body.Generation, body.Hash); err != nil {
-		return Applied{}, fmt.Errorf("desiredstate: Pull: persist last-applied generation: %w", err)
-	}
+	// 4. Persist {generation, hash} AND the applied screen_programs as ONE
+	// atomic apply-unit (REL-055/056): a generation swap MUST complete entirely
+	// against either the prior or the new generation, never a torn mix where
+	// last-applied reports the new generation while the served screen_programs
+	// are still the prior generation's. Writing them as two separate,
+	// un-transacted row writes (an earlier SetLastAppliedGeneration +
+	// SetServedScreenPrograms pair) left a power-pull window in which the
+	// {generation, hash} commit landed but the screen_programs commit did not —
+	// on restart the relay would report itself caught up on the new generation
+	// while silently still serving the old one's program, never applying an
+	// emergency preempt/blank the new generation carried. store.ApplyGeneration
+	// closes that window by committing all three fields in a single statement.
+	// Only reached once hash + signature have both verified and the generation
+	// has not regressed. Re-applying the same already-applied generation is a
+	// no-op by construction (REL-070) — the row is upserted to the same values.
 	programsJSON, err := json.Marshal(applied.ScreenPrograms)
 	if err != nil {
 		return Applied{}, fmt.Errorf("desiredstate: Pull: marshal applied screen_programs: %w", err)
 	}
-	if err := store.SetServedScreenPrograms(programsJSON); err != nil {
-		return Applied{}, fmt.Errorf("desiredstate: Pull: persist applied screen_programs: %w", err)
+	if err := store.ApplyGeneration(body.Generation, body.Hash, programsJSON); err != nil {
+		return Applied{}, fmt.Errorf("desiredstate: Pull: persist applied generation: %w", err)
 	}
 
 	return applied, nil

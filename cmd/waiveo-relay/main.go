@@ -8,7 +8,11 @@
 // (REL-071, `#28`) — and pulls + verifies the feeder's signed desired-state
 // snapshot (internal/relay/desiredstate, REL-051/052/055/071/072),
 // persisting last-applied and holding the resulting applied screen-program
-// in memory. It then serves player/1's pairing surface
+// in memory. If the app peer is unreachable at boot but a prior pull already
+// persisted a last-applied generation, the handshake/pull failure is NOT fatal:
+// the relay proceeds and serves that durable copy offline (REL-055/061 offline
+// continuity), so a restart during a disconnection still serves screens. It
+// then serves player/1's pairing surface
 // (internal/relay/playerserver, PLY-030–037) over its own HTTPS listener,
 // using the exact same certificate — the enrollment identity persisted in
 // its identity store — that FormPairingCode's commitment (REL-126) is
@@ -118,31 +122,56 @@ func main() {
 		log.Printf("waiveo-relay trust anchor learned (desired_state_verification_key %s)", hex.EncodeToString(key))
 	}
 
+	// Whether a prior successful pull already left a persisted last-applied
+	// generation in the store decides how a boot-time app-peer failure below is
+	// handled (REL-055/061): with a persisted snapshot to serve, an unreachable
+	// app peer at boot — a restart during a WAN/app-peer disconnection, exactly
+	// the case REL-055 offline continuity exists to cover — MUST NOT down the
+	// process; the relay serves its persisted last-applied screen_programs
+	// offline. With nothing ever persisted, a boot that cannot reach the app
+	// peer genuinely has nothing to serve, and hello/Pull failure stays fatal.
+	_, _, hasPersisted, err := store.LastAppliedGeneration()
+	if err != nil {
+		log.Fatalf("waiveo-relay: read last-applied generation: %v", err)
+	}
+
 	// Perform the relay/1 connection handshake immediately after enrollment and
 	// before the desired-state pull (REL-030): the app peer challenges, this
 	// relay signs the nonce with its enrollment key (channel binding, REL-032),
 	// declares its version/features/site/subnet/clock, and adopts the app peer's
 	// authoritative site_binding from hello-ack (REL-036). The adopted site
 	// drives the edge engine's schedule/sun evaluation once the automation stack
-	// boots below. A refusal here — a channel binding the app peer will not
-	// accept, or an unsupported protocol version — is fatal: the relay has no
-	// authenticated connection to proceed on.
+	// boots below. A refusal or transport failure here is fatal ONLY when there
+	// is no persisted snapshot to fall back on; otherwise the relay proceeds in
+	// offline-serve mode (REL-055/061) with no live site adopted.
 	site, err := helloWithRetry(cfg, relayIdent)
 	if err != nil {
-		log.Fatalf("waiveo-relay: hello: %v", err)
+		if fatal := offlineServeFallback(err, hasPersisted); fatal != nil {
+			log.Fatalf("waiveo-relay: hello: %v", fatal)
+		}
+		log.Printf("waiveo-relay: hello failed (%v); serving persisted last-applied offline (REL-055/061)", err)
+		site = hello.SiteBinding{}
 	}
 
 	// Pull + verify the feeder's signed desired-state snapshot against the
-	// trust anchor enrollment just persisted. A failure here (bad
-	// signature, tampered sections, or a regressed generation) is fatal —
-	// Wave-1 first-photon's relay has nothing useful to serve without a
-	// verified desired-state generation applied.
+	// trust anchor enrollment just persisted. A failure here (app peer
+	// unreachable, bad signature, tampered sections, or a regressed generation)
+	// is fatal ONLY when there is no persisted snapshot to fall back on. When a
+	// prior pull already persisted a last-applied generation, a failed pull is
+	// non-fatal: the relay keeps that durable copy and serves it offline
+	// (REL-055/061), rather than exiting and leaving every screen unable to
+	// pull /player/v1/program.
 	applied, err := desiredstate.Pull(cfg.feederURL, store)
 	if err != nil {
-		log.Fatalf("waiveo-relay: pull desired state: %v", err)
+		if fatal := offlineServeFallback(err, hasPersisted); fatal != nil {
+			log.Fatalf("waiveo-relay: pull desired state: %v", fatal)
+		}
+		log.Printf("waiveo-relay: pull desired state failed (%v); serving persisted last-applied offline (REL-055/061)", err)
+		applied = desiredstate.Applied{}
+	} else {
+		log.Printf("waiveo-relay applied desired state generation %d (screen %s, program %s, image %s)",
+			applied.Generation, applied.ScreenID, applied.ProgramRevision, applied.Image.AssetRef)
 	}
-	log.Printf("waiveo-relay applied desired state generation %d (screen %s, program %s, image %s)",
-		applied.Generation, applied.ScreenID, applied.ProgramRevision, applied.Image.AssetRef)
 
 	// Reuse the enrollment identity read above (relayIdent) as the relay's
 	// player/1 TLS identity too — the same certificate the handshake channel-
@@ -298,6 +327,30 @@ func logPairingCodes(cfg config, applied desiredstate.Applied, relayCertDER []by
 		}
 		log.Printf("waiveo-relay pairing code (grant %s): %s", grant.GrantID, code)
 	}
+}
+
+// offlineServeFallback decides, per REL-055/061, whether a boot-time app-peer
+// failure (a hello handshake or a desired-state Pull that could not complete)
+// should down the relay process or degrade to serving the persisted
+// last-applied snapshot offline. A failure is survivable ONLY when a prior
+// successful pull left a persisted last-applied generation in the store: that
+// durable {generation, hash, screen_programs} copy is exactly what the relay
+// serves without a live app-peer connection (REL-055 offline continuity), so a
+// restart during a disconnection must reach the player/1 listener rather than
+// exit. With nothing persisted, a boot that cannot reach the app peer has no
+// program to serve at all, so the failure stays fatal.
+//
+// It returns nil when the caller should continue in offline-serve mode, or the
+// original bootErr (unchanged) when the caller should treat it as fatal. A nil
+// bootErr always returns nil.
+func offlineServeFallback(bootErr error, hasPersisted bool) error {
+	if bootErr == nil {
+		return nil
+	}
+	if hasPersisted {
+		return nil
+	}
+	return bootErr
 }
 
 // enrollWithRetry calls enroll.Run against the co-located feeder, retrying

@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -78,6 +79,40 @@ func selfSignedCertDER(t *testing.T, notAfter time.Time) []byte {
 		t.Fatalf("create cert: %v", err)
 	}
 	return der
+}
+
+// TestOfflineServeFallback pins the REL-055/061 boot policy the relay applies
+// when the app peer is unreachable at startup: a hello or Pull failure is
+// survivable (degrade to serving the persisted last-applied snapshot offline)
+// IFF a prior successful pull already persisted a last-applied generation;
+// otherwise it stays fatal because there is nothing to serve. This is the
+// regression guard for the defect where a boot-time app-peer failure downed the
+// whole process even though a valid persisted {generation, hash,
+// screen_programs} sat in the store — a restart during a disconnection that
+// REL-055 exists to keep serving.
+func TestOfflineServeFallback(t *testing.T) {
+	bootErr := errors.New("app peer unreachable")
+
+	// Persisted snapshot present: a boot-time failure must NOT be fatal — the
+	// relay serves the persisted last-applied copy offline.
+	if fatal := offlineServeFallback(bootErr, true); fatal != nil {
+		t.Errorf("offlineServeFallback(err, hasPersisted=true) = %v, want nil (serve persisted offline, REL-055/061)", fatal)
+	}
+
+	// Nothing persisted: the same failure IS fatal — no program to serve.
+	if fatal := offlineServeFallback(bootErr, false); fatal == nil {
+		t.Error("offlineServeFallback(err, hasPersisted=false) = nil, want the original error (nothing to serve)")
+	} else if !errors.Is(fatal, bootErr) {
+		t.Errorf("offlineServeFallback returned %v, want the original bootErr unchanged", fatal)
+	}
+
+	// A nil bootErr is never fatal regardless of persisted state.
+	if fatal := offlineServeFallback(nil, false); fatal != nil {
+		t.Errorf("offlineServeFallback(nil, false) = %v, want nil", fatal)
+	}
+	if fatal := offlineServeFallback(nil, true); fatal != nil {
+		t.Errorf("offlineServeFallback(nil, true) = %v, want nil", fatal)
+	}
 }
 
 func TestLoadConfigDefaultsAreLoopback(t *testing.T) {

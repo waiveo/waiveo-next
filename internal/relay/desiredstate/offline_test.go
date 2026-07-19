@@ -153,6 +153,48 @@ func TestPullPersistsScreenProgramsForOfflineServe(t *testing.T) {
 	}
 }
 
+// TestPullAppliesGenerationAndProgramsInLockstep is the REL-056 atomic-swap
+// property observed at the Pull boundary: a single successful Pull leaves the
+// persisted last-applied generation AND the persisted screen_programs both
+// reflecting the SAME pulled snapshot — never the new generation paired with a
+// prior generation's program. Pull persists them through the store's single
+// atomic apply-unit (identity.ApplyGeneration), so the two facets can never
+// read back cross-generation.
+func TestPullAppliesGenerationAndProgramsInLockstep(t *testing.T) {
+	img := loadTestImage(t)
+	id := testFeederIdentity(t)
+
+	snap, err := snapshot.Build(img, "https://origin.example", id, []wire.PairingGrant{grant.Mint()})
+	if err != nil {
+		t.Fatalf("snapshot.Build: %v", err)
+	}
+
+	ts := newTestFeeder(t, id, snap)
+	store := enrolledStore(t, ts)
+
+	applied, err := Pull(ts.URL, store)
+	if err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+
+	// The persisted generation must equal the generation whose programs were
+	// persisted — read the two facets back independently and confirm they agree.
+	gen, _, ok, err := store.LastAppliedGeneration()
+	if err != nil || !ok {
+		t.Fatalf("LastAppliedGeneration: gen=%d ok=%v err=%v", gen, ok, err)
+	}
+	if gen != applied.Generation {
+		t.Errorf("persisted generation %d != applied generation %d", gen, applied.Generation)
+	}
+	served, err := ServedProgram(store)
+	if err != nil {
+		t.Fatalf("ServedProgram: %v", err)
+	}
+	if !reflect.DeepEqual(served, snap.Sections.ScreenPrograms) {
+		t.Errorf("persisted screen_programs = %+v, want the pulled generation's %+v (REL-056: generation and programs applied in lockstep)", served, snap.Sections.ScreenPrograms)
+	}
+}
+
 // TestServedProgramEmptyOnFreshStore asserts a store that has never applied a
 // generation serves an empty (non-nil-erroring) program set — the REL-060
 // empty-placeholder decode, so a never-synced relay's serve path is a clean

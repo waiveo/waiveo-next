@@ -89,6 +89,17 @@ func powerPullHash(generation int64) string {
 	return fmt.Sprintf("sha256:%016x", generation)
 }
 
+// powerPullScreenPrograms is the deterministic {generation → screen_programs}
+// relation the atomic writer commits alongside each generation, so the parent
+// can detect a screen_programs array torn from the generation it was applied
+// with (REL-056 atomic swap over the exact field the two-call apply used to
+// tear). The value is a JSON array encoding the tick, so a recovered
+// screen_programs whose encoded tick does not match the recovered generation is
+// a torn cross-generation mix.
+func powerPullScreenPrograms(generation int64) []byte {
+	return []byte(fmt.Sprintf("[%d]", generation))
+}
+
 // TestMain routes a subprocess carrying envWriterMode into the power-pull
 // writer (which never returns — it is SIGKILLed by its parent, or exits
 // nonzero on a setup error); an ordinary invocation runs the test suite.
@@ -178,9 +189,9 @@ func writeAtomicTicks(st *Store) {
 			return
 		}
 		if _, err := tx.Exec(
-			`INSERT INTO last_applied_generation (id, generation, hash) VALUES (1, ?, ?)
-			 ON CONFLICT (id) DO UPDATE SET generation = excluded.generation, hash = excluded.hash`,
-			tick, powerPullHash(tick),
+			`INSERT INTO last_applied_generation (id, generation, hash, screen_programs) VALUES (1, ?, ?, ?)
+			 ON CONFLICT (id) DO UPDATE SET generation = excluded.generation, hash = excluded.hash, screen_programs = excluded.screen_programs`,
+			tick, powerPullHash(tick), powerPullScreenPrograms(tick),
 		); err != nil {
 			return
 		}
@@ -348,6 +359,26 @@ func verifyRecovery(dbPath string) recovery {
 		return recovery{detail: fmt.Sprintf("TORN last-applied: generation %d carries hash %q, want %q", generation, hash, powerPullHash(generation))}
 	}
 
+	// screen_programs is applied as a facet of the SAME singleton last-applied
+	// row, in the SAME atomic write as {generation, hash} (REL-056). A recovered
+	// screen_programs whose encoded tick disagrees with the recovered generation
+	// is exactly the torn cross-generation mix the two-call apply left possible —
+	// the relay reporting the new generation while still serving the prior one's
+	// program. A non-empty screen_programs (the empty placeholder '[]' decodes to
+	// no ticks and is skipped, e.g. the torn/undisciplined negative control never
+	// writes this facet) MUST encode the recovered generation.
+	var sp []byte
+	if err := db.QueryRow(`SELECT screen_programs FROM last_applied_generation WHERE id = 1`).Scan(&sp); err != nil {
+		return recovery{detail: fmt.Sprintf("read screen_programs: %v", err)}
+	}
+	var spTicks []int64
+	if err := json.Unmarshal(sp, &spTicks); err != nil {
+		return recovery{detail: fmt.Sprintf("screen_programs malformed: %v", err)}
+	}
+	if len(spTicks) > 0 && spTicks[0] != generation {
+		return recovery{detail: fmt.Sprintf("TORN last-applied: generation %d carries screen_programs for generation %d (cross-generation mix, REL-056)", generation, spTicks[0])}
+	}
+
 	// Durable telemetry history: contiguous, unique, well-formed.
 	rows, err := db.Query(`SELECT seq, payload FROM telemetry_queue ORDER BY seq`)
 	if err != nil {
@@ -463,6 +494,47 @@ func TestPowerPullTortureRecovery(t *testing.T) {
 		t.Fatalf("max recovered generation %d never exceeded warmup %d: kills never landed mid-write-loop", maxGen, atomicWarmupTicks)
 	}
 	t.Logf("recovered cleanly across %d SIGKILLs; committed generation ranged %d..%d", iterations, minGen, maxGen)
+}
+
+// TestVerifyRecoveryDetectsTornScreenPrograms is the direct negative control
+// for the screen_programs lockstep check: it stages the exact torn state the
+// pre-fix two-call apply (SetLastAppliedGeneration then a separate
+// SetServedScreenPrograms) could leave across a power-pull — the generation
+// advanced to 6 while screen_programs still encode generation 5 — and asserts
+// verifyRecovery flags it TORN. Without this the harness's screen_programs
+// invariant could pass vacuously (REL-056 atomic swap over the torn field).
+func TestVerifyRecoveryDetectsTornScreenPrograms(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "torn-programs.db")
+	st, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	if err := st.SetIdentity(powerPullRelayID, []byte("cert-fixture"), priv); err != nil {
+		t.Fatalf("SetIdentity: %v", err)
+	}
+	// Generation + hash advanced to 6, but screen_programs left at generation 5 —
+	// the torn cross-generation mix.
+	if _, err := st.db.Exec(
+		`INSERT INTO last_applied_generation (id, generation, hash, screen_programs) VALUES (1, ?, ?, ?)`,
+		int64(6), powerPullHash(6), powerPullScreenPrograms(5),
+	); err != nil {
+		t.Fatalf("stage torn last_applied: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	rec := verifyRecovery(dbPath)
+	if rec.clean {
+		t.Fatal("verifyRecovery accepted a generation/screen_programs cross-generation mix as clean — the REL-056 lockstep check has no teeth")
+	}
+	if !strings.Contains(rec.detail, "TORN") || !strings.Contains(rec.detail, "screen_programs") {
+		t.Fatalf("verifyRecovery detail = %q, want a TORN screen_programs detection", rec.detail)
+	}
 }
 
 // TestPowerPullTortureHarnessHasTeeth is the negative control that proves
