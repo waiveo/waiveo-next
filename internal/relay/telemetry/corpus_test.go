@@ -110,18 +110,42 @@ func TestCorpusEVT040_041FlowsThroughDurableChannel(t *testing.T) {
 		if e.Schema != SchemaAutomationRun {
 			t.Errorf("%s: pushed schema = %q, want automation.run", c.CaseID, e.Schema)
 		}
+		// The DELIVERED wire entry's payload must carry all seven EVT-040 mandatory
+		// fields (REL-090 — payload = that schema's own field shape, unmodified;
+		// EVT-043 observability). A payload dropping rule_revision/trigger_snapshot/
+		// condition_results/action_outcomes en route to the wire is non-conformant.
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(e.Payload, &raw); err != nil {
+			t.Fatalf("%s: payload decode: %v", c.CaseID, err)
+		}
+		for _, k := range []string{"rule_id", "rule_revision", "trigger_snapshot", "condition_results", "action_outcomes", "mode_disposition", "misfire_caught"} {
+			if _, ok := raw[k]; !ok {
+				t.Errorf("%s: delivered payload missing EVT-040 mandatory field %q: %s", c.CaseID, k, e.Payload)
+			}
+		}
 		var got struct {
+			RuleID          string `json:"rule_id"`
+			RuleRevision    int    `json:"rule_revision"`
 			ModeDisposition string `json:"mode_disposition"`
 			MisfireCaught   bool   `json:"misfire_caught"`
 		}
 		if err := json.Unmarshal(e.Payload, &got); err != nil {
 			t.Fatalf("%s: payload decode: %v", c.CaseID, err)
 		}
+		if got.RuleID != c.Expected.Envelope.Payload.RuleID {
+			t.Errorf("%s: pushed rule_id = %q, want %q", c.CaseID, got.RuleID, c.Expected.Envelope.Payload.RuleID)
+		}
+		if got.RuleRevision != c.Expected.Envelope.Payload.RuleRevision {
+			t.Errorf("%s: pushed rule_revision = %d, want %d", c.CaseID, got.RuleRevision, c.Expected.Envelope.Payload.RuleRevision)
+		}
 		if got.ModeDisposition != c.Expected.Envelope.Payload.ModeDisposition {
 			t.Errorf("%s: pushed mode_disposition = %q, want %q", c.CaseID, got.ModeDisposition, c.Expected.Envelope.Payload.ModeDisposition)
 		}
 		if got.MisfireCaught != c.Expected.Envelope.Payload.MisfireCaught {
 			t.Errorf("%s: pushed misfire_caught = %v, want %v", c.CaseID, got.MisfireCaught, c.Expected.Envelope.Payload.MisfireCaught)
+		}
+		if !jsonEqual(t, raw["trigger_snapshot"], c.Expected.Envelope.Payload.TriggerSnapshot) {
+			t.Errorf("%s: pushed trigger_snapshot = %s, want %s", c.CaseID, raw["trigger_snapshot"], c.Expected.Envelope.Payload.TriggerSnapshot)
 		}
 	}
 

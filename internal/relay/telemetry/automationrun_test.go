@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/maaxton/waiveo-next/internal/rules/engine"
@@ -29,24 +30,36 @@ const (
 	evt041SkippedCorpus   = "../../../conformance/corpora/events-1/EVT-041-valid-automation-run-skipped-internal.json"
 )
 
-// evtRunCase is the subset of an events/1 automation.run corpus document this
-// emitter oracle reads: the RunDisposition inputs it maps (rule_id, mode,
-// disposition, misfire_caught) and the expected payload's own derivable fields.
+// evtRunCase is the events/1 automation.run corpus document this emitter oracle
+// reads: the RunDisposition inputs it maps (rule_id, rule_revision, mode,
+// disposition, misfire_caught, and the trigger/condition/action context the
+// automation.run payload also reports) and the full expected envelope.payload —
+// all seven EVT-040 mandatory fields, none optional. The three context fields are
+// json.RawMessage so the exact events/1 JSON is compared as a tree, never
+// redefined.
 type evtRunCase struct {
 	CaseID string `json:"case_id"`
 	Input  struct {
-		RuleID        string `json:"rule_id"`
-		Mode          string `json:"mode"`
-		Disposition   string `json:"disposition"`
-		MisfireCaught bool   `json:"misfire_caught"`
+		RuleID        string          `json:"rule_id"`
+		RuleRevision  int             `json:"rule_revision"`
+		Mode          string          `json:"mode"`
+		Disposition   string          `json:"disposition"`
+		MisfireCaught bool            `json:"misfire_caught"`
+		Trigger       json.RawMessage `json:"trigger"`
+		Conditions    json.RawMessage `json:"conditions"`
+		Actions       json.RawMessage `json:"actions"`
 	} `json:"input"`
 	Expected struct {
 		Envelope struct {
 			Schema  string `json:"schema"`
 			Payload struct {
-				RuleID          string `json:"rule_id"`
-				ModeDisposition string `json:"mode_disposition"`
-				MisfireCaught   bool   `json:"misfire_caught"`
+				RuleID           string          `json:"rule_id"`
+				RuleRevision     int             `json:"rule_revision"`
+				TriggerSnapshot  json.RawMessage `json:"trigger_snapshot"`
+				ConditionResults json.RawMessage `json:"condition_results"`
+				ActionOutcomes   json.RawMessage `json:"action_outcomes"`
+				ModeDisposition  string          `json:"mode_disposition"`
+				MisfireCaught    bool            `json:"misfire_caught"`
 			} `json:"payload"`
 		} `json:"envelope"`
 	} `json:"expected"`
@@ -69,11 +82,31 @@ func loadEvtRunCase(t *testing.T, path string) evtRunCase {
 // input — the exact struct the engine hands the emitter as a rule fires.
 func dispositionFrom(c evtRunCase) engine.RunDisposition {
 	return engine.RunDisposition{
-		RuleID:        c.Input.RuleID,
-		Disposition:   engine.Disposition(c.Input.Disposition),
-		Mode:          c.Input.Mode,
-		MisfireCaught: c.Input.MisfireCaught,
+		RuleID:           c.Input.RuleID,
+		Disposition:      engine.Disposition(c.Input.Disposition),
+		Mode:             c.Input.Mode,
+		MisfireCaught:    c.Input.MisfireCaught,
+		RuleRevision:     c.Input.RuleRevision,
+		TriggerSnapshot:  c.Input.Trigger,
+		ConditionResults: c.Input.Conditions,
+		ActionOutcomes:   c.Input.Actions,
 	}
+}
+
+// jsonEqual reports whether two JSON documents are equal as generic trees
+// (order/whitespace insensitive). Unlike jsonTreeEqual's subset semantics, this
+// asserts full equality — the emitted context field must match the corpus's
+// expected payload exactly, no missing keys.
+func jsonEqual(t *testing.T, got, want json.RawMessage) bool {
+	t.Helper()
+	var gt, wt any
+	if err := json.Unmarshal(got, &gt); err != nil {
+		t.Fatalf("decode got %s: %v", got, err)
+	}
+	if err := json.Unmarshal(want, &wt); err != nil {
+		t.Fatalf("decode want %s: %v", want, err)
+	}
+	return reflect.DeepEqual(gt, wt)
 }
 
 // TestAutomationRunEntryMapsEVT040_041 drives each frozen events/1 automation.run
@@ -100,8 +133,27 @@ func TestAutomationRunEntryMapsEVT040_041(t *testing.T) {
 			t.Errorf("%s: subject = %q, want the rule id %q", c.CaseID, subject, c.Input.RuleID)
 		}
 
+		// All seven EVT-040 mandatory payload fields must be present and match the
+		// corpus's own expected envelope.payload — none is optional, so a payload
+		// missing rule_revision/trigger_snapshot/condition_results/action_outcomes
+		// is non-conformant even though the corpus names the case "valid".
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(payload, &raw); err != nil {
+			t.Fatalf("%s: payload not valid JSON: %v (%s)", c.CaseID, err, payload)
+		}
+		wantKeys := []string{"rule_id", "rule_revision", "trigger_snapshot", "condition_results", "action_outcomes", "mode_disposition", "misfire_caught"}
+		for _, k := range wantKeys {
+			if _, ok := raw[k]; !ok {
+				t.Errorf("%s: payload missing EVT-040 mandatory field %q: %s", c.CaseID, k, payload)
+			}
+		}
+		if len(raw) != len(wantKeys) {
+			t.Errorf("%s: payload has %d fields, want exactly %d (EVT-040): %s", c.CaseID, len(raw), len(wantKeys), payload)
+		}
+
 		var got struct {
 			RuleID          string `json:"rule_id"`
+			RuleRevision    int    `json:"rule_revision"`
 			ModeDisposition string `json:"mode_disposition"`
 			MisfireCaught   bool   `json:"misfire_caught"`
 		}
@@ -111,13 +163,46 @@ func TestAutomationRunEntryMapsEVT040_041(t *testing.T) {
 		if got.RuleID != c.Expected.Envelope.Payload.RuleID {
 			t.Errorf("%s: rule_id = %q, want %q", c.CaseID, got.RuleID, c.Expected.Envelope.Payload.RuleID)
 		}
+		if got.RuleRevision != c.Expected.Envelope.Payload.RuleRevision {
+			t.Errorf("%s: rule_revision = %d, want %d", c.CaseID, got.RuleRevision, c.Expected.Envelope.Payload.RuleRevision)
+		}
 		if got.ModeDisposition != c.Expected.Envelope.Payload.ModeDisposition {
 			t.Errorf("%s: mode_disposition = %q, want %q", c.CaseID, got.ModeDisposition, c.Expected.Envelope.Payload.ModeDisposition)
 		}
 		if got.MisfireCaught != c.Expected.Envelope.Payload.MisfireCaught {
 			t.Errorf("%s: misfire_caught = %v, want %v", c.CaseID, got.MisfireCaught, c.Expected.Envelope.Payload.MisfireCaught)
 		}
+		// The three context fields are carried through byte-for-byte, so compare
+		// them as JSON trees against the corpus's own expected payload.
+		if !jsonEqual(t, raw["trigger_snapshot"], c.Expected.Envelope.Payload.TriggerSnapshot) {
+			t.Errorf("%s: trigger_snapshot = %s, want %s", c.CaseID, raw["trigger_snapshot"], c.Expected.Envelope.Payload.TriggerSnapshot)
+		}
+		if !jsonEqual(t, raw["condition_results"], c.Expected.Envelope.Payload.ConditionResults) {
+			t.Errorf("%s: condition_results = %s, want %s", c.CaseID, raw["condition_results"], c.Expected.Envelope.Payload.ConditionResults)
+		}
+		if !jsonEqual(t, raw["action_outcomes"], c.Expected.Envelope.Payload.ActionOutcomes) {
+			t.Errorf("%s: action_outcomes = %s, want %s", c.CaseID, raw["action_outcomes"], c.Expected.Envelope.Payload.ActionOutcomes)
+		}
 	}
+}
+
+// TestAutomationRunEntryRejectsNonEVT041Disposition proves the emitter enforces
+// EVT-041's closed {ran,skipped,restarted} mode_disposition enum. engine.Canceled
+// is a real engine.Disposition (the RUL-380 generation-swap teardown outcome
+// ApplyGeneration produces) but has no automation.run representation; feeding it
+// to the emitter is a wiring error that must be caught, never emitted as an
+// out-of-enum "canceled" value onto the durable wire (REL-090/095, EVT-041).
+func TestAutomationRunEntryRejectsNonEVT041Disposition(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("AutomationRunEntry(engine.Canceled) did not panic; an out-of-enum mode_disposition would reach the durable wire (EVT-041)")
+		}
+	}()
+	AutomationRunEntry(engine.RunDisposition{
+		RuleID:      "01J8Z3K4N5P6Q7R8S9T0V1W2YC",
+		Disposition: engine.Canceled,
+		Mode:        "restart",
+	}, 0)
 }
 
 // TestAutomationRunEntryBuffersDurableNeverCoalesced proves the emitter's output

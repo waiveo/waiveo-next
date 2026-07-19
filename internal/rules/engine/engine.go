@@ -58,14 +58,29 @@ const (
 )
 
 // RunDisposition is the recorded outcome of one trigger firing that reached
-// mode evaluation (RUL-246, Wire shapes). MisfireCaught is the orthogonal
-// marker RUL-355 sets on a caught-up misfired firing (a later part); it is
+// mode evaluation (RUL-246, Wire shapes) — the record from which the relay's
+// events/1 automation.run event is emitted (EVT-040/041). RuleID, Disposition,
+// Mode, and MisfireCaught are the mode-evaluation outcome; MisfireCaught is the
+// orthogonal marker RUL-355 sets on a caught-up misfired firing (a later part),
 // always false here.
+//
+// RuleRevision, TriggerSnapshot, ConditionResults, and ActionOutcomes are the
+// remaining automation.run payload context EVT-040 requires (the applied rule
+// revision, the firing trigger, and the condition/action records of the run).
+// They are carried as the firing's own events/1 JSON — opaque here, so the
+// disposition record does not redefine the events/1 schema (REL-095). The
+// firing path that assembles a run's trigger/condition/action record populates
+// them (a later part wires them from live evaluation); the bare mode-evaluation
+// dispositions this part produces leave them empty.
 type RunDisposition struct {
-	RuleID        string      `json:"rule_id"`
-	Disposition   Disposition `json:"disposition"`
-	Mode          string      `json:"mode"`
-	MisfireCaught bool        `json:"misfire_caught"`
+	RuleID           string          `json:"rule_id"`
+	Disposition      Disposition     `json:"disposition"`
+	Mode             string          `json:"mode"`
+	MisfireCaught    bool            `json:"misfire_caught"`
+	RuleRevision     int             `json:"rule_revision"`
+	TriggerSnapshot  json.RawMessage `json:"trigger_snapshot"`
+	ConditionResults json.RawMessage `json:"condition_results"`
+	ActionOutcomes   json.RawMessage `json:"action_outcomes"`
 }
 
 // Engine drives the rules of one applied generation. It is not safe for
