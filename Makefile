@@ -16,8 +16,8 @@ dev-up: dev-down
 	@mkdir -p $(RUNDIR)
 	@go build -o $(FEEDER_BIN) ./cmd/waiveo-feeder
 	@go build -o $(RELAY_BIN) ./cmd/waiveo-relay
-	@{ $(FEEDER_BIN) & echo $$! > $(RUNDIR)/feeder.pid; }
-	@{ $(RELAY_BIN) & echo $$! > $(RUNDIR)/relay.pid; }
+	@{ $(FEEDER_BIN) >$(RUNDIR)/feeder.log 2>&1 & echo $$! > $(RUNDIR)/feeder.pid; }
+	@{ $(RELAY_BIN) >$(RUNDIR)/relay.log 2>&1 & echo $$! > $(RUNDIR)/relay.pid; }
 
 smoke:
 	@bash scripts/dev-smoke.sh
@@ -25,4 +25,4 @@ smoke:
 dev-down:
 	@[ -f $(RUNDIR)/feeder.pid ] && kill $$(cat $(RUNDIR)/feeder.pid) 2>/dev/null || true
 	@[ -f $(RUNDIR)/relay.pid ] && kill $$(cat $(RUNDIR)/relay.pid) 2>/dev/null || true
-	@rm -f $(RUNDIR)/feeder.pid $(RUNDIR)/relay.pid
+	@rm -f $(RUNDIR)/feeder.pid $(RUNDIR)/relay.pid $(RUNDIR)/feeder.log $(RUNDIR)/relay.log

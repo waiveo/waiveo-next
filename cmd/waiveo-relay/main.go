@@ -29,10 +29,12 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/maaxton/waiveo-next/internal/relay/automationhost"
 	"github.com/maaxton/waiveo-next/internal/relay/desiredstate"
 	"github.com/maaxton/waiveo-next/internal/relay/enroll"
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
 	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
+	"github.com/maaxton/waiveo-next/internal/rules/registry"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
@@ -130,6 +132,21 @@ func main() {
 	if !ok {
 		log.Fatalf("waiveo-relay: no persisted identity after enrollment — cannot serve player/1")
 	}
+
+	// Boot the edge-automation stack from the SAME verified Applied value: compile
+	// + load the signed edge_rules (REL-062) into the engine, wired to the device
+	// plane (command dispatch) and the durable telemetry queue (automation.run,
+	// REL-090/093). The four subsystems — engine, device plane, telemetry, and the
+	// durable operational store — now run inside this one binary. The device-state
+	// INPUT (the observations that fire a rule) is the injectable
+	// automationhost.DeviceStateSource seam real polling/ECP will feed; that source
+	// is hardware-gated and deferred, so the live binary loads the rules and stands
+	// ready rather than driving a synthetic observation (the e2e test drives the
+	// synthetic source to prove the wired stack fires).
+	if err := bootAutomationStack(store, relayID, applied); err != nil {
+		log.Fatalf("waiveo-relay: boot automation stack: %v", err)
+	}
+
 	cert, certDER, err := relayTLSCertificate(relayID)
 	if err != nil {
 		log.Fatalf("waiveo-relay: build TLS certificate from enrollment identity: %v", err)
@@ -239,6 +256,46 @@ func enrollWithRetry(feederURL string, store *identity.Store) error {
 		}
 		time.Sleep(enrollRetryInterval)
 	}
+}
+
+// bootAutomationStack builds the relay's edge-automation Host over the
+// operational store and loads the verified desired-state generation's signed
+// edge_rules into it (REL-062), logging how many edge rules loaded. It wires a
+// loopback device controller and a loopback entity resolver for now: the real
+// ECP DeviceController and the real adopted-entity resolver (reading the device
+// plane's own store) are hardware/data-model concerns that land later. The
+// registry is the media-player FixtureRegistry for now — the real
+// device-class-registry/1 content is a later data-model concern.
+func bootAutomationStack(store *identity.Store, relayID identity.RelayIdentity, applied desiredstate.Applied) error {
+	host, err := automationhost.New(store, registry.FixtureRegistry{}, loopbackController{}, loopbackResolver, relayID.RelayID)
+	if err != nil {
+		return err
+	}
+	if err := host.ApplyEdgeRules(applied.EdgeRules, int(applied.Generation)); err != nil {
+		return err
+	}
+	log.Printf("waiveo-relay automation engine loaded: %d edge rule(s); device plane + durable telemetry ready", host.EdgeRuleCount())
+	return nil
+}
+
+// loopbackController is the Wave-1 stand-in DeviceController: it accepts every
+// resolved device command and logs it, standing in for the real ECP/Roku adapter
+// (hardware, deferred) so the wired automation stack can be exercised without a
+// physical device. It never fails, so a fired rule's dispatch always succeeds.
+type loopbackController struct{}
+
+func (loopbackController) Dispatch(entityID, command string, params map[string]any) error {
+	log.Printf("waiveo-relay automation dispatch (loopback): %s %s", entityID, command)
+	return nil
+}
+
+// loopbackResolver is the Wave-1 stand-in entity resolver: it maps every
+// entity_id to a single media-player loopback device so a loaded edge rule's
+// device_command resolves against the fixture registry's vocabulary (REL-112/113).
+// The real resolver reads the device plane's adopted-entity records (data-model/1)
+// and is a later concern.
+func loopbackResolver(entityID string) (deviceID, deviceClass string, ok bool) {
+	return "01J8Z3K4N5P6Q7R8S9T0V1DEVA", "media-player", true
 }
 
 func healthz(w http.ResponseWriter, r *http.Request) {
