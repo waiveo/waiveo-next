@@ -28,6 +28,8 @@ var expectedDriven = []string{
 	"REL-030-valid-hello-negotiate-channel-binding",
 	"REL-070-valid-generation-reapply-idempotent-noop",
 	"REL-071-invalid-wrong-peer-key-snapshot-rejected",
+	"REL-133-valid-clock-hint-bounded",
+	"REL-136-valid-coldboot-skew-tolerant-connect",
 }
 
 var expectedPending = []string{
@@ -36,8 +38,6 @@ var expectedPending = []string{
 	"REL-090-valid-telemetry-overflow-loss-marker",
 	"REL-094-valid-telemetry-latest-only-heartbeat-superseded",
 	"REL-110-valid-device-candidate-and-command",
-	"REL-133-valid-clock-hint-bounded",
-	"REL-136-valid-coldboot-skew-tolerant-connect",
 }
 
 // TestRelay1DriverGreen boots the live in-process feeder and runs the relay/1

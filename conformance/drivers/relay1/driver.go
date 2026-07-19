@@ -18,8 +18,9 @@
 // Applicability triage (§10 "no silent caps"): Run DRIVES the cases
 // first-photon implements (REL-010 fresh enroll, REL-020/022/027
 // Expired-certificate re-enrollment, REL-030 hello/negotiate, REL-070
-// idempotent reapply, REL-071 wrong-peer-key rejection) and marks every other
-// relay-1 case PENDING with an explicit reason.
+// idempotent reapply, REL-071 wrong-peer-key rejection, REL-133 bounded
+// clock.hint, REL-136/137 cold-boot skew-tolerant/deferred connect) and marks
+// every other relay-1 case PENDING with an explicit reason.
 package relay1
 
 import (
@@ -93,6 +94,12 @@ type Feeder interface {
 	// generation signed by a DIFFERENT key than this feeder's own — REL-071's
 	// impostor snapshot.
 	WrongKeySnapshotURL(generation int64) (string, error)
+	// AppPeerLeafSPKI returns the DER-encoded SubjectPublicKeyInfo of the app
+	// peer's own TLS leaf certificate — the enrollment-anchored `trust_pin`
+	// (REL-011) a relay pins the connection against under REL-136/137. The
+	// feeder serves this exact leaf on its TLS listener, so a relay dialing
+	// EnrollBaseURL validates the real presented certificate against it.
+	AppPeerLeafSPKI() ([]byte, error)
 }
 
 const contract = "relay/1"
@@ -115,6 +122,8 @@ func Run(client RelayClient, feeder Feeder) report.Report {
 	driveREL030(&rep, client, feeder, cases)
 	driveREL070(&rep, client, feeder, cases)
 	driveREL071(&rep, client, feeder, cases)
+	driveREL133(&rep, cases)
+	driveREL136(&rep, client, feeder, cases)
 
 	pend := func(short, reason string) {
 		id := short
@@ -128,8 +137,6 @@ func Run(client RelayClient, feeder Feeder) report.Report {
 	pend("REL-090", "telemetry overflow / loss-marker is the Phase-2 telemetry plane; first-photon has no telemetry ingest surface.")
 	pend("REL-094", "telemetry latest-only heartbeat supersession is the Phase-2 telemetry plane; not built in first-photon.")
 	pend("REL-110", "device-candidate + command is the Phase-3 device plane; first-photon carries an empty device_inventory and no command path.")
-	pend("REL-133", "clock-hint bounding is Phase-2 clock-trust; first-photon has no clock-hint negotiation.")
-	pend("REL-136", "cold-boot skew-tolerant connect is Phase-2 clock-trust; first-photon has no skew-negotiated connect path.")
 
 	return rep
 }

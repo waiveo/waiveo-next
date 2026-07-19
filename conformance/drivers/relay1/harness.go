@@ -3,7 +3,9 @@ package relay1
 import (
 	"bytes"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"log"
@@ -215,6 +217,22 @@ func (f *InProcessFeeder) WrongKeySnapshotURL(generation int64) (string, error) 
 		Sections:      f.baseSections,
 	})
 	return f.stateBase, nil
+}
+
+// AppPeerLeafSPKI implements Feeder: the DER SubjectPublicKeyInfo of the
+// feeder's own TLS leaf — the exact certificate serve() presents on every
+// listener — so a relay dialing EnrollBaseURL under REL-136/137 pins the real
+// presented key.
+func (f *InProcessFeeder) AppPeerLeafSPKI() ([]byte, error) {
+	block, _ := pem.Decode(f.id.TLSCertPEM())
+	if block == nil || block.Type != "CERTIFICATE" {
+		return nil, fmt.Errorf("relay1: feeder TLS cert did not PEM-decode to a CERTIFICATE block")
+	}
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("relay1: parse feeder TLS leaf: %w", err)
+	}
+	return leaf.RawSubjectPublicKeyInfo, nil
 }
 
 func (f *InProcessFeeder) setCurrent(b wire.StateSnapshotBody) {

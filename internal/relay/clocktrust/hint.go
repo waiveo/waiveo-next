@@ -1,17 +1,29 @@
 // Package clocktrust implements the relay/1 connection-layer clock-trust
-// exchange (contracts/relay-1.md REL-132–137): a relay accepts a bounded
-// `clock.hint` from its app peer that adjusts its runtime clock but never
-// advances its verified floor (REL-132/133), completes a mutually
-// authenticated connection even when its own clock is untrusted via
-// skew-tolerant/deferred temporal validation pinned to the enrollment-anchored
-// app-peer key (REL-136/137), and drives the untrusted->trusted transition
-// that re-evaluates time-based rules (REL-134).
+// mechanics (contracts/relay-1.md REL-132–137):
 //
-// This file is the `clock.hint` receiver (REL-132/133). A hint carries no
-// verifiable signature, so it adjusts the relay's RUNTIME clock ONLY — never
-// the persisted floor (internal/relay/identity). The RuntimeClock here has no
-// access to the identity store by construction, which is what structurally
-// guarantees REL-132's "a hint never advances the floor".
+//   - hint.go — the bounded runtime clock (REL-132/133): a RuntimeClock that a
+//     `clock.hint` from the app peer adjusts, and AcceptHint's not_after+grace
+//     bound. A hint carries no verifiable signature, so it adjusts the relay's
+//     RUNTIME clock ONLY — never the persisted floor (internal/relay/identity).
+//     The RuntimeClock has no access to the identity store by construction,
+//     which is what structurally guarantees REL-132's "a hint never advances
+//     the floor".
+//   - receiver.go — the wire `clock.hint` dispatcher (REL-133): HintReceiver
+//     decodes an actual clock.hint envelope arriving on an established
+//     connection and drives AcceptHint, and mounts as the relay's clock.hint
+//     endpoint. This is the connection-layer path that makes the runtime clock
+//     reachable end-to-end (cmd/waiveo-relay registers it).
+//   - connect.go — the connect-time app-peer certificate check (REL-136/137):
+//     VerifyAppPeerCert / AppPeerTLSConfig complete a mutually authenticated
+//     connection even when the relay's own clock is untrusted, via
+//     skew-tolerant OR deferred temporal validation, with the app peer's leaf
+//     SubjectPublicKeyInfo pinned key-for-key (constant-time) to the
+//     enrollment-anchored trust_pin — never chain validation.
+//
+// REL-134's re-evaluation of time-based rules on the untrusted->trusted
+// transition is a rules/1 consequence (RUL-371), not implemented in this
+// package; this package produces the clock-trust state that transition
+// observes.
 package clocktrust
 
 import (
@@ -75,6 +87,15 @@ func (c *RuntimeClock) AcceptHint(hint ClockHint, certNotAfterMs, boundedGraceMs
 	c.adjusted = true
 	c.mu.Unlock()
 	return true
+}
+
+// AcceptHintNow applies hint using the runtime clock's OWN monotonic source
+// as the anchor instant — the form the wire dispatcher (receiver.go) uses, so
+// a caller receiving a real clock.hint need not thread a monotonic reading.
+// It is exactly AcceptHint(hint, …, c.mono()); the four-argument AcceptHint
+// remains for tests that pin a deterministic monotonic reading.
+func (c *RuntimeClock) AcceptHintNow(hint ClockHint, certNotAfterMs, boundedGraceMs int64) (accepted bool) {
+	return c.AcceptHint(hint, certNotAfterMs, boundedGraceMs, c.mono())
 }
 
 // WallMillis returns the current hint-adjusted runtime wall time in Unix

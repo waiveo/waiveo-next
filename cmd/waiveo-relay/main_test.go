@@ -1,6 +1,75 @@
 package main
 
-import "testing"
+import (
+	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/json"
+	"math/big"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+)
+
+// TestRegisterClockHintReceivesWireHint proves the relay/1 clock.hint receiver
+// (REL-133) is wired into the relay's own listener and reachable end-to-end: a
+// POSTed clock.hint bounded by the relay's own cert not_after is applied to the
+// runtime clock, and one past not_after+grace is declined.
+func TestRegisterClockHintReceivesWireHint(t *testing.T) {
+	notAfter := time.UnixMilli(1784073600000)
+	certDER := selfSignedCertDER(t, notAfter)
+
+	mux := http.NewServeMux()
+	if _, err := registerClockHint(mux, certDER); err != nil {
+		t.Fatalf("registerClockHint: %v", err)
+	}
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	post := func(wire string) (accepted bool, status int) {
+		resp, err := http.Post(srv.URL+"/relay/v1/clock-hint", "application/json", bytes.NewBufferString(wire))
+		if err != nil {
+			t.Fatalf("POST clock.hint: %v", err)
+		}
+		defer resp.Body.Close()
+		var body struct {
+			Accepted bool `json:"accepted"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&body)
+		return body.Accepted, resp.StatusCode
+	}
+
+	// Within not_after + grace -> accepted.
+	if accepted, status := post(`{"type":"clock.hint","relay_id":"01J8Z4K4N5P6Q7R8S9T0V1W3A1","body":{"ts":1752537600000}}`); !accepted || status != http.StatusOK {
+		t.Errorf("in-bound clock.hint: accepted=%v status=%d, want accepted=true status=200", accepted, status)
+	}
+	// Past not_after + grace -> declined (still 200).
+	if accepted, status := post(`{"type":"clock.hint","relay_id":"01J8Z4K4N5P6Q7R8S9T0V1W3A1","body":{"ts":1784074200001}}`); accepted || status != http.StatusOK {
+		t.Errorf("out-of-bound clock.hint: accepted=%v status=%d, want accepted=false status=200", accepted, status)
+	}
+}
+
+func selfSignedCertDER(t *testing.T, notAfter time.Time) []byte {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "relay"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     notAfter,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, priv)
+	if err != nil {
+		t.Fatalf("create cert: %v", err)
+	}
+	return der
+}
 
 func TestLoadConfigDefaultsAreLoopback(t *testing.T) {
 	cfg, err := loadConfig(func(string) string { return "" })

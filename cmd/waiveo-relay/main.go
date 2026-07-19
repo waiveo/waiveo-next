@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/relay/automationhost"
+	"github.com/maaxton/waiveo-next/internal/relay/clocktrust"
 	"github.com/maaxton/waiveo-next/internal/relay/desiredstate"
 	"github.com/maaxton/waiveo-next/internal/relay/enroll"
 	"github.com/maaxton/waiveo-next/internal/relay/hello"
@@ -194,6 +195,17 @@ func main() {
 	mux.HandleFunc("/healthz", healthz)
 	pairingSrv.Register(mux)
 
+	// Mount the relay/1 clock.hint receiver (REL-133) on this relay's own
+	// listener: the app peer MAY send clock.hint at any time on the established
+	// connection, and the relay applies it to a runtime clock only — bounded by
+	// this relay's own certificate not_after plus a grace so a hint alone can
+	// never make the relay believe its expired credential is still valid, and
+	// never touching the persisted floor (REL-132). The relay boots with this
+	// runtime clock untrusted (the clock_state it declared at hello, REL-038).
+	if _, err := registerClockHint(mux, certDER); err != nil {
+		log.Fatalf("waiveo-relay: register clock.hint receiver: %v", err)
+	}
+
 	server := &http.Server{
 		Addr:      cfg.listen,
 		Handler:   apihttp.WithTraceID(mux),
@@ -235,6 +247,23 @@ func relayTLSCertificate(id identity.RelayIdentity) (tls.Certificate, []byte, er
 	}
 
 	return cert, block.Bytes, nil
+}
+
+// registerClockHint mounts the relay/1 clock.hint receiver (REL-133) on mux
+// over a fresh, untrusted runtime clock (internal/relay/clocktrust), bounding
+// accepted hints to this relay's own certificate not_after (parsed from
+// certDER) plus clocktrust.DefaultBoundedGraceMs. It returns the receiver so
+// the wiring is observable in tests. This is the connection-layer path that
+// makes the runtime clock reachable end-to-end: a real clock.hint on the wire
+// reaches AcceptHint here, never a direct call.
+func registerClockHint(mux *http.ServeMux, certDER []byte) (*clocktrust.HintReceiver, error) {
+	leaf, err := x509.ParseCertificate(certDER)
+	if err != nil {
+		return nil, fmt.Errorf("parse enrollment cert for clock.hint bound: %w", err)
+	}
+	recv := clocktrust.NewHintReceiver(clocktrust.NewRuntimeClock(), leaf.NotAfter.UnixMilli(), clocktrust.DefaultBoundedGraceMs)
+	mux.HandleFunc("/relay/v1/clock-hint", recv.ServeHTTP)
+	return recv, nil
 }
 
 // logPairingCodes forms and logs (dev-console-only stand-in for a real
