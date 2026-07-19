@@ -74,8 +74,14 @@ func ParseMatch(raw json.RawMessage) (Match, error) {
 
 	switch {
 	case w.SSDP != nil:
+		if *w.SSDP == "" {
+			return Match{}, fmt.Errorf("%w: ssdp value MUST be a non-empty search-target string", ErrUnknownDeviceMatchForm)
+		}
 		return Match{SSDP: *w.SSDP}, nil
 	case w.MDNS != nil:
+		if *w.MDNS == "" {
+			return Match{}, fmt.Errorf("%w: mdns value MUST be a non-empty service-type string", ErrUnknownDeviceMatchForm)
+		}
 		return Match{MDNS: *w.MDNS}, nil
 	default:
 		if !macOuiPattern.MatchString(*w.MacOui) {

@@ -56,6 +56,12 @@ func TestParseMatchUnknownOrAmbiguousForms(t *testing.T) {
 		{"two fields set", `{"ssdp":"a","mdns":"b"}`},
 		{"all three fields set", `{"ssdp":"a","mdns":"b","macOui":"AABBCC"}`},
 		{"not an object", `"ssdp:foo"`},
+		// REL-110/111: an empty-string value is representationally the zero
+		// (unset) Match, so it must be rejected rather than collapse two
+		// textually-distinct degenerate matches into one Store entry / corrupt
+		// the report envelope on marshal.
+		{"empty ssdp value", `{"ssdp":""}`},
+		{"empty mdns value", `{"mdns":""}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
