@@ -254,10 +254,13 @@ func logPairingCodes(cfg config, applied desiredstate.Applied, relayCertDER []by
 
 // enrollWithRetry calls enroll.Run against the co-located feeder, retrying
 // on failure (e.g. the feeder's listener not up yet) until
-// enrollRetryBudget elapses. enroll.Run itself is idempotent — a store that
-// already holds a persisted identity returns immediately without a network
-// call — so a retry here only ever costs real work on a genuinely fresh
-// store.
+// enrollRetryBudget elapses. enroll.Run is idempotent for a valid persisted
+// identity — a store that already holds one with an unexpired certificate
+// returns immediately without a network call — but if that certificate has
+// expired, Run drives the Expired-certificate re-enrollment path
+// (internal/relay/reenroll, REL-020/027): the relay recovers its identity by
+// proving possession of the expired certificate's own retained private key,
+// under the same relay_id, re-anchoring its trust anchor (REL-014/017).
 func enrollWithRetry(feederURL string, store *identity.Store) error {
 	deadline := time.Now().Add(enrollRetryBudget)
 	var lastErr error

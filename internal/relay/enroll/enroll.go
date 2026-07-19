@@ -39,6 +39,7 @@ import (
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
+	"github.com/maaxton/waiveo-next/internal/relay/reenroll"
 )
 
 // ErrInvalidVerificationKey is returned when the feeder's enrollment
@@ -88,21 +89,43 @@ type errorBody struct {
 }
 
 // Run enrolls the relay identified by store against the feeder at
-// feederBaseURL (e.g. "https://127.0.0.1:7420"), unless store already holds
-// a persisted identity — in which case Run is a no-op success, per this
-// package's idempotent-across-restarts doc.
+// feederBaseURL (e.g. "https://127.0.0.1:7420"). A store that already holds a
+// persisted identity is not re-enrolled with a fresh claim credential — but if
+// that identity's certificate has expired, Run drives the hardened
+// Expired-certificate re-enrollment path (internal/relay/reenroll,
+// REL-020/027) instead of returning a no-op, recovering the relay's identity by
+// key possession rather than a re-claim. An already-enrolled store with a still
+// valid certificate is a no-op success, per this package's
+// idempotent-across-restarts doc.
 //
-// On success, store holds the issued relay_id and certificate, the private
-// key Run generated for the CSR, and the feeder's own
+// On a fresh enrollment, store holds the issued relay_id and certificate, the
+// private key Run generated for the CSR, and the feeder's own
 // desired_state_verification_key.
 func Run(feederBaseURL string, store *identity.Store) error {
+	return run(feederBaseURL, store, time.Now())
+}
+
+// run is Run with an injectable evaluation time, so the expired-certificate
+// branch is testable against a freshly issued (year-long) certificate. The
+// relay evaluates expiry from its own clock here purely to DECIDE whether to
+// attempt the re-enroll path; the security decision — eligibility + PoP on the
+// app peer's own trusted time (REL-023) — is made by the feeder, which re-checks
+// everything regardless of what the relay's untrusted clock believed.
+func run(feederBaseURL string, store *identity.Store, now time.Time) error {
 	if store == nil {
 		return fmt.Errorf("enroll: Run: store must not be nil")
 	}
 
-	if _, alreadyEnrolled, err := store.Identity(); err != nil {
+	if id, alreadyEnrolled, err := store.Identity(); err != nil {
 		return fmt.Errorf("enroll: Run: read persisted identity: %w", err)
 	} else if alreadyEnrolled {
+		expired, err := certExpired(id.CertPEM, now)
+		if err != nil {
+			return fmt.Errorf("enroll: Run: evaluate certificate expiry: %w", err)
+		}
+		if expired {
+			return reenroll.ReEnroll(feederBaseURL, store)
+		}
 		return nil
 	}
 
@@ -175,6 +198,24 @@ func buildCSR(priv ed25519.PrivateKey) (string, error) {
 	}
 	block := &pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}
 	return string(pem.EncodeToMemory(block)), nil
+}
+
+// certExpired reports whether the relay's persisted certificate has expired
+// relative to now — its NotAfter is at or before now. A certPEM that does not
+// decode/parse is an error (a corrupt store), never silently treated as valid.
+// This is the relay-side trigger for the Expired-certificate re-enrollment path
+// (REL-020); the app peer independently re-establishes expiry + eligibility on
+// its own trusted time (REL-023).
+func certExpired(certPEM []byte, now time.Time) (bool, error) {
+	block, _ := pem.Decode(certPEM)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return false, fmt.Errorf("persisted certificate did not decode to a CERTIFICATE PEM block")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return false, fmt.Errorf("parse persisted certificate: %w", err)
+	}
+	return !now.Before(cert.NotAfter), nil
 }
 
 // fetchClaimToken performs REL-011's `GET /claim-token` against the
