@@ -1,0 +1,176 @@
+// Package datamodel is the reference Go implementation of data-model/1's
+// scheduling core (contracts/data-model-1.md): the six platform-owned row kinds
+// (playlist, schedule, validity-window, daypart, fallback, preset-batch), their
+// validation and platform-ownership guard (DAT-005–008/040/050/060/070–101), and
+// — in later files of this package — the scope-node tree, DST-correct daypart
+// holding, and the per-instant cross-schedule resolution engine that projects an
+// effective daypart to a player/1 Lease and fires preset batches on rising edges.
+//
+// This file defines the row structs with exact Wire-shape `json` tags. The
+// scheduling-core rows are STATES (a daypart is continuous membership, not a
+// one-shot event); the resolution engine treats them accordingly.
+package datamodel
+
+import "encoding/json"
+
+// Playlist is a playlist row (DAT-040): the resource-row baseline (DAT-005–008)
+// plus name and an ordered items array.
+type Playlist struct {
+	ID         string            `json:"id"`
+	ScopeNode  string            `json:"scope_node"`
+	Name       string            `json:"name"`
+	Items      []PlaylistItem    `json:"items"`
+	ExternalID string            `json:"external_id,omitempty"`
+	Labels     map[string]string `json:"labels,omitempty"`
+	Revision   int               `json:"revision"`
+	CreatedAt  int64             `json:"created_at"`
+	UpdatedAt  int64             `json:"updated_at"`
+}
+
+// PlaylistItem is one entry of a playlist's items array (DAT-041). `source` is
+// `asset` (asset_ref present) or `playable` (pack_id + content_id present). A
+// nested pack_id here names the item's content pack and is NOT a row-level
+// pack-ownership field (DAT-101 bars only the latter).
+type PlaylistItem struct {
+	Source          string `json:"source"`
+	AssetRef        string `json:"asset_ref,omitempty"`
+	PackID          string `json:"pack_id,omitempty"`
+	ContentID       string `json:"content_id,omitempty"`
+	DurationSeconds *int   `json:"duration_seconds,omitempty"`
+}
+
+// Schedule is a schedule row (DAT-050): baseline plus name, an optional
+// fallback_id, an optional priority (default 0; higher wins, DAT-053), and an
+// optional misfire (DAT-120).
+type Schedule struct {
+	ID         string            `json:"id"`
+	ScopeNode  string            `json:"scope_node"`
+	Name       string            `json:"name"`
+	FallbackID string            `json:"fallback_id,omitempty"`
+	Priority   *int              `json:"priority,omitempty"`
+	Misfire    string            `json:"misfire,omitempty"`
+	ExternalID string            `json:"external_id,omitempty"`
+	Labels     map[string]string `json:"labels,omitempty"`
+	Revision   int               `json:"revision"`
+	CreatedAt  int64             `json:"created_at"`
+	UpdatedAt  int64             `json:"updated_at"`
+}
+
+// EffectivePriority is the schedule's precedence primary key (DAT-050): its own
+// priority, or 0 when it declares none.
+func (s Schedule) EffectivePriority() int {
+	if s.Priority == nil {
+		return 0
+	}
+	return *s.Priority
+}
+
+// ValidityWindow is a validity-window row (DAT-060): schedule_id references its
+// owning schedule, scope_node matches that schedule's (DAT-007). starts_at and
+// ends_at are nullable timestamps — null means, respectively, no lower or no
+// upper bound (DAT-061); both are always emitted (null, not omitted).
+type ValidityWindow struct {
+	ID         string `json:"id"`
+	ScheduleID string `json:"schedule_id"`
+	ScopeNode  string `json:"scope_node"`
+	StartsAt   *int64 `json:"starts_at"`
+	EndsAt     *int64 `json:"ends_at"`
+	Revision   int    `json:"revision"`
+	CreatedAt  int64  `json:"created_at"`
+	UpdatedAt  int64  `json:"updated_at"`
+}
+
+// Daypart is a daypart row (DAT-070). days_of_week/start_time/end_time declare
+// its local coverage (DAT-071–072); display_power (DAT-074) is the display state
+// it commands while it holds; playlist_id/preset_batch_id are optional refs
+// (DAT-075); misfire is optional (DAT-076).
+type Daypart struct {
+	ID            string `json:"id"`
+	ScheduleID    string `json:"schedule_id"`
+	ScopeNode     string `json:"scope_node"`
+	DaysOfWeek    []int  `json:"days_of_week"`
+	StartTime     string `json:"start_time"`
+	EndTime       string `json:"end_time"`
+	DisplayPower  string `json:"display_power"`
+	PlaylistID    string `json:"playlist_id,omitempty"`
+	PresetBatchID string `json:"preset_batch_id,omitempty"`
+	Misfire       string `json:"misfire,omitempty"`
+	Name          string `json:"name,omitempty"`
+	Revision      int    `json:"revision"`
+	CreatedAt     int64  `json:"created_at"`
+	UpdatedAt     int64  `json:"updated_at"`
+}
+
+// EffectiveMisfire resolves a daypart's misfire (DAT-076): its own, else its
+// owning schedule's, else catch_up_once (the recurring-state default, DAT-121).
+func (d Daypart) EffectiveMisfire(owning Schedule) string {
+	if d.Misfire != "" {
+		return d.Misfire
+	}
+	if owning.Misfire != "" {
+		return owning.Misfire
+	}
+	return "catch_up_once"
+}
+
+// Fallback is a fallback row (DAT-080): baseline plus name, display_power, and an
+// optional playlist_id — the resolution-order default beneath a schedule's
+// dayparts (DAT-081).
+type Fallback struct {
+	ID           string            `json:"id"`
+	ScopeNode    string            `json:"scope_node"`
+	Name         string            `json:"name"`
+	DisplayPower string            `json:"display_power"`
+	PlaylistID   string            `json:"playlist_id,omitempty"`
+	ExternalID   string            `json:"external_id,omitempty"`
+	Labels       map[string]string `json:"labels,omitempty"`
+	Revision     int               `json:"revision"`
+	CreatedAt    int64             `json:"created_at"`
+	UpdatedAt    int64             `json:"updated_at"`
+}
+
+// PresetBatch is a preset-batch row (DAT-090). Its identity field is preset_id,
+// not id — the sole baseline exception (DAT-005), kept byte-exact with the field
+// a rules/1 preset_batch action resolves against (RUL-170). commands is a
+// non-empty device-command list (DAT-091); last_outcome records the most recent
+// invocation (DAT-092/093).
+type PresetBatch struct {
+	PresetID    string              `json:"preset_id"`
+	ScopeNode   string              `json:"scope_node"`
+	Name        string              `json:"name"`
+	Commands    []PresetCommand     `json:"commands"`
+	LastOutcome *PresetBatchOutcome `json:"last_outcome,omitempty"`
+	ExternalID  string              `json:"external_id,omitempty"`
+	Labels      map[string]string   `json:"labels,omitempty"`
+	Revision    int                 `json:"revision"`
+	CreatedAt   int64               `json:"created_at"`
+	UpdatedAt   int64               `json:"updated_at"`
+}
+
+// PresetCommand is one device-class command in a preset batch (DAT-091): the
+// target entity, a command name from that entity's device class, and its typed
+// params (resolved against the device-class registry, REG-050–052).
+type PresetCommand struct {
+	EntityID string          `json:"entity_id"`
+	Command  string          `json:"command"`
+	Params   json.RawMessage `json:"params,omitempty"`
+}
+
+// PresetBatchOutcome is a preset-batch row's recorded invocation outcome
+// (DAT-092): the byte-exact {outcome, results} shape rules/1 RUL-172 fixes
+// (mirrored from internal/rules/eval so a preset row can carry it), plus this
+// contract's own evaluated_at. outcome is one of complete, partial, or failed.
+type PresetBatchOutcome struct {
+	Outcome     string          `json:"outcome"`
+	Results     []CommandResult `json:"results"`
+	EvaluatedAt int64           `json:"evaluated_at"`
+}
+
+// CommandResult is one command's pass/fail entry within a PresetBatchOutcome —
+// the identical shape rules/1's PresetBatchOutcome uses (DAT-092, RUL-172).
+type CommandResult struct {
+	Target  string `json:"target"`
+	Command string `json:"command"`
+	OK      bool   `json:"ok"`
+	Error   string `json:"error,omitempty"`
+}
