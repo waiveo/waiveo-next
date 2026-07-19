@@ -18,10 +18,13 @@
 package schedulehost
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"time"
 
 	"github.com/maaxton/waiveo-next/internal/datamodel"
+	"github.com/maaxton/waiveo-next/internal/relay/automation"
 	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
@@ -262,6 +265,12 @@ type Resolver struct {
 	// firing on. It is advanced only on a successful resolve, so a resolution
 	// error never spuriously changes the rising-edge baseline.
 	prev *datamodel.EffectiveState
+
+	// lastResolveMs is the instant the last successful ResolveNow resolved at —
+	// the evaluated_at a preset batch fired for that resolution stamps into its
+	// DAT-092 outcome (FirePreset has no nowMs of its own; Tick calls ResolveNow
+	// immediately before FirePreset, so this is that tick's instant).
+	lastResolveMs int64
 }
 
 // NewResolver builds a Resolver serving screenNodeID from store, writing each
@@ -301,5 +310,136 @@ func (r *Resolver) ResolveNow(nowMs int64) (fired *datamodel.PresetFire, err err
 
 	fired = datamodel.PresetTransition(r.prev, &state)
 	r.prev = &state
+	r.lastResolveMs = nowMs
 	return fired, nil
+}
+
+// FirePreset dispatches a rising-edge preset batch's device commands through the
+// device plane and collects its DAT-092 batch outcome. fire is the
+// datamodel.PresetFire ResolveNow/Tick returned — nil when this tick was not a
+// rising edge (or the effective daypart's preset was masked away), in which case
+// nothing dispatches and an empty outcome is returned.
+//
+// When fire is non-nil, FirePreset looks up its bound preset batch
+// (fire.PresetBatchID, resolved against the store's already-validated
+// PresetBatches — referential integrity is datamodel.ValidateRows's guarantee,
+// DAT-075) and dispatches EACH command through sink (the SAME
+// automation.CommandSink the edge-rules engine fires through, so a preset command
+// gets the identical device-class vocabulary resolution, per-device
+// serialization, and credential hygiene an app- or rule-dispatched command does,
+// REL-113/114/115). Every command is attempted independently — one failure
+// neither halts the batch nor discards the successes — and the per-command
+// dispositions are classified into the complete/partial/failed outcome
+// datamodel.BatchOutcome fixes (DAT-092). FirePreset does NOT re-derive which
+// daypart is effective or whether a preset should fire — that edge decision is
+// datamodel.PresetTransition's, read off fire; this method only executes it.
+func (r *Resolver) FirePreset(fire *datamodel.PresetFire, sink *automation.CommandSink) datamodel.PresetBatchOutcome {
+	if fire == nil {
+		return datamodel.PresetBatchOutcome{} // not a rising edge — nothing fires (DAT-075).
+	}
+	batch := r.presetBatch(fire.PresetBatchID)
+	if batch == nil {
+		// A validated store never dangles a preset reference (DAT-075); a missing
+		// batch here means a degraded store, so fire nothing rather than panic.
+		return datamodel.BatchOutcome(nil, r.lastResolveMs)
+	}
+
+	results := make([]datamodel.CommandResult, 0, len(batch.Commands))
+	for _, cmd := range batch.Commands {
+		params, perr := decodeParams(cmd.Params)
+		if perr != nil {
+			results = append(results, datamodel.CommandResult{Target: cmd.EntityID, Command: cmd.Command, OK: false, Error: perr.Error()})
+			continue
+		}
+		err := sink.Dispatch(cmd.EntityID, cmd.Command, params)
+		results = append(results, datamodel.CommandResult{
+			Target:  cmd.EntityID,
+			Command: cmd.Command,
+			OK:      err == nil,
+			Error:   errString(err),
+		})
+	}
+	return datamodel.BatchOutcome(results, r.lastResolveMs)
+}
+
+// presetBatch returns the preset batch identified by presetID (its DAT-090
+// preset_id), or nil when the store carries none — the referential lookup
+// FirePreset resolves a datamodel.PresetFire against.
+func (r *Resolver) presetBatch(presetID string) *datamodel.PresetBatch {
+	for i := range r.store.Rows.PresetBatches {
+		if r.store.Rows.PresetBatches[i].PresetID == presetID {
+			return &r.store.Rows.PresetBatches[i]
+		}
+	}
+	return nil
+}
+
+// decodeParams unmarshals a preset command's opaque params (DAT-091) into the
+// map[string]any the device-command surface dispatches — nil for an absent
+// params object, an error only for malformed JSON (which fails just that one
+// command, not the batch).
+func decodeParams(raw json.RawMessage) (map[string]any, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// errString is err.Error() or "" for a nil error — the Error field a
+// datamodel.CommandResult carries for a failed command (empty on success).
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+// Tick is one turn of the resolution loop for this screen: it re-resolves and
+// re-serves the current instant's Lease (ResolveNow — the level-triggered STATE
+// projection, done EVERY tick, DAT-119) and then fires the rising-edge preset
+// (FirePreset on the transition ResolveNow returned — edge-triggered ONLY on an
+// effective-daypart-identity change, DAT-075). A masked daypart never fires,
+// because the transition is computed on the node-level effective state, not
+// per-schedule candidates (DAT-111).
+//
+// Tick is degrade-safe: on a resolution error (an unresolvable effective tz,
+// DAT-034) ResolveNow leaves the served program untouched and returns the error,
+// which Tick absorbs — the screen keeps its last-served program rather than
+// resolving against a box-local substitute, and no preset fires. The store and
+// screen are fixed for a Resolver's life, so a tz that resolves at boot resolves
+// on every tick; a genuinely unresolvable one is surfaced by the boot-time
+// resolve, not silently lost here.
+func (r *Resolver) Tick(nowMs int64, sink *automation.CommandSink) {
+	fired, err := r.ResolveNow(nowMs)
+	if err != nil {
+		return
+	}
+	r.FirePreset(fired, sink)
+}
+
+// Loop drives Tick once per tick delivered on ticks, resolving the screen's
+// effective state at the wall-clock instant each tick carries (t.UnixMilli()) —
+// the periodic re-resolve that catches daypart boundaries (a daypart is a
+// holding STATE re-resolved every tick, DAT-119, never a one-shot event). The
+// tick CADENCE is injected: a time.Ticker's channel in the relay binary, a
+// manual channel in tests, so nothing here sleeps on the wall clock. Loop
+// returns when ctx is cancelled or ticks is closed. It mirrors the automation
+// host's own drive loop (internal/relay/automationhost.Host.Run) — the STATE
+// engine's counterpart to the EVENT engine's observation loop.
+func (r *Resolver) Loop(ctx context.Context, ticks <-chan time.Time, sink *automation.CommandSink) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case t, ok := <-ticks:
+			if !ok {
+				return
+			}
+			r.Tick(t.UnixMilli(), sink)
+		}
+	}
 }

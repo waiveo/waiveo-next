@@ -2,19 +2,24 @@ package schedulehost
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/datamodel"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
+	"github.com/maaxton/waiveo-next/internal/relay/automation"
+	"github.com/maaxton/waiveo-next/internal/relay/deviceplane"
 	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
+	"github.com/maaxton/waiveo-next/internal/rules/registry"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/tlsboot"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
@@ -604,5 +609,266 @@ func TestResolveNowUnresolvableTZLeavesSetProgramUncalledAndErrors(t *testing.T)
 	}
 	if fire != nil {
 		t.Errorf("ResolveNow fire = %+v, want nil on the error path", fire)
+	}
+}
+
+// demoRuleEntityID / demoContentDaypartID / demoPresetBatchID are byte-exact
+// copies of the feeder's own (unexported) demo-schedule fixtures
+// (internal/feeder/snapshot/demoschedule.go): the content daypart's bound
+// preset batch fires ONE launch device_command against demoRuleEntityID on
+// its rising edge (DAT-075). demoScreenScopeNodeID above is the same
+// cross-package fixture-sharing pattern.
+const (
+	demoRuleEntityID     = "01J8Z3K4N5P6Q7R8S9T0V1SCRN"
+	demoContentDaypartID = "01J8Z7DEMODAYPARTCONTENT01"
+	demoPresetBatchID    = "01J8Z8DEMOPRESETBATCHFIRE1"
+)
+
+// recordController records every physical dispatch it receives — the same
+// fake-controller pattern internal/relay/automation's own tests use to observe
+// what reaches the device plane. It never fails, so a fired preset command's
+// dispatch always succeeds (a complete PresetBatchOutcome, DAT-092).
+type recordController struct {
+	mu   sync.Mutex
+	seen []string // "entity/command", in dispatch order
+}
+
+func (c *recordController) Dispatch(entityID, command string, params map[string]any) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.seen = append(c.seen, entityID+"/"+command)
+	return nil
+}
+
+func (c *recordController) calls() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]string, len(c.seen))
+	copy(out, c.seen)
+	return out
+}
+
+// newFakeSink builds a real *automation.CommandSink — the SAME device-plane
+// dispatch surface the automation engine fires through (REL-113/115) — wired to
+// a recordController so a test can observe exactly which preset commands
+// reached the device plane. Every entity resolves to a media-player device, so
+// the FixtureRegistry vocabulary (launch/home/keypress/power) accepts the demo
+// preset's commands.
+func newFakeSink(t *testing.T) (*automation.CommandSink, *recordController) {
+	t.Helper()
+	ctrl := &recordController{}
+	resolve := func(entityID string) (string, string, bool) {
+		return entityID + "-device", "media-player", true
+	}
+	surface := deviceplane.NewCommandSurface(ctrl, registry.FixtureRegistry{}, resolve)
+	return automation.NewCommandSink(surface, "01J8ZFAKESINKRELAYID000001"), ctrl
+}
+
+// TestTickCrossingIntoContentFiresPresetOnceThenHolds is the Task-5 rising-edge
+// proof (DAT-075/111/119): ticking at an overnight instant (the blank daypart,
+// which binds no preset) fires nothing; crossing into the content daypart fires
+// its bound preset EXACTLY ONCE through the device plane (a rising edge of
+// effective-daypart identity); and a second tick still inside that content
+// daypart fires NOTHING — the STATE projection is level-triggered every tick,
+// the preset is edge-triggered only, so a hold never re-fires.
+func TestTickCrossingIntoContentFiresPresetOnceThenHolds(t *testing.T) {
+	store, errs := BuildStore(buildDemoSection(t))
+	if len(errs) != 0 {
+		t.Fatalf("BuildStore(demo section) errs = %+v, want none", errs)
+	}
+	srv, priv, _ := newTestPlayerServer(t)
+	r := NewResolver(store, demoScreenScopeNodeID, srv, priv)
+	sink, ctrl := newFakeSink(t)
+
+	// Overnight: the blank daypart holds and binds no preset — nothing fires.
+	r.Tick(demoLocalInstant(t, 2, 0), sink)
+	if calls := ctrl.calls(); len(calls) != 0 {
+		t.Fatalf("overnight tick dispatched %v, want nothing (the blank daypart binds no preset)", calls)
+	}
+
+	// Cross the boundary into the content daypart: its bound preset fires once.
+	r.Tick(demoLocalInstant(t, 12, 0), sink)
+	if calls := ctrl.calls(); len(calls) != 1 || calls[0] != demoRuleEntityID+"/launch" {
+		t.Fatalf("crossing into the content daypart dispatched %v, want exactly [%s/launch] (DAT-075 rising edge)", calls, demoRuleEntityID)
+	}
+
+	// Stay inside the SAME content daypart: level-triggered STATE, no re-fire.
+	r.Tick(demoLocalInstant(t, 15, 0), sink)
+	if calls := ctrl.calls(); len(calls) != 1 {
+		t.Fatalf("a second tick inside the same content daypart dispatched %v, want still exactly 1 (a hold must not re-fire, DAT-119)", calls)
+	}
+}
+
+// TestFirePresetDispatchesBatchAndCollectsCompleteOutcome asserts FirePreset
+// resolves the fired preset batch's commands, dispatches each through the reused
+// device-plane sink, and collects a DAT-092 PresetBatchOutcome — complete when
+// every command succeeds, with one per-command result carrying the target entity
+// and command name.
+func TestFirePresetDispatchesBatchAndCollectsCompleteOutcome(t *testing.T) {
+	store, errs := BuildStore(buildDemoSection(t))
+	if len(errs) != 0 {
+		t.Fatalf("BuildStore(demo section) errs = %+v, want none", errs)
+	}
+	r := NewResolver(store, demoScreenScopeNodeID, nil, nil) // FirePreset never touches the player server
+	sink, ctrl := newFakeSink(t)
+
+	fire := &datamodel.PresetFire{DaypartID: demoContentDaypartID, PresetBatchID: demoPresetBatchID}
+	out := r.FirePreset(fire, sink)
+
+	if out.Outcome != "complete" {
+		t.Errorf("outcome = %q, want complete (every command succeeded, DAT-092)", out.Outcome)
+	}
+	if len(out.Results) != 1 {
+		t.Fatalf("outcome has %d per-command results, want 1 (the demo batch's single command)", len(out.Results))
+	}
+	res := out.Results[0]
+	if !res.OK || res.Target != demoRuleEntityID || res.Command != "launch" {
+		t.Errorf("result = %+v, want an ok launch on %s", res, demoRuleEntityID)
+	}
+	if calls := ctrl.calls(); len(calls) != 1 || calls[0] != demoRuleEntityID+"/launch" {
+		t.Errorf("device plane saw %v, want exactly [%s/launch]", calls, demoRuleEntityID)
+	}
+}
+
+// TestFirePresetNilFireDispatchesNothing asserts a nil fire (no rising edge, or
+// a masked/absent preset) dispatches nothing and collects an empty outcome —
+// the level-triggered STATE projection continues, but no preset event is
+// emitted (DAT-075).
+func TestFirePresetNilFireDispatchesNothing(t *testing.T) {
+	store, errs := BuildStore(buildDemoSection(t))
+	if len(errs) != 0 {
+		t.Fatalf("BuildStore(demo section) errs = %+v, want none", errs)
+	}
+	r := NewResolver(store, demoScreenScopeNodeID, nil, nil)
+	sink, ctrl := newFakeSink(t)
+
+	out := r.FirePreset(nil, sink)
+	if len(out.Results) != 0 {
+		t.Errorf("nil-fire outcome has %d results, want 0 (nothing fired)", len(out.Results))
+	}
+	if calls := ctrl.calls(); len(calls) != 0 {
+		t.Errorf("nil fire dispatched %v, want nothing", calls)
+	}
+}
+
+// maskedStore builds a single-screen store carrying TWO overlapping schedules
+// that both HOLD at noon (America/Chicago): a base schedule (priority 0,
+// 06:00-22:00) binding maskedEntity/home, and a higher-precedence holiday
+// schedule (priority 100, 10:00-14:00) binding effectiveEntity/launch. At noon
+// the holiday layer is effective and the base daypart is MASKED (DAT-111): only
+// the effective daypart's preset must ever fire (DAT-075).
+const (
+	maskedSiteID           = "01J8ZCMASKEDSITE0000000001"
+	maskedScreenID         = "01J8ZCMASKEDSCREEN00000001"
+	maskedBaseScheduleID   = "01J8ZCMASKEDBASESCHEDULE01"
+	maskedHolidayScheduleI = "01J8ZCMASKEDHOLISCHEDULE01"
+	maskedBaseDaypartID    = "01J8ZCMASKEDBASEDAYPART001"
+	maskedHolidayDaypartID = "01J8ZCMASKEDHOLIDAYPART001"
+	maskedPresetID         = "01J8ZCMASKEDPRESETBASE0001"
+	effectivePresetID      = "01J8ZCEFFECTIVEPRESETHOL01"
+	maskedEntity           = "01J8ZCMASKEDENTITYBASE0001"
+	effectiveEntity        = "01J8ZCEFFECTIVEENTITYHOL01"
+)
+
+func maskedStore(t *testing.T) datamodel.RowStore {
+	t.Helper()
+	tz := demoSiteTZ
+	lat := 41.8781
+	long := -87.6298
+	orgBound := "01J8ZCMASKEDORGBOUND000001"
+	siteParent := maskedSiteID
+	basePriority := 0
+	holidayPriority := 100
+
+	nodes := []datamodel.ScopeNode{
+		{ID: maskedSiteID, Kind: "site", ParentID: &orgBound, Name: "Masked Site", TZ: &tz, Lat: &lat, Long: &long, Revision: 1, CreatedAt: 1, UpdatedAt: 1},
+		{ID: maskedScreenID, Kind: "screen", ParentID: &siteParent, Name: "Masked Screen", Revision: 1, CreatedAt: 1, UpdatedAt: 1},
+	}
+	tree, treeErrs := datamodel.BuildScopeTree(nodes)
+	if len(treeErrs) != 0 {
+		t.Fatalf("BuildScopeTree(masked fixture) errs = %+v, want none", treeErrs)
+	}
+
+	allWeek := []int{0, 1, 2, 3, 4, 5, 6}
+	return datamodel.RowStore{
+		Tree: tree,
+		Rows: datamodel.RowSet{
+			Schedules: []datamodel.Schedule{
+				{ID: maskedBaseScheduleID, ScopeNode: maskedScreenID, Name: "Base", Priority: &basePriority, Revision: 1, CreatedAt: 1, UpdatedAt: 1},
+				{ID: maskedHolidayScheduleI, ScopeNode: maskedScreenID, Name: "Holiday", Priority: &holidayPriority, Revision: 1, CreatedAt: 1, UpdatedAt: 1},
+			},
+			Dayparts: []datamodel.Daypart{
+				{ID: maskedBaseDaypartID, ScheduleID: maskedBaseScheduleID, ScopeNode: maskedScreenID, DaysOfWeek: allWeek, StartTime: "06:00:00", EndTime: "22:00:00", DisplayPower: "on", PresetBatchID: maskedPresetID, Name: "Base Hours", Revision: 1, CreatedAt: 1, UpdatedAt: 1},
+				{ID: maskedHolidayDaypartID, ScheduleID: maskedHolidayScheduleI, ScopeNode: maskedScreenID, DaysOfWeek: allWeek, StartTime: "10:00:00", EndTime: "14:00:00", DisplayPower: "on", PresetBatchID: effectivePresetID, Name: "Holiday Hours", Revision: 1, CreatedAt: 1, UpdatedAt: 1},
+			},
+			PresetBatches: []datamodel.PresetBatch{
+				{PresetID: maskedPresetID, ScopeNode: maskedScreenID, Name: "Masked Base Preset", Commands: []datamodel.PresetCommand{{EntityID: maskedEntity, Command: "home"}}, Revision: 1, CreatedAt: 1, UpdatedAt: 1},
+				{PresetID: effectivePresetID, ScopeNode: maskedScreenID, Name: "Effective Holiday Preset", Commands: []datamodel.PresetCommand{{EntityID: effectiveEntity, Command: "launch", Params: json.RawMessage(`{"channel":"holiday"}`)}}, Revision: 1, CreatedAt: 1, UpdatedAt: 1},
+			},
+		},
+	}
+}
+
+// TestTickMaskedDaypartDoesNotFire asserts a masked daypart NEVER fires its
+// preset (DAT-075/111): at noon both the base and holiday dayparts hold, but the
+// higher-precedence holiday is the effective one, so only its preset
+// (effectiveEntity/launch) fires — the masked base's preset (maskedEntity/home)
+// must never reach the device plane. This holds by construction because
+// PresetTransition keys on the node-level effective state, not per-schedule
+// candidates.
+func TestTickMaskedDaypartDoesNotFire(t *testing.T) {
+	store := maskedStore(t)
+	srv, priv, _ := newTestPlayerServer(t)
+	r := NewResolver(store, maskedScreenID, srv, priv)
+	sink, ctrl := newFakeSink(t)
+
+	r.Tick(demoLocalInstant(t, 12, 0), sink)
+
+	calls := ctrl.calls()
+	if len(calls) != 1 || calls[0] != effectiveEntity+"/launch" {
+		t.Fatalf("masked tick dispatched %v, want exactly [%s/launch] — only the effective daypart's preset fires (DAT-075/111)", calls, effectiveEntity)
+	}
+	for _, c := range calls {
+		if c == maskedEntity+"/home" {
+			t.Fatalf("the MASKED daypart's preset fired (%s) — a masked daypart must NEVER fire (DAT-111)", c)
+		}
+	}
+}
+
+// TestLoopDrivesTickOnInjectedTicks asserts the resolution loop drives Tick on
+// each tick delivered by an injected channel (a time.Ticker's channel in the
+// binary, a manual channel here) — no wall-clock sleeps: an overnight tick then
+// a content-daypart tick fire the rising-edge preset exactly once, a second
+// content tick does not re-fire, and the loop returns when its context is
+// cancelled.
+func TestLoopDrivesTickOnInjectedTicks(t *testing.T) {
+	store, errs := BuildStore(buildDemoSection(t))
+	if len(errs) != 0 {
+		t.Fatalf("BuildStore(demo section) errs = %+v, want none", errs)
+	}
+	srv, priv, _ := newTestPlayerServer(t)
+	r := NewResolver(store, demoScreenScopeNodeID, srv, priv)
+	sink, ctrl := newFakeSink(t)
+
+	ticks := make(chan time.Time)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		r.Loop(ctx, ticks, sink)
+		close(done)
+	}()
+
+	// Each unbuffered send completes only once the loop has received it, and the
+	// loop processes ticks one at a time, so these drive three ordered Ticks
+	// deterministically without any sleep.
+	ticks <- time.UnixMilli(demoLocalInstant(t, 2, 0))  // overnight: no fire
+	ticks <- time.UnixMilli(demoLocalInstant(t, 12, 0)) // rising edge: fire once
+	ticks <- time.UnixMilli(demoLocalInstant(t, 15, 0)) // hold: no re-fire
+
+	cancel()
+	<-done
+
+	if calls := ctrl.calls(); len(calls) != 1 || calls[0] != demoRuleEntityID+"/launch" {
+		t.Fatalf("Loop over the injected ticks dispatched %v, want exactly [%s/launch]", calls, demoRuleEntityID)
 	}
 }
