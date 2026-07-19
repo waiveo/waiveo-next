@@ -27,11 +27,13 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"reflect"
 	"runtime"
 
 	"github.com/maaxton/waiveo-next/conformance/drivers/corpus"
 	"github.com/maaxton/waiveo-next/conformance/drivers/report"
 	"github.com/maaxton/waiveo-next/internal/relay/desiredstate"
+	"github.com/maaxton/waiveo-next/internal/relay/hello"
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
 )
 
@@ -50,6 +52,12 @@ type RelayClient interface {
 	// snapshot from feederBaseURL, returning the applied state or a typed
 	// rejection error (leaving last-applied untouched on rejection).
 	Pull(feederBaseURL string, store *identity.Store) (desiredstate.Applied, error)
+	// Hello performs the relay/1 connection handshake (REL-030–039) against
+	// feederBaseURL, declaring decl and signing the app peer's challenge
+	// nonce with the enrollment identity Enroll persisted into store,
+	// returning the app peer's hello-ack or a typed refusal
+	// (*hello.RefusedError).
+	Hello(feederBaseURL string, store *identity.Store, decl hello.Declaration) (hello.HelloAck, error)
 }
 
 // Feeder is the LIVE counterparty the driver stages each case against: the
@@ -91,6 +99,7 @@ func Run(client RelayClient, feeder Feeder) report.Report {
 	}
 
 	driveREL010(&rep, client, feeder, cases)
+	driveREL030(&rep, client, feeder, cases)
 	driveREL070(&rep, client, feeder, cases)
 	driveREL071(&rep, client, feeder, cases)
 
@@ -104,7 +113,6 @@ func Run(client RelayClient, feeder Feeder) report.Report {
 	pend("REL-020", "re-enrollment after cert expiry is Phase-2 identity-lifecycle; first-photon has no in-band renewal/re-enrollment path (REL-015/017).")
 	pend("REL-022", "re-enrollment with a superseded cert is Phase-2 identity-lifecycle; no re-enrollment path in first-photon.")
 	pend("REL-027", "re-enrollment PoP-signature rejection is Phase-2 identity-lifecycle; no re-enrollment path in first-photon.")
-	pend("REL-030", "hello/negotiate channel-binding is the Phase-2 steady-state relay/1 session; first-photon's desired-state pull is a bare GET with no hello/negotiate handshake.")
 	pend("REL-056", "multi-generation atomic swap needs >1 concurrently-staged generation with sectioned apply; first-photon serves one generation and applies it whole.")
 	pend("REL-061", "preempt screen-program (priority/offline) is Phase-2 program-delivery semantics; first-photon applies a single static screen-program with no preemption.")
 	pend("REL-090", "telemetry overflow / loss-marker is the Phase-2 telemetry plane; first-photon has no telemetry ingest surface.")
@@ -191,6 +199,134 @@ func driveREL010(rep *report.Report, client RelayClient, feeder Feeder, cases ma
 	rep.Pass(c.CaseID, contract,
 		"relay_id / cert / desired_state_verification_key values are runtime-issued, not the corpus fixtures — asserted present + stable + single-use, not byte-equal.",
 		"not_before/not_after (enroll-ack.body): runtime validity window; not asserted byte-equal.")
+}
+
+// driveREL030 drives the relay/1 connection handshake (hello/negotiate,
+// REL-030–039): after enrolling, the relay fetches the app peer's single-use
+// challenge and signs it with its enrollment key as the channel binding
+// (REL-032), declares the corpus's protocol_version/features/subnet_metadata/
+// clock_state (REL-031), and the app peer verifies the binding, negotiates
+// N-1 down to the relay's declared minor (REL-033/034), grants the shared
+// feature subset — silently dropping the corpus's unrecognized flag
+// (REL-035) — and answers with its own authoritative site_binding (REL-036).
+func driveREL030(rep *report.Report, client RelayClient, feeder Feeder, cases map[string]corpus.Case) {
+	c, ok := corpus.ByID(cases, "REL-030")
+	if !ok {
+		rep.Fail("REL-030", contract, "case not found in frozen corpus")
+		return
+	}
+
+	store, err := enrolledStore(client, feeder)
+	if err != nil {
+		rep.Fail(c.CaseID, contract, err.Error())
+		return
+	}
+	defer store.Close()
+
+	relayIdent, ok, err := store.Identity()
+	if err != nil || !ok {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("read enrolled identity before hello: ok=%v err=%v", ok, err))
+		return
+	}
+
+	var diffs []report.Diff
+
+	// The corpus's own hello.body declaration: protocol_version one minor
+	// behind the app peer's current, and a feature set that includes a flag
+	// the app peer does not recognize — the exact input REL-035's silent-drop
+	// assertion needs.
+	decl := hello.Declaration{
+		ProtocolVersion: "1.0",
+		Features:        []string{"telemetry.latest_only_v1", "an-unrecognized-future-flag"},
+		SubnetMetadata:  hello.SubnetMetadata{AdvertisedAddress: "192.0.2.12"},
+		ClockState:      hello.ClockState{State: "trusted", Source: "ntp"},
+	}
+
+	ack, err := client.Hello(feeder.EnrollBaseURL(), store, decl)
+	if err != nil {
+		// channel_binding_verified=false / connection_refused=true: the corpus
+		// declares the valid path, so any refusal or transport failure here IS
+		// the divergence — a *hello.RefusedError included verbatim.
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("hello handshake refused/failed (corpus expects channel_binding_verified=true, connection_refused=false): %v", err))
+		return
+	}
+
+	if ack.RelayID != relayIdent.RelayID {
+		diffs = append(diffs, report.Diff{Field: "hello_ack.relay_id", Expected: relayIdent.RelayID, Actual: ack.RelayID})
+	}
+
+	if wantVerified, present := c.Expect("channel_binding_verified"); !present {
+		diffs = append(diffs, report.Diff{Field: "channel_binding_verified", Expected: "<declared in corpus expected block>", Actual: "absent from corpus fixture"})
+	} else if wantVerified != true {
+		diffs = append(diffs, report.Diff{Field: "channel_binding_verified", Expected: wantVerified, Actual: true})
+	}
+
+	if wantRefused, present := c.Expect("connection_refused"); !present {
+		diffs = append(diffs, report.Diff{Field: "connection_refused", Expected: "<declared in corpus expected block>", Actual: "absent from corpus fixture"})
+	} else if wantRefused != false {
+		diffs = append(diffs, report.Diff{Field: "connection_refused", Expected: wantRefused, Actual: false})
+	}
+
+	wantNegotiated, present := c.Expect("hello_ack.body.negotiated_version")
+	if !present {
+		diffs = append(diffs, report.Diff{Field: "hello_ack.body.negotiated_version", Expected: "<declared in corpus expected block>", Actual: "absent from corpus fixture"})
+	} else if wantNegotiated != ack.Body.NegotiatedVersion {
+		diffs = append(diffs, report.Diff{Field: "hello_ack.body.negotiated_version (N-1, REL-033/034)", Expected: wantNegotiated, Actual: ack.Body.NegotiatedVersion})
+	}
+
+	wantFeatures, present := expectStringSlice(c, "hello_ack.body.features")
+	if !present {
+		diffs = append(diffs, report.Diff{Field: "hello_ack.body.features", Expected: "<declared in corpus expected block>", Actual: "absent from corpus fixture"})
+	} else if !reflect.DeepEqual(wantFeatures, ack.Body.Features) {
+		diffs = append(diffs, report.Diff{Field: "hello_ack.body.features (shared subset, REL-035)", Expected: wantFeatures, Actual: ack.Body.Features})
+	}
+
+	// unrecognized_feature_flag_dropped_silently: the relay's declared
+	// "an-unrecognized-future-flag" must not survive into the negotiated
+	// subset, and the connection must still succeed — a genuinely
+	// unrecognized flag is dropped, never treated as a refusal reason.
+	if wantDropped, present := c.Expect("unrecognized_feature_flag_dropped_silently"); !present {
+		diffs = append(diffs, report.Diff{Field: "unrecognized_feature_flag_dropped_silently", Expected: "<declared in corpus expected block>", Actual: "absent from corpus fixture"})
+	} else if wantDropped == true {
+		for _, f := range ack.Body.Features {
+			if f == "an-unrecognized-future-flag" {
+				diffs = append(diffs, report.Diff{Field: "unrecognized_feature_flag_dropped_silently", Expected: true, Actual: "flag present in hello_ack.body.features"})
+			}
+		}
+	}
+
+	wantSite := hello.SiteBinding{
+		ScopeNode: c.ExpectString("hello_ack.body.site_binding.scope_node"),
+		TZ:        c.ExpectString("hello_ack.body.site_binding.tz"),
+	}
+	if lat, present := expectFloat(c, "hello_ack.body.site_binding.lat"); present {
+		wantSite.Lat = lat
+	} else {
+		diffs = append(diffs, report.Diff{Field: "hello_ack.body.site_binding.lat", Expected: "<declared in corpus expected block>", Actual: "absent from corpus fixture"})
+	}
+	if long, present := expectFloat(c, "hello_ack.body.site_binding.long"); present {
+		wantSite.Long = long
+	} else {
+		diffs = append(diffs, report.Diff{Field: "hello_ack.body.site_binding.long", Expected: "<declared in corpus expected block>", Actual: "absent from corpus fixture"})
+	}
+	if wantSite != ack.Body.SiteBinding {
+		diffs = append(diffs, report.Diff{Field: "hello_ack.body.site_binding (authoritative, REL-036)", Expected: wantSite, Actual: ack.Body.SiteBinding})
+	}
+
+	if wantDeprecated, present := c.Expect("hello_ack.body.deprecated"); !present {
+		diffs = append(diffs, report.Diff{Field: "hello_ack.body.deprecated", Expected: "<declared in corpus expected block>", Actual: "absent from corpus fixture"})
+	} else if m, ok := wantDeprecated.(map[string]any); !ok || len(m) != len(ack.Body.Deprecated) {
+		diffs = append(diffs, report.Diff{Field: "hello_ack.body.deprecated (REL-039)", Expected: wantDeprecated, Actual: ack.Body.Deprecated})
+	}
+
+	if len(diffs) > 0 {
+		rep.Fail(c.CaseID, contract, "hello/negotiate diverged", diffs...)
+		return
+	}
+	rep.Pass(c.CaseID, contract,
+		"relay_id / channel_binding_signature: runtime-issued (relay_id from REL-010 enrollment, the signature computed fresh over this connection's own single-use nonce) — asserted self-consistent (hello_ack.relay_id echoes the enrolling identity), not byte-equal to the corpus's static fixture values.",
+		"challenge.body.nonce: minted fresh per connection by the live app peer (crypto/rand, REL-030); not the corpus's static nonce.",
+	)
 }
 
 // driveREL070 drives idempotent generation reapply: after applying generation
@@ -386,6 +522,40 @@ func expectInt(c corpus.Case, path string) (n int64, present bool) {
 	default:
 		return 0, false
 	}
+}
+
+// expectStringSlice reads a []string expected field (JSON arrays decode as
+// []any of strings), also reporting whether the field was PRESENT — mirrors
+// expectInt's presence-checking discipline for the hello-ack feature list.
+func expectStringSlice(c corpus.Case, path string) (out []string, present bool) {
+	v, ok := c.Expect(path)
+	if !ok {
+		return nil, false
+	}
+	arr, ok := v.([]any)
+	if !ok {
+		return nil, false
+	}
+	out = make([]string, 0, len(arr))
+	for _, e := range arr {
+		s, ok := e.(string)
+		if !ok {
+			return nil, false
+		}
+		out = append(out, s)
+	}
+	return out, true
+}
+
+// expectFloat reads a float64 expected field, also reporting whether it was
+// PRESENT — mirrors expectInt for the hello-ack site_binding's lat/long.
+func expectFloat(c corpus.Case, path string) (f float64, present bool) {
+	v, ok := c.Expect(path)
+	if !ok {
+		return 0, false
+	}
+	f, ok = v.(float64)
+	return f, ok
 }
 
 func corpusDir() string {

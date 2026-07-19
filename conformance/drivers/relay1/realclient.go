@@ -1,8 +1,11 @@
 package relay1
 
 import (
+	"fmt"
+
 	"github.com/maaxton/waiveo-next/internal/relay/desiredstate"
 	relayenroll "github.com/maaxton/waiveo-next/internal/relay/enroll"
+	"github.com/maaxton/waiveo-next/internal/relay/hello"
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
 )
 
@@ -28,4 +31,19 @@ func (RealRelayClient) Enroll(feederBaseURL string, store *identity.Store) error
 // verify-then-apply gate under test.
 func (RealRelayClient) Pull(feederBaseURL string, store *identity.Store) (desiredstate.Applied, error) {
 	return desiredstate.Pull(feederBaseURL, store)
+}
+
+// Hello implements RelayClient via internal/relay/hello.PerformHello — the
+// relay/1 connection handshake (REL-030–039) under test, using the
+// enrollment identity Enroll persisted into store to sign the channel
+// binding (REL-032).
+func (RealRelayClient) Hello(feederBaseURL string, store *identity.Store, decl hello.Declaration) (hello.HelloAck, error) {
+	id, ok, err := store.Identity()
+	if err != nil {
+		return hello.HelloAck{}, fmt.Errorf("real-relay: Hello: read identity: %w", err)
+	}
+	if !ok {
+		return hello.HelloAck{}, fmt.Errorf("real-relay: Hello: no enrolled identity")
+	}
+	return hello.PerformHello(feederBaseURL, id.PrivateKey, id.RelayID, decl)
 }

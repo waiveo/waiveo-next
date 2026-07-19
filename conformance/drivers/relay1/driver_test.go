@@ -3,6 +3,7 @@ package relay1_test
 import (
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"reflect"
 	"sort"
@@ -13,12 +14,14 @@ import (
 	"github.com/maaxton/waiveo-next/conformance/drivers/report"
 	"github.com/maaxton/waiveo-next/internal/relay/desiredstate"
 	relayenroll "github.com/maaxton/waiveo-next/internal/relay/enroll"
+	"github.com/maaxton/waiveo-next/internal/relay/hello"
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
 var expectedDriven = []string{
 	"REL-010-valid-fresh-enroll",
+	"REL-030-valid-hello-negotiate-channel-binding",
 	"REL-070-valid-generation-reapply-idempotent-noop",
 	"REL-071-invalid-wrong-peer-key-snapshot-rejected",
 }
@@ -27,7 +30,6 @@ var expectedPending = []string{
 	"REL-020-valid-re-enroll-after-cert-expiry",
 	"REL-022-invalid-re-enroll-superseded-cert",
 	"REL-027-invalid-re-enroll-pop-signature-invalid",
-	"REL-030-valid-hello-negotiate-channel-binding",
 	"REL-056-valid-generation-apply-atomic-swap",
 	"REL-061-valid-preempt-priority-screen-program-offline",
 	"REL-090-valid-telemetry-overflow-loss-marker",
@@ -163,6 +165,21 @@ func (brokenSkipVerifyClient) Name() string { return "broken-skip-verify" }
 
 func (brokenSkipVerifyClient) Enroll(feederBaseURL string, store *identity.Store) error {
 	return relayenroll.Run(feederBaseURL, store)
+}
+
+// Hello delegates to the real handshake client — REL-071 is the only
+// vulnerability this strawman stages; it has no broken hello behavior of its
+// own to prove, so it just performs a normal hello using the store's
+// enrolled identity.
+func (brokenSkipVerifyClient) Hello(feederBaseURL string, store *identity.Store, decl hello.Declaration) (hello.HelloAck, error) {
+	id, ok, err := store.Identity()
+	if err != nil {
+		return hello.HelloAck{}, err
+	}
+	if !ok {
+		return hello.HelloAck{}, fmt.Errorf("brokenSkipVerifyClient: no enrolled identity")
+	}
+	return hello.PerformHello(feederBaseURL, id.PrivateKey, id.RelayID, decl)
 }
 
 func (brokenSkipVerifyClient) Pull(feederBaseURL string, store *identity.Store) (desiredstate.Applied, error) {

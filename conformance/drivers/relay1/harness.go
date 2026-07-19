@@ -17,10 +17,29 @@ import (
 	"github.com/maaxton/waiveo-next/internal/feeder/grant"
 	feedersigning "github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
+	"github.com/maaxton/waiveo-next/internal/relay/hello"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/signhash"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
+
+// helloSite is the app peer's authoritative site_binding this in-process
+// feeder reports in every hello-ack (REL-036) — the same first-photon site
+// cmd/waiveo-feeder wires in production, and the REL-030 corpus case's own
+// expected hello_ack.body.site_binding.
+var helloSite = hello.SiteBinding{
+	ScopeNode: "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5",
+	TZ:        "America/Chicago",
+	Lat:       41.8781,
+	Long:      -87.6298,
+}
+
+// helloRecognizedFeatures are the relay/1 capability flags this in-process
+// feeder understands, for the hello-ack shared-feature subset (REL-035) —
+// matching cmd/waiveo-feeder's firstPhotonRecognizedFeatures so the REL-030
+// corpus's "an-unrecognized-future-flag" is dropped silently rather than
+// accidentally recognized.
+var helloRecognizedFeatures = []string{"telemetry.latest_only_v1"}
 
 var quietErrorLog = log.New(io.Discard, "", 0)
 
@@ -83,6 +102,21 @@ func NewInProcessFeeder() (*InProcessFeeder, error) {
 	}
 	enrollMux := http.NewServeMux()
 	enrollSrv.Register(enrollMux)
+
+	// The connection handshake's app-peer server (relay/1 REL-030–039),
+	// mounted on the SAME mux as enrollment — exactly how cmd/waiveo-feeder
+	// wires it in production — so feeder.EnrollBaseURL() doubles as the
+	// hello base URL. Its channel-binding verification (REL-032) reads the
+	// relay's enrollment-learned key straight off enrollSrv.
+	helloSrv := hello.NewAppPeerServer(
+		enrollSrv.RelayEnrollmentKey,
+		helloSite,
+		hello.AppPeerImplementedMinors(1, 1),
+		helloRecognizedFeatures,
+		nil,
+	)
+	helloSrv.Register(enrollMux)
+
 	if f.enrollBase, err = f.serve(apihttp.WithTraceID(enrollMux)); err != nil {
 		f.Close()
 		return nil, fmt.Errorf("relay1: serve enroll: %w", err)
