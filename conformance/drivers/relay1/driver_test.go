@@ -27,6 +27,7 @@ var expectedDriven = []string{
 	"REL-027-invalid-re-enroll-pop-signature-invalid",
 	"REL-030-valid-hello-negotiate-channel-binding",
 	"REL-056-valid-generation-apply-atomic-swap",
+	"REL-061-valid-preempt-priority-screen-program-offline",
 	"REL-070-valid-generation-reapply-idempotent-noop",
 	"REL-071-invalid-wrong-peer-key-snapshot-rejected",
 	"REL-090-valid-telemetry-overflow-loss-marker",
@@ -36,9 +37,15 @@ var expectedDriven = []string{
 	"REL-136-valid-coldboot-skew-tolerant-connect",
 }
 
-var expectedPending = []string{
-	"REL-061-valid-preempt-priority-screen-program-offline",
-}
+// expectedPending is intentionally empty (nil, matching report.Report's own
+// PendingIDs() zero-match return — byStatus's `var ids []string` stays nil
+// when nothing matches, so reflect.DeepEqual below needs a nil, not an empty
+// non-nil, slice on this side): every conformance/corpora/relay-1 case is
+// driven — full relay/1 conformance-driver coverage (Wave 1 Phase 2 Task 5).
+// TestRelay1CorpusFullyAccountedFor still independently re-derives full
+// coverage straight from the corpus DIRECTORY, so a new case frozen later
+// without triage fails loudly rather than silently riding along.
+var expectedPending []string
 
 // TestRelay1DriverGreen boots the live in-process feeder and runs the relay/1
 // driver against the real relay client: every driven case PASSes and the

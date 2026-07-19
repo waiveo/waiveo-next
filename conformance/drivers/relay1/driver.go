@@ -15,16 +15,17 @@
 // impostor-signed one) — the feederBaseURL of the brief, expanded to what an
 // oracle actually needs to reproduce a case.
 //
-// Applicability triage (§10 "no silent caps"): Run DRIVES the cases
-// first-photon implements (REL-010 fresh enroll, REL-020/022/027
+// Applicability triage (§10 "no silent caps"): Run DRIVES every case in the
+// frozen relay-1 corpus (REL-010 fresh enroll, REL-020/022/027
 // Expired-certificate re-enrollment, REL-030 hello/negotiate, REL-056
-// durable atomic generation-apply swap, REL-070 idempotent reapply, REL-071
-// wrong-peer-key rejection, REL-090/094 telemetry buffer overflow /
-// latest-only heartbeat supersession against internal/relay/telemetry,
-// REL-110/112/113 device-candidate report + command resolve/dispatch
-// against internal/relay/deviceplane, REL-133 bounded clock.hint, REL-136/137
-// cold-boot skew-tolerant/deferred connect) and marks
-// every other relay-1 case PENDING with an explicit reason.
+// durable atomic generation-apply swap, REL-061 offline screen-program serve
+// against internal/relay/desiredstate.ServedProgram, REL-070 idempotent
+// reapply, REL-071 wrong-peer-key rejection, REL-090/094 telemetry buffer
+// overflow / latest-only heartbeat supersession against
+// internal/relay/telemetry, REL-110/112/113 device-candidate report +
+// command resolve/dispatch against internal/relay/deviceplane, REL-133
+// bounded clock.hint, REL-136/137 cold-boot skew-tolerant/deferred connect)
+// — the pending set is empty; every corpus case is driven.
 package relay1
 
 import (
@@ -125,6 +126,7 @@ func Run(client RelayClient, feeder Feeder) report.Report {
 	driveREL027(&rep, client, feeder, cases)
 	driveREL030(&rep, client, feeder, cases)
 	driveREL056(&rep, cases)
+	driveREL061(&rep, cases)
 	driveREL070(&rep, client, feeder, cases)
 	driveREL071(&rep, client, feeder, cases)
 	driveREL090(&rep, cases)
@@ -132,15 +134,6 @@ func Run(client RelayClient, feeder Feeder) report.Report {
 	driveREL110(&rep, cases)
 	driveREL133(&rep, cases)
 	driveREL136(&rep, client, feeder, cases)
-
-	pend := func(short, reason string) {
-		id := short
-		if c, ok := corpus.ByID(cases, short); ok {
-			id = c.CaseID
-		}
-		rep.Pending(id, contract, reason)
-	}
-	pend("REL-061", "preempt screen-program (priority/offline) is Phase-2 program-delivery semantics; first-photon applies a single static screen-program with no preemption.")
 
 	return rep
 }
