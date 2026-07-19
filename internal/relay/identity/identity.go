@@ -70,16 +70,34 @@ CREATE TABLE IF NOT EXISTS last_applied_generation (
 // Open opens (creating if necessary) the operational SQLite database at
 // path, ensuring its schema exists. path's parent directory is created
 // (mode 0700) if missing; use ":memory:" for an ephemeral, test-only store.
+//
+// A file-backed store is opened under crash-safe write discipline (§10):
+// journal_mode=WAL, synchronous=FULL, and busy_timeout=5000ms are applied to
+// every connection (via the DSN, so a pooled reconnect re-applies them), and
+// each is verified after Open. WAL + FULL fsync every commit is what lets a
+// committed operational record — a last-applied {generation, hash} (REL-055)
+// or a durable-class telemetry entry (REL-093) — survive an abrupt process
+// kill (power-pull) without a torn/partial write ever surfacing as valid
+// state on reopen. A ":memory:" store carries no such durability and skips
+// the file-only journal_mode assertion.
 func Open(path string) (*Store, error) {
+	dsn := path
 	if path != ":memory:" {
 		if dir := filepath.Dir(path); dir != "." {
 			if err := os.MkdirAll(dir, 0o700); err != nil {
 				return nil, fmt.Errorf("identity: create dir %s: %w", dir, err)
 			}
 		}
+		// modernc.org/sqlite runs each `_pragma` on every new connection, so
+		// the write-discipline PRAGMAs hold even if database/sql retires and
+		// re-dials the pooled connection under SetMaxOpenConns(1).
+		dsn = "file:" + path +
+			"?_pragma=journal_mode(WAL)" +
+			"&_pragma=synchronous(FULL)" +
+			"&_pragma=busy_timeout(5000)"
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("identity: open %s: %w", path, err)
 	}
@@ -89,6 +107,13 @@ func Open(path string) (*Store, error) {
 	// under concurrent writers on the same *os.File handle.
 	db.SetMaxOpenConns(1)
 
+	if path != ":memory:" {
+		if err := verifyWriteDiscipline(db); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("identity: %w", err)
+		}
+	}
+
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("identity: create schema: %w", err)
@@ -97,8 +122,54 @@ func Open(path string) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
-// Close closes the underlying database handle.
+// verifyWriteDiscipline confirms the §10 crash-safety PRAGMAs actually took
+// on the connection — a silently-ignored journal_mode or synchronous setting
+// would leave the store one power-pull away from a torn write, so Open fails
+// loudly rather than run undurably.
+func verifyWriteDiscipline(db *sql.DB) error {
+	var journal string
+	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&journal); err != nil {
+		return fmt.Errorf("read journal_mode: %w", err)
+	}
+	if journal != "wal" {
+		return fmt.Errorf("journal_mode = %q, want wal", journal)
+	}
+
+	var synchronous int
+	if err := db.QueryRow(`PRAGMA synchronous`).Scan(&synchronous); err != nil {
+		return fmt.Errorf("read synchronous: %w", err)
+	}
+	if synchronous != 2 { // 2 == FULL
+		return fmt.Errorf("synchronous = %d, want 2 (FULL)", synchronous)
+	}
+
+	var busyTimeout int
+	if err := db.QueryRow(`PRAGMA busy_timeout`).Scan(&busyTimeout); err != nil {
+		return fmt.Errorf("read busy_timeout: %w", err)
+	}
+	if busyTimeout != 5000 {
+		return fmt.Errorf("busy_timeout = %d, want 5000", busyTimeout)
+	}
+	return nil
+}
+
+// Checkpoint flushes the WAL back into the main database file and truncates
+// the -wal sidecar (PRAGMA wal_checkpoint(TRUNCATE)), bounding the WAL's
+// on-disk growth over the appliance's life (§10). It is safe to call at any
+// time; Close calls it on a clean shutdown.
+func (s *Store) Checkpoint() error {
+	if _, err := s.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		return fmt.Errorf("identity: checkpoint: %w", err)
+	}
+	return nil
+}
+
+// Close checkpoints the WAL (best-effort, so a clean shutdown leaves no
+// unbounded sidecar) and closes the underlying database handle. Committed
+// state is already durable via WAL before Close is ever reached (§10) — the
+// checkpoint only bounds the WAL, it is not what makes writes durable.
 func (s *Store) Close() error {
+	_, _ = s.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
 	return s.db.Close()
 }
 
