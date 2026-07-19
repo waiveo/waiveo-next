@@ -223,6 +223,11 @@ type Session struct {
 	client   *http.Client
 	base     string
 	relayPub ed25519.PublicKey
+	// commitment is the pinned relay's fingerprint commitment (PLY-052) — the
+	// value pinnedClient re-checks on every connection. Retained so Relocate can
+	// re-pin against the same relay at a new address (PLY-132/133) without
+	// re-pairing.
+	commitment []byte
 }
 
 // Pair runs the pairing prefix of the player/1 client thread for pairingCode —
@@ -266,6 +271,7 @@ func Pair(pairingCode string) (*Session, error) {
 		client:       client,
 		base:         base,
 		relayPub:     relayPub,
+		commitment:   commitment,
 	}, nil
 }
 
