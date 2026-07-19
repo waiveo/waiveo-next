@@ -151,6 +151,12 @@ func Build(img []byte, contentBaseURL string, id *signing.Identity, grants []wir
 			Devices:           []json.RawMessage{},
 			PackMatchPatterns: []json.RawMessage{},
 		},
+		// The schedule section (REL-065) is emitted empty-but-typed this
+		// wave: all seven scheduling-core row arrays present and non-null
+		// (REL-060), no rows yet. Normalized() guarantees each marshals as
+		// `[]`, riding the same hash/signature as every other section; a later
+		// task authors real daypart rows here for the relay to resolve.
+		Schedule: wire.ScheduleSection{}.Normalized(),
 		RevocationAndSite: wire.RevocationAndSite{
 			Revoked:       []string{},
 			SiteEffective: firstPhotonSiteEffective,

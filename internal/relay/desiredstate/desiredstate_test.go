@@ -472,6 +472,78 @@ func TestPullExposesScreenPrograms(t *testing.T) {
 	}
 }
 
+// TestPullExposesSchedule asserts a verified snapshot's schedule section
+// (REL-065) is surfaced on Applied.Schedule unmodified — the raw
+// scheduling-core rows + scope nodes the feeder signed, which a later
+// relay-side resolver derives a dayparting timeline from. It rides the SAME
+// hash/signature verification as every other section (no separate trust step),
+// and a populated schedule leaves the byte-identical-marshaling → hash
+// invariant intact: repopulate the section, recompute the hash + re-sign under
+// the feeder's own key, and Pull verifies it exactly as it does every section.
+func TestPullExposesSchedule(t *testing.T) {
+	img := loadTestImage(t)
+	id := testFeederIdentity(t)
+
+	snap, err := snapshot.Build(img, "https://origin.example", id, nil)
+	if err != nil {
+		t.Fatalf("snapshot.Build: %v", err)
+	}
+
+	// snapshot.Build emits an empty-but-typed schedule: all seven arrays
+	// present and non-nil (REL-060/065).
+	empty := snap.Sections.Schedule
+	for name, arr := range map[string][]json.RawMessage{
+		"scope_nodes":      empty.ScopeNodes,
+		"playlists":        empty.Playlists,
+		"schedules":        empty.Schedules,
+		"validity_windows": empty.ValidityWindows,
+		"dayparts":         empty.Dayparts,
+		"fallbacks":        empty.Fallbacks,
+		"preset_batches":   empty.PresetBatches,
+	} {
+		if arr == nil {
+			t.Errorf("snapshot.Build emitted a nil schedule.%s, want a present empty slice (REL-060/065)", name)
+		}
+		if len(arr) != 0 {
+			t.Errorf("snapshot.Build emitted a non-empty schedule.%s = %v, want empty this task", name, arr)
+		}
+	}
+
+	// Populate the schedule section with opaque scheduling-core rows (fixture
+	// ULIDs), normalize, then re-hash + re-sign under the feeder's own key so
+	// the snapshot stays internally consistent (hash covers sections, REL-053).
+	sched := wire.ScheduleSection{
+		ScopeNodes: []json.RawMessage{
+			json.RawMessage(`{"id":"01ARZ3NDEKTSV4RRFFQ69G5FA1","revision":1,"kind":"site","tz":"America/Chicago"}`),
+			json.RawMessage(`{"id":"01ARZ3NDEKTSV4RRFFQ69G5FA2","revision":1,"kind":"screen","parent":"01ARZ3NDEKTSV4RRFFQ69G5FA1"}`),
+		},
+		Schedules: []json.RawMessage{
+			json.RawMessage(`{"id":"01ARZ3NDEKTSV4RRFFQ69G5FA4","revision":1,"scope_node":"01ARZ3NDEKTSV4RRFFQ69G5FA2"}`),
+		},
+	}.Normalized()
+	snap.Sections.Schedule = sched
+	snap.Hash, err = wire.HashSections(snap.Sections)
+	if err != nil {
+		t.Fatalf("wire.HashSections: %v", err)
+	}
+	canon, err := wire.SignedScopeBytes(snap.Generation, snap.Hash)
+	if err != nil {
+		t.Fatalf("wire.SignedScopeBytes: %v", err)
+	}
+	snap.Signature = wire.EncodeSignature(signhash.Sign(id.SigningPriv(), canon))
+
+	ts := newTestFeeder(t, id, snap)
+	store := enrolledStore(t, ts)
+
+	applied, err := Pull(ts.URL, store)
+	if err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+	if !reflect.DeepEqual(applied.Schedule, sched) {
+		t.Errorf("applied.Schedule = %+v, want %+v (REL-065, unmodified, riding the same hash/signature)", applied.Schedule, sched)
+	}
+}
+
 // TestPullRejectsIncompleteSections asserts a snapshot whose `sections`
 // object omits any one of the seven REL-060 keys is rejected outright
 // (ErrSectionsIncomplete) — the structural completeness gate fires before

@@ -114,6 +114,31 @@ func TestBuildShape(t *testing.T) {
 			t.Errorf("sections JSON missing REL-060 key %q; got %s", k, body["sections"])
 		}
 	}
+
+	// The schedule section (REL-065) is emitted empty-but-typed this task: an
+	// object carrying exactly the seven scheduling-core row arrays, each `[]`
+	// (present, non-null — REL-060), never `{}` and never null.
+	var sched map[string]json.RawMessage
+	if err := json.Unmarshal(sections["schedule"], &sched); err != nil {
+		t.Fatalf("Unmarshal schedule section: %v; got %s", err, sections["schedule"])
+	}
+	schedKeys := []string{
+		"scope_nodes",
+		"playlists",
+		"schedules",
+		"validity_windows",
+		"dayparts",
+		"fallbacks",
+		"preset_batches",
+	}
+	if len(sched) != len(schedKeys) {
+		t.Errorf("schedule section marshaled to %d keys, want exactly %d (%v); got %s", len(sched), len(schedKeys), schedKeys, sections["schedule"])
+	}
+	for _, k := range schedKeys {
+		if string(sched[k]) != "[]" {
+			t.Errorf("schedule.%s = %s, want [] (empty array, never null — REL-060/065)", k, sched[k])
+		}
+	}
 }
 
 // TestBuildEmitsDemoEdgeRule asserts Build populates the `edge_rules`

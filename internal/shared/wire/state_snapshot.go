@@ -63,10 +63,61 @@ type Sections struct {
 	ScreenPrograms     []ScreenProgram   `json:"screen_programs"`
 	EdgeRules          EdgeRules         `json:"edge_rules"`
 	DeviceInventory    DeviceInventory   `json:"device_inventory"`
-	Schedule           struct{}          `json:"schedule"`
+	Schedule           ScheduleSection   `json:"schedule"`
 	RevocationAndSite  RevocationAndSite `json:"revocation_and_site"`
 	PairingGrants      []PairingGrant    `json:"pairing_grants"`
 	WorkflowGeneration any               `json:"workflow_generation"`
+}
+
+// ScheduleSection is the relay/1 `schedule` section (REL-065): the
+// scheduling-core rows + scope nodes the feeder carries OPAQUELY for the
+// relay to derive a dayparting timeline from (data-model/1). relay/1 does not
+// own these row shapes — data-model/1 does — so every array element is left
+// as raw JSON here, exactly as `edge_rules` carries rules/1's own compiled
+// entries (REL-062). The relay-side parser (internal/relay/schedulehost)
+// unmarshals these arrays into data-model/1's own row types and resolves them
+// through internal/datamodel; this package never interprets them.
+//
+// Every one of the seven arrays is present and non-null in a well-formed
+// snapshot (REL-060): call Normalized before hashing/signing so each empty
+// array marshals as `[]`, never `null`. Field declaration order IS the
+// canonical marshal order (encoding/json marshals struct fields in Go
+// declaration order), so byte-identical content always hashes identically —
+// the REL-053 byte-identical-marshaling → hash invariant.
+type ScheduleSection struct {
+	ScopeNodes      []json.RawMessage `json:"scope_nodes"`
+	Playlists       []json.RawMessage `json:"playlists"`
+	Schedules       []json.RawMessage `json:"schedules"`
+	ValidityWindows []json.RawMessage `json:"validity_windows"`
+	Dayparts        []json.RawMessage `json:"dayparts"`
+	Fallbacks       []json.RawMessage `json:"fallbacks"`
+	PresetBatches   []json.RawMessage `json:"preset_batches"`
+}
+
+// Normalized returns a copy of sec with every nil row array replaced by a
+// non-nil empty slice, so each of the seven scheduling-core arrays marshals
+// as `[]` rather than `null` (REL-060: sections carry an empty array, never
+// an omitted key or a null placeholder). The feeder calls this before
+// hashing/signing so the schedule section satisfies the REL-060 no-null
+// invariant exactly as every other section does, and rides the same
+// hash/signature. Normalization does not touch element bytes, so it preserves
+// the byte-identical-marshaling → hash invariant.
+func (sec ScheduleSection) Normalized() ScheduleSection {
+	norm := func(s []json.RawMessage) []json.RawMessage {
+		if s == nil {
+			return []json.RawMessage{}
+		}
+		return s
+	}
+	return ScheduleSection{
+		ScopeNodes:      norm(sec.ScopeNodes),
+		Playlists:       norm(sec.Playlists),
+		Schedules:       norm(sec.Schedules),
+		ValidityWindows: norm(sec.ValidityWindows),
+		Dayparts:        norm(sec.Dayparts),
+		Fallbacks:       norm(sec.Fallbacks),
+		PresetBatches:   norm(sec.PresetBatches),
+	}
 }
 
 // ScreenProgram is one relay/1 `screen_programs` entry (REL-061).

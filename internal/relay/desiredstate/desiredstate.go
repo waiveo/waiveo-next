@@ -131,6 +131,18 @@ type Applied struct {
 	// stay correct across a restart from the persisted snapshot alone without
 	// first completing a fresh hello.
 	SiteEffective wire.SiteEffective
+
+	// Schedule is the verified snapshot's sections.schedule (REL-065),
+	// carried unmodified — the scheduling-core rows + scope nodes the feeder
+	// signed, carried opaquely (raw JSON per row) for a later relay-side
+	// resolver (internal/relay/schedulehost) to unmarshal into data-model/1's
+	// own row types and derive a dayparting timeline from. Like every field
+	// here it is only ever produced by an already-hash-and-signature-verified
+	// snapshot, so it rides the SAME trust as everything else — there is no
+	// separate verification step for it, exactly as REL-065's signed-section
+	// discipline requires. An empty-but-typed schedule (today's first-photon
+	// state) carries all seven arrays present and empty.
+	Schedule wire.ScheduleSection
 }
 
 // Pull fetches the feeder's signed desired-state snapshot from
@@ -366,5 +378,6 @@ func extractApplied(generation int64, sections wire.Sections) (Applied, error) {
 		EdgeRules:       sections.EdgeRules.Rules,
 		ScreenPrograms:  sections.ScreenPrograms,
 		SiteEffective:   sections.RevocationAndSite.SiteEffective,
+		Schedule:        sections.Schedule,
 	}, nil
 }
