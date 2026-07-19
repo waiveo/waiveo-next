@@ -2,23 +2,56 @@
 // scheduling-core resolution engine (contracts/relay-1.md REL-065,
 // contracts/data-model-1.md DAT-051/111/113-118): it parses the
 // opaquely-carried `schedule` desired-state section into a
-// datamodel.RowStore and, in later files of this package, resolves it into
-// the player/1 Lease a screen is served and fires preset batches on daypart
+// datamodel.RowStore (BuildStore/Governs), resolves it per-instant into the
+// player/1 Lease a screen is served (ProjectLease/Resolver, DAT-113-118),
+// and — in a later file of this package — fires preset batches on daypart
 // rising edges.
 //
 // This package DERIVES, it does not re-implement (data-model/1 line 391):
 // every parse/validate/resolve step here calls straight through to
-// internal/datamodel's own, corpus-proven functions
-// (datamodel.BuildScopeTree, datamodel.ValidateRows). No scheduling
-// semantics — precedence, holding, fallback, or terminal-default rules —
-// are expressed in this package.
+// internal/datamodel's own, corpus-proven functions (datamodel.BuildScopeTree,
+// datamodel.ValidateRows, datamodel.Resolve, datamodel.PresetTransition). No
+// scheduling semantics — precedence, holding, fallback, the display_power
+// projection, or the terminal-default rule — are expressed in this package;
+// ProjectLease reads the already-resolved datamodel.EffectiveState and only
+// maps it onto the player/1 Lease field vocabulary.
 package schedulehost
 
 import (
+	"crypto/ed25519"
 	"encoding/json"
 
 	"github.com/maaxton/waiveo-next/internal/datamodel"
+	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
+)
+
+// Lease projection constants. These are the player/1 Lease field values a
+// schedule-resolved program carries; ProjectLease maps a resolved
+// datamodel.EffectiveState onto them without re-deriving any scheduling rule.
+const (
+	// leasePriorityScheduled is the Lease `priority` every schedule-resolved
+	// program carries (player/1 PLY-108): schedule-driven, never the separate
+	// emergency `preempt` path (out of this driver's scope).
+	leasePriorityScheduled = "scheduled"
+
+	// leaseDisplayContent is player/1's Lease `display` value for a powered
+	// screen showing its playlist (PLY-093) — the value datamodel.Resolve
+	// already projects a display_power:on daypart to (DAT-113). This package
+	// reads that projection to decide whether to source content; it does not
+	// re-map display_power itself (data-model/1 line 391).
+	leaseDisplayContent = "content"
+
+	// leaseContentTypeImage is the single player/1 content `type` (PLY-083)
+	// the first-photon carries, matching playerserver.SetServedProgram's own
+	// constant `image` annotation. A real per-item content-type lookup is a
+	// later concern.
+	leaseContentTypeImage = "image"
+
+	// terminalProgramRevision is the stable programRevision for the DAT-118
+	// terminal default (a governing schedule holds nothing): a fixed sentinel,
+	// so a screen parked at the terminal blank never spuriously re-swaps.
+	terminalProgramRevision = "terminal:blank"
 )
 
 // BuildStore parses a carried `schedule` desired-state section (REL-065)
@@ -108,4 +141,165 @@ func Governs(store datamodel.RowStore, screenNodeID string) bool {
 		}
 	}
 	return false
+}
+
+// ProjectLease resolves screenNodeID's effective state at nowMs
+// (datamodel.Resolve) and maps it onto the player/1 Lease fields a relay serves
+// (DAT-113-118):
+//
+//   - display is datamodel.Resolve's already-projected Lease `display` — content
+//     for a display_power:on daypart (DAT-113), blank for a blank/off daypart
+//     (DAT-114/115) or the terminal default (DAT-118). This package does not
+//     re-derive the display_power mapping; it reads Resolve's projection.
+//   - content, for a `content` display, is the effective daypart's/fallback's
+//     playlist projected item-by-item to player/1 Lease content refs
+//     (playlistContent); a blank/terminal display carries no content.
+//   - priority is always `scheduled` — this is the schedule-driven serve path;
+//     the emergency `preempt` priority is a separate path, out of scope here.
+//   - programRevision is a deterministic function of the effective-daypart
+//     IDENTITY (programRevisionFor): byte-identical while the same daypart holds
+//     (no spurious re-swap) and different across a daypart change (the player
+//     swaps).
+//
+// It returns a non-nil error exactly when datamodel.Resolve does — i.e. an
+// unresolvable effective tz (DAT-034) — and in that case returns no Lease
+// fields: resolution NEVER substitutes box-local state, so the caller degrades
+// rather than serving a guessed one.
+func ProjectLease(store datamodel.RowStore, screenNodeID string, nowMs int64) (display string, priority string, content []wire.LeaseContent, programRevision string, err error) {
+	state, err := datamodel.Resolve(store, screenNodeID, nowMs)
+	if err != nil {
+		return "", "", nil, "", err
+	}
+	display, priority, content, programRevision = projectState(store, state)
+	return display, priority, content, programRevision, nil
+}
+
+// projectState maps an ALREADY-resolved datamodel.EffectiveState onto the
+// player/1 Lease fields. It is the shared projection ProjectLease (which calls
+// Resolve first) and Resolver.ResolveNow (which keeps the resolved state for the
+// preset rising-edge check) both use, so the two cannot drift on how a resolved
+// state becomes a Lease.
+func projectState(store datamodel.RowStore, state datamodel.EffectiveState) (display string, priority string, content []wire.LeaseContent, programRevision string) {
+	display = state.Display
+	priority = leasePriorityScheduled
+	programRevision = programRevisionFor(state)
+	if state.Display == leaseDisplayContent {
+		content = playlistContent(store, state.PlaylistID)
+	}
+	return display, priority, content, programRevision
+}
+
+// programRevisionFor derives a Lease programRevision from the effective state's
+// identity: the schedule + effective daypart id while a daypart holds, the
+// schedule + fallback id under a fallback (DAT-117), or the fixed terminal
+// sentinel at the DAT-118 terminal default. It is a pure function of identity,
+// so it is stable while the same state holds and changes when it changes — the
+// property a player relies on to swap its program only on a real change.
+func programRevisionFor(state datamodel.EffectiveState) string {
+	switch {
+	case state.Daypart != nil:
+		return state.ScheduleID + ":dp:" + state.Daypart.ID
+	case state.Fallback != nil:
+		return state.ScheduleID + ":fb:" + state.Fallback.ID
+	default:
+		return terminalProgramRevision
+	}
+}
+
+// playlistContent projects the playlist named by playlistID (the effective
+// daypart's or fallback's playlist_id, already resolved onto state.PlaylistID)
+// into player/1 Lease content refs, one per asset item (DAT-041). Only items
+// carrying an asset_ref project to a plain image content item; a `playable`
+// (pack) item has no direct Lease content ref and is skipped. An empty or
+// unknown playlist id yields no content.
+//
+// The scheduling-core playlist item (DAT-041) carries an asset_ref but no
+// content-origin URL — the asset_ref -> direct-fetch URL resolution (REL-140)
+// is a separate concern this projection does not have the inputs for — so the
+// URL/ExpiresAt fields are left zero here; a later task threading a content
+// resolver fills them.
+func playlistContent(store datamodel.RowStore, playlistID string) []wire.LeaseContent {
+	if playlistID == "" {
+		return nil
+	}
+	for i := range store.Rows.Playlists {
+		p := store.Rows.Playlists[i]
+		if p.ID != playlistID {
+			continue
+		}
+		content := make([]wire.LeaseContent, 0, len(p.Items))
+		for _, item := range p.Items {
+			if item.AssetRef == "" {
+				continue // a pack `playable` has no direct Lease content ref.
+			}
+			content = append(content, wire.LeaseContent{
+				Type:     leaseContentTypeImage,
+				AssetRef: item.AssetRef,
+			})
+		}
+		if len(content) == 0 {
+			return nil
+		}
+		return content
+	}
+	return nil
+}
+
+// Resolver owns the per-instant serving of ONE screen's schedule-resolved
+// program: it resolves the screen's effective state, projects it onto the
+// player/1 Lease the player server issues (Resolver.ResolveNow), and tracks the
+// previous effective state so a daypart's rising edge can fire its preset batch
+// (a later task dispatches the returned datamodel.PresetFire). One Resolver
+// serves one screen; a site with several screens runs one Resolver each.
+type Resolver struct {
+	store        datamodel.RowStore
+	screenNodeID string
+	srv          *playerserver.Server
+	signingKey   ed25519.PrivateKey
+
+	// prev is the effective state the last successful ResolveNow projected, or
+	// nil before the first — the edge datamodel.PresetTransition keys a preset
+	// firing on. It is advanced only on a successful resolve, so a resolution
+	// error never spuriously changes the rising-edge baseline.
+	prev *datamodel.EffectiveState
+}
+
+// NewResolver builds a Resolver serving screenNodeID from store, writing each
+// resolved Lease to srv (playerserver.Server.SetProgram) signed with signingKey
+// — the relay's own enrollment key, the SAME trust anchor a player pins its
+// Lease-signature check against (PLY-090), exactly as playerserver.SetProgram
+// documents.
+func NewResolver(store datamodel.RowStore, screenNodeID string, srv *playerserver.Server, signingKey ed25519.PrivateKey) *Resolver {
+	return &Resolver{store: store, screenNodeID: screenNodeID, srv: srv, signingKey: signingKey}
+}
+
+// ResolveNow resolves the screen's effective state at nowMs, serves the
+// projected Lease (playerserver.Server.SetProgram), and returns the preset batch
+// to fire on this instant's rising edge (datamodel.PresetTransition of the
+// previous effective state to the current) — nil when nothing fires; a later
+// task dispatches it through the device plane.
+//
+// This is the level-triggered STATE projection (DAT-119): the display/content
+// Lease is re-derived and re-served on EVERY call, whether or not the effective
+// daypart changed — a daypart is a holding state, not a one-shot event. Only the
+// returned preset fire is edge-triggered (DAT-075), keyed on effective-daypart
+// identity by datamodel.PresetTransition.
+//
+// On a resolution error — an unresolvable effective tz (DAT-034) above all — it
+// does NOT call SetProgram: the currently-served program (the app-authored one,
+// or a prior resolved one) stays in place and the error is surfaced for the
+// caller to log and degrade. Resolution NEVER substitutes box-local state, so a
+// bad tz degrades rather than serving a guessed program.
+func (r *Resolver) ResolveNow(nowMs int64) (fired *datamodel.PresetFire, err error) {
+	state, err := datamodel.Resolve(r.store, r.screenNodeID, nowMs)
+	if err != nil {
+		return nil, err
+	}
+
+	display, priority, content, programRevision := projectState(r.store, state)
+	r.srv.SetProgram(programRevision, priority, display, content, r.signingKey)
+
+	fired = datamodel.PresetTransition(r.prev, &state)
+	r.prev = &state
+	return fired, nil
 }

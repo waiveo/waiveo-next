@@ -1,12 +1,22 @@
 package schedulehost
 
 import (
+	"bytes"
+	"crypto/ed25519"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/maaxton/waiveo-next/internal/datamodel"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
+	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
+	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
+	"github.com/maaxton/waiveo-next/internal/shared/tlsboot"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
@@ -232,4 +242,367 @@ func TestGovernsAncestorCascade(t *testing.T) {
 			t.Errorf("Governs(store, %q) = true, want false — a schedule scoped to an unrelated sibling screen is not an ancestor and MUST NOT govern this screen", cascadeScreenID)
 		}
 	})
+}
+
+// demoSiteTZ is the demo site's fixture effective tz (the same value the
+// feeder's own firstPhotonSiteEffective.TZ carries, unexported there, so this
+// is a byte-exact copy — the cross-package fixture-sharing pattern
+// demoScreenScopeNodeID above already uses). Every demo daypart's local
+// coverage is read against this zone, never a box-local one (DAT-034).
+const demoSiteTZ = "America/Chicago"
+
+// demoLocalInstant computes a deterministic Unix-ms instant at the given local
+// hour/minute in the demo site's effective tz, on a fixed DST-quiet winter date
+// (2026-01-15) — the same fixture-instant construction the feeder's own
+// demoschedule_test uses, so a content-hour vs overnight instant lands in the
+// same daypart the feeder authored (06:00-22:00 content, 22:00-06:00 blank).
+func demoLocalInstant(t *testing.T, hour, minute int) int64 {
+	t.Helper()
+	loc, err := time.LoadLocation(demoSiteTZ)
+	if err != nil {
+		t.Fatalf("load location %q: %v", demoSiteTZ, err)
+	}
+	return time.Date(2026, time.January, 15, hour, minute, 0, 0, loc).UnixMilli()
+}
+
+// TestProjectLeaseMidDayProjectsContentFromPlaylist asserts a mid-day instant
+// (inside the demo content daypart) projects display:content at priority
+// scheduled, with one image content item sourced from the effective daypart's
+// playlist (DAT-113/115) — the SAME asset_ref the demo playlist item carries.
+func TestProjectLeaseMidDayProjectsContentFromPlaylist(t *testing.T) {
+	store, errs := BuildStore(buildDemoSection(t))
+	if len(errs) != 0 {
+		t.Fatalf("BuildStore(demo section) errs = %+v, want none", errs)
+	}
+	if len(store.Rows.Playlists) == 0 || len(store.Rows.Playlists[0].Items) == 0 {
+		t.Fatalf("demo store carries no playlist items to source content from")
+	}
+	wantAssetRef := store.Rows.Playlists[0].Items[0].AssetRef
+
+	display, priority, content, programRevision, err := ProjectLease(store, demoScreenScopeNodeID, demoLocalInstant(t, 12, 0))
+	if err != nil {
+		t.Fatalf("ProjectLease(mid-day): %v", err)
+	}
+	if display != "content" {
+		t.Errorf("display = %q, want content (DAT-113)", display)
+	}
+	if priority != "scheduled" {
+		t.Errorf("priority = %q, want scheduled (schedule-driven, not the emergency preempt path)", priority)
+	}
+	if programRevision == "" {
+		t.Error("programRevision is empty, want a non-empty deterministic revision")
+	}
+	if len(content) != 1 {
+		t.Fatalf("content has %d items, want 1 (the demo playlist's single asset item)", len(content))
+	}
+	if content[0].Type != "image" {
+		t.Errorf("content[0].type = %q, want image", content[0].Type)
+	}
+	if content[0].AssetRef != wantAssetRef {
+		t.Errorf("content[0].asset_ref = %q, want %q (sourced from the effective daypart's playlist)", content[0].AssetRef, wantAssetRef)
+	}
+}
+
+// TestProjectLeaseOvernightProjectsBlankNoContent asserts an overnight instant
+// (inside the demo blank daypart) projects display:blank with NO content
+// (DAT-114/115), still at priority scheduled — a blank daypart is a
+// schedule-driven state, powered on showing nothing.
+func TestProjectLeaseOvernightProjectsBlankNoContent(t *testing.T) {
+	store, errs := BuildStore(buildDemoSection(t))
+	if len(errs) != 0 {
+		t.Fatalf("BuildStore(demo section) errs = %+v, want none", errs)
+	}
+
+	display, priority, content, _, err := ProjectLease(store, demoScreenScopeNodeID, demoLocalInstant(t, 2, 0))
+	if err != nil {
+		t.Fatalf("ProjectLease(overnight): %v", err)
+	}
+	if display != "blank" {
+		t.Errorf("display = %q, want blank (DAT-114)", display)
+	}
+	if priority != "scheduled" {
+		t.Errorf("priority = %q, want scheduled", priority)
+	}
+	if len(content) != 0 {
+		t.Errorf("content has %d items, want 0 (a blank daypart shows nothing, DAT-115)", len(content))
+	}
+}
+
+// governedTerminalStore builds a store whose schedule GOVERNS the screen (a
+// schedule is attached to it) but that never HOLDS — it declares no dayparts
+// and no fallback — so resolution terminates at the DAT-118 terminal default:
+// display:blank, powered on, no content, never a box-local substitution.
+func governedTerminalStore(t *testing.T) (datamodel.RowStore, string) {
+	t.Helper()
+	tz := demoSiteTZ
+	lat := 41.8781
+	long := -87.6298
+	orgBound := "01J8ZATERMINALORGBOUND0001"
+	siteID := "01J8ZATERMINALSITE00000001"
+	screenID := "01J8ZATERMINALSCREEN000001"
+	scheduleID := "01J8ZATERMINALSCHEDULE0001"
+	siteParent := siteID
+
+	nodes := []datamodel.ScopeNode{
+		{ID: siteID, Kind: "site", ParentID: &orgBound, Name: "Terminal Site", TZ: &tz, Lat: &lat, Long: &long, Revision: 1, CreatedAt: 1, UpdatedAt: 1},
+		{ID: screenID, Kind: "screen", ParentID: &siteParent, Name: "Terminal Screen", Revision: 1, CreatedAt: 1, UpdatedAt: 1},
+	}
+	tree, treeErrs := datamodel.BuildScopeTree(nodes)
+	if len(treeErrs) != 0 {
+		t.Fatalf("BuildScopeTree(terminal fixture) errs = %+v, want none", treeErrs)
+	}
+	store := datamodel.RowStore{
+		Tree: tree,
+		Rows: datamodel.RowSet{
+			Schedules: []datamodel.Schedule{
+				{ID: scheduleID, ScopeNode: screenID, Name: "Governs But Nothing Holds", Revision: 1, CreatedAt: 1, UpdatedAt: 1},
+			},
+		},
+	}
+	return store, screenID
+}
+
+// TestProjectLeaseTerminalDefaultBlank asserts a governed screen with nothing
+// holding (no daypart, no fallback) projects the DAT-118 terminal default:
+// display:blank, no content, at a deterministic (stable) programRevision so the
+// screen never spuriously re-swaps while parked at the terminal blank.
+func TestProjectLeaseTerminalDefaultBlank(t *testing.T) {
+	store, screenID := governedTerminalStore(t)
+
+	display, priority, content, rev1, err := ProjectLease(store, screenID, demoLocalInstant(t, 12, 0))
+	if err != nil {
+		t.Fatalf("ProjectLease(terminal): %v", err)
+	}
+	if display != "blank" {
+		t.Errorf("display = %q, want blank (DAT-118 terminal default)", display)
+	}
+	if priority != "scheduled" {
+		t.Errorf("priority = %q, want scheduled", priority)
+	}
+	if len(content) != 0 {
+		t.Errorf("content has %d items, want 0 (terminal default shows nothing, DAT-118)", len(content))
+	}
+
+	_, _, _, rev2, err := ProjectLease(store, screenID, demoLocalInstant(t, 18, 0))
+	if err != nil {
+		t.Fatalf("ProjectLease(terminal, second instant): %v", err)
+	}
+	if rev1 != rev2 {
+		t.Errorf("terminal programRevision is not stable across instants: %q vs %q", rev1, rev2)
+	}
+}
+
+// TestProjectLeaseProgramRevisionStableWithinDaypartChangesAcross asserts the
+// programRevision is a deterministic function of effective-daypart identity: it
+// is byte-identical across two resolves inside the SAME daypart (no spurious
+// program swap) and differs across a daypart boundary (the player swaps).
+func TestProjectLeaseProgramRevisionStableWithinDaypartChangesAcross(t *testing.T) {
+	store, errs := BuildStore(buildDemoSection(t))
+	if len(errs) != 0 {
+		t.Fatalf("BuildStore(demo section) errs = %+v, want none", errs)
+	}
+
+	_, _, _, revMidday, err := ProjectLease(store, demoScreenScopeNodeID, demoLocalInstant(t, 12, 0))
+	if err != nil {
+		t.Fatalf("ProjectLease(12:00): %v", err)
+	}
+	_, _, _, revAfternoon, err := ProjectLease(store, demoScreenScopeNodeID, demoLocalInstant(t, 15, 0))
+	if err != nil {
+		t.Fatalf("ProjectLease(15:00): %v", err)
+	}
+	if revMidday != revAfternoon {
+		t.Errorf("programRevision changed within the SAME content daypart: %q (12:00) vs %q (15:00) — a stable daypart must not re-swap", revMidday, revAfternoon)
+	}
+
+	_, _, _, revOvernight, err := ProjectLease(store, demoScreenScopeNodeID, demoLocalInstant(t, 2, 0))
+	if err != nil {
+		t.Fatalf("ProjectLease(02:00): %v", err)
+	}
+	if revMidday == revOvernight {
+		t.Errorf("programRevision unchanged across a daypart boundary: content=%q overnight=%q — a daypart change must yield a new revision", revMidday, revOvernight)
+	}
+}
+
+// newTestPlayerServer builds a real playerserver.Server with one redeemable
+// pairing grant and returns it alongside the ed25519 signing key SetProgram
+// signs its Leases with and the grant's selector — enough to pair a player and
+// pull the served program back over player/1's own HTTP surface.
+func newTestPlayerServer(t *testing.T) (*playerserver.Server, ed25519.PrivateKey, string) {
+	t.Helper()
+	certPEM, keyPEM := tlsboot.GenSelfSigned()
+
+	block, _ := pem.Decode(keyPEM)
+	if block == nil || block.Type != "PRIVATE KEY" {
+		t.Fatalf("GenSelfSigned key did not PEM-decode to a PRIVATE KEY block")
+	}
+	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		t.Fatalf("x509.ParsePKCS8PrivateKey: %v", err)
+	}
+	priv, ok := key.(ed25519.PrivateKey)
+	if !ok {
+		t.Fatalf("parsed key is %T, want ed25519.PrivateKey", key)
+	}
+
+	const grantID = "grant-test-fixture-000000001"
+	grant := wire.PairingGrant{
+		GrantID:                grantID,
+		Purpose:                "pairing",
+		ResultingPrincipalKind: "screen",
+		TTL:                    900,
+		RedemptionMode:         "one-time",
+		IssuedAt:               time.Now().UnixMilli(),
+	}
+	srv, err := playerserver.NewServer(certPEM, []wire.PairingGrant{grant})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	return srv, priv, grantID
+}
+
+// pairAndPull pairs a player against srv (redeeming grantID) and pulls the
+// served program, returning the issued Lease — the black-box way to observe
+// what SetProgram configured, through player/1's own pair -> program flow.
+func pairAndPull(t *testing.T, srv *playerserver.Server, grantID string, contentTypes []string) playerserver.LeaseResponse {
+	t.Helper()
+	mux := http.NewServeMux()
+	srv.Register(mux)
+	ts := httptest.NewServer(apihttp.WithTraceID(mux))
+	t.Cleanup(ts.Close)
+
+	pairBody, err := json.Marshal(playerserver.PairingRequest{
+		HardwareID:    "hw-0001",
+		GrantSelector: grantID,
+		Capabilities:  playerserver.Capabilities{ContentTypes: []string{"image", "video"}, PlayerVersion: "1.0.0"},
+	})
+	if err != nil {
+		t.Fatalf("marshal pairing request: %v", err)
+	}
+	pairResp, err := http.Post(ts.URL+"/player/v1/pair", "application/json", bytes.NewReader(pairBody))
+	if err != nil {
+		t.Fatalf("POST /player/v1/pair: %v", err)
+	}
+	defer pairResp.Body.Close()
+	var pr playerserver.PairingResponse
+	if err := json.NewDecoder(pairResp.Body).Decode(&pr); err != nil {
+		t.Fatalf("decode pairing response: %v", err)
+	}
+	if pr.ChannelToken == "" {
+		t.Fatalf("pairing did not yield a channel_token: %+v", pr)
+	}
+
+	pullBody, err := json.Marshal(playerserver.ProgramPullRequest{
+		Capabilities: playerserver.Capabilities{ContentTypes: contentTypes, PlayerVersion: "1.0.0"},
+	})
+	if err != nil {
+		t.Fatalf("marshal program pull: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/player/v1/program", bytes.NewReader(pullBody))
+	if err != nil {
+		t.Fatalf("build program request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+pr.ChannelToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /player/v1/program: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("program pull status = %d, want 200", resp.StatusCode)
+	}
+	var lease playerserver.LeaseResponse
+	if err := json.NewDecoder(resp.Body).Decode(&lease); err != nil {
+		t.Fatalf("decode lease: %v", err)
+	}
+	return lease
+}
+
+// TestResolveNowServesResolvedProgramViaSetProgram asserts ResolveNow projects
+// the current instant and calls the player server's SetProgram, so a player
+// pulling its program then sees the schedule-resolved Lease: display:content,
+// priority scheduled, the demo asset ref, and the SAME programRevision
+// ProjectLease derives for that instant (proving the two share one projection).
+func TestResolveNowServesResolvedProgramViaSetProgram(t *testing.T) {
+	store, errs := BuildStore(buildDemoSection(t))
+	if len(errs) != 0 {
+		t.Fatalf("BuildStore(demo section) errs = %+v, want none", errs)
+	}
+	wantAssetRef := store.Rows.Playlists[0].Items[0].AssetRef
+
+	srv, priv, grantID := newTestPlayerServer(t)
+	r := NewResolver(store, demoScreenScopeNodeID, srv, priv)
+
+	midDay := demoLocalInstant(t, 12, 0)
+	if _, err := r.ResolveNow(midDay); err != nil {
+		t.Fatalf("ResolveNow(mid-day): %v", err)
+	}
+
+	_, _, _, wantRevision, err := ProjectLease(store, demoScreenScopeNodeID, midDay)
+	if err != nil {
+		t.Fatalf("ProjectLease(mid-day): %v", err)
+	}
+
+	lease := pairAndPull(t, srv, grantID, []string{"image", "video"})
+	if lease.Display != "content" {
+		t.Errorf("served display = %q, want content (SetProgram was not wired to the resolved state)", lease.Display)
+	}
+	if lease.Priority != "scheduled" {
+		t.Errorf("served priority = %q, want scheduled", lease.Priority)
+	}
+	if lease.ProgramRevision != wantRevision {
+		t.Errorf("served program_revision = %q, want %q (ResolveNow must serve ProjectLease's revision)", lease.ProgramRevision, wantRevision)
+	}
+	if len(lease.Content) != 1 {
+		t.Fatalf("served content has %d items, want 1", len(lease.Content))
+	}
+	if lease.Content[0].Type != "image" || lease.Content[0].AssetRef != wantAssetRef {
+		t.Errorf("served content[0] = %+v, want type image with asset_ref %q", lease.Content[0], wantAssetRef)
+	}
+}
+
+// unresolvableTZStore builds a store whose screen resolves to a tz that is not
+// a loadable IANA zone — so datamodel.Resolve returns an error (DAT-034: the
+// platform NEVER substitutes box-local state) rather than a defined state.
+func unresolvableTZStore(t *testing.T) (datamodel.RowStore, string) {
+	t.Helper()
+	badTZ := "Not/ARealZone"
+	lat := 1.0
+	long := 1.0
+	siteBound := "01J8ZBUNRESOLVTZSITEBND001"
+	screenID := "01J8ZBUNRESOLVTZSCREEN0001"
+
+	nodes := []datamodel.ScopeNode{
+		{ID: screenID, Kind: "screen", ParentID: &siteBound, Name: "Bad TZ Screen", TZ: &badTZ, Lat: &lat, Long: &long, Revision: 1, CreatedAt: 1, UpdatedAt: 1},
+	}
+	tree, _ := datamodel.BuildScopeTree(nodes)
+	return datamodel.RowStore{Tree: tree}, screenID
+}
+
+// TestResolveNowUnresolvableTZLeavesSetProgramUncalledAndErrors asserts that on
+// an unresolvable effective tz (DAT-034) ResolveNow does NOT call SetProgram
+// and surfaces the error — never a box-local substitution. The Resolver is
+// given a nil *playerserver.Server: had ResolveNow called SetProgram it would
+// panic dereferencing nil, so a clean error return with no panic is proof the
+// serve path was left untouched.
+func TestResolveNowUnresolvableTZLeavesSetProgramUncalledAndErrors(t *testing.T) {
+	store, screenID := unresolvableTZStore(t)
+	r := NewResolver(store, screenID, nil, nil)
+
+	var fire *datamodel.PresetFire
+	var err error
+	func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				t.Fatalf("ResolveNow panicked — it called SetProgram on the nil server instead of erroring (DAT-034): %v", rec)
+			}
+		}()
+		fire, err = r.ResolveNow(demoLocalInstant(t, 12, 0))
+	}()
+
+	if err == nil {
+		t.Fatal("ResolveNow err = nil, want an unresolvable-tz error (DAT-034, no box-local fallback)")
+	}
+	if fire != nil {
+		t.Errorf("ResolveNow fire = %+v, want nil on the error path", fire)
+	}
 }
