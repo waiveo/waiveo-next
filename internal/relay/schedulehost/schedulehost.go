@@ -74,23 +74,36 @@ func BuildStore(sec wire.ScheduleSection) (datamodel.RowStore, []datamodel.Error
 // Governs reports whether the carried schedule governs screenNodeID, per
 // the relay's additive serving policy (Global Constraints): the screen's
 // scope node MUST be present in the carried scope tree, AND at least one
-// schedule row MUST be attached directly to it. Governs is a purely
-// structural, time-independent check — it says nothing about whether a
-// daypart currently HOLDS (that per-instant question is Resolve's, a later
-// task) — it only decides whether the relay should treat this screen as
+// schedule row MUST be applicable to it per DAT-051 — its own scope_node is
+// the screen itself OR any ancestor of the screen on the parent_id chain
+// (contracts/data-model-1.md DAT-051: "a site-wide base schedule governs
+// every screen beneath it"). Governs delegates the ancestor walk to
+// datamodel.ScopeTree.AncestorChain, the same cascade ApplicableSchedules
+// itself walks, rather than re-deriving it here (data-model/1 line 391).
+//
+// Governs is a purely structural, time-independent check — it says nothing
+// about whether a schedule is currently in force (DAT-052) or a daypart
+// currently HOLDS (that per-instant question is Resolve's, a later task) —
+// it only decides whether the relay should treat this screen as
 // schedule-driven at all.
 //
-// When Governs is false (no scope node carried for the screen, or the
-// screen carries no schedule of its own), the relay's stated policy is to
-// keep serving the app-authored screen_programs program unchanged
-// (REL-061) — behavior is UNCHANGED for an empty or non-attaching schedule.
-// Governs does not itself decide what to serve; callers do.
+// When Governs is false (no scope node carried for the screen, or no
+// schedule is applicable to it at any ancestor distance), the relay's
+// stated policy is to keep serving the app-authored screen_programs
+// program unchanged (REL-061) — behavior is UNCHANGED for an empty or
+// non-applicable schedule. Governs does not itself decide what to serve;
+// callers do.
 func Governs(store datamodel.RowStore, screenNodeID string) bool {
-	if _, ok := store.Tree.KindOf(screenNodeID); !ok {
+	chain := store.Tree.AncestorChain(screenNodeID)
+	if chain == nil {
 		return false
 	}
+	inChain := make(map[string]bool, len(chain))
+	for _, id := range chain {
+		inChain[id] = true
+	}
 	for _, s := range store.Rows.Schedules {
-		if s.ScopeNode == screenNodeID {
+		if inChain[s.ScopeNode] {
 			return true
 		}
 	}

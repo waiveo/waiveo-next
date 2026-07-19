@@ -64,11 +64,18 @@ type EffectiveState struct {
 	ScheduleID string
 }
 
-// ancestorChain returns nodeID and its ancestors on the parent_id chain toward
+// AncestorChain returns nodeID and its ancestors on the parent_id chain toward
 // the root, nearest first: index i is ancestor-distance i (nodeID itself is 0).
 // It stops at a subtree boundary (a parent absent from the tree) and is
 // cycle-guarded. An unknown nodeID yields a nil chain.
-func (t ScopeTree) ancestorChain(nodeID string) []string {
+//
+// This is the DAT-051 applicability cascade's own walk — the same shape the
+// DAT-033 effective-tz ancestor walk uses (EffectiveGeo) — exported so a
+// caller outside this package (e.g. relay/schedulehost's structural Governs
+// check, REL-065) can test schedule-attachment applicability without
+// re-deriving the walk itself (data-model/1 line 391: derive, don't
+// re-implement).
+func (t ScopeTree) AncestorChain(nodeID string) []string {
 	if _, ok := t.byID[nodeID]; !ok {
 		return nil
 	}
@@ -101,7 +108,7 @@ func (t ScopeTree) ancestorChain(nodeID string) []string {
 // ancestor (DAT-051) and in force when it has no validity window or at least one
 // containing tMs (DAT-052). An unknown nodeID yields an empty slice.
 func ApplicableSchedules(store RowStore, nodeID string, tMs int64) []Schedule {
-	chain := store.Tree.ancestorChain(nodeID)
+	chain := store.Tree.AncestorChain(nodeID)
 	if chain == nil {
 		return nil
 	}

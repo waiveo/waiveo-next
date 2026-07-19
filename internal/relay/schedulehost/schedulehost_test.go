@@ -153,3 +153,83 @@ func TestBuildStoreMalformedRowDegradesWithoutPanic(t *testing.T) {
 		t.Fatalf("BuildStore(one malformed daypart) len(Dayparts) = %d, want 1 (the surviving good row)", len(store.Rows.Dayparts))
 	}
 }
+
+// TestGovernsAncestorCascade asserts Governs resolves schedule applicability
+// via the DAT-051 ancestor cascade — "its own scope_node is N itself or any
+// ancestor of N on the parent_id chain" — not direct-attachment-only. A
+// schedule whose scope_node is a SITE ancestor of the screen (DAT-051's own
+// paradigmatic example: "a site-wide base schedule governs every screen
+// beneath it") MUST govern the screen even though no schedule row is ever
+// attached to the screen node itself. A schedule attached to an unrelated
+// sibling screen under the same site MUST NOT govern this screen — Governs
+// must implement the real ancestor cascade, not degrade into "any schedule
+// exists anywhere in the store".
+func TestGovernsAncestorCascade(t *testing.T) {
+	const (
+		cascadeOrgAncestorID     = "01J8Z9CASCADEORGBOUND00001"
+		cascadeSiteID            = "01J8Z9CASCADESITE000000001"
+		cascadeScreenID          = "01J8Z9CASCADESCREEN0000001"
+		cascadeSiblingID         = "01J8Z9CASCADESIBLING000001"
+		cascadeSiteScheduleID    = "01J8Z9CASCADESCHEDULESIT01"
+		cascadeSiblingScheduleID = "01J8Z9CASCADESCHEDULESIB01"
+	)
+	orgParentID := cascadeOrgAncestorID
+	siteParentID := cascadeSiteID
+	siteTZ := "America/New_York"
+	siteLat := 40.7128
+	siteLong := -74.0060
+
+	nodes := []datamodel.ScopeNode{
+		{
+			ID: cascadeSiteID, Kind: "site", ParentID: &orgParentID,
+			Name: "Cascade Site", TZ: &siteTZ, Lat: &siteLat, Long: &siteLong,
+			Revision: 1, CreatedAt: 1, UpdatedAt: 1,
+		},
+		{
+			ID: cascadeScreenID, Kind: "screen", ParentID: &siteParentID,
+			Name: "Cascade Screen", Revision: 1, CreatedAt: 1, UpdatedAt: 1,
+		},
+		{
+			ID: cascadeSiblingID, Kind: "screen", ParentID: &siteParentID,
+			Name: "Cascade Sibling Screen", Revision: 1, CreatedAt: 1, UpdatedAt: 1,
+		},
+	}
+	tree, treeErrs := datamodel.BuildScopeTree(nodes)
+	if len(treeErrs) != 0 {
+		t.Fatalf("BuildScopeTree(cascade fixture) errs = %+v, want none", treeErrs)
+	}
+
+	t.Run("site-scoped schedule governs a descendant screen", func(t *testing.T) {
+		store := datamodel.RowStore{
+			Tree: tree,
+			Rows: datamodel.RowSet{
+				Schedules: []datamodel.Schedule{
+					{
+						ID: cascadeSiteScheduleID, ScopeNode: cascadeSiteID,
+						Name: "Site-wide Base Schedule", Revision: 1, CreatedAt: 1, UpdatedAt: 1,
+					},
+				},
+			},
+		}
+		if !Governs(store, cascadeScreenID) {
+			t.Errorf("Governs(store, %q) = false, want true — the site-scoped schedule is applicable to the screen via the DAT-051 ancestor cascade even though no schedule is attached to the screen directly", cascadeScreenID)
+		}
+	})
+
+	t.Run("sibling-scoped schedule does not govern an unrelated screen", func(t *testing.T) {
+		store := datamodel.RowStore{
+			Tree: tree,
+			Rows: datamodel.RowSet{
+				Schedules: []datamodel.Schedule{
+					{
+						ID: cascadeSiblingScheduleID, ScopeNode: cascadeSiblingID,
+						Name: "Sibling-only Schedule", Revision: 1, CreatedAt: 1, UpdatedAt: 1,
+					},
+				},
+			},
+		}
+		if Governs(store, cascadeScreenID) {
+			t.Errorf("Governs(store, %q) = true, want false — a schedule scoped to an unrelated sibling screen is not an ancestor and MUST NOT govern this screen", cascadeScreenID)
+		}
+	})
+}
