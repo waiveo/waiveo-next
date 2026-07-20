@@ -1,0 +1,18 @@
+{
+  "case_id": "REG-031-invalid-group-name-collision",
+  "contract": "device-class-registry/1",
+  "req_ids": ["REG-031"],
+  "description": "An extension attempts to register a new on semantic group for the media-player class, whose on group already exists as a built-in group. REG-031 requires the attempt be rejected outright: the existing group's membership MUST NOT be redefined or merged with the rejected attempt's members — an author needing a related-but-different set of states must register it under a new, distinctly named group instead.",
+  "input": {
+    "attempt": {
+      "device_class": "media-player",
+      "group_name": "on",
+      "members": ["idle"]
+    }
+  },
+  "expected": {
+    "registration_rejected": true,
+    "error_code": "GROUP_NAME_COLLISION",
+    "existing_group_members_unchanged": ["on", "playing", "idle", "paused", "buffering"]
+  }
+}

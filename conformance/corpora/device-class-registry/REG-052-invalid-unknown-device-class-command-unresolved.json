@@ -1,0 +1,14 @@
+{
+  "case_id": "REG-052-invalid-unknown-device-class-command-unresolved",
+  "contract": "device-class-registry/1",
+  "req_ids": ["REG-052"],
+  "description": "A device_command action's target entity names a device_class absent from the registry (DEVICE_CLASS_UNKNOWN). Command resolution fails closed exactly as REG-052 requires for an unresolved command name — never a silent no-op — while the identical command against the known media-player class continues to resolve, as a positive control ruling out a blanket false result.",
+  "input": {
+    "known": { "device_class": "media-player", "command": "launch" },
+    "unknown_class": { "device_class": "smart-plug-9000", "command": "launch" }
+  },
+  "expected": {
+    "known_resolves": true,
+    "unknown_class_resolves": false
+  }
+}

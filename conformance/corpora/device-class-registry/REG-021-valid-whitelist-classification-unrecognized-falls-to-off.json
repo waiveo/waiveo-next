@@ -1,0 +1,13 @@
+{
+  "case_id": "REG-021-valid-whitelist-classification-unrecognized-falls-to-off",
+  "contract": "device-class-registry/1",
+  "req_ids": ["REG-021", "REG-062"],
+  "description": "State classification MUST be implemented as a whitelist (REG-021), never a blacklist: a raw driver value the media-player class explicitly recognizes (playing, off) classifies to its own designated state, and a raw value this driver has never seen before (a vendor-specific quirk mode) classifies to the class's own unknown_state_fallback, off (REG-062) — never to a permissive default the classifier merely fails to blacklist away.",
+  "input": {
+    "device_class": "media-player",
+    "raw_values": ["playing", "vendor-quirk-mode-7", "off"]
+  },
+  "expected": {
+    "classified_states": ["playing", "off", "off"]
+  }
+}

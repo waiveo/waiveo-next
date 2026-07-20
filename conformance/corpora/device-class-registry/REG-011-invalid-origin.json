@@ -1,0 +1,24 @@
+{
+  "case_id": "REG-011-invalid-origin",
+  "contract": "device-class-registry/1",
+  "req_ids": ["REG-011"],
+  "description": "A ClassEntry whose origin is neither built-in nor extension-registered fails structural validation with ORIGIN_INVALID. The rest of the entry is otherwise fully conformant, so ORIGIN_INVALID is the only violation reported — not a side effect of some other malformed field.",
+  "input": {
+    "device_classes": {
+      "smart-plug": {
+        "origin": "vendor-supplied",
+        "states": ["on", "off"],
+        "unknown_state_fallback": "off",
+        "semantic_groups": {},
+        "attributes": [],
+        "commands": []
+      }
+    }
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      { "code": "ORIGIN_INVALID", "field": "device_classes.smart-plug.origin", "message": "origin MUST be exactly built-in or extension-registered" }
+    ]
+  }
+}

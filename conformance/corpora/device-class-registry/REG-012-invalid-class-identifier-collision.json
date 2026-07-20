@@ -1,0 +1,24 @@
+{
+  "case_id": "REG-012-invalid-class-identifier-collision",
+  "contract": "device-class-registry/1",
+  "req_ids": ["REG-012"],
+  "description": "An extension attempts to register a new class under the identifier media-player, which already exists as the platform's built-in entry. REG-012 requires the attempt be rejected outright: the existing built-in entry MUST NOT be shadowed, overridden, or merged with the rejected attempt's content, regardless of whether the existing entry is itself built-in or extension-registered.",
+  "input": {
+    "attempt": {
+      "id": "media-player",
+      "entry": {
+        "origin": "extension-registered",
+        "states": ["on", "off"],
+        "unknown_state_fallback": "off",
+        "semantic_groups": {},
+        "attributes": [],
+        "commands": []
+      }
+    }
+  },
+  "expected": {
+    "registration_rejected": true,
+    "error_code": "CLASS_IDENTIFIER_COLLISION",
+    "existing_origin_unchanged": "built-in"
+  }
+}

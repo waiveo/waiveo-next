@@ -1,0 +1,26 @@
+{
+  "case_id": "REG-042-invalid-attribute-unit-not-applicable",
+  "contract": "device-class-registry/1",
+  "req_ids": ["REG-042"],
+  "description": "A typed attribute declares unit while its own type is string, not number. REG-042 permits unit only on a number-typed attribute, so validation fails with ATTRIBUTE_UNIT_NOT_APPLICABLE and no other violation.",
+  "input": {
+    "device_classes": {
+      "smart-plug": {
+        "origin": "extension-registered",
+        "states": ["on", "off"],
+        "unknown_state_fallback": "off",
+        "semantic_groups": {},
+        "attributes": [
+          { "name": "label", "type": "string", "unit": "lux", "nullable": true, "change_emission": "cosmetic" }
+        ],
+        "commands": []
+      }
+    }
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      { "code": "ATTRIBUTE_UNIT_NOT_APPLICABLE", "field": "device_classes.smart-plug.attributes[0].unit", "message": "unit MAY be declared only when type is number" }
+    ]
+  }
+}

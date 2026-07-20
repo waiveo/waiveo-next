@@ -7,28 +7,28 @@ One row per requirement ID `contracts/device-class-registry.md` defines. Format:
 | REG-001 | `contracts/device-class-registry.md#registry-model` | - | TBD-wave1 |
 | REG-002 | `contracts/device-class-registry.md#registry-model` | `roku-media-player` | covered |
 | REG-010 | `contracts/device-class-registry.md#device-class-identity` | `roku-media-player` | covered |
-| REG-011 | `contracts/device-class-registry.md#device-class-identity` | `roku-media-player` | covered |
-| REG-012 | `contracts/device-class-registry.md#device-class-identity` | - | TBD-wave1 |
+| REG-011 | `contracts/device-class-registry.md#device-class-identity` | `roku-media-player`, `REG-011-invalid-origin` | covered |
+| REG-012 | `contracts/device-class-registry.md#device-class-identity` | `REG-012-invalid-class-identifier-collision` | covered |
 | REG-020 | `contracts/device-class-registry.md#state-vocabulary` | `roku-media-player` | covered |
-| REG-021 | `contracts/device-class-registry.md#state-vocabulary` | - | TBD-wave1 |
-| REG-022 | `contracts/device-class-registry.md#state-vocabulary` | `roku-media-player` | covered |
+| REG-021 | `contracts/device-class-registry.md#state-vocabulary` | `REG-021-valid-whitelist-classification-unrecognized-falls-to-off` | covered |
+| REG-022 | `contracts/device-class-registry.md#state-vocabulary` | `roku-media-player`, `REG-021-valid-whitelist-classification-unrecognized-falls-to-off` | covered |
 | REG-030 | `contracts/device-class-registry.md#semantic-groups` | `roku-media-player` | covered |
-| REG-031 | `contracts/device-class-registry.md#semantic-groups` | - | TBD-wave1 |
+| REG-031 | `contracts/device-class-registry.md#semantic-groups` | `REG-031-invalid-group-name-collision` | covered |
 | REG-032 | `contracts/device-class-registry.md#semantic-groups` | - | TBD-wave1 |
 | REG-033 | `contracts/device-class-registry.md#semantic-groups` | - | TBD-wave1 |
 | REG-040 | `contracts/device-class-registry.md#typed-attribute-declarations` | `roku-media-player` | covered |
 | REG-041 | `contracts/device-class-registry.md#typed-attribute-declarations` | `roku-media-player` | covered |
-| REG-042 | `contracts/device-class-registry.md#typed-attribute-declarations` | - | TBD-wave1 |
+| REG-042 | `contracts/device-class-registry.md#typed-attribute-declarations` | `REG-042-invalid-attribute-unit-not-applicable` | covered |
 | REG-043 | `contracts/device-class-registry.md#typed-attribute-declarations` | `roku-media-player` | covered |
 | REG-044 | `contracts/device-class-registry.md#typed-attribute-declarations` | `roku-media-player` | covered |
 | REG-045 | `contracts/device-class-registry.md#typed-attribute-declarations` | - | TBD-wave1 |
 | REG-050 | `contracts/device-class-registry.md#command-vocabulary` | `roku-media-player` | covered |
 | REG-051 | `contracts/device-class-registry.md#command-vocabulary` | `roku-media-player` | covered |
-| REG-052 | `contracts/device-class-registry.md#command-vocabulary` | - | TBD-wave1 |
+| REG-052 | `contracts/device-class-registry.md#command-vocabulary` | `REG-052-invalid-unknown-device-class-command-unresolved` | covered |
 | REG-053 | `contracts/device-class-registry.md#command-vocabulary` | - | TBD-wave1 |
 | REG-060 | `contracts/device-class-registry.md#the-media-player-class` | `roku-media-player` | covered |
 | REG-061 | `contracts/device-class-registry.md#the-media-player-class` | `roku-media-player` | covered |
-| REG-062 | `contracts/device-class-registry.md#the-media-player-class` | `roku-media-player` | covered |
+| REG-062 | `contracts/device-class-registry.md#the-media-player-class` | `roku-media-player`, `REG-021-valid-whitelist-classification-unrecognized-falls-to-off` | covered |
 | REG-063 | `contracts/device-class-registry.md#the-media-player-class` | `roku-media-player` | covered |
 | REG-064 | `contracts/device-class-registry.md#the-media-player-class` | `roku-media-player` | covered |
 | REG-065 | `contracts/device-class-registry.md#the-media-player-class` | - | TBD-wave1 |
