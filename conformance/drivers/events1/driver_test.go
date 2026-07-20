@@ -8,11 +8,15 @@ import (
 	"github.com/maaxton/waiveo-next/conformance/drivers/report"
 )
 
-// expectedDriven is every first-half conformance/corpora/events-1 case this
-// driver drives against the live internal/events implementation: the
+// expectedDriven is every conformance/corpora/events-1 case this driver
+// drives against the live internal/events implementation: the
 // envelope/catalog/EVT-013 gate cases (EVT-010, both EVT-013 pair members),
-// the four automation.run cases (EVT-040/041x3), and the three remaining
-// platform schemas' single valid case each (EVT-050/060/070/080).
+// the four automation.run cases (EVT-040/041x3), the three remaining
+// platform schemas' single valid case each (EVT-050/060/070/080), and the
+// four delivery-layer cases — WS hello/hello-ack (EVT-091), the malformed
+// resume_from rejection (EVT-134), the retention-expired resume gap
+// (EVT-140), and the signed webhook delivery (EVT-151). events/1 is now at
+// full corpus coverage: every frozen case is driven, none pending.
 var expectedDriven = []string{
 	"EVT-010-valid-entity-state-changed",
 	"EVT-013-invalid-registered-schema-malformed-payload",
@@ -25,23 +29,22 @@ var expectedDriven = []string{
 	"EVT-060-valid-device-heartbeat",
 	"EVT-070-valid-box-vitals",
 	"EVT-080-valid-audit-login-failure",
-}
-
-// expectedPending is the second-half delivery layer (WS/SSE bindings,
-// resumable delivery, webhooks) — a separate follow-up plan, not a driver
-// gap. §10 "no silent caps": each rides an explicit PENDING row with a
-// reason, never a silently-absent one.
-var expectedPending = []string{
 	"EVT-091-valid-hello-fresh-subscribe",
 	"EVT-134-invalid-resume-from-malformed",
 	"EVT-140-valid-resume-with-gap",
 	"EVT-151-valid-webhook-delivery-signed",
 }
 
+// expectedPending is empty: events/1's delivery layer (WS/SSE bindings,
+// resumable delivery, webhooks) landed in the plan's Tasks 1-3, and this
+// task drives its four corpus cases — there is nothing left pending for
+// events/1 (§10 "no silent caps": an empty set here, not an absent check).
+var expectedPending = []string{}
+
 // TestEvents1DriverGreen replays every frozen events-1 corpus case against
-// the live internal/events implementation: exactly the first-half cases are
-// driven (none silently skipped), the delivery-layer cases are explicitly
-// PENDING, and every driven case PASSes.
+// the live internal/events implementation: every case in the corpus is
+// driven (none pending, none silently skipped), and every driven case
+// PASSes.
 func TestEvents1DriverGreen(t *testing.T) {
 	rep := events1.Run()
 	t.Logf("\n%s", rep.String())

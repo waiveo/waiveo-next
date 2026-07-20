@@ -32,30 +32,43 @@
 // itself, and drives only the EVT-060 structural gate.
 //
 // The delivery layer (WS/SSE bindings, resumable delivery, webhooks —
-// EVT-091/134/140/151) is a separate follow-up plan; those four cases are
-// explicitly PENDING here (§10 "no silent caps"), never silently absent.
+// EVT-091/134/140/151) drives its four corpus cases against internal/events'
+// delivery.go/eventlog.go/resume.go/webhook.go directly: a hello with no
+// resume_from acks resume_result fresh (EVT-091, via AckHello); a malformed
+// resume_from is rejected RESUME_FROM_INVALID before any delivery, never
+// silently fresh (EVT-134, via Resolve); a resume older than the retention
+// horizon acks resume_result gap with the {from_id,to_id,reason} loss marker
+// and resumes delivery at the oldest retained id with no silent loss
+// (EVT-140, via Resolve against an EventLog whose oldest retained id is the
+// case's own input); and a webhook delivery's X-Waiveo-Signature is the
+// hex HMAC-SHA256 of the corpus's own literal signed_material, checked
+// against an INDEPENDENT crypto/hmac+sha256 reference computation — never a
+// call into the code under test — so a broken WebhookSignature is actually
+// caught, not rubber-stamped (EVT-151). events/1 is now at full corpus
+// coverage: every case in the frozen corpus is driven, none pending (§10 "no
+// silent caps").
 package events1
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/maaxton/waiveo-next/conformance/drivers/corpus"
 	"github.com/maaxton/waiveo-next/conformance/drivers/report"
 	"github.com/maaxton/waiveo-next/internal/events"
+	"github.com/maaxton/waiveo-next/internal/shared/apiselector"
 )
 
 const contract = "events/1"
-
-// pendingReason is the shared PENDING explanation for the four second-half
-// delivery-layer cases every one of them cites (§10 "no silent caps"): a
-// deliberate, explicit deferral to a separate follow-up plan, not a gap.
-const pendingReason = "events/1 delivery layer (WS/SSE bindings, resumable delivery, webhook signing/retry) rides a separate follow-up plan"
 
 // Shared fixture envelope metadata (fixture-ULID) for every case whose own
 // producer-shaped input does not itself supply envelope-level context (only
@@ -144,11 +157,10 @@ func driveCases(rep *report.Report, cases map[string]corpus.Case) {
 	driveDeviceHeartbeat(rep, cases)
 	driveBoxVitals(rep, cases)
 	driveAuditEvent(rep, cases)
-
-	rep.Pending("EVT-091-valid-hello-fresh-subscribe", contract, pendingReason)
-	rep.Pending("EVT-134-invalid-resume-from-malformed", contract, pendingReason)
-	rep.Pending("EVT-140-valid-resume-with-gap", contract, pendingReason)
-	rep.Pending("EVT-151-valid-webhook-delivery-signed", contract, pendingReason)
+	driveHelloFreshSubscribe(rep, cases)
+	driveMalformedResumeFrom(rep, cases)
+	driveResumeWithGap(rep, cases)
+	driveWebhookDeliverySigned(rep, cases)
 }
 
 // driveEntityStateChanged drives EVT-010: it derives the entity.state_changed
@@ -727,6 +739,314 @@ func driveAuditEvent(rep *report.Report, cases map[string]corpus.Case) {
 
 	verr := events.Validate(env)
 	recordDelivery(rep, c, verr, want.Delivered, diffs)
+}
+
+// driveHelloFreshSubscribe drives EVT-091: a WS client opens with subprotocol
+// events.v1+json and sends a hello carrying no resume_from and a
+// scope-node-narrowing selector; the server acks resume_result: fresh
+// (EVT-090/091/092/132). The hello's own selector is run through
+// apiselector.Parse — the EVT-121 selector MECHANICS this driver reuses
+// rather than reimplements — proving it well-formed; this case pins no
+// scope-node placement tree to test Selector.Matches containment against, so
+// only Parse is exercised here (Matches itself is apiselector's own,
+// already-corpus-driven concern under api/1).
+func driveHelloFreshSubscribe(rep *report.Report, cases map[string]corpus.Case) {
+	const id = "EVT-091-valid-hello-fresh-subscribe"
+	c, ok := corpus.ByID(cases, id)
+	if !ok {
+		rep.Fail(id, contract, "case not found in frozen corpus")
+		return
+	}
+
+	var input struct {
+		Subprotocol string            `json:"subprotocol"`
+		Frame       events.HelloFrame `json:"frame"`
+	}
+	if err := decodeInto(c.Input, &input); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode input: %v", err))
+		return
+	}
+	var want struct {
+		Frame events.HelloAckFrame `json:"frame"`
+	}
+	if err := decodeInto(c.Expected, &want); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode expected: %v", err))
+		return
+	}
+
+	var diffs []report.Diff
+	if _, negotiated := events.NegotiateSubprotocol([]string{input.Subprotocol}); !negotiated {
+		diffs = append(diffs, report.Diff{Field: "subprotocol", Expected: events.Subprotocol, Actual: input.Subprotocol})
+	}
+	if err := events.ValidateHelloFirst(input.Frame.Type); err != nil {
+		diffs = append(diffs, report.Diff{Field: "hello_first_frame", Expected: "accepted (EVT-091)", Actual: err.Error()})
+	}
+	if _, perr := apiselector.Parse(input.Frame.Selector); perr != nil {
+		diffs = append(diffs, report.Diff{Field: "selector", Expected: "a well-formed apiselector (EVT-121)", Actual: perr.Error()})
+	}
+
+	ack, handled := events.AckHello(input.Frame)
+	if !handled {
+		diffs = append(diffs, report.Diff{Field: "hello_ack.handled", Expected: true, Actual: false})
+	}
+	if ack.Type != want.Frame.Type {
+		diffs = append(diffs, report.Diff{Field: "hello_ack.type", Expected: want.Frame.Type, Actual: ack.Type})
+	}
+	if ack.ResumeResult != want.Frame.ResumeResult {
+		diffs = append(diffs, report.Diff{Field: "hello_ack.resume_result", Expected: want.Frame.ResumeResult, Actual: ack.ResumeResult})
+	}
+
+	finishCase(rep, c, diffs)
+}
+
+// driveMalformedResumeFrom drives EVT-134: a hello supplying a syntactically
+// malformed resume_from is rejected RESUME_FROM_INVALID before any event is
+// delivered, never silently treated as an omitted (fresh) resume_from — even
+// though the log holds a live event, proving the malformed check precedes
+// any membership/retention comparison (EVT-131/134).
+func driveMalformedResumeFrom(rep *report.Report, cases map[string]corpus.Case) {
+	const id = "EVT-134-invalid-resume-from-malformed"
+	c, ok := corpus.ByID(cases, id)
+	if !ok {
+		rep.Fail(id, contract, "case not found in frozen corpus")
+		return
+	}
+
+	var input struct {
+		Frame struct {
+			Type       string `json:"type"`
+			ResumeFrom string `json:"resume_from"`
+		} `json:"frame"`
+	}
+	if err := decodeInto(c.Input, &input); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode input: %v", err))
+		return
+	}
+	var want struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+		EventsDelivered int  `json:"events_delivered"`
+		TreatedAsFresh  bool `json:"treated_as_fresh"`
+	}
+	if err := decodeInto(c.Expected, &want); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode expected: %v", err))
+		return
+	}
+
+	var log events.EventLog
+	log.Append(events.Envelope{ID: fixtureID})
+
+	out, rerr := events.Resolve(&log, input.Frame.ResumeFrom)
+
+	var diffs []report.Diff
+	if rerr == nil {
+		diffs = append(diffs, report.Diff{Field: "error.code", Expected: want.Error.Code, Actual: "nil (Resolve did not reject the malformed resume_from)"})
+	} else if rerr.Code != want.Error.Code {
+		diffs = append(diffs, report.Diff{Field: "error.code", Expected: want.Error.Code, Actual: rerr.Code})
+	}
+	if got := len(out.Events); got != want.EventsDelivered {
+		diffs = append(diffs, report.Diff{Field: "events_delivered", Expected: want.EventsDelivered, Actual: got})
+	}
+	treatedAsFresh := rerr == nil && out.Result == events.ResumeResultFresh
+	if treatedAsFresh != want.TreatedAsFresh {
+		diffs = append(diffs, report.Diff{Field: "treated_as_fresh", Expected: want.TreatedAsFresh, Actual: treatedAsFresh})
+	}
+
+	finishCase(rep, c, diffs)
+}
+
+// driveResumeWithGap drives EVT-140: a hello resumes from an event id older
+// than the retention window; the server acks resume_result gap, the gap
+// frame names the requested point and the oldest recoverable point, and
+// delivery resumes AT the oldest retained id with no silent loss (EVT-140/
+// 141/143). The log is built so its oldest retained id is exactly the case's
+// own oldest_retained_id input — the requested resume_from predates it.
+func driveResumeWithGap(rep *report.Report, cases map[string]corpus.Case) {
+	const id = "EVT-140-valid-resume-with-gap"
+	c, ok := corpus.ByID(cases, id)
+	if !ok {
+		rep.Fail(id, contract, "case not found in frozen corpus")
+		return
+	}
+
+	var input struct {
+		Frame struct {
+			Type       string `json:"type"`
+			ResumeFrom string `json:"resume_from"`
+		} `json:"frame"`
+		OldestRetainedID string `json:"oldest_retained_id"`
+	}
+	if err := decodeInto(c.Input, &input); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode input: %v", err))
+		return
+	}
+	var want struct {
+		Frames []struct {
+			Type         string  `json:"type"`
+			ResumeResult string  `json:"resume_result"`
+			FromID       *string `json:"from_id"`
+			ToID         string  `json:"to_id"`
+			Reason       string  `json:"reason"`
+		} `json:"frames"`
+		DeliveryResumesAt string `json:"delivery_resumes_at"`
+		SilentLoss        bool   `json:"silent_loss"`
+	}
+	if err := decodeInto(c.Expected, &want); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode expected: %v", err))
+		return
+	}
+	if len(want.Frames) != 2 {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("corpus expected.frames has %d entries; want 2 (hello-ack + gap)", len(want.Frames)))
+		return
+	}
+
+	var log events.EventLog
+	log.Append(events.Envelope{ID: input.OldestRetainedID})
+
+	out, rerr := events.Resolve(&log, input.Frame.ResumeFrom)
+	if rerr != nil {
+		rep.Fail(c.CaseID, contract, "events/1 driver diverged from the corpus expectation",
+			report.Diff{Field: "resolve.error", Expected: "nil (an aged-out resume gaps, it never errors — EVT-143)", Actual: rerr.Code})
+		return
+	}
+
+	var diffs []report.Diff
+	ack := want.Frames[0]
+	if out.Result != ack.ResumeResult {
+		diffs = append(diffs, report.Diff{Field: "hello_ack.resume_result", Expected: ack.ResumeResult, Actual: out.Result})
+	}
+
+	gapWant := want.Frames[1]
+	if out.Gap == nil {
+		diffs = append(diffs, report.Diff{Field: "gap", Expected: "non-nil (EVT-140)", Actual: "nil"})
+	} else {
+		if out.Gap.Type != gapWant.Type {
+			diffs = append(diffs, report.Diff{Field: "gap.type", Expected: gapWant.Type, Actual: out.Gap.Type})
+		}
+		var gotFromID, wantFromID string
+		if out.Gap.FromID != nil {
+			gotFromID = *out.Gap.FromID
+		}
+		if gapWant.FromID != nil {
+			wantFromID = *gapWant.FromID
+		}
+		if gotFromID != wantFromID {
+			diffs = append(diffs, report.Diff{Field: "gap.from_id", Expected: wantFromID, Actual: gotFromID})
+		}
+		if out.Gap.ToID != gapWant.ToID {
+			diffs = append(diffs, report.Diff{Field: "gap.to_id", Expected: gapWant.ToID, Actual: out.Gap.ToID})
+		}
+		if out.Gap.Reason != gapWant.Reason {
+			diffs = append(diffs, report.Diff{Field: "gap.reason", Expected: gapWant.Reason, Actual: out.Gap.Reason})
+		}
+	}
+
+	if out.ResumeAtID != want.DeliveryResumesAt {
+		diffs = append(diffs, report.Diff{Field: "delivery_resumes_at", Expected: want.DeliveryResumesAt, Actual: out.ResumeAtID})
+	}
+	// EVT-143 no-silent-loss: delivery must resume AT the oldest retained id
+	// inclusive, never a gap marker alongside an additional silently-missing
+	// event.
+	gotSilentLoss := len(out.Events) == 0 || out.Events[0].ID != want.DeliveryResumesAt
+	if gotSilentLoss != want.SilentLoss {
+		diffs = append(diffs, report.Diff{Field: "silent_loss", Expected: want.SilentLoss, Actual: gotSilentLoss})
+	}
+
+	finishCase(rep, c, diffs)
+}
+
+// driveWebhookDeliverySigned drives EVT-151: an automation.run event due for
+// delivery to a registered webhook endpoint is signed with
+// X-Waiveo-Signature = hex HMAC-SHA256 of "<timestamp>.<raw body>" keyed by
+// the endpoint's own signing secret. body is the corpus's own literal event
+// object re-marshaled (compacting insignificant whitespace, never reordering
+// keys), reproducing the corpus's signed_material bit-for-bit. The expected
+// hex is computed by an INDEPENDENT crypto/hmac+sha256 reference — never a
+// call into events.WebhookSignature itself — so this can actually catch a
+// broken signer, not rubber-stamp it.
+func driveWebhookDeliverySigned(rep *report.Report, cases map[string]corpus.Case) {
+	const id = "EVT-151-valid-webhook-delivery-signed"
+	c, ok := corpus.ByID(cases, id)
+	if !ok {
+		rep.Fail(id, contract, "case not found in frozen corpus")
+		return
+	}
+
+	var input struct {
+		EndpointSigningSecret string          `json:"endpoint_signing_secret"`
+		DeliveryID            string          `json:"delivery_id"`
+		Timestamp             int64           `json:"timestamp"`
+		Event                 json.RawMessage `json:"event"`
+	}
+	if err := decodeInto(c.Input, &input); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode input: %v", err))
+		return
+	}
+	var want struct {
+		Request struct {
+			Method     string            `json:"method"`
+			Headers    map[string]string `json:"headers"`
+			BodySchema string            `json:"body_schema"`
+		} `json:"request"`
+		SignedMaterial string `json:"signed_material"`
+	}
+	if err := decodeInto(c.Expected, &want); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode expected: %v", err))
+		return
+	}
+
+	body, err := json.Marshal(input.Event)
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("marshal fixture event: %v", err))
+		return
+	}
+	timestamp := strconv.FormatInt(input.Timestamp, 10)
+	signedMaterial := timestamp + "." + string(body)
+
+	var diffs []report.Diff
+	if signedMaterial != want.SignedMaterial {
+		diffs = append(diffs, report.Diff{Field: "signed_material", Expected: want.SignedMaterial, Actual: signedMaterial})
+	}
+
+	mac := hmac.New(sha256.New, []byte(input.EndpointSigningSecret))
+	mac.Write([]byte(signedMaterial))
+	wantHex := hex.EncodeToString(mac.Sum(nil))
+
+	if got := events.WebhookSignature(input.EndpointSigningSecret, timestamp, body); got != wantHex {
+		diffs = append(diffs, report.Diff{Field: "X-Waiveo-Signature", Expected: wantHex, Actual: got})
+	}
+	if gotID := want.Request.Headers[events.HeaderDeliveryID]; gotID != input.DeliveryID {
+		diffs = append(diffs, report.Diff{Field: "X-Waiveo-Delivery-Id", Expected: input.DeliveryID, Actual: gotID})
+	}
+	if gotTS := want.Request.Headers[events.HeaderTimestamp]; gotTS != timestamp {
+		diffs = append(diffs, report.Diff{Field: "X-Waiveo-Timestamp", Expected: timestamp, Actual: gotTS})
+	}
+
+	var env events.Envelope
+	if err := json.Unmarshal(input.Event, &env); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("unmarshal fixture event: %v", err))
+		return
+	}
+	if env.Schema != want.Request.BodySchema {
+		diffs = append(diffs, report.Diff{Field: "body_schema", Expected: want.Request.BodySchema, Actual: env.Schema})
+	}
+
+	finishCase(rep, c, diffs,
+		"expected.request.method (always POST, EVT-151) has no field on events.WebhookRequest to assert against — the live HTTP transport is a deferred thin wrapper (webhook.go's own doc comment); not asserted here")
+}
+
+// finishCase records a delivery-layer case's outcome from its own collected
+// diffs (EVT-091/134/140/151): the same PASS/FAIL bookkeeping recordDelivery
+// applies to the schema-catalog half, without its events.Validate
+// delivered-boolean check — these four cases have no analogous single
+// "delivered" verdict of their own.
+func finishCase(rep *report.Report, c corpus.Case, diffs []report.Diff, notes ...string) {
+	if len(diffs) > 0 {
+		rep.Fail(c.CaseID, contract, "events/1 driver diverged from the corpus expectation", diffs...)
+		return
+	}
+	rep.Pass(c.CaseID, contract, notes...)
 }
 
 // recordDelivery is the shared EVT-013 delivery-gate assertion every drive
