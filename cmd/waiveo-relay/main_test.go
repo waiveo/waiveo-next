@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
@@ -17,12 +18,14 @@ import (
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/datamodel"
+	"github.com/maaxton/waiveo-next/internal/deviceclass"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
 	"github.com/maaxton/waiveo-next/internal/relay/automation"
+	"github.com/maaxton/waiveo-next/internal/relay/automationhost"
 	"github.com/maaxton/waiveo-next/internal/relay/clocktrust"
-	"github.com/maaxton/waiveo-next/internal/relay/deviceplane"
 	"github.com/maaxton/waiveo-next/internal/relay/desiredstate"
+	"github.com/maaxton/waiveo-next/internal/relay/deviceplane"
 	"github.com/maaxton/waiveo-next/internal/relay/hello"
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
 	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
@@ -279,7 +282,7 @@ func pairAndPull(t *testing.T, srv *playerserver.Server, grantID string) players
 
 // buildDemoAppliedForTest runs the real feeder Build path (the same demo
 // schedule Task 2 authored, REL-065) and adapts its output into a
-// desiredstate.Applied value — the exact shape bootScheduleResolver receives
+// desiredstate.Applied value — the exact shape bootScheduleResolverAt receives
 // from a verified pull, without standing up a live feeder + desiredstate.Pull
 // round trip (already covered by internal/relay/desiredstate's own tests).
 func buildDemoAppliedForTest(t *testing.T) desiredstate.Applied {
@@ -371,7 +374,7 @@ func TestBootScheduleResolverServesResolvedProgramForGovernedScreen(t *testing.T
 
 // TestBootScheduleResolverEmptyScheduleLeavesAppAuthoredProgramUnchanged
 // asserts the stated additive serving policy (Global Constraints): with an
-// empty (never-carried) schedule section, bootScheduleResolver builds no
+// empty (never-carried) schedule section, bootScheduleResolverAt builds no
 // resolvers and the app-authored screen_programs SetServedProgram already
 // configured is served completely unchanged — today's first-photon
 // behavior, preserved.
@@ -537,5 +540,285 @@ func TestBootScheduleResolverSkipMisfireDoesNotResumeFire(t *testing.T) {
 
 	if calls := ctrl.calls(); len(calls) != 0 {
 		t.Fatalf("boot resolve with misfire:skip dispatched %v to the device plane, want nothing (DAT-075/076/121: a skip misfire suppresses the boot resume-edge fire)", calls)
+	}
+}
+
+// --- Task 5: relay periodic desired-state re-pull + the live loop -------------
+
+// Re-pull fixture identities: one site + screen + schedule governed by a single
+// all-day content daypart sourcing a one-item playlist. Two of these at
+// successive generations, differing only in the playlist's asset_ref, model an
+// authored schedule edit A->B the re-pull loop must apply live.
+const (
+	rePullOrgBoundID  = "01J8ZREPULLORGBOUND000001"
+	rePullSiteID      = "01J8ZREPULLSITE000000001"
+	rePullScreenID    = "01J8ZREPULLSCREEN00000001"
+	rePullScheduleID  = "01J8ZREPULLSCHEDULE000001"
+	rePullDaypartID   = "01J8ZREPULLDAYPARTALLDAY01"
+	rePullPlaylistID  = "01J8ZREPULLPLAYLIST000001"
+	rePullTestRelayID = "01J8ZREPULLRELAYIDENTITY01"
+	rePullAssetA      = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	rePullAssetB      = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+)
+
+// buildRePullContentApplied builds a desiredstate.Applied at generation gen whose
+// carried schedule governs one screen resolving (at a content-hour instant) to
+// display:content sourced from a one-item playlist carrying assetRef — the exact
+// shape a verified desiredstate.Pull returns. Two at successive generations,
+// differing only in assetRef, are the A->B authored-schedule edit the re-pull
+// loop applies. It mirrors internal/feeder/snapshot's own demo authoring, using
+// a single all-day daypart so any instant lands inside its window.
+func buildRePullContentApplied(t *testing.T, gen int64, assetRef string) desiredstate.Applied {
+	t.Helper()
+	tz := "America/Chicago"
+	lat := 41.8781
+	long := -87.6298
+	orgParent := rePullOrgBoundID
+	siteParent := rePullSiteID
+
+	siteNode := datamodel.ScopeNode{ID: rePullSiteID, Kind: "site", ParentID: &orgParent, Name: "Re-pull Site", TZ: &tz, Lat: &lat, Long: &long, Revision: 1, CreatedAt: 1, UpdatedAt: 1}
+	screenNode := datamodel.ScopeNode{ID: rePullScreenID, Kind: "screen", ParentID: &siteParent, Name: "Re-pull Screen", Revision: 1, CreatedAt: 1, UpdatedAt: 1}
+	schedule := datamodel.Schedule{ID: rePullScheduleID, ScopeNode: rePullScreenID, Name: "Re-pull Schedule", Revision: 1, CreatedAt: 1, UpdatedAt: 1}
+	daypart := datamodel.Daypart{
+		ID: rePullDaypartID, ScheduleID: rePullScheduleID, ScopeNode: rePullScreenID,
+		DaysOfWeek: []int{0, 1, 2, 3, 4, 5, 6}, StartTime: "00:00:00", EndTime: "23:59:59",
+		DisplayPower: "on", PlaylistID: rePullPlaylistID, Name: "All Day", Revision: 1, CreatedAt: 1, UpdatedAt: 1,
+	}
+	playlist := datamodel.Playlist{
+		ID: rePullPlaylistID, ScopeNode: rePullScreenID, Name: "Re-pull Playlist",
+		Items:    []datamodel.PlaylistItem{{Source: "asset", AssetRef: assetRef}},
+		Revision: 1, CreatedAt: 1, UpdatedAt: 1,
+	}
+
+	sec := wire.ScheduleSection{
+		ScopeNodes: marshalRows(t, siteNode, screenNode),
+		Schedules:  marshalRows(t, schedule),
+		Dayparts:   marshalRows(t, daypart),
+		Playlists:  marshalRows(t, playlist),
+	}.Normalized()
+
+	return desiredstate.Applied{Generation: gen, Schedule: sec}
+}
+
+// newRePullFixture wires the live serving collaborators a re-pull tick drives —
+// a real playerserver.Server, a scheduleDriver over it, and a real automationhost
+// over an in-memory operational store — plus the deterministic content-hour
+// instant the resolvers resolve at. It is the black-box harness the re-pull tests
+// observe the served program through (pairAndPull).
+func newRePullFixture(t *testing.T) (*scheduleDriver, *automationhost.Host, *playerserver.Server, string, int64) {
+	t.Helper()
+	srv, priv, grantID := newTestPlayerServer(t)
+
+	store, err := identity.Open(":memory:")
+	if err != nil {
+		t.Fatalf("identity.Open(:memory:): %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	host, err := automationhost.New(store, deviceclass.Builtin(), loopbackController{}, loopbackResolver, rePullTestRelayID)
+	if err != nil {
+		t.Fatalf("automationhost.New: %v", err)
+	}
+
+	driver := &scheduleDriver{
+		srv:        srv,
+		sink:       fakeScheduleSink(),
+		site:       hello.SiteBinding{TZ: "America/Chicago", Lat: 41.8781, Long: -87.6298},
+		signingKey: priv,
+		tickEvery:  scheduleResolverTickInterval,
+	}
+	return driver, host, srv, grantID, demoContentHourInstant(t)
+}
+
+// TestRePullAppliesHigherGenerationLive is the Task-5 oracle (REL-056): after a
+// boot apply of generation N (schedule A), a re-pull tick that pulls generation
+// N+1 (schedule B — a different authored playlist asset) re-resolves the governed
+// screen so the served program reflects B, NOT A. This is the "an API edit MUST
+// change the resolved program" guarantee: a green loop that fails to propagate
+// the new generation is exactly what this test guards against.
+func TestRePullAppliesHigherGenerationLive(t *testing.T) {
+	driver, host, srv, grantID, nowMs := newRePullFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	appliedA := buildRePullContentApplied(t, 7, rePullAssetA)
+	appliedB := buildRePullContentApplied(t, 8, rePullAssetB)
+
+	// Boot apply of generation N (schedule A): the screen now serves A's asset
+	// (the "SCHEDULE RESOLVER OK ... asset ...aaaa" log line). The one-time
+	// pairing grant is redeemed exactly once, after the re-pull, so the served
+	// program observed IS the post-tick program — proving the transition A->B.
+	driver.apply(ctx, appliedA, nowMs)
+
+	puller := &rePuller{
+		pull:    func() (desiredstate.Applied, error) { return appliedB, nil },
+		driver:  driver,
+		host:    host,
+		nowFn:   func() int64 { return nowMs },
+		lastGen: appliedA.Generation,
+	}
+
+	if applied := puller.tick(ctx); !applied {
+		t.Fatal("re-pull tick of a higher generation returned applied=false, want true (REL-056 apply)")
+	}
+	if puller.lastGen != appliedB.Generation {
+		t.Errorf("after applying gen 8, lastGen = %d, want 8", puller.lastGen)
+	}
+
+	lease := pairAndPull(t, srv, grantID)
+	if lease.Display != "content" || lease.Priority != "scheduled" {
+		t.Errorf("served display/priority = %q/%q, want content/scheduled (schedule-resolved)", lease.Display, lease.Priority)
+	}
+	if len(lease.Content) != 1 || lease.Content[0].AssetRef != rePullAssetB {
+		t.Fatalf("served content = %+v, want one item asset %s (the N+1 schedule) — the re-pull did not re-resolve live", lease.Content, rePullAssetB)
+	}
+}
+
+// TestRePullSameGenerationIsNoOp pins REL-052/070: a re-pull that returns the
+// already-applied generation is a no-op — tick reports it did not apply (no
+// re-resolve churn) and the served program is left exactly as the last-applied
+// generation set it.
+func TestRePullSameGenerationIsNoOp(t *testing.T) {
+	driver, host, srv, grantID, nowMs := newRePullFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	appliedB := buildRePullContentApplied(t, 8, rePullAssetB)
+	driver.apply(ctx, appliedB, nowMs) // boot apply of gen N+1 (schedule B)
+
+	puller := &rePuller{
+		pull:    func() (desiredstate.Applied, error) { return appliedB, nil }, // same generation returned again
+		driver:  driver,
+		host:    host,
+		nowFn:   func() int64 { return nowMs },
+		lastGen: appliedB.Generation,
+	}
+
+	if applied := puller.tick(ctx); applied {
+		t.Fatal("re-pull tick of the same generation returned applied=true, want false (REL-070 no-op, no re-resolve churn)")
+	}
+	if puller.lastGen != appliedB.Generation {
+		t.Errorf("lastGen after a same-generation no-op = %d, want unchanged 8", puller.lastGen)
+	}
+	lease := pairAndPull(t, srv, grantID)
+	if len(lease.Content) != 1 || lease.Content[0].AssetRef != rePullAssetB {
+		t.Fatalf("served content after a no-op = %+v, want unchanged asset %s", lease.Content, rePullAssetB)
+	}
+}
+
+// TestRePullRejectsRegressedGeneration pins REL-052: a re-pull that regresses —
+// whether the pull itself rejects it as desiredstate.ErrGenerationRegressed, or
+// returns a lower generation the loop's own monotonic guard rejects — is a no-op,
+// and the last-applied generation stays served.
+func TestRePullRejectsRegressedGeneration(t *testing.T) {
+	appliedB := buildRePullContentApplied(t, 8, rePullAssetB)
+	appliedRegressed := buildRePullContentApplied(t, 7, rePullAssetA) // a lower generation than last-applied
+
+	cases := []struct {
+		name string
+		pull pullFunc
+	}{
+		{"pull rejects as ErrGenerationRegressed", func() (desiredstate.Applied, error) {
+			return desiredstate.Applied{}, desiredstate.ErrGenerationRegressed
+		}},
+		{"pull returns a lower generation", func() (desiredstate.Applied, error) {
+			return appliedRegressed, nil
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			driver, host, srv, grantID, nowMs := newRePullFixture(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			driver.apply(ctx, appliedB, nowMs) // last-applied = gen 8 (schedule B)
+			puller := &rePuller{pull: tc.pull, driver: driver, host: host, nowFn: func() int64 { return nowMs }, lastGen: appliedB.Generation}
+
+			if applied := puller.tick(ctx); applied {
+				t.Fatal("re-pull tick of a regressed generation returned applied=true, want false (REL-052 rejected)")
+			}
+			if puller.lastGen != appliedB.Generation {
+				t.Errorf("lastGen after a regressed pull = %d, want unchanged 8", puller.lastGen)
+			}
+			lease := pairAndPull(t, srv, grantID)
+			if len(lease.Content) != 1 || lease.Content[0].AssetRef != rePullAssetB {
+				t.Fatalf("served content after a regressed pull = %+v, want unchanged asset %s (last-applied stays)", lease.Content, rePullAssetB)
+			}
+		})
+	}
+}
+
+// TestRePullFailureIsNonFatal pins REL-055: a mid-run pull failure (app peer
+// unreachable, transport error) is non-fatal — the tick reports no apply and the
+// last-applied program keeps being served offline, never blanked.
+func TestRePullFailureIsNonFatal(t *testing.T) {
+	driver, host, srv, grantID, nowMs := newRePullFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	appliedB := buildRePullContentApplied(t, 8, rePullAssetB)
+	driver.apply(ctx, appliedB, nowMs)
+
+	puller := &rePuller{
+		pull: func() (desiredstate.Applied, error) {
+			return desiredstate.Applied{}, errors.New("app peer unreachable")
+		},
+		driver:  driver,
+		host:    host,
+		nowFn:   func() int64 { return nowMs },
+		lastGen: appliedB.Generation,
+	}
+
+	if applied := puller.tick(ctx); applied {
+		t.Fatal("re-pull tick with a failing pull returned applied=true, want false (REL-055 non-fatal, keep last-applied)")
+	}
+	lease := pairAndPull(t, srv, grantID)
+	if len(lease.Content) != 1 || lease.Content[0].AssetRef != rePullAssetB {
+		t.Fatalf("served content after a failed pull = %+v, want unchanged asset %s (last-applied served offline)", lease.Content, rePullAssetB)
+	}
+}
+
+// TestRePullLoopDeliversTicks proves the loop wiring: rePullLoop drives
+// rePuller.tick once per tick delivered on its channel (a manual channel here,
+// a time.Ticker in the binary), so a generation authored between ticks is picked
+// up live; and it returns cleanly when its context is cancelled. Two sends on the
+// unbuffered channel act as a barrier — the second returns only once the loop has
+// finished processing the first — so the assertion is race-free.
+func TestRePullLoopDeliversTicks(t *testing.T) {
+	driver, host, srv, grantID, nowMs := newRePullFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	appliedA := buildRePullContentApplied(t, 7, rePullAssetA)
+	appliedB := buildRePullContentApplied(t, 8, rePullAssetB)
+	driver.apply(ctx, appliedA, nowMs)
+
+	puller := &rePuller{
+		pull:    func() (desiredstate.Applied, error) { return appliedB, nil },
+		driver:  driver,
+		host:    host,
+		nowFn:   func() int64 { return nowMs },
+		lastGen: appliedA.Generation,
+	}
+
+	ticks := make(chan time.Time)
+	done := make(chan struct{})
+	go func() {
+		rePullLoop(ctx, ticks, puller)
+		close(done)
+	}()
+
+	ticks <- time.Now() // tick 1: pulls + applies gen 8
+	ticks <- time.Now() // barrier: returns only after tick 1 fully processed
+
+	lease := pairAndPull(t, srv, grantID)
+	if len(lease.Content) != 1 || lease.Content[0].AssetRef != rePullAssetB {
+		t.Fatalf("after a delivered re-pull tick, served content = %+v, want asset %s", lease.Content, rePullAssetB)
+	}
+
+	cancel() // the loop must return on context cancellation
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("rePullLoop did not return after context cancellation")
 	}
 }

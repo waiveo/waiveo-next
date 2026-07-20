@@ -41,8 +41,8 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/automation"
 	"github.com/maaxton/waiveo-next/internal/relay/automationhost"
 	"github.com/maaxton/waiveo-next/internal/relay/clocktrust"
-	"github.com/maaxton/waiveo-next/internal/relay/deviceplane"
 	"github.com/maaxton/waiveo-next/internal/relay/desiredstate"
+	"github.com/maaxton/waiveo-next/internal/relay/deviceplane"
 	"github.com/maaxton/waiveo-next/internal/relay/enroll"
 	"github.com/maaxton/waiveo-next/internal/relay/hello"
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
@@ -268,7 +268,39 @@ func main() {
 		deviceplane.NewCommandSurface(loopbackController{}, deviceRegistry, loopbackResolver),
 		relayID.RelayID,
 	)
-	bootScheduleResolver(applied, pairingSrv, scheduleSink, site, relayID.PrivateKey)
+
+	// rootCtx governs every long-lived background loop this process starts — the
+	// per-screen schedule resolve loops and the desired-state re-pull loop — for
+	// the life of the binary. The scheduleDriver owns the schedule resolvers'
+	// lifecycle across generations: a re-pull that applies a higher generation
+	// cancels the prior generation's resolve loops before installing the new
+	// ones (REL-056 atomic swap), so a superseded generation's ticker never
+	// races the live serve.
+	rootCtx := context.Background()
+	driver := &scheduleDriver{
+		srv:        pairingSrv,
+		sink:       scheduleSink,
+		site:       site,
+		signingKey: relayID.PrivateKey,
+		tickEvery:  scheduleResolverTickInterval,
+	}
+	driver.apply(rootCtx, applied, time.Now().UnixMilli())
+
+	// The relay's live loop (relay/1 REL-052/055/056): after the boot pull, it
+	// re-pulls desired-state on a bounded interval (POC: a few seconds — relay/1
+	// defines no push, so polling is the POC mechanism). A higher generation is
+	// applied atomically — the schedule resolvers are re-driven and the automation
+	// engine's edge rules reloaded — while a same/lower generation is a no-op and a
+	// mid-run pull failure is non-fatal (the last-applied stays served offline).
+	puller := &rePuller{
+		pull:    func() (desiredstate.Applied, error) { return desiredstate.Pull(cfg.feederURL, store) },
+		driver:  driver,
+		host:    host,
+		nowFn:   func() int64 { return time.Now().UnixMilli() },
+		lastGen: applied.Generation,
+	}
+	rePullTicker := time.NewTicker(rePullInterval)
+	go rePullLoop(rootCtx, rePullTicker.C, puller)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthz)
@@ -447,17 +479,19 @@ func bootAutomationStack(store *identity.Store, relayID identity.RelayIdentity, 
 // poll already runs at.
 const scheduleResolverTickInterval = 30 * time.Second
 
-// bootScheduleResolver builds the relay's schedule-resolution driver
-// (internal/relay/schedulehost, REL-065/DAT-113-118) from the SAME verified
-// Applied value bootAutomationStack read, using the real wall clock for the
-// one-time boot resolve. It is a thin wrapper over bootScheduleResolverAt —
-// which takes nowMs explicitly — so a test can drive a deterministic instant
-// without any wall-clock dependency.
-func bootScheduleResolver(applied desiredstate.Applied, srv *playerserver.Server, sink *automation.CommandSink, site hello.SiteBinding, signingKey ed25519.PrivateKey) []*schedulehost.Resolver {
-	return bootScheduleResolverAt(applied, srv, sink, site, signingKey, time.Now().UnixMilli())
+// bootScheduleResolverAt is the boot-path entry to the schedule resolver: it
+// resolves + serves applied.Schedule once at nowMs and starts each governed
+// screen's background re-resolve loop under context.Background() at the standard
+// scheduleResolverTickInterval. It is a thin wrapper over resolveAndServe — which
+// takes the loop context and tick cadence explicitly, so the live re-pull path
+// (scheduleDriver, livepull.go) can cancel a superseded generation's loops and
+// tests can drive a deterministic instant — preserving the boot-only signature
+// the existing boot tests exercise.
+func bootScheduleResolverAt(applied desiredstate.Applied, srv *playerserver.Server, sink *automation.CommandSink, site hello.SiteBinding, signingKey ed25519.PrivateKey, nowMs int64) []*schedulehost.Resolver {
+	return resolveAndServe(context.Background(), applied, srv, sink, site, signingKey, scheduleResolverTickInterval, nowMs)
 }
 
-// bootScheduleResolverAt parses applied.Schedule into a data-model/1 RowStore
+// resolveAndServe parses applied.Schedule into a data-model/1 RowStore
 // (schedulehost.BuildStore — degrade-safe: a parse/validation error is logged
 // but never fatal) and, for every carried scope node of kind "screen" the
 // schedule GOVERNS (schedulehost.Governs, the stated additive serving
@@ -465,10 +499,16 @@ func bootScheduleResolver(applied desiredstate.Applied, srv *playerserver.Server
 // tick (schedulehost.Resolver.TickBoot) at nowMs runs immediately, resolving
 // and serving the current Lease and firing the effective daypart's rising-edge
 // preset through sink UNLESS its effective misfire is "skip" (DAT-075/076/
-// 094/121 — this is the boot resume edge those clauses name, not an ordinary
-// tick) — and a background ticker keeps re-resolving at
-// scheduleResolverTickInterval so a later daypart boundary is caught without a
-// restart, firing unconditionally on every ordinary rising edge from then on.
+// 094/121 — this is the boot-or-generation-apply resume edge those clauses name,
+// not an ordinary tick) — and a background ticker keeps re-resolving at
+// tickEvery so a later daypart boundary is caught without a restart, firing
+// unconditionally on every ordinary rising edge from then on.
+//
+// ctx governs every background resolve loop this call starts: cancelling it stops
+// them (and stops their tickers). This is what lets a re-pulled generation
+// atomically replace a prior one (REL-056) — the caller cancels the prior
+// generation's ctx before resolveAndServe installs the new generation's loops, so
+// a superseded generation's ticker can never race the new serve.
 //
 // A screen the schedule does not govern (no carried scope node for it, or no
 // applicable schedule) is left exactly as it was: the app-authored
@@ -483,7 +523,7 @@ func bootScheduleResolver(applied desiredstate.Applied, srv *playerserver.Server
 // the boot log line's context; the resolved schedule's own effective tz comes
 // from the carried scope tree exclusively (datamodel.EffectiveTZ via
 // datamodel.Resolve), never from site or any box-local clock (DAT-034/118).
-func bootScheduleResolverAt(applied desiredstate.Applied, srv *playerserver.Server, sink *automation.CommandSink, site hello.SiteBinding, signingKey ed25519.PrivateKey, nowMs int64) []*schedulehost.Resolver {
+func resolveAndServe(ctx context.Context, applied desiredstate.Applied, srv *playerserver.Server, sink *automation.CommandSink, site hello.SiteBinding, signingKey ed25519.PrivateKey, tickEvery time.Duration, nowMs int64) []*schedulehost.Resolver {
 	store, errs := schedulehost.BuildStore(applied.Schedule)
 	for _, e := range errs {
 		log.Printf("waiveo-relay: schedule section: %s: %s: %s", e.Field, e.Code, e.Message)
@@ -513,8 +553,11 @@ func bootScheduleResolverAt(applied desiredstate.Applied, srv *playerserver.Serv
 			log.Printf("SCHEDULE RESOLVER OK (screen %s: display:%s; site tz %s)", screenID, display, site.TZ)
 		}
 
-		ticker := time.NewTicker(scheduleResolverTickInterval)
-		go r.Loop(context.Background(), ticker.C, sink)
+		ticker := time.NewTicker(tickEvery)
+		go func(res *schedulehost.Resolver) {
+			defer ticker.Stop()
+			res.Loop(ctx, ticker.C, sink)
+		}(r)
 	}
 
 	if len(resolvers) == 0 {
