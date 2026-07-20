@@ -1,0 +1,41 @@
+{
+  "case_id": "MAN-072-invalid-devices-without-compat-relay",
+  "contract": "manifest/1",
+  "req_ids": ["MAN-072"],
+  "description": "A manifest declaring a non-empty devices contribution but omitting compat.relay; validation fails naming compat.relay as the offending field, never a silent grant of relay access to a pack that never declared it needs one.",
+  "input": {
+    "id": "acme/no-relay-pack",
+    "version": "1.0.0",
+    "displayName": "msg:pack.displayName",
+    "compat": {
+      "ctx": ">=1.0 <2.0",
+      "renderer": []
+    },
+    "capabilities": [],
+    "egress": [],
+    "resources": {
+      "memory": 64,
+      "cpuWeight": 100,
+      "storageQuota": 16,
+      "maxScheduledTimers": 0
+    },
+    "dataModel": {
+      "version": 1,
+      "collections": []
+    },
+    "retention": {},
+    "ui": {
+      "pages": []
+    },
+    "devices": [
+      { "deviceClass": "media-player", "match": [{ "ssdp": "urn:roku-com:device:player:1" }], "capabilities": ["device.read"] }
+    ],
+    "actions": []
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      { "code": "MANIFEST_SCHEMA_INVALID", "field": "compat.relay", "message": "a pack with a non-empty devices array MUST declare compat.relay (MAN-072)" }
+    ]
+  }
+}

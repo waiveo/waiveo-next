@@ -1,0 +1,45 @@
+{
+  "case_id": "MAN-091-invalid-automation-action-not-in-actions",
+  "contract": "manifest/1",
+  "req_ids": ["MAN-091"],
+  "description": "A manifest contributing an automation action whose name does not also appear in the pack's own declared actions; validation fails naming the offending automation-contributed action, never resolving it against a second implicit registry.",
+  "input": {
+    "id": "acme/orphan-action-pack",
+    "version": "1.0.0",
+    "displayName": "msg:pack.displayName",
+    "compat": {
+      "ctx": ">=1.0 <2.0",
+      "renderer": []
+    },
+    "capabilities": [],
+    "egress": [],
+    "resources": {
+      "memory": 64,
+      "cpuWeight": 100,
+      "storageQuota": 16,
+      "maxScheduledTimers": 0
+    },
+    "dataModel": {
+      "version": 1,
+      "collections": []
+    },
+    "retention": {},
+    "ui": {
+      "pages": []
+    },
+    "contributes": {
+      "automation": {
+        "actions": [
+          { "name": "refresh", "fieldsSchema": { "type": "object" }, "execution": "app-service" }
+        ]
+      }
+    },
+    "actions": []
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      { "code": "MANIFEST_SCHEMA_INVALID", "field": "contributes.automation.actions[0].name", "message": "automation action \"refresh\" MUST also appear in actions under the same name (MAN-091)" }
+    ]
+  }
+}

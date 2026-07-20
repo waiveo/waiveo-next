@@ -1,0 +1,46 @@
+{
+  "case_id": "MAN-052-invalid-two-title-fields",
+  "contract": "manifest/1",
+  "req_ids": ["MAN-052"],
+  "description": "A manifest declaring a data-model collection with two fields both annotated role:title; validation fails naming the offending collection, since at most one title field per collection is allowed.",
+  "input": {
+    "id": "acme/double-title-pack",
+    "version": "1.0.0",
+    "displayName": "msg:pack.displayName",
+    "compat": {
+      "ctx": ">=1.0 <2.0",
+      "renderer": []
+    },
+    "capabilities": [],
+    "egress": [],
+    "resources": {
+      "memory": 64,
+      "cpuWeight": 100,
+      "storageQuota": 16,
+      "maxScheduledTimers": 0
+    },
+    "dataModel": {
+      "version": 1,
+      "collections": [
+        {
+          "name": "notes",
+          "fields": [
+            { "name": "heading", "type": "string", "role": "title" },
+            { "name": "subheading", "type": "string", "role": "title" }
+          ]
+        }
+      ]
+    },
+    "retention": {},
+    "ui": {
+      "pages": []
+    },
+    "actions": []
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      { "code": "MANIFEST_SCHEMA_INVALID", "field": "dataModel.collections[0]", "message": "at most one field per collection may declare role \"title\", got 2 (MAN-052)" }
+    ]
+  }
+}

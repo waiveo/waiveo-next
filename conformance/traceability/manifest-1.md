@@ -25,7 +25,7 @@ One row per requirement ID `contracts/manifest-1.md` defines. Format: `conforman
 | MAN-042 | `contracts/manifest-1.md#resource-limits` | - | TBD-wave1 |
 | MAN-050 | `contracts/manifest-1.md#data-model-declaration` | `MAN-051-valid-data-model` | covered |
 | MAN-051 | `contracts/manifest-1.md#data-model-declaration` | `MAN-051-valid-data-model` | covered |
-| MAN-052 | `contracts/manifest-1.md#data-model-declaration` | `MAN-051-valid-data-model` | covered |
+| MAN-052 | `contracts/manifest-1.md#data-model-declaration` | `MAN-051-valid-data-model`, `MAN-052-invalid-two-title-fields` | covered |
 | MAN-053 | `contracts/manifest-1.md#data-model-declaration` | - | TBD-wave1 |
 | MAN-054 | `contracts/manifest-1.md#data-model-declaration` | `MAN-051-valid-data-model` | covered |
 | MAN-055 | `contracts/manifest-1.md#data-model-declaration` | - | TBD-wave1 |
@@ -35,11 +35,11 @@ One row per requirement ID `contracts/manifest-1.md` defines. Format: `conforman
 | MAN-063 | `contracts/manifest-1.md#ui-page-declarations` | - | TBD-wave1 |
 | MAN-070 | `contracts/manifest-1.md#device-contributions` | `MAN-020-valid-full-featured` | covered |
 | MAN-071 | `contracts/manifest-1.md#device-contributions` | - | TBD-wave1 |
-| MAN-072 | `contracts/manifest-1.md#device-contributions` | `MAN-020-valid-full-featured` | covered |
+| MAN-072 | `contracts/manifest-1.md#device-contributions` | `MAN-020-valid-full-featured`, `MAN-072-invalid-devices-without-compat-relay` | covered |
 | MAN-080 | `contracts/manifest-1.md#playable-contributions` | `MAN-020-valid-full-featured` | covered |
-| MAN-081 | `contracts/manifest-1.md#playable-contributions` | `MAN-020-valid-full-featured` | covered |
-| MAN-090 | `contracts/manifest-1.md#automation-contributions` | `MAN-020-valid-full-featured` | covered |
-| MAN-091 | `contracts/manifest-1.md#automation-contributions` | `MAN-020-valid-full-featured` | covered |
+| MAN-081 | `contracts/manifest-1.md#playable-contributions` | `MAN-020-valid-full-featured`, `MAN-081-invalid-fixed-without-duration-seconds` | covered |
+| MAN-090 | `contracts/manifest-1.md#automation-contributions` | `MAN-020-valid-full-featured`, `MAN-090-invalid-non-namespaced-event` | covered |
+| MAN-091 | `contracts/manifest-1.md#automation-contributions` | `MAN-020-valid-full-featured`, `MAN-091-invalid-automation-action-not-in-actions` | covered |
 | MAN-092 | `contracts/manifest-1.md#automation-contributions` | - | TBD-wave1 |
 | MAN-100 | `contracts/manifest-1.md#actions` | `MAN-020-valid-full-featured` | covered |
 | MAN-101 | `contracts/manifest-1.md#actions` | - | TBD-wave1 |

@@ -1,0 +1,45 @@
+{
+  "case_id": "MAN-090-invalid-non-namespaced-event",
+  "contract": "manifest/1",
+  "req_ids": ["MAN-090"],
+  "description": "A manifest contributing an automation event whose name is not namespaced as <pack-id>.<local-name>; validation fails naming the offending event, never inferring the pack's own namespace on its behalf.",
+  "input": {
+    "id": "acme/bare-event-pack",
+    "version": "1.0.0",
+    "displayName": "msg:pack.displayName",
+    "compat": {
+      "ctx": ">=1.0 <2.0",
+      "renderer": []
+    },
+    "capabilities": [],
+    "egress": [],
+    "resources": {
+      "memory": 64,
+      "cpuWeight": 100,
+      "storageQuota": 16,
+      "maxScheduledTimers": 0
+    },
+    "dataModel": {
+      "version": 1,
+      "collections": []
+    },
+    "retention": {},
+    "ui": {
+      "pages": []
+    },
+    "contributes": {
+      "automation": {
+        "events": [
+          { "name": "forecast_updated", "payloadSchema": { "type": "object" } }
+        ]
+      }
+    },
+    "actions": []
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      { "code": "MANIFEST_SCHEMA_INVALID", "field": "contributes.automation.events[0].name", "message": "event name \"forecast_updated\" MUST be namespaced as \"acme/bare-event-pack.<local-name>\" (MAN-090)" }
+    ]
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "case_id": "MAN-081-invalid-fixed-without-duration-seconds",
+  "contract": "manifest/1",
+  "req_ids": ["MAN-081"],
+  "description": "A manifest contributing a playable with durationSemantics fixed but omitting durationSeconds entirely; validation fails naming contributes.playable.durationSeconds, never defaulting to an implicit duration.",
+  "input": {
+    "id": "acme/no-duration-pack",
+    "version": "1.0.0",
+    "displayName": "msg:pack.displayName",
+    "compat": {
+      "ctx": ">=1.0 <2.0",
+      "renderer": []
+    },
+    "capabilities": [],
+    "egress": [],
+    "resources": {
+      "memory": 64,
+      "cpuWeight": 100,
+      "storageQuota": 16,
+      "maxScheduledTimers": 0
+    },
+    "dataModel": {
+      "version": 1,
+      "collections": []
+    },
+    "retention": {},
+    "ui": {
+      "pages": []
+    },
+    "contributes": {
+      "playable": {
+        "contentType": "image",
+        "durationSemantics": "fixed",
+        "renderHints": {},
+        "contentId": "static-frame"
+      }
+    },
+    "actions": []
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      { "code": "MANIFEST_SCHEMA_INVALID", "field": "contributes.playable.durationSeconds", "message": "contributes.playable.durationSeconds MUST be a positive number when durationSemantics is fixed (MAN-081)" }
+    ]
+  }
+}
