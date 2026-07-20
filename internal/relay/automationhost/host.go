@@ -15,9 +15,12 @@
 // the engine loads via engine.ApplyGeneration, command dispatch flows through
 // automation.CommandSink → deviceplane.CommandSurface, and automation.run rides
 // telemetry.AutomationRunEntry into the durable telemetry.Buffer backed by the
-// operational store. The registry is internal/rules/registry.FixtureRegistry
-// (media-player) for now — the real device-class-registry/1 content is a later
-// data-model concern.
+// operational store. The registry is device-class-registry/1's own canonical
+// built-in (internal/deviceclass.Builtin(), REG-060-066): New builds it ONCE
+// and hands it to both the device plane (as deviceplane.CommandVocab, directly
+// — REG-052/REL-113) and the engine (adapted via registry.FromDeviceClass —
+// REG-032/044/052), so a device_command resolves against the identical
+// media-player vocabulary on both paths.
 package automationhost
 
 import (
@@ -26,6 +29,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/maaxton/waiveo-next/internal/deviceclass"
 	"github.com/maaxton/waiveo-next/internal/relay/automation"
 	"github.com/maaxton/waiveo-next/internal/relay/deviceplane"
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
@@ -71,6 +75,14 @@ type Host struct {
 	buf    *telemetry.Buffer
 	clk    clock.Clock
 
+	// surface is the device-command surface New wires the canonical registry
+	// into as its CommandVocab (REG-052/REL-113) — the app-dispatched
+	// device.command entry point (deviceplane.CommandSurface.Execute) a later
+	// wire receiver calls into directly, and the one this package's own tests
+	// drive to prove command resolution against the real media-player
+	// vocabulary end to end.
+	surface *deviceplane.CommandSurface
+
 	// appliedGen is the desired-state generation whose edge_rules are currently
 	// loaded, and hasApplied whether any generation has been applied yet. Together
 	// they make ApplyEdgeRules idempotent: re-applying an already-applied
@@ -85,35 +97,45 @@ type Host struct {
 }
 
 // New builds the relay's edge-automation stack over the operational store and
-// the device-facing collaborators. It wires:
+// the device-facing collaborators. dc is the ONE canonical device-class
+// registry (internal/deviceclass.Builtin(), REG-060-066) the caller
+// constructs; New wires it into BOTH consumers rather than letting each build
+// or duplicate its own:
 //
 //   - the device-command surface (deviceplane.CommandSurface) over controller
-//     (the physical-device adapter), reg (the device-class command vocabulary,
-//     REL-113), and resolveEntity (entity_id → device_id/device-class, REL-112);
+//     (the physical-device adapter), dc itself as the CommandVocab (REG-052 —
+//     dc's CommandExists(deviceClass, command string) bool satisfies the
+//     interface directly, no adapter needed, REL-113), and resolveEntity
+//     (entity_id → device_id/device-class, REL-112);
 //   - the engine's command sink (automation.CommandSink) over that surface, so a
 //     rule's device_command flows through the SAME resolve→serialize→dispatch
 //     path (REL-113/114/115) as an app-dispatched command, stamped with relayID;
 //   - the durable telemetry buffer (telemetry.NewDurableBuffer) over store, so a
 //     committed automation.run survives a power-pull (REL-090/093); and
-//   - the engine (engine.New) over reg, the host's real clock, and that sink.
+//   - the engine (engine.New) over registry.FromDeviceClass(dc, registry.Overlay{})
+//     — dc adapted to the rules/1 registry.Registry surface with no extra
+//     overlay attributes (the three rules-corpus-only ones are a documented
+//     test-fixture concern, never mixed into the running relay) — the host's
+//     real clock, and that sink.
 //
 // The upstream telemetry push channel (telemetry.Channel) is the relay/1 wire
 // transport that lands later; New builds only the durable queue side the engine
 // records into. It returns an error only if the durable buffer fails to resume
 // from store (a silently-empty durable buffer would be indistinguishable from
 // durable loss, REL-090).
-func New(store *identity.Store, reg registry.Registry, controller deviceplane.DeviceController, resolveEntity deviceplane.EntityResolver, relayID string) (*Host, error) {
+func New(store *identity.Store, dc deviceclass.Registry, controller deviceplane.DeviceController, resolveEntity deviceplane.EntityResolver, relayID string) (*Host, error) {
 	buf, err := telemetry.NewDurableBuffer(store, telemetryCapacity)
 	if err != nil {
 		return nil, fmt.Errorf("automationhost: resume durable telemetry buffer: %w", err)
 	}
 
-	surface := deviceplane.NewCommandSurface(controller, reg, resolveEntity)
+	surface := deviceplane.NewCommandSurface(controller, dc, resolveEntity)
 	sink := automation.NewCommandSink(surface, relayID)
 	clk := sysClock{}
+	reg := registry.FromDeviceClass(dc, registry.Overlay{})
 	eng := engine.New(reg, clk, sink, nil)
 
-	return &Host{engine: eng, buf: buf, clk: clk}, nil
+	return &Host{engine: eng, buf: buf, clk: clk, surface: surface}, nil
 }
 
 // ApplyEdgeRules compiles the desired-state generation's edge_rules and loads

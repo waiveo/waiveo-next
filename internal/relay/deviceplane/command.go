@@ -43,9 +43,12 @@ type DeviceController interface {
 
 // CommandVocab is the device-class command-vocabulary source the surface
 // resolves a command against (REL-113, device-class-registry/1 REG-052). The
-// engine's internal/rules/registry.Registry satisfies this (via CommandExists);
-// this minimal interface keeps the surface from re-implementing the registry
-// while not importing it just for a type.
+// canonical device-class-registry/1 registry (internal/deviceclass.Registry,
+// e.g. deviceclass.Builtin()) satisfies this directly via its own
+// CommandExists — the identical method signature — with no adapter needed;
+// the engine's internal/rules/registry.Registry also satisfies it. This
+// minimal interface keeps the surface from depending on either concrete
+// registry type while not importing one just for a type.
 type CommandVocab interface {
 	CommandExists(deviceClass, command string) bool
 }

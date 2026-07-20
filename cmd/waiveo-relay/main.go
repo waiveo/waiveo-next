@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/datamodel"
+	"github.com/maaxton/waiveo-next/internal/deviceclass"
 	"github.com/maaxton/waiveo-next/internal/relay/automation"
 	"github.com/maaxton/waiveo-next/internal/relay/automationhost"
 	"github.com/maaxton/waiveo-next/internal/relay/clocktrust"
@@ -47,7 +48,6 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
 	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
 	"github.com/maaxton/waiveo-next/internal/relay/schedulehost"
-	"github.com/maaxton/waiveo-next/internal/rules/registry"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
@@ -195,7 +195,14 @@ func main() {
 	// is hardware-gated and deferred, so the live binary loads the rules and stands
 	// ready rather than driving a synthetic observation (the e2e test drives the
 	// synthetic source to prove the wired stack fires).
-	host, err := bootAutomationStack(store, relayID, applied, site)
+	// The ONE canonical device-class registry (device-class-registry/1's own
+	// built-in media-player content, REG-060-066) this relay resolves every
+	// device_command against — the edge engine's (via bootAutomationStack) and
+	// the schedule resolver's preset-firing surface (below) alike — so both
+	// paths agree on exactly the same command vocabulary (REG-052/REL-113).
+	deviceRegistry := deviceclass.Builtin()
+
+	host, err := bootAutomationStack(store, relayID, applied, site, deviceRegistry)
 	if err != nil {
 		log.Fatalf("waiveo-relay: boot automation stack: %v", err)
 	}
@@ -253,11 +260,12 @@ func main() {
 	// (no carried scope node, or no applicable schedule) is left exactly as
 	// SetServedProgram configured it — the additive serving policy. The device
 	// plane's command surface mirrors bootAutomationStack's own construction
-	// (same loopback controller, fixture registry vocabulary, and entity
-	// resolver) so a fired preset batch dispatches through the identical
-	// resolve -> serialize -> dispatch path (REL-113/114/115) an edge rule does.
+	// (same loopback controller, the SAME canonical deviceRegistry as
+	// CommandVocab, and entity resolver) so a fired preset batch dispatches
+	// through the identical resolve -> serialize -> dispatch path
+	// (REL-113/114/115) an edge rule does.
 	scheduleSink := automation.NewCommandSink(
-		deviceplane.NewCommandSurface(loopbackController{}, registry.FixtureRegistry{}, loopbackResolver),
+		deviceplane.NewCommandSurface(loopbackController{}, deviceRegistry, loopbackResolver),
 		relayID.RelayID,
 	)
 	bootScheduleResolver(applied, pairingSrv, scheduleSink, site, relayID.PrivateKey)
@@ -408,11 +416,12 @@ func enrollWithRetry(feederURL string, store *identity.Store) error {
 // edge_rules into it (REL-062), logging how many edge rules loaded. It wires a
 // loopback device controller and a loopback entity resolver for now: the real
 // ECP DeviceController and the real adopted-entity resolver (reading the device
-// plane's own store) are hardware/data-model concerns that land later. The
-// registry is the media-player FixtureRegistry for now — the real
-// device-class-registry/1 content is a later data-model concern.
-func bootAutomationStack(store *identity.Store, relayID identity.RelayIdentity, applied desiredstate.Applied, site hello.SiteBinding) (*automationhost.Host, error) {
-	host, err := automationhost.New(store, registry.FixtureRegistry{}, loopbackController{}, loopbackResolver, relayID.RelayID)
+// plane's own store) are hardware/data-model concerns that land later. dc is
+// the relay's ONE canonical device-class registry (device-class-registry/1's
+// own built-in, REG-060-066) — automationhost.New wires it directly into the
+// device plane's CommandVocab and, adapted, into the engine's registry.Registry.
+func bootAutomationStack(store *identity.Store, relayID identity.RelayIdentity, applied desiredstate.Applied, site hello.SiteBinding, dc deviceclass.Registry) (*automationhost.Host, error) {
+	host, err := automationhost.New(store, dc, loopbackController{}, loopbackResolver, relayID.RelayID)
 	if err != nil {
 		return nil, err
 	}

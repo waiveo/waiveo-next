@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/maaxton/waiveo-next/internal/deviceclass"
 	"github.com/maaxton/waiveo-next/internal/relay/deviceplane"
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
 	"github.com/maaxton/waiveo-next/internal/rules/registry"
@@ -79,7 +80,7 @@ func newTestHost(t *testing.T, dbPath string, controller deviceplane.DeviceContr
 		t.Fatalf("identity.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	host, err := New(store, registry.FixtureRegistry{}, controller, testResolver, testRelayID)
+	host, err := New(store, deviceclass.Builtin(), controller, testResolver, testRelayID)
 	if err != nil {
 		t.Fatalf("automationhost.New: %v", err)
 	}
@@ -147,5 +148,43 @@ func TestApplyEdgeRulesIdempotentReapply(t *testing.T) {
 	}
 	if got := controller.commands(); len(got) != 1 || got[0] != testScreenEntity+"/launch" {
 		t.Fatalf("device saw %v, want exactly one launch", got)
+	}
+}
+
+// TestCommandVocabResolvesAgainstCanonicalMediaPlayerRegistry is the Task-6
+// proof that the Host's device-command surface — the app-dispatched
+// device.command entry point (REL-112/113) automationhost.New wires — resolves
+// against the SAME canonical device-class-registry/1 built-in (REG-060-066)
+// New was given: a real media-player command (launch) resolves, and a name
+// that is not one of the four declared commands (fly) is rejected
+// COMMAND_UNRESOLVED without ever reaching the device.
+func TestCommandVocabResolvesAgainstCanonicalMediaPlayerRegistry(t *testing.T) {
+	controller := &recordController{}
+	host, _ := newTestHost(t, filepath.Join(t.TempDir(), "relay.db"), controller)
+
+	launch := host.surface.Execute(deviceplane.DeviceCommand{
+		ID:      "01J8Z3K4N5P6Q7R8S9T0V1CMD1",
+		RelayID: testRelayID,
+		Body:    deviceplane.CommandBody{EntityID: testScreenEntity, Command: "launch"},
+	})
+	if !launch.Body.OK {
+		t.Fatalf("launch (a real media-player command, REG-066) = %+v, want ok:true", launch.Body)
+	}
+	if got := controller.commands(); len(got) != 1 || got[0] != testScreenEntity+"/launch" {
+		t.Fatalf("device saw %v after a resolved launch, want exactly one launch", got)
+	}
+
+	fly := host.surface.Execute(deviceplane.DeviceCommand{
+		ID:      "01J8Z3K4N5P6Q7R8S9T0V1CMD2",
+		RelayID: testRelayID,
+		Body:    deviceplane.CommandBody{EntityID: testScreenEntity, Command: "fly"},
+	})
+	if fly.Body.OK || fly.Body.Error == nil || fly.Body.Error.Code != "COMMAND_UNRESOLVED" {
+		t.Fatalf("fly (not a media-player command) = %+v, want ok:false COMMAND_UNRESOLVED", fly.Body)
+	}
+	// REL-113: an unresolved command must never reach the physical device — the
+	// controller's command count stays exactly the one prior (resolved) launch.
+	if got := controller.commands(); len(got) != 1 {
+		t.Fatalf("device saw %v after an unresolved fly, want the dispatch count unchanged at 1", got)
 	}
 }
