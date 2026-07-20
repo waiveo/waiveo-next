@@ -1,13 +1,14 @@
 package events
 
 import (
-	"encoding/json"
 	"errors"
 	"testing"
 )
 
 // validEnvelope is a well-formed EVT-010 envelope for a registered schema, using
-// the frozen corpus fixture ULIDs (conformance/corpora/events-1).
+// the frozen corpus fixture ULIDs (conformance/corpora/events-1). Its payload is
+// the EVT-010 corpus entity.state_changed payload, so it validates end-to-end
+// once the entity.state_changed validator is registered (Task 2).
 func validEnvelope() Envelope {
 	return Envelope{
 		ID:              "01J8Z3K4N5P6Q7R8S9T0V1W2Y7",
@@ -19,14 +20,14 @@ func validEnvelope() Envelope {
 		RetentionClass:  "telemetry-standard",
 		Origin:          "relay",
 		OriginPrincipal: "01J8Z3K4N5P6Q7R8S9T0V1W2Y8",
-		Payload:         json.RawMessage(`{"anything":"goes"}`),
+		Payload:         validEntityStateChangedPayload(),
 	}
 }
 
-// TestValidate_RegisteredSchemaStubDelivers: a well-formed envelope for a
-// registered schema (its stub payload validator returns nil) validates, so the
+// TestValidate_RegisteredSchemaValidPayloadDelivers: a well-formed envelope for a
+// registered schema whose payload conforms to that schema validates, so the
 // event is deliverable (EVT-010/013).
-func TestValidate_RegisteredSchemaStubDelivers(t *testing.T) {
+func TestValidate_RegisteredSchemaValidPayloadDelivers(t *testing.T) {
 	if err := Validate(validEnvelope()); err != nil {
 		t.Fatalf("a well-formed envelope for a registered schema must validate (EVT-010/013); got %v", err)
 	}

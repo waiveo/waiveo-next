@@ -42,8 +42,8 @@ func stubValidator(json.RawMessage) error { return nil }
 // (EVT-013). Its key set is exactly RegisteredSchemas (EVT-020) — see
 // TestRegisteredCatalogAndValidatorsAgree.
 var payloadValidators = map[string]payloadValidator{
-	SchemaEntityStateChanged: stubValidator,
-	SchemaAutomationRun:      stubValidator,
+	SchemaEntityStateChanged: validateEntityStateChanged,
+	SchemaAutomationRun:      validateAutomationRun,
 	SchemaContentPlayed:      stubValidator,
 	SchemaDeviceHeartbeat:    stubValidator,
 	SchemaBoxVitals:          stubValidator,
