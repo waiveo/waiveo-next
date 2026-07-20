@@ -30,14 +30,22 @@ func loadManifest(t *testing.T, file string) PackManifest {
 // testHost is the small fixed fixture registry the manifest corpus validates
 // against — the host's recognized capability/feature/page-type/device-class/
 // provider sets plus a memory floor (conformance notes: a documented fixture
-// registry, not the real independently-evolving registries).
+// registry, not the real independently-evolving registries). BundleFiles
+// carries messages/en.json by default (MAN-111) since every corpus fixture's
+// pack is presumed to bundle its default-locale catalog; a test exercising the
+// MAN-111 failure path overrides BundleFiles to omit it. Capabilities
+// includes "notifications.send", a host-recognized capability no fixture
+// manifest itself declares — used to pin that an actions[].capabilityScope
+// MUST resolve against the manifest's own declared capabilities, not merely
+// the host registry (MAN-100).
 func testHost() HostRegistries {
 	return HostRegistries{
-		Capabilities:   map[string]bool{"device.read": true, "egress.http": true},
+		Capabilities:   map[string]bool{"device.read": true, "egress.http": true, "notifications.send": true},
 		Features:       map[string]bool{},
 		PageTypes:      map[string]bool{"dashboard": true, "list-detail": true, "settings-form": true},
 		DeviceClasses:  map[string]bool{"media-player": true},
 		Providers:      map[string]bool{"weather-api/api-key": true},
+		BundleFiles:    map[string]bool{"messages/en.json": true},
 		MemoryFloorMiB: 32,
 	}
 }

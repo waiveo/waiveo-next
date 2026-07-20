@@ -13,9 +13,10 @@ import (
 // capabilities & consent (MAN-020/021), the egress allowlist (MAN-030/031),
 // resource limits (MAN-040/042), the data model — collections, the universal
 // entity envelope, retention, and connections (MAN-050-055) — UI page/slot/
-// surface declarations (MAN-060-063), device contributions (MAN-070-072), and
-// playable contributions (MAN-080/081). Automation/actions/locale (MAN-090-111)
-// are layered onto this same entry point.
+// surface declarations (MAN-060-063), device contributions (MAN-070-072),
+// playable contributions (MAN-080/081), automation contributions
+// (MAN-090-092), server-side actions (MAN-100/102/103), and locale catalogs
+// (MAN-110/111).
 func Validate(m PackManifest, host HostRegistries) []Error {
 	var errs []Error
 	errs = append(errs, validateIdentity(m)...)
@@ -27,6 +28,9 @@ func Validate(m PackManifest, host HostRegistries) []Error {
 	errs = append(errs, validateUI(m, host)...)
 	errs = append(errs, validateDevices(m, host)...)
 	errs = append(errs, validatePlayable(m)...)
+	errs = append(errs, validateAutomation(m, host)...)
+	errs = append(errs, validateActions(m)...)
+	errs = append(errs, validateLocale(host)...)
 	return errs
 }
 
