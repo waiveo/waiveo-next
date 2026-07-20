@@ -76,6 +76,46 @@ func TestNewTimestampWithinSaneWindow(t *testing.T) {
 	}
 }
 
+// TestValidAcceptsCanonical confirms Valid accepts a freshly minted ULID and
+// the contract's own wire example — both canonical 26-character Crockford
+// forms with a leading 0..7 character.
+func TestValidAcceptsCanonical(t *testing.T) {
+	for _, s := range []string{
+		New(),
+		"01J8Z3K4N5P6Q7R8S9T0V1W2ZF", // player-1 PLY-097 wire example
+		"01J8Z3K4N5P6Q7R8S9T0V1W2Z1", // api-1 API-032 corpus id
+		"00000000000000000000000000",
+		"7ZZZZZZZZZZZZZZZZZZZZZZZZZ", // the spec's largest valid ULID
+	} {
+		if !Valid(s) {
+			t.Errorf("Valid(%q) = false, want true (a canonical ULID)", s)
+		}
+	}
+}
+
+// TestValidRejectsMalformed confirms Valid rejects everything that is not a
+// canonical ULID: wrong length, non-Crockford characters (including the
+// excluded I/L/O/U and lowercase), and a leading character above 7 (which
+// would overflow the 48-bit timestamp past the 128-bit value width).
+func TestValidRejectsMalformed(t *testing.T) {
+	for _, s := range []string{
+		"",                              // empty
+		"01J8Z3K4N5P6Q7R8S9T0V1W2Z",     // 25 chars, too short
+		"01J8Z3K4N5P6Q7R8S9T0V1W2Z11",   // 27 chars, too long
+		"01J8Z3K4N5P6Q7R8S9T0V1W2ZI",    // I is excluded from Crockford
+		"01J8Z3K4N5P6Q7R8S9T0V1W2ZL",    // L is excluded from Crockford
+		"01j8z3k4n5p6q7r8s9t0v1w2zf",    // lowercase is non-canonical
+		"8ZZZZZZZZZZZZZZZZZZZZZZZZZ",     // leading 8 overflows the timestamp
+		"ZZZZZZZZZZZZZZZZZZZZZZZZZZ",     // leading Z overflows the timestamp
+		"01J8Z3K4N5P6Q7R8S9T0V1W2Z-",    // '-' is not a Crockford symbol
+		"not a cursor!!",                // clearly not a ULID
+	} {
+		if Valid(s) {
+			t.Errorf("Valid(%q) = true, want false (not a canonical ULID)", s)
+		}
+	}
+}
+
 // decodeMillisForTest is a standalone (non-exported-from-package) reverse
 // of encode, used only to verify New()'s timestamp component actually
 // decodes to a sane value — it is deliberately independent of encode's own

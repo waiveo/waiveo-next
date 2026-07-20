@@ -12,6 +12,7 @@ package ulid
 
 import (
 	"crypto/rand"
+	"strings"
 	"time"
 )
 
@@ -48,6 +49,33 @@ func New() string {
 	}
 
 	return encode(data)
+}
+
+// Valid reports whether s is a syntactically valid canonical ULID — the
+// inverse check to New/encode. A canonical ULID is exactly 26 characters, each
+// one of the 32 uppercase Crockford base32 symbols crockfordAlphabet lists
+// (I, L, O, U excluded; lowercase and any other byte rejected), and its leading
+// character is in 0..7. The leading-character bound matters because 26*5 = 130
+// bits hold a 128-bit value behind two zero pad bits, so the first symbol
+// carries only 3 significant bits — a value above 7 there would overflow the
+// 48-bit timestamp past the representable width (the spec's largest ULID is
+// 7ZZZZZZZZZZZZZZZZZZZZZZZZZ). It backs api/1's "syntactically valid ULID"
+// requirements (API-045) and keyset-cursor sanity (API-035): a cursor that
+// satisfies the opaque grammar but does not decode to a valid ULID position is
+// not a valid cursor.
+func Valid(s string) bool {
+	if len(s) != 26 {
+		return false
+	}
+	if s[0] < '0' || s[0] > '7' {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if strings.IndexByte(crockfordAlphabet, s[i]) < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // encode Crockford-base32-encodes data's 128 bits into the canonical
