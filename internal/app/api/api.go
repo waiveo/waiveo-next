@@ -1,7 +1,7 @@
 // Package api is the app-side api/1 HTTP surface for the authoring loop: the
-// management door through which scope-nodes and (a follow-up task) the
-// scheduling-core resources are authored over HTTP, persisted by internal/app/
-// store, and thereby fed into the feeder's signed desired-state.
+// management door through which scope-nodes and the scheduling-core resources
+// (schedules, dayparts, playlists) are authored over HTTP, persisted by
+// internal/app/store, and thereby fed into the feeder's signed desired-state.
 //
 // Every handler routes through the already-built, corpus-driven api/1 convention
 // helpers — it never re-derives one:
@@ -61,15 +61,18 @@ type server struct {
 }
 
 // New builds the api/1 HTTP handler: a /api/v1-prefixed mux exposing the
-// scope-nodes CRUD operations over st, wrapped in apihttp.WithTraceID so every
-// request resolves a Trace-Id once (echoed by the header and every Problem body).
-// idem guards Idempotency-Key create replays; nowMs is the injected clock the
-// idempotency calls are timestamped with. The scheduling-core resources are
-// mounted by a follow-up task onto this same mux.
+// scope-nodes and scheduling-core (schedules/dayparts/playlists) CRUD
+// operations over st, wrapped in apihttp.WithTraceID so every request resolves a
+// Trace-Id once (echoed by the header and every Problem body). idem guards
+// Idempotency-Key create replays; nowMs is the injected clock the idempotency
+// calls are timestamped with.
 func New(st *store.Store, idem *apihttp.IdempotencyStore, nowMs func() int64) http.Handler {
 	srv := &server{store: st, idem: idem, nowMs: nowMs}
 	mux := http.NewServeMux()
 	srv.mount(mux, scopeNodesConfig())
+	srv.mount(mux, schedulesConfig())
+	srv.mount(mux, daypartsConfig())
+	srv.mount(mux, playlistsConfig())
 	return apihttp.WithTraceID(mux)
 }
 
