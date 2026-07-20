@@ -260,6 +260,14 @@ type Resolver struct {
 	srv          *playerserver.Server
 	signingKey   ed25519.PrivateKey
 
+	// generation is the desired-state generation this resolver was built for
+	// (relay/1 REL-052/056). It is stamped onto every playerserver.SetProgram
+	// write so a superseded generation's still-in-flight resolver goroutine —
+	// cancelled but mid-resolve when a higher generation is applied — cannot
+	// revert the served program to its stale generation: SetProgram fences a
+	// strictly-older write.
+	generation int64
+
 	// prev is the effective state the last successful ResolveNow projected, or
 	// nil before the first — the edge datamodel.PresetTransition keys a preset
 	// firing on. It is advanced only on a successful resolve, so a resolution
@@ -278,8 +286,15 @@ type Resolver struct {
 // — the relay's own enrollment key, the SAME trust anchor a player pins its
 // Lease-signature check against (PLY-090), exactly as playerserver.SetProgram
 // documents.
-func NewResolver(store datamodel.RowStore, screenNodeID string, srv *playerserver.Server, signingKey ed25519.PrivateKey) *Resolver {
-	return &Resolver{store: store, screenNodeID: screenNodeID, srv: srv, signingKey: signingKey}
+//
+// generation is the desired-state generation store was applied for (relay/1
+// REL-052/056): it is carried onto every SetProgram write as the fence key, so
+// a resolver from a superseded generation cannot revert the served program a
+// newer generation installed. The live re-pull path (cmd/waiveo-relay) passes
+// the applied generation; tests exercising a single generation may pass any
+// non-decreasing value.
+func NewResolver(store datamodel.RowStore, screenNodeID string, srv *playerserver.Server, signingKey ed25519.PrivateKey, generation int64) *Resolver {
+	return &Resolver{store: store, screenNodeID: screenNodeID, srv: srv, signingKey: signingKey, generation: generation}
 }
 
 // ResolveNow resolves the screen's effective state at nowMs, serves the
@@ -306,7 +321,7 @@ func (r *Resolver) ResolveNow(nowMs int64) (fired *datamodel.PresetFire, err err
 	}
 
 	display, priority, content, programRevision := projectState(r.store, state)
-	r.srv.SetProgram(programRevision, priority, display, content, r.signingKey)
+	r.srv.SetProgram(r.generation, programRevision, priority, display, content, r.signingKey)
 
 	fired = datamodel.PresetTransition(r.prev, &state)
 	r.prev = &state

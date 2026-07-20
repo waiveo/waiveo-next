@@ -253,7 +253,7 @@ func main() {
 	if len(served) == 0 {
 		log.Fatalf("waiveo-relay: persisted last-applied snapshot carried no screen_programs to serve")
 	}
-	pairingSrv.SetServedProgram(served[0], relayID.PrivateKey)
+	pairingSrv.SetServedProgram(applied.Generation, served[0], relayID.PrivateKey)
 
 	// Boot the schedule resolver (internal/relay/schedulehost, REL-065/DAT-113-118)
 	// from the SAME verified Applied value bootAutomationStack read above: it
@@ -278,8 +278,10 @@ func main() {
 	// the life of the binary. The scheduleDriver owns the schedule resolvers'
 	// lifecycle across generations: a re-pull that applies a higher generation
 	// cancels the prior generation's resolve loops before installing the new
-	// ones (REL-056 atomic swap), so a superseded generation's ticker never
-	// races the live serve.
+	// ones (REL-056 atomic swap). Because cancellation cannot interrupt a
+	// resolver already mid-resolve, a superseded generation's late SetProgram
+	// write is fenced by generation at the player server (a strictly-older
+	// generation's write is dropped, REL-052/056) rather than by cancel timing.
 	rootCtx := context.Background()
 	driver := &scheduleDriver{
 		srv:        pairingSrv,
@@ -511,8 +513,12 @@ func bootScheduleResolverAt(applied desiredstate.Applied, srv *playerserver.Serv
 // ctx governs every background resolve loop this call starts: cancelling it stops
 // them (and stops their tickers). This is what lets a re-pulled generation
 // atomically replace a prior one (REL-056) — the caller cancels the prior
-// generation's ctx before resolveAndServe installs the new generation's loops, so
-// a superseded generation's ticker can never race the new serve.
+// generation's ctx before resolveAndServe installs the new generation's loops.
+// Cancellation cannot interrupt a resolver already mid-resolve, so the residual
+// hazard — a superseded generation's late write landing after the new serve — is
+// closed at the write point: each resolver stamps applied.Generation onto
+// playerserver.Server.SetProgram, which drops a strictly-older generation's write
+// (REL-052/056), so a stale in-flight resolver can never revert the new serve.
 //
 // A screen the schedule does not govern (no carried scope node for it, or no
 // applicable schedule) is left exactly as it was: the app-authored
@@ -547,7 +553,7 @@ func resolveAndServe(ctx context.Context, applied desiredstate.Applied, srv *pla
 			continue
 		}
 
-		r := schedulehost.NewResolver(store, screenID, srv, signingKey)
+		r := schedulehost.NewResolver(store, screenID, srv, signingKey, applied.Generation)
 		r.TickBoot(nowMs, sink) // the level-triggered STATE projection + the misfire-governed boot resume-edge preset (DAT-075/076/094/119/121).
 		resolvers = append(resolvers, r)
 

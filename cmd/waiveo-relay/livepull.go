@@ -35,10 +35,15 @@ type pullFunc func() (desiredstate.Applied, error)
 // scheduleDriver owns the schedule-resolver lifecycle across desired-state
 // generations for one relay. apply installs a generation's resolvers + background
 // re-resolve loops over the player server; a subsequent apply cancels the prior
-// generation's loops before installing the new ones, so a superseded generation's
-// ticker can never race the new serve (the REL-056 atomic-swap discipline for the
-// serving side of a generation apply). It is driven only from the boot path (once)
-// and the single-threaded re-pull loop, so the cancel handoff needs no lock.
+// generation's loops before installing the new ones (the REL-056 atomic-swap
+// discipline for the serving side of a generation apply). Cancellation stops the
+// loops but cannot interrupt a resolver goroutine already mid-resolve, so a
+// superseded generation's late write could otherwise land after the new serve;
+// that hazard is fenced at the write point instead — every resolver stamps its
+// generation onto playerserver.Server.SetProgram, which drops a strictly-older
+// generation's write (REL-052/056), so a stale in-flight resolver can never
+// revert the new serve. apply is driven only from the boot path (once) and the
+// single-threaded re-pull loop, so the cancel handoff needs no lock.
 type scheduleDriver struct {
 	srv        *playerserver.Server
 	sink       *automation.CommandSink

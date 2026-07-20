@@ -83,7 +83,7 @@ func programTestServer(t *testing.T) (srv *Server, pub ed25519.PublicKey, token 
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	srv.SetProgram("rev-17", "scheduled", "content", testImageContent(), priv)
+	srv.SetProgram(1, "rev-17", "scheduled", "content", testImageContent(), priv)
 
 	_, raw := doPair(t, srv, PairingRequest{
 		HardwareID:    "hw-0001",
@@ -312,6 +312,56 @@ func TestLeaseAckRecordsAck(t *testing.T) {
 	}
 	if rec.LeaseID != lease.LeaseID {
 		t.Errorf("LeaseAck.LeaseID = %q, want %q", rec.LeaseID, lease.LeaseID)
+	}
+}
+
+// TestSetProgramFencesStaleGenerationWrite is the regression guard for the
+// live re-pull race (REL-052/056). When a higher desired-state generation is
+// applied, the superseded generation's per-screen resolver goroutines are
+// cancelled but one may still be mid-resolve and call SetProgram late. Since
+// every resolver stamps its own generation onto SetProgram, the server MUST
+// drop a strictly-older generation's write so the served program never reverts
+// to the pre-edit generation — the "an API edit MUST change the resolved
+// program" oracle across the atomic-swap window. A same-or-higher generation
+// still wins, so a same-generation schedule resolver can replace the boot
+// baseline. Without the fence this is plain last-write-wins and the stale
+// generation-7 write below reverts the served program.
+func TestSetProgramFencesStaleGenerationWrite(t *testing.T) {
+	certPEM, _, priv, _ := testRelaySigningIdentity(t)
+	srv, err := NewServer(certPEM, []wire.PairingGrant{testGrant()})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	// Generation 8 is applied and served (an admin's schedule edit, live).
+	srv.SetProgram(8, "gen-8", "scheduled", "content", testImageContent(), priv)
+	// A superseded generation-7 resolver, still mid-resolve when 8 was applied,
+	// writes late — the concrete re-pull race this fence closes.
+	srv.SetProgram(7, "gen-7", "blank", "blank", nil, priv)
+
+	srv.mu.Lock()
+	gotRev, gotDisplay, gotGen := srv.program.ProgramRevision, srv.program.Display, srv.programGen
+	srv.mu.Unlock()
+
+	if gotRev != "gen-8" {
+		t.Errorf("program_revision = %q, want gen-8 — a stale generation-7 write reverted the served program past generation 8 (REL-052/056)", gotRev)
+	}
+	if gotDisplay != "content" {
+		t.Errorf("display = %q, want content — the stale generation-7 write leaked through the generation fence", gotDisplay)
+	}
+	if gotGen != 8 {
+		t.Errorf("programGen = %d, want 8 — the fence must not lower the applied generation", gotGen)
+	}
+
+	// A same-generation write still wins: the fence must not freeze the program,
+	// so a same-generation schedule resolver replaces the boot baseline (the
+	// additive serving policy) exactly as before.
+	srv.SetProgram(8, "gen-8-schedule", "scheduled", "content", testImageContent(), priv)
+	srv.mu.Lock()
+	gotRev = srv.program.ProgramRevision
+	srv.mu.Unlock()
+	if gotRev != "gen-8-schedule" {
+		t.Errorf("program_revision = %q, want gen-8-schedule — a same-generation write must still win (last-write-wins within a generation)", gotRev)
 	}
 }
 

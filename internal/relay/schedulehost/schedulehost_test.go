@@ -535,7 +535,7 @@ func TestResolveNowServesResolvedProgramViaSetProgram(t *testing.T) {
 	wantAssetRef := store.Rows.Playlists[0].Items[0].AssetRef
 
 	srv, priv, grantID := newTestPlayerServer(t)
-	r := NewResolver(store, demoScreenScopeNodeID, srv, priv)
+	r := NewResolver(store, demoScreenScopeNodeID, srv, priv, 1)
 
 	midDay := demoLocalInstant(t, 12, 0)
 	if _, err := r.ResolveNow(midDay); err != nil {
@@ -565,6 +565,40 @@ func TestResolveNowServesResolvedProgramViaSetProgram(t *testing.T) {
 	}
 }
 
+// TestResolveNowStaleGenerationDoesNotRevertServedProgram is the regression
+// guard for the live re-pull race at the resolver layer (REL-052/056). A
+// resolver built for a superseded generation, whose cancelled background loop
+// is still mid-resolve when a higher generation has already taken over the
+// served program, MUST NOT revert that program when its late ResolveNow lands:
+// the resolver stamps its own generation onto SetProgram, which the player
+// server fences against a strictly-older write. Here generation 8 is live and a
+// leftover generation-7 resolver resolves + writes afterward; the serve must
+// stay on generation 8.
+func TestResolveNowStaleGenerationDoesNotRevertServedProgram(t *testing.T) {
+	store, errs := BuildStore(buildDemoSection(t))
+	if len(errs) != 0 {
+		t.Fatalf("BuildStore(demo section) errs = %+v, want none", errs)
+	}
+
+	srv, priv, grantID := newTestPlayerServer(t)
+
+	// Generation 8 has taken over the served program (the new schedule edit,
+	// applied live by the re-pull loop).
+	srv.SetProgram(8, "gen-8-live", "scheduled", "content", nil, priv)
+
+	// A superseded generation-7 resolver resolves late — its background loop was
+	// mid-resolve when generation 8 was applied — and writes via SetProgram.
+	stale := NewResolver(store, demoScreenScopeNodeID, srv, priv, 7)
+	if _, err := stale.ResolveNow(demoLocalInstant(t, 12, 0)); err != nil {
+		t.Fatalf("ResolveNow(stale generation 7): %v", err)
+	}
+
+	lease := pairAndPull(t, srv, grantID, []string{"image", "video"})
+	if lease.ProgramRevision != "gen-8-live" {
+		t.Errorf("served program_revision = %q, want gen-8-live — a superseded generation-7 resolver reverted the live serve (REL-052/056)", lease.ProgramRevision)
+	}
+}
+
 // unresolvableTZStore builds a store whose screen resolves to a tz that is not
 // a loadable IANA zone — so datamodel.Resolve returns an error (DAT-034: the
 // platform NEVER substitutes box-local state) rather than a defined state.
@@ -591,7 +625,7 @@ func unresolvableTZStore(t *testing.T) (datamodel.RowStore, string) {
 // serve path was left untouched.
 func TestResolveNowUnresolvableTZLeavesSetProgramUncalledAndErrors(t *testing.T) {
 	store, screenID := unresolvableTZStore(t)
-	r := NewResolver(store, screenID, nil, nil)
+	r := NewResolver(store, screenID, nil, nil, 1)
 
 	var fire *datamodel.PresetFire
 	var err error
@@ -677,7 +711,7 @@ func TestTickCrossingIntoContentFiresPresetOnceThenHolds(t *testing.T) {
 		t.Fatalf("BuildStore(demo section) errs = %+v, want none", errs)
 	}
 	srv, priv, _ := newTestPlayerServer(t)
-	r := NewResolver(store, demoScreenScopeNodeID, srv, priv)
+	r := NewResolver(store, demoScreenScopeNodeID, srv, priv, 1)
 	sink, ctrl := newFakeSink(t)
 
 	// Overnight: the blank daypart holds and binds no preset — nothing fires.
@@ -709,7 +743,7 @@ func TestFirePresetDispatchesBatchAndCollectsCompleteOutcome(t *testing.T) {
 	if len(errs) != 0 {
 		t.Fatalf("BuildStore(demo section) errs = %+v, want none", errs)
 	}
-	r := NewResolver(store, demoScreenScopeNodeID, nil, nil) // FirePreset never touches the player server
+	r := NewResolver(store, demoScreenScopeNodeID, nil, nil, 1) // FirePreset never touches the player server
 	sink, ctrl := newFakeSink(t)
 
 	fire := &datamodel.PresetFire{DaypartID: demoContentDaypartID, PresetBatchID: demoPresetBatchID}
@@ -739,7 +773,7 @@ func TestFirePresetNilFireDispatchesNothing(t *testing.T) {
 	if len(errs) != 0 {
 		t.Fatalf("BuildStore(demo section) errs = %+v, want none", errs)
 	}
-	r := NewResolver(store, demoScreenScopeNodeID, nil, nil)
+	r := NewResolver(store, demoScreenScopeNodeID, nil, nil, 1)
 	sink, ctrl := newFakeSink(t)
 
 	out := r.FirePreset(nil, sink)
@@ -819,7 +853,7 @@ func maskedStore(t *testing.T) datamodel.RowStore {
 func TestTickMaskedDaypartDoesNotFire(t *testing.T) {
 	store := maskedStore(t)
 	srv, priv, _ := newTestPlayerServer(t)
-	r := NewResolver(store, maskedScreenID, srv, priv)
+	r := NewResolver(store, maskedScreenID, srv, priv, 1)
 	sink, ctrl := newFakeSink(t)
 
 	r.Tick(demoLocalInstant(t, 12, 0), sink)
@@ -847,7 +881,7 @@ func TestLoopDrivesTickOnInjectedTicks(t *testing.T) {
 		t.Fatalf("BuildStore(demo section) errs = %+v, want none", errs)
 	}
 	srv, priv, _ := newTestPlayerServer(t)
-	r := NewResolver(store, demoScreenScopeNodeID, srv, priv)
+	r := NewResolver(store, demoScreenScopeNodeID, srv, priv, 1)
 	sink, ctrl := newFakeSink(t)
 
 	ticks := make(chan time.Time)
@@ -934,7 +968,7 @@ func resumeMisfireStore(t *testing.T, daypartMisfire string) datamodel.RowStore 
 func TestTickBootSkipMisfireSuppressesResumeFireButStillProjectsState(t *testing.T) {
 	store := resumeMisfireStore(t, "skip")
 	srv, priv, _ := newTestPlayerServer(t)
-	r := NewResolver(store, resumeMisfireScreenID, srv, priv)
+	r := NewResolver(store, resumeMisfireScreenID, srv, priv, 1)
 	sink, ctrl := newFakeSink(t)
 
 	r.TickBoot(demoLocalInstant(t, 12, 0), sink)
@@ -956,7 +990,7 @@ func TestTickBootSkipMisfireSuppressesResumeFireButStillProjectsState(t *testing
 func TestTickBootDefaultMisfireStillFiresResumeEdge(t *testing.T) {
 	store := resumeMisfireStore(t, "") // no explicit misfire -> catch_up_once (DAT-121)
 	srv, priv, _ := newTestPlayerServer(t)
-	r := NewResolver(store, resumeMisfireScreenID, srv, priv)
+	r := NewResolver(store, resumeMisfireScreenID, srv, priv, 1)
 	sink, ctrl := newFakeSink(t)
 
 	r.TickBoot(demoLocalInstant(t, 12, 0), sink)

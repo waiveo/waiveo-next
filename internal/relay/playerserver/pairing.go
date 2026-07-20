@@ -129,6 +129,7 @@ type Server struct {
 	pollResults    map[string]redemption // poll_token -> completed result (PLY-034; see handlePairStatus doc)
 
 	program    program                    // Task 10: SetProgram's own configured state
+	programGen int64                      // desired-state generation the served program was applied for; SetProgram fences a strictly-older write (REL-052/056)
 	signingKey ed25519.PrivateKey         // Task 10: relay's own key, signs every issued Lease (PLY-090)
 	leaseAcks  map[string]LeaseAckRequest // Task 10: lease_id -> most recent LeaseAck (PLY-091)
 

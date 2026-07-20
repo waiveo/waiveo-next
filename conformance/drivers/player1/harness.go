@@ -232,7 +232,7 @@ func (r *InProcessRelay) bootRelay(feederBaseURL string) error {
 	if err != nil {
 		return fmt.Errorf("playerserver.NewServer: %w", err)
 	}
-	pairingSrv.SetProgram(applied.ProgramRevision, applied.Priority, applied.Display, []wire.LeaseContent{{
+	pairingSrv.SetProgram(applied.Generation, applied.ProgramRevision, applied.Priority, applied.Display, []wire.LeaseContent{{
 		Type:      "image",
 		AssetRef:  applied.Image.AssetRef,
 		URL:       applied.Image.URL,

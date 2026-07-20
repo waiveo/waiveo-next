@@ -113,13 +113,26 @@ type program struct {
 // to this relay is itself pinned to") checks against the exact cert this
 // relay's player/1 listener presents.
 //
-// Wave-1 first-photon calls this once at boot with the single applied
-// screen-program; nothing here refreshes it on a later desired-state
-// re-pull (out of this task's scope — a later task wires a live update
-// path).
-func (s *Server) SetProgram(programRevision, priority, display string, content []wire.LeaseContent, signingKey ed25519.PrivateKey) {
+// generation is the desired-state generation this program was resolved for
+// (relay/1 REL-052/056). The live re-pull loop drives SetProgram concurrently
+// across generations: when a higher generation is applied, the superseded
+// generation's per-screen resolver goroutines are cancelled but one may still be
+// mid-flight inside a resolve, so its late write can arrive AFTER the new
+// generation's. SetProgram FENCES that hazard: a write whose generation is
+// strictly older than the last one applied here is dropped, so a stale
+// resolver can never revert the served program to a superseded generation
+// (upholding the "an API edit MUST change the resolved program" oracle across
+// the atomic-swap window). A write at the same-or-higher generation wins
+// (last-write-wins WITHIN a generation is preserved, so the schedule resolver's
+// TickBoot correctly replaces the app-authored baseline SetServedProgram
+// configured at the same generation at boot).
+func (s *Server) SetProgram(generation int64, programRevision, priority, display string, content []wire.LeaseContent, signingKey ed25519.PrivateKey) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if generation < s.programGen {
+		return // stale generation's late write — never revert a newer generation's served program (REL-052/056).
+	}
+	s.programGen = generation
 	s.program = program{
 		ProgramRevision: programRevision,
 		Priority:        priority,
@@ -150,7 +163,12 @@ func (s *Server) SetProgram(programRevision, priority, display string, content [
 // signingKey MUST be the relay's own enrollment private key, as SetProgram
 // documents — the same trust anchor a player pins its Lease-signature check
 // against (PLY-090).
-func (s *Server) SetServedProgram(sp wire.ScreenProgram, signingKey ed25519.PrivateKey) {
+//
+// generation is the persisted last-applied generation this served program
+// belongs to (relay/1 REL-052/056), carried into SetProgram's own generation
+// fence: it is the boot-time baseline a same-generation schedule resolver then
+// replaces, and a strictly-older stale write can never revert.
+func (s *Server) SetServedProgram(generation int64, sp wire.ScreenProgram, signingKey ed25519.PrivateKey) {
 	content := make([]wire.LeaseContent, 0, len(sp.Content))
 	for _, c := range sp.Content {
 		content = append(content, wire.LeaseContent{
@@ -160,7 +178,7 @@ func (s *Server) SetServedProgram(sp wire.ScreenProgram, signingKey ed25519.Priv
 			ExpiresAt: c.ExpiresAt,
 		})
 	}
-	s.SetProgram(sp.ProgramRevision, sp.Priority, sp.Display, content, signingKey)
+	s.SetProgram(generation, sp.ProgramRevision, sp.Priority, sp.Display, content, signingKey)
 }
 
 // LeaseAck returns a previously recorded lease/ack for leaseID, and

@@ -22,7 +22,7 @@ func preemptProgramTestServer(t *testing.T) (srv *Server, token string) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	srv.SetProgram("rev-18", "preempt", "content", testImageContent(), priv)
+	srv.SetProgram(1, "rev-18", "preempt", "content", testImageContent(), priv)
 
 	_, raw := doPair(t, srv, PairingRequest{
 		HardwareID:    "hw-0001",

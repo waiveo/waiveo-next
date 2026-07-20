@@ -346,7 +346,7 @@ func TestBootScheduleResolverServesResolvedProgramForGovernedScreen(t *testing.T
 	applied := buildDemoAppliedForTest(t)
 
 	srv, priv, grantID := newTestPlayerServer(t)
-	srv.SetServedProgram(applied.ScreenPrograms[0], priv)
+	srv.SetServedProgram(applied.Generation, applied.ScreenPrograms[0], priv)
 	appAuthoredRevision := applied.ScreenPrograms[0].ProgramRevision
 
 	sink := fakeScheduleSink()
@@ -387,7 +387,7 @@ func TestBootScheduleResolverEmptyScheduleLeavesAppAuthoredProgramUnchanged(t *t
 		Content:         []wire.ContentRef{{AssetRef: "sha256:deadbeef", URL: "https://origin.example/content/deadbeef"}},
 	}
 	srv, priv, grantID := newTestPlayerServer(t)
-	srv.SetServedProgram(appAuthored, priv)
+	srv.SetServedProgram(1, appAuthored, priv)
 
 	applied := desiredstate.Applied{} // never-carried schedule (today's first-photon state)
 	sink := fakeScheduleSink()

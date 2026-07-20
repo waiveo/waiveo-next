@@ -40,7 +40,7 @@ func TestSetServedProgramDeliversPersistedPreemptLease(t *testing.T) {
 			ExpiresAt: 1752545000000,
 		}},
 	}
-	srv.SetServedProgram(served, priv)
+	srv.SetServedProgram(1, served, priv)
 
 	_, raw := doPair(t, srv, PairingRequest{
 		HardwareID:    "hw-0001",
