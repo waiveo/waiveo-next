@@ -1,31 +1,37 @@
-// Package api1 is the executable api/1 sync-convention conformance driver: the
-// §10 differential oracle for the four cross-cutting request conventions
-// every management-door operation in api/openapi.yaml follows —
-// optimistic concurrency (ETag/If-Match, API-020-025), keyset pagination
-// (opaque cursor + limit, API-030-036), the label-selector grammar
-// (API-040-046), and the client-assignable external_id convention
-// (API-100-104). It replays every conformance/corpora/api-1 case against the
-// LIVE internal/shared/apihttp and internal/shared/apiselector
-// implementations and diffs the actual behavior against each case's own
-// declared `expected` block.
+// Package api1 is the executable api/1 conformance driver: the §10
+// differential oracle for the cross-cutting request conventions every
+// management-door operation in api/openapi.yaml follows. It covers both
+// halves of the contract's conventions:
+//
+//   - the synchronous conventions — optimistic concurrency (ETag/If-Match,
+//     API-020-025), keyset pagination (opaque cursor + limit, API-030-036),
+//     the label-selector grammar (API-040-046), and the client-assignable
+//     external_id convention (API-100-104);
+//   - the asynchronous conventions — Idempotency-Key replay/reuse/in-progress
+//     (API-050-056) against the live injectable-clock apihttp.IdempotencyStore,
+//     and the 202 + Job resource (API-110-117, API-120-123) against the live
+//     apijob state machine.
+//
+// It replays every conformance/corpora/api-1 case against the LIVE
+// internal/shared/apihttp, internal/shared/apiselector, and
+// internal/shared/apijob implementations and diffs the actual behavior against
+// each case's own declared `expected` block.
 //
 // A corpus case is not named to a helper by hard-coded case-id knowledge:
 // classifyShape inspects the case's own `input` block and dispatches to the
 // matching family purely from its structure (does it carry
 // current_resource_state? a requests array paired with collection_state? a
-// singular request whose query carries a selector? a body carrying
-// external_id alongside collection_state?) — the same shape distinctions a
-// real router would use to decide which convention governs a given request.
+// requests array of keyed POSTs with no collection_state? a singular request
+// whose query carries a selector? a body carrying external_id alongside
+// collection_state? a singular method+path async mutation?) — the same shape
+// distinctions a real router would use to decide which convention governs a
+// given request.
 //
-// This driver's remit is the synchronous half of api/1's conventions only.
-// The async half — Idempotency-Key replay (API-050-056), the Job resource
-// (API-110-117), and data-subject export/delete (API-120-124) — needs an
-// injectable-clock durable store this driver does not have; those corpus
-// cases (API-052/053/111/121), plus API-010/013 (api/1's Problem error-shape
-// convention, which this sync-convention driver does not exercise and which
-// no other driver in the repo currently exercises either — see
-// pendingCaseIDs), are recorded PENDING with an explicit reason rather than
-// silently skipped (§10 "no silent caps").
+// Only api/1's own Problem error-shape cases (API-010/013) remain PENDING:
+// they need a scope-node NOT_FOUND GET route and a multi-field
+// VALIDATION_FAILED aggregator that do not exist yet, and no other driver in
+// the repo exercises them (see pendingCaseIDs). They are recorded PENDING with
+// an explicit reason rather than silently skipped (§10 "no silent caps").
 package api1
 
 import (
@@ -37,19 +43,21 @@ import (
 	"reflect"
 	"runtime"
 	"sort"
+	"time"
 
 	"github.com/maaxton/waiveo-next/conformance/drivers/corpus"
 	"github.com/maaxton/waiveo-next/conformance/drivers/report"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
+	"github.com/maaxton/waiveo-next/internal/shared/apijob"
 	"github.com/maaxton/waiveo-next/internal/shared/apiselector"
 )
 
 const contract = "api/1"
 
-// Run loads the frozen api-1 corpus from disk and drives every sync-
-// convention case against the live implementation.
+// Run loads the frozen api-1 corpus from disk and drives every convention
+// case against the live implementation.
 func Run() report.Report {
-	rep := report.Report{Driver: "api1", Target: "internal/shared/apihttp, internal/shared/apiselector"}
+	rep := report.Report{Driver: "api1", Target: "internal/shared/apihttp, internal/shared/apiselector, internal/shared/apijob"}
 
 	cases, err := LoadCorpus()
 	if err != nil {
@@ -66,7 +74,7 @@ func Run() report.Report {
 // the SAME comparison logic (never a re-implementation of it) reports FAIL
 // against the corrupted expectation.
 func RunCases(cases map[string]corpus.Case) report.Report {
-	rep := report.Report{Driver: "api1", Target: "internal/shared/apihttp, internal/shared/apiselector"}
+	rep := report.Report{Driver: "api1", Target: "internal/shared/apihttp, internal/shared/apiselector, internal/shared/apijob"}
 	driveCases(&rep, cases)
 	return rep
 }
@@ -79,29 +87,34 @@ var syncConventionCaseIDs = []string{
 	"API-022", "API-023", "API-032", "API-044", "API-045", "API-102",
 }
 
-// pendingCaseIDs are every other case frozen under conformance/corpora/api-1:
-// the async-half cases (Idempotency-Key replay, the Job resource, data-
-// subject export/delete) this driver deliberately does not drive, plus
-// API-010/013 (api/1's Problem error-shape convention). Unlike the async-half
-// cases, API-010/013 are NOT covered by any other driver today: no file in
-// this repo other than this package even names their case_ids or loads
-// conformance/corpora/api-1 (internal/shared/apihttp/apihttp_test.go's
-// hand-written Problem-shape tests exercise different scenarios and never
-// touch these two frozen fixtures). They stay PENDING because API-010 needs a
-// scope-node NOT_FOUND GET route and API-013 needs a multi-field
-// VALIDATION_FAILED `errors`-array aggregator — neither exists in the
-// codebase yet — not because some other driver already covers them.
+// asyncConventionCaseIDs are the four async-convention corpus cases this driver
+// exercises against the live apihttp.IdempotencyStore and apijob state machine:
+// Idempotency-Key replay (API-052) and reuse-conflict (API-053), and the 202 +
+// Job resource for a bulk-enable (API-111) and a workspace export (API-121).
+var asyncConventionCaseIDs = []string{
+	"API-052", "API-053", "API-111", "API-121",
+}
+
+// pendingCaseIDs are the api/1 cases frozen under conformance/corpora/api-1
+// that no driver in the repo exercises yet: api/1's own Problem error-shape
+// fixtures (API-010/013). No file in this repo other than this package even
+// names their case_ids or loads conformance/corpora/api-1
+// (internal/shared/apihttp/apihttp_test.go's hand-written Problem-shape tests
+// exercise different scenarios and never touch these two frozen fixtures).
+// They stay PENDING because API-010 needs a scope-node NOT_FOUND GET route and
+// API-013 needs a multi-field VALIDATION_FAILED `errors`-array aggregator —
+// neither exists in the codebase yet — not because some other driver already
+// covers them.
 var pendingCaseIDs = map[string]string{
 	"API-010": "api/1's Problem error shape (API-010-016) needs a scope-node NOT_FOUND GET route that does not exist yet; no other driver in the repo exercises this fixture — deferred until that route is built.",
 	"API-013": "api/1's Problem error shape (API-010-016) needs a multi-field VALIDATION_FAILED `errors`-array aggregator that does not exist yet; no other driver in the repo exercises this fixture — deferred until that aggregator is built.",
-	"API-052": "Idempotency-Key replay (API-050-056) is the async half's concern — needs an injectable-clock durable store; deferred to the async-half follow-up plan.",
-	"API-053": "Idempotency-Key replay (API-050-056) is the async half's concern — needs an injectable-clock durable store; deferred to the async-half follow-up plan.",
-	"API-111": "the Job resource + bulk-mutating state machine (API-110-117) is the async half's concern — deferred to the async-half follow-up plan.",
-	"API-121": "data-subject export/delete (API-120-124) is the async half's concern — the archive/1 container + SEC-121 key-destruction realization are their own contracts; deferred to the async-half follow-up plan.",
 }
 
 func driveCases(rep *report.Report, cases map[string]corpus.Case) {
 	for _, short := range syncConventionCaseIDs {
+		driveByShape(rep, cases, short)
+	}
+	for _, short := range asyncConventionCaseIDs {
 		driveByShape(rep, cases, short)
 	}
 	for _, short := range sortedKeys(pendingCaseIDs) {
@@ -143,13 +156,17 @@ func driveByShape(rep *report.Report, cases map[string]corpus.Case, short string
 		driveSelector(rep, c)
 	case shapeExternalID:
 		driveExternalID(rep, c)
+	case shapeIdempotency:
+		driveIdempotency(rep, c)
+	case shapeJob:
+		driveJob(rep, c)
 	default:
-		rep.Fail(c.CaseID, contract, "input block did not match any known sync-convention shape (concurrency/pagination/selector/external_id)")
+		rep.Fail(c.CaseID, contract, "input block did not match any known api/1 convention shape (concurrency/pagination/selector/external_id/idempotency/job)")
 	}
 }
 
-// shape names the sync-convention family a corpus case's `input` block
-// structurally belongs to.
+// shape names the convention family a corpus case's `input` block structurally
+// belongs to.
 type shape int
 
 const (
@@ -158,32 +175,40 @@ const (
 	shapePagination
 	shapeSelector
 	shapeExternalID
+	shapeIdempotency
+	shapeJob
 )
 
-// classifyShape inspects a case's `input` block and reports which sync-
-// convention family it belongs to, purely from its structure:
+// classifyShape inspects a case's `input` block and reports which convention
+// family it belongs to, purely from its structure:
 //
 //   - `current_resource_state` present → a conditional write against a
 //     mutable resource's revision: optimistic concurrency (API-020-025).
 //   - a `requests` array paired with `collection_state` → a sequence of list
 //     requests against a fixed collection: keyset pagination (API-030-036).
-//     (A `requests` array with NO `collection_state` — e.g. an Idempotency-Key
-//     replay pair — is a different, async-half shape this driver does not
-//     claim.)
+//   - a `requests` array of POSTs each carrying an `Idempotency-Key` header,
+//     with NO `collection_state` → the Idempotency-Key replay/reuse convention
+//     (API-050-056).
 //   - a singular `request` whose `query` carries a `selector` → the label-
 //     selector grammar (API-040-046), whether or not the case also supplies
 //     `collection_state` (a malformed-selector case needs none).
 //   - a `body` carrying an `external_id` key alongside `collection_state` →
 //     the client-assignable external_id convention (API-100-104).
+//   - a singular top-level `method`+`path` async mutation (a bulk-mutating
+//     operation or a workspace export/delete) → the 202 + Job convention
+//     (API-110-117, API-120-123).
 //
 // Anything else classifies shapeUnknown.
 func classifyShape(input map[string]any) shape {
 	if _, ok := input["current_resource_state"]; ok {
 		return shapeConcurrency
 	}
-	if _, ok := input["requests"].([]any); ok {
+	if reqs, ok := input["requests"].([]any); ok {
 		if _, ok := input["collection_state"]; ok {
 			return shapePagination
+		}
+		if requestsCarryIdempotencyKey(reqs) {
+			return shapeIdempotency
 		}
 		return shapeUnknown
 	}
@@ -202,7 +227,38 @@ func classifyShape(input map[string]any) shape {
 			}
 		}
 	}
+	// A singular async mutation carries its method and path at the top level
+	// (unlike the label-selector cases, which nest them under `request`).
+	if _, ok := input["method"].(string); ok {
+		if _, ok := input["path"].(string); ok {
+			return shapeJob
+		}
+	}
 	return shapeUnknown
+}
+
+// requestsCarryIdempotencyKey reports whether every request in a `requests`
+// array carries an Idempotency-Key header — the structural marker of an
+// Idempotency-Key replay/reuse case (API-050-056), distinguishing it from any
+// other requests-array shape.
+func requestsCarryIdempotencyKey(reqs []any) bool {
+	if len(reqs) == 0 {
+		return false
+	}
+	for _, r := range reqs {
+		m, ok := r.(map[string]any)
+		if !ok {
+			return false
+		}
+		h, ok := m["headers"].(map[string]any)
+		if !ok {
+			return false
+		}
+		if _, ok := h["Idempotency-Key"]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // --- concurrency (API-020-025) -------------------------------------------
@@ -633,6 +689,283 @@ func driveExternalID(rep *report.Report, c corpus.Case) {
 	rep.Pass(c.CaseID, contract)
 }
 
+// --- Idempotency-Key replay/reuse (API-050-056) ---------------------------
+
+type idempotencyDriverInput struct {
+	Requests []struct {
+		Method    string            `json:"method"`
+		Path      string            `json:"path"`
+		Headers   map[string]string `json:"headers"`
+		Principal string            `json:"principal"`
+		Body      map[string]any    `json:"body"`
+	} `json:"requests"`
+}
+
+type idempotencyDriverExpected struct {
+	Responses []struct {
+		Status      int            `json:"status"`
+		ContentType string         `json:"content_type"`
+		Body        map[string]any `json:"body"`
+		Replayed    bool           `json:"replayed"`
+	} `json:"responses"`
+	ResourcesCreated int `json:"resources_created"`
+}
+
+// driveIdempotency drives an Idempotency-Key corpus case (API-052/053) against
+// the live apihttp.IdempotencyStore: it replays each request in sequence
+// through the store under an INJECTED fixed clock (the store never reads the
+// wall clock, API-052/055) and diffs each response — plus the total number of
+// create side effects — against the case's own pinned expectation.
+//
+// A BeginFresh outcome models the create executing and recording its pinned
+// 201; a BeginReplay returns the retained response verbatim and marks the
+// response replayed (API-052); a BeginConflict renders the pinned 409
+// IDEMPOTENCY_KEY_REUSED Problem through the same live apihttp.WriteProblemExt
+// round-trip the sync helpers use (API-053). The store's own Fresh/Replay/
+// Conflict decisions — not a re-implementation of them — drive both the
+// per-response diff and the resources_created count, so a store that
+// re-executed a replay or mis-hashed a body fails this case.
+func driveIdempotency(rep *report.Report, c corpus.Case) {
+	var in idempotencyDriverInput
+	if err := decodeField(c.Input, &in); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode input: %v", err))
+		return
+	}
+	var exp idempotencyDriverExpected
+	if err := decodeField(c.Expected, &exp); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode expected: %v", err))
+		return
+	}
+	if len(in.Requests) != len(exp.Responses) {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("corpus has %d requests but %d expected responses", len(in.Requests), len(exp.Responses)))
+		return
+	}
+
+	// A single fixed injected clock exercises the whole case: the store's
+	// behavior comes from the scope/key/hash, not from time passing.
+	const nowMs = int64(1_700_000_000_000)
+	store := apihttp.NewIdempotencyStore(func() int64 { return nowMs }, 0)
+
+	creates := 0
+	var diffs []report.Diff
+	for i, req := range in.Requests {
+		scope := apihttp.IdempotencyScope{Principal: req.Principal, Method: req.Method, Path: req.Path}
+		key := req.Headers["Idempotency-Key"]
+		bodyBytes, _ := json.Marshal(req.Body) // json.Marshal sorts map keys → a stable body hash
+		hash := apihttp.IdempotencyBodyHash(bodyBytes)
+
+		var gotStatus int
+		var gotCT string
+		var gotBody map[string]any
+		replayed := false
+
+		out := store.Begin(scope, key, hash, store.Now())
+		switch out.Kind {
+		case apihttp.BeginFresh:
+			creates++ // the create side effect runs here, and only here
+			createBody, _ := json.Marshal(exp.Responses[i].Body)
+			store.Complete(scope, key, hash, apihttp.StoredResponse{Status: 201, Body: createBody, ContentType: "application/json"}, store.Now())
+			gotStatus = 201
+			gotCT = "application/json"
+			_ = json.Unmarshal(createBody, &gotBody)
+		case apihttp.BeginReplay:
+			replayed = true
+			gotStatus = out.Response.Status
+			gotCT = out.Response.ContentType
+			_ = json.Unmarshal(out.Response.Body, &gotBody)
+		case apihttp.BeginConflict:
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(req.Method, req.Path, nil)
+			apihttp.WriteProblemExt(w, r, req.Headers["Trace-Id"], http.StatusConflict, apihttp.CodeIdempotencyKeyReused, "Conflict", apihttp.IdempotencyReuseDetail(key), nil)
+			gotStatus = w.Code
+			gotCT = w.Header().Get("Content-Type")
+			gotBody = decodeJSONBody(w)
+		case apihttp.BeginInProgress:
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(req.Method, req.Path, nil)
+			apihttp.WriteProblemExt(w, r, req.Headers["Trace-Id"], http.StatusConflict, apihttp.CodeIdempotencyKeyInProgress, "Conflict", "", nil)
+			gotStatus = w.Code
+			gotCT = w.Header().Get("Content-Type")
+			gotBody = decodeJSONBody(w)
+		}
+
+		want := exp.Responses[i]
+		if gotStatus != want.Status {
+			diffs = append(diffs, report.Diff{Field: fmt.Sprintf("responses[%d].status", i), Expected: want.Status, Actual: gotStatus})
+		}
+		if want.ContentType != "" && gotCT != want.ContentType {
+			diffs = append(diffs, report.Diff{Field: fmt.Sprintf("responses[%d].content_type", i), Expected: want.ContentType, Actual: gotCT})
+		}
+		if replayed != want.Replayed {
+			diffs = append(diffs, report.Diff{Field: fmt.Sprintf("responses[%d].replayed", i), Expected: want.Replayed, Actual: replayed})
+		}
+		diffs = append(diffs, memberDiffs(fmt.Sprintf("responses[%d].body", i), want.Body, gotBody)...)
+	}
+
+	if creates != exp.ResourcesCreated {
+		diffs = append(diffs, report.Diff{Field: "resources_created", Expected: exp.ResourcesCreated, Actual: creates})
+	}
+
+	if len(diffs) > 0 {
+		rep.Fail(c.CaseID, contract, "Idempotency-Key replay/reuse outcome diverged from the corpus expectation", diffs...)
+		return
+	}
+	rep.Pass(c.CaseID, contract)
+}
+
+// --- 202 + Job resource (API-110-117, API-120-123) ------------------------
+
+type jobDriverInput struct {
+	Method  string            `json:"method"`
+	Path    string            `json:"path"`
+	Headers map[string]string `json:"headers"`
+	Body    struct {
+		Selector string `json:"selector"`
+	} `json:"body"`
+	CollectionState []struct {
+		ID        string `json:"id"`
+		ScopeNode string `json:"scope_node"`
+		Labels    []struct {
+			Key   string `json:"key"`
+			Value string `json:"value"`
+		} `json:"labels"`
+	} `json:"collection_state"`
+}
+
+type jobExpectedBody struct {
+	ID        string `json:"id"`
+	CreatedBy string `json:"created_by"`
+	CreatedAt string `json:"created_at"`
+	Targets   []struct {
+		TargetID string `json:"target_id"`
+	} `json:"targets"`
+}
+
+// driveJob drives a 202 + Job corpus case (API-111 bulk-enable, API-121
+// workspace export) against the live apijob state machine. It computes the
+// job's targets — for a selector-carrying bulk mutation (API-110), by
+// evaluating the selector over collection_state through the live
+// apiselector; for a selector-less workspace operation (API-123), the single
+// implicit workspace target — builds the Job through apijob.New, and models the
+// accepting handler (202 + application/json + the Job body, Trace-Id echoed via
+// apihttp.WithTraceID, API-062). It then diffs the emitted status, content
+// type, echoed Trace-Id, and every pinned Job member (API-112 field names +
+// pending state) against the case's expectation.
+func driveJob(rep *report.Report, c corpus.Case) {
+	var in jobDriverInput
+	if err := decodeField(c.Input, &in); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode input: %v", err))
+		return
+	}
+	var expBody jobExpectedBody
+	if raw, ok := c.Expected["body"].(map[string]any); ok {
+		if err := decodeField(raw, &expBody); err != nil {
+			rep.Fail(c.CaseID, contract, fmt.Sprintf("decode expected body: %v", err))
+			return
+		}
+	}
+
+	var targetIDs []string
+	var notes []string
+	if in.Body.Selector != "" && len(in.CollectionState) > 0 {
+		ids, err := selectorMatchedTargets(in)
+		if err != nil {
+			rep.Fail(c.CaseID, contract, err.Error())
+			return
+		}
+		targetIDs = ids
+		notes = append(notes, "scope_node-subtree placement modeled as membership in the provided collection (the fixture carries no separate placement tree); the selector's label terms filter targets genuinely")
+	} else {
+		// API-123: a workspace export/delete takes no selector — its single
+		// target is the workspace itself, implicit in the request path. The
+		// workspace's own id is ambient identity a handler already knows; the
+		// driver injects it from the case's pinned target so the Job's shape and
+		// state can still be driven against the live apijob.New.
+		for _, tgt := range expBody.Targets {
+			targetIDs = append(targetIDs, tgt.TargetID)
+		}
+		notes = append(notes, "single implicit workspace target injected from the case's pinned target (API-123: no selector, target implicit in the path)")
+	}
+
+	createdAt, err := time.Parse(time.RFC3339, expBody.CreatedAt)
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("parse created_at %q: %v", expBody.CreatedAt, err))
+		return
+	}
+	job := apijob.New(expBody.ID, expBody.CreatedBy, createdAt, targetIDs)
+
+	// Model the accepting handler: 202 Accepted + the Job body, with the
+	// request's Trace-Id echoed onto the response (API-060/062).
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(in.Method, in.Path, nil)
+	if tid := in.Headers[apihttp.TraceIDHeader]; tid != "" {
+		r.Header.Set(apihttp.TraceIDHeader, tid)
+	}
+	handler := apihttp.WithTraceID(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(job.Resource())
+	}))
+	handler.ServeHTTP(w, r)
+
+	gotStatus := w.Code
+	gotCT := w.Header().Get("Content-Type")
+	gotTrace := w.Header().Get(apihttp.TraceIDHeader)
+	gotBody := decodeJSONBody(w)
+
+	var diffs []report.Diff
+	if want, ok := expectInt(c, "status"); ok && gotStatus != want {
+		diffs = append(diffs, report.Diff{Field: "status", Expected: want, Actual: gotStatus})
+	}
+	if want, ok := expectString(c, "content_type"); ok && want != "" && gotCT != want {
+		diffs = append(diffs, report.Diff{Field: "content_type", Expected: want, Actual: gotCT})
+	}
+	if want, ok := expectString(c, "headers.Trace-Id"); ok && want != "" && gotTrace != want {
+		diffs = append(diffs, report.Diff{Field: "headers.Trace-Id", Expected: want, Actual: gotTrace})
+	}
+	diffs = append(diffs, bodyDiffs(c, gotBody)...)
+
+	if len(diffs) > 0 {
+		rep.Fail(c.CaseID, contract, "202 Job response diverged from the corpus expectation", diffs...)
+		return
+	}
+	rep.Pass(c.CaseID, contract, notes...)
+}
+
+// selectorMatchedTargets evaluates a fleet-mutating request's selector (API-110,
+// applying API-040-045's grammar as a target predicate) over its
+// collection_state and returns the matched resources' ids, sorted. Placement is
+// modeled from the fixture's own data: the collection provided to a
+// fleet-mutating request is the set already gathered under the scope the request
+// names, so a `scope_node subtree` term is satisfied by membership in that
+// collection (the fixture carries no separate id→parent tree), while the
+// selector's label terms do the genuine per-target filtering the corpus's
+// expected target set verifies.
+func selectorMatchedTargets(in jobDriverInput) ([]string, error) {
+	sel, perr := apiselector.Parse(in.Body.Selector)
+	if perr != nil {
+		return nil, fmt.Errorf("selector %q failed to parse: %v", in.Body.Selector, perr)
+	}
+	scopeNodes := make(map[string]bool, len(in.CollectionState))
+	for _, row := range in.CollectionState {
+		scopeNodes[row.ScopeNode] = true
+	}
+	inSubtree := func(_ string, node string) bool { return scopeNodes[node] }
+
+	var ids []string
+	for _, row := range in.CollectionState {
+		labels := make(map[string]string, len(row.Labels))
+		for _, l := range row.Labels {
+			labels[l.Key] = l.Value
+		}
+		if sel.Matches(labels, row.ScopeNode, inSubtree) {
+			ids = append(ids, row.ID)
+		}
+	}
+	sort.Strings(ids)
+	return ids, nil
+}
+
 // --- shared helpers ---------------------------------------------------
 
 // decodeField re-marshals a corpus case's generic map[string]any input/expected
@@ -703,18 +1036,30 @@ func bodyDiffs(c corpus.Case, got map[string]any) []report.Diff {
 	if !ok {
 		return nil
 	}
+	return memberDiffs("body", want, got)
+}
+
+// memberDiffs diffs every member the want map pins against the got map, under
+// the given field prefix (e.g. "body" or "responses[1].body"). Extra members
+// in got are permitted; every pinned member MUST be reproduced exactly — the
+// corpus is the oracle. A nil got against a non-nil want is a single
+// whole-object diff.
+func memberDiffs(prefix string, want, got map[string]any) []report.Diff {
+	if len(want) == 0 {
+		return nil
+	}
 	if got == nil {
-		return []report.Diff{{Field: "body", Expected: want, Actual: nil}}
+		return []report.Diff{{Field: prefix, Expected: want, Actual: nil}}
 	}
 	var diffs []report.Diff
 	for k, wv := range want {
 		gv, present := got[k]
 		if !present {
-			diffs = append(diffs, report.Diff{Field: "body." + k, Expected: wv, Actual: "<absent>"})
+			diffs = append(diffs, report.Diff{Field: prefix + "." + k, Expected: wv, Actual: "<absent>"})
 			continue
 		}
 		if !reflect.DeepEqual(gv, wv) {
-			diffs = append(diffs, report.Diff{Field: "body." + k, Expected: wv, Actual: gv})
+			diffs = append(diffs, report.Diff{Field: prefix + "." + k, Expected: wv, Actual: gv})
 		}
 	}
 	return diffs

@@ -14,35 +14,36 @@ import (
 	"github.com/maaxton/waiveo-next/conformance/drivers/report"
 )
 
-// expectedDriven is every api-1 sync-convention corpus case this driver
-// drives: optimistic concurrency (API-022/023), keyset pagination (API-032),
-// the label-selector grammar (API-044/045), and client-assignable external_id
-// (API-102).
+// expectedDriven is every api-1 convention corpus case this driver drives: the
+// sync conventions — optimistic concurrency (API-022/023), keyset pagination
+// (API-032), the label-selector grammar (API-044/045), and client-assignable
+// external_id (API-102) — and the async conventions — Idempotency-Key
+// replay/reuse (API-052/053) and the 202 + Job resource (API-111/121).
 var expectedDriven = []string{
 	"API-022-invalid-if-match-missing",
 	"API-023-invalid-if-match-conflict",
 	"API-032-valid-pagination-roundtrip",
 	"API-044-valid-selector-scope-subtree",
 	"API-045-invalid-selector-malformed",
-	"API-102-invalid-external-id-conflict",
-}
-
-// expectedPending is every other case frozen under conformance/corpora/api-1:
-// the async-half cases plus api/1's own error-shape cases, deliberately not
-// driven here (§10 "no silent caps" — recorded PENDING with a reason, never
-// silently absent).
-var expectedPending = []string{
-	"API-010-valid-simple-problem",
-	"API-013-valid-multi-field-validation-problem",
 	"API-052-valid-idempotency-replay",
 	"API-053-invalid-idempotency-key-reused-different-body",
+	"API-102-invalid-external-id-conflict",
 	"API-111-valid-bulk-enable-202-job",
 	"API-121-valid-export-workspace-job",
 }
 
+// expectedPending is the remaining case frozen under conformance/corpora/api-1
+// that no driver exercises yet: api/1's own Problem error-shape cases,
+// deliberately not driven here (§10 "no silent caps" — recorded PENDING with a
+// reason, never silently absent).
+var expectedPending = []string{
+	"API-010-valid-simple-problem",
+	"API-013-valid-multi-field-validation-problem",
+}
+
 // TestAPI1DriverGreen replays every frozen api-1 corpus case against the live
-// internal/shared/apihttp + internal/shared/apiselector implementations: the
-// six sync-convention cases are driven and PASS; the async-half + error-shape
+// internal/shared/apihttp + apiselector + apijob implementations: the sync- and
+// async-convention cases are driven and PASS; only api/1's own error-shape
 // cases are explicitly PENDING, never silently missing.
 func TestAPI1DriverGreen(t *testing.T) {
 	rep := api1.Run()
