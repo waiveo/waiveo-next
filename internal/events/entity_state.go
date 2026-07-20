@@ -279,3 +279,59 @@ func requireEnumField(m map[string]json.RawMessage, field string, valid map[stri
 	}
 	return s, nil
 }
+
+// requireNonEmptyStringField checks that field is present in m, is a JSON
+// string (never null), and is non-empty (variable.changed.variable, EVT-084:
+// a variable's own name is never blank).
+func requireNonEmptyStringField(m map[string]json.RawMessage, field string) error {
+	if err := requireStringField(m, field); err != nil {
+		return err
+	}
+	var s string
+	_ = json.Unmarshal(m[field], &s)
+	if s == "" {
+		return ValidationError{Field: field, Detail: "must be non-empty"}
+	}
+	return nil
+}
+
+// optionalULIDField checks that, when field is present and non-null in m, it
+// is a valid ULID string. Outright absence and an explicit JSON null are both
+// accepted as "no value" (audit.event.on_behalf_of, EVT-080: a ULID, optional
+// — absent for a self-attributed action; a producer that always writes the
+// key writes null rather than omitting it, as the EVT-080 corpus does). A
+// present non-null value that is not a valid ULID is an EVT-013 rejection.
+func optionalULIDField(m map[string]json.RawMessage, field string) error {
+	raw, present := m[field]
+	if !present || string(raw) == "null" {
+		return nil
+	}
+	var s string
+	if json.Unmarshal(raw, &s) != nil || !ulid.Valid(s) {
+		return ValidationError{Field: field, Detail: "must be a valid ULID or null when present"}
+	}
+	return nil
+}
+
+// requireScalarOrNullField checks that field is present in m (required — only
+// its value may be null) and that its JSON value decodes to one of string,
+// number, boolean, or null — never an object or array
+// (variable.changed.old_value/new_value, EVT-084: a platform variable's value
+// is always a scalar, or unset). Outright field absence is still an EVT-013
+// rejection, distinct from an explicit null.
+func requireScalarOrNullField(m map[string]json.RawMessage, field string) error {
+	raw, ok := m[field]
+	if !ok {
+		return ValidationError{Field: field, Detail: "required (send null when unset)"}
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return ValidationError{Field: field, Detail: "must be a string, number, boolean, or null"}
+	}
+	switch v.(type) {
+	case nil, string, float64, bool:
+		return nil
+	default:
+		return ValidationError{Field: field, Detail: "must be a string, number, boolean, or null"}
+	}
+}

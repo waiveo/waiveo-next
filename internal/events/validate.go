@@ -30,13 +30,10 @@ func (e ValidationError) Error() string {
 var ErrPackSchema = errors.New("events: pack-namespaced schema is out of the registered catalog (EVT-022)")
 
 // payloadValidator validates a registered schema's payload against its own field
-// definition (EVT-013). Task 1 registers stubs; the real per-schema validators
-// are filled in by the schema files (entity_state.go, automation_run.go, …).
+// definition (EVT-013). The real per-schema validators are filled in by the
+// schema files (entity_state.go, automation_run.go, content_played.go,
+// device_heartbeat.go, box_vitals.go, audit_event.go, variable_changed.go).
 type payloadValidator func(json.RawMessage) error
-
-// stubValidator is the Task-1 placeholder: it accepts any payload. Each real
-// per-schema validator replaces its entry in payloadValidators.
-func stubValidator(json.RawMessage) error { return nil }
 
 // payloadValidators dispatches a registered schema name to its payload validator
 // (EVT-013). Its key set is exactly RegisteredSchemas (EVT-020) — see
@@ -47,8 +44,8 @@ var payloadValidators = map[string]payloadValidator{
 	SchemaContentPlayed:      validateContentPlayed,
 	SchemaDeviceHeartbeat:    validateDeviceHeartbeat,
 	SchemaBoxVitals:          validateBoxVitals,
-	SchemaAuditEvent:         stubValidator,
-	SchemaVariableChanged:    stubValidator,
+	SchemaAuditEvent:         validateAuditEvent,
+	SchemaVariableChanged:    validateVariableChanged,
 }
 
 // Validate is the EVT-013 delivery gate. It first checks the envelope's required
