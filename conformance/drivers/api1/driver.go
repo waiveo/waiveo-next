@@ -21,9 +21,11 @@
 // The async half — Idempotency-Key replay (API-050-056), the Job resource
 // (API-110-117), and data-subject export/delete (API-120-124) — needs an
 // injectable-clock durable store this driver does not have; those corpus
-// cases (API-052/053/111/121), plus API-010/013 (api/1's error-shape
-// convention, already driven by its own contract), are recorded PENDING with
-// an explicit reason rather than silently skipped (§10 "no silent caps").
+// cases (API-052/053/111/121), plus API-010/013 (api/1's Problem error-shape
+// convention, which this sync-convention driver does not exercise and which
+// no other driver in the repo currently exercises either — see
+// pendingCaseIDs), are recorded PENDING with an explicit reason rather than
+// silently skipped (§10 "no silent caps").
 package api1
 
 import (
@@ -80,11 +82,18 @@ var syncConventionCaseIDs = []string{
 // pendingCaseIDs are every other case frozen under conformance/corpora/api-1:
 // the async-half cases (Idempotency-Key replay, the Job resource, data-
 // subject export/delete) this driver deliberately does not drive, plus
-// API-010/013 (api/1's error-shape convention — already covered by that
-// convention's own corpus cases, out of this sync-convention driver's scope).
+// API-010/013 (api/1's Problem error-shape convention). Unlike the async-half
+// cases, API-010/013 are NOT covered by any other driver today: no file in
+// this repo other than this package even names their case_ids or loads
+// conformance/corpora/api-1 (internal/shared/apihttp/apihttp_test.go's
+// hand-written Problem-shape tests exercise different scenarios and never
+// touch these two frozen fixtures). They stay PENDING because API-010 needs a
+// scope-node NOT_FOUND GET route and API-013 needs a multi-field
+// VALIDATION_FAILED `errors`-array aggregator — neither exists in the
+// codebase yet — not because some other driver already covers them.
 var pendingCaseIDs = map[string]string{
-	"API-010": "api/1's Problem error shape (API-010-016) is a separate convention with its own corpus coverage — out of this sync-convention driver's scope.",
-	"API-013": "api/1's Problem error shape (API-010-016) is a separate convention with its own corpus coverage — out of this sync-convention driver's scope.",
+	"API-010": "api/1's Problem error shape (API-010-016) needs a scope-node NOT_FOUND GET route that does not exist yet; no other driver in the repo exercises this fixture — deferred until that route is built.",
+	"API-013": "api/1's Problem error shape (API-010-016) needs a multi-field VALIDATION_FAILED `errors`-array aggregator that does not exist yet; no other driver in the repo exercises this fixture — deferred until that aggregator is built.",
 	"API-052": "Idempotency-Key replay (API-050-056) is the async half's concern — needs an injectable-clock durable store; deferred to the async-half follow-up plan.",
 	"API-053": "Idempotency-Key replay (API-050-056) is the async half's concern — needs an injectable-clock durable store; deferred to the async-half follow-up plan.",
 	"API-111": "the Job resource + bulk-mutating state machine (API-110-117) is the async half's concern — deferred to the async-half follow-up plan.",
@@ -413,8 +422,11 @@ type selectorInput struct {
 		Kind     string `json:"kind"`
 		ParentID string `json:"parent_id"`
 	} `json:"collection_state"`
+	Headers map[string]string `json:"headers"`
 	Request struct {
-		Query map[string]string `json:"query"`
+		Method string            `json:"method"`
+		Path   string            `json:"path"`
+		Query  map[string]string `json:"query"`
 	} `json:"request"`
 }
 
@@ -422,9 +434,11 @@ type selectorInput struct {
 // apiselector.Parse. When the selector parses (API-044): evaluate it over the
 // collection (placement modeled as an id→parent_id tree, `kind` carried as the
 // resource's sole label) and diff the selected + paginated ids against the
-// pinned {items, cursor} envelope. When it fails to parse (API-045): diff the
-// resulting *ParseError's Status/Code/Title/Detail against the pinned Problem
-// body — the offending term named verbatim.
+// pinned {items, cursor} envelope. When it fails to parse (API-045): write the
+// resulting *ParseError through the same apihttp.WriteProblemExt round-trip
+// the concurrency/external_id helpers use, and diff the genuine
+// Content-Type header + JSON body against the pinned Problem — never the
+// *ParseError's fields compared to themselves.
 func driveSelector(rep *report.Report, c corpus.Case) {
 	var in selectorInput
 	if err := decodeField(c.Input, &in); err != nil {
@@ -434,30 +448,42 @@ func driveSelector(rep *report.Report, c corpus.Case) {
 
 	sel, perr := apiselector.Parse(in.Request.Query["selector"])
 	if perr != nil {
-		driveSelectorParseError(rep, c, perr)
+		driveSelectorParseError(rep, c, in, perr)
 		return
 	}
 	driveSelectorMatch(rep, c, in, sel)
 }
 
-func driveSelectorParseError(rep *report.Report, c corpus.Case, perr *apiselector.ParseError) {
+// driveSelectorParseError drives a malformed-selector corpus case (API-045).
+// apiselector.ParseError never reaches an HTTP response on its own — it has
+// no Content-Type or Type field of its own — so this writes one via the
+// LIVE apihttp.WriteProblemExt (the same helper a real handler would call)
+// against a real httptest.ResponseRecorder, then diffs the observed status,
+// Content-Type header, and JSON body against the case's pinned expectation
+// using the same bodyDiffs helper driveConcurrency/driveExternalID use. This
+// is what lets a wrong Content-Type header or a wrong `type` Problem member
+// actually fail this case, rather than only checking the corpus fixture's
+// own internal consistency.
+func driveSelectorParseError(rep *report.Report, c corpus.Case, in selectorInput, perr *apiselector.ParseError) {
+	method := in.Request.Method
+	if method == "" {
+		method = http.MethodGet
+	}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(method, in.Request.Path, nil)
+	apihttp.WriteProblemExt(w, r, in.Headers["Trace-Id"], perr.Status, perr.Code, perr.Title, perr.Detail, nil)
+	gotStatus := w.Code
+	gotCT := w.Header().Get("Content-Type")
+	gotBody := decodeJSONBody(w)
+
 	var diffs []report.Diff
-	if want, ok := expectInt(c, "status"); ok && perr.Status != want {
-		diffs = append(diffs, report.Diff{Field: "status", Expected: want, Actual: perr.Status})
+	if want, ok := expectInt(c, "status"); ok && gotStatus != want {
+		diffs = append(diffs, report.Diff{Field: "status", Expected: want, Actual: gotStatus})
 	}
-	body, _ := c.Expected["body"].(map[string]any)
-	if want, ok := body["code"].(string); ok && perr.Code != want {
-		diffs = append(diffs, report.Diff{Field: "body.code", Expected: want, Actual: perr.Code})
+	if want, ok := expectString(c, "content_type"); ok && want != "" && gotCT != want {
+		diffs = append(diffs, report.Diff{Field: "content_type", Expected: want, Actual: gotCT})
 	}
-	if want, ok := body["title"].(string); ok && perr.Title != want {
-		diffs = append(diffs, report.Diff{Field: "body.title", Expected: want, Actual: perr.Title})
-	}
-	if want, ok := body["detail"].(string); ok && perr.Detail != want {
-		diffs = append(diffs, report.Diff{Field: "body.detail", Expected: want, Actual: perr.Detail})
-	}
-	if want, ok := body["type"].(string); ok && want != "about:blank" {
-		diffs = append(diffs, report.Diff{Field: "body.type", Expected: want, Actual: "about:blank"})
-	}
+	diffs = append(diffs, bodyDiffs(c, gotBody)...)
 
 	if len(diffs) > 0 {
 		rep.Fail(c.CaseID, contract, "selector parse-error Problem diverged from the corpus expectation", diffs...)
