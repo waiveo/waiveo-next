@@ -106,3 +106,20 @@ func TestValidateSurfaceEntryBundled(t *testing.T) {
 		t.Fatalf("expected a bundled surface entry to validate clean, got %+v", errs)
 	}
 }
+
+// TestValidateDuplicateSurfaceName: two surfaces sharing a name violate the
+// MAN-063 pack-unique-identifier requirement for `name`, even when each
+// surface's entry independently resolves against the host's bundled file set.
+func TestValidateDuplicateSurfaceName(t *testing.T) {
+	m := loadManifest(t, man020File)
+	m.UI.Surfaces = []Surface{
+		{Name: "main", Entry: "dist/a.js"},
+		{Name: "main", Entry: "dist/b.js"},
+	}
+	host := testHost()
+	host.BundleFiles = map[string]bool{"dist/a.js": true, "dist/b.js": true}
+	errs := Validate(m, host)
+	if !hasField(errs, "ui.surfaces[1].name") {
+		t.Fatalf("expected a duplicate-name error on ui.surfaces[1].name, got %+v", errs)
+	}
+}

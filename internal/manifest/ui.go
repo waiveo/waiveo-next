@@ -9,8 +9,8 @@ var validSizeHints = map[string]bool{"small": true, "medium": true, "large": tru
 // a pageType that is itself a compat.renderer member, and a msg-ref titleMsg;
 // a fragment: card page carries a recognized sizeHint (and a page without
 // fragment: card carries no sizeHint); ui.slots entries are named; and every
-// ui.surfaces entry's entry names a file present in the host's bundled file
-// set.
+// ui.surfaces entry has a pack-unique name and an entry naming a file present
+// in the host's bundled file set.
 func validateUI(m PackManifest, host HostRegistries) []Error {
 	var errs []Error
 
@@ -72,14 +72,20 @@ func validateUI(m PackManifest, host HostRegistries) []Error {
 		}
 	}
 
-	// MAN-063: a surface MUST be named, and its entry MUST name a file present
-	// in the host's bundled file set.
+	// MAN-063: a surface's name MUST be a pack-unique identifier, and its entry
+	// MUST name a file present in the host's bundled file set.
+	seenSurfaceNames := map[string]bool{}
 	for i, s := range m.UI.Surfaces {
 		at := "ui.surfaces[" + strconv.Itoa(i) + "]"
 		if s.Name == "" {
 			errs = append(errs, Error{"MANIFEST_SCHEMA_INVALID", at + ".name",
 				"ui.surfaces[].name is required (MAN-063)"})
+		} else if seenSurfaceNames[s.Name] {
+			errs = append(errs, Error{"MANIFEST_SCHEMA_INVALID", at + ".name",
+				`surface name "` + s.Name + `" is declared more than once (MAN-063)`})
 		}
+		seenSurfaceNames[s.Name] = true
+
 		if !host.BundleFiles[s.Entry] {
 			errs = append(errs, Error{"MANIFEST_SCHEMA_INVALID", at + ".entry",
 				`ui.surfaces[].entry "` + s.Entry + `" does not name a file in the pack's bundle (MAN-063)`})
