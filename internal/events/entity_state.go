@@ -173,3 +173,109 @@ func isJSONObject(raw json.RawMessage) bool {
 	var obj map[string]json.RawMessage
 	return json.Unmarshal(raw, &obj) == nil && obj != nil
 }
+
+// requireInt64Field checks that field is present in m and is a JSON integer
+// (a fractional number fails, and never null), returning its value as an
+// int64. content.played's t_start/t_end are epoch-ms Timestamps that can
+// exceed a 32-bit range, so this is distinct from requireIntField. The
+// explicit null pre-check matters because encoding/json unmarshals a JSON
+// null into an existing value as a no-op that returns a nil error, which
+// would otherwise let a null slip through as a zero-value 0 (EVT-013).
+func requireInt64Field(m map[string]json.RawMessage, field string) (int64, error) {
+	raw, ok := m[field]
+	if !ok {
+		return 0, ValidationError{Field: field, Detail: "required"}
+	}
+	var n int64
+	if string(raw) == "null" || json.Unmarshal(raw, &n) != nil {
+		return 0, ValidationError{Field: field, Detail: "must be an integer"}
+	}
+	return n, nil
+}
+
+// requireNumberField checks that field is present in m and is a JSON number
+// (never null), returning its value as a float64. box.vitals.cpu_temp is a
+// fractional Celsius reading, so (unlike requireIntField/requireInt64Field) a
+// fractional value is accepted here. The explicit null pre-check matters
+// because encoding/json unmarshals a JSON null into an existing value as a
+// no-op that returns a nil error, which would otherwise let a null slip
+// through as a zero-value 0 (EVT-013).
+func requireNumberField(m map[string]json.RawMessage, field string) (float64, error) {
+	raw, ok := m[field]
+	if !ok {
+		return 0, ValidationError{Field: field, Detail: "required"}
+	}
+	var n float64
+	if string(raw) == "null" || json.Unmarshal(raw, &n) != nil {
+		return 0, ValidationError{Field: field, Detail: "must be a number"}
+	}
+	return n, nil
+}
+
+// requireStringArrayField checks that field is present in m and is a JSON
+// array of strings — an empty array is valid and distinct from absence
+// (box.vitals.throttled_flags, EVT-071: present-even-empty, never absent).
+func requireStringArrayField(m map[string]json.RawMessage, field string) ([]string, error) {
+	raw, ok := m[field]
+	if !ok {
+		return nil, ValidationError{Field: field, Detail: "required"}
+	}
+	var arr []string
+	if string(raw) == "null" || json.Unmarshal(raw, &arr) != nil {
+		return nil, ValidationError{Field: field, Detail: "must be an array of strings"}
+	}
+	return arr, nil
+}
+
+// requireNullableStringField checks that field is present in m (it MUST be —
+// only its value may be absent-in-spirit) and is either a JSON string or a
+// JSON null (device.heartbeat.now_playing_content_id: null when nothing is
+// currently playing). Outright field absence is still an EVT-013 rejection,
+// distinct from an explicit null.
+func requireNullableStringField(m map[string]json.RawMessage, field string) error {
+	raw, ok := m[field]
+	if !ok {
+		return ValidationError{Field: field, Detail: "required (send null when there is no value)"}
+	}
+	if string(raw) == "null" {
+		return nil
+	}
+	var s string
+	if json.Unmarshal(raw, &s) != nil {
+		return ValidationError{Field: field, Detail: "must be a string or null"}
+	}
+	return nil
+}
+
+// optionalObjectField checks that, when field is present in m, it is a JSON
+// object — absence is fine (the field itself is optional: content.played's
+// power_evidence, box.vitals's sd_health).
+func optionalObjectField(m map[string]json.RawMessage, field string) error {
+	raw, present := m[field]
+	if !present {
+		return nil
+	}
+	if !isJSONObject(raw) {
+		return ValidationError{Field: field, Detail: "must be an object when present"}
+	}
+	return nil
+}
+
+// requireEnumField checks that field is present in m, is a JSON string, and is
+// a member of valid — returning the value. A value outside the closed enum is
+// an EVT-013 rejection named for the field (e.g. content.played's cause/
+// completion, EVT-050).
+func requireEnumField(m map[string]json.RawMessage, field string, valid map[string]struct{}, allowed string) (string, error) {
+	raw, ok := m[field]
+	if !ok {
+		return "", ValidationError{Field: field, Detail: "required"}
+	}
+	var s string
+	if json.Unmarshal(raw, &s) != nil {
+		return "", ValidationError{Field: field, Detail: "must be a string"}
+	}
+	if _, ok := valid[s]; !ok {
+		return "", ValidationError{Field: field, Detail: "must be one of " + allowed}
+	}
+	return s, nil
+}

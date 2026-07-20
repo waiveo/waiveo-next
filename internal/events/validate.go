@@ -44,9 +44,9 @@ func stubValidator(json.RawMessage) error { return nil }
 var payloadValidators = map[string]payloadValidator{
 	SchemaEntityStateChanged: validateEntityStateChanged,
 	SchemaAutomationRun:      validateAutomationRun,
-	SchemaContentPlayed:      stubValidator,
-	SchemaDeviceHeartbeat:    stubValidator,
-	SchemaBoxVitals:          stubValidator,
+	SchemaContentPlayed:      validateContentPlayed,
+	SchemaDeviceHeartbeat:    validateDeviceHeartbeat,
+	SchemaBoxVitals:          validateBoxVitals,
 	SchemaAuditEvent:         stubValidator,
 	SchemaVariableChanged:    stubValidator,
 }
