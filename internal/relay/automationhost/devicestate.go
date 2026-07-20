@@ -56,6 +56,8 @@ func (s *SyntheticSource) Next() (state.Observation, bool) {
 // from an observation, so AutomationRunEntry's EVT-041 enum is never fed an
 // out-of-band value here.
 func (h *Host) Observe(obs state.Observation) ([]engine.RunDisposition, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	disps := h.engine.Observe(obs)
 	atMs := h.clk.WallMillis()
 	for _, d := range disps {

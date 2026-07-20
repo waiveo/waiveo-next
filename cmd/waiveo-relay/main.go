@@ -212,12 +212,16 @@ func main() {
 	// this relay declared at hello above), owns the runtime clock a clock.hint
 	// adjusts, and drives the engine's immediate re-evaluation of time-based rules
 	// on an untrusted->trusted transition (REL-134 -> RUL-371) via
-	// host.Engine().SetClockTrust. A hint NEVER trips that transition (REL-132) —
+	// host.SetClockTrust. A hint NEVER trips that transition (REL-132) —
 	// only a VERIFIED time (a desired-state-key-signed timestamp, or authenticated
 	// NTP) applied via the controller does. The concrete verified-time source is a
-	// deliberate later concern; the controller stands wired for it.
+	// deliberate later concern; the controller stands wired for it. This callback
+	// runs on a per-request goroutine (the clock.hint HTTP handler), so it MUST
+	// reach the engine only through host.SetClockTrust — which serializes on the
+	// host's lock against the background re-pull loop's ApplyEdgeRules — never a
+	// raw engine pointer.
 	clockCtl := clocktrust.NewController(store, clocktrust.NewRuntimeClock(), func(state string) error {
-		_, err := host.Engine().SetClockTrust(state)
+		_, err := host.SetClockTrust(state)
 		return err
 	})
 

@@ -27,6 +27,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/deviceclass"
@@ -67,10 +68,22 @@ var _ clock.Clock = sysClock{}
 
 // Host is the running relay's edge-automation stack: the loaded engine, the
 // durable telemetry buffer its firings emit automation.run into, and the clock
-// the engine reads time through. It is not safe for concurrent use — Observe,
-// Run, and ApplyEdgeRules advance the single engine loop serially, exactly as a
-// relay's one evaluation loop drives it.
+// the engine reads time through. engine.Engine has no internal locking and must
+// be advanced serially — as a relay's one evaluation loop drives it — so every
+// Host method that touches the engine (Observe, Run, ApplyEdgeRules, SetLocation,
+// SetClockTrust) serializes on mu. That serialization is load-bearing: the binary
+// now drives ApplyEdgeRules from the background desired-state re-pull loop while
+// the connection-layer clock.hint HTTP handler drives SetClockTrust from a
+// separate per-request goroutine (REL-133), and the two must never touch the
+// engine concurrently.
 type Host struct {
+	// mu serializes every engine-advancing method against each other, standing in
+	// for the relay's single evaluation loop. It exists because engine.Engine is
+	// not itself safe for concurrent use and the running binary calls into the
+	// host from more than one goroutine (the re-pull loop and the clock.hint
+	// handler).
+	mu sync.Mutex
+
 	engine *engine.Engine
 	buf    *telemetry.Buffer
 	clk    clock.Clock
@@ -153,6 +166,9 @@ func New(store *identity.Store, dc deviceclass.Registry, controller deviceplane.
 // run. A lower generation is likewise ignored here (desiredstate.Pull already
 // rejects a regressed generation, REL-052).
 func (h *Host) ApplyEdgeRules(edgeRules []json.RawMessage, generation int) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
 	if h.hasApplied && generation <= h.appliedGen {
 		return nil // idempotent re-apply of an already-applied generation (REL-070)
 	}
@@ -213,10 +229,23 @@ func (h *Host) EdgeRuleCount() int { return h.loadedEdge }
 // the loader's error for an unknown IANA zone name, leaving the prior location
 // unchanged.
 func (h *Host) SetLocation(tzName string, lat, lon float64) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	return h.engine.SetLocation(tzName, lat, lon)
 }
 
-// Engine exposes the loaded engine so a device-state source (Observe/Run) can
-// feed it observations. It is the seam the synthetic source drives in tests/demo
-// and the real polling/ECP source will feed on hardware.
-func (h *Host) Engine() *engine.Engine { return h.engine }
+// SetClockTrust sets the engine's clock trust state (relay/1 REL-132/134 ->
+// rules/1 RUL-370/371) under mu, so the connection-layer clock.hint handler —
+// which the binary drives from a per-request goroutine via the clocktrust.Controller
+// callback — can never advance the engine concurrently with the background re-pull
+// loop's ApplyEdgeRules. It returns the dispositions of any firings the
+// untrusted->trusted replay produces (RUL-371) and the loader's error for an
+// unknown trust state. This is the ONLY seam onto the engine's clock trust; the
+// host deliberately hands out no raw *engine.Engine pointer that would let a caller
+// bypass mu (REL-132: a bare hint never trips the transition — only a verified
+// time applied through the controller does).
+func (h *Host) SetClockTrust(state string) ([]engine.RunDisposition, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.engine.SetClockTrust(state)
+}
