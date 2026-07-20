@@ -20,6 +20,11 @@ dev-up: dev-down
 	@# against a prior feeder process could no longer bind. Clearing it keeps the
 	@# self-contained dev check deterministic across repeated runs.
 	@rm -rf $(RUNDIR)/relay-identity
+	@# Fresh app store each run too: the authoring-loop demo (scripts/authoring-demo.sh)
+	@# edits the seeded schedule, so starting from the pristine seed keeps the live
+	@# demonstration deterministic across repeated runs (the feeder re-seeds an empty
+	@# store at boot). The WAL/SHM sidecars are cleared alongside the db file.
+	@rm -f $(RUNDIR)/feeder-store.db $(RUNDIR)/feeder-store.db-wal $(RUNDIR)/feeder-store.db-shm
 	@go build -o $(FEEDER_BIN) ./cmd/waiveo-feeder
 	@go build -o $(RELAY_BIN) ./cmd/waiveo-relay
 	@{ $(FEEDER_BIN) >$(RUNDIR)/feeder.log 2>&1 & echo $$! > $(RUNDIR)/feeder.pid; }

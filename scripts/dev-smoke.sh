@@ -37,3 +37,9 @@ else
   echo "SCHEDULE RESOLVER FAIL: relay did not log '$SCHEDULE_LINE' in $RELAY_LOG" >&2
   exit 1
 fi
+
+# 4. Authoring loop: author a schedule edit over the api/1 HTTP surface and assert
+# the relay's resolved screen program changes within the re-pull interval — the
+# whole loop (api -> store -> desired-state -> relay re-pull -> re-resolve) live
+# over real HTTP. The probe prints AUTHORING LOOP OK, or exits non-zero.
+RELAY_LOG="$RELAY_LOG" bash scripts/authoring-demo.sh
