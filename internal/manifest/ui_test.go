@@ -83,6 +83,28 @@ func TestValidateFragmentCardValidSizeHint(t *testing.T) {
 	}
 }
 
+// TestValidateSlotMissingName: a ui.slots entry with no name violates the
+// MAN-062 named-slot-point requirement.
+func TestValidateSlotMissingName(t *testing.T) {
+	m := loadManifest(t, man020File)
+	m.UI.Slots = []Slot{{Accepts: []string{"card"}}}
+	errs := Validate(m, testHost())
+	if !hasField(errs, "ui.slots[0].name") {
+		t.Fatalf("expected a name-required error on ui.slots[0].name, got %+v", errs)
+	}
+}
+
+// TestValidateSlotNamed: a ui.slots entry carrying a name validates clean
+// (MAN-062).
+func TestValidateSlotNamed(t *testing.T) {
+	m := loadManifest(t, man020File)
+	m.UI.Slots = []Slot{{Name: "sidebar", Accepts: []string{"card"}}}
+	errs := Validate(m, testHost())
+	if hasField(errs, "ui.slots[0].name") {
+		t.Fatalf("expected a named slot to validate clean, got %+v", errs)
+	}
+}
+
 // TestValidateSurfaceEntryNotBundled: a ui.surfaces entry whose entry names no
 // file in the host's bundled file set is refused (MAN-063).
 func TestValidateSurfaceEntryNotBundled(t *testing.T) {
