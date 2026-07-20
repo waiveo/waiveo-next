@@ -238,11 +238,13 @@ type HostRegistries struct {
 
 // Error is a manifest/1 validation failure: one of the contract's Error
 // taxonomy codes, a dotted path to the offending field, and a human message. It
-// doubles as a Go error.
+// doubles as a Go error. The field-location serializes under the wire key
+// "field" — the key the contract's ValidationResult shape and every corpus
+// fixture use (matching the sibling datamodel/rules validators).
 type Error struct {
 	Code    string `json:"code"`
-	Path    string `json:"path"`
+	Field   string `json:"field"`
 	Message string `json:"message"`
 }
 
-func (e Error) Error() string { return e.Code + " at " + e.Path + ": " + e.Message }
+func (e Error) Error() string { return e.Code + " at " + e.Field + ": " + e.Message }
