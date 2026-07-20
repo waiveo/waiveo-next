@@ -501,3 +501,72 @@ func TestStatePullReturnsVerifiableSignedSnapshot(t *testing.T) {
 		t.Errorf("pulled grant = %#v, want the minted grant %#v", pulled.Sections.PairingGrants[0], g)
 	}
 }
+
+// TestStatePullServesProviderCurrentGeneration asserts an installed snapshot
+// provider supersedes the static snapshot: the pull endpoint serves whatever the
+// provider currently returns, so a store-derived rebuild at a higher generation
+// is picked up on the very next pull (the authoring loop's serving half). A nil
+// provider reverts to the static snapshot.
+func TestStatePullServesProviderCurrentGeneration(t *testing.T) {
+	srv, ts, _, _ := newTestServer(t)
+	client := ts.Client()
+
+	pull := func() wire.StateSnapshotBody {
+		t.Helper()
+		resp, err := client.Get(ts.URL + "/state/pull")
+		if err != nil {
+			t.Fatalf("GET /state/pull: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET /state/pull status = %d, want 200", resp.StatusCode)
+		}
+		var body wire.StateSnapshotBody
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatalf("decode state.snapshot body: %v", err)
+		}
+		return body
+	}
+
+	// Before a provider: the static snapshot (generation 1).
+	if got := pull().Generation; got != 1 {
+		t.Fatalf("static pull generation = %d, want 1", got)
+	}
+
+	// A provider whose current generation the test advances between pulls.
+	current := wire.StateSnapshotBody{Generation: 42}
+	srv.SetSnapshotProvider(func() (wire.StateSnapshotBody, error) { return current, nil })
+	if got := pull().Generation; got != 42 {
+		t.Fatalf("provider pull generation = %d, want 42", got)
+	}
+	current = wire.StateSnapshotBody{Generation: 43}
+	if got := pull().Generation; got != 43 {
+		t.Fatalf("post-advance pull generation = %d, want 43 (each pull serves the current generation)", got)
+	}
+
+	// A provider error surfaces as a 500 (the relay treats it as a non-fatal
+	// pull failure, REL-055) — never a corrupt 200.
+	srv.SetSnapshotProvider(func() (wire.StateSnapshotBody, error) {
+		return wire.StateSnapshotBody{}, errProviderUnavailable
+	})
+	resp, err := client.Get(ts.URL + "/state/pull")
+	if err != nil {
+		t.Fatalf("GET /state/pull (provider error): %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("provider-error pull status = %d, want 500", resp.StatusCode)
+	}
+
+	// Clearing the provider reverts to the static snapshot.
+	srv.SetSnapshotProvider(nil)
+	if got := pull().Generation; got != 1 {
+		t.Fatalf("reverted pull generation = %d, want the static 1", got)
+	}
+}
+
+var errProviderUnavailable = errorString("desired state unavailable")
+
+type errorString string
+
+func (e errorString) Error() string { return string(e) }

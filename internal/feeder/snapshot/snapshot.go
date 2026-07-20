@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/shared/signhash"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
@@ -190,6 +191,123 @@ func Build(img []byte, contentBaseURL string, id *signing.Identity, grants []wir
 		Signature:  signature,
 		Sections:   sections,
 	}, nil
+}
+
+// BuildFromStore builds and signs a relay/1 desired-state snapshot from the app
+// store's authored rows (rows, a consistent read at the store's generation, from
+// store.DesiredState). It is the store-derived counterpart to Build: the
+// `schedule` section (REL-065) carries the store's scope nodes + scheduling-core
+// rows (no longer the hardcoded buildDemoScheduleSection), and
+// `revocation_and_site.site_effective` (REL-066) is the site node's own
+// tz/lat/long (rows.SiteEffective, derived in the store from the SITE scope node
+// per data-model DAT-033 — never the feeder's OS locale). Every other section
+// keeps the exact baseline shape Build produces: one image screen-program showing
+// img (asset_ref = img's content id, url under contentBaseURL), the Wave-1 demo
+// edge rule, an empty device_inventory, grants in pairing_grants, and the
+// reserved workflow_generation.
+//
+// The snapshot's `generation` is the store's own monotonic counter
+// (rows.Generation) rather than a constant, so an api write that advances the
+// store generation yields a higher-generation snapshot on the next build — the
+// seam that carries an authored edit to the relay. The REL-053 byte-identical-
+// marshaling → hash invariant and the REL-075 signature-over-{generation, hash}
+// are preserved: this reuses the exact same wire helpers Build does
+// (hashSections / signGenerationHash), so signing here and verifying on the relay
+// (internal/relay/desiredstate) cannot drift.
+func BuildFromStore(rows store.DesiredStateResult, img []byte, contentBaseURL string, id *signing.Identity, grants []wire.PairingGrant) (SignedSnapshot, error) {
+	if id == nil {
+		return SignedSnapshot{}, fmt.Errorf("snapshot: BuildFromStore: id must not be nil")
+	}
+
+	if grants == nil {
+		grants = []wire.PairingGrant{}
+	}
+
+	assetRef := signhash.ContentID(img)
+	hexDigest := strings.TrimPrefix(assetRef, "sha256:")
+
+	scheduleSection, err := scheduleSectionFromStore(rows)
+	if err != nil {
+		return SignedSnapshot{}, fmt.Errorf("snapshot: BuildFromStore: schedule section: %w", err)
+	}
+
+	sections := wire.Sections{
+		ScreenPrograms: []wire.ScreenProgram{
+			{
+				ScreenID:        firstPhotonScreenID,
+				ProgramRevision: firstPhotonProgramRevision,
+				Priority:        "scheduled",
+				Display:         "content",
+				Content: []wire.ContentRef{
+					{
+						AssetRef:  assetRef,
+						URL:       contentBaseURL + "/content/" + hexDigest,
+						ExpiresAt: firstPhotonExpiresAt,
+					},
+				},
+			},
+		},
+		EdgeRules: wire.EdgeRules{
+			RulesMinorVersion: rulesMinorVersion,
+			Rules:             []json.RawMessage{demoEdgeRuleJSON},
+		},
+		DeviceInventory: wire.DeviceInventory{
+			Devices:           []json.RawMessage{},
+			PackMatchPatterns: []json.RawMessage{},
+		},
+		Schedule: scheduleSection,
+		RevocationAndSite: wire.RevocationAndSite{
+			Revoked:       []string{},
+			SiteEffective: rows.SiteEffective,
+		},
+		PairingGrants:      grants,
+		WorkflowGeneration: nil, // RESERVED, REL-068
+	}
+
+	hash, err := hashSections(sections)
+	if err != nil {
+		return SignedSnapshot{}, err
+	}
+
+	generation := rows.Generation
+
+	signature, err := signGenerationHash(generation, hash, id)
+	if err != nil {
+		return SignedSnapshot{}, err
+	}
+
+	return SignedSnapshot{
+		Generation: generation,
+		Hash:       hash,
+		Signature:  signature,
+		Sections:   sections,
+	}, nil
+}
+
+// scheduleSectionFromStore assembles the REL-065 `schedule` section from a store
+// desired-state read: the scope nodes marshaled back to raw JSON (the relay
+// re-parses them through data-model/1, so a typed round-trip is fine) and the six
+// scheduling-core row-kind arrays carried verbatim as the store holds them. The
+// result is Normalized so every one of the seven arrays marshals as `[]` rather
+// than `null` (REL-060), exactly as buildDemoScheduleSection does.
+func scheduleSectionFromStore(rows store.DesiredStateResult) (wire.ScheduleSection, error) {
+	scopeNodesRaw := make([]json.RawMessage, 0, len(rows.ScopeNodes))
+	for _, n := range rows.ScopeNodes {
+		b, err := json.Marshal(n)
+		if err != nil {
+			return wire.ScheduleSection{}, fmt.Errorf("marshal scope node %s: %w", n.ID, err)
+		}
+		scopeNodesRaw = append(scopeNodesRaw, b)
+	}
+	return wire.ScheduleSection{
+		ScopeNodes:      scopeNodesRaw,
+		Playlists:       rows.Rows.Playlists,
+		Schedules:       rows.Rows.Schedules,
+		ValidityWindows: rows.Rows.ValidityWindows,
+		Dayparts:        rows.Rows.Dayparts,
+		Fallbacks:       rows.Rows.Fallbacks,
+		PresetBatches:   rows.Rows.PresetBatches,
+	}.Normalized(), nil
 }
 
 // hashSections computes REL-053's `hash` by delegating to

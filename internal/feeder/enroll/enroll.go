@@ -61,6 +61,14 @@ type Server struct {
 	identity *signing.Identity
 	snapshot wire.StateSnapshotBody
 
+	// snapshotProvider, when set (SetSnapshotProvider), supersedes the static
+	// snapshot: handleStatePull calls it to obtain the CURRENT-generation desired
+	// state on each pull, so the feeder can serve a store-derived snapshot rebuilt
+	// as the app store's generation advances (the authoring loop) rather than one
+	// frozen snapshot. nil (the default) preserves the original behavior — serve
+	// the snapshot NewServer was given, verbatim. Read/written under mu.
+	snapshotProvider func() (wire.StateSnapshotBody, error)
+
 	caCert *x509.Certificate
 	caKey  ed25519.PrivateKey
 
@@ -344,14 +352,49 @@ func (s *Server) IsRevoked(relayID, serial string) bool {
 	return false
 }
 
-// handleStatePull implements relay/1's desired-state pull (REL-051),
-// serving this server's one signed generation verbatim.
+// SetSnapshotProvider installs a desired-state source that supersedes the static
+// snapshot: every subsequent desired-state pull is answered by calling provider,
+// so the feeder can serve a store-derived snapshot at the store's current
+// generation (rebuilt as the generation advances). Passing nil reverts to serving
+// the static snapshot NewServer was given. Intended to be called once at startup
+// before the listener accepts pulls; guarded by mu so it is nonetheless safe
+// against a concurrent pull.
+func (s *Server) SetSnapshotProvider(provider func() (wire.StateSnapshotBody, error)) {
+	s.mu.Lock()
+	s.snapshotProvider = provider
+	s.mu.Unlock()
+}
+
+// currentSnapshot returns the desired state to serve: the provider's
+// current-generation snapshot when one is installed, else the static snapshot.
+func (s *Server) currentSnapshot() (wire.StateSnapshotBody, error) {
+	s.mu.Lock()
+	provider := s.snapshotProvider
+	static := s.snapshot
+	s.mu.Unlock()
+	if provider != nil {
+		return provider()
+	}
+	return static, nil
+}
+
+// handleStatePull implements relay/1's desired-state pull (REL-051), serving the
+// feeder's current signed generation — the provider-derived one when a snapshot
+// provider is installed (the store-driven authoring loop), else the static
+// snapshot verbatim. A provider error is a 500: the relay treats a failed pull as
+// non-fatal and keeps serving its last-applied generation (REL-055), so a
+// transient derive failure never corrupts the served program.
 func (s *Server) handleStatePull(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.snapshot)
+	snap, err := s.currentSnapshot()
+	if err != nil {
+		http.Error(w, "desired state unavailable", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, snap)
 }
 
 // issueRelayCert issues a per-relay leaf certificate under s's CA, over

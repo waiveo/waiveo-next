@@ -60,6 +60,32 @@ func (s *Store) DesiredStateRows(ctx context.Context) (scopeNodes []datamodel.Sc
 	return scopeNodes, rows, siteEffective, generation, nil
 }
 
+// DesiredStateResult bundles a single consistent DesiredStateRows read into one
+// value — the input the feeder's snapshot.BuildFromStore consumes to derive a
+// signed desired-state generation. Its fields are exactly the DesiredStateRows
+// tuple (the scope nodes, the six scheduling-core row kinds, the site's effective
+// tz/lat/long from the SITE node per DAT-033, and the store generation the read
+// was taken at), so BuildFromStore never needs box-local state.
+type DesiredStateResult struct {
+	ScopeNodes    []datamodel.ScopeNode
+	Rows          datamodel.RawRows
+	SiteEffective wire.SiteEffective
+	Generation    int64
+}
+
+// DesiredState is DesiredStateRows returned as one DesiredStateResult value — the
+// single-argument form snapshot.BuildFromStore takes. Like DesiredStateRows it
+// reads scope nodes, scheduling rows, the site effective placement, and the
+// generation under one read lock, so the returned result is a consistent snapshot
+// at that generation.
+func (s *Store) DesiredState(ctx context.Context) (DesiredStateResult, error) {
+	nodes, rows, se, gen, err := s.DesiredStateRows(ctx)
+	if err != nil {
+		return DesiredStateResult{}, err
+	}
+	return DesiredStateResult{ScopeNodes: nodes, Rows: rows, SiteEffective: se, Generation: gen}, nil
+}
+
 // deriveSiteEffective reads the site node's own tz/lat/long (DAT-033). The first
 // site node in id order is used; a store with no site node yields the zero value.
 func deriveSiteEffective(nodes []datamodel.ScopeNode) wire.SiteEffective {

@@ -14,6 +14,20 @@ func TestLoadConfigDefaultsAreLoopback(t *testing.T) {
 	}
 }
 
+func TestLoadConfigStoreDefaultAndOverride(t *testing.T) {
+	// Unset -> the make-dev-local default under .dev/.
+	def := loadConfig(func(string) string { return "" })
+	if def.storePath != ".dev/feeder-store.db" {
+		t.Errorf("default storePath = %q, want .dev/feeder-store.db", def.storePath)
+	}
+	// Explicit override wins (the on-box deployment points it at its data volume).
+	env := map[string]string{"WAIVEO_FEEDER_STORE": "/var/lib/waiveo/feeder.db"}
+	got := loadConfig(func(k string) string { return env[k] })
+	if got.storePath != "/var/lib/waiveo/feeder.db" {
+		t.Errorf("storePath = %q, want the explicit override", got.storePath)
+	}
+}
+
 func TestLoadConfigContentURLDefaultsToListen(t *testing.T) {
 	// Overriding only the listen address carries into the content base URL, so
 	// a screen's direct fetch targets the same host the feeder binds — unless

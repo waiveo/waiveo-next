@@ -9,6 +9,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
@@ -18,7 +19,11 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync"
+	"time"
 
+	"github.com/maaxton/waiveo-next/internal/app/api"
+	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/feeder/enroll"
 	"github.com/maaxton/waiveo-next/internal/feeder/grant"
 	"github.com/maaxton/waiveo-next/internal/feeder/origin"
@@ -26,6 +31,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
 	"github.com/maaxton/waiveo-next/internal/relay/hello"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
+	"github.com/maaxton/waiveo-next/internal/shared/signhash"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
@@ -56,7 +62,13 @@ var firstPhotonRecognizedFeatures = []string{"telemetry.latest_only_v1"}
 type config struct {
 	listen         string // TCP bind address for the HTTPS listener
 	contentBaseURL string // scheme+host the direct-fetch content URL is built from
+	storePath      string // SQLite file the app store persists scope-nodes + scheduling rows to
 }
+
+// defaultStorePath is the make-dev-local SQLite file the feeder's app store lives
+// in (git-ignored under .dev/, alongside the signing keys). store.Open creates
+// the parent dir if absent, so no separate mkdir is needed.
+const defaultStorePath = ".dev/feeder-store.db"
 
 // loadConfig reads the feeder config from env (via `env`, os.Getenv in main),
 // falling back to the loopback defaults. contentBaseURL defaults to the listen
@@ -66,6 +78,7 @@ func loadConfig(env func(string) string) config {
 	return config{
 		listen:         listen,
 		contentBaseURL: envOr(env, "WAIVEO_FEEDER_CONTENT_URL", "https://"+listen),
+		storePath:      envOr(env, "WAIVEO_FEEDER_STORE", defaultStorePath),
 	}
 }
 
@@ -92,15 +105,46 @@ func main() {
 	contentBaseURL := cfg.contentBaseURL
 	g := grant.Mint()
 
-	snap, err := snapshot.Build(img, contentBaseURL, id, []wire.PairingGrant{g})
+	// The app-side store (scope-nodes + scheduling-core rows) the api authors into
+	// and the desired-state is derived from. Seeded with the make-dev demo only
+	// when empty, so a first run resolves a program while a persisted store keeps
+	// whatever was authored.
+	ctx := context.Background()
+	st, err := store.Open(cfg.storePath)
 	if err != nil {
-		log.Fatalf("waiveo-feeder: build snapshot: %v", err)
+		log.Fatalf("waiveo-feeder: open store: %v", err)
+	}
+	defer st.Close()
+
+	assetRef := signhash.ContentID(img)
+	if gen, err := st.Generation(ctx); err != nil {
+		log.Fatalf("waiveo-feeder: read store generation: %v", err)
+	} else if gen == 0 {
+		if err := st.SeedDemo(ctx, assetRef); err != nil {
+			log.Fatalf("waiveo-feeder: seed demo: %v", err)
+		}
+		log.Printf("waiveo-feeder seeded make-dev demo into %s", cfg.storePath)
 	}
 
-	enrollSrv, err := enroll.NewServer(id, snap)
+	// The desired-state source: rebuilds the signed snapshot from the store,
+	// cached by generation and invalidated when an api write advances it — so each
+	// pull serves the current generation (the authoring loop's serving half).
+	src := &desiredStateSource{
+		store: st, img: img, contentBaseURL: contentBaseURL, id: id,
+		grants: []wire.PairingGrant{g},
+	}
+	initialSnap, err := src.current()
+	if err != nil {
+		log.Fatalf("waiveo-feeder: build initial desired state: %v", err)
+	}
+
+	enrollSrv, err := enroll.NewServer(id, initialSnap)
 	if err != nil {
 		log.Fatalf("waiveo-feeder: enrollment server: %v", err)
 	}
+	// Serve the store-derived, generation-tracked desired state from the pull
+	// endpoint (superseding the static initialSnap).
+	enrollSrv.SetSnapshotProvider(src.current)
 
 	// The connection handshake's app-peer server (relay/1 REL-030–039): it
 	// issues the challenge nonce and answers a relay's hello, verifying the
@@ -116,9 +160,20 @@ func main() {
 		nil,
 	)
 
+	// The api/1 authoring surface (scope-nodes + scheduling-core CRUD), mounted
+	// under /api/v1 on the same TLS listener. Auth is DEFERRED for this dev-lab
+	// POC (unauthenticated — the api/1 conventions treat the principal as a given;
+	// the idempotency principal is a fixed POC ULID inside the api package),
+	// documented, not silent. The clock is injected so no wall-clock read lives in
+	// the api/idempotency layers.
+	nowMs := func() int64 { return time.Now().UnixMilli() }
+	idem := apihttp.NewIdempotencyStore(nowMs, 0)
+	apiHandler := api.New(st, idem, nowMs)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthz)
 	mux.Handle("/content/", contentStore.Handler())
+	mux.Handle("/api/v1/", apiHandler)
 	enrollSrv.Register(mux)
 	helloSrv.Register(mux)
 
@@ -135,6 +190,56 @@ func main() {
 
 	log.Printf("waiveo-feeder listening (HTTPS) on %s (content base %s)", cfg.listen, cfg.contentBaseURL)
 	log.Fatal(server.ListenAndServeTLS("", ""))
+}
+
+// desiredStateSource rebuilds the feeder's signed desired-state snapshot from the
+// app store on demand, caching it by the store's generation: a pull for an
+// unchanged generation returns the cached snapshot, and it is rebuilt (via
+// snapshot.BuildFromStore) only when an api write has advanced the generation.
+// This is the seam that makes an authored edit change what the relay pulls, while
+// keeping desired-state derivation entirely store-driven (site_effective comes
+// from the site node, never box-local state).
+type desiredStateSource struct {
+	store          *store.Store
+	img            []byte
+	contentBaseURL string
+	id             *signing.Identity
+	grants         []wire.PairingGrant
+
+	mu        sync.Mutex
+	cached    wire.StateSnapshotBody
+	cachedGen int64
+	haveCache bool
+}
+
+// current returns the snapshot for the store's current generation, rebuilding it
+// only when the generation has advanced since the last build. Safe for
+// concurrent pulls.
+func (d *desiredStateSource) current() (wire.StateSnapshotBody, error) {
+	ctx := context.Background()
+	gen, err := d.store.Generation(ctx)
+	if err != nil {
+		return wire.StateSnapshotBody{}, err
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.haveCache && d.cachedGen == gen {
+		return d.cached, nil
+	}
+
+	ds, err := d.store.DesiredState(ctx)
+	if err != nil {
+		return wire.StateSnapshotBody{}, err
+	}
+	snap, err := snapshot.BuildFromStore(ds, d.img, d.contentBaseURL, d.id, d.grants)
+	if err != nil {
+		return wire.StateSnapshotBody{}, err
+	}
+	d.cached = snap
+	d.cachedGen = ds.Generation
+	d.haveCache = true
+	return snap, nil
 }
 
 func healthz(w http.ResponseWriter, r *http.Request) {
