@@ -51,3 +51,37 @@ func WriteProblem(w http.ResponseWriter, r *http.Request, traceID string, status
 		Instance: r.URL.Path,
 	})
 }
+
+// WriteProblemExt writes a Problem like WriteProblem but additionally carries a
+// human-readable `detail` member and any contract-defined extension members in
+// extra (e.g. `current_revision` for a REVISION_CONFLICT, API-023, or an
+// `errors` array for a multi-field VALIDATION_FAILED, API-013). The base
+// members (`type: about:blank`, `title`, `status`, `code`, `trace_id`,
+// `instance`) are identical to WriteProblem; `detail` is omitted when empty;
+// each key in extra becomes a top-level Problem extension member. As with
+// WriteProblem, code MUST come from the calling contract's own closed error-
+// code registry (API-011) — this helper does not validate it — and traceID
+// MUST equal the response's Trace-Id header value (API-062). extra MUST NOT
+// shadow a base member.
+func WriteProblemExt(w http.ResponseWriter, r *http.Request, traceID string, status int, code, title, detail string, extra map[string]any) {
+	body := map[string]any{
+		"type":     problemType,
+		"title":    title,
+		"status":   status,
+		"code":     code,
+		"trace_id": traceID,
+	}
+	if detail != "" {
+		body["detail"] = detail
+	}
+	if r != nil && r.URL != nil && r.URL.Path != "" {
+		body["instance"] = r.URL.Path
+	}
+	for k, v := range extra {
+		body[k] = v
+	}
+
+	w.Header().Set("Content-Type", ProblemContentType)
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
+}
