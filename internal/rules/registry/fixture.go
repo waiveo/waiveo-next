@@ -1,117 +1,73 @@
 package registry
 
+import "github.com/maaxton/waiveo-next/internal/deviceclass"
+
 // FixtureRegistry is the small, fixed built-in registry the rules-1 corpus
 // documents beside itself (rules-1 Conformance notes: "corpus cases use a
 // small fixed fixture registry documented beside the corpus, the same
 // convention manifest/1's corpus notes establish"). It carries exactly one
-// device class, media-player, whose states, semantic groups, and commands
-// are device-class-registry/1's REG-061/063/066-pinned built-in content —
-// kept in lockstep by hand with that contract's own corpus and with
-// conformance/corpora/rules-1/RUL-321-scalar-expands-array-exact.json, per
-// device-class-registry/1's own cross-contract-alignment note — plus a
-// couple of typed attributes this contract's own corpus cases exercise
-// beyond REG-064's pinned list, so a corpus fixture referencing them (e.g.
-// RUL-023-attribute-only-vs-state-change's "volume") resolves without
-// inventing a second device class.
+// device class, media-player, whose states, semantic groups, typed attributes,
+// and commands are NO LONGER hand-maintained here: they are sourced from the
+// canonical, contract-validated device-class-registry/1 built-in
+// (deviceclass.Builtin(), REG-060-066) through the FromDeviceClass adapter, so
+// the media-player vocabulary is defined in exactly one place. FixtureRegistry
+// is now a thin value whose methods delegate to that single adapter instance;
+// callers keep constructing it as registry.FixtureRegistry{}.
 //
-// media-player semantic groups (device-class-registry/1 REG-063):
+// On top of the canonical built-in it carries a small, documented overlay of
+// three corpus-only typed attributes the rules-1 corpus references but
+// device-class-registry/1 does NOT pin as REG-064 built-in content:
 //
-//	"on":  on, playing, idle, paused, buffering
-//	"off": off, standby, unavailable
+//	volume       Number   significant  (corpus-only; RUL-023-attribute-only-vs-state-change)
+//	media_title  String   cosmetic     (corpus-only; RUL-023-attribute-only-vs-state-change)
+//	powered_on   Boolean  significant  (corpus-only; RUL-101-corroborating-and-cross-entity-conditions)
 //
-// media-player typed attributes:
-//
-//	active_app      String   significant  (REG-064)
-//	active_app_id   String   significant  (REG-064)
-//	app_type        String   significant  (REG-064; enum app/screensaver/home/menu, compared as String — RUL-260/263)
-//	power_mode      String   significant  (REG-064)
-//	is_screensaver  Boolean  significant  (REG-064)
-//	app_version     String   cosmetic     (REG-064)
-//	volume          Number   significant  (corpus-only, not REG-064-pinned)
-//	media_title     String   cosmetic     (corpus-only, not REG-064-pinned)
-//	powered_on      Boolean  significant  (corpus-only, not REG-064-pinned;
-//	                                      RUL-101-corroborating-and-cross-entity-conditions)
-//
-// media-player commands (device-class-registry/1 REG-066): launch, home,
-// keypress, power.
+// These live ONLY as this overlay, never mixed into the canonical deviceclass
+// content, and can only ADD to media-player — a REG-064 attribute of the same
+// name always wins (FromDeviceClass never lets the overlay shadow it). The
+// canonical built-in supplies the six REG-064 attributes (active_app,
+// active_app_id, app_type[enum->String, RUL-263], power_mode, is_screensaver,
+// app_version), the on/off semantic groups (REG-063), and the four commands
+// launch/home/keypress/power (REG-066).
 //
 // FixtureRegistry has no extension-registered content of its own: every
-// SemanticGroups call resolves only against the built-in groups above.
+// SemanticGroups call resolves only against the canonical built-in groups.
 type FixtureRegistry struct{}
 
 var _ Registry = FixtureRegistry{}
 
-// fixtureGroup is one device class's one built-in semantic group: a name and
-// its member states, in the fixed declaration order device-class-registry/1
-// pins for media-player (REG-063).
-type fixtureGroup struct {
-	name    string
-	members []string
-}
-
-var fixtureBuiltinGroups = map[string][]fixtureGroup{
+// corpusOverlay is the documented set of corpus-only typed attributes layered on
+// top of the canonical media-player built-in (see FixtureRegistry). It ADDS
+// only; it never shadows a REG-064 attribute.
+var corpusOverlay = NewOverlay(map[string]map[string]OverlayAttr{
 	"media-player": {
-		{name: "on", members: []string{"on", "playing", "idle", "paused", "buffering"}},
-		{name: "off", members: []string{"off", "standby", "unavailable"}},
+		"volume":      {Type: Number, ChangeEmission: "significant"},
+		"media_title": {Type: String, ChangeEmission: "cosmetic"},
+		"powered_on":  {Type: Boolean, ChangeEmission: "significant"},
 	},
-}
+})
 
-type fixtureAttr struct {
-	valueType      ValueType
-	changeEmission string
-}
-
-var fixtureAttributes = map[string]map[string]fixtureAttr{
-	"media-player": {
-		"active_app":     {valueType: String, changeEmission: "significant"},
-		"active_app_id":  {valueType: String, changeEmission: "significant"},
-		"app_type":       {valueType: String, changeEmission: "significant"},
-		"power_mode":     {valueType: String, changeEmission: "significant"},
-		"is_screensaver": {valueType: Boolean, changeEmission: "significant"},
-		"app_version":    {valueType: String, changeEmission: "cosmetic"},
-		"volume":         {valueType: Number, changeEmission: "significant"},
-		"media_title":    {valueType: String, changeEmission: "cosmetic"},
-		"powered_on":     {valueType: Boolean, changeEmission: "significant"},
-	},
-}
-
-var fixtureCommands = map[string]map[string]bool{
-	"media-player": {"launch": true, "home": true, "keypress": true, "power": true},
-}
+// fixtureAdapter is the single canonical-registry-backed Registry every
+// FixtureRegistry value delegates to: the platform's built-in media-player class
+// plus the corpus-only overlay. Built once at package initialization.
+var fixtureAdapter = FromDeviceClass(deviceclass.Builtin(), corpusOverlay)
 
 // SemanticGroups implements Registry.
 func (FixtureRegistry) SemanticGroups(deviceClass, state string) []string {
-	var out []string
-	for _, g := range fixtureBuiltinGroups[deviceClass] {
-		for _, m := range g.members {
-			if m == state {
-				out = append(out, g.name)
-				break
-			}
-		}
-	}
-	// FixtureRegistry has no extension-registered groups; built-in groups
-	// (above) are all there is (RUL-321 ordering).
-	return out
+	return fixtureAdapter.SemanticGroups(deviceClass, state)
 }
 
 // AttributeType implements Registry.
 func (FixtureRegistry) AttributeType(deviceClass, attr string) ValueType {
-	if a, ok := fixtureAttributes[deviceClass][attr]; ok {
-		return a.valueType
-	}
-	return Unknown
+	return fixtureAdapter.AttributeType(deviceClass, attr)
 }
 
 // ChangeEmission implements Registry.
 func (FixtureRegistry) ChangeEmission(deviceClass, attr string) string {
-	if a, ok := fixtureAttributes[deviceClass][attr]; ok {
-		return a.changeEmission
-	}
-	return ""
+	return fixtureAdapter.ChangeEmission(deviceClass, attr)
 }
 
 // CommandExists implements Registry.
 func (FixtureRegistry) CommandExists(deviceClass, command string) bool {
-	return fixtureCommands[deviceClass][command]
+	return fixtureAdapter.CommandExists(deviceClass, command)
 }
