@@ -232,6 +232,9 @@ type HostRegistries struct {
 	// Providers is the host connection registry, keyed "provider/authType"
 	// (MAN-055).
 	Providers map[string]bool
+	// BundleFiles is the set of file paths present in the pack's own bundle
+	// artifact — the set a ui.surfaces[].entry MUST resolve against (MAN-063).
+	BundleFiles map[string]bool
 	// MemoryFloorMiB is the host-configured minimum resources.memory (MAN-042).
 	MemoryFloorMiB int
 	// InstalledDataModelVersion is the dataModel.version of the pack's

@@ -11,10 +11,11 @@ import (
 //
 // This pass covers identity + compatibility (MAN-001/002/003/010/011/012/013),
 // capabilities & consent (MAN-020/021), the egress allowlist (MAN-030/031),
-// resource limits (MAN-040/042), and the data model — collections, the
-// universal entity envelope, retention, and connections (MAN-050-055). Later
-// sections (UI/devices/playables, automation/actions/locale) are layered onto
-// this same entry point.
+// resource limits (MAN-040/042), the data model — collections, the universal
+// entity envelope, retention, and connections (MAN-050-055) — UI page/slot/
+// surface declarations (MAN-060-063), device contributions (MAN-070-072), and
+// playable contributions (MAN-080/081). Automation/actions/locale (MAN-090-111)
+// are layered onto this same entry point.
 func Validate(m PackManifest, host HostRegistries) []Error {
 	var errs []Error
 	errs = append(errs, validateIdentity(m)...)
@@ -23,6 +24,9 @@ func Validate(m PackManifest, host HostRegistries) []Error {
 	errs = append(errs, validateEgress(m)...)
 	errs = append(errs, validateResources(m, host)...)
 	errs = append(errs, validateDataModel(m, host)...)
+	errs = append(errs, validateUI(m, host)...)
+	errs = append(errs, validateDevices(m, host)...)
+	errs = append(errs, validatePlayable(m)...)
 	return errs
 }
 
