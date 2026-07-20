@@ -193,7 +193,10 @@ func TestEndpointState_ReEnableResumesFromLastDeliveredID(t *testing.T) {
 	}
 
 	// PendingAfter must agree with Resolve's own backlog.
-	gotEvents, gotGap := st.PendingAfter(&l)
+	gotEvents, gotGap, gotErr := st.PendingAfter(&l)
+	if gotErr != nil {
+		t.Fatalf("PendingAfter rerr = %v; want nil (a still-retained LastDeliveredID resolves cleanly)", gotErr)
+	}
 	if got := ids(gotEvents); !stringSlicesEqual(got, want) {
 		t.Fatalf("PendingAfter = %v; want %v (must match Resolve's backlog)", got, want)
 	}
@@ -222,7 +225,10 @@ func TestEndpointState_PendingAfter_AgedOutLastDeliveredID_Gap(t *testing.T) {
 	// only re-enabled later (EVT-154's own scenario).
 	st.RecordDelivered("01J8Z3K4N5P6Q7R8S9T0V1W2Y6")
 
-	events, gap := st.PendingAfter(l)
+	events, gap, gotErr := st.PendingAfter(l)
+	if gotErr != nil {
+		t.Fatalf("PendingAfter rerr = %v; want nil (an aged-out-but-still-known id is a gap, not an error)", gotErr)
+	}
 
 	// PendingAfter must agree EXACTLY with Resolve's own gap outcome — the
 	// two mechanisms must never diverge (EVT-155).
@@ -260,6 +266,49 @@ func TestEndpointState_PendingAfter_AgedOutLastDeliveredID_Gap(t *testing.T) {
 	}
 }
 
+// TestEndpointState_PendingAfter_UnresolvableLastDeliveredID_PropagatesError
+// (EVT-134/143): if LastDeliveredID cannot be resolved against log at all —
+// e.g. a fresh/reconstructed log (EventLog is in-memory only) that never
+// recorded the envelope LastDeliveredID names, and whose lexicographic value
+// is not even old enough to be a retention_expired gap — PendingAfter MUST
+// propagate the RESUME_FROM_INVALID error rather than silently falling back
+// to a gap-free full backlog. A gap-free full backlog is bit-for-bit
+// indistinguishable from a brand-new endpoint that has never lost anything:
+// exactly the "silently treated as fresh" behavior EVT-134 forbids for
+// resume_from, and the silent-loss behavior EVT-143 forbids for any
+// discontinuity.
+func TestEndpointState_PendingAfter_UnresolvableLastDeliveredID_PropagatesError(t *testing.T) {
+	l := NewEventLog(10)
+	l.Append(env("01J8Z3K4N5P6Q7R8S9T0V1W2Y9"))
+
+	st := NewEndpointState("whsec_fixture_unresolvable_test", 10, DefaultBackoffBaseMs, DefaultBackoffCapMs, DefaultRotationOverlapMs)
+	// Greater than the log's oldest retained id (so not a retention_expired
+	// gap) but never actually recorded in l (so not a clean resume either) —
+	// the one way Resolve can return RESUME_FROM_INVALID for an id that is
+	// otherwise grammar/ULID valid.
+	st.RecordDelivered("01J8Z3K4N5P6Q7R8S9T0V1W2ZZ")
+
+	// Confirm the test setup actually hits Resolve's error case.
+	_, rerr := Resolve(l, st.LastDeliveredID)
+	if rerr == nil {
+		t.Fatal("test setup invalid: Resolve(last_delivered_id) did not error")
+	}
+
+	events, gap, gotErr := st.PendingAfter(l)
+	if gotErr == nil {
+		t.Fatal("PendingAfter rerr = nil; want the propagated RESUME_FROM_INVALID error, not a silent fallback to a full backlog (EVT-134/143)")
+	}
+	if gotErr.Code != ResumeFromInvalidCode {
+		t.Fatalf("PendingAfter rerr.Code = %q; want %q", gotErr.Code, ResumeFromInvalidCode)
+	}
+	if events != nil {
+		t.Fatalf("PendingAfter events = %v; want nil on error — no fallback delivery", events)
+	}
+	if gap != nil {
+		t.Fatalf("PendingAfter gap = %+v; want nil on error", gap)
+	}
+}
+
 // TestEndpointState_PendingAfter_IDOrder (EVT-157): deliveries are owed in id
 // order, and a later id is never handed out ahead of an earlier one still
 // within its own retry budget — a failed attempt against the head does not
@@ -272,7 +321,10 @@ func TestEndpointState_PendingAfter_IDOrder(t *testing.T) {
 
 	st := NewEndpointState("whsec_fixture_order_test", 10, DefaultBackoffBaseMs, DefaultBackoffCapMs, DefaultRotationOverlapMs)
 
-	pendingEvents, pendingGap := st.PendingAfter(&l)
+	pendingEvents, pendingGap, pendingErr := st.PendingAfter(&l)
+	if pendingErr != nil {
+		t.Fatalf("PendingAfter rerr = %v; want nil", pendingErr)
+	}
 	pending := ids(pendingEvents)
 	wantAll := []string{"01J8Z3K4N5P6Q7R8S9T0V1W2Y6", "01J8Z3K4N5P6Q7R8S9T0V1W2Y7", "01J8Z3K4N5P6Q7R8S9T0V1W2Y8"}
 	if !stringSlicesEqual(pending, wantAll) {
@@ -284,16 +336,16 @@ func TestEndpointState_PendingAfter_IDOrder(t *testing.T) {
 
 	// A failed attempt against the head must not advance the queue.
 	st.RecordAttempt(false, 0)
-	if got, gap := st.PendingAfter(&l); !stringSlicesEqual(ids(got), wantAll) || gap != nil {
-		t.Fatalf("pending backlog after a failed attempt = %v (gap=%v); want unchanged %v, no gap (EVT-157)", ids(got), gap, wantAll)
+	if got, gap, err := st.PendingAfter(&l); err != nil || !stringSlicesEqual(ids(got), wantAll) || gap != nil {
+		t.Fatalf("pending backlog after a failed attempt = %v (gap=%v, err=%v); want unchanged %v, no gap, no error (EVT-157)", ids(got), gap, err, wantAll)
 	}
 
 	// Only delivering the head advances the queue.
 	st.RecordAttempt(true, 1000)
 	st.RecordDelivered("01J8Z3K4N5P6Q7R8S9T0V1W2Y6")
 	wantRemaining := []string{"01J8Z3K4N5P6Q7R8S9T0V1W2Y7", "01J8Z3K4N5P6Q7R8S9T0V1W2Y8"}
-	if got, gap := st.PendingAfter(&l); !stringSlicesEqual(ids(got), wantRemaining) || gap != nil {
-		t.Fatalf("pending backlog after delivering the head = %v (gap=%v); want %v, no gap", ids(got), gap, wantRemaining)
+	if got, gap, err := st.PendingAfter(&l); err != nil || !stringSlicesEqual(ids(got), wantRemaining) || gap != nil {
+		t.Fatalf("pending backlog after delivering the head = %v (gap=%v, err=%v); want %v, no gap, no error", ids(got), gap, err, wantRemaining)
 	}
 }
 

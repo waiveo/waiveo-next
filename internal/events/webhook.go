@@ -226,27 +226,35 @@ func (e *EndpointState) Enable() {
 // CURRENT head succeeds, so a retry of that head keeps returning the
 // identical head-of-queue envelope: a later id is never attempted ahead of
 // an earlier one still within its own retry budget.
-func (e *EndpointState) PendingAfter(log *EventLog) ([]Envelope, *GapFrame) {
+//
+// rerr is non-nil only if Resolve itself cannot resolve LastDeliveredID at
+// all (its own RESUME_FROM_INVALID case) — expected only if the log this
+// call is given was reconstructed without the envelope LastDeliveredID names
+// (EventLog is in-memory per eventlog.go's own doc comment, so a process
+// restart is exactly such a case; nothing in EndpointState pins log to the
+// same instance across calls, since PendingAfter takes it as a parameter
+// every time). In that case Events and Gap are both nil: PendingAfter never
+// falls back to log.After("") — a gap-free full backlog would be
+// bit-for-bit indistinguishable from an endpoint that has never lost
+// anything, which is exactly the "silently treated as fresh" behavior
+// EVT-134 forbids for resume_from and the silent-loss behavior EVT-143
+// forbids for any discontinuity. The caller (the deferred delivery loop)
+// must surface rerr as an operator-visible condition, never resolve it as
+// delivery-as-normal.
+func (e *EndpointState) PendingAfter(log *EventLog) ([]Envelope, *GapFrame, *ResumeError) {
 	if e.LastDeliveredID == "" {
 		// Nothing has ever been delivered to this endpoint, so it owes the
 		// entire retained log — there is no prior point to gap against.
-		return log.After(""), nil
+		return log.After(""), nil, nil
 	}
 
 	// Route through the identical mechanism a WS/SSE reconnect uses
 	// (EVT-155) — no gap logic is reimplemented here.
 	out, rerr := Resolve(log, e.LastDeliveredID)
 	if rerr != nil {
-		// LastDeliveredID only ever holds an id RecordDelivered previously
-		// recorded from a real envelope already Appended to this same log, so
-		// it always matches the resume_from grammar/ULID check and, once
-		// past the retention floor, is always still Has() in the log — this
-		// branch is unreachable under correct use. Fail safe rather than
-		// silent: deliver the entire current backlog with no assumed clean
-		// resume, instead of dropping everything.
-		return log.After(""), nil
+		return nil, nil, rerr
 	}
-	return out.Events, out.Gap
+	return out.Events, out.Gap, nil
 }
 
 // NextBackoffMs returns the capped-exponential backoff (EVT-153) before
