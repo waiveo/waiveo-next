@@ -10,9 +10,11 @@ import (
 // just the first — each Code one of the contract's Error taxonomy codes.
 //
 // This pass covers identity + compatibility (MAN-001/002/003/010/011/012/013),
-// capabilities & consent (MAN-020/021), the egress allowlist (MAN-030/031), and
-// resource limits (MAN-040/042). Later sections (data model, UI/devices/
-// playables, automation/actions/locale) are layered onto this same entry point.
+// capabilities & consent (MAN-020/021), the egress allowlist (MAN-030/031),
+// resource limits (MAN-040/042), and the data model — collections, the
+// universal entity envelope, retention, and connections (MAN-050-055). Later
+// sections (UI/devices/playables, automation/actions/locale) are layered onto
+// this same entry point.
 func Validate(m PackManifest, host HostRegistries) []Error {
 	var errs []Error
 	errs = append(errs, validateIdentity(m)...)
@@ -20,6 +22,7 @@ func Validate(m PackManifest, host HostRegistries) []Error {
 	errs = append(errs, validateCapabilities(m, host)...)
 	errs = append(errs, validateEgress(m)...)
 	errs = append(errs, validateResources(m, host)...)
+	errs = append(errs, validateDataModel(m, host)...)
 	return errs
 }
 

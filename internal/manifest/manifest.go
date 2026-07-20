@@ -234,6 +234,10 @@ type HostRegistries struct {
 	Providers map[string]bool
 	// MemoryFloorMiB is the host-configured minimum resources.memory (MAN-042).
 	MemoryFloorMiB int
+	// InstalledDataModelVersion is the dataModel.version of the pack's
+	// currently installed manifest, if any (MAN-053). Zero means no prior
+	// install exists, so the version-regression check is skipped.
+	InstalledDataModelVersion int
 }
 
 // Error is a manifest/1 validation failure: one of the contract's Error
