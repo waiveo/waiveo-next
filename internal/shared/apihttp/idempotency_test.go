@@ -214,6 +214,43 @@ func TestIdempotencyInProgress(t *testing.T) {
 	}
 }
 
+// TestIdempotencyAbortReleasesInFlight covers Abort: a fresh Begin whose request
+// then fails transiently (no retainable response) is released so the SAME key+body
+// re-executes as Fresh rather than wedging InProgress forever. A completed entry,
+// by contrast, is never dropped by Abort.
+func TestIdempotencyAbortReleasesInFlight(t *testing.T) {
+	store := NewIdempotencyStore(fixedClock(idempotencyBaseMs), 0)
+	scope := IdempotencyScope{Principal: "usr_01J8Z000000000000000000001", Method: http.MethodPost, Path: "/api/v1/scope-nodes"}
+	const key = "c8f34fd3-0d5b-4bac-9a3f-0e8d7c6b5432"
+	hash := IdempotencyBodyHash([]byte(`{"kind":"site","name":"New Site"}`))
+
+	if out := store.Begin(scope, key, hash, idempotencyBaseMs); out.Kind != BeginFresh {
+		t.Fatalf("first Begin = %v, want Fresh", out.Kind)
+	}
+	// The original failed transiently: release the in-flight marker.
+	store.Abort(scope, key, hash)
+	if n := store.len(); n != 0 {
+		t.Fatalf("Abort left %d entries, want 0 (in-flight marker released)", n)
+	}
+	// The retry re-executes as Fresh, not InProgress — the key is not wedged.
+	if out := store.Begin(scope, key, hash, idempotencyBaseMs); out.Kind != BeginFresh {
+		t.Fatalf("retry after Abort = %v, want Fresh", out.Kind)
+	}
+
+	// Abort never drops an already-completed entry (a retained response — success
+	// OR a deterministic failure — is preserved for replay).
+	store.Complete(scope, key, hash, StoredResponse{Status: 400, Body: []byte(`{"code":"EXTERNAL_ID_CONFLICT"}`), ContentType: ProblemContentType}, idempotencyBaseMs)
+	store.Abort(scope, key, hash)
+	if out := store.Begin(scope, key, hash, idempotencyBaseMs); out.Kind != BeginReplay {
+		t.Fatalf("Begin after Complete+Abort = %v, want Replay (completed entry not dropped)", out.Kind)
+	}
+
+	// A hash mismatch or an unknown key is a no-op.
+	store.Abort(scope, key, IdempotencyBodyHash([]byte(`{"other":true}`)))
+	store.Abort(scope, "no-such-key", hash)
+	store.Abort(scope, "", hash) // empty key: nothing was ever stored
+}
+
 // TestIdempotencyScopeIsolation drives API-051: the identical key value under a
 // different principal, method, or path is a fresh request, never a replay.
 func TestIdempotencyScopeIsolation(t *testing.T) {

@@ -23,6 +23,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -197,25 +198,43 @@ func (rs *resource) create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// A server-assigned id when the client omitted one (openapi: id is not part
-	// of the create body); a client-supplied id is honored as-is.
+	// A fresh keyed request now holds an in-flight marker that MUST be resolved on
+	// EVERY terminal path (API-052/054) — never only on success. The response is
+	// composed into a capture so its exact bytes can be retained for replay, and a
+	// definitive outcome (any status < 500, success OR a deterministic client
+	// Problem) is Completed; a transient 5xx is Aborted so the key stays retryable.
+	rc := &responseCapture{}
+	rs.createExec(rc, r, raw)
+	status, body, ct := rc.flush(w)
+
+	if key != "" {
+		if status < http.StatusInternalServerError {
+			rs.srv.idem.Complete(scope, key, hash, apihttp.StoredResponse{
+				Status:      status,
+				Body:        body,
+				ContentType: ct,
+			}, now)
+		} else {
+			rs.srv.idem.Abort(scope, key, hash)
+		}
+	}
+}
+
+// createExec performs the create against the store and writes its outcome — a 201
+// with ETag/Location, or an api/1 Problem — to w. external_id uniqueness
+// (API-101/102) and client-supplied-id collision are enforced ATOMICALLY inside the
+// store write (via a WriteGuard and the store's own id check), closing the
+// check-then-write race a pre-write snapshot in a separate critical section left
+// open. w is the response capture create() owns, so the exact bytes are retainable
+// for an Idempotency-Key replay.
+func (rs *resource) createExec(w http.ResponseWriter, r *http.Request, raw []byte) {
+	// A server-assigned id when the client omitted one (openapi: id is not part of
+	// the create body); a client-supplied id is honored as-is.
 	body, id := rs.ensureID(raw)
 	fields := parseFields(body)
 
-	// external_id uniqueness (API-101/102) runs BEFORE the write.
-	if fields.ExternalID != "" {
-		refs, err := rs.externalRefs(r)
-		if err != nil {
-			rs.internal(w, r, err)
-			return
-		}
-		if xerr := apihttp.CheckExternalIDUnique(refs, rs.cfg.resourceType, rs.cfg.extScope(fields), fields.ExternalID, ""); xerr != nil {
-			rs.problem(w, r, xerr.Status, xerr.Code, xerr.Title, xerr.Detail)
-			return
-		}
-	}
-
-	res, err := rs.srv.store.Create(r.Context(), rs.cfg.kind, body)
+	res, err := rs.srv.store.Create(r.Context(), rs.cfg.kind, body,
+		rs.externalIDGuards(fields.ExternalID, rs.cfg.extScope(fields), "")...)
 	if err != nil {
 		rs.writeStoreError(w, r, err)
 		return
@@ -223,16 +242,7 @@ func (rs *resource) create(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("ETag", apihttp.ETag(res.Revision))
 	w.Header().Set("Location", apiPrefix+"/"+rs.cfg.path+"/"+id)
-	respBody := append([]byte(nil), res.Body...)
-	writeJSON(w, http.StatusCreated, respBody)
-
-	if key != "" {
-		rs.srv.idem.Complete(scope, key, hash, apihttp.StoredResponse{
-			Status:      http.StatusCreated,
-			Body:        respBody,
-			ContentType: contentTypeJSON,
-		}, now)
-	}
+	writeJSON(w, http.StatusCreated, res.Body)
 }
 
 // ensureID returns the create body guaranteed to carry an identity, plus that
@@ -359,21 +369,13 @@ func (rs *resource) patch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// external_id uniqueness over the effective (post-merge) fields (API-101/102).
+	// external_id uniqueness over the effective (post-merge) fields (API-101/102),
+	// enforced atomically inside the store write by a WriteGuard — closing the
+	// check-then-write race a pre-write snapshot in a separate critical section left
+	// open. selfID excludes this row, so an unchanged external_id never self-collides.
 	eff := effectiveFields(current.Body, patchBody)
-	if eff.ExternalID != "" {
-		refs, err := rs.externalRefs(r)
-		if err != nil {
-			rs.internal(w, r, err)
-			return
-		}
-		if xerr := apihttp.CheckExternalIDUnique(refs, rs.cfg.resourceType, rs.cfg.extScope(eff), eff.ExternalID, id); xerr != nil {
-			rs.problem(w, r, xerr.Status, xerr.Code, xerr.Title, xerr.Detail)
-			return
-		}
-	}
-
-	res, err := rs.srv.store.Update(r.Context(), rs.cfg.kind, id, current.Revision, patchBody)
+	res, err := rs.srv.store.Update(r.Context(), rs.cfg.kind, id, current.Revision, patchBody,
+		rs.externalIDGuards(eff.ExternalID, rs.cfg.extScope(eff), id)...)
 	if err != nil {
 		rs.writeStoreError(w, r, err)
 		return
@@ -413,14 +415,31 @@ func (rs *resource) delete(w http.ResponseWriter, r *http.Request) {
 
 // ---- shared helpers -------------------------------------------------------
 
-// externalRefs projects every stored row of the kind onto the ExternalRef shape
-// CheckExternalIDUnique consumes, scoping external_id uniqueness by the kind's
-// own grouping (a scope node by parent, a scheduling row by scope_node).
-func (rs *resource) externalRefs(r *http.Request) ([]apihttp.ExternalRef, error) {
-	rows, err := rs.srv.store.List(r.Context(), rs.cfg.kind, store.ListFilter{})
-	if err != nil {
-		return nil, err
+// externalIDGuards returns the store WriteGuard(s) that enforce external_id
+// uniqueness (API-101/102) INSIDE the write transaction — atomically with the
+// write, closing the check-then-write race a pre-write snapshot leaves open. The
+// guard reuses apihttp.CheckExternalIDUnique over the tx snapshot the store hands
+// it (it never re-derives the rule) and returns the *apihttp.ExternalIDError
+// verbatim for writeStoreError to render. selfID excuses the row being updated (so
+// an unchanged external_id never self-collides); an empty externalID needs no
+// guard, since it can never collide (API-100).
+func (rs *resource) externalIDGuards(externalID, scopeNode, selfID string) []store.WriteGuard {
+	if externalID == "" {
+		return nil
 	}
+	return []store.WriteGuard{func(existing []store.Resource) error {
+		refs := rs.refsFrom(existing)
+		if xerr := apihttp.CheckExternalIDUnique(refs, rs.cfg.resourceType, scopeNode, externalID, selfID); xerr != nil {
+			return xerr
+		}
+		return nil
+	}}
+}
+
+// refsFrom projects the store rows a WriteGuard is handed onto the ExternalRef
+// shape CheckExternalIDUnique consumes, scoping external_id uniqueness by the
+// kind's own grouping (a scope node by parent, a scheduling row by scope_node).
+func (rs *resource) refsFrom(rows []store.Resource) []apihttp.ExternalRef {
 	refs := make([]apihttp.ExternalRef, 0, len(rows))
 	for _, res := range rows {
 		f := parseFields(res.Body)
@@ -431,7 +450,7 @@ func (rs *resource) externalRefs(r *http.Request) ([]apihttp.ExternalRef, error)
 			ScopeNode:    rs.cfg.extScope(f),
 		})
 	}
-	return refs, nil
+	return refs
 }
 
 // inSubtreeFn builds the scope-subtree predicate a selector's `scope_node
@@ -479,6 +498,14 @@ func effectiveFields(current, patch []byte) resourceFields {
 // (API-013); an optimistic-concurrency conflict is 412 / REVISION_CONFLICT with
 // current_revision; a not-found is 404; anything else is 500 / INTERNAL.
 func (rs *resource) writeStoreError(w http.ResponseWriter, r *http.Request, err error) {
+	// An external_id-uniqueness rejection a WriteGuard raised inside the store write
+	// (API-101/102): 400 / EXTERNAL_ID_CONFLICT, surfaced atomically with the write
+	// it prevented.
+	var xerr *apihttp.ExternalIDError
+	if errors.As(err, &xerr) {
+		rs.problem(w, r, xerr.Status, xerr.Code, xerr.Title, xerr.Detail)
+		return
+	}
 	var verr *store.ValidationError
 	if errors.As(err, &verr) {
 		apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), http.StatusUnprocessableEntity,
@@ -557,6 +584,52 @@ func writeJSONValue(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", contentTypeJSON)
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// responseCapture buffers a handler's composed response (status, handler-set
+// headers, body) so the exact bytes can be BOTH flushed to the real ResponseWriter
+// AND retained verbatim for an Idempotency-Key replay (API-052). It captures only
+// what the handler writes; the Trace-Id response header WithTraceID already set on
+// the real writer is untouched and still emitted on flush.
+type responseCapture struct {
+	hdr    http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func (c *responseCapture) Header() http.Header {
+	if c.hdr == nil {
+		c.hdr = http.Header{}
+	}
+	return c.hdr
+}
+
+func (c *responseCapture) WriteHeader(status int) {
+	if c.status == 0 {
+		c.status = status
+	}
+}
+
+func (c *responseCapture) Write(b []byte) (int, error) { return c.body.Write(b) }
+
+// flush copies the captured headers and body onto w, then returns the status, a
+// COPY of the body bytes, and the Content-Type — the fields an Idempotency-Key
+// StoredResponse retains (the copy so the retained record is immune to later buffer
+// reuse). A handler that never wrote a status is treated as 200.
+func (c *responseCapture) flush(w http.ResponseWriter) (status int, body []byte, contentType string) {
+	for k, vs := range c.hdr {
+		for _, v := range vs {
+			w.Header().Add(k, v)
+		}
+	}
+	status = c.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	w.WriteHeader(status)
+	b := c.body.Bytes()
+	_, _ = w.Write(b)
+	return status, append([]byte(nil), b...), c.hdr.Get("Content-Type")
 }
 
 // replay writes a retained idempotent response verbatim (status + content-type +

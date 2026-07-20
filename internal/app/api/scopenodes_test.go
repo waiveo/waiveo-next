@@ -3,10 +3,12 @@ package api_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync"
 	"testing"
 
 	"github.com/maaxton/waiveo-next/internal/app/api"
@@ -389,6 +391,142 @@ func TestExternalIDConflict(t *testing.T) {
 	resp, raw = e.do(t, http.MethodPost, "/api/v1/scope-nodes", mustJSON(t, ok), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("same-external-id-different-parent status = %d, want 201, body %s", resp.StatusCode, raw)
+	}
+}
+
+// TestCreateDuplicateIDIsClientProblem: a create whose client-supplied id already
+// names an existing row is a well-defined client Problem (VALIDATION_FAILED with
+// an id-field error), never a masked 500 INTERNAL from a raw PRIMARY KEY constraint.
+func TestCreateDuplicateIDIsClientProblem(t *testing.T) {
+	e := newEnv(t)
+	e.createNode(t, siteNode(siteID))
+
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/scope-nodes", mustJSON(t, siteNode(siteID)), nil)
+	if resp.StatusCode == http.StatusInternalServerError {
+		t.Fatalf("duplicate client-supplied id surfaced as 500 INTERNAL (body %s)", raw)
+	}
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("duplicate-id status = %d, want 422 VALIDATION_FAILED, body %s", resp.StatusCode, raw)
+	}
+	p := assertProblem(t, resp, raw, "VALIDATION_FAILED")
+	errsAny, _ := p["errors"].([]any)
+	if len(errsAny) == 0 {
+		t.Fatalf("VALIDATION_FAILED carried no per-field errors array (body %s)", raw)
+	}
+	first, _ := errsAny[0].(map[string]any)
+	if first["field"] != "id" {
+		t.Fatalf("duplicate-id error field = %v, want id (body %s)", first["field"], raw)
+	}
+	// The original row is untouched — the duplicate create wrote nothing.
+	resp, _ = e.do(t, http.MethodGet, "/api/v1/scope-nodes/"+siteID, nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("original site missing after rejected duplicate create: status %d", resp.StatusCode)
+	}
+}
+
+// TestConcurrentCreateExternalIDUniqueness: many concurrent creates that share one
+// external_id under one parent (distinct ids, so only the external_id rule can gate
+// them) must yield EXACTLY ONE winner — the check-then-write must be atomic
+// (API-101/102), not a pre-write snapshot two requests can race past. Each round
+// uses a fresh external_id (independent trials); a non-atomic check lets more than
+// one winner through in at least one round with overwhelming probability, while an
+// atomic guard yields exactly one every round.
+func TestConcurrentCreateExternalIDUniqueness(t *testing.T) {
+	e := newEnv(t)
+	e.createNode(t, siteNode(siteID))
+
+	const rounds = 8
+	const n = 16
+	for r := 0; r < rounds; r++ {
+		externalID := fmt.Sprintf("race-screen-%d", r)
+		bodies := make([][]byte, n)
+		for i := 0; i < n; i++ {
+			// 26-char ULID-shaped ids, globally distinct, so the PRIMARY KEY never collides.
+			id := fmt.Sprintf("01J8Z0F%02d%017d", r, i)
+			bodies[i] = mustJSON(t, screenNode(id, siteID, externalID))
+		}
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		codes := make([]int, n)
+		wg.Add(n)
+		for i := 0; i < n; i++ {
+			go func(i int) {
+				defer wg.Done()
+				<-start
+				resp, _ := e.do(t, http.MethodPost, "/api/v1/scope-nodes", bodies[i], nil)
+				codes[i] = resp.StatusCode
+			}(i)
+		}
+		close(start) // release all goroutines at once to maximize overlap
+		wg.Wait()
+
+		created := 0
+		for _, c := range codes {
+			switch c {
+			case http.StatusCreated:
+				created++
+			case http.StatusBadRequest: // EXTERNAL_ID_CONFLICT — expected loser
+			default:
+				t.Fatalf("round %d: unexpected concurrent create status %d", r, c)
+			}
+		}
+		if created != 1 {
+			t.Fatalf("round %d: concurrent creates sharing external_id %q produced %d winners, want exactly 1", r, externalID, created)
+		}
+	}
+
+	// Exactly `rounds` screen rows persisted overall — one winner per external_id.
+	resp, raw := e.do(t, http.MethodGet, "/api/v1/scope-nodes?selector="+url.QueryEscape("kind=screen")+"&limit=200", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list screens status = %d", resp.StatusCode)
+	}
+	var p struct {
+		Items []json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &p); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(p.Items) != rounds {
+		t.Fatalf("screens persisted = %d, want exactly %d (one winner per external_id)", len(p.Items), rounds)
+	}
+}
+
+// TestIdempotentCreateReplaysFailure: a keyed create that fails deterministically
+// (external_id conflict) must, on an identical-key+body retry, REPLAY that same
+// failure (API-052) — not wedge the key InProgress by never completing the entry.
+func TestIdempotentCreateReplaysFailure(t *testing.T) {
+	e := newEnv(t)
+	e.createNode(t, siteNode(siteID))
+	e.createNode(t, screenNode(screen1ID, siteID, "lobby-screen-1"))
+
+	body := mustJSON(t, screenNode(screen2ID, siteID, "lobby-screen-1"))
+	hdr := map[string]string{"Idempotency-Key": "dup-external-id-key"}
+
+	// First keyed create collides → 400 EXTERNAL_ID_CONFLICT (a fresh request:
+	// header and body trace_id agree).
+	resp1, raw1 := e.do(t, http.MethodPost, "/api/v1/scope-nodes", body, hdr)
+	if resp1.StatusCode != http.StatusBadRequest {
+		t.Fatalf("first keyed create status = %d, want 400, body %s", resp1.StatusCode, raw1)
+	}
+	assertProblem(t, resp1, raw1, "EXTERNAL_ID_CONFLICT")
+
+	// Retry with the identical key+body replays the SAME failed response verbatim,
+	// never a 409 IDEMPOTENCY_KEY_IN_PROGRESS from a wedged in-flight marker.
+	resp2, raw2 := e.do(t, http.MethodPost, "/api/v1/scope-nodes", body, hdr)
+	if resp2.StatusCode != http.StatusBadRequest {
+		t.Fatalf("replayed keyed create status = %d, want 400 (wedged idempotency key?), body %s", resp2.StatusCode, raw2)
+	}
+	var p2 map[string]any
+	if err := json.Unmarshal(raw2, &p2); err != nil {
+		t.Fatalf("decode replayed problem: %v (body %s)", err, raw2)
+	}
+	if p2["code"] != "EXTERNAL_ID_CONFLICT" {
+		t.Fatalf("replayed problem code = %v, want EXTERNAL_ID_CONFLICT (body %s)", p2["code"], raw2)
+	}
+	// Verbatim replay (API-052): the retained failed response is returned byte-for-byte.
+	if !bytes.Equal(raw1, raw2) {
+		t.Fatalf("failure replay body differs (not verbatim):\n first:  %s\n replay: %s", raw1, raw2)
 	}
 }
 

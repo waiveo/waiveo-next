@@ -129,6 +129,19 @@ func (e *ValidationError) Error() string {
 	return fmt.Sprintf("store: validation failed (%d error(s))", len(e.Errors))
 }
 
+// WriteGuard is a caller-supplied invariant check run INSIDE a Create/Update write
+// transaction, against the kind's existing rows as read under the SAME write lock
+// the write commits under (readResources over the transaction). Because the write
+// path serializes under Store.mu, no other writer can interleave between a guard's
+// read and the row write — so a guard closes the check-then-write (TOCTOU) race a
+// pre-write snapshot taken in a separate critical section leaves open. Returning a
+// non-nil error rolls the transaction back before anything is written and is
+// propagated to the caller VERBATIM, so the api layer can supply a guard that calls
+// apihttp.CheckExternalIDUnique and recognize the *apihttp.ExternalIDError it
+// returns — enforcing external_id uniqueness (API-101/102) atomically rather than
+// re-implementing the rule in the store.
+type WriteGuard func(existing []Resource) error
+
 // Store is the app-side SQLite store. Safe for concurrent use: writes serialize
 // under mu (write lock) and reads take mu (read lock), so a revision/generation
 // bump is atomic against any concurrent read.
@@ -282,7 +295,7 @@ func (s *Store) writeTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 // columns. The generation is bumped and the resulting full row-set validated
 // (BuildScopeTree for scope nodes, ValidateRows for scheduling kinds) before
 // commit — a validation failure rolls the whole thing back.
-func (s *Store) Create(ctx context.Context, kind Kind, body json.RawMessage) (Resource, error) {
+func (s *Store) Create(ctx context.Context, kind Kind, body json.RawMessage, guards ...WriteGuard) (Resource, error) {
 	table, err := tableFor(kind)
 	if err != nil {
 		return Resource{}, err
@@ -304,7 +317,31 @@ func (s *Store) Create(ctx context.Context, kind Kind, body json.RawMessage) (Re
 	labelsJSON := marshalLabels(bf.Labels)
 
 	if err := s.writeTx(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx,
+		// The existing rows, read under the write lock this tx holds — the atomic
+		// snapshot the id-uniqueness check and every WriteGuard evaluate against, so
+		// a check-then-write invariant cannot be raced past by a concurrent writer.
+		existing, err := readResources(ctx, tx, table)
+		if err != nil {
+			return err
+		}
+		// A client-supplied id that already names a row is a well-defined client
+		// error (VALIDATION_FAILED with an identity-field error), not a raw PRIMARY
+		// KEY constraint the api layer would otherwise mask as a 500 INTERNAL.
+		for _, e := range existing {
+			if e.ID == id {
+				return &ValidationError{Errors: []datamodel.Error{{
+					Field:   identityFieldName(kind),
+					Code:    "already_exists",
+					Message: fmt.Sprintf("a %s with this identifier already exists", kind),
+				}}}
+			}
+		}
+		for _, g := range guards {
+			if err := g(existing); err != nil {
+				return err
+			}
+		}
+		_, err = tx.ExecContext(ctx,
 			`INSERT INTO `+table+` (id, revision, external_id, labels, scope_node, created_at, updated_at, body)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 			id, 1, bf.ExternalID, labelsJSON, bf.ScopeNode, now, now, string(fullBody),
@@ -395,7 +432,7 @@ func (s *Store) List(ctx context.Context, kind Kind, filter ListFilter) ([]Resou
 // never overwritten by it). The store bumps revision to current+1, refreshes
 // updated_at, re-denormalizes the columns, bumps the generation, and re-validates
 // the full row-set before commit.
-func (s *Store) Update(ctx context.Context, kind Kind, id string, rev int64, patch json.RawMessage) (Resource, error) {
+func (s *Store) Update(ctx context.Context, kind Kind, id string, rev int64, patch json.RawMessage, guards ...WriteGuard) (Resource, error) {
 	table, err := tableFor(kind)
 	if err != nil {
 		return Resource{}, err
@@ -435,6 +472,22 @@ func (s *Store) Update(ctx context.Context, kind Kind, id string, rev int64, pat
 			return err
 		}
 		labelsJSON := marshalLabels(bf.Labels)
+
+		// WriteGuards evaluate the effective post-merge write against the existing
+		// rows read under this same write lock — atomically with the UPDATE, so an
+		// external_id-uniqueness check (API-101/102) cannot be raced past. The guard
+		// excludes this row by its own id, so an unchanged external_id never collides.
+		if len(guards) > 0 {
+			existing, err := readResources(ctx, tx, table)
+			if err != nil {
+				return err
+			}
+			for _, g := range guards {
+				if err := g(existing); err != nil {
+					return err
+				}
+			}
+		}
 
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE `+table+` SET revision = ?, external_id = ?, labels = ?, scope_node = ?, updated_at = ?, body = ? WHERE id = ?`,
@@ -489,6 +542,39 @@ func (s *Store) Delete(ctx context.Context, kind Kind, id string, rev int64) err
 		}
 		return validateAfterWrite(ctx, tx, kind)
 	})
+}
+
+// readResources reads every row of table (ordered by id ascending) into Resources
+// via q, which may be *sql.DB (the read path) or *sql.Tx (an in-transaction guard
+// snapshot). It is the single full-table row reader the write-path WriteGuards
+// share with List, so a guard sees exactly the rows a List would — but read under
+// the write lock, atomically with the write it gates.
+func readResources(ctx context.Context, q queryer, table string) ([]Resource, error) {
+	rows, err := q.QueryContext(ctx,
+		`SELECT id, revision, external_id, labels, scope_node, created_at, updated_at, body FROM `+table+` ORDER BY id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("store: read %s: %w", table, err)
+	}
+	defer rows.Close()
+	out := []Resource{}
+	for rows.Next() {
+		res, err := scanResource(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, res)
+	}
+	return out, rows.Err()
+}
+
+// identityFieldName is the JSON key a row of this kind carries its identity under
+// (preset_id for a preset-batch, the DAT-005 exception; id otherwise) — used to
+// name the offending field in a duplicate-identity ValidationError.
+func identityFieldName(kind Kind) string {
+	if kind == KindPresetBatch {
+		return "preset_id"
+	}
+	return "id"
 }
 
 // scanResource reads one baseline+body row into a Resource.

@@ -241,6 +241,32 @@ func (s *IdempotencyStore) Complete(scope IdempotencyScope, key, hash string, re
 	s.entries[k] = e
 }
 
+// Abort discards the in-flight marker Begin recorded for scope+key when the
+// original request ended WITHOUT a retainable response — a transient failure the
+// client SHOULD be free to retry as a genuinely fresh request (a 5xx INTERNAL /
+// UNAVAILABLE), rather than a deterministic outcome Complete would replay. Leaving
+// the marker in place would instead wedge the key: every repeat would see
+// BeginInProgress even though the original has finished. Abort is a no-op for an
+// empty key, for a scope+key with no entry, for a hash mismatch, or for an
+// already-completed entry (a recorded response, success or failure, is never
+// dropped) — so it only ever releases the exact in-flight marker its own Begin
+// opened.
+func (s *IdempotencyStore) Abort(scope IdempotencyScope, key, hash string) {
+	if key == "" {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	k := idempotencyKey{scope: scope, key: key}
+	e, ok := s.entries[k]
+	if !ok || e.completed || e.hash != hash {
+		return
+	}
+	delete(s.entries, k)
+}
+
 // len reports the number of retained entries. It exists for the package's own
 // tests to assert that unkeyed requests store nothing (API-050).
 func (s *IdempotencyStore) len() int {

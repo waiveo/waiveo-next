@@ -98,6 +98,73 @@ func TestOpenStartsAtGenerationZero(t *testing.T) {
 	}
 }
 
+// TestCreateDuplicateIDIsValidationError: a Create whose id already names a row is
+// rejected as a *ValidationError (a well-defined client Problem the api layer maps
+// to VALIDATION_FAILED), never a raw PRIMARY KEY constraint error, and writes
+// nothing — the generation does not advance.
+func TestCreateDuplicateIDIsValidationError(t *testing.T) {
+	s := openMem(t)
+	ctx := context.Background()
+
+	if _, err := s.Create(ctx, store.KindScopeNode, mustJSON(t, siteNode())); err != nil {
+		t.Fatalf("first create: %v", err)
+	}
+	genBefore := gen(t, s)
+
+	_, err := s.Create(ctx, store.KindScopeNode, mustJSON(t, siteNode()))
+	var verr *store.ValidationError
+	if !errors.As(err, &verr) {
+		t.Fatalf("duplicate-id create error = %v, want *store.ValidationError", err)
+	}
+	if len(verr.Errors) == 0 || verr.Errors[0].Field != "id" {
+		t.Fatalf("duplicate-id validation errors = %+v, want an id-field error", verr.Errors)
+	}
+	if g := gen(t, s); g != genBefore {
+		t.Fatalf("generation advanced on rejected duplicate create: %d -> %d", genBefore, g)
+	}
+}
+
+// TestWriteGuardRunsAtomicallyAndCanReject: a WriteGuard sees the pre-write row
+// snapshot and, when it rejects, its error propagates verbatim and nothing is
+// written (generation unchanged) — the store enforces a check-then-write invariant
+// atomically inside the write transaction rather than trusting a caller's earlier
+// snapshot.
+func TestWriteGuardRunsAtomicallyAndCanReject(t *testing.T) {
+	s := openMem(t)
+	ctx := context.Background()
+	seedSiteScreen(t, s) // one site + one screen already present
+	genBefore := gen(t, s)
+
+	sentinel := errors.New("guard rejected")
+	sawRows := -1
+	guard := func(existing []store.Resource) error {
+		sawRows = len(existing)
+		return sentinel
+	}
+
+	// A create the guard rejects: error is returned verbatim, nothing written.
+	dupSite := siteNode()
+	dupSite.ID = "01J8Z9SECONDSITENODEFORGRD"
+	_, err := s.Create(ctx, store.KindScopeNode, mustJSON(t, dupSite), guard)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("guarded create error = %v, want the sentinel verbatim", err)
+	}
+	if sawRows != 2 {
+		t.Fatalf("guard saw %d existing rows, want 2 (the site+screen snapshot)", sawRows)
+	}
+	if g := gen(t, s); g != genBefore {
+		t.Fatalf("generation advanced on guard-rejected create: %d -> %d", genBefore, g)
+	}
+
+	// A passing guard lets the write through.
+	if _, err := s.Create(ctx, store.KindScopeNode, mustJSON(t, dupSite), func([]store.Resource) error { return nil }); err != nil {
+		t.Fatalf("guarded create with passing guard: %v", err)
+	}
+	if g := gen(t, s); g != genBefore+1 {
+		t.Fatalf("generation after accepted guarded create = %d, want %d", g, genBefore+1)
+	}
+}
+
 func TestCreateScopeNodeBumpsRevisionAndGeneration(t *testing.T) {
 	s := openMem(t)
 	ctx := context.Background()
