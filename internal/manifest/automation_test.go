@@ -71,11 +71,49 @@ func TestValidateAutomationTriggerUnresolvable(t *testing.T) {
 		},
 	}
 	errs := Validate(m, testHost())
-	if !hasCode(errs, "TRIGGER_UNRESOLVABLE") {
-		t.Fatalf("expected a TRIGGER_UNRESOLVABLE error, got %+v", errs)
-	}
-	if !hasField(errs, "contributes.automation.triggers[0].matches") {
+	got, ok := errorForField(errs, "contributes.automation.triggers[0].matches")
+	if !ok {
 		t.Fatalf("expected the error to name contributes.automation.triggers[0].matches, got %+v", errs)
+	}
+	if got.Code != "TRIGGER_UNRESOLVABLE" {
+		t.Errorf("code: got %q, want TRIGGER_UNRESOLVABLE", got.Code)
+	}
+	// The message MUST name the offending deviceClass value, matching every
+	// other registry-recognition error in this package (capabilities.go,
+	// ui.go, devices.go) — never a fixed generic string that hides which
+	// value a pack author needs to fix (MAN-092).
+	const wantMsg = `device class "printer" is not in the host device-class registry (MAN-092)`
+	if got.Message != wantMsg {
+		t.Errorf("message: got %q, want %q", got.Message, wantMsg)
+	}
+}
+
+// TestValidateAutomationTriggerUnresolvableNamesEvent: a trigger matches
+// naming an event value that isn't one of this pack's own automation.events
+// entries MUST name that event value in the TRIGGER_UNRESOLVABLE message —
+// distinct from the deviceClass-branch message — never the same generic
+// string regardless of which alternative was supplied (MAN-092).
+func TestValidateAutomationTriggerUnresolvableNamesEvent(t *testing.T) {
+	m := loadManifest(t, man020File)
+	m.Contributes.Automation.Triggers = []AutomationTrigger{
+		{
+			Name:         "unknown-trigger",
+			Msg:          "msg:trigger.unknown",
+			Matches:      []byte(`{"event":"other-pack.not-mine"}`),
+			ParamsSchema: []byte(`{"type":"object"}`),
+		},
+	}
+	errs := Validate(m, testHost())
+	got, ok := errorForField(errs, "contributes.automation.triggers[0].matches")
+	if !ok {
+		t.Fatalf("expected the error to name contributes.automation.triggers[0].matches, got %+v", errs)
+	}
+	if got.Code != "TRIGGER_UNRESOLVABLE" {
+		t.Errorf("code: got %q, want TRIGGER_UNRESOLVABLE", got.Code)
+	}
+	const wantMsg = `event "other-pack.not-mine" is not one of this pack's own automation.events entries (MAN-092)`
+	if got.Message != wantMsg {
+		t.Errorf("message: got %q, want %q", got.Message, wantMsg)
 	}
 }
 

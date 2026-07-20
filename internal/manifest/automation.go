@@ -85,16 +85,26 @@ func validateAutomation(m PackManifest, host HostRegistries) []Error {
 		var match automationTriggerMatch
 		_ = json.Unmarshal(tr.Matches, &match)
 
-		resolved := false
+		// unresolved names the offending value (and which alternative,
+		// deviceClass or event, was actually supplied) so a pack author sees
+		// exactly what failed to resolve, matching every sibling
+		// registry-recognition error in this package.
+		var unresolved string
 		switch {
 		case match.Event != "":
-			resolved = eventNames[match.Event]
+			if !eventNames[match.Event] {
+				unresolved = `event "` + match.Event + `" is not one of this pack's own automation.events entries`
+			}
 		case match.DeviceClass != "":
-			resolved = host.DeviceClasses[match.DeviceClass]
+			if !host.DeviceClasses[match.DeviceClass] {
+				unresolved = `device class "` + match.DeviceClass + `" is not in the host device-class registry`
+			}
+		default:
+			unresolved = "matches declares neither a deviceClass nor an event"
 		}
-		if !resolved {
+		if unresolved != "" {
 			errs = append(errs, Error{"TRIGGER_UNRESOLVABLE", at + ".matches",
-				"contributes.automation.triggers[].matches MUST resolve against the host device-class registry or one of this pack's own automation.events entries (MAN-092)"})
+				unresolved + " (MAN-092)"})
 		}
 	}
 

@@ -59,6 +59,17 @@ func hasField(errs []Error, field string) bool {
 	return false
 }
 
+// errorForField returns the first error whose Field matches, so a test can
+// pin its exact Code/Message rather than merely its presence.
+func errorForField(errs []Error, field string) (Error, bool) {
+	for _, e := range errs {
+		if e.Field == field {
+			return e, true
+		}
+	}
+	return Error{}, false
+}
+
 func hasCode(errs []Error, code string) bool {
 	for _, e := range errs {
 		if e.Code == code {
