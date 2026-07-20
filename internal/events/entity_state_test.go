@@ -82,6 +82,25 @@ func TestEntityStateChanged_MissingOldStateRejected(t *testing.T) {
 	}
 }
 
+// TestEntityStateChanged_NullAttributeChangeRejected: a JSON null for the
+// required boolean attribute_change is not a boolean and must be an EVT-013
+// rejection — encoding/json unmarshals null as a no-op, so a null must never
+// silently pass as a zero-value false (EVT-030 requires a boolean here).
+func TestEntityStateChanged_NullAttributeChangeRejected(t *testing.T) {
+	p := json.RawMessage(`{
+		"entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y9",
+		"device_id": "01J8Z3K4N5P6Q7R8S9T0V1W2YA",
+		"old_state": "playing",
+		"new_state": "idle",
+		"attribute_change": null
+	}`)
+	err := validateEntityStateChanged(p)
+	var ve ValidationError
+	if !errors.As(err, &ve) || ve.Field != "attribute_change" {
+		t.Fatalf("a null attribute_change must be an EVT-013 rejection on attribute_change, not a silent false; got %v", err)
+	}
+}
+
 // TestEntityStateChanged_BadEntityIDULIDRejected: entity_id/device_id are ULID
 // fields (EVT-030).
 func TestEntityStateChanged_BadEntityIDULIDRejected(t *testing.T) {

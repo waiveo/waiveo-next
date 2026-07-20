@@ -35,6 +35,32 @@ func TestAutomationRun_ModeDispositionEnumBites(t *testing.T) {
 	}
 }
 
+// TestAutomationRun_NullMisfireCaughtRejected: a JSON null for the required
+// boolean misfire_caught must be an EVT-013 rejection — encoding/json unmarshals
+// null as a no-op, so a null must never silently pass as a zero-value false and
+// misreport a caught misfire as a normal firing (EVT-040/EVT-041/RUL-246).
+func TestAutomationRun_NullMisfireCaughtRejected(t *testing.T) {
+	p := json.RawMessage(`{"rule_id":"01J8Z3K4N5P6Q7R8S9T0V1W2YC","rule_revision":4,"trigger_snapshot":{"kind":"state"},"condition_results":[{"passed":true}],"action_outcomes":[{"status":"ok"}],"mode_disposition":"ran","misfire_caught":null}`)
+	err := validateAutomationRun(p)
+	var ve ValidationError
+	if !errors.As(err, &ve) || ve.Field != "misfire_caught" {
+		t.Fatalf("a null misfire_caught must be an EVT-013 rejection on misfire_caught, not a silent false; got %v", err)
+	}
+}
+
+// TestAutomationRun_NullRuleRevisionRejected: a JSON null for the required
+// integer rule_revision must be an EVT-013 rejection — encoding/json unmarshals
+// null as a no-op, so a null must never silently pass as a zero-value 0 and
+// corrupt the revision audit trail (EVT-040 requires an integer here).
+func TestAutomationRun_NullRuleRevisionRejected(t *testing.T) {
+	p := json.RawMessage(`{"rule_id":"01J8Z3K4N5P6Q7R8S9T0V1W2YC","rule_revision":null,"trigger_snapshot":{"kind":"state"},"condition_results":[{"passed":true}],"action_outcomes":[{"status":"ok"}],"mode_disposition":"ran","misfire_caught":false}`)
+	err := validateAutomationRun(p)
+	var ve ValidationError
+	if !errors.As(err, &ve) || ve.Field != "rule_revision" {
+		t.Fatalf("a null rule_revision must be an EVT-013 rejection on rule_revision, not a silent 0; got %v", err)
+	}
+}
+
 // TestAutomationRunEnvelope_MapsEvaluatorToOrigin: the constructor derives the
 // envelope origin from the evaluator — relay for the edge evaluator, internal
 // for any app-side evaluator (EVT-042).

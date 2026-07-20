@@ -105,29 +105,35 @@ func requireULIDField(m map[string]json.RawMessage, field string) error {
 	return nil
 }
 
-// requireBoolField checks that field is present in m and is a JSON boolean,
-// returning its value.
+// requireBoolField checks that field is present in m and is a JSON boolean
+// (never null), returning its value. The explicit null pre-check matters because
+// encoding/json unmarshals a JSON null into an existing value as a no-op that
+// returns a nil error, which would otherwise let a null slip through as a
+// zero-value false (EVT-013).
 func requireBoolField(m map[string]json.RawMessage, field string) (bool, error) {
 	raw, ok := m[field]
 	if !ok {
 		return false, ValidationError{Field: field, Detail: "required"}
 	}
 	var b bool
-	if json.Unmarshal(raw, &b) != nil {
+	if string(raw) == "null" || json.Unmarshal(raw, &b) != nil {
 		return false, ValidationError{Field: field, Detail: "must be a boolean"}
 	}
 	return b, nil
 }
 
 // requireIntField checks that field is present in m and is a JSON integer
-// (a fractional number fails), returning its value.
+// (a fractional number fails, and never null), returning its value. The explicit
+// null pre-check matters because encoding/json unmarshals a JSON null into an
+// existing value as a no-op that returns a nil error, which would otherwise let a
+// null slip through as a zero-value 0 (EVT-013).
 func requireIntField(m map[string]json.RawMessage, field string) (int, error) {
 	raw, ok := m[field]
 	if !ok {
 		return 0, ValidationError{Field: field, Detail: "required"}
 	}
 	var n int
-	if json.Unmarshal(raw, &n) != nil {
+	if string(raw) == "null" || json.Unmarshal(raw, &n) != nil {
 		return 0, ValidationError{Field: field, Detail: "must be an integer"}
 	}
 	return n, nil
