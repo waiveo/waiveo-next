@@ -133,8 +133,10 @@ type EndpointState struct {
 	// of the most recently successfully delivered envelope, advanced only by
 	// RecordDelivered. Re-enabling a disabled endpoint, or resuming one
 	// recovering from transient failures, resumes from exactly this id via
-	// PendingAfter (EventLog.After) or, when the exact same gap accounting a
-	// WS/SSE reconnect gets is wanted, resume.Resolve.
+	// PendingAfter, which itself routes through resume.Resolve — so a
+	// LastDeliveredID that has aged past the log's retention window surfaces
+	// the EXACT SAME retention_expired gap a WS/SSE reconnect would (EVT-155),
+	// never a silently truncated backlog.
 	LastDeliveredID string
 
 	maxConsecutiveFailures int
@@ -204,14 +206,47 @@ func (e *EndpointState) Enable() {
 }
 
 // PendingAfter returns this endpoint's owed backlog against log, in
-// ascending id order (EVT-157): log.After(LastDeliveredID), the identical cut
-// a WS/SSE clean resume uses. It is the ordered queue a delivery loop drains
-// one id at a time — LastDeliveredID only advances via RecordDelivered once
-// an attempt for the CURRENT head succeeds, so a retry of that head keeps
-// returning the identical head-of-queue envelope: a later id is never
-// attempted ahead of an earlier one still within its own retry budget.
-func (e *EndpointState) PendingAfter(log *EventLog) []Envelope {
-	return log.After(e.LastDeliveredID)
+// ascending id order (EVT-157), together with the gap frame EVT-155 requires
+// when LastDeliveredID has aged past log's retention window. A registered
+// webhook endpoint is, from the durable-event log's perspective, just
+// another subscriber (EVT-155): it MUST get the EXACT SAME retention-window
+// gap behavior (Loss markers) a WS/SSE reconnect gets from resume.Resolve —
+// never a silently truncated backlog that is bit-for-bit indistinguishable
+// from an ordinary clean resume (EVT-143). Gap is nil in exactly two cases:
+// a never-yet-delivered endpoint (LastDeliveredID == "", which owes the
+// whole retained log — there is no prior point to gap against, unlike
+// Resolve's own empty-resume_from "fresh" case which owes nothing), and a
+// LastDeliveredID still within retention (an ordinary clean resume). It is
+// non-nil, Reason ReasonRetentionExpired, exactly when LastDeliveredID has
+// aged out; Events then starts AT the oldest retained id inclusive, matching
+// Resolve's own gap delivery (EVT-140/141/143, no silent loss).
+//
+// It is also the ordered queue a delivery loop drains one id at a time —
+// LastDeliveredID only advances via RecordDelivered once an attempt for the
+// CURRENT head succeeds, so a retry of that head keeps returning the
+// identical head-of-queue envelope: a later id is never attempted ahead of
+// an earlier one still within its own retry budget.
+func (e *EndpointState) PendingAfter(log *EventLog) ([]Envelope, *GapFrame) {
+	if e.LastDeliveredID == "" {
+		// Nothing has ever been delivered to this endpoint, so it owes the
+		// entire retained log — there is no prior point to gap against.
+		return log.After(""), nil
+	}
+
+	// Route through the identical mechanism a WS/SSE reconnect uses
+	// (EVT-155) — no gap logic is reimplemented here.
+	out, rerr := Resolve(log, e.LastDeliveredID)
+	if rerr != nil {
+		// LastDeliveredID only ever holds an id RecordDelivered previously
+		// recorded from a real envelope already Appended to this same log, so
+		// it always matches the resume_from grammar/ULID check and, once
+		// past the retention floor, is always still Has() in the log — this
+		// branch is unreachable under correct use. Fail safe rather than
+		// silent: deliver the entire current backlog with no assumed clean
+		// resume, instead of dropping everything.
+		return log.After(""), nil
+	}
+	return out.Events, out.Gap
 }
 
 // NextBackoffMs returns the capped-exponential backoff (EVT-153) before
