@@ -299,9 +299,15 @@ func (rs *resource) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The cursor is scoped to THIS resource type (rs.cfg.resourceType), so a
+	// cursor minted by another resource's list — even a byte-identical id — is
+	// rejected 400 / CURSOR_INVALID here rather than silently paged from as an
+	// arbitrary keyset position in the wrong collection (API-033/035). The
+	// unscoped bare-ULID form is the corpus exception pinned to the automations
+	// list, not a default for every kind mounted through this handler.
 	var afterID string
 	if cursor != "" {
-		lastID, cerr := apihttp.DecodeCursor("", cursor)
+		lastID, cerr := apihttp.DecodeCursor(rs.cfg.resourceType, cursor)
 		if cerr != nil {
 			rs.problem(w, r, cerr.Status, cerr.Code, cerr.Title, cerr.Detail)
 			return
@@ -335,8 +341,10 @@ func (rs *resource) list(w http.ResponseWriter, r *http.Request) {
 		window = append(window, res.Body)
 	}
 
-	// The unscoped keyset: the next cursor is the last returned row's bare ULID.
-	page := apihttp.Page("", window, limit, func(b json.RawMessage) string {
+	// The next cursor is bound to this resource type (rs.cfg.resourceType) so it
+	// names a keyset position ONLY for this resource's list and is refused under
+	// any other (API-033); the encoded token stays opaque to the client.
+	page := apihttp.Page(rs.cfg.resourceType, window, limit, func(b json.RawMessage) string {
 		return parseFields(b).ID
 	})
 	writeJSONValue(w, http.StatusOK, page)
