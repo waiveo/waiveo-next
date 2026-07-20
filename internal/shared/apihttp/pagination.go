@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/maaxton/waiveo-next/internal/shared/ulid"
 )
@@ -21,6 +22,13 @@ const MaxPageLimit = 200
 // token is a client-opaque string of URL-safe base64url characters. A cursor
 // that does not match is malformed and cannot name a keyset position.
 var cursorTokenPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// cursorScopeSep separates a scoped cursor's operation/resource-type tag from
+// the keyset ULID it names. It is `_`, which the opaque-cursor grammar admits
+// (API-036) but a canonical ULID never contains — a ULID is uppercase Crockford
+// base32 (API-034) — so the first `_` unambiguously ends the scope tag. A scope
+// tag therefore MUST NOT itself contain `_` (see EncodeCursor).
+const cursorScopeSep = "_"
 
 // PageParamError describes the Problem a page-parameter helper's caller MUST
 // emit when a limit or cursor is rejected: the HTTP Status, the closed-registry
@@ -63,34 +71,84 @@ func ParsePageParams(rawCursor string, rawLimit string) (cursor string, limit in
 }
 
 // EncodeCursor returns the opaque continuation token for the keyset position
-// after lastID (API-033/036). api/1 keys list pagination on the resource's ULID
-// (API-034), and a ULID is already a URL-safe token that satisfies the opaque-
-// cursor grammar, so the token IS lastID itself — the position is self-
-// describing and nothing is constructed on top of it. The client treats the
-// value as opaque and only ever passes it back verbatim.
-func EncodeCursor(lastID string) string {
-	return lastID
+// after lastID within the given list operation / resource-type scope
+// (API-033/036). A cursor carries no meaning across a different list operation
+// or resource type — even where two id values are byte-identical (API-033) — so
+// the token is bound to scope: it names a position ONLY for the scope that
+// minted it, and DecodeCursor rejects it under any other.
+//
+// scope is a short, stable tag naming the list operation / resource type (e.g.
+// "device", "automation"); it MUST NOT contain cursorScopeSep. The empty scope
+// is the unscoped keyset: the token is lastID itself — the bare ULID (API-034),
+// already a grammar-satisfying opaque token — which is the form api/1's
+// automations list is pinned to by the corpus (API-032). A non-empty scope
+// prefixes the tag and cursorScopeSep onto the ULID, still URL-safe under the
+// opaque-cursor grammar (API-036). The client treats the value as opaque and
+// only ever passes it back verbatim.
+func EncodeCursor(scope, lastID string) string {
+	if scope == "" {
+		return lastID
+	}
+	if strings.Contains(scope, cursorScopeSep) {
+		// A scope tag carrying the separator would make DecodeCursor's split
+		// ambiguous; every caller passes a compile-time-constant tag, so this
+		// is a programming error, surfaced rather than silently mis-scoped.
+		panic("apihttp: EncodeCursor: cursor scope " + strconv.Quote(scope) + " must not contain " + strconv.Quote(cursorScopeSep))
+	}
+	return scope + cursorScopeSep + lastID
 }
 
 // DecodeCursor recovers the keyset position (the last id already seen) a cursor
-// names (API-033/035). A cursor that fails the opaque-cursor grammar
-// (API-036), or that satisfies the grammar but does not decode to a valid
-// keyset position — for the ULID keyset, a syntactically valid ULID (API-034) —
-// is rejected 400 / CURSOR_INVALID. A rejected cursor NEVER silently degrades
-// to "start from the beginning" (API-035): the caller emits the Problem and
-// serves no page. An empty cursor is not a keyset position and is likewise
-// rejected — callers pass an empty cursor through ParsePageParams and skip the
-// decode entirely to start from the beginning, rather than decoding "".
-func DecodeCursor(cursor string) (lastID string, prob *PageParamError) {
-	if !cursorTokenPattern.MatchString(cursor) || !ulid.Valid(cursor) {
-		return "", &PageParamError{
-			Status: http.StatusBadRequest,
-			Code:   "CURSOR_INVALID",
-			Title:  "Bad Request",
-			Detail: fmt.Sprintf("The pagination cursor %q is not valid.", cursor),
-		}
+// names within the given list operation / resource-type scope (API-033/035). It
+// rejects 400 / CURSOR_INVALID a cursor that is malformed, or that was issued by
+// a different operation or resource type (API-035):
+//
+//   - a cursor failing the opaque-cursor grammar (API-036);
+//   - under the empty (unscoped) scope, a token that is not a syntactically
+//     valid ULID keyset position (API-034) — which includes any scoped token,
+//     since its scope tag and separator are not part of a ULID;
+//   - under a non-empty scope, a token not carrying exactly that scope's tag,
+//     or whose position is not a valid ULID — so a cursor minted for one scope
+//     (e.g. a `device` id) is refused when replayed under another (e.g. the
+//     `automation` list), never paged from as an arbitrary keyset position.
+//
+// scope MUST be the same tag EncodeCursor minted the cursor under. A rejected
+// cursor NEVER silently degrades to "start from the beginning" (API-035): the
+// caller emits the Problem and serves no page. An empty cursor is not a keyset
+// position and is likewise rejected — callers pass an empty cursor through
+// ParsePageParams and skip the decode entirely to start from the beginning,
+// rather than decoding "".
+func DecodeCursor(scope, cursor string) (lastID string, prob *PageParamError) {
+	if !cursorTokenPattern.MatchString(cursor) {
+		return "", cursorInvalid(cursor)
 	}
-	return cursor, nil
+	if scope == "" {
+		// Unscoped keyset: the cursor IS the bare ULID position (API-034). A
+		// scoped token carries a tag and the cursorScopeSep byte (never part of
+		// a ULID), so ulid.Valid rejects it here — a scoped cursor can never
+		// masquerade as an unscoped one.
+		if !ulid.Valid(cursor) {
+			return "", cursorInvalid(cursor)
+		}
+		return cursor, nil
+	}
+	prefix := scope + cursorScopeSep
+	id, ok := strings.CutPrefix(cursor, prefix)
+	if !ok || !ulid.Valid(id) {
+		return "", cursorInvalid(cursor)
+	}
+	return id, nil
+}
+
+// cursorInvalid builds the 400 / CURSOR_INVALID Problem a rejected pagination
+// cursor yields (API-035, closed code registry API-011).
+func cursorInvalid(cursor string) *PageParamError {
+	return &PageParamError{
+		Status: http.StatusBadRequest,
+		Code:   "CURSOR_INVALID",
+		Title:  "Bad Request",
+		Detail: fmt.Sprintf("The pagination cursor %q is not valid.", cursor),
+	}
 }
 
 // PageEnvelope is the response body every api/1 list endpoint returns
@@ -107,10 +165,12 @@ type PageEnvelope[T any] struct {
 // request's cursor position, fetched one beyond the limit so a further page can
 // be detected — and returns the {items, cursor} envelope (API-032). When window
 // holds more rows than limit, the page carries the first limit rows and a next
-// cursor equal to EncodeCursor of the last returned row's id; otherwise window
-// is the final page and the cursor is null. idOf extracts a row's keyset id.
-// A page therefore never repeats or skips a row across the roundtrip (API-034).
-func Page[T any](window []T, limit int, idOf func(T) string) PageEnvelope[T] {
+// cursor equal to EncodeCursor(scope, ...) of the last returned row's id;
+// otherwise window is the final page and the cursor is null. scope is the list
+// operation / resource-type tag the next cursor is bound to (see EncodeCursor);
+// pass "" for the unscoped bare-ULID keyset. idOf extracts a row's keyset id. A
+// page therefore never repeats or skips a row across the roundtrip (API-034).
+func Page[T any](scope string, window []T, limit int, idOf func(T) string) PageEnvelope[T] {
 	if limit < 0 {
 		limit = 0
 	}
@@ -120,7 +180,7 @@ func Page[T any](window []T, limit int, idOf func(T) string) PageEnvelope[T] {
 	if len(window) > limit {
 		items = window[:limit]
 		if len(items) > 0 {
-			tok := EncodeCursor(idOf(items[len(items)-1]))
+			tok := EncodeCursor(scope, idOf(items[len(items)-1]))
 			next = &tok
 		}
 	}

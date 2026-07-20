@@ -137,7 +137,7 @@ func servePage(t *testing.T, sorted []listItem, rawCursor, rawLimit string) (sta
 
 	lastID := ""
 	if cursor != "" {
-		id, derr := DecodeCursor(cursor)
+		id, derr := DecodeCursor("", cursor)
 		if derr != nil {
 			t.Fatalf("DecodeCursor(%q) rejected a valid corpus cursor: %+v", cursor, derr)
 		}
@@ -157,7 +157,7 @@ func servePage(t *testing.T, sorted []listItem, rawCursor, rawLimit string) (sta
 		after = after[:limit+1]
 	}
 
-	env := Page(after, limit, func(it listItem) string { return it.ID })
+	env := Page("", after, limit, func(it listItem) string { return it.ID })
 
 	raw, err := json.Marshal(env)
 	if err != nil {
@@ -227,7 +227,7 @@ func TestParsePageParamsRejectsOutOfRange(t *testing.T) {
 // describing) and that the token satisfies API-036's opaque-cursor grammar.
 func TestEncodeCursorIsOpaqueToken(t *testing.T) {
 	lastID := "01J8Z3K4N5P6Q7R8S9T0V1W2Z1"
-	tok := EncodeCursor(lastID)
+	tok := EncodeCursor("", lastID)
 	if tok != lastID {
 		t.Errorf("EncodeCursor(%q) = %q, want the id itself (the keyset token IS the last id)", lastID, tok)
 	}
@@ -240,7 +240,7 @@ func TestEncodeCursorIsOpaqueToken(t *testing.T) {
 // position) decodes back to that position with no error.
 func TestDecodeCursorValid(t *testing.T) {
 	cursor := "01J8Z3K4N5P6Q7R8S9T0V1W2Z1"
-	lastID, perr := DecodeCursor(cursor)
+	lastID, perr := DecodeCursor("", cursor)
 	if perr != nil {
 		t.Fatalf("DecodeCursor(%q) = error %+v, want a valid keyset position", cursor, perr)
 	}
@@ -253,7 +253,7 @@ func TestDecodeCursorValid(t *testing.T) {
 // rejected 400 / CURSOR_INVALID and yields no keyset position — never a silent
 // "start from the beginning" (API-035).
 func TestDecodeCursorMalformed(t *testing.T) {
-	lastID, perr := DecodeCursor("not a cursor!!")
+	lastID, perr := DecodeCursor("", "not a cursor!!")
 	if perr == nil {
 		t.Fatal("DecodeCursor(\"not a cursor!!\") accepted a malformed cursor, want CURSOR_INVALID (API-035)")
 	}
@@ -278,7 +278,7 @@ func TestDecodeCursorGrammarOKButNotAKeysetPosition(t *testing.T) {
 		if !cursorTokenGrammar.MatchString(cursor) {
 			t.Fatalf("test bug: %q should satisfy the opaque grammar", cursor)
 		}
-		lastID, perr := DecodeCursor(cursor)
+		lastID, perr := DecodeCursor("", cursor)
 		if perr == nil {
 			t.Errorf("DecodeCursor(%q) accepted a grammar-valid non-ULID, want CURSOR_INVALID", cursor)
 			continue
@@ -296,7 +296,7 @@ func TestDecodeCursorGrammarOKButNotAKeysetPosition(t *testing.T) {
 // further row remains (the fetched window did not exceed limit).
 func TestPageLastPageCursorNull(t *testing.T) {
 	rows := []listItem{{ID: "01J8Z3K4N5P6Q7R8S9T0V1W2Z8"}}
-	env := Page(rows, 1, func(it listItem) string { return it.ID })
+	env := Page("", rows, 1, func(it listItem) string { return it.ID })
 	if env.Cursor != nil {
 		t.Errorf("Page cursor = %v, want nil on the last page", *env.Cursor)
 	}
@@ -312,7 +312,7 @@ func TestPageMoreRowsSetsCursor(t *testing.T) {
 		{ID: "01J8Z3K4N5P6Q7R8S9T0V1W2Z1"},
 		{ID: "01J8Z3K4N5P6Q7R8S9T0V1W2Z8"},
 	}
-	env := Page(rows, 1, func(it listItem) string { return it.ID })
+	env := Page("", rows, 1, func(it listItem) string { return it.ID })
 	if len(env.Items) != 1 || env.Items[0].ID != rows[0].ID {
 		t.Fatalf("Page items = %#v, want just the first row", env.Items)
 	}
@@ -321,5 +321,84 @@ func TestPageMoreRowsSetsCursor(t *testing.T) {
 	}
 	if *env.Cursor != rows[0].ID {
 		t.Errorf("Page cursor = %q, want %q (EncodeCursor of the last returned id)", *env.Cursor, rows[0].ID)
+	}
+}
+
+// TestScopedCursorRoundtrips confirms a cursor minted under a non-empty scope
+// round-trips back to its keyset position when decoded under the SAME scope,
+// and that the scoped token still satisfies API-036's opaque-cursor grammar and
+// is distinct from the bare id (the scope is bound into the token, not dropped).
+func TestScopedCursorRoundtrips(t *testing.T) {
+	id := "01J8Z3K4N5P6Q7R8S9T0V1W2Z1"
+	tok := EncodeCursor("device", id)
+	if tok == id {
+		t.Errorf("EncodeCursor(%q, %q) = %q, want a scope-bound token distinct from the bare id", "device", id, tok)
+	}
+	if !cursorTokenGrammar.MatchString(tok) {
+		t.Errorf("scoped cursor %q does not satisfy ^[A-Za-z0-9_-]+$ (API-036)", tok)
+	}
+	got, perr := DecodeCursor("device", tok)
+	if perr != nil {
+		t.Fatalf("DecodeCursor(%q, %q) = error %+v, want the keyset position", "device", tok, perr)
+	}
+	if got != id {
+		t.Errorf("DecodeCursor(%q, %q) = %q, want %q", "device", tok, got, id)
+	}
+}
+
+// TestDecodeCursorRejectsForeignScope is the API-033/035 regression: a cursor
+// carries no meaning across a different list operation or resource type, so a
+// cursor issued under one scope MUST be rejected 400 / CURSOR_INVALID when
+// replayed under a different scope — never silently paged from as an arbitrary
+// keyset position. This covers the concrete replay the reviewer flagged: a
+// device id handed out as a `devices` cursor, then replayed against the
+// `automations` list, and its mirror (an `automations` cursor replayed against
+// `devices`), plus the unscoped/scoped crossings in both directions.
+func TestDecodeCursorRejectsForeignScope(t *testing.T) {
+	// A real device id, exactly as a devices list would mint it as a cursor.
+	deviceCursor := EncodeCursor("device", "01J8Z3K4N5P6Q7R8S9T0V1W2Z1")
+	// A bare ULID as the unscoped automations list mints it (corpus API-032).
+	bareCursor := EncodeCursor("", "01J8Z3K4N5P6Q7R8S9T0V1W2Z8")
+
+	cases := []struct {
+		name        string
+		decodeScope string
+		cursor      string
+	}{
+		{"device cursor replayed on automations", "automation", deviceCursor},
+		{"automation cursor replayed on device", "device", EncodeCursor("automation", "01J8Z3K4N5P6Q7R8S9T0V1W2Z1")},
+		{"scoped device cursor replayed unscoped", "", deviceCursor},
+		{"bare cursor replayed under a scope", "device", bareCursor},
+		{"scope prefix mismatch is not a prefix match", "dev", deviceCursor},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lastID, perr := DecodeCursor(tc.decodeScope, tc.cursor)
+			if perr == nil {
+				t.Fatalf("DecodeCursor(%q, %q) accepted a cursor issued by a different operation/resource type, want CURSOR_INVALID (API-035)", tc.decodeScope, tc.cursor)
+			}
+			if lastID != "" {
+				t.Errorf("rejected cross-scope cursor yielded keyset position %q, want empty (no start-from-beginning)", lastID)
+			}
+			if perr.Status != 400 {
+				t.Errorf("status = %d, want 400", perr.Status)
+			}
+			if perr.Code != "CURSOR_INVALID" {
+				t.Errorf("code = %q, want CURSOR_INVALID", perr.Code)
+			}
+		})
+	}
+}
+
+// TestScopedCursorsAreDistinctAcrossScopes confirms the same keyset id encoded
+// under two different scopes yields two byte-distinct cursors — the property
+// that lets a decoder tell a `devices` cursor from an `automations` cursor even
+// when the underlying id is identical (API-033).
+func TestScopedCursorsAreDistinctAcrossScopes(t *testing.T) {
+	id := "01J8Z3K4N5P6Q7R8S9T0V1W2Z1"
+	a := EncodeCursor("device", id)
+	b := EncodeCursor("automation", id)
+	if a == b {
+		t.Errorf("EncodeCursor(device, %q) == EncodeCursor(automation, %q) == %q, want scope-distinct cursors", id, id, a)
 	}
 }
