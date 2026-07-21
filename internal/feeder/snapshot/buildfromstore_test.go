@@ -205,6 +205,50 @@ func TestBuildFromStoreGenerationAdvances(t *testing.T) {
 	}
 }
 
+// TestBuildFromStoreEmitsContentOrigin asserts BuildFromStore, like Build,
+// carries its contentBaseURL argument into revocation_and_site.content_origin
+// (REL-061/066) over the store-derived path too — riding the same
+// hash/signature invariant as every other section member (REL-053/075).
+func TestBuildFromStoreEmitsContentOrigin(t *testing.T) {
+	img := loadTestImage(t)
+	id := testIdentity(t)
+	assetRef := signhash.ContentID(img)
+	s := seededStore(t, assetRef)
+
+	ds, err := s.DesiredState(context.Background())
+	if err != nil {
+		t.Fatalf("DesiredState: %v", err)
+	}
+
+	snap, err := BuildFromStore(ds, img, "https://origin.example", id, nil)
+	if err != nil {
+		t.Fatalf("BuildFromStore: %v", err)
+	}
+
+	if got, want := snap.Sections.RevocationAndSite.ContentOrigin, "https://origin.example"; got != want {
+		t.Errorf("RevocationAndSite.ContentOrigin = %q, want %q (REL-061/066)", got, want)
+	}
+
+	recomputed, err := hashSections(snap.Sections)
+	if err != nil {
+		t.Fatalf("hashSections: %v", err)
+	}
+	if recomputed != snap.Hash {
+		t.Errorf("recomputed hash %q != snapshot hash %q — content_origin must be covered by hash (REL-053)", recomputed, snap.Hash)
+	}
+	canon, err := generationHashCanonBytes(snap.Generation, snap.Hash)
+	if err != nil {
+		t.Fatalf("generationHashCanonBytes: %v", err)
+	}
+	sigBytes, err := wire.DecodeSignature(snap.Signature)
+	if err != nil {
+		t.Fatalf("wire.DecodeSignature: %v", err)
+	}
+	if !signhash.Verify(id.SigningPub(), canon, sigBytes) {
+		t.Error("signature did not verify with a populated content_origin field over the store-derived path (REL-075)")
+	}
+}
+
 func TestBuildFromStoreRejectsNilIdentity(t *testing.T) {
 	img := loadTestImage(t)
 	s := seededStore(t, signhash.ContentID(img))

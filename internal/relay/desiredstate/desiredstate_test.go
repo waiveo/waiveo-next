@@ -447,6 +447,37 @@ func TestPullExposesSiteEffective(t *testing.T) {
 	}
 }
 
+// TestPullExposesContentOrigin asserts a verified snapshot's
+// revocation_and_site.content_origin (REL-061/066) is surfaced on
+// Applied.ContentOrigin unmodified — the content-origin base URL a later
+// relay-side schedule resolver (internal/relay/schedulehost) derives
+// fetchable content URLs from. It rides the SAME hash/signature verification
+// as every other section member.
+func TestPullExposesContentOrigin(t *testing.T) {
+	img := loadTestImage(t)
+	id := testFeederIdentity(t)
+
+	snap, err := snapshot.Build(img, "https://origin.example", id, nil)
+	if err != nil {
+		t.Fatalf("snapshot.Build: %v", err)
+	}
+	want := snap.Sections.RevocationAndSite.ContentOrigin
+	if want == "" {
+		t.Fatal("precondition: snapshot.Build emitted an empty content_origin")
+	}
+
+	ts := newTestFeeder(t, id, snap)
+	store := enrolledStore(t, ts)
+
+	applied, err := Pull(ts.URL, store)
+	if err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+	if applied.ContentOrigin != want {
+		t.Errorf("applied.ContentOrigin = %q, want %q (REL-061/066, unmodified)", applied.ContentOrigin, want)
+	}
+}
+
 // TestPullExposesScreenPrograms asserts a verified snapshot's full
 // screen_programs array (REL-061) is surfaced on Applied.ScreenPrograms
 // unmodified — carrying priority/display/content through for Task 2's

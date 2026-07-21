@@ -277,6 +277,44 @@ func TestBuildEmitsSiteEffective(t *testing.T) {
 	}
 }
 
+// TestBuildEmitsContentOrigin asserts Build carries its contentBaseURL
+// argument into revocation_and_site.content_origin (REL-061/066) — the base
+// URL a screen fetches this site's content from — riding the same
+// hash/signature as every other section member.
+func TestBuildEmitsContentOrigin(t *testing.T) {
+	img := loadTestImage(t)
+	id := testIdentity(t)
+
+	snap, err := Build(img, "https://origin.example", id, nil)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	if got, want := snap.Sections.RevocationAndSite.ContentOrigin, "https://origin.example"; got != want {
+		t.Errorf("RevocationAndSite.ContentOrigin = %q, want %q (REL-061/066)", got, want)
+	}
+
+	// The section rides hash + signature exactly like every other section.
+	recomputed, err := hashSections(snap.Sections)
+	if err != nil {
+		t.Fatalf("hashSections: %v", err)
+	}
+	if recomputed != snap.Hash {
+		t.Errorf("recomputed hash %q != snapshot hash %q — content_origin must be covered by hash (REL-053)", recomputed, snap.Hash)
+	}
+	canon, err := generationHashCanonBytes(snap.Generation, snap.Hash)
+	if err != nil {
+		t.Fatalf("generationHashCanonBytes: %v", err)
+	}
+	sigBytes, err := wire.DecodeSignature(snap.Signature)
+	if err != nil {
+		t.Fatalf("wire.DecodeSignature: %v", err)
+	}
+	if !signhash.Verify(id.SigningPub(), canon, sigBytes) {
+		t.Error("signature did not verify with a populated content_origin field (REL-075)")
+	}
+}
+
 // TestBuildSignatureVerifies asserts the snapshot's signature verifies
 // under the feeder's own signing public key over {generation, hash}, and
 // fails under a different key (REL-075).

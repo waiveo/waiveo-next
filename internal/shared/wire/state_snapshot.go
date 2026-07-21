@@ -161,11 +161,20 @@ type DeviceInventory struct {
 }
 
 // RevocationAndSite is the relay/1 `revocation_and_site` section
-// (REL-066): `revoked` an array of opaque identifier strings, and
-// `site_effective` a persisted copy of the site's placement data.
+// (REL-066): `revoked` an array of opaque identifier strings,
+// `site_effective` a persisted copy of the site's placement data, and
+// `content_origin` (REL-061) the base URL a screen fetches this site's
+// content from — the app's own content origin, carried opaquely from the
+// feeder so a relay-side schedule resolver (internal/relay/schedulehost) can
+// derive fetchable content URLs (`content_origin + "/content/" + hex`)
+// without ever guessing a relay-local origin (REL-140: relay never in the
+// content path). A plain optional string, not a required REL-060 section
+// key: an absent key normalizes to "" via encoding/json's ordinary zero-value
+// decode — no explicit normalization step is needed.
 type RevocationAndSite struct {
 	Revoked       []string      `json:"revoked"`
 	SiteEffective SiteEffective `json:"site_effective"`
+	ContentOrigin string        `json:"content_origin"`
 }
 
 // SiteEffective mirrors `{tz, lat, long}` — relay/1's persisted copy of a

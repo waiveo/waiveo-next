@@ -102,6 +102,11 @@ var demoEdgeRuleJSON = json.RawMessage(`{"id":"` + demoRuleID + `","mode":"singl
 // `/content/<hex>` route under contentBaseURL. It signs with id's
 // signing private key.
 //
+// contentBaseURL also rides `sections.revocation_and_site.content_origin`
+// (REL-061/066) verbatim — the same base URL a relay-side schedule resolver
+// (internal/relay/schedulehost) later derives schedule-resolved content URLs
+// from, so the app-authored and schedule-resolved paths share one origin.
+//
 // The `sections.edge_rules` section (REL-062) carries the Wave-1
 // first-automation demo rule (demoEdgeRuleJSON) under rules_minor_version
 // "1.0" — one edge rule the relay compiles + loads into its edge engine
@@ -168,6 +173,7 @@ func Build(img []byte, contentBaseURL string, id *signing.Identity, grants []wir
 		RevocationAndSite: wire.RevocationAndSite{
 			Revoked:       []string{},
 			SiteEffective: firstPhotonSiteEffective,
+			ContentOrigin: contentBaseURL,
 		},
 		PairingGrants:      grants,
 		WorkflowGeneration: nil, // RESERVED, REL-068
@@ -200,11 +206,12 @@ func Build(img []byte, contentBaseURL string, id *signing.Identity, grants []wir
 // rows (no longer the hardcoded buildDemoScheduleSection), and
 // `revocation_and_site.site_effective` (REL-066) is the site node's own
 // tz/lat/long (rows.SiteEffective, derived in the store from the SITE scope node
-// per data-model DAT-033 — never the feeder's OS locale). Every other section
-// keeps the exact baseline shape Build produces: one image screen-program showing
-// img (asset_ref = img's content id, url under contentBaseURL), the Wave-1 demo
-// edge rule, an empty device_inventory, grants in pairing_grants, and the
-// reserved workflow_generation.
+// per data-model DAT-033 — never the feeder's OS locale), and
+// `revocation_and_site.content_origin` (REL-061/066) is contentBaseURL verbatim,
+// exactly as Build emits it. Every other section keeps the exact baseline shape
+// Build produces: one image screen-program showing img (asset_ref = img's content
+// id, url under contentBaseURL), the Wave-1 demo edge rule, an empty
+// device_inventory, grants in pairing_grants, and the reserved workflow_generation.
 //
 // The snapshot's `generation` is the store's own monotonic counter
 // (rows.Generation) rather than a constant, so an api write that advances the
@@ -259,6 +266,7 @@ func BuildFromStore(rows store.DesiredStateResult, img []byte, contentBaseURL st
 		RevocationAndSite: wire.RevocationAndSite{
 			Revoked:       []string{},
 			SiteEffective: rows.SiteEffective,
+			ContentOrigin: contentBaseURL,
 		},
 		PairingGrants:      grants,
 		WorkflowGeneration: nil, // RESERVED, REL-068

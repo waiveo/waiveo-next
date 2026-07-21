@@ -302,6 +302,124 @@ func TestScheduleSectionMarshalsStableAndRoundTrips(t *testing.T) {
 	}
 }
 
+// TestRevocationAndSiteContentOriginRoundTrips asserts RevocationAndSite's
+// content_origin field (REL-061/066: the base URL a screen fetches this
+// site's content from) round-trips through JSON verbatim, and that an
+// incoming JSON object omitting the key normalizes to "" (never a decode
+// error) — the field is a plain optional string, not a required REL-060
+// section key.
+func TestRevocationAndSiteContentOriginRoundTrips(t *testing.T) {
+	rs := RevocationAndSite{
+		Revoked:       []string{},
+		SiteEffective: SiteEffective{},
+		ContentOrigin: "https://origin.example",
+	}
+	raw, err := json.Marshal(rs)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("Unmarshal into map: %v", err)
+	}
+	if got, want := string(m["content_origin"]), `"https://origin.example"`; got != want {
+		t.Errorf("content_origin = %s, want %s; got %s", got, want, raw)
+	}
+
+	var back RevocationAndSite
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatalf("round-trip Unmarshal: %v", err)
+	}
+	if back.ContentOrigin != rs.ContentOrigin {
+		t.Errorf("round-tripped ContentOrigin = %q, want %q", back.ContentOrigin, rs.ContentOrigin)
+	}
+
+	// Absent key normalizes to "" — never a decode error, never left
+	// uninitialized to something other than the zero value.
+	var absent RevocationAndSite
+	if err := json.Unmarshal([]byte(`{"revoked":[],"site_effective":{"tz":"","lat":0,"long":0}}`), &absent); err != nil {
+		t.Fatalf("Unmarshal without content_origin: %v", err)
+	}
+	if absent.ContentOrigin != "" {
+		t.Errorf("ContentOrigin with an absent key = %q, want \"\"", absent.ContentOrigin)
+	}
+}
+
+// TestSectionsWithContentOriginHashesDeterministicallyAndRoundTrips asserts
+// adding content_origin to revocation_and_site preserves the REL-053
+// byte-identical-marshaling → hash invariant: HashSections is stable across
+// repeated calls with content_origin populated, and a full wire round-trip
+// (marshal → unmarshal → marshal) is byte-identical, so a relay recomputing
+// the hash over the received sections reproduces the feeder's hash exactly
+// even with this new field present.
+func TestSectionsWithContentOriginHashesDeterministicallyAndRoundTrips(t *testing.T) {
+	sections := Sections{
+		ScreenPrograms:  []ScreenProgram{},
+		EdgeRules:       EdgeRules{Rules: []json.RawMessage{}},
+		DeviceInventory: DeviceInventory{Devices: []json.RawMessage{}, PackMatchPatterns: []json.RawMessage{}},
+		Schedule:        ScheduleSection{}.Normalized(),
+		RevocationAndSite: RevocationAndSite{
+			Revoked:       []string{},
+			SiteEffective: SiteEffective{},
+			ContentOrigin: "https://origin.example",
+		},
+		PairingGrants:      []PairingGrant{},
+		WorkflowGeneration: nil,
+	}
+
+	h1, err := HashSections(sections)
+	if err != nil {
+		t.Fatalf("HashSections #1: %v", err)
+	}
+	h2, err := HashSections(sections)
+	if err != nil {
+		t.Fatalf("HashSections #2: %v", err)
+	}
+	if h1 != h2 {
+		t.Errorf("HashSections not stable across marshals with content_origin present: %q vs %q (REL-053)", h1, h2)
+	}
+
+	raw1, err := json.Marshal(sections)
+	if err != nil {
+		t.Fatalf("Marshal sections: %v", err)
+	}
+	var back Sections
+	if err := json.Unmarshal(raw1, &back); err != nil {
+		t.Fatalf("Unmarshal sections: %v", err)
+	}
+	raw2, err := json.Marshal(back)
+	if err != nil {
+		t.Fatalf("re-Marshal round-tripped sections: %v", err)
+	}
+	if !bytes.Equal(raw1, raw2) {
+		t.Errorf("Sections round-trip not byte-identical with content_origin present:\n first=%s\n back =%s", raw1, raw2)
+	}
+
+	hBack, err := HashSections(back)
+	if err != nil {
+		t.Fatalf("HashSections(round-tripped): %v", err)
+	}
+	if hBack != h1 {
+		t.Errorf("hash changed across a wire round-trip with content_origin present: %q → %q (REL-053 invariant broken)", h1, hBack)
+	}
+
+	if back.RevocationAndSite.ContentOrigin != "https://origin.example" {
+		t.Errorf("round-tripped ContentOrigin = %q, want %q", back.RevocationAndSite.ContentOrigin, "https://origin.example")
+	}
+
+	// A different content_origin must produce a different hash — it is
+	// covered by hash like every other section member.
+	other := sections
+	other.RevocationAndSite.ContentOrigin = "https://other.example"
+	hOther, err := HashSections(other)
+	if err != nil {
+		t.Fatalf("HashSections(other): %v", err)
+	}
+	if hOther == h1 {
+		t.Error("different content_origin values produced the same hash — want different hashes (REL-053)")
+	}
+}
+
 // TestSectionKeysAreTheSevenRELKeys asserts SectionKeys is exactly the seven
 // REL-060 keys, in the contract's declared order.
 func TestSectionKeysAreTheSevenRELKeys(t *testing.T) {

@@ -132,6 +132,18 @@ type Applied struct {
 	// first completing a fresh hello.
 	SiteEffective wire.SiteEffective
 
+	// ContentOrigin is the verified snapshot's
+	// sections.revocation_and_site.content_origin (REL-061/066), carried
+	// unmodified — the base URL a screen fetches this site's content from,
+	// which a later relay-side schedule resolver (internal/relay/schedulehost)
+	// threads into each schedule-resolved content item's `url`
+	// (`ContentOrigin + "/content/" + hex(asset_ref)`), the SAME URL grammar
+	// snapshot.Build already uses for the app-authored path (REL-061). An
+	// empty ContentOrigin means the feeder carried no content origin — a
+	// resolver leaves resolved content items without a url rather than
+	// fabricating a relay-local one (REL-140: relay never in the content path).
+	ContentOrigin string
+
 	// Schedule is the verified snapshot's sections.schedule (REL-065),
 	// carried unmodified — the scheduling-core rows + scope nodes the feeder
 	// signed, carried opaquely (raw JSON per row) for a later relay-side
@@ -378,6 +390,7 @@ func extractApplied(generation int64, sections wire.Sections) (Applied, error) {
 		EdgeRules:       sections.EdgeRules.Rules,
 		ScreenPrograms:  sections.ScreenPrograms,
 		SiteEffective:   sections.RevocationAndSite.SiteEffective,
+		ContentOrigin:   sections.RevocationAndSite.ContentOrigin,
 		Schedule:        sections.Schedule,
 	}, nil
 }
