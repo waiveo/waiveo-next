@@ -48,6 +48,8 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
 	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
 	"github.com/maaxton/waiveo-next/internal/relay/schedulehost"
+	"github.com/maaxton/waiveo-next/internal/relay/telemetry"
+	"github.com/maaxton/waiveo-next/internal/relay/telemetryhttp"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
@@ -307,6 +309,23 @@ func main() {
 	}
 	rePullTicker := time.NewTicker(rePullInterval)
 	go rePullLoop(rootCtx, rePullTicker.C, puller)
+
+	// Wire the relay's telemetry upstream channel (relay/1 REL-090/092/097): the
+	// automation stack records a fired rule's automation.run into the durable
+	// telemetry buffer (host.TelemetryBuffer); this Channel pushes that buffer to
+	// the co-located app peer's /telemetry/v1/push ingest route over the
+	// feeder-trusting TLS client, on a bounded interval. A received ack_through_seq
+	// advances the buffer's retention (REL-092); an un-acked batch (app peer down
+	// or rejecting) is retained and retried on the next tick (REL-097 — no silent
+	// loss). This is the live delivery that carries a fired rule's event off the
+	// relay to the app's event log.
+	telemetryChannel := telemetry.NewChannel(
+		host.TelemetryBuffer(),
+		telemetryhttp.New(cfg.feederURL, feederTLSClient()),
+		nil, // single-attempt per Flush; an un-acked batch rides the next flush tick
+	)
+	telemetryFlushTicker := time.NewTicker(telemetryFlushInterval)
+	go telemetryFlushLoop(rootCtx, telemetryFlushTicker.C, telemetryChannel)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthz)
@@ -649,6 +668,61 @@ func (loopbackController) Dispatch(entityID, command string, params map[string]a
 // and is a later concern.
 func loopbackResolver(entityID string) (deviceID, deviceClass string, ok bool) {
 	return "01J8Z3K4N5P6Q7R8S9T0V1DEVA", "media-player", true
+}
+
+// telemetryFlushInterval is the POC cadence the running relay pushes its
+// buffered telemetry upstream at (relay/1 REL-090): a couple of seconds, bounded
+// so a fired rule's automation.run reaches the app peer promptly without a
+// busy-loop. relay/1 defines no server push, so a periodic Flush is the
+// deliberate POC delivery mechanism. The live binary drives the loop from a
+// time.Ticker at this cadence; tests inject a manual channel, so nothing here
+// sleeps on the wall clock.
+const telemetryFlushInterval = 2 * time.Second
+
+// telemetryPushTimeout bounds one telemetry.push POST so a stalled app peer
+// cannot wedge the flush loop; a timed-out push is a non-fatal transport error —
+// the batch stays buffered and rides the next tick (REL-097).
+const telemetryPushTimeout = 5 * time.Second
+
+// telemetryFlushLoop drives ch.Flush once per tick delivered on ticks — a
+// time.Ticker's channel in the binary, a manual channel in tests, so nothing
+// here sleeps on the wall clock. Each Flush pushes the buffered telemetry batch
+// to the app peer and, on a received ack_through_seq, advances the buffer's
+// retention (REL-092); a push that fails (app peer unreachable or rejecting) is
+// logged and the batch left buffered for the next tick (REL-097 — an un-acked
+// batch is retried across reconnects, its durable entries never discarded). It
+// returns when ctx is cancelled or ticks is closed.
+func telemetryFlushLoop(ctx context.Context, ticks <-chan time.Time, ch *telemetry.Channel) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case _, ok := <-ticks:
+			if !ok {
+				return
+			}
+			if _, err := ch.Flush(); err != nil {
+				log.Printf("waiveo-relay telemetry push: flush failed (%v); batch retained for retry (REL-097)", err)
+			}
+		}
+	}
+}
+
+// feederTLSClient returns the relay's feeder-trusting HTTP client for the
+// telemetry upstream push (REL-090): server-authenticated TLS with no separate
+// trust anchor to validate the co-located feeder/app-peer's self-signed listener
+// certificate against, mirroring the relay's existing enroll / desired-state /
+// hello bootstrap clients (REL-010/011 bootstrap exception, made concrete for
+// the Wave-1 co-located feeder+relay loopback deployment). It is independent of
+// the telemetry retention/ack logic, which the Channel owns; this client only
+// carries the batch on the wire.
+func feederTLSClient() *http.Client {
+	return &http.Client{
+		Timeout: telemetryPushTimeout,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // REL-010/011 co-located bootstrap exception, see doc above
+		},
+	}
 }
 
 func healthz(w http.ResponseWriter, r *http.Request) {

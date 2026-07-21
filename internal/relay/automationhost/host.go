@@ -220,6 +220,15 @@ func (h *Host) ApplyEdgeRules(edgeRules []json.RawMessage, generation int) error
 // binary logs it as "automation engine loaded: N edge rule(s)".
 func (h *Host) EdgeRuleCount() int { return h.loadedEdge }
 
+// TelemetryBuffer returns the durable telemetry buffer a firing records its
+// automation.run into (REL-090/093), so the binary can wrap it in the upstream
+// telemetry.Channel and push it to the app peer (REL-090/092/097). New builds
+// only the durable queue side the engine records into; the Channel is the wire
+// transport the binary constructs over this buffer. The buffer is itself safe
+// for concurrent use by the recording engine and the flushing Channel, so no
+// lock is taken here — the returned pointer is the live buffer, not a copy.
+func (h *Host) TelemetryBuffer() *telemetry.Buffer { return h.buf }
+
 // SetLocation adopts the site this relay is bound to — its effective timezone
 // and coordinates — into the running engine (relay/1 REL-036 → rules/1
 // engine.SetLocation), so the edge engine's time-based and sun-based triggers

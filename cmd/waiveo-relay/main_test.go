@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,6 +30,8 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/hello"
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
 	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
+	"github.com/maaxton/waiveo-next/internal/relay/telemetry"
+	"github.com/maaxton/waiveo-next/internal/relay/telemetryhttp"
 	"github.com/maaxton/waiveo-next/internal/rules/registry"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/tlsboot"
@@ -820,5 +823,62 @@ func TestRePullLoopDeliversTicks(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("rePullLoop did not return after context cancellation")
+	}
+}
+
+// TestTelemetryFlushLoopPushesBufferedTelemetryOnTick proves the flush wiring:
+// telemetryFlushLoop drives telemetry.Channel.Flush once per tick delivered on
+// its channel (a manual channel here, a time.Ticker in the binary), pushing the
+// buffered automation.run to the app peer over the concrete telemetryhttp
+// transport, and advancing retention on the received ack_through_seq (REL-090/
+// 092/097); and it returns cleanly when its context is cancelled. Two sends on
+// the unbuffered channel act as a barrier — the second returns only once the
+// loop has finished processing the first — so the assertion is race-free.
+func TestTelemetryFlushLoopPushesBufferedTelemetryOnTick(t *testing.T) {
+	var pushedEntries atomic.Int64
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var batch telemetry.PushBatch
+		if err := json.NewDecoder(r.Body).Decode(&batch); err != nil {
+			t.Errorf("app peer: decode telemetry.push: %v", err)
+		}
+		var through int64
+		for _, e := range batch.Entries {
+			if e.Seq > through {
+				through = e.Seq
+			}
+		}
+		pushedEntries.Add(int64(len(batch.Entries)))
+		_ = json.NewEncoder(w).Encode(telemetry.Ack{AckThroughSeq: through})
+	}))
+	defer srv.Close()
+
+	buf := telemetry.NewBuffer(16)
+	buf.Record(telemetry.SchemaAutomationRun, json.RawMessage(`{"rule_id":"01J8Z3K4N5RULEA"}`), "", 1)
+	ch := telemetry.NewChannel(buf, telemetryhttp.New(srv.URL, srv.Client()), nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ticks := make(chan time.Time)
+	done := make(chan struct{})
+	go func() {
+		telemetryFlushLoop(ctx, ticks, ch)
+		close(done)
+	}()
+
+	ticks <- time.Now() // tick 1: pushes the buffered automation.run
+	ticks <- time.Now() // barrier: returns only after tick 1 is fully processed
+
+	if got := pushedEntries.Load(); got != 1 {
+		t.Errorf("app peer received %d telemetry entries after a flush tick, want 1", got)
+	}
+	if pending := buf.Pending(); len(pending) != 0 {
+		t.Errorf("after an acked flush, buffer has %d pending entries, want 0 (retention advanced)", len(pending))
+	}
+
+	cancel() // the loop must return on context cancellation
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("telemetryFlushLoop did not return after context cancellation")
 	}
 }
