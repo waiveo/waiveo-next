@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -330,6 +331,44 @@ func TestRunAutomationReturnsDisposition(t *testing.T) {
 		t.Fatalf("run-missing status = %d, want 404", resp.StatusCode)
 	}
 	assertProblem(t, resp, raw, "NOT_FOUND")
+}
+
+// TestRunAppClassAutomationRefused: POST /automations/{id}/run REFUSES an
+// app-classified automation. Only edge rules ride live execution (REL-062); an
+// app-class rule is stored + validated but its execution is deferred, so a
+// synchronous run must not carry it into the engine.Observe/dispatch path a live
+// edge rule uses (the safety property: an app-classified rule must not leak into
+// live execution). appAutomationBody carries a well-formed state trigger
+// identical to the edge fixture's — it is only its notify action that classifies
+// it APP — so the refusal is the class guard's doing, not a malformed trigger.
+//
+// The run is refused 400 / VALIDATION_FAILED naming the app-class reason. The
+// detail is asserted deliberately: engine.Load also defensively rejects a
+// non-edge rule, so a bare status+code check would still pass with the API-layer
+// class guard deleted (the run would 400 with the engine's message instead). The
+// detail substring is what pins the API guard specifically — so a future edit
+// that drops or inverts it (e.g. the documented app-side-execution fast-follow,
+// once engine.Load is relaxed to run app rules app-side) is caught here.
+func TestRunAppClassAutomationRefused(t *testing.T) {
+	e := newEnv(t)
+
+	// An app-classified automation (a notify action is app-class unconditionally,
+	// RUL-210) is stored + validated exactly like an edge rule — the compile gate
+	// accepts it; classification, not compilation, is what gates the run.
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", appAutomationBody(automationAID, autoScopeNode, nil), nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create app-class automation status = %d, body %s", resp.StatusCode, raw)
+	}
+
+	// The synchronous run is refused before the rule reaches the engine.
+	resp, raw = e.do(t, http.MethodPost, "/api/v1/automations/"+automationAID+"/run", nil, nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("run app-class status = %d, want 400 (body %s)", resp.StatusCode, raw)
+	}
+	p := assertProblem(t, resp, raw, "VALIDATION_FAILED")
+	if detail, _ := p["detail"].(string); !strings.Contains(detail, "app-class") {
+		t.Fatalf("app-class refusal detail = %q, want it to name the app-class reason (body %s)", detail, raw)
+	}
 }
 
 // TestBulkEnableReturnsJobOverMatchedIDs: POST /automations/bulk-enable is a
