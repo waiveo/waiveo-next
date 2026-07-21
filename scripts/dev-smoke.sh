@@ -51,3 +51,18 @@ RELAY_LOG="$RELAY_LOG" bash scripts/authoring-demo.sh
 # is never in this data path (REL-140). The probe prints CONTENT LOOP OK, or
 # exits non-zero.
 go run ./scripts/contentloop
+
+# 6. Automation authoring: the edge rule the relay loaded came from the app store,
+# not a hardcoded constant — the demo rule is now a store seed the feeder derives
+# edge_rules from (REL-062), so the "automation engine loaded: N edge rule(s)"
+# count reflects the store's own edge-classified automations. Assert N >= 1: a
+# store-authored rule actually loaded into the running engine, closing the
+# author -> store -> edge_rules -> relay loop the automation e2e proves in-process,
+# here live over the booted dev stack.
+AUTHORED_COUNT=$(grep -m1 -o 'automation engine loaded: [0-9]\{1,\}' "$RELAY_LOG" 2>/dev/null | grep -o '[0-9]\{1,\}' || true)
+if [ -n "$AUTHORED_COUNT" ] && [ "$AUTHORED_COUNT" -ge 1 ]; then
+  echo "AUTOMATION AUTHORING OK ($AUTHORED_COUNT store-authored edge rule(s) loaded)"
+else
+  echo "AUTOMATION AUTHORING FAIL: relay loaded no store-authored edge rules (count='${AUTHORED_COUNT:-none}') in $RELAY_LOG" >&2
+  exit 1
+fi
