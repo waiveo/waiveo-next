@@ -15,7 +15,7 @@ const seedAssetRef = "sha256:3a5439d0a1f4b2c6e7889900aabbccddeeff001122334455667
 
 // TestSeedDemoInsertsResolvableProgram: SeedDemo lands the whole demo as store
 // rows that validate cleanly, advancing the generation once per row (a fresh
-// store reaches generation 7), and the derived desired-state read carries a
+// store reaches generation 8), and the derived desired-state read carries a
 // scope tree that validates and a site_effective taken from the site node's own
 // tz/lat/long (DAT-033), never box-local state.
 func TestSeedDemoInsertsResolvableProgram(t *testing.T) {
@@ -28,16 +28,16 @@ func TestSeedDemoInsertsResolvableProgram(t *testing.T) {
 	if err := s.SeedDemo(ctx, seedAssetRef); err != nil {
 		t.Fatalf("SeedDemo: %v", err)
 	}
-	if g := gen(t, s); g != 7 {
-		t.Fatalf("generation after seed = %d, want 7 (2 scope nodes + playlist + schedule + preset + 2 dayparts)", g)
+	if g := gen(t, s); g != 8 {
+		t.Fatalf("generation after seed = %d, want 8 (2 scope nodes + playlist + schedule + preset + 2 dayparts + 1 automation)", g)
 	}
 
 	nodes, rows, se, generation, err := s.DesiredStateRows(ctx)
 	if err != nil {
 		t.Fatalf("DesiredStateRows: %v", err)
 	}
-	if generation != 7 {
-		t.Fatalf("DesiredStateRows generation = %d, want 7", generation)
+	if generation != 8 {
+		t.Fatalf("DesiredStateRows generation = %d, want 8", generation)
 	}
 
 	// The scheduling rows validate as a complete, referentially-sound set.
@@ -60,6 +60,19 @@ func TestSeedDemoInsertsResolvableProgram(t *testing.T) {
 	// site_effective comes from the site node's own placement columns (DAT-033).
 	if se.TZ != siteTZ || se.Lat != siteLat || se.Long != siteLong {
 		t.Fatalf("site_effective = %+v, want tz=%s lat=%v long=%v from the site node (DAT-033)", se, siteTZ, siteLat, siteLong)
+	}
+
+	// The seeded demo automation rides EdgeRuleBodies (REL-062) as the store's
+	// one edge-classified rule — the feeder's edge_rules derivation source.
+	bodies, _, edgeGen, err := s.EdgeRuleBodies(ctx)
+	if err != nil {
+		t.Fatalf("EdgeRuleBodies: %v", err)
+	}
+	if len(bodies) != 1 {
+		t.Fatalf("EdgeRuleBodies after seed = %d, want 1 (the seeded demo automation)", len(bodies))
+	}
+	if edgeGen != 8 {
+		t.Fatalf("EdgeRuleBodies generation = %d, want 8", edgeGen)
 	}
 }
 
@@ -95,11 +108,14 @@ func TestDesiredStateBundlesTheRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DesiredState: %v", err)
 	}
-	if ds.Generation != 7 {
-		t.Fatalf("DesiredState.Generation = %d, want 7", ds.Generation)
+	if ds.Generation != 8 {
+		t.Fatalf("DesiredState.Generation = %d, want 8", ds.Generation)
 	}
 	if len(ds.ScopeNodes) != 2 || len(ds.Rows.Dayparts) != 2 {
 		t.Fatalf("DesiredState bundled nodes:%d dayparts:%d, want 2/2", len(ds.ScopeNodes), len(ds.Rows.Dayparts))
+	}
+	if len(ds.EdgeRules.Rules) != 1 {
+		t.Fatalf("DesiredState.EdgeRules.Rules = %d, want 1 (the seeded demo automation, REL-062)", len(ds.EdgeRules.Rules))
 	}
 	if ds.SiteEffective.TZ != siteTZ {
 		t.Fatalf("DesiredState.SiteEffective.TZ = %q, want %q", ds.SiteEffective.TZ, siteTZ)

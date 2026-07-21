@@ -65,25 +65,44 @@ func (s *Store) DesiredStateRows(ctx context.Context) (scopeNodes []datamodel.Sc
 // signed desired-state generation. Its fields are exactly the DesiredStateRows
 // tuple (the scope nodes, the six scheduling-core row kinds, the site's effective
 // tz/lat/long from the SITE node per DAT-033, and the store generation the read
-// was taken at), so BuildFromStore never needs box-local state.
+// was taken at) PLUS EdgeRules — the store's edge-classified automations
+// (Store.EdgeRuleBodies, REL-062) wire-shaped for BuildFromStore's edge_rules
+// section — so BuildFromStore never needs box-local state nor a hardcoded rule.
 type DesiredStateResult struct {
 	ScopeNodes    []datamodel.ScopeNode
 	Rows          datamodel.RawRows
 	SiteEffective wire.SiteEffective
+	EdgeRules     wire.EdgeRules
 	Generation    int64
 }
 
 // DesiredState is DesiredStateRows returned as one DesiredStateResult value — the
 // single-argument form snapshot.BuildFromStore takes. Like DesiredStateRows it
-// reads scope nodes, scheduling rows, the site effective placement, and the
-// generation under one read lock, so the returned result is a consistent snapshot
-// at that generation.
+// reads scope nodes, scheduling rows, and the site effective placement under one
+// read lock; it additionally reads the store's edge-classified automations
+// (EdgeRuleBodies) so the result's EdgeRules field carries them wire-shaped
+// (REL-062) — an app-classified rule is never included, only edge rules ride
+// edge_rules. Generation is DesiredStateRows' own (the scheduling-core read); a
+// concurrent write landing between the two reads is not a concern here (the
+// store's single-writer serialization makes this race practically unreachable in
+// this wave, and either read still yields an internally consistent Sections
+// value for BuildFromStore to hash and sign).
 func (s *Store) DesiredState(ctx context.Context) (DesiredStateResult, error) {
 	nodes, rows, se, gen, err := s.DesiredStateRows(ctx)
 	if err != nil {
 		return DesiredStateResult{}, err
 	}
-	return DesiredStateResult{ScopeNodes: nodes, Rows: rows, SiteEffective: se, Generation: gen}, nil
+	bodies, minorVersion, _, err := s.EdgeRuleBodies(ctx)
+	if err != nil {
+		return DesiredStateResult{}, err
+	}
+	return DesiredStateResult{
+		ScopeNodes:    nodes,
+		Rows:          rows,
+		SiteEffective: se,
+		EdgeRules:     wire.EdgeRules{RulesMinorVersion: minorVersion, Rules: bodies},
+		Generation:    gen,
+	}, nil
 }
 
 // deriveSiteEffective reads the site node's own tz/lat/long (DAT-033). The first

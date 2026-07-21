@@ -208,10 +208,14 @@ func Build(img []byte, contentBaseURL string, id *signing.Identity, grants []wir
 // tz/lat/long (rows.SiteEffective, derived in the store from the SITE scope node
 // per data-model DAT-033 — never the feeder's OS locale), and
 // `revocation_and_site.content_origin` (REL-061/066) is contentBaseURL verbatim,
-// exactly as Build emits it. Every other section keeps the exact baseline shape
-// Build produces: one image screen-program showing img (asset_ref = img's content
-// id, url under contentBaseURL), the Wave-1 demo edge rule, an empty
-// device_inventory, grants in pairing_grants, and the reserved workflow_generation.
+// exactly as Build emits it. The `edge_rules` section (REL-062) carries
+// rows.EdgeRules — the store's edge-classified authored automations
+// (store.EdgeRuleBodies, no longer the hardcoded demoEdgeRuleJSON constant): an
+// app-classified stored rule is never carried here (its execution is app-side,
+// deferred). Every other section keeps the exact baseline shape Build produces:
+// one image screen-program showing img (asset_ref = img's content id, url under
+// contentBaseURL), an empty device_inventory, grants in pairing_grants, and the
+// reserved workflow_generation.
 //
 // The snapshot's `generation` is the store's own monotonic counter
 // (rows.Generation) rather than a constant, so an api write that advances the
@@ -238,6 +242,17 @@ func BuildFromStore(rows store.DesiredStateResult, img []byte, contentBaseURL st
 		return SignedSnapshot{}, fmt.Errorf("snapshot: BuildFromStore: schedule section: %w", err)
 	}
 
+	// edge_rules (REL-062) is the store's own edge-classified automations
+	// (rows.EdgeRules, from store.EdgeRuleBodies). Rules is defensively
+	// normalized to a non-nil empty slice (REL-060: a store with zero edge
+	// rules must still marshal `[]`, never `null`) — DesiredState already
+	// guarantees this via EdgeRuleBodies, but BuildFromStore does not trust a
+	// caller-assembled DesiredStateResult to have done so.
+	edgeRules := rows.EdgeRules
+	if edgeRules.Rules == nil {
+		edgeRules.Rules = []json.RawMessage{}
+	}
+
 	sections := wire.Sections{
 		ScreenPrograms: []wire.ScreenProgram{
 			{
@@ -254,10 +269,7 @@ func BuildFromStore(rows store.DesiredStateResult, img []byte, contentBaseURL st
 				},
 			},
 		},
-		EdgeRules: wire.EdgeRules{
-			RulesMinorVersion: rulesMinorVersion,
-			Rules:             []json.RawMessage{demoEdgeRuleJSON},
-		},
+		EdgeRules: edgeRules,
 		DeviceInventory: wire.DeviceInventory{
 			Devices:           []json.RawMessage{},
 			PackMatchPatterns: []json.RawMessage{},
