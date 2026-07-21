@@ -28,6 +28,7 @@ import (
 	"testing"
 
 	"github.com/maaxton/waiveo-next/internal/datamodel"
+	"github.com/maaxton/waiveo-next/internal/feeder/origin"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
 	"github.com/maaxton/waiveo-next/internal/relay/schedulehost"
@@ -176,6 +177,55 @@ func TestPlaylistUnknownAssetRefRejected(t *testing.T) {
 	resp, _ = e.do(t, http.MethodGet, "/api/v1/playlists/"+cePlaylistID, nil, nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("dangling-asset playlist was stored despite VALIDATION_FAILED: get status %d", resp.StatusCode)
+	}
+}
+
+// TestPlaylistReauthoringSurvivesOriginRestart pins the second-order effect of
+// the persistence asymmetry: validatePlaylistAssets gates on origin.Store.Has at
+// write time, so if the content origin lost an uploaded asset on restart, a PATCH
+// (or re-POST) of a playlist referencing that already-uploaded content would be
+// spuriously rejected 422 REFERENCE_INVALID — the guard "you cannot schedule
+// content that cannot be served" inverting into "you cannot re-edit a playlist
+// for content you already uploaded." With a dir-backed origin the asset survives,
+// so authoring the playlist after a restart succeeds.
+func TestPlaylistReauthoringSurvivesOriginRestart(t *testing.T) {
+	dir := t.TempDir()
+	asset := []byte("waiveo-next restart-survivor asset — uploaded before the feeder restarts")
+	ref := signhash.ContentID(asset)
+
+	// Lifetime 1: an operator uploads the asset to a persistent content origin.
+	c1, err := origin.Open(dir)
+	if err != nil {
+		t.Fatalf("origin.Open (lifetime 1): %v", err)
+	}
+	if _, err := c1.Add(asset); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Restart: a fresh feeder process reopens the SAME content dir — no shared
+	// in-memory map, exactly as a real restart would reload persisted content.
+	c2, err := origin.Open(dir)
+	if err != nil {
+		t.Fatalf("origin.Open (restart): %v", err)
+	}
+	if !c2.Has(strings.TrimPrefix(ref, "sha256:")) {
+		t.Fatalf("precondition: the uploaded asset did not survive the restart")
+	}
+
+	// Author a playlist referencing the already-uploaded asset over a fresh api
+	// handler bound to the reopened origin. The write MUST NOT be rejected 422 —
+	// the content is present in the origin, so the guard is satisfied.
+	e := newEnvWithContent(t, c2)
+	e.createNode(t, siteNode(ceSiteID))
+	e.createNode(t, screenNode(ceScreenID, ceSiteID, ""))
+
+	pl := datamodel.Playlist{
+		ID: cePlaylistID, ScopeNode: ceScreenID, Name: "Restart Survivor Playlist",
+		Items: []datamodel.PlaylistItem{{Source: "asset", AssetRef: ref}},
+	}
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/playlists", mustJSON(t, pl), nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("authoring a playlist for content uploaded before the restart: status %d, body %s (want 201 — the guard must not invert into rejecting already-uploaded content)", resp.StatusCode, raw)
 	}
 }
 

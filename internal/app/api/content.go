@@ -31,7 +31,15 @@ func (srv *server) uploadContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	assetRef := srv.content.Add(body)
+	assetRef, err := srv.content.Add(body)
+	if err != nil {
+		// The bytes could not be durably persisted to the content origin; the
+		// upload is not honored rather than reported stored-but-volatile (which
+		// would let a playlist reference content that vanishes on restart).
+		apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), http.StatusInternalServerError,
+			"INTERNAL", "Internal Server Error", "The content could not be stored.", nil)
+		return
+	}
 	hexDigest := strings.TrimPrefix(assetRef, "sha256:")
 
 	writeJSONValue(w, http.StatusCreated, map[string]string{

@@ -44,6 +44,22 @@ func TestLoadConfigStoreDefaultAndOverride(t *testing.T) {
 	}
 }
 
+func TestLoadConfigContentDirDefaultAndOverride(t *testing.T) {
+	// Unset -> the make-dev-local default under .dev/, a sibling of the store DB;
+	// it MUST persist alongside storePath so uploaded content survives a restart
+	// in lock-step with the playlists that reference it.
+	def := loadConfig(func(string) string { return "" })
+	if def.contentPath != ".dev/feeder-content" {
+		t.Errorf("default contentPath = %q, want .dev/feeder-content", def.contentPath)
+	}
+	// Explicit override wins (the on-box deployment points it at its data volume).
+	env := map[string]string{"WAIVEO_FEEDER_CONTENT_DIR": "/var/lib/waiveo/content"}
+	got := loadConfig(func(k string) string { return env[k] })
+	if got.contentPath != "/var/lib/waiveo/content" {
+		t.Errorf("contentPath = %q, want the explicit override", got.contentPath)
+	}
+}
+
 func TestLoadConfigContentURLDefaultsToListen(t *testing.T) {
 	// Overriding only the listen address carries into the content base URL, so
 	// a screen's direct fetch targets the same host the feeder binds — unless

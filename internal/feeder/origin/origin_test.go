@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -31,7 +32,10 @@ func loadTestImage(t *testing.T) []byte {
 func TestServeReturnsExactBytes(t *testing.T) {
 	img := loadTestImage(t)
 	o := New()
-	assetRef := o.Add(img)
+	assetRef, err := o.Add(img)
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
 
 	hexDigest := strings.TrimPrefix(assetRef, "sha256:")
 	got := o.Serve(hexDigest)
@@ -55,6 +59,93 @@ func TestServeUnknownHash404s(t *testing.T) {
 	}
 }
 
+// TestOpenPersistsContentAcrossRestart is the regression guard for the
+// persistence asymmetry: the app store's scheduling rows that reference a
+// content asset_ref persist to SQLite, so the content origin those refs resolve
+// against MUST persist too — otherwise a routine feeder restart makes every
+// resolved content url 404 (the bytes are gone) and spuriously rejects
+// re-authoring a playlist for content already uploaded. A dir-backed Store
+// (Open) write-throughs every Add to disk and reloads it at open, so an asset
+// uploaded in one process lifetime is still served in the next.
+func TestOpenPersistsContentAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	img := loadTestImage(t)
+
+	// First feeder lifetime: open a dir-backed origin and upload the asset.
+	first, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open(%q): %v", dir, err)
+	}
+	assetRef, err := first.Add(img)
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	hexDigest := strings.TrimPrefix(assetRef, "sha256:")
+
+	// Restart: a brand-new Store over the SAME dir — no shared in-memory map,
+	// exactly as a fresh feeder process would reopen its persisted content.
+	second, err := Open(dir)
+	if err != nil {
+		t.Fatalf("reopen Open(%q): %v", dir, err)
+	}
+	if !second.Has(hexDigest) {
+		t.Fatalf("Has(%q) = false after restart; the uploaded asset did not persist (a PATCH to a playlist referencing it would spuriously 422)", hexDigest)
+	}
+	got := second.Serve(hexDigest)
+	if got == nil {
+		t.Fatalf("Serve(%q) = nil after restart; a resolved content url would 404", hexDigest)
+	}
+	if string(got) != string(img) {
+		t.Errorf("Serve(%q) returned different bytes than were uploaded before the restart", hexDigest)
+	}
+	// The reloaded bytes still hash to their own key — content-addressing
+	// integrity (GET /content/<hex> returns bytes whose sha256 is <hex>) survives
+	// the round-trip through disk.
+	if signhash.ContentID(got) != assetRef {
+		t.Errorf("ContentID(reloaded bytes) = %q, want %q (asset_ref)", signhash.ContentID(got), assetRef)
+	}
+}
+
+// TestOpenSkipsCorruptOnDiskContent asserts Open refuses to load a file whose
+// bytes no longer hash to its filename — a torn write or externally corrupted
+// asset is dropped, never served under a hash it does not match, so the
+// content-addressing integrity invariant holds even across a disk fault.
+func TestOpenSkipsCorruptOnDiskContent(t *testing.T) {
+	dir := t.TempDir()
+	img := loadTestImage(t)
+	assetRef := signhash.ContentID(img)
+	hexDigest := strings.TrimPrefix(assetRef, "sha256:")
+
+	// Plant a file named by the asset's hash but carrying different bytes.
+	if err := os.WriteFile(filepath.Join(dir, hexDigest), []byte("not the image bytes"), 0o600); err != nil {
+		t.Fatalf("plant corrupt file: %v", err)
+	}
+	o, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open(%q): %v", dir, err)
+	}
+	if o.Has(hexDigest) {
+		t.Fatalf("Has(%q) = true; corrupt content was loaded and would be served under a mismatched hash", hexDigest)
+	}
+	if got := o.Serve(hexDigest); got != nil {
+		t.Errorf("Serve(%q) = %q, want nil (corrupt content must not be served)", hexDigest, got)
+	}
+}
+
+// TestNewIsInMemoryOnly pins that the dir-less constructor persists nothing, so
+// the api-layer tests' default Store stays ephemeral and the (ref, error) Add
+// signature never errors on the in-memory path.
+func TestNewIsInMemoryOnly(t *testing.T) {
+	o := New()
+	ref, err := o.Add(loadTestImage(t))
+	if err != nil {
+		t.Fatalf("Add on in-memory store: %v", err)
+	}
+	if ref == "" {
+		t.Fatal("Add returned an empty asset_ref")
+	}
+}
+
 // TestHandlerServesOverHTTPS asserts the store's HTTP handler serves the
 // exact image bytes at /content/<hex> for a known hash, and 404s an
 // unknown one — exercised over an actual TLS listener, since screens
@@ -62,7 +153,10 @@ func TestServeUnknownHash404s(t *testing.T) {
 func TestHandlerServesOverHTTPS(t *testing.T) {
 	img := loadTestImage(t)
 	o := New()
-	assetRef := o.Add(img)
+	assetRef, err := o.Add(img)
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
 	hexDigest := strings.TrimPrefix(assetRef, "sha256:")
 
 	srv := httptest.NewTLSServer(apihttp.WithTraceID(o.Handler()))

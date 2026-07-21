@@ -77,6 +77,13 @@ type testEnv struct {
 const testContentBase = "https://content.example"
 
 func newEnv(t *testing.T) *testEnv {
+	return newEnvWithContent(t, origin.New())
+}
+
+// newEnvWithContent is newEnv over a caller-supplied content origin — used by the
+// restart regression to hand the api handler an origin.Open'd store already
+// carrying content uploaded in a prior "lifetime".
+func newEnvWithContent(t *testing.T, content *origin.Store) *testEnv {
 	t.Helper()
 	st, err := store.Open(":memory:")
 	if err != nil {
@@ -85,7 +92,6 @@ func newEnv(t *testing.T) *testEnv {
 	t.Cleanup(func() { _ = st.Close() })
 	clock := func() int64 { return fixedNowMs }
 	idem := apihttp.NewIdempotencyStore(clock, 0)
-	content := origin.New()
 	ts := httptest.NewServer(api.New(st, idem, clock, content, testContentBase))
 	t.Cleanup(ts.Close)
 	return &testEnv{ts: ts, store: st, content: content, contentBase: testContentBase}

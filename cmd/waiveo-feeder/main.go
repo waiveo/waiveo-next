@@ -63,12 +63,21 @@ type config struct {
 	listen         string // TCP bind address for the HTTPS listener
 	contentBaseURL string // scheme+host the direct-fetch content URL is built from
 	storePath      string // SQLite file the app store persists scope-nodes + scheduling rows to
+	contentPath    string // directory the content origin persists uploaded asset bytes to
 }
 
 // defaultStorePath is the make-dev-local SQLite file the feeder's app store lives
 // in (git-ignored under .dev/, alongside the signing keys). store.Open creates
 // the parent dir if absent, so no separate mkdir is needed.
 const defaultStorePath = ".dev/feeder-store.db"
+
+// defaultContentPath is the make-dev-local directory the content origin persists
+// uploaded asset bytes into (git-ignored under .dev/, a sibling of the store DB).
+// It MUST persist alongside storePath: the playlists in the store reference
+// content by asset_ref, so if the bytes did not survive a restart the store's
+// resolved content urls would 404 and re-authoring would be spuriously rejected.
+// origin.Open creates the dir if absent, so no separate mkdir is needed.
+const defaultContentPath = ".dev/feeder-content"
 
 // loadConfig reads the feeder config from env (via `env`, os.Getenv in main),
 // falling back to the loopback defaults. contentBaseURL defaults to the listen
@@ -79,6 +88,7 @@ func loadConfig(env func(string) string) config {
 		listen:         listen,
 		contentBaseURL: envOr(env, "WAIVEO_FEEDER_CONTENT_URL", "https://"+listen),
 		storePath:      envOr(env, "WAIVEO_FEEDER_STORE", defaultStorePath),
+		contentPath:    envOr(env, "WAIVEO_FEEDER_CONTENT_DIR", defaultContentPath),
 	}
 }
 
@@ -98,9 +108,18 @@ func main() {
 	}
 	log.Printf("waiveo-feeder identity loaded (signing pub %s)", hex.EncodeToString(id.SigningPub()))
 
-	contentStore := origin.New()
+	// The content origin is dir-backed so operator-uploaded assets survive a
+	// restart in lock-step with the persisted playlists that reference them
+	// (cfg.contentPath, a sibling of the store DB). The placeholder is re-added
+	// every boot — content-addressed, so re-adding it is a no-op on disk.
+	contentStore, err := origin.Open(cfg.contentPath)
+	if err != nil {
+		log.Fatalf("waiveo-feeder: open content store: %v", err)
+	}
 	img := placeholderImage()
-	contentStore.Add(img)
+	if _, err := contentStore.Add(img); err != nil {
+		log.Fatalf("waiveo-feeder: persist placeholder image: %v", err)
+	}
 
 	contentBaseURL := cfg.contentBaseURL
 	g := grant.Mint()

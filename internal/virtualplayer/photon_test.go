@@ -71,7 +71,9 @@ func bootTestFeeder(t *testing.T) (baseURL string, img []byte) {
 
 	img = testImage()
 	contentStore := origin.New()
-	contentStore.Add(img)
+	if _, err := contentStore.Add(img); err != nil {
+		t.Fatalf("contentStore.Add: %v", err)
+	}
 
 	g := grant.Mint()
 	snap, err := snapshot.Build(img, baseURL, id, []wire.PairingGrant{g})
