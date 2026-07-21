@@ -284,7 +284,7 @@ func TestProjectLeaseMidDayProjectsContentFromPlaylist(t *testing.T) {
 	}
 	wantAssetRef := store.Rows.Playlists[0].Items[0].AssetRef
 
-	display, priority, content, programRevision, err := ProjectLease(store, demoScreenScopeNodeID, demoLocalInstant(t, 12, 0))
+	display, priority, content, programRevision, err := ProjectLease(store, demoScreenScopeNodeID, demoLocalInstant(t, 12, 0), "")
 	if err != nil {
 		t.Fatalf("ProjectLease(mid-day): %v", err)
 	}
@@ -318,7 +318,7 @@ func TestProjectLeaseOvernightProjectsBlankNoContent(t *testing.T) {
 		t.Fatalf("BuildStore(demo section) errs = %+v, want none", errs)
 	}
 
-	display, priority, content, _, err := ProjectLease(store, demoScreenScopeNodeID, demoLocalInstant(t, 2, 0))
+	display, priority, content, _, err := ProjectLease(store, demoScreenScopeNodeID, demoLocalInstant(t, 2, 0), "")
 	if err != nil {
 		t.Fatalf("ProjectLease(overnight): %v", err)
 	}
@@ -374,7 +374,7 @@ func governedTerminalStore(t *testing.T) (datamodel.RowStore, string) {
 func TestProjectLeaseTerminalDefaultBlank(t *testing.T) {
 	store, screenID := governedTerminalStore(t)
 
-	display, priority, content, rev1, err := ProjectLease(store, screenID, demoLocalInstant(t, 12, 0))
+	display, priority, content, rev1, err := ProjectLease(store, screenID, demoLocalInstant(t, 12, 0), "")
 	if err != nil {
 		t.Fatalf("ProjectLease(terminal): %v", err)
 	}
@@ -388,7 +388,7 @@ func TestProjectLeaseTerminalDefaultBlank(t *testing.T) {
 		t.Errorf("content has %d items, want 0 (terminal default shows nothing, DAT-118)", len(content))
 	}
 
-	_, _, _, rev2, err := ProjectLease(store, screenID, demoLocalInstant(t, 18, 0))
+	_, _, _, rev2, err := ProjectLease(store, screenID, demoLocalInstant(t, 18, 0), "")
 	if err != nil {
 		t.Fatalf("ProjectLease(terminal, second instant): %v", err)
 	}
@@ -407,11 +407,11 @@ func TestProjectLeaseProgramRevisionStableWithinDaypartChangesAcross(t *testing.
 		t.Fatalf("BuildStore(demo section) errs = %+v, want none", errs)
 	}
 
-	_, _, _, revMidday, err := ProjectLease(store, demoScreenScopeNodeID, demoLocalInstant(t, 12, 0))
+	_, _, _, revMidday, err := ProjectLease(store, demoScreenScopeNodeID, demoLocalInstant(t, 12, 0), "")
 	if err != nil {
 		t.Fatalf("ProjectLease(12:00): %v", err)
 	}
-	_, _, _, revAfternoon, err := ProjectLease(store, demoScreenScopeNodeID, demoLocalInstant(t, 15, 0))
+	_, _, _, revAfternoon, err := ProjectLease(store, demoScreenScopeNodeID, demoLocalInstant(t, 15, 0), "")
 	if err != nil {
 		t.Fatalf("ProjectLease(15:00): %v", err)
 	}
@@ -419,7 +419,7 @@ func TestProjectLeaseProgramRevisionStableWithinDaypartChangesAcross(t *testing.
 		t.Errorf("programRevision changed within the SAME content daypart: %q (12:00) vs %q (15:00) — a stable daypart must not re-swap", revMidday, revAfternoon)
 	}
 
-	_, _, _, revOvernight, err := ProjectLease(store, demoScreenScopeNodeID, demoLocalInstant(t, 2, 0))
+	_, _, _, revOvernight, err := ProjectLease(store, demoScreenScopeNodeID, demoLocalInstant(t, 2, 0), "")
 	if err != nil {
 		t.Fatalf("ProjectLease(02:00): %v", err)
 	}
@@ -535,14 +535,14 @@ func TestResolveNowServesResolvedProgramViaSetProgram(t *testing.T) {
 	wantAssetRef := store.Rows.Playlists[0].Items[0].AssetRef
 
 	srv, priv, grantID := newTestPlayerServer(t)
-	r := NewResolver(store, demoScreenScopeNodeID, srv, priv, 1)
+	r := NewResolver(store, demoScreenScopeNodeID, srv, priv, 1, "")
 
 	midDay := demoLocalInstant(t, 12, 0)
 	if _, err := r.ResolveNow(midDay); err != nil {
 		t.Fatalf("ResolveNow(mid-day): %v", err)
 	}
 
-	_, _, _, wantRevision, err := ProjectLease(store, demoScreenScopeNodeID, midDay)
+	_, _, _, wantRevision, err := ProjectLease(store, demoScreenScopeNodeID, midDay, "")
 	if err != nil {
 		t.Fatalf("ProjectLease(mid-day): %v", err)
 	}
@@ -588,7 +588,7 @@ func TestResolveNowStaleGenerationDoesNotRevertServedProgram(t *testing.T) {
 
 	// A superseded generation-7 resolver resolves late — its background loop was
 	// mid-resolve when generation 8 was applied — and writes via SetProgram.
-	stale := NewResolver(store, demoScreenScopeNodeID, srv, priv, 7)
+	stale := NewResolver(store, demoScreenScopeNodeID, srv, priv, 7, "")
 	if _, err := stale.ResolveNow(demoLocalInstant(t, 12, 0)); err != nil {
 		t.Fatalf("ResolveNow(stale generation 7): %v", err)
 	}
@@ -625,7 +625,7 @@ func unresolvableTZStore(t *testing.T) (datamodel.RowStore, string) {
 // serve path was left untouched.
 func TestResolveNowUnresolvableTZLeavesSetProgramUncalledAndErrors(t *testing.T) {
 	store, screenID := unresolvableTZStore(t)
-	r := NewResolver(store, screenID, nil, nil, 1)
+	r := NewResolver(store, screenID, nil, nil, 1, "")
 
 	var fire *datamodel.PresetFire
 	var err error
@@ -711,7 +711,7 @@ func TestTickCrossingIntoContentFiresPresetOnceThenHolds(t *testing.T) {
 		t.Fatalf("BuildStore(demo section) errs = %+v, want none", errs)
 	}
 	srv, priv, _ := newTestPlayerServer(t)
-	r := NewResolver(store, demoScreenScopeNodeID, srv, priv, 1)
+	r := NewResolver(store, demoScreenScopeNodeID, srv, priv, 1, "")
 	sink, ctrl := newFakeSink(t)
 
 	// Overnight: the blank daypart holds and binds no preset — nothing fires.
@@ -743,7 +743,7 @@ func TestFirePresetDispatchesBatchAndCollectsCompleteOutcome(t *testing.T) {
 	if len(errs) != 0 {
 		t.Fatalf("BuildStore(demo section) errs = %+v, want none", errs)
 	}
-	r := NewResolver(store, demoScreenScopeNodeID, nil, nil, 1) // FirePreset never touches the player server
+	r := NewResolver(store, demoScreenScopeNodeID, nil, nil, 1, "") // FirePreset never touches the player server
 	sink, ctrl := newFakeSink(t)
 
 	fire := &datamodel.PresetFire{DaypartID: demoContentDaypartID, PresetBatchID: demoPresetBatchID}
@@ -773,7 +773,7 @@ func TestFirePresetNilFireDispatchesNothing(t *testing.T) {
 	if len(errs) != 0 {
 		t.Fatalf("BuildStore(demo section) errs = %+v, want none", errs)
 	}
-	r := NewResolver(store, demoScreenScopeNodeID, nil, nil, 1)
+	r := NewResolver(store, demoScreenScopeNodeID, nil, nil, 1, "")
 	sink, ctrl := newFakeSink(t)
 
 	out := r.FirePreset(nil, sink)
@@ -853,7 +853,7 @@ func maskedStore(t *testing.T) datamodel.RowStore {
 func TestTickMaskedDaypartDoesNotFire(t *testing.T) {
 	store := maskedStore(t)
 	srv, priv, _ := newTestPlayerServer(t)
-	r := NewResolver(store, maskedScreenID, srv, priv, 1)
+	r := NewResolver(store, maskedScreenID, srv, priv, 1, "")
 	sink, ctrl := newFakeSink(t)
 
 	r.Tick(demoLocalInstant(t, 12, 0), sink)
@@ -881,7 +881,7 @@ func TestLoopDrivesTickOnInjectedTicks(t *testing.T) {
 		t.Fatalf("BuildStore(demo section) errs = %+v, want none", errs)
 	}
 	srv, priv, _ := newTestPlayerServer(t)
-	r := NewResolver(store, demoScreenScopeNodeID, srv, priv, 1)
+	r := NewResolver(store, demoScreenScopeNodeID, srv, priv, 1, "")
 	sink, ctrl := newFakeSink(t)
 
 	ticks := make(chan time.Time)
@@ -968,7 +968,7 @@ func resumeMisfireStore(t *testing.T, daypartMisfire string) datamodel.RowStore 
 func TestTickBootSkipMisfireSuppressesResumeFireButStillProjectsState(t *testing.T) {
 	store := resumeMisfireStore(t, "skip")
 	srv, priv, _ := newTestPlayerServer(t)
-	r := NewResolver(store, resumeMisfireScreenID, srv, priv, 1)
+	r := NewResolver(store, resumeMisfireScreenID, srv, priv, 1, "")
 	sink, ctrl := newFakeSink(t)
 
 	r.TickBoot(demoLocalInstant(t, 12, 0), sink)
@@ -990,7 +990,7 @@ func TestTickBootSkipMisfireSuppressesResumeFireButStillProjectsState(t *testing
 func TestTickBootDefaultMisfireStillFiresResumeEdge(t *testing.T) {
 	store := resumeMisfireStore(t, "") // no explicit misfire -> catch_up_once (DAT-121)
 	srv, priv, _ := newTestPlayerServer(t)
-	r := NewResolver(store, resumeMisfireScreenID, srv, priv, 1)
+	r := NewResolver(store, resumeMisfireScreenID, srv, priv, 1, "")
 	sink, ctrl := newFakeSink(t)
 
 	r.TickBoot(demoLocalInstant(t, 12, 0), sink)

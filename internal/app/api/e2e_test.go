@@ -180,7 +180,7 @@ func resolveThroughDesiredState(t *testing.T, st *store.Store, img []byte, id *s
 	if !schedulehost.Governs(rowStore, e2eScreenNodeID) {
 		t.Fatalf("the seeded schedule does not govern screen %s", e2eScreenNodeID)
 	}
-	display, _, content, programRevision, err = schedulehost.ProjectLease(rowStore, e2eScreenNodeID, nowMs)
+	display, _, content, programRevision, err = schedulehost.ProjectLease(rowStore, e2eScreenNodeID, nowMs, snap.Sections.RevocationAndSite.ContentOrigin)
 	if err != nil {
 		t.Fatalf("ProjectLease: %v", err)
 	}

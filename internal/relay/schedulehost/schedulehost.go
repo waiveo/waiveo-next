@@ -21,6 +21,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/datamodel"
@@ -156,7 +157,11 @@ func Governs(store datamodel.RowStore, screenNodeID string) bool {
 //     re-derive the display_power mapping; it reads Resolve's projection.
 //   - content, for a `content` display, is the effective daypart's/fallback's
 //     playlist projected item-by-item to player/1 Lease content refs
-//     (playlistContent); a blank/terminal display carries no content.
+//     (playlistContent); a blank/terminal display carries no content. Each
+//     asset item's fetchable `url` is derived from contentOrigin — the
+//     desired-state content-origin base (desiredstate.Applied.ContentOrigin,
+//     REL-061) — in the same `<base>/content/<hex>` form snapshot.Build uses;
+//     an empty contentOrigin degrades to a url-less content item (REL-140).
 //   - priority is always `scheduled` — this is the schedule-driven serve path;
 //     the emergency `preempt` priority is a separate path, out of scope here.
 //   - programRevision is a deterministic function of the effective-daypart
@@ -168,12 +173,12 @@ func Governs(store datamodel.RowStore, screenNodeID string) bool {
 // unresolvable effective tz (DAT-034) — and in that case returns no Lease
 // fields: resolution NEVER substitutes box-local state, so the caller degrades
 // rather than serving a guessed one.
-func ProjectLease(store datamodel.RowStore, screenNodeID string, nowMs int64) (display string, priority string, content []wire.LeaseContent, programRevision string, err error) {
+func ProjectLease(store datamodel.RowStore, screenNodeID string, nowMs int64, contentOrigin string) (display string, priority string, content []wire.LeaseContent, programRevision string, err error) {
 	state, err := datamodel.Resolve(store, screenNodeID, nowMs)
 	if err != nil {
 		return "", "", nil, "", err
 	}
-	display, priority, content, programRevision = projectState(store, state)
+	display, priority, content, programRevision = projectState(store, state, contentOrigin)
 	return display, priority, content, programRevision, nil
 }
 
@@ -182,12 +187,12 @@ func ProjectLease(store datamodel.RowStore, screenNodeID string, nowMs int64) (d
 // Resolve first) and Resolver.ResolveNow (which keeps the resolved state for the
 // preset rising-edge check) both use, so the two cannot drift on how a resolved
 // state becomes a Lease.
-func projectState(store datamodel.RowStore, state datamodel.EffectiveState) (display string, priority string, content []wire.LeaseContent, programRevision string) {
+func projectState(store datamodel.RowStore, state datamodel.EffectiveState, contentOrigin string) (display string, priority string, content []wire.LeaseContent, programRevision string) {
 	display = state.Display
 	priority = leasePriorityScheduled
 	programRevision = programRevisionFor(state)
 	if state.Display == leaseDisplayContent {
-		content = playlistContent(store, state.PlaylistID)
+		content = playlistContent(store, state.PlaylistID, contentOrigin)
 	}
 	return display, priority, content, programRevision
 }
@@ -216,12 +221,22 @@ func programRevisionFor(state datamodel.EffectiveState) string {
 // (pack) item has no direct Lease content ref and is skipped. An empty or
 // unknown playlist id yields no content.
 //
-// The scheduling-core playlist item (DAT-041) carries an asset_ref but no
-// content-origin URL — the asset_ref -> direct-fetch URL resolution (REL-140)
-// is a separate concern this projection does not have the inputs for — so the
-// URL/ExpiresAt fields are left zero here; a later task threading a content
-// resolver fills them.
-func playlistContent(store datamodel.RowStore, playlistID string) []wire.LeaseContent {
+// contentOrigin is the desired-state's content-origin base URL
+// (desiredstate.Applied.ContentOrigin, from revocation_and_site.content_origin,
+// REL-061/066). Each asset item's Lease `url` is stamped as
+// `contentOrigin + "/content/" + hex(asset_ref)` — the sha256: prefix stripped
+// off the content-addressed ref — which is BYTE-IDENTICAL to the URL form the
+// app-authored path (snapshot.Build) emits for the same asset + base, so the
+// two content-URL grammars are single-sourced (REL-061), never a second shape.
+// `expires_at` is 0 for now, matching snapshot.Build (no content-URL TTL policy
+// is defined yet).
+//
+// When contentOrigin is "" — the desired state carried no content origin — the
+// url is left EMPTY exactly as before: the relay derives content URLs only from
+// the base carried in desired-state, never a relay-local guess, so a missing
+// base degrades to a url-less content item rather than fabricating a box-local
+// origin (REL-140).
+func playlistContent(store datamodel.RowStore, playlistID string, contentOrigin string) []wire.LeaseContent {
 	if playlistID == "" {
 		return nil
 	}
@@ -238,6 +253,7 @@ func playlistContent(store datamodel.RowStore, playlistID string) []wire.LeaseCo
 			content = append(content, wire.LeaseContent{
 				Type:     leaseContentTypeImage,
 				AssetRef: item.AssetRef,
+				URL:      contentURL(contentOrigin, item.AssetRef),
 			})
 		}
 		if len(content) == 0 {
@@ -246,6 +262,19 @@ func playlistContent(store datamodel.RowStore, playlistID string) []wire.LeaseCo
 		return content
 	}
 	return nil
+}
+
+// contentURL builds a schedule-resolved content item's Lease `url` from the
+// desired-state content-origin base and a content-addressed asset_ref
+// (`sha256:<hex>`): `contentOrigin + "/content/" + <hex>`, mirroring
+// snapshot.Build's app-authored form byte-for-byte (REL-061). An empty
+// contentOrigin yields an empty url — the relay never fabricates a box-local
+// origin (REL-140); the caller degrades to a url-less content item.
+func contentURL(contentOrigin, assetRef string) string {
+	if contentOrigin == "" {
+		return ""
+	}
+	return contentOrigin + "/content/" + strings.TrimPrefix(assetRef, "sha256:")
 }
 
 // Resolver owns the per-instant serving of ONE screen's schedule-resolved
@@ -259,6 +288,15 @@ type Resolver struct {
 	screenNodeID string
 	srv          *playerserver.Server
 	signingKey   ed25519.PrivateKey
+
+	// contentOrigin is the desired-state content-origin base URL
+	// (desiredstate.Applied.ContentOrigin, from revocation_and_site.content_origin,
+	// REL-061/066) this resolver derives schedule-resolved content-item Lease URLs
+	// from — the SAME base the app-authored snapshot.Build path uses, so both
+	// produce byte-identical `<base>/content/<hex>` URLs. Empty when the applied
+	// desired-state carried no content origin, in which case resolved content
+	// items degrade to a url-less ref (REL-140) rather than a box-local guess.
+	contentOrigin string
 
 	// generation is the desired-state generation this resolver was built for
 	// (relay/1 REL-052/056). It is stamped onto every playerserver.SetProgram
@@ -293,8 +331,16 @@ type Resolver struct {
 // newer generation installed. The live re-pull path (cmd/waiveo-relay) passes
 // the applied generation; tests exercising a single generation may pass any
 // non-decreasing value.
-func NewResolver(store datamodel.RowStore, screenNodeID string, srv *playerserver.Server, signingKey ed25519.PrivateKey, generation int64) *Resolver {
-	return &Resolver{store: store, screenNodeID: screenNodeID, srv: srv, signingKey: signingKey, generation: generation}
+//
+// contentOrigin is the applied desired-state's content-origin base URL
+// (desiredstate.Applied.ContentOrigin, REL-061/066): every schedule-resolved
+// content item this resolver serves gets a fetchable `<contentOrigin>/content/
+// <hex>` URL derived from it, byte-identical to the app-authored snapshot.Build
+// form. An empty contentOrigin degrades resolved content to url-less refs
+// (REL-140) — the live re-pull path passes applied.ContentOrigin, so a feeder
+// that carried no content origin degrades rather than fabricating one.
+func NewResolver(store datamodel.RowStore, screenNodeID string, srv *playerserver.Server, signingKey ed25519.PrivateKey, generation int64, contentOrigin string) *Resolver {
+	return &Resolver{store: store, screenNodeID: screenNodeID, srv: srv, signingKey: signingKey, generation: generation, contentOrigin: contentOrigin}
 }
 
 // ResolveNow resolves the screen's effective state at nowMs, serves the
@@ -320,7 +366,7 @@ func (r *Resolver) ResolveNow(nowMs int64) (fired *datamodel.PresetFire, err err
 		return nil, err
 	}
 
-	display, priority, content, programRevision := projectState(r.store, state)
+	display, priority, content, programRevision := projectState(r.store, state, r.contentOrigin)
 	r.srv.SetProgram(r.generation, programRevision, priority, display, content, r.signingKey)
 
 	fired = datamodel.PresetTransition(r.prev, &state)

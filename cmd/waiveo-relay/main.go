@@ -545,7 +545,7 @@ func resolveAndServe(ctx context.Context, applied desiredstate.Applied, srv *pla
 			continue
 		}
 
-		display, _, content, _, err := schedulehost.ProjectLease(store, screenID, nowMs)
+		display, _, content, _, err := schedulehost.ProjectLease(store, screenID, nowMs, applied.ContentOrigin)
 		if err != nil {
 			// An unresolvable effective tz (DAT-034) degrades to the app-authored
 			// program already served — never a box-local substitution.
@@ -553,7 +553,7 @@ func resolveAndServe(ctx context.Context, applied desiredstate.Applied, srv *pla
 			continue
 		}
 
-		r := schedulehost.NewResolver(store, screenID, srv, signingKey, applied.Generation)
+		r := schedulehost.NewResolver(store, screenID, srv, signingKey, applied.Generation, applied.ContentOrigin)
 		r.TickBoot(nowMs, sink) // the level-triggered STATE projection + the misfire-governed boot resume-edge preset (DAT-075/076/094/119/121).
 		resolvers = append(resolvers, r)
 
