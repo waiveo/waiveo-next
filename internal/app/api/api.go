@@ -32,6 +32,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/datamodel"
 	"github.com/maaxton/waiveo-next/internal/feeder/origin"
+	"github.com/maaxton/waiveo-next/internal/rules/compile"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/apiselector"
 	"github.com/maaxton/waiveo-next/internal/shared/ulid"
@@ -83,6 +84,14 @@ func New(st *store.Store, idem *apihttp.IdempotencyStore, nowMs func() int64, co
 	srv.mount(mux, schedulesConfig())
 	srv.mount(mux, daypartsConfig())
 	srv.mount(mux, playlistsConfig())
+	srv.mount(mux, automationsConfig())
+	// The automations family adds two operations beyond plain resource CRUD: a
+	// synchronous per-automation run (openapi runAutomation) and a selector-targeted
+	// fleet-mutating bulk enable/disable returning an api/1 Job (bulkEnableAutomations).
+	// The literal `bulk-enable` segment is unambiguous — the generic mount registers
+	// no POST on `automations/{id}` — and `{id}/run` has its own two-segment shape.
+	mux.HandleFunc("POST "+apiPrefix+"/automations/{id}/run", srv.runAutomation)
+	mux.HandleFunc("POST "+apiPrefix+"/automations/bulk-enable", srv.bulkEnableAutomations)
 	mux.HandleFunc("POST "+apiPrefix+"/content", srv.uploadContent)
 	return apihttp.WithTraceID(mux)
 }
@@ -566,6 +575,17 @@ func (rs *resource) writeStoreError(w http.ResponseWriter, r *http.Request, err 
 	var xerr *apihttp.ExternalIDError
 	if errors.As(err, &xerr) {
 		rs.problem(w, r, xerr.Status, xerr.Code, xerr.Title, xerr.Detail)
+		return
+	}
+	// A rules/1 compile failure the store's compile-gate raised on an automation
+	// write (compile.Compile, never re-run here): the authored rule is rejected
+	// 422 / VALIDATION_FAILED carrying the compiler's message as the Problem detail
+	// and its offending member as the api/1 `errors` extension (API-013) — a
+	// non-compiling rule is never stored nor carried to the relay.
+	var cerr *compile.CompileError
+	if errors.As(err, &cerr) {
+		apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), http.StatusUnprocessableEntity,
+			"VALIDATION_FAILED", "Unprocessable Entity", cerr.Message, compileErrorExtra(cerr))
 		return
 	}
 	var verr *store.ValidationError
