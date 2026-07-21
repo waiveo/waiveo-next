@@ -547,6 +547,89 @@ func TestConcurrentWritesSerialized(t *testing.T) {
 	}
 }
 
+// TestDesiredStateGenerationBindsConsistentEdgeRuleContent guards the
+// (generation, edge-rule content) binding DesiredState's caller relies on
+// (REL-053/075: a signed {generation, hash} pair must correspond to exactly one
+// atomic store state). Every write in this test is a distinct, compile-clean
+// edge-automation Create — each commits exactly one generation bump together
+// with exactly one new edge rule row, atomically, in the SAME transaction
+// (automations.go) — so at ANY single true store instant the two quantities are
+// the same number: generation == stored edge-rule count. A storm of concurrent
+// creates races a storm of concurrent DesiredState() reads; every DesiredState()
+// result, whenever it lands, must report that same equality.
+//
+// Regression: DesiredState used to compose two SEPARATELY read-locked calls
+// (DesiredStateRows, whose RUnlock released the store's lock, then a later,
+// independent RLock/RUnlock in EdgeRuleBodies) rather than one RLock section
+// spanning both reads. A create landing in the gap between them committed (and
+// bumped the generation) after the first read but before the second, so the
+// composite result carried the FIRST read's (now stale) generation alongside the
+// SECOND, later read's fresher edge-rule content — a generation/content pair
+// that never described one atomic snapshot.
+func TestDesiredStateGenerationBindsConsistentEdgeRuleContent(t *testing.T) {
+	s := openMem(t)
+	ctx := context.Background()
+
+	const writers = 150
+	const readers = 8
+
+	stop := make(chan struct{})
+	var readerWG sync.WaitGroup
+	for i := 0; i < readers; i++ {
+		readerWG.Add(1)
+		go func() {
+			defer readerWG.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				ds, err := s.DesiredState(ctx)
+				if err != nil {
+					t.Errorf("DesiredState: %v", err)
+					return
+				}
+				if int64(len(ds.EdgeRules.Rules)) != ds.Generation {
+					t.Errorf("DesiredState generation=%d but EdgeRules carried %d rule(s), want equal — "+
+						"a write landed between the store's two independently-locked reads, binding a stale "+
+						"generation to fresher edge-rule content (REL-053/075)",
+						ds.Generation, len(ds.EdgeRules.Rules))
+				}
+			}
+		}()
+	}
+
+	var writerWG sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		writerWG.Add(1)
+		go func(i int) {
+			defer writerWG.Done()
+			id := "01J8ZDSGENEDG" + padID(i)
+			if _, err := s.Create(ctx, store.KindAutomation, edgeAutomation(id)); err != nil {
+				t.Errorf("create automation %d: %v", i, err)
+			}
+		}(i)
+	}
+	writerWG.Wait()
+	close(stop)
+	readerWG.Wait()
+
+	if g := gen(t, s); g != writers {
+		t.Fatalf("generation after %d automation creates = %d, want %d", writers, g, writers)
+	}
+	bodies, _, finalGen, err := s.EdgeRuleBodies(ctx)
+	if err != nil {
+		t.Fatalf("EdgeRuleBodies: %v", err)
+	}
+	if len(bodies) != writers {
+		t.Fatalf("EdgeRuleBodies after storm = %d, want %d", len(bodies), writers)
+	}
+	if finalGen != int64(writers) {
+		t.Fatalf("EdgeRuleBodies generation after storm = %d, want %d", finalGen, writers)
+	}
+}
+
 // padID renders i as a fixed-width 13-char suffix so every generated fixture id
 // is a distinct 26-char string.
 func padID(i int) string {

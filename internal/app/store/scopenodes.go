@@ -28,26 +28,41 @@ func readScopeNodes(ctx context.Context, q queryer) ([]datamodel.ScopeNode, erro
 	return nodes, nil
 }
 
-// DesiredStateRows returns the store's current desired-state inputs the feeder
-// derives its signed snapshot from (the schedule section, REL-065): the scope
-// nodes, the six scheduling-core row kinds as datamodel.RawRows, the site's
-// effective tz/lat/long, and the store generation — all read under one read lock
-// so they form a single consistent snapshot at that generation.
+// desiredStateRows is the unlocked core of DesiredStateRows: it reads the scope
+// nodes and the six scheduling-core row kinds and derives site_effective, but
+// takes no lock itself — every caller wraps it in its OWN read-lock section, so
+// it can be composed with FURTHER reads (DesiredState adds the edge-rule-bodies
+// read) inside a single critical section rather than stacking separately-locked
+// calls.
 //
 // site_effective is taken from the SITE scope node's OWN placement columns
 // (DAT-033) — never from the feeder's OS locale (the no-box-local-desired-state
 // rule). A site node always carries all three geo columns non-null (BuildScopeTree
 // enforced it at write time). If no site node is present the zero SiteEffective
 // is returned.
+func desiredStateRows(ctx context.Context, q queryer) (scopeNodes []datamodel.ScopeNode, rows datamodel.RawRows, siteEffective wire.SiteEffective, err error) {
+	scopeNodes, err = readScopeNodes(ctx, q)
+	if err != nil {
+		return nil, datamodel.RawRows{}, wire.SiteEffective{}, err
+	}
+	rows, err = readRawRows(ctx, q)
+	if err != nil {
+		return nil, datamodel.RawRows{}, wire.SiteEffective{}, err
+	}
+	siteEffective = deriveSiteEffective(scopeNodes)
+	return scopeNodes, rows, siteEffective, nil
+}
+
+// DesiredStateRows returns the store's current desired-state inputs the feeder
+// derives its signed snapshot from (the schedule section, REL-065): the scope
+// nodes, the six scheduling-core row kinds as datamodel.RawRows, the site's
+// effective tz/lat/long, and the store generation — all read under one read lock
+// so they form a single consistent snapshot at that generation.
 func (s *Store) DesiredStateRows(ctx context.Context) (scopeNodes []datamodel.ScopeNode, rows datamodel.RawRows, siteEffective wire.SiteEffective, generation int64, err error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	scopeNodes, err = readScopeNodes(ctx, s.db)
-	if err != nil {
-		return nil, datamodel.RawRows{}, wire.SiteEffective{}, 0, err
-	}
-	rows, err = readRawRows(ctx, s.db)
+	scopeNodes, rows, siteEffective, err = desiredStateRows(ctx, s.db)
 	if err != nil {
 		return nil, datamodel.RawRows{}, wire.SiteEffective{}, 0, err
 	}
@@ -55,8 +70,6 @@ func (s *Store) DesiredStateRows(ctx context.Context) (scopeNodes []datamodel.Sc
 	if err != nil {
 		return nil, datamodel.RawRows{}, wire.SiteEffective{}, 0, err
 	}
-
-	siteEffective = deriveSiteEffective(scopeNodes)
 	return scopeNodes, rows, siteEffective, generation, nil
 }
 
@@ -77,22 +90,34 @@ type DesiredStateResult struct {
 }
 
 // DesiredState is DesiredStateRows returned as one DesiredStateResult value — the
-// single-argument form snapshot.BuildFromStore takes. Like DesiredStateRows it
-// reads scope nodes, scheduling rows, and the site effective placement under one
-// read lock; it additionally reads the store's edge-classified automations
-// (EdgeRuleBodies) so the result's EdgeRules field carries them wire-shaped
-// (REL-062) — an app-classified rule is never included, only edge rules ride
-// edge_rules. Generation is DesiredStateRows' own (the scheduling-core read); a
-// concurrent write landing between the two reads is not a concern here (the
-// store's single-writer serialization makes this race practically unreachable in
-// this wave, and either read still yields an internally consistent Sections
-// value for BuildFromStore to hash and sign).
+// single-argument form snapshot.BuildFromStore takes. It reads scope nodes,
+// scheduling rows, the site effective placement, AND the store's edge-classified
+// automations (the same query readEdgeRuleBodies/EdgeRuleBodies runs) so the
+// result's EdgeRules field carries them wire-shaped (REL-062) — an app-classified
+// rule is never included, only edge rules ride edge_rules.
+//
+// All four reads (scope nodes, scheduling rows, edge rule bodies, generation)
+// happen inside ONE s.mu.RLock() section — not composed from DesiredStateRows and
+// EdgeRuleBodies's own separate lock sections. Composing those two public,
+// independently-locked methods would let a write commit (and bump the shared
+// generation) in the gap between the first RUnlock and the second RLock: the
+// result would then carry one read's generation alongside a LATER read's edge-
+// rule content, binding a stale generation to fresher content and breaking the
+// (generation, hash) signing invariant REL-053/075 depends on — a bug this
+// composed form does not have, since no lock is ever released mid-read here.
 func (s *Store) DesiredState(ctx context.Context) (DesiredStateResult, error) {
-	nodes, rows, se, gen, err := s.DesiredStateRows(ctx)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	nodes, rows, se, err := desiredStateRows(ctx, s.db)
 	if err != nil {
 		return DesiredStateResult{}, err
 	}
-	bodies, minorVersion, _, err := s.EdgeRuleBodies(ctx)
+	bodies, err := readEdgeRuleBodies(ctx, s.db)
+	if err != nil {
+		return DesiredStateResult{}, err
+	}
+	generation, err := readGeneration(ctx, s.db)
 	if err != nil {
 		return DesiredStateResult{}, err
 	}
@@ -100,8 +125,8 @@ func (s *Store) DesiredState(ctx context.Context) (DesiredStateResult, error) {
 		ScopeNodes:    nodes,
 		Rows:          rows,
 		SiteEffective: se,
-		EdgeRules:     wire.EdgeRules{RulesMinorVersion: minorVersion, Rules: bodies},
-		Generation:    gen,
+		EdgeRules:     wire.EdgeRules{RulesMinorVersion: rulesMinorVersion, Rules: bodies},
+		Generation:    generation,
 	}, nil
 }
 

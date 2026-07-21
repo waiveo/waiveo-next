@@ -78,22 +78,19 @@ func setExecutionClass(ctx context.Context, tx *sql.Tx, kind Kind, id, execution
 	return nil
 }
 
-// EdgeRuleBodies returns the stored edge-classified automation bodies (ordered by
-// id), the rules/1 minor they were compiled against, and the store generation the
-// read was taken at — the inputs the feeder derives the relay's edge_rules section
-// from (REL-062). ONLY edge rules are returned: an app-classified rule is stored
-// and validated but not carried to the relay, so it never appears here. The three
-// values are read under one read lock, so they form a consistent snapshot at the
-// returned generation. The bodies slice is never nil (an empty store yields an
-// empty, non-nil slice, so the section marshals as `[]`, not `null`, per REL-060).
-func (s *Store) EdgeRuleBodies(ctx context.Context) ([]json.RawMessage, string, int64, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	rows, err := s.db.QueryContext(ctx,
+// readEdgeRuleBodies loads every edge-classified automation body (ordered by
+// id), unlocked — the query core EdgeRuleBodies and DesiredState each run inside
+// their OWN read-lock section. Kept as a single unlocked helper (rather than two
+// separately-locked public methods composed by a caller) is precisely what lets
+// DesiredState fold this read into the SAME critical section as its scope-node/
+// scheduling-row/generation reads: see DesiredState's doc comment. The bodies
+// slice is never nil (an empty store yields an empty, non-nil slice, so the
+// section marshals as `[]`, not `null`, per REL-060).
+func readEdgeRuleBodies(ctx context.Context, q queryer) ([]json.RawMessage, error) {
+	rows, err := q.QueryContext(ctx,
 		`SELECT body FROM automations WHERE execution_class = ? ORDER BY id ASC`, executionClassEdge)
 	if err != nil {
-		return nil, "", 0, fmt.Errorf("store: read edge rule bodies: %w", err)
+		return nil, fmt.Errorf("store: read edge rule bodies: %w", err)
 	}
 	defer rows.Close()
 
@@ -101,14 +98,31 @@ func (s *Store) EdgeRuleBodies(ctx context.Context) ([]json.RawMessage, string, 
 	for rows.Next() {
 		var body string
 		if err := rows.Scan(&body); err != nil {
-			return nil, "", 0, fmt.Errorf("store: scan edge rule body: %w", err)
+			return nil, fmt.Errorf("store: scan edge rule body: %w", err)
 		}
 		bodies = append(bodies, json.RawMessage(body))
 	}
 	if err := rows.Err(); err != nil {
-		return nil, "", 0, fmt.Errorf("store: read edge rule bodies: %w", err)
+		return nil, fmt.Errorf("store: read edge rule bodies: %w", err)
 	}
+	return bodies, nil
+}
 
+// EdgeRuleBodies returns the stored edge-classified automation bodies (ordered by
+// id), the rules/1 minor they were compiled against, and the store generation the
+// read was taken at — the inputs the feeder derives the relay's edge_rules section
+// from (REL-062). ONLY edge rules are returned: an app-classified rule is stored
+// and validated but not carried to the relay, so it never appears here. The three
+// values are read under one read lock, so they form a consistent snapshot at the
+// returned generation.
+func (s *Store) EdgeRuleBodies(ctx context.Context) ([]json.RawMessage, string, int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	bodies, err := readEdgeRuleBodies(ctx, s.db)
+	if err != nil {
+		return nil, "", 0, err
+	}
 	generation, err := readGeneration(ctx, s.db)
 	if err != nil {
 		return nil, "", 0, err
