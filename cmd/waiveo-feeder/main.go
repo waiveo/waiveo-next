@@ -166,9 +166,13 @@ func main() {
 	// the idempotency principal is a fixed POC ULID inside the api package),
 	// documented, not silent. The clock is injected so no wall-clock read lives in
 	// the api/idempotency layers.
+	// The api's content upload writes into the SAME contentStore the /content/
+	// handler below serves from (one origin.Store instance), so an uploaded asset
+	// is immediately servable; contentBaseURL is this feeder's own content-origin
+	// base the upload's returned url is built from (REL-061/140).
 	nowMs := func() int64 { return time.Now().UnixMilli() }
 	idem := apihttp.NewIdempotencyStore(nowMs, 0)
-	apiHandler := api.New(st, idem, nowMs)
+	apiHandler := api.New(st, idem, nowMs, contentStore, contentBaseURL)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthz)

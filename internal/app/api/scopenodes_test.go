@@ -14,6 +14,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/app/api"
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/datamodel"
+	"github.com/maaxton/waiveo-next/internal/feeder/origin"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 )
 
@@ -60,11 +61,20 @@ func screenNode(id, parent, externalID string) datamodel.ScopeNode {
 	}
 }
 
-// testEnv is a live httptest server over a fresh :memory: store.
+// testEnv is a live httptest server over a fresh :memory: store, sharing one
+// content origin store (contentBase is the feeder-injected content base URL the
+// upload endpoint builds direct-fetch URLs from).
 type testEnv struct {
-	ts    *httptest.Server
-	store *store.Store
+	ts          *httptest.Server
+	store       *store.Store
+	content     *origin.Store
+	contentBase string
 }
+
+// testContentBase is the fixed content-origin base URL the api-layer tests
+// inject into api.New — a fixture host (no secrets), byte-identical to the form
+// snapshot.Build uses: <base>/content/<hex>.
+const testContentBase = "https://content.example"
 
 func newEnv(t *testing.T) *testEnv {
 	t.Helper()
@@ -75,9 +85,10 @@ func newEnv(t *testing.T) *testEnv {
 	t.Cleanup(func() { _ = st.Close() })
 	clock := func() int64 { return fixedNowMs }
 	idem := apihttp.NewIdempotencyStore(clock, 0)
-	ts := httptest.NewServer(api.New(st, idem, clock))
+	content := origin.New()
+	ts := httptest.NewServer(api.New(st, idem, clock, content, testContentBase))
 	t.Cleanup(ts.Close)
-	return &testEnv{ts: ts, store: st}
+	return &testEnv{ts: ts, store: st, content: content, contentBase: testContentBase}
 }
 
 func (e *testEnv) do(t *testing.T, method, path string, body []byte, headers map[string]string) (*http.Response, []byte) {
@@ -203,7 +214,7 @@ func TestCreateAndGetScopeNode(t *testing.T) {
 
 func TestListPaginationRoundtrip(t *testing.T) {
 	e := newEnv(t)
-	e.createNode(t, siteNode(siteID))          // id ...B
+	e.createNode(t, siteNode(siteID))                  // id ...B
 	e.createNode(t, screenNode(screen1ID, siteID, "")) // id ...C
 
 	type page struct {

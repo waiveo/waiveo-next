@@ -11,6 +11,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/app/api"
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/feeder/grant"
+	"github.com/maaxton/waiveo-next/internal/feeder/origin"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/signhash"
@@ -145,7 +146,7 @@ func TestDesiredStateSourceCurrentRebuildsOnAPIWriteGenerationBump(t *testing.T)
 	// under If-Match. The store validates + bumps revision + generation atomically.
 	clock := func() int64 { return int64(1_700_000_000_000) }
 	idem := apihttp.NewIdempotencyStore(clock, 0)
-	ts := httptest.NewServer(api.New(st, idem, clock))
+	ts := httptest.NewServer(api.New(st, idem, clock, origin.New(), "https://192.0.2.12:7420"))
 	t.Cleanup(ts.Close)
 
 	getResp, _ := doFeederReq(t, ts, http.MethodGet, "/api/v1/dayparts/"+feederE2EContentDaypartID, nil, nil)

@@ -53,6 +53,17 @@ func (s *Store) Serve(hexDigest string) []byte {
 	return s.items[hexDigest]
 }
 
+// Has reports whether content is stored under hexDigest (no "sha256:" prefix).
+// The playlist authoring surface uses it to reject an item whose asset_ref was
+// never uploaded to this origin (data-model/1 DAT-041): content that cannot be
+// served cannot be scheduled.
+func (s *Store) Has(hexDigest string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.items[hexDigest]
+	return ok
+}
+
 // contentPathPrefix is the route content is served under: /content/<hex>.
 const contentPathPrefix = "/content/"
 

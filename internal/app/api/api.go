@@ -31,6 +31,7 @@ import (
 
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/datamodel"
+	"github.com/maaxton/waiveo-next/internal/feeder/origin"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/apiselector"
 	"github.com/maaxton/waiveo-next/internal/shared/ulid"
@@ -53,26 +54,36 @@ const apiPrefix = "/api/v1"
 // resources live in, the idempotency store guarding create replays, and the
 // injected clock (epoch ms) the idempotency Begin/Complete calls are timestamped
 // with — so the api layer, like the idempotency store itself, reads no wall
-// clock of its own.
+// clock of its own. content is the shared content-addressed origin store the
+// upload endpoint writes into (and the feeder serves GET /content/<hex> from over
+// the SAME instance); contentBase is the feeder's own content-origin base URL the
+// upload's returned url is built from (<base>/content/<hex>, snapshot.Build's form).
 type server struct {
-	store *store.Store
-	idem  *apihttp.IdempotencyStore
-	nowMs func() int64
+	store       *store.Store
+	idem        *apihttp.IdempotencyStore
+	nowMs       func() int64
+	content     *origin.Store
+	contentBase string
 }
 
 // New builds the api/1 HTTP handler: a /api/v1-prefixed mux exposing the
 // scope-nodes and scheduling-core (schedules/dayparts/playlists) CRUD
-// operations over st, wrapped in apihttp.WithTraceID so every request resolves a
-// Trace-Id once (echoed by the header and every Problem body). idem guards
-// Idempotency-Key create replays; nowMs is the injected clock the idempotency
-// calls are timestamped with.
-func New(st *store.Store, idem *apihttp.IdempotencyStore, nowMs func() int64) http.Handler {
-	srv := &server{store: st, idem: idem, nowMs: nowMs}
+// operations over st, plus the content-addressed asset upload (POST
+// /api/v1/content) over content, wrapped in apihttp.WithTraceID so every request
+// resolves a Trace-Id once (echoed by the header and every Problem body). idem
+// guards Idempotency-Key create replays; nowMs is the injected clock the
+// idempotency calls are timestamped with. content is the shared origin store the
+// feeder also serves GET /content/<hex> from (one instance, so an upload is
+// immediately servable); contentBase is the feeder's content-origin base URL the
+// upload's returned url is built from.
+func New(st *store.Store, idem *apihttp.IdempotencyStore, nowMs func() int64, content *origin.Store, contentBase string) http.Handler {
+	srv := &server{store: st, idem: idem, nowMs: nowMs, content: content, contentBase: contentBase}
 	mux := http.NewServeMux()
 	srv.mount(mux, scopeNodesConfig())
 	srv.mount(mux, schedulesConfig())
 	srv.mount(mux, daypartsConfig())
 	srv.mount(mux, playlistsConfig())
+	mux.HandleFunc("POST "+apiPrefix+"/content", srv.uploadContent)
 	return apihttp.WithTraceID(mux)
 }
 
