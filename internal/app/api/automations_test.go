@@ -31,6 +31,20 @@ func edgeAutomationBody(id, scopeNode string, labels map[string]string) []byte {
 	return automationBody(id, scopeNode, labels, `{"type":"device_command","entity_id":"`+autoScreenEntity+`","command":"launch","params":{"channel":"dev"}}`)
 }
 
+// disabledEdgeAutomationBody is edgeAutomationBody with the resource-envelope
+// `enabled` flag flipped to false: a compile-clean, edge-classified rule the author
+// has switched OFF. It is stored and validated exactly like its enabled sibling —
+// the rule compiler ignores the envelope flag — but must never ride edge_rules and
+// so must never fire. It reuses edgeAutomationBody so the two differ only by the
+// flag under test.
+func disabledEdgeAutomationBody(id, scopeNode string) []byte {
+	m := map[string]any{}
+	_ = json.Unmarshal(edgeAutomationBody(id, scopeNode, nil), &m)
+	m["enabled"] = false
+	b, _ := json.Marshal(m)
+	return b
+}
+
 // appAutomationBody compiles but classifies APP (a notify action is app-class
 // unconditionally, RUL-210) — stored + validated, but never carried to the relay.
 func appAutomationBody(id, scopeNode string, labels map[string]string) []byte {

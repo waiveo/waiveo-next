@@ -22,6 +22,7 @@ package api_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"path/filepath"
 	"sync"
@@ -205,4 +206,105 @@ func TestAutomationAuthoringLoopAuthoredRuleLoadsAndFires(t *testing.T) {
 	if ch, _ := cmd.params["channel"].(string); ch != "dev" {
 		t.Fatalf("dispatched params[channel] = %v, want the authored %q (params: %v)", cmd.params["channel"], "dev", cmd.params)
 	}
+}
+
+// TestAutomationAuthoringLoopDisabledRuleNeverFires is the negative oracle for the
+// resource-envelope `enabled` gate (openapi Automation.enabled): author a
+// compile-clean edge rule with `enabled:false`, run it through the SAME store →
+// signed desired-state → relay-load path the positive oracle uses, and prove it
+// NEVER fires. THE ABSENCE OF THE FIRE IS THE ORACLE: a disabled rule that the API
+// reports as inactive must not reach the relay's edge_rules and must not dispatch a
+// device command — otherwise it silently rides edge_rules and fires anyway, the
+// exact defect this guards against. The rule is still stored and edge-classified;
+// only the carry path drops it.
+func TestAutomationAuthoringLoopDisabledRuleNeverFires(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+
+	// --- Author an edge rule identical to the positive oracle's, but enabled:false.
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations",
+		disabledEdgeAutomationBody(automationAID, autoScopeNode), nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("author disabled automation: status %d, body %s", resp.StatusCode, raw)
+	}
+	// GET reports it disabled — the API-visible state the carry path must agree with.
+	resp, raw = e.do(t, http.MethodGet, "/api/v1/automations/"+automationAID, nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get authored automation: status %d, body %s", resp.StatusCode, raw)
+	}
+	var got struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("decode automation: %v", err)
+	}
+	if got.Enabled {
+		t.Fatalf("authored automation reports enabled=true, want false")
+	}
+
+	// --- The feeder derives the signed desired state from the store: a disabled edge
+	// automation must NOT ride edge_rules (REL-062).
+	ds, err := e.store.DesiredState(ctx)
+	if err != nil {
+		t.Fatalf("DesiredState: %v", err)
+	}
+	snap, err := snapshot.BuildFromStore(ds, []byte("automation-authoring-disabled-e2e-image"), e.contentBase, mustSigning(t), nil)
+	if err != nil {
+		t.Fatalf("BuildFromStore: %v", err)
+	}
+	if n := len(snap.Sections.EdgeRules.Rules); n != 0 {
+		t.Fatalf("edge_rules carried %d rule(s) for a disabled automation, want 0", n)
+	}
+
+	// --- Boot the relay's edge-automation host and load the (empty) edge_rules — the
+	// existing load path, no new mechanism. Nothing loads, so nothing can fire.
+	fake := &fakeDevicePlane{}
+	relayStore, err := identity.Open(filepath.Join(t.TempDir(), "relay.db"))
+	if err != nil {
+		t.Fatalf("identity.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = relayStore.Close() })
+
+	resolveEntity := func(entityID string) (deviceID, deviceClass string, ok bool) {
+		if entityID == autoScreenEntity {
+			return e2eDeviceID, e2eDeviceClass, true
+		}
+		return "", "", false
+	}
+	host, err := automationhost.New(relayStore, deviceclass.Builtin(), fake, resolveEntity, e2eRelayID)
+	if err != nil {
+		t.Fatalf("automationhost.New: %v", err)
+	}
+	if err := host.ApplyEdgeRules(snap.Sections.EdgeRules.Rules, int(snap.Generation)); err != nil {
+		t.Fatalf("ApplyEdgeRules from the store-derived snapshot: %v", err)
+	}
+	if got := host.EdgeRuleCount(); got != 0 {
+		t.Fatalf("engine loaded %d edge rule(s) from a disabled authored snapshot, want 0", got)
+	}
+
+	// --- Feed the transition that WOULD trigger the rule were it enabled. It must
+	// fire nothing and dispatch nothing — the disabled rule never reached the relay.
+	disps, err := host.Observe(state.NewObservation(registry.FixtureRegistry{},
+		e2eEntity(autoScreenEntity, "off"), e2eEntity(autoScreenEntity, "on")))
+	if err != nil {
+		t.Fatalf("Observe (would-trigger transition): %v", err)
+	}
+	if len(disps) != 0 {
+		t.Fatalf("a disabled automation fired %d disposition(s) on its trigger, want 0", len(disps))
+	}
+	if cmds := fake.commands(); len(cmds) != 0 {
+		t.Fatalf("a disabled automation dispatched %v to the device plane, want nothing", cmds)
+	}
+}
+
+// mustSigning loads (or creates) a feeder signing identity in a per-test temp dir,
+// failing the test on error — the same identity setup the positive oracle does
+// inline, factored out so both e2e cases share it.
+func mustSigning(t *testing.T) *signing.Identity {
+	t.Helper()
+	id, err := signing.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("signing.LoadOrCreate: %v", err)
+	}
+	return id
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"testing"
 
 	"github.com/maaxton/waiveo-next/internal/app/store"
@@ -16,9 +17,22 @@ import (
 const (
 	autoRuleEntityID = "01J8Z3K4N5P6Q7R8S9T0V1SCRN"
 	autoEdgeRuleID   = "01J8ZA0EDGE0RULE0FIXTURE01"
+	autoEdgeRuleID2  = "01J8ZA0EDGE0RULE0FIXTURE02"
 	autoAppRuleID    = "01J8ZA0APP00RULE0FIXTURE01"
 	autoBadRuleID    = "01J8ZA0BAD00RULE0FIXTURE01"
 )
+
+// edgeAutomationEnabled is edgeAutomation carrying an explicit resource-envelope
+// `enabled` flag — the API's first-class "is this automation active" gate. The
+// rules compiler ignores the envelope field (it reads only its own vocabulary), so
+// this stays a compile-clean, edge-classified rule regardless of the flag; the
+// carry path (readEdgeRuleBodies) is what must honor it and drop a disabled rule.
+func edgeAutomationEnabled(id string, enabled bool) json.RawMessage {
+	return json.RawMessage(`{"id":"` + id + `","enabled":` + strconv.FormatBool(enabled) + `,"mode":"single",` +
+		`"triggers":[{"type":"state","entity_id":"` + autoRuleEntityID + `","to":["on"]}],` +
+		`"conditions":[],` +
+		`"actions":[{"type":"device_command","entity_id":"` + autoRuleEntityID + `","command":"launch","params":{"channel":"dev"}}]}`)
+}
 
 // edgeAutomation is a well-formed edge rule: a state trigger on autoRuleEntityID
 // rising to "on" firing a device_command on that same entity (RUL-002 edge).
@@ -235,6 +249,97 @@ func TestGetAndListPreserveExecutionClass(t *testing.T) {
 	}
 	if byID[autoAppRuleID] != "app" {
 		t.Fatalf("List app rule execution_class = %q, want \"app\"", byID[autoAppRuleID])
+	}
+}
+
+// TestDisabledEdgeAutomationExcludedFromEdgeRules: an authored edge automation with
+// the resource-envelope `enabled` flag set false is stored and STILL edge-classified
+// (the flag is not a compile input), but must NOT ride edge_rules — the carry path
+// honors `enabled`, so a disabled rule is never sent to the relay and never fires.
+// An enabled sibling rides normally, proving the flag — not the classification — is
+// what excludes it.
+func TestDisabledEdgeAutomationExcludedFromEdgeRules(t *testing.T) {
+	s := openMem(t)
+	ctx := context.Background()
+
+	res, err := s.Create(ctx, store.KindAutomation, edgeAutomationEnabled(autoEdgeRuleID, false))
+	if err != nil {
+		t.Fatalf("create disabled edge automation: %v", err)
+	}
+	// The disabled rule is still a compile-clean edge rule — the flag gates carry,
+	// not classification.
+	if res.ExecutionClass != "edge" {
+		t.Fatalf("disabled automation execution_class = %q, want \"edge\"", res.ExecutionClass)
+	}
+
+	bodies, _, _, err := s.EdgeRuleBodies(ctx)
+	if err != nil {
+		t.Fatalf("EdgeRuleBodies: %v", err)
+	}
+	if len(bodies) != 0 {
+		t.Fatalf("disabled edge automation rode edge_rules: got %d bodies, want 0", len(bodies))
+	}
+
+	// DesiredState carries the same edge-rule set, so it must exclude it too.
+	ds, err := s.DesiredState(ctx)
+	if err != nil {
+		t.Fatalf("DesiredState: %v", err)
+	}
+	if len(ds.EdgeRules.Rules) != 0 {
+		t.Fatalf("DesiredState carried %d disabled edge rule(s), want 0", len(ds.EdgeRules.Rules))
+	}
+
+	// An enabled sibling rides — the flag, not the class, is what excludes.
+	if _, err := s.Create(ctx, store.KindAutomation, edgeAutomationEnabled(autoEdgeRuleID2, true)); err != nil {
+		t.Fatalf("create enabled edge automation: %v", err)
+	}
+	bodies, _, _, err = s.EdgeRuleBodies(ctx)
+	if err != nil {
+		t.Fatalf("EdgeRuleBodies (after enabled sibling): %v", err)
+	}
+	if len(bodies) != 1 {
+		t.Fatalf("EdgeRuleBodies returned %d bodies, want 1 (enabled only)", len(bodies))
+	}
+	if got := ruleIDOf(t, bodies[0]); got != autoEdgeRuleID2 {
+		t.Fatalf("EdgeRuleBodies[0] rule id = %q, want the enabled rule %q", got, autoEdgeRuleID2)
+	}
+}
+
+// TestPatchEnabledTogglesEdgeCarry: PATCHing `enabled` on a stored edge automation
+// toggles whether it rides edge_rules — enabled:false drops it (so it stops firing),
+// enabled:true carries it again. This is the exact CRUD path the review flagged: a
+// plain PATCH {"enabled": false} that the API reports as disabled must also stop the
+// rule reaching the relay, not merely change the GET response.
+func TestPatchEnabledTogglesEdgeCarry(t *testing.T) {
+	s := openMem(t)
+	ctx := context.Background()
+
+	res, err := s.Create(ctx, store.KindAutomation, edgeAutomationEnabled(autoEdgeRuleID, true))
+	if err != nil {
+		t.Fatalf("create enabled edge automation: %v", err)
+	}
+	if bodies, _, _, _ := s.EdgeRuleBodies(ctx); len(bodies) != 1 {
+		t.Fatalf("enabled edge automation did not ride edge_rules: got %d bodies, want 1", len(bodies))
+	}
+
+	// PATCH enabled:false — still edge-classified, but dropped from the carry set.
+	upd, err := s.Update(ctx, store.KindAutomation, autoEdgeRuleID, res.Revision, json.RawMessage(`{"enabled":false}`))
+	if err != nil {
+		t.Fatalf("PATCH enabled:false: %v", err)
+	}
+	if upd.ExecutionClass != "edge" {
+		t.Fatalf("disabling did not preserve execution_class: got %q, want \"edge\"", upd.ExecutionClass)
+	}
+	if bodies, _, _, _ := s.EdgeRuleBodies(ctx); len(bodies) != 0 {
+		t.Fatalf("PATCH enabled:false still rode edge_rules: got %d bodies, want 0", len(bodies))
+	}
+
+	// PATCH enabled:true again — it reappears in the carry set.
+	if _, err := s.Update(ctx, store.KindAutomation, autoEdgeRuleID, upd.Revision, json.RawMessage(`{"enabled":true}`)); err != nil {
+		t.Fatalf("PATCH enabled:true: %v", err)
+	}
+	if bodies, _, _, _ := s.EdgeRuleBodies(ctx); len(bodies) != 1 {
+		t.Fatalf("re-enabled edge automation did not ride edge_rules: got %d bodies, want 1", len(bodies))
 	}
 }
 

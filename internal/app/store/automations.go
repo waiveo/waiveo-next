@@ -78,17 +78,29 @@ func setExecutionClass(ctx context.Context, tx *sql.Tx, kind Kind, id, execution
 	return nil
 }
 
-// readEdgeRuleBodies loads every edge-classified automation body (ordered by
-// id), unlocked — the query core EdgeRuleBodies and DesiredState each run inside
+// readEdgeRuleBodies loads every ENABLED edge-classified automation body (ordered
+// by id), unlocked — the query core EdgeRuleBodies and DesiredState each run inside
 // their OWN read-lock section. Kept as a single unlocked helper (rather than two
 // separately-locked public methods composed by a caller) is precisely what lets
 // DesiredState fold this read into the SAME critical section as its scope-node/
 // scheduling-row/generation reads: see DesiredState's doc comment. The bodies
 // slice is never nil (an empty store yields an empty, non-nil slice, so the
 // section marshals as `[]`, not `null`, per REL-060).
+//
+// The `enabled` predicate honors the Automation resource envelope's first-class
+// active gate (openapi Automation.enabled, REQUIRED; AutomationCreate defaults it
+// true): the rule compiler ignores `enabled` (it is not rule vocabulary, so it
+// never affects compile/classify), so it is enforced HERE on the carry path — a
+// disabled automation stays stored and edge-classified but is NOT sent to the
+// relay's edge_rules (REL-062) and therefore never fires. `enabled` lives in the
+// JSON body, not a column, so it is read with json_extract; COALESCE treats an
+// ABSENT flag as enabled (the create default is true), so only an explicit
+// `enabled:false` excludes the row.
 func readEdgeRuleBodies(ctx context.Context, q queryer) ([]json.RawMessage, error) {
 	rows, err := q.QueryContext(ctx,
-		`SELECT body FROM automations WHERE execution_class = ? ORDER BY id ASC`, executionClassEdge)
+		`SELECT body FROM automations
+		 WHERE execution_class = ? AND COALESCE(json_extract(body, '$.enabled'), 1) <> 0
+		 ORDER BY id ASC`, executionClassEdge)
 	if err != nil {
 		return nil, fmt.Errorf("store: read edge rule bodies: %w", err)
 	}
