@@ -7,7 +7,18 @@ import (
 	"testing"
 
 	"github.com/maaxton/waiveo-next/internal/datamodel"
+	"github.com/maaxton/waiveo-next/internal/shared/signhash"
 )
+
+// playlistFixtureAsset is the content seedSchedulingScope uploads to the shared
+// content origin so playlistFixture's asset_ref resolves — a playlist item's
+// asset_ref MUST be present in the origin (you cannot schedule un-uploaded
+// content). Fixture bytes only (no secrets).
+var playlistFixtureAsset = []byte("waiveo-next scheduling-core fixture asset")
+
+// playlistFixtureAssetRef is the server-computed content id of playlistFixtureAsset
+// (the same value the upload endpoint returns for those bytes).
+var playlistFixtureAssetRef = signhash.ContentID(playlistFixtureAsset)
 
 // Fixture ULIDs for the scheduling-core CRUD tests (fixture-ULID convention; no
 // secrets — Crockford-base32 only, so a minted keyset cursor over these ids
@@ -33,6 +44,9 @@ func seedSchedulingScope(t *testing.T, e *testEnv) {
 	t.Helper()
 	e.createNode(t, siteNode(schedSiteID))
 	e.createNode(t, screenNode(schedScreenID, schedSiteID, ""))
+	// A playlist item's asset_ref must resolve in the shared content origin, so
+	// upload the fixture asset before any playlist referencing it is authored.
+	e.uploadContent(t, playlistFixtureAsset)
 }
 
 func playlistFixture(id string, labels map[string]string) datamodel.Playlist {
@@ -40,7 +54,7 @@ func playlistFixture(id string, labels map[string]string) datamodel.Playlist {
 		ID:        id,
 		ScopeNode: schedScreenID,
 		Name:      "Demo Playlist " + id,
-		Items:     []datamodel.PlaylistItem{{Source: "asset", AssetRef: "sha256:cafef00d"}},
+		Items:     []datamodel.PlaylistItem{{Source: "asset", AssetRef: playlistFixtureAssetRef}},
 		Labels:    labels,
 	}
 }

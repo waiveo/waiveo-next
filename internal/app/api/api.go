@@ -103,6 +103,14 @@ type resourceConfig struct {
 	selLabels    func(resourceFields) map[string]string
 	placement    func(resourceFields) string
 	extScope     func(resourceFields) string
+	// validate, when non-nil, is a per-kind pre-write body validation run over the
+	// EFFECTIVE request body — the create body, or a patch shallow-merged onto the
+	// current row — BEFORE the store write; a non-empty result is rendered
+	// 422 / VALIDATION_FAILED carrying the per-field errors as the api/1 `errors`
+	// extension (API-013), and nothing is stored. Only the playlist kind sets it:
+	// each item's asset_ref must resolve in the shared content origin (you cannot
+	// schedule content that was never uploaded, DAT-041) — see scheduling.go.
+	validate func(srv *server, body []byte) []datamodel.Error
 }
 
 // resource binds a resourceConfig to the shared server so the handler methods
@@ -246,6 +254,10 @@ func (rs *resource) createExec(w http.ResponseWriter, r *http.Request, raw []byt
 	// the create body); a client-supplied id is honored as-is.
 	body, id := rs.ensureID(raw)
 	fields := parseFields(body)
+
+	if rs.writeValidationFailed(w, r, body) {
+		return
+	}
 
 	res, err := rs.srv.store.Create(r.Context(), rs.cfg.kind, body,
 		rs.externalIDGuards(fields.ExternalID, rs.cfg.extScope(fields), "")...)
@@ -391,11 +403,19 @@ func (rs *resource) patch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A per-kind pre-write validation (playlist asset_refs) runs over the EFFECTIVE
+	// post-merge body, so a patch that introduces an un-uploaded asset_ref is
+	// rejected exactly as a create would be — never stored.
+	merged := mergedBody(current.Body, patchBody)
+	if rs.writeValidationFailed(w, r, merged) {
+		return
+	}
+
 	// external_id uniqueness over the effective (post-merge) fields (API-101/102),
 	// enforced atomically inside the store write by a WriteGuard — closing the
 	// check-then-write race a pre-write snapshot in a separate critical section left
 	// open. selfID excludes this row, so an unchanged external_id never self-collides.
-	eff := effectiveFields(current.Body, patchBody)
+	eff := parseFields(merged)
 	res, err := rs.srv.store.Update(r.Context(), rs.cfg.kind, id, current.Revision, patchBody,
 		rs.externalIDGuards(eff.ExternalID, rs.cfg.extScope(eff), id)...)
 	if err != nil {
@@ -497,10 +517,11 @@ func (srv *server) inSubtreeFn(r *http.Request) (func(ancestor, node string) boo
 	}, nil
 }
 
-// effectiveFields shallow-merges a patch over the current body and projects the
-// result onto the resource baseline — the fields a post-patch external_id check
-// evaluates against.
-func effectiveFields(current, patch []byte) resourceFields {
+// mergedBody shallow-merges a patch over the current body — the EFFECTIVE
+// post-patch body a per-kind validation and the external_id check both evaluate
+// against. A body that cannot be re-marshaled degrades to the current body (the
+// store's own validation surfaces the real error on write).
+func mergedBody(current, patch []byte) []byte {
 	m := map[string]json.RawMessage{}
 	_ = json.Unmarshal(current, &m)
 	p := map[string]json.RawMessage{}
@@ -510,9 +531,28 @@ func effectiveFields(current, patch []byte) resourceFields {
 	}
 	merged, err := json.Marshal(m)
 	if err != nil {
-		return parseFields(current)
+		return current
 	}
-	return parseFields(merged)
+	return merged
+}
+
+// writeValidationFailed runs the resource kind's per-kind pre-write validation (if
+// any) over body and, on a non-empty result, writes the 422 / VALIDATION_FAILED
+// Problem carrying the per-field errors as the api/1 `errors` extension (API-013),
+// returning true so the caller aborts before any store write. It returns false
+// (writing nothing) when the kind declares no validation or the body passes.
+func (rs *resource) writeValidationFailed(w http.ResponseWriter, r *http.Request, body []byte) bool {
+	if rs.cfg.validate == nil {
+		return false
+	}
+	verrs := rs.cfg.validate(rs.srv, body)
+	if len(verrs) == 0 {
+		return false
+	}
+	apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), http.StatusUnprocessableEntity,
+		"VALIDATION_FAILED", "Unprocessable Entity",
+		"One or more fields failed validation.", validationExtra(verrs))
+	return true
 }
 
 // writeStoreError maps a store write error onto its api/1 Problem: a datamodel

@@ -43,3 +43,11 @@ fi
 # whole loop (api -> store -> desired-state -> relay re-pull -> re-resolve) live
 # over real HTTP. The probe prints AUTHORING LOOP OK, or exits non-zero.
 RELAY_LOG="$RELAY_LOG" bash scripts/authoring-demo.sh
+
+# 5. Content loop: upload an asset to the feeder's content origin and fetch it
+# back from the url the server returns, verifying content-addressing (the fetched
+# bytes hash to the server-computed asset_ref) — the upload -> content-addressed
+# store -> direct-fetch loop a real screen walks, live over real HTTP. The relay
+# is never in this data path (REL-140). The probe prints CONTENT LOOP OK, or
+# exits non-zero.
+go run ./scripts/contentloop
