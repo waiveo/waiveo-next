@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/app/store"
@@ -73,12 +74,33 @@ func (nopSink) Dispatch(entityID, command string, params map[string]any) error {
 // first state trigger, and returns the firing's mode-evaluation disposition
 // (RUL-246) as the openapi AutomationRunResult ({run_id, disposition}).
 //
+// It is a mutating POST tagged mcp:act, so it honors Idempotency-Key (API-050/072,
+// openapi runAutomation.IdempotencyKeyParam): a client's retry-on-timeout replays
+// the retained response verbatim rather than firing the run — and its device
+// dispatch — a second time. The key handling reuses the same idem store + response
+// capture the generic create() path uses (srv.idempotent), never a second mechanism.
+//
 // Deferred (documented): the full trigger-snapshot / AutomationRunRequest.context
 // override semantics, and app-side execution of app-classified rules. This increment
 // supports a state-triggered edge automation; an app-class rule, a rule without a
 // synthesizable state trigger, or a firing whose conditions do not admit a run is
 // refused with a precise Problem rather than a fabricated disposition.
 func (srv *server) runAutomation(w http.ResponseWriter, r *http.Request) {
+	// The body is read up front so its content hash keys Idempotency-Key
+	// replay-vs-reuse (API-052) even though AutomationRunRequest.context is
+	// deferred; a keyed retry with the same body replays, a different body conflicts.
+	raw, ok := readBody(w, r)
+	if !ok {
+		return
+	}
+	srv.idempotent(w, r, raw, func(w http.ResponseWriter) { srv.runAutomationExec(w, r) })
+}
+
+// runAutomationExec is the run's actual work, executed once per fresh (non-replayed)
+// request under the Idempotency-Key guard in runAutomation. It writes into the
+// response capture that guard owns, so a firing's exact response bytes are retained
+// for a later retry's verbatim replay.
+func (srv *server) runAutomationExec(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	res, found, err := srv.store.Get(r.Context(), store.KindAutomation, id)
 	if err != nil {
@@ -199,12 +221,16 @@ func firstState(raw json.RawMessage) (string, bool) {
 }
 
 // bulkEnableRequest is the AutomationBulkEnableRequest body: a label-selector
-// target predicate and the `enabled` value to apply. Enabled is a pointer so an
-// absent field (a body that names no boolean) is distinguishable from an explicit
-// false.
+// target predicate and the `enabled` value to apply. BOTH are pointers so an
+// ABSENT field is distinguishable from a present zero value — `enabled` absent vs
+// an explicit false, and `selector` absent vs an explicit "". The openapi schema
+// marks both required precisely so a fleet-mutating request cannot omit its target
+// predicate: an empty or whitespace-only selector matches EVERY stored automation
+// (apiselector), so the handler rejects an absent/blank selector 422 rather than
+// silently touching the whole fleet.
 type bulkEnableRequest struct {
-	Selector string `json:"selector"`
-	Enabled  *bool  `json:"enabled"`
+	Selector *string `json:"selector"`
+	Enabled  *bool   `json:"enabled"`
 }
 
 // bulkEnableAutomations handles POST /api/v1/automations/bulk-enable — a
@@ -212,6 +238,12 @@ type bulkEnableRequest struct {
 // the selector against every stored automation (reusing apiselector, exactly as the
 // list handler does), then returns 202 + an api/1 Job (apijob) whose targets are the
 // matched ids, each pending.
+//
+// It is a mutating POST tagged mcp:act, so it honors Idempotency-Key (API-050/072,
+// openapi bulkEnableAutomations.IdempotencyKeyParam): a client's retry-on-timeout
+// replays the original 202 + Job verbatim rather than minting a second, distinct
+// Job. The key handling reuses the same idem store + response capture the generic
+// create() path uses (srv.idempotent), never a second mechanism.
 //
 // Deferred (documented): the per-target toggle-and-regenerate — this increment
 // returns the accepted Job and its target set; actually flipping each row's
@@ -222,9 +254,25 @@ func (srv *server) bulkEnableAutomations(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
+	srv.idempotent(w, r, body, func(w http.ResponseWriter) { srv.bulkEnableExec(w, r, body) })
+}
+
+// bulkEnableExec is the bulk-enable's actual work, executed once per fresh
+// (non-replayed) request under the Idempotency-Key guard in bulkEnableAutomations.
+// It writes into the response capture that guard owns, so the exact 202 + Job bytes
+// are retained for a later retry's verbatim replay (a retry never mints a new Job).
+func (srv *server) bulkEnableExec(w http.ResponseWriter, r *http.Request, body []byte) {
 	var req bulkEnableRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		writeProblem(w, r, http.StatusBadRequest, "VALIDATION_FAILED", "Bad Request", "The request body could not be parsed.")
+		return
+	}
+	// `selector` is required (openapi AutomationBulkEnableRequest.required): an
+	// absent OR empty/whitespace selector matches every stored automation
+	// (apiselector), so it is rejected 422 rather than silently targeting the whole
+	// fleet — the schema requires it precisely to force an explicit target predicate.
+	if req.Selector == nil || strings.TrimSpace(*req.Selector) == "" {
+		writeProblem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Unprocessable Entity", "`selector` is required.")
 		return
 	}
 	if req.Enabled == nil {
@@ -232,7 +280,7 @@ func (srv *server) bulkEnableAutomations(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	sel, serr := apiselector.Parse(req.Selector)
+	sel, serr := apiselector.Parse(*req.Selector)
 	if serr != nil {
 		writeProblem(w, r, serr.Status, serr.Code, serr.Title, serr.Detail)
 		return
@@ -259,6 +307,52 @@ func (srv *server) bulkEnableAutomations(w http.ResponseWriter, r *http.Request)
 
 	job := apijob.New(ulid.New(), pocPrincipal, time.UnixMilli(srv.nowMs()), targetIDs)
 	writeJSONValue(w, http.StatusAccepted, job.Resource())
+}
+
+// idempotent runs a mutating server-level operation (runAutomation,
+// bulkEnableAutomations — the api/1 mcp:act POSTs outside plain resource creation)
+// under the Idempotency-Key convention (API-050/052/072), reusing the SAME idem
+// store, responseCapture, and replay the generic create() path uses — never a
+// second mechanism. A keyed repeat replays the retained response verbatim, or
+// 409-conflicts, BEFORE exec runs; an unkeyed request always executes. A fresh
+// keyed request's exact response bytes are captured and retained (Complete) so a
+// client's retry-on-timeout replays them rather than re-firing the operation; a
+// transient 5xx is Aborted instead, leaving the key retryable. raw is the request
+// body the replay-vs-reuse content hash is taken over (API-052).
+func (srv *server) idempotent(w http.ResponseWriter, r *http.Request, raw []byte, exec func(http.ResponseWriter)) {
+	key := r.Header.Get("Idempotency-Key")
+	scope := apihttp.IdempotencyScope{Principal: pocPrincipal, Method: r.Method, Path: r.URL.Path}
+	hash := apihttp.IdempotencyBodyHash(raw)
+	now := srv.nowMs()
+	if key != "" {
+		switch out := srv.idem.Begin(scope, key, hash, now); out.Kind {
+		case apihttp.BeginReplay:
+			replay(w, out.Response)
+			return
+		case apihttp.BeginConflict:
+			writeProblem(w, r, http.StatusConflict, apihttp.CodeIdempotencyKeyReused, "Conflict", apihttp.IdempotencyReuseDetail(key))
+			return
+		case apihttp.BeginInProgress:
+			writeProblem(w, r, http.StatusConflict, apihttp.CodeIdempotencyKeyInProgress, "Conflict", "A request with this Idempotency-Key is already in progress.")
+			return
+		}
+	}
+
+	// A fresh keyed request holds an in-flight marker that MUST be resolved on every
+	// terminal path (API-052/054): a definitive outcome (any status < 500, success OR
+	// a deterministic client Problem) is Completed for verbatim replay; a transient
+	// 5xx is Aborted so the key stays retryable.
+	rc := &responseCapture{}
+	exec(rc)
+	status, body, ct := rc.flush(w)
+
+	if key != "" {
+		if status < http.StatusInternalServerError {
+			srv.idem.Complete(scope, key, hash, apihttp.StoredResponse{Status: status, Body: body, ContentType: ct}, now)
+		} else {
+			srv.idem.Abort(scope, key, hash)
+		}
+	}
 }
 
 // writeProblem writes an api/1 RFC 9457 Problem (no extension members) from a

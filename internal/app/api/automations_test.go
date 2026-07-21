@@ -392,3 +392,130 @@ func TestBulkEnableReturnsJobOverMatchedIDs(t *testing.T) {
 	}
 	assertProblem(t, resp, raw, "SELECTOR_INVALID")
 }
+
+// TestBulkEnableRequiresSelector: `selector` is required (openapi
+// AutomationBulkEnableRequest.required). An absent OR empty/whitespace selector
+// is rejected 422 / VALIDATION_FAILED rather than silently matching every stored
+// automation — the schema marks it required precisely so a fleet-mutating request
+// cannot omit its target predicate and touch the whole fleet by accident.
+func TestBulkEnableRequiresSelector(t *testing.T) {
+	e := newEnv(t)
+	// A stored automation the fleet-wide default WOULD have matched, so a missing
+	// guard is observable as a Job over it rather than a 422.
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", edgeAutomationBody(automationAID, autoScopeNode, nil), nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d, body %s", resp.StatusCode, raw)
+	}
+
+	// selector omitted entirely.
+	omitted := mustJSON(t, map[string]any{"enabled": false})
+	resp, raw = e.do(t, http.MethodPost, "/api/v1/automations/bulk-enable", omitted, nil)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("omitted-selector status = %d, want 422 (body %s)", resp.StatusCode, raw)
+	}
+	assertProblem(t, resp, raw, "VALIDATION_FAILED")
+
+	// selector present but empty — apiselector treats "" as matching everything,
+	// so this MUST be rejected too, not accepted as a fleet-wide target.
+	empty := mustJSON(t, map[string]any{"selector": "", "enabled": false})
+	resp, raw = e.do(t, http.MethodPost, "/api/v1/automations/bulk-enable", empty, nil)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("empty-selector status = %d, want 422 (body %s)", resp.StatusCode, raw)
+	}
+	assertProblem(t, resp, raw, "VALIDATION_FAILED")
+
+	// whitespace-only selector is likewise empty after trimming.
+	blank := mustJSON(t, map[string]any{"selector": "   ", "enabled": false})
+	resp, raw = e.do(t, http.MethodPost, "/api/v1/automations/bulk-enable", blank, nil)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("blank-selector status = %d, want 422 (body %s)", resp.StatusCode, raw)
+	}
+	assertProblem(t, resp, raw, "VALIDATION_FAILED")
+}
+
+// TestRunAutomationIdempotency: POST /automations/{id}/run is a mutating POST
+// tagged mcp:act, so it MUST honor Idempotency-Key (API-050/072) — a retry with
+// the same key replays the retained response verbatim instead of firing a second
+// run, while a different key executes a genuinely fresh run.
+func TestRunAutomationIdempotency(t *testing.T) {
+	e := newEnv(t)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", edgeAutomationBody(automationAID, autoScopeNode, nil), nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d, body %s", resp.StatusCode, raw)
+	}
+	runID := func(raw []byte) string {
+		t.Helper()
+		var out struct {
+			RunID string `json:"run_id"`
+		}
+		if err := json.Unmarshal(raw, &out); err != nil {
+			t.Fatalf("decode run result: %v (body %s)", err, raw)
+		}
+		if out.RunID == "" {
+			t.Fatalf("run result missing run_id (body %s)", raw)
+		}
+		return out.RunID
+	}
+
+	path := "/api/v1/automations/" + automationAID + "/run"
+	keyed := map[string]string{"Idempotency-Key": "run-key-1"}
+
+	resp, raw1 := e.do(t, http.MethodPost, path, nil, keyed)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("first run status = %d, body %s", resp.StatusCode, raw1)
+	}
+	resp, raw2 := e.do(t, http.MethodPost, path, nil, keyed)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("idempotent run replay status = %d, want 200", resp.StatusCode)
+	}
+	// A replay returns the identical retained body — the SAME run_id, not a second run.
+	if string(raw1) != string(raw2) {
+		t.Fatalf("idempotent run replay body differs (second run fired):\n%s\n%s", raw1, raw2)
+	}
+
+	// A different key is a fresh request: it executes a new run with a new run_id.
+	resp, raw3 := e.do(t, http.MethodPost, path, nil, map[string]string{"Idempotency-Key": "run-key-2"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("second-key run status = %d, body %s", resp.StatusCode, raw3)
+	}
+	if runID(raw1) == runID(raw3) {
+		t.Fatalf("different Idempotency-Key replayed the first run_id %q instead of a fresh run", runID(raw1))
+	}
+}
+
+// TestBulkEnableIdempotency: POST /automations/bulk-enable is a mutating mcp:act
+// POST, so it MUST honor Idempotency-Key (API-050/072). A retry with the same
+// key+body replays the original 202 Job verbatim (same job id) rather than
+// minting a second Job; the same key with a DIFFERENT body is a reuse conflict
+// (409 / IDEMPOTENCY_KEY_REUSED).
+func TestBulkEnableIdempotency(t *testing.T) {
+	e := newEnv(t)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", edgeAutomationBody(automationAID, autoScopeNode, map[string]string{"env": "prod"}), nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d, body %s", resp.StatusCode, raw)
+	}
+
+	body := mustJSON(t, map[string]any{"selector": "env=prod", "enabled": false})
+	keyed := map[string]string{"Idempotency-Key": "bulk-key-1"}
+
+	resp, raw1 := e.do(t, http.MethodPost, "/api/v1/automations/bulk-enable", body, keyed)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("first bulk-enable status = %d, body %s", resp.StatusCode, raw1)
+	}
+	resp, raw2 := e.do(t, http.MethodPost, "/api/v1/automations/bulk-enable", body, keyed)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("idempotent bulk-enable replay status = %d, want 202", resp.StatusCode)
+	}
+	// A replay returns the identical Job — same id — not a second, distinct job.
+	if string(raw1) != string(raw2) {
+		t.Fatalf("idempotent bulk-enable replay body differs (second Job minted):\n%s\n%s", raw1, raw2)
+	}
+
+	// Same key, different body → reuse conflict (409).
+	other := mustJSON(t, map[string]any{"selector": "env=prod", "enabled": true})
+	resp, raw = e.do(t, http.MethodPost, "/api/v1/automations/bulk-enable", other, keyed)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("reuse-with-different-body status = %d, want 409 (body %s)", resp.StatusCode, raw)
+	}
+	assertProblem(t, resp, raw, "IDEMPOTENCY_KEY_REUSED")
+}
