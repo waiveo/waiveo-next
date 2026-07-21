@@ -180,34 +180,90 @@ func TestIngest_IdempotentOnSeq(t *testing.T) {
 	}
 }
 
-// TestIngest_AckIsHighestContiguousSeq: the ack is the highest CONTIGUOUS seq
-// durably processed (REL-092) — a record above a still-missing seq is appended
-// (no silent loss) but NOT acked until the hole is filled, whereupon the ack
-// jumps to the new contiguous high-water.
-func TestIngest_AckIsHighestContiguousSeq(t *testing.T) {
+// TestIngest_AckIsHighestSeqReceived_JumpsMarkedAndSupersededGaps: ack_through_seq
+// is the highest ordinary-entry seq RECEIVED (REL-092), NOT a no-gap-contiguous
+// high-water. A gap left below it — by a loss-marked buffer overflow (REL-096) or
+// by a latest-only supersession that produces no marker at all (REL-094) — is
+// jumped, never wedged on. This mirrors the REL-092 worked example and the
+// REL-090 overflow corpus (REL-090-valid-telemetry-overflow-loss-marker.json),
+// whose expected ack_through_seq is 1002 across BOTH a marked 980-999 drop and a
+// bare, unaccounted gap at seq 1000.
+func TestIngest_AckIsHighestSeqReceived_JumpsMarkedAndSupersededGaps(t *testing.T) {
 	log := events.NewEventLog(0)
 	h := New(log, siteScope, seqIDs())
 
-	if ack := postBatch(t, h, pushBatch(
-		autoEntry(1, validAutomationRunPayload()),
-		autoEntry(2, validAutomationRunPayload()),
-	)); ack.AckThroughSeq != 2 {
-		t.Fatalf("a contiguous [1,2] must ack 2; got %d", ack.AckThroughSeq)
+	batch := telemetry.PushBatch{
+		Entries: []telemetry.Entry{
+			autoEntry(1001, validAutomationRunPayload()),
+			autoEntry(1002, validAutomationRunPayload()),
+		},
+		// 980-999 is a loss-marked durable overflow; 1000 is a bare gap — a
+		// latest-only supersession (REL-094), which by design produces no marker.
+		LossMarkers: []telemetry.LossMarker{{
+			FromSeq:               980,
+			ToSeq:                 999,
+			DroppedCountsBySchema: map[string]int{"content.played": 12},
+			Reason:                telemetry.ReasonBufferExceeded,
+		}},
+	}
+	ack := postBatch(t, h, batch)
+
+	if ack.AckThroughSeq != 1002 {
+		t.Fatalf("ack must jump the marked+bare gaps to the highest seq received (REL-092); want 1002 got %d", ack.AckThroughSeq)
+	}
+	if got := log.After(""); len(got) != 2 {
+		t.Fatalf("both above-the-gap entries must be appended (no silent loss); want 2 got %d", len(got))
+	}
+	wantAcked := []telemetry.SeqRange{{FromSeq: 980, ToSeq: 999}}
+	if !reflect.DeepEqual(ack.LossMarkersAcked, wantAcked) {
+		t.Fatalf("the delivered loss marker must be acknowledged (REL-092/102); want %+v got %+v", wantAcked, ack.LossMarkersAcked)
+	}
+	// The gap set must DRAIN once the cursor jumps the gap: a wedged contiguous
+	// cursor would retain every above-gap seq in `processed` forever — an
+	// unbounded map leak for the life of the connection.
+	if in := h.(*ingest); len(in.processed) != 0 {
+		t.Fatalf("the gap set must drain once the cursor jumps the gap; got %d retained", len(in.processed))
+	}
+}
+
+// TestIngest_AckJumpsLossMarkerFromOverflow: the exact REL-096 drop-oldest shape —
+// after acking seq 1, a push of entry seq 5 alongside a buffer_exceeded loss
+// marker for the dropped 2-4 range acks 5, not 1. A contiguous high-water would
+// wedge at 1 forever behind the first overflow — the relay's ack-gated retention
+// (REL-097) would then never prune the already-delivered seq-5 entry from its
+// bounded buffer, re-pushing it and eventually re-dropping genuinely-durable
+// telemetry as false loss.
+func TestIngest_AckJumpsLossMarkerFromOverflow(t *testing.T) {
+	log := events.NewEventLog(0)
+	h := New(log, siteScope, seqIDs())
+
+	if ack := postBatch(t, h, pushBatch(autoEntry(1, validAutomationRunPayload()))); ack.AckThroughSeq != 1 {
+		t.Fatalf("a lone seq 1 must ack 1; got %d", ack.AckThroughSeq)
 	}
 
-	// seq 4 with seq 3 still missing: appended, but the ack must NOT pass the hole.
-	if ack := postBatch(t, h, pushBatch(autoEntry(4, validAutomationRunPayload()))); ack.AckThroughSeq != 2 {
-		t.Fatalf("the ack must not advance past a missing seq (REL-092); want 2 got %d", ack.AckThroughSeq)
+	batch := telemetry.PushBatch{
+		Entries: []telemetry.Entry{autoEntry(5, validAutomationRunPayload())},
+		LossMarkers: []telemetry.LossMarker{{
+			FromSeq:               2,
+			ToSeq:                 4,
+			DroppedCountsBySchema: map[string]int{events.SchemaAutomationRun: 3},
+			Reason:                telemetry.ReasonBufferExceeded,
+		}},
 	}
-	if got := log.After(""); len(got) != 3 {
-		t.Fatalf("an above-the-gap record must still be appended (no silent loss); want 3 got %d", len(got))
+	ack := postBatch(t, h, batch)
+	if ack.AckThroughSeq != 5 {
+		t.Fatalf("the ack must jump the loss-marked 2-4 gap to the highest seq received (REL-092); want 5 got %d", ack.AckThroughSeq)
 	}
-
-	// seq 3 fills the gap: the ack jumps to the new contiguous high-water, 4.
-	if ack := postBatch(t, h, pushBatch(autoEntry(3, validAutomationRunPayload()))); ack.AckThroughSeq != 4 {
-		t.Fatalf("filling the gap must advance the ack to 4; got %d", ack.AckThroughSeq)
+	if got := log.After(""); len(got) != 2 {
+		t.Fatalf("the seq-5 entry must be durably appended above the gap (no silent loss); want 2 got %d", len(got))
 	}
-	if got := log.After(""); len(got) != 4 {
-		t.Fatalf("all four contiguous records must now be in the log; want 4 got %d", len(got))
+	// A seq inside the jumped, loss-marked range is terminally accounted for: the
+	// relay (seq-ordered push, REL-090/097) will never deliver it, and a stray
+	// redelivery must dedup, not re-append.
+	if ack := postBatch(t, h, pushBatch(autoEntry(3, validAutomationRunPayload()))); ack.AckThroughSeq != 5 {
+		t.Fatalf("a seq below the cursor must stay acked at 5, not regress; got %d", ack.AckThroughSeq)
+	}
+	if got := log.After(""); len(got) != 2 {
+		t.Fatalf("a seq at or below the cursor must not be appended (idempotent, REL-097); want 2 got %d", len(got))
 	}
 }
