@@ -189,6 +189,55 @@ func TestEdgeRuleBodiesReturnsEdgeOnly(t *testing.T) {
 	}
 }
 
+// TestGetAndListPreserveExecutionClass: the compiler's edge/app classification is a
+// persisted, row-level property, so a subsequent Get or List of an automation MUST
+// report the same execution_class the compile-gated Create recorded — not the empty
+// default. Regression: scanResource read only the shared baseline columns, so every
+// read path but the one-shot Create/Update return silently dropped execution_class.
+func TestGetAndListPreserveExecutionClass(t *testing.T) {
+	s := openMem(t)
+	ctx := context.Background()
+
+	if _, err := s.Create(ctx, store.KindAutomation, edgeAutomation(autoEdgeRuleID)); err != nil {
+		t.Fatalf("create edge automation: %v", err)
+	}
+	if _, err := s.Create(ctx, store.KindAutomation, appAutomation(autoAppRuleID)); err != nil {
+		t.Fatalf("create app automation: %v", err)
+	}
+
+	// A Get after the write must still carry the persisted classification.
+	gotEdge, ok, err := s.Get(ctx, store.KindAutomation, autoEdgeRuleID)
+	if err != nil || !ok {
+		t.Fatalf("Get edge rule: ok=%v err=%v", ok, err)
+	}
+	if gotEdge.ExecutionClass != "edge" {
+		t.Fatalf("Get edge rule execution_class = %q, want \"edge\"", gotEdge.ExecutionClass)
+	}
+	gotApp, ok, err := s.Get(ctx, store.KindAutomation, autoAppRuleID)
+	if err != nil || !ok {
+		t.Fatalf("Get app rule: ok=%v err=%v", ok, err)
+	}
+	if gotApp.ExecutionClass != "app" {
+		t.Fatalf("Get app rule execution_class = %q, want \"app\"", gotApp.ExecutionClass)
+	}
+
+	// A List must carry it for every returned row too.
+	list, err := s.List(ctx, store.KindAutomation, store.ListFilter{})
+	if err != nil {
+		t.Fatalf("List automations: %v", err)
+	}
+	byID := map[string]string{}
+	for _, r := range list {
+		byID[r.ID] = r.ExecutionClass
+	}
+	if byID[autoEdgeRuleID] != "edge" {
+		t.Fatalf("List edge rule execution_class = %q, want \"edge\"", byID[autoEdgeRuleID])
+	}
+	if byID[autoAppRuleID] != "app" {
+		t.Fatalf("List app rule execution_class = %q, want \"app\"", byID[autoAppRuleID])
+	}
+}
+
 // TestUpdateRecompilesAndReclassifies: an Update re-runs the compile gate. A patch
 // that breaks compilation is rejected (revision/generation unchanged, class kept);
 // a patch that turns the rule app-class flips execution_class and drops it from

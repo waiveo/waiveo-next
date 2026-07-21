@@ -401,7 +401,7 @@ func (s *Store) Get(ctx context.Context, kind Kind, id string) (Resource, bool, 
 	defer s.mu.RUnlock()
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, revision, external_id, labels, scope_node, created_at, updated_at, body
+		`SELECT `+selectColumns(kind)+`
 		 FROM `+table+` WHERE id = ?`, id)
 	if err != nil {
 		return Resource{}, false, fmt.Errorf("store: get %s: %w", kind, err)
@@ -413,7 +413,7 @@ func (s *Store) Get(ctx context.Context, kind Kind, id string) (Resource, bool, 
 		}
 		return Resource{}, false, nil
 	}
-	res, err := scanResource(rows)
+	res, err := scanResource(kind, rows)
 	if err != nil {
 		return Resource{}, false, err
 	}
@@ -429,7 +429,7 @@ func (s *Store) List(ctx context.Context, kind Kind, filter ListFilter) ([]Resou
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	q := `SELECT id, revision, external_id, labels, scope_node, created_at, updated_at, body FROM ` + table
+	q := `SELECT ` + selectColumns(kind) + ` FROM ` + table
 	var args []any
 	if filter.ScopeNode != "" {
 		q += ` WHERE scope_node = ?`
@@ -445,7 +445,7 @@ func (s *Store) List(ctx context.Context, kind Kind, filter ListFilter) ([]Resou
 
 	out := []Resource{}
 	for rows.Next() {
-		res, err := scanResource(rows)
+		res, err := scanResource(kind, rows)
 		if err != nil {
 			return nil, err
 		}
@@ -590,15 +590,18 @@ func (s *Store) Delete(ctx context.Context, kind Kind, id string, rev int64) err
 // share with List, so a guard sees exactly the rows a List would — but read under
 // the write lock, atomically with the write it gates.
 func readResources(ctx context.Context, q queryer, table string) ([]Resource, error) {
+	// The table name IS the Kind string (tableFor validated it upstream), so the
+	// projection/scan pick up the automations execution_class column here too.
+	kind := Kind(table)
 	rows, err := q.QueryContext(ctx,
-		`SELECT id, revision, external_id, labels, scope_node, created_at, updated_at, body FROM `+table+` ORDER BY id ASC`)
+		`SELECT `+selectColumns(kind)+` FROM `+table+` ORDER BY id ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("store: read %s: %w", table, err)
 	}
 	defer rows.Close()
 	out := []Resource{}
 	for rows.Next() {
-		res, err := scanResource(rows)
+		res, err := scanResource(kind, rows)
 		if err != nil {
 			return nil, err
 		}
@@ -617,11 +620,34 @@ func identityFieldName(kind Kind) string {
 	return "id"
 }
 
-// scanResource reads one baseline+body row into a Resource.
-func scanResource(rows *sql.Rows) (Resource, error) {
+// baselineColumns is the shared api/1 projection every resource table exposes, in
+// the order scanResource reads them.
+const baselineColumns = "id, revision, external_id, labels, scope_node, created_at, updated_at, body"
+
+// selectColumns is the column projection to read a row of kind into a Resource. It
+// is the shared baseline for every kind PLUS, for the automations table only (the
+// sole kind carrying an execution_class column), that column — so a fetched
+// automation retains the compile-gated edge/app classification recorded on its row
+// rather than silently defaulting to empty on Get/List. scanResource(kind, …) reads
+// exactly the projection this returns.
+func selectColumns(kind Kind) string {
+	if kind == KindAutomation {
+		return baselineColumns + ", execution_class"
+	}
+	return baselineColumns
+}
+
+// scanResource reads one row — the selectColumns(kind) projection — into a Resource.
+// For the automations kind the trailing execution_class column is scanned too, so
+// the persisted classification survives a read (not just the Create/Update return).
+func scanResource(kind Kind, rows *sql.Rows) (Resource, error) {
 	var r Resource
 	var labelsJSON, body string
-	if err := rows.Scan(&r.ID, &r.Revision, &r.ExternalID, &labelsJSON, &r.ScopeNode, &r.CreatedAt, &r.UpdatedAt, &body); err != nil {
+	dest := []any{&r.ID, &r.Revision, &r.ExternalID, &labelsJSON, &r.ScopeNode, &r.CreatedAt, &r.UpdatedAt, &body}
+	if kind == KindAutomation {
+		dest = append(dest, &r.ExecutionClass)
+	}
+	if err := rows.Scan(dest...); err != nil {
 		return Resource{}, fmt.Errorf("store: scan row: %w", err)
 	}
 	if labelsJSON != "" && labelsJSON != "{}" {
