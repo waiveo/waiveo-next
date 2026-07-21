@@ -45,14 +45,20 @@ const (
 	KindValidityWindow Kind = "validity_windows"
 	KindFallback       Kind = "fallbacks"
 	KindPresetBatch    Kind = "preset_batches"
+	// KindAutomation is the rules/1 authored-rule kind: the api/1 resource
+	// baseline + the rule-definition JSON body + an execution_class column
+	// (edge/app). Its writes are gated by the rules compiler rather than
+	// datamodel.ValidateRows (see automations.go).
+	KindAutomation Kind = "automations"
 )
 
 // allKinds is every resource table in schema order (scope_nodes first, then the
-// six scheduling-core kinds). schedulingKinds is the subset validated through
-// datamodel.ValidateRows.
+// six scheduling-core kinds, then automations). schedulingKinds is the subset
+// validated through datamodel.ValidateRows; automations are compile-gated
+// (compile.Compile) instead — see automations.go.
 var allKinds = []Kind{
 	KindScopeNode, KindPlaylist, KindSchedule, KindDaypart,
-	KindValidityWindow, KindFallback, KindPresetBatch,
+	KindValidityWindow, KindFallback, KindPresetBatch, KindAutomation,
 }
 
 var kindSet = func() map[Kind]bool {
@@ -85,6 +91,10 @@ type Resource struct {
 	CreatedAt  int64
 	UpdatedAt  int64
 	Body       json.RawMessage
+	// ExecutionClass is the compiler's edge/app classification of an automation
+	// row (compile.Classify). It is empty for kinds that carry no execution class
+	// and is set by a compile-gated Create/Update (see automations.go).
+	ExecutionClass string
 }
 
 // ListFilter narrows a List. The zero value returns every row of the kind in id
@@ -217,6 +227,13 @@ func Open(dsn string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: migrate meta: %w", err)
 	}
+	// The automations table carries the baseline PLUS an execution_class column,
+	// so it is created from its own DDL first; the shared-baseline loop below then
+	// no-ops over it (CREATE TABLE IF NOT EXISTS).
+	if _, err := db.Exec(automationsTableDDL); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("store: migrate automations: %w", err)
+	}
 	for _, k := range allKinds {
 		if _, err := db.Exec(fmt.Sprintf(resourceTableDDL, string(k))); err != nil {
 			_ = db.Close()
@@ -314,6 +331,13 @@ func (s *Store) Create(ctx context.Context, kind Kind, body json.RawMessage, gua
 	if err != nil {
 		return Resource{}, err
 	}
+	// Compile-gate an automation before the write is even opened: a non-compiling
+	// rule returns the compiler's typed error and nothing is stored (the tx is
+	// never begun). The classification rides the row's execution_class column.
+	executionClass, err := compileGate(kind, fullBody)
+	if err != nil {
+		return Resource{}, err
+	}
 	labelsJSON := marshalLabels(bf.Labels)
 
 	if err := s.writeTx(ctx, func(tx *sql.Tx) error {
@@ -349,6 +373,9 @@ func (s *Store) Create(ctx context.Context, kind Kind, body json.RawMessage, gua
 		if err != nil {
 			return fmt.Errorf("store: insert %s: %w", kind, err)
 		}
+		if err := setExecutionClass(ctx, tx, kind, id, executionClass); err != nil {
+			return err
+		}
 		if err := bumpGeneration(ctx, tx); err != nil {
 			return err
 		}
@@ -360,6 +387,7 @@ func (s *Store) Create(ctx context.Context, kind Kind, body json.RawMessage, gua
 	return Resource{
 		ID: id, Revision: 1, ExternalID: bf.ExternalID, ScopeNode: bf.ScopeNode,
 		Labels: bf.Labels, CreatedAt: now, UpdatedAt: now, Body: fullBody,
+		ExecutionClass: executionClass,
 	}, nil
 }
 
@@ -471,6 +499,14 @@ func (s *Store) Update(ctx context.Context, kind Kind, id string, rev int64, pat
 		if err != nil {
 			return err
 		}
+		// Re-run the compile gate over the merged body: an Update is re-validated
+		// and re-classified exactly like a Create, so a patch that breaks
+		// compilation rolls the whole tx back (nothing changed) and a patch that
+		// crosses the edge/app line updates the execution_class column.
+		executionClass, err := compileGate(kind, fullBody)
+		if err != nil {
+			return err
+		}
 		labelsJSON := marshalLabels(bf.Labels)
 
 		// WriteGuards evaluate the effective post-merge write against the existing
@@ -495,6 +531,9 @@ func (s *Store) Update(ctx context.Context, kind Kind, id string, rev int64, pat
 		); err != nil {
 			return fmt.Errorf("store: update %s: %w", kind, err)
 		}
+		if err := setExecutionClass(ctx, tx, kind, id, executionClass); err != nil {
+			return err
+		}
 		if err := bumpGeneration(ctx, tx); err != nil {
 			return err
 		}
@@ -504,6 +543,7 @@ func (s *Store) Update(ctx context.Context, kind Kind, id string, rev int64, pat
 		res = Resource{
 			ID: id, Revision: newRev, ExternalID: bf.ExternalID, ScopeNode: bf.ScopeNode,
 			Labels: bf.Labels, CreatedAt: curBaseline.CreatedAt, UpdatedAt: now, Body: fullBody,
+			ExecutionClass: executionClass,
 		}
 		return nil
 	}); err != nil {

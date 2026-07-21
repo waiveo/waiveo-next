@@ -49,6 +49,11 @@ func validateAfterWrite(ctx context.Context, tx *sql.Tx, kind Kind) error {
 			return &ValidationError{Errors: errs}
 		}
 		return nil
+	case kind == KindAutomation:
+		// Automations are gated by the rules compiler (compile.Compile) at the top
+		// of Create/Update, not by datamodel.ValidateRows — a compile failure has
+		// already aborted the write before this post-write hook runs.
+		return nil
 	default:
 		return fmt.Errorf("store: no validator for kind %q", kind)
 	}
