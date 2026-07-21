@@ -3,7 +3,9 @@ package wire
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -418,6 +420,61 @@ func TestSectionsWithContentOriginHashesDeterministicallyAndRoundTrips(t *testin
 	if hOther == h1 {
 		t.Error("different content_origin values produced the same hash — want different hashes (REL-053)")
 	}
+}
+
+// TestContractDocumentsContentOrigin is the interop regression guard: the
+// feeder emits revocation_and_site.content_origin and the relay reads it (this
+// package's RevocationAndSite.ContentOrigin), so contracts/relay-1.md MUST
+// document the field — both in the REL-066 clause that defines
+// revocation_and_site and in the example state.snapshot. Without it, a
+// third-party relay/feeder/screen implemented strictly to the contract would
+// omit the field, and its schedule-resolved content items would get no url — a
+// silent interop degrade. This test fails if the field is ever dropped back out
+// of the contract text.
+func TestContractDocumentsContentOrigin(t *testing.T) {
+	const contractPath = "../../../contracts/relay-1.md"
+	raw, err := os.ReadFile(contractPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", contractPath, err)
+	}
+	doc := string(raw)
+
+	// 1. The REL-066 clause — the structural home of revocation_and_site — must
+	//    define content_origin.
+	rel066 := requirementClause(t, doc, "REL-066")
+	if !strings.Contains(rel066, "content_origin") {
+		t.Errorf("REL-066 does not document content_origin — the field the feeder emits and the relay reads is then defined by no clause:\n%s", rel066)
+	}
+
+	// 2. The example state.snapshot's revocation_and_site must carry content_origin,
+	//    so a reader implementing from the example does not omit it.
+	foundInExample := false
+	for _, line := range strings.Split(doc, "\n") {
+		if strings.Contains(line, `"revocation_and_site"`) && strings.Contains(line, `"content_origin"`) {
+			foundInExample = true
+			break
+		}
+	}
+	if !foundInExample {
+		t.Error("the example state.snapshot's revocation_and_site omits content_origin (contracts/relay-1.md)")
+	}
+}
+
+// requirementClause returns the text of the requirement paragraph anchored by
+// **[<id>]** in the contract markdown (up to the next blank line), so a test can
+// assert on that one clause alone rather than the whole document.
+func requirementClause(t *testing.T, doc, id string) string {
+	t.Helper()
+	anchor := "**[" + id + "]**"
+	i := strings.Index(doc, anchor)
+	if i < 0 {
+		t.Fatalf("requirement %s not found in the contract", id)
+	}
+	rest := doc[i:]
+	if end := strings.Index(rest, "\n\n"); end >= 0 {
+		return rest[:end]
+	}
+	return rest
 }
 
 // TestSectionKeysAreTheSevenRELKeys asserts SectionKeys is exactly the seven
