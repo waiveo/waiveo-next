@@ -3,6 +3,7 @@ import { Link, NavLink, Outlet } from "react-router";
 import {
   AudioWaveform,
   LayoutDashboard,
+  LayoutTemplate,
   Menu,
   Palette,
   PanelLeftClose,
@@ -35,6 +36,7 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
+  { to: "/pages", label: "Pages", icon: LayoutTemplate },
   { to: "/design", label: "Design kit", icon: Palette },
 ];
 
