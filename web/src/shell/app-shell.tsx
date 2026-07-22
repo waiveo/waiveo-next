@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, NavLink, Outlet } from "react-router";
 import {
+  Activity,
   AudioWaveform,
   CalendarClock,
   Images,
@@ -44,6 +45,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/schedules", label: "Schedules", icon: CalendarClock },
   { to: "/content", label: "Content", icon: Images },
   { to: "/automations", label: "Automations", icon: Workflow },
+  { to: "/activity", label: "Activity", icon: Activity },
   { to: "/pages", label: "Pages", icon: LayoutTemplate },
   { to: "/design", label: "Design kit", icon: Palette },
 ];

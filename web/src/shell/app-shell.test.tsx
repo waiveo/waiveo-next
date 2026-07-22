@@ -63,6 +63,34 @@ describe("AppShell — locked-left responsive shell", () => {
     expect(sidebar.compareDocumentPosition(content) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it("carries the full console navigation in the rail, in order", () => {
+    const { container } = renderShell();
+    const sidebar = container.querySelector('[data-slot="shell-sidebar"]') as HTMLElement;
+    const railNav = within(sidebar).getByRole("navigation", { name: /primary/i });
+    const labels = within(railNav)
+      .getAllByRole("link")
+      .map((a) => a.textContent?.trim());
+    expect(labels).toEqual([
+      "Overview",
+      "Screens",
+      "Schedules",
+      "Content",
+      "Automations",
+      "Activity",
+      "Pages",
+      "Design kit",
+    ]);
+  });
+
+  it("marks the Activity route active when it is the current path", () => {
+    const { container } = renderShell("/activity");
+    const sidebar = container.querySelector('[data-slot="shell-sidebar"]') as HTMLElement;
+    expect(within(sidebar).getByRole("link", { name: "Activity" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+  });
+
   it("carries a brand mark in the rail", () => {
     const { container } = renderShell();
     const sidebar = container.querySelector('[data-slot="shell-sidebar"]') as HTMLElement;

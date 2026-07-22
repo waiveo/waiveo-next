@@ -6,6 +6,7 @@ import ScreensRoute from "@/routes/screens/screens-route";
 import SchedulesRoute from "@/routes/schedules/schedules-route";
 import ContentRoute from "@/routes/content/content-route";
 import AutomationsRoute from "@/routes/automations/automations-route";
+import ActivityRoute from "@/routes/activity/activity-route";
 import DesignRoute from "@/routes/design/design-route";
 import PagesRoute from "@/routes/pages/pages-route";
 
@@ -14,8 +15,8 @@ import PagesRoute from "@/routes/pages/pages-route";
 // AppShell is the responsive frame every route renders inside (via <Outlet/>): a
 // locked-left nav rail, a left drawer + hamburger below 1024px, a header, and the
 // content region. The console pages talk to the feeder over the same-origin
-// api/1 client and the ui-schema renderer; the rest of the nav (Automations,
-// Activity) lands in later waves.
+// api/1 client and the ui-schema renderer; Activity streams the live /events/v1
+// SSE. The full console navigation is wired here.
 export default function App() {
   return (
     <ThemeProvider>
@@ -27,6 +28,7 @@ export default function App() {
             <Route path="/schedules" element={<SchedulesRoute />} />
             <Route path="/content" element={<ContentRoute />} />
             <Route path="/automations" element={<AutomationsRoute />} />
+            <Route path="/activity" element={<ActivityRoute />} />
             <Route path="/pages" element={<PagesRoute />} />
             <Route path="/design" element={<DesignRoute />} />
           </Route>
