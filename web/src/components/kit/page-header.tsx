@@ -11,6 +11,16 @@ import { cn } from "@/lib/utils";
  * content. Text therefore sits on a scrim layer, never on the raw gradient —
  * the brand's text-never-on-raw-gradient rule expressed structurally, not as a
  * per-page habit.
+ *
+ * Placement matters as much as the scrim. `--grad-hero` is a 150deg ramp
+ * (ember top-left → indigo tail bottom-right) and `--grad-hero-scrim` is
+ * bottom-weighted (its 0.62 dark end at the bottom). Both protections live in
+ * the LOWER band, which is exactly where HORIZON §4 places the hero headline
+ * (warm-white holds 7.9:1 over the indigo lower-third). So the hero band is
+ * taller than its content and bottom-anchors it (`justify-end` / `sm:items-end`
+ * with a big-top/small-bottom pad): the ember sky sits ABOVE the copy, and the
+ * headline lands where the scrim is darkest and the ramp is coolest — never
+ * centered over the weakly-scrimmed ember stop.
  */
 export interface PageHeaderProps {
   title: string;
@@ -36,11 +46,13 @@ export function PageHeader({
       data-slot="page-header"
       data-variant={variant}
       className={cn(
-        "flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between",
+        "flex flex-col gap-4 sm:flex-row sm:justify-between",
         hero
-          ? // .wv-hero lays --grad-hero AND its scrim; content sits above the scrim.
-            "wv-hero rounded-panel px-6 py-8 sm:px-8 sm:py-10"
-          : "border-b border-border pb-5",
+          ? // .wv-hero lays --grad-hero AND its scrim; the band is taller than its
+            // content and bottom-anchors it so the headline lands in the protected
+            // lower band (dark scrim end + indigo tail), never the ember top.
+            "wv-hero rounded-panel min-h-[9.5rem] justify-end px-6 pt-12 pb-6 sm:min-h-[11rem] sm:items-end sm:px-8 sm:pt-14 sm:pb-7"
+          : "border-b border-border pb-5 sm:items-center",
         className,
       )}
     >

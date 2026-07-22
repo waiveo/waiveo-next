@@ -30,4 +30,28 @@ describe("PageHeader", () => {
     expect(header.className).not.toContain("var(--grad-hero)");
     expect(header.getAttribute("data-variant")).toBe("hero");
   });
+
+  it("hero variant bottom-anchors its content into the protected lower band", () => {
+    // --grad-hero-scrim is bottom-weighted (0.62 dark end at the bottom) and the
+    // 150deg ramp puts the indigo tail low; HORIZON §4 places the headline there.
+    // So the hero band must be taller than its content and pin it to the bottom
+    // (justify-end on the mobile column, items-end on the sm row) — NEVER centered
+    // over the weakly-scrimmed ember top.
+    const { container } = render(<PageHeader title="Welcome" variant="hero" />);
+    const header = container.querySelector('[data-slot="page-header"]')!;
+    expect(header.className).toContain("justify-end");
+    expect(header.className).toContain("sm:items-end");
+    // A min-height gives the band a "lower third" for justify-end to anchor into.
+    expect(header.className).toMatch(/min-h-\[/);
+    // Centering would drop the headline back onto the unprotected ember stop.
+    expect(header.className).not.toContain("sm:items-center");
+  });
+
+  it("default variant keeps its centered row and never bottom-anchors", () => {
+    const { container } = render(<PageHeader title="Screens" actions={<span>a</span>} />);
+    const header = container.querySelector('[data-slot="page-header"]')!;
+    expect(header.className).toContain("sm:items-center");
+    expect(header.className).not.toContain("justify-end");
+    expect(header.className).not.toContain("wv-hero");
+  });
 });
