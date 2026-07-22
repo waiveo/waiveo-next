@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,6 +30,21 @@ var (
 	idC = idPrefix + "Y7"
 	idD = idPrefix + "Y8"
 )
+
+// ulidSeq mints deterministic, ascending, valid 26-char ULIDs (the idPrefix plus
+// a 2-symbol Crockford-base32 counter suffix), so successive ids sort in call
+// order — the shape the ingest assigns (EVT-011) and the same generator the
+// eventingest tests use, so a reconstructed envelope carrying one validates.
+func ulidSeq() func() string {
+	const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+	n := 0
+	return func() string {
+		hi := alphabet[(n/32)%32]
+		lo := alphabet[n%32]
+		n++
+		return idPrefix + string([]byte{hi, lo})
+	}
+}
 
 // corpusAutomationRunPayload is the frozen corpus automation.run payload
 // (conformance/corpora/events-1) — a real, serializable event body so a streamed
@@ -153,17 +169,17 @@ func TestSSE_FreshConnectionStreamsOnlyLiveAppends(t *testing.T) {
 	log := events.NewEventLog(0)
 	log.Append(autoEnv(idA))
 	log.Append(autoEnv(idB))
-	notify := make(chan struct{}, 1)
+	hub := NewHub(log)
 
-	srv := httptest.NewServer(New(log, notify))
+	srv := httptest.NewServer(New(hub))
 	defer srv.Close()
 
 	br, closeConn := dialSSE(t, srv, "", nil)
 	defer closeConn()
 
-	// A live append after the fresh watermark is established must stream through.
-	log.Append(autoEnv(idC))
-	notify <- struct{}{}
+	// A live append after the fresh watermark is established must stream through —
+	// the ingest's Append is what both records it and wakes the subscriber.
+	hub.Append(autoEnv(idC))
 
 	f := readFrameWithin(t, br, 2*time.Second)
 	if f.event != "event" {
@@ -189,9 +205,9 @@ func TestSSE_ResumeFromStreamsBacklogThenLive(t *testing.T) {
 	log.Append(autoEnv(idA))
 	log.Append(autoEnv(idB))
 	log.Append(autoEnv(idC))
-	notify := make(chan struct{}, 1)
+	hub := NewHub(log)
 
-	srv := httptest.NewServer(New(log, notify))
+	srv := httptest.NewServer(New(hub))
 	defer srv.Close()
 
 	br, closeConn := dialSSE(t, srv, "resume_from="+idA, nil)
@@ -206,8 +222,7 @@ func TestSSE_ResumeFromStreamsBacklogThenLive(t *testing.T) {
 	}
 
 	// then a live append continues the same stream.
-	log.Append(autoEnv(idD))
-	notify <- struct{}{}
+	hub.Append(autoEnv(idD))
 	if f := readFrameWithin(t, br, 2*time.Second); f.event != "event" || f.id != idD {
 		t.Fatalf("live continuation frame must be event %s; got event=%q id=%q", idD, f.event, f.id)
 	}
@@ -221,9 +236,9 @@ func TestSSE_LastEventIDTakesPrecedenceOverResumeFromQuery(t *testing.T) {
 	log.Append(autoEnv(idA))
 	log.Append(autoEnv(idB))
 	log.Append(autoEnv(idC))
-	notify := make(chan struct{}, 1)
+	hub := NewHub(log)
 
-	srv := httptest.NewServer(New(log, notify))
+	srv := httptest.NewServer(New(hub))
 	defer srv.Close()
 
 	// query says resume from idA (would replay idB, idC); Last-Event-ID says idB,
@@ -243,8 +258,7 @@ func TestSSE_LastEventIDTakesPrecedenceOverResumeFromQuery(t *testing.T) {
 // (EVT-134) — not treated as an omitted (fresh) resume.
 func TestSSE_MalformedResumeFromRejectedBeforeStream(t *testing.T) {
 	log := events.NewEventLog(0)
-	notify := make(chan struct{}, 1)
-	h := New(log, notify)
+	h := New(NewHub(log))
 
 	req := httptest.NewRequest(http.MethodGet, "/events/v1?resume_from=not_a_ulid", nil)
 	req.Header.Set("Accept", "text/event-stream")
@@ -281,9 +295,9 @@ func TestSSE_AgedOutResumeFromEmitsGapFirst(t *testing.T) {
 	log.Append(autoEnv(idB))
 	log.Append(autoEnv(idC))
 	// retained now: idB, idC; oldest = idB.
-	notify := make(chan struct{}, 1)
+	hub := NewHub(log)
 
-	srv := httptest.NewServer(New(log, notify))
+	srv := httptest.NewServer(New(hub))
 	defer srv.Close()
 
 	br, closeConn := dialSSE(t, srv, "resume_from="+idA, nil)
@@ -315,5 +329,185 @@ func TestSSE_AgedOutResumeFromEmitsGapFirst(t *testing.T) {
 	}
 	if f := readFrameWithin(t, br, 2*time.Second); f.event != "event" || f.id != idC {
 		t.Fatalf("gap resume must then deliver %s in order; got event=%q id=%q", idC, f.event, f.id)
+	}
+}
+
+// TestSSE_MultipleSubscribersEachReceiveLiveAppend is the finding-1 regression:
+// with TWO concurrently-connected fresh subscribers, a SINGLE Append must push
+// the new event live to BOTH of them. A single shared notify channel would
+// deliver the wake to only one blocked receiver, leaving the other asleep — this
+// exercises the per-subscriber fan-out that guarantees every subscriber sees a
+// live event (EVT-100).
+func TestSSE_MultipleSubscribersEachReceiveLiveAppend(t *testing.T) {
+	log := events.NewEventLog(0)
+	hub := NewHub(log)
+
+	srv := httptest.NewServer(New(hub))
+	defer srv.Close()
+
+	br1, close1 := dialSSE(t, srv, "", nil)
+	defer close1()
+	br2, close2 := dialSSE(t, srv, "", nil)
+	defer close2()
+
+	// One Append must wake BOTH subscribers.
+	hub.Append(autoEnv(idC))
+
+	f1 := readFrameWithin(t, br1, 2*time.Second)
+	f2 := readFrameWithin(t, br2, 2*time.Second)
+	if f1.id != idC {
+		t.Fatalf("subscriber 1 must receive the live append %s; got %q", idC, f1.id)
+	}
+	if f2.id != idC {
+		t.Fatalf("subscriber 2 must ALSO receive the live append %s — a single shared channel would wake only one (EVT-100); got %q", idC, f2.id)
+	}
+}
+
+// TestSSE_ConcurrentAppendsAndReadsAreRaceFree is the finding-2/4 regression: an
+// SSE subscriber's live loop reads the shared log (hub.after) on one goroutine
+// while a writer floods hub.Append on another. Both must go through the Hub's
+// single lock, so under `go test -race` there is no unsynchronized read/write on
+// the EventLog's backing slice, and every appended event is delivered exactly
+// once, in id order, with none silently lost (EVT-135/143).
+func TestSSE_ConcurrentAppendsAndReadsAreRaceFree(t *testing.T) {
+	log := events.NewEventLog(0)
+	hub := NewHub(log)
+
+	srv := httptest.NewServer(New(hub))
+	defer srv.Close()
+
+	br, closeConn := dialSSE(t, srv, "", nil)
+	defer closeConn()
+
+	const n = 40
+	next := ulidSeq()
+	want := make([]string, n)
+	for i := range want {
+		want[i] = next()
+	}
+
+	// Flood the log from a separate goroutine while the server's live loop reads.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for _, id := range want {
+			hub.Append(autoEnv(id))
+		}
+	}()
+
+	// Every appended event must arrive live, in ascending id order, none lost.
+	for i := 0; i < n; i++ {
+		f := readFrameWithin(t, br, 5*time.Second)
+		if f.event != "event" || f.id != want[i] {
+			t.Fatalf("live frame %d must be %s in order (no silent loss); got event=%q id=%q", i, want[i], f.event, f.id)
+		}
+	}
+	wg.Wait()
+}
+
+// TestHub_SubscribeCapturesWatermarkAtomicallyWithRegistration is the finding-3
+// regression at the boundary itself: Hub.subscribe must register the wake mailbox
+// AND snapshot the fresh watermark under one lock hold. If those two steps were
+// separated (as the pre-fix handler was — it wrote the 200 to announce the
+// connection, THEN read the head as the watermark), an event appended in the gap
+// would be neither in the backlog nor after the watermark, and silently dropped.
+// Here: the head snapshot equals the pre-subscribe tail, the subscriber is
+// already registered (a subsequent Append wakes it), and the appended event is
+// strictly after the watermark — so it is delivered live, never lost (EVT-132).
+func TestHub_SubscribeCapturesWatermarkAtomicallyWithRegistration(t *testing.T) {
+	log := events.NewEventLog(0)
+	log.Append(autoEnv(idA))
+	hub := NewHub(log)
+
+	sub, outcome, rerr := hub.subscribe("")
+	if rerr != nil {
+		t.Fatalf("a fresh subscribe must not error; got %v", rerr)
+	}
+	defer sub.close()
+	if outcome.Result != events.ResumeResultFresh {
+		t.Fatalf("empty resume_from must resolve fresh; got %q", outcome.Result)
+	}
+	// The watermark is the head at the registration instant — the pre-existing idA.
+	if sub.head != idA {
+		t.Fatalf("fresh watermark must be the head snapshotted with registration (%s); got %q", idA, sub.head)
+	}
+
+	// An event appended AFTER subscribe returned must wake the already-registered
+	// subscriber (registration happened inside subscribe, atomically) ...
+	hub.Append(autoEnv(idB))
+	select {
+	case <-sub.wake():
+	default:
+		t.Fatalf("Append after subscribe must wake the registered subscriber — registration and the watermark snapshot must be one atomic step (EVT-132)")
+	}
+	// ... and be strictly after the watermark, so the live loop delivers it (the
+	// pre-existing idA is excluded from a fresh subscriber's live tail).
+	tail := hub.after(sub.head)
+	if len(tail) != 1 || tail[0].ID != idB {
+		t.Fatalf("the event appended at connection time must be in the deliverable tail after the watermark, never dropped (EVT-132/143); got %+v", tail)
+	}
+}
+
+// TestSSE_FreshDeliversEveryAppendAfterConnect is the finding-3 regression at the
+// handler: because the watermark is captured atomically with registration BEFORE
+// the 200 is written, every event appended after the connection is established is
+// delivered live, in order — nothing appended around connection time falls into a
+// silent gap (EVT-132).
+func TestSSE_FreshDeliversEveryAppendAfterConnect(t *testing.T) {
+	log := events.NewEventLog(0)
+	log.Append(autoEnv(idA)) // pre-existing — a fresh subscriber must NOT replay it
+	hub := NewHub(log)
+
+	srv := httptest.NewServer(New(hub))
+	defer srv.Close()
+
+	br, closeConn := dialSSE(t, srv, "", nil)
+	defer closeConn()
+
+	for _, id := range []string{idB, idC, idD} {
+		hub.Append(autoEnv(id))
+		f := readFrameWithin(t, br, 2*time.Second)
+		if f.event != "event" || f.id != id {
+			t.Fatalf("every post-connect append must be delivered live in order (EVT-132); want %s got event=%q id=%q", id, f.event, f.id)
+		}
+	}
+}
+
+// TestHub_CloseEndsLiveSubscribers: Hub.Close ends every live subscriber stream
+// for a graceful shutdown — a subscriber blocked in its live loop returns rather
+// than hanging the server's shutdown forever (the seam the deferred WS transport
+// and a real net/http server rely on).
+func TestHub_CloseEndsLiveSubscribers(t *testing.T) {
+	log := events.NewEventLog(0)
+	hub := NewHub(log)
+
+	srv := httptest.NewServer(New(hub))
+	defer srv.Close()
+
+	br, closeConn := dialSSE(t, srv, "", nil)
+	defer closeConn()
+
+	// Prove the stream is live, then close the hub — the body must reach EOF.
+	hub.Append(autoEnv(idA))
+	if f := readFrameWithin(t, br, 2*time.Second); f.id != idA {
+		t.Fatalf("stream must be live before shutdown; got %q", f.id)
+	}
+
+	hub.Close()
+	hub.Close() // idempotent
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := br.ReadString('\n')
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatalf("after Hub.Close the subscriber stream must end (EOF), not deliver another frame")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Hub.Close must end a blocked subscriber's live loop; the stream hung")
 	}
 }

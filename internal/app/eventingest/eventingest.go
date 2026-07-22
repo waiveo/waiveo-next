@@ -16,6 +16,14 @@
 // It reuses the built wire types (telemetry.PushBatch/Entry/Ack), the built
 // events.EventLog/Validate/ClassFor, and apihttp's Problem/Trace-Id — it
 // re-implements none of them.
+//
+// It appends through an EventSink rather than a bare *events.EventLog: in
+// production the sink is the eventsse.Hub, whose Append records the event AND
+// wakes every connected /events/v1 subscriber under the shared synchronization
+// boundary events.EventLog delegates to "the live transport" — so a
+// telemetry-derived event pushes live with no separate notify wiring, and the
+// ingest write never races an SSE read (EVT-100). A bare *events.EventLog also
+// satisfies EventSink, so a test can append and read it directly.
 package eventingest
 
 import (
@@ -31,14 +39,24 @@ import (
 	"github.com/maaxton/waiveo-next/internal/shared/ulid"
 )
 
+// EventSink is the append target the ingest writes reconstructed envelopes to.
+// It is the write half of the shared event log: *events.EventLog satisfies it
+// directly, and in production the eventsse.Hub satisfies it too — the Hub's
+// Append serializes the write against concurrent SSE reads and wakes every
+// subscriber, which is what makes a telemetry-derived event push live (EVT-100).
+type EventSink interface {
+	Append(events.Envelope)
+}
+
 // ingest is the POST /telemetry/v1/push handler. It owns the write side of the
-// shared events.EventLog and the at-least-once bookkeeping: which telemetry seqs
-// it has terminally processed (appended-if-valid or dropped-if-invalid) and the
-// highest-received ack cursor. Its state is guarded by mu, so concurrent pushes
-// (the relay flushes serially, but the seam is unauthenticated and shared) never
-// race the log or the cursor.
+// shared event log (via an EventSink) and the at-least-once bookkeeping: which
+// telemetry seqs it has terminally processed (appended-if-valid or
+// dropped-if-invalid) and the highest-received ack cursor. Its own bookkeeping
+// is guarded by mu, so concurrent pushes (the relay flushes serially, but the
+// seam is unauthenticated and shared) never race the cursor; the sink owns the
+// log's own synchronization boundary.
 type ingest struct {
-	log           *events.EventLog
+	sink          EventSink
 	siteScopeNode string
 	idSeq         func() string
 	// logf records an EVT-013 drop; it defaults to the stdlib logger and is a
@@ -60,16 +78,17 @@ type ingest struct {
 	ackThrough int64
 }
 
-// New returns the POST /telemetry/v1/push handler writing into log. siteScopeNode
-// is the site's scope-node ULID stamped onto every ingested event's scope_node
-// (the REL-090 wire record carries no per-record scope, so the site node is
-// authoritative; a per-record subject-derived scope is a deferred concern).
-// idSeq mints each ingested event's recording-order id (EVT-011) — a ULID
-// generator whose values are lexicographically time-ordered. The log is shared,
-// unmodified, with the /events/v1 SSE reader.
-func New(log *events.EventLog, siteScopeNode string, idSeq func() string) http.Handler {
+// New returns the POST /telemetry/v1/push handler writing into sink. In
+// production sink is the eventsse.Hub shared with the /events/v1 SSE reader, so
+// each append also wakes the live subscribers. siteScopeNode is the site's
+// scope-node ULID stamped onto every ingested event's scope_node (the REL-090
+// wire record carries no per-record scope, so the site node is authoritative; a
+// per-record subject-derived scope is a deferred concern). idSeq mints each
+// ingested event's recording-order id (EVT-011) — a ULID generator whose values
+// are lexicographically time-ordered.
+func New(sink EventSink, siteScopeNode string, idSeq func() string) http.Handler {
 	return &ingest{
-		log:           log,
+		sink:          sink,
 		siteScopeNode: siteScopeNode,
 		idSeq:         idSeq,
 		logf:          stdlog.Printf,
@@ -163,7 +182,7 @@ func (in *ingest) processOne(e telemetry.Entry) {
 		in.logf("eventingest: dropping telemetry seq %d schema %q: %v (EVT-013)", e.Seq, e.Schema, err)
 		return
 	}
-	in.log.Append(env)
+	in.sink.Append(env)
 }
 
 // buildEnvelope assigns the app-side envelope fields onto a wire record and
