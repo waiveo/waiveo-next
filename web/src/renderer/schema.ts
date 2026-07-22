@@ -215,7 +215,10 @@ export const WIDGET_CATALOG: Record<string, WidgetSpec> = {
   repeat: {
     category: "structural",
     children: false,
-    bind: "optional",
+    // UIS-070 bind shape `array` / UIS-107: `bind` names the array `itemTemplate`
+    // iterates — a repeat with no bound array has nothing to render, so bind is
+    // required (contrast `fragment`, whose bind is explicitly optional and rescopes).
+    bind: "required",
     props: {
       itemTemplate: req("widget"),
       itemScope: p("msg"), // a kebab identifier — presence-checked only

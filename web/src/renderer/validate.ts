@@ -134,6 +134,21 @@ function looksComputed(v: unknown): v is Record<string, unknown> {
   return isObject(v) && "compute" in v;
 }
 
+/** For a grammar-valid Binding path that begins `$context.<name>`, verify `<name>`
+ * is a declared context feed (UIS-105); an undeclared feed fails
+ * CONTEXT_REF_UNDEFINED. A no-op for any path with no `$context` root. */
+function checkContextRef(s: string, path: string, ctx: Ctx): void {
+  const segments = splitTopLevel(s, ".");
+  if (segments[0] !== "$context") return;
+  // The feed name is the second segment up to any index/predicate bracket, e.g.
+  // `$context.ghosts[id=$ui.selected]` → `ghosts`. (A plain split on `[`, since
+  // splitTopLevel treats `[` as a depth marker, never a separator.)
+  const name = segments[1] ? segments[1].split("[")[0] : undefined;
+  if (!name || !ctx.contextKeys.has(name)) {
+    fail(ctx, "CONTEXT_REF_UNDEFINED", path, `$context.${name ?? ""} is not a declared context feed (UIS-105)`);
+  }
+}
+
 /** Validate a LiveBinding `{ path, live: true }` (UIS-109). */
 function validateLiveBinding(v: Record<string, unknown>, path: string, ctx: Ctx): void {
   if (v.live !== true) {
@@ -142,7 +157,11 @@ function validateLiveBinding(v: Record<string, unknown>, path: string, ctx: Ctx)
   }
   if (!isValidBindingPath(v.path)) {
     fail(ctx, "BINDING_PATH_INVALID", `${path}.path`, "a LiveBinding's `path` must be a valid Binding (UIS-109)");
+    return;
   }
+  // A LiveBinding's `path` is a Binding (UIS-100); a `$context.<name>` in it is
+  // subject to the same existence check a bare-string Binding gets (UIS-105).
+  checkContextRef(v.path as string, `${path}.path`, ctx);
 }
 
 /** Validate a bare-string Binding, checking grammar (UIS-100) and, for a
@@ -157,13 +176,7 @@ function validateBindingString(s: string, path: string, ctx: Ctx, writeTarget = 
     fail(ctx, "BINDING_PATH_INVALID", path, "cannot write to the read-only $index segment (UIS-107)");
     return;
   }
-  const segments = splitTopLevel(s, ".");
-  if (segments[0] === "$context") {
-    const name = segments[1] ? splitTopLevel(segments[1], "[")[0] : undefined;
-    if (!name || !ctx.contextKeys.has(name)) {
-      fail(ctx, "CONTEXT_REF_UNDEFINED", path, `$context.${name ?? ""} is not a declared context feed (UIS-105)`);
-    }
-  }
+  checkContextRef(s, path, ctx);
 }
 
 /** A Binding-typed position (UIS-066): a bare-string Binding or a LiveBinding. */
@@ -221,7 +234,13 @@ function validateRootBinding(v: unknown, path: string, ctx: Ctx, allowPaginated 
   if (typeof v === "string") {
     if (!isValidRootBindingString(v)) {
       fail(ctx, "BINDING_PATH_INVALID", path, `"${v}" does not match the UIS-005/UIS-100 root-Binding grammar`);
+      return;
     }
+    // A root Binding endorses `$context.<name>` as a source (UIS-023); UIS-105's
+    // existence check is unconditional, so each `/`-delimited part that is a
+    // `$context` reference must resolve to a declared feed — grammar alone is not
+    // enough, exactly as it is not for a Scope-relative Binding.
+    for (const part of v.split("/")) checkContextRef(part, path, ctx);
     return;
   }
   if (isObject(v)) {
@@ -274,18 +293,21 @@ function validateComputed(v: Record<string, unknown>, path: string, ctx: Ctx): v
     fail(ctx, "COMPUTE_FN_UNKNOWN", `${path}.compute`, `"${String(fn)}" is not a ui-schema/1 Computed function (UIS-140)`);
     return;
   }
-  const args = v.args;
-  if (!Array.isArray(args)) return;
+  const args = Array.isArray(v.args) ? v.args : [];
+  // label(vocabRef, valueBinding): arg0 is a vocabRef pinned to the UIS-120 closed
+  // set (UIS-140), enforced as a closed set (UIS-121). It MUST be present and a
+  // member of the table, so an absent (missing/empty args), non-string, or
+  // out-of-set vocabRef fails VOCAB_REF_UNKNOWN — never a silent skip.
+  if (fn === "label") {
+    const ref = args[0];
+    if (typeof ref !== "string" || !(ref in VOCAB_TABLE)) {
+      fail(ctx, "VOCAB_REF_UNKNOWN", `${path}.args[0]`, `"${String(ref)}" is not a member of the UIS-120 vocabRef table`);
+    }
+  }
   const skip = COMPUTE_SKIP_GRAMMAR[fn] ?? new Set<number>();
   args.forEach((arg, i) => {
     const argPath = `${path}.args[${i}]`;
-    if (fn === "label" && i === 0) {
-      // label(vocabRef, valueBinding): arg0 is a vocabRef, not a data path.
-      if (typeof arg === "string" && !(arg in VOCAB_TABLE)) {
-        fail(ctx, "VOCAB_REF_UNKNOWN", argPath, `"${arg}" is not a member of the UIS-120 vocabRef table`);
-      }
-      return;
-    }
+    if (fn === "label" && i === 0) return; // vocabRef — enforced above, never grammar-checked
     if (skip.has(i)) return; // pinned non-Binding literal (msgRef, key-array)
     validateBindingExpr(arg, argPath, ctx);
   });

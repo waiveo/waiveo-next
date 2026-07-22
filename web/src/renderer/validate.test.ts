@@ -259,6 +259,23 @@ describe("computed values (UIS-140 → COMPUTE_FN_UNKNOWN)", () => {
     // vocabRef, not a data path, so it must not be rejected as BINDING_PATH_INVALID.
     expect(codes(withStatTile({ compute: "label", args: ["rules/1:mode", "mode"] }))).toEqual([]);
   });
+  it("rejects a label() whose vocabRef is not a member of the UIS-120 table (VOCAB_REF_UNKNOWN)", () => {
+    // label's pinned vocabRef is a closed set (UIS-120/121) — a string outside it
+    // fails, never a silent pass.
+    expect(codes(withStatTile({ compute: "label", args: ["rules/1:nope", "mode"] }))).toContain(
+      "VOCAB_REF_UNKNOWN",
+    );
+  });
+  it("rejects a label() whose vocabRef arg is a non-string (VOCAB_REF_UNKNOWN)", () => {
+    // A non-string in the vocabRef position is not a member of the table.
+    expect(codes(withStatTile({ compute: "label", args: [5, "mode"] }))).toContain("VOCAB_REF_UNKNOWN");
+  });
+  it("rejects a label() with args omitted entirely (vocabRef absent → VOCAB_REF_UNKNOWN)", () => {
+    expect(codes(withStatTile({ compute: "label" }))).toContain("VOCAB_REF_UNKNOWN");
+  });
+  it("rejects a label() with an empty args array (vocabRef absent → VOCAB_REF_UNKNOWN)", () => {
+    expect(codes(withStatTile({ compute: "label", args: [] }))).toContain("VOCAB_REF_UNKNOWN");
+  });
 });
 
 describe("context feeds (UIS-105 → CONTEXT_REF_UNDEFINED)", () => {
@@ -593,6 +610,80 @@ describe("root Bindings syntactically validated (UIS-005/023/066 → BINDING_PAT
   });
 });
 
+describe("root Bindings honor the $context existence check (UIS-005/023/105 → CONTEXT_REF_UNDEFINED)", () => {
+  // UIS-023 endorses `$context.<name>` as a list.source form; UIS-105 is an
+  // unconditional MUST with no carve-out for root-Binding positions — an
+  // undeclared context feed named at a page's primary source must be rejected,
+  // never silently accepted on grammar alone.
+  it("rejects an undeclared $context feed on list.source", () => {
+    const e = errorFor(
+      {
+        pageType: "list-detail",
+        list: { source: "$context.ghosts", display: textWidget },
+        detail: { source: "rows[id=1]", root: textWidget },
+      },
+      "CONTEXT_REF_UNDEFINED",
+    );
+    expect(e?.path).toBe("list.source");
+  });
+  it("rejects an undeclared $context feed on detail.source", () => {
+    const e = errorFor(
+      {
+        pageType: "list-detail",
+        list: { source: "rows", display: textWidget },
+        detail: { source: "$context.ghosts[id=1]", root: textWidget },
+      },
+      "CONTEXT_REF_UNDEFINED",
+    );
+    expect(e?.path).toBe("detail.source");
+  });
+  it("rejects an undeclared $context feed on a settings-form source", () => {
+    const e = errorFor(
+      {
+        pageType: "settings-form",
+        source: "$context.ghosts",
+        sections: [{ fields: [labeledField] }],
+        actions: [submitButton],
+      },
+      "CONTEXT_REF_UNDEFINED",
+    );
+    expect(e?.path).toBe("source");
+  });
+  it("rejects an undeclared $context feed on a wizard draftSource", () => {
+    const e = errorFor(
+      {
+        pageType: "wizard",
+        draftSource: "$context.ghosts",
+        steps: [{ id: "a", titleMsg: "msg:a", root: textWidget }],
+        onFinish: { verb: "call-action", action: "done" },
+      },
+      "CONTEXT_REF_UNDEFINED",
+    );
+    expect(e?.path).toBe("draftSource");
+  });
+  it("rejects an undeclared $context feed inside a root LiveBinding's path", () => {
+    const e = errorFor(
+      {
+        pageType: "list-detail",
+        list: { source: { path: "$context.ghosts", live: true }, display: textWidget },
+        detail: { source: "rows[id=1]", root: textWidget },
+      },
+      "CONTEXT_REF_UNDEFINED",
+    );
+    expect(e?.path).toBe("list.source.path");
+  });
+  it("accepts a $context feed on list.source/detail.source once it is declared", () => {
+    expect(
+      codes({
+        pageType: "list-detail",
+        context: { ghosts: { collection: "ghosts" } },
+        list: { source: "$context.ghosts", display: textWidget },
+        detail: { source: "$context.ghosts[id=$ui.selected]", root: textWidget },
+      }),
+    ).toEqual([]);
+  });
+});
+
 describe("table.columns / switch.cases sub-fields (UIS-070 → WIDGET_REQUIRED_FIELD_MISSING)", () => {
   it("rejects an empty table.columns array", () => {
     const e = firstError(settingsForm({ type: "table", props: { source: "rows", columns: [] } }));
@@ -699,5 +790,38 @@ describe("ActionRef params walked (UIS-160/108 → BINDING_PATH_INVALID / ACTION
       onFinish: { verb: "call-action", action: "done", params: { x: "name", n: 5 } },
     };
     expect(codes(doc)).toEqual([]);
+  });
+});
+
+describe("repeat widget (UIS-070/107 → WIDGET_REQUIRED_FIELD_MISSING / BINDING_PATH_INVALID)", () => {
+  // repeat's `bind` names the array its `itemTemplate` iterates (UIS-070 bind
+  // shape `array`, UIS-107); a repeat with no bound array has nothing to render,
+  // so the bind is required, not optional (unlike `fragment`, whose bind rescopes).
+  const withRepeat = (repeat: Record<string, unknown>) => ({
+    pageType: "dashboard",
+    tiles: [{ size: "large", widget: repeat }],
+  });
+  it("rejects a repeat with no bind (nothing to iterate, UIS-107)", () => {
+    const e = errorFor(withRepeat({ type: "repeat", props: { itemTemplate: textWidget } }), "WIDGET_REQUIRED_FIELD_MISSING");
+    expect(e?.path).toBe("tiles[0].widget.bind");
+  });
+  it("rejects a repeat missing its required itemTemplate", () => {
+    const e = errorFor(withRepeat({ type: "repeat", bind: "items" }), "WIDGET_REQUIRED_FIELD_MISSING");
+    expect(e?.path).toBe("tiles[0].widget.props.itemTemplate");
+  });
+  it("rejects a malformed repeat bind (BINDING_PATH_INVALID)", () => {
+    const e = errorFor(withRepeat({ type: "repeat", bind: "a..b", props: { itemTemplate: textWidget } }), "BINDING_PATH_INVALID");
+    expect(e?.path).toBe("tiles[0].widget.bind");
+  });
+  it("accepts a well-formed repeat: bound array, itemTemplate, and its optional props", () => {
+    expect(
+      codes(
+        withRepeat({
+          type: "repeat",
+          bind: "triggers",
+          props: { itemTemplate: textWidget, itemScope: "item", minItems: 0, maxItems: 5, emptyMsg: "msg:empty" },
+        }),
+      ),
+    ).toEqual([]);
   });
 });
