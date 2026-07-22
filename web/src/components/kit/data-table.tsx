@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import {
   flexRender,
   getCoreRowModel,
@@ -67,6 +67,10 @@ export interface DataTableProps<TData, TValue = unknown> {
   emptyState?: ReactNode;
   /** Trailing per-row actions (e.g. a dropdown of row commands). */
   rowActions?: (row: TData) => ReactNode;
+  /** Whole-row press (the ui-schema `table` `rowPress` event, UIS-070). When set,
+   * each row becomes a keyboard-operable button whose accessible name is the row
+   * content; the stacked-card presentation presses the card. */
+  onRowPress?: (row: TData, index: number) => void;
   className?: string;
 }
 
@@ -78,10 +82,29 @@ export function DataTable<TData, TValue = unknown>({
   skeletonRows = 5,
   emptyState,
   rowActions,
+  onRowPress,
   className,
 }: DataTableProps<TData, TValue>) {
   const [sorting, setSorting] = useState<SortingState>([]);
   const stacked = useMediaQuery("(max-width: 640px)");
+
+  // Interactive props for a pressable row/card (keyboard + pointer), applied only
+  // when onRowPress is set so a plain data table stays non-interactive.
+  const pressProps = (rowData: TData, index: number) =>
+    onRowPress
+      ? {
+          role: "button" as const,
+          tabIndex: 0,
+          onClick: () => onRowPress(rowData, index),
+          onKeyDown: (e: ReactKeyboardEvent) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              onRowPress(rowData, index);
+            }
+          },
+          className: "cursor-pointer",
+        }
+      : {};
 
   const table = useReactTable({
     data,
@@ -130,11 +153,17 @@ export function DataTable<TData, TValue = unknown>({
         ) : rows.length === 0 ? (
           <div className="rounded-card border border-border bg-card">{empty}</div>
         ) : (
-          rows.map((row) => (
+          rows.map((row) => {
+            const press = pressProps(row.original, row.index);
+            return (
             <div
               key={row.id}
               data-slot="data-card"
-              className="flex flex-col gap-2 rounded-card border border-border bg-card p-4 wv-elevation"
+              {...press}
+              className={cn(
+                "flex flex-col gap-2 rounded-card border border-border bg-card p-4 wv-elevation",
+                press.className,
+              )}
             >
               <dl className="flex flex-col gap-2">
                 {row.getVisibleCells().map((cell) => {
@@ -162,7 +191,8 @@ export function DataTable<TData, TValue = unknown>({
                 </div>
               ) : null}
             </div>
-          ))
+            );
+          })
         )}
       </div>
     );
@@ -247,8 +277,14 @@ export function DataTable<TData, TValue = unknown>({
                 </TableCell>
               </TableRow>
             ) : (
-              rows.map((row) => (
-                <TableRow key={row.id} data-state={row.getIsSelected() ? "selected" : undefined}>
+              rows.map((row) => {
+                const press = pressProps(row.original, row.index);
+                return (
+                <TableRow
+                  key={row.id}
+                  data-state={row.getIsSelected() ? "selected" : undefined}
+                  {...press}
+                >
                   {row.getVisibleCells().map((cell) => {
                     const meta = cell.column.columnDef.meta;
                     return (
@@ -267,7 +303,8 @@ export function DataTable<TData, TValue = unknown>({
                     <TableCell className="text-right">{rowActions(row.original)}</TableCell>
                   ) : null}
                 </TableRow>
-              ))
+                );
+              })
             )}
           </TableBody>
         </Table>

@@ -1,0 +1,405 @@
+// ui-schema/1 — the page renderer.
+//
+// The interpreter's front door: validate the page document (a non-conformant
+// document NEVER renders — closed sets are closed, UIS-200), then paint one of
+// the four page-type layouts (list-detail, settings-form, dashboard, wizard)
+// through the widget catalog over the kit, inside the state store + live SSE
+// providers. Every layout is fully responsive: the list-detail two-pane stacks
+// on narrow, the dashboard grid collapses to one column, the wizard and form
+// stack — no page ever scrolls horizontally at 360px.
+
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Button } from "@/components/kit";
+import {
+  collectVocabLabels,
+  evalBindingExpr,
+  makeMessageResolver,
+  resolvePathWithLoc,
+  type RenderEnv,
+  type RenderScope,
+} from "./bindings";
+import { validatePage } from "./validate";
+import { LiveProvider, type EventSourceFactory } from "./live";
+import { RendererProvider, useRenderer } from "./state";
+import { runAction } from "./actions";
+import type { ActionRef, ActionHandler, WidgetNode, WizardController } from "./types";
+import { isTruthy } from "./widgets/common";
+import { WidgetNodeView } from "./widgets/widget-node";
+import { WizardContext } from "./widgets/wizard-context";
+import type { ValidationError } from "./schema";
+
+type PageDoc = Record<string, unknown>;
+
+export interface PageRendererProps {
+  /** The ui-schema/1 page document (validated here before any paint). */
+  doc: unknown;
+  /** The page-level resource namespace root Bindings resolve against (UIS-005). */
+  data?: Record<string, unknown>;
+  /** Initial `$ui` ephemeral state (UIS-104) — usually empty. */
+  initialUi?: Record<string, unknown>;
+  /** The api-client seam the action verbs dispatch onto (UIS-161). */
+  handler?: ActionHandler;
+  /** A `msg:` catalog (MAN-003/111); absent, references humanize. */
+  messages?: Record<string, string>;
+  /** The viewer's active locale for formatDate/formatNumber (UIS-143). */
+  locale?: string;
+  /** Host-provided fragment content for `slot` widgets (UIS-185). */
+  slots?: Record<string, ReactNode>;
+  /** EventSource factory for LiveBindings (UIS-109) — a fake in tests. */
+  eventSourceFactory?: EventSourceFactory;
+  /** Notified with the taxonomy errors when a document is rejected. */
+  onValidationError?: (errors: ValidationError[]) => void;
+}
+
+function defaultLocale(explicit?: string): string {
+  if (explicit) return explicit;
+  if (typeof navigator !== "undefined" && navigator.language) return navigator.language;
+  return "en-US";
+}
+
+export function PageRenderer({
+  doc,
+  data,
+  initialUi,
+  handler = {},
+  messages,
+  locale,
+  slots = {},
+  eventSourceFactory,
+  onValidationError,
+}: PageRendererProps) {
+  const result = useMemo(() => validatePage(doc), [doc]);
+
+  useEffect(() => {
+    if (!result.ok) onValidationError?.(result.errors);
+  }, [result, onValidationError]);
+
+  // A non-conformant document is refused, never partially rendered (UIS-200).
+  if (!result.ok) {
+    return (
+      <div role="alert" data-slot="renderer-invalid" className="rounded-card border border-[color:var(--wv-err)] bg-[color:var(--wv-err-bg)] p-4 text-sm">
+        <p className="font-semibold text-[color:var(--wv-err)]">This page could not be rendered.</p>
+        <ul className="mt-2 flex flex-col gap-1 font-mono text-[12px] text-muted-foreground">
+          {result.errors.map((e, i) => (
+            <li key={i}>
+              {e.code} · {e.path}
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  }
+
+  const page = doc as PageDoc;
+  const env: RenderEnv = {
+    msg: makeMessageResolver(messages),
+    locale: defaultLocale(locale),
+    vocabLabels: collectVocabLabels(page),
+  };
+  const fragments = (page.fragments as Record<string, WidgetNode>) ?? {};
+  const primarySource =
+    page.pageType === "settings-form"
+      ? String(page.source)
+      : page.pageType === "list-detail" && typeof (page.detail as PageDoc)?.source === "string"
+        ? String((page.detail as PageDoc).source)
+        : undefined;
+
+  return (
+    <LiveProvider factory={eventSourceFactory}>
+      <RendererProvider
+        initialResource={data ?? {}}
+        initialUi={initialUi ?? {}}
+        env={env}
+        handler={handler}
+        fragments={fragments}
+        slots={slots}
+        primarySource={primarySource}
+      >
+        <PageBody page={page} />
+      </RendererProvider>
+    </LiveProvider>
+  );
+}
+
+function PageBody({ page }: { page: PageDoc }) {
+  const ctx = useRenderer();
+  const contextFeeds = useMemo(() => {
+    const feeds: Record<string, unknown> = {};
+    const cmap = page.context && typeof page.context === "object" ? (page.context as Record<string, { collection?: string }>) : {};
+    for (const [name, ref] of Object.entries(cmap)) {
+      const coll = ref?.collection;
+      feeds[name] = coll ? (ctx.resource as Record<string, unknown>)?.[coll] : undefined;
+    }
+    return feeds;
+  }, [page, ctx.resource]);
+
+  const base: RenderScope = {
+    root: ctx.resource,
+    current: ctx.resource,
+    currentPath: [],
+    currentTree: "resource",
+    ui: ctx.ui,
+    context: contextFeeds,
+  };
+
+  switch (page.pageType) {
+    case "list-detail":
+      return <ListDetailLayout page={page} base={base} />;
+    case "settings-form":
+      return <SettingsFormLayout page={page} base={base} />;
+    case "dashboard":
+      return <DashboardLayout page={page} base={base} />;
+    case "wizard":
+      return <WizardLayout page={page} base={base} />;
+    default:
+      return null;
+  }
+}
+
+// ── list-detail (UIS-020–024) ───────────────────────────────────────────────
+
+function leafOfPath(path: string): string {
+  const last = path.split(".").pop() ?? path;
+  return (last.split("[")[0] ?? last) || path;
+}
+
+function ListDetailLayout({ page, base }: { page: PageDoc; base: RenderScope }) {
+  const ctx = useRenderer();
+  const list = page.list as { source: unknown; display: WidgetNode };
+  const detail = page.detail as { source: unknown; root: WidgetNode; emptyMsg?: string };
+  const newAction = page.newAction as ActionRef | undefined;
+
+  const detailSource = String(detail.source);
+  const resolved = resolvePathWithLoc(detailSource, base);
+  const hasDetail = resolved.value != null;
+  const detailScope: RenderScope = hasDetail
+    ? { ...base, root: resolved.value, current: resolved.value, currentPath: resolved.loc ?? [], currentTree: resolved.tree }
+    : base;
+  const emptyMsg = detail.emptyMsg ? ctx.env.msg(String(detail.emptyMsg)) : "Select an item to see its detail.";
+
+  const paginated =
+    list.source !== null && typeof list.source === "object" && (list.source as PageDoc).paginated === true;
+
+  return (
+    <div className="grid gap-6 lg:grid-cols-2">
+      <section aria-label="List" className="flex min-w-0 flex-col gap-3">
+        {newAction ? (
+          <div className="flex justify-end">
+            <Button variant="default" onClick={() => runAction(newAction, base, ctx)}>
+              New
+            </Button>
+          </div>
+        ) : null}
+        {paginated ? (
+          <PaginatedList source={list.source as PageDoc} display={list.display} base={base} />
+        ) : (
+          <WidgetNodeView node={list.display} scope={base} depth={0} />
+        )}
+      </section>
+      <section aria-label="Detail" className="flex min-w-0 flex-col gap-3">
+        {hasDetail ? (
+          <WidgetNodeView node={detail.root} scope={detailScope} depth={0} />
+        ) : (
+          <p className="text-sm text-muted-foreground">{emptyMsg}</p>
+        )}
+      </section>
+    </div>
+  );
+}
+
+/** A keyset-cursor paginated list.source (UIS-023/024): fetch page-by-page over
+ * the api/1 cursor convention, accumulate rows in memory, and render `display`
+ * against them; the "load more" affordance is suppressed once a fetch returns
+ * `cursor: null` (no further page). */
+function PaginatedList({ source, display, base }: { source: PageDoc; display: WidgetNode; base: RenderScope }) {
+  const ctx = useRenderer();
+  const path = String(source.path);
+  const limit = typeof source.limit === "number" ? source.limit : undefined;
+  const leaf = leafOfPath(path);
+  const [items, setItems] = useState<unknown[]>([]);
+  const [cursor, setCursor] = useState<string | null | undefined>(undefined);
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(
+    async (c: string | null) => {
+      if (!ctx.handler.fetchPage) return;
+      setLoading(true);
+      try {
+        const res = await ctx.handler.fetchPage(path, c, limit);
+        setItems((prev) => [...prev, ...res.items]);
+        setCursor(res.cursor);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [ctx.handler, path, limit],
+  );
+
+  useEffect(() => {
+    void load(null);
+  }, [load]);
+
+  const listScope: RenderScope = {
+    ...base,
+    current: { ...(base.current as Record<string, unknown>), [leaf]: items },
+  };
+
+  return (
+    <div className="flex flex-col gap-3">
+      <WidgetNodeView node={display} scope={listScope} depth={0} />
+      {typeof cursor === "string" ? (
+        <div className="flex justify-center">
+          <Button variant="outline" disabled={loading} onClick={() => void load(cursor)}>
+            Load more
+          </Button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// ── settings-form (UIS-030/031) ─────────────────────────────────────────────
+
+function SettingsFormLayout({ page, base }: { page: PageDoc; base: RenderScope }) {
+  const ctx = useRenderer();
+  const resolved = resolvePathWithLoc(String(page.source), base);
+  const scope: RenderScope = {
+    ...base,
+    root: resolved.value,
+    current: resolved.value,
+    currentPath: resolved.loc ?? [],
+    currentTree: "resource",
+  };
+  const sections = (page.sections as Array<{ titleMsg?: string; fields: WidgetNode[] }>) ?? [];
+  const actions = (page.actions as WidgetNode[]) ?? [];
+
+  return (
+    <form className="mx-auto flex w-full max-w-2xl flex-col gap-8" onSubmit={(e) => e.preventDefault()}>
+      {sections.map((section, si) => (
+        <section key={si} className="flex flex-col gap-5 rounded-card border border-border bg-card p-5 wv-elevation sm:p-6">
+          {section.titleMsg ? (
+            <h2 className="font-display text-[17px] font-semibold">{ctx.env.msg(String(section.titleMsg))}</h2>
+          ) : null}
+          <div className="flex flex-col gap-5">
+            {section.fields.map((field, fi) => (
+              <WidgetNodeView key={fi} node={field} scope={scope} depth={0} />
+            ))}
+          </div>
+        </section>
+      ))}
+      <div className="flex flex-wrap gap-3">
+        {actions.map((action, ai) => (
+          <WidgetNodeView key={ai} node={action} scope={scope} depth={0} />
+        ))}
+      </div>
+    </form>
+  );
+}
+
+// ── dashboard (UIS-040/041) ─────────────────────────────────────────────────
+
+const TILE_SPAN: Record<string, string> = {
+  small: "",
+  medium: "sm:col-span-2",
+  large: "sm:col-span-2 lg:col-span-4",
+};
+
+function DashboardLayout({ page, base }: { page: PageDoc; base: RenderScope }) {
+  const tiles = (page.tiles as Array<{ size: string; widget: WidgetNode }>) ?? [];
+  return (
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      {tiles.map((tile, ti) => (
+        <div key={ti} className={`min-w-0 ${TILE_SPAN[tile.size] ?? ""}`}>
+          {/* Each tile resolves its bindings independently as root bindings
+              (UIS-040) — the page has no single page-wide bound resource. */}
+          <WidgetNodeView node={tile.widget} scope={base} depth={0} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── wizard (UIS-050–052) ────────────────────────────────────────────────────
+
+function WizardLayout({ page, base }: { page: PageDoc; base: RenderScope }) {
+  const ctx = useRenderer();
+  const steps = (page.steps as Array<{ id: string; titleMsg: string; root: WidgetNode; canAdvanceIf?: unknown }>) ?? [];
+  const [stepIndex, setStepIndex] = useState(0);
+  const draftSource = page.draftSource;
+
+  // One shared draft Scope across all steps (UIS-052): a real backing resource
+  // when draftSource is declared, else the ephemeral $ui.draft (UIS-051).
+  let draftScope: RenderScope;
+  if (typeof draftSource === "string") {
+    const resolved = resolvePathWithLoc(draftSource, base);
+    draftScope = {
+      ...base,
+      root: resolved.value ?? {},
+      current: resolved.value ?? {},
+      currentPath: resolved.loc ?? [],
+      currentTree: "resource",
+    };
+  } else {
+    const draft = (base.ui.draft as Record<string, unknown>) ?? {};
+    draftScope = { ...base, root: draft, current: draft, currentPath: ["draft"], currentTree: "ui" };
+  }
+
+  const step = steps[stepIndex];
+  const canAdvance = step?.canAdvanceIf === undefined ? true : isTruthy(evalBindingExpr(step.canAdvanceIf, draftScope, ctx.env));
+
+  const controller: WizardController = {
+    next: () => {
+      if (canAdvance) setStepIndex((i) => Math.min(i + 1, steps.length - 1));
+    },
+    back: () => setStepIndex((i) => Math.max(i - 1, 0)),
+    finish: () => {
+      const onFinish = page.onFinish as ActionRef | undefined;
+      if (onFinish) runAction(onFinish, draftScope, ctx);
+    },
+  };
+
+  const isFirst = stepIndex === 0;
+  const isLast = stepIndex === steps.length - 1;
+  if (!step) return null;
+
+  return (
+    <WizardContext.Provider value={controller}>
+      <div className="mx-auto flex w-full max-w-xl flex-col gap-6">
+        <ol className="flex flex-wrap gap-x-2 gap-y-1 text-[13px]">
+          {steps.map((s, i) => (
+            <li
+              key={s.id}
+              aria-current={i === stepIndex ? "step" : undefined}
+              className={
+                i === stepIndex
+                  ? "font-semibold text-foreground"
+                  : "text-muted-foreground"
+              }
+            >
+              {i > 0 ? <span className="mr-2 text-muted-foreground">/</span> : null}
+              {ctx.env.msg(String(s.titleMsg))}
+            </li>
+          ))}
+        </ol>
+        <h2 className="font-display text-[19px] font-semibold">{ctx.env.msg(String(step.titleMsg))}</h2>
+        <div className="flex flex-col gap-5">
+          <WidgetNodeView node={step.root} scope={draftScope} depth={0} />
+        </div>
+        <div className="flex justify-between gap-3">
+          <Button variant="ghost" onClick={() => controller.back()} disabled={isFirst}>
+            Back
+          </Button>
+          {isLast ? (
+            <Button variant="default" onClick={() => controller.finish()}>
+              Finish
+            </Button>
+          ) : (
+            <Button variant="default" onClick={() => controller.next()} disabled={!canAdvance}>
+              Next
+            </Button>
+          )}
+        </div>
+      </div>
+    </WizardContext.Provider>
+  );
+}
