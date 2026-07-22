@@ -26,7 +26,6 @@ export type Automation = components["schemas"]["Automation"];
 export type AutomationCreate = components["schemas"]["AutomationCreate"];
 export type AutomationUpdate = components["schemas"]["AutomationUpdate"];
 export type AutomationRunResult = components["schemas"]["AutomationRunResult"];
-export type Job = components["schemas"]["Job"];
 
 // ── Scheduling-core Wire shapes (data-model/1; not yet in the OpenAPI) ───────
 
@@ -217,15 +216,18 @@ function crud<T, TCreate, TUpdate>(client: ApiClient, path: string): ResourceMod
   return mod;
 }
 
-// ── Automations: CRUD + run + bulk-enable + the Job it returns ───────────────
+// ── Automations: CRUD + run ──────────────────────────────────────────────────
+//
+// Bulk-enable (POST /automations/bulk-enable) and the Job-polling it returns
+// (GET /jobs/{id}) are DEFERRED — the plan's self-review lists "bulk-enable/jobs
+// UI" under Deferred (deliberate), Task 4 scopes only per-automation enable/
+// disable via If-Match PATCH, and `GET /jobs/{id}` has no server handler yet
+// (it's a contract stub, not a live route). Neither ships on the typed client
+// until it has a live route + tests; resources.type-test.ts locks that out.
 
 export interface AutomationsModule extends ResourceModule<Automation, AutomationCreate, AutomationUpdate> {
   /** Run one automation now; returns its mode-evaluation disposition. */
   run(id: string, context?: Record<string, unknown>): Promise<AutomationRunResult>;
-  /** Enable/disable a selector-matched set; returns a Job to poll. */
-  bulkEnable(selector: string, enabled: boolean): Promise<Job>;
-  /** Poll a Job returned by a fleet-mutating operation. */
-  getJob(jobId: string): Promise<Job>;
 }
 
 function automationsModule(client: ApiClient): AutomationsModule {
@@ -237,13 +239,6 @@ function automationsModule(client: ApiClient): AutomationsModule {
         `/automations/${encodeURIComponent(id)}/run`,
         context ? { context } : undefined,
       );
-    },
-    bulkEnable(selector, enabled) {
-      return client.action<Job>("/automations/bulk-enable", { selector, enabled });
-    },
-    async getJob(jobId) {
-      const r = await client.read<Job>(`/jobs/${encodeURIComponent(jobId)}`);
-      return r.data;
     },
   };
 }

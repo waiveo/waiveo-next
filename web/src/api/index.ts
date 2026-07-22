@@ -42,7 +42,6 @@ export {
   type AutomationCreate,
   type AutomationUpdate,
   type AutomationRunResult,
-  type Job,
   type Schedule,
   type ScheduleCreate,
   type ScheduleUpdate,

@@ -30,3 +30,18 @@ export function removeWithoutEtagIsRejected() {
   // @ts-expect-error — remove requires an If-Match ETag; no unconditional-overwrite path exists.
   return api.scopeNodes.remove(id);
 }
+
+// Contract: the automations surface is CRUD + run ONLY. Bulk-enable and Job
+// polling are DEFERRED (plan self-review lists "bulk-enable/jobs UI" under
+// Deferred; Task 4 scopes only per-automation enable/disable) and `GET /jobs/{id}`
+// has no server handler — so neither ships on the typed client. If either is
+// re-introduced without a live route + tests, the `@ts-expect-error` directives
+// below go unused and `tsc` fails here, catching the regression.
+export function automationsSurfaceIsCrudPlusRunOnly() {
+  // `run` is part of the shipped surface (this line must compile).
+  void api.automations.run;
+  // @ts-expect-error — bulkEnable is deferred; it does not ship on the client.
+  void api.automations.bulkEnable;
+  // @ts-expect-error — getJob is deferred (GET /jobs/{id} has no server handler).
+  void api.automations.getJob;
+}
