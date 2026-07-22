@@ -9,7 +9,7 @@
     "sections": [
       {
         "fields": [
-          { "type": "text-input", "bind": "general..displayName" }
+          { "type": "text-input", "bind": "general..displayName", "props": { "labelMsg": "msg:settings.general.displayName" } }
         ]
       }
     ],

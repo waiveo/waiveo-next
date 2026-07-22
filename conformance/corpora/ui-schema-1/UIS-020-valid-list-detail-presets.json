@@ -24,7 +24,7 @@
       "root": {
         "type": "section",
         "children": [
-          { "type": "text-input", "bind": "name" },
+          { "type": "text-input", "bind": "name", "props": { "labelMsg": "msg:presets.detail.nameLabel" } },
           { "type": "text", "props": { "value": "id" } }
         ]
       }

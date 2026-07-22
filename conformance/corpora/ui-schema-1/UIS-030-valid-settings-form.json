@@ -10,8 +10,8 @@
       {
         "titleMsg": "msg:settings.general.title",
         "fields": [
-          { "type": "text-input", "bind": "displayName" },
-          { "type": "toggle", "bind": "quietHours" }
+          { "type": "text-input", "bind": "displayName", "props": { "labelMsg": "msg:settings.general.displayName" } },
+          { "type": "toggle", "bind": "quietHours", "props": { "labelMsg": "msg:settings.general.quietHours" } }
         ]
       }
     ],

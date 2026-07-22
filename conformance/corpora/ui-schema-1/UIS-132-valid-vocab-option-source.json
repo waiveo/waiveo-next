@@ -13,6 +13,7 @@
             "type": "select",
             "bind": "mode",
             "props": {
+              "labelMsg": "msg:automations.detail.modeLabel",
               "options": {
                 "kind": "vocab",
                 "ref": "rules/1:mode",

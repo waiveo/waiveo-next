@@ -14,7 +14,6 @@
 import {
   ACTION_VERBS,
   COMPUTE_FNS,
-  INPUT_TYPES,
   OPTION_SOURCE_KINDS,
   PAGE_TYPES,
   RESERVED_ROOTS,
@@ -25,7 +24,6 @@ import {
   type ErrorCode,
   type PageType,
   type PropDef,
-  type ValidateOptions,
   type ValidationError,
   type ValidationResult,
   type WidgetSpec,
@@ -120,7 +118,6 @@ interface Ctx {
   contextKeys: Set<string>;
   slotNames: { name: string; path: string }[];
   inWizard: boolean;
-  strictInputLabels: boolean;
 }
 
 function fail(ctx: Ctx, code: ErrorCode, path: string, message: string): void {
@@ -180,6 +177,64 @@ function validateBinding(v: unknown, path: string, ctx: Ctx, writeTarget = false
     return;
   }
   fail(ctx, "BINDING_PATH_INVALID", path, "expected a Binding string or LiveBinding (UIS-066/109)");
+}
+
+// ── Root Bindings (UIS-005/UIS-023) ─────────────────────────────────────────
+// A root Binding (list.source, detail.source, settings-form source, wizard
+// draftSource) resolves against the page-level resource namespace rather than an
+// enclosing Scope (UIS-005), where a collection or single record may be named by
+// a REST-ish path — one or more resource segments joined by "/" (e.g.
+// "automations/<id>"). That is a superset of the Scope-relative UIS-100 grammar:
+// each "/"-delimited part is itself a UIS-100 path (a collection, optionally
+// index-/predicate-selected) OR a bare resource id (a ULID/opaque key). It is
+// still a Binding-typed position (UIS-066), so a part matching neither form —
+// e.g. an empty segment (`a..b`) or a malformed predicate (`rows[id=]`) — MUST
+// fail as BINDING_PATH_INVALID.
+
+const RESOURCE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
+function isValidRootBindingString(s: string): boolean {
+  if (typeof s !== "string" || s.length === 0) return false;
+  const parts = s.split("/");
+  return parts.every((part) => part.length > 0 && (isValidBindingPath(part) || RESOURCE_ID.test(part)));
+}
+
+/** Validate a `list.source` paginated source object (UIS-023): `{ path, paginated:
+ * true, limit? }`. `path` is a Binding (UIS-100/root-Binding), so a source missing
+ * `path`, or whose `paginated` is not literally `true`, MUST fail as
+ * BINDING_PATH_INVALID. */
+function validatePaginatedSource(v: Record<string, unknown>, path: string, ctx: Ctx): void {
+  if (v.path === undefined) {
+    fail(ctx, "BINDING_PATH_INVALID", `${path}.path`, "a paginated list.source must declare a `path` Binding (UIS-023)");
+  } else if (typeof v.path !== "string" || !isValidRootBindingString(v.path)) {
+    fail(ctx, "BINDING_PATH_INVALID", `${path}.path`, `"${String(v.path)}" is not a valid Binding for a paginated list.source (UIS-023)`);
+  }
+  if (v.paginated !== true) {
+    fail(ctx, "BINDING_PATH_INVALID", `${path}.paginated`, "a paginated list.source must set `paginated` literally true (UIS-023)");
+  }
+}
+
+/** A root Binding (UIS-005): a REST-ish resource-path string, a LiveBinding
+ * (UIS-109), or — for `list.source` only (`allowPaginated`) — a paginated source
+ * object (UIS-023). Any other shape is a malformed Binding (BINDING_PATH_INVALID). */
+function validateRootBinding(v: unknown, path: string, ctx: Ctx, allowPaginated = false): void {
+  if (typeof v === "string") {
+    if (!isValidRootBindingString(v)) {
+      fail(ctx, "BINDING_PATH_INVALID", path, `"${v}" does not match the UIS-005/UIS-100 root-Binding grammar`);
+    }
+    return;
+  }
+  if (isObject(v)) {
+    if ("live" in v) {
+      validateLiveBinding(v, path, ctx);
+      return;
+    }
+    if (allowPaginated) {
+      validatePaginatedSource(v, path, ctx);
+      return;
+    }
+  }
+  fail(ctx, "BINDING_PATH_INVALID", path, "expected a Binding string or LiveBinding root source (UIS-005/109)");
 }
 
 /** A BindingExpr position (UIS-108/141): a Binding, a Computed, or a JSON literal.
@@ -286,6 +341,21 @@ function validateOptionSource(v: unknown, path: string, ctx: Ctx): void {
 
 // ── Actions (UIS-160) ───────────────────────────────────────────────────────
 
+/** An ActionRef `params` field (UIS-160): an object of literal/Binding values.
+ * A wrongly-shaped `params` fails as ACTION_FIELDS_INVALID; each string entry is a
+ * Binding (UIS-108/UIS-184) and is grammar-checked (BINDING_PATH_INVALID). */
+function validateActionParams(value: unknown, path: string, ctx: Ctx): void {
+  if (value === undefined) return;
+  if (!isObject(value)) {
+    fail(ctx, "ACTION_FIELDS_INVALID", path, "`params` must be an object of literal/Binding values (UIS-160)");
+    return;
+  }
+  for (const [k, pv] of Object.entries(value)) {
+    // A JSON string is a Binding (UIS-108); non-strings are literals, not checked.
+    if (typeof pv === "string") validateBindingString(pv, `${path}.${k}`, ctx);
+  }
+}
+
 function validateActionRef(v: unknown, path: string, ctx: Ctx): void {
   if (!isObject(v) || typeof v.verb !== "string") {
     fail(ctx, "ACTION_FIELDS_INVALID", path, "an ActionRef must be an object with a verb (UIS-160)");
@@ -313,6 +383,7 @@ function validateActionRef(v: unknown, path: string, ctx: Ctx): void {
       if (typeof v.to !== "string") {
         fail(ctx, "ACTION_FIELDS_INVALID", `${path}.to`, "navigate requires a `to` path template (UIS-160)");
       }
+      validateActionParams(v.params, `${path}.params`, ctx);
       break;
     case "submit":
       if (v.target !== undefined) validateBinding(v.target, `${path}.target`, ctx, true);
@@ -327,6 +398,7 @@ function validateActionRef(v: unknown, path: string, ctx: Ctx): void {
       if (typeof v.action !== "string") {
         fail(ctx, "ACTION_FIELDS_INVALID", `${path}.action`, "call-action requires an `action` name (UIS-160)");
       }
+      validateActionParams(v.params, `${path}.params`, ctx);
       break;
     case "set":
       needBinding("target");
@@ -372,18 +444,39 @@ function validatePropByKind(def: PropDef, value: unknown, path: string, ctx: Ctx
       validateWidget(value, path, ctx);
       break;
     case "cases":
-      if (Array.isArray(value)) {
-        value.forEach((c, i) => {
-          if (isObject(c) && "render" in c) validateWidget(c.render, `${path}[${i}].render`, ctx);
-        });
+      // UIS-070: a non-empty array of {when, render} — `when` a JSON literal (any
+      // JSON value, so presence-checked, never truthiness-checked), `render` a widget.
+      if (!Array.isArray(value) || value.length === 0) {
+        fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", path, "switch.cases must be a non-empty array of {when, render} (UIS-070)");
+        break;
       }
+      value.forEach((c, i) => {
+        if (!isObject(c) || !("when" in c)) {
+          fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", `${path}[${i}].when`, "a switch case must declare `when` (UIS-070)");
+        }
+        if (!isObject(c) || !("render" in c)) {
+          fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", `${path}[${i}].render`, "a switch case must declare `render` (UIS-070)");
+        } else {
+          validateWidget(c.render, `${path}[${i}].render`, ctx);
+        }
+      });
       break;
     case "columns":
-      if (Array.isArray(value)) {
-        value.forEach((col, i) => {
-          if (isObject(col) && "cell" in col) validateBindingExpr(col.cell, `${path}[${i}].cell`, ctx);
-        });
+      // UIS-070: a non-empty array of {headerMsg, cell} — `cell` a BindingExpr per row.
+      if (!Array.isArray(value) || value.length === 0) {
+        fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", path, "table.columns must be a non-empty array of {headerMsg, cell} (UIS-070)");
+        break;
       }
+      value.forEach((col, i) => {
+        if (!isObject(col) || !("headerMsg" in col)) {
+          fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", `${path}[${i}].headerMsg`, "a table column must declare `headerMsg` (UIS-070)");
+        }
+        if (!isObject(col) || !("cell" in col)) {
+          fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", `${path}[${i}].cell`, "a table column must declare `cell` (UIS-070)");
+        } else {
+          validateBindingExpr(col.cell, `${path}[${i}].cell`, ctx);
+        }
+      });
       break;
     case "fragmentRef":
       if (typeof value !== "string" || !ctx.fragmentKeys.has(value)) {
@@ -438,8 +531,9 @@ function validateWidget(node: unknown, path: string, ctx: Ctx): void {
   for (const [key, def] of Object.entries(spec.props)) {
     const present = key in props && props[key] !== undefined;
     if (!present) {
-      const requiredLabel = def.kind === "msg" && key === "labelMsg" && INPUT_TYPES.has(type) && ctx.strictInputLabels;
-      if (def.required || requiredLabel) {
+      if (def.required) {
+        // Includes every input-category widget's `labelMsg` (UIS-075), marked
+        // required in the catalog, so a missing accessible label fails here.
         fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", `${path}.props.${key}`, `${type} requires prop "${key}" (UIS-062/075)`);
       }
       continue;
@@ -477,55 +571,150 @@ function validateWidget(node: unknown, path: string, ctx: Ctx): void {
 }
 
 // ── Page-type structural walks ──────────────────────────────────────────────
+//
+// Each page type's required substructure (UIS-020/030/031/040/050) MUST be
+// present, not merely well-formed-when-present: a document missing its whole
+// required substructure is non-conformant and MUST be flagged (UIS-200 forbids
+// accepting it unvalidated on the theory the renderer fails later). The taxonomy
+// has no dedicated page-structural code, so an absent required structural field
+// reuses WIDGET_REQUIRED_FIELD_MISSING — the contract's single "a required field
+// is absent" code — at the field's own path.
 
 function walkListDetail(doc: Record<string, unknown>, ctx: Ctx): void {
   const list = doc.list;
-  if (isObject(list) && "display" in list) validateWidget(list.display, "list.display", ctx);
+  if (!isObject(list)) {
+    fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", "list", "a list-detail page must declare `list` as {source, display} (UIS-020)");
+  } else {
+    if (list.source === undefined) {
+      fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", "list.source", "list-detail requires `list.source` (UIS-020)");
+    } else {
+      validateRootBinding(list.source, "list.source", ctx, true); // list.source MAY be a paginated source (UIS-023)
+    }
+    if (list.display === undefined) {
+      fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", "list.display", "list-detail requires a `list.display` widget (UIS-020)");
+    } else {
+      validateWidget(list.display, "list.display", ctx);
+    }
+  }
   const detail = doc.detail;
-  if (isObject(detail) && "root" in detail) validateWidget(detail.root, "detail.root", ctx);
+  if (!isObject(detail)) {
+    fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", "detail", "a list-detail page must declare `detail` as {source, root} (UIS-020)");
+  } else {
+    if (detail.source === undefined) {
+      fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", "detail.source", "list-detail requires `detail.source` (UIS-020)");
+    } else {
+      validateRootBinding(detail.source, "detail.source", ctx);
+    }
+    if (detail.root === undefined) {
+      fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", "detail.root", "list-detail requires a `detail.root` widget (UIS-020)");
+    } else {
+      validateWidget(detail.root, "detail.root", ctx);
+    }
+  }
   if (doc.newAction !== undefined) validateActionRef(doc.newAction, "newAction", ctx);
-  // list.source / detail.source are root Bindings against the page-level resource
-  // namespace (UIS-005), where a collection may be named by a REST-ish path; they
-  // are not subject to the Scope-relative UIS-100 grammar and are left opaque.
 }
 
 function walkSettingsForm(doc: Record<string, unknown>, ctx: Ctx): void {
-  if (Array.isArray(doc.sections)) {
+  // UIS-030: source (root Binding), sections (non-empty, each with non-empty fields).
+  if (doc.source === undefined) {
+    fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", "source", "a settings-form page must declare `source` (UIS-030)");
+  } else {
+    validateRootBinding(doc.source, "source", ctx);
+  }
+  if (!Array.isArray(doc.sections) || doc.sections.length === 0) {
+    fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", "sections", "a settings-form page must declare a non-empty `sections` array (UIS-030)");
+  } else {
     doc.sections.forEach((section, si) => {
-      if (isObject(section) && Array.isArray(section.fields)) {
-        section.fields.forEach((field, fi) => validateWidget(field, `sections[${si}].fields[${fi}]`, ctx));
+      if (!isObject(section) || !Array.isArray(section.fields)) {
+        fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", `sections[${si}].fields`, "a settings-form section must declare a `fields` array (UIS-030)");
+        return;
       }
+      if (section.fields.length === 0) {
+        fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", `sections[${si}].fields`, "a settings-form section's `fields` must be non-empty (UIS-030)");
+      }
+      section.fields.forEach((field, fi) => validateWidget(field, `sections[${si}].fields[${fi}]`, ctx));
     });
   }
-  if (Array.isArray(doc.actions)) {
+  // UIS-031: actions non-empty, at least one wiring on.press to a submit ActionRef.
+  if (!Array.isArray(doc.actions) || doc.actions.length === 0) {
+    fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", "actions", "a settings-form page must declare a non-empty `actions` array (UIS-031)");
+  } else {
     doc.actions.forEach((action, ai) => validateWidget(action, `actions[${ai}]`, ctx));
+    const hasSubmit = doc.actions.some(
+      (a) => isObject(a) && isObject(a.on) && isObject(a.on.press) && (a.on.press as Record<string, unknown>).verb === "submit",
+    );
+    if (!hasSubmit) {
+      fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", "actions", "a settings-form must wire at least one action's on.press to a submit ActionRef (UIS-031)");
+    }
   }
 }
 
+// The closed dashboard tile-size enum (UIS-040) — the same three-value set
+// manifest/1 MAN-061's `sizeHint` uses.
+const TILE_SIZES = new Set(["small", "medium", "large"]);
+
 function walkDashboard(doc: Record<string, unknown>, ctx: Ctx): void {
-  if (Array.isArray(doc.tiles)) {
-    doc.tiles.forEach((tile, ti) => {
-      if (isObject(tile) && "widget" in tile) validateWidget(tile.widget, `tiles[${ti}].widget`, ctx);
-    });
+  // UIS-040: a dashboard MUST declare `tiles` as an array of {size, widget}. The
+  // array MAY be empty; each tile's `size` is the closed small|medium|large enum.
+  if (!Array.isArray(doc.tiles)) {
+    fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", "tiles", "a dashboard page must declare a `tiles` array (UIS-040)");
+    return;
   }
+  doc.tiles.forEach((tile, ti) => {
+    if (!isObject(tile)) {
+      fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", `tiles[${ti}]`, "a dashboard tile must be an object {size, widget} (UIS-040)");
+      return;
+    }
+    if (typeof tile.size !== "string" || !TILE_SIZES.has(tile.size)) {
+      // A required, closed-valued structural field absent or outside its set —
+      // reported with the "required field" code at the tile's own `size` path.
+      fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", `tiles[${ti}].size`, "a dashboard tile `size` must be one of small|medium|large (UIS-040)");
+    }
+    if (tile.widget === undefined) {
+      fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", `tiles[${ti}].widget`, "a dashboard tile must declare a `widget` (UIS-040)");
+    } else {
+      validateWidget(tile.widget, `tiles[${ti}].widget`, ctx);
+    }
+  });
 }
 
 function walkWizard(doc: Record<string, unknown>, ctx: Ctx): void {
-  const seen = new Set<string>();
-  if (Array.isArray(doc.steps)) {
+  // UIS-050: steps (non-empty; each {id, titleMsg, root, canAdvanceIf?}) + onFinish.
+  if (!Array.isArray(doc.steps) || doc.steps.length === 0) {
+    fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", "steps", "a wizard page must declare a non-empty `steps` array (UIS-050)");
+  } else {
+    const seen = new Set<string>();
     doc.steps.forEach((step, si) => {
-      if (!isObject(step)) return;
-      if (typeof step.id === "string") {
+      if (!isObject(step)) {
+        fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", `steps[${si}]`, "a wizard step must be an object {id, titleMsg, root} (UIS-050)");
+        return;
+      }
+      if (typeof step.id !== "string") {
+        fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", `steps[${si}].id`, "a wizard step must declare an `id` (UIS-050)");
+      } else {
         if (seen.has(step.id)) {
           fail(ctx, "WIZARD_STEP_ID_DUPLICATE", `steps[${si}].id`, `duplicate wizard step id "${step.id}" (UIS-050)`);
         }
         seen.add(step.id);
       }
-      if ("root" in step) validateWidget(step.root, `steps[${si}].root`, ctx);
+      if (step.titleMsg === undefined) {
+        fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", `steps[${si}].titleMsg`, "a wizard step must declare a `titleMsg` (UIS-050)");
+      }
+      if (step.root === undefined) {
+        fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", `steps[${si}].root`, "a wizard step must declare a `root` widget (UIS-050)");
+      } else {
+        validateWidget(step.root, `steps[${si}].root`, ctx);
+      }
       if (step.canAdvanceIf !== undefined) validateBindingExpr(step.canAdvanceIf, `steps[${si}].canAdvanceIf`, ctx);
     });
   }
-  if (doc.onFinish !== undefined) validateActionRef(doc.onFinish, "onFinish", ctx);
+  if (doc.onFinish === undefined) {
+    fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", "onFinish", "a wizard page must declare an `onFinish` ActionRef (UIS-050)");
+  } else {
+    validateActionRef(doc.onFinish, "onFinish", ctx);
+  }
+  // draftSource is optional (UIS-051); when declared it is a root Binding.
+  if (doc.draftSource !== undefined) validateRootBinding(doc.draftSource, "draftSource", ctx);
 }
 
 // ── Entry point ─────────────────────────────────────────────────────────────
@@ -533,14 +722,13 @@ function walkWizard(doc: Record<string, unknown>, ctx: Ctx): void {
 /** Validate a ui-schema/1 page document against the contract's closed sets and
  * grammar (UIS-200). Returns `{ ok: true }` for a conformant document, or
  * `{ ok: false, errors }` with one typed rejection per violation. */
-export function validatePage(doc: unknown, opts: ValidateOptions = {}): ValidationResult {
+export function validatePage(doc: unknown): ValidationResult {
   const ctx: Ctx = {
     errors: [],
     fragmentKeys: new Set(),
     contextKeys: new Set(),
     slotNames: [],
     inWizard: false,
-    strictInputLabels: opts.strictInputLabels ?? false,
   };
 
   if (!isObject(doc)) {

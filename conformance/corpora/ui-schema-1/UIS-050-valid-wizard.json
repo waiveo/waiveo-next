@@ -9,7 +9,7 @@
       {
         "id": "name",
         "titleMsg": "msg:wizard.step.name",
-        "root": { "type": "text-input", "bind": "name" },
+        "root": { "type": "text-input", "bind": "name", "props": { "labelMsg": "msg:wizard.step.nameLabel" } },
         "canAdvanceIf": "name"
       },
       {

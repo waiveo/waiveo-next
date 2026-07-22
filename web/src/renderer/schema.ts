@@ -51,15 +51,6 @@ export interface ValidationError {
  * that gets `{ ok: false }` must refuse to paint the page. */
 export type ValidationResult = { ok: true } | { ok: false; errors: ValidationError[] };
 
-export interface ValidateOptions {
-  /** Enforce UIS-075: every input-category widget MUST carry a `labelMsg`
-   * accessible label. Default `false` because the frozen ui-schema/1 conformance
-   * corpus's minimal valid cases (UIS-020/030/050/132-valid) predate the required
-   * label and omit it; the product surface turns this on once those cases carry a
-   * `labelMsg`, as the automation-builder fixture already does on every input. */
-  strictInputLabels?: boolean;
-}
-
 // ── Vocabulary references (UIS-120) ─────────────────────────────────────────
 // The complete closed set, each row's members in the order the contract's table
 // lists them (UIS-132's candidate ordering depends on it).
@@ -288,7 +279,7 @@ export const WIDGET_CATALOG: Record<string, WidgetSpec> = {
     children: false,
     bind: "required",
     props: {
-      labelMsg: p("msg"), // required under strictInputLabels (UIS-075)
+      labelMsg: req("msg"), // required accessible label (UIS-075)
       placeholderMsg: p("msg"),
       multiline: p("bool"),
       maxLength: p("int"),
@@ -299,49 +290,49 @@ export const WIDGET_CATALOG: Record<string, WidgetSpec> = {
     category: "input",
     children: false,
     bind: "required",
-    props: { labelMsg: p("msg"), min: p("number"), max: p("number"), step: p("number") },
+    props: { labelMsg: req("msg"), min: p("number"), max: p("number"), step: p("number") },
     events: { change: { required: false } },
   },
   "duration-input": {
     category: "input",
     children: false,
     bind: "required",
-    props: { labelMsg: p("msg"), displayUnit: p("enum"), min: p("number") },
+    props: { labelMsg: req("msg"), displayUnit: p("enum"), min: p("number") },
     events: { change: { required: false } },
   },
   toggle: {
     category: "input",
     children: false,
     bind: "required",
-    props: { labelMsg: p("msg"), onLabelMsg: p("msg"), offLabelMsg: p("msg") },
+    props: { labelMsg: req("msg"), onLabelMsg: p("msg"), offLabelMsg: p("msg") },
     events: { change: { required: false } },
   },
   select: {
     category: "input",
     children: false,
     bind: "required",
-    props: { labelMsg: p("msg"), options: req("options"), placeholderMsg: p("msg") },
+    props: { labelMsg: req("msg"), options: req("options"), placeholderMsg: p("msg") },
     events: { change: { required: false } },
   },
   "multi-select": {
     category: "input",
     children: false,
     bind: "required",
-    props: { labelMsg: p("msg"), options: req("options") },
+    props: { labelMsg: req("msg"), options: req("options") },
     events: { change: { required: false } },
   },
   "entity-picker": {
     category: "input",
     children: false,
     bind: "required",
-    props: { labelMsg: p("msg"), modes: p("modes") },
+    props: { labelMsg: req("msg"), modes: p("modes") },
     events: { change: { required: false } },
   },
   "time-of-day": {
     category: "input",
     children: false,
     bind: "required",
-    props: { labelMsg: p("msg") },
+    props: { labelMsg: req("msg") },
     events: { change: { required: false } },
   },
   button: {
@@ -354,7 +345,9 @@ export const WIDGET_CATALOG: Record<string, WidgetSpec> = {
 };
 
 /** The eight input-category widget types UIS-075 requires an accessible `labelMsg`
- * on (enforced under `strictInputLabels`). */
+ * on. Each carries `labelMsg` as a required prop in the catalog above, so a
+ * missing label fails validation as WIDGET_REQUIRED_FIELD_MISSING (UIS-062/075)
+ * through the ordinary required-prop check — no separate gate. */
 export const INPUT_TYPES = new Set(
   Object.entries(WIDGET_CATALOG)
     .filter(([, spec]) => spec.category === "input")
