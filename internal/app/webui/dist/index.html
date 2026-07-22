@@ -1,0 +1,52 @@
+<!doctype html>
+<!--
+  Placeholder SPA shell. `make web-build` overwrites web/dist with the real Vite
+  build and syncs it into internal/app/webui/dist (the go:embed source). This
+  committed placeholder is what keeps `go build ./...` green without a Node
+  build. Colors are flat HORIZON Dusk tokens (bg/text/muted) — no gradient.
+-->
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Waiveo</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #0c0a18;
+        color: #f1ecfa;
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      .shell {
+        min-height: 100%;
+        display: grid;
+        place-items: center;
+        text-align: center;
+        padding: 2rem;
+      }
+      h1 {
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        margin: 0 0 0.5rem;
+      }
+      p {
+        color: #9c95b8;
+        margin: 0;
+      }
+      code {
+        font-family: ui-monospace, "SF Mono", monospace;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root" class="shell" data-waiveo-shell>
+      <div>
+        <h1>Waiveo</h1>
+        <p>The console has not been built yet — run <code>make web-build</code>.</p>
+      </div>
+    </div>
+  </body>
+</html>

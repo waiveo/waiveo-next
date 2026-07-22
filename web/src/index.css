@@ -1,0 +1,7 @@
+/*
+ * The Tailwind v4 entry. The HORIZON design tokens (Dusk + Daybreak) and the
+ * @theme mapping are layered in on top of this import by the design-system task;
+ * this file stays the single CSS entry the app and the shadcn CLI (see
+ * components.json -> tailwind.css) resolve against.
+ */
+@import "tailwindcss";

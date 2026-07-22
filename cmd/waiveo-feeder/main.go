@@ -26,6 +26,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/app/eventingest"
 	"github.com/maaxton/waiveo-next/internal/app/eventsse"
 	"github.com/maaxton/waiveo-next/internal/app/store"
+	"github.com/maaxton/waiveo-next/internal/app/webui"
 	"github.com/maaxton/waiveo-next/internal/events"
 	"github.com/maaxton/waiveo-next/internal/feeder/enroll"
 	"github.com/maaxton/waiveo-next/internal/feeder/grant"
@@ -232,12 +233,23 @@ func main() {
 	eventHub := eventsse.NewHub(eventLog)
 	telemetryIngest := eventingest.New(eventHub, firstPhotonSite.ScopeNode, ulid.Monotonic())
 
+	// The embedded console SPA, served at "/" for every non-API path. The API,
+	// event-stream, content-origin, telemetry and enrollment/handshake routes are
+	// registered as more specific patterns, so http.ServeMux keeps them ahead of
+	// this catch-all. `go build` embeds the committed placeholder shell; `make
+	// web-build` swaps in the real Vite output before a real run.
+	webUI, err := webui.Handler()
+	if err != nil {
+		log.Fatalf("waiveo-feeder: web UI handler: %v", err)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthz)
 	mux.Handle("/content/", contentStore.Handler())
 	mux.Handle("/api/v1/", apiHandler)
 	mux.Handle("/telemetry/v1/push", telemetryIngest)
 	mux.Handle("/events/v1", eventsse.New(eventHub))
+	mux.Handle("/", webUI)
 	enrollSrv.Register(mux)
 	helloSrv.Register(mux)
 

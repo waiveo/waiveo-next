@@ -1,9 +1,14 @@
-.PHONY: dev dev-up dev-down smoke
+.PHONY: dev dev-up dev-down smoke web-dev web-check web-build
 # Repo-local run dir (git-ignored): pidfiles + the built binaries live here, so teardown
 # is exact (by PID, not `pkill -f`) and nothing lands in a shared /tmp.
 RUNDIR := $(CURDIR)/.dev
 FEEDER_BIN := $(RUNDIR)/waiveo-feeder
 RELAY_BIN := $(RUNDIR)/waiveo-relay
+
+# The web console (web/) is a self-contained npm project built with Vite; the
+# production bundle is embedded into the feeder binary (internal/app/webui/dist).
+WEB_DIR := $(CURDIR)/web
+WEB_EMBED_DIR := $(CURDIR)/internal/app/webui/dist
 
 # Bring the stack up, smoke it, and ALWAYS tear it down (success or failure) — exit with
 # the smoke result so `make dev` is a clean, self-cleaning check.
@@ -41,3 +46,23 @@ dev-down:
 	@[ -f $(RUNDIR)/feeder.pid ] && kill $$(cat $(RUNDIR)/feeder.pid) 2>/dev/null || true
 	@[ -f $(RUNDIR)/relay.pid ] && kill $$(cat $(RUNDIR)/relay.pid) 2>/dev/null || true
 	@rm -f $(RUNDIR)/feeder.pid $(RUNDIR)/relay.pid $(RUNDIR)/feeder.log $(RUNDIR)/relay.log
+
+# --- Web console ------------------------------------------------------------
+# Assumes deps are installed (`cd web && npm ci`). The Vite dev server proxies
+# /api + /events + /content to the running Go feeder (see web/vite.config.ts).
+web-dev:
+	@npm --prefix $(WEB_DIR) run dev
+
+# The web gate: typecheck (tsc --noEmit) + lint (eslint) + unit tests (vitest run).
+web-check:
+	@npm --prefix $(WEB_DIR) run check
+
+# Production build into web/dist, then refresh the embedded copy the feeder
+# serves from (internal/app/webui/dist) so a subsequent `make dev` / feeder build
+# embeds the real SPA. The committed placeholder index.html is what keeps
+# `go build ./...` green when this has not been run.
+web-build:
+	@npm --prefix $(WEB_DIR) run build
+	@rm -rf $(WEB_EMBED_DIR)
+	@mkdir -p $(WEB_EMBED_DIR)
+	@cp -R $(WEB_DIR)/dist/. $(WEB_EMBED_DIR)/
