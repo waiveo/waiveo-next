@@ -29,6 +29,12 @@ type EventLog struct {
 	retention int
 	// events holds the retained envelopes in ascending id order.
 	events []Envelope
+	// evictedThrough is the highest id ever aged out of retention ("" if none).
+	// It is the substrate a live subscriber's mid-stream loss check reads: an
+	// event with an id at or below it is no longer reconstructible. It only ever
+	// increases (entries age out oldest-first, ids ascending), so it records the
+	// high-water mark of everything the log has silently dropped (EVT-142).
+	evictedThrough string
 }
 
 // NewEventLog returns a log bounded to at most retention entries. A retention of
@@ -63,6 +69,12 @@ func (l *EventLog) Append(env Envelope) {
 
 	if l.retention > 0 && len(l.events) > l.retention {
 		drop := len(l.events) - l.retention
+		// The highest of the dropped prefix is the newest id being aged out; keep
+		// evictedThrough as the max ever dropped so it never regresses if an
+		// out-of-order older id is appended then immediately evicted (EVT-142).
+		if h := l.events[drop-1].ID; h > l.evictedThrough {
+			l.evictedThrough = h
+		}
 		// reallocate so aged-out envelopes are not pinned by the backing array.
 		l.events = append([]Envelope(nil), l.events[drop:]...)
 	}
@@ -76,6 +88,18 @@ func (l *EventLog) OldestRetainedID() string {
 		return ""
 	}
 	return l.events[0].ID
+}
+
+// EvictedAfter reports whether any event with an id strictly greater than id has
+// aged out of retention — an event past the caller's last-delivered point that
+// was dropped before it could be delivered. It is the precise mid-stream analogue
+// of Resolve's connect-time retention_expired check (EVT-142/143): a live
+// subscriber whose last-delivered id predates the highest aged-out id has a real
+// buffer_exceeded gap and must be told; one caught up to or past that id does not,
+// so no spurious gap is marked. It is always false on a log that has never
+// evicted (evictedThrough == ""), so an unbounded log never reports a gap.
+func (l *EventLog) EvictedAfter(id string) bool {
+	return l.evictedThrough != "" && id < l.evictedThrough
 }
 
 // After returns the retained envelopes whose id is strictly greater than id, in

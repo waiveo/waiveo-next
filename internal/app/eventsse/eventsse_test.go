@@ -474,6 +474,102 @@ func TestSSE_FreshDeliversEveryAppendAfterConnect(t *testing.T) {
 	}
 }
 
+// TestHub_LiveDrainMarksBufferExceededGapOnRetentionDrop is the regression for
+// the mid-stream slow-consumer loss (EVT-142/143): a connected subscriber whose
+// live loop lags behind Append on a BOUNDED log has undelivered events aged out
+// before it drains them. drain — exactly what the live loop runs on each wake —
+// MUST mark that discontinuity with a buffer_exceeded gap and resume at the
+// oldest retained id, never silently return the truncated tail with no signal.
+//
+// Before the fix the live loop called hub.after(lastID) directly: once lastID
+// aged out, After just returned the surviving tail starting at the new oldest id,
+// with no gap frame and no way for the caller to know entries were skipped — the
+// silent loss EVT-143 forbids.
+func TestHub_LiveDrainMarksBufferExceededGapOnRetentionDrop(t *testing.T) {
+	log := events.NewEventLog(2) // bounded: memory-protecting retention horizon
+	hub := NewHub(log)
+
+	// A pre-existing event, then a fresh subscribe: the live watermark is idA.
+	hub.Append(autoEnv(idA))
+	sub, outcome, rerr := hub.subscribe("")
+	if rerr != nil {
+		t.Fatalf("fresh subscribe must not error; got %v", rerr)
+	}
+	defer sub.close()
+	if outcome.Result != events.ResumeResultFresh {
+		t.Fatalf("empty resume_from must resolve fresh; got %q", outcome.Result)
+	}
+	lastID := sub.head // idA — the subscriber's last-delivered point
+	if lastID != idA {
+		t.Fatalf("fresh watermark must be the head idA; got %q", lastID)
+	}
+
+	// The subscriber has NOT drained yet. A burst appends idB, idC, idD faster
+	// than it drains: retention 2 keeps only [idC, idD], so idB is appended then
+	// aged out before the subscriber ever delivers it — a mid-stream drop.
+	hub.Append(autoEnv(idB))
+	hub.Append(autoEnv(idC)) // evicts idA
+	hub.Append(autoEnv(idD)) // evicts idB (appended, never delivered)
+
+	// The burst left a coalesced pending wake — the live loop WILL drain next.
+	select {
+	case <-sub.wake():
+	default:
+		t.Fatal("the burst must leave a pending wake for the live loop to drain")
+	}
+
+	// drain is exactly what the live loop runs on that wake.
+	gap, tail := hub.drain(lastID)
+
+	if gap == nil {
+		t.Fatal("a mid-stream retention drop (idB appended then aged out before delivery) MUST emit a buffer_exceeded gap, never a silent truncation (EVT-142/143)")
+	}
+	if gap.Reason != events.ReasonBufferExceeded {
+		t.Fatalf("mid-stream drop gap reason must be buffer_exceeded (EVT-142); got %q", gap.Reason)
+	}
+	if gap.FromID == nil || *gap.FromID != idA {
+		t.Fatalf("gap from_id must be the subscriber's last-delivered id %s; got %v", idA, gap.FromID)
+	}
+	if gap.ToID != idC {
+		t.Fatalf("gap to_id must be the oldest retained id %s (delivery resumes there); got %q", idC, gap.ToID)
+	}
+	// Delivery then resumes AT the oldest retained id inclusive — no further loss.
+	if len(tail) != 2 || tail[0].ID != idC || tail[1].ID != idD {
+		t.Fatalf("after the gap, drain must deliver the retained tail [idC idD] inclusive; got %v", ids(tail))
+	}
+}
+
+// TestHub_LiveDrainNoGapWhenCaughtUp is the false-positive guard for the fix: a
+// subscriber whose last-delivered id is still within (or ahead of) the retention
+// window must NOT be handed a spurious gap. Here retention ages out only idA; a
+// subscriber at idB still has every later event (idC) retained, so drain returns
+// the clean tail with NO gap — buffer_exceeded is only for a genuine drop.
+func TestHub_LiveDrainNoGapWhenCaughtUp(t *testing.T) {
+	log := events.NewEventLog(2)
+	hub := NewHub(log)
+
+	hub.Append(autoEnv(idA))
+	hub.Append(autoEnv(idB))
+	hub.Append(autoEnv(idC)) // retained [idB idC]; only idA aged out
+
+	gap, tail := hub.drain(idB) // subscriber last saw idB, which is still retained
+	if gap != nil {
+		t.Fatalf("a subscriber caught up to a still-retained id must NOT get a spurious gap; got %+v", *gap)
+	}
+	if len(tail) != 1 || tail[0].ID != idC {
+		t.Fatalf("drain must return the clean tail [idC]; got %v", ids(tail))
+	}
+}
+
+// ids extracts the ordered id list from a slice of envelopes for test messages.
+func ids(evs []events.Envelope) []string {
+	out := make([]string, 0, len(evs))
+	for _, e := range evs {
+		out = append(out, e.ID)
+	}
+	return out
+}
+
 // TestHub_CloseEndsLiveSubscribers: Hub.Close ends every live subscriber stream
 // for a graceful shutdown — a subscriber blocked in its live loop returns rather
 // than hanging the server's shutdown forever (the seam the deferred WS transport

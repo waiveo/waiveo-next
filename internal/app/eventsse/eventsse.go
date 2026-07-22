@@ -148,6 +148,29 @@ func (h *Hub) after(id string) []events.Envelope {
 	return h.log.After(id)
 }
 
+// drain is one wake's worth of live delivery for a subscriber last at lastID: the
+// not-yet-delivered tail, plus a buffer_exceeded gap frame when events past
+// lastID have aged out of retention before this drain (a mid-stream slow-consumer
+// drop, EVT-142/143). Both are computed under ONE lock hold so they are a
+// consistent snapshot — the gap's to_id equals the first retained id the tail
+// then delivers. This is the live-loop analogue of Resolve's connect-time
+// retention_expired gap: a discontinuity is always marked, never silently a
+// truncated tail with a bare id jump. On an unbounded (or not-lagged) log there
+// is no eviction past lastID, so gap is nil and this is a plain tail read.
+func (h *Hub) drain(lastID string) (*events.GapFrame, []events.Envelope) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	tail := h.log.After(lastID)
+	if h.log.EvictedAfter(lastID) {
+		// The subscriber's own last-delivered point (and undelivered events after
+		// it) aged out: mark the loss and resume AT the oldest retained id, which
+		// is exactly where After(lastID) picks the tail up.
+		g := events.BufferExceededGap(lastID, h.log.OldestRetainedID())
+		return &g, tail
+	}
+	return nil, tail
+}
+
 // headLocked is the newest retained id — the fresh-subscribe watermark; the
 // caller holds mu. It is "" for an empty log (after("") then yields the whole
 // first live batch).
@@ -298,7 +321,17 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case <-s.hub.done:
 			return
 		case <-sub.wake():
-			for _, env := range s.hub.after(lastID) {
+			// Drain the not-yet-delivered tail. If the subscriber lagged far enough
+			// behind on a bounded log that undelivered events aged out before this
+			// wake, drain returns a buffer_exceeded gap first — the mid-stream
+			// analogue of the connect-time retention_expired gap, so a discontinuity
+			// is marked, never a silent id jump (EVT-142/143).
+			gap, tail := s.hub.drain(lastID)
+			if gap != nil {
+				s.writeString(w, events.SSEGapLine(*gap))
+				lastID = gap.ToID
+			}
+			for _, env := range tail {
 				s.writeEvent(w, env)
 				lastID = env.ID
 			}
