@@ -277,6 +277,12 @@ export interface RenderEnv {
   /** vocabRef → member → msg reference, collected from the document's own vocab
    * OptionSources so `label` (UIS-140) can resolve without a parallel registry. */
   vocabLabels: Record<string, Record<string, string>>;
+  /** Server field-validation errors for the currently-bound resource: a 422
+   * VALIDATION_FAILED Problem's `errors[]` mapped to bind-path → message (the
+   * api/1 convention that per-field errors surface on the offending FormField,
+   * not only a toast). Keyed by the input's `bind` path; absent when the last
+   * write succeeded or none has been attempted. */
+  fieldErrors?: Record<string, string>;
 }
 
 /** Humanize a `msg:` reference when no catalog entry exists — the last dotted

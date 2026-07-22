@@ -47,6 +47,10 @@ export interface PageRendererProps {
   slots?: Record<string, ReactNode>;
   /** EventSource factory for LiveBindings (UIS-109) — a fake in tests. */
   eventSourceFactory?: EventSourceFactory;
+  /** Server field-validation errors to surface inline (bind-path → message): a
+   * 422 VALIDATION_FAILED's `errors[]` mapped by the host so the offending
+   * FormField shows the message, per the api/1 convention. */
+  fieldErrors?: Record<string, string>;
   /** Notified with the taxonomy errors when a document is rejected. */
   onValidationError?: (errors: ValidationError[]) => void;
 }
@@ -66,6 +70,7 @@ export function PageRenderer({
   locale,
   slots = {},
   eventSourceFactory,
+  fieldErrors,
   onValidationError,
 }: PageRendererProps) {
   const result = useMemo(() => validatePage(doc), [doc]);
@@ -95,6 +100,7 @@ export function PageRenderer({
     msg: makeMessageResolver(messages),
     locale: defaultLocale(locale),
     vocabLabels: collectVocabLabels(page),
+    ...(fieldErrors ? { fieldErrors } : {}),
   };
   const fragments = (page.fragments as Record<string, WidgetNode>) ?? {};
   const primarySource =

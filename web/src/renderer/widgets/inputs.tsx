@@ -42,17 +42,20 @@ function useBoundField(node: WidgetProps["node"], scope: WidgetProps["scope"]) {
     if (loc) ctx.store.write(loc, v);
     if (changeAction) runAction(changeAction, scope, ctx, wizard);
   };
-  return { value, write, msg: ctx.env.msg };
+  // A server field-validation error for THIS input's bind path (UIS/api-1: a 422
+  // VALIDATION_FAILED's per-field message surfaces on the offending FormField).
+  const error = ctx.env.fieldErrors?.[bindPath];
+  return { value, write, msg: ctx.env.msg, error };
 }
 
 export function TextInputWidget({ node, scope }: WidgetProps) {
-  const { value, write, msg } = useBoundField(node, scope);
+  const { value, write, msg, error } = useBoundField(node, scope);
   const label = msg(String(node.props?.labelMsg ?? ""));
   const placeholder = node.props?.placeholderMsg ? msg(String(node.props.placeholderMsg)) : undefined;
   const multiline = node.props?.multiline === true;
   const maxLength = typeof node.props?.maxLength === "number" ? node.props.maxLength : undefined;
   return (
-    <FormField label={label}>
+    <FormField label={label} {...(error ? { error } : {})}>
       {(field: FormFieldControl) =>
         multiline ? (
           <textarea
@@ -81,13 +84,13 @@ export function TextInputWidget({ node, scope }: WidgetProps) {
 }
 
 export function NumberInputWidget({ node, scope }: WidgetProps) {
-  const { value, write, msg } = useBoundField(node, scope);
+  const { value, write, msg, error } = useBoundField(node, scope);
   const label = msg(String(node.props?.labelMsg ?? ""));
   const min = typeof node.props?.min === "number" ? node.props.min : undefined;
   const max = typeof node.props?.max === "number" ? node.props.max : undefined;
   const step = typeof node.props?.step === "number" ? node.props.step : undefined;
   return (
-    <FormField label={label}>
+    <FormField label={label} {...(error ? { error } : {})}>
       {(field: FormFieldControl) => (
         <input
           {...field}
@@ -109,7 +112,7 @@ const UNIT_PER_SECOND: Record<string, number> = { ms: 1000, s: 1, min: 1 / 60, h
 const UNIT_SUFFIX: Record<string, string> = { ms: "ms", s: "sec", min: "min", h: "hr" };
 
 export function DurationInputWidget({ node, scope }: WidgetProps) {
-  const { value, write, msg } = useBoundField(node, scope);
+  const { value, write, msg, error } = useBoundField(node, scope);
   const label = msg(String(node.props?.labelMsg ?? ""));
   const unit = String(node.props?.displayUnit ?? "s");
   const factor = UNIT_PER_SECOND[unit] ?? 1;
@@ -117,7 +120,7 @@ export function DurationInputWidget({ node, scope }: WidgetProps) {
   const shown = Number.isFinite(seconds) ? seconds * factor : "";
   const minSeconds = typeof node.props?.min === "number" ? node.props.min : 0;
   return (
-    <FormField label={`${label} (${UNIT_SUFFIX[unit] ?? unit})`}>
+    <FormField label={`${label} (${UNIT_SUFFIX[unit] ?? unit})`} {...(error ? { error } : {})}>
       {(field: FormFieldControl) => (
         <input
           {...field}
@@ -137,10 +140,10 @@ export function DurationInputWidget({ node, scope }: WidgetProps) {
 }
 
 export function TimeOfDayWidget({ node, scope }: WidgetProps) {
-  const { value, write, msg } = useBoundField(node, scope);
+  const { value, write, msg, error } = useBoundField(node, scope);
   const label = msg(String(node.props?.labelMsg ?? ""));
   return (
-    <FormField label={label}>
+    <FormField label={label} {...(error ? { error } : {})}>
       {(field: FormFieldControl) => (
         <input
           {...field}
@@ -156,13 +159,13 @@ export function TimeOfDayWidget({ node, scope }: WidgetProps) {
 }
 
 export function ToggleWidget({ node, scope }: WidgetProps) {
-  const { value, write, msg } = useBoundField(node, scope);
+  const { value, write, msg, error } = useBoundField(node, scope);
   const label = msg(String(node.props?.labelMsg ?? ""));
   const on = Boolean(value);
   const onLabel = node.props?.onLabelMsg ? msg(String(node.props.onLabelMsg)) : "On";
   const offLabel = node.props?.offLabelMsg ? msg(String(node.props.offLabelMsg)) : "Off";
   return (
-    <FormField label={label}>
+    <FormField label={label} {...(error ? { error } : {})}>
       {(field: FormFieldControl) => (
         <div className="flex items-center gap-2.5">
           {/* The clickable control is a >=44px touch target (.wv-touch, the 44px
@@ -197,13 +200,13 @@ export function ToggleWidget({ node, scope }: WidgetProps) {
 
 export function SelectWidget({ node, scope }: WidgetProps) {
   const ctx = useRenderer();
-  const { value, write, msg } = useBoundField(node, scope);
+  const { value, write, msg, error } = useBoundField(node, scope);
   const label = msg(String(node.props?.labelMsg ?? ""));
   const placeholder = node.props?.placeholderMsg ? msg(String(node.props.placeholderMsg)) : undefined;
   const options = resolveOptions(node.props?.options, scope, ctx.env);
   const byKey = new Map(options.map((o) => [String(o.value), o.value]));
   return (
-    <FormField label={label}>
+    <FormField label={label} {...(error ? { error } : {})}>
       {(field: FormFieldControl) => (
         <select
           {...field}
@@ -267,7 +270,7 @@ const MODE_KEY: Record<string, string> = {
 const KEY_MODE: Record<string, string> = { entity_id: "entity", selector: "selector", device_class: "deviceClass" };
 
 export function EntityPickerWidget({ node, scope }: WidgetProps) {
-  const { value, write, msg } = useBoundField(node, scope);
+  const { value, write, msg, error } = useBoundField(node, scope);
   const label = msg(String(node.props?.labelMsg ?? ""));
   const modes: string[] = Array.isArray(node.props?.modes)
     ? (node.props?.modes as string[])
@@ -277,7 +280,7 @@ export function EntityPickerWidget({ node, scope }: WidgetProps) {
   const activeMode = KEY_MODE[activeKey] ?? modes[0];
   const currentValue = ref[activeKey];
   return (
-    <FormField label={label}>
+    <FormField label={label} {...(error ? { error } : {})}>
       {(field: FormFieldControl) => (
         <div className="flex flex-col gap-2 sm:flex-row">
           <select

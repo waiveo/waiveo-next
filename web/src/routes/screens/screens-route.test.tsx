@@ -7,7 +7,7 @@ import { ThemeProvider } from "@/components/theme/theme-provider";
 import ScreensRoute from "./screens-route";
 import screensPageDoc from "./page.uis.json";
 import { validatePage } from "@/renderer/validate";
-import { TRACE_ID, ULID_A, ULID_B, ULID_ROOT, scopeNode, ok, problem } from "@/api/test-support";
+import { TRACE_ID, ULID_A, ULID_B, ULID_C, ULID_ROOT, scopeNode, ok, problem } from "@/api/test-support";
 
 function renderScreens() {
   return render(
@@ -200,6 +200,135 @@ describe("Screens — create / edit / delete over api/1", () => {
 
     await waitFor(() => expect(screen.queryByText("Lobby display")).not.toBeInTheDocument());
     expect(ifMatch).toBe('"2"');
+  });
+});
+
+// A fourth fixture ULID (test-support exports A/B/C/ROOT) for the created row in
+// the multi-site case, so it stays distinct from the two sites and the seed screen.
+const ULID_D = "01J8Z3K4N5P6Q7R8S9T0V1W2X9";
+
+// Route the scope-nodes list by its selector: the page loads the screens
+// (`kind=screen`) for the table AND the candidate parents (`kind in (site,group)`)
+// a new screen must attach under. A real server filters by selector; the mock
+// branches so the two lists are distinct, as they are in production.
+function scopeNodesBySelector(screens: unknown[], parents: unknown[]) {
+  return http.get("*/api/v1/scope-nodes", ({ request }) => {
+    const sel = new URL(request.url).searchParams.get("selector") ?? "";
+    return page(sel.includes("site") ? parents : screens);
+  });
+}
+
+describe("Screens — a 422 maps its field errors onto the FormField", () => {
+  it("on an edit rejected 422 VALIDATION_FAILED, shows the per-field message inline (not only a toast) and keeps the edit", async () => {
+    const state = {
+      rows: [scopeNode({ id: ULID_A, name: "Lobby display", tz: "America/New_York", revision: 3 })],
+    };
+    let patchCount = 0;
+    server.use(
+      scopeNodesBySelector(state.rows, []),
+      http.patch("*/api/v1/scope-nodes/:id", () => {
+        patchCount += 1;
+        return problem(422, "VALIDATION_FAILED", "The screen could not be saved.", {
+          errors: [
+            { field: "name", code: "ALREADY_EXISTS", message: "A screen with this name already exists." },
+          ],
+        });
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderScreens();
+    await screen.findByRole("table", { name: "Screens" });
+
+    const row = screen.getByText("Lobby display").closest("tr");
+    await user.click(row as HTMLElement);
+    const nameInput = await screen.findByLabelText("Display name");
+    await user.clear(nameInput);
+    await user.type(nameInput, "Cafe board");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    // The server's per-field message lands on the offending field as a FormField
+    // error (role="alert"), the input is flagged aria-invalid, and — because a
+    // validation failure is NOT a conflict — the form stays put with the operator's
+    // edit intact so they can fix and resubmit. Exactly one write was attempted.
+    const inlineError = await screen.findByText("A screen with this name already exists.");
+    expect(inlineError).toHaveAttribute("role", "alert");
+    const fieldAfter = screen.getByLabelText("Display name") as HTMLInputElement;
+    expect(fieldAfter).toHaveAttribute("aria-invalid", "true");
+    expect(fieldAfter.value).toBe("Cafe board");
+    expect(patchCount).toBe(1);
+  });
+});
+
+describe("Screens — a new screen is placed under a real parent site", () => {
+  it("adds the first screen under the loaded site even when the screen list is empty (scenario A)", async () => {
+    const site = scopeNode({ id: ULID_C, kind: "site", name: "HQ", parent_id: ULID_ROOT });
+    const state = { rows: [] as unknown[] };
+    let postedParent: string | null | undefined = "unset";
+    server.use(
+      scopeNodesBySelector(state.rows, [site]),
+      http.post("*/api/v1/scope-nodes", async ({ request }) => {
+        const body = (await request.json()) as { parent_id?: string };
+        postedParent = body.parent_id;
+        const created = scopeNode({ id: ULID_B, name: "New screen", parent_id: ULID_C, revision: 1 });
+        state.rows = [created];
+        return ok(created, { status: 201, revision: 1 });
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderScreens();
+    // No sibling screen exists to copy a parent from — the parent comes from the
+    // loaded site, so the very first screen can still be created.
+    await user.click(await screen.findByRole("button", { name: "New" }));
+    await waitFor(() => expect(postedParent).toBe(ULID_C));
+  });
+
+  it("lets the operator pick which site a new screen lands under when the org spans several (scenario B)", async () => {
+    const siteA = scopeNode({ id: ULID_A, kind: "site", name: "North Campus", parent_id: ULID_ROOT });
+    const siteB = scopeNode({ id: ULID_B, kind: "site", name: "South Campus", parent_id: ULID_ROOT });
+    const state = { rows: [scopeNode({ id: ULID_C, name: "Lobby display", parent_id: ULID_A, revision: 1 })] };
+    let postedParent: string | null | undefined = "unset";
+    server.use(
+      scopeNodesBySelector(state.rows, [siteA, siteB]),
+      http.post("*/api/v1/scope-nodes", async ({ request }) => {
+        const body = (await request.json()) as { parent_id?: string };
+        postedParent = body.parent_id;
+        const created = scopeNode({ id: ULID_D, name: "New screen", parent_id: body.parent_id, revision: 1 });
+        state.rows = [...state.rows, created];
+        return ok(created, { status: 201, revision: 1 });
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderScreens();
+    await screen.findByRole("table", { name: "Screens" });
+
+    // Two sites → the target-site picker appears; the fresh screen goes under the
+    // one chosen, not under whichever site the first-loaded screen happened to be in.
+    const picker = await screen.findByLabelText("Add new screens under");
+    await user.selectOptions(picker, ULID_B);
+    await user.click(screen.getByRole("button", { name: "New" }));
+    await waitFor(() => expect(postedParent).toBe(ULID_B));
+  });
+
+  it("refuses to add a screen when there is no site to place it under, instead of silently failing (scenario A, no site)", async () => {
+    let posted = false;
+    server.use(
+      scopeNodesBySelector([], []),
+      http.post("*/api/v1/scope-nodes", () => {
+        posted = true;
+        return ok(scopeNode({}), { status: 201, revision: 1 });
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderScreens();
+    await user.click(await screen.findByRole("button", { name: "New" }));
+    // A clear message, and — crucially — no write attempted (never a POST the
+    // server would reject with SCOPE_NODE_PARENT_INVALID).
+    expect(await screen.findByText(/add a site/i)).toBeInTheDocument();
+    expect(posted).toBe(false);
   });
 });
 
