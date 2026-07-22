@@ -47,9 +47,11 @@ export default tseslint.config(
     files: ["src/components/kit/**", "src/components/ui/**", "src/components/theme/**"],
     rules: { "no-restricted-imports": "off" },
   },
-  // Node-context config files.
+  // Node-context files: the config files at the root and the tooling scripts
+  // under scripts/ (e.g. the dev-server SSE proxy probe) run on Node, not in the
+  // browser, so they get the Node globals (process, fetch, AbortController, …).
   {
-    files: ["*.{js,ts}", "vite.config.ts", "eslint.config.js"],
+    files: ["*.{js,ts}", "vite.config.ts", "eslint.config.js", "scripts/**/*.{js,mjs,ts}"],
     languageOptions: { globals: globals.node },
   },
 );

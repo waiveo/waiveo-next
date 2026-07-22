@@ -1,4 +1,4 @@
-.PHONY: dev dev-up dev-down smoke web-dev web-check web-build
+.PHONY: dev dev-up dev-down smoke web-dev web-check web-build web-sse-check
 # Repo-local run dir (git-ignored): pidfiles + the built binaries live here, so teardown
 # is exact (by PID, not `pkill -f`) and nothing lands in a shared /tmp.
 RUNDIR := $(CURDIR)/.dev
@@ -56,6 +56,17 @@ web-dev:
 # The web gate: typecheck (tsc --noEmit) + lint (eslint) + unit tests (vitest run).
 web-check:
 	@npm --prefix $(WEB_DIR) run check
+
+# Live SSE-through-Vite-proxy check (Task 2 regression guard). Brings the
+# feeder+relay stack up, boots the real Vite dev server against it, asserts the
+# /events/v1 live stream reaches a client THROUGH the proxy (a fresh subscribe
+# opens its 200 text/event-stream headers immediately; a recorded event's bytes
+# stream through), then ALWAYS tears the stack down. Guards the http-proxy-3
+# header-flush hook in web/vite.config.ts — without it a fresh SSE subscribe
+# hangs with no `open`, silently stranding every `live` binding on its static
+# value. Assumes web deps are installed (`cd web && npm ci`).
+web-sse-check: dev-up
+	@node $(WEB_DIR)/scripts/sse-proxy-probe.mjs; rc=$$?; $(MAKE) --no-print-directory dev-down; exit $$rc
 
 # Production build into web/dist, then refresh the embedded copy the feeder
 # serves from (internal/app/webui/dist) so a subsequent `make dev` / feeder build
