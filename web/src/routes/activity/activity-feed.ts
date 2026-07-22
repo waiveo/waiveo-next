@@ -53,6 +53,17 @@ export const EVENTS_URL = "/events/v1";
 
 export type ActivityStatus = "connecting" | "live" | "degraded" | "paused" | "unavailable";
 
+/** How many consecutive failed connects that never opened we tolerate while
+ * carrying a resume cursor before giving up on it and reconnecting fresh. A
+ * rejected resume_from (400 RESUME_FROM_INVALID — e.g. the feeder restarted and
+ * never recorded the id) surfaces to a browser EventSource as a plain `error`
+ * with no `open`, indistinguishable from a transient drop. We retry a few times
+ * (a transient failure often clears, and resuming avoids a silent gap), but a
+ * cursor the server keeps refusing is dead: after this many failures we clear it
+ * and fall back to a fresh subscribe so the feed recovers instead of looping on
+ * an id the server will never accept again. */
+const RESUME_GIVEUP_ATTEMPTS = 3;
+
 /** One rendered stream entry — either a delivered event or a server gap marker. */
 export type ActivityRow = EventRow | GapRow;
 
@@ -211,6 +222,13 @@ export function useActivityFeed({ url, factory, reconnectDelayMs, maxRows = 200 
   const pausedRef = useRef(false);
   const seqRef = useRef(0);
   const connectRef = useRef<(() => void) | null>(null);
+  // Whether the CURRENT connection ever fired `open` — an errored connect that
+  // never opened is a failed handshake (e.g. a rejected resume_from), not a
+  // mid-stream drop of a healthy connection.
+  const openedRef = useRef(false);
+  // Consecutive failed connects (errored without opening) since the last
+  // successful open. Drives the resume-cursor give-up above.
+  const failedConnectsRef = useRef(0);
 
   const closeEs = useCallback(() => {
     if (esRef.current) {
@@ -275,18 +293,39 @@ export function useActivityFeed({ url, factory, reconnectDelayMs, maxRows = 200 
     const connect = () => {
       if (disposed || pausedRef.current) return;
       closeEs();
+      openedRef.current = false;
       setStatus("connecting");
       const suffix = lastIdRef.current ? `?resume_from=${encodeURIComponent(lastIdRef.current)}` : "";
       const es = factory(url + suffix);
       esRef.current = es;
       es.addEventListener("open", () => {
-        if (!disposed && !pausedRef.current) setStatus("live");
+        if (disposed || pausedRef.current) return;
+        // A live handshake: the resume (or fresh) connect was accepted, so any
+        // prior failed-connect streak is cleared.
+        openedRef.current = true;
+        failedConnectsRef.current = 0;
+        setStatus("live");
       });
       es.addEventListener("error", () => {
         if (disposed || pausedRef.current) return;
         // The connection dropped: mark degraded, tear down THIS stream (so the
         // browser's own auto-reconnect can't race our controlled one), and
         // reconnect on the backoff — carrying resume_from so no event is lost.
+        //
+        // But an error on a connect that never opened is a failed handshake,
+        // not a mid-stream drop. When we're carrying a resume cursor the server
+        // keeps refusing (a rejected resume_from returns a 400 before any SSE
+        // frame — indistinguishable from a network blip to EventSource), naively
+        // reconnecting resends the same dead id and loops forever. Count the
+        // consecutive failures and, once the cursor is clearly never going to be
+        // accepted, drop it and reconnect fresh so the feed actually recovers.
+        if (!openedRef.current) {
+          failedConnectsRef.current += 1;
+          if (failedConnectsRef.current >= RESUME_GIVEUP_ATTEMPTS && lastIdRef.current) {
+            lastIdRef.current = "";
+            failedConnectsRef.current = 0;
+          }
+        }
         setStatus("degraded");
         closeEs();
         scheduleReconnect();

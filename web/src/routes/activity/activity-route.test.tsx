@@ -195,6 +195,42 @@ describe("ActivityRoute — live stream over /events/v1", () => {
     expect(screen.getByText("automation.run")).toBeInTheDocument();
   });
 
+  it("falls back to a fresh subscribe after the server keeps rejecting a stale resume cursor", async () => {
+    const { factory, instances } = fakeFactory();
+    render(<ActivityRoute factory={factory} reconnectDelayMs={0} />);
+
+    // A fresh open that delivers an event, so a resume cursor is captured.
+    instances[0].emitOpen();
+    instances[0].emitEvent(automationRun(EVT1, "ran"));
+
+    // The connection drops; the feed reconnects carrying resume_from.
+    instances[0].emitError();
+    await waitFor(() => expect(instances).toHaveLength(2));
+    expect(instances[1].url).toContain("resume_from=");
+
+    // Now the server rejects that stale cursor on EVERY reconnect — e.g. the
+    // feeder restarted and never recorded the id, so GET /events/v1 returns a
+    // 400 RESUME_FROM_INVALID before any SSE frame. To a browser EventSource
+    // that surfaces as a plain `error` with no `open`. The feed must not loop
+    // on the dead cursor forever: after enough consecutive failed resume
+    // connects it drops the cursor and reconnects FRESH. Drive rejections
+    // until a fresh (no resume_from) connect appears — bounded, so a true
+    // infinite resume loop fails this test instead of hanging.
+    for (let i = 0; i < 10; i++) {
+      const latest = instances[instances.length - 1];
+      if (!latest.url.includes("resume_from")) break;
+      const before = instances.length;
+      latest.emitError();
+      await waitFor(() => expect(instances.length).toBeGreaterThan(before));
+    }
+
+    const recovered = instances[instances.length - 1];
+    expect(recovered.url).not.toContain("resume_from");
+    // And a fresh open on that connection returns the feed to live.
+    recovered.emitOpen();
+    expect(screen.getByText("Live")).toBeInTheDocument();
+  });
+
   it("shows a visible gap indicator when the server signals a gap", () => {
     const { factory, instances } = fakeFactory();
     render(<ActivityRoute factory={factory} reconnectDelayMs={0} />);
