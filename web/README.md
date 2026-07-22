@@ -87,6 +87,7 @@ source-available or paid-tier components are used.
 | react | MIT |
 | react-dom | MIT |
 | react-router | MIT |
+| @tanstack/react-table | MIT |
 | clsx | MIT |
 | tailwind-merge | MIT |
 | class-variance-authority | Apache-2.0 |

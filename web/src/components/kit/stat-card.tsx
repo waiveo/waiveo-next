@@ -1,0 +1,36 @@
+import type { ReactNode } from "react";
+import type { LucideIcon } from "lucide-react";
+import { Card } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
+import { KitIcon } from "./kit-icon";
+
+/**
+ * StatCard — a single measured figure on the flat content layer. The value is
+ * set in the mono face with tabular numerals (HORIZON: every measured value that
+ * changes or aligns is JetBrains Mono, tabular), so a column of stat cards lines
+ * up digit-for-digit. Never a gradient surface.
+ */
+export interface StatCardProps {
+  label: string;
+  value: ReactNode;
+  /** Optional leading glyph — decorative; the label carries the meaning. */
+  icon?: LucideIcon;
+  /** A small caption under the value (e.g. a delta or a hint). */
+  hint?: ReactNode;
+  className?: string;
+}
+
+export function StatCard({ label, value, icon: Icon, hint, className }: StatCardProps) {
+  return (
+    <Card data-slot="stat-card" className={cn("gap-0 p-5", className)}>
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-[11px] font-semibold tracking-[0.10em] text-muted-foreground uppercase">
+          {label}
+        </span>
+        {Icon ? <KitIcon icon={Icon} decorative className="size-4 text-muted-foreground" /> : null}
+      </div>
+      <div className="mt-2 font-mono text-[32px] leading-none font-semibold wv-tnum">{value}</div>
+      {hint ? <div className="mt-2 text-sm text-muted-foreground">{hint}</div> : null}
+    </Card>
+  );
+}
