@@ -216,13 +216,21 @@ func main() {
 	// wakes every connected /events/v1 subscriber so a telemetry-derived event
 	// pushes live (REL-090/092 -> EVT-010/100). firstPhotonSite.ScopeNode is the
 	// authoritative site node stamped onto every ingested event (the REL-090 wire
-	// record carries no per-record scope); ulid.New mints each event's
-	// recording-order id (EVT-011). Auth is DEFERRED for this dev-lab POC — the
-	// ingest + SSE endpoints are unauthenticated (EVT-110-114 is the documented
-	// seam), and the relay pushes over the existing feeder TLS.
+	// record carries no per-record scope); a ulid.Monotonic() factory mints each
+	// event's recording-order id (EVT-011). It is monotonic — NOT plain ulid.New —
+	// because ingest reconstructs a whole PushBatch in a tight loop and two rule
+	// firings inside one relay flush tick easily share a wall-clock millisecond;
+	// plain New's independent random tail could then sort the second-recorded event
+	// below the first, delivering them out of recording order and, in a narrow
+	// interleaving with a live drain, permanently dropping one from a lagging
+	// subscriber's stream (EVT-011, REL-094/097, EVT-135/143). The monotonic factory
+	// makes same-millisecond ids sort in mint (recording) order. Auth is DEFERRED
+	// for this dev-lab POC — the ingest + SSE endpoints are unauthenticated
+	// (EVT-110-114 is the documented seam), and the relay pushes over the existing
+	// feeder TLS.
 	eventLog := events.NewEventLog(feederEventLogRetention)
 	eventHub := eventsse.NewHub(eventLog)
-	telemetryIngest := eventingest.New(eventHub, firstPhotonSite.ScopeNode, ulid.New)
+	telemetryIngest := eventingest.New(eventHub, firstPhotonSite.ScopeNode, ulid.Monotonic())
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthz)

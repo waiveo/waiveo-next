@@ -2,6 +2,7 @@ package ulid
 
 import (
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -73,6 +74,112 @@ func TestNewTimestampWithinSaneWindow(t *testing.T) {
 	const slackMS = 1000 // generous, to absorb any clock-resolution wobble
 	if ms < before-slackMS || ms > after+slackMS {
 		t.Fatalf("decoded timestamp %d ms outside [%d, %d] window (id %q)", ms, before-slackMS, after+slackMS, got)
+	}
+}
+
+// TestMonotonicStrictlyAscendingWithinMillisecond confirms the generator
+// Monotonic() returns is STRICTLY ascending even for a burst of ids minted
+// inside one wall-clock millisecond — the guarantee plain New() deliberately
+// does NOT make (its 80-bit tail is independent crypto/rand per call, so two
+// same-millisecond ids have no defined relative order). The events/1 ingest
+// assigns each event its recording-order id from this generator (EVT-011); if
+// two automation.run events minted in the same millisecond could invert, the
+// events/1 log would store and deliver them out of recording order, and a
+// lagging SSE subscriber could permanently, silently drop one (EVT-011,
+// REL-094/097, EVT-135/143). A tight loop is guaranteed to land many calls in
+// the same millisecond on any real machine — the sameMS guard fails the test if
+// it somehow did not, so the within-ms path is never left un-exercised.
+func TestMonotonicStrictlyAscendingWithinMillisecond(t *testing.T) {
+	next := Monotonic()
+	prev := next()
+	sameMS := 0
+	for i := 0; i < 10000; i++ {
+		cur := next()
+		if cur <= prev {
+			t.Fatalf("call %d: Monotonic id %q not strictly greater than previous %q (within-millisecond ordering violated)", i, cur, prev)
+		}
+		if cur[:10] == prev[:10] {
+			sameMS++
+		}
+		prev = cur
+	}
+	if sameMS == 0 {
+		t.Fatalf("test ineffective: no two successive Monotonic ids shared a millisecond prefix, so the within-ms increment path was never exercised")
+	}
+}
+
+// TestMonotonicEmitsValidCanonicalULIDs confirms every id Monotonic() mints —
+// including the same-millisecond increments — is a syntactically valid canonical
+// ULID (Valid), so the events/1 envelope id it becomes satisfies EVT-011's
+// "syntactically valid ULID" shape and events.Validate accepts it.
+func TestMonotonicEmitsValidCanonicalULIDs(t *testing.T) {
+	next := Monotonic()
+	for i := 0; i < 2000; i++ {
+		got := next()
+		if !Valid(got) {
+			t.Fatalf("call %d: Monotonic() = %q, not a valid canonical ULID", i, got)
+		}
+	}
+}
+
+// TestMonotonicIndependentFactoriesDoNotShareState confirms two generators from
+// separate Monotonic() calls keep independent state — one factory's increments
+// never perturb another's — so the production single-factory guarantee is not an
+// accidental global.
+func TestMonotonicIndependentFactoriesDoNotShareState(t *testing.T) {
+	a := Monotonic()
+	b := Monotonic()
+	// Interleave the two factories; each must be internally strictly ascending.
+	var lastA, lastB string
+	for i := 0; i < 1000; i++ {
+		ca := a()
+		if lastA != "" && ca <= lastA {
+			t.Fatalf("factory A call %d: %q not strictly greater than previous %q", i, ca, lastA)
+		}
+		lastA = ca
+		cb := b()
+		if lastB != "" && cb <= lastB {
+			t.Fatalf("factory B call %d: %q not strictly greater than previous %q", i, cb, lastB)
+		}
+		lastB = cb
+	}
+}
+
+// TestMonotonicConcurrentSafeUniqueAndOrdered confirms one Monotonic() factory
+// shared across goroutines is race-free (run under -race), mints globally unique
+// ids, and — because every call returns strictly above every prior call — leaves
+// each goroutine's own observed subsequence strictly ascending. This backs the
+// "safe for concurrent use" contract the factory documents.
+func TestMonotonicConcurrentSafeUniqueAndOrdered(t *testing.T) {
+	const goroutines, perG = 8, 500
+	next := Monotonic()
+
+	var wg sync.WaitGroup
+	seqs := make([][]string, goroutines)
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			out := make([]string, perG)
+			for i := 0; i < perG; i++ {
+				out[i] = next()
+			}
+			seqs[g] = out
+		}(g)
+	}
+	wg.Wait()
+
+	seen := make(map[string]bool, goroutines*perG)
+	for g, out := range seqs {
+		for i, id := range out {
+			if i > 0 && id <= out[i-1] {
+				t.Fatalf("goroutine %d call %d: %q not strictly greater than previous %q", g, i, id, out[i-1])
+			}
+			if seen[id] {
+				t.Fatalf("goroutine %d call %d: duplicate id %q across concurrent callers", g, i, id)
+			}
+			seen[id] = true
+		}
 	}
 }
 

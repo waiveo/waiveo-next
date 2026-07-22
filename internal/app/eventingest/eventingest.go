@@ -84,8 +84,13 @@ type ingest struct {
 // scope-node ULID stamped onto every ingested event's scope_node (the REL-090
 // wire record carries no per-record scope, so the site node is authoritative; a
 // per-record subject-derived scope is a deferred concern). idSeq mints each
-// ingested event's recording-order id (EVT-011) — a ULID generator whose values
-// are lexicographically time-ordered.
+// ingested event's recording-order id (EVT-011). It MUST be strictly ascending
+// across successive calls — including ids minted within the same millisecond,
+// which a whole PushBatch reconstructed in one loop iteration routinely is — so
+// the log stores and an SSE subscriber streams them in recording order, never
+// inverting or silently dropping one (REL-094/097, EVT-135/143). Pass a
+// monotonic generator (ulid.Monotonic()), NOT plain ulid.New, whose independent
+// random tail leaves same-millisecond ids unordered.
 func New(sink EventSink, siteScopeNode string, idSeq func() string) http.Handler {
 	return &ingest{
 		sink:          sink,

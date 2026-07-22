@@ -13,6 +13,7 @@ package ulid
 import (
 	"crypto/rand"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -49,6 +50,85 @@ func New() string {
 	}
 
 	return encode(data)
+}
+
+// Monotonic returns a stateful ULID generator whose successive calls are
+// STRICTLY ascending — including for ids minted within the same millisecond,
+// which plain New does NOT order (New's 80-bit tail is independent crypto/rand
+// per call, so two same-millisecond ids have no defined relative order). It
+// implements the ULID spec's monotonic factory: a fresh 80-bit random tail per
+// new millisecond, and within one millisecond the tail is incremented by one so
+// each id strictly exceeds the last. A backwards clock step reuses the last
+// (higher) timestamp rather than regressing. The returned closure is safe for
+// concurrent use.
+//
+// This exists for the events/1 envelope-id path (EVT-011): the ingest assigns
+// each event its recording-order id from this generator, and the event log
+// stores and a resuming/live SSE subscriber streams strictly in id order
+// (After/Has are id comparisons). A within-millisecond inversion — two rule
+// firings inside one telemetry flush tick, easily the same wall-clock ms — would
+// otherwise deliver them out of recording order and, in a narrow interleaving,
+// silently and permanently drop one from a lagging subscriber's stream
+// (REL-094/097, EVT-135/143). A monotonic id closes that: same-ms ids sort in
+// mint (recording) order.
+func Monotonic() func() string {
+	var (
+		mu       sync.Mutex
+		lastMS   uint64
+		lastRand [10]byte // the 80-bit random tail of the last id minted
+		seeded   bool
+	)
+	return func() string {
+		mu.Lock()
+		defer mu.Unlock()
+
+		ms := uint64(time.Now().UnixMilli())
+		if !seeded || ms > lastMS {
+			// A new (or the first) millisecond: fresh randomness.
+			lastMS = ms
+			if _, err := rand.Read(lastRand[:]); err != nil {
+				// Same fatal-environment convention as New: crypto/rand failing
+				// is an unrecoverable entropy-source problem, and this is a
+				// value-returning helper with nowhere to propagate an error.
+				panic("ulid: Monotonic: " + err.Error())
+			}
+			seeded = true
+		} else {
+			// Same millisecond (or the clock stepped backwards): keep the prior
+			// timestamp and increment the 80-bit tail so the id strictly exceeds
+			// the previous one, preserving recording order (EVT-011). Reusing the
+			// higher lastMS on a backwards step means an id never regresses.
+			if incr80(&lastRand) {
+				// The 80-bit space wrapped within one millisecond (2^80 calls —
+				// not physically reachable). Carry into the timestamp so the id
+				// stays strictly ascending rather than error out of a value
+				// helper; the tail is now all-zero, still below the next call's.
+				lastMS++
+			}
+		}
+
+		var data [16]byte
+		data[0] = byte(lastMS >> 40)
+		data[1] = byte(lastMS >> 32)
+		data[2] = byte(lastMS >> 24)
+		data[3] = byte(lastMS >> 16)
+		data[4] = byte(lastMS >> 8)
+		data[5] = byte(lastMS)
+		copy(data[6:], lastRand[:])
+		return encode(data)
+	}
+}
+
+// incr80 increments the 80-bit big-endian value in b by one, in place,
+// returning true only on overflow (b was all 0xFF and wrapped to all 0x00).
+func incr80(b *[10]byte) bool {
+	for i := len(b) - 1; i >= 0; i-- {
+		b[i]++
+		if b[i] != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // Valid reports whether s is a syntactically valid canonical ULID — the
