@@ -69,8 +69,17 @@ export function TableWidget({ node, scope, depth }: WidgetProps) {
   const ctx = useRenderer();
   const wizard = useWizard();
   const { env } = ctx;
+  // `source` is a Binding (UIS-070) and MAY be a LiveBinding (UIS-066/109): unwrap
+  // `{path, live:true}` to its `.path` before resolving, and subscribe so pushed
+  // rows re-render exactly as text/badge/stat-tile values do (UIS-110). A bare
+  // string source is unchanged (asLiveBinding returns null → once-fetched).
   const source = node.props?.source;
-  const { array, loc, tree } = resolveArray(String(source), scope);
+  const live = asLiveBinding(source);
+  const sourcePath = live ? live.path : String(source);
+  const resolved = resolveArray(sourcePath, scope);
+  const { loc, tree } = resolved;
+  const liveArray = useLive(live ? live.path : null, resolved.array);
+  const array = Array.isArray(liveArray) ? liveArray : resolved.array;
   const decls = Array.isArray(node.props?.columns) ? (node.props?.columns as ColumnDecl[]) : [];
   const rowPress = node.on?.rowPress as ActionRef | undefined;
 
@@ -85,7 +94,7 @@ export function TableWidget({ node, scope, depth }: WidgetProps) {
   }));
 
   const data = array as Record<string, unknown>[];
-  const label = typeof node.id === "string" ? node.id : leafName(source);
+  const label = typeof node.id === "string" ? node.id : leafName(sourcePath);
 
   const onRowPress = rowPress
     ? (row: Record<string, unknown>, index: number) => {

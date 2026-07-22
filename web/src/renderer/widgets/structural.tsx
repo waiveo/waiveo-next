@@ -11,7 +11,7 @@
 import { useState } from "react";
 import { KitIcon } from "@/components/kit";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { asLiveBinding } from "../live";
+import { asLiveBinding, useLive } from "../live";
 import { evalBindingExpr, resolvePath } from "../bindings";
 import { useRenderer } from "../state";
 import type { WidgetNode } from "../types";
@@ -55,9 +55,15 @@ export function SectionWidget({ node, scope, depth }: WidgetProps) {
 
 export function RepeatWidget({ node, scope, depth }: WidgetProps) {
   const { env } = useRenderer();
+  // `bind` is a Binding (UIS-070) and MAY be a LiveBinding (UIS-109): unwrap to
+  // its `.path` for the initial resolve AND subscribe (UIS-110) so a live-bound
+  // list grows over events/1 rather than freezing at its once-fetched snapshot.
   const live = asLiveBinding(node.bind);
   const bindPath = live ? live.path : String(node.bind);
-  const { array, loc, tree } = resolveArray(bindPath, scope);
+  const resolved = resolveArray(bindPath, scope);
+  const { loc, tree } = resolved;
+  const liveArray = useLive(live ? live.path : null, resolved.array);
+  const array = Array.isArray(liveArray) ? liveArray : resolved.array;
   const itemScopeName = typeof node.props?.itemScope === "string" ? node.props.itemScope : "item";
   const template = node.props?.itemTemplate as WidgetNode | undefined;
   if (!template) return null;
@@ -97,6 +103,15 @@ export function FragmentWidget({ node, scope, depth }: WidgetProps) {
   const ctx = useRenderer();
   const ref = String(node.props?.ref);
   const fragment = ctx.fragments[ref];
+  // A `bind` narrows the scope (UIS-183) and MAY be a LiveBinding (UIS-109): its
+  // rescope value re-evaluates over events/1 (UIS-110). Resolve + subscribe
+  // UNCONDITIONALLY (rules of hooks) — ahead of the fail-closed early returns —
+  // so `useLive` is called in the same order every render regardless of them.
+  const live = asLiveBinding(node.bind);
+  const narrowed =
+    node.bind !== undefined ? narrowToFragmentBind(scope, live ? live.path : String(node.bind)) : null;
+  const liveCurrent = useLive(live ? live.path : null, narrowed ? narrowed.current : undefined);
+
   if (!fragment) return null; // an unresolved ref was rejected at validation (UIS-180)
   // Fail closed at a finite ceiling rather than exhaust the stack (UIS-182).
   if (depth + 1 > FRAGMENT_DEPTH_CEILING) {
@@ -106,11 +121,11 @@ export function FragmentWidget({ node, scope, depth }: WidgetProps) {
       </div>
     );
   }
-  // A bind narrows the scope (UIS-183); absent, the fragment is scope-transparent.
+  // Absent a bind the fragment is scope-transparent; present, the (possibly live)
+  // narrowed value becomes the new enclosing Scope's `current` (UIS-183).
   let childScope = scope;
-  if (node.bind !== undefined) {
-    const live = asLiveBinding(node.bind);
-    childScope = narrowToFragmentBind(scope, live ? live.path : String(node.bind));
+  if (narrowed) {
+    childScope = { ...narrowed, current: liveCurrent };
   }
   // params become $params.<name> inside the fragment (UIS-184), resolved against
   // this node's own enclosing scope at reference time.

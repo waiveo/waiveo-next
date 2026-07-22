@@ -58,8 +58,18 @@ export function runAction(
       break;
     }
     case "submit": {
-      const target = typeof action.target === "string" ? action.target : primarySource;
-      void handler.submit?.(target, store.resource);
+      // Persist the *bound* resource `target` names — not the whole data root
+      // (UIS-160/UIS-005). An explicit `target` is an ordinary Binding, resolved
+      // against the enclosing scope before handing to the seam (the same way the
+      // `delete` case just below resolves its own target). Absent a target, the
+      // page's primary bound resource is meant — and its resolved value is this
+      // subtree's outermost Scope (`scope.root`, UIS-005: a root Binding's value
+      // BECOMES the Scope it roots), the value `detail.source`/`source` established.
+      if (typeof action.target === "string") {
+        void handler.submit?.(action.target, resolvePath(action.target, scope));
+      } else {
+        void handler.submit?.(primarySource, scope.root);
+      }
       break;
     }
     case "create": {

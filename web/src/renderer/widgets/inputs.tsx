@@ -162,19 +162,28 @@ export function ToggleWidget({ node, scope }: WidgetProps) {
     <FormField label={label}>
       {(field: FormFieldControl) => (
         <div className="flex items-center gap-2.5">
+          {/* The clickable control is a >=44px touch target (.wv-touch, the 44px
+              minimum the responsive contract mandates) with the visual switch
+              track carried by an inner span so the hit area grows without
+              stretching the pill itself. */}
           <button
             {...field}
             type="button"
             role="switch"
             aria-checked={on}
             onClick={() => write(!on)}
-            className="peer inline-flex h-5 w-9 shrink-0 items-center rounded-pill border border-transparent outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring aria-checked:bg-[image:var(--grad-accent)] data-[off=true]:bg-[color:var(--wv-off-bg)]"
-            data-off={!on}
+            className="wv-touch peer inline-flex shrink-0 items-center justify-center rounded-pill outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <span
               aria-hidden="true"
-              className={`block size-4 rounded-pill bg-white shadow-sm transition-transform ${on ? "translate-x-[18px]" : "translate-x-0.5"}`}
-            />
+              data-on={on}
+              data-off={!on}
+              className="inline-flex h-5 w-9 shrink-0 items-center rounded-pill border border-transparent transition-colors data-[on=true]:bg-[image:var(--grad-accent)] data-[off=true]:bg-[color:var(--wv-off-bg)]"
+            >
+              <span
+                className={`block size-4 rounded-pill bg-white shadow-sm transition-transform ${on ? "translate-x-[18px]" : "translate-x-0.5"}`}
+              />
+            </span>
           </button>
           <span className="text-sm text-muted-foreground">{on ? onLabel : offLabel}</span>
         </div>
@@ -228,9 +237,11 @@ export function MultiSelectWidget({ node, scope }: WidgetProps) {
   return (
     <fieldset className="flex flex-col gap-1.5">
       <legend className="text-sm font-medium">{label}</legend>
-      <div className="flex flex-col gap-1.5">
+      <div className="flex flex-col gap-1">
+        {/* Each option row is a >=44px touch target (.wv-touch) so the tiny
+            checkbox is comfortably tappable, per the responsive 44px contract. */}
         {options.map((o, i) => (
-          <label key={i} className="flex items-center gap-2 text-sm">
+          <label key={i} className="wv-touch flex items-center gap-2 text-sm">
             <input
               type="checkbox"
               className="size-4 rounded-[4px] border border-border"

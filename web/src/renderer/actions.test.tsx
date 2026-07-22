@@ -137,3 +137,50 @@ describe("actions — repeat-add / repeat-remove mutate the in-memory array (UIS
     expect(screen.getByText("beta")).toBeInTheDocument();
   });
 });
+
+describe("actions — submit persists the RESOLVED bound record, not the whole data root (UIS-160/005)", () => {
+  const doc = {
+    pageType: "list-detail",
+    list: {
+      source: "items",
+      display: {
+        type: "table",
+        props: { source: "items", columns: [{ headerMsg: "msg:name", cell: "item.name" }] },
+        on: { rowPress: { verb: "set", target: "$ui.sel", value: "item.id" } },
+      },
+    },
+    detail: {
+      source: "items[id=$ui.sel]",
+      root: {
+        type: "section",
+        children: [
+          { type: "text-input", bind: "name", props: { labelMsg: "msg:name" } },
+          { type: "button", props: { labelMsg: "msg:save" }, on: { press: { verb: "submit" } } },
+        ],
+      },
+    },
+  };
+
+  it("is a valid document", () => {
+    expect(validatePage(doc).ok).toBe(true);
+  });
+
+  it("hands handler.submit the one selected record — never the whole items collection", async () => {
+    const user = userEvent.setup();
+    const handler: ActionHandler = { submit: vi.fn() };
+    render(
+      <PageRenderer
+        doc={doc}
+        data={{ items: [{ id: "a", name: "Alpha" }, { id: "b", name: "Beta" }] }}
+        messages={messages}
+        handler={handler}
+      />,
+    );
+    // Select Alpha, then Save. submit's default target is detail.source; its
+    // RESOLVED value (the single record) is the payload — Beta must never leak.
+    await user.click(screen.getByRole("button", { name: /Alpha/ }));
+    await user.click(await screen.findByRole("button", { name: "Save" }));
+    expect(handler.submit).toHaveBeenCalledWith("items[id=$ui.sel]", { id: "a", name: "Alpha" });
+    expect(handler.submit).not.toHaveBeenCalledWith("items[id=$ui.sel]", expect.objectContaining({ items: expect.anything() }));
+  });
+});

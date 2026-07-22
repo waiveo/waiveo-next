@@ -85,11 +85,15 @@ describe("PageRenderer — settings-form (UIS-030)", () => {
 
     expect(screen.getByRole("heading", { name: "General" })).toBeInTheDocument();
     expect(screen.getByLabelText("Display name")).toHaveValue("The Hangar");
-    expect(screen.getByRole("switch", { name: "Quiet hours" })).toHaveAttribute("aria-checked", "true");
+    const toggle = screen.getByRole("switch", { name: "Quiet hours" });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    // The switch is a >=44px touch target (responsive contract, UIS-075's control).
+    expect(toggle.className).toContain("wv-touch");
 
-    // The save button's on.press submit dispatches to the api-client seam.
+    // The save button's on.press submit dispatches the RESOLVED bound resource —
+    // just the `source` record, not the whole top-level data root (UIS-160/005).
     await user.click(screen.getByRole("button", { name: "Save" }));
-    expect(handler.submit).toHaveBeenCalledWith("site", { site: { displayName: "The Hangar", quietHours: true } });
+    expect(handler.submit).toHaveBeenCalledWith("site", { displayName: "The Hangar", quietHours: true });
   });
 });
 
@@ -137,6 +141,43 @@ describe("PageRenderer — wizard (UIS-050)", () => {
     // Back returns to the first step (its input retains the shared draft value).
     await user.click(screen.getByRole("button", { name: "Back" }));
     expect(screen.getByLabelText("Automation name")).toHaveValue("Lobby wind-down");
+  });
+});
+
+describe("PageRenderer — interactive controls meet the 44px touch target (responsive contract)", () => {
+  it("gives every multi-select option row a >=44px touch target (wv-touch)", () => {
+    const doc = {
+      pageType: "settings-form",
+      source: "prefs",
+      sections: [
+        {
+          fields: [
+            {
+              type: "multi-select",
+              bind: "days",
+              props: {
+                labelMsg: "msg:prefs.days",
+                options: {
+                  kind: "literal",
+                  items: [
+                    { value: "mon", labelMsg: "msg:prefs.mon" },
+                    { value: "tue", labelMsg: "msg:prefs.tue" },
+                  ],
+                },
+              },
+            },
+          ],
+        },
+      ],
+      actions: [{ type: "button", props: { labelMsg: "msg:settings.save" }, on: { press: { verb: "submit" } } }],
+    };
+    render(<PageRenderer doc={doc} data={{ prefs: { days: ["mon"] } }} messages={messages} />);
+
+    const checkboxes = screen.getAllByRole("checkbox");
+    expect(checkboxes).toHaveLength(2); // rendered, not the rejection panel
+    for (const cb of checkboxes) {
+      expect(cb.closest("label")?.className).toContain("wv-touch");
+    }
   });
 });
 

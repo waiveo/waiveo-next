@@ -75,3 +75,86 @@ describe("PageRenderer — LiveBinding over a fake EventSource (UIS-109/110)", (
     expect(screen.getByText("55")).toBeInTheDocument();
   });
 });
+
+// A `table`'s `source` and a `repeat`'s `bind` are Binding-typed (UIS-070) and so
+// MAY be LiveBindings (UIS-066/109). Both must subscribe over events/1 (UIS-110),
+// not just read the once-fetched value — otherwise a live-bound collection freezes
+// at its first snapshot with no indication liveness was silently dropped.
+describe("PageRenderer — a table's LiveBinding source re-renders on a push (UIS-066/109/110)", () => {
+  const tableLiveDoc = {
+    pageType: "dashboard",
+    tiles: [
+      {
+        size: "large",
+        widget: {
+          type: "table",
+          props: { source: { path: "events", live: true }, columns: [{ headerMsg: "msg:name", cell: "item.name" }] },
+        },
+      },
+    ],
+  };
+
+  it("renders the bound rows, then appends a pushed row without a refetch", () => {
+    FakeEventSource.instances = [];
+    const factory: EventSourceFactory = (url) => new FakeEventSource(url);
+    render(
+      <PageRenderer
+        doc={tableLiveDoc}
+        data={{ events: [{ name: "Alpha" }, { name: "Beta" }] }}
+        messages={{ "msg:name": "Name" }}
+        eventSourceFactory={factory}
+      />,
+    );
+    // The valid document renders its bound content (not the empty state).
+    expect(screen.getByText("Alpha")).toBeInTheDocument();
+    expect(screen.getByText("Beta")).toBeInTheDocument();
+    expect(FakeEventSource.instances).toHaveLength(1);
+
+    act(() =>
+      FakeEventSource.instances[0].emit({
+        path: "events",
+        value: [{ name: "Alpha" }, { name: "Beta" }, { name: "Gamma" }],
+      }),
+    );
+    expect(screen.getByText("Gamma")).toBeInTheDocument();
+  });
+});
+
+describe("PageRenderer — a repeat's LiveBinding bind grows on a push (UIS-070/109/110)", () => {
+  const repeatLiveDoc = {
+    pageType: "settings-form",
+    source: "doc",
+    sections: [
+      {
+        fields: [
+          {
+            type: "repeat",
+            bind: { path: "tags", live: true },
+            props: { itemTemplate: { type: "text", props: { value: "item.label" } } },
+          },
+        ],
+      },
+    ],
+    actions: [{ type: "button", props: { labelMsg: "msg:save" }, on: { press: { verb: "submit" } } }],
+  };
+
+  it("renders the once-fetched item, then a pushed second item appears", () => {
+    FakeEventSource.instances = [];
+    const factory: EventSourceFactory = (url) => new FakeEventSource(url);
+    render(
+      <PageRenderer
+        doc={repeatLiveDoc}
+        data={{ doc: { tags: [{ label: "alpha" }] } }}
+        messages={{ "msg:save": "Save" }}
+        eventSourceFactory={factory}
+      />,
+    );
+    expect(screen.getByText("alpha")).toBeInTheDocument();
+    expect(screen.queryByText("beta")).not.toBeInTheDocument();
+
+    act(() =>
+      FakeEventSource.instances[0].emit({ path: "tags", value: [{ label: "alpha" }, { label: "beta" }] }),
+    );
+    expect(screen.getByText("beta")).toBeInTheDocument();
+  });
+});
