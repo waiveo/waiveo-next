@@ -1,7 +1,10 @@
 /*
- * The Tailwind v4 entry. The HORIZON design tokens (Dusk + Daybreak) and the
- * @theme mapping are layered in on top of this import by the design-system task;
- * this file stays the single CSS entry the app and the shadcn CLI (see
- * components.json -> tailwind.css) resolve against.
+ * The single CSS entry (components.json -> tailwind.css). Tailwind v4 first, then
+ * the animation utilities the Radix-based components use, then the HORIZON design
+ * system (tokens + @theme bridge + base/utilities) in src/theme.css. Order
+ * matters: theme.css must compose after `@import "tailwindcss"` so its @theme and
+ * @layer blocks land in the right cascade.
  */
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "./theme.css";

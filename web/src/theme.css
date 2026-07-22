@@ -1,0 +1,347 @@
+/*
+ * HORIZON — the Waiveo brand design system, as CSS-variable tokens.
+ *
+ * The canonical source of every value here is the brand file `brand/HORIZON.md`
+ * (its `TOKENS` fenced JSON). Values are transcribed VERBATIM; any color,
+ * gradient, radius or type value that deviates from that file is a defect. The
+ * system is dual-mode by identity: **Dusk** (dark) is the default and lives on
+ * `:root` + `[data-theme="dark"]`; **Daybreak** (light) is a first-class,
+ * fully-resolved theme on `[data-theme="light"]`.
+ *
+ * Two layers, one rule: an *atmosphere* layer (the `--grad-*` gradients + grain)
+ * paints the stage — hero bands, the one primary action, content thumbs. A flat
+ * *content* layer (`--wv-surface`/`--wv-text`/status tokens, mapped onto the
+ * shadcn semantic vars below) is where every word, table and form renders, and
+ * it is AA-provable. Text never sits on a raw gradient — the `.wv-hero` utility
+ * lays a scrim between the ramp and its content.
+ *
+ * This file is @import'ed by index.css AFTER `@import "tailwindcss"`, so its
+ * `@theme`/`@layer` blocks compose in the right cascade order.
+ */
+
+/* ── HORIZON · Dusk (dark) — the default theme ───────────────────────────── */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* Content layer — verbatim from brand/HORIZON.md TOKENS.dark */
+  --wv-bg: #0C0A18;
+  --wv-surface: #14111F;
+  --wv-surface-2: #1E1A30;
+  --wv-border: #2E2945;
+  --wv-row-border: #221E36;
+  --wv-text: #F1ECFA;
+  --wv-muted: #9C95B8;
+  --wv-accent: #F368C4;
+  --wv-accent-fg: #1A0A16;
+  --wv-accent-text: #F368C4;
+  --wv-nav-active-bg: #2A1428;
+  --wv-nav-active-fg: #F79AD8;
+  --wv-ok: #43C98A;
+  --wv-ok-bg: #10241C;
+  --wv-warn: #F1B54B;
+  --wv-warn-bg: #2A2010;
+  --wv-err: #FB6A6A;
+  --wv-err-bg: #2C1417;
+  --wv-off-bg: #211E30;
+  /* Live/on-air is a distinct green (the ok family brightened) — the only token
+     that glows. Green means live; magenta means brand; nothing else glows. */
+  --wv-live: #35E8A0;
+
+  /* Atmosphere layer — plain fallbacks first (the @supports block below upgrades
+     each to `in oklch` where the engine can interpolate in oklch). Each hero /
+     accent / deck gradient carries an -fg companion for the text that may sit
+     over it (behind a scrim for the hero; a flat chip for decks). */
+  --grad-hero: linear-gradient(150deg, #FF7A3D 0%, #EA4BA4 46%, #4A34B8 100%);
+  --grad-hero-fg: #FFF6EC;
+  --grad-hero-scrim: linear-gradient(rgba(12, 10, 24, 0) 0%, rgba(12, 10, 24, 0.62) 100%);
+  --grad-accent: linear-gradient(120deg, #FF7A33 0%, #FB3D93 100%);
+  --grad-accent-fg: #1A0A16;
+  --grad-deck-1: linear-gradient(160deg, #FFB25A 0%, #FF6F91 55%, #EA4BA4 100%);
+  --grad-deck-1-fg: #F1ECFA;
+  --grad-deck-2: linear-gradient(160deg, #FF6FB0 0%, #C13AD0 55%, #5B34C4 100%);
+  --grad-deck-2-fg: #F1ECFA;
+  --grad-deck-3: linear-gradient(160deg, #FF9A3D 0%, #F0533E 55%, #B4265E 100%);
+  --grad-deck-3-fg: #F1ECFA;
+  --grad-deck-4: linear-gradient(160deg, #7A5CF0 0%, #4A34B8 55%, #1E1A5A 100%);
+  --grad-deck-4-fg: #F1ECFA;
+
+  /* Elevation flips strategy by theme: Dusk = glow (a halo derived from the
+     surface's own color) so cards read as lit from within, not dropped on. */
+  --wv-elevation:
+    inset 0 0 0 1px oklch(from var(--wv-surface-2) calc(l + 0.06) c h),
+    0 10px 34px -14px oklch(from var(--wv-surface-2) calc(l + 0.5) c h / 0.35);
+
+  /* shadcn semantic surface — mapped onto HORIZON so the vendored base is on
+     brand with no stock-palette remnant. `--primary` is the flat magenta accent
+     (links/focus/rings); primary *buttons* carry `--grad-accent` (see button). */
+  --background: var(--wv-bg);
+  --foreground: var(--wv-text);
+  --card: var(--wv-surface);
+  --card-foreground: var(--wv-text);
+  --popover: var(--wv-surface-2);
+  --popover-foreground: var(--wv-text);
+  --primary: var(--wv-accent);
+  --primary-foreground: var(--wv-accent-fg);
+  --secondary: var(--wv-surface-2);
+  --secondary-foreground: var(--wv-text);
+  --muted: var(--wv-surface-2);
+  --muted-foreground: var(--wv-muted);
+  --accent: var(--wv-surface-2);
+  --accent-foreground: var(--wv-text);
+  --destructive: var(--wv-err);
+  --destructive-foreground: var(--wv-bg);
+  --border: var(--wv-border);
+  --input: var(--wv-border);
+  --ring: var(--wv-accent);
+}
+
+/* ── HORIZON · Daybreak (light) — the same hue ramp, re-toned to paper ────── */
+[data-theme="light"] {
+  color-scheme: light;
+
+  /* Content layer — verbatim from brand/HORIZON.md TOKENS.light */
+  --wv-bg: #FCF6F0;
+  --wv-surface: #FFFFFF;
+  --wv-surface-2: #F5EEE7;
+  --wv-border: #E7DCD2;
+  --wv-row-border: #EFE7DE;
+  --wv-text: #221826;
+  --wv-muted: #6B5F6D;
+  --wv-accent: #BC2A88;
+  --wv-accent-fg: #FFFFFF;
+  --wv-accent-text: #BC2A88;
+  --wv-nav-active-bg: #FBE6F3;
+  --wv-nav-active-fg: #BC2A88;
+  --wv-ok: #0F7D46;
+  --wv-ok-bg: #E8F6EE;
+  --wv-warn: #9A5A08;
+  --wv-warn-bg: #FCF1E0;
+  --wv-err: #BE312B;
+  --wv-err-bg: #FCEAE7;
+  --wv-off-bg: #EFEAF0;
+  --wv-live: #0C8A56;
+
+  --grad-hero: linear-gradient(150deg, #FFD9A8 0%, #FBAFC8 46%, #A9C7F5 100%);
+  --grad-hero-fg: #2A1420;
+  --grad-hero-scrim: linear-gradient(rgba(42, 20, 32, 0) 0%, rgba(42, 20, 32, 0.28) 100%);
+  --grad-accent: linear-gradient(120deg, #C42E8F 0%, #93267E 100%);
+  --grad-accent-fg: #FFFFFF;
+  --grad-deck-1: linear-gradient(160deg, #FFE1A6 0%, #FFB27A 55%, #FF8FA0 100%);
+  --grad-deck-1-fg: #221826;
+  --grad-deck-2: linear-gradient(160deg, #FFC7DE 0%, #F79AC8 55%, #C77BE0 100%);
+  --grad-deck-2-fg: #221826;
+  --grad-deck-3: linear-gradient(160deg, #FFD9A8 0%, #FFA9B0 55%, #E59AD8 100%);
+  --grad-deck-3-fg: #221826;
+  --grad-deck-4: linear-gradient(160deg, #BFD4FA 0%, #A9C7F5 55%, #C9B8F2 100%);
+  --grad-deck-4-fg: #221826;
+
+  /* Daybreak = shadow: soft, grounded, warm-tinted (not the Dusk glow). */
+  --wv-elevation:
+    0 1px 2px rgba(34, 24, 38, 0.06),
+    0 10px 28px -16px rgba(34, 24, 38, 0.22);
+
+  --background: var(--wv-bg);
+  --foreground: var(--wv-text);
+  --card: var(--wv-surface);
+  --card-foreground: var(--wv-text);
+  --popover: var(--wv-surface);
+  --popover-foreground: var(--wv-text);
+  --primary: var(--wv-accent);
+  --primary-foreground: var(--wv-accent-fg);
+  --secondary: var(--wv-surface-2);
+  --secondary-foreground: var(--wv-text);
+  --muted: var(--wv-surface-2);
+  --muted-foreground: var(--wv-muted);
+  --accent: var(--wv-surface-2);
+  --accent-foreground: var(--wv-text);
+  --destructive: var(--wv-err);
+  --destructive-foreground: #FFFFFF;
+  --border: var(--wv-border);
+  --input: var(--wv-border);
+  --ring: var(--wv-accent);
+}
+
+/*
+ * Gradients interpolate `in oklch` to avoid the muddy grey sRGB midpoint. The
+ * plain fallbacks declared above win on engines that cannot parse gradient
+ * interpolation; this feature-detected block upgrades them where supported, so
+ * an old engine still gets a valid gradient rather than a blank fill.
+ */
+@supports (background: linear-gradient(in oklch, red, blue)) {
+  :root,
+  [data-theme="dark"] {
+    --grad-hero: linear-gradient(150deg in oklch, #FF7A3D 0%, #EA4BA4 46%, #4A34B8 100%);
+    --grad-accent: linear-gradient(120deg in oklch, #FF7A33 0%, #FB3D93 100%);
+    --grad-deck-1: linear-gradient(160deg in oklch, #FFB25A 0%, #FF6F91 55%, #EA4BA4 100%);
+    --grad-deck-2: linear-gradient(160deg in oklch, #FF6FB0 0%, #C13AD0 55%, #5B34C4 100%);
+    --grad-deck-3: linear-gradient(160deg in oklch, #FF9A3D 0%, #F0533E 55%, #B4265E 100%);
+    --grad-deck-4: linear-gradient(160deg in oklch, #7A5CF0 0%, #4A34B8 55%, #1E1A5A 100%);
+  }
+  [data-theme="light"] {
+    --grad-hero: linear-gradient(150deg in oklch, #FFD9A8 0%, #FBAFC8 46%, #A9C7F5 100%);
+    --grad-accent: linear-gradient(120deg in oklch, #C42E8F 0%, #93267E 100%);
+    --grad-deck-1: linear-gradient(160deg in oklch, #FFE1A6 0%, #FFB27A 55%, #FF8FA0 100%);
+    --grad-deck-2: linear-gradient(160deg in oklch, #FFC7DE 0%, #F79AC8 55%, #C77BE0 100%);
+    --grad-deck-3: linear-gradient(160deg in oklch, #FFD9A8 0%, #FFA9B0 55%, #E59AD8 100%);
+    --grad-deck-4: linear-gradient(160deg in oklch, #BFD4FA 0%, #A9C7F5 55%, #C9B8F2 100%);
+  }
+}
+
+/*
+ * Bridge HORIZON to Tailwind's design tokens. `inline` means the generated
+ * utilities reference the var() directly, so `bg-background`, `text-foreground`,
+ * `rounded-btn`, `font-display`, `bg-wv-ok`, … all re-resolve when [data-theme]
+ * flips at runtime.
+ */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* HORIZON brand + status utilities (bg-wv-*, text-wv-*). The ok/live green is
+     reserved for live/ok status — never decorative. */
+  --color-wv-bg: var(--wv-bg);
+  --color-wv-surface: var(--wv-surface);
+  --color-wv-surface-2: var(--wv-surface-2);
+  --color-wv-border: var(--wv-border);
+  --color-wv-row-border: var(--wv-row-border);
+  --color-wv-text: var(--wv-text);
+  --color-wv-muted: var(--wv-muted);
+  --color-wv-accent: var(--wv-accent);
+  --color-wv-accent-fg: var(--wv-accent-fg);
+  --color-wv-accent-text: var(--wv-accent-text);
+  --color-wv-nav-active-bg: var(--wv-nav-active-bg);
+  --color-wv-nav-active-fg: var(--wv-nav-active-fg);
+  --color-wv-ok: var(--wv-ok);
+  --color-wv-ok-bg: var(--wv-ok-bg);
+  --color-wv-warn: var(--wv-warn);
+  --color-wv-warn-bg: var(--wv-warn-bg);
+  --color-wv-err: var(--wv-err);
+  --color-wv-err-bg: var(--wv-err-bg);
+  --color-wv-off-bg: var(--wv-off-bg);
+  --color-wv-live: var(--wv-live);
+
+  /* Radii (brand/HORIZON.md §6): inputs/chips 8 · buttons 10 · cards 14 ·
+     panels/modals 18 · pills 999 (status only). */
+  --radius-input: 8px;
+  --radius-btn: 10px;
+  --radius-card: 14px;
+  --radius-panel: 18px;
+  --radius-pill: 999px;
+
+  /* Type (all self-hosted OFL via @fontsource — see main.tsx). The bare-family
+     fallback chains are verbatim from brand/HORIZON.md TOKENS. */
+  --font-sans: "Inter Variable", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "SF Mono", monospace;
+  --font-display: "Bricolage Grotesque Variable", "Bricolage Grotesque", "Inter", sans-serif;
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  html {
+    font-family: var(--font-sans);
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  ::selection {
+    background: color-mix(in oklch, var(--wv-accent) 32%, transparent);
+  }
+  /* A visible, on-brand focus ring for keyboard users across the whole app. */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+}
+
+@layer utilities {
+  /* Display face — page titles, hero headlines, the wordmark. */
+  .font-display {
+    font-family: var(--font-display);
+  }
+  /* Telemetry / any number that changes or aligns is tabular. */
+  .wv-tnum {
+    font-variant-numeric: tabular-nums;
+  }
+  /* Theme-aware elevation (Dusk glow / Daybreak shadow). */
+  .wv-elevation {
+    box-shadow: var(--wv-elevation);
+  }
+
+  /*
+   * Grain — layers over large gradient surfaces. It is both the "confident, not
+   * sterile" texture and the standard fix for gradient banding on the compressed
+   * HDMI/Roku panels Waiveo renders to. The noise is an inline SVG feTurbulence
+   * data-URI, so there is ZERO external request. It screen-blends in Dusk (grain
+   * glows) and multiply-blends in Daybreak (grain grounds like paper).
+   */
+  .wv-grain {
+    position: relative;
+    isolation: isolate;
+  }
+  .wv-grain::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='140'%20height='140'%3E%3Cfilter%20id='wvGrain'%3E%3CfeTurbulence%20type='fractalNoise'%20baseFrequency='0.85'%20numOctaves='2'%20stitchTiles='stitch'/%3E%3C/filter%3E%3Crect%20width='100%25'%20height='100%25'%20filter='url(%23wvGrain)'/%3E%3C/svg%3E");
+    background-size: 140px 140px;
+    opacity: 0.22;
+    mix-blend-mode: screen;
+  }
+  [data-theme="light"] .wv-grain::after {
+    opacity: 0.14;
+    mix-blend-mode: multiply;
+  }
+
+  /*
+   * Hero band — THE sanctioned surface for `--grad-hero`. It ALWAYS lays the
+   * scrim between the ramp and its content (the `::before`), so a headline never
+   * sits on the raw gradient. This is the brand's text-never-on-raw-gradient
+   * build-rule expressed as a token, not a per-page habit. Body copy still
+   * renders on the flat content layer, never here.
+   */
+  .wv-hero {
+    position: relative;
+    isolation: isolate;
+    background: var(--grad-hero);
+    color: var(--grad-hero-fg);
+  }
+  .wv-hero::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background: var(--grad-hero-scrim);
+  }
+}

@@ -40,10 +40,11 @@ export default tseslint.config(
       "no-restricted-imports": ["error", kitOnlyImports],
     },
   },
-  // The kit and the vendored base are the only places allowed to import from
-  // components/ui — they are the wrapping layer.
+  // The kit, the vendored base, and the theme infrastructure are the only places
+  // allowed to import from components/ui — they ARE the wrapping/base layer, not
+  // pages. Everything else must go through the kit.
   {
-    files: ["src/components/kit/**", "src/components/ui/**"],
+    files: ["src/components/kit/**", "src/components/ui/**", "src/components/theme/**"],
     rules: { "no-restricted-imports": "off" },
   },
   // Node-context config files.

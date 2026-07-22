@@ -65,6 +65,15 @@ deviates from that file is a defect. Fonts (Bricolage Grotesque, Inter, JetBrain
 Mono) are self-hosted via `@fontsource` — no external font, CDN, or network
 requests in the built bundle.
 
+The vendored shadcn base in `src/components/ui/` is restyled so **all** styling
+flows from those tokens (the primary Button carries `--grad-accent`; there are no
+stock-shadcn palette remnants). `src/components/theme/` holds the `ThemeProvider`
+(restores the last theme from `localStorage`, defaults to Dusk, reflects it as
+`data-theme` on `<html>`) and the Dusk/Daybreak toggle. Brand build-rules are
+enforced by tests: a token-equality test asserts `theme.css` matches
+`brand/HORIZON.md` verbatim, and a rule test forbids text on a raw `--grad-hero`
+(the `.wv-hero` utility always lays a scrim between the ramp and its content).
+
 ## Dependency licenses
 
 Every **direct** dependency is permissively licensed (MIT / Apache-2.0 / ISC /
@@ -80,6 +89,26 @@ source-available or paid-tier components are used.
 | react-router | MIT |
 | clsx | MIT |
 | tailwind-merge | MIT |
+| class-variance-authority | Apache-2.0 |
+| lucide-react | ISC |
+| sonner | MIT |
+| cmdk | MIT |
+| @radix-ui/react-slot | MIT |
+| @radix-ui/react-dialog | MIT |
+| @radix-ui/react-dropdown-menu | MIT |
+| @radix-ui/react-popover | MIT |
+| @radix-ui/react-tooltip | MIT |
+| @radix-ui/react-tabs | MIT |
+| @radix-ui/react-checkbox | MIT |
+| @radix-ui/react-switch | MIT |
+| @radix-ui/react-radio-group | MIT |
+| @radix-ui/react-select | MIT |
+| @radix-ui/react-label | MIT |
+| @radix-ui/react-separator | MIT |
+| @radix-ui/react-scroll-area | MIT |
+| @fontsource-variable/bricolage-grotesque | OFL-1.1 (font) + MIT (package) |
+| @fontsource-variable/inter | OFL-1.1 (font) + MIT (package) |
+| @fontsource-variable/jetbrains-mono | OFL-1.1 (font) + MIT (package) |
 
 ### Development dependencies
 
@@ -88,9 +117,11 @@ source-available or paid-tier components are used.
 | @eslint/js | MIT |
 | @tailwindcss/vite | MIT |
 | tailwindcss | MIT |
+| tw-animate-css | MIT |
 | @testing-library/dom | MIT |
 | @testing-library/jest-dom | MIT |
 | @testing-library/react | MIT |
+| @testing-library/user-event | MIT |
 | @types/react | MIT |
 | @types/react-dom | MIT |
 | @vitejs/plugin-react | MIT |
@@ -104,4 +135,8 @@ source-available or paid-tier components are used.
 | vite | MIT |
 | vitest | MIT |
 
-Self-hosted OFL fonts (via `@fontsource`) are added with the design-system theme.
+The three brand faces — **Bricolage Grotesque** (display), **Inter** (UI) and
+**JetBrains Mono** (telemetry) — are self-hosted via `@fontsource` (their font
+files are OFL-1.1). They are imported in `src/main.tsx`, so Vite bundles the
+`.woff2` files locally and the built app makes **zero external font/CDN/network
+requests**.
