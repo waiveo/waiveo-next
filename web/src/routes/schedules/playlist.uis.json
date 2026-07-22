@@ -1,0 +1,87 @@
+{
+  "pageType": "list-detail",
+  "list": {
+    "source": "playlists",
+    "display": {
+      "type": "table",
+      "id": "Playlists",
+      "props": {
+        "source": "playlists",
+        "columns": [
+          { "headerMsg": "msg:pl.col.name", "cell": "item.name" },
+          { "headerMsg": "msg:pl.col.count", "cell": { "compute": "count", "args": ["item.items"] } }
+        ]
+      },
+      "on": { "rowPress": { "verb": "set", "target": "$ui.selected", "value": "item.id" } }
+    }
+  },
+  "detail": {
+    "source": "playlists[id=$ui.selected]",
+    "emptyMsg": "msg:pl.detail.empty",
+    "root": {
+      "type": "section",
+      "props": { "titleMsg": "msg:pl.detail.title" },
+      "children": [
+        {
+          "type": "text-input",
+          "bind": "name",
+          "props": { "labelMsg": "msg:pl.name" }
+        },
+        {
+          "type": "repeat",
+          "bind": "items",
+          "props": {
+            "itemScope": "item",
+            "emptyMsg": "msg:pl.items.empty",
+            "itemTemplate": {
+              "type": "section",
+              "children": [
+                {
+                  "type": "text-input",
+                  "bind": "item.asset_ref",
+                  "props": { "labelMsg": "msg:pl.item.ref", "placeholderMsg": "msg:pl.item.refPh" }
+                },
+                {
+                  "type": "duration-input",
+                  "bind": "item.duration_seconds",
+                  "props": { "labelMsg": "msg:pl.item.dur", "displayUnit": "s" }
+                },
+                {
+                  "type": "button",
+                  "props": { "labelMsg": "msg:pl.item.remove", "style": "destructive" },
+                  "on": { "press": { "verb": "repeat-remove", "target": "item" } }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "type": "button",
+          "props": { "labelMsg": "msg:pl.item.add" },
+          "on": {
+            "press": {
+              "verb": "repeat-add",
+              "target": "items",
+              "itemDefault": { "source": "asset", "asset_ref": "", "duration_seconds": 10 }
+            }
+          }
+        },
+        {
+          "type": "button",
+          "props": { "labelMsg": "msg:pl.save", "style": "primary" },
+          "on": { "press": { "verb": "submit" } }
+        },
+        {
+          "type": "button",
+          "props": { "labelMsg": "msg:pl.delete", "style": "destructive" },
+          "on": { "press": { "verb": "delete", "target": "$root" } }
+        }
+      ]
+    }
+  },
+  "newAction": {
+    "verb": "create",
+    "target": "playlists",
+    "itemDefault": { "name": "New playlist", "items": [] }
+  }
+}
