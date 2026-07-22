@@ -74,3 +74,10 @@ fi
 # subscriber) end to end over real HTTP. The probe prints OBSERVABILITY OK, or
 # exits non-zero.
 go run ./scripts/observabilityprobe
+
+# 8. Web UI: the feeder serves the embedded console SPA shell at / (the catch-all
+# behind the api/event/content/telemetry patterns). The probe GETs / and asserts
+# the SPA shell (a 200 text/html body carrying the <title> marker) — the real
+# Vite build when `make web-build` has populated the embed, the committed
+# placeholder otherwise. Prints WEB UI OK, or exits non-zero.
+go run ./scripts/webuiprobe
