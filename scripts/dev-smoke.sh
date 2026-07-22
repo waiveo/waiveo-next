@@ -2,9 +2,10 @@
 # scripts/dev-smoke.sh — asserts the dev stack (feeder + relay) answers /healthz,
 # that the relay booted its edge-automation stack, AND that it booted its
 # schedule resolver. Delegates health to the Go probe (scripts/devsmoke): the
-# feeder serves an ed25519-leaf TLS cert that some system curl builds (macOS
-# LibreSSL) cannot handshake, so the probe is Go — matching the all-Go,
-# all-ed25519 stack. It owns readiness (retries each endpoint ~10s) and prints
+# feeder serves a self-signed, no-CA-yet TLS leaf, so the probe is Go — it dials
+# the feeder/relay directly without wiring curl's system trust to a bootstrap
+# cert, matching the all-Go stack. It owns readiness (retries each endpoint ~10s)
+# and prints
 # SMOKE OK / SMOKE FAIL. Then this script asserts the relay's own log recorded
 # (a) the automation engine loading the signed edge_rules from desired state
 # and (b) the schedule resolver (internal/relay/schedulehost, REL-065) having

@@ -1,16 +1,24 @@
 package signing
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/maaxton/waiveo-next/internal/shared/signhash"
 )
 
 // TestServingLeafIsECDSAP256 is the browser-compatibility guard: the TLS leaf
@@ -33,9 +41,71 @@ func TestServingLeafIsECDSAP256(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadOrCreate error: %v", err)
 	}
+	assertServingLeafECDSAP256(t, id)
+}
 
-	// Assemble the tls.Certificate exactly as cmd/waiveo-feeder/main.go does,
-	// so this tests the leaf the listener would actually present.
+// TestLoadSelfHealsStaleEd25519ServingLeaf is the regression guard for the
+// self-healing load path. A feeder identity persisted BEFORE the ECDSA-leaf fix
+// carries the old GenSelfSigned output: an Ed25519 signing key AND an Ed25519
+// TLS leaf. TestServingLeafIsECDSAP256 above can never observe that state — it
+// only ever calls LoadOrCreate(t.TempDir()), an always-fresh dir that takes the
+// create() path under today's code. But .dev/feeder-keys is designed to PERSIST
+// (the signing key is the relay's enrollment anchor) and the Makefile's dev-up
+// clears .dev/relay-identity yet never .dev/feeder-keys — so a dev checkout that
+// ran the stack once before this fix keeps a stale Ed25519 leaf on disk, and
+// load() reloading it verbatim would re-serve the browser-incompatible leaf
+// across every later `make dev`/`make web-dev` with no error.
+//
+// LoadOrCreate must repair such an identity in place on the next load: reissue
+// an ECDSA P-256 serving leaf while preserving the enrollment-anchored Ed25519
+// SIGNING key byte-for-byte, and PERSIST the reissued material so a subsequent
+// restart reuses it (a stable pin for the relay's next enrollment) rather than
+// re-minting a fresh leaf every load.
+func TestLoadSelfHealsStaleEd25519ServingLeaf(t *testing.T) {
+	dir := t.TempDir()
+
+	// Seed a pre-fix identity straight to disk: a real Ed25519 signing key plus
+	// an Ed25519 TLS leaf — exactly what the old GenSelfSigned wrote — so
+	// LoadOrCreate takes its load() branch against genuinely stale material.
+	signingPub := seedEd25519SigningKey(t, filepath.Join(dir, signingKeyFile))
+	seedEd25519TLSLeaf(t, filepath.Join(dir, tlsCertFile), filepath.Join(dir, tlsKeyFile))
+
+	id, err := LoadOrCreate(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreate(%q) error: %v", dir, err)
+	}
+
+	// The enrollment-anchored signing identity must survive the heal untouched.
+	if !id.SigningPub().Equal(signingPub) {
+		t.Fatalf("self-heal changed the signing pub: got %x, want seeded %x", id.SigningPub(), signingPub)
+	}
+	// The served leaf must now be ECDSA P-256, not the seeded Ed25519 leaf.
+	assertServingLeafECDSAP256(t, id)
+
+	// The heal must be persisted: a second load reuses the SAME ECDSA leaf (no
+	// per-restart churn) and still yields the original signing key.
+	reloaded, err := LoadOrCreate(dir)
+	if err != nil {
+		t.Fatalf("second LoadOrCreate(%q) error: %v", dir, err)
+	}
+	assertServingLeafECDSAP256(t, reloaded)
+	if !bytes.Equal(id.TLSCertPEM(), reloaded.TLSCertPEM()) {
+		t.Fatal("healed TLS leaf not persisted: second load re-minted a different cert")
+	}
+	if !reloaded.SigningPub().Equal(signingPub) {
+		t.Fatalf("second load changed the signing pub: got %x, want seeded %x", reloaded.SigningPub(), signingPub)
+	}
+}
+
+// assertServingLeafECDSAP256 fails t unless id's TLS serving material —
+// assembled exactly as cmd/waiveo-feeder/main.go does,
+// tls.X509KeyPair(id.TLSCertPEM(), id.TLSKeyPEM()) — is an ECDSA P-256 leaf
+// whose private half pairs with it. That is the algorithm every real browser
+// and macOS LibreSSL curl require of the feeder's HTTPS leaf; an Ed25519 leaf
+// is rejected at handshake.
+func assertServingLeafECDSAP256(t *testing.T, id *Identity) {
+	t.Helper()
+
 	cert, err := tls.X509KeyPair(id.TLSCertPEM(), id.TLSKeyPEM())
 	if err != nil {
 		t.Fatalf("tls.X509KeyPair(TLSCertPEM, TLSKeyPEM): %v", err)
@@ -64,6 +134,61 @@ func TestServingLeafIsECDSAP256(t *testing.T) {
 	}
 	if !priv.PublicKey.Equal(pub) {
 		t.Fatal("serving private key does not pair with the leaf's public key")
+	}
+}
+
+// seedEd25519SigningKey writes a real Ed25519 PKCS8 signing key to path (0600),
+// mimicking a pre-fix persisted signing_key.pem, and returns its public half.
+func seedEd25519SigningKey(t *testing.T, path string) ed25519.PublicKey {
+	t.Helper()
+
+	pub, priv := signhash.GenerateKey()
+	der, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		t.Fatalf("marshal ed25519 signing key: %v", err)
+	}
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+	if err := os.WriteFile(path, pemBytes, 0o600); err != nil {
+		t.Fatalf("write seeded signing key: %v", err)
+	}
+	return pub
+}
+
+// seedEd25519TLSLeaf writes a self-signed Ed25519 TLS leaf and its PKCS8 key to
+// certPath (0644) / keyPath (0600) — the exact pre-fix GenSelfSigned output, so
+// load() sees the stale, browser-incompatible serving material a real dev
+// checkout carries after running the stack once before the ECDSA fix.
+func seedEd25519TLSLeaf(t *testing.T, certPath, keyPath string) {
+	t.Helper()
+
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate ed25519 tls key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "waiveo-relay"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().AddDate(10, 0, 0),
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, priv)
+	if err != nil {
+		t.Fatalf("create ed25519 tls cert: %v", err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	if err := os.WriteFile(certPath, certPEM, 0o644); err != nil {
+		t.Fatalf("write seeded tls cert: %v", err)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		t.Fatalf("marshal ed25519 tls key: %v", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		t.Fatalf("write seeded tls key: %v", err)
 	}
 }
 

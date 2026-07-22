@@ -14,7 +14,9 @@
 package signing
 
 import (
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
@@ -143,6 +145,26 @@ func load(signingKeyPath, certPath, certKeyPath string) (*Identity, error) {
 		return nil, fmt.Errorf("signing: read TLS key %s: %w", certKeyPath, err)
 	}
 
+	// Self-heal a stale serving leaf. An identity persisted before the
+	// browser-compat fix carries an Ed25519 TLS leaf (the old GenSelfSigned
+	// output), which Chrome/Safari/Firefox and macOS LibreSSL curl reject at
+	// handshake — leaving the embedded-SPA browser->feeder HTTPS path
+	// unreachable. .dev/feeder-keys is designed to persist and the Makefile's
+	// dev-up never clears it (unlike .dev/relay-identity), so without this a
+	// dev checkout that ran the stack once pre-fix would reload and re-serve
+	// the stale leaf forever. Reissue an ECDSA P-256 serving cert in place when
+	// the on-disk leaf is not already one, persisting it so the next restart
+	// reuses it. Only the TLS-serving cert/key change; the enrollment-anchored
+	// Ed25519 SIGNING key (read above) is untouched — and the relay re-pins the
+	// leaf's SPKI at its next (fresh-per-dev-up) enrollment, so reissuing here
+	// breaks no commitment.
+	if !servingLeafIsECDSAP256(certPEM) {
+		certPEM, certKeyPEM, err = reissueTLSLeaf(certPath, certKeyPath)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	pub, ok := priv.Public().(ed25519.PublicKey)
 	if !ok {
 		return nil, fmt.Errorf("signing: %s: public half is %T, want ed25519.PublicKey", signingKeyPath, priv.Public())
@@ -154,6 +176,44 @@ func load(signingKeyPath, certPath, certKeyPath string) (*Identity, error) {
 		certPEM:     certPEM,
 		certKeyPEM:  certKeyPEM,
 	}, nil
+}
+
+// servingLeafIsECDSAP256 reports whether the PEM-encoded certificate certPEM
+// carries an ECDSA P-256 public key — the algorithm real browsers and macOS
+// LibreSSL require of the feeder's HTTPS serving leaf. It returns false for an
+// Ed25519 leaf (the pre-fix material), a non-P-256 curve, or anything that does
+// not decode/parse as a certificate, so load() fails closed toward reissuing a
+// fresh, correct leaf.
+func servingLeafIsECDSAP256(certPEM []byte) bool {
+	block, _ := pem.Decode(certPEM)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return false
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return false
+	}
+	pub, ok := cert.PublicKey.(*ecdsa.PublicKey)
+	if !ok {
+		return false
+	}
+	return pub.Curve == elliptic.P256()
+}
+
+// reissueTLSLeaf mints a fresh ECDSA P-256 self-signed serving cert and
+// overwrites the persisted TLS cert/key files (never the signing key),
+// returning the new PEM material. Used by load() to repair a stale serving
+// leaf in place so the fix takes effect on the next feeder start without a
+// manual key-directory wipe.
+func reissueTLSLeaf(certPath, certKeyPath string) (certPEM, certKeyPEM []byte, err error) {
+	certPEM, certKeyPEM = tlsboot.GenSelfSigned()
+	if err := os.WriteFile(certKeyPath, certKeyPEM, 0o600); err != nil {
+		return nil, nil, fmt.Errorf("signing: reissue TLS key %s: %w", certKeyPath, err)
+	}
+	if err := os.WriteFile(certPath, certPEM, 0o644); err != nil {
+		return nil, nil, fmt.Errorf("signing: reissue TLS cert %s: %w", certPath, err)
+	}
+	return certPEM, certKeyPEM, nil
 }
 
 func readSigningKey(path string) (ed25519.PrivateKey, error) {
