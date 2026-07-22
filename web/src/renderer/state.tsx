@@ -10,7 +10,7 @@
 // handler (the action seam), the document's fragments, the host's slot content,
 // and the render environment.
 
-import { createContext, useContext, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { PathLoc, RenderEnv } from "./bindings";
 import type { ActionHandler, WidgetNode } from "./types";
 
@@ -101,6 +101,12 @@ export interface RendererProviderProps {
   fragments: Record<string, WidgetNode>;
   slots: Record<string, ReactNode>;
   primarySource?: string | undefined;
+  /** Notified when the ephemeral `$ui` tree changes (UIS-104) — e.g. a
+   * list-detail `rowPress` writing `$ui.selected`. The host seam owns state the
+   * renderer cannot see (captured field-validation errors, a conflict-review
+   * banner); this is how it learns a selection moved so it can scope/clear that
+   * state to the record now in view. Not fired for the initial mount. */
+  onUiChange?: ((ui: Record<string, unknown>) => void) | undefined;
   children: ReactNode;
 }
 
@@ -112,6 +118,7 @@ export function RendererProvider({
   fragments,
   slots,
   primarySource,
+  onUiChange,
   children,
 }: RendererProviderProps) {
   const [state, setState] = useState<{ resource: unknown; ui: Record<string, unknown> }>(() => ({
@@ -122,6 +129,20 @@ export function RendererProvider({
   // trees inside an event handler without re-creating themselves each render.
   const stateRef = useRef(state);
   stateRef.current = state;
+
+  // Report `$ui` transitions to the host seam, skipping the initial mount (the
+  // host already knows the seed it passed as `initialUi`). Fires post-commit, so
+  // a handler that setState()s the host is safe.
+  const onUiChangeRef = useRef(onUiChange);
+  onUiChangeRef.current = onUiChange;
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    if (!mountedRef.current) {
+      mountedRef.current = true;
+      return;
+    }
+    onUiChangeRef.current?.(state.ui);
+  }, [state.ui]);
 
   const store = useMemo<RendererStore>(
     () => ({

@@ -51,6 +51,11 @@ export interface PageRendererProps {
    * 422 VALIDATION_FAILED's `errors[]` mapped by the host so the offending
    * FormField shows the message, per the api/1 convention. */
   fieldErrors?: Record<string, string>;
+  /** Notified when the ephemeral `$ui` tree changes (e.g. a list-detail row
+   * selection). Lets the host scope its own out-of-band state (captured field
+   * errors, a conflict-review banner) to the record now in view. Not fired on
+   * the initial mount. */
+  onUiChange?: (ui: Record<string, unknown>) => void;
   /** Notified with the taxonomy errors when a document is rejected. */
   onValidationError?: (errors: ValidationError[]) => void;
 }
@@ -71,6 +76,7 @@ export function PageRenderer({
   slots = {},
   eventSourceFactory,
   fieldErrors,
+  onUiChange,
   onValidationError,
 }: PageRendererProps) {
   const result = useMemo(() => validatePage(doc), [doc]);
@@ -120,6 +126,7 @@ export function PageRenderer({
         fragments={fragments}
         slots={slots}
         primarySource={primarySource}
+        onUiChange={onUiChange}
       >
         <PageBody page={page} />
       </RendererProvider>

@@ -95,6 +95,20 @@ export default function ScreensRoute({ api }: { api?: WaiveoApi }) {
   // Field-validation errors from the last save (422), keyed by field → message, so
   // the detail form's FormField shows the message inline; cleared on each attempt.
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
+  // The row the renderer currently has selected (`$ui.selected`), mirrored here so
+  // the host can (a) re-seed the selection across the post-mutation remount — a
+  // 412 must leave the detail form OPEN on the current values for review, not
+  // collapse to the empty state a successful save leaves — and (b) drop the
+  // captured 422 field errors (keyed only by bind-path) the instant the operator
+  // moves to a different record, so a healthy screen never inherits another
+  // screen's naming conflict.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selectedIdRef = useRef<string | null>(null);
+  // True while a 412 REVISION_CONFLICT is awaiting the operator's review: the
+  // detail form is re-seeded with the current server values and this drives the
+  // distinct "changed elsewhere — reconcile" banner. Cleared on the next attempt
+  // or when the selection moves away.
+  const [conflictReview, setConflictReview] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   // Bumped after every mutation so PageRenderer remounts against the freshly
   // fetched data (the renderer seeds its editable store once, from the initial
@@ -133,6 +147,21 @@ export default function ScreensRoute({ api }: { api?: WaiveoApi }) {
     setVersion((v) => v + 1);
   }, [load]);
 
+  // The renderer owns the selection (`$ui.selected`, set by the list's rowPress);
+  // it tells us here when it moves. Moving to a different record retires any
+  // captured 422 field errors — they are keyed by bind-path (`name`/`tz`) with no
+  // record identity, so left in place they would render on the newly-selected
+  // screen's identically-named field — and exits the conflict-review state, which
+  // belonged to the record just left.
+  const onUiChange = useCallback((ui: Record<string, unknown>) => {
+    const next = typeof ui.selected === "string" ? ui.selected : null;
+    if (next === selectedIdRef.current) return;
+    selectedIdRef.current = next;
+    setSelectedId(next);
+    setFieldErrors({});
+    setConflictReview(false);
+  }, []);
+
   const handler: ActionHandler = useMemo(
     () => ({
       // "New": create a screen from the document's itemDefault, attached under the
@@ -142,6 +171,7 @@ export default function ScreensRoute({ api }: { api?: WaiveoApi }) {
       // than POST a body the server would reject with SCOPE_NODE_PARENT_INVALID.
       create: async (_target, itemDefault) => {
         setFieldErrors({});
+        setConflictReview(false);
         const parent = activeParentRef.current;
         if (!parent) {
           toast.error("Add a site before adding a screen — a screen must live under a site or group.");
@@ -168,6 +198,7 @@ export default function ScreensRoute({ api }: { api?: WaiveoApi }) {
         const meta = idRev(resource);
         if (!meta) return;
         setFieldErrors({});
+        setConflictReview(false);
         const r = resource as ScopeNode;
         const patch: ScopeNodeUpdate = { name: r.name, ...(r.tz !== undefined ? { tz: r.tz } : {}) };
         try {
@@ -178,7 +209,12 @@ export default function ScreensRoute({ api }: { api?: WaiveoApi }) {
             etagForRevision(meta.revision),
           );
           if (outcome.status === "conflict") {
+            // Surface the standard conflict UX: a toast, the re-read current
+            // values (reload seeds them), AND a persistent review state — the
+            // selection is preserved across the remount below (initialUi) so the
+            // detail form stays open on those current values, with the banner.
             toast.error("This screen changed elsewhere. Review the current values and try again.");
+            setConflictReview(true);
           } else {
             toast.success("Saved changes");
           }
@@ -199,6 +235,7 @@ export default function ScreensRoute({ api }: { api?: WaiveoApi }) {
       remove: async (_target, resource) => {
         const meta = idRev(resource);
         if (!meta) return;
+        setConflictReview(false);
         try {
           await client.scopeNodes.remove(meta.id, etagForRevision(meta.revision));
           toast.success("Deleted screen");
@@ -250,6 +287,15 @@ export default function ScreensRoute({ api }: { api?: WaiveoApi }) {
             </FormField>
           </div>
         ) : null}
+        {conflictReview ? (
+          <p
+            role="status"
+            className="rounded-card border border-[color:var(--wv-warn)] bg-[color:var(--wv-warn-bg)] p-4 text-sm text-[color:var(--wv-warn)]"
+          >
+            This screen was changed elsewhere while you were editing. The current values are shown below —
+            review them, then save again to apply your change.
+          </p>
+        ) : null}
         <main className="min-w-0">
           {screens === null ? (
             <p className="text-sm text-muted-foreground">Loading screens…</p>
@@ -258,9 +304,11 @@ export default function ScreensRoute({ api }: { api?: WaiveoApi }) {
               key={version}
               doc={screensPageDoc}
               data={{ screens }}
+              initialUi={{ selected: selectedId }}
               messages={messages}
               handler={handler}
               fieldErrors={fieldErrors}
+              onUiChange={onUiChange}
             />
           )}
         </main>

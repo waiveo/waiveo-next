@@ -179,6 +179,42 @@ describe("Screens — create / edit / delete over api/1", () => {
     expect(patchCount).toBe(1);
   });
 
+  it("on a 412, keeps the detail form open on the current values with a distinct review affordance (not the collapsed empty state a successful save leaves)", async () => {
+    const changed = scopeNode({ id: ULID_A, name: "Changed elsewhere", revision: 9 });
+    const state = { rows: [scopeNode({ id: ULID_A, name: "Lobby display", revision: 3 })] };
+    server.use(
+      http.get("*/api/v1/scope-nodes", () => page(state.rows)),
+      http.get("*/api/v1/scope-nodes/:id", () => ok(changed, { revision: 9 })),
+      http.patch("*/api/v1/scope-nodes/:id", () => {
+        state.rows = [changed];
+        return problem(412, "REVISION_CONFLICT", "The resource was modified concurrently.", {
+          current_revision: 9,
+        });
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderScreens();
+    await screen.findByRole("table", { name: "Screens" });
+
+    const row = screen.getByText("Lobby display").closest("tr");
+    await user.click(row as HTMLElement);
+    const nameInput = await screen.findByLabelText("Display name");
+    await user.clear(nameInput);
+    await user.type(nameInput, "My rename");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    // A 412 must produce a REVIEW state, not the same collapse a successful save
+    // leaves: the detail form stays mounted, now seeded with the CURRENT server
+    // values, and a distinct review banner (role=status) tells the operator to
+    // reconcile — the empty "select a screen" prompt must NOT be showing.
+    const banner = await screen.findByRole("status");
+    expect(banner).toHaveTextContent(/changed elsewhere/i);
+    const reviewed = (await screen.findByLabelText("Display name")) as HTMLInputElement;
+    await waitFor(() => expect(reviewed.value).toBe("Changed elsewhere"));
+    expect(screen.queryByText("Select a screen to edit it, or add a new one.")).not.toBeInTheDocument();
+  });
+
   it("deletes a screen under its If-Match", async () => {
     const state = { rows: [scopeNode({ id: ULID_A, name: "Lobby display", revision: 2 })] };
     let ifMatch: string | null = null;
@@ -257,6 +293,47 @@ describe("Screens — a 422 maps its field errors onto the FormField", () => {
     expect(fieldAfter).toHaveAttribute("aria-invalid", "true");
     expect(fieldAfter.value).toBe("Cafe board");
     expect(patchCount).toBe(1);
+  });
+
+  it("does not bleed one screen's 422 field error onto a different, untouched screen after switching rows", async () => {
+    const state = {
+      rows: [
+        scopeNode({ id: ULID_A, name: "Lobby display", tz: "America/New_York", revision: 3 }),
+        scopeNode({ id: ULID_B, name: "Cafe board", tz: "America/Chicago", revision: 1 }),
+      ],
+    };
+    server.use(
+      scopeNodesBySelector(state.rows, []),
+      http.patch("*/api/v1/scope-nodes/:id", () =>
+        problem(422, "VALIDATION_FAILED", "The screen could not be saved.", {
+          errors: [
+            { field: "name", code: "ALREADY_EXISTS", message: "A screen with this name already exists." },
+          ],
+        }),
+      ),
+    );
+
+    const user = userEvent.setup();
+    renderScreens();
+    await screen.findByRole("table", { name: "Screens" });
+
+    // Screen A's edit is rejected 422 → its per-field error lands on A's field.
+    await user.click(screen.getByText("Lobby display").closest("tr") as HTMLElement);
+    const nameA = await screen.findByLabelText("Display name");
+    await user.clear(nameA);
+    await user.type(nameA, "Renamed lobby");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    expect(await screen.findByText("A screen with this name already exists.")).toBeInTheDocument();
+
+    // Switch to a DIFFERENT, untouched screen B (never submitted) — its
+    // identically-named field must NOT inherit A's stale error; the error is keyed
+    // by bind-path, so without a clear on selection change it would bleed across.
+    await user.click(screen.getByText("Cafe board").closest("tr") as HTMLElement);
+    const tzB = (await screen.findByLabelText("Time zone")) as HTMLInputElement;
+    await waitFor(() => expect(tzB.value).toBe("America/Chicago")); // we are on B
+    const nameB = screen.getByLabelText("Display name") as HTMLInputElement;
+    expect(screen.queryByText("A screen with this name already exists.")).not.toBeInTheDocument();
+    expect(nameB).not.toHaveAttribute("aria-invalid", "true");
   });
 });
 
