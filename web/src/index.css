@@ -8,3 +8,7 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "./theme.css";
+/* The responsive contract (locked-left nav breakpoints, full-screen modals,
+   touch targets, contained table overflow). Unlayered on purpose so it wins over
+   Tailwind's layered utilities — see responsive.css. */
+@import "./responsive.css";

@@ -37,7 +37,6 @@ import {
   type ColumnDef,
   type Status,
 } from "@/components/kit";
-import { ThemeToggle } from "@/components/theme/theme-toggle";
 import { useTheme } from "@/components/theme/theme-context";
 import { cn } from "@/lib/utils";
 import {
@@ -626,12 +625,9 @@ export default function DesignRoute() {
               title="Waiveo design kit"
               description="Every widget-kit primitive and every HORIZON token, in Dusk and Daybreak — the living reference the console and every extension page render through."
               actions={
-                <>
-                  <ThemeToggle />
-                  <Button variant="default" icon={Upload}>
-                    Publish
-                  </Button>
-                </>
+                <Button variant="default" icon={Upload}>
+                  Publish
+                </Button>
               }
             />
           </div>

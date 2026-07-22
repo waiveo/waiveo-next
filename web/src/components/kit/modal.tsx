@@ -69,7 +69,7 @@ export function Modal({
   return (
     <Dialog {...rootProps}>
       {trigger ? <DialogTrigger asChild>{trigger}</DialogTrigger> : null}
-      <DialogContent showCloseButton={showCloseButton} className={cn(SIZE[size], className)}>
+      <DialogContent showCloseButton={showCloseButton} className={cn("wv-modal", SIZE[size], className)}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           {description ? <DialogDescription>{description}</DialogDescription> : null}

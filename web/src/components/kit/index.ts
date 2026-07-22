@@ -30,6 +30,9 @@ export type { FormFieldProps, FormFieldControl } from "./form-field";
 export { Modal, ConfirmModal } from "./modal";
 export type { ModalProps, ModalSize, ConfirmModalProps } from "./modal";
 
+export { NavDrawer } from "./nav-drawer";
+export type { NavDrawerProps } from "./nav-drawer";
+
 export { DataTable } from "./data-table";
 export type { DataTableProps } from "./data-table";
 

@@ -1,0 +1,81 @@
+/*
+ * HORIZON — the responsive contract, authored explicitly.
+ *
+ * Matt's requirement (2026-07-22): the console is fully responsive. The nav is
+ * LOCKED LEFT — a permanent rail from 1024px up, a left drawer + hamburger below
+ * it, never a top-nav. Everything works at 360px wide with NO horizontal PAGE
+ * scroll (tables adapt or scroll inside their own region), modals go full-screen
+ * on small viewports, and touch targets are >=44px.
+ *
+ * These breakpoint rules live here as authored CSS (rather than only as Tailwind
+ * utilities scattered through the JSX) for two reasons: (1) responsive.contract
+ * .test.ts asserts them so the contract cannot silently regress, and (2) they are
+ * UNLAYERED, so they win over Tailwind's layered utilities without `!important`
+ * — exactly what a small-viewport override of a centered modal needs.
+ *
+ * @import'ed by index.css AFTER tailwindcss + theme.css.
+ */
+
+/* ── Locked-left navigation ──────────────────────────────────────────────── */
+/* Below the desktop breakpoint the rail is hidden (the drawer takes over); the
+   hamburger and the compact mobile brand show in the header instead. */
+.wv-shell__sidebar {
+  display: none;
+}
+.wv-shell__hamburger {
+  display: inline-flex;
+}
+.wv-shell__mobile-brand {
+  display: flex;
+}
+
+@media (min-width: 1024px) {
+  /* The rail is permanently visible from 1024px up... */
+  .wv-shell__sidebar {
+    display: flex;
+  }
+  /* ...and the mobile affordances disappear (no top-nav, no drawer). */
+  .wv-shell__hamburger {
+    display: none;
+  }
+  .wv-shell__mobile-brand {
+    display: none;
+  }
+  .wv-shell__drawer {
+    display: none;
+  }
+}
+
+/* ── Full-screen modals on small viewports ───────────────────────────────── */
+/* At <=640px the centered dialog goes full-bleed: pinned to the viewport edges,
+   no rounded-panel inset, no translate — comfortable on a phone. Scoped to the
+   dialog content slot so the raised specificity beats the vendored utilities. */
+@media (max-width: 640px) {
+  .wv-modal[data-slot="dialog-content"] {
+    position: fixed;
+    inset: 0;
+    top: 0;
+    left: 0;
+    width: 100%;
+    max-width: 100%;
+    height: 100%;
+    max-height: 100dvh;
+    transform: none;
+    border-radius: 0;
+  }
+}
+
+/* ── Touch targets ───────────────────────────────────────────────────────── */
+/* Any control tagged .wv-touch clears the 44px minimum in both axes. */
+.wv-touch {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+/* ── Contained table overflow ────────────────────────────────────────────── */
+/* A wide table scrolls sideways INSIDE this region, never spilling to the page.
+   (Below the narrow breakpoint the kit swaps to stacked cards entirely.) */
+.wv-table-region {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
