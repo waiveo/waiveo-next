@@ -27,6 +27,27 @@ func validAutomationRunPayload() json.RawMessage {
 	return json.RawMessage(`{"rule_id":"01J8Z3K4N5P6Q7R8S9T0V1W2YC","rule_revision":4,"trigger_snapshot":{"kind":"state"},"condition_results":[{"passed":true}],"action_outcomes":[{"status":"ok"}],"mode_disposition":"ran","misfire_caught":false}`)
 }
 
+// The following are full, corpus-shaped payloads for the other four registered
+// schemas the relay telemetry channel carries (REL-095) — all valid against
+// their own events/1 field definition (EVT-030/050/060/070) — so a reconstructed
+// envelope carrying each passes events.Validate end to end, exercising that the
+// ingest classes and appends every telemetry schema, not just automation.run.
+func validContentPlayedPayload() json.RawMessage {
+	return json.RawMessage(`{"asset_ref":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85","screen_id":"01J8Z3K4N5P6Q7R8S9T0V1W2ZE","program_revision":"rev-00042","t_start":1752537000000,"t_end":1752537030000,"cause":"scheduled","completion":"completed"}`)
+}
+
+func validEntityStateChangedPayload() json.RawMessage {
+	return json.RawMessage(`{"entity_id":"01J8Z3K4N5P6Q7R8S9T0V1W2Y9","device_id":"01J8Z3K4N5P6Q7R8S9T0V1W2YA","old_state":"idle","new_state":"playing","attribute_change":false}`)
+}
+
+func validDeviceHeartbeatPayload() json.RawMessage {
+	return json.RawMessage(`{"device_id":"01J8Z3K4N5P6Q7R8S9T0V1W2YA","power_state":"on","app_state":"app","now_playing_content_id":null}`)
+}
+
+func validBoxVitalsPayload() json.RawMessage {
+	return json.RawMessage(`{"relay_id":"01J8Z3K4N5P6Q7R8S9T0V1W2ZF","cpu_temp":46.5,"throttled_flags":[],"undervoltage":false,"disk_headroom":2147483648}`)
+}
+
 // seqIDs returns an idSeq minting deterministic, ascending, valid ULIDs (fixture
 // ids, EVT-011 recording order): a fixed 24-char corpus prefix plus a 2-symbol
 // Crockford-base32 counter suffix, so successive ids sort in call order.
@@ -129,6 +150,64 @@ func TestIngest_AppendsValidAutomationRunEnvelopeAndAcks(t *testing.T) {
 	}
 }
 
+// TestIngest_AppendsEveryRelayTelemetrySchema: every registered schema the relay
+// telemetry channel carries (REL-095: automation.run, content.played,
+// entity.state_changed, device.heartbeat, box.vitals) MUST be classed by
+// events.ClassFor and appended, not dropped as EVT-013 for lacking a
+// cost/retention class. buildEnvelope reads ClassFor BEFORE the payload
+// validator, so a schema absent from events' class table is rejected purely for
+// lacking a class — never reaching its (existing, passing) validator — while the
+// ack still reports the seq delivered, silently losing Durable-class
+// content.played/entity.state_changed telemetry with no compiler or test signal
+// (REL-093). This mirrors the REL-090 overflow corpus, whose seq-1002 entry is a
+// content.played record, not a second automation.run.
+func TestIngest_AppendsEveryRelayTelemetrySchema(t *testing.T) {
+	cases := []struct {
+		schema  string
+		payload json.RawMessage
+	}{
+		{telemetry.SchemaAutomationRun, validAutomationRunPayload()},
+		{telemetry.SchemaContentPlayed, validContentPlayedPayload()},
+		{telemetry.SchemaEntityStateChanged, validEntityStateChangedPayload()},
+		{telemetry.SchemaDeviceHeartbeat, validDeviceHeartbeatPayload()},
+		{telemetry.SchemaBoxVitals, validBoxVitalsPayload()},
+	}
+	for _, c := range cases {
+		t.Run(c.schema, func(t *testing.T) {
+			// The channel that carries this schema (REL-095) MUST have a matching
+			// class registered app-side, or ingest drops it as EVT-013.
+			if _, _, ok := events.ClassFor(c.schema); !ok {
+				t.Fatalf("events.ClassFor(%q) must return a class for a relay telemetry schema (REL-095); got ok=false → ingest drops it as EVT-013", c.schema)
+			}
+
+			log := events.NewEventLog(0)
+			h := New(log, siteScope, seqIDs())
+			var logged []string
+			h.(*ingest).logf = func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+
+			ack := postBatch(t, h, pushBatch(telemetry.Entry{Seq: 1, Schema: c.schema, Payload: c.payload}))
+
+			if ack.AckThroughSeq != 1 {
+				t.Fatalf("%s: ack must report the received seq; want 1 got %d", c.schema, ack.AckThroughSeq)
+			}
+			got := log.After("")
+			if len(got) != 1 {
+				t.Fatalf("%s: a valid telemetry record MUST be appended, not dropped (REL-093/EVT-013); want 1 envelope got %d; drop-logs=%v", c.schema, len(got), logged)
+			}
+			env := got[0]
+			if env.Schema != c.schema {
+				t.Fatalf("schema must carry through; want %q got %q", c.schema, env.Schema)
+			}
+			if env.CostClass == "" || env.RetentionClass == "" {
+				t.Fatalf("%s: envelope must carry a non-empty cost/retention class (EVT-010); got cost=%q retention=%q", c.schema, env.CostClass, env.RetentionClass)
+			}
+			if err := events.Validate(env); err != nil {
+				t.Fatalf("%s: the reconstructed envelope must validate (EVT-013); got %v", c.schema, err)
+			}
+		})
+	}
+}
+
 // TestIngest_DropsInvalidPayloadButAcksBatch: a record whose payload fails
 // events.Validate is dropped and logged (EVT-013 — never appended), the batch
 // still succeeds, and the ack advances past the terminally-dropped seq so the
@@ -195,7 +274,12 @@ func TestIngest_AckIsHighestSeqReceived_JumpsMarkedAndSupersededGaps(t *testing.
 	batch := telemetry.PushBatch{
 		Entries: []telemetry.Entry{
 			autoEntry(1001, validAutomationRunPayload()),
-			autoEntry(1002, validAutomationRunPayload()),
+			// seq 1002 is the corpus fixture's REAL content.played entry (not a
+			// second automation.run) — a Durable-class schema (REL-093) the app
+			// MUST class and append. Substituting automation.run here would mask a
+			// missing class table entry that drops content.played as EVT-013 while
+			// this same test's len==2 assertion still passed.
+			{Seq: 1002, Schema: events.SchemaContentPlayed, Payload: validContentPlayedPayload()},
 		},
 		// 980-999 is a loss-marked durable overflow; 1000 is a bare gap — a
 		// latest-only supersession (REL-094), which by design produces no marker.
@@ -211,8 +295,15 @@ func TestIngest_AckIsHighestSeqReceived_JumpsMarkedAndSupersededGaps(t *testing.
 	if ack.AckThroughSeq != 1002 {
 		t.Fatalf("ack must jump the marked+bare gaps to the highest seq received (REL-092); want 1002 got %d", ack.AckThroughSeq)
 	}
-	if got := log.After(""); len(got) != 2 {
+	got := log.After("")
+	if len(got) != 2 {
 		t.Fatalf("both above-the-gap entries must be appended (no silent loss); want 2 got %d", len(got))
+	}
+	// The corpus's seq-1002 entry is content.played — it must actually be the
+	// second appended envelope, not dropped-for-lacking-a-class while the ack
+	// still claims it delivered (REL-093).
+	if got[0].Schema != events.SchemaAutomationRun || got[1].Schema != events.SchemaContentPlayed {
+		t.Fatalf("appended envelopes must carry the corpus schemas in order; got %q then %q", got[0].Schema, got[1].Schema)
 	}
 	wantAcked := []telemetry.SeqRange{{FromSeq: 980, ToSeq: 999}}
 	if !reflect.DeepEqual(ack.LossMarkersAcked, wantAcked) {

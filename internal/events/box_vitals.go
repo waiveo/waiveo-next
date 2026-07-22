@@ -8,6 +8,16 @@ import "encoding/json"
 // throttled_flags MUST be present as an array even when no flag is active —
 // never absent — since a subscriber checks for emptiness, never presence.
 
+// The cost/retention classing for a box.vitals event, co-located with the schema
+// (EVT-070) so class.go indexes it without duplicating the strings. The corpus
+// pins neither; both are operational-telemetry-tier, matching the events1
+// conformance driver's fixture class (box.vitals is a latest-only telemetry
+// schema on the relay channel, REL-094/095).
+const (
+	boxVitalsCostClass      = "telemetry"
+	boxVitalsRetentionClass = "telemetry-standard"
+)
+
 // validateBoxVitals enforces the EVT-070 box.vitals field definition:
 // relay_id is a ULID; cpu_temp is a required number; throttled_flags is a
 // required array of strings (present-even-empty, EVT-071); undervoltage is a

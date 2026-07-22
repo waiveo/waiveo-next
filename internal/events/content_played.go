@@ -9,6 +9,17 @@ import "encoding/json"
 // once t_end is known — this file only validates the payload's shape; when to
 // emit it is a producer-side (schedule/player) concern.
 
+// The default cost/retention classing for a content.played event, sourced here
+// (co-located with the schema, EVT-050) so class.go indexes it without a second
+// copy of the strings. The corpus pins neither for this schema; both are
+// operational-telemetry-tier, matching the events/1 wire-shape examples and the
+// events1 conformance driver's fixture class (content.played is a Durable-class
+// telemetry schema on the relay channel, REL-093/095).
+const (
+	contentPlayedCostClass      = "telemetry"
+	contentPlayedRetentionClass = "telemetry-standard"
+)
+
 // validCauses is the closed EVT-050 content.played.cause enum.
 var validCauses = map[string]struct{}{
 	"scheduled": {},

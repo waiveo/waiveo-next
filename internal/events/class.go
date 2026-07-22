@@ -17,13 +17,22 @@ type schemaClass struct {
 
 // classBySchema maps each registered schema whose class this codebase pins to
 // its {cost_class, retention_class}, sourced from the schema file's own class
-// constants (no second copy of the strings). A registered schema whose producer
-// is not yet wired — and any pack-namespaced schema (EVT-021/022) — is
-// deliberately absent: ClassFor reports ok=false for it, so an ingester
-// drops+logs a record it cannot class rather than minting an envelope with an
-// empty, un-validatable class (EVT-013).
+// constants (no second copy of the strings). It covers exactly the five schemas
+// the relay's telemetry channel carries (relay/1 REL-095) — the ones an ingester
+// (internal/app/eventingest) reconstructs into envelopes — so every telemetry
+// record reaches its payload validator and is classed, never dropped merely for
+// lacking a class. events/1 additionally registers audit.event and
+// variable.changed (EVT-020), but relay/1 does not relay either over this
+// channel, so neither is classed here; any pack-namespaced schema (EVT-021/022)
+// is likewise absent. For an absent schema ClassFor reports ok=false, so an
+// ingester drops+logs a record it cannot class rather than minting an envelope
+// with an empty, un-validatable class (EVT-013).
 var classBySchema = map[string]schemaClass{
-	SchemaAutomationRun: {cost: automationRunCostClass, retention: automationRunRetentionClass},
+	SchemaAutomationRun:      {cost: automationRunCostClass, retention: automationRunRetentionClass},
+	SchemaContentPlayed:      {cost: contentPlayedCostClass, retention: contentPlayedRetentionClass},
+	SchemaEntityStateChanged: {cost: entityStateChangedCostClass, retention: entityStateChangedRetentionClass},
+	SchemaDeviceHeartbeat:    {cost: deviceHeartbeatCostClass, retention: deviceHeartbeatRetentionClass},
+	SchemaBoxVitals:          {cost: boxVitalsCostClass, retention: boxVitalsRetentionClass},
 }
 
 // ClassFor returns the cost_class and retention_class the platform assigns an

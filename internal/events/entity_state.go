@@ -14,6 +14,16 @@ import (
 // it never resolves the entity's device class (that vocabulary check is a
 // producer-side concern).
 
+// The cost/retention classing for an entity.state_changed event, co-located with
+// the schema (EVT-030) so class.go indexes it without duplicating the strings.
+// The values are the ones the events/1 wire-shape example and the events1
+// conformance driver's fixture pin for this schema (a Durable-class telemetry
+// schema on the relay channel, REL-093/095).
+const (
+	entityStateChangedCostClass      = "telemetry"
+	entityStateChangedRetentionClass = "telemetry-standard"
+)
+
 // validateEntityStateChanged enforces the EVT-030 entity.state_changed field
 // definition: entity_id/device_id are ULIDs; old_state/new_state are required
 // strings; attribute_change is a required boolean; and attributes_delta is a

@@ -14,6 +14,16 @@ import "encoding/json"
 // file validates the payload's structural shape only (EVT-060); EVT-061's
 // cross-check is a documented seam, not implemented here.
 
+// The cost/retention classing for a device.heartbeat event, co-located with the
+// schema (EVT-060) so class.go indexes it without duplicating the strings. The
+// corpus pins neither; both are operational-telemetry-tier, matching the events1
+// conformance driver's fixture class (device.heartbeat is a latest-only telemetry
+// schema on the relay channel, REL-094/095).
+const (
+	deviceHeartbeatCostClass      = "telemetry"
+	deviceHeartbeatRetentionClass = "telemetry-standard"
+)
+
 // validateDeviceHeartbeat enforces the EVT-060 device.heartbeat field
 // definition: device_id is a ULID; power_state/app_state are required
 // strings; now_playing_content_id is a required field that is either a
