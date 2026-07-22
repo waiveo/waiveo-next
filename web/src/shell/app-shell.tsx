@@ -2,9 +2,11 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Link, NavLink, Outlet } from "react-router";
 import {
   AudioWaveform,
+  Images,
   LayoutDashboard,
   LayoutTemplate,
   Menu,
+  MonitorPlay,
   Palette,
   PanelLeftClose,
   PanelLeftOpen,
@@ -36,6 +38,8 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
+  { to: "/screens", label: "Screens", icon: MonitorPlay },
+  { to: "/content", label: "Content", icon: Images },
   { to: "/pages", label: "Pages", icon: LayoutTemplate },
   { to: "/design", label: "Design kit", icon: Palette },
 ];
