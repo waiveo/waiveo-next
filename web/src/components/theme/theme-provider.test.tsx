@@ -30,6 +30,15 @@ describe("ThemeProvider + ThemeToggle", () => {
     expect(document.documentElement.getAttribute("data-theme")).toBe("light");
   });
 
+  it("gives the toggle a >=44px touch target (wv-touch) like the rest of the shell chrome", () => {
+    // ThemeToggle sits in the always-visible shell header beside the 44px
+    // hamburger, so it must carry the same wv-touch treatment (size=icon is only
+    // 36px on its own).
+    setup();
+    const toggle = screen.getByRole("button", { name: /switch to .* theme/i });
+    expect(toggle.className).toContain("wv-touch");
+  });
+
   it("flips data-theme and persists to localStorage on toggle", async () => {
     const user = userEvent.setup();
     setup();

@@ -22,6 +22,19 @@ describe("Modal", () => {
     expect(screen.getByRole("button", { name: "Publish" })).toBeInTheDocument();
   });
 
+  it("gives the built-in close (X) button a >=44px touch target (wv-touch)", () => {
+    // On a full-screen mobile modal (<=640px) the X is the only pointer/touch way
+    // to dismiss besides the footer, so it must clear the 44px touch-target
+    // contract like every other shell/drawer control.
+    render(
+      <Modal title="Rename screen" open>
+        <input aria-label="New name" />
+      </Modal>,
+    );
+    const close = screen.getByRole("button", { name: "Close" });
+    expect(close.className).toContain("wv-touch");
+  });
+
   it("opens from a trigger and traps focus inside the dialog", async () => {
     const user = userEvent.setup();
     render(

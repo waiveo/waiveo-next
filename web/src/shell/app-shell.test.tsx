@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { render, screen, within, waitFor } from "@testing-library/react";
+import { render, screen, within, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { ThemeProvider } from "@/components/theme/theme-provider";
@@ -128,6 +128,45 @@ describe("AppShell — locked-left responsive shell", () => {
     await user.click(screen.getByRole("button", { name: /open navigation menu/i }));
     const drawer = await screen.findByRole("dialog");
     await user.click(within(drawer).getByRole("link", { name: "Design kit" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("closes the drawer when the viewport crosses into the locked-left desktop breakpoint", async () => {
+    // A drawer left open while the viewport grows past 1024px would keep Radix's
+    // modal side-effects (aria-hiding the app, scroll lock) engaged against a
+    // CSS-hidden dialog. The shell must drop the open state on the crossing.
+    const user = userEvent.setup();
+
+    // Controllable matchMedia: starts narrow, remembers change listeners so the
+    // test can drive a real breakpoint crossing (the default stub is inert).
+    const listeners = new Set<() => void>();
+    let desktop = false;
+    window.matchMedia = ((query: string) => {
+      const isMinWidth = /min-width/.test(query);
+      return {
+        get matches() {
+          return isMinWidth ? desktop : !desktop;
+        },
+        media: query,
+        onchange: null,
+        addEventListener: (_: string, cb: () => void) => listeners.add(cb),
+        removeEventListener: (_: string, cb: () => void) => listeners.delete(cb),
+        addListener: (cb: () => void) => listeners.add(cb),
+        removeListener: (cb: () => void) => listeners.delete(cb),
+        dispatchEvent: () => false,
+      } as unknown as MediaQueryList;
+    }) as unknown as typeof window.matchMedia;
+
+    renderShell();
+    await user.click(screen.getByRole("button", { name: /open navigation menu/i }));
+    await screen.findByRole("dialog");
+
+    // Grow past the desktop breakpoint and notify subscribers, as the browser would.
+    act(() => {
+      desktop = true;
+      listeners.forEach((cb) => cb());
+    });
+
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 });

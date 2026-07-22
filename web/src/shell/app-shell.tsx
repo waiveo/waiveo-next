@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link, NavLink, Outlet } from "react-router";
 import {
   AudioWaveform,
@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { Button, KitIcon, NavDrawer } from "@/components/kit";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
+import { useMediaQuery } from "@/lib/use-media-query";
 import { cn } from "@/lib/utils";
 
 /**
@@ -94,6 +95,18 @@ function ShellNav({
 export function AppShell({ children }: { children?: ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+
+  // The desktop/mobile split is CSS-only: at >=1024px responsive.css hides the
+  // drawer (`wv-shell__drawer`) and shows the permanent rail. But Radix Dialog's
+  // modal side-effects (aria-hiding the rest of the app, scroll lock, focus trap)
+  // key off `open`, not CSS visibility — so a drawer left open while the viewport
+  // grows past the breakpoint would keep the now-visible rail + content
+  // aria-hidden and body scroll locked against a display:none dialog. Reset the
+  // open state on the crossing so the drawer's modality can never outlive it.
+  const isDesktop = useMediaQuery("(min-width: 1024px)");
+  useEffect(() => {
+    if (isDesktop) setDrawerOpen(false);
+  }, [isDesktop]);
 
   return (
     <div
