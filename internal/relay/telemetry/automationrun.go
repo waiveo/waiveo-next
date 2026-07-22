@@ -57,9 +57,9 @@ func AutomationRunEntry(d engine.RunDisposition, atMs int64) (schema string, pay
 	p := automationRunPayload{
 		RuleID:           d.RuleID,
 		RuleRevision:     d.RuleRevision,
-		TriggerSnapshot:  d.TriggerSnapshot,
-		ConditionResults: d.ConditionResults,
-		ActionOutcomes:   d.ActionOutcomes,
+		TriggerSnapshot:  orEmptyObject(d.TriggerSnapshot),
+		ConditionResults: orEmptyArray(d.ConditionResults),
+		ActionOutcomes:   orEmptyArray(d.ActionOutcomes),
 		ModeDisposition:  modeDispositionOf(d.Disposition),
 		MisfireCaught:    d.MisfireCaught,
 	}
@@ -71,6 +71,34 @@ func AutomationRunEntry(d engine.RunDisposition, atMs int64) (schema string, pay
 		panic("telemetry: marshaling automation.run payload: " + err.Error())
 	}
 	return SchemaAutomationRun, json.RawMessage(raw), d.RuleID
+}
+
+// orEmptyObject returns raw when it carries a value, or an empty JSON object when
+// it is absent. orEmptyArray does the same with an empty JSON array. They keep
+// the emitted automation.run payload valid against events/1 EVT-040 — which
+// requires trigger_snapshot to be an OBJECT and condition_results/action_outcomes
+// to be ARRAYS (an empty array is explicitly valid) — for a firing whose
+// RunDisposition does not yet carry the trigger/condition/action snapshot. A bare
+// mode-evaluation firing leaves those three context fields nil (rules/1: the
+// live-evaluation snapshot is assembled by a later part of the engine), and a nil
+// json.RawMessage marshals to `null`, which is NOT a valid object/array and would
+// be dropped at the app ingest's EVT-013 gate (never reaching a subscriber). This
+// is not re-mapping the schema: it fills the mandatory EVT-040 fields with their
+// valid-empty form so the mapper always emits all seven mandatory fields validly,
+// and it is transparent once the engine populates real context — a non-empty
+// snapshot is carried through byte-for-byte unchanged (REL-090/095).
+func orEmptyObject(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return json.RawMessage("{}")
+	}
+	return raw
+}
+
+func orEmptyArray(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return json.RawMessage("[]")
+	}
+	return raw
 }
 
 // modeDispositionOf maps an engine.Disposition to its EVT-041 mode_disposition

@@ -71,7 +71,7 @@ const (
 // rules_minor_version per REL-062.
 const (
 	demoRuleEntityID  = "01J8Z3K4N5P6Q7R8S9T0V1SCRN"
-	demoRuleID        = "01J8Z3K4N5P6Q7R8S9T0V1AUTO"
+	demoRuleID        = "01J8Z3K4N5P6Q7R8S9T0V1AT01"
 	rulesMinorVersion = "1.0"
 )
 

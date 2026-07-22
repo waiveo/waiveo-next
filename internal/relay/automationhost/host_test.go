@@ -23,7 +23,7 @@ const (
 // "when the screen turns on, launch the dev channel on it" — a state trigger
 // (to:["on"]) driving a device_command launch, classified edge-class.
 const demoEdgeRule = `{
-	"id": "01J8Z3K4N5P6Q7R8S9T0V1AUTO",
+	"id": "01J8Z3K4N5P6Q7R8S9T0V1AT01",
 	"mode": "single",
 	"triggers": [{"type":"state","entity_id":"` + testScreenEntity + `","to":["on"]}],
 	"conditions": [],

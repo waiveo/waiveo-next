@@ -62,7 +62,7 @@ func TestAutomationDrivesDeviceEndToEnd(t *testing.T) {
 	e := engine.New(reg, clk, sink, nil)
 
 	rule := `{
-		"id": "01J8Z3K4N5P6Q7R8S9T0V1AUTO",
+		"id": "01J8Z3K4N5P6Q7R8S9T0V1AT01",
 		"mode": "single",
 		"triggers": [{"type":"state","entity_id":"` + screenEntity + `","to":["on"]}],
 		"conditions": [],

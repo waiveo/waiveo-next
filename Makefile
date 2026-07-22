@@ -28,7 +28,11 @@ dev-up: dev-down
 	@go build -o $(FEEDER_BIN) ./cmd/waiveo-feeder
 	@go build -o $(RELAY_BIN) ./cmd/waiveo-relay
 	@{ $(FEEDER_BIN) >$(RUNDIR)/feeder.log 2>&1 & echo $$! > $(RUNDIR)/feeder.pid; }
-	@{ $(RELAY_BIN) >$(RUNDIR)/relay.log 2>&1 & echo $$! > $(RUNDIR)/relay.pid; }
+	@# WAIVEO_RELAY_DEMO_OBSERVE drives one synthetic screen-on at boot so the demo
+	@# edge rule fires end to end (its automation.run rides the telemetry channel to
+	@# the app event log) — the live input the observability probe reads back. The
+	@# real device-state source is deferred hardware, so the dev stack synthesizes it.
+	@{ WAIVEO_RELAY_DEMO_OBSERVE=1 $(RELAY_BIN) >$(RUNDIR)/relay.log 2>&1 & echo $$! > $(RUNDIR)/relay.pid; }
 
 smoke:
 	@bash scripts/dev-smoke.sh

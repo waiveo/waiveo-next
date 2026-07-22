@@ -50,6 +50,8 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/schedulehost"
 	"github.com/maaxton/waiveo-next/internal/relay/telemetry"
 	"github.com/maaxton/waiveo-next/internal/relay/telemetryhttp"
+	"github.com/maaxton/waiveo-next/internal/rules/registry"
+	"github.com/maaxton/waiveo-next/internal/rules/state"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
@@ -207,6 +209,23 @@ func main() {
 	host, err := bootAutomationStack(store, relayID, applied, site, deviceRegistry)
 	if err != nil {
 		log.Fatalf("waiveo-relay: boot automation stack: %v", err)
+	}
+
+	// Dev-stack observability demo (gated): the real device-state INPUT that fires
+	// an edge rule is hardware polling/ECP, which is deferred, so the live binary
+	// otherwise loads the rules and stands ready without ever firing one. When
+	// WAIVEO_RELAY_DEMO_OBSERVE is set (the make-dev harness sets it), drive ONE
+	// synthetic screen-on observation through the loaded engine so the demo edge
+	// rule fires end to end — recording an automation.run into the durable
+	// telemetry buffer, which the flush loop below pushes to the app peer. This is
+	// exactly the SyntheticSource "dev-stack demo" path automationhost documents;
+	// it makes the observability loop (fired rule -> telemetry -> app event log ->
+	// /events/v1) demonstrable live without hardware. A failure is non-fatal — the
+	// relay serves regardless.
+	if os.Getenv("WAIVEO_RELAY_DEMO_OBSERVE") != "" {
+		if err := fireDemoObservation(host, deviceRegistry); err != nil {
+			log.Printf("waiveo-relay: demo observation did not fire (%v); observability demo skipped", err)
+		}
 	}
 
 	// Own the connection-layer clock-trust state (internal/relay/clocktrust,
@@ -493,6 +512,37 @@ func bootAutomationStack(store *identity.Store, relayID identity.RelayIdentity, 
 	}
 	log.Printf("waiveo-relay automation engine loaded: %d edge rule(s); device plane + durable telemetry ready", host.EdgeRuleCount())
 	return host, nil
+}
+
+// demoObserveEntityID is the entity the dev-stack observability demo drives a
+// synthetic screen-on transition on. It MUST match the seeded demo edge rule's
+// trigger entity (the app store's seedRuleEntityID) so the rising edge actually
+// matches the loaded rule and fires it; any other entity would observe a
+// transition the rule does not trigger on, producing no automation.run.
+const demoObserveEntityID = "01J8Z3K4N5P6Q7R8S9T0V1SCRN"
+
+// fireDemoObservation drives one synthetic "off -> on" transition on
+// demoObserveEntityID through the loaded engine (RUL-300/330), firing the demo
+// edge rule and recording its automation.run into the durable telemetry buffer
+// (REL-090/093). It first establishes a durable "off" baseline (no transition, no
+// firing) then the rising edge that fires. dc is the relay's canonical
+// device-class registry, adapted to the rules/1 registry surface only to classify
+// the observation's (absent) attribute changes — a pure state transition consults
+// no attribute declarations, so the media-player class resolves trivially. It
+// returns the host's drive error, if any (never fatal to the caller).
+func fireDemoObservation(host *automationhost.Host, dc deviceclass.Registry) error {
+	reg := registry.FromDeviceClass(dc, registry.Overlay{})
+	off := state.Entity{ID: demoObserveEntityID, DeviceClass: "media-player", State: "off"}
+	on := state.Entity{ID: demoObserveEntityID, DeviceClass: "media-player", State: "on"}
+	src := automationhost.NewSyntheticSource(
+		state.NewObservation(reg, off, off),
+		state.NewObservation(reg, off, on),
+	)
+	if err := host.Run(context.Background(), src); err != nil {
+		return err
+	}
+	log.Printf("waiveo-relay observability demo: synthetic screen-on fired the edge rule; automation.run buffered for telemetry push (REL-090)")
+	return nil
 }
 
 // scheduleResolverTickInterval is the cadence the running relay re-resolves

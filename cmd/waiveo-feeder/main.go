@@ -23,7 +23,10 @@ import (
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/app/api"
+	"github.com/maaxton/waiveo-next/internal/app/eventingest"
+	"github.com/maaxton/waiveo-next/internal/app/eventsse"
 	"github.com/maaxton/waiveo-next/internal/app/store"
+	"github.com/maaxton/waiveo-next/internal/events"
 	"github.com/maaxton/waiveo-next/internal/feeder/enroll"
 	"github.com/maaxton/waiveo-next/internal/feeder/grant"
 	"github.com/maaxton/waiveo-next/internal/feeder/origin"
@@ -32,8 +35,17 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/hello"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/signhash"
+	"github.com/maaxton/waiveo-next/internal/shared/ulid"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
+
+// feederEventLogRetention bounds the app-side live-event log (events/1): the most
+// recent telemetry-derived events retained for a resuming/backlog-reading
+// /events/v1 subscriber. It is generous for the low automation.run rate a
+// first-photon dev stack produces; the specific horizon is a platform-config
+// concern events/1 leaves open (EVT-153/154), so it is a named constant here, not
+// a contract value.
+const feederEventLogRetention = 4096
 
 // firstPhotonSite is the app peer's authoritative site_binding for Wave-1
 // first-photon (relay/1 REL-036): the site a relay is bound to, and that
@@ -193,10 +205,31 @@ func main() {
 	idem := apihttp.NewIdempotencyStore(nowMs, 0)
 	apiHandler := api.New(st, idem, nowMs, contentStore, contentBaseURL)
 
+	// The live observability plane (events/1 EVT-010/013/100/130-144): ONE shared
+	// event log the relay-telemetry ingest writes into and the /events/v1 SSE
+	// server streams from, bridged by an eventsse.Hub — the concurrent-safe
+	// live-transport boundary the EventLog delegates its synchronization to. The
+	// relay pushes each fired rule's automation.run to /telemetry/v1/push;
+	// eventingest reconstructs a full events/1 envelope (origin: relay, the site
+	// scope_node, a recording-order id, the schema's cost/retention class),
+	// events.Validates it (EVT-013), and appends it THROUGH the Hub, whose Append
+	// wakes every connected /events/v1 subscriber so a telemetry-derived event
+	// pushes live (REL-090/092 -> EVT-010/100). firstPhotonSite.ScopeNode is the
+	// authoritative site node stamped onto every ingested event (the REL-090 wire
+	// record carries no per-record scope); ulid.New mints each event's
+	// recording-order id (EVT-011). Auth is DEFERRED for this dev-lab POC — the
+	// ingest + SSE endpoints are unauthenticated (EVT-110-114 is the documented
+	// seam), and the relay pushes over the existing feeder TLS.
+	eventLog := events.NewEventLog(feederEventLogRetention)
+	eventHub := eventsse.NewHub(eventLog)
+	telemetryIngest := eventingest.New(eventHub, firstPhotonSite.ScopeNode, ulid.New)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthz)
 	mux.Handle("/content/", contentStore.Handler())
 	mux.Handle("/api/v1/", apiHandler)
+	mux.Handle("/telemetry/v1/push", telemetryIngest)
+	mux.Handle("/events/v1", eventsse.New(eventHub))
 	enrollSrv.Register(mux)
 	helloSrv.Register(mux)
 

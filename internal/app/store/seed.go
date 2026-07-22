@@ -33,7 +33,7 @@ const (
 	// demoRuleID (internal/feeder/snapshot's former demoEdgeRuleJSON constant),
 	// so a fresh make dev still loads the identical edge rule — now an authored,
 	// editable store row rather than a wire-level constant (REL-062).
-	seedDemoAutomationID = "01J8Z3K4N5P6Q7R8S9T0V1AUTO"
+	seedDemoAutomationID = "01J8Z3K4N5P6Q7R8S9T0V1AT01"
 
 	seedSiteTZ   = "America/Chicago"
 	seedSiteLat  = 41.8781

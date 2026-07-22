@@ -66,3 +66,11 @@ else
   echo "AUTOMATION AUTHORING FAIL: relay loaded no store-authored edge rules (count='${AUTHORED_COUNT:-none}') in $RELAY_LOG" >&2
   exit 1
 fi
+
+# 7. Observability: the relay fired the store-authored edge rule (a synthetic
+# screen-on at boot) and its automation.run rode the telemetry channel to the
+# app's event log; an SSE probe reads it back off /events/v1 — the live
+# observability loop (fired rule -> relay telemetry -> app ingest -> live SSE
+# subscriber) end to end over real HTTP. The probe prints OBSERVABILITY OK, or
+# exits non-zero.
+go run ./scripts/observabilityprobe
