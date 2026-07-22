@@ -12,6 +12,9 @@
 export { KitIcon } from "./kit-icon";
 export type { KitIconProps } from "./kit-icon";
 
+export { Button } from "./button";
+export type { ButtonProps } from "./button";
+
 export { StatusBadge } from "./status-badge";
 export type { StatusBadgeProps, Status } from "./status-badge";
 

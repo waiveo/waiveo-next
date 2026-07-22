@@ -22,6 +22,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import {
+  Button,
   DataTable,
   EmptyState,
   FormField,
@@ -93,48 +94,9 @@ const SECTIONS: Section[] = [
 ];
 
 // ── Gallery-local presentation ──────────────────────────────────────────────
-// The route may not import the vendored base directly (the kit is the only
-// sanctioned surface). These tiny helpers paint on-brand controls straight from
-// the HORIZON tokens — the primary button carries `--grad-accent` (a sanctioned
-// gradient surface), everything else stays flat on the content layer.
-
-type DemoButtonVariant = "primary" | "secondary" | "outline" | "ghost" | "destructive" | "link";
-
-const BUTTON_VARIANT: Record<DemoButtonVariant, string> = {
-  primary:
-    "bg-[image:var(--grad-accent)] text-[color:var(--grad-accent-fg)] shadow-[0_1px_2px_rgba(12,10,24,0.34),0_6px_20px_rgba(188,42,136,0.20)] hover:brightness-[1.06] active:brightness-95",
-  secondary: "border border-border bg-secondary text-secondary-foreground hover:bg-accent",
-  outline: "border border-border bg-transparent text-foreground hover:bg-accent",
-  ghost: "bg-transparent text-foreground hover:bg-accent",
-  destructive: "bg-destructive text-destructive-foreground hover:brightness-95",
-  link: "bg-transparent text-[color:var(--wv-accent-text)] underline-offset-4 hover:underline",
-};
-
-interface DemoButtonProps {
-  variant?: DemoButtonVariant;
-  onClick?: () => void;
-  icon?: LucideIcon;
-  children: ReactNode;
-  className?: string;
-  type?: "button" | "submit";
-}
-
-function DemoButton({ variant = "primary", onClick, icon, children, className, type = "button" }: DemoButtonProps) {
-  return (
-    <button
-      type={type}
-      onClick={onClick}
-      className={cn(
-        "inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-btn px-4 text-[13px] font-medium tracking-[0.01em] outline-none transition-[background-color,background-image,box-shadow,color,filter] duration-150 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-        BUTTON_VARIANT[variant],
-        className,
-      )}
-    >
-      {icon ? <KitIcon icon={icon} decorative className="size-4" /> : null}
-      {children}
-    </button>
-  );
-}
+// Buttons come from the kit (@/components/kit) like every other primitive — the
+// route never re-implements the vendored control, so the gallery's `default`
+// button is byte-for-byte the one every page renders.
 
 // Native form control styling, straight from the tokens (radius 8, hairline
 // border, focus ring) — used inside FormField, whose render-prop wires the a11y.
@@ -346,16 +308,16 @@ function ActionsSection() {
       intro="One primary action per view carries --grad-accent (the hotter Afterglow ramp, ink holding AA across the whole gradient). Every other variant stays flat."
     >
       <div className="flex flex-wrap items-center gap-3 rounded-card border border-border bg-card p-5 wv-elevation">
-        <DemoButton variant="primary" icon={Upload}>
+        <Button variant="default" icon={Upload}>
           Publish schedule
-        </DemoButton>
-        <DemoButton variant="secondary">Save draft</DemoButton>
-        <DemoButton variant="outline">Preview</DemoButton>
-        <DemoButton variant="ghost">Cancel</DemoButton>
-        <DemoButton variant="destructive" icon={Trash2}>
+        </Button>
+        <Button variant="secondary">Save draft</Button>
+        <Button variant="outline">Preview</Button>
+        <Button variant="ghost">Cancel</Button>
+        <Button variant="destructive" icon={Trash2}>
           Remove screen
-        </DemoButton>
-        <DemoButton variant="link">Learn more</DemoButton>
+        </Button>
+        <Button variant="link">Learn more</Button>
       </div>
     </SectionShell>
   );
@@ -450,9 +412,9 @@ function DataSection() {
     >
       <div className="flex flex-col gap-3">
         <div className="flex items-center gap-3">
-          <DemoButton variant="outline" onClick={() => setLoading((v) => !v)}>
+          <Button variant="outline" onClick={() => setLoading((v) => !v)}>
             {loading ? "Show data" : "Show loading"}
-          </DemoButton>
+          </Button>
         </div>
         <DataTable
           columns={screenColumns}
@@ -532,10 +494,10 @@ function FormsSection() {
         </FormField>
 
         <div className="flex gap-3">
-          <DemoButton variant="primary" type="submit">
+          <Button variant="default" type="submit">
             Save screen
-          </DemoButton>
-          <DemoButton variant="ghost">Cancel</DemoButton>
+          </Button>
+          <Button variant="ghost">Cancel</Button>
         </div>
       </form>
     </SectionShell>
@@ -554,8 +516,8 @@ function OverlaysSection() {
         <Modal
           title="Publish schedule"
           description="This goes live on every governed screen."
-          trigger={<DemoButton variant="primary" icon={Upload}>Publish schedule</DemoButton>}
-          footer={<DemoButton variant="primary">Publish now</DemoButton>}
+          trigger={<Button variant="default" icon={Upload}>Publish schedule</Button>}
+          footer={<Button variant="default">Publish now</Button>}
         >
           <p className="text-sm text-muted-foreground">
             Review the changes before publishing. The sky turns on the screens the moment you
@@ -569,19 +531,19 @@ function OverlaysSection() {
           confirmLabel="Remove screen"
           destructive
           onConfirm={() => toast.success("The Hangar TV removed")}
-          trigger={<DemoButton variant="destructive" icon={Trash2}>Remove screen</DemoButton>}
+          trigger={<Button variant="destructive" icon={Trash2}>Remove screen</Button>}
         />
 
-        <DemoButton variant="secondary" icon={Bell} onClick={() => toast("The Hangar TV dropped off 2m ago. Retrying every 30s.")}>
+        <Button variant="secondary" icon={Bell} onClick={() => toast("The Hangar TV dropped off 2m ago. Retrying every 30s.")}>
           Notify
-        </DemoButton>
-        <DemoButton
+        </Button>
+        <Button
           variant="outline"
           icon={Megaphone}
           onClick={() => toast.success("Sunrise daypart is on air")}
         >
           Success toast
-        </DemoButton>
+        </Button>
       </div>
     </SectionShell>
   );
@@ -601,9 +563,9 @@ function EmptySection() {
           title="Nothing scheduled for this daypart yet"
           description="Add content to light it up. The screen stays on the flat idle frame until then."
           action={
-            <DemoButton variant="primary" icon={Plus}>
+            <Button variant="default" icon={Plus}>
               Add content
-            </DemoButton>
+            </Button>
           }
         />
       </div>
@@ -666,9 +628,9 @@ export default function DesignRoute() {
               actions={
                 <>
                   <ThemeToggle />
-                  <DemoButton variant="primary" icon={Upload}>
+                  <Button variant="default" icon={Upload}>
                     Publish
-                  </DemoButton>
+                  </Button>
                 </>
               }
             />

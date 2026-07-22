@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, Link } from "react-router";
+import { Button } from "@/components/kit";
 import { ThemeProvider } from "@/components/theme/theme-provider";
 import DesignRoute from "@/routes/design/design-route";
 
@@ -11,12 +12,9 @@ function Home() {
     <main className="mx-auto flex min-h-screen max-w-xl flex-col items-center justify-center gap-4 px-6 text-center">
       <h1 className="font-display text-[32px] font-semibold tracking-[-0.015em]">Waiveo</h1>
       <p className="text-muted-foreground">The console is warming up.</p>
-      <Link
-        to="/design"
-        className="inline-flex h-9 items-center rounded-btn bg-[image:var(--grad-accent)] px-4 text-[13px] font-medium text-[color:var(--grad-accent-fg)] outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-      >
-        Open the design gallery
-      </Link>
+      <Button asChild>
+        <Link to="/design">Open the design gallery</Link>
+      </Button>
     </main>
   );
 }
