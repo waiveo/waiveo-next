@@ -24,4 +24,20 @@ describe("StatCard", () => {
     expect(container.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
     expect(screen.getByText("2 fired today")).toBeInTheDocument();
   });
+
+  it("hardens against horizontal overflow when squeezed into a narrow grid cell", () => {
+    // Regression: as a grid item StatCard defaults to min-width:auto, so its
+    // min-content (the uppercase label word) can outgrow a narrow track and leak
+    // page-level horizontal scroll (jsdom can't compute this — the class contract
+    // is the guard). The card must be able to shrink (min-w-0), the label must be
+    // able to break/shrink rather than push out, and the icon must not be crushed.
+    const { container } = render(<StatCard label="Automations" value={3} icon={Activity} />);
+    const card = container.querySelector('[data-slot="stat-card"]') as HTMLElement;
+    expect(card.className).toContain("min-w-0");
+    const label = screen.getByText("Automations");
+    expect(label.className).toContain("min-w-0");
+    expect(label.className).toContain("break-words");
+    const icon = container.querySelector("svg") as SVGElement;
+    expect(icon.getAttribute("class")).toContain("shrink-0");
+  });
 });

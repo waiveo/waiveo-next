@@ -115,6 +115,17 @@ describe.each(THEMES)("the design gallery under the %s theme", (theme) => {
     expect(dialog.contains(document.activeElement)).toBe(true);
   });
 
+  it("gives the per-row action a >=44px touch target (wv-touch)", () => {
+    // Regression: the gallery is the living reference every console/extension page
+    // renders through, so its own per-row action button must honour the >=44px
+    // touch-target contract. A bare `size-8` (32px) button fails it; the guard is
+    // the `wv-touch` class (min-width/height 44px), asserted here since jsdom does
+    // not compute box sizes.
+    renderGallery(theme);
+    const action = screen.getByRole("button", { name: "Actions for The Hangar TV" });
+    expect(action.className).toContain("wv-touch");
+  });
+
   it("highlights a nav item as the current section", async () => {
     const user = userEvent.setup();
     renderGallery(theme);

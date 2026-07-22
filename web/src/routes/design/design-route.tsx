@@ -425,7 +425,7 @@ function DataSection() {
               type="button"
               aria-label={`Actions for ${row.name}`}
               onClick={() => toast(`Opened actions for ${row.name}`)}
-              className="inline-flex size-8 items-center justify-center rounded-input text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+              className="wv-touch inline-flex items-center justify-center rounded-input text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
             >
               <KitIcon icon={MoreHorizontal} decorative className="size-4" />
             </button>

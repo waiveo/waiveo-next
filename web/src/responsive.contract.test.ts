@@ -31,6 +31,17 @@ describe("responsive CSS contract", () => {
     expect(css).toMatch(/\.wv-modal[^{]*\{[^}]*max-width:\s*100%/);
   });
 
+  it("neutralizes the base centering offset with `translate: none`, not only `transform`", () => {
+    // The base DialogContent centers via Tailwind's -translate-x-1/2/-translate-y-1/2,
+    // which Tailwind v4 compiles to the STANDALONE `translate` property (not
+    // `transform`). Resetting only `transform` leaves `translate: -50% -50%` in
+    // force, shifting the "full-bleed" panel off-screen by half its own size. The
+    // override must reset the `translate` property itself.
+    expect(css).toMatch(/@media \(max-width: 640px\) \{[^@]*\.wv-modal[^{]*\{[^}]*translate:\s*none/);
+    // `transform` stays reset too (belt and braces for any transform-based utility).
+    expect(css).toMatch(/@media \(max-width: 640px\) \{[^@]*\.wv-modal[^{]*\{[^}]*transform:\s*none/);
+  });
+
   it("guarantees >=44px touch targets", () => {
     expect(css).toMatch(/\.wv-touch\s*\{[^}]*min-(height|block-size):\s*44px/);
     expect(css).toMatch(/\.wv-touch\s*\{[^}]*min-(width|inline-size):\s*44px/);

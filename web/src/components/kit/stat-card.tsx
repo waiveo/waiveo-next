@@ -22,14 +22,18 @@ export interface StatCardProps {
 
 export function StatCard({ label, value, icon: Icon, hint, className }: StatCardProps) {
   return (
-    <Card data-slot="stat-card" className={cn("gap-0 p-5", className)}>
-      <div className="flex items-center justify-between gap-3">
-        <span className="text-[11px] font-semibold tracking-[0.10em] text-muted-foreground uppercase">
+    <Card data-slot="stat-card" className={cn("min-w-0 gap-0 p-5", className)}>
+      <div className="flex min-w-0 items-center justify-between gap-3">
+        <span className="min-w-0 text-[11px] font-semibold tracking-[0.10em] text-muted-foreground uppercase break-words">
           {label}
         </span>
-        {Icon ? <KitIcon icon={Icon} decorative className="size-4 text-muted-foreground" /> : null}
+        {Icon ? (
+          <KitIcon icon={Icon} decorative className="size-4 shrink-0 text-muted-foreground" />
+        ) : null}
       </div>
-      <div className="mt-2 font-mono text-[32px] leading-none font-semibold wv-tnum">{value}</div>
+      <div className="mt-2 min-w-0 font-mono text-[32px] leading-none font-semibold break-words wv-tnum">
+        {value}
+      </div>
       {hint ? <div className="mt-2 text-sm text-muted-foreground">{hint}</div> : null}
     </Card>
   );

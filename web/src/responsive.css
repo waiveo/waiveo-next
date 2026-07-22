@@ -49,7 +49,13 @@
 /* ── Full-screen modals on small viewports ───────────────────────────────── */
 /* At <=640px the centered dialog goes full-bleed: pinned to the viewport edges,
    no rounded-panel inset, no translate — comfortable on a phone. Scoped to the
-   dialog content slot so the raised specificity beats the vendored utilities. */
+   dialog content slot so the raised specificity beats the vendored utilities.
+   The base Dialog centers with Tailwind's `-translate-x-1/2 -translate-y-1/2`
+   utilities, which Tailwind v4 compiles to the STANDALONE `translate` property
+   (CSS Transforms Level 2) — NOT `transform`. The two compose independently, so
+   cancelling the offset here means resetting `translate` itself; `scale`/`rotate`
+   are reset alongside for completeness so no individual transform property can
+   survive to nudge the full-bleed panel off the viewport. */
 @media (max-width: 640px) {
   .wv-modal[data-slot="dialog-content"] {
     position: fixed;
@@ -60,7 +66,10 @@
     max-width: 100%;
     height: 100%;
     max-height: 100dvh;
+    translate: none;
     transform: none;
+    scale: none;
+    rotate: none;
     border-radius: 0;
   }
 }
