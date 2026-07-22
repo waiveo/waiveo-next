@@ -2,7 +2,9 @@ package tlsboot
 
 import (
 	"bytes"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -233,8 +235,16 @@ func TestCommitmentMultiAnchorRoundTrip(t *testing.T) {
 
 // TestGenSelfSignedProducesParsableCertAndKey confirms GenSelfSigned's
 // output actually parses as a real X.509 certificate and a real PKCS8
-// ed25519 private key, and that the key pairs with the cert's public key —
+// ECDSA P-256 private key, and that the key pairs with the cert's public key —
 // not merely that the PEM bytes are non-empty and mention the right words.
+//
+// The leaf is ECDSA P-256, NOT Ed25519: this is the browser-serving cert
+// (feeder over HTTPS, relay bootstrap for the OOB-pinned player fetch), and
+// real browsers plus macOS LibreSSL reject an Ed25519 server leaf outright.
+// The commitment scheme this package implements is a key pin over the leaf's
+// SubjectPublicKeyInfo, algorithm-agnostic, so the curve change does not touch
+// any pin — the same-key/different-cert and MITM-substitution guards above and
+// the committed golden vector (a fixed Ed25519 cert) still hold unchanged.
 func TestGenSelfSignedProducesParsableCertAndKey(t *testing.T) {
 	certPEM, keyPEM := GenSelfSigned()
 
@@ -256,17 +266,20 @@ func TestGenSelfSignedProducesParsableCertAndKey(t *testing.T) {
 		t.Fatalf("x509.ParsePKCS8PrivateKey(keyBlock.Bytes) error: %v", err)
 	}
 
-	priv, ok := key.(ed25519.PrivateKey)
+	priv, ok := key.(*ecdsa.PrivateKey)
 	if !ok {
-		t.Fatalf("parsed private key is %T, want ed25519.PrivateKey", key)
+		t.Fatalf("parsed private key is %T, want *ecdsa.PrivateKey", key)
 	}
 
-	certPub, ok := cert.PublicKey.(ed25519.PublicKey)
+	certPub, ok := cert.PublicKey.(*ecdsa.PublicKey)
 	if !ok {
-		t.Fatalf("cert.PublicKey is %T, want ed25519.PublicKey", cert.PublicKey)
+		t.Fatalf("cert.PublicKey is %T, want *ecdsa.PublicKey (real browsers reject Ed25519 server certs)", cert.PublicKey)
+	}
+	if certPub.Curve != elliptic.P256() {
+		t.Fatalf("cert public key curve = %v, want P-256", certPub.Curve.Params().Name)
 	}
 
-	if !priv.Public().(ed25519.PublicKey).Equal(certPub) {
+	if !priv.PublicKey.Equal(certPub) {
 		t.Fatal("parsed private key's public half does not match the cert's public key")
 	}
 }

@@ -1,13 +1,89 @@
 package signing
 
 import (
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
+	"crypto/tls"
+	"crypto/x509"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// TestServingLeafIsECDSAP256 is the browser-compatibility guard: the TLS leaf
+// the feeder actually serves (assembled in cmd/waiveo-feeder exactly the way
+// this test assembles it, tls.X509KeyPair(id.TLSCertPEM(), id.TLSKeyPEM()))
+// MUST carry an ECDSA P-256 public key, not Ed25519. Real browsers
+// (Chrome/Safari/Firefox) and macOS LibreSSL curl reject an Ed25519 server
+// leaf outright ("peer doesn't support any of the certificate's signature
+// algorithms"), so the embedded-SPA browser->feeder HTTPS path is unreachable
+// with an Ed25519 leaf even though Go/Node clients accept it and keep every
+// automated check green. ECDSA P-256 is universally supported by every TLS
+// client that matters here.
+//
+// This asserts ONLY the TLS-serving leaf's algorithm. The feeder's Ed25519
+// desired-state SIGNING identity is a separate key and MUST stay Ed25519 —
+// TestSigningIdentityStaysEd25519 locks that half so this change never bleeds
+// into the enrollment-anchored trust the relay verifies snapshots against.
+func TestServingLeafIsECDSAP256(t *testing.T) {
+	id, err := LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadOrCreate error: %v", err)
+	}
+
+	// Assemble the tls.Certificate exactly as cmd/waiveo-feeder/main.go does,
+	// so this tests the leaf the listener would actually present.
+	cert, err := tls.X509KeyPair(id.TLSCertPEM(), id.TLSKeyPEM())
+	if err != nil {
+		t.Fatalf("tls.X509KeyPair(TLSCertPEM, TLSKeyPEM): %v", err)
+	}
+	if len(cert.Certificate) == 0 {
+		t.Fatal("assembled tls.Certificate has no leaf DER")
+	}
+
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		t.Fatalf("parse serving leaf: %v", err)
+	}
+
+	pub, ok := leaf.PublicKey.(*ecdsa.PublicKey)
+	if !ok {
+		t.Fatalf("serving leaf public key is %T, want *ecdsa.PublicKey (real browsers reject Ed25519 server certs)", leaf.PublicKey)
+	}
+	if pub.Curve != elliptic.P256() {
+		t.Fatalf("serving leaf curve = %v, want P-256", pub.Curve.Params().Name)
+	}
+
+	// The private half must be an ECDSA P-256 key too, and pair with the leaf.
+	priv, ok := cert.PrivateKey.(*ecdsa.PrivateKey)
+	if !ok {
+		t.Fatalf("serving private key is %T, want *ecdsa.PrivateKey", cert.PrivateKey)
+	}
+	if !priv.PublicKey.Equal(pub) {
+		t.Fatal("serving private key does not pair with the leaf's public key")
+	}
+}
+
+// TestSigningIdentityStaysEd25519 locks the other half of the split-algorithm
+// invariant: the desired-state SIGNING key stays Ed25519 even as the TLS leaf
+// moves to ECDSA. A relay learns this signing key at enrollment and verifies
+// every pulled snapshot/lease against it (#28 enrollment-anchored trust), so
+// its algorithm must not drift with the TLS-serving change.
+func TestSigningIdentityStaysEd25519(t *testing.T) {
+	id, err := LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadOrCreate error: %v", err)
+	}
+	if _, ok := id.SigningPriv().Public().(ed25519.PublicKey); !ok {
+		t.Fatalf("signing public half is %T, want ed25519.PublicKey", id.SigningPriv().Public())
+	}
+	if len(id.SigningPub()) != ed25519.PublicKeySize {
+		t.Fatalf("SigningPub() length = %d, want %d (ed25519)", len(id.SigningPub()), ed25519.PublicKeySize)
+	}
+}
 
 // TestLoadOrCreateGeneratesKey confirms LoadOrCreate on an empty dir
 // generates a fresh, well-formed ed25519 signing key with no error.

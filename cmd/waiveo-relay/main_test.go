@@ -34,7 +34,6 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/telemetryhttp"
 	"github.com/maaxton/waiveo-next/internal/rules/registry"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
-	"github.com/maaxton/waiveo-next/internal/shared/tlsboot"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
@@ -192,22 +191,35 @@ func TestLoadConfigRejectsNonIntegerPairPort(t *testing.T) {
 // internal/relay/schedulehost's own test helper of the same name (this
 // codebase's established cross-package pattern for small test collaborators,
 // e.g. demoScreenScopeNodeID's own doc comment there).
+//
+// The cert is minted ed25519 directly (not via tlsboot.GenSelfSigned, which now
+// serves the browser-facing ECDSA P-256 leaf): the relay's lease-signing
+// identity — the cert whose public key a player verifies Leases against
+// (PLY-090) — is ed25519, a distinct key from the feeder's TLS serving leaf.
 func newTestPlayerServer(t *testing.T) (*playerserver.Server, ed25519.PrivateKey, string) {
 	t.Helper()
-	certPEM, keyPEM := tlsboot.GenSelfSigned()
-
-	block, _ := pem.Decode(keyPEM)
-	if block == nil || block.Type != "PRIVATE KEY" {
-		t.Fatalf("GenSelfSigned key did not PEM-decode to a PRIVATE KEY block")
-	}
-	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("x509.ParsePKCS8PrivateKey: %v", err)
+		t.Fatalf("ed25519.GenerateKey: %v", err)
 	}
-	priv, ok := key.(ed25519.PrivateKey)
-	if !ok {
-		t.Fatalf("parsed key is %T, want ed25519.PrivateKey", key)
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		t.Fatalf("generate serial: %v", err)
 	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: "waiveo-relay"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().AddDate(10, 0, 0),
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+	}
+	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, priv)
+	if err != nil {
+		t.Fatalf("x509.CreateCertificate: %v", err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
 
 	const grantID = "grant-schedresolver-test-01"
 	grant := wire.PairingGrant{

@@ -3,9 +3,12 @@ package playerserver
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"math/big"
 	"net/http"
 	"os"
 	"strings"
@@ -13,46 +16,45 @@ import (
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/shared/signhash"
-	"github.com/maaxton/waiveo-next/internal/shared/tlsboot"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
-// testRelaySigningIdentity builds a fresh self-signed relay cert (PEM+DER,
-// matching testRelayCert) alongside the ed25519.PrivateKey of that same
-// keypair — the key SetProgram signs a Lease with, and the cert's own
-// public key (extracted below by callers) is what PLY-090 requires a
-// Lease's signature to verify against.
+// testRelaySigningIdentity builds a fresh self-signed relay cert (PEM+DER)
+// alongside the ed25519.PrivateKey of that same keypair — the key SetProgram
+// signs a Lease with, and the cert's own public key (returned to callers) is
+// what PLY-090 requires a Lease's signature to verify against.
+//
+// This mints an ed25519 identity directly rather than reusing
+// tlsboot.GenSelfSigned: GenSelfSigned now serves the browser-facing ECDSA
+// P-256 leaf, but the relay's enrollment/lease-signing identity — the cert
+// presented here, whose public key a player verifies Leases against — is
+// ed25519 (leases are ed25519-signed via signhash). The two are distinct keys;
+// this helper models the ed25519 signing identity, not the TLS serving leaf.
 func testRelaySigningIdentity(t *testing.T) (certPEM, certDER []byte, priv ed25519.PrivateKey, pub ed25519.PublicKey) {
 	t.Helper()
-	certPEM, keyPEM := tlsboot.GenSelfSigned()
-
-	certBlock, _ := pem.Decode(certPEM)
-	if certBlock == nil || certBlock.Type != "CERTIFICATE" {
-		t.Fatalf("GenSelfSigned() cert did not PEM-decode to a CERTIFICATE block")
-	}
-	certDER = certBlock.Bytes
-
-	keyBlock, _ := pem.Decode(keyPEM)
-	if keyBlock == nil || keyBlock.Type != "PRIVATE KEY" {
-		t.Fatalf("GenSelfSigned() key did not PEM-decode to a PRIVATE KEY block")
-	}
-	key, err := x509.ParsePKCS8PrivateKey(keyBlock.Bytes)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("x509.ParsePKCS8PrivateKey: %v", err)
-	}
-	priv, ok := key.(ed25519.PrivateKey)
-	if !ok {
-		t.Fatalf("parsed key is %T, want ed25519.PrivateKey", key)
+		t.Fatalf("ed25519.GenerateKey: %v", err)
 	}
 
-	cert, err := x509.ParseCertificate(certDER)
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
-		t.Fatalf("x509.ParseCertificate: %v", err)
+		t.Fatalf("generate serial: %v", err)
 	}
-	pub, ok = cert.PublicKey.(ed25519.PublicKey)
-	if !ok {
-		t.Fatalf("cert public key is %T, want ed25519.PublicKey", cert.PublicKey)
+	tmpl := &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: "waiveo-relay"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().AddDate(10, 0, 0),
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
 	}
+	certDER, err = x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, priv)
+	if err != nil {
+		t.Fatalf("x509.CreateCertificate: %v", err)
+	}
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
 
 	return certPEM, certDER, priv, pub
 }

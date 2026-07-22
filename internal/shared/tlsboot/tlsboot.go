@@ -41,15 +41,16 @@
 // header-free, 64-column base64) byte-for-byte, which is a pointless and
 // fragile cross-implementation dependency.
 //
-// Stdlib-only (crypto/ed25519, crypto/rand, crypto/sha256, crypto/subtle,
-// crypto/x509, encoding/pem, math/big) — no protocol framing or
+// Stdlib-only (crypto/ecdsa, crypto/elliptic, crypto/rand, crypto/sha256,
+// crypto/subtle, crypto/x509, encoding/pem, math/big) — no protocol framing or
 // pairing-code transport lives here, only the primitives. Callers that need
 // a tls.Certificate for serving assemble one from GenSelfSigned's PEM
 // output via crypto/tls's X509KeyPair.
 package tlsboot
 
 import (
-	"crypto/ed25519"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -65,19 +66,34 @@ import (
 // (>=10 bytes), leaving margin without lengthening the pairing code much.
 const commitmentBytes = 16
 
-// GenSelfSigned generates a fresh ed25519 key pair and a self-signed TLS
-// leaf certificate over it, returning both as PEM. This is the relay's
-// bootstrap identity: it has no CA, so the cert is self-signed, and its
+// GenSelfSigned generates a fresh ECDSA P-256 key pair and a self-signed TLS
+// leaf certificate over it, returning both as PEM. This is the relay/feeder's
+// bootstrap serving identity: it has no CA, so the cert is self-signed, and its
 // authenticity is instead established out-of-band via the SPKI commitment
-// (Commitment / CommitmentForCertDER) carried in the pairing code.
+// (Commitment / CommitmentForCertDER) carried in the pairing code, or (for the
+// feeder's app peer) via the SPKI the relay pins at enrollment.
+//
+// The key is ECDSA P-256, NOT Ed25519, for browser compatibility: Chrome,
+// Safari, Firefox and macOS's LibreSSL curl all reject an Ed25519 server leaf
+// during the handshake ("peer doesn't support any of the certificate's
+// signature algorithms"), which made the embedded-SPA browser->feeder HTTPS
+// path unreachable even though Go and Node TLS clients accepted it. P-256 is
+// universally supported. This changes only the serving-cert algorithm; the
+// feeder's Ed25519 desired-state SIGNING identity and the relay's Ed25519
+// enrollment identity are separate keys and stay Ed25519. Because the pairing
+// commitment and the relay's enrollment trust_pin are key pins over the leaf's
+// SubjectPublicKeyInfo — algorithm-agnostic and recorded fresh over whatever
+// cert is actually served — the curve change is safe by design and touches no
+// verification path.
 func GenSelfSigned() (certPEM, keyPEM []byte) {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		// crypto/rand.Reader failing is a fatal environment problem
 		// (entropy source unavailable); there is no meaningful error
 		// to propagate to callers.
 		panic("tlsboot: GenSelfSigned: generate key: " + err.Error())
 	}
+	pub := &priv.PublicKey
 
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
