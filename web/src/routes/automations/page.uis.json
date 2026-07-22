@@ -56,5 +56,17 @@
         }
       ]
     }
+  },
+  "newAction": {
+    "verb": "create",
+    "target": "automations",
+    "itemDefault": {
+      "name": "New automation",
+      "mode": "single",
+      "max": null,
+      "triggers": [{ "type": "state", "entity_id": "", "to": ["on"] }],
+      "conditions": [],
+      "actions": [{ "type": "device_command", "entity_id": "", "command": "launch", "params": {} }]
+    }
   }
 }

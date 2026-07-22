@@ -168,6 +168,42 @@ describe("Automations — edit / enable / delete over api/1", () => {
     );
   });
 
+  // Regression (Fix 1): a 412 on the enable/disable toggle must surface the same
+  // standard conflict UX as the name-save and rule-save flows — a persistent
+  // role=status review banner alongside the toast, never only a fading toast, and
+  // never a silent retry-overwrite (exactly one write attempt).
+  it("on a toggle 412, surfaces the persistent review banner (not only a toast) and re-reads — never a silent overwrite", async () => {
+    const changed = automation({ id: ULID_A, name: "Open the doors", enabled: true, revision: 9 });
+    const state = { rows: [automation({ id: ULID_A, name: "Open the doors", enabled: true, revision: 5 })] };
+    let patchCount = 0;
+    server.use(
+      http.get("*/api/v1/scope-nodes", () => page([scopeNode({ id: ULID_ROOT, kind: "site", name: "HQ" })])),
+      http.get("*/api/v1/automations", () => page(state.rows)),
+      http.get("*/api/v1/automations/:id", () => ok(changed, { revision: 9 })),
+      http.patch("*/api/v1/automations/:id", () => {
+        patchCount += 1;
+        state.rows = [changed];
+        return problem(412, "REVISION_CONFLICT", "The resource was modified concurrently.", {
+          current_revision: 9,
+        });
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderRoute();
+    await screen.findByRole("table", { name: "Automations" });
+    await user.click(screen.getByText("Open the doors").closest("tr") as HTMLElement);
+    await user.click(await screen.findByRole("button", { name: "Disable" }));
+
+    // A persistent review banner is rendered (role=status), the same as the two
+    // sibling mutations — not just a toast that fades.
+    const banner = await screen.findByText(/enabled state was changed elsewhere/i);
+    expect(banner).toBeInTheDocument();
+    expect(banner).toHaveAttribute("role", "status");
+    // Exactly one write was attempted; the client re-read for review, never retried.
+    expect(patchCount).toBe(1);
+  });
+
   it("deletes an automation under its If-Match", async () => {
     const state = { rows: [automation({ id: ULID_A, name: "Open the doors", revision: 2 })] };
     let ifMatch: string | null = null;
@@ -386,30 +422,23 @@ describe("Automations — the rule-body code editor (grammar-gap)", () => {
   });
 });
 
-describe("Automations — create with a compiler-error body", () => {
-  it("surfaces a server 422 compile error on the create form's body field, then creates on a valid rule", async () => {
+describe("Automations — create via the dogfood newAction", () => {
+  // Creation lives in the ui-schema `newAction` verb + a first-party scope picker —
+  // the SAME minimal pattern Screens and Schedules use — not a separate first-party
+  // create modal that duplicates the ui-schema-expressible Name/scope fields. The
+  // "New" affordance the renderer paints from `newAction` POSTs the starter rule
+  // placed on the chosen scope, and the operator authors the real rule in the detail
+  // pane (where a 422 compile error surfaces on the body field, proven above).
+  it("the renderer's New verb creates from the starter template on the chosen scope, carrying an Idempotency-Key", async () => {
     const state = { rows: [] as unknown[] };
     let idempotencyKey: string | null = null;
-    let postCount = 0;
+    let postedBody: Record<string, unknown> = {};
     server.use(
       http.get("*/api/v1/scope-nodes", () => page([scopeNode({ id: ULID_ROOT, kind: "site", name: "HQ" })])),
       http.get("*/api/v1/automations", () => page(state.rows)),
       http.post("*/api/v1/automations", async ({ request }) => {
-        postCount += 1;
         idempotencyKey = request.headers.get("Idempotency-Key");
-        const body = (await request.json()) as { actions?: { type?: string }[] };
-        const badAction = body.actions?.[0]?.type === "not_a_real_action";
-        if (badAction) {
-          return problem(422, "VALIDATION_FAILED", "The rule did not compile.", {
-            errors: [
-              {
-                field: "actions[0].type",
-                code: "UNKNOWN_VOCABULARY_MEMBER",
-                message: '"not_a_real_action" is not a member of the closed action vocabulary',
-              },
-            ],
-          });
-        }
+        postedBody = (await request.json()) as Record<string, unknown>;
         const created = automation({ id: ULID_B, name: "New automation", revision: 1 });
         state.rows = [created];
         return ok(created, { status: 201, revision: 1 });
@@ -419,42 +448,56 @@ describe("Automations — create with a compiler-error body", () => {
     const user = userEvent.setup();
     renderRoute();
     await screen.findByRole("table", { name: "Automations" });
-    await user.click(screen.getByRole("button", { name: "New automation" }));
-
-    const dialog = await screen.findByRole("dialog");
-    // The create Name field is marked required (its label carries the decorative
-    // asterisk), so match by substring.
-    await user.type(within(dialog).getByLabelText("Name", { exact: false }), "New automation");
-    const bodyEditor = within(dialog).getByLabelText("Rule body (JSON)");
-
-    // First attempt: a rule that does not compile → the compiler message lands on
-    // the body field (not only a toast), the modal stays open, the input is intact.
-    await user.clear(bodyEditor);
-    await user.click(bodyEditor);
-    await user.paste(JSON.stringify({ mode: "single", triggers: [{ type: "state", entity_id: ULID_B, to: ["on"] }], conditions: [], actions: [{ type: "not_a_real_action" }] }));
-    await user.click(within(dialog).getByRole("button", { name: "Create automation" }));
-
-    expect(
-      await within(dialog).findByText('"not_a_real_action" is not a member of the closed action vocabulary'),
-    ).toBeInTheDocument();
-    // The modal stays open for the operator to fix the body (a compile failure is
-    // not a conflict), and the name they entered is intact.
-    expect((within(dialog).getByLabelText("Name", { exact: false }) as HTMLInputElement).value).toBe(
-      "New automation",
-    );
-
-    // Fix the body → the create succeeds, carries an Idempotency-Key, and the fresh
-    // row appears in the list.
-    await user.clear(bodyEditor);
-    await user.click(bodyEditor);
-    await user.paste(JSON.stringify({ mode: "single", triggers: [{ type: "state", entity_id: ULID_B, to: ["on"] }], conditions: [], actions: [{ type: "device_command", entity_id: ULID_B, command: "launch", params: {} }] }));
-    await user.click(within(dialog).getByRole("button", { name: "Create automation" }));
+    await user.click(await screen.findByRole("button", { name: "New" }));
 
     await waitFor(() =>
       expect(within(screen.getByRole("table", { name: "Automations" })).getByText("New automation")).toBeInTheDocument(),
     );
-    expect(postCount).toBe(2);
+    // The create carried an Idempotency-Key (the client owns that convention) and
+    // placed the starter rule on the chosen scope node — no separate create modal.
     expect(idempotencyKey).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(postedBody.scope_node).toBe(ULID_ROOT);
+    expect(postedBody.name).toBe("New automation");
+    expect(postedBody.mode).toBe("single");
+    expect(Array.isArray(postedBody.triggers)).toBe(true);
+    expect(Array.isArray(postedBody.actions)).toBe(true);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  // Regression (Fix 2): with an automation selected, the dogfooded detail pane
+  // already mounts a "Name" text-input and the "Rule body (JSON)" editor. Creation
+  // must NOT open a second first-party modal duplicating those — there was a bug
+  // where "New automation" opened a modal with its own Name input + Rule-body
+  // editor, putting two elements of each accessible name on the page at once.
+  it("opening New with an automation selected does not duplicate the Name/Rule-body affordances (no create modal)", async () => {
+    const state = { rows: [automation({ id: ULID_A, name: "Open the doors" })] as unknown[] };
+    server.use(
+      http.get("*/api/v1/scope-nodes", () => page([scopeNode({ id: ULID_ROOT, kind: "site", name: "HQ" })])),
+      http.get("*/api/v1/automations", () => page(state.rows)),
+      http.post("*/api/v1/automations", async () => {
+        const created = automation({ id: ULID_B, name: "New automation", revision: 1 });
+        state.rows = [automation({ id: ULID_A, name: "Open the doors" }), created];
+        return ok(created, { status: 201, revision: 1 });
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderRoute();
+    await screen.findByRole("table", { name: "Automations" });
+    await user.click(screen.getByText("Open the doors").closest("tr") as HTMLElement);
+    // Baseline: exactly one Name field and one Rule-body editor (the detail pane).
+    expect(screen.getAllByLabelText("Rule body (JSON)")).toHaveLength(1);
+    expect(screen.getAllByRole("textbox", { name: "Name" })).toHaveLength(1);
+
+    await user.click(screen.getByRole("button", { name: "New" }));
+    await waitFor(() =>
+      expect(within(screen.getByRole("table", { name: "Automations" })).getByText("New automation")).toBeInTheDocument(),
+    );
+    // No second Name/Rule-body surface, and no create dialog — creation is the
+    // ui-schema newAction verb, not a duplicating first-party modal.
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getAllByLabelText("Rule body (JSON)")).toHaveLength(1);
+    expect(screen.getAllByRole("textbox", { name: "Name" })).toHaveLength(1);
   });
 });
 

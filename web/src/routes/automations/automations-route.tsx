@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Play, Power, Plus, Save } from "lucide-react";
+import { Play, Power, Save } from "lucide-react";
 import { PageRenderer, type ActionHandler } from "@/renderer";
 import {
   Button,
   FormField,
-  Modal,
   PageHeader,
   StatusBadge,
   Toaster,
@@ -33,10 +32,13 @@ import automationsPageDoc from "./page.uis.json";
  * the mode and the enabled state) rendered through the SAME PageRenderer an
  * extension page takes, plus the three sanctioned first-party affordances the
  * grammar genuinely lacks. This file is the host seam: it feeds the live
- * automations in as the page's bound data, wires the dogfood verbs (submit=save
- * name, delete) onto the typed api/1 client, and hosts the first-party controls
- * beneath the renderer for the selected automation — Run, enable/disable, and the
- * raw rule-body code editor — plus the create modal.
+ * automations in as the page's bound data, wires the dogfood verbs (create=New,
+ * submit=save name, delete) onto the typed api/1 client, and hosts the first-party
+ * controls beneath the renderer for the selected automation — Run, enable/disable,
+ * and the raw rule-body code editor. Creation is dogfooded: the document's
+ * `newAction` verb creates the automation from a starter template placed on the
+ * scope chosen by a first-party target picker (the same grammar gap Screens and
+ * Schedules host), and the operator authors the real rule in the detail pane.
  *
  * Every mutation applies the conventions the client owns: creates carry an
  * Idempotency-Key; edits/deletes carry the If-Match derived from the record's
@@ -64,22 +66,6 @@ const messages: Record<string, string> = {
   "msg:auto.detail.save": "Save changes",
   "msg:auto.detail.delete": "Delete automation",
 };
-
-/** The rule-body template a brand-new automation starts from — the rules/1 rule
- * vocabulary (mode/max/triggers/conditions/actions) the operator fills in. The
- * compile-gate rejects it until the entity refs are real, and that rejection
- * surfaces on the body field, so an empty-ref template is a safe, editable start. */
-const NEW_RULE_TEMPLATE = JSON.stringify(
-  {
-    mode: "single",
-    max: null,
-    triggers: [{ type: "state", entity_id: "", to: ["on"] }],
-    conditions: [],
-    actions: [{ type: "device_command", entity_id: "", command: "launch", params: {} }],
-  },
-  null,
-  2,
-);
 
 /** A run's mode-evaluation disposition (rules/1 RunDisposition) → a StatusBadge
  * tone. `ran` is the live/started outcome (the ok/green lane, reserved for it);
@@ -178,15 +164,20 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
   const [disposition, setDisposition] = useState<AutomationRunResult | null>(null);
   const [running, setRunning] = useState(false);
   const [togglingEnabled, setTogglingEnabled] = useState(false);
+  // The persistent 412 review state for the enable/disable toggle — its own third
+  // conflict flag alongside the name form's (conflictReview) and the rule's
+  // (ruleConflict), so a toggle conflict surfaces the standard toast + re-read +
+  // review banner rather than only a fading toast.
+  const [enableConflict, setEnableConflict] = useState(false);
 
-  // First-party create modal state.
-  const [createOpen, setCreateOpen] = useState(false);
-  const [createName, setCreateName] = useState("");
-  const [createScopeId, setCreateScopeId] = useState("");
-  const [createBody, setCreateBody] = useState(NEW_RULE_TEMPLATE);
-  const [createNameError, setCreateNameError] = useState<string | null>(null);
-  const [createBodyError, setCreateBodyError] = useState<string | null>(null);
-  const [createBusy, setCreateBusy] = useState(false);
+  // The scope node the next "New" places an automation on; defaults to the first
+  // candidate and is chosen explicitly via the first-party picker when the org has
+  // more than one node. A ref lets the (stable) create handler read the live
+  // choice without being rebuilt on every picker change.
+  const [targetScopeId, setTargetScopeId] = useState<string | null>(null);
+  const activeScope = targetScopeId ?? scopeNodes[0]?.id ?? null;
+  const activeScopeRef = useRef<string | null>(activeScope);
+  activeScopeRef.current = activeScope;
 
   const load = useCallback(async () => {
     try {
@@ -245,10 +236,51 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
     setFieldErrors({});
     setConflictReview(false);
     setRuleConflict(false);
+    setEnableConflict(false);
   }, []);
 
   const handler: ActionHandler = useMemo(
     () => ({
+      // "New": create an automation from the document's starter itemDefault, placed
+      // on the chosen scope node, then reload so the fresh row is selectable and its
+      // rule is authored in the detail pane (the same idiom Screens/Schedules use).
+      // An automation MUST have a scope_node the newAction itemDefault can't carry,
+      // so with no candidate node there is nothing to place it on — say so plainly
+      // rather than POST a body the server would reject. The create carries an
+      // Idempotency-Key (the client owns that convention).
+      create: async (_target, itemDefault) => {
+        setConflictReview(false);
+        setRuleConflict(false);
+        setEnableConflict(false);
+        const scope = activeScopeRef.current;
+        if (!scope) {
+          toast.error("Add a site before creating an automation — an automation is placed on a scope node.");
+          return;
+        }
+        const rule = ruleUpdateFrom(itemDefault) ?? {};
+        const body: AutomationCreate = {
+          name: typeof itemDefault.name === "string" ? itemDefault.name : "New automation",
+          scope_node: scope,
+          enabled: true,
+          mode: (rule.mode ?? "single") as AutomationCreate["mode"],
+          triggers: (rule.triggers ?? []) as AutomationCreate["triggers"],
+          actions: (rule.actions ?? []) as AutomationCreate["actions"],
+          ...(rule.max !== undefined ? { max: rule.max } : {}),
+          ...(rule.conditions !== undefined ? { conditions: rule.conditions } : {}),
+        };
+        try {
+          const created = await client.automations.create(body);
+          toast.success(`Added ${created.data.name}`);
+          await reload();
+        } catch (err) {
+          const message = compileMessageOf(err);
+          if (message) {
+            toast.error(`Couldn't create the automation: ${message}`);
+          } else {
+            reportProblem("Couldn't create the automation", err);
+          }
+        }
+      },
       // "Save changes": persist the edited name under its If-Match (the standard
       // optimistic-concurrency flow); a 412 re-reads and surfaces the current state
       // for review, a 422's field errors land on the FormField.
@@ -319,6 +351,7 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
   const toggleEnabled = useCallback(async () => {
     if (!selected) return;
     const wasEnabled = selected.enabled;
+    setEnableConflict(false);
     setTogglingEnabled(true);
     try {
       const outcome = await updateWithReview(
@@ -328,7 +361,12 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
         etagForRevision(selected.revision),
       );
       if (outcome.status === "conflict") {
+        // The standard conflict UX, same as the name-save and rule-save flows: a
+        // toast, the re-read current state (reload re-seeds the badge), AND a
+        // persistent review banner — never a silent retry-overwrite. The selection
+        // is preserved across the remount so the review state survives the reload.
         toast.error("This automation changed elsewhere. Review it and try again.");
+        setEnableConflict(true);
       } else {
         toast.success(wasEnabled ? "Disabled automation" : "Enabled automation");
       }
@@ -378,70 +416,6 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
     }
   }, [client, selected, ruleDraft, reload]);
 
-  // ── The create modal ───────────────────────────────────────────────────────
-
-  const openCreate = useCallback(() => {
-    setCreateName("");
-    setCreateScopeId(scopeNodes[0]?.id ?? "");
-    setCreateBody(NEW_RULE_TEMPLATE);
-    setCreateNameError(null);
-    setCreateBodyError(null);
-    setCreateOpen(true);
-  }, [scopeNodes]);
-
-  const submitCreate = useCallback(async () => {
-    setCreateNameError(null);
-    setCreateBodyError(null);
-    let invalid = false;
-    if (!createName.trim()) {
-      setCreateNameError("Give the automation a name.");
-      invalid = true;
-    }
-    if (!createScopeId) {
-      toast.error("Add a site before creating an automation — an automation is placed on a scope node.");
-      return;
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(createBody);
-    } catch (e) {
-      setCreateBodyError(`The rule isn't valid JSON: ${(e as Error).message}`);
-      invalid = true;
-    }
-    if (invalid) return;
-    const rule = ruleUpdateFrom(parsed);
-    if (!rule) {
-      setCreateBodyError("The rule must be a JSON object with the rule's mode / triggers / conditions / actions.");
-      return;
-    }
-    const body: AutomationCreate = {
-      name: createName.trim(),
-      scope_node: createScopeId,
-      enabled: true,
-      mode: (rule.mode ?? "single") as AutomationCreate["mode"],
-      triggers: (rule.triggers ?? []) as AutomationCreate["triggers"],
-      actions: (rule.actions ?? []) as AutomationCreate["actions"],
-      ...(rule.max !== undefined ? { max: rule.max } : {}),
-      ...(rule.conditions !== undefined ? { conditions: rule.conditions } : {}),
-    };
-    setCreateBusy(true);
-    try {
-      const created = await client.automations.create(body);
-      toast.success(`Added ${created.data.name}`);
-      setCreateOpen(false);
-      await reload();
-    } catch (err) {
-      const message = compileMessageOf(err);
-      if (message) {
-        setCreateBodyError(message);
-      } else {
-        reportProblem("Couldn't create the automation", err);
-      }
-    } finally {
-      setCreateBusy(false);
-    }
-  }, [client, createName, createScopeId, createBody, reload]);
-
   const editorClasses =
     "wv-touch min-h-[11rem] w-full min-w-0 rounded-input border border-border bg-[color:var(--wv-surface-2)] px-3 py-2 font-mono text-[13px] leading-relaxed text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
@@ -452,17 +426,39 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
           variant="hero"
           title="Automations"
           description="Author the fleet's rules — when a screen turns on, run a playlist; on a schedule, power a display. Listed and edited through the same declarative page any extension renders through; the rule itself is authored as JSON."
-          actions={
-            <Button icon={Plus} className="wv-touch" onClick={openCreate} disabled={automations === null}>
-              New automation
-            </Button>
-          }
         />
 
         {loadError ? (
           <p role="alert" className="text-sm text-[color:var(--wv-err)]">
             Couldn't load automations — {loadError}
           </p>
+        ) : null}
+
+        {/* grammar-gap: an automation's create needs a scope_node the list-detail
+            newAction cannot carry (like a screen's parent or a schedule's node), and
+            it is fixed after create — so when the org spans more than one node the
+            operator MUST pick where a new automation lands. A first-party target
+            picker until the grammar grows a create-form with a placement selector;
+            the New button itself is the dogfooded newAction verb. */}
+        {scopeNodes.length > 1 ? (
+          <div className="max-w-sm">
+            <FormField label="Add new automations on">
+              {(field) => (
+                <select
+                  {...field}
+                  className="wv-touch flex min-h-[44px] w-full min-w-0 rounded-input border border-border bg-transparent px-3 py-1 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  value={activeScope ?? ""}
+                  onChange={(e) => setTargetScopeId(e.target.value)}
+                >
+                  {scopeNodes.map((n) => (
+                    <option key={n.id} value={n.id}>
+                      {n.name}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </FormField>
+          </div>
         ) : null}
 
         {conflictReview ? (
@@ -543,6 +539,16 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
               </div>
             </div>
 
+            {enableConflict ? (
+              <p
+                role="status"
+                className="rounded-card border border-[color:var(--wv-warn)] bg-[color:var(--wv-warn-bg)] p-3 text-sm text-[color:var(--wv-warn)]"
+              >
+                This automation's enabled state was changed elsewhere. The current state is shown above — review
+                it, then toggle again to apply your change.
+              </p>
+            ) : null}
+
             {ruleConflict ? (
               <p
                 role="status"
@@ -578,73 +584,6 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
           </section>
         ) : null}
       </div>
-
-      <Modal
-        open={createOpen}
-        onOpenChange={setCreateOpen}
-        size="lg"
-        title="New automation"
-        description="Name the automation, place it on a scope node, and author its rule."
-        footer={
-          <div className="flex justify-end gap-3">
-            <Button variant="ghost" className="wv-touch" onClick={() => setCreateOpen(false)}>
-              Cancel
-            </Button>
-            <Button className="wv-touch" disabled={createBusy} onClick={() => void submitCreate()}>
-              Create automation
-            </Button>
-          </div>
-        }
-      >
-        <div className="flex flex-col gap-5">
-          <FormField label="Name" required {...(createNameError ? { error: createNameError } : {})}>
-            {(field) => (
-              <input
-                {...field}
-                type="text"
-                value={createName}
-                onChange={(e) => setCreateName(e.target.value)}
-                className="wv-touch flex min-h-[44px] w-full min-w-0 rounded-input border border-border bg-transparent px-3 py-1 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              />
-            )}
-          </FormField>
-
-          <FormField label="Placed on">
-            {(field) => (
-              <select
-                {...field}
-                className="wv-touch flex min-h-[44px] w-full min-w-0 rounded-input border border-border bg-transparent px-3 py-1 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                value={createScopeId}
-                onChange={(e) => setCreateScopeId(e.target.value)}
-              >
-                {scopeNodes.length === 0 ? <option value="">No scope nodes — add a site first</option> : null}
-                {scopeNodes.map((n) => (
-                  <option key={n.id} value={n.id}>
-                    {n.name}
-                  </option>
-                ))}
-              </select>
-            )}
-          </FormField>
-
-          <FormField
-            label="Rule body (JSON)"
-            help="The rules/1 rule — mode, triggers, conditions, and actions. The compiler validates it on create."
-            {...(createBodyError ? { error: createBodyError } : {})}
-          >
-            {(field) => (
-              <textarea
-                {...field}
-                value={createBody}
-                onChange={(e) => setCreateBody(e.target.value)}
-                spellCheck={false}
-                rows={12}
-                className={editorClasses}
-              />
-            )}
-          </FormField>
-        </div>
-      </Modal>
 
       <Toaster />
     </div>
