@@ -59,10 +59,13 @@ web-check:
 
 # Production build into web/dist, then refresh the embedded copy the feeder
 # serves from (internal/app/webui/dist) so a subsequent `make dev` / feeder build
-# embeds the real SPA. The committed placeholder index.html is what keeps
-# `go build ./...` green when this has not been run.
+# embeds the real SPA. The built output is git-ignored; the committed `.gitkeep`
+# sentinel (recreated below after the copy wipes it) is what keeps
+# `//go:embed all:dist` compiling — and the Go-string placeholder shell is what
+# keeps `go build ./...` serving a valid shell — when this has not been run.
 web-build:
 	@npm --prefix $(WEB_DIR) run build
 	@rm -rf $(WEB_EMBED_DIR)
 	@mkdir -p $(WEB_EMBED_DIR)
 	@cp -R $(WEB_DIR)/dist/. $(WEB_EMBED_DIR)/
+	@touch $(WEB_EMBED_DIR)/.gitkeep

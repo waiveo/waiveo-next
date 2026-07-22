@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
 
 // TestHandlerServesShellAtRoot proves the embedded SPA is reachable: GET / returns
@@ -49,6 +50,34 @@ func TestHandlerIndexFallback(t *testing.T) {
 	body, _ := io.ReadAll(rec.Result().Body)
 	if !strings.Contains(string(body), `<div id="root"`) {
 		t.Errorf("index fallback body missing the SPA root marker; got:\n%s", body)
+	}
+}
+
+// TestServeIndexPlaceholderFallback proves the embed-absent path: when the embed
+// carries no built index.html (only the .gitkeep sentinel a fresh, un-built
+// checkout ships), the handler serves the Go-string placeholder shell — a 200
+// text/html body carrying BOTH the <title>Waiveo</title> marker the web-UI smoke
+// asserts and the SPA root marker — rather than a 500. This is deterministic
+// regardless of whether a local `make web-build` has populated the real embed.
+func TestServeIndexPlaceholderFallback(t *testing.T) {
+	empty := fstest.MapFS{".gitkeep": {Data: []byte{}}}
+	h := &spaHandler{fsys: empty, files: http.FileServerFS(empty)}
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET / status = %d, want 200 (placeholder fallback)", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("GET / content-type = %q, want text/html", ct)
+	}
+	body, _ := io.ReadAll(rec.Result().Body)
+	if !strings.Contains(string(body), "<title>Waiveo</title>") {
+		t.Errorf("placeholder shell missing the <title>Waiveo</title> marker; got:\n%s", body)
+	}
+	if !strings.Contains(string(body), `<div id="root"`) {
+		t.Errorf("placeholder shell missing the SPA root marker; got:\n%s", body)
 	}
 }
 

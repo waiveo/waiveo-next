@@ -2,10 +2,14 @@
 // binary so the single-binary deployment carries its own web UI — no separate
 // asset directory to ship or mount.
 //
-// The embedded tree is internal/app/webui/dist. A committed placeholder
-// index.html lives there so `go build ./...` is always green without a Node
-// build; `make web-build` populates it with the real Vite output (built into
-// web/dist, then copied here) before the feeder is compiled for a real run.
+// The embedded tree is internal/app/webui/dist. Only a committed `.gitkeep`
+// sentinel is tracked there (the built index.html + assets are git-ignored, so a
+// deterministic Vite build never shows up as a repo diff); `go build ./...` stays
+// green without a Node build because the embed always has that sentinel, and when
+// no built index.html is present the handler serves the Go-string placeholder
+// shell below. `make web-build` populates the tree with the real Vite output
+// (built into web/dist, then copied here) before the feeder is compiled for a
+// real run, and that build shadows the placeholder.
 package webui
 
 import (
@@ -18,6 +22,32 @@ import (
 
 //go:embed all:dist
 var embedded embed.FS
+
+// placeholderShell is the SPA shell served when the embed carries no built
+// index.html — a binary compiled before `make web-build` populated
+// internal/app/webui/dist. It references no assets (so it degrades to a static
+// message rather than 404-ing on a hashed bundle) and carries the same
+// `<title>Waiveo</title>` marker the real shell and the web-UI smoke both use, so
+// the feeder always answers / with a valid 200 text/html shell. A real build
+// shadows it.
+const placeholderShell = `<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Waiveo</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>The Waiveo console requires JavaScript.</noscript>
+    <p style="font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto; text-align: center; color: #888">
+      The Waiveo console has not been built into this binary yet. Run
+      <code>make web-build</code> and rebuild the feeder to embed the console.
+    </p>
+  </body>
+</html>
+`
 
 // Handler returns an http.Handler that serves the embedded SPA with
 // index.html fallback: a request that maps to a real embedded asset is served
@@ -69,8 +99,10 @@ func (h *spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *spaHandler) serveIndex(w http.ResponseWriter, _ *http.Request) {
 	b, err := fs.ReadFile(h.fsys, "index.html")
 	if err != nil {
-		http.Error(w, "web UI not built", http.StatusInternalServerError)
-		return
+		// No built index.html in the embed (a binary compiled before
+		// `make web-build`): serve the Go-string placeholder shell so / always
+		// answers with a valid 200 text/html Waiveo shell rather than a 500.
+		b = []byte(placeholderShell)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// The shell must never be cached stale: hashed asset files it references are
