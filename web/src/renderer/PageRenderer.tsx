@@ -158,9 +158,32 @@ function PageBody({ page }: { page: PageDoc }) {
 
 // ── list-detail (UIS-020–024) ───────────────────────────────────────────────
 
-function leafOfPath(path: string): string {
-  const last = path.split(".").pop() ?? path;
-  return (last.split("[")[0] ?? last) || path;
+/** Place `value` at a (possibly nested) dotted/slashed source path inside a fresh
+ * copy of `base`, shallow-cloning each level along the way. A flat source (e.g.
+ * `automations`) is the one-segment special case; a multi-segment source (e.g.
+ * `collection.rows`, a form the root-Binding grammar accepts) must land exactly
+ * where the display's own `source` Binding resolves — not only at the leaf key,
+ * which would strand the fetched rows at the wrong location. */
+function patchAtPath(base: Record<string, unknown>, path: string, value: unknown): Record<string, unknown> {
+  const segs = path
+    .split(/[./]/)
+    .map((s) => s.split("[")[0])
+    .filter((s) => s.length > 0);
+  const root: Record<string, unknown> = { ...base };
+  if (segs.length === 0) return root;
+  let cursor = root;
+  for (let i = 0; i < segs.length - 1; i++) {
+    const key = segs[i];
+    const next = cursor[key];
+    const cloned: Record<string, unknown> =
+      next !== null && typeof next === "object" && !Array.isArray(next)
+        ? { ...(next as Record<string, unknown>) }
+        : {};
+    cursor[key] = cloned;
+    cursor = cloned;
+  }
+  cursor[segs[segs.length - 1]] = value;
+  return root;
 }
 
 function ListDetailLayout({ page, base }: { page: PageDoc; base: RenderScope }) {
@@ -185,7 +208,7 @@ function ListDetailLayout({ page, base }: { page: PageDoc; base: RenderScope }) 
       <section aria-label="List" className="flex min-w-0 flex-col gap-3">
         {newAction ? (
           <div className="flex justify-end">
-            <Button variant="default" onClick={() => runAction(newAction, base, ctx)}>
+            <Button variant="default" className="wv-touch" onClick={() => runAction(newAction, base, ctx)}>
               New
             </Button>
           </div>
@@ -215,7 +238,6 @@ function PaginatedList({ source, display, base }: { source: PageDoc; display: Wi
   const ctx = useRenderer();
   const path = String(source.path);
   const limit = typeof source.limit === "number" ? source.limit : undefined;
-  const leaf = leafOfPath(path);
   const [items, setItems] = useState<unknown[]>([]);
   const [cursor, setCursor] = useState<string | null | undefined>(undefined);
   const [loading, setLoading] = useState(false);
@@ -241,7 +263,7 @@ function PaginatedList({ source, display, base }: { source: PageDoc; display: Wi
 
   const listScope: RenderScope = {
     ...base,
-    current: { ...(base.current as Record<string, unknown>), [leaf]: items },
+    current: patchAtPath(base.current as Record<string, unknown>, path, items),
   };
 
   return (
@@ -249,7 +271,7 @@ function PaginatedList({ source, display, base }: { source: PageDoc; display: Wi
       <WidgetNodeView node={display} scope={listScope} depth={0} />
       {typeof cursor === "string" ? (
         <div className="flex justify-center">
-          <Button variant="outline" disabled={loading} onClick={() => void load(cursor)}>
+          <Button variant="outline" className="wv-touch" disabled={loading} onClick={() => void load(cursor)}>
             Load more
           </Button>
         </div>
@@ -386,15 +408,15 @@ function WizardLayout({ page, base }: { page: PageDoc; base: RenderScope }) {
           <WidgetNodeView node={step.root} scope={draftScope} depth={0} />
         </div>
         <div className="flex justify-between gap-3">
-          <Button variant="ghost" onClick={() => controller.back()} disabled={isFirst}>
+          <Button variant="ghost" className="wv-touch" onClick={() => controller.back()} disabled={isFirst}>
             Back
           </Button>
           {isLast ? (
-            <Button variant="default" onClick={() => controller.finish()}>
+            <Button variant="default" className="wv-touch" onClick={() => controller.finish()}>
               Finish
             </Button>
           ) : (
-            <Button variant="default" onClick={() => controller.next()} disabled={!canAdvance}>
+            <Button variant="default" className="wv-touch" onClick={() => controller.next()} disabled={!canAdvance}>
               Next
             </Button>
           )}

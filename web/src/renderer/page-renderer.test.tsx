@@ -32,6 +32,12 @@ const messages: Record<string, string> = {
   "msg:wizard.step.name": "Name",
   "msg:wizard.step.nameLabel": "Automation name",
   "msg:wizard.step.review": "Review",
+  "msg:automations.detail.modeLabel": "Mode",
+  "msg:mode.single": "Single",
+  "msg:mode.restart": "Restart",
+  "msg:mode.queued": "Queued",
+  "msg:mode.parallel": "Parallel",
+  "msg:pagination.name": "Name",
 };
 
 describe("PageRenderer — list-detail (UIS-020)", () => {
@@ -178,6 +184,101 @@ describe("PageRenderer — interactive controls meet the 44px touch target (resp
     for (const cb of checkboxes) {
       expect(cb.closest("label")?.className).toContain("wv-touch");
     }
+  });
+});
+
+describe("PageRenderer — REST-ish `/` root Binding (UIS-005)", () => {
+  it("resolves a `<collection>/<id>` settings-form source to the bound record", () => {
+    // The validator explicitly accepts a `<collection>/<id>` root Binding
+    // (isValidRootBindingString) and the UIS-132 corpus fixture uses exactly that
+    // form for its settings-form `source`. The bound record must reach the field:
+    // the select shows "single", not the empty placeholder.
+    render(
+      <PageRenderer
+        doc={docFor("UIS-132-valid-vocab-option-source")}
+        data={{ automations: { "01J8Z3K4N5P6Q7R8S9T0V1W2A1": { mode: "single" } } }}
+        messages={messages}
+        handler={{ submit: vi.fn() }}
+      />,
+    );
+    expect(screen.getByLabelText("Mode")).toHaveValue("single");
+  });
+
+  it("writes the `<collection>/<id>` record back on submit at the resolved path (UIS-160/005)", async () => {
+    const user = userEvent.setup();
+    const handler: ActionHandler = { submit: vi.fn() };
+    render(
+      <PageRenderer
+        doc={docFor("UIS-132-valid-vocab-option-source")}
+        data={{ automations: { "01J8Z3K4N5P6Q7R8S9T0V1W2A1": { mode: "single" } } }}
+        messages={messages}
+        handler={handler}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    // submit dispatches the RESOLVED bound record — the automation, not the whole
+    // top-level resource root — proving the `/`-path resolved to a real location.
+    expect(handler.submit).toHaveBeenCalledWith(
+      "automations/01J8Z3K4N5P6Q7R8S9T0V1W2A1",
+      { mode: "single" },
+    );
+  });
+});
+
+describe("PageRenderer — paginated list.source over a nested path (UIS-023/024)", () => {
+  it("routes a fetched page of a multi-segment source path to the display table", async () => {
+    const handler: ActionHandler = {
+      fetchPage: vi.fn().mockResolvedValue({ items: [{ id: "01J8Z3K4N5P6Q7R8S9T0V1W2A9", name: "Lobby loop" }], cursor: null }),
+    };
+    const doc = {
+      pageType: "list-detail",
+      list: {
+        source: { path: "collection.rows", paginated: true },
+        display: {
+          type: "table",
+          props: {
+            source: "collection.rows",
+            columns: [{ headerMsg: "msg:pagination.name", cell: "item.name" }],
+          },
+        },
+      },
+      detail: {
+        source: "collection.selectedRow",
+        root: { type: "text", props: { value: "id" } },
+      },
+    };
+    render(<PageRenderer doc={doc} data={{ collection: { rows: [] } }} messages={messages} handler={handler} />);
+
+    // The fetched row must reach the table even though the source path is nested.
+    expect(await screen.findByText("Lobby loop")).toBeInTheDocument();
+    expect(handler.fetchPage).toHaveBeenCalledWith("collection.rows", null, undefined);
+  });
+});
+
+describe("PageRenderer — inputs and buttons meet the 44px touch target (responsive contract)", () => {
+  it("gives text-inputs and submit buttons the >=44px touch class (wv-touch)", () => {
+    render(
+      <PageRenderer
+        doc={docFor("UIS-030-valid-settings-form")}
+        data={{ site: { displayName: "The Hangar", quietHours: true } }}
+        messages={messages}
+        handler={{ submit: vi.fn() }}
+      />,
+    );
+    expect(screen.getByLabelText("Display name").className).toContain("wv-touch");
+    expect(screen.getByRole("button", { name: "Save" }).className).toContain("wv-touch");
+  });
+
+  it("gives a select control the >=44px touch class (wv-touch)", () => {
+    render(
+      <PageRenderer
+        doc={docFor("UIS-132-valid-vocab-option-source")}
+        data={{ automations: { "01J8Z3K4N5P6Q7R8S9T0V1W2A1": { mode: "single" } } }}
+        messages={messages}
+        handler={{ submit: vi.fn() }}
+      />,
+    );
+    expect(screen.getByLabelText("Mode").className).toContain("wv-touch");
   });
 });
 

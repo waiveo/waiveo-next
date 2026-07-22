@@ -61,25 +61,6 @@ interface Segment {
   predicate?: { field: string; value: PredValue };
 }
 
-/** Split on `sep` at bracket depth 0 only, so a predicate value that is itself a
- * dotted path (`arr[id=$ui.selected]`) is not torn apart. */
-function splitTopLevel(s: string, sep: string): string[] {
-  const out: string[] = [];
-  let depth = 0;
-  let start = 0;
-  for (let i = 0; i < s.length; i++) {
-    const ch = s[i];
-    if (ch === "[") depth++;
-    else if (ch === "]") depth = Math.max(0, depth - 1);
-    else if (ch === sep && depth === 0) {
-      out.push(s.slice(start, i));
-      start = i + 1;
-    }
-  }
-  out.push(s.slice(start));
-  return out;
-}
-
 const NUMBER_LITERAL = /^-?\d+(\.\d+)?$/;
 
 function parsePredValue(text: string): PredValue {
@@ -91,11 +72,35 @@ function parsePredValue(text: string): PredValue {
   return { kind: "binding", path: text };
 }
 
-/** Parse a UIS-100 path into segments. Assumes the input already passed the
+/** Split a path into segments on `.` AND `/` at bracket depth 0. `.` is the
+ * Scope-relative UIS-100 separator; `/` joins the resource segments of a root
+ * Binding (UIS-005, e.g. `automations/<id>`) — a form the validator explicitly
+ * accepts (isValidRootBindingString) but that a Scope-relative path never bears,
+ * so treating the two separators alike here resolves both without a second parser
+ * and never mis-splits an ordinary Binding. */
+function splitSegments(s: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === "[") depth++;
+    else if (ch === "]") depth = Math.max(0, depth - 1);
+    else if ((ch === "." || ch === "/") && depth === 0) {
+      out.push(s.slice(start, i));
+      start = i + 1;
+    }
+  }
+  out.push(s.slice(start));
+  return out;
+}
+
+/** Parse a UIS-100 path (or a UIS-005 root Binding, which additionally joins
+ * resource segments with `/`) into segments. Assumes the input already passed the
  * validator's grammar check (validate.ts), so parsing is forgiving of shapes the
  * grammar already excluded. */
 export function parsePath(path: string): Segment[] {
-  return splitTopLevel(path, ".").map((raw) => {
+  return splitSegments(path).map((raw) => {
     const br = raw.indexOf("[");
     if (br === -1) return { name: raw };
     const name = raw.slice(0, br);

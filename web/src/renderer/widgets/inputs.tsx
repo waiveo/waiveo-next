@@ -20,8 +20,11 @@ import type { ActionRef } from "../types";
 import type { WidgetProps } from "./common";
 import { useWizard } from "./wizard-context";
 
+// `.wv-touch` clamps the control to the responsive contract's 44px touch-target
+// minimum (Matt, 2026-07-22); its min-height wins over the `h-9` visual height so
+// every text/number/duration/time/select control is comfortably tappable.
 const FIELD_CLASS =
-  "flex h-9 w-full min-w-0 rounded-input border border-border bg-transparent px-3 py-1 text-sm text-foreground outline-none transition-[box-shadow,border-color] placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring aria-invalid:border-[color:var(--wv-err)]";
+  "wv-touch flex h-9 w-full min-w-0 rounded-input border border-border bg-transparent px-3 py-1 text-sm text-foreground outline-none transition-[box-shadow,border-color] placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring aria-invalid:border-[color:var(--wv-err)]";
 
 /** A widget's bound value plus a writer that performs the intrinsic write-back
  * (UIS-065) and fires any `on.change` ActionRef alongside it. Honors a

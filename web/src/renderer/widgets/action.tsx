@@ -26,8 +26,11 @@ export function ButtonWidget({ node, scope }: WidgetProps) {
   const variant = STYLE_VARIANT[String(node.props?.style ?? "secondary")] ?? "secondary";
   const press = node.on?.press as ActionRef | undefined;
   return (
+    // `.wv-touch` holds the button to the 44px touch-target minimum the responsive
+    // contract mandates (the kit Button's `default` size is a 36px `h-9`).
     <Button
       variant={variant}
+      className="wv-touch"
       onClick={() => {
         if (press) runAction(press, scope, ctx, wizard);
       }}
