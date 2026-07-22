@@ -11,6 +11,7 @@ import {
   Palette,
   PanelLeftClose,
   PanelLeftOpen,
+  Workflow,
   type LucideIcon,
 } from "lucide-react";
 import { Button, KitIcon, NavDrawer } from "@/components/kit";
@@ -42,6 +43,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/screens", label: "Screens", icon: MonitorPlay },
   { to: "/schedules", label: "Schedules", icon: CalendarClock },
   { to: "/content", label: "Content", icon: Images },
+  { to: "/automations", label: "Automations", icon: Workflow },
   { to: "/pages", label: "Pages", icon: LayoutTemplate },
   { to: "/design", label: "Design kit", icon: Palette },
 ];

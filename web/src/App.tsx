@@ -5,6 +5,7 @@ import OverviewRoute from "@/routes/overview/overview-route";
 import ScreensRoute from "@/routes/screens/screens-route";
 import SchedulesRoute from "@/routes/schedules/schedules-route";
 import ContentRoute from "@/routes/content/content-route";
+import AutomationsRoute from "@/routes/automations/automations-route";
 import DesignRoute from "@/routes/design/design-route";
 import PagesRoute from "@/routes/pages/pages-route";
 
@@ -25,6 +26,7 @@ export default function App() {
             <Route path="/screens" element={<ScreensRoute />} />
             <Route path="/schedules" element={<SchedulesRoute />} />
             <Route path="/content" element={<ContentRoute />} />
+            <Route path="/automations" element={<AutomationsRoute />} />
             <Route path="/pages" element={<PagesRoute />} />
             <Route path="/design" element={<DesignRoute />} />
           </Route>

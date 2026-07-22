@@ -1,0 +1,60 @@
+{
+  "pageType": "list-detail",
+  "list": {
+    "source": "automations",
+    "display": {
+      "type": "table",
+      "id": "Automations",
+      "props": {
+        "source": "automations",
+        "columns": [
+          { "headerMsg": "msg:auto.col.name", "cell": "item.name" },
+          { "headerMsg": "msg:auto.col.mode", "cell": "item.mode" }
+        ]
+      },
+      "on": { "rowPress": { "verb": "set", "target": "$ui.selected", "value": "item.id" } }
+    }
+  },
+  "detail": {
+    "source": "automations[id=$ui.selected]",
+    "emptyMsg": "msg:auto.detail.empty",
+    "root": {
+      "type": "section",
+      "props": { "titleMsg": "msg:auto.detail.title" },
+      "children": [
+        {
+          "type": "text-input",
+          "bind": "name",
+          "props": { "labelMsg": "msg:auto.detail.name" }
+        },
+        {
+          "type": "section",
+          "props": { "titleMsg": "msg:auto.detail.classification" },
+          "children": [
+            { "type": "badge", "props": { "value": "mode", "tone": "neutral" } },
+            {
+              "type": "badge",
+              "props": { "value": { "lit": "Enabled" }, "tone": "positive" },
+              "visibleIf": { "compute": "eq", "args": ["enabled", { "lit": true }] }
+            },
+            {
+              "type": "badge",
+              "props": { "value": { "lit": "Disabled" }, "tone": "neutral" },
+              "visibleIf": { "compute": "eq", "args": ["enabled", { "lit": false }] }
+            }
+          ]
+        },
+        {
+          "type": "button",
+          "props": { "labelMsg": "msg:auto.detail.save", "style": "primary" },
+          "on": { "press": { "verb": "submit" } }
+        },
+        {
+          "type": "button",
+          "props": { "labelMsg": "msg:auto.detail.delete", "style": "destructive" },
+          "on": { "press": { "verb": "delete", "target": "$root" } }
+        }
+      ]
+    }
+  }
+}

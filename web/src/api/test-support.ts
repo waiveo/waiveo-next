@@ -71,3 +71,29 @@ export function scopeNode(over: Record<string, unknown> = {}) {
     ...over,
   };
 }
+
+/** A fixture automation resource, matching the live feeder's wire shape (the
+ * management-API envelope around a rules/1 Rule: name/scope_node/labels/enabled/
+ * mode/max + the rule vocabulary triggers/conditions/actions + the api/1
+ * baseline). The compiler's edge/app `execution_class` is a server-internal
+ * column, NOT a wire field (openapi Automation is additionalProperties:false), so
+ * it is deliberately absent here — the console badges the wire-available `mode`
+ * and `enabled` state instead. */
+export function automation(over: Record<string, unknown> = {}) {
+  return {
+    id: ULID_A,
+    name: "Open the doors",
+    scope_node: ULID_ROOT,
+    labels: [],
+    enabled: true,
+    mode: "single",
+    max: null,
+    triggers: [{ type: "state", entity_id: ULID_B, to: ["on"] }],
+    conditions: [],
+    actions: [{ type: "device_command", entity_id: ULID_B, command: "launch", params: { channel: "dev" } }],
+    revision: 1,
+    created_at: "2026-07-22T00:00:00Z",
+    updated_at: "2026-07-22T00:00:00Z",
+    ...over,
+  };
+}
