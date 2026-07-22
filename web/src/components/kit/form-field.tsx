@@ -6,7 +6,10 @@ import { cn } from "@/lib/utils";
  * FormField — THE form idiom: label + control + help + error, wired for a11y in
  * one place so no page has to remember the plumbing. It generates a stable id,
  * points the `<label>` at the control, associates help/error text via
- * `aria-describedby`, and flags `aria-invalid` when an error is present.
+ * `aria-describedby`, flags `aria-invalid` when an error is present, and marks
+ * the control `aria-required` when the field is required (the visible asterisk
+ * is decorative and `aria-hidden`, so this is what assistive tech actually
+ * announces).
  *
  * The control is a render function that receives those wired props; passing them
  * onto the control is the whole contract. This makes correct labelling the path
@@ -16,6 +19,7 @@ export interface FormFieldControl {
   id: string;
   "aria-describedby"?: string;
   "aria-invalid"?: true;
+  "aria-required"?: true;
 }
 
 export interface FormFieldProps {
@@ -49,6 +53,7 @@ export function FormField({
   const control: FormFieldControl = { id };
   if (describedBy) control["aria-describedby"] = describedBy;
   if (error) control["aria-invalid"] = true;
+  if (required) control["aria-required"] = true;
 
   return (
     <div data-slot="form-field" className={cn("flex flex-col gap-1.5", className)}>

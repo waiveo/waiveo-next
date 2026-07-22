@@ -31,6 +31,27 @@ describe("FormField", () => {
     expect(input.getAttribute("aria-describedby")).toContain(error.id);
   });
 
+  it("surfaces the required flag to assistive tech (aria-required) with a decorative asterisk", () => {
+    render(
+      <FormField label="Screen name" required>
+        {(field) => <input {...field} />}
+      </FormField>,
+    );
+    const input = screen.getByRole("textbox");
+    expect(input).toHaveAttribute("aria-required", "true");
+
+    // The magenta asterisk is purely visual and must be hidden from AT.
+    const asterisk = screen.getByText("*");
+    expect(asterisk).toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("omits aria-required when the field is not required", () => {
+    render(
+      <FormField label="Notes">{(field) => <input {...field} />}</FormField>,
+    );
+    expect(screen.getByRole("textbox")).not.toHaveAttribute("aria-required");
+  });
+
   it("honors an explicit htmlFor id", () => {
     render(
       <FormField label="Notes" htmlFor="notes-field">
