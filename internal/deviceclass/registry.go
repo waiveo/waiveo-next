@@ -46,6 +46,20 @@ func Builtin() Registry {
 	return reg
 }
 
+// ClassNames returns every device-class identifier the registry indexes, sorted
+// ascending — the recognized-device-class set a host hands manifest/1 as its
+// MAN-070 device-class registry (a manifest's devices[].deviceClass MUST name a
+// member). Derived from the indexed registry rather than a hand-maintained
+// duplicate, so it tracks the built-in content (media-player today) exactly.
+func (r Registry) ClassNames() []string {
+	names := make([]string, 0, len(r.classes))
+	for name := range r.classes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // Class resolves deviceClass to its ClassEntry, reporting false when no entry
 // by that identifier exists in the registry (DEVICE_CLASS_UNKNOWN) — Registry
 // never fabricates a class entry for an unresolved identifier.

@@ -29,6 +29,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/maaxton/waiveo-next/internal/app/packs"
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/datamodel"
 	"github.com/maaxton/waiveo-next/internal/feeder/origin"
@@ -65,6 +66,10 @@ type server struct {
 	nowMs       func() int64
 	content     *origin.Store
 	contentBase string
+	// installer runs the manifest-gated declarative-pack install pipeline the
+	// POST /api/v1/packs handler drives (internal/app/packs). It shares the same
+	// store every other resource handler writes through.
+	installer *packs.Installer
 }
 
 // New builds the api/1 HTTP handler: a /api/v1-prefixed mux exposing the
@@ -78,13 +83,17 @@ type server struct {
 // immediately servable); contentBase is the feeder's content-origin base URL the
 // upload's returned url is built from.
 func New(st *store.Store, idem *apihttp.IdempotencyStore, nowMs func() int64, content *origin.Store, contentBase string) http.Handler {
-	srv := &server{store: st, idem: idem, nowMs: nowMs, content: content, contentBase: contentBase}
+	srv := &server{
+		store: st, idem: idem, nowMs: nowMs, content: content, contentBase: contentBase,
+		installer: packs.NewInstaller(st),
+	}
 	mux := http.NewServeMux()
 	srv.mount(mux, scopeNodesConfig())
 	srv.mount(mux, schedulesConfig())
 	srv.mount(mux, daypartsConfig())
 	srv.mount(mux, playlistsConfig())
 	srv.mount(mux, automationsConfig())
+	srv.mountPacks(mux)
 	// The automations family adds two operations beyond plain resource CRUD: a
 	// synchronous per-automation run (openapi runAutomation) and a selector-targeted
 	// fleet-mutating bulk enable/disable returning an api/1 Job (bulkEnableAutomations).

@@ -234,6 +234,13 @@ func Open(dsn string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: migrate automations: %w", err)
 	}
+	// The declarative-packs tables (packs + pack_files + pack_rows) are a
+	// self-contained subsystem with their own dedicated CRUD (packs.go), not a
+	// generic resource Kind, so they are migrated from their own DDL here.
+	if _, err := db.Exec(packsSchema); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("store: migrate packs: %w", err)
+	}
 	for _, k := range allKinds {
 		if _, err := db.Exec(fmt.Sprintf(resourceTableDDL, string(k))); err != nil {
 			_ = db.Close()
