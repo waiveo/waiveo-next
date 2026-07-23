@@ -402,6 +402,19 @@ type PackRowGuard func(existing []PackRow) error
 func (s *Store) CreatePackRow(ctx context.Context, packID, collection string, in PackRow, guards ...PackRowGuard) (PackRow, error) {
 	var out PackRow
 	if err := s.writeTx(ctx, func(tx *sql.Tx) error {
+		// The owning pack MUST still exist: a concurrent UninstallPack can commit
+		// in the window between the api layer resolving the collection and this
+		// write, and its cascade drops the packs row. Re-checking existence under
+		// this write lock — atomically with the insert — refuses the write rather
+		// than leaving an orphan pack_rows row for a pack that no longer exists
+		// (an orphan that survives the "atomic" uninstall and would resurface if
+		// the same pack id were later reinstalled fresh). This mirrors the
+		// InstallGuard TOCTOU closure MAN-053 relies on.
+		if _, found, err := getPack(ctx, tx, packID); err != nil {
+			return err
+		} else if !found {
+			return ErrNotFound
+		}
 		existing, err := readPackRows(ctx, tx, packID, collection)
 		if err != nil {
 			return err
@@ -448,6 +461,16 @@ func (s *Store) CreatePackRow(ctx context.Context, packID, collection string, in
 func (s *Store) UpdatePackRow(ctx context.Context, packID, collection, entityID string, expectedRev int64, next PackRow, guards ...PackRowGuard) (PackRow, error) {
 	var out PackRow
 	if err := s.writeTx(ctx, func(tx *sql.Tx) error {
+		// The owning pack MUST still exist — re-checked under this write lock so a
+		// concurrent uninstall's cascade cannot leave this update touching an
+		// orphan row (see CreatePackRow). A cascaded-away row would already read as
+		// ErrNotFound below; this additionally refuses a write against any pre-
+		// existing orphan whose packs row is gone.
+		if _, found, err := getPack(ctx, tx, packID); err != nil {
+			return err
+		} else if !found {
+			return ErrNotFound
+		}
 		var curRev, createdAt int64
 		err := tx.QueryRowContext(ctx,
 			`SELECT revision, created_at FROM pack_rows WHERE pack_id = ? AND collection = ? AND entity_id = ?`,

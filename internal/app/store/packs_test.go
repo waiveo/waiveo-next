@@ -343,3 +343,64 @@ func TestUninstallCascadesPackRows(t *testing.T) {
 		t.Fatalf("rows survived uninstall: %d", len(rows))
 	}
 }
+
+// TestCreatePackRowRefusesOrphanAfterUninstall: a row write whose owning pack has
+// been uninstalled (the TOCTOU a concurrent uninstall opens between the api
+// layer resolving the collection and this write) MUST be refused rather than
+// leaving an orphan pack_rows row — an orphan would survive the "atomic"
+// uninstall and resurface if the same pack id were later reinstalled fresh.
+func TestCreatePackRowRefusesOrphanAfterUninstall(t *testing.T) {
+	st := openMem(t)
+	ctx := context.Background()
+
+	pack, _, err := st.InstallPack(ctx, packSpec("acme/ghost", "1.0.0", 1))
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if err := st.UninstallPack(ctx, "acme/ghost", pack.Revision); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+
+	// The pack is gone; a create against it must not insert a surviving row.
+	if _, err := st.CreatePackRow(ctx, "acme/ghost", "items", rowIn(testScopeNode, "", `{"name":"x"}`)); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("CreatePackRow(uninstalled) = %v; want ErrNotFound", err)
+	}
+
+	// A subsequent FRESH reinstall of the same id must start with zero rows — no
+	// orphan resurrected from the write above.
+	fresh, created, err := st.InstallPack(ctx, packSpec("acme/ghost", "1.0.0", 1))
+	if err != nil {
+		t.Fatalf("reinstall: %v", err)
+	}
+	if !created {
+		t.Fatalf("reinstall created = false; want a fresh install (revision %d)", fresh.Revision)
+	}
+	if rows, _ := st.ListPackRows(ctx, "acme/ghost", "items"); len(rows) != 0 {
+		t.Fatalf("orphan row resurfaced on fresh reinstall: %d", len(rows))
+	}
+}
+
+// TestUpdatePackRowRefusesOrphanPack: an update whose owning pack no longer
+// exists is refused (the pack-existence re-check under the write lock), mirroring
+// the create path — a defensive close against touching a pre-existing orphan row.
+func TestUpdatePackRowRefusesOrphanPack(t *testing.T) {
+	st := openMem(t)
+	ctx := context.Background()
+
+	pack, _, err := st.InstallPack(ctx, packSpec("acme/ghost", "1.0.0", 1))
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	row, err := st.CreatePackRow(ctx, "acme/ghost", "items", rowIn(testScopeNode, "", `{"name":"x"}`))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := st.UninstallPack(ctx, "acme/ghost", pack.Revision); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+
+	if _, err := st.UpdatePackRow(ctx, "acme/ghost", "items", row.EntityID, row.Revision,
+		rowIn(testScopeNode, "", `{"name":"y"}`)); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("UpdatePackRow(uninstalled) = %v; want ErrNotFound", err)
+	}
+}

@@ -46,6 +46,30 @@ func TestValidateEnvelopeFieldCollisionInvalid(t *testing.T) {
 	}
 }
 
+// TestValidateReservedRowFieldCollisionInvalid: a declared field named
+// external_id, created_at, or updated_at collides with the api/1 resource-row
+// baseline every row carries as host-managed columns beside the MAN-051
+// envelope. The pack-data write gate intercepts a body key by any of these names
+// as a host/envelope field before consulting the declared fields, so such a
+// field's client value would be silently dropped (external_id repurposed as the
+// uniqueness key) — install MUST refuse it, exactly as it refuses an envelope
+// collision (MAN-051).
+func TestValidateReservedRowFieldCollisionInvalid(t *testing.T) {
+	for _, name := range []string{"external_id", "created_at", "updated_at"} {
+		m := loadManifest(t, man051File)
+		m.DataModel.Collections[0].Fields = append(m.DataModel.Collections[0].Fields, Field{
+			Name: name, Type: "string",
+		})
+		errs := Validate(m, testHost())
+		if !hasCode(errs, "MANIFEST_SCHEMA_INVALID") {
+			t.Fatalf("expected a MANIFEST_SCHEMA_INVALID error for a field named %q, got %+v", name, errs)
+		}
+		if !hasField(errs, "dataModel.collections[0].fields[2].name") {
+			t.Fatalf("expected the error to name the offending field for %q, got %+v", name, errs)
+		}
+	}
+}
+
 // TestValidateRetentionUndeclaredCollectionInvalid: a retention key naming a
 // collection the manifest never declared violates MAN-054.
 func TestValidateRetentionUndeclaredCollectionInvalid(t *testing.T) {

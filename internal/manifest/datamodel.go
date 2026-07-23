@@ -18,6 +18,23 @@ var universalEnvelopeFields = map[string]bool{
 	"params":          true,
 }
 
+// reservedRowFields is the api/1 resource-row baseline every pack-declared
+// collection's rows ALSO carry as host-managed columns, alongside the MAN-051
+// universal entity envelope: the client-assignable `external_id` grouping key
+// (api/1 API-100–104) and the store's `created_at`/`updated_at` timestamps
+// (data-model/1 DAT-008). They are not part of the MAN-051 envelope itself, but
+// the pack-data write gate intercepts a body key by any of these names as a
+// host/envelope field BEFORE consulting the declared fields — so a collection
+// declaring one would have that field's client value silently dropped (or, for
+// external_id, silently repurposed as the uniqueness key) and overwritten on
+// read. A manifest MUST NOT redeclare any of them as its own field either, for
+// the same reason it MUST NOT redeclare a universalEnvelopeFields name.
+var reservedRowFields = map[string]bool{
+	"external_id": true,
+	"created_at":  true,
+	"updated_at":  true,
+}
+
 // validateDataModel enforces MAN-050-055: a positive, non-regressing
 // dataModel.version; pack-unique collection names whose fields never redeclare
 // a universal-entity-envelope field and carry at most one role:title
@@ -70,6 +87,15 @@ func validateDataModel(m PackManifest, host HostRegistries) []Error {
 				errs = append(errs, Error{"MANIFEST_SCHEMA_INVALID", fat + ".name",
 					`field name "` + f.Name + `" collides with the universal entity envelope, ` +
 						"which every row carries in addition to declared fields (MAN-051)"})
+			} else if reservedRowFields[f.Name] {
+				// external_id/created_at/updated_at ride every row as host-managed
+				// api/1-baseline columns beside the MAN-051 envelope; a declared
+				// field by any of these names is silently swallowed by the pack-data
+				// write gate, so it is refused at install just like an envelope
+				// collision (MAN-051).
+				errs = append(errs, Error{"MANIFEST_SCHEMA_INVALID", fat + ".name",
+					`field name "` + f.Name + `" collides with a host-managed row field ` +
+						"(external_id, created_at, updated_at) every row carries in addition to declared fields (MAN-051)"})
 			}
 
 			// MAN-052: role, if present, MUST be "title" or "summary".
