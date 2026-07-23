@@ -206,6 +206,21 @@ function patchAtPath(base: Record<string, unknown>, path: string, value: unknown
 const CREATE_DRAFT_KEY = "__draft";
 
 /**
+ * Whether a `$ui` snapshot represents an OPEN list-detail create draft (UIS-021).
+ *
+ * A host seam (the one wired to `onUiChange`) uses this to reset its own
+ * out-of-band state — captured 422 field errors, a conflict-review banner — when a
+ * FRESH draft is entered. It has to: a draft keeps `$ui.selected` null across its
+ * whole New → Save → Cancel → New lifecycle, so a selection-identity guard alone
+ * can't tell that a prior, already-failed draft was dismissed and a new blank one
+ * begun. Field errors are keyed only by bind-path (no record identity), so without
+ * this reset a prior attempt's error would render on the brand-new, untouched draft.
+ */
+export function isCreateDraftUi(ui: Record<string, unknown>): boolean {
+  return ui[CREATE_DRAFT_KEY] != null;
+}
+
+/**
  * Seed a create draft from the page's `newAction` (the declarative create idiom,
  * UIS-021). The draft is a fresh in-memory record the detail form binds to:
  *

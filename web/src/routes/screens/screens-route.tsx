@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { PageRenderer, type ActionHandler } from "@/renderer";
+import { PageRenderer, isCreateDraftUi, type ActionHandler } from "@/renderer";
 import { FormField, PageHeader, Toaster, toast } from "@/components/kit";
 import {
   ApiError,
@@ -104,6 +104,9 @@ export default function ScreensRoute({ api }: { api?: WaiveoApi }) {
   // screen's naming conflict.
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selectedIdRef = useRef<string | null>(null);
+  // Whether a create draft was open on the last `$ui` we saw, so a fresh draft
+  // opening (New→Cancel→New, which keeps `$ui.selected` null) is detectable below.
+  const draftOpenRef = useRef(false);
   // True while a 412 REVISION_CONFLICT is awaiting the operator's review: the
   // detail form is re-seeded with the current server values and this drives the
   // distinct "changed elsewhere — reconcile" banner. Cleared on the next attempt
@@ -153,9 +156,15 @@ export default function ScreensRoute({ api }: { api?: WaiveoApi }) {
   // record identity, so left in place they would render on the newly-selected
   // screen's identically-named field — and exits the conflict-review state, which
   // belonged to the record just left.
+  // Entering a FRESH create draft (UIS-021) resets the same out-of-band state — a
+  // prior failed attempt's field error must not leak onto the new blank draft, which
+  // keeps `$ui.selected` null throughout its New→Cancel→New lifecycle.
   const onUiChange = useCallback((ui: Record<string, unknown>) => {
     const next = typeof ui.selected === "string" ? ui.selected : null;
-    if (next === selectedIdRef.current) return;
+    const draftOpen = isCreateDraftUi(ui);
+    const enteringDraft = draftOpen && !draftOpenRef.current;
+    draftOpenRef.current = draftOpen;
+    if (next === selectedIdRef.current && !enteringDraft) return;
     selectedIdRef.current = next;
     setSelectedId(next);
     setFieldErrors({});

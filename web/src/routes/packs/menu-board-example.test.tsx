@@ -10,7 +10,7 @@ import { MemoryRouter, Route, Routes } from "react-router";
 import { ThemeProvider } from "@/components/theme/theme-provider";
 import PackPageRoute from "./pack-page-route";
 import { validatePage } from "@/renderer/validate";
-import { TRACE_ID, ULID_A, ULID_ROOT, ok } from "@/api/test-support";
+import { TRACE_ID, ULID_A, ULID_ROOT, ok, problem } from "@/api/test-support";
 
 // The living proof for the web: the REAL in-repo example pack
 // (examples/packs/menu-board) — the very files `make example-pack` zips and the
@@ -182,5 +182,40 @@ describe("The menu-board example pack renders through the console", () => {
     expect(postedScope).toBe(ULID_ROOT);
     expect(idempotencyKey).toMatch(/^[0-9a-f-]{36}$/i);
     expect(postedLifecycle).toBe("draft");
+  });
+
+  it("a failed create's field error does NOT leak onto the next fresh draft (New→Save fails→Cancel→New)", async () => {
+    // Every create attempt fails validation on `name`; the 422 VALIDATION_FAILED's
+    // per-field error lands on the Item name FormField (the api/1 convention the
+    // host maps to `fieldErrors`).
+    server.use(
+      ...baseHandlers(),
+      http.get(`${B}/data/menu_items`, () => dataPage([])),
+      http.post(`${B}/data/menu_items`, () =>
+        problem(422, "VALIDATION_FAILED", "The record is invalid.", {
+          errors: [{ field: "name", code: "REQUIRED", message: "Name must not be blank (server said so)" }],
+        }),
+      ),
+    );
+
+    const user = userEvent.setup();
+    renderPack();
+    await screen.findByRole("table", { name: "Menu items" });
+
+    // New → a blank draft → Save → the create fails and the field error surfaces on
+    // the (still-open) draft form.
+    await user.click(screen.getByRole("button", { name: "New" }));
+    await user.click(await screen.findByRole("button", { name: "Save changes" }));
+    expect(await screen.findByText("Name must not be blank (server said so)")).toBeInTheDocument();
+
+    // Cancel that draft, then start a BRAND-NEW one. The stale, prior-attempt error
+    // must not survive onto the fresh, never-submitted draft — it renders clean.
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await user.click(screen.getByRole("button", { name: "New" }));
+    const freshName = await screen.findByLabelText("Item name");
+    expect(freshName).toHaveValue("");
+    await waitFor(() =>
+      expect(screen.queryByText("Name must not be blank (server said so)")).not.toBeInTheDocument(),
+    );
   });
 });

@@ -76,14 +76,20 @@ describe("Screens — the ui-schema dogfood", () => {
 });
 
 describe("Screens — create / edit / delete over api/1", () => {
-  it("creates a screen carrying an Idempotency-Key, then shows the fresh row", async () => {
+  it("creates a screen carrying an Idempotency-Key AND the seeded name, then shows the fresh row", async () => {
     const state = { rows: [scopeNode({ id: ULID_A, name: "Lobby display", revision: 1 })] };
     let idempotencyKey: string | null = null;
+    let postedName: unknown = "unset";
     server.use(
       http.get("*/api/v1/scope-nodes", () => page(state.rows)),
       http.post("*/api/v1/scope-nodes", async ({ request }) => {
         idempotencyKey = request.headers.get("Idempotency-Key");
-        const created = scopeNode({ id: ULID_B, name: "New screen", revision: 1 });
+        // Reflect the ACTUAL submitted name — a canned response would let a blank
+        // body sail through (the server does not enforce minLength, so a nameless
+        // POST would persist a nameless row).
+        const body = (await request.json()) as { name?: unknown };
+        postedName = body.name;
+        const created = scopeNode({ id: ULID_B, name: String(body.name ?? ""), revision: 1 });
         state.rows = [...state.rows, created];
         return ok(created, { status: 201, revision: 1 });
       }),
@@ -93,7 +99,9 @@ describe("Screens — create / edit / delete over api/1", () => {
     renderScreens();
     await screen.findByRole("table", { name: "Screens" });
 
-    // New opens a create draft (a blank detail form); Save commits it (UIS-021).
+    // New opens a create draft (a blank detail form); Save commits it with no typing.
+    // The page's newAction seeds a real starter name, so a no-type Save produces an
+    // identifiable row — never a silent blank (UIS-021).
     await user.click(screen.getByRole("button", { name: "New" }));
     await user.click(await screen.findByRole("button", { name: "Save changes" }));
 
@@ -101,6 +109,7 @@ describe("Screens — create / edit / delete over api/1", () => {
       expect(within(screen.getByRole("table", { name: "Screens" })).getByText("New screen")).toBeInTheDocument(),
     );
     expect(idempotencyKey).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(postedName).toBe("New screen");
   });
 
   it("edits a screen under its If-Match and persists the change", async () => {

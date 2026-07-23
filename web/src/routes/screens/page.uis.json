@@ -51,6 +51,6 @@
   "newAction": {
     "verb": "create",
     "target": "screens",
-    "itemDefault": { "kind": "screen", "name": "" }
+    "itemDefault": { "kind": "screen", "name": "New screen" }
   }
 }

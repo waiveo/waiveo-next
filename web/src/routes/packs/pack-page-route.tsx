@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router";
 import { AlertTriangle } from "lucide-react";
-import { PageRenderer, validatePage, type ActionHandler, type ValidationResult } from "@/renderer";
+import { PageRenderer, isCreateDraftUi, validatePage, type ActionHandler, type ValidationResult } from "@/renderer";
 import { EmptyState, PageHeader, Toaster, toast } from "@/components/kit";
 import {
   ApiError,
@@ -87,6 +87,10 @@ export default function PackPageRoute({ api }: { api?: WaiveoApi }) {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selectedIdRef = useRef<string | null>(null);
+  // Whether a create draft was open on the last `$ui` we saw, so onUiChange can spot
+  // a FRESH draft opening (a New→Cancel→New cycle the selection guard can't, since
+  // the draft leaves `$ui.selected` null throughout).
+  const draftOpenRef = useRef(false);
   const [conflictReview, setConflictReview] = useState(false);
   // Bumped after every mutation so PageRenderer remounts against the freshly
   // fetched rows (the renderer seeds its editable store once, from the initial
@@ -156,9 +160,15 @@ export default function PackPageRoute({ api }: { api?: WaiveoApi }) {
   // The renderer owns the selection (`$ui.selected`); moving to a different row
   // retires any captured 422 field errors (keyed by bind-path, no row identity)
   // and exits the conflict-review state that belonged to the row just left.
+  // Entering a FRESH create draft (UIS-021) does the same reset — otherwise a prior
+  // failed create's field error would leak onto the brand-new blank draft, since the
+  // draft keeps `$ui.selected` null across its whole New→Cancel→New lifecycle.
   const onUiChange = useCallback((ui: Record<string, unknown>) => {
     const next = typeof ui.selected === "string" ? ui.selected : null;
-    if (next === selectedIdRef.current) return;
+    const draftOpen = isCreateDraftUi(ui);
+    const enteringDraft = draftOpen && !draftOpenRef.current;
+    draftOpenRef.current = draftOpen;
+    if (next === selectedIdRef.current && !enteringDraft) return;
     selectedIdRef.current = next;
     setSelectedId(next);
     setFieldErrors({});

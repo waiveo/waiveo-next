@@ -22,9 +22,17 @@ const STYLE_VARIANT: Record<string, Variant> = {
 export function ButtonWidget({ node, scope }: WidgetProps) {
   const ctx = useRenderer();
   const wizard = useWizard();
+  const press = node.on?.press as ActionRef | undefined;
+  // A `delete` acts on an already-persisted record (its `$root`), which does not
+  // exist inside a list-detail create draft (the New idiom, UIS-021): the bound
+  // record is the not-yet-saved `$ui.__draft`, carrying no id/revision, so the host
+  // remove seam can only no-op on it. Rather than paint a fully-enabled control that
+  // silently does nothing, don't render it — a create form offers Save, never
+  // Delete. `draftCreateTarget` is set only inside that draft scope, and rides
+  // through every nested narrowing (narrowToItem/Fragment spread the scope).
+  if (press?.verb === "delete" && scope.draftCreateTarget !== undefined) return null;
   const label = ctx.env.msg(String(node.props?.labelMsg ?? ""));
   const variant = STYLE_VARIANT[String(node.props?.style ?? "secondary")] ?? "secondary";
-  const press = node.on?.press as ActionRef | undefined;
   return (
     // `.wv-touch` holds the button to the 44px touch-target minimum the responsive
     // contract mandates (the kit Button's `default` size is a 36px `h-9`).

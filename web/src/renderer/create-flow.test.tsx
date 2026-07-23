@@ -18,6 +18,7 @@ const messages: Record<string, string> = {
   "msg:col.name": "Name",
   "msg:detail.name": "Item name",
   "msg:detail.save": "Save changes",
+  "msg:detail.delete": "Delete item",
   "msg:detail.empty": "Select an item to edit it, or add a new one.",
 };
 
@@ -172,5 +173,55 @@ describe("list-detail create idiom (UIS-021) — New enters a draft, Save create
       expect(screen.getByText("Select an item to edit it, or add a new one.")).toBeInTheDocument(),
     );
     expect(onCreate).not.toHaveBeenCalled();
+  });
+});
+
+describe("list-detail create idiom (UIS-021) — a create draft hides existing-record-only controls", () => {
+  // The detail form pairs Save with a Delete (`{verb:"delete", target:"$root"}`) —
+  // exactly as the dogfooded core pages and the menu-board example do.
+  const docWithDelete = {
+    ...doc,
+    detail: {
+      ...doc.detail,
+      root: {
+        type: "section",
+        children: [
+          { type: "text-input", bind: "name", props: { labelMsg: "msg:detail.name" } },
+          { type: "button", props: { labelMsg: "msg:detail.save", style: "primary" }, on: { press: { verb: "submit" } } },
+          {
+            type: "button",
+            props: { labelMsg: "msg:detail.delete", style: "destructive" },
+            on: { press: { verb: "delete", target: "$root" } },
+          },
+        ],
+      },
+    },
+  };
+
+  it("Delete is a live control on a selected row but is NOT rendered inside a create draft (no dead button)", async () => {
+    const user = userEvent.setup();
+    const remove = vi.fn();
+    render(
+      <PageRenderer
+        doc={docWithDelete}
+        data={{ menu_items: [{ id: "A", name: "Cortado" }] }}
+        messages={messages}
+        handler={{ create: vi.fn(), submit: vi.fn(), remove }}
+      />,
+    );
+
+    // On a selected, persisted row the Delete button is present AND live: a click
+    // dispatches the remove verb against the resolved record.
+    await user.click(screen.getByRole("button", { name: /Cortado/ }));
+    await user.click(within(detailRegion()).getByRole("button", { name: "Delete item" }));
+    expect(remove).toHaveBeenCalledWith("$root", { id: "A", name: "Cortado" });
+
+    // Enter a create draft → the not-yet-persisted record has nothing to delete, so
+    // the Delete control is not painted at all (never a fully-enabled, silent no-op).
+    // Only Save (the create affordance) remains.
+    await user.click(screen.getByRole("button", { name: "New" }));
+    expect(within(detailRegion()).getByLabelText("Item name")).toHaveValue("");
+    expect(within(detailRegion()).queryByRole("button", { name: "Delete item" })).not.toBeInTheDocument();
+    expect(within(detailRegion()).getByRole("button", { name: "Save changes" })).toBeInTheDocument();
   });
 });

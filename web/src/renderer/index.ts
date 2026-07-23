@@ -6,7 +6,7 @@
 // content. `validatePage` is exposed for a build/lint-time check ahead of any
 // render (UIS-201).
 
-export { PageRenderer, type PageRendererProps } from "./PageRenderer";
+export { PageRenderer, isCreateDraftUi, type PageRendererProps } from "./PageRenderer";
 export { validatePage, isValidBindingPath } from "./validate";
 export type { ActionHandler, WidgetNode, ActionRef, WizardController } from "./types";
 export type { ValidationError, ValidationResult, ErrorCode } from "./schema";

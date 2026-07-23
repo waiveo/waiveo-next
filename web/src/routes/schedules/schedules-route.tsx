@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Pencil } from "lucide-react";
-import { PageRenderer, type ActionHandler } from "@/renderer";
+import { PageRenderer, isCreateDraftUi, type ActionHandler } from "@/renderer";
 import {
   Button,
   DataTable,
@@ -230,6 +230,9 @@ function SchedulesSection({ client }: { client: WaiveoApi }) {
   const [editorVersion, setEditorVersion] = useState(0);
 
   const selectedIdRef = useRef<string | null>(null);
+  // Whether a create draft was open on the last `$ui` we saw, so a fresh draft
+  // opening (New→Cancel→New, which keeps `$ui.selected` null) is detectable below.
+  const draftOpenRef = useRef(false);
   const activeScope = targetScopeId ?? scopeNodes[0]?.id ?? null;
   const activeScopeRef = useRef<string | null>(activeScope);
   activeScopeRef.current = activeScope;
@@ -275,9 +278,15 @@ function SchedulesSection({ client }: { client: WaiveoApi }) {
     }
   }, [client]);
 
+  // Entering a FRESH create draft (UIS-021) resets the same out-of-band state — a
+  // prior failed attempt's field error must not leak onto the new blank draft, which
+  // keeps `$ui.selected` null across its whole New→Cancel→New lifecycle.
   const onScheduleUiChange = useCallback((ui: Record<string, unknown>) => {
     const next = typeof ui.selected === "string" ? ui.selected : null;
-    if (next === selectedIdRef.current) return;
+    const draftOpen = isCreateDraftUi(ui);
+    const enteringDraft = draftOpen && !draftOpenRef.current;
+    draftOpenRef.current = draftOpen;
+    if (next === selectedIdRef.current && !enteringDraft) return;
     selectedIdRef.current = next;
     setSelectedScheduleId(next);
     setScheduleFieldErrors({});
@@ -668,6 +677,9 @@ function PlaylistsSection({ client }: { client: WaiveoApi }) {
   const [version, setVersion] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selectedIdRef = useRef<string | null>(null);
+  // Whether a create draft was open on the last `$ui` we saw, so a fresh draft
+  // opening (New→Cancel→New, which keeps `$ui.selected` null) is detectable below.
+  const draftOpenRef = useRef(false);
 
   const activeScope = targetScopeId ?? scopeNodes[0]?.id ?? null;
   const activeScopeRef = useRef<string | null>(activeScope);
@@ -698,9 +710,15 @@ function PlaylistsSection({ client }: { client: WaiveoApi }) {
     setVersion((v) => v + 1);
   }, [load]);
 
+  // Entering a FRESH create draft (UIS-021) resets the same out-of-band state — a
+  // prior failed attempt's field error must not leak onto the new blank draft, which
+  // keeps `$ui.selected` null across its whole New→Cancel→New lifecycle.
   const onUiChange = useCallback((ui: Record<string, unknown>) => {
     const next = typeof ui.selected === "string" ? ui.selected : null;
-    if (next === selectedIdRef.current) return;
+    const draftOpen = isCreateDraftUi(ui);
+    const enteringDraft = draftOpen && !draftOpenRef.current;
+    draftOpenRef.current = draftOpen;
+    if (next === selectedIdRef.current && !enteringDraft) return;
     selectedIdRef.current = next;
     setSelectedId(next);
     setFieldErrors({});

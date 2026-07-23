@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Play, Power, Save } from "lucide-react";
-import { PageRenderer, type ActionHandler } from "@/renderer";
+import { PageRenderer, isCreateDraftUi, type ActionHandler } from "@/renderer";
 import {
   Button,
   FormField,
@@ -150,6 +150,9 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
   const [scopeNodes, setScopeNodes] = useState<ScopeNode[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selectedIdRef = useRef<string | null>(null);
+  // Whether a create draft was open on the last `$ui` we saw, so a fresh draft
+  // opening (New→Cancel→New, which keeps `$ui.selected` null) is detectable below.
+  const draftOpenRef = useRef(false);
   // 422 field errors + the 412 review banner for the dogfood name form.
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [conflictReview, setConflictReview] = useState(false);
@@ -230,7 +233,13 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
   // review states that belonged to the record just left.
   const onUiChange = useCallback((ui: Record<string, unknown>) => {
     const next = typeof ui.selected === "string" ? ui.selected : null;
-    if (next === selectedIdRef.current) return;
+    // Entering a FRESH create draft (UIS-021) resets the same out-of-band state — a
+    // prior failed attempt's field error must not leak onto the new blank draft,
+    // which keeps `$ui.selected` null across its whole New→Cancel→New lifecycle.
+    const draftOpen = isCreateDraftUi(ui);
+    const enteringDraft = draftOpen && !draftOpenRef.current;
+    draftOpenRef.current = draftOpen;
+    if (next === selectedIdRef.current && !enteringDraft) return;
     selectedIdRef.current = next;
     setSelectedId(next);
     setFieldErrors({});
