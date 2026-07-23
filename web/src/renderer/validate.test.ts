@@ -276,6 +276,20 @@ describe("computed values (UIS-140 → COMPUTE_FN_UNKNOWN)", () => {
   it("rejects a label() with an empty args array (vocabRef absent → VOCAB_REF_UNKNOWN)", () => {
     expect(codes(withStatTile({ compute: "label", args: [] }))).toContain("VOCAB_REF_UNKNOWN");
   });
+  it("accepts a known formatCurrency() call (UIS-140/143)", () => {
+    expect(codes(withStatTile({ compute: "formatCurrency", args: ["price", "USD"] }))).toEqual([]);
+  });
+  it("does not grammar-check a formatCurrency() currency-code arg as a binding", () => {
+    // A currency code is a pinned literal (like label's vocabRef), not a data
+    // path — "US Dollar" is not valid Binding syntax but must not be rejected as
+    // BINDING_PATH_INVALID for it.
+    expect(codes(withStatTile({ compute: "formatCurrency", args: ["price", "US Dollar"] }))).toEqual([]);
+  });
+  it("still grammar-checks formatCurrency()'s first (numeric) arg as an ordinary Binding", () => {
+    expect(codes(withStatTile({ compute: "formatCurrency", args: ["bad path!", "USD"] }))).toContain(
+      "BINDING_PATH_INVALID",
+    );
+  });
 });
 
 describe("context feeds (UIS-105 → CONTEXT_REF_UNDEFINED)", () => {

@@ -184,7 +184,7 @@ ui-schema/1 defines the declarative document a pack ships for each page it contr
 
 ### Binding grammar: computed values
 
-**[UIS-140]** A Computed is `{compute, args}`, `compute` one of the closed function names below, `args` an array of Binding, JSON literal, or nested Computed values. A `compute` name outside this list MUST fail validation as `COMPUTE_FN_UNKNOWN`. A generic `args` entry — one the function's signature below does not pin to a narrower type (`label`'s `vocabRef`, `firstKey`'s literal key-array, and the `arrayBinding`/`secondsBinding`/`valueBinding`-typed arguments are the pinned ones) — is disambiguated between a literal and a Binding per UIS-108: notably, a bare string `arg` is a **Binding**, so a string literal argument (as in `eq(mode, "parallel")`) MUST be written `{"lit": "parallel"}`.
+**[UIS-140]** A Computed is `{compute, args}`, `compute` one of the closed function names below, `args` an array of Binding, JSON literal, or nested Computed values. A `compute` name outside this list MUST fail validation as `COMPUTE_FN_UNKNOWN`. A generic `args` entry — one the function's signature below does not pin to a narrower type (`label`'s `vocabRef`, `firstKey`'s literal key-array, `formatCurrency`'s pinned currency code, and the `arrayBinding`/`secondsBinding`/`valueBinding`-typed arguments are the pinned ones) — is disambiguated between a literal and a Binding per UIS-108: notably, a bare string `arg` is a **Binding**, so a string literal argument (as in `eq(mode, "parallel")`) MUST be written `{"lit": "parallel"}`.
 
 | compute | signature | behavior |
 |---|---|---|
@@ -200,13 +200,14 @@ ui-schema/1 defines the declarative document a pack ships for each page it contr
 | `formatDuration` | `formatDuration(secondsBinding) -> string` | human-readable rendering of a whole-seconds value |
 | `formatDate` | `formatDate(dateBinding) -> string` | locale-formatted rendering of an ISO-8601 date or date-time string value, per the viewer's active locale (UIS-143) |
 | `formatNumber` | `formatNumber(numberBinding) -> string` | locale-formatted rendering of a numeric value (grouping/decimal separators), per the viewer's active locale (UIS-143) |
+| `formatCurrency` | `formatCurrency(numberBinding, currencyCode) -> string` | locale-formatted currency rendering of a numeric value (symbol, grouping/decimal separators, symbol placement) per the viewer's active locale, pinned to the ISO 4217 `currencyCode` (a literal, not a Binding — the priced value's currency is a business fact, not a viewer preference) (UIS-143) |
 | `firstKey` | `firstKey(objectBinding, candidateKeys) -> string \| null` | the first of `candidateKeys` (a literal array of strings) that exists as a key on the object at `objectBinding`, or `null` if none exist |
 
 **[UIS-141]** `visibleIf`, a wizard step's `canAdvanceIf`, and any other BindingExpr-typed field this contract defines accept a bare Binding (truthy/falsy on its resolved value), a Computed, or a JSON literal boolean — all three are valid BindingExpr forms (Definitions).
 
 **[UIS-142]** `firstKey`'s purpose is expressing a discriminated union keyed by **which field is present**, distinct from `switch`'s ordinary case of matching a single field's **value** — `rules/1`'s own Condition shape (RUL-100) is exactly this: a composition (`and`/`or`/`not`) and a leaf (`type`) are told apart by which top-level key exists on the object, not by a shared field's value, since a composition carries no `type` key at all. A `switch` node's `discriminant` (UIS-070) accepting a BindingExpr rather than only a bare Binding is what makes this composable: `{"compute": "firstKey", "args": [<binding to the object>, ["and", "or", "not", "type"]]}` normalizes such a shape into the single string value an ordinary `case`/`when` match consumes, with no separate "key-presence" case-matching mode needed in `switch` itself.
 
-**[UIS-143]** `formatDate` and `formatNumber` (Binding grammar: computed values) render their bound value using the same viewer-resolved locale a `msg:` reference resolves its locale catalog against (`manifest/1` MAN-111) — this contract defines no separate locale-resolution mechanism of its own, the same "reused here by reference" treatment its Scope section already gives the `msg:` mechanism generally. A page's date- or number-typed field is never implicitly formatted merely by virtue of its type: `text`/`badge`/`stat-tile`'s `value` (or a `table` column's `cell`) reads a raw Binding verbatim unless the author explicitly wraps it in `formatDate`/`formatNumber` — the same already-optional, author-invoked usage `formatDuration` has always had — so a page needing a raw, non-localized value (an ID, a code, a wire-format timestamp meant for copy-paste) continues to bind directly. This is what it means for date/number **display** values to be locale-formatted rather than raw: the contract supplies the formatting vocabulary a pack needs since it ships no frontend code of its own to call `Intl` or an equivalent itself (Scope); which value positions are worth formatting remains an authoring choice.
+**[UIS-143]** `formatDate`, `formatNumber`, and `formatCurrency` (Binding grammar: computed values) render their bound value using the same viewer-resolved locale a `msg:` reference resolves its locale catalog against (`manifest/1` MAN-111) — this contract defines no separate locale-resolution mechanism of its own, the same "reused here by reference" treatment its Scope section already gives the `msg:` mechanism generally. A page's date-, number-, or price-typed field is never implicitly formatted merely by virtue of its type: `text`/`badge`/`stat-tile`'s `value` (or a `table` column's `cell`) reads a raw Binding verbatim unless the author explicitly wraps it in `formatDate`/`formatNumber`/`formatCurrency` — the same already-optional, author-invoked usage `formatDuration` has always had — so a page needing a raw, non-localized value (an ID, a code, a wire-format timestamp meant for copy-paste, or an editable `number-input`'s own bound value) continues to bind directly. `formatCurrency` additionally pins WHICH currency the value is (its `currencyCode` argument, an ISO 4217 code) independently of the viewer's locale — the locale governs only the rendering's symbol placement and separators, exactly as `Intl.NumberFormat`'s own `{style: "currency", currency}` option separates the two; a price does not change currency because a different viewer is looking at it. This is what it means for date/number/currency **display** values to be locale-formatted rather than raw: the contract supplies the formatting vocabulary a pack needs since it ships no frontend code of its own to call `Intl` or an equivalent itself (Scope); which value positions are worth formatting remains an authoring choice.
 
 ### Context feeds
 
@@ -372,6 +373,11 @@ ui-schema/1 defines the declarative document a pack ships for each page it contr
 ```json
 // BindingExpr — locale-formatted date/number display (UIS-143), e.g. a stat-tile value
 { "compute": "formatDate", "args": ["created_at"] }
+```
+
+```json
+// BindingExpr — locale-formatted currency display (UIS-143), e.g. a table column's cell
+{ "compute": "formatCurrency", "args": ["price", "USD"] }
 ```
 
 ```json

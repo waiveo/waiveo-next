@@ -10,7 +10,7 @@
         "columns": [
           { "headerMsg": "msg:col.name", "cell": "item.name" },
           { "headerMsg": "msg:col.section", "cell": "item.section" },
-          { "headerMsg": "msg:col.price", "cell": "item.price" }
+          { "headerMsg": "msg:col.price", "cell": { "compute": "formatCurrency", "args": ["item.price", "USD"] } }
         ]
       },
       "on": { "rowPress": { "verb": "set", "target": "$ui.selected", "value": "item.entity_id" } }

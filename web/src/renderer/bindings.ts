@@ -420,6 +420,10 @@ function applyCompute(node: { compute: string; args?: unknown[] }, scope: Render
       return formatDate(ev(0), env.locale);
     case "formatNumber":
       return formatNumber(ev(0), env.locale);
+    case "formatCurrency":
+      // arg1 is a pinned ISO 4217 currency code (never a Binding, UIS-140/143) —
+      // read directly, the same treatment label's vocabRef and msg's msgRef get.
+      return formatCurrency(ev(0), env.locale, args[1]);
     case "firstKey": {
       const obj = asRecord(ev(0));
       const keys = Array.isArray(args[1]) ? (args[1] as string[]) : [];
@@ -448,6 +452,26 @@ export function formatNumber(v: unknown, locale: string): string {
   const n = typeof v === "number" ? v : Number(v);
   if (!Number.isFinite(n)) return v == null ? "" : String(v);
   return new Intl.NumberFormat(locale).format(n);
+}
+
+const ISO_4217 = /^[A-Za-z]{3}$/;
+
+/** Locale-formatted currency rendering (UIS-143): the viewer's active locale
+ * drives punctuation/symbol placement (the same locale `formatNumber`/`formatDate`
+ * use), while `currency` (an ISO 4217 code, e.g. `"USD"`) pins WHICH currency the
+ * bound number is — a business fact of the priced value, not a viewer preference,
+ * exactly as `Intl.NumberFormat`'s `{style: "currency"}` option separates the two.
+ * This is the fix for a raw price (`4.5`) rendering as bare `"4.5"` instead of a
+ * currency string (`"$4.50"`): a page author now wraps the bound value in
+ * `{compute: "formatCurrency", args: [priceBinding, "USD"]}` instead of binding it
+ * directly. A malformed/absent currency code degrades to `"USD"` rather than
+ * crashing the renderer — the same graceful-degradation discipline every other
+ * Computed function here follows. */
+export function formatCurrency(v: unknown, locale: string, currency: unknown): string {
+  const n = typeof v === "number" ? v : Number(v);
+  if (!Number.isFinite(n)) return v == null ? "" : String(v);
+  const code = typeof currency === "string" && ISO_4217.test(currency) ? currency.toUpperCase() : "USD";
+  return new Intl.NumberFormat(locale, { style: "currency", currency: code }).format(n);
 }
 
 export function formatDuration(seconds: number): string {

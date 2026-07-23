@@ -161,6 +161,22 @@ describe("bindings — computed values (UIS-140)", () => {
     expect(String(compute("formatDate", ["created_at"]))).not.toBe(data.created_at);
   });
 
+  it("formatCurrency renders a locale-formatted currency string, not a raw number (UIS-143)", () => {
+    // The bug this closes: a raw price (4.5) rendered as bare "4.5" instead of a
+    // currency string. formatCurrency(numberBinding, currencyCode) fixes it.
+    expect(compute("formatCurrency", ["price", "USD"])).toBe("$1,234.50");
+    // A non-finite/absent value degrades gracefully, same discipline as formatNumber.
+    expect(compute("formatCurrency", ["missing", "USD"])).toBe("");
+  });
+
+  it("formatCurrency is locale-driven (UIS-143): the SAME value + currency renders differently per viewer locale", () => {
+    const usResult = evalBindingExpr({ compute: "formatCurrency", args: ["price", "EUR"] }, scope, env);
+    const deEnv: RenderEnv = { ...env, locale: "de-DE" };
+    const deResult = evalBindingExpr({ compute: "formatCurrency", args: ["price", "EUR"] }, scope, deEnv);
+    expect(String(usResult)).not.toBe(String(deResult));
+    expect(String(deResult)).toContain("€"); // €
+  });
+
   it("label resolves a value against a collected vocab label map (UIS-140)", () => {
     const withLabels: RenderEnv = {
       ...env,

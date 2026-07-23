@@ -124,6 +124,7 @@ export const COMPUTE_FNS = [
   "formatDuration",
   "formatDate",
   "formatNumber",
+  "formatCurrency",
   "firstKey",
 ] as const;
 export type ComputeFn = (typeof COMPUTE_FNS)[number];

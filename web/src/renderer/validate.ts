@@ -280,11 +280,12 @@ function validateBindingExpr(v: unknown, path: string, ctx: Ctx): void {
 
 // Arg positions a compute function pins to a non-Binding type, so the validator
 // must NOT grammar-check them as data paths (UIS-140): label's vocabRef, msg's
-// msgRef, firstKey's literal key-array.
+// msgRef, firstKey's literal key-array, formatCurrency's pinned currency code.
 const COMPUTE_SKIP_GRAMMAR: Record<string, Set<number>> = {
   label: new Set([0]), // vocabRef
   msg: new Set([0]), // msgRef
   firstKey: new Set([1]), // literal candidate-key array
+  formatCurrency: new Set([1]), // pinned ISO 4217 currency code (UIS-143)
 };
 
 function validateComputed(v: Record<string, unknown>, path: string, ctx: Ctx): void {

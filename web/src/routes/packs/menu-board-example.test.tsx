@@ -143,6 +143,30 @@ describe("The menu-board example pack renders through the console", () => {
     expect(within(table).getByText("Price")).toBeInTheDocument();
   });
 
+  it("renders price as currency in the list, but a raw editable number once a row is opened (UIS-143)", async () => {
+    // The bug: menu_items.price (4.5) rendered raw in the table ("4.5") instead of
+    // a currency string ("$4.50"). The fix formats the LIST cell via the page
+    // doc's formatCurrency binding, while the DETAIL form's number-input keeps the
+    // raw, editable value — formatting is a display concern, never applied to an
+    // editable bind (UIS-143).
+    server.use(
+      ...baseHandlers(),
+      http.get(`${B}/data/menu_items`, () => dataPage([menuRow()])),
+    );
+    const user = userEvent.setup();
+    renderPack();
+
+    const table = await screen.findByRole("table", { name: "Menu items" });
+    expect(within(table).getByText("$4.50")).toBeInTheDocument();
+    expect(within(table).queryByText("4.5")).not.toBeInTheDocument();
+
+    // Click the row through to the detail form (a real interaction, not just a
+    // render assertion) and confirm the price input underneath holds the raw,
+    // unformatted, still-editable value.
+    await user.click(within(table).getByText("Cortado"));
+    expect(await screen.findByLabelText("Price")).toHaveValue(4.5);
+  });
+
   it("creates a menu item over the pack-data api/1 surface and shows it in the list", async () => {
     // Start empty; the create posts under the org scope, then the list reflects it.
     const state = { rows: [] as unknown[] };
