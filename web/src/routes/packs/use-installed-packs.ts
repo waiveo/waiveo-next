@@ -17,10 +17,14 @@ export interface PackNavPage {
   label: string;
 }
 
-/** One installed pack's nav group: the resolved pack title and its pages. */
+/** One installed pack's nav group: the resolved pack title, its optional
+ * manifest-declared icon name (resolved to a glyph by the shell — undefined when
+ * absent or not a string; an unknown name degrades to the default, never broken),
+ * and its pages. */
 export interface PackNavGroup {
   packId: string;
   title: string;
+  icon?: string;
   pages: PackNavPage[];
 }
 
@@ -49,9 +53,14 @@ export function useInstalledPackNav(api?: WaiveoApi): PackNavGroup[] {
               if (safe === null) return [];
               return [{ to: `/p/${pack.id}/${safe}`, label: resolveTitle(messages, p.titleMsg) }];
             });
+            // The icon is untrusted manifest data — keep it only when it is a
+            // string; the shell's resolvePackIcon maps a known name to a glyph and
+            // an unknown (or absent) one to the default extension glyph.
+            const icon = typeof pack.manifest.icon === "string" ? pack.manifest.icon : undefined;
             return {
               packId: pack.id,
               title: resolveTitle(messages, pack.manifest.displayName),
+              ...(icon !== undefined ? { icon } : {}),
               pages,
             };
           }),

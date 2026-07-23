@@ -23,6 +23,7 @@ import { useMediaQuery } from "@/lib/use-media-query";
 import { cn } from "@/lib/utils";
 import type { WaiveoApi } from "@/api";
 import { useInstalledPackNav, type PackNavGroup } from "@/routes/packs/use-installed-packs";
+import { resolvePackIcon } from "./pack-icon";
 
 /**
  * AppShell — the console's responsive frame. The primary navigation is LOCKED
@@ -146,14 +147,28 @@ function ExtensionsNav({
       </div>
       {groups.map((group) => (
         <div key={group.packId} className="flex flex-col gap-1">
-          <span
-            className={cn(
-              "px-3 text-[11px] font-medium text-muted-foreground",
-              collapsed && "sr-only",
-            )}
+          {/* The group heading wears the pack's icon: its manifest-declared glyph
+              when it names a host-allowed one, else the default extension glyph.
+              resolvePackIcon ALWAYS returns a real component — the nav never shows
+              a broken/missing icon, even for an unknown or non-string name. */}
+          <div
+            data-slot="pack-group-heading"
+            className={cn("flex items-center gap-2 px-3", collapsed && "justify-center")}
           >
-            {group.title}
-          </span>
+            <KitIcon
+              icon={resolvePackIcon(group.icon)}
+              decorative
+              className="size-4 shrink-0 text-muted-foreground"
+            />
+            <span
+              className={cn(
+                "text-[11px] font-medium text-muted-foreground",
+                collapsed && "sr-only",
+              )}
+            >
+              {group.title}
+            </span>
+          </div>
           {group.pages.map((pg) => (
             <NavLink key={pg.to} to={pg.to} onClick={onNavigate} className={navLinkClass(collapsed)}>
               <KitIcon icon={FileText} decorative className="size-4 shrink-0" />

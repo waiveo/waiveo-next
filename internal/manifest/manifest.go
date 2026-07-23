@@ -27,6 +27,7 @@ type PackManifest struct {
 	Version      string                     `json:"version"`
 	DisplayName  string                     `json:"displayName"`
 	Description  string                     `json:"description,omitempty"`
+	Icon         string                     `json:"icon,omitempty"`
 	Compat       Compat                     `json:"compat"`
 	Capabilities []Capability               `json:"capabilities"`
 	Egress       []string                   `json:"egress"`

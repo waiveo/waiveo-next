@@ -16,6 +16,15 @@ var idSegmentRe = regexp.MustCompile(`^[a-z][a-z0-9-]{1,38}$`)
 // digits-only components (MAJOR.MINOR.PATCH).
 var versionRe = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
 
+// iconNameRe is the grammar the optional display icon MUST match: a lowercase
+// kebab-case lucide glyph name — a letter-led segment of lowercase letters and
+// digits, joined by single hyphens (no leading/trailing/double hyphen). It is
+// intentionally strict so a name can never carry markup, a path, whitespace, or
+// case into the console's icon lookup. Membership in the host-allowed glyph set
+// is NOT enforced here: an unrecognized-but-well-formed name degrades to the
+// default extension glyph at render, never a broken icon or a refused install.
+var iconNameRe = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`)
+
 // IsPublisherNameID reports whether id is a well-formed pack id (MAN-001):
 // exactly <publisher>/<name>, each segment matching idSegmentRe.
 func IsPublisherNameID(id string) bool {
@@ -41,4 +50,11 @@ func IsMsgRef(s string) bool {
 // three digits-only dot-separated components.
 func IsThreeComponentVersion(s string) bool {
 	return versionRe.MatchString(s)
+}
+
+// IsIconName reports whether s is a well-formed lucide glyph name (the optional
+// display-icon grammar): a lowercase kebab-case identifier. Shape only — it does
+// not check membership in the host-allowed glyph set (that resolves at render).
+func IsIconName(s string) bool {
+	return iconNameRe.MatchString(s)
 }

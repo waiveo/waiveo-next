@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { render, screen, within, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { MemoryRouter } from "react-router";
@@ -131,5 +132,82 @@ describe("Extensions nav", () => {
     // Let the (empty) packs list settle, then confirm no Extensions landmark.
     await waitFor(() => expect(screen.getByText("content")).toBeInTheDocument());
     expect(screen.queryByRole("navigation", { name: "Extensions" })).not.toBeInTheDocument();
+  });
+});
+
+// ── The nav icon: a real glyph on every pack group and page — never broken ─────
+//
+// A lucide component renders `<svg class="lucide lucide-<name> …">`, so a valid
+// icon is provable in the DOM by its `lucide-<name>` class; a broken/missing icon
+// would render no such glyph. The group wears the manifest-declared icon when it
+// names one the host allows, and the default extension glyph (Puzzle) otherwise —
+// including when the declared name is unknown (degrade, never break).
+
+/** The lucide `lucide-<name>` class on the single glyph inside `el`, or "" when
+ * `el` carries no icon at all (a broken/missing icon — what this fix forbids). */
+function iconName(el: Element | null | undefined): string {
+  const svg = el?.querySelector("svg");
+  const cls = svg?.getAttribute("class") ?? "";
+  return cls.match(/lucide-[a-z0-9-]+/)?.[0] ?? "";
+}
+
+async function renderWithPack(over: Record<string, unknown> = {}) {
+  server.use(
+    http.get("*/api/v1/packs", () =>
+      jsonBody({ items: [pack({ manifest: packManifest(over) })], cursor: null }),
+    ),
+    http.get("*/api/v1/packs/acme/menu-board/messages/en", () => jsonBody(PACK_EN_CATALOG)),
+  );
+  renderShell();
+  return await screen.findByRole("navigation", { name: "Extensions" });
+}
+
+describe("Extensions nav — pack icons (never broken)", () => {
+  it("renders the DEFAULT extension glyph on the group and a valid glyph on every page when no icon is declared", async () => {
+    const ext = await renderWithPack();
+
+    const heading = ext.querySelector('[data-slot="pack-group-heading"]');
+    expect(heading).not.toBeNull();
+    // A group without a declared icon wears the default extension glyph (Puzzle).
+    expect(iconName(heading)).toBe("lucide-puzzle");
+
+    // Every page link renders a real glyph too — no dead/missing icon anywhere.
+    for (const name of ["Menu Items", "Settings"]) {
+      const link = within(ext).getByRole("link", { name });
+      expect(iconName(link)).toMatch(/^lucide-[a-z]/);
+    }
+  });
+
+  it("renders the manifest-DECLARED icon on the group when it names a host-allowed glyph", async () => {
+    const ext = await renderWithPack({ icon: "utensils" });
+    const heading = ext.querySelector('[data-slot="pack-group-heading"]');
+    expect(iconName(heading)).toBe("lucide-utensils");
+  });
+
+  it("falls back to the DEFAULT glyph when the declared icon name is unknown — degrades, never broken", async () => {
+    const ext = await renderWithPack({ icon: "totally-not-a-real-glyph" });
+    const heading = ext.querySelector('[data-slot="pack-group-heading"]');
+    // Unknown name -> the default; the group still shows a real, non-broken glyph.
+    expect(iconName(heading)).toBe("lucide-puzzle");
+  });
+
+  it("survives a NON-string icon value (untrusted manifest) — still a real glyph, never a crash", async () => {
+    // Install validates the manifest as JSON; the console must not trust the icon's
+    // runtime type. A non-string icon degrades to the default rather than breaking.
+    const ext = await renderWithPack({ icon: { evil: 1 } as unknown as string });
+    const heading = ext.querySelector('[data-slot="pack-group-heading"]');
+    expect(iconName(heading)).toBe("lucide-puzzle");
+  });
+
+  it("navigates when a pack page link is CLICKED — the extension nav is live, not a dead icon strip", async () => {
+    const user = userEvent.setup();
+    const ext = await renderWithPack({ icon: "utensils" });
+
+    const link = within(ext).getByRole("link", { name: "Menu Items" });
+    expect(link).not.toHaveAttribute("aria-current");
+    // Drive the real interaction: clicking the extension link navigates to the
+    // pack page route and marks it active (a dead link would never become current).
+    await user.click(link);
+    expect(link).toHaveAttribute("aria-current", "page");
   });
 });

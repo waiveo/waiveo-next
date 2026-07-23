@@ -61,6 +61,12 @@ export interface PackManifest {
   /** A `msg:` reference resolved against the pack's locale catalog. */
   displayName: string;
   description?: string;
+  /** An optional display hint: a lucide glyph name (kebab-case) the console
+   * resolves to the pack's nav-group icon. Grammar-validated at install; an
+   * absent or unrecognized name degrades to the default extension glyph, never a
+   * broken icon (resolvePackIcon). Untrusted — the runtime value is not
+   * guaranteed to be a string. */
+  icon?: string;
   ui: { pages: PackManifestPage[] };
   dataModel: { version: number; collections: PackManifestCollection[] };
 }

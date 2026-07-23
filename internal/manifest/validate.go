@@ -20,6 +20,7 @@ import (
 func Validate(m PackManifest, host HostRegistries) []Error {
 	var errs []Error
 	errs = append(errs, validateIdentity(m)...)
+	errs = append(errs, validateIcon(m)...)
 	errs = append(errs, validateCompat(m, host)...)
 	errs = append(errs, validateCapabilities(m, host)...)
 	errs = append(errs, validateEgress(m)...)
@@ -51,6 +52,23 @@ func validateIdentity(m PackManifest) []Error {
 			"displayName MUST be a msg: locale-catalog reference (MAN-003)"})
 	}
 	return errs
+}
+
+// validateIcon checks the OPTIONAL display icon: when declared, it MUST be a
+// well-formed lucide glyph name (a lowercase kebab-case identifier), so a name
+// can never carry markup, a path, or whitespace into the console's icon lookup.
+// The host-allowed glyph SET is resolved at render, not here — an
+// unrecognized-but-well-formed name degrades to the default extension glyph
+// rather than failing install, so only a MALFORMED name is refused.
+func validateIcon(m PackManifest) []Error {
+	if m.Icon == "" {
+		return nil
+	}
+	if !IsIconName(m.Icon) {
+		return []Error{{"MANIFEST_SCHEMA_INVALID", "icon",
+			`icon, when declared, MUST be a lowercase kebab-case lucide glyph name, got "` + m.Icon + `"`}}
+	}
+	return nil
 }
 
 // validateCompat enforces MAN-010/011/012/013: compat.ctx present and a valid
