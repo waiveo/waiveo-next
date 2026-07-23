@@ -32,25 +32,13 @@ const ITEM_NAME = "E2E Flat White";
 
 let api: APIRequestContext;
 
-// A pack row must attach to a scope_node (MAN-051). A real deployment carries an org
-// root; the dev seed materializes only a Demo Site (its org ancestor id is a virtual
-// boundary, never inserted), so `selector=kind=org` is empty on a fresh stack and the
-// create control has no scope to attach to. Provision an org root over the API if one
-// is absent — the SAME "prepare the data precondition, then drive the control" pattern
-// as installing the pack if absent — so the gate exercises the create CONTROL, not a
-// seed gap. (Flagged for a proper seed follow-up; a pack row attaches to any scope
-// node, so this makes the out-of-box create flow work.)
-async function ensureOrgScope(): Promise<void> {
-  const res = await api.get("/api/v1/scope-nodes", { params: { selector: "kind=org" } });
-  expect(res.ok(), `list org scope nodes: ${res.status()}`).toBeTruthy();
-  const body = (await res.json()) as { items?: unknown[] };
-  if ((body.items ?? []).length > 0) return;
-  const created = await api.post("/api/v1/scope-nodes", {
-    headers: { "Idempotency-Key": randomUUID() },
-    data: { kind: "org", name: "E2E Org Root", parent_id: null },
-  });
-  expect(created.status(), `create org scope node: ${await created.text()}`).toBe(201);
-}
+// NOTE (cold-open create): the create test below drives New → fill → Save with NO
+// test-provisioned scope. A pack row must attach to a scope_node (MAN-051), and a
+// stock `make web-e2e` seeds ONLY a Demo Site (kind=site) whose org ancestor is a
+// virtual boundary — there is NO kind=org row. The app must resolve that site as the
+// create target on its own (org → site → any). This spec deliberately does NOT
+// provision an org: if the app cannot resolve a scope from the stock seed, the create
+// fails here — which is exactly the regression this gate must catch.
 
 // Install the in-repo example pack over the REAL install endpoint if it is not already
 // present. The zip bytes come from `make example-pack` (one source of truth,
@@ -84,7 +72,6 @@ async function apiRows(): Promise<Array<Record<string, unknown>>> {
 test.beforeAll(async () => {
   api = await pwRequest.newContext({ baseURL: BASE_URL, ignoreHTTPSErrors: true });
   await ensurePackInstalled();
-  await ensureOrgScope();
 });
 
 test.afterAll(async () => {

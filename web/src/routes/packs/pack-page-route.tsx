@@ -12,9 +12,40 @@ import {
   type FieldErrors,
   type PackRow,
   type PackRowWrite,
+  type ScopeNode,
   type WaiveoApi,
 } from "@/api";
 import { loadPackCatalog, primaryCollection, resolveTitle } from "./catalog";
+
+/**
+ * The scope node a create attaches a new pack row under (MAN-051: a pack row
+ * attaches to ANY scope node). A self-hosted deployment is one-org/one-site and
+ * ALWAYS carries a resolvable scope after `make dev-up` — but the demo seed
+ * materializes only a Demo Site whose org ancestor is a virtual boundary (never an
+ * inserted row), so resolving `kind=org` ALONE finds nothing and a cold-open create
+ * would wrongly refuse. Resolve the deployment's ROOT deterministically instead:
+ * prefer the org root, else a site (the invariant guarantees one), else the topmost
+ * node of any kind (a node whose parent is not itself a queryable row). Returns
+ * `null` ONLY for a genuinely scope-less deployment — which cannot happen after
+ * `make dev-up`.
+ */
+export function resolveDefaultScopeNode(nodes: ScopeNode[]): string | null {
+  if (nodes.length === 0) return null;
+  const byId = (a: ScopeNode, b: ScopeNode) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  const firstOfKind = (kind: ScopeNode["kind"]): string | null =>
+    nodes.filter((n) => n.kind === kind).sort(byId)[0]?.id ?? null;
+  // The org root first, then a site (the self-hosted invariant guarantees one),
+  // then the topmost node of ANY kind — a node whose parent is absent from the
+  // queryable set (the seed's site references a virtual org boundary) — with a
+  // sortable-ULID tiebreak so the choice is deterministic across page loads.
+  const org = firstOfKind("org");
+  if (org) return org;
+  const site = firstOfKind("site");
+  if (site) return site;
+  const ids = new Set(nodes.map((n) => n.id));
+  const roots = nodes.filter((n) => n.parent_id === null || !ids.has(n.parent_id));
+  return [...(roots.length > 0 ? roots : nodes)].sort(byId)[0].id;
+}
 
 /**
  * The pack page route (`/p/{publisher}/{name}/{path}`) — an INSTALLED extension's
@@ -68,7 +99,7 @@ interface Loaded {
   validation: ValidationResult;
   messages: Record<string, string>;
   collection: string | null;
-  orgScopeNode: string | null;
+  defaultScopeNode: string | null;
   pageTitle: string;
   packTitle: string;
 }
@@ -121,13 +152,17 @@ export default function PackPageRoute({ api }: { api?: WaiveoApi }) {
       const collectionNames = new Set((manifest.dataModel?.collections ?? []).map((c) => c.name));
       const collection = validation.ok ? primaryCollection(rawDoc, collectionNames) : null;
 
-      // A row must carry a scope_node (MAN-051). // auth-seam: consent (MAN-022) is
-      // auto-granted in the dev-POC and a created row is attached to the org root;
-      // a real deployment gates the write on granted consent and lets the operator
-      // choose the target scope.
-      const orgScopeNode = await client.scopeNodes
-        .list({ selector: "kind=org" })
-        .then((p) => p.items[0]?.id ?? null)
+      // A row must carry a scope_node (MAN-051). Resolve the deployment's root scope
+      // deterministically so a cold-open create always has a target: the org root if
+      // present, else the site (the self-hosted invariant guarantees one after
+      // `make dev-up`), else any scope node — a pack row attaches to ANY (MAN-051).
+      // auth-seam: consent (MAN-022) is auto-granted in the dev-POC and a created row
+      // is attached to this resolved root; a real deployment gates the write on
+      // granted consent and lets the operator choose the target scope.
+      const defaultScopeNode = await collectPages<ScopeNode>((cursor) =>
+        client.scopeNodes.list({ cursor }),
+      )
+        .then(resolveDefaultScopeNode)
         .catch(() => null);
 
       const pageEntry = (manifest.ui?.pages ?? []).find((p) => p.path === path);
@@ -137,7 +172,7 @@ export default function PackPageRoute({ api }: { api?: WaiveoApi }) {
       const packTitle = resolveTitle(messages, manifest.displayName);
 
       setRows(collection ? await loadRows(collection) : []);
-      setLoaded({ doc: rawDoc, validation, messages, collection, orgScopeNode, pageTitle, packTitle });
+      setLoaded({ doc: rawDoc, validation, messages, collection, defaultScopeNode, pageTitle, packTitle });
     } catch (err) {
       setLoadError(
         err instanceof ApiError ? (err.detail ?? err.code) : "The extension page is unreachable.",
@@ -175,19 +210,21 @@ export default function PackPageRoute({ api }: { api?: WaiveoApi }) {
     setConflictReview(false);
   }, []);
 
-  const orgScopeNode = loaded?.orgScopeNode ?? null;
+  const defaultScopeNode = loaded?.defaultScopeNode ?? null;
 
   const handler: ActionHandler = useMemo(
     () => ({
-      // "New": create a row from the document's itemDefault, attached under the org
-      // scope, then reload so the fresh row is editable in the detail form.
+      // "New": create a row from the document's itemDefault, attached under the
+      // deployment's resolved root scope, then reload so the fresh row is editable in
+      // the detail form.
       create: async (_target, itemDefault) => {
         if (!collection) return;
         setFieldErrors({});
         setConflictReview(false);
         // The draft MAY carry a page-declared scope_node (newAction.scopeFrom,
-        // UIS-021); absent, the host attaches the row under the current org scope.
-        const scopeNode = typeof itemDefault.scope_node === "string" ? itemDefault.scope_node : orgScopeNode;
+        // UIS-021); absent, the host attaches the row under the resolved root scope
+        // (org → site → any; MAN-051).
+        const scopeNode = typeof itemDefault.scope_node === "string" ? itemDefault.scope_node : defaultScopeNode;
         if (!scopeNode) {
           toast.error("This workspace has no scope to attach records to yet.");
           return;
@@ -281,7 +318,7 @@ export default function PackPageRoute({ api }: { api?: WaiveoApi }) {
         return { items: page.items, cursor: page.cursor };
       },
     }),
-    [client, packId, collection, orgScopeNode, reload],
+    [client, packId, collection, defaultScopeNode, reload],
   );
 
   const data = collection ? { [collection]: rows } : {};

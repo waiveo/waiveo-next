@@ -8,12 +8,14 @@ import { setupServer } from "msw/node";
 import { toast as sonnerToast } from "sonner";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { ThemeProvider } from "@/components/theme/theme-provider";
-import PackPageRoute from "./pack-page-route";
+import PackPageRoute, { resolveDefaultScopeNode } from "./pack-page-route";
 import { validatePage } from "@/renderer/validate";
+import type { ScopeNode } from "@/api";
 import {
   TRACE_ID,
   ULID_A,
   ULID_B,
+  ULID_C,
   ULID_ROOT,
   pack,
   packRow,
@@ -177,6 +179,66 @@ function renderPack(path = "menu-items") {
   );
 }
 
+// A minimal ScopeNode fixture for the pure resolver: only the fields the resolver
+// reads (id/kind/parent_id) matter; the rest satisfy the type.
+function node(over: Partial<ScopeNode> & Pick<ScopeNode, "id" | "kind">): ScopeNode {
+  return {
+    parent_id: null,
+    name: "Node",
+    labels: [],
+    revision: 1,
+    created_at: "2026-07-22T00:00:00Z",
+    updated_at: "2026-07-22T00:00:00Z",
+    ...over,
+  } as ScopeNode;
+}
+
+describe("resolveDefaultScopeNode — the create target from the deployment's scope tree", () => {
+  it("returns null only for a genuinely scope-less deployment", () => {
+    expect(resolveDefaultScopeNode([])).toBeNull();
+  });
+
+  it("prefers the org root over a site and a screen", () => {
+    const nodes = [
+      node({ id: ULID_C, kind: "screen", parent_id: ULID_B }),
+      node({ id: ULID_B, kind: "site", parent_id: ULID_ROOT }),
+      node({ id: ULID_ROOT, kind: "org", parent_id: null }),
+    ];
+    expect(resolveDefaultScopeNode(nodes)).toBe(ULID_ROOT);
+  });
+
+  // The exact make-dev-up shape: a Demo Site whose org ancestor is a virtual boundary
+  // (never an inserted row) plus a screen under it — no org row at all. This is the
+  // cold-open create that shipped broken; the resolver MUST fall through to the site.
+  it("falls through to the site when no org row exists (the make dev-up seed)", () => {
+    const nodes = [
+      node({ id: ULID_ROOT, kind: "site", parent_id: "01J8Z0DEMOORGANCESTORBOUND" }),
+      node({ id: ULID_C, kind: "screen", parent_id: ULID_ROOT }),
+    ];
+    expect(resolveDefaultScopeNode(nodes)).toBe(ULID_ROOT);
+  });
+
+  it("falls through to the topmost node of any kind when neither org nor site exists", () => {
+    // A group whose parent is absent from the queryable set is the topmost; its child
+    // screen is not chosen.
+    const nodes = [
+      node({ id: ULID_C, kind: "screen", parent_id: ULID_A }),
+      node({ id: ULID_A, kind: "group", parent_id: "01J8Z0ABSENTPARENTBOUNDARY" }),
+    ];
+    expect(resolveDefaultScopeNode(nodes)).toBe(ULID_A);
+  });
+
+  it("is deterministic — a sortable-ULID tiebreak when several nodes share the winning kind", () => {
+    const nodes = [
+      node({ id: ULID_B, kind: "org", parent_id: null }),
+      node({ id: ULID_A, kind: "org", parent_id: null }),
+    ];
+    // ULID_A sorts before ULID_B; the choice does not depend on input order.
+    expect(resolveDefaultScopeNode(nodes)).toBe(ULID_A);
+    expect(resolveDefaultScopeNode([...nodes].reverse())).toBe(ULID_A);
+  });
+});
+
 describe("Pack page — rendered through the shared renderer", () => {
   it("the example page doc passes validatePage (the same gate every page clears)", () => {
     expect(validatePage(menuItemsDoc).ok).toBe(true);
@@ -265,6 +327,54 @@ describe("Pack page — pack-data create / edit over the api/1 conventions", () 
     expect(idempotencyKey).toMatch(/^[0-9a-f-]{36}$/i);
     // The row was attached under the org scope (MAN-051 requires a scope_node ULID).
     expect(postedScope).toBe(ULID_ROOT);
+  });
+
+  // The cold-open regression: a stock `make dev-up` seeds ONLY a Demo Site (kind=site)
+  // whose org ancestor is a virtual boundary (never an inserted row) plus a screen —
+  // there is NO kind=org row. The create used to resolve its scope from `kind=org`
+  // alone, find nothing, and refuse with "no scope to attach records to yet". It must
+  // instead fall through to the site and post that scope_node, so an out-of-box create
+  // works with no operator-provisioned org.
+  it("resolves the scope from the site when a site-only deployment carries no org row (MAN-051)", async () => {
+    const SITE = ULID_ROOT; // the Demo Site node id (kind=site)
+    const state = { rows: [] as unknown[] };
+    let postedScope: unknown = "unset";
+    const errorSpy = vi.spyOn(sonnerToast, "error");
+    server.use(
+      http.get(`${B}`, () => ok(pack(), { revision: 1 })),
+      // A site-only tree: the site's org ancestor is a virtual boundary absent from
+      // the returned set, and a screen sits under the site — exactly the seed shape.
+      http.get("*/api/v1/scope-nodes", () =>
+        dataPage([
+          { id: SITE, kind: "site", parent_id: "01J8Z0DEMOORGANCESTORBOUND", name: "Demo Site", revision: 1 },
+          { id: ULID_C, kind: "screen", parent_id: SITE, name: "Demo Screen", revision: 1 },
+        ]),
+      ),
+      http.get(`${B}/pages/menu-items`, () => jsonBody(menuItemsDoc)),
+      http.get(`${B}/messages/en`, () => jsonBody(PACK_EN_CATALOG)),
+      http.get(`${B}/data/menu_items`, () => dataPage(state.rows)),
+      http.post(`${B}/data/menu_items`, async ({ request }) => {
+        const body = (await request.json()) as { scope_node?: unknown };
+        postedScope = body.scope_node;
+        const created = packRow({ entity_id: ULID_B, name: "New item", scope_node: SITE, revision: 1 });
+        state.rows = [...state.rows, created];
+        return ok(created, { status: 201, revision: 1 });
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderPack();
+    await screen.findByRole("table", { name: "Menu items" });
+    await user.click(screen.getByRole("button", { name: "New" }));
+    await user.click(await screen.findByRole("button", { name: "Save changes" }));
+
+    // The row was created AND attached to the SITE scope — never refused, never the
+    // screen (site is preferred as the topmost node the invariant guarantees).
+    await waitFor(() =>
+      expect(within(screen.getByRole("table", { name: "Menu items" })).getByText("New item")).toBeInTheDocument(),
+    );
+    expect(postedScope).toBe(SITE);
+    expect(errorSpy).not.toHaveBeenCalled();
   });
 
   it("edits a row under its If-Match and persists the change", async () => {
