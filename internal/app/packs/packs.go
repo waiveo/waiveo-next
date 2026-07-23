@@ -265,6 +265,18 @@ func (in *Installer) collectBundleFiles(m *manifest.PackManifest, bundle *Bundle
 			return nil, nil, nil, artifactErr("PACK_LOCALE_INVALID",
 				"locale catalog %q is not valid JSON", name)
 		}
+		// MAN-110: a locale catalog is a FLAT {key: text} map. Prove it here — a
+		// non-object top level or any non-string value is refused. The manifest
+		// engine's validateLocale only checks messages/en.json is present, so
+		// without this a pack could ship a catalog whose value is an object/array
+		// under a manifest-referenced key (displayName/titleMsg); carried to the
+		// console that non-string crashes React render. Defense-in-depth alongside
+		// the renderer's own value-type guard. The catalog is parsed only to prove
+		// its shape — nothing is executed.
+		if badKey, ok := localeCatalogStrings(catalog); !ok {
+			return nil, nil, nil, artifactErr("PACK_LOCALE_INVALID",
+				"locale catalog %q must be a flat object of string values (MAN-110)%s", name, badKey)
+		}
 		files = append(files, store.PackFile{
 			Kind: store.PackFileLocale,
 			Name: locale,
@@ -276,6 +288,32 @@ func (in *Installer) collectBundleFiles(m *manifest.PackManifest, bundle *Bundle
 	sort.Strings(pages)
 	sort.Strings(locales)
 	return files, pages, locales, nil
+}
+
+// localeCatalogStrings reports whether a locale catalog (already proven valid
+// JSON) is a flat object whose every value is a string (MAN-110). On failure it
+// also returns a `: "<key>" is not a string`-style suffix naming the first
+// offending key (empty for a non-object top level), for the typed error's detail.
+// It decodes only to inspect value shapes — it executes nothing.
+func localeCatalogStrings(catalog []byte) (detail string, ok bool) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(catalog, &raw); err != nil {
+		// Top level is not a JSON object (an array/string/number/null).
+		return "", false
+	}
+	// Sort the keys so the reported offender is deterministic across runs.
+	keys := make([]string, 0, len(raw))
+	for k := range raw {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		var s string
+		if err := json.Unmarshal(raw[k], &s); err != nil {
+			return fmt.Sprintf(": %q is not a string", k), false
+		}
+	}
+	return "", true
 }
 
 // localeName reports whether a bundle entry names a locale catalog

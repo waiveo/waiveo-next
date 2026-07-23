@@ -33,10 +33,22 @@ export function toRendererMessages(
 }
 
 /** Resolve a `msg:` reference to display text against an already-prefixed catalog,
- * humanizing the reference's last segment when the catalog has no entry (the same
- * graceful fallback the renderer applies to unresolved refs). */
+ * humanizing the reference's last segment when the catalog has no string entry (the
+ * same graceful fallback the renderer applies to unresolved refs).
+ *
+ * The catalog is UNTRUSTED pack data: install validates a locale catalog only as
+ * well-formed JSON, never that its values are strings, so a pack can ship
+ * messages/en.json with a NON-string value (an object/array/number) under a
+ * manifest-referenced key. toRendererMessages carries that value through verbatim,
+ * so a bare `messages[ref] ?? …` would return the non-string — which then flows to
+ * `group.title`/a header and crashes the whole console shell on React's "Objects
+ * are not valid as a React child" (there is no ErrorBoundary; AppShell wraps every
+ * route). Take the entry ONLY when it is a string; anything else — a non-string OWN
+ * value, or an inherited Object.prototype member reached by a `msg:`-prefix-dropped
+ * ref — humanizes. This mirrors the renderer's makeMessageResolver guard exactly. */
 export function resolveTitle(messages: Record<string, string>, ref: string): string {
-  return messages[ref] ?? humanizeMsgRef(ref);
+  const value = messages[ref];
+  return typeof value === "string" ? value : humanizeMsgRef(ref);
 }
 
 /** Humanize a `msg:` reference — its last dotted segment, de-camel/kebab/snaked

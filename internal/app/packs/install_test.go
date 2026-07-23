@@ -168,6 +168,29 @@ func TestInstallInvalidPageDoc(t *testing.T) {
 	artifactCode(t, err, "PACK_PAGE_DOC_INVALID")
 }
 
+// TestInstallNonStringLocaleValue: a locale catalog that is well-formed JSON but
+// carries a NON-string value (MAN-110 declares a flat {key: text} map) is refused
+// at install. This is defense-in-depth for the console: a non-string catalog value
+// referenced by the manifest (e.g. displayName) would otherwise flow into the nav
+// title unguarded. The catalog is only parsed to prove its shape — never executed.
+func TestInstallNonStringLocaleValue(t *testing.T) {
+	st := openStore(t)
+	files := basePackFiles(t, baseManifest())
+	files["messages/en.json"] = `{"pack.displayName":{"x":1},"page.menuItems.title":"Menu Items","page.settings.title":"Settings"}`
+	_, err := packs.NewInstaller(st).Install(context.Background(), filesZip(t, files))
+	artifactCode(t, err, "PACK_LOCALE_INVALID")
+}
+
+// TestInstallNonObjectLocaleCatalog: a locale catalog whose top level is not a
+// JSON object (a bare array/string/number) is likewise refused — MAN-110 is a map.
+func TestInstallNonObjectLocaleCatalog(t *testing.T) {
+	st := openStore(t)
+	files := basePackFiles(t, baseManifest())
+	files["messages/en.json"] = `["not","a","map"]`
+	_, err := packs.NewInstaller(st).Install(context.Background(), filesZip(t, files))
+	artifactCode(t, err, "PACK_LOCALE_INVALID")
+}
+
 // TestInstallMissingManifest: an artifact without a manifest.json is refused.
 func TestInstallMissingManifest(t *testing.T) {
 	st := openStore(t)
