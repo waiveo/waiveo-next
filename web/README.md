@@ -31,6 +31,18 @@ Run from the repo root (they wrap the npm scripts here):
 | `make web-dev` | Vite dev server; `/api`, `/events` and `/content` proxy to the running Go feeder (`https://127.0.0.1:7420`, self-signed TLS accepted). |
 | `make web-check` | The web gate: `tsc --noEmit` + `eslint` + `vitest run`. |
 | `make web-build` | Production build into `web/dist`, then synced into `internal/app/webui/dist` (the `go:embed` source). |
+| `make web-e2e` | The **click-through gate** (Playwright, dev-only): builds the SPA into the feeder embed, brings the full stack up, drives Chromium headless through the real console — New→fill→Save (a row appears **and** lands in the pack-data API), select→edit→Save (persists), Delete (gone), and every core nav item's heading — then tears the stack down. A dead control (renders but does nothing) fails it where a render-only test stays green. |
+
+### One-time Playwright browser install
+
+`make web-e2e` drives a real Chromium. Playwright is a **dev-only** dependency
+(Apache-2.0) and never enters the production bundle, and the browser binary is
+**not** committed — it lives in the OS cache (`~/Library/Caches/ms-playwright` on
+macOS). Install it once after `npm ci`:
+
+```sh
+cd web && npx playwright install chromium
+```
 
 `web/dist/index.html` and `internal/app/webui/dist/index.html` are committed
 **placeholder** shells (everything else the build emits is git-ignored). They keep

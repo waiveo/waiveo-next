@@ -54,4 +54,12 @@ export default tseslint.config(
     files: ["*.{js,ts}", "vite.config.ts", "eslint.config.js", "scripts/**/*.{js,mjs,ts}"],
     languageOptions: { globals: globals.node },
   },
+  // The Playwright click-through gate (tests/e2e) is DEV-ONLY and runs under the
+  // Playwright test runner on Node — it reads the pack zip off disk (fs), sees
+  // PW_* env, and drives the browser through the `page` fixture. Give it the Node
+  // globals; it is never built into the app bundle (tsconfig `include` is `src`).
+  {
+    files: ["tests/**/*.{ts,tsx}"],
+    languageOptions: { globals: globals.node },
+  },
 );

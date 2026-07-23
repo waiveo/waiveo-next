@@ -1,4 +1,4 @@
-.PHONY: dev dev-up dev-down smoke web-dev web-check web-build web-sse-check example-pack
+.PHONY: dev dev-up dev-down smoke web-dev web-check web-build web-sse-check web-e2e example-pack
 # Repo-local run dir (git-ignored): pidfiles + the built binaries live here, so teardown
 # is exact (by PID, not `pkill -f`) and nothing lands in a shared /tmp.
 RUNDIR := $(CURDIR)/.dev
@@ -89,3 +89,21 @@ web-build:
 	@mkdir -p $(WEB_EMBED_DIR)
 	@cp -R $(WEB_DIR)/dist/. $(WEB_EMBED_DIR)/
 	@touch $(WEB_EMBED_DIR)/.gitkeep
+
+# The real click-through gate (Wave 4b, Task 5): the anti-regression proving a
+# user-facing control actually worked, not just rendered. Build the SPA into the
+# feeder embed, build the example-pack zip the spec installs, bring the FULL stack
+# up (feeder + relay serving the real built SPA), then drive Chromium headless
+# through the actual console — New -> fill -> Save (a row appears AND lands in the
+# pack-data API), select -> edit -> Save (persists), Delete (gone), and every core
+# nav item's heading — and ALWAYS tear the stack down, exiting with the spec result.
+# A dead control (a button that renders but does nothing) fails this where a
+# render-only unit test stays green. Playwright is DEV-ONLY (Apache-2.0), never in
+# the production bundle; the Chromium binary is a one-time `cd web && npx playwright
+# install chromium` (cached in the OS, never committed). Assumes web deps installed
+# (`cd web && npm ci`). Sub-makes keep the build/pack/up order deterministic.
+web-e2e:
+	@$(MAKE) --no-print-directory web-build
+	@$(MAKE) --no-print-directory example-pack
+	@$(MAKE) --no-print-directory dev-up
+	@PW_PACK_ZIP=$(RUNDIR)/menu-board.pack.zip npm --prefix $(WEB_DIR) run e2e; rc=$$?; $(MAKE) --no-print-directory dev-down; exit $$rc
