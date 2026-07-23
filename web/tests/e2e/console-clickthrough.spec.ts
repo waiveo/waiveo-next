@@ -69,6 +69,20 @@ async function apiRows(): Promise<Array<Record<string, unknown>>> {
   return body.items ?? [];
 }
 
+// The seeded Demo Site's scope-node id (kind=site) straight off the scope-nodes api —
+// the create target the app must resolve on its OWN (org → site → any, MAN-051) for a
+// cold-open create with no operator-provisioned org. A stock `make dev-up` seeds
+// exactly one site; assert it is present so a scope-less seed fails loudly here rather
+// than surfacing opaquely downstream.
+async function siteScopeNodeId(): Promise<string> {
+  const res = await api.get("/api/v1/scope-nodes");
+  expect(res.ok(), `list scope nodes: ${res.status()}`).toBeTruthy();
+  const body = (await res.json()) as { items?: Array<{ id?: string; kind?: string }> };
+  const site = (body.items ?? []).find((n) => n.kind === "site");
+  expect(site?.id, "stock make dev-up seeds a Demo Site (kind=site)").toBeTruthy();
+  return site!.id!;
+}
+
 test.beforeAll(async () => {
   api = await pwRequest.newContext({ baseURL: BASE_URL, ignoreHTTPSErrors: true });
   await ensurePackInstalled();
@@ -107,6 +121,16 @@ test.describe.serial("installed pack list-detail — real create / edit / delete
     await expect
       .poll(async () => (await apiRows()).find((r) => r.name === ITEM_NAME)?.price)
       .toBe(4.5);
+
+    // The app resolved the create scope on its OWN: with NO test-provisioned org, the
+    // row attaches to the seeded Demo Site (kind=site) a stock `make dev-up` guarantees
+    // — the org → site → any resolution (MAN-051). This pins the actual fix: the scope
+    // is neither null (which would have refused with "no scope to attach records to
+    // yet") nor the screen beneath the site.
+    const siteScopeNode = await siteScopeNodeId();
+    await expect
+      .poll(async () => (await apiRows()).find((r) => r.name === ITEM_NAME)?.scope_node)
+      .toBe(siteScopeNode);
   });
 
   test("selecting the row, editing Price, and Save persists the change", async ({ page }) => {
