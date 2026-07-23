@@ -88,17 +88,30 @@ function GapRowView({ row }: { row: GapRow }) {
 
 export default function ActivityRoute({
   factory,
-  reconnectDelayMs = 3000,
+  reconnectDelayMs = 1000,
+  maxReconnectDelayMs = 30_000,
+  random,
   url = EVENTS_URL,
 }: {
   /** Injectable transport — a test passes a fake EventSource; `null` forces the
    * unavailable/degraded path. Defaults to the browser EventSource. */
   factory?: ActivityEventSourceFactory | null;
+  /** First-retry backoff delay (ms); the wait grows (capped, jittered) per drop. */
   reconnectDelayMs?: number;
+  /** Backoff ceiling (ms) — the reconnect cadence never runs away. */
+  maxReconnectDelayMs?: number;
+  /** [0,1) jitter source; injectable so tests are deterministic. */
+  random?: () => number;
   url?: string;
 }) {
   const transport = factory === undefined ? browserEventSourceFactory : factory;
-  const feed = useActivityFeed({ url, factory: transport, reconnectDelayMs });
+  const feed = useActivityFeed({
+    url,
+    factory: transport,
+    reconnectDelayMs,
+    maxReconnectDelayMs,
+    ...(random ? { random } : {}),
+  });
   const conn = CONNECTION[feed.status];
   const unavailable = feed.status === "unavailable";
   const eventCount = useMemo(() => feed.rows.filter((r) => r.kind === "event").length, [feed.rows]);

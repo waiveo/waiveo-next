@@ -27,6 +27,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Status } from "@/components/kit";
+import { reconnectDelay } from "@/lib/backoff";
 
 /** The minimal EventSource surface the feed needs — satisfied by the browser
  * `EventSource` and by a test fake. `open`/`error`/`event`/`gap` all arrive as
@@ -200,7 +201,12 @@ export interface ActivityFeed {
 export interface UseActivityFeedOptions {
   url: string;
   factory: ActivityEventSourceFactory | null;
+  /** First-retry backoff delay (ms); `0` reconnects instantly (test mode). */
   reconnectDelayMs: number;
+  /** Backoff ceiling (ms) — the reconnect wait never runs away. Default 30s. */
+  maxReconnectDelayMs?: number;
+  /** [0,1) jitter source; injectable so tests are deterministic. */
+  random?: () => number;
   /** Cap the retained rows so a long-lived feed never grows unbounded. */
   maxRows?: number;
 }
@@ -208,10 +214,19 @@ export interface UseActivityFeedOptions {
 /**
  * The live-feed engine as a hook: owns one EventSource at a time, prepends each
  * delivered event / gap as a row (newest first, capped), tracks the last id for a
- * resume, reconnects on a drop (backoff), and supports pause/resume. A missing
- * transport (no EventSource, no fake) reports `unavailable` and connects nothing.
+ * resume, reconnects on a drop with capped exponential backoff + jitter (so a
+ * backend restart can't be met by a tight reconnect loop), and supports
+ * pause/resume. A missing transport (no EventSource, no fake) reports
+ * `unavailable` and connects nothing.
  */
-export function useActivityFeed({ url, factory, reconnectDelayMs, maxRows = 200 }: UseActivityFeedOptions): ActivityFeed {
+export function useActivityFeed({
+  url,
+  factory,
+  reconnectDelayMs,
+  maxReconnectDelayMs = 30_000,
+  random = Math.random,
+  maxRows = 200,
+}: UseActivityFeedOptions): ActivityFeed {
   const [status, setStatus] = useState<ActivityStatus>(factory ? "connecting" : "unavailable");
   const [rows, setRows] = useState<ActivityRow[]>([]);
   const [paused, setPaused] = useState(false);
@@ -229,6 +244,9 @@ export function useActivityFeed({ url, factory, reconnectDelayMs, maxRows = 200 
   // Consecutive failed connects (errored without opening) since the last
   // successful open. Drives the resume-cursor give-up above.
   const failedConnectsRef = useRef(0);
+  // Consecutive reconnect attempts since the last successful open — drives the
+  // capped exponential backoff and is reset the moment the stream recovers.
+  const backoffAttemptRef = useRef(0);
 
   const closeEs = useCallback(() => {
     if (esRef.current) {
@@ -283,11 +301,17 @@ export function useActivityFeed({ url, factory, reconnectDelayMs, maxRows = 200 
 
     const scheduleReconnect = () => {
       clearTimer();
+      const delay = reconnectDelay(backoffAttemptRef.current, {
+        baseMs: reconnectDelayMs,
+        capMs: maxReconnectDelayMs,
+        random,
+      });
+      backoffAttemptRef.current += 1;
       timerRef.current = setTimeout(() => {
         timerRef.current = null;
         if (disposed || pausedRef.current) return;
         connect();
-      }, reconnectDelayMs);
+      }, delay);
     };
 
     const connect = () => {
@@ -301,9 +325,11 @@ export function useActivityFeed({ url, factory, reconnectDelayMs, maxRows = 200 
       es.addEventListener("open", () => {
         if (disposed || pausedRef.current) return;
         // A live handshake: the resume (or fresh) connect was accepted, so any
-        // prior failed-connect streak is cleared.
+        // prior failed-connect streak and the backoff are cleared — the next drop
+        // starts from the base delay again.
         openedRef.current = true;
         failedConnectsRef.current = 0;
+        backoffAttemptRef.current = 0;
         setStatus("live");
       });
       es.addEventListener("error", () => {
@@ -343,7 +369,7 @@ export function useActivityFeed({ url, factory, reconnectDelayMs, maxRows = 200 
       clearTimer();
       closeEs();
     };
-  }, [url, factory, reconnectDelayMs, onEvent, onGap, closeEs, clearTimer]);
+  }, [url, factory, reconnectDelayMs, maxReconnectDelayMs, random, onEvent, onGap, closeEs, clearTimer]);
 
   const pause = useCallback(() => {
     pausedRef.current = true;
@@ -356,6 +382,8 @@ export function useActivityFeed({ url, factory, reconnectDelayMs, maxRows = 200 
   const resume = useCallback(() => {
     pausedRef.current = false;
     setPaused(false);
+    // A manual resume is a fresh intent to reconnect — start the backoff over.
+    backoffAttemptRef.current = 0;
     connectRef.current?.();
   }, []);
 
