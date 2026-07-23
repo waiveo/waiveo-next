@@ -137,7 +137,10 @@ func TestPackReinstall200(t *testing.T) {
 }
 
 // TestPackInstallManifestRefused422: an unknown-capability manifest is refused
-// 422 / MANIFEST_INVALID carrying the typed per-field error.
+// 422 under the registry-valid top-level code VALIDATION_FAILED (API-011), the
+// manifest engine's typed per-field code riding inside the errors[] extension
+// (API-013) — never a bespoke top-level MANIFEST_INVALID outside api/1's closed
+// error registry.
 func TestPackInstallManifestRefused422(t *testing.T) {
 	e := newEnv(t)
 	m := packManifest()
@@ -146,7 +149,7 @@ func TestPackInstallManifestRefused422(t *testing.T) {
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want 422 (body %s)", resp.StatusCode, raw)
 	}
-	p := assertProblem(t, resp, raw, "MANIFEST_INVALID")
+	p := assertProblem(t, resp, raw, "VALIDATION_FAILED")
 	errorsHasFieldCode(t, p, "capabilities[0].capability", "UNKNOWN_CAPABILITY")
 }
 
@@ -168,21 +171,27 @@ func TestPackReinstallVersionRegression422(t *testing.T) {
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("regression status = %d, want 422 (%s)", resp.StatusCode, raw)
 	}
-	p := assertProblem(t, resp, raw, "MANIFEST_INVALID")
+	p := assertProblem(t, resp, raw, "VALIDATION_FAILED")
 	errorsHasFieldCode(t, p, "dataModel.version", "DATAMODEL_VERSION_REGRESSION")
 }
 
 // TestPackInstallMalformedArtifact422: non-zip bytes are a 422, never a panic/500.
+// The top-level Problem code is the registry-valid VALIDATION_FAILED (API-011),
+// with the artifact engine's own PACK_ARTIFACT_* code riding inside the errors[]
+// extension at field "artifact" — a bespoke top-level PACK_ARTIFACT_INVALID would
+// fall outside api/1's closed error-code registry.
 func TestPackInstallMalformedArtifact422(t *testing.T) {
 	e := newEnv(t)
 	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", []byte("not a zip at all"), nil)
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want 422 (%s)", resp.StatusCode, raw)
 	}
-	assertProblem(t, resp, raw, "PACK_ARTIFACT_INVALID")
+	p := assertProblem(t, resp, raw, "VALIDATION_FAILED")
+	errorsHasFieldCode(t, p, "artifact", "PACK_ARTIFACT_INVALID")
 }
 
-// TestPackInstallZipSlip422: a ../ traversal entry is a 422.
+// TestPackInstallZipSlip422: a ../ traversal entry is a 422 under the registry-valid
+// top-level VALIDATION_FAILED, its PACK_ARTIFACT_UNSAFE_ENTRY discriminant in errors[].
 func TestPackInstallZipSlip422(t *testing.T) {
 	e := newEnv(t)
 	z := packZip(t, map[string]string{
@@ -194,7 +203,8 @@ func TestPackInstallZipSlip422(t *testing.T) {
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want 422 (%s)", resp.StatusCode, raw)
 	}
-	assertProblem(t, resp, raw, "PACK_ARTIFACT_UNSAFE_ENTRY")
+	p := assertProblem(t, resp, raw, "VALIDATION_FAILED")
+	errorsHasFieldCode(t, p, "artifact", "PACK_ARTIFACT_UNSAFE_ENTRY")
 }
 
 // TestPackGet: after install, GET the pack by its two-segment id returns 200, an

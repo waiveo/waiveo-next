@@ -111,8 +111,9 @@ func packEnvelopeOf(p store.Pack) packEnvelope {
 // installPack installs a pack from a raw zip request body, gated by the real
 // manifest engine (internal/app/packs). A fresh install is 201 with the pack
 // identity + summary; a reinstall that updated an existing pack is 200. An
-// unsafe/malformed artifact is a 422 carrying the artifact's own code; a
-// manifest the engine refused is a 422 whose errors[] extension is the
+// unsafe/malformed artifact is a 422 whose errors[] extension carries the
+// artifact's own stable code under the registry-valid top-level VALIDATION_FAILED;
+// a manifest the engine refused is a 422 whose errors[] extension is the
 // contract's typed per-field violations (API-013). NOTHING in the artifact is
 // executed — a pack is data.
 //
@@ -158,26 +159,48 @@ func (srv *server) installPackExec(w http.ResponseWriter, r *http.Request, artif
 	writeJSONValue(w, status, res)
 }
 
-// writeInstallError maps an install failure onto its api/1 Problem. A
-// *packs.ArtifactError (an unsafe/malformed/oversize artifact) is a 422 carrying
-// its own stable code and message, no errors[]. A *packs.ManifestError (the
-// manifest engine's refusal) is a 422 whose errors[] extension is the contract's
-// typed per-field manifest violations. Anything else is a 500.
+// writeInstallError maps an install failure onto its api/1 Problem. Both refusal
+// kinds are a 422 under the SAME registry-valid top-level code VALIDATION_FAILED
+// (API-011): api/1's error-code registry is closed, so a bespoke top-level code
+// like MANIFEST_INVALID or a PACK_ARTIFACT_* value would fall outside it — the
+// domain-specific code rides inside the errors[] extension instead, exactly as
+// every sibling handler (datamodel/compile) already does. A *packs.ArtifactError
+// (an unsafe/malformed/oversize artifact) carries its stable PACK_ARTIFACT_* code
+// in a single-entry errors[] and its human message as the Problem detail. A
+// *packs.ManifestError (the manifest engine's refusal) carries the contract's
+// typed per-field manifest violations as errors[] (API-013). Anything else is a
+// 500.
 func (srv *server) writeInstallError(w http.ResponseWriter, r *http.Request, err error) {
 	var aerr *packs.ArtifactError
 	if errors.As(err, &aerr) {
-		srv.packProblem(w, r, http.StatusUnprocessableEntity, aerr.Code, "Unprocessable Entity", aerr.Message)
+		apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), http.StatusUnprocessableEntity,
+			"VALIDATION_FAILED", "Unprocessable Entity", aerr.Message, artifactErrorExtra(aerr))
 		return
 	}
 	var merr *packs.ManifestError
 	if errors.As(err, &merr) {
 		apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), http.StatusUnprocessableEntity,
-			"MANIFEST_INVALID", "Unprocessable Entity",
+			"VALIDATION_FAILED", "Unprocessable Entity",
 			"The pack manifest failed validation.", manifestErrorsExtra(merr.Errors))
 		return
 	}
 	srv.packProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error",
 		"An unexpected server error occurred.")
+}
+
+// artifactErrorExtra renders a single artifact refusal as the api/1 errors[]
+// extension (API-013): one {field, code, message} object carrying the artifact
+// engine's stable code (PACK_ARTIFACT_*). The artifact has no request field to
+// name — the uploaded zip as a whole is the offending member — so the field is
+// the literal "artifact". This keeps the diagnostic discriminant in the response
+// while the top-level code stays the registry-valid VALIDATION_FAILED (API-011),
+// mirroring automations.go's single compile.CompileError → errors[] mapping.
+func artifactErrorExtra(aerr *packs.ArtifactError) map[string]any {
+	return map[string]any{"errors": []map[string]string{{
+		"field":   "artifact",
+		"code":    aerr.Code,
+		"message": aerr.Message,
+	}}}
 }
 
 // manifestErrorsExtra renders a manifest error list as the api/1 errors[]
