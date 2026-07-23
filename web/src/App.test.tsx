@@ -15,6 +15,8 @@ const server = setupServer(
   http.get("*/api/v1/schedules", empty),
   http.get("*/api/v1/automations", empty),
   http.get("*/api/v1/playlists", empty),
+  // The shell resolves its Extensions nav over the installed-packs list.
+  http.get("*/api/v1/packs", empty),
 );
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => {

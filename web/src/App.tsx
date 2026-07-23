@@ -9,6 +9,7 @@ import AutomationsRoute from "@/routes/automations/automations-route";
 import ActivityRoute from "@/routes/activity/activity-route";
 import DesignRoute from "@/routes/design/design-route";
 import PagesRoute from "@/routes/pages/pages-route";
+import PackPageRoute from "@/routes/packs/pack-page-route";
 
 // The application root. The ThemeProvider owns the Dusk/Daybreak theme for the
 // whole app (default Dusk, persisted, reflected as data-theme on <html>). The
@@ -30,6 +31,9 @@ export default function App() {
             <Route path="/automations" element={<AutomationsRoute />} />
             <Route path="/activity" element={<ActivityRoute />} />
             <Route path="/pages" element={<PagesRoute />} />
+            {/* An installed pack's page: `/p/{publisher}/{name}/{path}` — the
+                pack id is two path segments, the page path a trailing splat. */}
+            <Route path="/p/:publisher/:name/*" element={<PackPageRoute />} />
             <Route path="/design" element={<DesignRoute />} />
           </Route>
         </Routes>

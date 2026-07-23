@@ -4,6 +4,7 @@ import {
   Activity,
   AudioWaveform,
   CalendarClock,
+  FileText,
   Images,
   LayoutDashboard,
   LayoutTemplate,
@@ -12,6 +13,7 @@ import {
   Palette,
   PanelLeftClose,
   PanelLeftOpen,
+  Puzzle,
   Workflow,
   type LucideIcon,
 } from "lucide-react";
@@ -19,6 +21,8 @@ import { Button, KitIcon, NavDrawer } from "@/components/kit";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
 import { useMediaQuery } from "@/lib/use-media-query";
 import { cn } from "@/lib/utils";
+import type { WaiveoApi } from "@/api";
+import { useInstalledPackNav, type PackNavGroup } from "@/routes/packs/use-installed-packs";
 
 /**
  * AppShell — the console's responsive frame. The primary navigation is LOCKED
@@ -71,42 +75,103 @@ function Brand({ collapsed, className }: { collapsed?: boolean; className?: stri
   );
 }
 
+/** The shared active/hover styling every nav link (core or extension) wears. */
+function navLinkClass(collapsed?: boolean) {
+  return ({ isActive }: { isActive: boolean }) =>
+    cn(
+      "wv-touch flex items-center gap-2.5 rounded-input px-3 text-[13px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
+      isActive
+        ? "bg-[color:var(--wv-nav-active-bg)] text-[color:var(--wv-nav-active-fg)]"
+        : "text-muted-foreground hover:bg-accent hover:text-foreground",
+      collapsed && "justify-center",
+    );
+}
+
 function ShellNav({
   collapsed,
   onNavigate,
+  packNav,
 }: {
   collapsed?: boolean;
   onNavigate?: () => void;
+  packNav?: PackNavGroup[];
 }) {
   return (
-    <nav aria-label="Primary" className="flex flex-col gap-1">
-      {NAV_ITEMS.map((item) => (
-        <NavLink
-          key={item.to}
-          to={item.to}
-          end={item.end ?? false}
-          onClick={onNavigate}
-          className={({ isActive }) =>
-            cn(
-              "wv-touch flex items-center gap-2.5 rounded-input px-3 text-[13px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
-              isActive
-                ? "bg-[color:var(--wv-nav-active-bg)] text-[color:var(--wv-nav-active-fg)]"
-                : "text-muted-foreground hover:bg-accent hover:text-foreground",
-              collapsed && "justify-center",
-            )
-          }
+    <div className="flex flex-col gap-4">
+      <nav aria-label="Primary" className="flex flex-col gap-1">
+        {NAV_ITEMS.map((item) => (
+          <NavLink
+            key={item.to}
+            to={item.to}
+            end={item.end ?? false}
+            onClick={onNavigate}
+            className={navLinkClass(collapsed)}
+          >
+            <KitIcon icon={item.icon} decorative className="size-4 shrink-0" />
+            <span className={cn(collapsed && "sr-only")}>{item.label}</span>
+          </NavLink>
+        ))}
+      </nav>
+      {packNav && packNav.length > 0 ? (
+        <ExtensionsNav groups={packNav} collapsed={collapsed} onNavigate={onNavigate} />
+      ) : null}
+    </div>
+  );
+}
+
+/** The Extensions section — installed packs' pages, grouped by pack. A second,
+ * distinctly-labelled nav landmark (never merged into Primary) so third-party
+ * content is clearly demarcated from the core console destinations. */
+function ExtensionsNav({
+  groups,
+  collapsed,
+  onNavigate,
+}: {
+  groups: PackNavGroup[];
+  collapsed?: boolean | undefined;
+  onNavigate?: (() => void) | undefined;
+}) {
+  return (
+    <nav aria-label="Extensions" className="flex flex-col gap-2">
+      <div className={cn("flex items-center gap-2 px-3", collapsed && "justify-center")}>
+        <KitIcon icon={Puzzle} decorative className="size-4 shrink-0 text-muted-foreground" />
+        <span
+          className={cn(
+            "text-[11px] font-semibold uppercase tracking-wide text-muted-foreground",
+            collapsed && "sr-only",
+          )}
         >
-          <KitIcon icon={item.icon} decorative className="size-4 shrink-0" />
-          <span className={cn(collapsed && "sr-only")}>{item.label}</span>
-        </NavLink>
+          Extensions
+        </span>
+      </div>
+      {groups.map((group) => (
+        <div key={group.packId} className="flex flex-col gap-1">
+          <span
+            className={cn(
+              "px-3 text-[11px] font-medium text-muted-foreground",
+              collapsed && "sr-only",
+            )}
+          >
+            {group.title}
+          </span>
+          {group.pages.map((pg) => (
+            <NavLink key={pg.to} to={pg.to} onClick={onNavigate} className={navLinkClass(collapsed)}>
+              <KitIcon icon={FileText} decorative className="size-4 shrink-0" />
+              <span className={cn(collapsed && "sr-only")}>{pg.label}</span>
+            </NavLink>
+          ))}
+        </div>
       ))}
     </nav>
   );
 }
 
-export function AppShell({ children }: { children?: ReactNode }) {
+export function AppShell({ children, api }: { children?: ReactNode; api?: WaiveoApi }) {
   const [collapsed, setCollapsed] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  // The Extensions nav: installed packs' pages, resolved over the api/1 client.
+  // Degrades to nothing (no section) when no packs are installed or unreachable.
+  const packNav = useInstalledPackNav(api);
 
   // The desktop/mobile split is CSS-only: at >=1024px responsive.css hides the
   // drawer (`wv-shell__drawer`) and shows the permanent rail. But Radix Dialog's
@@ -135,7 +200,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
         )}
       >
         <Brand collapsed={collapsed} />
-        <ShellNav collapsed={collapsed} />
+        <ShellNav collapsed={collapsed} packNav={packNav} />
         <div className="mt-auto flex flex-col gap-1">
           <button
             type="button"
@@ -179,7 +244,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
             }
           >
             <Brand />
-            <ShellNav onNavigate={() => setDrawerOpen(false)} />
+            <ShellNav onNavigate={() => setDrawerOpen(false)} packNav={packNav} />
           </NavDrawer>
           <Brand className="wv-shell__mobile-brand" />
           <div className="ml-auto flex items-center gap-2">

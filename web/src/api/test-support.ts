@@ -72,6 +72,92 @@ export function scopeNode(over: Record<string, unknown> = {}) {
   };
 }
 
+// ── Declarative-pack fixtures (manifest/1 + ui-schema/1) ─────────────────────
+
+/** The fixture pack id (`publisher/name`, MAN-001) — lowercase, slash-bearing. */
+export const PACK_ID = "acme/menu-board";
+
+/** A fixture pack manifest (the console-relevant subset): two pages (a list-detail
+ * + a settings-form) and one `menu_items` collection. displayName + titles are
+ * `msg:` references resolved against the locale-catalog fixture below. */
+export function packManifest(over: Record<string, unknown> = {}) {
+  return {
+    id: PACK_ID,
+    version: "1.0.0",
+    displayName: "msg:pack.displayName",
+    ui: {
+      pages: [
+        { path: "menu-items", pageType: "list-detail", titleMsg: "msg:page.menuItems.title" },
+        { path: "settings", pageType: "settings-form", titleMsg: "msg:page.settings.title" },
+      ],
+    },
+    dataModel: {
+      version: 1,
+      collections: [
+        {
+          name: "menu_items",
+          fields: [
+            { name: "name", type: "string", role: "title", searchable: true },
+            { name: "section", type: "string" },
+            { name: "price", type: "number" },
+          ],
+        },
+      ],
+    },
+    ...over,
+  };
+}
+
+/** A fixture installed-pack envelope (the registry's list/get shape). */
+export function pack(over: Record<string, unknown> = {}) {
+  return {
+    id: PACK_ID,
+    revision: 1,
+    version: "1.0.0",
+    data_model_version: 1,
+    created_at: 1_753_000_000,
+    updated_at: 1_753_000_000,
+    manifest: packManifest(),
+    ...over,
+  };
+}
+
+/** A fixture pack-data row (a `menu_items` menu item): the declared fields
+ * flattened together with the universal entity envelope (MAN-051). */
+export function packRow(over: Record<string, unknown> = {}) {
+  return {
+    entity_id: ULID_A,
+    revision: 1,
+    lifecycle_state: "published",
+    scope_node: ULID_ROOT,
+    labels: [],
+    template_ref: null,
+    params: null,
+    name: "Cortado",
+    section: "Coffee",
+    price: 4.5,
+    created_at: 1_753_000_000,
+    updated_at: 1_753_000_000,
+    ...over,
+  };
+}
+
+/** The fixture pack's default-locale (en) catalog — BARE keys (no `msg:` prefix),
+ * as a pack ships them on disk (MAN-110). */
+export const PACK_EN_CATALOG: Record<string, string> = {
+  "pack.displayName": "Menu Board",
+  "page.menuItems.title": "Menu Items",
+  "page.settings.title": "Settings",
+  "col.name": "Name",
+  "col.section": "Section",
+  "detail.title": "Menu item",
+  "detail.empty": "Select an item to edit it, or add a new one.",
+  "detail.name": "Item name",
+  "detail.section": "Section",
+  "detail.save": "Save changes",
+  "detail.delete": "Delete item",
+};
+
 /** A fixture automation resource, matching the live feeder's wire shape (the
  * management-API envelope around a rules/1 Rule: name/scope_node/labels/enabled/
  * mode/max + the rule vocabulary triggers/conditions/actions + the api/1

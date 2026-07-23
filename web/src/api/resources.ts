@@ -14,7 +14,15 @@
 
 import type { components } from "../../../api/gen/ts/api";
 import { ApiClient, RevisionConflictError, type ApiClientOptions, type Read } from "./client";
-import { paginate, type Page, type PageFetcher } from "./pagination";
+import { type Page } from "./pagination";
+import { crud } from "./crud";
+import {
+  createPacksModule,
+  packData,
+  type PackRow,
+  type PackRowWrite,
+  type PacksModule,
+} from "./packs";
 
 // ── Generated (contract-canonical) types ────────────────────────────────────
 
@@ -180,42 +188,6 @@ export function etagForRevision(revision: number): string {
   return `"${revision}"`;
 }
 
-function crud<T, TCreate, TUpdate>(client: ApiClient, path: string): ResourceModule<T, TCreate, TUpdate> {
-  const itemPath = (id: string): string => `${path}/${encodeURIComponent(id)}`;
-  const mod: ResourceModule<T, TCreate, TUpdate> = {
-    path,
-    list(params = {}) {
-      const query: Record<string, string | number | undefined> = {};
-      if (params.selector) query.selector = params.selector;
-      if (params.limit !== undefined) query.limit = params.limit;
-      // Omit the cursor on the first page — an empty cursor is not a keyset
-      // position and the server rejects it (API-035).
-      if (params.cursor) query.cursor = params.cursor;
-      return client.list<T>(path, query);
-    },
-    pages(params = {}) {
-      const fetchPage: PageFetcher<T> = (cursor) => mod.list({ ...params, cursor });
-      return paginate(fetchPage);
-    },
-    get(id) {
-      return client.read<T>(itemPath(id));
-    },
-    create(body) {
-      return client.create<T>(path, body);
-    },
-    update(id, patch, etag) {
-      return client.update<T>(itemPath(id), patch, etag);
-    },
-    remove(id, etag) {
-      return client.remove(itemPath(id), etag);
-    },
-    etagFor(id) {
-      return client.etagFor(itemPath(id));
-    },
-  };
-  return mod;
-}
-
 // ── Automations: CRUD + run ──────────────────────────────────────────────────
 //
 // Bulk-enable (POST /automations/bulk-enable) and the Job-polling it returns
@@ -269,6 +241,13 @@ export interface WaiveoApi {
   playlists: ResourceModule<Playlist, PlaylistCreate, PlaylistUpdate>;
   automations: AutomationsModule;
   content: ContentModule;
+  /** Installed declarative packs — list/get/install/uninstall + page docs and
+   * locale catalogs (manifest/1). */
+  packs: PacksModule;
+  /** The api/1 CRUD surface for one pack collection's universal-envelope rows
+   * (MAN-051/052) — the SAME ResourceModule shape every core family uses, so a
+   * pack's data is a first-class citizen (If-Match, Idempotency-Key, cursor). */
+  packData(packId: string, collection: string): ResourceModule<PackRow, PackRowWrite, PackRowWrite>;
 }
 
 /** Build the whole console API surface over one ApiClient (one shared ETag map,
@@ -283,6 +262,8 @@ export function createApi(opts?: ApiClientOptions): WaiveoApi {
     playlists: crud<Playlist, PlaylistCreate, PlaylistUpdate>(client, "/playlists"),
     automations: automationsModule(client),
     content: contentModule(client),
+    packs: createPacksModule(client),
+    packData: (packId, collection) => packData(client, packId, collection),
   };
 }
 
