@@ -79,6 +79,16 @@ func (srv *server) mountPacks(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE "+base+"/{publisher}/{name}", srv.deletePack)
 	mux.HandleFunc("GET "+base+"/{publisher}/{name}/pages/{path...}", srv.getPackPage)
 	mux.HandleFunc("GET "+base+"/{publisher}/{name}/messages/{locale}", srv.getPackMessages)
+
+	// The pack-data surface: CRUD over a declared collection's universal-envelope
+	// rows (MAN-051/052), with the full api/1 conventions. The literal `data`
+	// segment is unambiguous against the sibling `pages`/`messages` routes.
+	data := base + "/{publisher}/{name}/data/{collection}"
+	mux.HandleFunc("GET "+data, srv.listPackRows)
+	mux.HandleFunc("POST "+data, srv.createPackRow)
+	mux.HandleFunc("GET "+data+"/{entity_id}", srv.getPackRow)
+	mux.HandleFunc("PATCH "+data+"/{entity_id}", srv.patchPackRow)
+	mux.HandleFunc("DELETE "+data+"/{entity_id}", srv.deletePackRow)
 }
 
 // packIDFromPath rejoins the {publisher}/{name} path segments into the pack id.

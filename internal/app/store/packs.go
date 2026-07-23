@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+
+	"github.com/maaxton/waiveo-next/internal/shared/ulid"
 )
 
 // packsSchema creates the three declarative-packs tables. They form a
@@ -55,7 +57,7 @@ CREATE TABLE IF NOT EXISTS pack_rows (
 	revision        INTEGER NOT NULL,
 	lifecycle_state TEXT NOT NULL,
 	scope_node      TEXT NOT NULL,
-	labels          TEXT NOT NULL DEFAULT '{}',
+	labels          TEXT NOT NULL DEFAULT '[]',
 	template_ref    TEXT NOT NULL DEFAULT '',
 	params          TEXT NOT NULL DEFAULT '',
 	external_id     TEXT NOT NULL DEFAULT '',
@@ -350,4 +352,296 @@ func (s *Store) PackFileNames(ctx context.Context, packID, kind string) ([]strin
 	}
 	sort.Strings(names)
 	return names, nil
+}
+
+// ---- pack_rows: the universal-envelope rows of a pack's declared collections --
+
+// PackRow is one row of a pack's declared collection (MAN-051): the universal
+// entity envelope every row carries — EntityID (a host-assigned, immutable ULID),
+// the store-owned Revision (the api/1 ETag validator), LifecycleState, the
+// required ScopeNode reference, Labels (an array of strings), the optional
+// TemplateRef ("" == null) and Params (nil == null, present only with a
+// TemplateRef) — plus the api/1 client-assignable ExternalID (grouping key, NOT
+// part of the MAN-051 envelope) and Body, the declared-fields JSON object. The
+// store owns EntityID/Revision/CreatedAt/UpdatedAt; the caller supplies an
+// already-validated envelope + body (the api layer is the field-type/envelope
+// gate, exactly as the install pipeline is the manifest gate).
+type PackRow struct {
+	PackID         string
+	Collection     string
+	EntityID       string
+	Revision       int64
+	LifecycleState string
+	ScopeNode      string
+	Labels         []string
+	TemplateRef    string
+	Params         json.RawMessage
+	ExternalID     string
+	CreatedAt      int64
+	UpdatedAt      int64
+	Body           json.RawMessage
+}
+
+// PackRowGuard is the pack-rows analogue of WriteGuard: a caller-supplied
+// precondition re-checked INSIDE a create/update transaction against the
+// collection's existing rows read under the SAME write lock the write commits
+// under, so a check-then-write invariant (external_id uniqueness per
+// pack+collection+scope_node, API-101/102) cannot be raced past by a concurrent
+// writer. A non-nil return rolls the whole transaction back and is propagated
+// VERBATIM, so the api layer's guard can return the *apihttp.ExternalIDError it
+// renders as a 400 EXTERNAL_ID_CONFLICT.
+type PackRowGuard func(existing []PackRow) error
+
+// CreatePackRow inserts a new row into a pack's collection, assigning the
+// host-owned entity_id (a fresh ULID, immutable per MAN-051), revision 1, and the
+// created/updated timestamps, then bumping the store generation once — all in one
+// transaction. The caller (the api layer) has already validated the envelope +
+// declared-field body; the store owns only the baseline and atomicity. Guards run
+// against the collection's existing rows read under the write lock, so external_id
+// uniqueness is enforced atomically with the insert.
+func (s *Store) CreatePackRow(ctx context.Context, packID, collection string, in PackRow, guards ...PackRowGuard) (PackRow, error) {
+	var out PackRow
+	if err := s.writeTx(ctx, func(tx *sql.Tx) error {
+		existing, err := readPackRows(ctx, tx, packID, collection)
+		if err != nil {
+			return err
+		}
+		for _, g := range guards {
+			if err := g(existing); err != nil {
+				return err
+			}
+		}
+
+		now := s.nowMs()
+		entityID := ulid.New()
+		out = normalizePackRow(PackRow{
+			PackID: packID, Collection: collection, EntityID: entityID, Revision: 1,
+			LifecycleState: in.LifecycleState, ScopeNode: in.ScopeNode, Labels: in.Labels,
+			TemplateRef: in.TemplateRef, Params: in.Params, ExternalID: in.ExternalID,
+			CreatedAt: now, UpdatedAt: now, Body: in.Body,
+		})
+
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO pack_rows
+			  (pack_id, collection, entity_id, revision, lifecycle_state, scope_node, labels, template_ref, params, external_id, created_at, updated_at, body)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			out.PackID, out.Collection, out.EntityID, out.Revision, out.LifecycleState, out.ScopeNode,
+			marshalStringSlice(out.Labels), out.TemplateRef, paramsToDB(out.Params), out.ExternalID,
+			out.CreatedAt, out.UpdatedAt, string(out.Body),
+		); err != nil {
+			return fmt.Errorf("store: insert pack row: %w", err)
+		}
+		return bumpGeneration(ctx, tx)
+	}); err != nil {
+		return PackRow{}, err
+	}
+	return out, nil
+}
+
+// UpdatePackRow optimistically replaces a row's envelope + body: expectedRev MUST
+// equal the stored revision (else ErrRevisionMismatch, no write). next carries the
+// already-validated effective (post-merge) envelope and declared-field body; the
+// store re-checks the revision under its write lock (closing the check-then-write
+// race), bumps revision to current+1, refreshes updated_at (keeping created_at and
+// the immutable entity_id), runs the guards against the collection's rows, and
+// bumps the generation — atomically. A missing row is ErrNotFound.
+func (s *Store) UpdatePackRow(ctx context.Context, packID, collection, entityID string, expectedRev int64, next PackRow, guards ...PackRowGuard) (PackRow, error) {
+	var out PackRow
+	if err := s.writeTx(ctx, func(tx *sql.Tx) error {
+		var curRev, createdAt int64
+		err := tx.QueryRowContext(ctx,
+			`SELECT revision, created_at FROM pack_rows WHERE pack_id = ? AND collection = ? AND entity_id = ?`,
+			packID, collection, entityID).Scan(&curRev, &createdAt)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("store: update read pack row: %w", err)
+		}
+		if curRev != expectedRev {
+			return &RevisionMismatchError{Expected: expectedRev, Current: curRev}
+		}
+		if len(guards) > 0 {
+			existing, err := readPackRows(ctx, tx, packID, collection)
+			if err != nil {
+				return err
+			}
+			for _, g := range guards {
+				if err := g(existing); err != nil {
+					return err
+				}
+			}
+		}
+
+		now := s.nowMs()
+		out = normalizePackRow(PackRow{
+			PackID: packID, Collection: collection, EntityID: entityID, Revision: curRev + 1,
+			LifecycleState: next.LifecycleState, ScopeNode: next.ScopeNode, Labels: next.Labels,
+			TemplateRef: next.TemplateRef, Params: next.Params, ExternalID: next.ExternalID,
+			CreatedAt: createdAt, UpdatedAt: now, Body: next.Body,
+		})
+
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE pack_rows
+			   SET revision = ?, lifecycle_state = ?, scope_node = ?, labels = ?, template_ref = ?, params = ?, external_id = ?, updated_at = ?, body = ?
+			 WHERE pack_id = ? AND collection = ? AND entity_id = ?`,
+			out.Revision, out.LifecycleState, out.ScopeNode, marshalStringSlice(out.Labels),
+			out.TemplateRef, paramsToDB(out.Params), out.ExternalID, out.UpdatedAt, string(out.Body),
+			out.PackID, out.Collection, out.EntityID,
+		); err != nil {
+			return fmt.Errorf("store: update pack row: %w", err)
+		}
+		return bumpGeneration(ctx, tx)
+	}); err != nil {
+		return PackRow{}, err
+	}
+	return out, nil
+}
+
+// DeletePackRow optimistically removes a row: expectedRev MUST equal the stored
+// revision (else ErrRevisionMismatch, no write). A missing row is ErrNotFound. The
+// generation is bumped once, in the same transaction.
+func (s *Store) DeletePackRow(ctx context.Context, packID, collection, entityID string, expectedRev int64) error {
+	return s.writeTx(ctx, func(tx *sql.Tx) error {
+		var curRev int64
+		err := tx.QueryRowContext(ctx,
+			`SELECT revision FROM pack_rows WHERE pack_id = ? AND collection = ? AND entity_id = ?`,
+			packID, collection, entityID).Scan(&curRev)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("store: delete read pack row: %w", err)
+		}
+		if curRev != expectedRev {
+			return &RevisionMismatchError{Expected: expectedRev, Current: curRev}
+		}
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM pack_rows WHERE pack_id = ? AND collection = ? AND entity_id = ?`,
+			packID, collection, entityID); err != nil {
+			return fmt.Errorf("store: delete pack row: %w", err)
+		}
+		return bumpGeneration(ctx, tx)
+	})
+}
+
+// GetPackRow returns one row of a pack's collection by entity_id, and whether it
+// exists.
+func (s *Store) GetPackRow(ctx context.Context, packID, collection, entityID string) (PackRow, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+packRowColumns+` FROM pack_rows WHERE pack_id = ? AND collection = ? AND entity_id = ?`,
+		packID, collection, entityID)
+	if err != nil {
+		return PackRow{}, false, fmt.Errorf("store: get pack row: %w", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return PackRow{}, false, fmt.Errorf("store: get pack row: %w", err)
+		}
+		return PackRow{}, false, nil
+	}
+	row, err := scanPackRow(rows)
+	if err != nil {
+		return PackRow{}, false, err
+	}
+	return row, true, nil
+}
+
+// ListPackRows returns every row of a pack's collection, ordered by entity_id
+// ascending — the keyset order the api/1 cursor pages over. entity_id is a ULID,
+// so a byte comparison is the keyset order.
+func (s *Store) ListPackRows(ctx context.Context, packID, collection string) ([]PackRow, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return readPackRows(ctx, s.db, packID, collection)
+}
+
+// packRowColumns is the pack_rows projection scanPackRow reads, in order.
+const packRowColumns = "pack_id, collection, entity_id, revision, lifecycle_state, scope_node, labels, template_ref, params, external_id, created_at, updated_at, body"
+
+// readPackRows reads every row of a pack's collection (entity_id-ascending) via q,
+// which may be *sql.DB (the read path) or *sql.Tx (a guard's in-transaction
+// snapshot) — the single reader List and the write-path guards share, so a guard
+// sees exactly the rows a List would but under the write lock, atomically with the
+// write it gates.
+func readPackRows(ctx context.Context, q queryer, packID, collection string) ([]PackRow, error) {
+	rows, err := q.QueryContext(ctx,
+		`SELECT `+packRowColumns+` FROM pack_rows WHERE pack_id = ? AND collection = ? ORDER BY entity_id ASC`,
+		packID, collection)
+	if err != nil {
+		return nil, fmt.Errorf("store: list pack rows: %w", err)
+	}
+	defer rows.Close()
+	out := []PackRow{}
+	for rows.Next() {
+		row, err := scanPackRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// scanPackRow reads one pack_rows row (the packRowColumns projection) into a
+// PackRow, decoding labels from its JSON-array text and mapping the empty-string
+// sentinels back to nil (params) / "" (template_ref).
+func scanPackRow(rows *sql.Rows) (PackRow, error) {
+	var r PackRow
+	var labels, params, body string
+	if err := rows.Scan(&r.PackID, &r.Collection, &r.EntityID, &r.Revision, &r.LifecycleState,
+		&r.ScopeNode, &labels, &r.TemplateRef, &params, &r.ExternalID, &r.CreatedAt, &r.UpdatedAt, &body); err != nil {
+		return PackRow{}, fmt.Errorf("store: scan pack row: %w", err)
+	}
+	r.Labels = []string{}
+	if labels != "" {
+		if err := json.Unmarshal([]byte(labels), &r.Labels); err != nil {
+			return PackRow{}, fmt.Errorf("store: decode pack row labels: %w", err)
+		}
+	}
+	if params != "" {
+		r.Params = json.RawMessage(params)
+	}
+	r.Body = json.RawMessage(body)
+	return r, nil
+}
+
+// normalizePackRow canonicalizes a PackRow's nullable/collection fields so both
+// the returned value and the stored row agree: Labels is never nil (an empty
+// array), and Body is never empty (an empty JSON object) — matching how a
+// subsequent read scans them back.
+func normalizePackRow(r PackRow) PackRow {
+	if r.Labels == nil {
+		r.Labels = []string{}
+	}
+	if len(r.Body) == 0 {
+		r.Body = json.RawMessage("{}")
+	}
+	return r
+}
+
+// marshalStringSlice renders a label slice as its JSON-array text; a nil/empty
+// slice is the canonical "[]" (never SQL NULL or "null").
+func marshalStringSlice(ss []string) string {
+	if len(ss) == 0 {
+		return "[]"
+	}
+	b, err := json.Marshal(ss)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
+
+// paramsToDB maps the optional params object to its stored text: the empty-string
+// sentinel for an absent (null) params, or the raw JSON object otherwise.
+func paramsToDB(params json.RawMessage) string {
+	if len(params) == 0 {
+		return ""
+	}
+	return string(params)
 }

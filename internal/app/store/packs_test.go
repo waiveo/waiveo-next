@@ -167,3 +167,179 @@ func TestListPacksOrderedByID(t *testing.T) {
 		t.Fatalf("list order = %v; want [a m z]", []string{list[0].ID, list[1].ID, list[2].ID})
 	}
 }
+
+// ---- pack_rows CRUD -------------------------------------------------------
+
+const testScopeNode = "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5"
+
+func rowIn(scopeNode, externalID string, body string) store.PackRow {
+	return store.PackRow{
+		LifecycleState: "published",
+		ScopeNode:      scopeNode,
+		ExternalID:     externalID,
+		Body:           json.RawMessage(body),
+	}
+}
+
+// TestCreatePackRowAssignsEnvelopeAndBumpsGeneration: a created row gets a
+// host-assigned entity_id (a ULID), revision 1, the timestamps, and advances the
+// generation once.
+func TestCreatePackRowAssignsEnvelopeAndBumpsGeneration(t *testing.T) {
+	st := openMem(t)
+	ctx := context.Background()
+	if _, _, err := st.InstallPack(ctx, packSpec("acme/menu-board", "1.0.0", 1)); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	before := gen(t, st)
+
+	row, err := st.CreatePackRow(ctx, "acme/menu-board", "menu_items", rowIn(testScopeNode, "", `{"name":"Burger"}`))
+	if err != nil {
+		t.Fatalf("CreatePackRow: %v", err)
+	}
+	if len(row.EntityID) != 26 {
+		t.Fatalf("entity_id = %q, want a 26-char ULID", row.EntityID)
+	}
+	if row.Revision != 1 {
+		t.Fatalf("revision = %d, want 1", row.Revision)
+	}
+	if row.CreatedAt == 0 || row.UpdatedAt == 0 {
+		t.Fatalf("timestamps unset: created=%d updated=%d", row.CreatedAt, row.UpdatedAt)
+	}
+	if after := gen(t, st); after != before+1 {
+		t.Fatalf("generation = %d, want %d (one bump)", after, before+1)
+	}
+
+	got, found, err := st.GetPackRow(ctx, "acme/menu-board", "menu_items", row.EntityID)
+	if err != nil || !found {
+		t.Fatalf("GetPackRow: found=%v err=%v", found, err)
+	}
+	if got.ScopeNode != testScopeNode || string(got.Body) != `{"name":"Burger"}` {
+		t.Fatalf("round-tripped row = %+v", got)
+	}
+	if got.Labels == nil || len(got.Labels) != 0 {
+		t.Fatalf("labels = %v, want [] (never nil)", got.Labels)
+	}
+}
+
+// TestUpdatePackRowOptimistic: an update at the current revision bumps it, keeps
+// the immutable entity_id + created_at, and refreshes updated_at.
+func TestUpdatePackRowOptimistic(t *testing.T) {
+	st := openMem(t)
+	ctx := context.Background()
+	_, _, _ = st.InstallPack(ctx, packSpec("acme/menu-board", "1.0.0", 1))
+	row, err := st.CreatePackRow(ctx, "acme/menu-board", "menu_items", rowIn(testScopeNode, "", `{"name":"Burger"}`))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	next := store.PackRow{LifecycleState: "published", ScopeNode: testScopeNode, Body: json.RawMessage(`{"name":"Cheeseburger"}`)}
+	updated, err := st.UpdatePackRow(ctx, "acme/menu-board", "menu_items", row.EntityID, row.Revision, next)
+	if err != nil {
+		t.Fatalf("UpdatePackRow: %v", err)
+	}
+	if updated.Revision != 2 || updated.EntityID != row.EntityID {
+		t.Fatalf("update: revision=%d entity_id=%q; want 2/%q", updated.Revision, updated.EntityID, row.EntityID)
+	}
+	if updated.CreatedAt != row.CreatedAt {
+		t.Fatalf("created_at changed: %d -> %d", row.CreatedAt, updated.CreatedAt)
+	}
+	if string(updated.Body) != `{"name":"Cheeseburger"}` {
+		t.Fatalf("body = %s", updated.Body)
+	}
+
+	// A stale expected revision is refused, nothing changed.
+	_, err = st.UpdatePackRow(ctx, "acme/menu-board", "menu_items", row.EntityID, 1, next)
+	var rme *store.RevisionMismatchError
+	if !errors.As(err, &rme) || rme.Current != 2 {
+		t.Fatalf("stale update = %v; want RevisionMismatchError current=2", err)
+	}
+}
+
+// TestDeletePackRowOptimistic: delete at the current revision removes the row and
+// bumps the generation; a stale revision is refused; a missing row is ErrNotFound.
+func TestDeletePackRowOptimistic(t *testing.T) {
+	st := openMem(t)
+	ctx := context.Background()
+	_, _, _ = st.InstallPack(ctx, packSpec("acme/menu-board", "1.0.0", 1))
+	row, _ := st.CreatePackRow(ctx, "acme/menu-board", "menu_items", rowIn(testScopeNode, "", `{"name":"Burger"}`))
+
+	if err := st.DeletePackRow(ctx, "acme/menu-board", "menu_items", row.EntityID, 99); err == nil {
+		t.Fatal("stale-revision delete succeeded")
+	}
+	if err := st.DeletePackRow(ctx, "acme/menu-board", "menu_items", row.EntityID, row.Revision); err != nil {
+		t.Fatalf("DeletePackRow: %v", err)
+	}
+	if _, found, _ := st.GetPackRow(ctx, "acme/menu-board", "menu_items", row.EntityID); found {
+		t.Fatal("row survived delete")
+	}
+	if err := st.DeletePackRow(ctx, "acme/menu-board", "menu_items", row.EntityID, 1); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("delete missing = %v; want ErrNotFound", err)
+	}
+}
+
+// TestListPackRowsOrderedByEntityID: ListPackRows returns rows entity_id-ascending
+// (the keyset order the cursor pages over) and scopes to the given pack+collection.
+func TestListPackRowsOrderedByEntityID(t *testing.T) {
+	st := openMem(t)
+	ctx := context.Background()
+	_, _, _ = st.InstallPack(ctx, packSpec("acme/menu-board", "1.0.0", 1))
+	for i := 0; i < 5; i++ {
+		if _, err := st.CreatePackRow(ctx, "acme/menu-board", "menu_items", rowIn(testScopeNode, "", `{"name":"x"}`)); err != nil {
+			t.Fatalf("create %d: %v", i, err)
+		}
+	}
+	// A row in a different collection must not appear in menu_items.
+	_, _ = st.CreatePackRow(ctx, "acme/menu-board", "other", rowIn(testScopeNode, "", `{}`))
+
+	rows, err := st.ListPackRows(ctx, "acme/menu-board", "menu_items")
+	if err != nil {
+		t.Fatalf("ListPackRows: %v", err)
+	}
+	if len(rows) != 5 {
+		t.Fatalf("len = %d, want 5 (collection-scoped)", len(rows))
+	}
+	for i := 1; i < len(rows); i++ {
+		if rows[i-1].EntityID >= rows[i].EntityID {
+			t.Fatalf("not entity_id-ascending at %d: %q >= %q", i, rows[i-1].EntityID, rows[i].EntityID)
+		}
+	}
+}
+
+// TestPackRowGuardRunsInsideWrite: a guard returning an error rolls the create back
+// (no row, no generation bump) and propagates the error verbatim.
+func TestPackRowGuardRunsInsideWrite(t *testing.T) {
+	st := openMem(t)
+	ctx := context.Background()
+	_, _, _ = st.InstallPack(ctx, packSpec("acme/menu-board", "1.0.0", 1))
+	before := gen(t, st)
+
+	sentinel := errors.New("guard refused")
+	_, err := st.CreatePackRow(ctx, "acme/menu-board", "menu_items", rowIn(testScopeNode, "dup", `{}`),
+		func(existing []store.PackRow) error { return sentinel })
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("create = %v; want sentinel guard error", err)
+	}
+	if after := gen(t, st); after != before {
+		t.Fatalf("generation bumped despite a guard refusal: %d -> %d", before, after)
+	}
+	if rows, _ := st.ListPackRows(ctx, "acme/menu-board", "menu_items"); len(rows) != 0 {
+		t.Fatalf("row written despite a guard refusal: %d", len(rows))
+	}
+}
+
+// TestUninstallCascadesPackRows: uninstalling a pack removes its rows too (the
+// dev-POC destructive uninstall).
+func TestUninstallCascadesPackRows(t *testing.T) {
+	st := openMem(t)
+	ctx := context.Background()
+	pack, _, _ := st.InstallPack(ctx, packSpec("acme/menu-board", "1.0.0", 1))
+	if _, err := st.CreatePackRow(ctx, "acme/menu-board", "menu_items", rowIn(testScopeNode, "", `{"name":"Burger"}`)); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := st.UninstallPack(ctx, "acme/menu-board", pack.Revision); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+	if rows, _ := st.ListPackRows(ctx, "acme/menu-board", "menu_items"); len(rows) != 0 {
+		t.Fatalf("rows survived uninstall: %d", len(rows))
+	}
+}
