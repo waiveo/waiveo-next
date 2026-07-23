@@ -1,0 +1,22 @@
+{
+  "pageType": "settings-form",
+  "source": "settings",
+  "sections": [
+    {
+      "titleMsg": "msg:settings.board.title",
+      "fields": [
+        { "type": "text-input", "bind": "board_name", "props": { "labelMsg": "msg:settings.boardName", "placeholderMsg": "msg:settings.boardName.placeholder" } },
+        { "type": "text-input", "bind": "currency_symbol", "props": { "labelMsg": "msg:settings.currency", "maxLength": 3 } }
+      ]
+    },
+    {
+      "titleMsg": "msg:settings.display.title",
+      "fields": [
+        { "type": "toggle", "bind": "show_sold_out", "props": { "labelMsg": "msg:settings.showSoldOut" } }
+      ]
+    }
+  ],
+  "actions": [
+    { "type": "button", "props": { "labelMsg": "msg:settings.save", "style": "primary" }, "on": { "press": { "verb": "submit" } } }
+  ]
+}

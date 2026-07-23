@@ -1,4 +1,4 @@
-.PHONY: dev dev-up dev-down smoke web-dev web-check web-build web-sse-check
+.PHONY: dev dev-up dev-down smoke web-dev web-check web-build web-sse-check example-pack
 # Repo-local run dir (git-ignored): pidfiles + the built binaries live here, so teardown
 # is exact (by PID, not `pkill -f`) and nothing lands in a shared /tmp.
 RUNDIR := $(CURDIR)/.dev
@@ -41,6 +41,15 @@ dev-up: dev-down
 
 smoke:
 	@bash scripts/dev-smoke.sh
+
+# Build the in-repo declarative example pack (examples/packs/menu-board) into a
+# distributable zip artifact — a manifest, two ui-schema/1 page documents, and a
+# locale catalog, nothing executable. The bytes are identical to what `make dev`'s
+# pack smoke and the end-to-end test install over the real POST /api/v1/packs (one
+# source of truth: examples/packs). The output lands in the git-ignored run dir.
+example-pack:
+	@mkdir -p $(RUNDIR)
+	@go run ./scripts/examplepack -out $(RUNDIR)/menu-board.pack.zip
 
 dev-down:
 	@[ -f $(RUNDIR)/feeder.pid ] && kill $$(cat $(RUNDIR)/feeder.pid) 2>/dev/null || true

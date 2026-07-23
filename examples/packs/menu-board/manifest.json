@@ -1,0 +1,40 @@
+{
+  "id": "waiveo/menu-board",
+  "version": "1.0.0",
+  "displayName": "msg:pack.displayName",
+  "description": "A tasteful sample extension: manage a cafe menu as declarative data. No pack code runs anywhere — the manifest, the two pages, and the locale catalog are DATA the host validates and renders through the same Horizon kit every console page uses.",
+  "compat": {
+    "ctx": ">=1.0 <2.0",
+    "renderer": ["list-detail", "settings-form"]
+  },
+  "capabilities": [],
+  "egress": [],
+  "resources": {
+    "memory": 64,
+    "cpuWeight": 100,
+    "storageQuota": 16,
+    "maxScheduledTimers": 0
+  },
+  "dataModel": {
+    "version": 1,
+    "collections": [
+      {
+        "name": "menu_items",
+        "fields": [
+          { "name": "name", "type": "string", "role": "title", "searchable": true, "lifecycle": "draft-publish" },
+          { "name": "section", "type": "string" },
+          { "name": "price", "type": "number" },
+          { "name": "available", "type": "boolean" }
+        ]
+      }
+    ]
+  },
+  "retention": {},
+  "ui": {
+    "pages": [
+      { "path": "menu-items", "pageType": "list-detail", "titleMsg": "msg:page.menuItems.title" },
+      { "path": "settings", "pageType": "settings-form", "titleMsg": "msg:page.settings.title" }
+    ]
+  },
+  "actions": []
+}

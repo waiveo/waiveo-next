@@ -1,0 +1,36 @@
+{
+  "pageType": "list-detail",
+  "list": {
+    "source": "menu_items",
+    "display": {
+      "type": "table",
+      "id": "Menu items",
+      "props": {
+        "source": "menu_items",
+        "columns": [
+          { "headerMsg": "msg:col.name", "cell": "item.name" },
+          { "headerMsg": "msg:col.section", "cell": "item.section" },
+          { "headerMsg": "msg:col.price", "cell": "item.price" }
+        ]
+      },
+      "on": { "rowPress": { "verb": "set", "target": "$ui.selected", "value": "item.entity_id" } }
+    }
+  },
+  "detail": {
+    "source": "menu_items[entity_id=$ui.selected]",
+    "emptyMsg": "msg:detail.empty",
+    "root": {
+      "type": "section",
+      "props": { "titleMsg": "msg:detail.title" },
+      "children": [
+        { "type": "text-input", "bind": "name", "props": { "labelMsg": "msg:detail.name" } },
+        { "type": "text-input", "bind": "section", "props": { "labelMsg": "msg:detail.section" } },
+        { "type": "number-input", "bind": "price", "props": { "labelMsg": "msg:detail.price", "min": 0, "step": 0.5 } },
+        { "type": "toggle", "bind": "available", "props": { "labelMsg": "msg:detail.available" } },
+        { "type": "button", "props": { "labelMsg": "msg:detail.save", "style": "primary" }, "on": { "press": { "verb": "submit" } } },
+        { "type": "button", "props": { "labelMsg": "msg:detail.delete", "style": "destructive" }, "on": { "press": { "verb": "delete", "target": "$root" } } }
+      ]
+    }
+  },
+  "newAction": { "verb": "create", "target": "menu_items", "itemDefault": { "name": "New item", "section": "Mains", "price": 0, "available": true } }
+}

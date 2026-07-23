@@ -82,3 +82,11 @@ go run ./scripts/observabilityprobe
 # Vite build when `make web-build` has populated the embed, the committed
 # placeholder otherwise. Prints WEB UI OK, or exits non-zero.
 go run ./scripts/webuiprobe
+
+# 9. Declarative pack: install the in-repo example pack (examples/packs/menu-board)
+# through the REAL POST /api/v1/packs — the same manifest engine that gates a third
+# party's upload — and assert the install summary (its two pages + the menu_items
+# collection). Proves a declarative extension installs end to end on the live
+# feeder; NOTHING in the pack executes — a pack is data (manifest, page documents,
+# locale catalog). The probe prints PACK OK, or exits non-zero.
+go run ./scripts/packsmoke

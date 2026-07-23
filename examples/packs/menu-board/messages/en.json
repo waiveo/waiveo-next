@@ -1,0 +1,23 @@
+{
+  "pack.displayName": "Menu Board",
+  "page.menuItems.title": "Menu Items",
+  "page.settings.title": "Settings",
+  "col.name": "Item",
+  "col.section": "Section",
+  "col.price": "Price",
+  "detail.title": "Menu item",
+  "detail.empty": "Select an item to edit it, or add a new one.",
+  "detail.name": "Item name",
+  "detail.section": "Section",
+  "detail.price": "Price",
+  "detail.available": "Available",
+  "detail.save": "Save changes",
+  "detail.delete": "Delete item",
+  "settings.board.title": "Board",
+  "settings.display.title": "Display",
+  "settings.boardName": "Board name",
+  "settings.boardName.placeholder": "The Corner Cafe",
+  "settings.currency": "Currency symbol",
+  "settings.showSoldOut": "Show sold-out items",
+  "settings.save": "Save settings"
+}
