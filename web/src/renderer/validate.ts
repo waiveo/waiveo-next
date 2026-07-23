@@ -14,6 +14,7 @@
 import {
   ACTION_VERBS,
   COMPUTE_FNS,
+  ISO_4217_PATTERN,
   OPTION_SOURCE_KINDS,
   PAGE_TYPES,
   RESERVED_ROOTS,
@@ -303,6 +304,24 @@ function validateComputed(v: Record<string, unknown>, path: string, ctx: Ctx): v
     const ref = args[0];
     if (typeof ref !== "string" || !(ref in VOCAB_TABLE)) {
       fail(ctx, "VOCAB_REF_UNKNOWN", `${path}.args[0]`, `"${String(ref)}" is not a member of the UIS-120 vocabRef table`);
+    }
+  }
+  // formatCurrency(numberBinding, currencyCode): arg1 is a pinned ISO 4217
+  // currency code (UIS-140/143), enforced the same way label's vocabRef (above)
+  // is — a business fact of the priced row, not a viewer preference, so it MUST
+  // be present and well-formed. An absent (missing/empty args), non-string, or
+  // malformed code fails CURRENCY_CODE_INVALID (UIS-144) — never a silent
+  // runtime fallback to USD, which would render the wrong currency with no
+  // error surfaced anywhere in the pipeline.
+  if (fn === "formatCurrency") {
+    const code = args[1];
+    if (typeof code !== "string" || !ISO_4217_PATTERN.test(code)) {
+      fail(
+        ctx,
+        "CURRENCY_CODE_INVALID",
+        `${path}.args[1]`,
+        `"${String(code)}" is not a well-formed ISO 4217 currency code (UIS-144)`,
+      );
     }
   }
   const skip = COMPUTE_SKIP_GRAMMAR[fn] ?? new Set<number>();

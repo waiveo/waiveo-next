@@ -106,6 +106,22 @@ function baseHandlers() {
   ];
 }
 
+// A mutated clone of the real shipped menu-items page doc whose price column's
+// formatCurrency currency-code arg is replaced with `code` — models a pack author
+// typo/omission (e.g. "EURO" instead of "EUR") in the same declarative position
+// the shipped doc uses ["item.price", "USD"].
+function menuItemsDocWithCurrencyCode(code: unknown): Record<string, unknown> {
+  const doc = JSON.parse(JSON.stringify(realMenuItemsDoc)) as Record<string, unknown>;
+  const columns = ((doc.list as Record<string, unknown>).display as Record<string, unknown>).props as Record<
+    string,
+    unknown
+  >;
+  const priceCell = (columns.columns as Record<string, unknown>[])[2].cell as Record<string, unknown>;
+  const args = code === undefined ? ["item.price"] : ["item.price", code];
+  priceCell.args = args;
+  return doc;
+}
+
 function renderPack(path = "menu-items") {
   return render(
     <ThemeProvider>
@@ -165,6 +181,34 @@ describe("The menu-board example pack renders through the console", () => {
     // unformatted, still-editable value.
     await user.click(within(table).getByText("Cortado"));
     expect(await screen.findByLabelText("Price")).toHaveValue(4.5);
+  });
+
+  it("refuses to render a page doc whose formatCurrency arg is a malformed currency code, rather than silently rendering the wrong currency (CURRENCY_CODE_INVALID)", async () => {
+    // The defect this closes: a pack author typo/omission in formatCurrency's
+    // pinned currencyCode arg used to pass validation silently and render every
+    // price USD-formatted at runtime regardless of what was declared — a
+    // menu-board author writing "EURO" (or omitting the arg) shipped as a fully
+    // "conformant" document. Driving the REAL validate → PageRenderer pipeline
+    // (not just calling validatePage() directly) proves the wrong-currency text
+    // never reaches the screen: the page is rejected outright.
+    server.use(...baseHandlers(), http.get(`${B}/data/menu_items`, () => dataPage([menuRow()])));
+    server.use(http.get(`${B}/pages/menu-items`, () => jsonBody(menuItemsDocWithCurrencyCode("EURO"))));
+    renderPack();
+
+    expect(await screen.findByText("This page could not be displayed")).toBeInTheDocument();
+    expect(screen.getAllByText(/CURRENCY_CODE_INVALID/).length).toBeGreaterThan(0);
+    // Never a silent USD (or any) render of the priced value.
+    expect(screen.queryByText("$4.50")).not.toBeInTheDocument();
+    expect(screen.queryByText("4.5")).not.toBeInTheDocument();
+  });
+
+  it("refuses to render a page doc whose formatCurrency arg omits the currency code entirely (CURRENCY_CODE_INVALID)", async () => {
+    server.use(...baseHandlers(), http.get(`${B}/data/menu_items`, () => dataPage([menuRow()])));
+    server.use(http.get(`${B}/pages/menu-items`, () => jsonBody(menuItemsDocWithCurrencyCode(undefined))));
+    renderPack();
+
+    expect(await screen.findByText("This page could not be displayed")).toBeInTheDocument();
+    expect(screen.getAllByText(/CURRENCY_CODE_INVALID/).length).toBeGreaterThan(0);
   });
 
   it("creates a menu item over the pack-data api/1 surface and shows it in the list", async () => {

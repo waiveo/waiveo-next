@@ -29,6 +29,7 @@ export const ERROR_CODES = [
   "VOCAB_REF_UNKNOWN",
   "OPTION_SOURCE_INVALID",
   "COMPUTE_FN_UNKNOWN",
+  "CURRENCY_CODE_INVALID",
   "CONTEXT_REF_UNDEFINED",
   "ACTION_VERB_UNKNOWN",
   "ACTION_FIELDS_INVALID",
@@ -128,6 +129,14 @@ export const COMPUTE_FNS = [
   "firstKey",
 ] as const;
 export type ComputeFn = (typeof COMPUTE_FNS)[number];
+
+// `formatCurrency`'s pinned `currencyCode` arg (UIS-140/143) is a literal, not a
+// Binding — but unlike a Binding it gets NO grammar check elsewhere, so its own
+// shape must be enforced here (UIS-144): a bare 3-letter alpha code, matched
+// case-insensitively (e.g. "USD", "eur"). validate.ts enforces this at
+// validate-time (CURRENCY_CODE_INVALID); bindings.ts re-uses the SAME pattern for
+// its own graceful-degradation fallback so the two can never diverge.
+export const ISO_4217_PATTERN = /^[A-Za-z]{3}$/;
 
 // ── Action verbs (UIS-160) ──────────────────────────────────────────────────
 

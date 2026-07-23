@@ -58,6 +58,7 @@ One row per requirement ID `contracts/ui-schema-1.md` defines. Format: `conforma
 | UIS-141 | `contracts/ui-schema-1.md#binding-grammar-computed-values` | `UIS-050-valid-wizard` | covered |
 | UIS-142 | `contracts/ui-schema-1.md#binding-grammar-computed-values` | - | TBD-wave1 |
 | UIS-143 | `contracts/ui-schema-1.md#binding-grammar-computed-values` | - | TBD-wave1 |
+| UIS-144 | `contracts/ui-schema-1.md#binding-grammar-computed-values` | - | TBD-wave1 |
 | UIS-150 | `contracts/ui-schema-1.md#context-feeds` | - | TBD-wave1 |
 | UIS-151 | `contracts/ui-schema-1.md#context-feeds` | - | TBD-wave1 |
 | UIS-152 | `contracts/ui-schema-1.md#context-feeds` | - | TBD-wave1 |

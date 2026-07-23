@@ -8,7 +8,7 @@
 // a document that reached this module is already conformant (validate.ts ran
 // first), so these functions evaluate the grammar rather than re-validate it.
 
-import { VOCAB_TABLE } from "./schema";
+import { ISO_4217_PATTERN, VOCAB_TABLE } from "./schema";
 
 // ── Scope model (UIS-005/103–107/183) ───────────────────────────────────────
 //
@@ -454,8 +454,6 @@ export function formatNumber(v: unknown, locale: string): string {
   return new Intl.NumberFormat(locale).format(n);
 }
 
-const ISO_4217 = /^[A-Za-z]{3}$/;
-
 /** Locale-formatted currency rendering (UIS-143): the viewer's active locale
  * drives punctuation/symbol placement (the same locale `formatNumber`/`formatDate`
  * use), while `currency` (an ISO 4217 code, e.g. `"USD"`) pins WHICH currency the
@@ -464,13 +462,16 @@ const ISO_4217 = /^[A-Za-z]{3}$/;
  * This is the fix for a raw price (`4.5`) rendering as bare `"4.5"` instead of a
  * currency string (`"$4.50"`): a page author now wraps the bound value in
  * `{compute: "formatCurrency", args: [priceBinding, "USD"]}` instead of binding it
- * directly. A malformed/absent currency code degrades to `"USD"` rather than
+ * directly. A malformed/absent currency code degrades to `"USD"` here rather than
  * crashing the renderer — the same graceful-degradation discipline every other
- * Computed function here follows. */
+ * Computed function here follows — but this is defense-in-depth ONLY: validate.ts
+ * rejects a malformed/absent currency code at validate time (CURRENCY_CODE_INVALID,
+ * UIS-144), so a conformant document (the only kind that reaches this module, per
+ * this file's own header) never actually exercises this fallback. */
 export function formatCurrency(v: unknown, locale: string, currency: unknown): string {
   const n = typeof v === "number" ? v : Number(v);
   if (!Number.isFinite(n)) return v == null ? "" : String(v);
-  const code = typeof currency === "string" && ISO_4217.test(currency) ? currency.toUpperCase() : "USD";
+  const code = typeof currency === "string" && ISO_4217_PATTERN.test(currency) ? currency.toUpperCase() : "USD";
   return new Intl.NumberFormat(locale, { style: "currency", currency: code }).format(n);
 }
 

@@ -279,16 +279,46 @@ describe("computed values (UIS-140 → COMPUTE_FN_UNKNOWN)", () => {
   it("accepts a known formatCurrency() call (UIS-140/143)", () => {
     expect(codes(withStatTile({ compute: "formatCurrency", args: ["price", "USD"] }))).toEqual([]);
   });
+  it("accepts a lowercase-but-well-formed formatCurrency() currency code", () => {
+    expect(codes(withStatTile({ compute: "formatCurrency", args: ["price", "eur"] }))).toEqual([]);
+  });
   it("does not grammar-check a formatCurrency() currency-code arg as a binding", () => {
     // A currency code is a pinned literal (like label's vocabRef), not a data
-    // path — "US Dollar" is not valid Binding syntax but must not be rejected as
-    // BINDING_PATH_INVALID for it.
-    expect(codes(withStatTile({ compute: "formatCurrency", args: ["price", "US Dollar"] }))).toEqual([]);
+    // path — a well-formed-but-nonexistent-looking 3-letter code must not be
+    // rejected as BINDING_PATH_INVALID merely for not looking like a Binding.
+    expect(codes(withStatTile({ compute: "formatCurrency", args: ["price", "ZZZ"] }))).toEqual([]);
   });
   it("still grammar-checks formatCurrency()'s first (numeric) arg as an ordinary Binding", () => {
     expect(codes(withStatTile({ compute: "formatCurrency", args: ["bad path!", "USD"] }))).toContain(
       "BINDING_PATH_INVALID",
     );
+  });
+  it("rejects a formatCurrency() whose currency-code arg is not a well-formed ISO 4217 code (CURRENCY_CODE_INVALID)", () => {
+    // The defect this closes: "US Dollar" (or any typo/spelled-out name) used to
+    // pass validation silently and render USD-formatted at runtime regardless —
+    // it must now be a typed rejection, the same rigor label's vocabRef gets.
+    expect(codes(withStatTile({ compute: "formatCurrency", args: ["price", "US Dollar"] }))).toContain(
+      "CURRENCY_CODE_INVALID",
+    );
+  });
+  it("rejects a formatCurrency() whose currency-code arg is a 4+ letter typo (CURRENCY_CODE_INVALID)", () => {
+    // The concrete failure scenario: an author typing "EURO" instead of "EUR".
+    expect(codes(withStatTile({ compute: "formatCurrency", args: ["price", "EURO"] }))).toContain(
+      "CURRENCY_CODE_INVALID",
+    );
+  });
+  it("rejects a formatCurrency() whose currency-code arg is a non-string (CURRENCY_CODE_INVALID)", () => {
+    expect(codes(withStatTile({ compute: "formatCurrency", args: ["price", 840] }))).toContain(
+      "CURRENCY_CODE_INVALID",
+    );
+  });
+  it("rejects a formatCurrency() with the currency-code arg omitted (CURRENCY_CODE_INVALID)", () => {
+    expect(codes(withStatTile({ compute: "formatCurrency", args: ["price"] }))).toContain(
+      "CURRENCY_CODE_INVALID",
+    );
+  });
+  it("rejects a formatCurrency() with args omitted entirely (CURRENCY_CODE_INVALID)", () => {
+    expect(codes(withStatTile({ compute: "formatCurrency" }))).toContain("CURRENCY_CODE_INVALID");
   });
 });
 
