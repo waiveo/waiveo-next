@@ -222,7 +222,7 @@ export function isCreateDraftUi(ui: Record<string, unknown>): boolean {
 
 /**
  * Seed a create draft from the page's `newAction` (the declarative create idiom,
- * UIS-021). The draft is a fresh in-memory record the detail form binds to:
+ * UIS-021/164). The draft is a fresh in-memory record the detail form binds to:
  *
  *   "newAction": {
  *     "verb": "create",

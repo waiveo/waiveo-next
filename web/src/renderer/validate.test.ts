@@ -414,6 +414,59 @@ describe("actions (UIS-160/UIS-163 → ACTION_VERB_UNKNOWN / ACTION_FIELDS_INVAL
   });
 });
 
+describe("create idiom envelope seed fields (UIS-164 → BINDING_PATH_INVALID / ACTION_FIELDS_INVALID)", () => {
+  // A minimal valid list-detail we perturb one `newAction` field at a time. The
+  // create idiom (UIS-021/164) lets a page seed a new row's universal-envelope
+  // fields declaratively — `scopeFrom` (a Binding → scope_node) and `lifecycle`
+  // (a literal string → lifecycle_state). Both are OPTIONAL, so a typo or a wrong
+  // shape degrades SILENTLY to the host default unless the validator catches it —
+  // which is exactly what these cases pin (UIS-200: never accept it unvalidated).
+  const listDetail = (newAction: Record<string, unknown>) => ({
+    pageType: "list-detail",
+    list: { source: "rows", display: { type: "text", props: { value: "x" } } },
+    detail: { source: "rows[id=$ui.selected]", root: { type: "text", props: { value: "x" } } },
+    newAction,
+  });
+
+  it("accepts a create declaring valid scopeFrom + lifecycle seed fields", () => {
+    expect(
+      codes(
+        listDetail({
+          verb: "create",
+          target: "rows",
+          itemDefault: { name: "" },
+          scopeFrom: "$root.defaultScope",
+          lifecycle: "draft",
+        }),
+      ),
+    ).toEqual([]);
+  });
+
+  it("rejects a non-string scopeFrom (a Binding-typed field, UIS-066)", () => {
+    const e = firstError(listDetail({ verb: "create", target: "rows", scopeFrom: 42 }));
+    expect(e?.code).toBe("BINDING_PATH_INVALID");
+    expect(e?.path).toBe("newAction.scopeFrom");
+  });
+
+  it("rejects a malformed scopeFrom binding path", () => {
+    const e = firstError(listDetail({ verb: "create", target: "rows", scopeFrom: "a..b" }));
+    expect(e?.code).toBe("BINDING_PATH_INVALID");
+    expect(e?.path).toBe("newAction.scopeFrom");
+  });
+
+  it("rejects a non-string lifecycle", () => {
+    const e = firstError(listDetail({ verb: "create", target: "rows", lifecycle: true }));
+    expect(e?.code).toBe("ACTION_FIELDS_INVALID");
+    expect(e?.path).toBe("newAction.lifecycle");
+  });
+
+  it("rejects a misspelled/unknown create field (e.g. scopeForm) — never silently accepted (UIS-200)", () => {
+    const e = firstError(listDetail({ verb: "create", target: "rows", scopeForm: "$root.defaultScope" }));
+    expect(e?.code).toBe("ACTION_FIELDS_INVALID");
+    expect(e?.path).toBe("newAction.scopeForm");
+  });
+});
+
 describe("wizard step ids (UIS-050 → WIZARD_STEP_ID_DUPLICATE)", () => {
   it("rejects duplicate step ids", () => {
     const doc = {

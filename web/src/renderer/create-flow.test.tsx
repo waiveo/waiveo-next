@@ -146,6 +146,37 @@ describe("list-detail create idiom (UIS-021) — New enters a draft, Save create
     });
   });
 
+  it("omits scope_node when a declared scopeFrom resolves to absent (host supplies the default scope, UIS-164)", async () => {
+    const user = userEvent.setup();
+    const create = vi.fn();
+    // `scopeFrom` is OPTIONAL grammar (UIS-164): a syntactically valid Binding that
+    // resolves to nothing at draft time seeds no `scope_node` — the host supplies
+    // the current site — rather than writing a null. Driven through real clicks.
+    const scopedDoc = {
+      ...doc,
+      newAction: {
+        verb: "create",
+        target: "menu_items",
+        itemDefault: { name: "" },
+        scopeFrom: "$root.missingScope",
+        lifecycle: "draft",
+      },
+    };
+    render(
+      <PageRenderer doc={scopedDoc} data={{ menu_items: [] }} messages={messages} handler={{ create }} />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "New" }));
+    await user.type(within(detailRegion()).getByLabelText("Item name"), "Mocha");
+    await user.click(within(detailRegion()).getByRole("button", { name: "Save changes" }));
+
+    // The created payload carries the typed field and the lifecycle seed, but NO
+    // scope_node (absent, not null) — the documented host-default fallback.
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledWith("menu_items", { name: "Mocha", lifecycle_state: "draft" });
+    expect((create.mock.calls[0][1] as Record<string, unknown>)).not.toHaveProperty("scope_node");
+  });
+
   it("Cancel exits the draft without creating", async () => {
     const user = userEvent.setup();
     const onCreate = vi.fn();

@@ -378,6 +378,12 @@ function validateActionParams(value: unknown, path: string, ctx: Ctx): void {
   }
 }
 
+// UIS-164: a `create` ActionRef's field set is closed to exactly these keys. Its
+// optional envelope-seed fields (`scopeFrom`/`lifecycle`) degrade SILENTLY to the
+// host default when absent, so an unrecognized field (a misspelling) is a typed
+// rejection, never accepted unvalidated on the theory the renderer defaults later.
+const CREATE_FIELDS = new Set(["verb", "target", "itemDefault", "scopeFrom", "lifecycle"]);
+
 function validateActionRef(v: unknown, path: string, ctx: Ctx): void {
   if (!isObject(v) || typeof v.verb !== "string") {
     fail(ctx, "ACTION_FIELDS_INVALID", path, "an ActionRef must be an object with a verb (UIS-160)");
@@ -412,6 +418,30 @@ function validateActionRef(v: unknown, path: string, ctx: Ctx): void {
       break;
     case "create":
       needBinding("target");
+      // The create idiom's closed field set (UIS-164): an unrecognized field —
+      // typically a misspelled optional seed field, e.g. `scopeForm` — fails
+      // rather than silently degrading the new row's scope/lifecycle to a default.
+      for (const key of Object.keys(v)) {
+        if (!CREATE_FIELDS.has(key)) {
+          fail(ctx, "ACTION_FIELDS_INVALID", `${path}.${key}`, `create has no field "${key}" (UIS-164)`);
+        }
+      }
+      // `scopeFrom` is a once-resolved Binding (UIS-164, resolved like a bare-string
+      // Binding at scope establishment, UIS-110 — never a LiveBinding) sourcing the
+      // new row's `scope_node`; a non-string or grammar-malformed value fails
+      // BINDING_PATH_INVALID (UIS-066), the same as any other Binding-typed field.
+      if (v.scopeFrom !== undefined) {
+        if (typeof v.scopeFrom !== "string") {
+          fail(ctx, "BINDING_PATH_INVALID", `${path}.scopeFrom`, "create `scopeFrom` must be a Binding string (UIS-164)");
+        } else {
+          validateBindingString(v.scopeFrom, `${path}.scopeFrom`, ctx);
+        }
+      }
+      // `lifecycle` is a literal string (UIS-108, never the string-is-Binding rule)
+      // seeding `lifecycle_state`; a non-string is a wrongly-shaped field (UIS-160).
+      if (v.lifecycle !== undefined && typeof v.lifecycle !== "string") {
+        fail(ctx, "ACTION_FIELDS_INVALID", `${path}.lifecycle`, "create `lifecycle` must be a literal string (UIS-164)");
+      }
       break;
     case "delete":
       needBinding("target");

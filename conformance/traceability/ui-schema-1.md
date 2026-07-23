@@ -65,6 +65,7 @@ One row per requirement ID `contracts/ui-schema-1.md` defines. Format: `conforma
 | UIS-161 | `contracts/ui-schema-1.md#actions` | - | TBD-wave1 |
 | UIS-162 | `contracts/ui-schema-1.md#actions` | - | TBD-wave1 |
 | UIS-163 | `contracts/ui-schema-1.md#actions` | - | TBD-wave1 |
+| UIS-164 | `contracts/ui-schema-1.md#actions` | - | TBD-wave1 |
 | UIS-180 | `contracts/ui-schema-1.md#fragments--slots` | - | TBD-wave1 |
 | UIS-181 | `contracts/ui-schema-1.md#fragments--slots` | - | TBD-wave1 |
 | UIS-182 | `contracts/ui-schema-1.md#fragments--slots` | - | TBD-wave1 |
