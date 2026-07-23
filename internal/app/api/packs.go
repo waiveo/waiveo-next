@@ -1,10 +1,13 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/maaxton/waiveo-next/internal/app/packs"
 	"github.com/maaxton/waiveo-next/internal/app/store"
@@ -16,6 +19,52 @@ import (
 // cursor is bound to, so a cursor minted by another resource's list is refused
 // here rather than paged from as an arbitrary position (API-033/035).
 const packResourceType = "pack"
+
+// packCursorPrefix is the scope tag every packs-list cursor carries, so a cursor
+// minted by another resource's list — a `<scope>_<ulid>` token or a bare ULID —
+// is refused CURSOR_INVALID here rather than paged from as an arbitrary position.
+const packCursorPrefix = packResourceType + "_"
+
+// encodePackCursorID renders a pack id into the keyset position a next-page
+// cursor carries. A pack id is <publisher>/<name> — lowercase and slash-bearing,
+// so NOT the ULID the shared apihttp cursor helpers assume (they require the
+// position to satisfy ulid.Valid, API-034, and the whole token to match the
+// opaque-cursor grammar `^[A-Za-z0-9_-]+$`, API-036). base64url (no padding)
+// encodes the id into exactly that grammar's alphabet, keeping the cursor opaque
+// and URL-safe while still naming the exact id, so pagination works past page 1.
+func encodePackCursorID(id string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(id))
+}
+
+// decodePackCursor recovers the pack id a next-page cursor names, scoped to the
+// packs list. A malformed token, or one minted by a different list (a wrong
+// scope tag, a bare ULID, or non-base64url content), is refused 400 /
+// CURSOR_INVALID rather than silently paged from as an arbitrary keyset position
+// (API-035) — the same refusal the shared apihttp.DecodeCursor emits for a
+// cross-scope cursor, adapted to the pack id's non-ULID shape.
+func decodePackCursor(cursor string) (string, *apihttp.PageParamError) {
+	rest, ok := strings.CutPrefix(cursor, packCursorPrefix)
+	if !ok {
+		return "", packCursorInvalid(cursor)
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(rest)
+	if err != nil || len(raw) == 0 {
+		return "", packCursorInvalid(cursor)
+	}
+	return string(raw), nil
+}
+
+// packCursorInvalid builds the 400 / CURSOR_INVALID Problem a rejected packs-list
+// cursor yields — byte-identical to apihttp.DecodeCursor's own (closed code
+// registry API-011, API-035).
+func packCursorInvalid(cursor string) *apihttp.PageParamError {
+	return &apihttp.PageParamError{
+		Status: http.StatusBadRequest,
+		Code:   "CURSOR_INVALID",
+		Title:  "Bad Request",
+		Detail: fmt.Sprintf("The pagination cursor %q is not valid.", cursor),
+	}
+}
 
 // mountPacks registers the declarative-packs surface under /api/v1/packs. A pack
 // id is <publisher>/<name> (two path segments, MAN-001), so the item routes
@@ -66,10 +115,19 @@ func packEnvelopeOf(p store.Pack) packEnvelope {
 // manifest the engine refused is a 422 whose errors[] extension is the
 // contract's typed per-field violations (API-013). NOTHING in the artifact is
 // executed — a pack is data.
+//
+// It is a mutating, resource-creating POST, so it honors Idempotency-Key
+// (API-050/052/072) through the SAME srv.idempotent wrapper the generic create()
+// and the automations mcp:act POSTs use — never a second mechanism. A client's
+// retry-on-timeout with the same key + the same artifact replays the original
+// 201 verbatim rather than re-running the install (which would reinstall the pack
+// in place, bumping its revision and returning 200); the same key with a
+// different artifact is a 409 reuse conflict.
 func (srv *server) installPack(w http.ResponseWriter, r *http.Request) {
 	// Read the body under a hard cap (one beyond the artifact limit, so an
 	// over-limit upload is detected and refused as oversize rather than buffered
 	// whole). The pipeline's ReadBundle enforces the same limit authoritatively.
+	// The artifact bytes are also the Idempotency-Key replay-vs-reuse content hash.
 	limit := packs.DefaultLimits.MaxArtifactBytes
 	artifact, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
 	if err != nil {
@@ -78,6 +136,14 @@ func (srv *server) installPack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	srv.idempotent(w, r, artifact, func(w http.ResponseWriter) { srv.installPackExec(w, r, artifact) })
+}
+
+// installPackExec is the install's actual work, run once per fresh (non-replayed)
+// request under the Idempotency-Key guard in installPack. It writes into the
+// response capture that guard owns, so a successful install's exact response
+// bytes (201 + summary) are retained for a later retry's verbatim replay.
+func (srv *server) installPackExec(w http.ResponseWriter, r *http.Request, artifact []byte) {
 	res, err := srv.installer.Install(r.Context(), artifact)
 	if err != nil {
 		srv.writeInstallError(w, r, err)
@@ -138,7 +204,7 @@ func (srv *server) listPacks(w http.ResponseWriter, r *http.Request) {
 	}
 	var afterID string
 	if cursor != "" {
-		lastID, cerr := apihttp.DecodeCursor(packResourceType, cursor)
+		lastID, cerr := decodePackCursor(cursor)
 		if cerr != nil {
 			srv.packProblem(w, r, cerr.Status, cerr.Code, cerr.Title, cerr.Detail)
 			return
@@ -163,7 +229,10 @@ func (srv *server) listPacks(w http.ResponseWriter, r *http.Request) {
 		}
 		window = append(window, packEnvelopeOf(p))
 	}
-	page := apihttp.Page(packResourceType, window, limit, func(e packEnvelope) string { return e.ID })
+	// The next cursor is bound to this resource type AND base64url-encodes the pack
+	// id (which is not a ULID), so apihttp.Page mints a `pack_<base64url(id)>` token
+	// decodePackCursor round-trips — never a raw slash-bearing id the grammar rejects.
+	page := apihttp.Page(packResourceType, window, limit, func(e packEnvelope) string { return encodePackCursorID(e.ID) })
 	writeJSONValue(w, http.StatusOK, page)
 }
 

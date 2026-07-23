@@ -206,7 +206,14 @@ func (in *Installer) Install(ctx context.Context, artifact []byte) (Result, erro
 		Manifest:         append(json.RawMessage(nil), manifestBytes...),
 		Files:            files,
 	}
-	pack, created, err := in.store.InstallPack(ctx, spec)
+	// Re-assert MAN-053 inside the install transaction, against the prior row read
+	// under the store's write lock — not the installedVersion snapshot read above.
+	// Two concurrent installs of a not-yet-installed id both read installedVersion=0
+	// (so manifest.Validate skips the regression check for both); whichever commits
+	// LAST would otherwise overwrite the row unconditionally, silently downgrading
+	// the dataModel.version. This guard catches that in the committing transaction
+	// and refuses it with the SAME typed error the sequential path surfaces.
+	pack, created, err := in.store.InstallPack(ctx, spec, versionRegressionGuard(m.DataModel.Version))
 	if err != nil {
 		return Result{}, err
 	}
@@ -283,6 +290,28 @@ func localeName(entry string) (string, bool) {
 		return "", false
 	}
 	return locale, true
+}
+
+// versionRegressionGuard is the store.InstallGuard that re-enforces MAN-053
+// inside the install transaction: if the incoming dataModel.version is lower
+// than the prior installed pack's, it refuses the install with the SAME typed
+// *ManifestError the manifest engine's sequential check yields (so the api layer
+// renders the identical 422 / DATAMODEL_VERSION_REGRESSION field error). It fires
+// only when a prior row exists and only on an actual regression — the store runs
+// it against the prior row read under its own write lock, closing the TOCTOU race
+// the pipeline's pre-transaction installedVersion snapshot leaves open.
+func versionRegressionGuard(incomingVersion int) store.InstallGuard {
+	return func(prior store.Pack) error {
+		if incomingVersion < prior.DataModelVersion {
+			return &ManifestError{Errors: []manifest.Error{{
+				Code:  "DATAMODEL_VERSION_REGRESSION",
+				Field: "dataModel.version",
+				Message: fmt.Sprintf("dataModel.version %d is lower than the currently installed version %d (MAN-053)",
+					incomingVersion, prior.DataModelVersion),
+			}}}
+		}
+		return nil
+	}
 }
 
 // collectionNames returns the pack's declared collection names (MAN-051), sorted

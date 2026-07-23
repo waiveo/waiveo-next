@@ -3,6 +3,7 @@ package packs_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/maaxton/waiveo-next/internal/app/packs"
@@ -252,6 +253,50 @@ func TestReinstallLowerDataModelVersionRefused(t *testing.T) {
 	pack, _, _ := st.GetPack(ctx, "acme/menu-board")
 	if pack.Revision != 1 || pack.DataModelVersion != 3 {
 		t.Fatalf("installed pack changed after a refused reinstall: rev %d dmv %d; want 1/3", pack.Revision, pack.DataModelVersion)
+	}
+}
+
+// TestConcurrentInstallVersionRegressionRace: two concurrent installs of a
+// not-yet-installed pack id — one declaring dataModel.version 10, one declaring
+// version 1 — must NEVER leave the store at the lower version. Both Install()
+// calls read installedVersion=0 in their pre-transaction snapshot (so
+// manifest.Validate skips the MAN-053 check for both); the store then serializes
+// the two InstallPack transactions, and whichever committed last would otherwise
+// overwrite the row unconditionally, silently downgrading dataModel.version. The
+// in-transaction versionRegressionGuard closes that TOCTOU race: the second
+// committer sees the first's row and, if it regresses, is refused — so the final
+// version is always the higher one, whatever the commit order, and neither call
+// returns a spurious error when it legitimately wins. Looped so the race, which
+// resolves either commit order, is exercised many times.
+func TestConcurrentInstallVersionRegressionRace(t *testing.T) {
+	const trials = 100
+	for i := 0; i < trials; i++ {
+		st := openStore(t)
+		in := packs.NewInstaller(st)
+		ctx := context.Background()
+
+		hi := baseManifest()
+		hi["dataModel"] = map[string]any{"version": 10, "collections": []any{
+			map[string]any{"name": "menu_items", "fields": []any{
+				map[string]any{"name": "name", "type": "string", "role": "title"},
+			}},
+		}}
+		hiZip := basePackZip(t, hi)
+		loZip := basePackZip(t, baseManifest()) // dataModel.version 1
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); _, _ = in.Install(ctx, hiZip) }()
+		go func() { defer wg.Done(); _, _ = in.Install(ctx, loZip) }()
+		wg.Wait()
+
+		pack, found, err := st.GetPack(ctx, "acme/menu-board")
+		if err != nil || !found {
+			t.Fatalf("trial %d: GetPack found=%v err=%v", i, found, err)
+		}
+		if pack.DataModelVersion != 10 {
+			t.Fatalf("trial %d: stored dataModel.version = %d, want 10 — a concurrent lower-version install raced past MAN-053 and downgraded the pack", i, pack.DataModelVersion)
+		}
 	}
 }
 

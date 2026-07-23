@@ -106,6 +106,25 @@ type PackInstall struct {
 	Files            []PackFile
 }
 
+// InstallGuard is a caller-supplied precondition re-checked INSIDE the install
+// transaction, against the prior installed pack row read under the SAME write
+// lock the upsert commits under. It runs only when a prior row exists (a fresh
+// install can never regress), and a non-nil return rolls the whole transaction
+// back with the guard's error propagated VERBATIM (so the pipeline can return
+// its own typed *packs.ManifestError and the api layer renders the same 422 it
+// does on the sequential path).
+//
+// This closes the check-then-write (TOCTOU) race a pre-transaction snapshot
+// leaves open: the pipeline reads the installed dataModel.version ONCE, outside
+// this tx, to feed manifest.Validate — but between that read and this commit a
+// concurrent install of the same pack id may have landed a HIGHER version, so
+// MAN-053's version-regression gate would be skipped for both (each saw "not
+// installed") and the lower version could silently win by committing last. The
+// guard re-evaluates the regression here, atomically, so the store never ends
+// at a dataModel.version below one already installed. It mirrors the WriteGuard
+// pattern the generic Create/Update path uses for external_id uniqueness.
+type InstallGuard func(prior Pack) error
+
 // GetPack returns the installed pack with id, and whether it exists.
 func (s *Store) GetPack(ctx context.Context, id string) (Pack, bool, error) {
 	s.mu.RLock()
@@ -170,9 +189,13 @@ func (s *Store) ListPacks(ctx context.Context) ([]Pack, error) {
 // data survives a pack update); uninstall is the only path that removes rows.
 //
 // The MAN-053 dataModel.version-regression refusal is enforced UPSTREAM by the
-// pipeline's manifest.Validate (which surfaces the contract's typed error); this
-// method trusts the spec has already passed that gate.
-func (s *Store) InstallPack(ctx context.Context, spec PackInstall) (Pack, bool, error) {
+// pipeline's manifest.Validate (which surfaces the contract's typed error) for
+// the sequential case; a caller additionally passes an InstallGuard so the same
+// regression check is re-run against the prior row read INSIDE this transaction,
+// closing the TOCTOU race two concurrent installs of one id would otherwise slip
+// through (see InstallGuard). The store owns only the revision/generation
+// baseline and the atomicity — the guard owns the typed refusal.
+func (s *Store) InstallPack(ctx context.Context, spec PackInstall, guards ...InstallGuard) (Pack, bool, error) {
 	var out Pack
 	var created bool
 	if err := s.writeTx(ctx, func(tx *sql.Tx) error {
@@ -185,6 +208,16 @@ func (s *Store) InstallPack(ctx context.Context, spec PackInstall) (Pack, bool, 
 
 		var revision, createdAt int64
 		if found {
+			// Re-check every precondition against the prior row read under this
+			// write lock BEFORE the upsert — the atomic snapshot that closes the
+			// check-then-write race a pre-transaction read leaves open (e.g. a
+			// concurrent install of this same id that landed a higher
+			// dataModel.version). A guard's error rolls the whole tx back.
+			for _, g := range guards {
+				if err := g(prior); err != nil {
+					return err
+				}
+			}
 			revision = prior.Revision + 1
 			createdAt = prior.CreatedAt
 			if _, err := tx.ExecContext(ctx,
