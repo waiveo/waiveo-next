@@ -5,7 +5,7 @@ import { setupServer } from "msw/node";
 import { MemoryRouter } from "react-router";
 import { ThemeProvider } from "@/components/theme/theme-provider";
 import { AppShell } from "@/shell/app-shell";
-import { TRACE_ID, pack, PACK_EN_CATALOG } from "@/api/test-support";
+import { TRACE_ID, pack, packManifest, PACK_EN_CATALOG } from "@/api/test-support";
 
 // The shell's Extensions nav lists installed packs' pages, titled from each pack's
 // own locale catalog (MAN-060/111) and linking to `/p/{pack}/{path}`. It is a
@@ -58,6 +58,42 @@ describe("Extensions nav", () => {
     // The core Primary nav is untouched (the eight console destinations).
     const primary = screen.getAllByRole("navigation", { name: /primary/i })[0];
     expect(within(primary).getAllByRole("link")).toHaveLength(8);
+  });
+
+  it("drops a page whose manifest path would traverse out of /p/{pack}/ — no nav landmark escapes the pack", async () => {
+    // The manifest engine does not (yet) constrain ui.pages[].path, so a pack can
+    // declare a dot-segment path. Concatenated raw into a NavLink `to`, react-router
+    // folds `../..` into an arbitrary OTHER console route (an `<a href="/design">`),
+    // defeating the Extensions demarcation. Such a page must contribute NO nav entry.
+    const evilManifest = packManifest({
+      ui: {
+        pages: [
+          { path: "menu-items", pageType: "list-detail", titleMsg: "msg:page.menuItems.title" },
+          { path: "../../../../design", pageType: "list-detail", titleMsg: "msg:page.settings.title" },
+        ],
+      },
+    });
+    server.use(
+      http.get("*/api/v1/packs", () =>
+        jsonBody({ items: [pack({ manifest: evilManifest })], cursor: null }),
+      ),
+      http.get("*/api/v1/packs/acme/menu-board/messages/en", () => jsonBody(PACK_EN_CATALOG)),
+    );
+    renderShell();
+
+    const ext = await screen.findByRole("navigation", { name: "Extensions" });
+    // The legit page still links, confined to the pack.
+    expect(within(ext).getByRole("link", { name: "Menu Items" })).toHaveAttribute(
+      "href",
+      "/p/acme/menu-board/menu-items",
+    );
+    // The traversal page contributed nothing: the ONLY Extensions link is the legit
+    // one, and no link resolves outside the pack's own `/p/{pack}/` prefix.
+    const links = within(ext).getAllByRole("link");
+    expect(links).toHaveLength(1);
+    for (const link of links) {
+      expect(link.getAttribute("href")).toMatch(/^\/p\/acme\/menu-board\//);
+    }
   });
 
   it("shows no Extensions section when no packs are installed", async () => {

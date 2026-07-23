@@ -7,7 +7,7 @@
 // Extensions section simply does not appear.
 
 import { useEffect, useMemo, useState } from "react";
-import { collectPages, createApi, type Pack, type WaiveoApi } from "@/api";
+import { collectPages, createApi, encodePackPagePath, type Pack, type WaiveoApi } from "@/api";
 import { loadPackCatalog, resolveTitle } from "./catalog";
 
 /** One installed page as a nav destination: its `/p/{pack}/{path}` route and its
@@ -38,10 +38,17 @@ export function useInstalledPackNav(api?: WaiveoApi): PackNavGroup[] {
         const built = await Promise.all(
           packs.map(async (pack): Promise<PackNavGroup> => {
             const messages = await loadPackCatalog(client.packs, pack.id);
-            const pages = (pack.manifest.ui?.pages ?? []).map((p) => ({
-              to: `/p/${pack.id}/${p.path}`,
-              label: resolveTitle(messages, p.titleMsg),
-            }));
+            const pages = (pack.manifest.ui?.pages ?? []).flatMap((p) => {
+              // The manifest path is untrusted (the engine does not constrain its
+              // grammar): a `..`/`.`/empty segment is dropped rather than emitted as a
+              // nav landmark, because react-router's `resolvePath` would fold it into
+              // an arbitrary OTHER console route — escaping the pack's own
+              // `/p/{pack}/{path}` confinement and the Extensions demarcation. A safe
+              // path is percent-encoded per-segment so it can never do so.
+              const safe = encodePackPagePath(p.path);
+              if (safe === null) return [];
+              return [{ to: `/p/${pack.id}/${safe}`, label: resolveTitle(messages, p.titleMsg) }];
+            });
             return {
               packId: pack.id,
               title: resolveTitle(messages, pack.manifest.displayName),

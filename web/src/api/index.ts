@@ -58,6 +58,7 @@ export {
 export {
   createPacksModule,
   packData,
+  encodePackPagePath,
   type PacksModule,
   type Pack,
   type PackManifest,

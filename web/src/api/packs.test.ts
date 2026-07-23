@@ -107,6 +107,33 @@ describe("packs registry client", () => {
     await expect(api().packs.pageDoc(PACK_ID, "menu-items")).resolves.toEqual(doc);
   });
 
+  it("confines a crafted page path to the pack's own /pages/ namespace (no traversal escape)", async () => {
+    // A single catch-all records every request that leaves the client, so the
+    // assertions are about where the fetch actually went — not about which mock
+    // happened to answer.
+    const requested: string[] = [];
+    server.use(
+      http.get(/.*/, ({ request }) => {
+        requested.push(new URL(request.url).pathname);
+        return HttpResponse.json({ ok: true }, { headers: { "Trace-Id": TRACE_ID } });
+      }),
+    );
+
+    // (a) A literal dot-segment path is refused BEFORE any request leaves — the
+    // WHATWG URL parser fetch() uses would otherwise collapse `../` onto another
+    // api/1 endpoint (`/api/v1/packs/acme/scope-nodes`).
+    await expect(api().packs.pageDoc(PACK_ID, "../../scope-nodes")).rejects.toThrow();
+    expect(requested).toHaveLength(0);
+
+    // (b) A PERCENT-ENCODED dot-segment (`%2e%2e`, which react-router keeps in the
+    // route splat and the URL parser would ALSO collapse) is encoded per-segment to
+    // an inert `%252e%252e`: the request stays under the pack's `/pages/`, never
+    // escaping to a sibling pack or another resource.
+    await api().packs.pageDoc(PACK_ID, "%2e%2e/%2e%2e/scope-nodes");
+    expect(requested).toHaveLength(1);
+    expect(requested[0].startsWith("/api/v1/packs/acme/menu-board/pages/")).toBe(true);
+  });
+
   it("fetches a locale catalog verbatim (bare keys)", async () => {
     server.use(
       http.get(`${TEST_BASE}/packs/acme/menu-board/messages/en`, () =>

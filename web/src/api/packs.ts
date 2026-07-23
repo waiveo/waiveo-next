@@ -87,6 +87,34 @@ export interface PackInstallResult {
   locales: string[];
 }
 
+// ── Pack page-path confinement ───────────────────────────────────────────────
+
+/**
+ * Encode a pack-declared page path for SAFE splicing into a route href or a fetch
+ * URL. Unlike a pack id (idSegmentRe-constrained server-side), the manifest engine
+ * does not yet constrain `ui.pages[].path` to a segment grammar — so the console
+ * must not trust it. A path like `../../design` or `%2e%2e/%2e%2e/scope-nodes`,
+ * concatenated raw, escapes the pack's own `/p/{pack}/{path}` confinement:
+ * react-router's `resolvePath` and the WHATWG URL parser `fetch()` uses BOTH
+ * collapse dot-segments before computing the destination.
+ *
+ * Each `/`-separated segment is percent-encoded individually — a genuinely nested
+ * path keeps its separators, but a literal `%2e%2e` becomes an inert `%252e%252e`
+ * the parser will not collapse. A `.`/`..`/empty segment is REJECTED outright:
+ * encodeURIComponent leaves `.`/`..` untouched (dots are unreserved), so it would
+ * otherwise remain a live dot-segment the router/parser still folds away. Returns
+ * the safe path, or `null` when the path carries a traversal or empty segment.
+ */
+export function encodePackPagePath(path: string): string | null {
+  if (path === "") return null;
+  const out: string[] = [];
+  for (const segment of path.split("/")) {
+    if (segment === "" || segment === "." || segment === "..") return null;
+    out.push(encodeURIComponent(segment));
+  }
+  return out.join("/");
+}
+
 // ── The pack registry module ─────────────────────────────────────────────────
 
 export interface PacksModule {
@@ -133,9 +161,17 @@ export function createPacksModule(client: ApiClient): PacksModule {
       return client.remove(`${base}/${id}`, etag);
     },
     pageDoc(id, path) {
-      // The page path may itself be nested (a `{path...}` server wildcard); its
-      // slashes are path separators, so it rides raw like the id.
-      return client.read<unknown>(`${base}/${id}/pages/${path}`).then((r) => r.data);
+      // The page path is UNTRUSTED manifest data (the engine does not constrain its
+      // grammar) whose `/` are real separators (a `{path...}` server wildcard) — so
+      // it is encoded per-segment and a dot-segment refused, NEVER concatenated raw,
+      // or the URL parser would collapse `../` (or `%2e%2e`) out of this pack's
+      // `/pages/` namespace onto another endpoint (a sibling pack, another api/1
+      // resource). The pack id rides raw: it is idSegmentRe-safe server-side.
+      const safe = encodePackPagePath(path);
+      if (safe === null) {
+        return Promise.reject(new Error(`refusing an unsafe pack page path: "${path}"`));
+      }
+      return client.read<unknown>(`${base}/${id}/pages/${safe}`).then((r) => r.data);
     },
     messages(id, locale) {
       return client
