@@ -377,6 +377,112 @@ describe("Pack page — pack-data create / edit over the api/1 conventions", () 
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
+  // Efficiency regression (bounded create-default query): the create target is
+  // resolved from a bounded `kind in (org,site)` selector — a 1–2 row query on a
+  // one-org/one-site deployment — NOT an unfiltered walk of every group and screen in
+  // the fleet on every pack-page open. A resolver that fetched the whole scope-node
+  // collection would fail the "only the bounded selector was issued" assertion here.
+  it("resolves the create scope from a bounded kind in (org,site) query — never a full-tree walk", async () => {
+    const SITE = ULID_ROOT; // the Demo Site node id (kind=site)
+    const selectors: Array<string | null> = [];
+    const state = { rows: [] as unknown[] };
+    let postedScope: unknown = "unset";
+    server.use(
+      http.get(`${B}`, () => ok(pack(), { revision: 1 })),
+      http.get("*/api/v1/scope-nodes", ({ request }) => {
+        const selector = new URL(request.url).searchParams.get("selector");
+        selectors.push(selector);
+        // The server honors the selector: the bounded query returns just the site
+        // (its org ancestor is a virtual boundary, never a row). Were the app to fall
+        // to the unfiltered walk it would additionally drag in the screen — the very
+        // rows the bounded query exists to avoid fetching.
+        return selector === "kind in (org,site)"
+          ? dataPage([{ id: SITE, kind: "site", parent_id: "01J8Z0DEMOORGANCESTORBOUND", name: "Demo Site", revision: 1 }])
+          : dataPage([
+              { id: SITE, kind: "site", parent_id: "01J8Z0DEMOORGANCESTORBOUND", name: "Demo Site", revision: 1 },
+              { id: ULID_C, kind: "screen", parent_id: SITE, name: "Demo Screen", revision: 1 },
+            ]);
+      }),
+      http.get(`${B}/pages/menu-items`, () => jsonBody(menuItemsDoc)),
+      http.get(`${B}/messages/en`, () => jsonBody(PACK_EN_CATALOG)),
+      http.get(`${B}/data/menu_items`, () => dataPage(state.rows)),
+      http.post(`${B}/data/menu_items`, async ({ request }) => {
+        const body = (await request.json()) as { scope_node?: unknown };
+        postedScope = body.scope_node;
+        const created = packRow({ entity_id: ULID_B, name: "New item", scope_node: SITE, revision: 1 });
+        state.rows = [...state.rows, created];
+        return ok(created, { status: 201, revision: 1 });
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderPack();
+    await screen.findByRole("table", { name: "Menu items" });
+    await user.click(screen.getByRole("button", { name: "New" }));
+    await user.click(await screen.findByRole("button", { name: "Save changes" }));
+
+    // The site resolved as the create target from the bounded query alone…
+    await waitFor(() =>
+      expect(within(screen.getByRole("table", { name: "Menu items" })).getByText("New item")).toBeInTheDocument(),
+    );
+    expect(postedScope).toBe(SITE);
+    // …and the page issued ONLY the bounded selector — never the unfiltered full-tree
+    // walk. This is the efficiency guard: a normal pack-page open must not fetch every
+    // scope node in the deployment just to pick a create default.
+    expect(selectors).toContain("kind in (org,site)");
+    expect(selectors.every((s) => s === "kind in (org,site)")).toBe(true);
+  });
+
+  // The fallback path: a deployment with NEITHER an org nor a site (effectively
+  // unreachable after `make dev-up`) still resolves a target — the bounded query
+  // returns empty, so the resolver walks the full unfiltered set exactly once to pick
+  // any root node (MAN-051: a pack row attaches to ANY scope node).
+  it("falls back to the full unfiltered walk only when neither an org nor a site exists", async () => {
+    const GROUP = ULID_A;
+    const selectors: Array<string | null> = [];
+    const state = { rows: [] as unknown[] };
+    let postedScope: unknown = "unset";
+    server.use(
+      http.get(`${B}`, () => ok(pack(), { revision: 1 })),
+      http.get("*/api/v1/scope-nodes", ({ request }) => {
+        const selector = new URL(request.url).searchParams.get("selector");
+        selectors.push(selector);
+        // The bounded query is EMPTY (no org, no site); only the full walk surfaces
+        // the group root the row must attach to.
+        return selector === "kind in (org,site)"
+          ? dataPage([])
+          : dataPage([
+              { id: GROUP, kind: "group", parent_id: "01J8Z0ABSENTPARENTBOUNDARY", name: "Lobby group", revision: 1 },
+              { id: ULID_C, kind: "screen", parent_id: GROUP, name: "Lobby screen", revision: 1 },
+            ]);
+      }),
+      http.get(`${B}/pages/menu-items`, () => jsonBody(menuItemsDoc)),
+      http.get(`${B}/messages/en`, () => jsonBody(PACK_EN_CATALOG)),
+      http.get(`${B}/data/menu_items`, () => dataPage(state.rows)),
+      http.post(`${B}/data/menu_items`, async ({ request }) => {
+        const body = (await request.json()) as { scope_node?: unknown };
+        postedScope = body.scope_node;
+        const created = packRow({ entity_id: ULID_B, name: "New item", scope_node: GROUP, revision: 1 });
+        state.rows = [...state.rows, created];
+        return ok(created, { status: 201, revision: 1 });
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderPack();
+    await screen.findByRole("table", { name: "Menu items" });
+    await user.click(screen.getByRole("button", { name: "New" }));
+    await user.click(await screen.findByRole("button", { name: "Save changes" }));
+
+    await waitFor(() =>
+      expect(within(screen.getByRole("table", { name: "Menu items" })).getByText("New item")).toBeInTheDocument(),
+    );
+    // The bounded query ran FIRST, then the fallback walk (selector-less) — and the
+    // group root resolved the create target.
+    expect(selectors).toEqual(["kind in (org,site)", null]);
+    expect(postedScope).toBe(GROUP);
+  });
+
   it("edits a row under its If-Match and persists the change", async () => {
     const state = { rows: [packRow({ entity_id: ULID_A, name: "Cortado", revision: 3 })] as unknown[] };
     let ifMatch: string | null = null;

@@ -48,6 +48,39 @@ export function resolveDefaultScopeNode(nodes: ScopeNode[]): string | null {
 }
 
 /**
+ * The bounded selector for the create-default's COMMON case: the deployment's org
+ * and/or site roots. Self-hosted is one-org/one-site (data-model/1), so this is a
+ * 1–2 row query — NOT a walk of every group and screen in the fleet. Mirrors the
+ * screens route's `PARENT_SELECTOR` idiom (a filtered scope-node query, never the
+ * whole tree, to pick a create target).
+ */
+const DEFAULT_SCOPE_SELECTOR = "kind in (org,site)";
+
+/**
+ * Resolve the create-default scope node against a live client. The common path is a
+ * bounded `kind in (org,site)` query — `resolveDefaultScopeNode` prefers the org,
+ * else the site (the self-hosted invariant guarantees one after `make dev-up`). ONLY
+ * a deployment with neither an org nor a site (effectively unreachable post-`make
+ * dev-up`) pays the full unfiltered walk, reserved as the last-resort fallback so a
+ * pack page whose selector matched a root never fetches every scope node just to pick
+ * a default. Returns `null` only for a genuinely scope-less deployment.
+ */
+async function resolveDefaultScopeNodeVia(
+  scopeNodes: WaiveoApi["scopeNodes"],
+): Promise<string | null> {
+  const preferred = await collectPages<ScopeNode>((cursor) =>
+    scopeNodes.list({ selector: DEFAULT_SCOPE_SELECTOR, cursor }),
+  );
+  const fromPreferred = resolveDefaultScopeNode(preferred);
+  if (fromPreferred) return fromPreferred;
+  // Neither an org nor a site exists — walk the full set to pick any root node
+  // (MAN-051: a pack row attaches to ANY scope node). This branch is unreachable
+  // after a stock `make dev-up`; it exists so a non-standard tree still resolves.
+  const all = await collectPages<ScopeNode>((cursor) => scopeNodes.list({ cursor }));
+  return resolveDefaultScopeNode(all);
+}
+
+/**
  * The pack page route (`/p/{publisher}/{name}/{path}`) — an INSTALLED extension's
  * page, rendered through the EXACT same renderer + kit a core page uses. This is
  * the uniformity promise reaching third-party content: the route fetches the page
@@ -156,14 +189,12 @@ export default function PackPageRoute({ api }: { api?: WaiveoApi }) {
       // deterministically so a cold-open create always has a target: the org root if
       // present, else the site (the self-hosted invariant guarantees one after
       // `make dev-up`), else any scope node — a pack row attaches to ANY (MAN-051).
+      // A bounded `kind in (org,site)` query serves the common case; only a tree with
+      // neither pays the full walk (see resolveDefaultScopeNodeVia).
       // auth-seam: consent (MAN-022) is auto-granted in the dev-POC and a created row
       // is attached to this resolved root; a real deployment gates the write on
       // granted consent and lets the operator choose the target scope.
-      const defaultScopeNode = await collectPages<ScopeNode>((cursor) =>
-        client.scopeNodes.list({ cursor }),
-      )
-        .then(resolveDefaultScopeNode)
-        .catch(() => null);
+      const defaultScopeNode = await resolveDefaultScopeNodeVia(client.scopeNodes).catch(() => null);
 
       const pageEntry = (manifest.ui?.pages ?? []).find((p) => p.path === path);
       const pageTitle = pageEntry
