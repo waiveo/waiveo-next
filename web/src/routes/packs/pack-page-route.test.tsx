@@ -1,8 +1,11 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
 import { render, screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
+// The kit re-exports this exact sonner `toast` object, so spying here intercepts
+// the route's `toast.success`/`toast.error` calls deterministically.
+import { toast as sonnerToast } from "sonner";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { ThemeProvider } from "@/components/theme/theme-provider";
 import PackPageRoute from "./pack-page-route";
@@ -63,6 +66,53 @@ const menuItemsDoc = {
   newAction: { verb: "create", target: "menu_items", itemDefault: { name: "New item" } },
 };
 
+// A conformant settings-form page (UIS-030/031) — no manifest-declared collection
+// backs it (only list-detail binds one this wave), and it MUST wire a submit action.
+const settingsFormDoc = {
+  pageType: "settings-form",
+  source: "prefs",
+  sections: [
+    {
+      titleMsg: "msg:detail.title",
+      fields: [{ type: "text-input", bind: "greeting", props: { labelMsg: "msg:detail.name" } }],
+    },
+  ],
+  actions: [
+    { type: "button", props: { labelMsg: "msg:detail.save", style: "primary" }, on: { press: { verb: "submit" } } },
+  ],
+};
+
+// A conformant list-detail page whose list.source is the spec-legal PAGINATED form
+// (UIS-023/024): its rows are fetched page-by-page by the renderer through the
+// ActionHandler.fetchPage seam, NOT from the eagerly preloaded resource tree.
+const paginatedDoc = {
+  pageType: "list-detail",
+  list: {
+    source: { path: "menu_items", paginated: true, limit: 1 },
+    display: {
+      type: "table",
+      id: "Menu items",
+      props: {
+        source: "menu_items",
+        columns: [
+          { headerMsg: "msg:col.name", cell: "item.name" },
+          { headerMsg: "msg:col.section", cell: "item.section" },
+        ],
+      },
+      on: { rowPress: { verb: "set", target: "$ui.selected", value: "item.entity_id" } },
+    },
+  },
+  detail: {
+    source: "menu_items[entity_id=$ui.selected]",
+    emptyMsg: "msg:detail.empty",
+    root: {
+      type: "section",
+      props: { titleMsg: "msg:detail.title" },
+      children: [{ type: "text-input", bind: "name", props: { labelMsg: "msg:detail.name" } }],
+    },
+  },
+};
+
 const server = setupServer();
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => {
@@ -70,6 +120,7 @@ afterEach(() => {
   setViewport(false);
   setLanguage("en-US");
   window.localStorage.clear();
+  vi.restoreAllMocks();
 });
 afterAll(() => server.close());
 
@@ -311,6 +362,78 @@ describe("Pack page — pack-data create / edit over the api/1 conventions", () 
     );
     expect(screen.queryByText("My rename")).not.toBeInTheDocument();
     expect(patchCount).toBe(1);
+  });
+});
+
+describe("Pack page — safety + spec-form regressions", () => {
+  // Regression: a settings-form (or any page binding no manifest-declared
+  // collection) Save reported a green "Saved" without persisting anything — a
+  // false-positive success. The submit must never fabricate a save that did not
+  // happen; it reports honestly instead.
+  it("a settings-form Save never fabricates a green 'Saved' when nothing is persisted", async () => {
+    // The fixture is a conformant page (so the Save button is real) that binds no
+    // collection — the whole precondition of the buggy branch.
+    expect(validatePage(settingsFormDoc).ok).toBe(true);
+    const successSpy = vi.spyOn(sonnerToast, "success");
+    const errorSpy = vi.spyOn(sonnerToast, "error");
+    server.use(
+      http.get(`${B}`, () => ok(pack(), { revision: 1 })),
+      http.get("*/api/v1/scope-nodes", () =>
+        dataPage([{ id: ULID_ROOT, kind: "org", parent_id: null, name: "Org", revision: 1 }]),
+      ),
+      http.get(`${B}/pages/settings`, () => jsonBody(settingsFormDoc)),
+      http.get(`${B}/messages/en`, () => jsonBody(PACK_EN_CATALOG)),
+    );
+
+    const user = userEvent.setup();
+    renderPack("settings");
+    await user.click(await screen.findByRole("button", { name: "Save changes" }));
+
+    // The honest signal fires; the false-positive success toast never does.
+    await waitFor(() => expect(errorSpy).toHaveBeenCalled());
+    expect(successSpy).not.toHaveBeenCalled();
+  });
+
+  // Regression: a spec-legal PAGINATED list.source (UIS-023/024) rendered zero rows
+  // forever because the ActionHandler never wired fetchPage — the renderer's
+  // PaginatedList no-ops without it. It must fetch, render, and page.
+  it("a paginated list.source renders its rows through fetchPage, with a working 'Load more'", async () => {
+    expect(validatePage(paginatedDoc).ok).toBe(true);
+    server.use(
+      http.get(`${B}`, () => ok(pack(), { revision: 1 })),
+      http.get("*/api/v1/scope-nodes", () =>
+        dataPage([{ id: ULID_ROOT, kind: "org", parent_id: null, name: "Org", revision: 1 }]),
+      ),
+      http.get(`${B}/pages/menu-items`, () => jsonBody(paginatedDoc)),
+      http.get(`${B}/messages/en`, () => jsonBody(PACK_EN_CATALOG)),
+      // One keyset row per page: the first carries a continuation cursor, the second
+      // closes it (cursor: null → the final page, no further "Load more").
+      http.get(`${B}/data/menu_items`, ({ request }) => {
+        const cursor = new URL(request.url).searchParams.get("cursor");
+        return cursor
+          ? HttpResponse.json(
+              { items: [packRow({ entity_id: ULID_B, name: "Almond croissant", section: "Pastry" })], cursor: null },
+              { headers: { "Trace-Id": TRACE_ID } },
+            )
+          : HttpResponse.json(
+              { items: [packRow({ entity_id: ULID_A, name: "Cortado", section: "Coffee" })], cursor: "CURSOR-2" },
+              { headers: { "Trace-Id": TRACE_ID } },
+            );
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderPack();
+    await screen.findByRole("table", { name: "Menu items" });
+    // The first keyset page rendered THROUGH fetchPage — not zero rows forever.
+    expect(await screen.findByText("Cortado")).toBeInTheDocument();
+    // The second page is not shown until the affordance is used…
+    expect(screen.queryByText("Almond croissant")).not.toBeInTheDocument();
+    // …and "Load more" fetches it (the opaque cursor threaded back verbatim).
+    await user.click(screen.getByRole("button", { name: "Load more" }));
+    expect(await screen.findByText("Almond croissant")).toBeInTheDocument();
+    // The final page closed the cursor — no further "Load more".
+    expect(screen.queryByRole("button", { name: "Load more" })).not.toBeInTheDocument();
   });
 });
 

@@ -300,8 +300,17 @@ export function humanizeMsgRef(ref: string): string {
 /** Build a MessageResolver over an optional catalog, falling back to humanizing. */
 export function makeMessageResolver(catalog?: Record<string, string>): MessageResolver {
   return (ref, args = []) => {
-    const template = catalog?.[ref];
-    const text = template ?? humanizeMsgRef(ref);
+    // A page doc's Msg-kind props are presence-only validated (there is no
+    // scalar-shape taxonomy code), so a pack — maliciously, or by a typo that drops
+    // the `msg:` prefix — can pass a bare name that collides with an
+    // Object.prototype member (`__proto__`, `constructor`, `hasOwnProperty`,
+    // `toString`, …). A plain `catalog?.[ref]` would then return the INHERITED
+    // member (a truthy non-string), slip past the humanize fallback, and crash the
+    // whole renderer on `.replace`. Take the entry only when it is the catalog's OWN
+    // string; anything else humanizes, degrading to the standard fallback.
+    const template =
+      catalog && Object.prototype.hasOwnProperty.call(catalog, ref) ? catalog[ref] : undefined;
+    const text = typeof template === "string" ? template : humanizeMsgRef(ref);
     // Positional {0}/{1}/… interpolation (msg's own arg convention).
     return text.replace(/\{(\d+)\}/g, (_, i: string) => String(args[Number(i)] ?? ""));
   };

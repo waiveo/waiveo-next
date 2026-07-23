@@ -3,6 +3,7 @@ import {
   collectVocabLabels,
   evalBindingExpr,
   formatDuration,
+  humanizeMsgRef,
   makeMessageResolver,
   resolveOptions,
   resolvePath,
@@ -242,5 +243,40 @@ describe("bindings — toDisplay", () => {
     expect(toDisplay(42)).toBe("42");
     expect(toDisplay(null)).toBe("");
     expect(toDisplay({ a: 1 })).toBe('{"a":1}');
+  });
+});
+
+describe("bindings — message resolver, prototype-pollution safety", () => {
+  // A page doc's Msg-kind props are presence-only validated (no scalar-shape
+  // taxonomy code), so a pack can set a Msg prop to a bare name — maliciously or by
+  // a typo dropping the `msg:` prefix — that collides with an Object.prototype
+  // member. Indexing the plain-object catalog with it must NOT return the inherited
+  // member (a truthy non-string that crashes the renderer on `.replace`): the
+  // resolver takes only an OWN string entry, otherwise it humanizes.
+  const catalog = { "msg:col.name": "Name", "msg:greeting": "Hi {0}" };
+  const poison = ["__proto__", "constructor", "hasOwnProperty", "toString", "valueOf", "isPrototypeOf"];
+  for (const ref of poison) {
+    it(`humanizes a bare "${ref}" instead of resolving an inherited prototype member`, () => {
+      const resolve = makeMessageResolver(catalog);
+      let text = "";
+      expect(() => {
+        text = resolve(ref);
+      }).not.toThrow();
+      expect(typeof text).toBe("string");
+      // The humanized fallback, never the inherited member's value.
+      expect(text).toBe(humanizeMsgRef(ref));
+    });
+  }
+
+  it("still resolves a genuine own catalog entry (with interpolation)", () => {
+    const resolve = makeMessageResolver(catalog);
+    expect(resolve("msg:col.name")).toBe("Name");
+    expect(resolve("msg:greeting", ["there"])).toBe("Hi there");
+  });
+
+  it("is safe even with an empty catalog (which still inherits Object.prototype)", () => {
+    const resolve = makeMessageResolver({});
+    expect(() => resolve("toString")).not.toThrow();
+    expect(resolve("toString")).toBe(humanizeMsgRef("toString"));
   });
 });

@@ -200,7 +200,11 @@ export default function PackPageRoute({ api }: { api?: WaiveoApi }) {
       // sent; the server ignores host-owned envelope fields (MAN-051).
       submit: async (_target, resource) => {
         if (!collection) {
-          toast.success("Saved");
+          // No manifest-declared collection backs this page — every page type but
+          // list-detail this wave (a settings-form persists to a target that lands
+          // with a later wave). There is nowhere to write, so report honestly
+          // rather than fabricating a green "Saved" for a save that never happened.
+          toast.error("Saving isn't available for this page yet.");
           return;
         }
         const meta = rowRef(resource);
@@ -244,6 +248,19 @@ export default function PackPageRoute({ api }: { api?: WaiveoApi }) {
         } catch (err) {
           reportProblem("Couldn't delete the record", err);
         }
+      },
+      // A paginated `list.source` (UIS-023/024) is fetched page-by-page by the
+      // renderer's PaginatedList through this seam — it bypasses the eagerly
+      // preloaded resource tree, so an unwired fetchPage would leave the list
+      // permanently empty. Serve one api/1 keyset page of the SAME bound
+      // collection's rows (its root key IS this page's primary collection); a
+      // source that names no declared collection has nothing to page.
+      fetchPage: async (_path, cursor, limit) => {
+        if (!collection) return { items: [], cursor: null };
+        const page = await client
+          .packData(packId, collection)
+          .list({ cursor, ...(limit !== undefined ? { limit } : {}) });
+        return { items: page.items, cursor: page.cursor };
       },
     }),
     [client, packId, collection, orgScopeNode, reload],
