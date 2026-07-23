@@ -271,6 +271,11 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
         try {
           const created = await client.automations.create(body);
           toast.success(`Added ${created.data.name}`);
+          // The freshly created row becomes the selection (UIS-021): the detail
+          // pane reopens on it so its rule is authored straight away, rather than
+          // collapsing to the empty prompt.
+          selectedIdRef.current = created.data.id;
+          setSelectedId(created.data.id);
           await reload();
         } catch (err) {
           const message = compileMessageOf(err);

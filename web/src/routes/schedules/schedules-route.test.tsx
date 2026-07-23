@@ -202,7 +202,9 @@ describe("Schedules — the paginated list over api/1", () => {
     renderSchedules();
     await screen.findByRole("table", { name: "Schedules" });
 
+    // New opens a create draft; Save schedule commits it (the create idiom, UIS-021).
     await user.click(within(sectionByHeading("Schedules")).getByRole("button", { name: "New" }));
+    await user.click(await screen.findByRole("button", { name: "Save schedule" }));
 
     await waitFor(() =>
       expect(
@@ -435,7 +437,9 @@ describe("Playlists — dogfooded management over api/1", () => {
     const user = userEvent.setup();
     renderSchedules();
     await screen.findByRole("table", { name: "Playlists" });
+    // New opens a create draft; Save playlist commits it (the create idiom, UIS-021).
     await user.click(within(sectionByHeading("Playlists")).getByRole("button", { name: "New" }));
+    await user.click(await screen.findByRole("button", { name: "Save playlist" }));
 
     await waitFor(() =>
       expect(within(screen.getByRole("table", { name: "Playlists" })).getByText("New playlist")).toBeInTheDocument(),

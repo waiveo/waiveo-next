@@ -448,7 +448,9 @@ describe("Automations — create via the dogfood newAction", () => {
     const user = userEvent.setup();
     renderRoute();
     await screen.findByRole("table", { name: "Automations" });
+    // New opens a create draft (the starter template); Save commits it (UIS-021).
     await user.click(await screen.findByRole("button", { name: "New" }));
+    await user.click(await screen.findByRole("button", { name: "Save changes" }));
 
     await waitFor(() =>
       expect(within(screen.getByRole("table", { name: "Automations" })).getByText("New automation")).toBeInTheDocument(),
@@ -489,12 +491,18 @@ describe("Automations — create via the dogfood newAction", () => {
     expect(screen.getAllByLabelText("Rule body (JSON)")).toHaveLength(1);
     expect(screen.getAllByRole("textbox", { name: "Name" })).toHaveLength(1);
 
+    // New replaces the selected row's detail with a blank create draft (never a
+    // second, duplicating surface): still exactly one Name field, and the
+    // selected-row-only Rule-body editor is absent until a row is selected again.
     await user.click(screen.getByRole("button", { name: "New" }));
+    expect(screen.getAllByRole("textbox", { name: "Name" })).toHaveLength(1);
+    expect(screen.queryByLabelText("Rule body (JSON)")).not.toBeInTheDocument();
+    // Save commits the draft; the fresh row becomes the selection, reopening the
+    // single detail form + its Rule-body editor — no duplication, no create dialog.
+    await user.click(await screen.findByRole("button", { name: "Save changes" }));
     await waitFor(() =>
       expect(within(screen.getByRole("table", { name: "Automations" })).getByText("New automation")).toBeInTheDocument(),
     );
-    // No second Name/Rule-body surface, and no create dialog — creation is the
-    // ui-schema newAction verb, not a duplicating first-party modal.
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.getAllByLabelText("Rule body (JSON)")).toHaveLength(1);
     expect(screen.getAllByRole("textbox", { name: "Name" })).toHaveLength(1);

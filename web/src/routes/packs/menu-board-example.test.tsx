@@ -147,14 +147,16 @@ describe("The menu-board example pack renders through the console", () => {
     // Start empty; the create posts under the org scope, then the list reflects it.
     const state = { rows: [] as unknown[] };
     let postedScope: unknown = "unset";
+    let postedLifecycle: unknown = "unset";
     let idempotencyKey: string | null = null;
     server.use(
       ...baseHandlers(),
       http.get(`${B}/data/menu_items`, () => dataPage(state.rows)),
       http.post(`${B}/data/menu_items`, async ({ request }) => {
         idempotencyKey = request.headers.get("Idempotency-Key");
-        const body = (await request.json()) as { scope_node?: unknown; name?: unknown };
+        const body = (await request.json()) as { scope_node?: unknown; name?: unknown; lifecycle_state?: unknown };
         postedScope = body.scope_node;
+        postedLifecycle = body.lifecycle_state;
         const created = menuRow({ entity_id: ULID_A, name: String(body.name ?? "New item") });
         state.rows = [created];
         return ok(created, { status: 201, revision: 1 });
@@ -165,15 +167,20 @@ describe("The menu-board example pack renders through the console", () => {
     renderPack();
     await screen.findByRole("table", { name: "Menu items" });
 
-    // "New" creates the row from the shipped page's itemDefault (name "New item").
+    // New opens a BLANK create draft (the shipped page seeds no name); fill it, then
+    // Save commits it through the pack-data create path (the create idiom, UIS-021).
     await user.click(screen.getByRole("button", { name: "New" }));
+    await user.type(await screen.findByLabelText("Item name"), "Espresso");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() =>
       expect(
-        within(screen.getByRole("table", { name: "Menu items" })).getByText("New item"),
+        within(screen.getByRole("table", { name: "Menu items" })).getByText("Espresso"),
       ).toBeInTheDocument(),
     );
-    // The write carried the required scope_node (MAN-051) + a fresh Idempotency-Key.
+    // The write carried the required scope_node (MAN-051), a fresh Idempotency-Key,
+    // and the page-declared lifecycle_state (a draft-publish collection starts draft).
     expect(postedScope).toBe(ULID_ROOT);
     expect(idempotencyKey).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(postedLifecycle).toBe("draft");
   });
 });

@@ -93,7 +93,9 @@ describe("Screens — create / edit / delete over api/1", () => {
     renderScreens();
     await screen.findByRole("table", { name: "Screens" });
 
+    // New opens a create draft (a blank detail form); Save commits it (UIS-021).
     await user.click(screen.getByRole("button", { name: "New" }));
+    await user.click(await screen.findByRole("button", { name: "Save changes" }));
 
     await waitFor(() =>
       expect(within(screen.getByRole("table", { name: "Screens" })).getByText("New screen")).toBeInTheDocument(),
@@ -358,6 +360,7 @@ describe("Screens — a new screen is placed under a real parent site", () => {
     // No sibling screen exists to copy a parent from — the parent comes from the
     // loaded site, so the very first screen can still be created.
     await user.click(await screen.findByRole("button", { name: "New" }));
+    await user.click(await screen.findByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(postedParent).toBe(ULID_C));
   });
 
@@ -386,6 +389,7 @@ describe("Screens — a new screen is placed under a real parent site", () => {
     const picker = await screen.findByLabelText("Add new screens under");
     await user.selectOptions(picker, ULID_B);
     await user.click(screen.getByRole("button", { name: "New" }));
+    await user.click(await screen.findByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(postedParent).toBe(ULID_B));
   });
 
@@ -401,9 +405,11 @@ describe("Screens — a new screen is placed under a real parent site", () => {
 
     const user = userEvent.setup();
     renderScreens();
+    // New opens the draft; committing it (Save) is where the guard fires — a clear
+    // message, and — crucially — no write attempted (never a POST the server would
+    // reject with SCOPE_NODE_PARENT_INVALID).
     await user.click(await screen.findByRole("button", { name: "New" }));
-    // A clear message, and — crucially — no write attempted (never a POST the
-    // server would reject with SCOPE_NODE_PARENT_INVALID).
+    await user.click(await screen.findByRole("button", { name: "Save changes" }));
     expect(await screen.findByText(/add a site/i)).toBeInTheDocument();
     expect(posted).toBe(false);
   });

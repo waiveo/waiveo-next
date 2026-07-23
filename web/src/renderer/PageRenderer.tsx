@@ -14,6 +14,7 @@ import {
   collectVocabLabels,
   evalBindingExpr,
   makeMessageResolver,
+  resolvePath,
   resolvePathWithLoc,
   type RenderEnv,
   type RenderScope,
@@ -199,18 +200,105 @@ function patchAtPath(base: Record<string, unknown>, path: string, value: unknown
   return root;
 }
 
+// The reserved `$ui` slot a list-detail create draft lives in (the New idiom,
+// UIS-021). Double-underscore: renderer-reserved, never an author-addressable
+// binding target — a page's own `$ui` bookkeeping (UIS-104) never collides with it.
+const CREATE_DRAFT_KEY = "__draft";
+
+/**
+ * Seed a create draft from the page's `newAction` (the declarative create idiom,
+ * UIS-021). The draft is a fresh in-memory record the detail form binds to:
+ *
+ *   "newAction": {
+ *     "verb": "create",
+ *     "target": "<collection>",          // where Save POSTs the new row (UIS-160/161)
+ *     "itemDefault": { ...author fields }, // literal-only seed (UIS-108/109)
+ *     "scopeFrom": "<Binding>",           // OPTIONAL — sources the universal-envelope
+ *                                          //   scope_node; absent → the host supplies
+ *                                          //   the current site
+ *     "lifecycle": "draft"                // OPTIONAL — the initial lifecycle_state for
+ *                                          //   a draft-publish collection
+ *   }
+ *
+ * `itemDefault` supplies the author-owned fields; `scopeFrom`/`lifecycle` supply the
+ * universal-envelope fields a new row requires. Both envelope keys are optional — a
+ * page that leaves scope to the host omits `scopeFrom`, and a collection that is not
+ * draft-publish omits `lifecycle`.
+ */
+function buildCreateDraft(action: ActionRef, base: RenderScope): Record<string, unknown> {
+  const itemDefault = action.itemDefault;
+  const seed: Record<string, unknown> =
+    itemDefault !== null && typeof itemDefault === "object" && !Array.isArray(itemDefault)
+      ? { ...(itemDefault as Record<string, unknown>) }
+      : {};
+  if (typeof action.scopeFrom === "string") {
+    const scopeNode = resolvePath(action.scopeFrom, base);
+    if (scopeNode != null) seed.scope_node = scopeNode;
+  }
+  if (typeof action.lifecycle === "string") seed.lifecycle_state = action.lifecycle;
+  return seed;
+}
+
 function ListDetailLayout({ page, base }: { page: PageDoc; base: RenderScope }) {
   const ctx = useRenderer();
   const list = page.list as { source: unknown; display: WidgetNode };
   const detail = page.detail as { source: unknown; root: WidgetNode; emptyMsg?: string };
   const newAction = page.newAction as ActionRef | undefined;
 
+  // The create-draft session (UIS-021): New enters a blank detail form bound to a
+  // fresh in-memory record held at `$ui.__draft` — NOT the last selection — and
+  // Save persists it as a create. `draft` is the live draft (null when not creating).
+  const draft = (ctx.ui[CREATE_DRAFT_KEY] ?? null) as Record<string, unknown> | null;
+  const creating = draft != null;
+
+  const cancelDraft = useCallback(() => {
+    ctx.store.write({ tree: "ui", loc: [CREATE_DRAFT_KEY] }, undefined);
+  }, [ctx.store]);
+
+  // Escape exits the draft from anywhere on the page (Cancel is the explicit
+  // affordance; Escape is its keyboard equivalent), mounted only while creating.
+  useEffect(() => {
+    if (!creating) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") cancelDraft();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [creating, cancelDraft]);
+
+  const startDraft = () => {
+    if (!newAction) return;
+    // Only `create` enters a draft; any other newAction verb dispatches as an
+    // ordinary action (this contract reserves newAction for create today, UIS-021).
+    if (newAction.verb !== "create") {
+      runAction(newAction, base, ctx);
+      return;
+    }
+    // New while an item is selected clears the selection FIRST, then seeds the
+    // draft — the detail switches from the old row to the blank create form.
+    ctx.store.write({ tree: "ui", loc: ["selected"] }, null);
+    ctx.store.write({ tree: "ui", loc: [CREATE_DRAFT_KEY] }, buildCreateDraft(newAction, base));
+  };
+
   const detailSource = String(detail.source);
   const resolved = resolvePathWithLoc(detailSource, base);
-  const hasDetail = resolved.value != null;
-  const detailScope: RenderScope = hasDetail
+  const hasSelection = !creating && resolved.value != null;
+  const selectionScope: RenderScope = hasSelection
     ? { ...base, root: resolved.value, current: resolved.value, currentPath: resolved.loc ?? [], currentTree: resolved.tree }
     : base;
+
+  // The draft binds the detail form to the `$ui.__draft` record; `draftCreateTarget`
+  // routes its `submit` to the create path (actions.tsx) rather than an update.
+  const draftTarget = newAction && typeof newAction.target === "string" ? newAction.target : undefined;
+  const draftScope: RenderScope = {
+    ...base,
+    root: draft ?? {},
+    current: draft ?? {},
+    currentPath: [CREATE_DRAFT_KEY],
+    currentTree: "ui",
+    ...(draftTarget !== undefined ? { draftCreateTarget: draftTarget } : {}),
+  };
+
   const emptyMsg = detail.emptyMsg ? ctx.env.msg(String(detail.emptyMsg)) : "Select an item to see its detail.";
 
   const paginated =
@@ -221,7 +309,7 @@ function ListDetailLayout({ page, base }: { page: PageDoc; base: RenderScope }) 
       <section aria-label="List" className="flex min-w-0 flex-col gap-3">
         {newAction ? (
           <div className="flex justify-end">
-            <Button variant="default" className="wv-touch" onClick={() => runAction(newAction, base, ctx)}>
+            <Button variant="default" className="wv-touch" onClick={startDraft}>
               New
             </Button>
           </div>
@@ -233,8 +321,17 @@ function ListDetailLayout({ page, base }: { page: PageDoc; base: RenderScope }) 
         )}
       </section>
       <section aria-label="Detail" className="flex min-w-0 flex-col gap-3">
-        {hasDetail ? (
-          <WidgetNodeView node={detail.root} scope={detailScope} depth={0} />
+        {creating ? (
+          <div className="flex flex-col gap-3">
+            <div className="flex justify-end">
+              <Button variant="ghost" className="wv-touch" onClick={cancelDraft}>
+                Cancel
+              </Button>
+            </div>
+            <WidgetNodeView node={detail.root} scope={draftScope} depth={0} />
+          </div>
+        ) : hasSelection ? (
+          <WidgetNodeView node={detail.root} scope={selectionScope} depth={0} />
         ) : (
           <p className="text-sm text-muted-foreground">{emptyMsg}</p>
         )}

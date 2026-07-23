@@ -58,6 +58,16 @@ export function runAction(
       break;
     }
     case "submit": {
+      // Inside a list-detail create draft (the New idiom, UIS-021), the bound
+      // record is a fresh in-memory draft, not a persisted row — so Save persists
+      // it as a CREATE through the same host create path (UIS-160/161), naming the
+      // draft's target collection, rather than an If-Match update of a record that
+      // does not exist yet. The draft (scope.root) carries the seeded fields plus
+      // the universal-envelope defaults the page declared.
+      if (scope.draftCreateTarget !== undefined) {
+        void handler.create?.(scope.draftCreateTarget, asObject(scope.root));
+        break;
+      }
       // Persist the *bound* resource `target` names — not the whole data root
       // (UIS-160/UIS-005). An explicit `target` is an ordinary Binding, resolved
       // against the enclosing scope before handing to the seam (the same way the

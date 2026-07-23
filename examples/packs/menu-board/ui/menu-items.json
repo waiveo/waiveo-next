@@ -32,5 +32,10 @@
       ]
     }
   },
-  "newAction": { "verb": "create", "target": "menu_items", "itemDefault": { "name": "New item", "section": "Mains", "price": 0, "available": true } }
+  "newAction": {
+    "verb": "create",
+    "target": "menu_items",
+    "itemDefault": { "name": "", "section": "", "price": 0, "available": true },
+    "lifecycle": "draft"
+  }
 }

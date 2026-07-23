@@ -304,6 +304,9 @@ function SchedulesSection({ client }: { client: WaiveoApi }) {
         try {
           const created = await client.schedules.create(body);
           toast.success(`Added ${created.data.name}`);
+          // The fresh row becomes the selection (UIS-021) so its detail opens.
+          selectedIdRef.current = created.data.id;
+          setSelectedScheduleId(created.data.id);
           await reload();
         } catch (err) {
           reportProblem("Couldn't add the schedule", err);
@@ -722,6 +725,9 @@ function PlaylistsSection({ client }: { client: WaiveoApi }) {
         try {
           const created = await client.playlists.create(body);
           toast.success(`Added ${created.data.name}`);
+          // The fresh row becomes the selection (UIS-021) so its detail opens.
+          selectedIdRef.current = created.data.id;
+          setSelectedId(created.data.id);
           await reload();
         } catch (err) {
           reportProblem("Couldn't add the playlist", err);

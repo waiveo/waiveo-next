@@ -254,7 +254,10 @@ describe("Pack page — pack-data create / edit over the api/1 conventions", () 
     const user = userEvent.setup();
     renderPack();
     await screen.findByRole("table", { name: "Menu items" });
+    // New opens a create draft (seeded from itemDefault, name "New item"); Save
+    // commits it through the pack-data create path (UIS-021).
     await user.click(screen.getByRole("button", { name: "New" }));
+    await user.click(await screen.findByRole("button", { name: "Save changes" }));
 
     await waitFor(() =>
       expect(within(screen.getByRole("table", { name: "Menu items" })).getByText("New item")).toBeInTheDocument(),

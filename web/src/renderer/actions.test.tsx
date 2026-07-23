@@ -35,7 +35,10 @@ describe("actions — create + delete against the api-client seam", () => {
       source: "items[id=$ui.sel]",
       root: {
         type: "section",
-        children: [{ type: "button", props: { labelMsg: "msg:del" }, on: { press: { verb: "delete", target: "$root" } } }],
+        children: [
+          { type: "button", props: { labelMsg: "msg:save" }, on: { press: { verb: "submit" } } },
+          { type: "button", props: { labelMsg: "msg:del" }, on: { press: { verb: "delete", target: "$root" } } },
+        ],
       },
     },
     newAction: { verb: "create", target: "items", itemDefault: { name: "Untitled" } },
@@ -45,11 +48,15 @@ describe("actions — create + delete against the api-client seam", () => {
     expect(validatePage(doc).ok).toBe(true);
   });
 
-  it("`create` dispatches the New affordance to handler.create (UIS-021/160)", async () => {
+  it("New enters a create draft; the draft's Save dispatches handler.create (UIS-021/160)", async () => {
     const user = userEvent.setup();
     const handler: ActionHandler = { create: vi.fn() };
     render(<PageRenderer doc={doc} data={{ items: [{ id: "a", name: "Alpha" }] }} messages={messages} handler={handler} />);
+    // The New click enters a draft — it no longer fires create itself…
     await user.click(screen.getByRole("button", { name: "New" }));
+    expect(handler.create).not.toHaveBeenCalled();
+    // …Save commits the draft through the create path, seeded from itemDefault.
+    await user.click(screen.getByRole("button", { name: "Save" }));
     expect(handler.create).toHaveBeenCalledWith("items", { name: "Untitled" });
   });
 

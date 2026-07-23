@@ -49,6 +49,11 @@ export interface RenderScope {
   params?: Record<string, unknown>;
   /** The active item scope inside a `repeat`/`table` row (UIS-107). */
   item?: ItemScope;
+  /** Set only inside a list-detail **create draft** (the New idiom, UIS-021): the
+   * collection a `submit` here POSTs a NEW row to (through the create path,
+   * UIS-160/161) instead of If-Match-updating a persisted record. Absent in every
+   * ordinary edit/settings scope. */
+  draftCreateTarget?: string;
 }
 
 // ── Path parsing (UIS-100) ──────────────────────────────────────────────────

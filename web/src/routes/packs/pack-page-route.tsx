@@ -175,14 +175,22 @@ export default function PackPageRoute({ api }: { api?: WaiveoApi }) {
         if (!collection) return;
         setFieldErrors({});
         setConflictReview(false);
-        if (!orgScopeNode) {
+        // The draft MAY carry a page-declared scope_node (newAction.scopeFrom,
+        // UIS-021); absent, the host attaches the row under the current org scope.
+        const scopeNode = typeof itemDefault.scope_node === "string" ? itemDefault.scope_node : orgScopeNode;
+        if (!scopeNode) {
           toast.error("This workspace has no scope to attach records to yet.");
           return;
         }
-        const body: PackRowWrite = { ...itemDefault, scope_node: orgScopeNode };
+        const body: PackRowWrite = { ...itemDefault, scope_node: scopeNode };
         try {
-          await client.packData(packId, collection).create(body);
+          const created = await client.packData(packId, collection).create(body);
           toast.success("Added a record");
+          // The fresh row becomes the selection (UIS-021): its detail form reopens
+          // on the created record rather than collapsing to the empty prompt.
+          const newId = created.data.entity_id;
+          selectedIdRef.current = newId;
+          setSelectedId(newId);
           await reload();
         } catch (err) {
           const fields = fieldErrorsOf(err);

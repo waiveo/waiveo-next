@@ -185,6 +185,10 @@ export default function ScreensRoute({ api }: { api?: WaiveoApi }) {
         try {
           const created = await client.scopeNodes.create(body);
           toast.success(`Added ${created.data.name}`);
+          // The fresh row becomes the selection (UIS-021) so its detail form is
+          // open to edit straight away, not collapsed to the empty prompt.
+          selectedIdRef.current = created.data.id;
+          setSelectedId(created.data.id);
           await reload();
         } catch (err) {
           reportProblem("Couldn't add the screen", err);
