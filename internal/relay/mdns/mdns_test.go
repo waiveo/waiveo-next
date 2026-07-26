@@ -164,6 +164,60 @@ func TestHandlePacketObservesMatchingPTR(t *testing.T) {
 	}
 }
 
+// TestHandlePacketObservesMatchingPTRCaseInsensitive asserts a PTR answer
+// whose owner name differs from a configured pattern only by case (anywhere
+// in the name, not just the ".local" suffix normalizeServiceType already
+// folds) still matches: DNS names are case-insensitive (RFC 1035 §2.3.3),
+// so a device announcing "_Waiveo._TCP.local." must hit a configured
+// "_waiveo._tcp" pattern exactly as a byte-identical announcement would.
+func TestHandlePacketObservesMatchingPTRCaseInsensitive(t *testing.T) {
+	store := deviceplane.NewStore("relay-1")
+	now := func() int64 { return 1000 }
+	pattern := mustMatch(t, `{"mdns":"_waiveo._tcp"}`)
+
+	l, err := New(Config{Patterns: []deviceplane.Match{pattern}, Store: store, NowMillis: now})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	data := buildPTRPacket(t, "_Waiveo._TCP.LOCAL.", "TheHanger._Waiveo._TCP.local.")
+	l.handlePacket(data)
+
+	cands := store.Report().Body.Candidates
+	if len(cands) != 1 {
+		t.Fatalf("got %d candidates, want 1 (case-insensitive match): %+v", len(cands), cands)
+	}
+	if cands[0].Match != pattern {
+		t.Errorf("candidate match = %+v, want %+v", cands[0].Match, pattern)
+	}
+}
+
+// TestHandlePacketObservesMatchingPTRCaseInsensitivePattern is the mirror of
+// TestHandlePacketObservesMatchingPTRCaseInsensitive from the other side: a
+// mixed-case configured pattern must still fold at construction (New) so a
+// byte-exact lower-case wire announcement matches it.
+func TestHandlePacketObservesMatchingPTRCaseInsensitivePattern(t *testing.T) {
+	store := deviceplane.NewStore("relay-1")
+	now := func() int64 { return 1000 }
+	pattern := mustMatch(t, `{"mdns":"_Waiveo._TCP"}`)
+
+	l, err := New(Config{Patterns: []deviceplane.Match{pattern}, Store: store, NowMillis: now})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	data := buildPTRPacket(t, "_waiveo._tcp.local.", "TheHanger._waiveo._tcp.local.")
+	l.handlePacket(data)
+
+	cands := store.Report().Body.Candidates
+	if len(cands) != 1 {
+		t.Fatalf("got %d candidates, want 1 (case-insensitive match): %+v", len(cands), cands)
+	}
+	if cands[0].Match != pattern {
+		t.Errorf("candidate match = %+v, want %+v", cands[0].Match, pattern)
+	}
+}
+
 // TestHandlePacketIgnoresNonMatchingPTR asserts a PTR answer whose owner name
 // does not match any configured pattern is never Observed.
 func TestHandlePacketIgnoresNonMatchingPTR(t *testing.T) {
@@ -381,8 +435,11 @@ func TestRunObservesDeliveredPacketsThenStopsPromptlyOnContextCancel(t *testing.
 		t.Fatal("Run() did not return promptly after ctx cancel")
 	}
 
-	if fake.closeCallCount() < 1 {
-		t.Error("Run() did not close the packetSource on ctx cancel")
+	// Exactly once: the ctx-cancellation watcher goroutine and Run's own
+	// deferred cleanup both reach a close call on this path, but sync.Once
+	// inside Run must collapse them to a single real Close (Run's own doc).
+	if got := fake.closeCallCount(); got != 1 {
+		t.Errorf("packetSource.Close() called %d times on ctx cancel, want exactly 1", got)
 	}
 }
 

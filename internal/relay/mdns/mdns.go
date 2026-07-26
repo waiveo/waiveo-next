@@ -1,8 +1,8 @@
 // Package mdns is the relay's mDNS LISTENER (contracts/relay-1.md
 // REL-110/111): it listens for mDNS announcements on the standard multicast
-// group 224.0.0.251:5353 (net.ListenMulticastUDP, RFC 6762), parses each
-// received message by hand with golang.org/x/net/dns/dnsmessage — no
-// third-party mDNS library, this package owns the parse/match logic itself —
+// group 224.0.0.251:5353 (RFC 6762), parses each received message by hand
+// with golang.org/x/net/dns/dnsmessage — no third-party mDNS library, this
+// package owns the parse/match logic itself —
 // and feeds every PTR-record service-type hit for a configured manifest/1
 // MAN-071 mdns discovery-match pattern into the device plane's candidate
 // Store as a ProvenanceDiscovered candidate, exactly like
@@ -35,8 +35,10 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 
 	"golang.org/x/net/dns/dnsmessage"
+	"golang.org/x/net/ipv4"
 
 	"github.com/maaxton/waiveo-next/internal/relay/deviceplane"
 )
@@ -56,7 +58,8 @@ type Config struct {
 	// entries with MDNS set are used; SSDP/MacOui entries are ignored here
 	// — SSDP discovery is internal/relay/discovery's own separate lane, and
 	// MacOui has no mDNS analogue. Multiple patterns sharing the same
-	// service-type string collapse to one watched type.
+	// service-type string collapse to one watched type, case-insensitively
+	// (RFC 1035 §2.3.3 — see byServiceType's own doc).
 	Patterns []deviceplane.Match
 
 	// Store is the candidate store every matched pattern is Observe'd into
@@ -73,7 +76,13 @@ type Config struct {
 // into a deviceplane.Store as a ProvenanceDiscovered candidate (REL-110/111).
 // See the package doc for the LISTENER/(no responder) split.
 type Listener struct {
-	byServiceType map[string]deviceplane.Match // normalized service-type -> pattern
+	// byServiceType maps a normalized, lower-cased service-type (see
+	// observePTRRecords) to the pattern that watches it. DNS names are
+	// case-insensitive (RFC 1035 §2.3.3), so the key is folded to lower
+	// case at construction and every lookup folds its own name the same
+	// way — matching must not depend on whatever case a manifest author or
+	// a particular device on the wire happened to use.
+	byServiceType map[string]deviceplane.Match
 	store         *deviceplane.Store
 	nowMillis     func() int64
 
@@ -95,7 +104,7 @@ func New(cfg Config) (*Listener, error) {
 		if p.MDNS == "" {
 			continue
 		}
-		byServiceType[p.MDNS] = p
+		byServiceType[strings.ToLower(p.MDNS)] = p
 	}
 	if len(byServiceType) == 0 {
 		return nil, errors.New("mdns: Config.Patterns has no usable MDNS pattern")
@@ -123,23 +132,33 @@ func New(cfg Config) (*Listener, error) {
 // read here is handled synchronously in this one loop, so there is no
 // detached goroutine that could land a late Observe: once Run returns, no
 // further Observe call from this Run invocation can reach the Store.
+//
+// src is closed exactly once no matter which of the two paths below gets
+// there first (the ctx-cancellation watcher, or Run's own deferred
+// cleanup on a non-cancellation return) — sync.Once, not two independent
+// unconditional Close calls, since both paths run on every ctx-cancellation
+// return and a real packetSource has no obligation to tolerate a redundant
+// Close cleanly.
 func (l *Listener) Run(ctx context.Context) error {
 	src, err := l.listen()
 	if err != nil {
 		return fmt.Errorf("mdns: opening multicast listener: %w", err)
 	}
 
+	var closeOnce sync.Once
+	closeSrc := func() { closeOnce.Do(func() { _ = src.Close() }) }
+
 	watchDone := make(chan struct{})
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = src.Close()
+			closeSrc()
 		case <-watchDone:
 		}
 	}()
 	defer func() {
 		close(watchDone)
-		_ = src.Close()
+		closeSrc()
 	}()
 
 	for {
@@ -192,8 +211,11 @@ func (l *Listener) handlePacket(data []byte) {
 }
 
 // observePTRRecords Observes every PTR resource in resources whose owner
-// name, normalized, exactly matches a configured pattern (REL-110/111). A
-// PTR record's RDATA (the specific service instance it names) is never
+// name, normalized, matches a configured pattern (REL-110/111) — the
+// comparison folds case (byServiceType's own doc): DNS names are
+// case-insensitive (RFC 1035 §2.3.3), so a device announcing
+// "_Waiveo._TCP.local." must still hit a configured "_waiveo._tcp" pattern.
+// A PTR record's RDATA (the specific service instance it names) is never
 // consulted — only its owner name, the service type being enumerated
 // (RFC 6763 §4.1) — and a non-PTR resource or a non-matching name is
 // ignored.
@@ -203,7 +225,7 @@ func (l *Listener) observePTRRecords(resources []dnsmessage.Resource, atMs int64
 			continue
 		}
 		serviceType := normalizeServiceType(r.Header.Name.String())
-		m, ok := l.byServiceType[serviceType]
+		m, ok := l.byServiceType[strings.ToLower(serviceType)]
 		if !ok {
 			continue
 		}
@@ -215,10 +237,11 @@ func (l *Listener) observePTRRecords(resources []dnsmessage.Resource, atMs int64
 // the wire (e.g. "_waiveo._tcp.local.", always root-dot-terminated once
 // unpacked — see dnsmessage.Name.unpack) into MAN-071's mdns pattern form
 // (e.g. "_waiveo._tcp"): the trailing root dot and the reserved ".local"
-// pseudo-TLD (RFC 6762 §3) are both trimmed. The ".local" trim is
-// case-insensitive (DNS names are case-insensitive, RFC 1035 §2.3.3); the
-// result is otherwise compared byte-exact against configured patterns,
-// mirroring discovery.go's own exact search-target-string match.
+// pseudo-TLD (RFC 6762 §3) are both trimmed. The ".local" trim itself is
+// case-insensitive, and the result is matched against configured patterns
+// case-insensitively too (byServiceType's own doc, RFC 1035 §2.3.3) — that
+// full-name fold happens at the byServiceType lookup site, not here, so this
+// function's own return value stays whatever case the wire sent.
 func normalizeServiceType(name string) string {
 	s := strings.TrimSuffix(name, ".")
 	return trimSuffixFold(s, ".local")
@@ -251,7 +274,7 @@ type packetSource interface {
 }
 
 // udpPacketSource is the real packetSource: an mDNS multicast UDP socket
-// (net.ListenMulticastUDP — no third-party mDNS library).
+// (defaultListen — no third-party mDNS library).
 type udpPacketSource struct {
 	conn *net.UDPConn
 }
@@ -270,16 +293,101 @@ func (s *udpPacketSource) Close() error {
 }
 
 // defaultListen opens the real mDNS multicast socket on mdnsAddress
-// (net.ListenMulticastUDP, REL-110/111's live listener). A nil interface
-// selects the OS's default multicast-capable interface.
+// (REL-110/111's live listener), joined on every up, multicast-capable,
+// IPv4-addressed network interface — not net.ListenMulticastUDP(nil), and
+// deliberately so.
+//
+// net.ListenMulticastUDP's own doc calls passing a nil *net.Interface "not
+// recommended because the assignment depends on platforms and sometimes it
+// might require routing configuration": the OS picks one system-assigned
+// interface to join the multicast group on, and on a multi-homed box (a
+// waiveo-host Raspberry Pi appliance ships with both eth0 and wlan0) that
+// pick can be the wrong NIC — the one that never actually carries LAN mDNS
+// traffic. Run would still return nil and loop forever reading nothing,
+// indistinguishable from "no traffic ever arrived" (see
+// TestLiveMulticastListenSmoke's own doc), silently starving discovery with
+// no error surfaced anywhere.
+//
+// This mirrors the sibling SSDP lane's own third-party dependency,
+// go-ssdp@v0.9.1's internal/multicast.Listen(): one UDP socket bound to the
+// group address, wrapped in golang.org/x/net/ipv4 so the multicast group can
+// be joined on every qualifying interface individually (joinAllInterfaces)
+// rather than left to the OS's single implicit choice.
 func defaultListen() (packetSource, error) {
 	addr, err := net.ResolveUDPAddr("udp4", mdnsAddress)
 	if err != nil {
 		return nil, fmt.Errorf("resolve %s: %w", mdnsAddress, err)
 	}
-	conn, err := net.ListenMulticastUDP("udp4", nil, addr)
+	conn, err := net.ListenUDP("udp4", addr)
 	if err != nil {
-		return nil, fmt.Errorf("listen multicast udp %s: %w", mdnsAddress, err)
+		return nil, fmt.Errorf("listen udp %s: %w", mdnsAddress, err)
+	}
+	if err := joinAllInterfaces(ipv4.NewPacketConn(conn), addr); err != nil {
+		_ = conn.Close()
+		return nil, err
 	}
 	return &udpPacketSource{conn: conn}, nil
+}
+
+// joinAllInterfaces joins pconn to the group multicast address on every
+// up, multicast-capable, IPv4-addressed interface on the box (go-ssdp's own
+// interfacesIPv4() filter, mirrored here so both discovery lanes in this
+// codebase enumerate join candidates the same way). A single interface's
+// join failure is skipped rather than fatal — a link that goes down between
+// net.Interfaces() and the JoinGroup call, or one this process lacks
+// privilege to join on, are both expected on a real box — but joining zero
+// interfaces IS fatal: it reproduces exactly the "OS silently picked nothing
+// usable" failure mode this function exists to avoid (see defaultListen's
+// own doc), so that case is a reported error rather than a silent no-op
+// listener.
+func joinAllInterfaces(pconn *ipv4.PacketConn, group *net.UDPAddr) error {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return fmt.Errorf("mdns: listing network interfaces: %w", err)
+	}
+
+	joined := 0
+	var lastErr error
+	for i := range ifaces {
+		ifi := &ifaces[i]
+		if !multicastCapable(ifi) {
+			continue
+		}
+		if err := pconn.JoinGroup(ifi, group); err != nil {
+			lastErr = err
+			continue
+		}
+		joined++
+	}
+	if joined > 0 {
+		return nil
+	}
+	if lastErr != nil {
+		return fmt.Errorf("mdns: joining multicast group %s on any interface: %w", group, lastErr)
+	}
+	return fmt.Errorf("mdns: no up, multicast-capable, IPv4 interface found to join %s on", group)
+}
+
+// multicastCapable reports whether ifi is up, multicast-capable, and has at
+// least one non-unspecified IPv4 address — the same filter go-ssdp's
+// internal/multicast/interface.go applies (hasLinkUp + hasMulticast +
+// hasIPv4Address) before it will attempt to join a group on an interface.
+func multicastCapable(ifi *net.Interface) bool {
+	if ifi.Flags&net.FlagUp == 0 || ifi.Flags&net.FlagMulticast == 0 {
+		return false
+	}
+	addrs, err := ifi.Addrs()
+	if err != nil {
+		return false
+	}
+	for _, a := range addrs {
+		ip, _, err := net.ParseCIDR(a.String())
+		if err != nil {
+			continue
+		}
+		if ip4 := ip.To4(); ip4 != nil && !ip.IsUnspecified() {
+			return true
+		}
+	}
+	return false
 }
