@@ -242,6 +242,59 @@ func TestProgramContentTypeGateExcludesUndeclaredType(t *testing.T) {
 	}
 }
 
+// TestClampContentDurationsFloorsNonZeroSubFloorValues proves
+// clampContentDurations raises a nonsensical near-zero or negative
+// duration_ms up to leaseContentMinDurationMS, in place, while leaving 0 (the
+// PLY-083b "no override" sentinel) and an already-sane value untouched.
+func TestClampContentDurationsFloorsNonZeroSubFloorValues(t *testing.T) {
+	content := []wire.LeaseContent{
+		{Type: "image", DurationMS: 1},                         // nonsensical near-zero -> floored
+		{Type: "image", DurationMS: -5},                        // negative -> floored
+		{Type: "image", DurationMS: 0},                         // PLY-083b sentinel -> untouched
+		{Type: "image", DurationMS: leaseContentMinDurationMS}, // exactly the floor -> untouched
+		{Type: "image", DurationMS: 8000},                      // already sane -> untouched
+	}
+
+	got := clampContentDurations(content)
+
+	want := []int64{leaseContentMinDurationMS, leaseContentMinDurationMS, 0, leaseContentMinDurationMS, 8000}
+	for i, w := range want {
+		if got[i].DurationMS != w {
+			t.Errorf("content[%d].DurationMS = %d, want %d", i, got[i].DurationMS, w)
+		}
+	}
+}
+
+// TestProgramHandlerClampsUnsafeDurationEndToEnd proves the clamp is really
+// wired into the served Lease, not just unit-tested in isolation: a program
+// configured with a 1ms duration_ms content item (the exact render-thread-
+// freeze-hazard shape a buggy/malicious producer could emit) serves a Lease
+// whose corresponding item carries the floored value instead.
+func TestProgramHandlerClampsUnsafeDurationEndToEnd(t *testing.T) {
+	srv, _, token := programTestServer(t)
+
+	srv.mu.Lock()
+	srv.program.Content = []wire.LeaseContent{
+		{Type: "image", AssetRef: "sha256:aaaa", URL: "https://example/content/aaaa", DurationMS: 1},
+	}
+	srv.mu.Unlock()
+
+	resp, raw := doProgram(t, srv, token, []string{"image", "video"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %v", resp.StatusCode, raw)
+	}
+
+	var lease LeaseResponse
+	remarshal(t, raw, &lease)
+
+	if len(lease.Content) != 1 {
+		t.Fatalf("content has %d items, want 1; got %+v", len(lease.Content), lease.Content)
+	}
+	if lease.Content[0].DurationMS != leaseContentMinDurationMS {
+		t.Errorf("served DurationMS = %d, want floored to %d (unclamped wire-supplied duration_ms reached the player)", lease.Content[0].DurationMS, leaseContentMinDurationMS)
+	}
+}
+
 // TestProgramRejectsMissingToken confirms a request with no Authorization
 // header is refused with a typed error, never a Lease.
 func TestProgramRejectsMissingToken(t *testing.T) {

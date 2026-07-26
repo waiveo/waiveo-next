@@ -305,7 +305,7 @@ func (s *Server) handleProgram(w http.ResponseWriter, r *http.Request) {
 		ProgramRevision: prog.ProgramRevision,
 		Priority:        prog.Priority,
 		Display:         prog.Display,
-		Content:         filterContentTypes(prog.Content, req.Capabilities.ContentTypes),
+		Content:         clampContentDurations(filterContentTypes(prog.Content, req.Capabilities.ContentTypes)),
 		IssuedAt:        time.Now().UnixMilli(),
 		ValidUntil:      time.Now().Add(leaseValidity).UnixMilli(),
 	}
@@ -436,6 +436,40 @@ func (s *Server) RenderEnds() []RenderEndRequest {
 // item of a type the player hasn't most-recently declared support for. An
 // empty or nil declaredTypes excludes every item, never included by
 // default.
+// leaseContentMinDurationMS is the floor this relay enforces on a Lease
+// content item's own `duration_ms` (PLY-083b) before it ever reaches a
+// player. `duration_ms` rides this codebase's wire.LeaseContent/ContentRef
+// as a raw, unvalidated int64 from every producer (schedulehost's
+// duration_seconds*1000 projection, an app-authored ContentRef, a persisted
+// screen_programs entry) all the way to this handler with no bounds check
+// anywhere upstream. A player (PhotonScene.brs renderCastItem) feeds this
+// value directly into a SceneGraph Timer's `duration` field; a near-zero or
+// negative value re-arms that timer at a CPU-saturating rate (or is
+// undefined behavior, for negative) on the player's render thread — the
+// exact freeze signature this fleet has been bitten by before. This is
+// player/1's own choke point for every content item regardless of which
+// producer set duration_ms, so clamping here closes the hazard for all of
+// them at once rather than requiring every producer to remember to.
+//
+// A duration_ms of exactly 0 is left untouched: PLY-083b defines 0 (like
+// absent) as "no override — the player supplies its own default", a
+// meaningful sentinel this clamp must not disturb. Only a non-zero value
+// below the floor (including any negative value, which is not a meaningful
+// override at all) is raised to it.
+const leaseContentMinDurationMS = 1000
+
+// clampContentDurations floors every non-zero, sub-floor duration_ms in
+// content to leaseContentMinDurationMS, in place, and returns it. See
+// leaseContentMinDurationMS's own doc for why this exists.
+func clampContentDurations(content []wire.LeaseContent) []wire.LeaseContent {
+	for i := range content {
+		if content[i].DurationMS != 0 && content[i].DurationMS < leaseContentMinDurationMS {
+			content[i].DurationMS = leaseContentMinDurationMS
+		}
+	}
+	return content
+}
+
 func filterContentTypes(content []wire.LeaseContent, declaredTypes []string) []wire.LeaseContent {
 	allowed := make(map[string]bool, len(declaredTypes))
 	for _, t := range declaredTypes {
