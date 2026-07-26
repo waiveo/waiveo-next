@@ -44,14 +44,17 @@ import (
 	"net/url"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/maaxton/waiveo-next/conformance/drivers/corpus"
 	"github.com/maaxton/waiveo-next/conformance/drivers/report"
 	"github.com/maaxton/waiveo-next/internal/app/api"
 	"github.com/maaxton/waiveo-next/internal/app/store"
+	"github.com/maaxton/waiveo-next/internal/datamodel"
 	"github.com/maaxton/waiveo-next/internal/feeder/origin"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 )
@@ -95,7 +98,7 @@ func RunCases(cases map[string]corpus.Case) report.Report {
 // has no mounted route to drive (see pendingCaseIDs).
 var drivenCaseIDs = []string{
 	"API-010", "API-013",
-	"API-022", "API-023", "API-032", "API-044", "API-045", "API-101", "API-102",
+	"API-022", "API-023", "API-032", "API-035", "API-044", "API-045", "API-101", "API-102",
 	"API-052", "API-053", "API-111",
 }
 
@@ -367,6 +370,31 @@ func (h *harness) seedAutomation(id, scopeNode string, labels map[string]string)
 	return err
 }
 
+// seedPlaylist writes a compile-clean playlist row directly into the store
+// (fixture setup, same seed-via-store/drive-via-handler pattern as
+// seedAutomation). It exists so a pagination-family case can seed a SECOND
+// resource kind alongside automations (API-035's foreign-cursor case: a
+// cursor minted by the automations list must be rejected by the playlists
+// list) — store.Create validates a playlist's structural shape (DAT-041's
+// item source/asset_ref pairing) but not that the asset_ref actually resolves
+// in the content origin (that check is validatePlaylistAssets, an api/1 HTTP-
+// layer guard on the create ROUTE, not on store.Create itself), so a fixture
+// asset_ref never uploaded anywhere is fine here.
+func (h *harness) seedPlaylist(id, scopeNode string) error {
+	pl := datamodel.Playlist{
+		ID:        id,
+		ScopeNode: scopeNode,
+		Name:      "Conformance Fixture Playlist",
+		Items:     []datamodel.PlaylistItem{{Source: "asset", AssetRef: "sha256:deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}},
+	}
+	b, err := json.Marshal(pl)
+	if err != nil {
+		return err
+	}
+	_, err = h.store.Create(context.Background(), store.KindPlaylist, b)
+	return err
+}
+
 // --- api/1's own Problem error shape (API-010-016) --------------------------
 
 // driveProblemNotFound drives API-010: GET on a scope-node id that does not
@@ -574,13 +602,24 @@ func driveConcurrency(rep *report.Report, c corpus.Case) {
 
 // --- keyset pagination (API-030-036) --------------------------------------
 
+type paginationCollectionRow struct {
+	ID string `json:"id"`
+	// Kind selects which resource this row is seeded as: "automation" (the
+	// zero value, so API-032's kind-less rows still seed as automations) or
+	// "playlist" — a SECOND resource type a case like API-035 seeds so it can
+	// prove a cursor minted by one resource's list is rejected by another's.
+	Kind string `json:"kind"`
+}
+
+type paginationRequest struct {
+	Method string            `json:"method"`
+	Path   string            `json:"path"`
+	Query  map[string]string `json:"query"`
+}
+
 type paginationInput struct {
-	CollectionState []struct {
-		ID string `json:"id"`
-	} `json:"collection_state"`
-	Requests []struct {
-		Query map[string]string `json:"query"`
-	} `json:"requests"`
+	CollectionState []paginationCollectionRow `json:"collection_state"`
+	Requests        []paginationRequest       `json:"requests"`
 }
 
 type paginationExpected struct {
@@ -591,22 +630,82 @@ type paginationExpected struct {
 	CombinedItemsCoverCollectionExactlyOnce bool `json:"combined_items_cover_collection_exactly_once"`
 }
 
-// drivePagination drives the keyset-pagination roundtrip case (API-032)
-// against the live GET /api/v1/automations handler: the corpus's
-// collection_state rows are seeded as compile-clean automations (see
-// seedAutomation), then each request in sequence is replayed through the
-// live handler and diffed against that request's own pinned expected
-// response.
+// responseMarkerPattern recognizes a chain marker in a request's query value
+// (documented in conformance/corpora/README.md): "$responses[N].field" refers
+// to a member of the Nth EARLIER response this same case already observed.
+// It exists so a roundtrip case can pass back a REAL value the implementation
+// returned (e.g. the cursor a list actually minted) instead of a corpus-
+// authored literal — API-033 forbids a client from ever constructing a cursor,
+// so the corpus itself must not hardcode one either.
+var responseMarkerPattern = regexp.MustCompile(`^\$responses\[(\d+)\]\.([A-Za-z0-9_]+)$`)
+
+// cursorTokenGrammar is api/1 API-036's opaque-cursor grammar, recompiled here
+// (rather than imported from apihttp, whose copy is unexported) so a chained
+// cursor is checked against the frozen contract grammar, not the
+// implementation's own regexp.
+var cursorTokenGrammar = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// resolvePaginationQuery resolves every "$responses[N].field" marker in a
+// request's query values against the bodies of the responses this case has
+// already observed (prior), leaving any non-marker value untouched. When the
+// referenced field is "cursor" it additionally enforces — a driver-side
+// STRENGTHENING beyond a plain marker lookup — that the chained value is a
+// non-null string satisfying the opaque-cursor grammar (API-032's "page 1
+// returns a non-null opaque cursor" + API-036's grammar): a roundtrip case can
+// only ever chain a real, spec-conformant continuation token, never a null,
+// absent, or malformed one, so a case whose "page 1" never actually minted a
+// cursor fails loudly here instead of silently sending the literal marker
+// string (or an empty value) as the next request's cursor.
+func resolvePaginationQuery(reqIdx int, q map[string]string, prior []map[string]any) (map[string]string, []report.Diff) {
+	out := make(map[string]string, len(q))
+	var diffs []report.Diff
+	for k, raw := range q {
+		m := responseMarkerPattern.FindStringSubmatch(raw)
+		if m == nil {
+			out[k] = raw
+			continue
+		}
+		idx, _ := strconv.Atoi(m[1])
+		field := m[2]
+		var val any
+		if idx >= 0 && idx < len(prior) {
+			val = prior[idx][field]
+		}
+		s, isString := val.(string)
+		if !isString || (field == "cursor" && !cursorTokenGrammar.MatchString(s)) {
+			wantDesc := "a non-null string"
+			if field == "cursor" {
+				wantDesc = "a non-null string matching ^[A-Za-z0-9_-]+$ (API-032 non-null cursor + API-036 grammar)"
+			}
+			diffs = append(diffs, report.Diff{
+				Field:    fmt.Sprintf("requests[%d].query.%s (chained from responses[%d].%s)", reqIdx, k, idx, field),
+				Expected: wantDesc,
+				Actual:   val,
+			})
+			continue
+		}
+		out[k] = s
+	}
+	return out, diffs
+}
+
+// drivePagination drives an api/1 keyset-pagination corpus case against the
+// live GET handler(s) for one or more resource lists: the corpus's
+// collection_state rows are seeded as compile-clean automations and/or
+// playlists (see seedAutomation/seedPlaylist, selected per row by `kind`),
+// then each request is resolved (chaining any "$responses[N].field" marker
+// against the response actually observed for an earlier request in the same
+// case — see resolvePaginationQuery) and replayed through the live handler,
+// diffed against that request's own pinned expected response.
 //
-// The live automations list scopes its cursor by resourceType ("automations",
-// api.go's automationsConfig + apihttp.EncodeCursor), whereas this corpus
-// case pins the UNSCOPED bare-ULID cursor form ("the automations list is
-// pinned to the unscoped bare-ULID cursor form", the prior driver's own
-// comment). No unscoped list route exists in the shipped code — every
-// resource's cursor is scoped uniformly — so this is a genuine, confirmed
-// corpus-vs-code divergence (not a driver bug) that this case now correctly
-// FAILS on, where the old library-level driver could not see it at all (it
-// called apihttp.Page("", ...) directly, choosing the unscoped form itself).
+// This drives BOTH the roundtrip case (API-032: page 2's cursor is chained
+// from page 1's own real response, never hardcoded, since API-033 makes a
+// cursor opaque to the client) and the foreign-cursor case (API-035: a cursor
+// minted by one resource's list, chained into a DIFFERENT resource's list,
+// must be rejected 400/CURSOR_INVALID) — the live api.go list handler scopes
+// every resource's cursor uniformly by its own resourceType (automationsConfig,
+// playlistsConfig, ... + apihttp.EncodeCursor/DecodeCursor), so both outcomes
+// fall out of the same mechanism.
 func drivePagination(rep *report.Report, c corpus.Case) {
 	var in paginationInput
 	if err := decodeField(c.Input, &in); err != nil {
@@ -628,8 +727,18 @@ func drivePagination(rep *report.Report, c corpus.Case) {
 
 	const scopeNode = "01J8Z0PAGINATIONSCOPENODE1"
 	for _, row := range in.CollectionState {
-		if err := h.seedAutomation(row.ID, scopeNode, nil); err != nil {
-			rep.Fail(c.CaseID, contract, fmt.Sprintf("seed automation %s: %v", row.ID, err))
+		var seedErr error
+		switch row.Kind {
+		case "", "automation":
+			seedErr = h.seedAutomation(row.ID, scopeNode, nil)
+		case "playlist":
+			seedErr = h.seedPlaylist(row.ID, scopeNode)
+		default:
+			rep.Fail(c.CaseID, contract, fmt.Sprintf("collection_state row %s: unknown kind %q", row.ID, row.Kind))
+			return
+		}
+		if seedErr != nil {
+			rep.Fail(c.CaseID, contract, fmt.Sprintf("seed %s %s: %v", row.Kind, row.ID, seedErr))
 			return
 		}
 	}
@@ -641,9 +750,19 @@ func drivePagination(rep *report.Report, c corpus.Case) {
 
 	var diffs []report.Diff
 	seen := map[string]int{}
+	var priorBodies []map[string]any
 	for i, req := range in.Requests {
-		path := "/api/v1/automations?" + encodeQuery(req.Query)
-		res := h.do("GET", path, nil, nil)
+		query, qdiffs := resolvePaginationQuery(i, req.Query, priorBodies)
+		diffs = append(diffs, qdiffs...)
+
+		method := req.Method
+		if method == "" {
+			method = http.MethodGet
+		}
+		path := req.Path + "?" + encodeQuery(query)
+		res := h.do(method, path, nil, nil)
+		priorBodies = append(priorBodies, res.body)
+
 		want := exp.Responses[i]
 		if res.status != want.Status {
 			diffs = append(diffs, report.Diff{Field: fmt.Sprintf("responses[%d].status", i), Expected: want.Status, Actual: res.status})
@@ -674,7 +793,7 @@ func drivePagination(rep *report.Report, c corpus.Case) {
 	}
 
 	if len(diffs) > 0 {
-		rep.Fail(c.CaseID, contract, "keyset-pagination roundtrip diverged from the corpus expectation", diffs...)
+		rep.Fail(c.CaseID, contract, "keyset-pagination outcome diverged from the corpus expectation", diffs...)
 		return
 	}
 	rep.Pass(c.CaseID, contract)

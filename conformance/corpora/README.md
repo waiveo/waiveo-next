@@ -44,6 +44,16 @@ Fields:
   input. Shape mirrors whatever the contract defines as the response/output
   for this kind of input.
 
-Corpora are data only — no executable assertions live here. Per-contract
-driver skeletons that consume these files against a running implementation
-are a separate, not-yet-built piece of `conformance/`.
+A request field whose string value starts with `$responses[` (e.g.
+`$responses[0].cursor`) is a chain marker, not a literal value: it names a
+member of an EARLIER response within the same case, and the driver resolves
+it against the actual response body it observed for that request before
+issuing the request that carries the marker. This exists so a roundtrip case
+(e.g. keyset pagination) never has to hardcode an opaque token the contract
+itself forbids a client from constructing — it always chains the REAL value
+the implementation returned.
+
+Corpora are data only — no executable assertions live here. Six per-contract
+drivers under `conformance/drivers/` (api1, deviceclass1, events1,
+manifest1, player1, relay1) consume these files against a running
+implementation.

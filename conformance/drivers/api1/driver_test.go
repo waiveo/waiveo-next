@@ -18,6 +18,7 @@ var expectedDriven = []string{
 	"API-022-invalid-if-match-missing",
 	"API-023-invalid-if-match-conflict",
 	"API-032-valid-pagination-roundtrip",
+	"API-035-invalid-cursor-foreign-resource",
 	"API-044-valid-selector-scope-subtree",
 	"API-045-invalid-selector-malformed",
 	"API-052-valid-idempotency-replay",
@@ -45,11 +46,6 @@ var expectedPending = []string{
 // than silently going green over a still-broken case, or silently going red
 // over a NEW regression this map hasn't been told about yet.
 var expectedFailing = map[string]string{
-	"API-032-valid-pagination-roundtrip": "the corpus pins the UNSCOPED bare-ULID cursor form for the automations list " +
-		"(\"...pinned to the unscoped bare-ULID cursor form\", ADR embedded in the old driver's own comment); the live " +
-		"automations list (api.go's automationsConfig.resourceType=\"automations\") scopes every cursor uniformly like every " +
-		"other resource — there is no unscoped list route in the shipped code, so the corpus's second-page request (built with " +
-		"the bare-ULID cursor) is rejected 400/CURSOR_INVALID by the live handler instead of returning page 2.",
 	"API-111-valid-bulk-enable-202-job": "created_by can never equal the corpus's arbitrary pinned value: the live handler " +
 		"stamps it from the fixed pocPrincipal constant because auth is deferred (api.go's own doc comment), and " +
 		"contracts/api-1.md's Conformance notes treat a principal as a given, opaque INPUT — this fixture pins created_by as " +

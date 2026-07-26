@@ -364,9 +364,7 @@ func (rs *resource) list(w http.ResponseWriter, r *http.Request) {
 	// The cursor is scoped to THIS resource type (rs.cfg.resourceType), so a
 	// cursor minted by another resource's list — even a byte-identical id — is
 	// rejected 400 / CURSOR_INVALID here rather than silently paged from as an
-	// arbitrary keyset position in the wrong collection (API-033/035). The
-	// unscoped bare-ULID form is the corpus exception pinned to the automations
-	// list, not a default for every kind mounted through this handler.
+	// arbitrary keyset position in the wrong collection (API-033/035).
 	var afterID string
 	if cursor != "" {
 		lastID, cerr := apihttp.DecodeCursor(rs.cfg.resourceType, cursor)

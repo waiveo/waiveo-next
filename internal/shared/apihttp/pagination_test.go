@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"testing"
 )
 
@@ -14,6 +15,16 @@ import (
 // independently so the test asserts EncodeCursor's output against the frozen
 // grammar rather than against the implementation's own regexp.
 var cursorTokenGrammar = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// paginationResponseMarkerPattern recognizes the chain-marker convention
+// documented in conformance/corpora/README.md: a request query value of the
+// form "$responses[N].field" names a member of the Nth EARLIER response this
+// test has already observed, rather than a literal. TestPaginationRoundtripCorpus
+// resolves it against the actual response bodies servePage returned — never
+// against the corpus's own `expected` block — so the roundtrip really does
+// chain page 2's cursor from page 1's REAL output (API-033 forbids a client,
+// and by extension this test, from ever constructing a cursor itself).
+var paginationResponseMarkerPattern = regexp.MustCompile(`^\$responses\[(\d+)\]\.([A-Za-z0-9_]+)$`)
 
 // paginationCase is the slice of an api-1 corpus case this package's keyset-
 // pagination helpers drive: a stable, id-ordered collection and a sequence of
@@ -65,12 +76,20 @@ type listItem struct {
 	ID string `json:"id"`
 }
 
-// TestPaginationRoundtripCorpus drives API-032: over a two-row collection,
-// limit=1 yields page 1 with a non-null opaque cursor equal to the last
-// returned id, and re-requesting with that exact cursor yields page 2 with the
-// remaining row and cursor:null. The two pages enumerate the collection exactly
-// once, in stable id order, and the page-2 cursor is only ever the last
-// returned id passed back verbatim (never constructed).
+// TestPaginationRoundtripCorpus drives API-032 at the library level (servePage
+// exercises ParsePageParams/DecodeCursor/Page directly, not an HTTP handler):
+// over a two-row collection, limit=1 yields page 1 with a non-null opaque
+// cursor, and page 2 is requested with the cursor CHAINED from page 1's own
+// real response (the corpus's "$responses[0].cursor" marker, resolved here
+// against the actual body servePage returned — see
+// paginationResponseMarkerPattern) yields the remaining row and cursor:null.
+// The two pages enumerate the collection exactly once, in stable id order, and
+// the page-2 cursor is only ever page 1's real output passed back verbatim,
+// never a value this test or the corpus constructs (API-033). Every corpus-
+// pinned response member MUST be reproduced exactly; a member the corpus does
+// not pin (page 1's cursor encoding, deliberately unasserted since API-033
+// makes it opaque) is not checked here either — a subset compare, matching
+// what the api/1 conformance driver asserts for the same corpus case.
 func TestPaginationRoundtripCorpus(t *testing.T) {
 	c := loadPaginationCase(t, "API-032-valid-pagination-roundtrip.json")
 
@@ -87,15 +106,28 @@ func TestPaginationRoundtripCorpus(t *testing.T) {
 	}
 
 	seen := map[string]int{}
+	var priorBodies []map[string]any
 	for i, req := range c.Input.Requests {
-		gotStatus, gotBody := servePage(t, sorted, req.Query["cursor"], req.Query["limit"])
+		cursor := resolvePaginationMarker(t, i, req.Query["cursor"], priorBodies)
+		gotStatus, gotBody := servePage(t, sorted, cursor, req.Query["limit"])
+		priorBodies = append(priorBodies, gotBody)
 
 		wantResp := c.Expected.Responses[i]
 		if gotStatus != wantResp.Status {
 			t.Errorf("request %d: status = %d, want %d", i, gotStatus, wantResp.Status)
 		}
-		if !reflect.DeepEqual(gotBody, wantResp.Body) {
-			t.Errorf("request %d: body = %#v, want %#v (corpus-pinned)", i, gotBody, wantResp.Body)
+		// Subset compare: every member the corpus pins on this response MUST be
+		// reproduced exactly; a member it does not pin is not asserted (mirrors
+		// the api/1 conformance driver's listBodyDiffsRaw for this same case).
+		for k, wv := range wantResp.Body {
+			gv, present := gotBody[k]
+			if !present {
+				t.Errorf("request %d: body missing pinned member %q, want %#v", i, k, wv)
+				continue
+			}
+			if !reflect.DeepEqual(gv, wv) {
+				t.Errorf("request %d: body.%s = %#v, want %#v (corpus-pinned)", i, k, gv, wv)
+			}
 		}
 
 		// Tally the ids this page returned for the exactly-once check.
@@ -120,6 +152,37 @@ func TestPaginationRoundtripCorpus(t *testing.T) {
 			}
 		}
 	}
+}
+
+// resolvePaginationMarker resolves raw — a request's `cursor` query value —
+// as a corpus chain marker ("$responses[N].field") against prior, the actual
+// response bodies this test observed for earlier requests in the same case,
+// or returns raw unchanged when it is not a marker (including the empty
+// string: request 0 has no cursor to chain). The resolved value MUST be a
+// non-null string satisfying API-036's opaque-cursor grammar: a roundtrip can
+// only ever chain a real, spec-conformant continuation token, never a
+// null/absent one, so a "page 1" that never actually minted a cursor fails
+// the test loudly here rather than silently sending the literal marker string
+// as page 2's cursor.
+func resolvePaginationMarker(t *testing.T, reqIdx int, raw string, prior []map[string]any) string {
+	t.Helper()
+	m := paginationResponseMarkerPattern.FindStringSubmatch(raw)
+	if m == nil {
+		return raw
+	}
+	idx, err := strconv.Atoi(m[1])
+	if err != nil || idx < 0 || idx >= len(prior) {
+		t.Fatalf("request %d: marker %q refers to responses[%d], but only %d prior response(s) were recorded", reqIdx, raw, idx, len(prior))
+	}
+	v, present := prior[idx][m[2]]
+	s, isString := v.(string)
+	if !present || !isString {
+		t.Fatalf("request %d: marker %q: responses[%d].%s is %v, not a string (a null/absent cursor can never be chained)", reqIdx, raw, idx, m[2], v)
+	}
+	if !cursorTokenGrammar.MatchString(s) {
+		t.Fatalf("request %d: chained cursor %q does not satisfy ^[A-Za-z0-9_-]+$ (API-036)", reqIdx, s)
+	}
+	return s
 }
 
 // servePage models the read path a list handler follows for one request:
@@ -357,7 +420,9 @@ func TestScopedCursorRoundtrips(t *testing.T) {
 func TestDecodeCursorRejectsForeignScope(t *testing.T) {
 	// A real device id, exactly as a devices list would mint it as a cursor.
 	deviceCursor := EncodeCursor("device", "01J8Z3K4N5P6Q7R8S9T0V1W2Z1")
-	// A bare ULID as the unscoped automations list mints it (corpus API-032).
+	// A bare ULID, exactly as EncodeCursor's own unscoped ("") form mints it —
+	// a library capability in its own right, not how any api/1 resource list
+	// mints a cursor today (every mounted list passes a non-empty scope).
 	bareCursor := EncodeCursor("", "01J8Z3K4N5P6Q7R8S9T0V1W2Z8")
 
 	cases := []struct {

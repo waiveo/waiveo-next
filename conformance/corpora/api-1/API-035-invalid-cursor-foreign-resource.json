@@ -1,0 +1,31 @@
+{
+  "case_id": "API-035-invalid-cursor-foreign-resource",
+  "contract": "api/1",
+  "req_ids": ["API-035"],
+  "description": "A cursor minted by one list operation (automations) names a keyset position ONLY for that resource type (API-033); replayed as the cursor on a DIFFERENT resource's list (playlists) it MUST be rejected 400 Bad Request / CURSOR_INVALID, never silently treated as a valid position in the wrong collection or as 'start from the beginning'.",
+  "input": {
+    "collection_state": [
+      { "id": "01J8Z3K4N5P6Q7R8S9T0V1W3A1", "kind": "automation", "name": "Lobby screens on at open", "created_at": "2026-07-01T08:00:00Z" },
+      { "id": "01J8Z3K4N5P6Q7R8S9T0V1W3A8", "kind": "automation", "name": "Lobby screens off at close", "created_at": "2026-07-01T09:00:00Z" },
+      { "id": "01J8Z3K4N5P6Q7R8S9T0V1W3B1", "kind": "playlist", "name": "Lobby loop", "created_at": "2026-07-01T08:30:00Z" }
+    ],
+    "requests": [
+      { "method": "GET", "path": "/api/v1/automations", "query": { "limit": "1" } },
+      { "method": "GET", "path": "/api/v1/playlists", "query": { "cursor": "$responses[0].cursor" } }
+    ]
+  },
+  "expected": {
+    "responses": [
+      { "status": 200 },
+      {
+        "status": 400,
+        "body": {
+          "type": "about:blank",
+          "title": "Bad Request",
+          "status": 400,
+          "code": "CURSOR_INVALID"
+        }
+      }
+    ]
+  }
+}

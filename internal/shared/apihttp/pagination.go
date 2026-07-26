@@ -80,11 +80,12 @@ func ParsePageParams(rawCursor string, rawLimit string) (cursor string, limit in
 // scope is a short, stable tag naming the list operation / resource type (e.g.
 // "device", "automation"); it MUST NOT contain cursorScopeSep. The empty scope
 // is the unscoped keyset: the token is lastID itself — the bare ULID (API-034),
-// already a grammar-satisfying opaque token — which is the form api/1's
-// automations list is pinned to by the corpus (API-032). A non-empty scope
-// prefixes the tag and cursorScopeSep onto the ULID, still URL-safe under the
-// opaque-cursor grammar (API-036). The client treats the value as opaque and
-// only ever passes it back verbatim.
+// already a grammar-satisfying opaque token. api/1's own resource lists (see
+// internal/app/api) all pass a non-empty scope; the unscoped form remains a
+// library capability in its own right, exercised directly by this package's
+// tests. A non-empty scope prefixes the tag and cursorScopeSep onto the ULID,
+// still URL-safe under the opaque-cursor grammar (API-036). The client treats
+// the value as opaque and only ever passes it back verbatim.
 func EncodeCursor(scope, lastID string) string {
 	if scope == "" {
 		return lastID

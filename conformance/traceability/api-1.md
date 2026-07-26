@@ -44,7 +44,7 @@ export` does not exist in `api.New`'s mux).
 | API-032 | `contracts/api-1.md#keyset-pagination` | `API-032-valid-pagination-roundtrip` | covered |
 | API-033 | `contracts/api-1.md#keyset-pagination` | `API-032-valid-pagination-roundtrip` | covered |
 | API-034 | `contracts/api-1.md#keyset-pagination` | `API-032-valid-pagination-roundtrip` | covered |
-| API-035 | `contracts/api-1.md#keyset-pagination` | - | TBD-wave1 |
+| API-035 | `contracts/api-1.md#keyset-pagination` | `API-035-invalid-cursor-foreign-resource` | covered |
 | API-036 | `contracts/api-1.md#keyset-pagination` | `API-032-valid-pagination-roundtrip` | covered |
 | API-040 | `contracts/api-1.md#label-selector-grammar` | `API-044-valid-selector-scope-subtree` | covered |
 | API-041 | `contracts/api-1.md#label-selector-grammar` | `API-044-valid-selector-scope-subtree` | covered |
