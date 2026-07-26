@@ -51,6 +51,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/enroll"
 	"github.com/maaxton/waiveo-next/internal/relay/hello"
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
+	"github.com/maaxton/waiveo-next/internal/relay/mdns"
 	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
 	"github.com/maaxton/waiveo-next/internal/relay/schedulehost"
 	"github.com/maaxton/waiveo-next/internal/relay/ssdpresponder"
@@ -80,14 +81,18 @@ type config struct {
 	// (WAIVEO_RELAY_ECP_TARGETS="entity=host[:port],..."). pollInterval is
 	// the ECP state-poll period (WAIVEO_RELAY_POLL_MS, default 5000).
 	// discoveryOn enables the SSDP client sweep feeding the candidate store
-	// (WAIVEO_RELAY_DISCOVERY=1, REL-110/111). ssdpAnnounce enables the SSDP
-	// RESPONDER — answering a player's own M-SEARCH for this relay's
+	// (WAIVEO_RELAY_DISCOVERY=1, REL-110/111). mdnsPatterns enables the mDNS
+	// listener feeding the SAME candidate store (WAIVEO_RELAY_MDNS_PATTERNS,
+	// comma-separated MAN-071 service-type strings e.g. "_waiveo._tcp";
+	// empty/unset is off, internal/relay/mdns). ssdpAnnounce enables the
+	// SSDP RESPONDER — answering a player's own M-SEARCH for this relay's
 	// player/1 pairing surface (WAIVEO_RELAY_SSDP_ANNOUNCE=1, PLY-021/022).
-	// Both default off: CI and loopback dev runs must never multicast, so
-	// dev/CI stay byte-identical to today.
+	// All three default off: CI and loopback dev runs must never multicast,
+	// so dev/CI stay byte-identical to today.
 	ecpTargets   map[string]ecp.Target
 	pollInterval time.Duration
 	discoveryOn  bool
+	mdnsPatterns []string
 	ssdpAnnounce bool
 }
 
@@ -117,8 +122,29 @@ func loadConfig(env func(string) string) (config, error) {
 		ecpTargets:   targets,
 		pollInterval: time.Duration(pollMS) * time.Millisecond,
 		discoveryOn:  env("WAIVEO_RELAY_DISCOVERY") == "1" || env("WAIVEO_RELAY_DISCOVERY") == "true",
+		mdnsPatterns: parseMDNSPatterns(env("WAIVEO_RELAY_MDNS_PATTERNS")),
 		ssdpAnnounce: env("WAIVEO_RELAY_SSDP_ANNOUNCE") == "1" || env("WAIVEO_RELAY_SSDP_ANNOUNCE") == "true",
 	}, nil
+}
+
+// parseMDNSPatterns parses "svc1,svc2" into the mdns package's Config.Patterns
+// input list of MAN-071 mdns service-type strings (nil for empty input, or
+// input with no non-empty entry after trimming — e.g. "" or ","). Unlike
+// parseECPTargets, no entry shape is rejected: any non-empty string is a
+// usable service type, so there is nothing here to fail config load over.
+func parseMDNSPatterns(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	var patterns []string
+	for _, p := range strings.Split(raw, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		patterns = append(patterns, p)
+	}
+	return patterns
 }
 
 // parseECPTargets parses "entity=host[:port],entity2=host2" into the entity →
@@ -421,28 +447,58 @@ func main() {
 		log.Printf("waiveo-relay device polling live (%d target(s), every %s)", len(pollTargets), cfg.pollInterval)
 	}
 
-	// SSDP client discovery (REL-110/111): sweep + alive-monitor the LAN for
-	// the built-in Roku search target, minting pattern-hit candidates into the
-	// relay's candidate store. The store's device.candidates report rides to
-	// the app peer in Wave 2; for now a low-rate log line makes a live sweep's
-	// effect observable on-box. Timestamps are wall-clock Timestamp-ms — the
-	// store is in-memory relay state, not persisted evidence, so clock-trust
-	// gating does not apply to it.
-	if cfg.discoveryOn {
+	// Discovery (REL-110/111): SSDP client sweep + mDNS listener each mint
+	// pattern-hit candidates into ONE SHARED candidate store when both lanes
+	// are on — REL-110's device.candidates report is a full-set report per
+	// relay, not per discovery lane, so a candidate either lane observes must
+	// land in the same Store regardless of which one matched it. When only
+	// one lane is configured, candStore is still built here (there is no
+	// third lane yet to share it with). The store's device.candidates report
+	// rides to the app peer in Wave 2; for now a low-rate log line makes a
+	// live sweep's/listener's effect observable on-box. Timestamps are
+	// wall-clock Timestamp-ms — the store is in-memory relay state, not
+	// persisted evidence, so clock-trust gating does not apply to it.
+	if cfg.discoveryOn || len(cfg.mdnsPatterns) > 0 {
 		candStore := deviceplane.NewStore(relayID.RelayID)
-		disc, err := discovery.New(discovery.Config{
-			Patterns:  []deviceplane.Match{{SSDP: "roku:ecp"}},
-			Store:     candStore,
-			NowMillis: func() int64 { return time.Now().UnixMilli() },
-		})
-		if err != nil {
-			log.Fatalf("waiveo-relay: configure SSDP discovery: %v", err)
-		}
-		go func() {
-			if err := disc.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
-				log.Printf("waiveo-relay: discovery ended: %v", err)
+
+		if cfg.discoveryOn {
+			disc, err := discovery.New(discovery.Config{
+				Patterns:  []deviceplane.Match{{SSDP: "roku:ecp"}},
+				Store:     candStore,
+				NowMillis: func() int64 { return time.Now().UnixMilli() },
+			})
+			if err != nil {
+				log.Fatalf("waiveo-relay: configure SSDP discovery: %v", err)
 			}
-		}()
+			go func() {
+				if err := disc.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
+					log.Printf("waiveo-relay: discovery ended: %v", err)
+				}
+			}()
+			log.Printf("waiveo-relay SSDP discovery live (pattern roku:ecp)")
+		}
+
+		if len(cfg.mdnsPatterns) > 0 {
+			mdnsMatches := make([]deviceplane.Match, len(cfg.mdnsPatterns))
+			for i, svcType := range cfg.mdnsPatterns {
+				mdnsMatches[i] = deviceplane.Match{MDNS: svcType}
+			}
+			mdnsListener, err := mdns.New(mdns.Config{
+				Patterns:  mdnsMatches,
+				Store:     candStore,
+				NowMillis: func() int64 { return time.Now().UnixMilli() },
+			})
+			if err != nil {
+				log.Fatalf("waiveo-relay: configure mDNS discovery: %v", err)
+			}
+			go func() {
+				if err := mdnsListener.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
+					log.Printf("waiveo-relay: mDNS discovery ended: %v", err)
+				}
+			}()
+			log.Printf("waiveo-relay mDNS discovery live (patterns %s)", strings.Join(cfg.mdnsPatterns, ", "))
+		}
+
 		go func() {
 			tick := time.NewTicker(time.Minute)
 			defer tick.Stop()
@@ -457,7 +513,6 @@ func main() {
 				}
 			}
 		}()
-		log.Printf("waiveo-relay SSDP discovery live (pattern roku:ecp)")
 	}
 
 	// SSDP RESPONDER (player/1 PLY-021/022): answer a player's same-network

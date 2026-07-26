@@ -193,6 +193,7 @@ func TestLoadConfigECPTargetsAndPolling(t *testing.T) {
 		"WAIVEO_RELAY_ECP_TARGETS":   "01J8Z3K4N5P6Q7R8S9T0V1SCRN=192.0.2.51, second=192.0.2.52:9060",
 		"WAIVEO_RELAY_POLL_MS":       "2500",
 		"WAIVEO_RELAY_DISCOVERY":     "1",
+		"WAIVEO_RELAY_MDNS_PATTERNS": "_waiveo._tcp",
 		"WAIVEO_RELAY_SSDP_ANNOUNCE": "1",
 	}
 	cfg, err := loadConfig(func(k string) string { return env[k] })
@@ -210,6 +211,9 @@ func TestLoadConfigECPTargetsAndPolling(t *testing.T) {
 	}
 	if !cfg.discoveryOn {
 		t.Error("discoveryOn = false, want true for WAIVEO_RELAY_DISCOVERY=1")
+	}
+	if len(cfg.mdnsPatterns) != 1 || cfg.mdnsPatterns[0] != "_waiveo._tcp" {
+		t.Errorf("mdnsPatterns = %v, want [_waiveo._tcp]", cfg.mdnsPatterns)
 	}
 	if !cfg.ssdpAnnounce {
 		t.Error("ssdpAnnounce = false, want true for WAIVEO_RELAY_SSDP_ANNOUNCE=1")
@@ -229,11 +233,27 @@ func TestLoadConfigDeviceDefaultsOff(t *testing.T) {
 	if cfg.discoveryOn {
 		t.Error("discoveryOn = true, want false by default")
 	}
+	if cfg.mdnsPatterns != nil {
+		t.Errorf("mdnsPatterns = %v, want nil by default (CI/dev loopback must not multicast)", cfg.mdnsPatterns)
+	}
 	if cfg.ssdpAnnounce {
 		t.Error("ssdpAnnounce = true, want false by default (CI/dev loopback must not multicast)")
 	}
 	if cfg.pollInterval != 5*time.Second {
 		t.Errorf("pollInterval = %s, want the 5s default", cfg.pollInterval)
+	}
+}
+
+func TestLoadConfigMDNSPatterns(t *testing.T) {
+	// Comma-separated service types, tolerating stray whitespace and empty
+	// entries from a trailing/doubled comma.
+	env := map[string]string{"WAIVEO_RELAY_MDNS_PATTERNS": " _waiveo._tcp, _googlecast._tcp ,,"}
+	cfg, err := loadConfig(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatalf("loadConfig(mdns patterns): %v", err)
+	}
+	if len(cfg.mdnsPatterns) != 2 || cfg.mdnsPatterns[0] != "_waiveo._tcp" || cfg.mdnsPatterns[1] != "_googlecast._tcp" {
+		t.Errorf("mdnsPatterns = %v, want [_waiveo._tcp _googlecast._tcp]", cfg.mdnsPatterns)
 	}
 }
 
