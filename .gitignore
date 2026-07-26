@@ -31,3 +31,6 @@ web/.last-run.json
 # internal/relay/identity.Open) — holds the relay's own enrollment private
 # key. Same rationale as .dev/feeder-keys/ above.
 .dev/relay-identity/
+
+# graphify (local knowledge graph, on-demand dev tooling)
+graphify-out/
