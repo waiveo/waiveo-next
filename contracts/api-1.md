@@ -174,6 +174,8 @@ The single `/api/v1` prefix (API-001) replaces a legacy core/extension URL split
 
 **[API-104]** `external_id` MUST appear, unchanged, in every representation of a resource this contract's operations return, and MUST be accepted back unchanged by a create or update operation given that same representation — so a client that reads a resource and later re-submits what it read (an export/apply round trip) preserves `external_id`, and every cross-reference expressed through it (API-103) continues to resolve to the same resource.
 
+**[API-105]** A create or update request that supplies a value for a resource's own `id` — the field API-100 names as exclusively server-assigned — MUST be rejected with `422 Unprocessable Content` / `code: ID_SERVER_ASSIGNED`, without executing the write; `external_id` is the sole client-assignable identity slot (API-100).
+
 ### Fleet-mutating operations & the Job resource
 
 **[API-110]** An operation that mutates more than one resource in a single request (a fleet-mutating operation) MUST accept the label-selector grammar (Label-selector grammar) to designate its target set, applying API-040–045 unchanged — the same `selector` convention a list operation uses to filter a read, extended here to a mutating operation's own target predicate.
@@ -294,6 +296,7 @@ api/1 has no connection-time handshake — it is negotiated once, structurally, 
 | `IDEMPOTENCY_KEY_REUSED` | The same `Idempotency-Key` scope was presented with a different request body. | no — use a new key or the original body |
 | `IDEMPOTENCY_KEY_IN_PROGRESS` | The same `Idempotency-Key` scope's original request has not yet completed. | yes — after a short backoff |
 | `EXTERNAL_ID_CONFLICT` | A create or update request's `external_id` collided with an existing resource of the same type under the same scope node. | no — choose a different `external_id` |
+| `ID_SERVER_ASSIGNED` | A create or update request supplied a value for a resource's own `id`, which is exclusively server-assigned (API-105). | no — omit `id`; use `external_id` for a client-assigned identity |
 | `RATE_LIMITED` | The principal exceeded its rate limit. | yes — after the stated backoff |
 | `INTERNAL` | An unclassified server-side failure. | yes — with backoff |
 | `UNAVAILABLE` | The server or a dependency it needs is temporarily unable to serve the request. | yes — with backoff |

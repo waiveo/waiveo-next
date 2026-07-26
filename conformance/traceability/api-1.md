@@ -82,6 +82,7 @@ route to drive at all (`/api/v1/workspace/export` does not exist in
 | API-102 | `contracts/api-1.md#client-assignable-external_id` | `API-102-invalid-external-id-conflict` | covered |
 | API-103 | `contracts/api-1.md#client-assignable-external_id` | - | TBD-wave1 |
 | API-104 | `contracts/api-1.md#client-assignable-external_id` | - | TBD-wave1 |
+| API-105 | `contracts/api-1.md#client-assignable-external_id` | - | TBD-wave1 |
 | API-110 | `contracts/api-1.md#fleet-mutating-operations--the-job-resource` | `API-111-valid-bulk-enable-202-job` | covered |
 | API-111 | `contracts/api-1.md#fleet-mutating-operations--the-job-resource` | `API-111-valid-bulk-enable-202-job` | covered |
 | API-112 | `contracts/api-1.md#fleet-mutating-operations--the-job-resource` | `API-111-valid-bulk-enable-202-job` | covered |
