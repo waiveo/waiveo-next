@@ -36,6 +36,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -349,11 +350,13 @@ func main() {
 	// Configured ECP targets swap in the real hardware adapter; otherwise the
 	// loopback stand-ins keep dev/CI behavior byte-identical.
 	var (
-		devController deviceplane.DeviceController = loopbackController{}
-		devResolver   deviceplane.EntityResolver   = loopbackResolver
+		devController  deviceplane.DeviceController = loopbackController{}
+		baseController deviceplane.DeviceController = loopbackController{}
+		devResolver    deviceplane.EntityResolver   = loopbackResolver
 	)
 	if len(cfg.ecpTargets) > 0 {
-		devController = ecp.New(cfg.ecpTargets)
+		baseController = ecp.New(cfg.ecpTargets)
+		devController = loggingController{inner: baseController, source: "automation"}
 		targets := cfg.ecpTargets
 		devResolver = func(entityID string) (deviceID, deviceClass string, ok bool) {
 			// Wave-1 bridge resolver: a configured ECP target IS the adopted
@@ -516,7 +519,19 @@ func main() {
 			// launch is indistinguishable, from the device plane's side, from
 			// an app-peer-, edge-rule-, or preset-batch-issued command, and
 			// takes the identical per-device dispatch lock.
-			Controller: automation.NewCommandSink(commandSurface, relayID.RelayID),
+			// Keep-alive dispatches through its OWN surface over the same
+			// underlying adapter, differing only in the source label its
+			// dispatches carry in the journal. The device plane still sees an
+			// identical command taking the identical per-device lock; the
+			// label exists purely so an operator reading the log can tell a
+			// keep-alive recovery from an edge-rule or preset-batch command,
+			// which is otherwise impossible once several subsystems drive the
+			// same screen.
+			Controller: automation.NewCommandSink(
+				deviceplane.NewCommandSurface(
+					loggingController{inner: baseController, source: "keep-alive"},
+					deviceRegistry, devResolver),
+				relayID.RelayID),
 			// Wave-1 bridge (playerserver.Server.CurrentDisplay's own doc):
 			// exactly one screen-program is served system-wide today, so
 			// every entityID maps to that SAME currently active Lease
@@ -1028,6 +1043,39 @@ type loopbackController struct{}
 
 func (loopbackController) Dispatch(entityID, command string, params map[string]any) error {
 	log.Printf("waiveo-relay automation dispatch (loopback): %s %s", entityID, command)
+	return nil
+}
+
+// loggingController wraps a DeviceController so every dispatch leaves an
+// operator-visible trace naming WHICH subsystem issued it.
+//
+// The device adapters themselves are deliberately silent (REL-114 credential
+// hygiene: an adapter that logs is an adapter that can leak a parameter), and
+// with several subsystems — the edge-rules engine, schedule preset batches, and
+// screen keep-alive — all dispatching through the same surface, a command
+// arriving at a device was previously indistinguishable at the journal from any
+// other. That was found the first time a real screen was driven end-to-end: the
+// screen moved, and nothing on the box could say what moved it.
+//
+// Only the command NAME and the parameter KEYS are logged, never parameter
+// values, so a credential passed as a param can never reach the journal.
+type loggingController struct {
+	inner  deviceplane.DeviceController
+	source string
+}
+
+func (c loggingController) Dispatch(entityID, command string, params map[string]any) error {
+	keys := make([]string, 0, len(params))
+	for k := range params {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	err := c.inner.Dispatch(entityID, command, params)
+	if err != nil {
+		log.Printf("waiveo-relay dispatch [%s]: %s %s params=%v FAILED: %v", c.source, entityID, command, keys, err)
+		return err
+	}
+	log.Printf("waiveo-relay dispatch [%s]: %s %s params=%v ok", c.source, entityID, command, keys)
 	return nil
 }
 
