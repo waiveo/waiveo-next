@@ -35,6 +35,7 @@ before touching anything.
 # on the box
 sudo useradd --system --home /opt/waiveo-next waiveo   # once
 sudo install -d -o waiveo -g waiveo /opt/waiveo-next/bin
+sudo chown waiveo:waiveo /opt/waiveo-next   # daemons create .dev/ under the workdir
 sudo install -o waiveo -g waiveo waiveo-feeder waiveo-relay /opt/waiveo-next/bin/
 
 # edit the two unit files: set WAIVEO_FEEDER_CONTENT_URL and
@@ -64,9 +65,19 @@ Sideload `player-v3` and launch the console-only self-check — no screen needed
 read the result from the debug console:
 
 ```
-# package + sideload player-v3 (rokudev dev credentials), then:
+# zip MUST include testdata/ (the self-check reads pkg:/testdata golden vectors)
+cd player-v3 && zip -r /tmp/player-v3.zip manifest source components testdata
+# the form needs BOTH mysubmit and archive, or it 400s with "mysubmit Field Not Found"
+curl --digest -u rokudev:<dev-pass> -F "mysubmit=Replace" \
+  -F "archive=@/tmp/player-v3.zip" "http://<dev-roku-ip>/plugin_install"
+# plugin_install AUTO-LAUNCHES the channel with no args. Exit to Home and WAIT
+# until query/active-app reports type="home" before the deep-link launch, or
+# the launch is a no-op against the running instance:
+curl -d '' "http://<dev-roku-ip>:8060/keypress/Home"
 curl -d '' "http://<dev-roku-ip>:8060/launch/dev?selfcheck=1"
-telnet <dev-roku-ip> 8085     # watch for [RESULT] lines
+# the 8085 console DROPS connections at app transitions — connect AFTER the
+# app is up and read the session scrollback:
+sleep 20 && nc <dev-roku-ip> 8085     # grep for [RESULT] lines
 ```
 
 Every `[RESULT] ... = PASS` (especially `roEVPDigest sha256(empty) vs known
@@ -79,8 +90,11 @@ the primitive, do not pair.
 1. **Suppress legacy control of THIS screen only** — so the legacy watchdog does
    not fight the new player for the screen (see the auto-launch/flapping
    history). This is a configuration change on the legacy stack, not a code
-   change, so "legacy untouched" still holds. *(Confirm the exact
-   unclaim/suppress step against the running legacy stack before executing.)*
+   change, so "legacy untouched" still holds. Concretely (verified 2026-07-26):
+   the per-screen kill switch is `slidecast_screens.watchdog_enabled`, settable
+   over the authenticated web API —
+   `PUT /api/extensions/slidecast/screens/<serial> {"watchdog_enabled": false}`
+   (serial like `roku:X0290...`; reverse with `true` on rollback).
 2. Sideload `player-v3` to the screen.
 3. Hand it the pairing code from step 2:
    ```
@@ -115,3 +129,25 @@ The program poll sends its `content_types` capabilities as a JSON body on a GET
 drops the GET body, the relay's content-type gate returns zero content items and
 the screen shows a status message instead of the image. If that happens, add a
 query-string/header capabilities fallback to `GET /player/v1/program`.
+*(Did NOT bite on firmware 15.2.4 — the GET body arrived intact.)*
+
+## Hardware findings — first photon achieved 2026-07-26, The Hanger, fw 15.2.4
+
+The full chain (pair → pin → redeem → program → lease → direct fetch →
+`asset_ref` verify → render) worked after four on-device fixes, all caught by
+the §3/§5 gates exactly as designed:
+
+- `roEVPDigest` returns `""` for ZERO-LENGTH input (both `Process(empty)` and
+  `Setup`+`Final()`); non-empty digests are byte-correct. `wvSha256Hex` now
+  fails closed on empty input by contract.
+- A committed fixture's trailing LF made three byte-identical self-check
+  comparisons fail invisibly — `wvTrim` originally stripped CR but not LF.
+- The Roku TLS stack refuses a CA:FALSE self-signed cert as a trust anchor
+  and a clientAuth-only leaf as a server ("unsuitable certificate purpose").
+  Fixed in `tlsboot.GenSelfSigned` (CA-shaped anchor) and feeder issuance
+  (dual EKU). The virtualplayer's skip-verify+pin posture can never surface
+  EKU/anchor-shape failures — only an ordinary-verification client does.
+- Ed25519 TLS (leaf and CA) handshakes fine on this firmware.
+- Re-pairing after a relay re-key needs no wipe: launch with the fresh code —
+  a supplied code is deliberate re-provisioning and takes precedence over
+  persisted state (persisted pairing survives if the new code fails).
