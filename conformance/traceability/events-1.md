@@ -2,6 +2,25 @@
 
 One row per requirement ID `contracts/events-1.md` defines. Format: `conformance/traceability/README.md`.
 
+**2026-07-26 re-drive note:** `conformance/drivers/events1` now mounts the
+LIVE `internal/app/eventingest` (POST `/telemetry/v1/push`) and
+`internal/app/eventsse` (GET `/events/v1`) handlers wherever a real producer
+or transport path exists, rather than calling `internal/events` directly —
+the same 2026-07-26 audit that flagged `api/1`'s driver found this driver had
+never touched a single `internal/app/` package either. Unlike `api/1`,
+re-driving against the live handlers surfaced no genuine corpus-vs-code
+divergence: every driven case still passes. Two schemas (`audit.event`,
+and the internal-origin `automation.run` case) remain driven directly
+against `internal/events`, because no producer or HTTP endpoint anywhere in
+the tree constructs either — `eventingest` is the only envelope-constructing
+endpoint, and it is relay-telemetry-scoped (always `origin: relay`); see
+`conformance/drivers/events1/driver.go`'s package doc for the full list of
+what is driven through which path and why. EVT-100/102/103/104 moved to
+`covered`: they were previously untested at the transport level (the old
+driver never opened a real SSE connection); `EVT-091-valid-hello-fresh-
+subscribe` and `EVT-140-valid-resume-with-gap` now drive a real
+`httptest.Server`-backed SSE connection end to end.
+
 | req-id | contract §anchor | case-id(s) | status |
 |---|---|---|---|
 | EVT-001 | `contracts/events-1.md#versioning--transport-surface` | - | TBD-wave1 |
@@ -41,11 +60,11 @@ One row per requirement ID `contracts/events-1.md` defines. Format: `conformance
 | EVT-094 | `contracts/events-1.md#ws-binding` | - | TBD-wave1 |
 | EVT-095 | `contracts/events-1.md#ws-binding` | - | TBD-wave1 |
 | EVT-096 | `contracts/events-1.md#ws-binding` | - | TBD-wave1 |
-| EVT-100 | `contracts/events-1.md#sse-binding` | - | TBD-wave1 |
+| EVT-100 | `contracts/events-1.md#sse-binding` | `EVT-091-valid-hello-fresh-subscribe`, `EVT-140-valid-resume-with-gap` | covered |
 | EVT-101 | `contracts/events-1.md#sse-binding` | - | TBD-wave1 |
-| EVT-102 | `contracts/events-1.md#sse-binding` | - | TBD-wave1 |
-| EVT-103 | `contracts/events-1.md#sse-binding` | - | TBD-wave1 |
-| EVT-104 | `contracts/events-1.md#sse-binding` | - | TBD-wave1 |
+| EVT-102 | `contracts/events-1.md#sse-binding` | `EVT-134-invalid-resume-from-malformed`, `EVT-140-valid-resume-with-gap` | covered |
+| EVT-103 | `contracts/events-1.md#sse-binding` | `EVT-140-valid-resume-with-gap` | covered |
+| EVT-104 | `contracts/events-1.md#sse-binding` | `EVT-140-valid-resume-with-gap` | covered |
 | EVT-105 | `contracts/events-1.md#sse-binding` | - | TBD-wave1 |
 | EVT-110 | `contracts/events-1.md#authentication` | - | TBD-wave1 |
 | EVT-111 | `contracts/events-1.md#authentication` | - | TBD-wave1 |

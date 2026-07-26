@@ -2,6 +2,24 @@
 
 One row per requirement ID `contracts/api-1.md` defines. Format: `conformance/traceability/README.md`.
 
+**2026-07-26 re-drive note:** `conformance/drivers/api1` now mounts the LIVE,
+HTTP-mounted `internal/app/api` handler (`api.New`) instead of calling the
+convention libraries (`apihttp`/`apiselector`/`apijob`) directly — a
+2026-07-26 audit found the prior driver certified those libraries, not the
+shipped `/api/v1` surface. `covered` below still means exactly what
+`README.md` defines ("a listed case exercises this requirement today") — it
+is not a pass/fail signal, and this table has no third value for that. Seven
+of the eleven now-driven cases surfaced a genuine, confirmed divergence
+between their frozen expectation and the live handler's actual behavior
+(wording/status-code mismatches, two fixtures that violate a datamodel rule
+built after they were frozen, and two Job-resource fields with no
+determinism seam) — see `conformance/drivers/api1/driver_test.go`'s
+`expectedFailing` map for the full list and reasons, and the Track A
+follow-up issue this reconciliation files for resolving them. `API-120/121/
+123` moved back to `TBD-wave1`: `API-121-valid-export-workspace-job` is the
+one corpus case with no mounted route to drive at all (`/api/v1/workspace/
+export` does not exist in `api.New`'s mux).
+
 | req-id | contract §anchor | case-id(s) | status |
 |---|---|---|---|
 | API-001 | `contracts/api-1.md#versioning--surface` | - | TBD-wave1 |
@@ -69,8 +87,8 @@ One row per requirement ID `contracts/api-1.md` defines. Format: `conformance/tr
 | API-115 | `contracts/api-1.md#fleet-mutating-operations--the-job-resource` | - | TBD-wave1 |
 | API-116 | `contracts/api-1.md#fleet-mutating-operations--the-job-resource` | - | TBD-wave1 |
 | API-117 | `contracts/api-1.md#fleet-mutating-operations--the-job-resource` | - | TBD-wave1 |
-| API-120 | `contracts/api-1.md#data-subject-export--delete` | `API-121-valid-export-workspace-job` | covered |
-| API-121 | `contracts/api-1.md#data-subject-export--delete` | `API-121-valid-export-workspace-job` | covered |
+| API-120 | `contracts/api-1.md#data-subject-export--delete` | - | TBD-wave1 |
+| API-121 | `contracts/api-1.md#data-subject-export--delete` | - | TBD-wave1 |
 | API-122 | `contracts/api-1.md#data-subject-export--delete` | - | TBD-wave1 |
-| API-123 | `contracts/api-1.md#data-subject-export--delete` | `API-121-valid-export-workspace-job` | covered |
+| API-123 | `contracts/api-1.md#data-subject-export--delete` | - | TBD-wave1 |
 | API-124 | `contracts/api-1.md#data-subject-export--delete` | - | TBD-wave1 |
