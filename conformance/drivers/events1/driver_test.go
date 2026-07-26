@@ -9,14 +9,13 @@ import (
 )
 
 // expectedDriven is every conformance/corpora/events-1 case this driver
-// drives against the live internal/events implementation: the
-// envelope/catalog/EVT-013 gate cases (EVT-010, both EVT-013 pair members),
-// the four automation.run cases (EVT-040/041x3), the three remaining
-// platform schemas' single valid case each (EVT-050/060/070/080), and the
-// four delivery-layer cases — WS hello/hello-ack (EVT-091), the malformed
-// resume_from rejection (EVT-134), the retention-expired resume gap
-// (EVT-140), and the signed webhook delivery (EVT-151). events/1 is now at
-// full corpus coverage: every frozen case is driven, none pending.
+// drives — against the LIVE, HTTP-mounted internal/app/eventingest (POST
+// /telemetry/v1/push) and internal/app/eventsse (GET /events/v1) handlers
+// wherever a real producer/transport path exists, and directly against
+// internal/events for the two schemas confirmed to have no producer or HTTP
+// endpoint anywhere in the tree (audit.event, the internal-origin
+// automation.run case) — see driver.go's package doc and each drive
+// function's own comment for which is which and why.
 var expectedDriven = []string{
 	"EVT-010-valid-entity-state-changed",
 	"EVT-013-invalid-registered-schema-malformed-payload",
@@ -35,16 +34,15 @@ var expectedDriven = []string{
 	"EVT-151-valid-webhook-delivery-signed",
 }
 
-// expectedPending is empty: events/1's delivery layer (WS/SSE bindings,
-// resumable delivery, webhooks) landed in the plan's Tasks 1-3, and this
-// task drives its four corpus cases — there is nothing left pending for
-// events/1 (§10 "no silent caps": an empty set here, not an absent check).
+// expectedPending is empty: every frozen events-1 case is driven.
 var expectedPending = []string{}
 
 // TestEvents1DriverGreen replays every frozen events-1 corpus case against
-// the live internal/events implementation: every case in the corpus is
-// driven (none pending, none silently skipped), and every driven case
-// PASSes.
+// the live handlers: every case in the corpus is driven (none pending, none
+// silently skipped), and every driven case PASSes — unlike api1 (its sibling
+// driver), mounting the real events/1 handlers surfaced no genuine
+// corpus-vs-code divergence: the live eventingest/eventsse behavior matches
+// the frozen corpus exactly, for everything a live handler exists to drive.
 func TestEvents1DriverGreen(t *testing.T) {
 	rep := events1.Run()
 	t.Logf("\n%s", rep.String())
@@ -69,12 +67,10 @@ func TestEvents1DriverGreen(t *testing.T) {
 // TestEvents1DriverHasTeeth proves the driver actually diffs against the live
 // implementation rather than rubber-stamping every case: it takes the real
 // EVT-040-valid-automation-run case (whose corpus `expected.delivered` is
-// truthfully true — internal/events.Validate really does deliver a
+// truthfully true — the live eventingest handler really does append a
 // well-formed automation.run event) and corrupts ONLY the declared
 // expectation to false, leaving the live implementation's real, correct
-// behavior untouched. A driver with teeth reports this case FAIL — the
-// manufactured expectation of non-delivery is itself what's wrong, and the
-// driver must say so rather than rubber-stamping every case PASS.
+// behavior untouched. A driver with teeth reports this case FAIL.
 func TestEvents1DriverHasTeeth(t *testing.T) {
 	cases, err := events1.LoadCorpus()
 	if err != nil {
@@ -102,6 +98,52 @@ func TestEvents1DriverHasTeeth(t *testing.T) {
 	}
 	if rep.OK() {
 		t.Errorf("driver reported OK against a corrupted corpus expectation — the oracle has no teeth")
+	}
+}
+
+// TestEvents1ResumeGapHasTeeth proves the live-SSE-transport EVT-140 case
+// actually reads the real stream rather than rubber-stamping: it corrupts
+// ONLY the declared gap-marker reason, leaving the live handler's real
+// buffer_exceeded/retention_expired marker untouched.
+func TestEvents1ResumeGapHasTeeth(t *testing.T) {
+	cases, err := events1.LoadCorpus()
+	if err != nil {
+		t.Fatalf("LoadCorpus: %v", err)
+	}
+
+	const target = "EVT-140-valid-resume-with-gap"
+	broken, ok := cases[target]
+	if !ok {
+		t.Fatalf("%s case missing from the frozen corpus", target)
+	}
+	brokenExpected := make(map[string]any, len(broken.Expected))
+	for k, v := range broken.Expected {
+		brokenExpected[k] = v
+	}
+	frames, ok := brokenExpected["frames"].([]any)
+	if !ok || len(frames) != 2 {
+		t.Fatalf("test bug: expected.frames must have 2 entries, got %v", brokenExpected["frames"])
+	}
+	gapFrame, ok := frames[1].(map[string]any)
+	if !ok || gapFrame["reason"] != "retention_expired" {
+		t.Fatalf("test bug: expected frames[1].reason retention_expired in the real corpus, got %v", gapFrame["reason"])
+	}
+	brokenGapFrame := make(map[string]any, len(gapFrame))
+	for k, v := range gapFrame {
+		brokenGapFrame[k] = v
+	}
+	brokenGapFrame["reason"] = "wrong_reason" // the live gap marker really says retention_expired; this is a lie.
+	brokenFrames := append([]any(nil), frames...)
+	brokenFrames[1] = brokenGapFrame
+	brokenExpected["frames"] = brokenFrames
+	broken.Expected = brokenExpected
+	cases[target] = broken
+
+	rep := events1.RunCases(cases)
+	t.Logf("\n%s", rep.String())
+
+	if !caseFailed(rep, target) {
+		t.Errorf("expected %s to FAIL against a corrupted (gap reason: wrong_reason) expectation, but it did not; report:\n%s", target, rep.String())
 	}
 }
 
