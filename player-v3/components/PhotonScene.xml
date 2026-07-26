@@ -1,8 +1,11 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <!-- PhotonScene: a black backdrop, a full-screen Poster (image) or Video (video)
-     for a plain photon, a "composedLayers" Group that holds dynamically
-     created full-screen Poster/Video children for a "composed" item (PLY-015
-     — stacked in layers array order, index 0 furthest back), and a status
+     that cycles through an ordered cast's items (PLY-083a — a "cast" of one
+     or more content items, ordinary single-item Leases being the degenerate
+     one-item case), castTimer driving an image item's own dwell time
+     (PLY-083b), a "composedLayers" Group that holds dynamically created
+     full-screen Poster/Video children for a "composed" item (PLY-015 —
+     stacked in layers array order, index 0 furthest back), and a status
      Label shown until content renders. pairingCode is set by Main from the
      launch args; the scene starts the PlayerTask once it has a code (or is
      already paired). Storage is included for wvStorageLoad (component scopes
@@ -19,5 +22,6 @@
     <Video id="contentVideo" width="1920" height="1080" visible="false" />
     <Group id="composedLayers" visible="false" />
     <Label id="statusLabel" text="Waiveo Player v3" translation="[80,960]" width="1760" />
+    <Timer id="castTimer" repeat="false" />
   </children>
 </component>

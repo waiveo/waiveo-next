@@ -160,8 +160,12 @@ func (s *Server) SetProgram(generation int64, programRevision, priority, display
 // (an older feeder that predates the field, REL-061a) defaults to `image`,
 // this codebase's own historical implicit value from before the field
 // existed — so a pre-existing single-image snapshot serves an identical Lease
-// to before. Each URL is the screen's DIRECT content-origin fetch target
-// (never a relay-hosted one, REL-140) — this server never touches the bytes.
+// to before. Each item's `duration_ms` (REL-061a) is likewise carried
+// unmodified onto the Lease content item's own `duration_ms` (PLY-083b) via
+// wire.LeaseContent's `omitempty` tag — an item with none marshals with no
+// `duration_ms` key at all. Each URL is the screen's DIRECT content-origin
+// fetch target (never a relay-hosted one, REL-140) — this server never
+// touches the bytes.
 //
 // signingKey MUST be the relay's own enrollment private key, as SetProgram
 // documents — the same trust anchor a player pins its Lease-signature check
@@ -182,10 +186,11 @@ func (s *Server) SetServedProgram(generation int64, sp wire.ScreenProgram, signi
 			contentType = "image"
 		}
 		content = append(content, wire.LeaseContent{
-			Type:      contentType,
-			AssetRef:  c.AssetRef,
-			URL:       c.URL,
-			ExpiresAt: c.ExpiresAt,
+			Type:       contentType,
+			AssetRef:   c.AssetRef,
+			URL:        c.URL,
+			ExpiresAt:  c.ExpiresAt,
+			DurationMS: c.DurationMS,
 		})
 	}
 	s.SetProgram(generation, sp.ProgramRevision, sp.Priority, sp.Display, content, signingKey)

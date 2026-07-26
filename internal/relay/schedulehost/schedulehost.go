@@ -216,10 +216,23 @@ func programRevisionFor(state datamodel.EffectiveState) string {
 
 // playlistContent projects the playlist named by playlistID (the effective
 // daypart's or fallback's playlist_id, already resolved onto state.PlaylistID)
-// into player/1 Lease content refs, one per asset item (DAT-041). Only items
-// carrying an asset_ref project to a plain image content item; a `playable`
-// (pack) item has no direct Lease content ref and is skipped. An empty or
-// unknown playlist id yields no content.
+// into player/1 Lease content refs, one per asset item (DAT-041), IN ORDER —
+// an N-item playlist therefore yields an N-item Lease `content` array a
+// player cycles per PLY-083a, not just its first item. Only items carrying
+// an asset_ref project to a plain image content item; a `playable` (pack)
+// item has no direct Lease content ref and is skipped. An empty or unknown
+// playlist id yields no content.
+//
+// An item's own `duration_seconds` override (DAT-042), when present and
+// non-zero, is carried onto the projected content item's `duration_ms`
+// (PLY-083b) as duration_seconds*1000 — the same per-item dwell-time override
+// relay/1's own ContentRef.DurationMS carries for the app-authored direct
+// path (REL-061a), so a schedule-resolved multi-item cast honors an authored
+// per-item duration exactly as a direct one does. An item with no override
+// (DurationSeconds nil or 0) carries no `duration_ms` at all (omitempty) —
+// unchanged from this function's pre-existing single-item output, so an
+// existing one-item playlist with no duration override still projects a
+// byte-identical Lease content item.
 //
 // contentOrigin is the desired-state's content-origin base URL
 // (desiredstate.Applied.ContentOrigin, from revocation_and_site.content_origin,
@@ -250,10 +263,15 @@ func playlistContent(store datamodel.RowStore, playlistID string, contentOrigin 
 			if item.AssetRef == "" {
 				continue // a pack `playable` has no direct Lease content ref.
 			}
+			var durationMS int64
+			if item.DurationSeconds != nil && *item.DurationSeconds != 0 {
+				durationMS = int64(*item.DurationSeconds) * 1000
+			}
 			content = append(content, wire.LeaseContent{
-				Type:     leaseContentTypeImage,
-				AssetRef: item.AssetRef,
-				URL:      contentURL(contentOrigin, item.AssetRef),
+				Type:       leaseContentTypeImage,
+				AssetRef:   item.AssetRef,
+				URL:        contentURL(contentOrigin, item.AssetRef),
+				DurationMS: durationMS,
 			})
 		}
 		if len(content) == 0 {

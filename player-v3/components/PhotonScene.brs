@@ -1,9 +1,10 @@
 ' PhotonScene.brs — renders the first photon. Creates the PlayerTask, starts it
 ' once a pairing code is available (or the device is already paired), and swaps
-' in a Poster (image), a Video node (video), or a stacked group of full-screen
-' Poster/Video children (composed, PLY-015) when the task reports content that
-' has already been fetched AND asset_ref-verified (Program.brs never hands back
-' a contentUri, or a composed layer, that has not passed that check).
+' in a "cast" (PLY-083a: an ordered, cycling sequence of one-or-more verified
+' Poster/Video content items) or a stacked group of full-screen Poster/Video
+' children (composed, PLY-015) when the task reports content that has already
+' been fetched AND asset_ref-verified (Program.brs never hands back a
+' contentUri, or a composed layer, that has not passed that check).
 
 sub init()
     m.bg = m.top.findNode("bg")
@@ -13,6 +14,17 @@ sub init()
     m.composedLayers = m.top.findNode("composedLayers")
     m.status = m.top.findNode("statusLabel")
     m.status.text = "Waiveo Player v3 — starting…"
+
+    ' castTimer drives an image cast item's own dwell time (PLY-083b): started
+    ' fresh for every image item (renderCastItem), firing once (repeat=false)
+    ' to advance to the next item (PLY-083a). A video item's own advance
+    ' signal is its Video node's "finished" state (onVideoStateChange), not
+    ' this timer — the timer is simply left stopped while a video item shows.
+    m.castTimer = m.top.findNode("castTimer")
+    m.castTimer.observeField("fire", "onCastTimerFire")
+
+    m.castItems = []
+    m.castIndex = 0
 
     m.task = CreateObject("roSGNode", "PlayerTask")
     m.task.observeField("photonResult", "onPhotonResult")
@@ -58,32 +70,17 @@ sub onPhotonResult()
 
     if res.ok
         if res.contentType = "composed"
+            stopCastTimer()
             renderComposed(res.layers)
-        else if res.contentType = "video"
-            clearComposed()
-            format = res.streamFormat
-            if format = "" then format = "mp4"
-            content = CreateObject("roSGNode", "ContentNode")
-            content.url = res.contentUri
-            content.streamFormat = format
-            content.live = false
-
-            m.poster.visible = false
-            m.video.content = content
-            m.video.visible = true
-            m.video.control = "play"
         else
-            ' image (or any future non-video type this player does not yet
-            ' distinguish): stop and hide the Video node first so a prior
-            ' playback does not keep running behind a poster.
-            clearComposed()
-            m.video.control = "stop"
-            m.video.visible = false
-            m.poster.uri = res.contentUri
-            m.poster.visible = true
+            ' "cast" — one or more already-fetched, already-verified image/video
+            ' items (PLY-083a); a single-item cast is the degenerate case of the
+            ' exact same cycling logic (renderCastItem loops back to itself).
+            startCast(res.items)
         end if
         m.status.visible = false
     else
+        stopCastTimer()
         clearComposed()
         m.video.control = "stop"
         m.video.visible = false
@@ -95,13 +92,99 @@ sub onPhotonResult()
     end if
 end sub
 
+' startCast begins (or replaces) an ordered cast (PLY-083a): stops any
+' composed-layer rendering, resets to item 0, and renders it.
+sub startCast(items as Object)
+    clearComposed()
+    m.castItems = items
+    m.castIndex = 0
+    if m.castItems = invalid or m.castItems.Count() = 0
+        ' Program.brs never returns contentType "cast" with an empty items
+        ' array (it errors instead), but guard defensively rather than index
+        ' into an empty array below.
+        return
+    end if
+    renderCastItem()
+end sub
+
+' renderCastItem presents m.castItems[m.castIndex]: a Poster for an image item
+' (arming castTimer for its own dwell time, PLY-083b, falling back to this
+' player's own default when the item carries none) or the Video node for a
+' video item (its own "finished" state is the advance signal, PLY-083a) —
+' castTimer is left stopped for a video item. Both node types were already
+' fetched + asset_ref-verified by Program.brs before this ever runs.
+sub renderCastItem()
+    if m.castItems = invalid or m.castItems.Count() = 0 then return
+    item = m.castItems[m.castIndex]
+
+    stopCastTimer()
+
+    if item.contentType = "video"
+        m.poster.visible = false
+        format = item.streamFormat
+        if format = "" then format = "mp4"
+        content = CreateObject("roSGNode", "ContentNode")
+        content.url = item.contentUri
+        content.streamFormat = format
+        content.live = false
+        m.video.content = content
+        m.video.visible = true
+        m.video.control = "play"
+        print "[player-v3] cast item " + m.castIndex.toStr() + "/" + m.castItems.Count().toStr() + " (video, advances on end-of-stream): " + item.contentUri
+    else
+        m.video.control = "stop"
+        m.video.visible = false
+        m.poster.uri = item.contentUri
+        m.poster.visible = true
+
+        durationMs = item.durationMs
+        if durationMs = invalid or durationMs = 0 then durationMs = wvDefaultImageDurationMs()
+        m.castTimer.duration = durationMs / 1000.0
+        m.castTimer.control = "start"
+        print "[player-v3] cast item " + m.castIndex.toStr() + "/" + m.castItems.Count().toStr() + " (image, " + durationMs.toStr() + "ms dwell): " + item.contentUri
+    end if
+end sub
+
+' advanceCast moves to the next item, wrapping back to index 0 after the
+' last (PLY-083a's "continuously repeating cycle").
+sub advanceCast()
+    if m.castItems = invalid or m.castItems.Count() = 0 then return
+    m.castIndex = (m.castIndex + 1) mod m.castItems.Count()
+    renderCastItem()
+end sub
+
+' onCastTimerFire is castTimer's own "fire" field-change handler — an image
+' cast item's dwell time has elapsed (PLY-083b); advance to the next item.
+sub onCastTimerFire()
+    print "[player-v3] cast image dwell time elapsed — advancing to next item"
+    advanceCast()
+end sub
+
+' stopCastTimer halts castTimer so a superseded cast (a fresh photonResult
+' arriving, or a switch to a composed item) never fires a stale advance
+' against content that is no longer showing.
+sub stopCastTimer()
+    m.castTimer.control = "stop"
+end sub
+
+' wvDefaultImageDurationMs is this player's own default dwell time for an
+' image cast item whose `duration_ms` is absent or zero — PLY-083b fixes no
+' contract-level default, leaving it to a player. 8000ms matches this
+' ecosystem's own demo-cast per-item dwell time (snapshot.demoCastItemDurationMS
+' — internal/feeder/snapshot/democast.go), not a coincidence: it is the same
+' reasonable signage dwell time, just this player's own copy of that choice
+' since a player has no way to read a feeder-side Go constant.
+function wvDefaultImageDurationMs() as Integer
+    return 8000
+end function
+
 ' renderComposed presents a "composed" content item's layers (PLY-015):
 ' every layer is full screen and stacked in `layers` array order (index 0
 ' furthest back, later indices progressively on top) — this contract defines
 ' no per-layer geometry/timing schema (Scope, out of scope), so full-screen
 ' stacking in wire order is the only ordering it gives a player to honor.
 ' Layers were already fetched + asset_ref-verified by Program.brs before this
-' ever runs (identical integrity guarantee as the plain image/video path).
+' ever runs (identical integrity guarantee as a cast item).
 sub renderComposed(layers as Object)
     m.poster.visible = false
     m.video.control = "stop"
@@ -150,18 +233,18 @@ sub clearComposed()
     m.composedLayers.visible = false
 end sub
 
-' onVideoStateChange handles the Video node's end-of-stream and error states.
-' There is no further-lease-pull loop yet (PlayerTask fetches its one photon
-' item once) — a "finished" video is deliberately restarted so a screen never
-' goes dark simply because its single verified item finished playing, mirroring
-' PLY-087's "keep showing what you have" posture for the no-further-content
-' case. "error" is surfaced to the status label rather than left as a frozen or
-' blank video frame — a silent stuck screen is worse than a visible error.
+' onVideoStateChange handles the plain content Video node's end-of-stream and
+' error states. A "finished" video cast item advances to the next cast item
+' (PLY-083a) — a one-item cast's "next" item is itself, so this is exactly
+' this player's prior "restart on finish" behavior in the degenerate case,
+' not a behavior change for an existing single-video Lease. "error" is
+' surfaced to the status label rather than left as a frozen or blank video
+' frame — a silent stuck screen is worse than a visible error.
 sub onVideoStateChange()
     state = m.video.state
     if state = "finished"
-        print "[player-v3] video finished — restarting playback (end-of-stream)"
-        m.video.control = "play"
+        print "[player-v3] cast item video finished — advancing (end-of-stream, PLY-083a)"
+        advanceCast()
     else if state = "error"
         errCode = m.video.errorCode
         errMsg = m.video.errorMsg

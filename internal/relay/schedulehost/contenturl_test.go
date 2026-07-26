@@ -57,6 +57,62 @@ func TestPlaylistContentThreadsContentOriginURL(t *testing.T) {
 	}
 }
 
+// multiAssetStore builds a RowStore carrying one playlist with three ordered
+// `asset` items, the middle one carrying a `duration_seconds` override — enough
+// to exercise playlistContent's ordered multi-item projection and its
+// duration_seconds -> duration_ms carry (PLY-083b).
+func multiAssetStore(playlistID string, assetRefs [3]string, middleDurationSeconds int) datamodel.RowStore {
+	dur := middleDurationSeconds
+	return datamodel.RowStore{
+		Rows: datamodel.RowSet{
+			Playlists: []datamodel.Playlist{
+				{
+					ID:   playlistID,
+					Name: "Multi-Item Cast Fixture",
+					Items: []datamodel.PlaylistItem{
+						{Source: "asset", AssetRef: assetRefs[0]},
+						{Source: "asset", AssetRef: assetRefs[1], DurationSeconds: &dur},
+						{Source: "asset", AssetRef: assetRefs[2]},
+					},
+					Revision: 1, CreatedAt: 1, UpdatedAt: 1,
+				},
+			},
+		},
+	}
+}
+
+// TestPlaylistContentOrderedMultiItemCarriesDurationOverride asserts
+// playlistContent (a) projects an N-item playlist into an N-item Lease
+// content array IN ORDER (PLY-083a) — not just its first item — and (b)
+// carries an item's own duration_seconds override onto that item's own
+// duration_ms as *1000 (PLY-083b), while an item with no override carries no
+// duration_ms key at all (omitempty, byte-identical to this function's
+// pre-existing no-duration output).
+func TestPlaylistContentOrderedMultiItemCarriesDurationOverride(t *testing.T) {
+	const playlistID = "01J8ZURLFIXTUREPLAYLIST004"
+	assetRefs := [3]string{"sha256:AAA", "sha256:BBB", "sha256:CCC"}
+	store := multiAssetStore(playlistID, assetRefs, 9)
+
+	content := playlistContent(store, playlistID, "https://origin.example")
+	if len(content) != 3 {
+		t.Fatalf("playlistContent returned %d items, want 3", len(content))
+	}
+	for i, want := range assetRefs {
+		if content[i].AssetRef != want {
+			t.Errorf("content[%d].asset_ref = %q, want %q (order must be preserved)", i, content[i].AssetRef, want)
+		}
+	}
+	if content[0].DurationMS != 0 {
+		t.Errorf("content[0].duration_ms = %d, want 0 (no override)", content[0].DurationMS)
+	}
+	if content[1].DurationMS != 9000 {
+		t.Errorf("content[1].duration_ms = %d, want 9000 (duration_seconds:9 override -> *1000)", content[1].DurationMS)
+	}
+	if content[2].DurationMS != 0 {
+		t.Errorf("content[2].duration_ms = %d, want 0 (no override)", content[2].DurationMS)
+	}
+}
+
 // TestPlaylistContentEmptyOriginLeavesURLEmpty asserts that when the desired
 // state carried no content-origin base, playlistContent degrades exactly as
 // today — the asset_ref still projects but the url is left EMPTY, never a

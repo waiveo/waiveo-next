@@ -6,17 +6,24 @@ import (
 )
 
 // LeaseContent is one player/1 Lease `content` array entry for a plain
-// `image`/`video` item (PLY-083): `{type, asset_ref, url, expires_at}`.
-// This differs from relay/1's own ContentRef (REL-061), which carries no
-// `type` field — a relay assigns `type` when converting a verified
-// screen-program's content reference into a player/1 Lease content item
-// (Wave-1 first-photon carries exactly one kind, `image`, so this
-// conversion is a constant today, not a lookup).
+// `image`/`video` item (PLY-083): `{type, asset_ref, url, expires_at}`,
+// plus the additive `duration_ms` (PLY-083b). This differs from relay/1's
+// own ContentRef (REL-061), which carries no `type` field — a relay
+// assigns `type` when converting a verified screen-program's content
+// reference into a player/1 Lease content item (SetServedProgram, per-item
+// from the entry's own ContentType, REL-061a).
+//
+// DurationMS mirrors relay/1's ContentRef.DurationMS (REL-061a) verbatim —
+// SetServedProgram carries it unmodified from the persisted entry onto this
+// field, `omitempty` so an item that carries none (the pre-PLY-083b wire
+// shape) marshals with no `duration_ms` key, byte-identical to every prior
+// release (mirroring ContentRef's own omitempty doc, REL-061a).
 type LeaseContent struct {
-	Type      string `json:"type"`
-	AssetRef  string `json:"asset_ref"`
-	URL       string `json:"url"`
-	ExpiresAt int64  `json:"expires_at"`
+	Type       string `json:"type"`
+	AssetRef   string `json:"asset_ref"`
+	URL        string `json:"url"`
+	ExpiresAt  int64  `json:"expires_at"`
+	DurationMS int64  `json:"duration_ms,omitempty"`
 }
 
 // Lease is player/1's Lease shape (PLY-090) minus `signature` — exactly

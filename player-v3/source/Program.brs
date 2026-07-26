@@ -1,11 +1,18 @@
 ' Program.brs — the on-device player/1 program thread (PLY-080/084/090/091).
-' Pulls a signed Lease over the pinned relay connection, fetches the one
-' content item (image, video, or a "composed" item's image/video layers —
-' PLY-014's content-type floor plus PLY-015's composed restriction) DIRECT
-' from its feeder content-origin URL, verifies the fetched bytes against each
-' item's own asset_ref (content-addressed integrity) BEFORE returning
-' anything to render, and returns either a single local file path + content
-' type (image/video) or a layers array (composed) for PhotonScene to present.
+' Pulls a signed Lease over the pinned relay connection, fetches EVERY plain
+' image/video content item the Lease's `content` array carries (PLY-014's
+' content-type floor), in order, DIRECT from its feeder content-origin URL,
+' verifies each item's fetched bytes against its own asset_ref
+' (content-addressed integrity) BEFORE returning anything to render, and
+' returns either an ordered `items` array (PLY-083a: one or more plain
+' image/video items, each already fetched + verified, each carrying its own
+' `durationMs` per PLY-083b) or a `layers` array (a single "composed" item,
+' PLY-015) for PhotonScene to present. A Lease whose first content item is
+' "composed" is handled as that single composed item (this codebase does not
+' mix a composed item into an ordered cast); otherwise every image/video item
+' present becomes one entry of `items`, cycled by PhotonScene per PLY-083a —
+' a one-item Lease is simply the degenerate one-entry case of the same path,
+' so this is not two code paths glued together, just one.
 '
 ' Integrity note (video, PLY-084/PLY-014): this player fetches the WHOLE asset
 ' to a local file and hashes it before ever handing a URI back for playback —
@@ -39,12 +46,13 @@
 ' (or a Roku-supported signature scheme).
 '
 ' wvDoProgram(state) where state = { channelToken, relayHost, relayPort, trustPem }
-' returns { ok, contentUri, contentType ("image"|"video"|"composed"),
-' streamFormat (video only), layers (composed only — array of {contentUri,
-' contentType, streamFormat}), leaseId, error, needsRepair }.
+' returns { ok, contentType ("cast"|"composed"), items (cast only — ordered
+' array of {contentUri, contentType ("image"|"video"), streamFormat,
+' durationMs}), layers (composed only — array of {contentUri, contentType,
+' streamFormat}), leaseId, error, needsRepair }.
 
 function wvDoProgram(state as Object) as Object
-    r = { ok: false, contentUri: "", contentType: "", streamFormat: "", layers: invalid, leaseId: "", error: "", needsRepair: false }
+    r = { ok: false, contentType: "", items: invalid, layers: invalid, leaseId: "", error: "", needsRepair: false }
 
     pinFile = wvRehydrateTrustFile(state.trustPem)
     if pinFile = ""
@@ -84,6 +92,10 @@ function wvDoProgram(state as Object) as Object
         return r
     end if
 
+    ' Printed verbatim (evidence trail): this is the exact Lease JSON the relay
+    ' signed and served over the pinned connection, before any parsing.
+    print "[player-v3] program response body: " + resp.body
+
     lease = ParseJson(resp.body)
     if lease = invalid
         r.error = "program response was not valid JSON"
@@ -91,14 +103,21 @@ function wvDoProgram(state as Object) as Object
     end if
     r.leaseId = wvStr(lease.lease_id)
 
-    item = wvFirstPlayableItem(lease)
-    if item = invalid
-        r.error = "lease carried no image, video, or composed content item (content-type gate or empty program)"
+    content = lease.content
+    if content = invalid or content.Count() = 0
+        r.error = "lease carried an empty or missing content array"
         return r
     end if
-    itemType = wvStr(item.type)
 
-    if itemType = "composed"
+    ' A Lease whose first item is "composed" is handled as that single
+    ' composed item (unchanged from this player's pre-cast behavior) — this
+    ' codebase never mixes a composed item into an ordered cast. Every other
+    ' Lease is treated as an ordered cast of its image/video items, PLY-083a
+    ' (a one-item cast being the degenerate single-item case).
+    firstType = wvStr(content[0].type)
+
+    if firstType = "composed"
+        item = content[0]
         ' --- composed item (PLY-015/PLY-083): fetch+verify every layer with
         ' the identical per-item integrity pipeline plain image/video items
         ' use (wvFetchAndVerifyItem), one local file per layer so a video
@@ -125,7 +144,7 @@ function wvDoProgram(state as Object) as Object
                 return r
             end if
 
-            localPath = wvLocalPathForLayer(layerType, i)
+            localPath = wvLocalPathForCastItem(layerType, i)
             fv = wvFetchAndVerifyItem(layer, localPath)
             if not fv.ok
                 r.error = "composed layer " + i.toStr() + ": " + fv.error
@@ -145,50 +164,62 @@ function wvDoProgram(state as Object) as Object
         return r
     end if
 
-    ' --- direct content fetch (PLY-084) + asset_ref integrity ---
-    ' Same fetch-whole-file-then-verify pipeline for both types (see the
-    ' integrity note at the top of this file for why video pays a full
-    ' pre-fetch instead of streaming). The local path's extension only aids
-    ' debugging — the Video node below is told its format explicitly via
-    ' streamFormat, not by sniffing this filename.
-    localPath = "cachefs:/waiveo_player_v3_content.img"
-    if itemType = "video" then localPath = "cachefs:/waiveo_player_v3_content.mp4"
+    ' --- ordered cast: fetch + verify EVERY image/video item, in order
+    ' (PLY-083a) --- Same fetch-whole-file-then-verify pipeline for both
+    ' types (see the integrity note at the top of this file for why video
+    ' pays a full pre-fetch instead of streaming). Any item whose type is
+    ' neither image nor video (nor composed, handled above) is skipped —
+    ' forward-compatible with a future content-type vocabulary this player
+    ' has not adopted (mirroring PLY-016's server-side rule, applied
+    ' defensively here too).
+    castOut = []
+    for i = 0 to content.Count() - 1
+        item = content[i]
+        itemType = wvStr(item.type)
+        if itemType = "image" or itemType = "video"
+            localPath = wvLocalPathForCastItem(itemType, i)
+            fv = wvFetchAndVerifyItem(item, localPath)
+            if not fv.ok
+                r.error = "cast item " + i.toStr() + ": " + fv.error
+                return r
+            end if
 
-    fv = wvFetchAndVerifyItem(item, localPath)
-    if not fv.ok
-        r.error = fv.error
+            ci = { contentUri: localPath, contentType: itemType, streamFormat: "", durationMs: wvItemDurationMs(item) }
+            if itemType = "video" then ci.streamFormat = wvVideoStreamFormat()
+            castOut.Push(ci)
+        end if
+    end for
+
+    if castOut.Count() = 0
+        r.error = "lease carried no image or video content item (content-type gate or empty program)"
         return r
     end if
 
     ' --- best-effort lease ack (PLY-091), over the pinned connection ---
     wvAckLease(base, state.channelToken, pinFile, r.leaseId)
 
-    r.contentUri = localPath
-    r.contentType = itemType
-    if itemType = "video" then r.streamFormat = wvVideoStreamFormat()
+    r.items = castOut
+    r.contentType = "cast"
     r.ok = true
     return r
 end function
 
-' wvFirstPlayableItem returns the first content item of type "image",
-' "video", or "composed" in the lease (PLY-014's content-type floor plus
-' PLY-015's composed form), or invalid.
-function wvFirstPlayableItem(lease as Object) as Dynamic
-    content = lease.content
-    if content = invalid then return invalid
-    for each item in content
-        if item.type = "image" or item.type = "video" or item.type = "composed" then return item
-    end for
-    return invalid
+' wvItemDurationMs reads a Content reference's own `duration_ms` (PLY-083b),
+' returning 0 when absent — PhotonScene supplies its own default dwell time
+' for a zero value (this contract fixes none, PLY-083b).
+function wvItemDurationMs(item as Object) as Integer
+    d = item.duration_ms
+    if d = invalid then return 0
+    return Int(d)
 end function
 
-' wvLocalPathForLayer returns a stable, per-layer local cache path so a
-' composed item's layers never collide with each other or with a plain
-' single-item fetch's own path.
-function wvLocalPathForLayer(layerType as String, index as Integer) as String
+' wvLocalPathForCastItem returns a stable, per-index local cache path so a
+' cast's items (or a composed item's layers, which call this same helper)
+' never collide with each other on disk.
+function wvLocalPathForCastItem(itemType as String, index as Integer) as String
     ext = ".img"
-    if layerType = "video" then ext = ".mp4"
-    return "cachefs:/waiveo_player_v3_layer" + index.toStr() + ext
+    if itemType = "video" then ext = ".mp4"
+    return "cachefs:/waiveo_player_v3_item" + index.toStr() + ext
 end function
 
 ' wvFetchAndVerifyItem fetches a single Content reference's `url` to

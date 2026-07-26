@@ -7,7 +7,7 @@ sub init()
 end sub
 
 sub runPhoton()
-    result = { phase: "start", ok: false, contentUri: "", contentType: "", streamFormat: "", layers: invalid, status: "starting", error: "" }
+    result = { phase: "start", ok: false, contentType: "", items: invalid, layers: invalid, status: "starting", error: "" }
 
     state = wvStorageLoad()
 
@@ -64,14 +64,21 @@ sub runPhoton()
         if prog.layers <> invalid then layerCount = prog.layers.Count()
         print "[player-v3] PHOTON — composed (" + layerCount.toStr() + " layers) verified + ready to render"
     else
-        print "[player-v3] PHOTON — " + prog.contentType + " verified + ready to render (" + prog.contentUri + ")"
+        itemCount = 0
+        if prog.items <> invalid then itemCount = prog.items.Count()
+        print "[player-v3] PHOTON — cast (" + itemCount.toStr() + " item(s)) verified + ready to render"
+        if prog.items <> invalid
+            for i = 0 to prog.items.Count() - 1
+                it = prog.items[i]
+                print "[player-v3]   item " + i.toStr() + ": " + it.contentType + " durationMs=" + it.durationMs.toStr() + " " + it.contentUri
+            end for
+        end if
     end if
     result.ok = true
     result.phase = "done"
     result.status = "photon"
-    result.contentUri = prog.contentUri
     result.contentType = prog.contentType
-    result.streamFormat = prog.streamFormat
+    result.items = prog.items
     result.layers = prog.layers
     m.top.photonResult = result
 end sub

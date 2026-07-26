@@ -205,6 +205,10 @@ This residual is structural to trust-on-first-contact pairing generally — a fu
 
 **[PLY-083]** Every content item a Lease carries MUST be a Content reference: `{type, asset_ref, url, expires_at}` for a plain `image`/`video` item, or `{type: "composed", layers: [...]}` for a `composed` item whose `layers` satisfies PLY-015. `asset_ref` and `url`/`expires_at` MUST use the same shape `relay/1` REL-061 defines for its own `screen_programs.content` entries.
 
+**[PLY-083a]** When a Lease's `content` array (PLY-090) carries more than one item, a player MUST present them in that array's own order, advancing from one item to the next at that item's own natural end — an `image` item's own dwell time (`duration_ms`, PLY-083b) elapsing, or a `video` item's own playback reaching its end — and MUST loop back to the array's first item after its last, so a multi-item `content` array is presented as a continuously repeating cycle for as long as the Lease containing it remains the player's active Lease (PLY-094/098). This governs sequencing only: PLY-101's immediate-adoption rule for a `preempt`-priority Lease, and PLY-094's full-supersession rule, apply identically regardless of where in a cycle a superseded Lease's own sequence currently sat. A single-item `content` array is the degenerate case of this same rule — its one item's own natural end is immediately followed by that same item again, which is indistinguishable from simply continuing to show it.
+
+**[PLY-083b]** A plain `image`/`video` Content reference item (PLY-083) MAY additionally carry `duration_ms`, additive to this version's originally-published `{type, asset_ref, url, expires_at}` shape — mirroring `relay/1`'s own per-item `duration_ms` (`relay/1` REL-061a), from which a relay carries it unmodified onto the corresponding Lease content item. `duration_ms`, when present and non-zero on an `image` item, is that item's own display dwell time before PLY-083a's advance-at-natural-end applies; this contract does not itself fix a default dwell time for an item whose `duration_ms` is absent or zero — a player supplies its own. `duration_ms` on a `video` item is not itself this contract's advance signal for that item — the video's own playback-end (PLY-083a) is — and this contract requires no particular treatment of a video item's `duration_ms` beyond carrying it unmodified from the wire.
+
 **[PLY-084]** A player MUST fetch asset bytes directly from `url` — never through its relay, which carries no verb or field for fetching, caching, or serving content bytes on a player's behalf (mirroring `relay/1`'s own Gateway posture, REL-140).
 
 **[PLY-085]** A player MUST reconcile its currently held content against a newly delivered Lease by content reference (`asset_ref`), fetching only assets it does not already hold, never re-fetching a byte-identical `asset_ref` it has already resolved.
@@ -439,6 +443,27 @@ USN: relay:01J8Z4K4N5P6Q7R8S9T0V1W3A1
   "display": "content",
   "content": [
     { "type": "image", "asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85", "url": "https://198.51.100.20/cas/e3b0c4...", "expires_at": 1752541200000 }
+  ],
+  "issued_at": 1752537600000,
+  "valid_until": 1752538500000,
+  "signature": "ed25519-sig-computed-with-the-relays-player-facing-signing-key"
+}
+```
+
+```json
+// Lease — scheduled priority, multi-item content cast (PLY-083a/083b): three
+// images, each with its own duration_ms dwell time, presented in this array's
+// order and cycled back to index 0 after the last
+{
+  "lease_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZH",
+  "screen_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZE",
+  "program_revision": "rev-19",
+  "priority": "scheduled",
+  "display": "content",
+  "content": [
+    { "type": "image", "asset_ref": "sha256:1111...", "url": "https://198.51.100.20/cas/1111...", "expires_at": 1752541200000, "duration_ms": 8000 },
+    { "type": "image", "asset_ref": "sha256:2222...", "url": "https://198.51.100.20/cas/2222...", "expires_at": 1752541200000, "duration_ms": 8000 },
+    { "type": "image", "asset_ref": "sha256:3333...", "url": "https://198.51.100.20/cas/3333...", "expires_at": 1752541200000, "duration_ms": 8000 }
   ],
   "issued_at": 1752537600000,
   "valid_until": 1752538500000,

@@ -154,4 +154,10 @@ func TestSetServedProgramCarriesPerItemContentType(t *testing.T) {
 	if lease.Content[1].AssetRef != served.Content[1].AssetRef {
 		t.Errorf("content[1].asset_ref = %q, want %q — item 1's own digest must survive, not just item 0's", lease.Content[1].AssetRef, served.Content[1].AssetRef)
 	}
+	if lease.Content[0].DurationMS != 0 {
+		t.Errorf("content[0].duration_ms = %d, want 0 (item carried none, PLY-083b/omitempty)", lease.Content[0].DurationMS)
+	}
+	if lease.Content[1].DurationMS != 9000 {
+		t.Errorf("content[1].duration_ms = %d, want 9000 (carried from the persisted entry's own DurationMS, REL-061a -> PLY-083b)", lease.Content[1].DurationMS)
+	}
 }
