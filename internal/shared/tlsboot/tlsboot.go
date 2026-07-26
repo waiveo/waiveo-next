@@ -108,9 +108,16 @@ func GenSelfSigned() (certPEM, keyPEM []byte) {
 		},
 		NotBefore:             now.Add(-time.Hour),
 		NotAfter:              now.AddDate(10, 0, 0),
-		KeyUsage:              x509.KeyUsageDigitalSignature,
+		// CA-shaped on purpose: the Roku TLS stack (firmware 15.2.4, first-photon
+		// hardware run) refuses a CA:FALSE self-signed cert as its own trust
+		// anchor with "unsuitable certificate purpose" — it does not implement
+		// the trusted-self-signed-EE shortcut Go/Node/browsers allow. A
+		// self-signed anchor with CA:TRUE + keyCertSign verifies everywhere.
+		// Authority still rests on the SPKI commitment pin, not cert shape.
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
+		IsCA:                  true,
 	}
 
 	der, err := x509.CreateCertificate(rand.Reader, template, template, pub, priv)
