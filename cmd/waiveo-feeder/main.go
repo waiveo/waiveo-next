@@ -262,14 +262,18 @@ func main() {
 	// POC (unauthenticated — the api/1 conventions treat the principal as a given;
 	// the idempotency principal is a fixed POC ULID inside the api package),
 	// documented, not silent. The clock is injected so no wall-clock read lives in
-	// the api/idempotency layers.
+	// the api/idempotency layers; likewise the id source (ulid.New — plain, not
+	// Monotonic: unlike eventingest's tight reconstruction loop, api/1 mints at
+	// most one id per HTTP request, so there is no same-millisecond ordering
+	// concern to guard against here) is injected so the api layer mints no id
+	// from a generator of its own.
 	// The api's content upload writes into the SAME contentStore the /content/
 	// handler below serves from (one origin.Store instance), so an uploaded asset
 	// is immediately servable; contentBaseURL is this feeder's own content-origin
 	// base the upload's returned url is built from (REL-061/140).
 	nowMs := func() int64 { return time.Now().UnixMilli() }
 	idem := apihttp.NewIdempotencyStore(nowMs, 0)
-	apiHandler := api.New(st, idem, nowMs, contentStore, contentBaseURL)
+	apiHandler := api.New(st, idem, nowMs, ulid.New, contentStore, contentBaseURL)
 
 	// The live observability plane (events/1 EVT-010/013/100/130-144): ONE shared
 	// event log the relay-telemetry ingest writes into and the /events/v1 SSE

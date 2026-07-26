@@ -55,11 +55,14 @@ var expectedFailing = map[string]string{
 		"instead of creating it 201 — the Idempotency-Key fixtures were never reconciled with the site-geo-required rule.",
 	"API-053-invalid-idempotency-key-reused-different-body": "same DAT-031 site-geo-required mismatch as API-052: the first " +
 		"request in the case is rejected 422 instead of succeeding 201.",
-	"API-111-valid-bulk-enable-202-job": "two of the Job resource's fields can never equal the corpus's arbitrary pinned " +
-		"values: the live handler mints the Job id via ulid.New() (automations.go bulkEnableExec) with no injection seam, and " +
-		"stamps created_by from the fixed pocPrincipal constant (auth is deferred — api.go's own doc comment). created_at DOES " +
-		"match (this driver sets the harness clock to the case's own pinned created_at) — confirming those are the only two " +
-		"genuine divergences, not a systemic Job-shape bug.",
+	"API-111-valid-bulk-enable-202-job": "created_by can never equal the corpus's arbitrary pinned value: the live handler " +
+		"stamps it from the fixed pocPrincipal constant because auth is deferred (api.go's own doc comment), and " +
+		"contracts/api-1.md's Conformance notes treat a principal as a given, opaque INPUT — this fixture pins created_by as " +
+		"an expected OUTPUT with no corresponding input.principal to drive it from. Resolving this for real needs both an " +
+		"input.principal on the fixture and a request-scoped principal seam, which belong to the deferred auth work, not this " +
+		"driver. id/created_at/targets/state all match now (the harness drives both its clock and its id source FROM the " +
+		"case's own pinned created_at/id, exactly as api.New's injected nowMs/newID seams allow) — confirming created_by is " +
+		"the ONLY remaining genuine divergence, not a systemic Job-shape bug.",
 }
 
 // TestAPI1DriverGreen replays every frozen api-1 corpus case against the LIVE

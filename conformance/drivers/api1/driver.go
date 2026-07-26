@@ -258,19 +258,42 @@ type harness struct {
 // newHarness opens a fresh in-memory store and mounts api.New over it. nowMs
 // is the fixed clock every Idempotency-Key / Job timestamp in this harness's
 // lifetime is stamped with — never the wall clock — so a case's outcome is
-// reproducible.
-func newHarness(nowMs int64) (*harness, error) {
+// reproducible. newID is likewise the fixed id source every server-minted id
+// (a create's server-assigned id, a run's run_id, a bulk-enable Job's id) is
+// drawn from in this harness's lifetime — never a package-level generator —
+// so a case's outcome is reproducible on that axis too.
+func newHarness(nowMs int64, newID func() string) (*harness, error) {
 	st, err := store.Open(":memory:")
 	if err != nil {
 		return nil, fmt.Errorf("store.Open: %w", err)
 	}
 	clock := func() int64 { return nowMs }
 	idem := apihttp.NewIdempotencyStore(clock, 0)
-	h := api.New(st, idem, clock, origin.New(), "https://origin.example")
+	h := api.New(st, idem, clock, newID, origin.New(), "https://origin.example")
 	return &harness{store: st, h: h}, nil
 }
 
 func (h *harness) close() { _ = h.store.Close() }
+
+// deterministicIDs mints deterministic, ascending, valid 26-char ULIDs — the
+// injected id source (server.newID) this driver's harness supplies to every
+// case that does not itself pin a server-minted id, so that id is reproducible
+// rather than a fresh random ulid.New() on every run. Duplicated (not
+// imported) from conformance/drivers/events1/driver.go's monotonicIDs: driver
+// packages do not import each other, and the two generators mint into
+// unrelated id spaces (api/1 resource/run/job ids vs. events/1 envelope ids),
+// so sharing a literal prefix would invite confusion rather than reuse.
+func deterministicIDs() func() string {
+	const prefix = "01J8Z9DRVMNTAP1RESRCX000"
+	const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+	n := 0
+	return func() string {
+		hi := alphabet[(n/32)%32]
+		lo := alphabet[n%32]
+		n++
+		return prefix + string([]byte{hi, lo})
+	}
+}
 
 // result is the decoded outcome of one request driven through the live
 // handler.
@@ -369,7 +392,7 @@ func driveProblemNotFound(rep *report.Report, c corpus.Case) {
 		return
 	}
 
-	h, err := newHarness(fixedNowMs)
+	h, err := newHarness(fixedNowMs, deterministicIDs())
 	if err != nil {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("newHarness: %v", err))
 		return
@@ -425,7 +448,7 @@ func driveProblemValidation(rep *report.Report, c corpus.Case) {
 		return
 	}
 
-	h, err := newHarness(fixedNowMs)
+	h, err := newHarness(fixedNowMs, deterministicIDs())
 	if err != nil {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("newHarness: %v", err))
 		return
@@ -486,7 +509,7 @@ func driveConcurrency(rep *report.Report, c corpus.Case) {
 		return
 	}
 
-	h, err := newHarness(fixedNowMs)
+	h, err := newHarness(fixedNowMs, deterministicIDs())
 	if err != nil {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("newHarness: %v", err))
 		return
@@ -596,7 +619,7 @@ func drivePagination(rep *report.Report, c corpus.Case) {
 		return
 	}
 
-	h, err := newHarness(fixedNowMs)
+	h, err := newHarness(fixedNowMs, deterministicIDs())
 	if err != nil {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("newHarness: %v", err))
 		return
@@ -710,7 +733,7 @@ func driveSelector(rep *report.Report, c corpus.Case) {
 		return
 	}
 
-	h, err := newHarness(fixedNowMs)
+	h, err := newHarness(fixedNowMs, deterministicIDs())
 	if err != nil {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("newHarness: %v", err))
 		return
@@ -782,7 +805,7 @@ func driveExternalID(rep *report.Report, c corpus.Case) {
 		return
 	}
 
-	h, err := newHarness(fixedNowMs)
+	h, err := newHarness(fixedNowMs, deterministicIDs())
 	if err != nil {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("newHarness: %v", err))
 		return
@@ -888,7 +911,7 @@ func driveIdempotency(rep *report.Report, c corpus.Case) {
 		return
 	}
 
-	h, err := newHarness(fixedNowMs)
+	h, err := newHarness(fixedNowMs, deterministicIDs())
 	if err != nil {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("newHarness: %v", err))
 		return
@@ -967,14 +990,22 @@ type jobDriverInput struct {
 // (store.DesiredStateRows + datamodel.BuildScopeTree.AncestorChain), not a
 // driver-modeled membership set.
 //
-// The harness clock is set to the case's own pinned created_at, so that part
-// of the Job resource is reproduced exactly. Two fields never can be: the
-// live handler mints the Job id via ulid.New() (automations.go's
-// bulkEnableExec) with no injection seam, and stamps created_by from the
-// fixed pocPrincipal constant (auth is deferred, api.go's own doc comment) —
-// neither can equal the corpus's arbitrary pinned id/created_by. Both are
-// left asserted (not loosened), so this case FAILS on exactly those two
-// fields — a confirmed, reportable divergence, not a driver defect.
+// The harness clock is set to the case's own pinned created_at, and the
+// harness id source is likewise a closure returning the case's own pinned
+// expected body id, so both of those fields are now reproduced exactly (the
+// live handler mints the Job id through the same injected server.newID seam
+// as everything else, automations.go's bulkEnableExec — there is no longer a
+// package-level generator standing between the corpus and the live id). One
+// field never can be: created_by is stamped from the fixed pocPrincipal
+// constant (auth is deferred, api.go's own doc comment), which cannot equal
+// the corpus's arbitrary pinned created_by — contracts/api-1.md's own
+// Conformance notes say a case that needs a principal "treat[s] one as a
+// given, opaque input", and this fixture pins created_by as an EXPECTED
+// OUTPUT with no corresponding input.principal to drive it from. Closing this
+// for real needs both an input.principal on the fixture and a request-scoped
+// principal seam — both belong to the deferred auth work, not this driver.
+// The field is left asserted (not loosened), so this case FAILS on exactly
+// that one field — a confirmed, reportable divergence, not a driver defect.
 func driveJob(rep *report.Report, c corpus.Case) {
 	var in jobDriverInput
 	if err := decodeField(c.Input, &in); err != nil {
@@ -1002,7 +1033,12 @@ func driveJob(rep *report.Report, c corpus.Case) {
 		return
 	}
 
-	h, err := newHarness(createdAt.UnixMilli())
+	// The id source, like the clock above, is driven FROM the fixture: a closure
+	// returning the case's own pinned expected body id, so the live-minted Job
+	// id now reproduces the corpus exactly (see the doc comment above) — the
+	// remaining, genuinely-unclosable divergence is created_by alone.
+	pinnedID := func() string { return expBody.ID }
+	h, err := newHarness(createdAt.UnixMilli(), pinnedID)
 	if err != nil {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("newHarness: %v", err))
 		return

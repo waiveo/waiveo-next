@@ -17,7 +17,6 @@ import (
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/apijob"
 	"github.com/maaxton/waiveo-next/internal/shared/apiselector"
-	"github.com/maaxton/waiveo-next/internal/shared/ulid"
 )
 
 // automationsConfig is the resource configuration for the rules/1 authored-rule
@@ -144,7 +143,7 @@ func (srv *server) runAutomationExec(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSONValue(w, http.StatusOK, map[string]string{
-		"run_id":      ulid.New(),
+		"run_id":      srv.newID(),
 		"disposition": string(dispositions[0].Disposition),
 	})
 }
@@ -309,8 +308,10 @@ func (srv *server) bulkEnableExec(w http.ResponseWriter, r *http.Request, body [
 	// .UTC() so the Job's created_at serializes as RFC3339 "Z" (api/1 API-112),
 	// not whatever the process's local time.Local zone happens to be —
 	// time.UnixMilli returns a Time in Local, and time.Time's JSON marshaling
-	// preserves whatever Location it carries.
-	job := apijob.New(ulid.New(), pocPrincipal, time.UnixMilli(srv.nowMs()).UTC(), targetIDs)
+	// preserves whatever Location it carries. The Job's id comes from the same
+	// injected srv.newID seam every other server-minted id draws from — never a
+	// package-level generator of its own.
+	job := apijob.New(srv.newID(), pocPrincipal, time.UnixMilli(srv.nowMs()).UTC(), targetIDs)
 	writeJSONValue(w, http.StatusAccepted, job.Resource())
 }
 

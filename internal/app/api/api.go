@@ -36,7 +36,6 @@ import (
 	"github.com/maaxton/waiveo-next/internal/rules/compile"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/apiselector"
-	"github.com/maaxton/waiveo-next/internal/shared/ulid"
 )
 
 // pocPrincipal is the fixed dev-lab POC principal the Idempotency-Key scope is
@@ -56,14 +55,20 @@ const apiPrefix = "/api/v1"
 // resources live in, the idempotency store guarding create replays, and the
 // injected clock (epoch ms) the idempotency Begin/Complete calls are timestamped
 // with — so the api layer, like the idempotency store itself, reads no wall
-// clock of its own. content is the shared content-addressed origin store the
-// upload endpoint writes into (and the feeder serves GET /content/<hex> from over
-// the SAME instance); contentBase is the feeder's own content-origin base URL the
-// upload's returned url is built from (<base>/content/<hex>, snapshot.Build's form).
+// clock of its own. newID is likewise injected rather than read from a
+// package-level generator: the api layer mints no id from a generator of its
+// own, every server-minted id (a create's server-assigned id, a synchronous
+// run's run_id, a bulk-enable Job's id) comes from this single seam. content
+// is the shared content-addressed origin store the upload endpoint writes
+// into (and the feeder serves GET /content/<hex> from over the SAME
+// instance); contentBase is the feeder's own content-origin base URL the
+// upload's returned url is built from (<base>/content/<hex>, snapshot.Build's
+// form).
 type server struct {
 	store       *store.Store
 	idem        *apihttp.IdempotencyStore
 	nowMs       func() int64
+	newID       func() string
 	content     *origin.Store
 	contentBase string
 	// installer runs the manifest-gated declarative-pack install pipeline the
@@ -78,13 +83,17 @@ type server struct {
 // /api/v1/content) over content, wrapped in apihttp.WithTraceID so every request
 // resolves a Trace-Id once (echoed by the header and every Problem body). idem
 // guards Idempotency-Key create replays; nowMs is the injected clock the
-// idempotency calls are timestamped with. content is the shared origin store the
-// feeder also serves GET /content/<hex> from (one instance, so an upload is
-// immediately servable); contentBase is the feeder's content-origin base URL the
-// upload's returned url is built from.
-func New(st *store.Store, idem *apihttp.IdempotencyStore, nowMs func() int64, content *origin.Store, contentBase string) http.Handler {
+// idempotency calls are timestamped with; newID is the injected id source
+// every server-minted id (a create's server-assigned id, a synchronous run's
+// run_id, a bulk-enable Job's id) is drawn from — the same seam pattern as
+// nowMs, so the api layer reads no wall clock AND mints no id of its own.
+// content is the shared origin store the feeder also serves GET /content/<hex>
+// from (one instance, so an upload is immediately servable); contentBase is
+// the feeder's content-origin base URL the upload's returned url is built
+// from.
+func New(st *store.Store, idem *apihttp.IdempotencyStore, nowMs func() int64, newID func() string, content *origin.Store, contentBase string) http.Handler {
 	srv := &server{
-		store: st, idem: idem, nowMs: nowMs, content: content, contentBase: contentBase,
+		store: st, idem: idem, nowMs: nowMs, newID: newID, content: content, contentBase: contentBase,
 		installer: packs.NewInstaller(st),
 	}
 	mux := http.NewServeMux()
@@ -298,14 +307,15 @@ func (rs *resource) createExec(w http.ResponseWriter, r *http.Request, raw []byt
 }
 
 // ensureID returns the create body guaranteed to carry an identity, plus that
-// id. A client-supplied id is kept; otherwise a fresh ULID is minted and
-// injected under the kind's identity field.
+// id. A client-supplied id is kept; otherwise a fresh id is minted from the
+// server's injected id source (srv.newID — never a package-level generator)
+// and injected under the kind's identity field.
 func (rs *resource) ensureID(raw []byte) (body []byte, id string) {
 	f := parseFields(raw)
 	if got := rs.cfg.identity(f); got != "" {
 		return raw, got
 	}
-	id = ulid.New()
+	id = rs.srv.newID()
 	m := map[string]json.RawMessage{}
 	_ = json.Unmarshal(raw, &m)
 	idJSON, _ := json.Marshal(id)

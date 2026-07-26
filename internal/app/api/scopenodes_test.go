@@ -16,6 +16,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/datamodel"
 	"github.com/maaxton/waiveo-next/internal/feeder/origin"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
+	"github.com/maaxton/waiveo-next/internal/shared/ulid"
 )
 
 // A single fixed injected clock so idempotency retention is deterministic and no
@@ -92,7 +93,7 @@ func newEnvWithContent(t *testing.T, content *origin.Store) *testEnv {
 	t.Cleanup(func() { _ = st.Close() })
 	clock := func() int64 { return fixedNowMs }
 	idem := apihttp.NewIdempotencyStore(clock, 0)
-	ts := httptest.NewServer(api.New(st, idem, clock, content, testContentBase))
+	ts := httptest.NewServer(api.New(st, idem, clock, ulid.New, content, testContentBase))
 	t.Cleanup(ts.Close)
 	return &testEnv{ts: ts, store: st, content: content, contentBase: testContentBase}
 }
