@@ -28,9 +28,15 @@ Columns:
 
 Every requirement a contract defines should get a row here, even if its
 status is `TBD-wave1` — an ID with no row at all is undertracked, not merely
-unimplemented. That completeness isn't machine-checked yet; only the reverse
-direction is (a row's req-id must resolve to a real requirement somewhere in
-the corpus) — closing that gap is future work, not assumed here.
+unimplemented. Both directions of that are machine-checked by
+`scripts/validate-contracts.mjs`: a row's req-id must resolve to a real
+requirement defined in the contract this file maps to (forward, check #4),
+and every requirement ID a contract defines must have >=1 row in its own
+traceability map (reverse, check #5). Neither direction checks the
+**case-id(s)** or **status** cell contents — a row can cite a case-id that
+doesn't exist in `conformance/corpora/`, or claim `covered` with a stale or
+mismatched case list, and the validator will not catch it; that's future
+work, not assumed here.
 
 This file (`README.md`) documents the format only; it carries no real rows
 and is exempt from the "req-id must exist" check the same way

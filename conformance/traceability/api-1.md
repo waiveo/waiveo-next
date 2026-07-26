@@ -8,17 +8,19 @@ convention libraries (`apihttp`/`apiselector`/`apijob`) directly — a
 2026-07-26 audit found the prior driver certified those libraries, not the
 shipped `/api/v1` surface. `covered` below still means exactly what
 `README.md` defines ("a listed case exercises this requirement today") — it
-is not a pass/fail signal, and this table has no third value for that. Seven
-of the eleven now-driven cases surfaced a genuine, confirmed divergence
-between their frozen expectation and the live handler's actual behavior
-(wording/status-code mismatches, two fixtures that violate a datamodel rule
-built after they were frozen, and two Job-resource fields with no
-determinism seam) — see `conformance/drivers/api1/driver_test.go`'s
-`expectedFailing` map for the full list and reasons, and the Track A
-follow-up issue this reconciliation files for resolving them. `API-120/121/
-123` moved back to `TBD-wave1`: `API-121-valid-export-workspace-job` is the
-one corpus case with no mounted route to drive at all (`/api/v1/workspace/
-export` does not exist in `api.New`'s mux).
+is not a pass/fail signal, and this table has no third value for that. That
+re-drive originally surfaced seven genuine, confirmed divergences between
+frozen expectations and the live handler's actual behavior (wording/
+status-code mismatches, two fixtures that violated a datamodel rule built
+after they were frozen, and two Job-resource fields with no determinism
+seam). After this change series, of the eleven driven cases exactly ONE
+still diverges: `API-111-valid-bulk-enable-202-job`'s `created_by` field,
+which the live handler stamps from a fixed principal because auth is
+deferred — see `conformance/drivers/api1/driver_test.go`'s `expectedFailing`
+map for the full reason. `API-120/121/123` moved back to `TBD-wave1`:
+`API-121-valid-export-workspace-job` is the one corpus case with no mounted
+route to drive at all (`/api/v1/workspace/export` does not exist in
+`api.New`'s mux).
 
 | req-id | contract §anchor | case-id(s) | status |
 |---|---|---|---|

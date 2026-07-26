@@ -9,19 +9,19 @@ Roll-up of the contract corpus: every contract, its requirement-ID count, its se
 | manifest/1 | 44 | 5 | 20 | 24 | 1 |
 | ctx/1 | 43 | 5 | 8 | 35 | 3 |
 | rules/1 | 113 | 25 | 58 | 55 | 6 |
-| device-class-registry | 29 | 1 | 18 | 11 | 0 |
-| data-model/1 | 64 | 20 | 49 | 15 | 0 |
-| api/1 | 70 | 12 | 35 | 35 | 1 |
-| events/1 | 73 | 15 | 33 | 40 | 10 |
+| device-class-registry | 29 | 1 | 23 | 6 | 0 |
+| data-model/1 | 65 | 20 | 49 | 16 | 0 |
+| api/1 | 71 | 12 | 34 | 37 | 1 |
+| events/1 | 73 | 15 | 37 | 36 | 10 |
 | archive/1 | 66 | 9 | 23 | 43 | 4 |
-| relay/1 | 104 | 14 | 66 | 38 | 2 |
-| player/1 | 123 | 7 | 46 | 77 | 9 |
+| relay/1 | 105 | 14 | 66 | 39 | 2 |
+| player/1 | 126 | 7 | 46 | 80 | 9 |
 | surface/1 | 50 | 8 | 17 | 33 | 1 |
 | channel-index | 48 | 11 | 23 | 25 | 0 |
 | marketplace/1 | 49 | 14 | 26 | 23 | 4 |
-| ui-schema/1 | 71 | 9 | 22 | 49 | 3 |
+| ui-schema/1 | 73 | 9 | 22 | 51 | 3 |
 | security-model | 83 | 8 | 15 | 68 | 7 |
-| **Total** | **1030** | **163** | **459** | **571** | **51** |
+| **Total** | **1038** | **163** | **467** | **571** | **51** |
 
 **Companion artifacts:**
 - `../fixtures/automation-builder/` — the ui-schema/1 go/no-go fixture (a complete declarative automation-builder document + render-walkthrough), gated by `../fixtures/fixture-lint.mjs` (wired into the pr/merge CI tiers; asserts every widget/binding/vocabRef the fixture uses is defined in ui-schema/1).
