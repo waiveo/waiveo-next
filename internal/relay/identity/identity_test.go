@@ -9,15 +9,20 @@ import (
 )
 
 // TestOpenCreatesExactOperationalTableSet asserts the relay's operational
-// SQLite holds exactly the eight tables relay/1 REL-142/REL-130/REL-011 scope
-// durable local state to — enrollment identity, last-applied generation, the
-// desired-state verification key, the persisted clock floor, the app-peer trust
-// pin, and the bounded telemetry queue plus its loss markers and monotonic seq
-// high-water (Telemetry upstream, REL-090/091) — and nothing else. In particular, no
-// table here is capable of holding asset/media bytes (`#52` gateway posture):
-// the relay's own content is never cached in this store — the telemetry_queue
-// holds only small {seq,schema,payload,subject} event records, never asset
-// bytes, and telemetry_seq_high_water holds a single integer cursor.
+// SQLite holds exactly the ten tables relay/1 REL-142/REL-130/REL-011 (plus
+// player/1 PLY-091/PLY-105's own extension of that same tier, playersession.go)
+// scope durable local state to — enrollment identity, last-applied generation,
+// the desired-state verification key, the persisted clock floor, the app-peer
+// trust pin, the bounded telemetry queue plus its loss markers and monotonic
+// seq high-water (Telemetry upstream, REL-090/091), and the player-session
+// pair (a minted channel token's hashed record, a one-time pairing grant's
+// redemption marker) — and nothing else. In particular, no table here is
+// capable of holding asset/media bytes (`#52` gateway posture): the relay's
+// own content is never cached in this store — the telemetry_queue holds only
+// small {seq,schema,payload,subject} event records, never asset bytes,
+// telemetry_seq_high_water holds a single integer cursor, and
+// player_channel_tokens holds only a token's own hash plus {screen_id,
+// expires_at}, never the token itself (playersession.go's HashToken).
 func TestOpenCreatesExactOperationalTableSet(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "relay.db")
 
@@ -38,6 +43,8 @@ func TestOpenCreatesExactOperationalTableSet(t *testing.T) {
 		"clock_floor",
 		"desired_state_verification_key",
 		"last_applied_generation",
+		"player_channel_tokens",
+		"player_redeemed_grants",
 		"relay_identity",
 		"telemetry_loss_marker",
 		"telemetry_queue",

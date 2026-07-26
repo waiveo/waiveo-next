@@ -20,6 +20,16 @@
 // TestOpenCreatesExactOperationalTableSet pins the table set to guard against
 // one ever being added by accident.
 //
+// This store also holds the player/1-facing credential state PLY-091 and
+// PLY-105 each name as belonging to "relay/1's own operational storage,
+// mirroring the persistence relay/1 REL-142 already requires of it" — a
+// minted channel token (hashed, never raw; see playersession.go's HashToken)
+// and a one-time pairing grant's own redemption marker (relay/1 REL-121).
+// REL-142's own text scopes only relay/1's OWN durable state; player-facing
+// credential issuance is explicitly a distinct contract (player/1) this one
+// only supplies inputs to, and player/1 itself is what extends the SAME
+// durable tier to this state — see playersession.go's own package doc.
+//
 // Backed by modernc.org/sqlite — a pure-Go SQLite driver (no cgo), keeping
 // the relay binary's pure-Go, no-`.node` release-gate posture (Wave-0's
 // pure-Go invariant) intact.
@@ -137,6 +147,10 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(telemetrySchema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("identity: create telemetry schema: %w", err)
+	}
+	if _, err := db.Exec(playerSessionSchema); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("identity: create player-session schema: %w", err)
 	}
 
 	return &Store{db: db}, nil

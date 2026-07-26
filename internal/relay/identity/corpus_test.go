@@ -263,9 +263,9 @@ func TestCorpusREL070GenerationReapplyIdempotentNoop(t *testing.T) {
 // assertNoMediaTable is the §52 operational-footprint check scoped to a
 // specific corpus test: the store must hold exactly the known small
 // operational tables (identity, last-applied, clock floor, telemetry queue +
-// its sidecars) and nothing capable of holding asset/media bytes, even after
-// exercising a generation-apply swap whose own corpus fixture carries a full
-// content section with asset_ref/url fields. This mirrors
+// its sidecars, player-session state) and nothing capable of holding
+// asset/media bytes, even after exercising a generation-apply swap whose own
+// corpus fixture carries a full content section with asset_ref/url fields. This mirrors
 // TestOpenCreatesExactOperationalTableSet's table set (identity_test.go);
 // repeating it here ties the assertion to THIS corpus's own apply path,
 // rather than only a freshly opened store.
@@ -282,6 +282,8 @@ func assertNoMediaTable(t *testing.T, store *Store) {
 		"clock_floor",
 		"desired_state_verification_key",
 		"last_applied_generation",
+		"player_channel_tokens",
+		"player_redeemed_grants",
 		"relay_identity",
 		"telemetry_loss_marker",
 		"telemetry_queue",

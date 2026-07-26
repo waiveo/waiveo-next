@@ -28,6 +28,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maaxton/waiveo-next/internal/relay/identity"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/paircode"
 	"github.com/maaxton/waiveo-next/internal/shared/tlsboot"
@@ -90,6 +91,15 @@ var (
 	errPairingExpired     = errors.New("the pairing grant behind this selector has passed its ttl")
 )
 
+// errSessionPersistFailed wraps a durable-store write failure encountered
+// while redeeming a pairing grant (EnablePersistence, below) — a distinct,
+// non-taxonomy failure from PLY-036's two typed pairing-rejection codes: the
+// grant selector itself was valid, only the durable write of its redemption
+// result failed. handlePair maps this to a 500 INTERNAL rather than any
+// PAIRING_* code, since attributing a storage failure to "your pairing code
+// was invalid" would be actively misleading to a retrying player.
+var errSessionPersistFailed = errors.New("playerserver: failed to persist pairing/session state durably")
+
 // channelTokenRecord is what a minted channel token resolves to: the
 // screen_id it authorizes and its own bounded expiry — the record a later
 // /player/v1/program task validates a presented token against.
@@ -124,9 +134,20 @@ type Server struct {
 
 	mu             sync.Mutex
 	grants         map[string]wire.PairingGrant // grant_id -> grant
-	redeemedGrants map[string]bool              // grant_id -> redeemed (enforced only for one-time grants)
+	redeemedGrants map[string]bool              // grant_id -> redeemed (enforced only for one-time grants) — an in-process cache; grantAlreadyRedeemedLocked also consults sessionStore
 	tokens         map[string]channelTokenRecord
 	pollResults    map[string]redemption // poll_token -> completed result (PLY-034; see handlePairStatus doc)
+
+	// sessionStore, when non-nil (EnablePersistence), is the relay's durable
+	// operational store (internal/relay/identity) this Server ALSO persists
+	// every minted channel token (hashed, never raw) and every one-time
+	// pairing grant's redemption into, so both survive a relay process
+	// restart (REL-120's sole-issuer/sole-verifier role; PLY-091/PLY-105's
+	// own precedent for extending this tier — see EnablePersistence's doc).
+	// Nil in every test and conformance-driver construction that never
+	// calls EnablePersistence — those keep today's in-memory-only,
+	// non-durable behavior byte-for-byte.
+	sessionStore *identity.Store
 
 	program    program                    // Task 10: SetProgram's own configured state
 	programGen int64                      // desired-state generation the served program was applied for; SetProgram fences a strictly-older write (REL-052/056)
@@ -199,12 +220,75 @@ func (s *Server) Register(mux *http.ServeMux) {
 // presented Authorization: Bearer channel token (PLY-076, Channel tokens).
 func (s *Server) LookupChannelToken(token string) (screenID string, expiresAt int64, ok bool) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	rec, known := s.tokens[token]
-	if !known {
+	store := s.sessionStore
+	s.mu.Unlock()
+	if known {
+		return rec.ScreenID, rec.ExpiresAt, true
+	}
+	if store == nil {
 		return "", 0, false
 	}
-	return rec.ScreenID, rec.ExpiresAt, true
+
+	// A cache miss with persistence enabled does not by itself mean the
+	// token is unknown: this process's own s.tokens map starts empty on
+	// every restart (NewServer), so it alone cannot distinguish "never
+	// issued" from "issued and durably persisted in an EARLIER process
+	// lifetime". Consult the durable store, keyed by the token's own hash
+	// (identity.HashToken — EnablePersistence's own doc on why a hash
+	// rather than the raw token) rather than the unrecoverable raw value.
+	screenID, expiresAt, found, err := store.PlayerSession(identity.HashToken(token))
+	if err != nil || !found {
+		return "", 0, false
+	}
+
+	// Backfill the in-memory cache so this SAME token resolves from memory
+	// on a screen's every later poll this process lifetime, without
+	// repeating the durable lookup on every single one.
+	s.mu.Lock()
+	s.tokens[token] = channelTokenRecord{ScreenID: screenID, ExpiresAt: expiresAt}
+	s.mu.Unlock()
+	return screenID, expiresAt, true
+}
+
+// EnablePersistence points s at store — the relay's own durable operational
+// SQLite store (internal/relay/identity, the SAME store SetLastAppliedGeneration
+// and AppendTelemetry already write into) — as its durable session tier: every
+// channel token this Server mints from here on is ALSO persisted there
+// (hashed, never raw — identity.HashToken's own doc), and every one-time
+// pairing grant's redemption is ALSO marked durably there, so a relay
+// restart no longer strands an already-paired screen behind a channel token
+// only this process's own memory ever knew about.
+//
+// This closes the amnesia relay/1's own sole-issuer/sole-verifier role
+// (REL-120) otherwise leaves open: NewServer always builds s.tokens and
+// s.redeemedGrants empty, so — absent this call — a screen whose channel
+// token was minted before a relay restart gets CHANNEL_TOKEN_INVALID on its
+// very next /player/v1/program poll, purely because the relay process
+// restarted, not because anything about its credential actually changed.
+// player/1 PLY-071's 24-hour bounded channel-token expiry, and PLY-091's/
+// PLY-105's own precedent of extending this SAME durable tier — "relay/1's
+// own operational storage, mirroring the persistence relay/1 REL-142
+// already requires of it" — to Lease acknowledgement and preempt-grant
+// state, both presuppose a token's (or a one-time grant's consumption)
+// validity survives exactly this kind of restart.
+//
+// This is additive, not a load-back: unlike
+// internal/feeder/enroll.Server.EnablePersistence (which replaces an
+// in-memory registry wholesale from a prior JSON snapshot at call time), a
+// hashed channel token cannot be recovered back into a plaintext-keyed
+// in-memory map, so there is nothing to eagerly reload here. Instead,
+// LookupChannelToken and redeem's own one-time-grant check
+// (grantAlreadyRedeemedLocked) each fall through to store on their own
+// in-memory cache miss — see their own docs — which is what actually makes
+// a token or a grant's redemption state minted/marked in an EARLIER process
+// lifetime resolve correctly in this one. Must be called before
+// Register/serving traffic, to close the race between an incoming request
+// and this field's assignment.
+func (s *Server) EnablePersistence(store *identity.Store) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessionStore = store
 }
 
 // RevokeScreen marks screenID revoked in the relay's own last-synced view of
@@ -251,6 +335,15 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 
 	rec, err := s.redeem(req.GrantSelector)
 	if err != nil {
+		if errors.Is(err, errSessionPersistFailed) {
+			// The grant selector itself resolved fine — only the durable
+			// write of its redemption result failed (disk full, store
+			// unavailable). PLY-036's two typed codes both mean "your
+			// pairing code itself is no good"; neither is accurate here, so
+			// this is a 500 rather than either.
+			apihttp.WriteProblem(w, r, traceID, http.StatusInternalServerError, "INTERNAL", "Internal Error")
+			return
+		}
 		code := errorCode(err)
 		apihttp.WriteProblem(w, r, traceID, http.StatusBadRequest, code, problemTitle(code))
 		return
@@ -329,7 +422,7 @@ func (s *Server) redeem(selector string) (redemption, error) {
 	if !known {
 		return redemption{}, errPairingCodeInvalid
 	}
-	if grant.RedemptionMode == "one-time" && s.redeemedGrants[grant.GrantID] {
+	if grant.RedemptionMode == "one-time" && s.grantAlreadyRedeemedLocked(grant.GrantID) {
 		return redemption{}, errPairingCodeInvalid
 	}
 
@@ -338,11 +431,17 @@ func (s *Server) redeem(selector string) (redemption, error) {
 		return redemption{}, errPairingExpired
 	}
 
+	now := time.Now()
+
 	if grant.RedemptionMode == "one-time" {
 		s.redeemedGrants[grant.GrantID] = true
+		if s.sessionStore != nil {
+			if err := s.sessionStore.MarkPairingGrantRedeemed(grant.GrantID, now.UnixMilli()); err != nil {
+				return redemption{}, fmt.Errorf("%w: %v", errSessionPersistFailed, err)
+			}
+		}
 	}
 
-	now := time.Now()
 	rec := redemption{
 		ChannelToken: newOpaqueToken("ct"),
 		ScreenID:     newOpaqueToken("screen"),
@@ -350,8 +449,39 @@ func (s *Server) redeem(selector string) (redemption, error) {
 		ExpiresAt:    now.Add(channelTokenTTL).UnixMilli(),
 	}
 	s.tokens[rec.ChannelToken] = channelTokenRecord{ScreenID: rec.ScreenID, ExpiresAt: rec.ExpiresAt}
+	if s.sessionStore != nil {
+		if err := s.sessionStore.SetPlayerSession(identity.HashToken(rec.ChannelToken), rec.ScreenID, rec.ExpiresAt); err != nil {
+			return redemption{}, fmt.Errorf("%w: %v", errSessionPersistFailed, err)
+		}
+	}
 
 	return rec, nil
+}
+
+// grantAlreadyRedeemedLocked reports whether grantID's one-time grant has
+// already been redeemed — checking the in-memory cache first, then (on a
+// cache miss) the durable store, so a one-time grant redeemed in an earlier
+// process lifetime stays consumed across a relay restart. Without this,
+// NewServer's fresh, empty redeemedGrants map would let a one-time grant
+// that was already fully redeemed before a restart be redeemed a SECOND
+// time after one — relay/1 REL-121's own redemption-count-never-exceeds-one
+// guarantee holding only within a single process lifetime, not across a
+// restart, which is exactly the amnesia PLY-091/PLY-105 already name and
+// fix for Lease-acknowledgement state (see EnablePersistence's own doc). The
+// caller holds s.mu.
+func (s *Server) grantAlreadyRedeemedLocked(grantID string) bool {
+	if s.redeemedGrants[grantID] {
+		return true
+	}
+	if s.sessionStore == nil {
+		return false
+	}
+	redeemed, err := s.sessionStore.PairingGrantRedeemed(grantID)
+	if err != nil || !redeemed {
+		return false
+	}
+	s.redeemedGrants[grantID] = true // backfill the in-memory cache
+	return true
 }
 
 // errorCode maps redeem's sentinel errors to PLY-036's registry codes.

@@ -444,6 +444,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("waiveo-relay: build player/1 pairing server: %v", err)
 	}
+	// Point the pairing/session surface at the SAME durable operational store
+	// enrollment identity and last-applied generation already persist into, so
+	// a minted channel token and a one-time pairing grant's redemption both
+	// survive this process's own restart (REL-120's sole-issuer/sole-verifier
+	// role; see playerserver.Server.EnablePersistence's own doc). Must happen
+	// before pairingSrv.Register mounts routes onto mux below.
+	pairingSrv.EnablePersistence(store)
 	logPairingCodes(cfg, applied, certDER)
 
 	// Configure program delivery (GET /player/v1/program) from the relay's
