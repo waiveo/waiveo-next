@@ -134,6 +134,7 @@ type Server struct {
 
 	mu             sync.Mutex
 	grants         map[string]wire.PairingGrant // grant_id -> grant
+	grantsGen      int64                        // desired-state generation the currently-redeemable grants set was applied for; SetPairingGrants fences a strictly-older write (REL-052/056), mirroring programGen below
 	redeemedGrants map[string]bool              // grant_id -> redeemed (enforced only for one-time grants) — an in-process cache; grantAlreadyRedeemedLocked also consults sessionStore
 	tokens         map[string]channelTokenRecord
 	pollResults    map[string]redemption // poll_token -> completed result (PLY-034; see handlePairStatus doc)
@@ -289,6 +290,43 @@ func (s *Server) EnablePersistence(store *identity.Store) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessionStore = store
+}
+
+// SetPairingGrants replaces s's redeemable pairing-grant set wholesale with
+// grants, applying the SAME generation-fencing discipline SetProgram
+// already applies to served program state (REL-052/056): a write whose
+// generation is strictly older than the last one applied here is dropped,
+// so a re-pull racing a newer generation's own SetPairingGrants call can
+// never revert a screen's redeemable grant set to a superseded generation's.
+//
+// This is the setter relay/1 REL-122 requires and which NewServer alone
+// never provided: "a pairing grant delivered via pairing_grants MUST remain
+// redeemable ... until a newer generation supersedes it" presupposes a live
+// re-pull CAN refresh what's redeemable; before this method existed, the
+// grant set NewServer built at BOOT was frozen for the rest of the
+// process's life, so even a fully-recovered live desired-state pull could
+// never hand a screen the grant it actually needs. Callers apply this on
+// every generation a re-pull applies (cmd/waiveo-relay's rePuller.tick),
+// the same call site that already re-drives the served program and edge
+// rules.
+//
+// redeemedGrants (REL-121's one-time-redemption bookkeeping) is left
+// untouched by this call: a grant_id already marked redeemed stays marked
+// redeemed regardless of whether the newer generation's set still carries
+// that grant_id — a consumed one-time grant never becomes redeemable again
+// merely because the surrounding grant set was superseded.
+func (s *Server) SetPairingGrants(generation int64, grants []wire.PairingGrant) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if generation < s.grantsGen {
+		return // stale generation's late write — never revert a newer generation's grant set (REL-052/056)
+	}
+	s.grantsGen = generation
+	grantIndex := make(map[string]wire.PairingGrant, len(grants))
+	for _, g := range grants {
+		grantIndex[g.GrantID] = g
+	}
+	s.grants = grantIndex
 }
 
 // RevokeScreen marks screenID revoked in the relay's own last-synced view of

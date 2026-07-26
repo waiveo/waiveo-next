@@ -315,20 +315,34 @@ func newTestPlayerServer(t *testing.T) (*playerserver.Server, ed25519.PrivateKey
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
 
-	const grantID = "grant-schedresolver-test-01"
-	grant := wire.PairingGrant{
-		GrantID:                grantID,
+	srv, err := playerserver.NewServer(certPEM, []wire.PairingGrant{testPlayerServerGrant()})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	return srv, priv, testPlayerServerGrantID
+}
+
+// testPlayerServerGrantID is newTestPlayerServer's own boot-time REL-121
+// pairing-grant id — hoisted to package scope so buildRePullContentApplied
+// (below) can carry the SAME grant forward as every re-pull fixture's own
+// desiredstate.Applied.PairingGrants, mirroring what a real relay/1 pull
+// actually returns: a FULL current pairing_grants list, not a delta — a
+// grant an app peer never touched keeps riding every successive generation's
+// snapshot, identical, until something actually changes it.
+const testPlayerServerGrantID = "grant-schedresolver-test-01"
+
+// testPlayerServerGrant builds the wire.PairingGrant record NewServer boots
+// srv with (testPlayerServerGrantID), freshly timestamped so its TTL is
+// always live for the calling test's own real-time duration.
+func testPlayerServerGrant() wire.PairingGrant {
+	return wire.PairingGrant{
+		GrantID:                testPlayerServerGrantID,
 		Purpose:                "pairing",
 		ResultingPrincipalKind: "screen",
 		TTL:                    900,
 		RedemptionMode:         "one-time",
 		IssuedAt:               time.Now().UnixMilli(),
 	}
-	srv, err := playerserver.NewServer(certPEM, []wire.PairingGrant{grant})
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
-	}
-	return srv, priv, grantID
 }
 
 // pairAndPull pairs a player against srv (redeeming grantID) and pulls its
@@ -706,7 +720,16 @@ func buildRePullContentApplied(t *testing.T, gen int64, assetRef string) desired
 		Playlists:  marshalRows(t, playlist),
 	}.Normalized()
 
-	return desiredstate.Applied{Generation: gen, Schedule: sec}
+	// Carry testPlayerServerGrantID's own grant forward on every generation
+	// this fixture builds — the same "a real pull returns the FULL current
+	// pairing_grants list" reasoning testPlayerServerGrant's own doc gives:
+	// this fixture's schedule-only tests never intend to exercise a grant
+	// CHANGING across generations, so their fixture should not accidentally
+	// supersede newRePullFixture's own boot grant to empty on every tick. A
+	// test that DOES want to exercise a superseding grant set (a new or
+	// dropped grant_id) overwrites this field explicitly on the returned
+	// value, same as it already does for other fields.
+	return desiredstate.Applied{Generation: gen, Schedule: sec, PairingGrants: []wire.PairingGrant{testPlayerServerGrant()}}
 }
 
 // newRePullFixture wires the live serving collaborators a re-pull tick drives —
@@ -779,6 +802,89 @@ func TestRePullAppliesHigherGenerationLive(t *testing.T) {
 	}
 	if len(lease.Content) != 1 || lease.Content[0].AssetRef != rePullAssetB {
 		t.Fatalf("served content = %+v, want one item asset %s (the N+1 schedule) — the re-pull did not re-resolve live", lease.Content, rePullAssetB)
+	}
+}
+
+// attemptPair POSTs a bare pairing attempt against srv for grantSelector and
+// returns only the HTTP status code — the black-box way this file's grant-
+// supersession test observes whether a given selector is currently
+// redeemable, without asserting on a successful lease (pairAndPull already
+// covers the success path end to end).
+func attemptPair(t *testing.T, srv *playerserver.Server, grantSelector string) int {
+	t.Helper()
+	mux := http.NewServeMux()
+	srv.Register(mux)
+	ts := httptest.NewServer(apihttp.WithTraceID(mux))
+	t.Cleanup(ts.Close)
+
+	body, err := json.Marshal(playerserver.PairingRequest{
+		HardwareID:    "hw-repull-grants-0001",
+		GrantSelector: grantSelector,
+		Capabilities:  playerserver.Capabilities{ContentTypes: []string{"image"}, PlayerVersion: "1.0.0"},
+	})
+	if err != nil {
+		t.Fatalf("marshal pairing request: %v", err)
+	}
+	resp, err := http.Post(ts.URL+"/player/v1/pair", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /player/v1/pair: %v", err)
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode
+}
+
+// TestRePullSupersedesPairingGrantsWithNewerGeneration is the relay/1 REL-122
+// oracle for the live loop's OWN redeemable grant set, mirroring
+// TestRePullAppliesHigherGenerationLive's own shape for the served program: a
+// re-pull tick that applies a strictly higher generation carrying a DIFFERENT
+// pairing grant must make that new grant redeemable, and must retire the boot
+// grant it replaces. Before playerserver.Server.SetPairingGrants existed,
+// there was no call anywhere in the re-pull path that ever touched the grant
+// set NewServer built once at boot — this is the regression test that fails
+// without it (the new grant would stay unredeemable, PAIRING_CODE_INVALID,
+// forever, and the superseded boot grant would stay redeemable forever too).
+func TestRePullSupersedesPairingGrantsWithNewerGeneration(t *testing.T) {
+	driver, host, srv, bootGrantID, nowMs := newRePullFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	appliedA := buildRePullContentApplied(t, 7, rePullAssetA)
+	driver.apply(ctx, appliedA, nowMs) // boot apply of generation 7; srv's grant set is still newRePullFixture's own boot grant (bootGrantID)
+
+	const newGrantID = "grant-repull-superseding-01"
+	appliedB := buildRePullContentApplied(t, 8, rePullAssetB)
+	appliedB.PairingGrants = []wire.PairingGrant{{
+		GrantID:                newGrantID,
+		Purpose:                "pairing",
+		ResultingPrincipalKind: "screen",
+		TTL:                    900,
+		RedemptionMode:         "one-time",
+		IssuedAt:               time.Now().UnixMilli(),
+	}}
+
+	puller := &rePuller{
+		pull:    func() (desiredstate.Applied, error) { return appliedB, nil },
+		driver:  driver,
+		host:    host,
+		nowFn:   func() int64 { return nowMs },
+		lastGen: appliedA.Generation,
+	}
+	if applied := puller.tick(ctx); !applied {
+		t.Fatal("re-pull tick of a higher generation returned applied=false, want true (REL-056 apply)")
+	}
+
+	// The boot grant is superseded — REL-122's own boundary condition ("until
+	// a newer generation supersedes it") — so it must no longer redeem.
+	if status := attemptPair(t, srv, bootGrantID); status != http.StatusBadRequest {
+		t.Errorf("pairing against the superseded boot grant = %d, want 400 PAIRING_CODE_INVALID (REL-122 superseded)", status)
+	}
+
+	// The new generation's OWN grant must now be redeemable — REL-122's
+	// affirmative half, and the whole point of a live re-pull being able to
+	// refresh what a screen can pair against without a relay restart.
+	lease := pairAndPull(t, srv, newGrantID)
+	if len(lease.Content) != 1 || lease.Content[0].AssetRef != rePullAssetB {
+		t.Fatalf("served content after redeeming the superseding generation's own grant = %+v, want one item asset %s", lease.Content, rePullAssetB)
 	}
 }
 

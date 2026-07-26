@@ -112,6 +112,15 @@ func (p *rePuller) tick(ctx context.Context) bool {
 	// Strictly higher generation — apply it live. Pull already persisted the new
 	// generation atomically (REL-056); re-drive the serving side to match.
 	p.driver.apply(ctx, applied, p.nowFn())
+
+	// Refresh the redeemable pairing-grant set from this SAME verified
+	// generation (relay/1 REL-122: a pairing grant remains redeemable "until a
+	// newer generation supersedes it"). Without this, playerserver.Server's
+	// grant set stays exactly what NewServer built at boot for the rest of the
+	// process's life — a screen needing a grant this live re-pull just carried
+	// would never see it become redeemable.
+	p.driver.srv.SetPairingGrants(applied.Generation, applied.PairingGrants)
+
 	if err := p.host.ApplyEdgeRules(applied.EdgeRules, int(applied.Generation)); err != nil {
 		// ApplyEdgeRules is fail-closed per rule (a bad rule is skipped, not fatal);
 		// a returned error is unexpected, so log and keep serving rather than crash.
