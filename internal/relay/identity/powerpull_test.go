@@ -40,6 +40,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -79,6 +80,18 @@ const (
 	// and the parent can tell that the writer genuinely progressed under kill
 	// (recovered generation > warmup).
 	atomicWarmupTicks = 10
+
+	// defaultTortureCycles is TestPowerPullTortureRecovery's default SIGKILL
+	// cycle count — bounded to keep the default run comfortably under the
+	// gate ladder's 45s budget on ordinary CI hardware (each cycle spawns and
+	// kills a subprocess, so cost scales roughly linearly with cycle count).
+	// envTortureCycles overrides it for an extended, ad hoc soak run.
+	defaultTortureCycles = 25
+
+	// envTortureCycles, when set to a positive integer, overrides
+	// defaultTortureCycles — the extended-count escape hatch for a deliberate
+	// longer soak run outside the default gate budget.
+	envTortureCycles = "WAIVEO_TORTURE_CYCLES"
 )
 
 // powerPullHash is the deterministic {generation → hash} relation both the
@@ -445,6 +458,22 @@ func verifyRecovery(dbPath string) recovery {
 	return recovery{clean: true, generation: generation}
 }
 
+// tortureCycles returns the SIGKILL-cycle count TestPowerPullTortureRecovery
+// runs: WAIVEO_TORTURE_CYCLES if set to a positive integer (an extended,
+// ad hoc soak run beyond the default gate budget), else defaultTortureCycles.
+func tortureCycles(t *testing.T) int {
+	t.Helper()
+	raw := os.Getenv(envTortureCycles)
+	if raw == "" {
+		return defaultTortureCycles
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		t.Fatalf("%s=%q: want a positive integer", envTortureCycles, raw)
+	}
+	return n
+}
+
 // TestPowerPullTortureRecovery is the §10 appliance-physics gate: across many
 // iterations, a disciplined writer is SIGKILLed mid-write at an
 // iteration-index-derived delay, and the reopened operational store MUST
@@ -452,13 +481,15 @@ func verifyRecovery(dbPath string) recovery {
 // torn last-applied {generation, hash}, no half-applied apply-unit, identity
 // and durable telemetry intact (REL-055/056 atomic swap, REL-090/093 durable
 // telemetry, REL-130 clock floor). Committed durable state always survives an
-// abrupt kill.
+// abrupt kill. Runs defaultTortureCycles iterations by default (bounded well
+// under the gate ladder's 45s budget); WAIVEO_TORTURE_CYCLES overrides the
+// count for an extended soak run.
 func TestPowerPullTortureRecovery(t *testing.T) {
 	if testing.Short() {
 		t.Skip("power-pull torture harness spawns subprocesses; skipped under -short")
 	}
 
-	const iterations = 25
+	iterations := tortureCycles(t)
 	const killSpreadMs = 15
 
 	var minGen, maxGen int64 = 1<<62 - 1, 0
