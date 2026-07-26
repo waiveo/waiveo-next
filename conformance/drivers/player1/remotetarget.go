@@ -77,6 +77,31 @@
 // set TestPlayer1DriverGreen/TestPlayer1CorpusFullyAccountedFor assert) is
 // completely unchanged. See RemoteEnvFromEnv's own doc for the full env var
 // list.
+//
+// # Running the live suite against a real device
+//
+// TestPlayer1DriverAgainstRealRokuTarget (driver_test.go) is the entry point:
+// it SKIPs unless WAIVEO_CONF_PLAYER_TARGET=roku, and otherwise drives the
+// entire player-1 corpus against the device at WAIVEO_CONF_PLAYER_ROKU_HOST
+// over ECP, with the in-process feeder+relay stack bound so that device can
+// actually reach it. One command runs it, with the two required vars filled
+// in for a device at 192.168.50.51 and a relay dial address the operator
+// supplies (the LAN-reachable address of the machine invoking `go test`
+// itself — there is no safe default, see envRelayDialHost's own doc):
+//
+//	WAIVEO_CONF_PLAYER_TARGET=roku \
+//	WAIVEO_CONF_PLAYER_ROKU_HOST=192.168.50.51 \
+//	WAIVEO_CONF_RELAY_DIAL_HOST=<this-machine's-LAN-IP> \
+//	go test ./conformance/drivers/player1/... -run TestPlayer1DriverAgainstRealRokuTarget -v
+//
+// That command alone is sufficient: WAIVEO_CONF_RELAY_BIND_HOST defaults to
+// "0.0.0.0" (bind every interface) precisely so it need not be set separately
+// from the dial address above. Every other var (ECP/debug ports, channel,
+// observe timeout, or "off" to switch to relay-observed mode) is optional and
+// only worth setting to override its default — see RemoteEnvFromEnv's own doc.
+// The command FAILs the run if any driven case's observed behavior diverges
+// from the corpus's expected block, and reports PLY-057 PENDING (never a
+// guaranteed-wrong FAIL) for the reason this file's own doc above states.
 package player1
 
 import (
