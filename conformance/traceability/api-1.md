@@ -29,6 +29,7 @@ export` does not exist in `api.New`'s mux).
 | API-011 | `contracts/api-1.md#error-shape` | `API-010-valid-simple-problem`, `API-013-valid-multi-field-validation-problem` | covered |
 | API-012 | `contracts/api-1.md#error-shape` | - | TBD-wave1 |
 | API-013 | `contracts/api-1.md#error-shape` | `API-013-valid-multi-field-validation-problem` | covered |
+| API-013a | `contracts/api-1.md#error-shape` | - | TBD-wave1 |
 | API-014 | `contracts/api-1.md#error-shape` | - | TBD-wave1 |
 | API-015 | `contracts/api-1.md#error-shape` | `API-010-valid-simple-problem` | covered |
 | API-016 | `contracts/api-1.md#error-shape` | `API-010-valid-simple-problem`, `API-013-valid-multi-field-validation-problem` | covered |

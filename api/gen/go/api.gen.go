@@ -563,6 +563,9 @@ type TooManyRequests = Problem
 // Unauthorized RFC 9457 problem+json, extended with `code` (this contract's machine-readable error registry) and `trace_id`. `code` is the discriminant a client asserts on; `title`/`detail` are for humans.
 type Unauthorized = Problem
 
+// UnprocessableContent RFC 9457 problem+json, extended with `code` (this contract's machine-readable error registry) and `trace_id`. `code` is the discriminant a client asserts on; `title`/`detail` are for humans.
+type UnprocessableContent = Problem
+
 // apiKeyContextKey is the context key for ApiKey security scheme
 type apiKeyContextKey string
 
@@ -2643,6 +2646,7 @@ type CreateAutomationResponse struct {
 	ApplicationproblemJSON401 *Unauthorized
 	ApplicationproblemJSON403 *Forbidden
 	ApplicationproblemJSON409 *Conflict
+	ApplicationproblemJSON422 *UnprocessableContent
 }
 
 // Status returns HTTPResponse.Status
@@ -2676,6 +2680,7 @@ type BulkEnableAutomationsResponse struct {
 	ApplicationproblemJSON400 *BadRequest
 	ApplicationproblemJSON401 *Unauthorized
 	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON422 *UnprocessableContent
 	ApplicationproblemJSON429 *TooManyRequests
 }
 
@@ -2778,6 +2783,7 @@ type UpdateAutomationResponse struct {
 	ApplicationproblemJSON403 *Forbidden
 	ApplicationproblemJSON404 *NotFound
 	ApplicationproblemJSON412 *PreconditionFailed
+	ApplicationproblemJSON422 *UnprocessableContent
 	ApplicationproblemJSON428 *PreconditionRequired
 }
 
@@ -2814,6 +2820,7 @@ type RunAutomationResponse struct {
 	ApplicationproblemJSON403 *Forbidden
 	ApplicationproblemJSON404 *NotFound
 	ApplicationproblemJSON409 *Conflict
+	ApplicationproblemJSON422 *UnprocessableContent
 	ApplicationproblemJSON429 *TooManyRequests
 }
 
@@ -3095,6 +3102,7 @@ type CreateScopeNodeResponse struct {
 	ApplicationproblemJSON401 *Unauthorized
 	ApplicationproblemJSON403 *Forbidden
 	ApplicationproblemJSON409 *Conflict
+	ApplicationproblemJSON422 *UnprocessableContent
 }
 
 // Status returns HTTPResponse.Status
@@ -3196,6 +3204,7 @@ type UpdateScopeNodeResponse struct {
 	ApplicationproblemJSON403 *Forbidden
 	ApplicationproblemJSON404 *NotFound
 	ApplicationproblemJSON412 *PreconditionFailed
+	ApplicationproblemJSON422 *UnprocessableContent
 	ApplicationproblemJSON428 *PreconditionRequired
 }
 
@@ -3696,6 +3705,13 @@ func ParseCreateAutomationResponse(rsp *http.Response) (*CreateAutomationRespons
 		}
 		response.ApplicationproblemJSON409 = &dest
 
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
 	}
 
 	return response, nil
@@ -3742,6 +3758,13 @@ func ParseBulkEnableAutomationsResponse(rsp *http.Response) (*BulkEnableAutomati
 			return nil, err
 		}
 		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
 		var dest TooManyRequests
@@ -3905,6 +3928,13 @@ func ParseUpdateAutomationResponse(rsp *http.Response) (*UpdateAutomationRespons
 		}
 		response.ApplicationproblemJSON412 = &dest
 
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 428:
 		var dest PreconditionRequired
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
@@ -3972,6 +4002,13 @@ func ParseRunAutomationResponse(rsp *http.Response) (*RunAutomationResponse, err
 			return nil, err
 		}
 		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
 		var dest TooManyRequests
@@ -4284,6 +4321,13 @@ func ParseCreateScopeNodeResponse(rsp *http.Response) (*CreateScopeNodeResponse,
 		}
 		response.ApplicationproblemJSON409 = &dest
 
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
 	}
 
 	return response, nil
@@ -4438,6 +4482,13 @@ func ParseUpdateScopeNodeResponse(rsp *http.Response) (*UpdateScopeNodeResponse,
 			return nil, err
 		}
 		response.ApplicationproblemJSON412 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 428:
 		var dest PreconditionRequired

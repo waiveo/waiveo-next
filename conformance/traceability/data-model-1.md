@@ -5,6 +5,7 @@ One row per requirement ID `contracts/data-model-1.md` defines. Format: `conform
 | req-id | contract §anchor | case-id(s) | status |
 |---|---|---|---|
 | DAT-001 | `contracts/data-model-1.md#scope-node-tree` | `DAT-001-valid-scope-node-tree` | covered |
+| DAT-001a | `contracts/data-model-1.md#scope-node-tree` | - | TBD-wave1 |
 | DAT-002 | `contracts/data-model-1.md#scope-node-tree` | `DAT-001-valid-scope-node-tree` | covered |
 | DAT-003 | `contracts/data-model-1.md#scope-node-tree` | `DAT-001-valid-scope-node-tree` | covered |
 | DAT-004 | `contracts/data-model-1.md#scope-node-tree` | `DAT-001-valid-scope-node-tree` | covered |

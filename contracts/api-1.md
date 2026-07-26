@@ -1,7 +1,7 @@
 # Management API Conventions
 
 **Contract:** api/1
-**Version:** 1.0
+**Version:** 1.1
 **Status:** review
 
 ## Scope
@@ -48,13 +48,17 @@ The single `/api/v1` prefix (API-001) replaces a legacy core/extension URL split
 
 **[API-012]** The error-code registry is additive-only: a published `code` value's meaning MUST NOT change, and MUST NOT be removed or repurposed, within major version 1.
 
-**[API-013]** A response carrying more than one independent field-level validation failure MUST use `code: VALIDATION_FAILED` and MUST include the extension member `errors`: an array of `{field, code, message}` objects, one per failing field, in addition to the top-level `code`/`detail`.
+**[API-013]** A response carrying more than one independent field-level validation failure MUST use `code: VALIDATION_FAILED` and MUST include the extension member `errors`: an array of `{field, code, message}` objects, one per failing field, in addition to the top-level `code`/`detail`. Each `errors[]` entry's own `code` is drawn from the error registry of the contract that owns the failing field's rule — for a scope-node field, `data-model/1`'s Error taxonomy — not from this contract's own registry (API-011), the same reuse-by-name discipline `player/1`'s PLY-007 applies to a whole Problem's top-level `code`.
+
+**[API-013a]** A request rejected with `code: VALIDATION_FAILED` MUST carry HTTP status `422 Unprocessable Content` when the failure is in the request body, and `400 Bad Request` when the failure is in a query parameter (API-031's `limit`).
 
 **[API-014]** A background or per-target operation that surfaces an error outside the direct request/response cycle (a fleet job's per-target failure, a webhook delivery failure) MUST type that error using a `code` from this same registry, never a parallel vocabulary.
 
 **[API-015]** `instance`, when present, MUST be the request's own path, unmodified — an operator or client correlating a stored Problem document back to the endpoint that produced it MUST be able to do so from this field alone.
 
 **[API-016]** `type` MUST be the literal string `about:blank`; `code` (API-011) is the sole machine-readable discriminant this version of api/1 defines. A later minor MAY mint dereferenceable `type` URIs without breaking this contract, since `about:blank` remains a legal value throughout.
+
+`detail` is a human-readable, per-occurrence explanation; no requirement in this contract pins its exact wording for any `code` (API-045's identify-the-offending-term rule constrains content, not phrasing). The `detail` strings appearing in this document's Wire shapes are illustrative, not normative text a server must reproduce verbatim.
 
 ### Optimistic concurrency
 
@@ -74,7 +78,7 @@ The single `/api/v1` prefix (API-001) replaces a legacy core/extension URL split
 
 **[API-030]** Every list operation MUST accept two query parameters: `cursor` (string, optional) and `limit` (integer, optional).
 
-**[API-031]** `limit`'s server-applied default MUST be 50 and its server-enforced maximum MUST be 200. A client-supplied `limit` outside `[1, 200]` MUST be rejected with `code: VALIDATION_FAILED`, never silently clamped.
+**[API-031]** `limit`'s server-applied default MUST be 50 and its server-enforced maximum MUST be 200. A client-supplied `limit` outside `[1, 200]` MUST be rejected with `400 Bad Request` / `code: VALIDATION_FAILED`, never silently clamped.
 
 **[API-032]** A list operation's success response body MUST be a JSON object with an `items` array (the page's resources, in the operation's default order) and a `cursor` field: an opaque continuation token for the next page, or `null` when no further rows remain.
 
@@ -216,16 +220,17 @@ The single `/api/v1` prefix (API-001) replaces a legacy core/extension URL split
 ```
 
 ```json
-// Problem — multi-field validation failure (API-013)
+// Problem — multi-field validation failure, request body (API-013, API-013a)
 {
   "type": "about:blank",
   "title": "Validation Failed",
-  "status": 400,
+  "status": 422,
+  "detail": "One or more fields failed validation.",
   "code": "VALIDATION_FAILED",
   "trace_id": "01J8Z3K4N5P6Q7R8S9T0V1W2X5",
   "errors": [
-    { "field": "kind", "code": "ENUM_MISMATCH", "message": "must be one of org, site, group, screen" },
-    { "field": "name", "code": "TOO_SHORT", "message": "must be at least 1 character" }
+    { "field": "kind", "code": "SCOPE_NODE_KIND_INVALID", "message": "scope-node kind must be one of org, site, group, screen (DAT-001)" },
+    { "field": "name", "code": "SCOPE_NODE_NAME_INVALID", "message": "a scope node's name MUST be a non-empty string (DAT-001a)" }
   ]
 }
 ```

@@ -31,6 +31,8 @@ data-model/1 defines the platform's core relational data model: the scope-node t
 
 **[DAT-001]** A scope node MUST be `{id, kind, parent_id, name, external_id?, labels?, revision, created_at, updated_at}` at minimum (ScopeNode, Wire shapes), plus the additional columns Org node: account state and entitlements and Time as data define. `kind` MUST be exactly one of `org`, `site`, `group`, or `screen` — the platform's complete, closed scope-node kind vocabulary; a value outside it MUST be rejected (`SCOPE_NODE_KIND_INVALID`, Error taxonomy). `group` is the generic grouping kind (for instance, a floor, wing, or department — an "area"), carrying no meaning beyond its place in the tree.
 
+**[DAT-001a]** A scope node's `name` MUST be a non-empty string of at most 200 characters; a create or update request violating this MUST be rejected (`SCOPE_NODE_NAME_INVALID`, Error taxonomy).
+
 **[DAT-002]** `parent_id` MUST be null if and only if `kind` is `org`; every non-`org` scope node's `parent_id` MUST reference an existing scope node (a violation rejected `SCOPE_NODE_PARENT_INVALID`, Error taxonomy). A conformant scope-node tree MUST contain exactly one `org`-kind node, which MUST be its own root — no node's ancestor chain reaches a second `org`-kind node (a second `org` node rejected `SCOPE_NODE_MULTIPLE_ORG`, Error taxonomy).
 
 **[DAT-003]** A scope node's `kind` MUST be a permitted child of its `parent_id`'s own `kind`, per the closed table below; a creation or re-parenting request violating it MUST be rejected (`SCOPE_NODE_PARENT_INVALID`, Error taxonomy).
@@ -370,6 +372,7 @@ This contract has no live wire handshake of its own; `api/1`'s CRUD operations a
 | code | meaning | retryable |
 |---|---|---|
 | `SCOPE_NODE_KIND_INVALID` | A scope node's `kind` is not one of `org`, `site`, `group`, `screen` (DAT-001). | no |
+| `SCOPE_NODE_NAME_INVALID` | A scope node's `name` is empty or exceeds 200 characters (DAT-001a). | no |
 | `SCOPE_NODE_PARENT_INVALID` | A scope node's `kind` is not a permitted child of its `parent_id`'s own `kind` (DAT-003), or `parent_id` is null on a non-`org` node or non-null on an `org` node (DAT-002). | no |
 | `SCOPE_NODE_MULTIPLE_ORG` | A scope-node tree contains more than one `org`-kind node, or a node's ancestor chain reaches a second `org`-kind node (DAT-002). | no |
 | `SCOPE_NODE_GEO_REQUIRED` | A `site`-kind scope node's `tz`/`lat`/`long` is missing or null (DAT-031). | no |

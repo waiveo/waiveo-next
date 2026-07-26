@@ -597,6 +597,15 @@ export interface components {
                 "application/problem+json": components["schemas"]["Problem"];
             };
         };
+        /** @description The request body failed field-level validation (`contracts/api-1.md#error-shape`, API-013a: a body validation failure is 422, distinct from the 400 a query-parameter validation failure — e.g. an out-of-range `limit` — carries). */
+        UnprocessableContent: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
         /** @description No valid principal was presented. */
         Unauthorized: {
             headers: {
@@ -753,6 +762,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableContent"];
         };
     };
     getScopeNode: {
@@ -851,6 +861,7 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             412: components["responses"]["PreconditionFailed"];
+            422: components["responses"]["UnprocessableContent"];
             428: components["responses"]["PreconditionRequired"];
         };
     };
@@ -921,6 +932,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableContent"];
         };
     };
     getAutomation: {
@@ -1019,6 +1031,7 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             412: components["responses"]["PreconditionFailed"];
+            422: components["responses"]["UnprocessableContent"];
             428: components["responses"]["PreconditionRequired"];
         };
     };
@@ -1057,6 +1070,7 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableContent"];
             429: components["responses"]["TooManyRequests"];
         };
     };
@@ -1091,6 +1105,7 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            422: components["responses"]["UnprocessableContent"];
             429: components["responses"]["TooManyRequests"];
         };
     };

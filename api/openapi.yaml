@@ -123,6 +123,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "409":
           $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
   /scope-nodes/{scope_node_id}:
     parameters:
       - name: scope_node_id
@@ -188,6 +190,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
         "428":
           $ref: "#/components/responses/PreconditionRequired"
     delete:
@@ -278,6 +282,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "409":
           $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
   /automations/{automation_id}:
     parameters:
       - name: automation_id
@@ -343,6 +349,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
         "428":
           $ref: "#/components/responses/PreconditionRequired"
     delete:
@@ -414,6 +422,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
         "429":
           $ref: "#/components/responses/TooManyRequests"
   /automations/bulk-enable:
@@ -453,6 +463,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
         "429":
           $ref: "#/components/responses/TooManyRequests"
 
@@ -756,6 +768,16 @@ components:
   responses:
     BadRequest:
       description: The request was malformed (validation failure, invalid selector, invalid cursor).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    UnprocessableContent:
+      description: >-
+        The request body failed field-level validation
+        (`contracts/api-1.md#error-shape`, API-013a: a body validation
+        failure is 422, distinct from the 400 a query-parameter validation
+        failure — e.g. an out-of-range `limit` — carries).
       content:
         application/problem+json:
           schema:
