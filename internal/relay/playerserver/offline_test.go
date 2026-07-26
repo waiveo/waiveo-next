@@ -83,3 +83,75 @@ func TestSetServedProgramDeliversPersistedPreemptLease(t *testing.T) {
 		t.Errorf("content[0].asset_ref = %q, want %q", lease.Content[0].AssetRef, served.Content[0].AssetRef)
 	}
 }
+
+// TestSetServedProgramCarriesPerItemContentType asserts SetServedProgram
+// (REL-061a) annotates EACH content item's Lease `type` (PLY-083) from that
+// item's OWN ContentRef.ContentType, in order — not a blanket "image"
+// constant — and that an item whose ContentType is "" (an older feeder
+// predating the field) still defaults to `image`, preserving this
+// codebase's historical single-image behavior byte-for-byte.
+func TestSetServedProgramCarriesPerItemContentType(t *testing.T) {
+	certPEM, _, priv, _ := testRelaySigningIdentity(t)
+	grant := testGrant()
+
+	srv, err := NewServer(certPEM, []wire.PairingGrant{grant})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	served := wire.ScreenProgram{
+		ScreenID:        "01J8Z3K4N5P6Q7R8S9T0V1W2X6",
+		ProgramRevision: "rev-cast-1",
+		Priority:        "scheduled",
+		Display:         "content",
+		Content: []wire.ContentRef{
+			{
+				AssetRef: "sha256:" + strings.Repeat("aa", 32),
+				URL:      "https://198.51.100.20/cas/aaaa0000",
+				// ContentType left unset — must default to "image".
+			},
+			{
+				AssetRef:    "sha256:" + strings.Repeat("bb", 32),
+				URL:         "https://198.51.100.20/cas/bbbb0000",
+				ContentType: "video",
+				DurationMS:  9000,
+			},
+		},
+	}
+	srv.SetServedProgram(1, served, priv)
+
+	_, raw := doPair(t, srv, PairingRequest{
+		HardwareID:    "hw-cast-0001",
+		GrantSelector: grant.GrantID,
+		Capabilities:  Capabilities{ContentTypes: []string{"image", "video"}, PlayerVersion: "1.0.0"},
+	})
+	var pairResp PairingResponse
+	remarshal(t, raw, &pairResp)
+	if pairResp.ChannelToken == "" {
+		t.Fatalf("pairing did not yield a channel_token: %+v", pairResp)
+	}
+
+	resp, body := doProgram(t, srv, pairResp.ChannelToken, []string{"image", "video"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %v", resp.StatusCode, body)
+	}
+
+	var lease LeaseResponse
+	remarshal(t, body, &lease)
+
+	if len(lease.Content) != 2 {
+		t.Fatalf("content has %d items, want 2", len(lease.Content))
+	}
+	if lease.Content[0].Type != "image" {
+		t.Errorf("content[0].type = %q, want %q (ContentType-unset default, REL-061a)", lease.Content[0].Type, "image")
+	}
+	if lease.Content[1].Type != "video" {
+		t.Errorf("content[1].type = %q, want %q (carried from the persisted entry's own ContentType)", lease.Content[1].Type, "video")
+	}
+	if lease.Content[0].AssetRef != served.Content[0].AssetRef {
+		t.Errorf("content[0].asset_ref = %q, want %q", lease.Content[0].AssetRef, served.Content[0].AssetRef)
+	}
+	if lease.Content[1].AssetRef != served.Content[1].AssetRef {
+		t.Errorf("content[1].asset_ref = %q, want %q — item 1's own digest must survive, not just item 0's", lease.Content[1].AssetRef, served.Content[1].AssetRef)
+	}
+}

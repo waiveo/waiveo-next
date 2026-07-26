@@ -152,13 +152,16 @@ func (s *Server) SetProgram(generation int64, programRevision, priority, display
 // so a preempt/content (or blank) assignment reaches the screen through the
 // relay's own offline continuity with no app-peer connection live.
 //
-// sp's content references (relay/1's own ContentRef, REL-061 — no `type`
-// field) are annotated with player/1's required content `type` (PLY-083) as
-// they become Lease content items. Wave-1 first-photon carries exactly one
-// content kind (`image`), so that annotation is a constant here, not a
-// lookup, exactly as cmd/waiveo-relay's own hand-off already treats it. Each
-// URL is the screen's DIRECT content-origin fetch target (never a
-// relay-hosted one, REL-140) — this server never touches the bytes.
+// sp's content references (relay/1's own ContentRef, REL-061/061a) each carry
+// their OWN `content_type`, annotated onto player/1's required content `type`
+// field (PLY-083) as they become Lease content items — a multi-item `content`
+// array (an ordered cast, REL-061) therefore reaches the player with each
+// item's real kind, never a blanket constant. An item whose ContentType is ""
+// (an older feeder that predates the field, REL-061a) defaults to `image`,
+// this codebase's own historical implicit value from before the field
+// existed — so a pre-existing single-image snapshot serves an identical Lease
+// to before. Each URL is the screen's DIRECT content-origin fetch target
+// (never a relay-hosted one, REL-140) — this server never touches the bytes.
 //
 // signingKey MUST be the relay's own enrollment private key, as SetProgram
 // documents — the same trust anchor a player pins its Lease-signature check
@@ -171,8 +174,15 @@ func (s *Server) SetProgram(generation int64, programRevision, priority, display
 func (s *Server) SetServedProgram(generation int64, sp wire.ScreenProgram, signingKey ed25519.PrivateKey) {
 	content := make([]wire.LeaseContent, 0, len(sp.Content))
 	for _, c := range sp.Content {
+		contentType := c.ContentType
+		if contentType == "" {
+			// REL-061a back-compat default: an item carrying no content_type
+			// (an older feeder) is treated as `image`, this codebase's own
+			// historical implicit value from before the field existed.
+			contentType = "image"
+		}
 		content = append(content, wire.LeaseContent{
-			Type:      "image",
+			Type:      contentType,
 			AssetRef:  c.AssetRef,
 			URL:       c.URL,
 			ExpiresAt: c.ExpiresAt,

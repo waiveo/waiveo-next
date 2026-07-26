@@ -434,3 +434,112 @@ func TestBuildFromStoreEdgeRulesExcludeAppClassifiedRule(t *testing.T) {
 		t.Errorf("recomputed hash %q != snapshot hash %q (REL-053)", recomputed, snap.Hash)
 	}
 }
+
+// TestBuildFromStoreCastSingleItemByteIdenticalToBuildFromStore asserts
+// BuildFromStoreCast, called with one CastItem carrying no ContentType/
+// DurationMS, produces wire output byte-identical to BuildFromStore's own —
+// the same single-item-preserving property BuildCast has over Build,
+// carried through the store-driven path make dev and CI both exercise.
+func TestBuildFromStoreCastSingleItemByteIdenticalToBuildFromStore(t *testing.T) {
+	img := loadTestImage(t)
+	id := testIdentity(t)
+	assetRef := signhash.ContentID(img)
+	s := seededStore(t, assetRef)
+
+	ds, err := s.DesiredState(context.Background())
+	if err != nil {
+		t.Fatalf("DesiredState: %v", err)
+	}
+
+	viaBuildFromStore, err := BuildFromStore(ds, img, "https://origin.example", id, nil)
+	if err != nil {
+		t.Fatalf("BuildFromStore: %v", err)
+	}
+	viaCast, err := BuildFromStoreCast(ds, []CastItem{{Bytes: img}}, "https://origin.example", id, nil)
+	if err != nil {
+		t.Fatalf("BuildFromStoreCast: %v", err)
+	}
+
+	if viaCast.Hash != viaBuildFromStore.Hash {
+		t.Errorf("BuildFromStoreCast single-item hash = %q, want %q (BuildFromStore's own hash)", viaCast.Hash, viaBuildFromStore.Hash)
+	}
+	if viaCast.Generation != viaBuildFromStore.Generation {
+		t.Errorf("BuildFromStoreCast Generation = %d, want %d", viaCast.Generation, viaBuildFromStore.Generation)
+	}
+
+	rawWant, err := json.Marshal(viaBuildFromStore.Sections)
+	if err != nil {
+		t.Fatalf("Marshal(viaBuildFromStore.Sections): %v", err)
+	}
+	rawGot, err := json.Marshal(viaCast.Sections)
+	if err != nil {
+		t.Fatalf("Marshal(viaCast.Sections): %v", err)
+	}
+	if string(rawWant) != string(rawGot) {
+		t.Errorf("BuildFromStoreCast single-item sections marshal differs from BuildFromStore's:\nBuildFromStore:     %s\nBuildFromStoreCast: %s", rawWant, rawGot)
+	}
+}
+
+// TestBuildFromStoreCastOrderedMultiItem asserts BuildFromStoreCast's
+// screen_programs[0].content carries the full ordered cast (one ContentRef
+// per item, each independently asset_ref-verifiable and carrying its own
+// content_type/duration_ms), while every other section (schedule, edge_rules,
+// site_effective) still derives from the store exactly as BuildFromStore's
+// own does.
+func TestBuildFromStoreCastOrderedMultiItem(t *testing.T) {
+	img := loadTestImage(t)
+	id := testIdentity(t)
+	assetRef := signhash.ContentID(img)
+	s := seededStore(t, assetRef)
+
+	ds, err := s.DesiredState(context.Background())
+	if err != nil {
+		t.Fatalf("DesiredState: %v", err)
+	}
+
+	items := []CastItem{
+		{Bytes: []byte("store-cast-item-one"), ContentType: "image", DurationMS: 5000},
+		{Bytes: []byte("store-cast-item-two"), ContentType: "video", DurationMS: 20000},
+	}
+
+	snap, err := BuildFromStoreCast(ds, items, "https://origin.example", id, nil)
+	if err != nil {
+		t.Fatalf("BuildFromStoreCast: %v", err)
+	}
+
+	content := snap.Sections.ScreenPrograms[0].Content
+	if len(content) != len(items) {
+		t.Fatalf("len(Content) = %d, want %d", len(content), len(items))
+	}
+	for i, item := range items {
+		got := content[i]
+		wantAssetRef := signhash.ContentID(item.Bytes)
+		if got.AssetRef != wantAssetRef {
+			t.Errorf("item %d: AssetRef = %q, want %q", i, got.AssetRef, wantAssetRef)
+		}
+		if got.ContentType != item.ContentType {
+			t.Errorf("item %d: ContentType = %q, want %q", i, got.ContentType, item.ContentType)
+		}
+		if got.DurationMS != item.DurationMS {
+			t.Errorf("item %d: DurationMS = %d, want %d", i, got.DurationMS, item.DurationMS)
+		}
+	}
+
+	// The store-derived sections (schedule/edge_rules/site_effective) are
+	// unaffected by which items populate the direct screen_programs cast —
+	// same seeded-demo shape BuildFromStore itself produces.
+	if got, want := len(snap.Sections.EdgeRules.Rules), 1; got != want {
+		t.Errorf("EdgeRules.Rules = %d, want %d (the seeded demo automation)", got, want)
+	}
+	if snap.Sections.RevocationAndSite.SiteEffective.TZ == "" {
+		t.Error("SiteEffective.TZ is empty, want the seeded site's tz")
+	}
+
+	recomputed, err := hashSections(snap.Sections)
+	if err != nil {
+		t.Fatalf("hashSections: %v", err)
+	}
+	if recomputed != snap.Hash {
+		t.Errorf("recomputed hash %q != snapshot hash %q (REL-053)", recomputed, snap.Hash)
+	}
+}

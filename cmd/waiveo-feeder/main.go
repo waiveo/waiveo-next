@@ -77,7 +77,29 @@ type config struct {
 	contentBaseURL string // scheme+host the direct-fetch content URL is built from
 	storePath      string // SQLite file the app store persists scope-nodes + scheduling rows to
 	contentPath    string // directory the content origin persists uploaded asset bytes to
+	demoCast       string // "" (default, single first-photon image) or "multi" (the real 3-item demo cast)
 }
+
+// demoCastModeMulti is loadConfig's WAIVEO_FEEDER_DEMO_CAST value that swaps
+// the single first-photon image for snapshot.DemoCastItems' real 3-item
+// ordered demo cast on the DIRECT screen_programs[0].content path (REL-061).
+// Any other value (including unset/"") keeps today's exact single-image
+// behavior — unset is the make-dev/CI default, so neither is affected by
+// this flag's existence.
+//
+// CAVEAT, stated here rather than left implicit: this flag changes ONLY the
+// app-authored screen_programs baseline SetServedProgram configures at boot
+// (cmd/waiveo-relay/main.go). A screen GOVERNED by a schedule (this codebase's
+// separate, already multi-item-capable playlist/daypart resolution engine,
+// internal/relay/schedulehost) has its Lease re-derived from that schedule's
+// own playlist on every resolve, which supersedes this baseline the moment the
+// schedule resolver first ticks (cmd/waiveo-relay/main.go's own doc: "replacing
+// the app-authored screen_programs baseline"). The make-dev/box seed
+// (store.SeedDemo) DOES seed a governing schedule, so this flag's effect is
+// visible at boot and on any screen the seeded schedule does not govern; making
+// it durably win over an active governing schedule is a separate, larger change
+// to the schedule/playlist engine, out of this flag's scope.
+const demoCastModeMulti = "multi"
 
 // defaultStorePath is the make-dev-local SQLite file the feeder's app store lives
 // in (git-ignored under .dev/, alongside the signing keys). store.Open creates
@@ -102,6 +124,7 @@ func loadConfig(env func(string) string) config {
 		contentBaseURL: envOr(env, "WAIVEO_FEEDER_CONTENT_URL", "https://"+listen),
 		storePath:      envOr(env, "WAIVEO_FEEDER_STORE", defaultStorePath),
 		contentPath:    envOr(env, "WAIVEO_FEEDER_CONTENT_DIR", defaultContentPath),
+		demoCast:       envOr(env, "WAIVEO_FEEDER_DEMO_CAST", ""),
 	}
 }
 
@@ -134,6 +157,31 @@ func main() {
 		log.Fatalf("waiveo-feeder: persist placeholder image: %v", err)
 	}
 
+	// The direct screen_programs.content cast this feeder builds
+	// (snapshot.BuildFromStoreCast): the single placeholder image by default —
+	// {Bytes: img} with NO ContentType/DurationMS set, so it marshals
+	// byte-identically to every prior release (snapshot.Build's own doc on
+	// ContentRef's omitempty tags) — or the real 3-item demo cast
+	// (snapshot.DemoCastItems) when WAIVEO_FEEDER_DEMO_CAST=multi. Every
+	// item's bytes are added to the SAME contentStore the placeholder above
+	// uses, so each is immediately servable at its own content-addressed URL —
+	// each item keeps its own digest, independently verifiable, not just the
+	// first (CastItem's doc).
+	castItems := []snapshot.CastItem{{Bytes: img}}
+	if cfg.demoCast == demoCastModeMulti {
+		items, err := snapshot.DemoCastItems()
+		if err != nil {
+			log.Fatalf("waiveo-feeder: load demo cast items: %v", err)
+		}
+		for i, item := range items {
+			if _, err := contentStore.Add(item.Bytes); err != nil {
+				log.Fatalf("waiveo-feeder: persist demo cast item %d: %v", i, err)
+			}
+		}
+		castItems = items
+		log.Printf("waiveo-feeder: multi-item demo cast enabled (%d items) — see demoCastModeMulti's doc for its interaction with a governing schedule", len(items))
+	}
+
 	contentBaseURL := cfg.contentBaseURL
 	g := grant.Mint()
 
@@ -162,7 +210,7 @@ func main() {
 	// cached by generation and invalidated when an api write advances it — so each
 	// pull serves the current generation (the authoring loop's serving half).
 	src := &desiredStateSource{
-		store: st, img: img, contentBaseURL: contentBaseURL, id: id,
+		store: st, items: castItems, contentBaseURL: contentBaseURL, id: id,
 		grants: []wire.PairingGrant{g},
 	}
 	initialSnap, err := src.current()
@@ -271,13 +319,19 @@ func main() {
 // desiredStateSource rebuilds the feeder's signed desired-state snapshot from the
 // app store on demand, caching it by the store's generation: a pull for an
 // unchanged generation returns the cached snapshot, and it is rebuilt (via
-// snapshot.BuildFromStore) only when an api write has advanced the generation.
+// snapshot.BuildFromStoreCast) only when an api write has advanced the generation.
 // This is the seam that makes an authored edit change what the relay pulls, while
 // keeping desired-state derivation entirely store-driven (site_effective comes
 // from the site node, never box-local state).
 type desiredStateSource struct {
-	store          *store.Store
-	img            []byte
+	store *store.Store
+	// items is the direct screen_programs[0].content ordered cast
+	// (BuildFromStoreCast) — main's default single-image boot passes a single
+	// CastItem with no ContentType/DurationMS set (byte-identical to the
+	// pre-cast BuildFromStore path, ContentRef's own doc comment); a
+	// WAIVEO_FEEDER_DEMO_CAST=multi boot passes snapshot.DemoCastItems'
+	// 3-item cast instead. MUST be non-empty.
+	items          []snapshot.CastItem
 	contentBaseURL string
 	id             *signing.Identity
 	grants         []wire.PairingGrant
@@ -308,7 +362,7 @@ func (d *desiredStateSource) current() (wire.StateSnapshotBody, error) {
 	if err != nil {
 		return wire.StateSnapshotBody{}, err
 	}
-	snap, err := snapshot.BuildFromStore(ds, d.img, d.contentBaseURL, d.id, d.grants)
+	snap, err := snapshot.BuildFromStoreCast(ds, d.items, d.contentBaseURL, d.id, d.grants)
 	if err != nil {
 		return wire.StateSnapshotBody{}, err
 	}

@@ -460,6 +460,105 @@ func TestContractDocumentsContentOrigin(t *testing.T) {
 	}
 }
 
+// TestContentRefContentTypeAndDurationOmitWhenUnset asserts ContentType and
+// DurationMS marshal `omitempty`: a ContentRef built exactly as every
+// pre-existing call site in this codebase built one — asset_ref/url/
+// expires_at only — produces JSON carrying neither `content_type` nor
+// `duration_ms`, so every existing single-item snapshot (internal/feeder/
+// snapshot.Build/BuildFromStore) marshals BYTE-IDENTICALLY to before these
+// fields existed, and its `hash` (REL-053) is unchanged. A ContentRef that
+// does populate them carries both, and a differing ContentType/DurationMS
+// changes the hash exactly like any other populated field.
+func TestContentRefContentTypeAndDurationOmitWhenUnset(t *testing.T) {
+	bare := ContentRef{
+		AssetRef:  "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85",
+		URL:       "https://origin.example/content/e3b0c4",
+		ExpiresAt: 1752541200000,
+	}
+	raw, err := json.Marshal(bare)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if _, ok := m["content_type"]; ok {
+		t.Errorf("a ContentRef built without ContentType marshaled a content_type key; got %s", raw)
+	}
+	if _, ok := m["duration_ms"]; ok {
+		t.Errorf("a ContentRef built without DurationMS marshaled a duration_ms key; got %s", raw)
+	}
+	if len(m) != 3 {
+		t.Errorf("bare ContentRef marshaled %d keys, want exactly 3 (asset_ref, url, expires_at); got %s", len(m), raw)
+	}
+
+	populated := ContentRef{
+		AssetRef:    bare.AssetRef,
+		URL:         bare.URL,
+		ExpiresAt:   bare.ExpiresAt,
+		ContentType: "video",
+		DurationMS:  15000,
+	}
+	raw2, err := json.Marshal(populated)
+	if err != nil {
+		t.Fatalf("Marshal populated: %v", err)
+	}
+	var m2 map[string]json.RawMessage
+	if err := json.Unmarshal(raw2, &m2); err != nil {
+		t.Fatalf("Unmarshal populated: %v", err)
+	}
+	if string(m2["content_type"]) != `"video"` {
+		t.Errorf("content_type = %s, want \"video\"; got %s", m2["content_type"], raw2)
+	}
+	if string(m2["duration_ms"]) != "15000" {
+		t.Errorf("duration_ms = %s, want 15000; got %s", m2["duration_ms"], raw2)
+	}
+}
+
+// TestContractDocumentsContentTypeAndDuration is the interop regression guard
+// for REL-061a: content_type/duration_ms are additive ContentRef fields this
+// package emits and a relay reads (internal/relay/playerserver.
+// SetServedProgram), so contracts/relay-1.md MUST document both — in the
+// clause that defines them and in the example state.snapshot — or a
+// third-party implementation reading only the contract would never learn
+// they exist.
+func TestContractDocumentsContentTypeAndDuration(t *testing.T) {
+	const contractPath = "../../../contracts/relay-1.md"
+	raw, err := os.ReadFile(contractPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", contractPath, err)
+	}
+	doc := string(raw)
+
+	rel061a := requirementClause(t, doc, "REL-061a")
+	if !strings.Contains(rel061a, "content_type") {
+		t.Errorf("REL-061a does not document content_type:\n%s", rel061a)
+	}
+	if !strings.Contains(rel061a, "duration_ms") {
+		t.Errorf("REL-061a does not document duration_ms:\n%s", rel061a)
+	}
+
+	foundContentType, foundDuration := false, false
+	for _, line := range strings.Split(doc, "\n") {
+		if strings.Contains(line, `"screen_programs"`) {
+			continue
+		}
+		if strings.Contains(line, `"asset_ref"`) && strings.Contains(line, `"content_type"`) {
+			foundContentType = true
+		}
+		if strings.Contains(line, `"asset_ref"`) && strings.Contains(line, `"duration_ms"`) {
+			foundDuration = true
+		}
+	}
+	if !foundContentType {
+		t.Error("the example state.snapshot's screen_programs.content omits content_type (contracts/relay-1.md)")
+	}
+	if !foundDuration {
+		t.Error("the example state.snapshot's screen_programs.content omits duration_ms (contracts/relay-1.md)")
+	}
+}
+
 // requirementClause returns the text of the requirement paragraph anchored by
 // **[<id>]** in the contract markdown (up to the next blank line), so a test can
 // assert on that one clause alone rather than the whole document.

@@ -134,11 +134,41 @@ type ScreenProgram struct {
 // ContentRef is one signed content reference inside a ScreenProgram's
 // `content` array (REL-061): `asset_ref` is a content-addressed `sha256:`
 // URI in the same form `signhash.ContentID` produces; `url` is where a
-// screen fetches the bytes directly (never through the relay, REL-140).
+// screen fetches the bytes directly (never through the relay, REL-140). A
+// `content` array carries these in intended playback order, and each entry
+// is independently asset_ref-verifiable — an array of N items is N
+// independently signed-and-fetchable references, not just the first.
+//
+// ContentType and DurationMS are additive fields (REL-004: within major
+// version 1, a new optional field MAY be introduced in a minor) beyond this
+// contract's originally-published `{asset_ref, url, expires_at}` shape:
+//
+//   - ContentType names this item's kind, drawn from the same floor
+//     `player/1`'s own `content_types` capability declares (`player/1`
+//     PLY-014: at least `image`/`video`), and is carried unmodified into the
+//     player/1 Lease content item's own `type` field for this entry
+//     (internal/relay/playerserver.SetServedProgram). An item whose
+//     ContentType is "" — an older feeder that predates this field — MUST be
+//     treated as `image`, this codebase's own historical implicit value from
+//     before this field existed (SetServedProgram applies that default).
+//   - DurationMS is an optional per-item display-duration override, non-zero
+//     when set — mirroring data-model/1's own per-item `duration_seconds`
+//     override column (DAT-042). It is carried opaquely in this Wave: no
+//     playback-advance driver in this codebase reads it yet, but it rides
+//     `hash`/`signature` (REL-053) exactly like every other field, so a
+//     later per-item-timing consumer can trust it as much as the rest of the
+//     snapshot.
+//
+// Both fields marshal `omitempty` so a ContentRef built without them (every
+// call site that predates this pair) marshals byte-identically to before
+// their introduction — no new JSON keys appear, and no snapshot hash changes,
+// unless a caller actually populates one.
 type ContentRef struct {
-	AssetRef  string `json:"asset_ref"`
-	URL       string `json:"url"`
-	ExpiresAt int64  `json:"expires_at"`
+	AssetRef    string `json:"asset_ref"`
+	URL         string `json:"url"`
+	ExpiresAt   int64  `json:"expires_at"`
+	ContentType string `json:"content_type,omitempty"`
+	DurationMS  int64  `json:"duration_ms,omitempty"`
 }
 
 // EdgeRules is the relay/1 `edge_rules` section (REL-062): a

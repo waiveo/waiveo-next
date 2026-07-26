@@ -13,6 +13,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/feeder/grant"
 	"github.com/maaxton/waiveo-next/internal/feeder/origin"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
+	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/signhash"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
@@ -134,7 +135,7 @@ func TestDesiredStateSourceCurrentRebuildsOnAPIWriteGenerationBump(t *testing.T)
 	// The desired-state source exactly as main wires it (fixture content host).
 	src := &desiredStateSource{
 		store:          st,
-		img:            img,
+		items:          []snapshot.CastItem{{Bytes: img}},
 		contentBaseURL: "https://192.0.2.12:7420",
 		id:             id,
 		grants:         []wire.PairingGrant{grant.Mint()},
@@ -237,4 +238,85 @@ func doFeederReq(t *testing.T, ts *httptest.Server, method, path string, body []
 		t.Fatalf("read body: %v", err)
 	}
 	return resp, raw
+}
+
+// TestLoadConfigDemoCastDefaultAndOverride asserts WAIVEO_FEEDER_DEMO_CAST
+// defaults to "" (the single first-photon image, byte-identical to every
+// prior release) and an explicit "multi" override is read through — the flag
+// a box deployment sets to serve the real 3-item demo cast instead.
+func TestLoadConfigDemoCastDefaultAndOverride(t *testing.T) {
+	def := loadConfig(func(string) string { return "" })
+	if def.demoCast != "" {
+		t.Errorf("default demoCast = %q, want \"\" (single first-photon image)", def.demoCast)
+	}
+	env := map[string]string{"WAIVEO_FEEDER_DEMO_CAST": "multi"}
+	got := loadConfig(func(k string) string { return env[k] })
+	if got.demoCast != "multi" {
+		t.Errorf("demoCast = %q, want the explicit override %q", got.demoCast, "multi")
+	}
+}
+
+// TestDesiredStateSourceMultiItemCastOrderedAndVerifiable asserts a
+// desiredStateSource configured with snapshot.DemoCastItems' real 3-item cast
+// (the WAIVEO_FEEDER_DEMO_CAST=multi path) serves a snapshot whose
+// screen_programs[0].content carries all 3 items, in order, each keeping its
+// own asset_ref matching its own bytes — the per-item content-digest
+// integrity property, exercised here against this codebase's real committed
+// demo assets rather than synthetic fixture bytes.
+func TestDesiredStateSourceMultiItemCastOrderedAndVerifiable(t *testing.T) {
+	ctx := context.Background()
+
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	img := placeholderImage()
+	if err := st.SeedDemo(ctx, signhash.ContentID(img)); err != nil {
+		t.Fatalf("SeedDemo: %v", err)
+	}
+
+	items, err := snapshot.DemoCastItems()
+	if err != nil {
+		t.Fatalf("snapshot.DemoCastItems: %v", err)
+	}
+	if len(items) < 2 {
+		t.Fatalf("DemoCastItems returned %d items, want at least 2 to exercise ordering", len(items))
+	}
+
+	id, err := signing.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("signing.LoadOrCreate: %v", err)
+	}
+
+	src := &desiredStateSource{
+		store:          st,
+		items:          items,
+		contentBaseURL: "https://192.0.2.12:7420",
+		id:             id,
+		grants:         []wire.PairingGrant{grant.Mint()},
+	}
+
+	snap, err := src.current()
+	if err != nil {
+		t.Fatalf("current(): %v", err)
+	}
+
+	if len(snap.Sections.ScreenPrograms) != 1 {
+		t.Fatalf("len(ScreenPrograms) = %d, want 1", len(snap.Sections.ScreenPrograms))
+	}
+	content := snap.Sections.ScreenPrograms[0].Content
+	if len(content) != len(items) {
+		t.Fatalf("len(Content) = %d, want %d", len(content), len(items))
+	}
+	for i, item := range items {
+		wantAssetRef := signhash.ContentID(item.Bytes)
+		if content[i].AssetRef != wantAssetRef {
+			t.Errorf("item %d: asset_ref = %q, want %q (its own content digest)", i, content[i].AssetRef, wantAssetRef)
+		}
+		if content[i].ContentType != "image" {
+			t.Errorf("item %d: content_type = %q, want %q", i, content[i].ContentType, "image")
+		}
+	}
 }

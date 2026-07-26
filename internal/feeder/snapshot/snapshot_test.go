@@ -465,3 +465,136 @@ func TestBuildWithGrantsRidesAndVerifies(t *testing.T) {
 		t.Error("signature did not verify with a populated pairing_grants section")
 	}
 }
+
+// TestBuildCastSingleItemByteIdenticalToBuild asserts BuildCast, called with
+// one CastItem carrying no ContentType/DurationMS ({Bytes: img}), produces
+// wire output byte-identical to Build(img, ...) itself — the "keep the
+// existing single-item behavior byte-identical" property this codebase's
+// new ordered-cast capability must preserve for every existing caller
+// (Build's own doc comment). Both hash and full JSON marshal are compared.
+func TestBuildCastSingleItemByteIdenticalToBuild(t *testing.T) {
+	img := loadTestImage(t)
+	id := testIdentity(t)
+
+	viaBuild, err := Build(img, "https://origin.example", id, nil)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	viaCast, err := BuildCast([]CastItem{{Bytes: img}}, "https://origin.example", id, nil)
+	if err != nil {
+		t.Fatalf("BuildCast: %v", err)
+	}
+
+	// The signature itself differs run-to-run only if the signed bytes
+	// differ (ed25519 is deterministic given identical key + message), so
+	// comparing hash (and the full sections marshal) is the load-bearing
+	// check; Generation is a shared constant (1) on this path.
+	if viaCast.Hash != viaBuild.Hash {
+		t.Errorf("BuildCast single-item hash = %q, want %q (Build's own hash) — single-item behavior must stay byte-identical", viaCast.Hash, viaBuild.Hash)
+	}
+	if viaCast.Generation != viaBuild.Generation {
+		t.Errorf("BuildCast Generation = %d, want %d", viaCast.Generation, viaBuild.Generation)
+	}
+
+	rawBuild, err := json.Marshal(viaBuild.Sections)
+	if err != nil {
+		t.Fatalf("Marshal(viaBuild.Sections): %v", err)
+	}
+	rawCast, err := json.Marshal(viaCast.Sections)
+	if err != nil {
+		t.Fatalf("Marshal(viaCast.Sections): %v", err)
+	}
+	if string(rawBuild) != string(rawCast) {
+		t.Errorf("BuildCast single-item sections marshal differs from Build's:\nBuild:     %s\nBuildCast: %s", rawBuild, rawCast)
+	}
+
+	// In particular, content_type/duration_ms must be ABSENT (not merely
+	// "image"/0) — this is what makes the marshal genuinely byte-identical
+	// rather than coincidentally equal.
+	item := viaCast.Sections.ScreenPrograms[0].Content[0]
+	if item.ContentType != "" {
+		t.Errorf("single-item BuildCast ContentType = %q, want \"\" (omitted on the wire)", item.ContentType)
+	}
+	if item.DurationMS != 0 {
+		t.Errorf("single-item BuildCast DurationMS = %d, want 0 (omitted on the wire)", item.DurationMS)
+	}
+}
+
+// TestBuildCastOrderedMultiItemEachIndependentlyVerifiable asserts BuildCast
+// with several items produces a `content` array in the SAME order, one
+// ContentRef per item, each carrying its OWN content_type/duration_ms and
+// its OWN asset_ref — the per-item content-digest integrity property this
+// codebase's multi-item cast support requires (every item, not just the
+// first, must be independently verifiable against its own bytes).
+func TestBuildCastOrderedMultiItemEachIndependentlyVerifiable(t *testing.T) {
+	id := testIdentity(t)
+
+	items := []CastItem{
+		{Bytes: []byte("cast-item-one-image-bytes"), ContentType: "image", DurationMS: 8000},
+		{Bytes: []byte("cast-item-two-image-bytes"), ContentType: "image", DurationMS: 6000},
+		// Fixture bytes standing in for a video asset — this test exercises
+		// the content_type/duration_ms plumbing only; it is not a claim
+		// that these bytes are a real video (see testdata/demo's own doc
+		// for this codebase's real demo assets).
+		{Bytes: []byte("cast-item-three-fixture-video-bytes"), ContentType: "video", DurationMS: 12000},
+	}
+
+	snap, err := BuildCast(items, "https://origin.example", id, nil)
+	if err != nil {
+		t.Fatalf("BuildCast: %v", err)
+	}
+
+	content := snap.Sections.ScreenPrograms[0].Content
+	if len(content) != len(items) {
+		t.Fatalf("len(Content) = %d, want %d", len(content), len(items))
+	}
+
+	seenAssetRefs := make(map[string]bool, len(items))
+	for i, item := range items {
+		got := content[i]
+		wantAssetRef := signhash.ContentID(item.Bytes)
+		if got.AssetRef != wantAssetRef {
+			t.Errorf("item %d: AssetRef = %q, want %q", i, got.AssetRef, wantAssetRef)
+		}
+		if seenAssetRefs[got.AssetRef] {
+			t.Errorf("item %d: asset_ref %q collides with an earlier item — fixture bytes must be distinct", i, got.AssetRef)
+		}
+		seenAssetRefs[got.AssetRef] = true
+
+		wantURL := "https://origin.example/content/" + wantAssetRef[len("sha256:"):]
+		if got.URL != wantURL {
+			t.Errorf("item %d: URL = %q, want %q", i, got.URL, wantURL)
+		}
+		if got.ContentType != item.ContentType {
+			t.Errorf("item %d: ContentType = %q, want %q", i, got.ContentType, item.ContentType)
+		}
+		if got.DurationMS != item.DurationMS {
+			t.Errorf("item %d: DurationMS = %d, want %d", i, got.DurationMS, item.DurationMS)
+		}
+	}
+
+	// The hash/signature cover the whole ordered array — recomputing and
+	// re-verifying confirms every item (not just the first) rides REL-053's
+	// hash and REL-075's signature.
+	recomputed, err := hashSections(snap.Sections)
+	if err != nil {
+		t.Fatalf("hashSections: %v", err)
+	}
+	if recomputed != snap.Hash {
+		t.Errorf("recomputed hash %q != snapshot hash %q", recomputed, snap.Hash)
+	}
+}
+
+// TestBuildCastRejectsEmptyItems asserts BuildCast refuses a call with no
+// items rather than silently building a screen-program with an empty
+// `content` array — an authoring mistake this package can detect cheaply
+// at the boundary rather than downstream.
+func TestBuildCastRejectsEmptyItems(t *testing.T) {
+	id := testIdentity(t)
+	if _, err := BuildCast(nil, "https://origin.example", id, nil); err == nil {
+		t.Error("BuildCast(nil items) = nil error, want an error")
+	}
+	if _, err := BuildCast([]CastItem{}, "https://origin.example", id, nil); err == nil {
+		t.Error("BuildCast(empty items) = nil error, want an error")
+	}
+}

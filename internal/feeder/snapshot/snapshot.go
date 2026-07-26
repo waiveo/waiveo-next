@@ -95,12 +95,56 @@ var firstPhotonSiteEffective = wire.SiteEffective{
 // at Build time.
 var demoEdgeRuleJSON = json.RawMessage(`{"id":"` + demoRuleID + `","mode":"single","triggers":[{"type":"state","entity_id":"` + demoRuleEntityID + `","to":["on"]}],"conditions":[],"actions":[{"type":"device_command","entity_id":"` + demoRuleEntityID + `","command":"launch","params":{"channel":"dev"}}]}`)
 
+// CastItem is one ordered item of a feeder-built screen-program's `content`
+// array (REL-061/061a) — the feeder-side input BuildCast/BuildFromStoreCast
+// turn into a wire.ContentRef. Bytes MUST already be (or be about to be)
+// added to the content origin (internal/feeder/origin.Store.Add) under the
+// SAME bytes, so the asset_ref this package computes (signhash.ContentID(
+// Bytes)) names content the origin can actually Serve — BuildCast itself
+// never touches the origin; a caller adds the bytes first (or verifies they
+// already are present) and passes them here to compute the matching
+// reference.
+//
+// ContentType is carried verbatim into the built ContentRef's `content_type`
+// (REL-061a) — this package performs no validation against player/1's
+// content-type floor (PLY-014); a caller is expected to pass one of `image`,
+// `video`, or another value player/1 treats as forward-compatible data
+// (PLY-016). DurationMS is carried verbatim into `duration_ms` (REL-061a); 0
+// means unspecified, matching that field's own optional-override semantics.
+type CastItem struct {
+	Bytes       []byte
+	ContentType string
+	DurationMS  int64
+}
+
+// contentRefFor builds the wire.ContentRef a single CastItem resolves to,
+// under contentBaseURL — the same `<base>/content/<hex>` URL grammar every
+// content-serving path in this codebase uses (REL-061/140).
+func contentRefFor(item CastItem, contentBaseURL string) wire.ContentRef {
+	assetRef := signhash.ContentID(item.Bytes)
+	hexDigest := strings.TrimPrefix(assetRef, "sha256:")
+	return wire.ContentRef{
+		AssetRef:    assetRef,
+		URL:         contentBaseURL + "/content/" + hexDigest,
+		ExpiresAt:   firstPhotonExpiresAt,
+		ContentType: item.ContentType,
+		DurationMS:  item.DurationMS,
+	}
+}
+
 // Build builds and signs generation 1 of a relay/1 desired-state
 // snapshot carrying exactly one screen-program that shows img: one
 // `content` item whose `asset_ref` is img's sha256 content ID
 // (signhash.ContentID) and whose `url` resolves to the content origin's
 // `/content/<hex>` route under contentBaseURL. It signs with id's
 // signing private key.
+//
+// Build is BuildCast's single-item convenience wrapper: it carries no
+// `content_type`/`duration_ms` (CastItem{Bytes: img} — both left at their
+// zero value), which ContentRef's own `omitempty` tags marshal as absent
+// keys (wire.ContentRef) — so every existing caller of Build keeps producing
+// the exact same wire bytes, and the exact same `hash` (REL-053), as before
+// those fields existed.
 //
 // contentBaseURL also rides `sections.revocation_and_site.content_origin`
 // (REL-061/066) verbatim — the same base URL a relay-side schedule resolver
@@ -122,20 +166,60 @@ var demoEdgeRuleJSON = json.RawMessage(`{"id":"` + demoRuleID + `","mode":"singl
 // (REL-053) and transitively by `signature` (REL-075) exactly like every
 // other section.
 func Build(img []byte, contentBaseURL string, id *signing.Identity, grants []wire.PairingGrant) (SignedSnapshot, error) {
+	snap, err := BuildCast([]CastItem{{Bytes: img}}, contentBaseURL, id, grants)
+	if err != nil {
+		return SignedSnapshot{}, fmt.Errorf("snapshot: Build: %w", err)
+	}
+	return snap, nil
+}
+
+// BuildCast is Build's ordered-multi-item generalization: it builds and
+// signs generation 1 of a relay/1 desired-state snapshot carrying exactly
+// one screen-program whose `content` array (REL-061) holds one ContentRef
+// per element of items, IN ORDER — a real multi-item cast (an ordered list
+// of images/videos, each independently asset_ref-verifiable) rather than
+// Build's single hard-coded image. Every item's own ContentType/DurationMS
+// rides into its ContentRef's `content_type`/`duration_ms` (REL-061a)
+// unmodified (contentRefFor). items MUST be non-empty; BuildCast does not
+// itself add any item's bytes to a content origin (internal/feeder/origin) —
+// a caller does that first, so this function's computed asset_ref/url
+// actually resolve to servable bytes.
+//
+// The demo schedule section (REL-065, buildDemoScheduleSection) still
+// carries a single-item playlist referencing items[0]'s own asset_ref — the
+// schedule/playlist resolution path (internal/relay/schedulehost) is a
+// separate, already multi-item-capable mechanism (data-model/1 DAT-041) this
+// function does not touch; only the direct screen_programs.content array
+// gets the full ordered cast.
+//
+// Build(img, ...) is exactly BuildCast([]CastItem{{Bytes: img}}, ...): a
+// single item with no ContentType/DurationMS set, which ContentRef's own
+// `omitempty` tags marshal as absent keys — so a 1-item BuildCast call
+// produces byte-identical wire output, and therefore an identical `hash`
+// (REL-053), to Build's own pre-existing output.
+func BuildCast(items []CastItem, contentBaseURL string, id *signing.Identity, grants []wire.PairingGrant) (SignedSnapshot, error) {
 	if id == nil {
-		return SignedSnapshot{}, fmt.Errorf("snapshot: Build: id must not be nil")
+		return SignedSnapshot{}, fmt.Errorf("snapshot: BuildCast: id must not be nil")
+	}
+	if len(items) == 0 {
+		return SignedSnapshot{}, fmt.Errorf("snapshot: BuildCast: items must be non-empty")
 	}
 
 	if grants == nil {
 		grants = []wire.PairingGrant{}
 	}
 
-	assetRef := signhash.ContentID(img)
-	hexDigest := strings.TrimPrefix(assetRef, "sha256:")
+	content := make([]wire.ContentRef, 0, len(items))
+	for _, item := range items {
+		content = append(content, contentRefFor(item, contentBaseURL))
+	}
 
-	scheduleSection, err := buildDemoScheduleSection(assetRef)
+	// The demo schedule's own playlist still shows a single item — the
+	// first of the cast — exactly as Build's pre-existing behavior did when
+	// len(items) == 1 (BuildCast's doc above).
+	scheduleSection, err := buildDemoScheduleSection(content[0].AssetRef)
 	if err != nil {
-		return SignedSnapshot{}, fmt.Errorf("snapshot: Build: demo schedule: %w", err)
+		return SignedSnapshot{}, fmt.Errorf("demo schedule: %w", err)
 	}
 
 	sections := wire.Sections{
@@ -145,13 +229,7 @@ func Build(img []byte, contentBaseURL string, id *signing.Identity, grants []wir
 				ProgramRevision: firstPhotonProgramRevision,
 				Priority:        "scheduled",
 				Display:         "content",
-				Content: []wire.ContentRef{
-					{
-						AssetRef:  assetRef,
-						URL:       contentBaseURL + "/content/" + hexDigest,
-						ExpiresAt: firstPhotonExpiresAt,
-					},
-				},
+				Content:         content,
 			},
 		},
 		EdgeRules: wire.EdgeRules{
@@ -226,28 +304,57 @@ func Build(img []byte, contentBaseURL string, id *signing.Identity, grants []wir
 // (hashSections / signGenerationHash), so signing here and verifying on the relay
 // (internal/relay/desiredstate) cannot drift.
 func BuildFromStore(rows store.DesiredStateResult, img []byte, contentBaseURL string, id *signing.Identity, grants []wire.PairingGrant) (SignedSnapshot, error) {
+	snap, err := BuildFromStoreCast(rows, []CastItem{{Bytes: img}}, contentBaseURL, id, grants)
+	if err != nil {
+		return SignedSnapshot{}, fmt.Errorf("snapshot: BuildFromStore: %w", err)
+	}
+	return snap, nil
+}
+
+// BuildFromStoreCast is BuildFromStore's ordered-multi-item generalization —
+// the store-derived counterpart to BuildCast, exactly as BuildFromStore is
+// Build's: every other section (schedule from the store, edge_rules from the
+// store, site_effective from the store) is unchanged from BuildFromStore's
+// own behavior; only `screen_programs[0].content` becomes the full ordered
+// cast (one wire.ContentRef per items element, via contentRefFor) instead of
+// a single hard-coded image. BuildFromStore(rows, img, ...) is exactly
+// BuildFromStoreCast(rows, []CastItem{{Bytes: img}}, ...) — a single item
+// with no ContentType/DurationMS set, so a 1-item call produces
+// byte-identical wire output (and therefore an identical `hash`, REL-053) to
+// BuildFromStore's own pre-existing output, per ContentRef's `omitempty`
+// tags.
+//
+// items MUST be non-empty. Like BuildCast, this function does not itself add
+// any item's bytes to a content origin (internal/feeder/origin) — a caller
+// does that first.
+func BuildFromStoreCast(rows store.DesiredStateResult, items []CastItem, contentBaseURL string, id *signing.Identity, grants []wire.PairingGrant) (SignedSnapshot, error) {
 	if id == nil {
-		return SignedSnapshot{}, fmt.Errorf("snapshot: BuildFromStore: id must not be nil")
+		return SignedSnapshot{}, fmt.Errorf("snapshot: BuildFromStoreCast: id must not be nil")
+	}
+	if len(items) == 0 {
+		return SignedSnapshot{}, fmt.Errorf("snapshot: BuildFromStoreCast: items must be non-empty")
 	}
 
 	if grants == nil {
 		grants = []wire.PairingGrant{}
 	}
 
-	assetRef := signhash.ContentID(img)
-	hexDigest := strings.TrimPrefix(assetRef, "sha256:")
+	content := make([]wire.ContentRef, 0, len(items))
+	for _, item := range items {
+		content = append(content, contentRefFor(item, contentBaseURL))
+	}
 
 	scheduleSection, err := scheduleSectionFromStore(rows)
 	if err != nil {
-		return SignedSnapshot{}, fmt.Errorf("snapshot: BuildFromStore: schedule section: %w", err)
+		return SignedSnapshot{}, fmt.Errorf("schedule section: %w", err)
 	}
 
 	// edge_rules (REL-062) is the store's own edge-classified automations
 	// (rows.EdgeRules, from store.EdgeRuleBodies). Rules is defensively
 	// normalized to a non-nil empty slice (REL-060: a store with zero edge
 	// rules must still marshal `[]`, never `null`) — DesiredState already
-	// guarantees this via EdgeRuleBodies, but BuildFromStore does not trust a
-	// caller-assembled DesiredStateResult to have done so.
+	// guarantees this via EdgeRuleBodies, but BuildFromStoreCast does not
+	// trust a caller-assembled DesiredStateResult to have done so.
 	edgeRules := rows.EdgeRules
 	if edgeRules.Rules == nil {
 		edgeRules.Rules = []json.RawMessage{}
@@ -260,13 +367,7 @@ func BuildFromStore(rows store.DesiredStateResult, img []byte, contentBaseURL st
 				ProgramRevision: firstPhotonProgramRevision,
 				Priority:        "scheduled",
 				Display:         "content",
-				Content: []wire.ContentRef{
-					{
-						AssetRef:  assetRef,
-						URL:       contentBaseURL + "/content/" + hexDigest,
-						ExpiresAt: firstPhotonExpiresAt,
-					},
-				},
+				Content:         content,
 			},
 		},
 		EdgeRules: edgeRules,
