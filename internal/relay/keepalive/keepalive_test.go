@@ -622,3 +622,51 @@ func TestRunCancelsPromptlyWhileADispatchIsInFlight(t *testing.T) {
 		t.Fatal("Run did not return promptly after cancellation while a dispatch was still in flight — evaluateAll's per-screen dispatch must never block ctx cancellation")
 	}
 }
+
+// TestRunCancelsPromptlyUnderConcurrentDispatchLoad extends the single-screen
+// proof above to actual LOAD: many screens, not just one, each with a
+// permanently-blocked dispatch in flight at once, all spawned from the SAME
+// evaluateAll tick. evaluateAll's own doc says it spawns one goroutine PER
+// qualifying screen and dispatchWG's own doc says Run never waits on it —
+// this pins that Run's cancellation stays prompt when that goroutine count is
+// large, not only when there happens to be exactly one outstanding dispatch.
+func TestRunCancelsPromptlyUnderConcurrentDispatchLoad(t *testing.T) {
+	const screenCount = 50
+	hold := make(chan struct{}) // never closed: every dispatch below hangs forever
+	entered := make(chan string, screenCount)
+	controller := &blockingKAController{onDispatch: func(entityID string) {
+		entered <- entityID
+		<-hold
+	}}
+	k := New(Config{PollInterval: 20 * time.Millisecond, LaunchDelay: time.Millisecond, Controller: controller})
+
+	now := time.Now()
+	for i := 0; i < screenCount; i++ {
+		seedConfirmable(k, "scr"+strconv.Itoa(i), now)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- k.Run(ctx) }()
+
+	seen := 0
+	deadline := time.After(2 * time.Second)
+	for seen < screenCount {
+		select {
+		case <-entered:
+			seen++
+		case <-deadline:
+			t.Fatalf("only %d/%d seeded screens' dispatches entered the controller before the deadline", seen, screenCount)
+		}
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("Run returned %v, want context.Canceled", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Run did not return promptly after cancellation with many dispatches still in flight (under load) — evaluateAll's per-screen dispatch must never block ctx cancellation, however many screens are outstanding")
+	}
+}
