@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"log"
 	"net/http"
 	"time"
 
@@ -135,6 +136,9 @@ func (s *Server) handleReEnrollRenew(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.relayKeys[req.RelayID] = newPub
 	s.recordIssuance(req.RelayID, serial, newPub, notBefore)
+	if err := s.persistLocked(); err != nil {
+		log.Printf("enroll: persist enrollment state after re-enrolling %s: %v", req.RelayID, err)
+	}
 	s.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, reenroll.RenewAck{

@@ -114,6 +114,14 @@ const defaultStorePath = ".dev/feeder-store.db"
 // origin.Open creates the dir if absent, so no separate mkdir is needed.
 const defaultContentPath = ".dev/feeder-content"
 
+// defaultEnrollDir is the make-dev-local directory the enrollment server's
+// registry (internal/feeder/enroll.Server.EnablePersistence) persists into —
+// git-ignored under .dev/, a sibling of the signing keys and the store DB. It
+// MUST persist alongside signing.DefaultDir: both together are what let an
+// already-enrolled relay's hello keep verifying (REL-032) across a feeder
+// restart, rather than the app peer forgetting the relay ever enrolled.
+const defaultEnrollDir = ".dev/feeder-enroll"
+
 // loadConfig reads the feeder config from env (via `env`, os.Getenv in main),
 // falling back to the loopback defaults. contentBaseURL defaults to the listen
 // address so an unconfigured feeder behaves exactly as before.
@@ -221,6 +229,15 @@ func main() {
 	enrollSrv, err := enroll.NewServer(id, initialSnap)
 	if err != nil {
 		log.Fatalf("waiveo-feeder: enrollment server: %v", err)
+	}
+	// Persist the enrollment registry (relay_id -> enrollment key, issuance
+	// records, claim-token bookkeeping, CA) across restarts: without this, a
+	// fresh process forgets every relay it ever enrolled and the very next
+	// hello from an already-enrolled relay fails channel-binding verification
+	// (CHANNEL_BINDING_INVALID, REL-032) even though nothing about that
+	// relay's own identity changed. See enroll.Server.EnablePersistence's doc.
+	if err := enrollSrv.EnablePersistence(defaultEnrollDir); err != nil {
+		log.Fatalf("waiveo-feeder: enable enrollment persistence: %v", err)
 	}
 	// Serve the store-derived, generation-tracked desired state from the pull
 	// endpoint (superseding the static initialSnap).

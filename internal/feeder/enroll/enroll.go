@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"log"
 	"math/big"
 	"net/http"
 	"sync"
@@ -82,6 +83,16 @@ type Server struct {
 	relayKeys     map[string]ed25519.PublicKey // relay_id -> the enrollment public key this feeder issued a cert over
 	issuances     map[string][]issuance        // relay_id -> certs this feeder has issued, most-recently-issued first
 	reOutstanding string                       // the currently-issued, not-yet-consumed re-enroll challenge nonce (REL-026)
+
+	// persistPath, when non-empty (EnablePersistence), is the file s's
+	// enrollment registry (relayKeys/issuances/redeemed/pending/caCert/caKey)
+	// is durably written to after every mutation, so a restarted feeder
+	// process reloads exactly what it held before — see EnablePersistence's
+	// own doc for why this matters (REL-032 channel-binding continuity
+	// across a restart). Empty by default: NewServer alone keeps today's
+	// in-memory-only, forgets-on-restart behavior unchanged for every
+	// caller that never opts in (tests, conformance drivers).
+	persistPath string
 }
 
 // issuance is one certificate this feeder issued under a relay_id: its serial
@@ -164,6 +175,9 @@ func (s *Server) handleClaimToken(w http.ResponseWriter, r *http.Request) {
 		token := newToken()
 		s.pending = token
 		s.redeemed[token] = false
+		if err := s.persistLocked(); err != nil {
+			log.Printf("enroll: persist enrollment state after minting claim token: %v", err)
+		}
 	}
 	token := s.pending
 	s.mu.Unlock()
@@ -254,6 +268,9 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		s.relayKeys[relayID] = pub
 		s.recordIssuance(relayID, serial, pub, notBefore)
+		if err := s.persistLocked(); err != nil {
+			log.Printf("enroll: persist enrollment state after enrolling %s: %v", relayID, err)
+		}
 		s.mu.Unlock()
 	}
 
@@ -288,6 +305,9 @@ func (s *Server) redeemToken(token string) bool {
 	s.redeemed[token] = true
 	if s.pending == token {
 		s.pending = ""
+	}
+	if err := s.persistLocked(); err != nil {
+		log.Printf("enroll: persist enrollment state after redeeming claim token: %v", err)
 	}
 	return true
 }
