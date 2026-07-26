@@ -95,7 +95,7 @@ func RunCases(cases map[string]corpus.Case) report.Report {
 // has no mounted route to drive (see pendingCaseIDs).
 var drivenCaseIDs = []string{
 	"API-010", "API-013",
-	"API-022", "API-023", "API-032", "API-044", "API-045", "API-102",
+	"API-022", "API-023", "API-032", "API-044", "API-045", "API-101", "API-102",
 	"API-052", "API-053", "API-111",
 }
 
@@ -779,16 +779,13 @@ type externalIDInput struct {
 	} `json:"collection_state"`
 }
 
-// driveExternalID drives the external_id-conflict corpus case (API-102)
+// driveExternalID drives the external_id-conflict corpus cases (API-101/102)
 // against the live POST /api/v1/scope-nodes handler: a create whose
-// external_id already names another resource of the same kind under the same
-// parent scope node is rejected before the write executes.
-//
-// The live handler scopes the uniqueness check by resourceConfig.resourceType
-// (api.go's refsFrom), which is the generic tag "scope-nodes" for every
-// scope-node kind — not the row's own `kind` ("screen") the corpus's pinned
-// detail names ("already in use by another screen under this parent."). This
-// is a genuine wording divergence this case now correctly surfaces.
+// external_id already names another resource under the same parent scope node
+// is rejected before the write executes — same-kind (API-102) or cross-kind
+// (API-101), since the live handler scopes the check by
+// resourceConfig.resourceType (api.go's refsFrom), the generic tag
+// "scope-nodes" every scope-node kind shares, never the row's own `kind`.
 func driveExternalID(rep *report.Report, c corpus.Case) {
 	var in externalIDInput
 	if err := decodeField(c.Input, &in); err != nil {

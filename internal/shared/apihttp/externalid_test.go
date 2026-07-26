@@ -55,15 +55,30 @@ func loadExternalIDConflictCase(t *testing.T, name string) externalIDConflictCas
 	return c
 }
 
+// scopeNodeResourceType is the api/1 resourceType family tag api.go's
+// scopeNodesConfig actually scopes external_id uniqueness by — "scope-nodes",
+// shared by every scope-node kind alike (API-101). The corpus's own
+// collection_state/body rows carry each row's `kind` (e.g. "screen"), which is
+// NOT what production matches on; refsFromCollectionState and this file's
+// calls into CheckExternalIDUnique tag every row with this family constant
+// instead, so the test drives the SAME matching key the live handler does.
+const scopeNodeResourceType = "scope-nodes"
+
+// scopeNodeDisplayName is the human noun api.go's scopeNodesConfig.displayName
+// carries, and the wording CheckExternalIDUnique's rejection Detail names.
+const scopeNodeDisplayName = "scope node"
+
 // refsFromCollectionState projects a corpus case's collection_state rows into
-// the []ExternalRef CheckExternalIDUnique/ResolveRef consume.
+// the []ExternalRef CheckExternalIDUnique/ResolveRef consume. Every row is
+// tagged scopeNodeResourceType — never the row's own `kind` — matching the
+// live api.go handler's family-scoped, kind-agnostic matching key (API-101).
 func refsFromCollectionState(c externalIDConflictCase) []ExternalRef {
 	refs := make([]ExternalRef, 0, len(c.Input.CollectionState))
 	for _, row := range c.Input.CollectionState {
 		refs = append(refs, ExternalRef{
 			ID:           row.ID,
 			ExternalID:   row.ExternalID,
-			ResourceType: row.Kind,
+			ResourceType: scopeNodeResourceType,
 			ScopeNode:    row.ParentID,
 		})
 	}
@@ -71,16 +86,16 @@ func refsFromCollectionState(c externalIDConflictCase) []ExternalRef {
 }
 
 // TestCheckExternalIDUniqueConflictCorpus drives API-101/102: a create whose
-// external_id already names another resource of the SAME kind under the SAME
-// parent scope node is rejected 400 / EXTERNAL_ID_CONFLICT before the write
-// executes, with the pinned detail reproduced verbatim.
+// external_id already names another resource of the SAME resource type under
+// the SAME parent scope node is rejected 400 / EXTERNAL_ID_CONFLICT before the
+// write executes, with the pinned detail reproduced verbatim.
 func TestCheckExternalIDUniqueConflictCorpus(t *testing.T) {
 	c := loadExternalIDConflictCase(t, "API-102-invalid-external-id-conflict.json")
 	existing := refsFromCollectionState(c)
 
 	// selfID is empty: this is a create, so no existing record can be "this
 	// same resource" and the check can never suppress itself.
-	prob := CheckExternalIDUnique(existing, c.Input.Body.Kind, c.Input.Body.ParentID, c.Input.Body.ExternalID, "")
+	prob := CheckExternalIDUnique(existing, scopeNodeResourceType, scopeNodeDisplayName, c.Input.Body.ParentID, c.Input.Body.ExternalID, "")
 	if prob == nil {
 		t.Fatal("CheckExternalIDUnique returned nil (no conflict), want EXTERNAL_ID_CONFLICT (API-102)")
 	}
@@ -106,7 +121,7 @@ func TestCheckExternalIDUniqueDifferentTypeNotCollision(t *testing.T) {
 	c := loadExternalIDConflictCase(t, "API-102-invalid-external-id-conflict.json")
 	existing := refsFromCollectionState(c)
 
-	prob := CheckExternalIDUnique(existing, "device", c.Input.Body.ParentID, c.Input.Body.ExternalID, "")
+	prob := CheckExternalIDUnique(existing, "device", "device", c.Input.Body.ParentID, c.Input.Body.ExternalID, "")
 	if prob != nil {
 		t.Errorf("CheckExternalIDUnique for a different resourceType = %+v, want nil (a different type is not a collision, API-101)", prob)
 	}
@@ -119,7 +134,7 @@ func TestCheckExternalIDUniqueDifferentScopeNotCollision(t *testing.T) {
 	c := loadExternalIDConflictCase(t, "API-102-invalid-external-id-conflict.json")
 	existing := refsFromCollectionState(c)
 
-	prob := CheckExternalIDUnique(existing, c.Input.Body.Kind, "01J8Z2Q1M8H8N4T0V1W2X3Y4Z9", c.Input.Body.ExternalID, "")
+	prob := CheckExternalIDUnique(existing, scopeNodeResourceType, scopeNodeDisplayName, "01J8Z2Q1M8H8N4T0V1W2X3Y4Z9", c.Input.Body.ExternalID, "")
 	if prob != nil {
 		t.Errorf("CheckExternalIDUnique under a different scopeNode = %+v, want nil (a different scope node is not a collision, API-101)", prob)
 	}
@@ -132,7 +147,7 @@ func TestCheckExternalIDUniqueEmptyNeverCollides(t *testing.T) {
 	c := loadExternalIDConflictCase(t, "API-102-invalid-external-id-conflict.json")
 	existing := refsFromCollectionState(c)
 
-	prob := CheckExternalIDUnique(existing, c.Input.Body.Kind, c.Input.Body.ParentID, "", "")
+	prob := CheckExternalIDUnique(existing, scopeNodeResourceType, scopeNodeDisplayName, c.Input.Body.ParentID, "", "")
 	if prob != nil {
 		t.Errorf("CheckExternalIDUnique(\"\") = %+v, want nil (an empty external_id never collides)", prob)
 	}
@@ -146,7 +161,7 @@ func TestCheckExternalIDUniqueSelfUpdateNotCollision(t *testing.T) {
 	existing := refsFromCollectionState(c)
 	self := c.Input.CollectionState[0]
 
-	prob := CheckExternalIDUnique(existing, self.Kind, self.ParentID, self.ExternalID, self.ID)
+	prob := CheckExternalIDUnique(existing, scopeNodeResourceType, scopeNodeDisplayName, self.ParentID, self.ExternalID, self.ID)
 	if prob != nil {
 		t.Errorf("CheckExternalIDUnique with selfID = the colliding record's own ID = %+v, want nil (not a DIFFERENT resource)", prob)
 	}
@@ -161,7 +176,7 @@ func TestCheckExternalIDUniqueOtherResourceStillCollides(t *testing.T) {
 	existing := refsFromCollectionState(c)
 	self := c.Input.CollectionState[0]
 
-	prob := CheckExternalIDUnique(existing, self.Kind, self.ParentID, self.ExternalID, "01J8Z3K4N5P6Q7R8S9T0V1W2Y2")
+	prob := CheckExternalIDUnique(existing, scopeNodeResourceType, scopeNodeDisplayName, self.ParentID, self.ExternalID, "01J8Z3K4N5P6Q7R8S9T0V1W2Y2")
 	if prob == nil {
 		t.Fatal("CheckExternalIDUnique with a selfID that does not name the colliding record = nil, want EXTERNAL_ID_CONFLICT")
 	}
@@ -202,7 +217,7 @@ func TestResolveRefByID(t *testing.T) {
 	existing := []ExternalRef{
 		{ID: "01J8Z3K4N5P6Q7R8S9T0V1W2Y0", ExternalID: "lobby-screen-1", ResourceType: "screen", ScopeNode: "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5"},
 	}
-	id, prob := ResolveRef("01J8Z3K4N5P6Q7R8S9T0V1W2Y0", existing, "screen", "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5")
+	id, prob := ResolveRef("01J8Z3K4N5P6Q7R8S9T0V1W2Y0", existing, "screen", "screen", "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5")
 	if prob != nil {
 		t.Fatalf("ResolveRef by id = error %+v, want a resolved id", prob)
 	}
@@ -219,7 +234,7 @@ func TestResolveRefByExternalIDFallback(t *testing.T) {
 	existing := []ExternalRef{
 		{ID: "01J8Z3K4N5P6Q7R8S9T0V1W2Y0", ExternalID: "lobby-screen-1", ResourceType: "screen", ScopeNode: "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5"},
 	}
-	id, prob := ResolveRef("lobby-screen-1", existing, "screen", "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5")
+	id, prob := ResolveRef("lobby-screen-1", existing, "screen", "screen", "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5")
 	if prob != nil {
 		t.Fatalf("ResolveRef by external_id = error %+v, want a resolved id", prob)
 	}
@@ -237,7 +252,7 @@ func TestResolveRefIDTakesPrecedenceOverExternalID(t *testing.T) {
 		{ID: ambiguous, ExternalID: "lobby-screen-1", ResourceType: "screen", ScopeNode: "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5"},
 		{ID: "01J8Z3K4N5P6Q7R8S9T0V1W2Y2", ExternalID: ambiguous, ResourceType: "screen", ScopeNode: "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5"},
 	}
-	id, prob := ResolveRef(ambiguous, existing, "screen", "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5")
+	id, prob := ResolveRef(ambiguous, existing, "screen", "screen", "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5")
 	if prob != nil {
 		t.Fatalf("ResolveRef(%q) = error %+v, want a resolved id", ambiguous, prob)
 	}
@@ -253,7 +268,7 @@ func TestResolveRefNotFound(t *testing.T) {
 	existing := []ExternalRef{
 		{ID: "01J8Z3K4N5P6Q7R8S9T0V1W2Y0", ExternalID: "lobby-screen-1", ResourceType: "screen", ScopeNode: "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5"},
 	}
-	id, prob := ResolveRef("no-such-value", existing, "screen", "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5")
+	id, prob := ResolveRef("no-such-value", existing, "screen", "screen", "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5")
 	if prob == nil {
 		t.Fatalf("ResolveRef(\"no-such-value\") = (%q, nil), want NOT_FOUND", id)
 	}
@@ -279,12 +294,12 @@ func TestResolveRefExternalIDNotFoundOutsideScope(t *testing.T) {
 	}
 
 	// Same external_id value, but querying a different scope node.
-	if _, prob := ResolveRef("lobby-screen-1", existing, "screen", "01J8Z2Q1M8H8N4T0V1W2X3Y4Z9"); prob == nil {
+	if _, prob := ResolveRef("lobby-screen-1", existing, "screen", "screen", "01J8Z2Q1M8H8N4T0V1W2X3Y4Z9"); prob == nil {
 		t.Error("ResolveRef matched an external_id under a different scope node, want NOT_FOUND")
 	}
 
 	// Same external_id value, but querying a different resourceType.
-	if _, prob := ResolveRef("lobby-screen-1", existing, "device", "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5"); prob == nil {
+	if _, prob := ResolveRef("lobby-screen-1", existing, "device", "device", "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5"); prob == nil {
 		t.Error("ResolveRef matched an external_id under a different resourceType, want NOT_FOUND")
 	}
 }

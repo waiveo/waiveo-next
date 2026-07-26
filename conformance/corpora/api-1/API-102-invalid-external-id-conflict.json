@@ -2,7 +2,7 @@
   "case_id": "API-102-invalid-external-id-conflict",
   "contract": "api/1",
   "req_ids": ["API-100", "API-101", "API-102"],
-  "description": "Creating a scope node whose external_id is already used by another scope node of the same kind under the same parent scope node is rejected with 400 Bad Request / EXTERNAL_ID_CONFLICT before the write executes; the collision rule is scoped by placement, so this says nothing about external_id reuse elsewhere in the tree.",
+  "description": "Creating a scope node whose external_id is already used by another scope node under the same parent is rejected with 400 Bad Request / EXTERNAL_ID_CONFLICT before the write executes: the collision rule is scoped by resource type (\"scope-nodes\", shared by every kind alike, API-101) and placement (same parent) — the same value under a different parent, or under a different resource type, is not a collision.",
   "input": {
     "method": "POST",
     "path": "/api/v1/scope-nodes",
@@ -32,7 +32,7 @@
       "type": "about:blank",
       "title": "Bad Request",
       "status": 400,
-      "detail": "external_id \"lobby-screen-1\" is already in use by another screen under this parent.",
+      "detail": "external_id \"lobby-screen-1\" is already in use by another scope node under this parent.",
       "code": "EXTERNAL_ID_CONFLICT",
       "trace_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y1"
     }

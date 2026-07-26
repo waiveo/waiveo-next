@@ -425,7 +425,7 @@ func (srv *server) packRowExternalIDGuards(externalID, scopeNode, selfID string)
 				ScopeNode:    row.ScopeNode,
 			})
 		}
-		if xerr := apihttp.CheckExternalIDUnique(refs, packRowResourceType, scopeNode, externalID, selfID); xerr != nil {
+		if xerr := apihttp.CheckExternalIDUnique(refs, packRowResourceType, "pack row", scopeNode, externalID, selfID); xerr != nil {
 			return xerr
 		}
 		return nil

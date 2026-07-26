@@ -75,7 +75,7 @@ export` does not exist in `api.New`'s mux).
 | API-091 | `contracts/api-1.md#security-override-convention` | - | TBD-wave1 |
 | API-092 | `contracts/api-1.md#security-override-convention` | - | TBD-wave1 |
 | API-100 | `contracts/api-1.md#client-assignable-external_id` | `API-102-invalid-external-id-conflict` | covered |
-| API-101 | `contracts/api-1.md#client-assignable-external_id` | `API-102-invalid-external-id-conflict` | covered |
+| API-101 | `contracts/api-1.md#client-assignable-external_id` | `API-102-invalid-external-id-conflict`, `API-101-invalid-external-id-cross-kind-conflict` | covered |
 | API-102 | `contracts/api-1.md#client-assignable-external_id` | `API-102-invalid-external-id-conflict` | covered |
 | API-103 | `contracts/api-1.md#client-assignable-external_id` | - | TBD-wave1 |
 | API-104 | `contracts/api-1.md#client-assignable-external_id` | - | TBD-wave1 |

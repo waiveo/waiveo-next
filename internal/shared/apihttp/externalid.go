@@ -50,6 +50,12 @@ func (e *ExternalIDError) Error() string { return e.Detail }
 // uniqueness scope. An empty externalID never collides, since setting it is
 // always optional (API-100).
 //
+// resourceType is the matching key API-101 scopes uniqueness by (a family
+// tag like "scope-nodes", shared by every kind of that family); displayName
+// is the human noun the rejection's Detail names instead — e.g. "scope node"
+// — so a Problem a client reads never leaks the bare, possibly-plural or
+// possibly-ungrammatical tag (e.g. "another scope-nodes under this parent").
+//
 // selfID names the resource being created or updated: empty for a create (so
 // no existing record's ID can equal it, and the check can never suppress
 // itself), or that resource's own id for an update — so an update that
@@ -57,7 +63,7 @@ func (e *ExternalIDError) Error() string { return e.Detail }
 // with itself. selfID only excuses the one record it names; a colliding
 // value already claimed by a DIFFERENT existing record is still rejected
 // even when selfID is supplied for some other resource entirely.
-func CheckExternalIDUnique(existing []ExternalRef, resourceType, scopeNode, externalID, selfID string) *ExternalIDError {
+func CheckExternalIDUnique(existing []ExternalRef, resourceType, displayName, scopeNode, externalID, selfID string) *ExternalIDError {
 	if externalID == "" {
 		return nil
 	}
@@ -75,7 +81,7 @@ func CheckExternalIDUnique(existing []ExternalRef, resourceType, scopeNode, exte
 			Status: http.StatusBadRequest,
 			Code:   "EXTERNAL_ID_CONFLICT",
 			Title:  "Bad Request",
-			Detail: fmt.Sprintf("external_id %q is already in use by another %s under this parent.", externalID, resourceType),
+			Detail: fmt.Sprintf("external_id %q is already in use by another %s under this parent.", externalID, displayName),
 		}
 	}
 	return nil
@@ -85,7 +91,9 @@ func CheckExternalIDUnique(existing []ExternalRef, resourceType, scopeNode, exte
 // resource's id or its external_id (API-103) — against existing, narrowing
 // the search to records of resourceType placed under scopeNode: the SAME
 // (type, scope node) unit API-101 scopes uniqueness by, so the fallback below
-// never crosses into a different placement's or type's namesake.
+// never crosses into a different placement's or type's namesake. displayName
+// is the human noun the NOT_FOUND Detail names — see CheckExternalIDUnique's
+// doc for why this is kept separate from resourceType, the matching key.
 //
 // value is tried as an id FIRST; only when no candidate's ID matches does it
 // fall back to external_id — so a value that happens to equal one record's id
@@ -95,7 +103,7 @@ func CheckExternalIDUnique(existing []ExternalRef, resourceType, scopeNode, exte
 // produces elsewhere in this contract (API-103) — this helper does not
 // distinguish "no such id" from "no such external_id" in its Problem, since
 // the contract requires a caller be unable to tell the two apart.
-func ResolveRef(value string, existing []ExternalRef, resourceType, scopeNode string) (id string, prob *ExternalIDError) {
+func ResolveRef(value string, existing []ExternalRef, resourceType, displayName, scopeNode string) (id string, prob *ExternalIDError) {
 	for _, ref := range existing {
 		if ref.ResourceType == resourceType && ref.ScopeNode == scopeNode && ref.ID == value {
 			return ref.ID, nil
@@ -110,6 +118,6 @@ func ResolveRef(value string, existing []ExternalRef, resourceType, scopeNode st
 		Status: http.StatusNotFound,
 		Code:   "NOT_FOUND",
 		Title:  "Not Found",
-		Detail: fmt.Sprintf("No %s exists with this identifier.", resourceType),
+		Detail: fmt.Sprintf("No %s exists with this identifier.", displayName),
 	}
 }

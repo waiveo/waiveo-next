@@ -34,6 +34,7 @@ func automationsConfig() resourceConfig {
 		kind:         store.KindAutomation,
 		path:         "automations",
 		resourceType: "automations",
+		displayName:  "automation",
 		selLabels:    func(f resourceFields) map[string]string { return f.Labels },
 		placement:    func(f resourceFields) string { return f.ScopeNode },
 		extScope:     func(f resourceFields) string { return f.ScopeNode },
@@ -108,7 +109,7 @@ func (srv *server) runAutomationExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !found {
-		writeProblem(w, r, http.StatusNotFound, "NOT_FOUND", "Not Found", "No resource exists at this identifier.")
+		writeProblem(w, r, http.StatusNotFound, "NOT_FOUND", "Not Found", "No automation exists with this identifier.")
 		return
 	}
 

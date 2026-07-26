@@ -16,6 +16,7 @@ func scopeNodesConfig() resourceConfig {
 		kind:         store.KindScopeNode,
 		path:         "scope-nodes",
 		resourceType: "scope-nodes",
+		displayName:  "scope node",
 		selLabels: func(f resourceFields) map[string]string {
 			m := make(map[string]string, len(f.Labels)+1)
 			for k, v := range f.Labels {

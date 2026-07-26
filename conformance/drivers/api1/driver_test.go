@@ -22,6 +22,7 @@ var expectedDriven = []string{
 	"API-045-invalid-selector-malformed",
 	"API-052-valid-idempotency-replay",
 	"API-053-invalid-idempotency-key-reused-different-body",
+	"API-101-invalid-external-id-cross-kind-conflict",
 	"API-102-invalid-external-id-conflict",
 	"API-111-valid-bulk-enable-202-job",
 }
@@ -44,9 +45,6 @@ var expectedPending = []string{
 // than silently going green over a still-broken case, or silently going red
 // over a NEW regression this map hasn't been told about yet.
 var expectedFailing = map[string]string{
-	"API-010-valid-simple-problem": "live rs.notFound (api.go) emits the resource-kind-agnostic detail " +
-		"\"No resource exists at this identifier.\" for every kind's 404; the corpus pins the scope-node-specific " +
-		"\"No scope node exists with this identifier.\" — a wording mismatch, not a missing route.",
 	"API-013-valid-multi-field-validation-problem": "status/code/message mismatch: the corpus pins 400/ENUM_MISMATCH/TOO_SHORT " +
 		"for an invalid kind + empty name; the live scope-node validator (datamodel.BuildScopeTree) always emits 422 and has no " +
 		"TOO_SHORT check on `name` at all (only SCOPE_NODE_KIND_INVALID for kind) — the corpus predates (or was never reconciled " +
@@ -61,10 +59,6 @@ var expectedFailing = map[string]string{
 		"instead of creating it 201 — the Idempotency-Key fixtures were never reconciled with the site-geo-required rule.",
 	"API-053-invalid-idempotency-key-reused-different-body": "same DAT-031 site-geo-required mismatch as API-052: the first " +
 		"request in the case is rejected 422 instead of succeeding 201.",
-	"API-102-invalid-external-id-conflict": "wording mismatch only: the live apihttp.CheckExternalIDUnique detail names the " +
-		"resource by resourceConfig.resourceType (\"scope-nodes\", the generic tag every scope-node kind shares in api.go); the " +
-		"corpus pins the row's own `kind` (\"screen\"). The conflict IS correctly detected (400/EXTERNAL_ID_CONFLICT, write not " +
-		"executed) — only the human-readable detail string differs.",
 	"API-111-valid-bulk-enable-202-job": "two of the Job resource's fields can never equal the corpus's arbitrary pinned " +
 		"values: the live handler mints the Job id via ulid.New() (automations.go bulkEnableExec) with no injection seam, and " +
 		"stamps created_by from the fixed pocPrincipal constant (auth is deferred — api.go's own doc comment). created_at DOES " +

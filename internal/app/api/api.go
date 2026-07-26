@@ -108,19 +108,27 @@ func New(st *store.Store, idem *apihttp.IdempotencyStore, nowMs func() int64, co
 // resourceConfig parameterizes the generic resource handler for one resource
 // kind: which store table it lives in, its URL path segment, the api/1
 // resource-type tag its external_id uniqueness and cross-references are scoped
-// by, and the three per-kind field projections the conventions need — the
-// selectable label set (labels + any reserved intrinsic), the scope-node
-// placement a selector's scope_node term evaluates against, and the grouping
-// external_id uniqueness is scoped by. A scope node's placement is itself and
-// its external_id groups by parent; a scheduling-core row's placement and
+// by, the human noun a Problem's `detail` prose names it by (displayName), and
+// the three per-kind field projections the conventions need — the selectable
+// label set (labels + any reserved intrinsic), the scope-node placement a
+// selector's scope_node term evaluates against, and the grouping external_id
+// uniqueness is scoped by. A scope node's placement is itself and its
+// external_id groups by parent; a scheduling-core row's placement and
 // external_id grouping are both its scope_node (see scopenodes.go / a follow-up).
 type resourceConfig struct {
 	kind         store.Kind
 	path         string
 	resourceType string
-	selLabels    func(resourceFields) map[string]string
-	placement    func(resourceFields) string
-	extScope     func(resourceFields) string
+	// displayName is the singular human noun this kind is named by in a Problem's
+	// `detail` prose (a 404's "No <displayName> exists..." and an external_id
+	// conflict's "...another <displayName> under this parent.") — resourceType
+	// itself is a matching key (a family tag like "scope-nodes", not always a
+	// grammatical noun on its own), so the two are kept separate rather than
+	// reusing one for the other.
+	displayName string
+	selLabels   func(resourceFields) map[string]string
+	placement   func(resourceFields) string
+	extScope    func(resourceFields) string
 	// validate, when non-nil, is a per-kind pre-write body validation run over the
 	// EFFECTIVE request body — the create body, or a patch shallow-merged onto the
 	// current row — BEFORE the store write; a non-empty result is rendered
@@ -489,7 +497,7 @@ func (rs *resource) externalIDGuards(externalID, scopeNode, selfID string) []sto
 	}
 	return []store.WriteGuard{func(existing []store.Resource) error {
 		refs := rs.refsFrom(existing)
-		if xerr := apihttp.CheckExternalIDUnique(refs, rs.cfg.resourceType, scopeNode, externalID, selfID); xerr != nil {
+		if xerr := apihttp.CheckExternalIDUnique(refs, rs.cfg.resourceType, rs.cfg.displayName, scopeNode, externalID, selfID); xerr != nil {
 			return xerr
 		}
 		return nil
@@ -497,8 +505,11 @@ func (rs *resource) externalIDGuards(externalID, scopeNode, selfID string) []sto
 }
 
 // refsFrom projects the store rows a WriteGuard is handed onto the ExternalRef
-// shape CheckExternalIDUnique consumes, scoping external_id uniqueness by the
-// kind's own grouping (a scope node by parent, a scheduling row by scope_node).
+// shape CheckExternalIDUnique consumes. Every row is tagged with the kind's
+// resourceType (the family api/1 scopes external_id uniqueness by — API-101
+// scopes by resource type together with placement, not by the row's own
+// store.Kind), and placed under the kind's own grouping (a scope node by
+// parent, a scheduling row by scope_node).
 func (rs *resource) refsFrom(rows []store.Resource) []apihttp.ExternalRef {
 	refs := make([]apihttp.ExternalRef, 0, len(rows))
 	for _, res := range rows {
@@ -644,7 +655,7 @@ func (rs *resource) problem(w http.ResponseWriter, r *http.Request, status int, 
 }
 
 func (rs *resource) notFound(w http.ResponseWriter, r *http.Request) {
-	rs.problem(w, r, http.StatusNotFound, "NOT_FOUND", "Not Found", "No resource exists at this identifier.")
+	rs.problem(w, r, http.StatusNotFound, "NOT_FOUND", "Not Found", "No "+rs.cfg.displayName+" exists with this identifier.")
 }
 
 // internal is the fallback for an unexpected server-side failure (API error
