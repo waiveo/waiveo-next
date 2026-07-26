@@ -347,14 +347,77 @@ type telnetDebugConsole struct {
 	r    *bufio.Reader
 }
 
-// dialTelnetDebugConsole dials addr (host:port) and returns a ready
-// telnetDebugConsole. The caller MUST Close it.
+// backlogDrainQuiet/backlogDrainMax bound dialTelnetDebugConsole's backlog
+// drain (see drainBacklog's own doc): empirically, against a real device on
+// The Hanger, the stale-scrollback burst a fresh connect receives arrives in
+// a single read within milliseconds, followed by genuine silence until the
+// device's own next print — so backlogDrainQuiet need not be large, and
+// backlogDrainMax merely bounds the pathological case of an unexpectedly
+// chatty console so a dial can never hang indefinitely.
+const (
+	backlogDrainQuiet = 400 * time.Millisecond
+	backlogDrainMax   = 3 * time.Second
+)
+
+// dialTelnetDebugConsole dials addr (host:port), drains the stale-scrollback
+// backlog every fresh connection receives (drainBacklog), and returns a
+// ready telnetDebugConsole. The caller MUST Close it.
 func dialTelnetDebugConsole(addr string, dialTimeout time.Duration) (*telnetDebugConsole, error) {
 	conn, err := net.DialTimeout("tcp", addr, dialTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("dial debug console %s: %w", addr, err)
 	}
-	return &telnetDebugConsole{conn: conn, r: bufio.NewReader(conn)}, nil
+	c := &telnetDebugConsole{conn: conn, r: bufio.NewReader(conn)}
+	c.drainBacklog()
+	return c, nil
+}
+
+// drainBacklog discards every byte already buffered or in-flight on a
+// freshly dialed debug console connection, BEFORE AwaitOutcome starts
+// classifying lines against it.
+//
+// A real Roku's BrightScript remote debug console replays a burst of the
+// device's OWN PRIOR output — print lines from an earlier, wholly unrelated
+// pairing attempt, session, or even a previous conformance run — to every
+// newly-dialed client, not merely output caused by whatever the CURRENT
+// caller is about to do. classifyPlayerV3Line pattern-matches by content
+// alone (the exact terminal strings PlayerTask.brs/Pairing.brs print), so it
+// cannot tell a stale "paired (screen ...)" or "program FAILED" line
+// leftover from a past attempt apart from a genuinely fresh one for THIS
+// attempt — and the stale burst arrives first, well before any live output
+// the launch this dial precedes could possibly cause. Without draining,
+// AwaitOutcome can match on that stale burst and return an outcome for an
+// attempt that never actually happened: driven live against The Hanger,
+// this produced BOTH a false PASS (PLY-050 matched a stale "paired (screen
+// ...)" line from an earlier attempt while pair_call_count was actually 0)
+// and, once that same stale line aged out of the console's buffer, a false
+// FAIL on the identical underlying case (PLY-055/PLY-050 both reporting
+// redemption_completed=false / pair_call_count=0) — the real device's own
+// pairing was correct throughout; only the observation was wrong.
+//
+// Verified empirically against a real player-v3 device on The Hanger: the
+// stale burst arrives in a single read within milliseconds of connecting,
+// then genuine silence follows until the device's own next print (the next
+// launch's live output) — so waiting for backlogDrainQuiet of inactivity
+// reliably clears exactly the stale burst and nothing more.
+func (c *telnetDebugConsole) drainBacklog() {
+	deadline := time.Now().Add(backlogDrainMax)
+	buf := make([]byte, 4096)
+	for {
+		quietUntil := time.Now().Add(backlogDrainQuiet)
+		if quietUntil.After(deadline) {
+			quietUntil = deadline
+		}
+		_ = c.conn.SetReadDeadline(quietUntil)
+		if _, err := c.r.Read(buf); err != nil {
+			return // quiet window elapsed (or the connection itself errored;
+			// either way AwaitOutcome's own read loop will surface a real
+			// connection error again if it persists)
+		}
+		if !time.Now().Before(deadline) {
+			return
+		}
+	}
 }
 
 // Close implements outcomeObserver.
