@@ -983,6 +983,22 @@ func driveExternalID(rep *report.Report, c corpus.Case) {
 // --- Idempotency-Key replay/reuse (API-050-056) ---------------------------
 
 type idempotencyDriverInput struct {
+	// SeedScopeNodes are scope nodes created directly through the store (the
+	// same seedScopeNode fixture-setup pattern driveSelector's collection_state
+	// uses) BEFORE any request in Requests runs — so a request body's parent_id
+	// can reference a REAL, already-existing scope node rather than leaning on
+	// BuildScopeTree's subtree-boundary tolerance (DAT-002 requires an existing
+	// parent; the tolerance is a read-side allowance for a relay/1 per-scope
+	// snapshot, not a license for an authoritative create). Deliberately a
+	// distinct field name from driveSelector/driveExternalID's own
+	// "collection_state": classifyShape treats an input carrying BOTH
+	// "requests" and "collection_state" as the pagination shape, so reusing
+	// that name here would misroute every idempotency case.
+	SeedScopeNodes []struct {
+		ID   string `json:"id"`
+		Kind string `json:"kind"`
+		Name string `json:"name"`
+	} `json:"seed_scope_nodes"`
 	Requests []struct {
 		Method  string            `json:"method"`
 		Path    string            `json:"path"`
@@ -1007,13 +1023,19 @@ type idempotencyDriverExpected struct {
 // its own pinned expectation, plus the total create side effects.
 //
 // The frozen API-052/053 fixtures predate two datamodel rules this driver's
-// harness enforces for real, since it is the live store: DAT-002 (a non-org
-// scope node MUST carry a non-null parent_id) and DAT-031 (a site MUST
-// declare tz/lat/long together). Both fixtures now carry a parent_id —
-// 01J8Z0A0000000000000000000, a never-created boundary parent, valid because
-// BuildScopeTree is subtree-tolerant of a parent absent from the tree
-// (internal/datamodel/scopetree.go) — plus the same synthetic geo every other
-// site-creating case in this driver uses (siteGeo's tz/lat/long values).
+// harness enforces for real, since it is the live store: DAT-002 (parent_id
+// MUST be null iff kind is org; every non-org node's parent_id MUST
+// reference an EXISTING scope node) and DAT-031 (a site MUST declare
+// tz/lat/long together). Both fixtures create a site under parent_id
+// 01J8Z0A0000000000000000000, so seed_scope_nodes now creates that id as a
+// real org-kind scope node before either request runs (h.seedScopeNode,
+// below) — an authoritative create's parent_id MUST reference a node that
+// genuinely exists; BuildScopeTree's subtree-boundary tolerance for a parent
+// absent from the set (internal/datamodel/scopetree.go) is a read-side
+// allowance for a relay/1 per-scope snapshot (REL-065), not a license to
+// leave a create's own parent dangling. The site body itself still carries
+// the same synthetic geo every other site-creating case in this driver uses
+// (siteGeo's tz/lat/long values).
 //
 // The corpus pins each case's server-minted id (…W2ZA / …W2ZB). The id
 // source, like driveJob's, is driven FROM the fixture: a closure returns the
@@ -1061,6 +1083,13 @@ func driveIdempotency(rep *report.Report, c corpus.Case) {
 		return
 	}
 	defer h.close()
+
+	for _, row := range in.SeedScopeNodes {
+		if err := h.seedScopeNode(map[string]any{"id": row.ID, "kind": row.Kind, "name": row.Name}); err != nil {
+			rep.Fail(c.CaseID, contract, fmt.Sprintf("seed scope node %s: %v", row.ID, err))
+			return
+		}
+	}
 
 	before, err := h.store.List(context.Background(), store.KindScopeNode, store.ListFilter{})
 	if err != nil {

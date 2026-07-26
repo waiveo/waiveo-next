@@ -4,6 +4,9 @@
   "req_ids": ["API-051", "API-053"],
   "description": "Reusing the same Idempotency-Key with a different request body is rejected with 409 IDEMPOTENCY_KEY_REUSED and does not execute — replay-of-original-response semantics only apply when the body hash matches; a different body is a client error, not a fresh request.",
   "input": {
+    "seed_scope_nodes": [
+      { "id": "01J8Z0A0000000000000000000", "kind": "org", "name": "Fixture Org" }
+    ],
     "requests": [
       {
         "method": "POST",

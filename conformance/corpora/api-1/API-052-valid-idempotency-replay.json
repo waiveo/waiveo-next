@@ -4,6 +4,9 @@
   "req_ids": ["API-050", "API-051", "API-052"],
   "description": "Two POSTs presenting the same Idempotency-Key and an identical body create exactly one resource: the second request returns the first request's exact recorded response (including its 201 status and the same resource id) without re-executing the create.",
   "input": {
+    "seed_scope_nodes": [
+      { "id": "01J8Z0A0000000000000000000", "kind": "org", "name": "Fixture Org" }
+    ],
     "requests": [
       {
         "method": "POST",
