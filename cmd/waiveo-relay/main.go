@@ -673,15 +673,28 @@ func main() {
 	// applied atomically — the schedule resolvers are re-driven and the automation
 	// engine's edge rules reloaded — while a same/lower generation is a no-op and a
 	// mid-run pull failure is non-fatal (the last-applied stays served offline).
-	puller := &rePuller{
-		pull:    func() (desiredstate.Applied, error) { return desiredstate.Pull(cfg.feederURL, store) },
-		driver:  driver,
-		host:    host,
-		nowFn:   func() int64 { return time.Now().UnixMilli() },
-		lastGen: applied.Generation,
+	// The live loop is gated on the SAME hello outcome the boot pull is gated on.
+	// Without this it defeats that gate within one tick: desiredstate.Pull's own
+	// verification is a signature check over the snapshot, which succeeds whether
+	// or not the app peer accepted this relay's identity, so a relay whose hello
+	// was REFUSED would skip the boot pull and then perform the identical pull
+	// seconds later — applying live desired state the peer just declined to
+	// authorize it for, while the journal reported the opposite. A relay that was
+	// not accepted serves its persisted last-applied snapshot offline and nothing
+	// more, until an operator re-enrolls it.
+	if helloOK {
+		puller := &rePuller{
+			pull:    func() (desiredstate.Applied, error) { return desiredstate.Pull(cfg.feederURL, store) },
+			driver:  driver,
+			host:    host,
+			nowFn:   func() int64 { return time.Now().UnixMilli() },
+			lastGen: applied.Generation,
+		}
+		rePullTicker := time.NewTicker(rePullInterval)
+		go rePullLoop(rootCtx, rePullTicker.C, puller)
+	} else {
+		log.Printf("waiveo-relay: live desired-state loop NOT started — hello was not accepted by the app peer; serving persisted last-applied offline until re-enrolled (REL-055/061)")
 	}
-	rePullTicker := time.NewTicker(rePullInterval)
-	go rePullLoop(rootCtx, rePullTicker.C, puller)
 
 	// Wire the relay's telemetry upstream channel (relay/1 REL-090/092/097): the
 	// automation stack records a fired rule's automation.run into the durable

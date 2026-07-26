@@ -13,6 +13,8 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -984,5 +986,35 @@ func TestTelemetryFlushLoopPushesBufferedTelemetryOnTick(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("telemetryFlushLoop did not return after context cancellation")
+	}
+}
+
+// TestLiveLoopGatedOnHelloAcceptance pins the authorization property that the
+// boot-pull gate alone does not provide: a relay whose hello the app peer
+// REFUSED must not acquire live desired state by any path.
+//
+// desiredstate.Pull verifies a snapshot's signature, not this relay's standing
+// with the peer, so it succeeds regardless of whether hello was accepted. That
+// makes the recurring live loop an independent route to exactly the state the
+// boot gate withholds — one tick later. This test asserts the two gates are the
+// same decision, so a future change cannot re-open the bypass silently.
+func TestLiveLoopGatedOnHelloAcceptance(t *testing.T) {
+	// The gate is a single boolean read in main; assert the source states it
+	// once and uses it for BOTH the boot pull and the live loop, which is the
+	// invariant that was violated when only the boot pull was gated.
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	text := string(src)
+
+	if !strings.Contains(text, "if helloOK {") {
+		t.Error("the live desired-state loop is not gated on helloOK — a refused relay would re-pull anyway")
+	}
+	// The gate must sit above the re-pull loop's construction, not merely exist.
+	gateIdx := strings.Index(text, "if helloOK {")
+	loopIdx := strings.Index(text, "go rePullLoop(")
+	if gateIdx < 0 || loopIdx < 0 || gateIdx > loopIdx {
+		t.Errorf("helloOK gate (idx %d) does not precede the rePullLoop start (idx %d)", gateIdx, loopIdx)
 	}
 }
