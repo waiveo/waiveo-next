@@ -29,6 +29,7 @@ sub init()
 
     m.castItems = []
     m.castIndex = 0
+    m.castSignature = ""
 
     m.task = CreateObject("roSGNode", "PlayerTask")
     m.task.observeField("photonResult", "onPhotonResult")
@@ -77,7 +78,19 @@ sub onPhotonResult()
         ' each either plain image/video or composed (PLY-015); a single-item
         ' cast is the degenerate case of the exact same cycling logic
         ' (renderCastItem loops back to itself).
-        startCast(res.items)
+        '
+        ' Only (re)start the cast when the program actually CHANGED. The task
+        ' re-polls on its own cadence (PLY-083a's lifecycle wording), and a
+        ' poll that returns the same program must not restart the sequence:
+        ' with a poll interval shorter than the cast's total run time, an
+        ' unconditional restart pins the screen near item 0 forever and the
+        ' tail of the cast is never displayed at all — the cycle PLY-083a
+        ' requires would silently never complete.
+        sig = castSignature(res.items)
+        if sig <> m.castSignature
+            m.castSignature = sig
+            startCast(res.items)
+        end if
         m.status.visible = false
     else
         stopCastTimer()
@@ -91,6 +104,36 @@ sub onPhotonResult()
         m.status.visible = true
     end if
 end sub
+
+' castSignature identifies a cast by its ordered content, so an unchanged
+' re-poll is distinguishable from a genuinely new program. Built from each
+' item's own resolved URI and dwell rather than a lease id, because a relay
+' re-issues a lease (new lease_id, new issued_at) on every poll while the
+' content it carries is unchanged — keying on the lease would make every
+' poll look like a change, which is the bug this exists to prevent.
+' castStr coerces a possibly-invalid field to a string. Defined locally
+' because a SceneGraph component's scope does not inherit pkg:/source
+' globals — only the scripts its own XML includes.
+function castStr(v as Dynamic) as String
+    if v = invalid then return ""
+    return v.toStr()
+end function
+
+function castSignature(items as Object) as String
+    if items = invalid then return ""
+    sig = items.Count().toStr()
+    for i = 0 to items.Count() - 1
+        it = items[i]
+        sig = sig + "|" + castStr(it.contentType) + ";" + castStr(it.contentUri) + ";"
+        if it.durationMs <> invalid then sig = sig + it.durationMs.toStr()
+        if it.layers <> invalid
+            for j = 0 to it.layers.Count() - 1
+                sig = sig + ";L" + castStr(it.layers[j].contentUri)
+            end for
+        end if
+    end for
+    return sig
+end function
 
 ' startCast begins (or replaces) an ordered cast (PLY-083a): stops any
 ' composed-layer rendering, resets to item 0, and renders it.
