@@ -12,23 +12,32 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // channelIndexArtifact/channelIndexSigned/channelIndexEnvelope mirror
 // channel-index/1's Wire shapes (contracts/channel-index.md `ChannelIndex`)
 // field-for-field -- artifact_id/kind/version/arch/status/digest/size/
-// download_url, wrapped in the signed/signatures envelope -- so a fixture
-// built here is exactly the document
-// scripts/install-from-channel-index.sh is contracted to parse.
+// download_url plus the optional staged-rollout fields hold_hours/
+// published_at/security_flagged (CHI-029/030) -- wrapped in the
+// signed/signatures envelope -- so a fixture built here is exactly the
+// document scripts/install-from-channel-index.sh is contracted to parse.
+// The three staged-rollout fields carry `omitempty` so a fixture that never
+// sets them (the common case) produces an entry with no `hold_hours` at
+// all, exactly like a real entry outside a staged rollout (CHI-029: "An
+// entry carrying no hold_hours is immediately install-eligible").
 type channelIndexArtifact struct {
-	ArtifactID  string `json:"artifact_id"`
-	Kind        string `json:"kind"`
-	Version     string `json:"version"`
-	Arch        string `json:"arch"`
-	Status      string `json:"status"`
-	Digest      string `json:"digest"`
-	Size        int64  `json:"size"`
-	DownloadURL string `json:"download_url"`
+	ArtifactID      string `json:"artifact_id"`
+	Kind            string `json:"kind"`
+	Version         string `json:"version,omitempty"`
+	Arch            string `json:"arch"`
+	Status          string `json:"status"`
+	Digest          string `json:"digest"`
+	Size            int64  `json:"size"`
+	DownloadURL     string `json:"download_url"`
+	HoldHours       int64  `json:"hold_hours,omitempty"`
+	PublishedAt     int64  `json:"published_at,omitempty"`
+	SecurityFlagged bool   `json:"security_flagged,omitempty"`
 }
 
 type channelIndexSigned struct {
@@ -288,4 +297,243 @@ func TestInstallRejectsNoMatchingArtifact(t *testing.T) {
 		t.Errorf("output does not explain the no-match failure:\n%s", out)
 	}
 	assertNotInstalled(t, filepath.Join(installRoot, "waiveo-relay"))
+}
+
+// TestInstallRejectsSizeMismatch proves a served artifact whose byte count
+// does not match the index's own signed-in-band `size` (CHI-023) is a hard
+// failure -- nonzero exit, SIZE_MISMATCH reported, nothing installed -- even
+// though its digest field is left correct, so this exercises the size check
+// independently of TestInstallRejectsDigestMismatch's digest check (CHI-023
+// requires both checks to be enforced, not either alone).
+func TestInstallRejectsSizeMismatch(t *testing.T) {
+	artifact := []byte("waiveo-relay-fixture-binary-size-mismatch\n")
+
+	srv := newFixtureServer(t, "relay-v1", map[string][]byte{"waiveo-relay": artifact}, func(baseURL string) []channelIndexArtifact {
+		return []channelIndexArtifact{
+			{ArtifactID: "waiveo-relay", Kind: "relay-release", Version: "1.0.0", Arch: "linux/amd64", Status: "active", Digest: "sha256:" + sha256Hex(artifact), Size: int64(len(artifact)) + 5, DownloadURL: baseURL + "/artifacts/waiveo-relay"},
+		}
+	})
+
+	installRoot := t.TempDir()
+	out, err := runScript(t, srv.URL+"/index.json", "relay-v1", installRoot)
+	if err == nil {
+		t.Fatalf("expected install to fail on size mismatch, it succeeded\noutput:\n%s", out)
+	}
+	if !strings.Contains(out, "SIZE_MISMATCH") {
+		t.Errorf("output does not report SIZE_MISMATCH:\n%s", out)
+	}
+	assertNotInstalled(t, filepath.Join(installRoot, "waiveo-relay"))
+}
+
+// TestInstallRejectsDuplicateArtifactID proves an index carrying two active
+// relay-release/linux/amd64 entries sharing the same artifact_id is refused
+// as ambiguous, rather than silently picking whichever entry jq or the
+// shell happened to see first -- this script has no basis in channel-index/1
+// to prefer one over the other.
+func TestInstallRejectsDuplicateArtifactID(t *testing.T) {
+	artifact := []byte("waiveo-relay-fixture-binary-dup\n")
+	digest := "sha256:" + sha256Hex(artifact)
+
+	srv := newFixtureServer(t, "relay-v1", map[string][]byte{"waiveo-relay": artifact}, func(baseURL string) []channelIndexArtifact {
+		return []channelIndexArtifact{
+			{ArtifactID: "waiveo-relay", Kind: "relay-release", Version: "1.0.0", Arch: "linux/amd64", Status: "active", Digest: digest, Size: int64(len(artifact)), DownloadURL: baseURL + "/artifacts/waiveo-relay"},
+			{ArtifactID: "waiveo-relay", Kind: "relay-release", Version: "1.0.1", Arch: "linux/amd64", Status: "active", Digest: digest, Size: int64(len(artifact)), DownloadURL: baseURL + "/artifacts/waiveo-relay"},
+		}
+	})
+
+	installRoot := t.TempDir()
+	out, err := runScript(t, srv.URL+"/index.json", "relay-v1", installRoot)
+	if err == nil {
+		t.Fatalf("expected install to fail on ambiguous duplicate artifact_id, it succeeded\noutput:\n%s", out)
+	}
+	if !strings.Contains(out, "ambiguous index") {
+		t.Errorf("output does not report the ambiguous-index failure:\n%s", out)
+	}
+	assertNotInstalled(t, filepath.Join(installRoot, "waiveo-relay"))
+}
+
+// TestInstallRejectsPathTraversalArtifactID proves a served index entry
+// whose artifact_id is a path-traversal payload is refused outright, before
+// any file is written for it -- this script trusts nothing about the
+// fetched index's own content (Scope note in the script header), so
+// artifact_id must never be used to build a filesystem path unsanitized.
+// Both a directly-escaping id and one that only escapes via multiple ".."
+// segments are exercised, and the assertion checks a full directory level
+// above installRoot -- not just installRoot itself -- to prove the escape
+// really is blocked, not merely that the intended destination is empty.
+func TestInstallRejectsPathTraversalArtifactID(t *testing.T) {
+	for _, artifactID := range []string{"../pwned", "safe/../../evil", "/etc/pwned"} {
+		t.Run(artifactID, func(t *testing.T) {
+			artifact := []byte("waiveo-relay-fixture-binary-traversal\n")
+			srv := newFixtureServer(t, "relay-v1", map[string][]byte{"waiveo-relay": artifact}, func(baseURL string) []channelIndexArtifact {
+				return []channelIndexArtifact{
+					{ArtifactID: artifactID, Kind: "relay-release", Version: "1.0.0", Arch: "linux/amd64", Status: "active", Digest: "sha256:" + sha256Hex(artifact), Size: int64(len(artifact)), DownloadURL: baseURL + "/artifacts/waiveo-relay"},
+				}
+			})
+
+			installRoot := t.TempDir()
+			out, err := runScript(t, srv.URL+"/index.json", "relay-v1", installRoot)
+			if err == nil {
+				t.Fatalf("expected install to fail on path-traversal artifact_id %q, it succeeded\noutput:\n%s", artifactID, out)
+			}
+			if !strings.Contains(out, "invalid artifact_id") {
+				t.Errorf("output does not report the invalid artifact_id:\n%s", out)
+			}
+			assertNotInstalled(t, filepath.Join(installRoot, "waiveo-relay"))
+			assertNotInstalled(t, filepath.Join(installRoot, "..", "pwned"))
+			assertNotInstalled(t, filepath.Join(installRoot, "..", "evil"))
+			assertNotInstalled(t, "/etc/pwned")
+		})
+	}
+}
+
+// TestInstallRejectsHeldEntry proves an artifact entry carrying a nonzero
+// hold_hours whose hold has NOT yet elapsed since its own published_at is
+// ineligible for selection (CHI-029/030) -- the run fails exactly as if no
+// active entry existed at all, and nothing is installed.
+func TestInstallRejectsHeldEntry(t *testing.T) {
+	artifact := []byte("waiveo-relay-fixture-binary-held\n")
+	srv := newFixtureServer(t, "relay-v1", map[string][]byte{"waiveo-relay": artifact}, func(baseURL string) []channelIndexArtifact {
+		return []channelIndexArtifact{
+			{
+				ArtifactID: "waiveo-relay", Kind: "relay-release", Version: "1.0.0", Arch: "linux/amd64", Status: "active",
+				Digest: "sha256:" + sha256Hex(artifact), Size: int64(len(artifact)), DownloadURL: baseURL + "/artifacts/waiveo-relay",
+				HoldHours: 24, PublishedAt: time.Now().UnixMilli(), // published "now" -- 24h hold has not elapsed
+			},
+		}
+	})
+
+	installRoot := t.TempDir()
+	out, err := runScript(t, srv.URL+"/index.json", "relay-v1", installRoot)
+	if err == nil {
+		t.Fatalf("expected install to fail on a held entry, it succeeded\noutput:\n%s", out)
+	}
+	if !strings.Contains(out, "no active relay-release artifact") {
+		t.Errorf("output does not report the no-eligible-artifact failure:\n%s", out)
+	}
+	assertNotInstalled(t, filepath.Join(installRoot, "waiveo-relay"))
+}
+
+// TestInstallResolvesEntryOnceHoldElapsed proves the mirror image of
+// TestInstallRejectsHeldEntry: once hold_hours has elapsed since
+// published_at, the same kind of entry becomes eligible and installs
+// normally (CHI-030's "until at least hold_hours hours have elapsed").
+func TestInstallResolvesEntryOnceHoldElapsed(t *testing.T) {
+	artifact := []byte("waiveo-relay-fixture-binary-hold-elapsed\n")
+	srv := newFixtureServer(t, "relay-v1", map[string][]byte{"waiveo-relay": artifact}, func(baseURL string) []channelIndexArtifact {
+		return []channelIndexArtifact{
+			{
+				ArtifactID: "waiveo-relay", Kind: "relay-release", Version: "1.0.0", Arch: "linux/amd64", Status: "active",
+				Digest: "sha256:" + sha256Hex(artifact), Size: int64(len(artifact)), DownloadURL: baseURL + "/artifacts/waiveo-relay",
+				HoldHours: 1, PublishedAt: time.Now().Add(-2 * time.Hour).UnixMilli(), // published 2h ago -- 1h hold elapsed
+			},
+		}
+	})
+
+	installRoot := t.TempDir()
+	out, err := runScript(t, srv.URL+"/index.json", "relay-v1", installRoot)
+	if err != nil {
+		t.Fatalf("expected install to succeed once the hold elapsed: %v\noutput:\n%s", err, out)
+	}
+	installed, err := os.ReadFile(filepath.Join(installRoot, "waiveo-relay"))
+	if err != nil {
+		t.Fatalf("read installed binary: %v\noutput:\n%s", err, out)
+	}
+	if string(installed) != string(artifact) {
+		t.Errorf("installed content = %q, want %q", installed, artifact)
+	}
+}
+
+// TestInstallResolvesSecurityFlaggedHeldEntry proves CHI-030's stated
+// exception: an entry marked security_flagged: true is selectable even
+// though its own hold_hours has not elapsed, because it supersedes a
+// since-disclosed vulnerability.
+func TestInstallResolvesSecurityFlaggedHeldEntry(t *testing.T) {
+	artifact := []byte("waiveo-relay-fixture-binary-security-flagged\n")
+	srv := newFixtureServer(t, "relay-v1", map[string][]byte{"waiveo-relay": artifact}, func(baseURL string) []channelIndexArtifact {
+		return []channelIndexArtifact{
+			{
+				ArtifactID: "waiveo-relay", Kind: "relay-release", Version: "1.0.1", Arch: "linux/amd64", Status: "active",
+				Digest: "sha256:" + sha256Hex(artifact), Size: int64(len(artifact)), DownloadURL: baseURL + "/artifacts/waiveo-relay",
+				HoldHours: 999999, PublishedAt: time.Now().UnixMilli(), SecurityFlagged: true,
+			},
+		}
+	})
+
+	installRoot := t.TempDir()
+	out, err := runScript(t, srv.URL+"/index.json", "relay-v1", installRoot)
+	if err != nil {
+		t.Fatalf("expected security_flagged entry to install despite its hold, it failed: %v\noutput:\n%s", err, out)
+	}
+	installed, err := os.ReadFile(filepath.Join(installRoot, "waiveo-relay"))
+	if err != nil {
+		t.Fatalf("read installed binary: %v\noutput:\n%s", err, out)
+	}
+	if string(installed) != string(artifact) {
+		t.Errorf("installed content = %q, want %q", installed, artifact)
+	}
+}
+
+// TestInstallParsesMisalignedFieldsRecordWithoutCorruption proves the fix
+// for the IFS tab-collapse bug: a served index entry missing a required
+// (CHI-020) field -- here `version`, marshaled as an absent key via
+// channelIndexArtifact's `omitempty` tag -- must not shift every field
+// after it out of position. Before the fix, jq's @tsv output combined with
+// `IFS="<tab>" read` silently collapsed the resulting empty field, so this
+// exact fixture made the shell compare the wrong values against each other
+// (observed failure: a bogus "unsupported digest scheme" rejection driven
+// by the SIZE value landing in the digest-scheme switch). With fields
+// delimited by the ASCII Unit Separator instead of tab, the empty version
+// field stays in its own position and every later field -- crucially digest
+// and size, still checked against the real downloaded artifact -- verifies
+// correctly.
+func TestInstallParsesMisalignedFieldsRecordWithoutCorruption(t *testing.T) {
+	artifact := []byte("waiveo-relay-fixture-binary-empty-field\n")
+	srv := newFixtureServer(t, "relay-v1", map[string][]byte{"waiveo-relay": artifact}, func(baseURL string) []channelIndexArtifact {
+		return []channelIndexArtifact{
+			// Version deliberately left unset -> omitempty drops the key
+			// entirely, exactly reproducing the missing-field shape.
+			{ArtifactID: "waiveo-relay", Kind: "relay-release", Arch: "linux/amd64", Status: "active", Digest: "sha256:" + sha256Hex(artifact), Size: int64(len(artifact)), DownloadURL: baseURL + "/artifacts/waiveo-relay"},
+		}
+	})
+
+	installRoot := t.TempDir()
+	out, err := runScript(t, srv.URL+"/index.json", "relay-v1", installRoot)
+	if err != nil {
+		t.Fatalf("expected install to succeed with fields correctly aligned despite the missing version field: %v\noutput:\n%s", err, out)
+	}
+	if strings.Contains(out, "unsupported digest scheme") {
+		t.Errorf("output shows the historical field-misalignment symptom (size value read as a digest scheme):\n%s", out)
+	}
+	installed, err := os.ReadFile(filepath.Join(installRoot, "waiveo-relay"))
+	if err != nil {
+		t.Fatalf("read installed binary: %v\noutput:\n%s", err, out)
+	}
+	if string(installed) != string(artifact) {
+		t.Errorf("installed content = %q, want %q", installed, artifact)
+	}
+}
+
+// TestInstallWarnsAboutLimitedTrustVerification locks in this script's
+// honest self-disclosure (Scope note in the script header): every run must
+// state, in its own output, that it performs only CHI-050 steps 7-8 and
+// does not verify the index's signature chain (CHI-001-012) or check the
+// revocation feed (CHI-070-074) -- so a caller reading run output is never
+// left assuming more was verified than actually was.
+func TestInstallWarnsAboutLimitedTrustVerification(t *testing.T) {
+	artifact := []byte("waiveo-relay-fixture-binary-warning-check\n")
+	srv := newFixtureServer(t, "relay-v1", map[string][]byte{"waiveo-relay": artifact}, func(baseURL string) []channelIndexArtifact {
+		return []channelIndexArtifact{
+			{ArtifactID: "waiveo-relay", Kind: "relay-release", Version: "1.0.0", Arch: "linux/amd64", Status: "active", Digest: "sha256:" + sha256Hex(artifact), Size: int64(len(artifact)), DownloadURL: baseURL + "/artifacts/waiveo-relay"},
+		}
+	})
+
+	installRoot := t.TempDir()
+	out, err := runScript(t, srv.URL+"/index.json", "relay-v1", installRoot)
+	if err != nil {
+		t.Fatalf("install script failed: %v\noutput:\n%s", err, out)
+	}
+	if !strings.Contains(out, "does NOT verify") || !strings.Contains(out, "CHI-001-012") {
+		t.Errorf("output does not disclose the limited-trust-verification warning:\n%s", out)
+	}
 }
