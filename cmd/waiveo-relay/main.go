@@ -31,9 +31,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/datamodel"
@@ -43,6 +45,9 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/clocktrust"
 	"github.com/maaxton/waiveo-next/internal/relay/desiredstate"
 	"github.com/maaxton/waiveo-next/internal/relay/deviceplane"
+	"github.com/maaxton/waiveo-next/internal/relay/discovery"
+	"github.com/maaxton/waiveo-next/internal/relay/ecp"
+	"github.com/maaxton/waiveo-next/internal/relay/ecppoll"
 	"github.com/maaxton/waiveo-next/internal/relay/enroll"
 	"github.com/maaxton/waiveo-next/internal/relay/hello"
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
@@ -67,6 +72,17 @@ type config struct {
 	feederURL string // co-located feeder base URL for enroll + desired-state pull
 	pairHost  string // dial host a formed pairing code encodes
 	pairPort  int    // dial port a formed pairing code encodes
+
+	// Hardware device plane (all optional; absent → the loopback stand-ins,
+	// byte-identical dev/CI behavior). ecpTargets maps entity_id → the LAN
+	// Roku its device_commands dispatch to AND its state is polled from
+	// (WAIVEO_RELAY_ECP_TARGETS="entity=host[:port],..."). pollInterval is
+	// the ECP state-poll period (WAIVEO_RELAY_POLL_MS, default 5000).
+	// discoveryOn enables the SSDP client sweep feeding the candidate store
+	// (WAIVEO_RELAY_DISCOVERY=1, REL-110/111).
+	ecpTargets   map[string]ecp.Target
+	pollInterval time.Duration
+	discoveryOn  bool
 }
 
 // loadConfig reads the relay config from env (os.Getenv in main), falling back
@@ -78,12 +94,59 @@ func loadConfig(env func(string) string) (config, error) {
 	if err != nil {
 		return config{}, fmt.Errorf("WAIVEO_RELAY_PAIR_PORT %q is not an integer: %w", portStr, err)
 	}
+	targets, err := parseECPTargets(env("WAIVEO_RELAY_ECP_TARGETS"))
+	if err != nil {
+		return config{}, err
+	}
+	pollMSStr := envOr(env, "WAIVEO_RELAY_POLL_MS", "5000")
+	pollMS, err := strconv.Atoi(pollMSStr)
+	if err != nil || pollMS <= 0 {
+		return config{}, fmt.Errorf("WAIVEO_RELAY_POLL_MS %q is not a positive integer", pollMSStr)
+	}
 	return config{
-		listen:    envOr(env, "WAIVEO_RELAY_LISTEN", "127.0.0.1:7421"),
-		feederURL: envOr(env, "WAIVEO_FEEDER_URL", "https://127.0.0.1:7420"),
-		pairHost:  envOr(env, "WAIVEO_RELAY_PAIR_HOST", "127.0.0.1"),
-		pairPort:  port,
+		listen:       envOr(env, "WAIVEO_RELAY_LISTEN", "127.0.0.1:7421"),
+		feederURL:    envOr(env, "WAIVEO_FEEDER_URL", "https://127.0.0.1:7420"),
+		pairHost:     envOr(env, "WAIVEO_RELAY_PAIR_HOST", "127.0.0.1"),
+		pairPort:     port,
+		ecpTargets:   targets,
+		pollInterval: time.Duration(pollMS) * time.Millisecond,
+		discoveryOn:  env("WAIVEO_RELAY_DISCOVERY") == "1" || env("WAIVEO_RELAY_DISCOVERY") == "true",
 	}, nil
+}
+
+// parseECPTargets parses "entity=host[:port],entity2=host2" into the entity →
+// ecp.Target map (nil for empty input). A malformed entry fails config load
+// fast rather than silently dropping a device.
+func parseECPTargets(raw string) (map[string]ecp.Target, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	targets := make(map[string]ecp.Target)
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		entityID, addr, ok := strings.Cut(entry, "=")
+		if !ok || entityID == "" || addr == "" {
+			return nil, fmt.Errorf("WAIVEO_RELAY_ECP_TARGETS entry %q is not entity=host[:port]", entry)
+		}
+		host, portStr, portErr := net.SplitHostPort(addr)
+		if portErr != nil {
+			// No port present — the whole addr is the host, port defaults in ecp.
+			targets[entityID] = ecp.Target{Host: addr}
+			continue
+		}
+		p, err := strconv.Atoi(portStr)
+		if err != nil || p <= 0 {
+			return nil, fmt.Errorf("WAIVEO_RELAY_ECP_TARGETS entry %q has a bad port", entry)
+		}
+		targets[entityID] = ecp.Target{Host: host, Port: p}
+	}
+	if len(targets) == 0 {
+		return nil, nil
+	}
+	return targets, nil
 }
 
 func envOr(env func(string) string, key, def string) string {
@@ -206,7 +269,32 @@ func main() {
 	// paths agree on exactly the same command vocabulary (REG-052/REL-113).
 	deviceRegistry := deviceclass.Builtin()
 
-	host, err := bootAutomationStack(store, relayID, applied, site, deviceRegistry)
+	// Select the device plane's controller + resolver pair ONCE and use it for
+	// BOTH dispatch paths (edge rules via bootAutomationStack, preset batches
+	// via scheduleSink below), so a fired command resolves and dispatches
+	// identically regardless of which engine fired it (REL-112/113/115).
+	// Configured ECP targets swap in the real hardware adapter; otherwise the
+	// loopback stand-ins keep dev/CI behavior byte-identical.
+	var (
+		devController deviceplane.DeviceController = loopbackController{}
+		devResolver   deviceplane.EntityResolver   = loopbackResolver
+	)
+	if len(cfg.ecpTargets) > 0 {
+		devController = ecp.New(cfg.ecpTargets)
+		targets := cfg.ecpTargets
+		devResolver = func(entityID string) (deviceID, deviceClass string, ok bool) {
+			// Wave-1 bridge resolver: a configured ECP target IS the adopted
+			// entity (device_id = entity_id, class media-player). The real
+			// adopted-entity records arrive with the app peer (data-model/1).
+			if _, present := targets[entityID]; present {
+				return entityID, "media-player", true
+			}
+			return "", "", false
+		}
+		log.Printf("waiveo-relay device plane: ECP controller live (%d target(s))", len(cfg.ecpTargets))
+	}
+
+	host, err := bootAutomationStack(store, relayID, applied, site, deviceRegistry, devController, devResolver)
 	if err != nil {
 		log.Fatalf("waiveo-relay: boot automation stack: %v", err)
 	}
@@ -290,7 +378,7 @@ func main() {
 	// through the identical resolve -> serialize -> dispatch path
 	// (REL-113/114/115) an edge rule does.
 	scheduleSink := automation.NewCommandSink(
-		deviceplane.NewCommandSurface(loopbackController{}, deviceRegistry, loopbackResolver),
+		deviceplane.NewCommandSurface(devController, deviceRegistry, devResolver),
 		relayID.RelayID,
 	)
 
@@ -304,6 +392,67 @@ func main() {
 	// write is fenced by generation at the player server (a strictly-older
 	// generation's write is dropped, REL-052/056) rather than by cancel timing.
 	rootCtx := context.Background()
+
+	// Real device-state input (hardware): poll every configured ECP target and
+	// feed the observation stream into the automation host. The poller's first
+	// snapshot per entity arrives as a self-transition seed (sets engine
+	// trigger baselines incl. attributes, fires nothing — RUL-300/304/330);
+	// real transitions follow on the same stream, so no separate seeding step
+	// exists. Host.Run pulls until the poller's stream closes on ctx cancel.
+	if len(cfg.ecpTargets) > 0 {
+		pollTargets := make(map[string]ecppoll.Target, len(cfg.ecpTargets))
+		for entityID, t := range cfg.ecpTargets {
+			pollTargets[entityID] = ecppoll.Target{Host: t.Host, Port: t.Port}
+		}
+		poller := ecppoll.New(pollTargets, cfg.pollInterval)
+		go poller.Run(rootCtx)
+		go func() {
+			if err := host.Run(rootCtx, poller); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("waiveo-relay: device-state drive loop ended: %v", err)
+			}
+		}()
+		log.Printf("waiveo-relay device polling live (%d target(s), every %s)", len(pollTargets), cfg.pollInterval)
+	}
+
+	// SSDP client discovery (REL-110/111): sweep + alive-monitor the LAN for
+	// the built-in Roku search target, minting pattern-hit candidates into the
+	// relay's candidate store. The store's device.candidates report rides to
+	// the app peer in Wave 2; for now a low-rate log line makes a live sweep's
+	// effect observable on-box. Timestamps are wall-clock Timestamp-ms — the
+	// store is in-memory relay state, not persisted evidence, so clock-trust
+	// gating does not apply to it.
+	if cfg.discoveryOn {
+		candStore := deviceplane.NewStore(relayID.RelayID)
+		disc, err := discovery.New(discovery.Config{
+			Patterns:  []deviceplane.Match{{SSDP: "roku:ecp"}},
+			Store:     candStore,
+			NowMillis: func() int64 { return time.Now().UnixMilli() },
+		})
+		if err != nil {
+			log.Fatalf("waiveo-relay: configure SSDP discovery: %v", err)
+		}
+		go func() {
+			if err := disc.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("waiveo-relay: discovery ended: %v", err)
+			}
+		}()
+		go func() {
+			tick := time.NewTicker(time.Minute)
+			defer tick.Stop()
+			for {
+				select {
+				case <-rootCtx.Done():
+					return
+				case <-tick.C:
+					if n := len(candStore.Report().Body.Candidates); n > 0 {
+						log.Printf("waiveo-relay discovery: %d candidate pattern(s) observed", n)
+					}
+				}
+			}
+		}()
+		log.Printf("waiveo-relay SSDP discovery live (pattern roku:ecp)")
+	}
+
 	driver := &scheduleDriver{
 		srv:        pairingSrv,
 		sink:       scheduleSink,
@@ -489,15 +638,14 @@ func enrollWithRetry(feederURL string, store *identity.Store) error {
 
 // bootAutomationStack builds the relay's edge-automation Host over the
 // operational store and loads the verified desired-state generation's signed
-// edge_rules into it (REL-062), logging how many edge rules loaded. It wires a
-// loopback device controller and a loopback entity resolver for now: the real
-// ECP DeviceController and the real adopted-entity resolver (reading the device
-// plane's own store) are hardware/data-model concerns that land later. dc is
-// the relay's ONE canonical device-class registry (device-class-registry/1's
+// edge_rules into it (REL-062), logging how many edge rules loaded. The caller
+// selects the DeviceController + EntityResolver pair (real ECP when targets are
+// configured, loopback stand-ins otherwise) so both dispatch paths share it. dc
+// is the relay's ONE canonical device-class registry (device-class-registry/1's
 // own built-in, REG-060-066) — automationhost.New wires it directly into the
 // device plane's CommandVocab and, adapted, into the engine's registry.Registry.
-func bootAutomationStack(store *identity.Store, relayID identity.RelayIdentity, applied desiredstate.Applied, site hello.SiteBinding, dc deviceclass.Registry) (*automationhost.Host, error) {
-	host, err := automationhost.New(store, dc, loopbackController{}, loopbackResolver, relayID.RelayID)
+func bootAutomationStack(store *identity.Store, relayID identity.RelayIdentity, applied desiredstate.Applied, site hello.SiteBinding, dc deviceclass.Registry, controller deviceplane.DeviceController, resolveEntity deviceplane.EntityResolver) (*automationhost.Host, error) {
+	host, err := automationhost.New(store, dc, controller, resolveEntity, relayID.RelayID)
 	if err != nil {
 		return nil, err
 	}

@@ -185,6 +185,64 @@ func TestLoadConfigRejectsNonIntegerPairPort(t *testing.T) {
 	}
 }
 
+func TestLoadConfigECPTargetsAndPolling(t *testing.T) {
+	// The on-box hardware shape: entity → LAN Roku mapping, custom poll period,
+	// discovery on. Port defaults to 0 in the parsed Target (ecp/ecppoll apply
+	// the 8060 ECP default themselves).
+	env := map[string]string{
+		"WAIVEO_RELAY_ECP_TARGETS": "01J8Z3K4N5P6Q7R8S9T0V1SCRN=192.0.2.51, second=192.0.2.52:9060",
+		"WAIVEO_RELAY_POLL_MS":     "2500",
+		"WAIVEO_RELAY_DISCOVERY":   "1",
+	}
+	cfg, err := loadConfig(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatalf("loadConfig(hardware shape): %v", err)
+	}
+	if got := cfg.ecpTargets["01J8Z3K4N5P6Q7R8S9T0V1SCRN"]; got.Host != "192.0.2.51" || got.Port != 0 {
+		t.Errorf("target[SCRN] = %+v, want host 192.0.2.51 port 0 (ECP default applies downstream)", got)
+	}
+	if got := cfg.ecpTargets["second"]; got.Host != "192.0.2.52" || got.Port != 9060 {
+		t.Errorf("target[second] = %+v, want host 192.0.2.52 port 9060", got)
+	}
+	if cfg.pollInterval != 2500*time.Millisecond {
+		t.Errorf("pollInterval = %s, want 2.5s", cfg.pollInterval)
+	}
+	if !cfg.discoveryOn {
+		t.Error("discoveryOn = false, want true for WAIVEO_RELAY_DISCOVERY=1")
+	}
+}
+
+func TestLoadConfigDeviceDefaultsOff(t *testing.T) {
+	// No hardware env → nil targets, discovery off, loopback stand-ins stay in
+	// (byte-identical dev/CI behavior).
+	cfg, err := loadConfig(func(string) string { return "" })
+	if err != nil {
+		t.Fatalf("loadConfig(defaults): %v", err)
+	}
+	if cfg.ecpTargets != nil {
+		t.Errorf("ecpTargets = %v, want nil", cfg.ecpTargets)
+	}
+	if cfg.discoveryOn {
+		t.Error("discoveryOn = true, want false by default")
+	}
+	if cfg.pollInterval != 5*time.Second {
+		t.Errorf("pollInterval = %s, want the 5s default", cfg.pollInterval)
+	}
+}
+
+func TestLoadConfigRejectsMalformedECPTargets(t *testing.T) {
+	for _, raw := range []string{"justanentity", "=192.0.2.51", "e=", "e=h:notaport"} {
+		env := map[string]string{"WAIVEO_RELAY_ECP_TARGETS": raw}
+		if _, err := loadConfig(func(k string) string { return env[k] }); err == nil {
+			t.Errorf("loadConfig accepted malformed WAIVEO_RELAY_ECP_TARGETS %q, want error", raw)
+		}
+	}
+	env := map[string]string{"WAIVEO_RELAY_POLL_MS": "0"}
+	if _, err := loadConfig(func(k string) string { return env[k] }); err == nil {
+		t.Error("loadConfig accepted WAIVEO_RELAY_POLL_MS=0, want error")
+	}
+}
+
 // newTestPlayerServer builds a real playerserver.Server plus the ed25519
 // signing key its issued Leases are signed with and a redeemable pairing
 // grant's selector — a byte-exact duplicate of
