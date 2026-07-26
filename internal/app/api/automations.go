@@ -305,7 +305,11 @@ func (srv *server) bulkEnableExec(w http.ResponseWriter, r *http.Request, body [
 		}
 	}
 
-	job := apijob.New(ulid.New(), pocPrincipal, time.UnixMilli(srv.nowMs()), targetIDs)
+	// .UTC() so the Job's created_at serializes as RFC3339 "Z" (api/1 API-112),
+	// not whatever the process's local time.Local zone happens to be —
+	// time.UnixMilli returns a Time in Local, and time.Time's JSON marshaling
+	// preserves whatever Location it carries.
+	job := apijob.New(ulid.New(), pocPrincipal, time.UnixMilli(srv.nowMs()).UTC(), targetIDs)
 	writeJSONValue(w, http.StatusAccepted, job.Resource())
 }
 
