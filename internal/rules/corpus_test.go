@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/maaxton/waiveo-next/internal/rules/compile"
@@ -48,6 +50,22 @@ var errorsThisFrontEndEmits = map[string]bool{
 	"MODE_MAX_NOT_APPLICABLE":   true,
 }
 
+// expectedCompileRan pins which rules-1 cases the front-end oracle actually
+// compiles-and-asserts, since which cases qualify is computed at runtime from
+// each case's OWN expected block (hasCompileSignal, above) rather than from a
+// hard-coded case list. Without this pin, a corpus edit could silently move a
+// case from ran to deferred (or the reverse) and nothing would notice — this
+// literal, plus the assertion at the end of TestRulesCompileCorpus, is what
+// makes that movement loud. TestRulesDrivenManifestMatchesRuntime (in
+// driven_manifest_test.go) unions this list with evalCorpusHandlers' keys and
+// checks the result against conformance/driven-manifest.json's rules/1 entry
+// — so a change here that isn't mirrored in the manifest also fails there.
+var expectedCompileRan = []string{
+	"RUL-001-unknown-vocabulary-member-rejected",
+	"RUL-101-corroborating-and-cross-entity-conditions",
+	"RUL-182-choose-app-branch-forces-app-class",
+}
+
 func TestRulesCompileCorpus(t *testing.T) {
 	dir := filepath.Join("..", "..", "conformance", "corpora", "rules-1")
 	entries, err := os.ReadDir(dir)
@@ -55,6 +73,7 @@ func TestRulesCompileCorpus(t *testing.T) {
 		t.Fatalf("read corpus dir: %v", err)
 	}
 	var ran, deferred int
+	var ranIDs []string
 	var deferredIDs []string
 	for _, ent := range entries {
 		if filepath.Ext(ent.Name()) != ".json" {
@@ -84,6 +103,7 @@ func TestRulesCompileCorpus(t *testing.T) {
 		}
 
 		ran++
+		ranIDs = append(ranIDs, c.CaseID)
 		t.Run(c.CaseID, func(t *testing.T) {
 			entry, cerr := compile.Compile(c.Input.Rule)
 			gotCompiles := cerr == nil
@@ -126,6 +146,12 @@ func TestRulesCompileCorpus(t *testing.T) {
 	}
 	if ran == 0 {
 		t.Fatal("no compile-time corpus cases ran — corpus path or shape wrong")
+	}
+	sort.Strings(ranIDs)
+	if !reflect.DeepEqual(ranIDs, expectedCompileRan) {
+		t.Errorf("compile-time driven set = %v, want %v — a corpus edit moved a case across the ran/deferred line; "+
+			"update expectedCompileRan (and, if driven cases changed, conformance/driven-manifest.json's rules/1 entry) to match",
+			ranIDs, expectedCompileRan)
 	}
 	t.Logf("front-end oracle: ran %d compile-time case(s), deferred %d to later engine parts: %v", ran, deferred, deferredIDs)
 }
