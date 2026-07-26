@@ -16,10 +16,10 @@ import (
 // the RUL-282 cross-entity restriction — exactly the shape of the demo rule.
 const (
 	autoRuleEntityID = "01J8Z3K4N5P6Q7R8S9T0V1SCRN"
-	autoEdgeRuleID   = "01J8ZA0EDGE0RULE0FIXTURE01"
-	autoEdgeRuleID2  = "01J8ZA0EDGE0RULE0FIXTURE02"
-	autoAppRuleID    = "01J8ZA0APP00RULE0FIXTURE01"
-	autoBadRuleID    = "01J8ZA0BAD00RULE0FIXTURE01"
+	autoEdgeRuleID   = "01J8ZA0EDGE0RV1E0F1XTVRE01"
+	autoEdgeRuleID2  = "01J8ZA0EDGE0RV1E0F1XTVRE02"
+	autoAppRuleID    = "01J8ZA0APP00RV1E0F1XTVRE01"
+	autoBadRuleID    = "01J8ZA0BAD00RV1E0F1XTVRE01"
 )
 
 // edgeAutomationEnabled is edgeAutomation carrying an explicit resource-envelope
@@ -134,6 +134,53 @@ func TestCreateUnknownTriggerRejectedNothingStored(t *testing.T) {
 		t.Fatalf("generation advanced on rejected non-compiling create: want 0, got %d", g)
 	}
 	if _, ok, err := s.Get(ctx, store.KindAutomation, autoBadRuleID); err != nil || ok {
+		t.Fatalf("Get rejected rule: ok=%v err=%v, want not-found and no error", ok, err)
+	}
+	bodies, _, _, err := s.EdgeRuleBodies(ctx)
+	if err != nil {
+		t.Fatalf("EdgeRuleBodies: %v", err)
+	}
+	if len(bodies) != 0 {
+		t.Fatalf("EdgeRuleBodies after a rejected write = %d bodies, want 0", len(bodies))
+	}
+}
+
+// TestCreateAutomationRejectsNonULIDID pins DAT-005a (a row's own id MUST be a
+// syntactically valid canonical ULID) for KindAutomation specifically:
+// compile.Compile, the gate that runs before any other automation write check,
+// has no notion of a row's own identity — it never looks at "id" at all, only
+// at the rule vocabulary — so without an id check of its own here, this exact
+// create previously SUCCEEDED with no error at all, leaving an automation row
+// no other resource kind's write path would ever accept (every other kind is
+// judged by datamodel.ValidateRows/BuildScopeTree, both of which call
+// datamodel.CheckRowID on every row). A non-ULID id persisted this way is
+// exactly the D1 unaddressability class DAT-005a exists to close: cursor
+// pagination's DecodeCursor requires ulid.Valid and would refuse to page past
+// such a row.
+func TestCreateAutomationRejectsNonULIDID(t *testing.T) {
+	s := openMem(t)
+	ctx := context.Background()
+
+	const badID = "totally-not-a-ulid"
+	_, err := s.Create(ctx, store.KindAutomation, edgeAutomation(badID))
+	var ve *store.ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("non-ULID-id create error = %v (%T), want *store.ValidationError", err, err)
+	}
+	found := false
+	for _, e := range ve.Errors {
+		if e.Code == "ROW_ID_INVALID" && e.Field == "id" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("non-ULID-id create errors = %+v, want a ROW_ID_INVALID error on field \"id\"", ve.Errors)
+	}
+
+	if g := gen(t, s); g != 0 {
+		t.Fatalf("generation advanced on rejected non-ULID-id create: want 0, got %d", g)
+	}
+	if _, ok, err := s.Get(ctx, store.KindAutomation, badID); err != nil || ok {
 		t.Fatalf("Get rejected rule: ok=%v err=%v, want not-found and no error", ok, err)
 	}
 	bodies, _, _, err := s.EdgeRuleBodies(ctx)

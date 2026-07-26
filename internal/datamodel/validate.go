@@ -85,7 +85,7 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 		if !decode(r, &v, &errs) {
 			continue
 		}
-		if e := checkRowID(v.ID, "id"); e != nil {
+		if e := CheckRowID(v.ID, "id"); e != nil {
 			errs = append(errs, *e)
 		}
 		rs.Playlists = append(rs.Playlists, v)
@@ -99,7 +99,7 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 		if !decode(r, &v, &errs) {
 			continue
 		}
-		if e := checkRowID(v.ID, "id"); e != nil {
+		if e := CheckRowID(v.ID, "id"); e != nil {
 			errs = append(errs, *e)
 		}
 		if v.Misfire != "" && !validMisfire[v.Misfire] {
@@ -116,7 +116,7 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 		if !decode(r, &v, &errs) {
 			continue
 		}
-		if e := checkRowID(v.ID, "id"); e != nil {
+		if e := CheckRowID(v.ID, "id"); e != nil {
 			errs = append(errs, *e)
 		}
 		if v.StartsAt != nil && v.EndsAt != nil && *v.EndsAt <= *v.StartsAt {
@@ -133,7 +133,7 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 		if !decode(r, &v, &errs) {
 			continue
 		}
-		if e := checkRowID(v.ID, "id"); e != nil {
+		if e := CheckRowID(v.ID, "id"); e != nil {
 			errs = append(errs, *e)
 		}
 		if !validDisplayPower[v.DisplayPower] {
@@ -153,7 +153,7 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 		if !decode(r, &v, &errs) {
 			continue
 		}
-		if e := checkRowID(v.ID, "id"); e != nil {
+		if e := CheckRowID(v.ID, "id"); e != nil {
 			errs = append(errs, *e)
 		}
 		if !validDisplayPower[v.DisplayPower] {
@@ -170,7 +170,7 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 		if !decode(r, &v, &errs) {
 			continue
 		}
-		if e := checkRowID(v.PresetID, "preset_id"); e != nil {
+		if e := CheckRowID(v.PresetID, "preset_id"); e != nil {
 			errs = append(errs, *e)
 		}
 		if len(v.Commands) == 0 {
@@ -186,13 +186,17 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 	return rs, errs
 }
 
-// checkRowID enforces DAT-005a: a row's own identity field — id for every kind
+// CheckRowID enforces DAT-005a: a row's own identity field — id for every kind
 // but preset-batch, whose identity field is preset_id (DAT-005's byte-exact
 // exception) — MUST be a syntactically valid canonical ULID. It is the one
-// helper shared by every ValidateRows decode loop below and by
-// BuildScopeTree's per-node loop (scopetree.go), so DAT-005a is enforced
-// identically for all seven row kinds from a single implementation.
-func checkRowID(id, field string) *Error {
+// helper shared by every ValidateRows decode loop below, by BuildScopeTree's
+// per-node loop (scopetree.go), and by the store package's own post-write
+// check for automations (internal/app/store/scheduling.go) — automations sit
+// outside RawRows/RowSet entirely (they are gated by the rules compiler, not
+// ValidateRows), so DAT-005a is enforced identically for all EIGHT resource
+// kinds from this one exported implementation, never a second one reimplemented
+// at the store layer.
+func CheckRowID(id, field string) *Error {
 	if !ulid.Valid(id) {
 		return &Error{Field: field, Code: "ROW_ID_INVALID", Message: "a row's id (a preset-batch's preset_id) MUST be a syntactically valid canonical ULID (DAT-005a)"}
 	}

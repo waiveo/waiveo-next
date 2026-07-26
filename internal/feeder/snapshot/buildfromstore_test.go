@@ -267,8 +267,8 @@ func TestBuildFromStoreRejectsNilIdentity(t *testing.T) {
 // section is derived from the store's edge-classified automations (REL-062),
 // not a hardcoded constant.
 const (
-	secondEdgeAutomationID = "01J8ZB0EDGE0RULE0BUILDFS01"
-	appAutomationID        = "01J8ZB0APP00RULE0BUILDFS01"
+	secondEdgeAutomationID = "01J8ZB0EDGE0RV1E0BV11DFS01"
+	appAutomationID        = "01J8ZB0APP00RV1E0BV11DFS01"
 )
 
 // secondEdgeAutomationBody is a second, well-formed edge rule (a state trigger

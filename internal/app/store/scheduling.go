@@ -52,7 +52,29 @@ func validateAfterWrite(ctx context.Context, tx *sql.Tx, kind Kind) error {
 	case kind == KindAutomation:
 		// Automations are gated by the rules compiler (compile.Compile) at the top
 		// of Create/Update, not by datamodel.ValidateRows — a compile failure has
-		// already aborted the write before this post-write hook runs.
+		// already aborted the write before this post-write hook runs. compile.Compile
+		// has no notion of a row's own identity, though, so DAT-005a (a row's id
+		// MUST be a syntactically valid canonical ULID) is enforced HERE instead,
+		// over the resulting full automations table — the same "judge the write
+		// against the state it produced" pattern the scheduling-kinds and scope-node
+		// cases above use, just narrowed to the one column compile.Compile never
+		// looks at. Without this, an in-process writer that bypasses the HTTP
+		// layer's own client-supplied-id rejection (a seed, a pack/install pipeline,
+		// a future caller) could persist a non-ULID automation id that cursor
+		// pagination (DecodeCursor's ulid.Valid gate) would then refuse to page past.
+		ids, err := readIDs(ctx, tx, string(KindAutomation))
+		if err != nil {
+			return err
+		}
+		var errs []datamodel.Error
+		for _, id := range ids {
+			if e := datamodel.CheckRowID(id, "id"); e != nil {
+				errs = append(errs, *e)
+			}
+		}
+		if len(errs) > 0 {
+			return &ValidationError{Errors: errs}
+		}
 		return nil
 	default:
 		return fmt.Errorf("store: no validator for kind %q", kind)
@@ -100,6 +122,27 @@ func readBodies(ctx context.Context, q queryer, table string) ([]json.RawMessage
 			return nil, fmt.Errorf("store: scan %s body: %w", table, err)
 		}
 		out = append(out, json.RawMessage(body))
+	}
+	return out, rows.Err()
+}
+
+// readIDs returns every id in table, ordered ascending — the minimal
+// projection validateAfterWrite's KindAutomation case needs to enforce
+// DAT-005a over the resulting full row-set, without paying to decode every
+// row's full body the way readBodies/readRawRows do.
+func readIDs(ctx context.Context, q queryer, table string) ([]string, error) {
+	rows, err := q.QueryContext(ctx, `SELECT id FROM `+table+` ORDER BY id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("store: read %s ids: %w", table, err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("store: scan %s id: %w", table, err)
+		}
+		out = append(out, id)
 	}
 	return out, rows.Err()
 }

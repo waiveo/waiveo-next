@@ -120,7 +120,7 @@ func BuildScopeTree(nodes []ScopeNode) (ScopeTree, []Error) {
 		// independent-check placement as the name check above — it neither
 		// short-circuits nor is short-circuited by the kind check below, so a
 		// node can surface a bad id alongside a bad kind in one pass.
-		if e := checkRowID(n.ID, "id"); e != nil {
+		if e := CheckRowID(n.ID, "id"); e != nil {
 			errs = append(errs, *e)
 		}
 
