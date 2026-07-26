@@ -49,7 +49,22 @@ func TestListCursorScopedPerResource(t *testing.T) {
 
 	clock := func() int64 { return int64(1_700_000_000_000) }
 	idem := apihttp.NewIdempotencyStore(clock, 0)
-	srv := &server{store: st, idem: idem, nowMs: clock}
+
+	// A resource's id is exclusively server-assigned (rejectClientSuppliedID) —
+	// so the ...B/...C keyset ordering this test depends on is pinned through
+	// the injected newID seam instead of a client-supplied id, minting in POST
+	// order below (site first, screen second).
+	minted := []string{
+		"01J8Z0B0000000000000000000",
+		"01J8Z0C0000000000000000000",
+	}
+	next := 0
+	newID := func() string {
+		id := minted[next]
+		next++
+		return id
+	}
+	srv := &server{store: st, idem: idem, nowMs: clock, newID: newID}
 	mux := http.NewServeMux()
 	srv.mount(mux, scopeNodesConfig())
 	srv.mount(mux, playlistsScopeTestConfig())
@@ -91,12 +106,13 @@ func TestListCursorScopedPerResource(t *testing.T) {
 		}
 	}
 
-	// Two scope nodes so a limit=1 list returns a continuation cursor (fixture
-	// ULIDs; the ...B/...C suffixes order them so keyset pagination is
-	// deterministic). No playlist rows are needed — a foreign cursor is rejected
-	// at decode, before any store read.
-	post("/api/v1/scope-nodes", `{"id":"01J8Z0B0000000000000000000","kind":"site","parent_id":"01J8Z0A0000000000000000000","name":"Demo Site","tz":"America/Chicago","lat":41.8781,"long":-87.6298}`)
-	post("/api/v1/scope-nodes", `{"id":"01J8Z0C0000000000000000000","kind":"screen","parent_id":"01J8Z0B0000000000000000000","name":"Demo Screen"}`)
+	// Two scope nodes so a limit=1 list returns a continuation cursor (server-
+	// minted fixture ULIDs, per the injected newID sequence above; the ...B/...C
+	// suffixes order them so keyset pagination is deterministic). No playlist
+	// rows are needed — a foreign cursor is rejected at decode, before any store
+	// read.
+	post("/api/v1/scope-nodes", `{"kind":"site","parent_id":"01J8Z0A0000000000000000000","name":"Demo Site","tz":"America/Chicago","lat":41.8781,"long":-87.6298}`)
+	post("/api/v1/scope-nodes", `{"kind":"screen","parent_id":"01J8Z0B0000000000000000000","name":"Demo Screen"}`)
 
 	// The scope-nodes list mints a cursor bound to its own resource type: it is
 	// NOT the bare ULID the unscoped form would emit — it carries the

@@ -20,58 +20,46 @@ var playlistFixtureAsset = []byte("waiveo-next scheduling-core fixture asset")
 // (the same value the upload endpoint returns for those bytes).
 var playlistFixtureAssetRef = signhash.ContentID(playlistFixtureAsset)
 
-// Fixture ULIDs for the scheduling-core CRUD tests (fixture-ULID convention; no
-// secrets — Crockford-base32 only, so a minted keyset cursor over these ids
-// round-trips through ulid.Valid, API-034). A dedicated site+screen pair,
-// independent of scopenodes_test.go's own fixtures — every test opens a fresh
-// :memory: store, so there is no collision.
-const (
-	schedSiteID       = "01J8Z0F0000000000000000000"
-	schedScreenID     = "01J8Z0G0000000000000000000"
-	playlistAID       = "01J8Z0H0000000000000000000"
-	playlistBID       = "01J8Z0J0000000000000000000"
-	missingPlaylistID = "01J8Z0K0000000000000000000"
-	scheduleAID       = "01J8Z0M0000000000000000000"
-	daypart1ID        = "01J8Z0N0000000000000000000"
-	daypart2ID        = "01J8Z0P0000000000000000000"
-	daypart3ID        = "01J8Z0Q0000000000000000000"
-	daypartDangID     = "01J8Z0R0000000000000000000"
-)
+// missingPlaylistID is a fixture ULID (fixture-ULID convention; no secrets —
+// Crockford-base32 only) that is deliberately never created, so a daypart
+// referencing it as playlist_id exercises a genuine dangling reference
+// (DAT-075 REFERENCE_INVALID).
+const missingPlaylistID = "01J8Z0K0000000000000000000"
 
 // seedSchedulingScope creates the site+screen scope-node pair every scheduling-
-// core fixture below hangs off.
-func seedSchedulingScope(t *testing.T, e *testEnv) {
+// core fixture below hangs off, returning the screen's id — every fixture
+// below's own id is now server-assigned (rejectClientSuppliedID), so callers
+// capture it from each create response rather than pinning it as a constant.
+func seedSchedulingScope(t *testing.T, e *testEnv) string {
 	t.Helper()
-	e.createNode(t, siteNode(schedSiteID))
-	e.createNode(t, screenNode(schedScreenID, schedSiteID, ""))
+	siteID := e.createNode(t, siteNode(""))
+	screenID := e.createNode(t, screenNode("", siteID, ""))
 	// A playlist item's asset_ref must resolve in the shared content origin, so
 	// upload the fixture asset before any playlist referencing it is authored.
 	e.uploadContent(t, playlistFixtureAsset)
+	return screenID
 }
 
-func playlistFixture(id string, labels map[string]string) datamodel.Playlist {
+func playlistFixture(scopeNode string, labels map[string]string) datamodel.Playlist {
 	return datamodel.Playlist{
-		ID:        id,
-		ScopeNode: schedScreenID,
-		Name:      "Demo Playlist " + id,
+		ScopeNode: scopeNode,
+		Name:      "Demo Playlist",
 		Items:     []datamodel.PlaylistItem{{Source: "asset", AssetRef: playlistFixtureAssetRef}},
 		Labels:    labels,
 	}
 }
 
-func scheduleFixture(id string) datamodel.Schedule {
+func scheduleFixture(scopeNode string) datamodel.Schedule {
 	return datamodel.Schedule{
-		ID:        id,
-		ScopeNode: schedScreenID,
+		ScopeNode: scopeNode,
 		Name:      "Demo Schedule",
 	}
 }
 
-func daypartFixture(id, scheduleID, playlistID, start, end string, days []int) datamodel.Daypart {
+func daypartFixture(scopeNode, scheduleID, playlistID, start, end string, days []int) datamodel.Daypart {
 	return datamodel.Daypart{
-		ID:           id,
 		ScheduleID:   scheduleID,
-		ScopeNode:    schedScreenID,
+		ScopeNode:    scopeNode,
 		DaysOfWeek:   days,
 		StartTime:    start,
 		EndTime:      end,
@@ -97,32 +85,34 @@ func (e *testEnv) createOK(t *testing.T, path string, body []byte) []byte {
 // now mounted for the three scheduling-core kinds this task adds.
 func TestSchedulingCoreCRUDHappyPath(t *testing.T) {
 	e := newEnv(t)
-	seedSchedulingScope(t, e)
+	screenID := seedSchedulingScope(t, e)
 
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/playlists", mustJSON(t, playlistFixture(playlistAID, nil)), nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/playlists", mustJSON(t, playlistFixture(screenID, nil)), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create playlist status = %d, body %s", resp.StatusCode, raw)
 	}
 	if etag := resp.Header.Get("ETag"); etag != `"1"` {
 		t.Fatalf("create playlist ETag = %q, want \"1\"", etag)
 	}
+	playlistAID := decodeID(t, raw)
 
-	resp, raw = e.do(t, http.MethodPost, "/api/v1/schedules", mustJSON(t, scheduleFixture(scheduleAID)), nil)
+	resp, raw = e.do(t, http.MethodPost, "/api/v1/schedules", mustJSON(t, scheduleFixture(screenID)), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create schedule status = %d, body %s", resp.StatusCode, raw)
 	}
 	if etag := resp.Header.Get("ETag"); etag != `"1"` {
 		t.Fatalf("create schedule ETag = %q, want \"1\"", etag)
 	}
+	scheduleAID := decodeID(t, raw)
 
 	// Two non-overlapping dayparts (half-open [06:00,12:00) then [12:00,22:00),
 	// same weekdays) referencing the schedule + playlist above.
-	d1 := daypartFixture(daypart1ID, scheduleAID, playlistAID, "06:00:00", "12:00:00", []int{1, 2, 3, 4, 5})
+	d1 := daypartFixture(screenID, scheduleAID, playlistAID, "06:00:00", "12:00:00", []int{1, 2, 3, 4, 5})
 	resp, raw = e.do(t, http.MethodPost, "/api/v1/dayparts", mustJSON(t, d1), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create daypart1 status = %d, body %s", resp.StatusCode, raw)
 	}
-	d2 := daypartFixture(daypart2ID, scheduleAID, playlistAID, "12:00:00", "22:00:00", []int{1, 2, 3, 4, 5})
+	d2 := daypartFixture(screenID, scheduleAID, playlistAID, "12:00:00", "22:00:00", []int{1, 2, 3, 4, 5})
 	resp, raw = e.do(t, http.MethodPost, "/api/v1/dayparts", mustJSON(t, d2), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create daypart2 status = %d, body %s", resp.StatusCode, raw)
@@ -136,15 +126,15 @@ func TestSchedulingCoreCRUDHappyPath(t *testing.T) {
 // (API-013), and nothing is stored.
 func TestDaypartOverlapValidationFailed(t *testing.T) {
 	e := newEnv(t)
-	seedSchedulingScope(t, e)
-	e.createOK(t, "/api/v1/playlists", mustJSON(t, playlistFixture(playlistAID, nil)))
-	e.createOK(t, "/api/v1/schedules", mustJSON(t, scheduleFixture(scheduleAID)))
+	screenID := seedSchedulingScope(t, e)
+	playlistAID := decodeID(t, e.createOK(t, "/api/v1/playlists", mustJSON(t, playlistFixture(screenID, nil))))
+	scheduleAID := decodeID(t, e.createOK(t, "/api/v1/schedules", mustJSON(t, scheduleFixture(screenID))))
 
-	d1 := daypartFixture(daypart1ID, scheduleAID, playlistAID, "06:00:00", "14:00:00", []int{1, 2, 3, 4, 5})
+	d1 := daypartFixture(screenID, scheduleAID, playlistAID, "06:00:00", "14:00:00", []int{1, 2, 3, 4, 5})
 	e.createOK(t, "/api/v1/dayparts", mustJSON(t, d1))
 
 	// d3 overlaps d1 on weekdays 1-5: [12:00,20:00) intersects [06:00,14:00).
-	d3 := daypartFixture(daypart3ID, scheduleAID, playlistAID, "12:00:00", "20:00:00", []int{1, 2, 3, 4, 5})
+	d3 := daypartFixture(screenID, scheduleAID, playlistAID, "12:00:00", "20:00:00", []int{1, 2, 3, 4, 5})
 	resp, raw := e.do(t, http.MethodPost, "/api/v1/dayparts", mustJSON(t, d3), nil)
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("overlapping daypart create status = %d, want 422, body %s", resp.StatusCode, raw)
@@ -166,10 +156,19 @@ func TestDaypartOverlapValidationFailed(t *testing.T) {
 		t.Fatalf("VALIDATION_FAILED errors did not include DAYPART_OVERLAP (DAT-073): %v", errsAny)
 	}
 
-	// The overlapping daypart was not stored.
-	resp, _ = e.do(t, http.MethodGet, "/api/v1/dayparts/"+daypart3ID, nil, nil)
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("overlapping daypart was stored despite VALIDATION_FAILED: get status %d", resp.StatusCode)
+	// The overlapping daypart was not stored — only d1 exists.
+	resp, raw = e.do(t, http.MethodGet, "/api/v1/dayparts", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list dayparts status = %d, body %s", resp.StatusCode, raw)
+	}
+	var listed struct {
+		Items []json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &listed); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(listed.Items) != 1 {
+		t.Fatalf("dayparts after rejected overlap = %d, want 1 (overlapping daypart was stored despite VALIDATION_FAILED)", len(listed.Items))
 	}
 }
 
@@ -179,10 +178,10 @@ func TestDaypartOverlapValidationFailed(t *testing.T) {
 // dangling reference.
 func TestDaypartMissingPlaylistValidationFailed(t *testing.T) {
 	e := newEnv(t)
-	seedSchedulingScope(t, e)
-	e.createOK(t, "/api/v1/schedules", mustJSON(t, scheduleFixture(scheduleAID)))
+	screenID := seedSchedulingScope(t, e)
+	scheduleAID := decodeID(t, e.createOK(t, "/api/v1/schedules", mustJSON(t, scheduleFixture(screenID))))
 
-	dangling := daypartFixture(daypartDangID, scheduleAID, missingPlaylistID, "06:00:00", "22:00:00", []int{0, 1, 2, 3, 4, 5, 6})
+	dangling := daypartFixture(screenID, scheduleAID, missingPlaylistID, "06:00:00", "22:00:00", []int{0, 1, 2, 3, 4, 5, 6})
 	resp, raw := e.do(t, http.MethodPost, "/api/v1/dayparts", mustJSON(t, dangling), nil)
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("dangling-playlist daypart create status = %d, want 422, body %s", resp.StatusCode, raw)
@@ -201,9 +200,18 @@ func TestDaypartMissingPlaylistValidationFailed(t *testing.T) {
 		t.Fatalf("VALIDATION_FAILED errors did not include a playlist_id REFERENCE_INVALID error: %v", errsAny)
 	}
 
-	resp, _ = e.do(t, http.MethodGet, "/api/v1/dayparts/"+daypartDangID, nil, nil)
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("dangling-reference daypart was stored despite VALIDATION_FAILED: get status %d", resp.StatusCode)
+	resp, raw = e.do(t, http.MethodGet, "/api/v1/dayparts", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list dayparts status = %d, body %s", resp.StatusCode, raw)
+	}
+	var listed struct {
+		Items []json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &listed); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(listed.Items) != 0 {
+		t.Fatalf("dangling-reference daypart was stored despite VALIDATION_FAILED: %d items", len(listed.Items))
 	}
 }
 
@@ -212,10 +220,10 @@ func TestDaypartMissingPlaylistValidationFailed(t *testing.T) {
 // conventions Task 2 proved over scope-nodes, now generalized.
 func TestSchedulingListGetPatchDeleteConventions(t *testing.T) {
 	e := newEnv(t)
-	seedSchedulingScope(t, e)
+	screenID := seedSchedulingScope(t, e)
 
-	e.createOK(t, "/api/v1/playlists", mustJSON(t, playlistFixture(playlistAID, map[string]string{"region": "east"})))
-	e.createOK(t, "/api/v1/playlists", mustJSON(t, playlistFixture(playlistBID, map[string]string{"region": "west"})))
+	playlistAID := decodeID(t, e.createOK(t, "/api/v1/playlists", mustJSON(t, playlistFixture(screenID, map[string]string{"region": "east"}))))
+	e.createOK(t, "/api/v1/playlists", mustJSON(t, playlistFixture(screenID, map[string]string{"region": "west"})))
 
 	// selector: only the east-labeled playlist.
 	q := url.Values{"selector": {"region=east"}}

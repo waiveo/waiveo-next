@@ -104,10 +104,11 @@ func TestAutomationAuthoringLoopAuthoredRuleLoadsAndFires(t *testing.T) {
 	// autoScreenEntity rising to "on" firing a device_command launch{channel:dev}
 	// on that same entity (the demo rule's shape; RUL-002 edge).
 	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations",
-		edgeAutomationBody(automationAID, autoScopeNode, nil), nil)
+		edgeAutomationBody("", autoScopeNode, nil), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("author automation: status %d, body %s", resp.StatusCode, raw)
 	}
+	automationAID := decodeID(t, raw)
 
 	// --- The feeder derives the signed desired state from the store: the authored
 	// edge rule rides edge_rules at the store's current generation (REL-062).
@@ -223,10 +224,11 @@ func TestAutomationAuthoringLoopDisabledRuleNeverFires(t *testing.T) {
 
 	// --- Author an edge rule identical to the positive oracle's, but enabled:false.
 	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations",
-		disabledEdgeAutomationBody(automationAID, autoScopeNode), nil)
+		disabledEdgeAutomationBody("", autoScopeNode), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("author disabled automation: status %d, body %s", resp.StatusCode, raw)
 	}
+	automationAID := decodeID(t, raw)
 	// GET reports it disabled — the API-visible state the carry path must agree with.
 	resp, raw = e.do(t, http.MethodGet, "/api/v1/automations/"+automationAID, nil, nil)
 	if resp.StatusCode != http.StatusOK {

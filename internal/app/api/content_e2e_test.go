@@ -20,6 +20,7 @@ package api_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -34,18 +35,6 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/schedulehost"
 	"github.com/maaxton/waiveo-next/internal/shared/signhash"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
-)
-
-// Fixture ULIDs for the content-pipeline e2e (fixture-ULID convention; no
-// secrets — Crockford-base32 only). A dedicated site+screen+playlist+schedule+
-// daypart, independent of the other tests' fixtures — every test opens a fresh
-// :memory: store, so there is no collision.
-const (
-	ceSiteID     = "01J8Z1B0000000000000000000"
-	ceScreenID   = "01J8Z1C0000000000000000000"
-	cePlaylistID = "01J8Z1D0000000000000000000"
-	ceScheduleID = "01J8Z1E0000000000000000000"
-	ceDaypartID  = "01J8Z1F0000000000000000000"
 )
 
 // TestContentPipelineEndToEnd is the make-it-real oracle for the whole content
@@ -66,33 +55,32 @@ func TestContentPipelineEndToEnd(t *testing.T) {
 
 	// --- 2. Author a playlist referencing the uploaded asset_ref + a schedule
 	// showing it, all over the api/1 handler.
-	e.createNode(t, siteNode(ceSiteID))
-	e.createNode(t, screenNode(ceScreenID, ceSiteID, ""))
+	siteID := e.createNode(t, siteNode(""))
+	screenID := e.createNode(t, screenNode("", siteID, ""))
 
 	pl := datamodel.Playlist{
-		ID:        cePlaylistID,
-		ScopeNode: ceScreenID,
+		ScopeNode: screenID,
 		Name:      "Content Pipeline Playlist",
 		Items:     []datamodel.PlaylistItem{{Source: "asset", AssetRef: up.AssetRef}},
 	}
-	e.createOK(t, "/api/v1/playlists", mustJSON(t, pl))
+	playlistID := decodeID(t, e.createOK(t, "/api/v1/playlists", mustJSON(t, pl)))
 
-	sch := datamodel.Schedule{ID: ceScheduleID, ScopeNode: ceScreenID, Name: "Content Pipeline Schedule"}
-	e.createOK(t, "/api/v1/schedules", mustJSON(t, sch))
+	sch := datamodel.Schedule{ScopeNode: screenID, Name: "Content Pipeline Schedule"}
+	scheduleID := decodeID(t, e.createOK(t, "/api/v1/schedules", mustJSON(t, sch)))
 
 	// A content daypart 06:00–22:00 every day, playing the playlist — the demo
 	// resolves at noon Chicago (e2eContentInstant), inside this window.
 	dp := datamodel.Daypart{
-		ID: ceDaypartID, ScheduleID: ceScheduleID, ScopeNode: ceScreenID,
+		ScheduleID: scheduleID, ScopeNode: screenID,
 		DaysOfWeek: []int{0, 1, 2, 3, 4, 5, 6}, StartTime: "06:00:00", EndTime: "22:00:00",
-		DisplayPower: "on", PlaylistID: cePlaylistID, Name: "Content Hours",
+		DisplayPower: "on", PlaylistID: playlistID, Name: "Content Hours",
 	}
 	e.createOK(t, "/api/v1/dayparts", mustJSON(t, dp))
 
 	// --- 3. Resolve the screen's program through the full signed desired-state
 	// path (BuildFromStore carries content_origin; the apply gate verifies it),
 	// then project the governed screen's Lease at noon Chicago.
-	content := resolveContentThroughDesiredState(t, e, ceScreenID, e2eContentInstant(t))
+	content := resolveContentThroughDesiredState(t, e, screenID, e2eContentInstant(t))
 	if len(content) != 1 {
 		t.Fatalf("resolved content items = %d, want 1 (the authored playlist asset)", len(content))
 	}
@@ -143,13 +131,13 @@ func TestContentPipelineEndToEnd(t *testing.T) {
 // that cannot be served), and nothing is stored.
 func TestPlaylistUnknownAssetRefRejected(t *testing.T) {
 	e := newEnv(t)
-	e.createNode(t, siteNode(ceSiteID))
-	e.createNode(t, screenNode(ceScreenID, ceSiteID, ""))
+	siteID := e.createNode(t, siteNode(""))
+	screenID := e.createNode(t, screenNode("", siteID, ""))
 
 	// A content-addressed ref for bytes that are NEVER uploaded to the origin.
 	unknown := signhash.ContentID([]byte("never uploaded to the content origin"))
 	pl := datamodel.Playlist{
-		ID: cePlaylistID, ScopeNode: ceScreenID, Name: "Dangling Asset Playlist",
+		ScopeNode: screenID, Name: "Dangling Asset Playlist",
 		Items: []datamodel.PlaylistItem{{Source: "asset", AssetRef: unknown}},
 	}
 	resp, raw := e.do(t, http.MethodPost, "/api/v1/playlists", mustJSON(t, pl), nil)
@@ -174,9 +162,18 @@ func TestPlaylistUnknownAssetRefRejected(t *testing.T) {
 	}
 
 	// The playlist was not stored.
-	resp, _ = e.do(t, http.MethodGet, "/api/v1/playlists/"+cePlaylistID, nil, nil)
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("dangling-asset playlist was stored despite VALIDATION_FAILED: get status %d", resp.StatusCode)
+	resp, raw = e.do(t, http.MethodGet, "/api/v1/playlists", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list playlists status = %d, body %s", resp.StatusCode, raw)
+	}
+	var listed struct {
+		Items []json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &listed); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(listed.Items) != 0 {
+		t.Fatalf("dangling-asset playlist was stored despite VALIDATION_FAILED: %d items", len(listed.Items))
 	}
 }
 
@@ -216,11 +213,11 @@ func TestPlaylistReauthoringSurvivesOriginRestart(t *testing.T) {
 	// handler bound to the reopened origin. The write MUST NOT be rejected 422 —
 	// the content is present in the origin, so the guard is satisfied.
 	e := newEnvWithContent(t, c2)
-	e.createNode(t, siteNode(ceSiteID))
-	e.createNode(t, screenNode(ceScreenID, ceSiteID, ""))
+	siteID := e.createNode(t, siteNode(""))
+	screenID := e.createNode(t, screenNode("", siteID, ""))
 
 	pl := datamodel.Playlist{
-		ID: cePlaylistID, ScopeNode: ceScreenID, Name: "Restart Survivor Playlist",
+		ScopeNode: screenID, Name: "Restart Survivor Playlist",
 		Items: []datamodel.PlaylistItem{{Source: "asset", AssetRef: ref}},
 	}
 	resp, raw := e.do(t, http.MethodPost, "/api/v1/playlists", mustJSON(t, pl), nil)

@@ -31,6 +31,7 @@ func TestInjectedIDSourceMintsBothCreateAndJobIDs(t *testing.T) {
 
 	minted := []string{
 		"01J8Z9SEAM0F1RSTM1NTED1D01",
+		"01J8Z9SEAM0AVT0F1XTVREM1D0",
 		"01J8Z9SEAM0SEC0NDM1NTED020",
 	}
 	next := 0
@@ -62,14 +63,17 @@ func TestInjectedIDSourceMintsBothCreateAndJobIDs(t *testing.T) {
 		t.Fatalf("created resource id = %q, want the FIRST injected id %q", got, minted[0])
 	}
 
-	// Seed a compile-clean edge automation under a CLIENT-supplied id (the
-	// create-minting path is not under test a second time here) so bulk-enable
-	// has a real matched target, then prove the Job mints its own id from the
-	// SAME injected source, in sequence after the create above.
-	autoID := "01J8Z9SEAM0AUTOMATIONFIXTU"
-	resp, raw = e.do(t, http.MethodPost, "/api/v1/automations", edgeAutomationBody(autoID, autoScopeNode, map[string]string{"env": "prod"}), nil)
+	// Seed a compile-clean edge automation with no client-supplied id (id is
+	// exclusively server-assigned, rejectClientSuppliedID) so bulk-enable has a
+	// real matched target — its create consumes the SECOND injected id — then
+	// prove the Job mints its own id from the SAME injected source, THIRD in
+	// sequence after the two creates above.
+	resp, raw = e.do(t, http.MethodPost, "/api/v1/automations", edgeAutomationBody("", autoScopeNode, map[string]string{"env": "prod"}), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create automation status = %d, body %s", resp.StatusCode, raw)
+	}
+	if got := decodeID(t, raw); got != minted[1] {
+		t.Fatalf("created automation id = %q, want the SECOND injected id %q", got, minted[1])
 	}
 
 	resp, raw = e.do(t, http.MethodPost, "/api/v1/automations/bulk-enable",
@@ -77,7 +81,7 @@ func TestInjectedIDSourceMintsBothCreateAndJobIDs(t *testing.T) {
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("bulk-enable status = %d, body %s", resp.StatusCode, raw)
 	}
-	if got := decodeID(t, raw); got != minted[1] {
-		t.Fatalf("Job id = %q, want the SECOND injected id %q", got, minted[1])
+	if got := decodeID(t, raw); got != minted[2] {
+		t.Fatalf("Job id = %q, want the THIRD injected id %q", got, minted[2])
 	}
 }

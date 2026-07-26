@@ -278,15 +278,19 @@ func (rs *resource) create(w http.ResponseWriter, r *http.Request) {
 }
 
 // createExec performs the create against the store and writes its outcome — a 201
-// with ETag/Location, or an api/1 Problem — to w. external_id uniqueness
-// (API-101/102) and client-supplied-id collision are enforced ATOMICALLY inside the
-// store write (via a WriteGuard and the store's own id check), closing the
-// check-then-write race a pre-write snapshot in a separate critical section left
-// open. w is the response capture create() owns, so the exact bytes are retainable
-// for an Idempotency-Key replay.
+// with ETag/Location, or an api/1 Problem — to w. A client-supplied id/preset_id
+// is rejected upfront (rejectClientSuppliedID); external_id uniqueness
+// (API-101/102) is enforced ATOMICALLY inside the store write (via a
+// WriteGuard), closing the check-then-write race a pre-write snapshot in a
+// separate critical section left open. w is the response capture create() owns,
+// so the exact bytes are retainable for an Idempotency-Key replay.
 func (rs *resource) createExec(w http.ResponseWriter, r *http.Request, raw []byte) {
-	// A server-assigned id when the client omitted one (openapi: id is not part of
-	// the create body); a client-supplied id is honored as-is.
+	if rs.rejectClientSuppliedID(w, r, raw) {
+		return
+	}
+	// The server always mints the id (openapi: id is not part of the create
+	// body; a resource's id is server-assigned, api/1 API-100) — a
+	// client-supplied one was already rejected above.
 	body, id := rs.ensureID(raw)
 	fields := parseFields(body)
 
@@ -306,15 +310,42 @@ func (rs *resource) createExec(w http.ResponseWriter, r *http.Request, raw []byt
 	writeJSON(w, http.StatusCreated, res.Body)
 }
 
-// ensureID returns the create body guaranteed to carry an identity, plus that
-// id. A client-supplied id is kept; otherwise a fresh id is minted from the
-// server's injected id source (srv.newID — never a package-level generator)
-// and injected under the kind's identity field.
-func (rs *resource) ensureID(raw []byte) (body []byte, id string) {
+// rejectClientSuppliedID writes a 422 / VALIDATION_FAILED Problem, naming the
+// kind's own identity field (id, or a preset-batch's preset_id), when raw
+// carries a non-empty client-supplied identity, and reports whether it wrote a
+// response so the caller aborts before any store write. A resource's id is
+// exclusively server-assigned: api/1's Definitions name id as the server-minted
+// identity, external_id (API-100–104) is the sanctioned client-assigned
+// identity slot, and every Create schema api/openapi.yaml declares already
+// omits id (additionalProperties: false) — this closes the gap where the HTTP
+// handlers did not yet enforce that schema at runtime. Applying the same check
+// to a PATCH body (rs.patch) additionally prevents a client from overwriting a
+// resource's already-assigned id after creation, which store.Update's
+// merge-over-current-body would otherwise accept with no id-immutability check
+// of its own.
+func (rs *resource) rejectClientSuppliedID(w http.ResponseWriter, r *http.Request, raw []byte) bool {
 	f := parseFields(raw)
-	if got := rs.cfg.identity(f); got != "" {
-		return raw, got
+	if rs.cfg.identity(f) == "" {
+		return false
 	}
+	field := rs.cfg.identityField()
+	apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), http.StatusUnprocessableEntity,
+		"VALIDATION_FAILED", "Validation Failed",
+		"One or more fields failed validation.",
+		map[string]any{"errors": []map[string]string{{
+			"field":   field,
+			"code":    "ID_SERVER_ASSIGNED",
+			"message": "a resource's " + field + " is assigned by the server and MUST NOT be supplied by the client; use external_id for a client-assigned identity (api/1 API-100).",
+		}}})
+	return true
+}
+
+// ensureID returns the create body with a freshly minted identity injected
+// under the kind's identity field, plus that id. A client-supplied id is
+// rejected upstream (rejectClientSuppliedID) before this ever runs, so every
+// body reaching here is minted fresh from the server's injected id source
+// (srv.newID — never a package-level generator).
+func (rs *resource) ensureID(raw []byte) (body []byte, id string) {
 	id = rs.srv.newID()
 	m := map[string]json.RawMessage{}
 	_ = json.Unmarshal(raw, &m)
@@ -434,6 +465,9 @@ func (rs *resource) patch(w http.ResponseWriter, r *http.Request) {
 
 	patchBody, ok := readBody(w, r)
 	if !ok {
+		return
+	}
+	if rs.rejectClientSuppliedID(w, r, patchBody) {
 		return
 	}
 

@@ -11,13 +11,14 @@ import (
 // Automation fixtures for the api-layer CRUD/run/bulk-enable tests (fixture-ULID
 // convention; no secrets). The trigger subject and the device_command target are
 // the SAME entity, so the edge rule never trips the RUL-282 cross-entity
-// restriction — exactly the shape of the demo rule.
+// restriction — exactly the shape of the demo rule. An automation's own id is
+// now exclusively server-assigned (rejectClientSuppliedID) like every other
+// kind, so every body-building helper below takes an empty id and callers
+// capture the server-minted one from each create response instead of pinning
+// it as a constant.
 const (
 	autoScreenEntity = "01J8Z3K4N5P6Q7R8S9T0V1SCRN"
 	autoScopeNode    = "01J8Z0B0000000000000000000"
-	automationAID    = "01J8ZB0AUT00000000000000A1"
-	automationBID    = "01J8ZB0AUT00000000000000B2"
-	automationCID    = "01J8ZB0AUT00000000000000C3"
 )
 
 // edgeAutomationBody is the management-API resource envelope around a well-formed
@@ -94,18 +95,16 @@ func nonCompilingAutomationBody(id, scopeNode string) []byte {
 func TestCreateAndGetAutomation(t *testing.T) {
 	e := newEnv(t)
 
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", edgeAutomationBody(automationAID, autoScopeNode, nil), nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", edgeAutomationBody("", autoScopeNode, nil), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create status = %d, body %s", resp.StatusCode, raw)
 	}
 	if etag := resp.Header.Get("ETag"); etag != `"1"` {
 		t.Fatalf("create ETag = %q, want \"1\"", etag)
 	}
+	automationAID := decodeID(t, raw)
 	if loc := resp.Header.Get("Location"); loc != "/api/v1/automations/"+automationAID {
 		t.Fatalf("create Location = %q, want /api/v1/automations/%s", loc, automationAID)
-	}
-	if got := decodeID(t, raw); got != automationAID {
-		t.Fatalf("created id = %q, want %q", got, automationAID)
 	}
 
 	resp, raw = e.do(t, http.MethodGet, "/api/v1/automations/"+automationAID, nil, nil)
@@ -133,7 +132,7 @@ func TestCreateAndGetAutomation(t *testing.T) {
 func TestCreateNonCompilingAutomationRejected(t *testing.T) {
 	e := newEnv(t)
 
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", nonCompilingAutomationBody(automationAID, autoScopeNode), nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", nonCompilingAutomationBody("", autoScopeNode), nil)
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("non-compiling create status = %d, want 422 (body %s)", resp.StatusCode, raw)
 	}
@@ -152,10 +151,19 @@ func TestCreateNonCompilingAutomationRejected(t *testing.T) {
 		t.Fatalf("compile error code = %v, want UNKNOWN_VOCABULARY_MEMBER", first["code"])
 	}
 
-	// Nothing stored: the id is absent.
-	resp, _ = e.do(t, http.MethodGet, "/api/v1/automations/"+automationAID, nil, nil)
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("rejected automation was stored: get status = %d, want 404", resp.StatusCode)
+	// Nothing stored.
+	resp, raw = e.do(t, http.MethodGet, "/api/v1/automations", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list automations status = %d, body %s", resp.StatusCode, raw)
+	}
+	var listed struct {
+		Items []json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &listed); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(listed.Items) != 0 {
+		t.Fatalf("rejected automation was stored: %d items, want 0", len(listed.Items))
 	}
 }
 
@@ -163,15 +171,16 @@ func TestCreateNonCompilingAutomationRejected(t *testing.T) {
 // gate — a patch that breaks compilation is rejected 422 and nothing changes.
 func TestPatchAutomationRecompileGated(t *testing.T) {
 	e := newEnv(t)
-	resp, _ := e.do(t, http.MethodPost, "/api/v1/automations", edgeAutomationBody(automationAID, autoScopeNode, nil), nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", edgeAutomationBody("", autoScopeNode, nil), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create status = %d", resp.StatusCode)
 	}
+	automationAID := decodeID(t, raw)
 
 	rename := mustJSON(t, map[string]string{"name": "Renamed Automation"})
 
 	// No If-Match → 428 / IF_MATCH_REQUIRED.
-	resp, raw := e.do(t, http.MethodPatch, "/api/v1/automations/"+automationAID, rename, nil)
+	resp, raw = e.do(t, http.MethodPatch, "/api/v1/automations/"+automationAID, rename, nil)
 	if resp.StatusCode != http.StatusPreconditionRequired {
 		t.Fatalf("patch-no-ifmatch status = %d, want 428", resp.StatusCode)
 	}
@@ -211,15 +220,16 @@ func TestPatchAutomationRecompileGated(t *testing.T) {
 // pagination and the label selector, exactly as the scope-nodes list does.
 func TestListAutomationsPaginationAndSelector(t *testing.T) {
 	e := newEnv(t)
-	create := func(id string, labels map[string]string) {
-		resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", edgeAutomationBody(id, autoScopeNode, labels), nil)
+	create := func(labels map[string]string) string {
+		resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", edgeAutomationBody("", autoScopeNode, labels), nil)
 		if resp.StatusCode != http.StatusCreated {
-			t.Fatalf("create %s status = %d, body %s", id, resp.StatusCode, raw)
+			t.Fatalf("create status = %d, body %s", resp.StatusCode, raw)
 		}
+		return decodeID(t, raw)
 	}
-	create(automationAID, map[string]string{"env": "prod"})
-	create(automationBID, map[string]string{"env": "staging"})
-	create(automationCID, map[string]string{"env": "prod"})
+	automationAID := create(map[string]string{"env": "prod"})
+	create(map[string]string{"env": "staging"})
+	automationCID := create(map[string]string{"env": "prod"})
 
 	type page struct {
 		Items  []json.RawMessage `json:"items"`
@@ -273,10 +283,10 @@ func TestListAutomationsPaginationAndSelector(t *testing.T) {
 func TestCreateAutomationExternalIDAndIdempotency(t *testing.T) {
 	e := newEnv(t)
 
-	body := edgeAutomationBody(automationAID, autoScopeNode, nil)
-	withExt := func(id, ext string) []byte {
+	body := edgeAutomationBody("", autoScopeNode, nil)
+	withExt := func(ext string) []byte {
 		m := map[string]json.RawMessage{}
-		_ = json.Unmarshal(edgeAutomationBody(id, autoScopeNode, nil), &m)
+		_ = json.Unmarshal(edgeAutomationBody("", autoScopeNode, nil), &m)
 		m["external_id"], _ = json.Marshal(ext)
 		out, _ := json.Marshal(m)
 		return out
@@ -299,11 +309,11 @@ func TestCreateAutomationExternalIDAndIdempotency(t *testing.T) {
 
 	// external_id uniqueness within the scope node: a second automation claiming the
 	// same external_id under the same scope is EXTERNAL_ID_CONFLICT.
-	resp, raw = e.do(t, http.MethodPost, "/api/v1/automations", withExt(automationBID, "shared-ext"), nil)
+	resp, raw = e.do(t, http.MethodPost, "/api/v1/automations", withExt("shared-ext"), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("ext create B status = %d, body %s", resp.StatusCode, raw)
 	}
-	resp, raw = e.do(t, http.MethodPost, "/api/v1/automations", withExt(automationCID, "shared-ext"), nil)
+	resp, raw = e.do(t, http.MethodPost, "/api/v1/automations", withExt("shared-ext"), nil)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("duplicate external_id status = %d, want 400 (body %s)", resp.StatusCode, raw)
 	}
@@ -316,10 +326,11 @@ func TestCreateAutomationExternalIDAndIdempotency(t *testing.T) {
 // starts a run reports `ran`.
 func TestRunAutomationReturnsDisposition(t *testing.T) {
 	e := newEnv(t)
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", edgeAutomationBody(automationAID, autoScopeNode, nil), nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", edgeAutomationBody("", autoScopeNode, nil), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create status = %d, body %s", resp.StatusCode, raw)
 	}
+	automationAID := decodeID(t, raw)
 
 	resp, raw = e.do(t, http.MethodPost, "/api/v1/automations/"+automationAID+"/run", nil, nil)
 	if resp.StatusCode != http.StatusOK {
@@ -369,10 +380,11 @@ func TestRunAppClassAutomationRefused(t *testing.T) {
 	// An app-classified automation (a notify action is app-class unconditionally,
 	// RUL-210) is stored + validated exactly like an edge rule — the compile gate
 	// accepts it; classification, not compilation, is what gates the run.
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", appAutomationBody(automationAID, autoScopeNode, nil), nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", appAutomationBody("", autoScopeNode, nil), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create app-class automation status = %d, body %s", resp.StatusCode, raw)
 	}
+	automationAID := decodeID(t, raw)
 
 	// The synchronous run is refused before the rule reaches the engine.
 	resp, raw = e.do(t, http.MethodPost, "/api/v1/automations/"+automationAID+"/run", nil, nil)
@@ -390,15 +402,16 @@ func TestRunAppClassAutomationRefused(t *testing.T) {
 // selector-matched automation ids, each pending (API-110/111).
 func TestBulkEnableReturnsJobOverMatchedIDs(t *testing.T) {
 	e := newEnv(t)
-	create := func(id string, labels map[string]string) {
-		resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", edgeAutomationBody(id, autoScopeNode, labels), nil)
+	create := func(labels map[string]string) string {
+		resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", edgeAutomationBody("", autoScopeNode, labels), nil)
 		if resp.StatusCode != http.StatusCreated {
-			t.Fatalf("create %s status = %d, body %s", id, resp.StatusCode, raw)
+			t.Fatalf("create status = %d, body %s", resp.StatusCode, raw)
 		}
+		return decodeID(t, raw)
 	}
-	create(automationAID, map[string]string{"env": "prod"})
-	create(automationBID, map[string]string{"env": "staging"})
-	create(automationCID, map[string]string{"env": "prod"})
+	automationAID := create(map[string]string{"env": "prod"})
+	create(map[string]string{"env": "staging"})
+	automationCID := create(map[string]string{"env": "prod"})
 
 	req := mustJSON(t, map[string]any{"selector": "env=prod", "enabled": false})
 	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations/bulk-enable", req, nil)
@@ -470,7 +483,7 @@ func TestBulkEnableRequiresSelector(t *testing.T) {
 	e := newEnv(t)
 	// A stored automation the fleet-wide default WOULD have matched, so a missing
 	// guard is observable as a Job over it rather than a 422.
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", edgeAutomationBody(automationAID, autoScopeNode, nil), nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", edgeAutomationBody("", autoScopeNode, nil), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create status = %d, body %s", resp.StatusCode, raw)
 	}
@@ -507,10 +520,11 @@ func TestBulkEnableRequiresSelector(t *testing.T) {
 // run, while a different key executes a genuinely fresh run.
 func TestRunAutomationIdempotency(t *testing.T) {
 	e := newEnv(t)
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", edgeAutomationBody(automationAID, autoScopeNode, nil), nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", edgeAutomationBody("", autoScopeNode, nil), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create status = %d, body %s", resp.StatusCode, raw)
 	}
+	automationAID := decodeID(t, raw)
 	runID := func(raw []byte) string {
 		t.Helper()
 		var out struct {
@@ -558,7 +572,7 @@ func TestRunAutomationIdempotency(t *testing.T) {
 // (409 / IDEMPOTENCY_KEY_REUSED).
 func TestBulkEnableIdempotency(t *testing.T) {
 	e := newEnv(t)
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", edgeAutomationBody(automationAID, autoScopeNode, map[string]string{"env": "prod"}), nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", edgeAutomationBody("", autoScopeNode, map[string]string{"env": "prod"}), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create status = %d, body %s", resp.StatusCode, raw)
 	}
