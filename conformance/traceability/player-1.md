@@ -71,6 +71,8 @@ One row per requirement ID `contracts/player-1.md` defines. Format: `conformance
 | PLY-081 | `contracts/player-1.md#program-delivery` | - | TBD-wave1 |
 | PLY-082 | `contracts/player-1.md#program-delivery` | - | TBD-wave1 |
 | PLY-083 | `contracts/player-1.md#program-delivery` | - | TBD-wave1 |
+| PLY-083a | `contracts/player-1.md#program-delivery` | - | TBD-wave1 |
+| PLY-083b | `contracts/player-1.md#program-delivery` | - | TBD-wave1 |
 | PLY-084 | `contracts/player-1.md#program-delivery` | - | TBD-wave1 |
 | PLY-085 | `contracts/player-1.md#program-delivery` | - | TBD-wave1 |
 | PLY-086 | `contracts/player-1.md#program-delivery` | - | TBD-wave1 |
