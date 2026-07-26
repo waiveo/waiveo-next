@@ -11,29 +11,37 @@ sub runPhoton()
 
     state = wvStorageLoad()
 
-    if not state.paired
-        code = m.top.pairingCode
-        if code = invalid then code = ""
-        if code = ""
-            result.phase = "need_code"
-            result.status = "waiting for pairing code"
-            m.top.photonResult = result
-            return
-        end if
+    ' An explicitly supplied launch-arg pairing code is deliberate operator
+    ' re-provisioning: try it FIRST even when already paired (a re-keyed relay
+    ' leaves persisted state stale forever otherwise). Never-wipe still holds:
+    ' persisted state is only replaced AFTER the new pairing succeeds; on
+    ' failure we fall back to the persisted pairing untouched.
+    code = m.top.pairingCode
+    if code = invalid then code = ""
 
+    if code <> ""
         print "[player-v3] pairing…"
         pair = wvDoPairing(code)
-        if not pair.ok
-            result.phase = "pair_failed"
-            result.status = "pairing failed"
-            result.error = pair.error
+        if pair.ok
+            wvStoragePersistPairing(pair.channelToken, pair.screenId, pair.relayHost, pair.relayPort, pair.trustPem)
+            print "[player-v3] paired (screen " + pair.screenId + "), token persisted"
+            state = wvStorageLoad()
+        else
             print "[player-v3] pairing FAILED: " + pair.error
-            m.top.photonResult = result
-            return
+            if not state.paired
+                result.phase = "pair_failed"
+                result.status = "pairing failed"
+                result.error = pair.error
+                m.top.photonResult = result
+                return
+            end if
+            print "[player-v3] keeping existing persisted pairing (never-wipe)"
         end if
-        wvStoragePersistPairing(pair.channelToken, pair.screenId, pair.relayHost, pair.relayPort, pair.trustPem)
-        print "[player-v3] paired (screen " + pair.screenId + "), token persisted"
-        state = wvStorageLoad()
+    else if not state.paired
+        result.phase = "need_code"
+        result.status = "waiting for pairing code"
+        m.top.photonResult = result
+        return
     end if
 
     print "[player-v3] pulling program…"

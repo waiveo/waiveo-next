@@ -12,21 +12,32 @@ sub init()
     m.task.observeField("photonResult", "onPhotonResult")
 
     m.started = false
+    m.startedCode = ""
     m.top.observeField("pairingCode", "maybeStart")
     maybeStart()
 end sub
 
-' maybeStart launches the PlayerTask exactly once, as soon as we either already
-' hold a persisted pairing or have been handed a pairing code.
+' maybeStart launches the PlayerTask as soon as we either already hold a
+' persisted pairing or have been handed a pairing code. Main sets pairingCode
+' AFTER the scene shows, so when persisted state exists the task fast-starts
+' with no code first — a code arriving later is deliberate operator
+' re-provisioning and re-runs the (one-shot) task with it, otherwise the
+' launch-arg code would be silently dropped whenever already paired.
 sub maybeStart()
-    if m.started then return
-
-    state = wvStorageLoad()
     code = m.top.pairingCode
     if code = invalid then code = ""
 
+    if m.started
+        if code = "" or code = m.startedCode then return
+        m.task.control = "STOP"
+        m.task = CreateObject("roSGNode", "PlayerTask")
+        m.task.observeField("photonResult", "onPhotonResult")
+    end if
+
+    state = wvStorageLoad()
     if state.paired or code <> ""
         m.started = true
+        m.startedCode = code
         m.status.text = "Waiveo Player v3 — connecting…"
         m.task.pairingCode = code
         m.task.control = "RUN"
