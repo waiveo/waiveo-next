@@ -4,20 +4,28 @@
 //   1. Every contracts/**/*.md except README.md/TEMPLATE.md opens with the header
 //      block: # Title, then **Contract:**, **Version:**, **Status:** lines.
 //   2. Every such file contains >=1 requirement-ID anchor: a line starting with
-//      **[XXX-000]** (three uppercase letters, a hyphen, three digits).
+//      **[XXX-000]** (three uppercase letters, a hyphen, three digits, optionally
+//      followed by a single lowercase letter for a mid-work insertion, e.g. XXX-000a).
 //   3. Requirement IDs are unique across the whole contracts corpus.
 //   4. Every requirement ID referenced from a conformance/traceability/<name>.md map
 //      (other than its own README.md) is defined in that map's mapped contract —
 //      conformance/traceability/<name>.md maps to contracts/<name>.md — not merely
 //      present anywhere in the contracts corpus.
+//   5. Every requirement ID defined in contracts/<name>.md has >=1 row in that
+//      contract's own conformance/traceability/<name>.md — the reverse of #4. This
+//      is what catches a requirement ID added to a contract with no traceability
+//      row ever added for it (the failure mode that motivated this check: a
+//      letter-suffixed ID like PLY-083a/REL-061a inserted mid-work and never
+//      traced). There is no allowlist for this check — a gap is fixed by adding
+//      the missing row, not by suppressing the check.
 import { readdirSync, readFileSync, statSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
 const CONTRACTS_ROOT = "contracts";
 const TRACEABILITY_ROOT = join("conformance", "traceability");
 const EXEMPT_NAMES = new Set(["README.md", "TEMPLATE.md"]);
-const REQUIREMENT_ID_RE = /^\*\*\[([A-Z]{3}-\d{3})\]\*\*/;
-const TRACEABILITY_ID_RE = /^[A-Z]{3}-\d{3}$/;
+const REQUIREMENT_ID_RE = /^\*\*\[([A-Z]{3}-\d{3}[a-z]?)\]\*\*/;
+const TRACEABILITY_ID_RE = /^[A-Z]{3}-\d{3}[a-z]?$/;
 
 const failures = [];
 
@@ -80,6 +88,13 @@ function expectedContractFor(traceabilityPath) {
 // A traceability map row looks like: | XXX-001 | contract §anchor | case-id(s) | status |
 // Only the first cell is inspected; anything not shaped like a requirement ID
 // (the header row, the --- separator row, prose) is silently skipped.
+//
+// Requirement ID -> whether it has >=1 row in its OWN contract's traceability
+// map (owner === expectedContract for that row). A row referencing an ID from
+// the wrong file (already a separate failure below) does not count here — the
+// ID still needs a real row in its own map.
+const tracedIds = new Set();
+
 function checkTraceabilityFile(path) {
   const expectedContract = expectedContractFor(path);
   const lines = readFileSync(path, "utf8").split("\n");
@@ -98,6 +113,8 @@ function checkTraceabilityFile(path) {
       failures.push(
         `${path}:${i + 1}: traceability map references requirement ID ${first} owned by ${owner}, but ${path} maps to ${expectedContract}`
       );
+    } else {
+      tracedIds.add(first);
     }
   });
 }
@@ -105,6 +122,24 @@ function checkTraceabilityFile(path) {
 for (const path of walkMarkdown(TRACEABILITY_ROOT)) {
   if (path.split("/").pop() === "README.md") continue;
   checkTraceabilityFile(path);
+}
+
+// #5 (reverse of #4): every requirement ID defined anywhere in the contracts
+// corpus must have a row in its own contract's traceability map. No allowlist
+// mechanism exists for this — a gap here means the row is missing, full stop.
+function expectedTraceabilityFor(contractPath) {
+  const name = contractPath.split("/").pop();
+  return join(TRACEABILITY_ROOT, name);
+}
+
+for (const [id, contractPath] of idOwner) {
+  if (tracedIds.has(id)) continue;
+  const tracePath = expectedTraceabilityFor(contractPath);
+  failures.push(
+    `${contractPath}: requirement ID ${id} has no traceability row in ${tracePath} — add a row ` +
+      `"| ${id} | contract §anchor | case-id(s) | status |" to ${tracePath} (status may be ` +
+      `"TBD-wave<n>" if no conformance case exists yet; there is no allowlist to add ${id} to instead).`
+  );
 }
 
 if (failures.length) {

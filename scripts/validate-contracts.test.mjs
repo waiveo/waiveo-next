@@ -158,6 +158,99 @@ test("traceability referencing an ID owned by a different contract fails", () =>
   );
 });
 
+test("requirement ID with no traceability row fails, naming the ID, contract, and file to edit", () => {
+  withFixture(
+    (write) => {
+      writeGoodCorpus(write);
+      // XXX-003 is added to the contract but the traceability map is never updated
+      // for it — the exact failure mode that motivated this check (a requirement
+      // ID inserted mid-work with no row ever added).
+      write(
+        "contracts/example-1.md",
+        GOOD_CONTRACT + "\n**[XXX-003]** A newly added requirement nobody traced.\n"
+      );
+    },
+    (root) => {
+      const res = runValidator(root);
+      assert.notEqual(res.status, 0);
+      const output = res.stdout + res.stderr;
+      assert.match(output, /XXX-003/);
+      assert.match(output, /contracts\/example-1\.md/);
+      assert.match(output, /conformance\/traceability\/example-1\.md/);
+      assert.match(output, /no traceability row/);
+      assert.match(res.stdout, /SUMMARY: validate-contracts: FAILED/);
+    }
+  );
+});
+
+test("requirement ID with a valid row in the wrong contract's map still fails the reverse check", () => {
+  // A row for XXX-002 exists, but only in player-1's map, not example-1's own —
+  // so XXX-002 is still untraced from example-1's point of view, even though a
+  // (misplaced) row for it exists somewhere in the corpus.
+  withFixture(
+    (write) => {
+      write("contracts/example-1.md", GOOD_CONTRACT);
+      write(
+        "conformance/traceability/example-1.md",
+        "| req-id | contract §anchor | case-id(s) | status |\n|---|---|---|---|\n| XXX-001 | contracts/example-1.md#normative-requirements | XXX-001-basic | covered |\n"
+      );
+      write(
+        "conformance/traceability/player-1.md",
+        "| req-id | contract §anchor | case-id(s) | status |\n|---|---|---|---|\n| XXX-002 | contracts/example-1.md#normative-requirements | XXX-002-basic | covered |\n"
+      );
+    },
+    (root) => {
+      const res = runValidator(root);
+      assert.notEqual(res.status, 0);
+      const output = res.stdout + res.stderr;
+      assert.match(output, /XXX-002/);
+      assert.match(output, /no traceability row in conformance\/traceability\/example-1\.md/);
+      assert.match(res.stdout, /SUMMARY: validate-contracts: FAILED/);
+    }
+  );
+});
+
+test("letter-suffixed requirement IDs (e.g. XXX-001a) are recognized on both the defined side and the row side", () => {
+  withFixture(
+    (write) => {
+      write(
+        "contracts/example-1.md",
+        GOOD_CONTRACT + "\n**[XXX-001a]** A mid-work insertion, suffixed like PLY-083a/REL-061a.\n"
+      );
+      write(
+        "conformance/traceability/example-1.md",
+        GOOD_TRACEABILITY_MAP +
+          "| XXX-001a | contracts/example-1.md#normative-requirements | - | TBD-wave1 |\n"
+      );
+    },
+    (root) => {
+      const res = runValidator(root);
+      assert.equal(res.status, 0, `expected exit 0, got ${res.status}\n${res.stdout}${res.stderr}`);
+      assert.match(res.stdout, /SUMMARY: validate-contracts: OK/);
+    }
+  );
+});
+
+test("a letter-suffixed requirement ID with no row still fails the reverse check", () => {
+  withFixture(
+    (write) => {
+      write(
+        "contracts/example-1.md",
+        GOOD_CONTRACT + "\n**[XXX-001a]** A mid-work insertion nobody traced.\n"
+      );
+      write("conformance/traceability/example-1.md", GOOD_TRACEABILITY_MAP);
+    },
+    (root) => {
+      const res = runValidator(root);
+      assert.notEqual(res.status, 0);
+      const output = res.stdout + res.stderr;
+      assert.match(output, /XXX-001a/);
+      assert.match(output, /no traceability row/);
+      assert.match(res.stdout, /SUMMARY: validate-contracts: FAILED/);
+    }
+  );
+});
+
 test("contract doc with zero requirement IDs fails", () => {
   withFixture(
     (write) => {
