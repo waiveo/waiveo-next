@@ -405,6 +405,20 @@ func main() {
 	}
 	pairingSrv.SetServedProgram(applied.Generation, served[0], relayID.PrivateKey)
 
+	// commandSurface is the ONE relay/1 REL-112/113/115 device-command surface
+	// this binary's non-edge-rule dispatch paths share — the schedule-preset
+	// path (scheduleSink, right below) and the screen keep-alive path
+	// (keepalive.Config.Controller, below) both wrap THIS SAME instance
+	// (mirroring bootAutomationStack's own construction: same loopback
+	// controller, the SAME canonical deviceRegistry as CommandVocab, and
+	// entity resolver) so a fired preset batch and a keep-alive recovery
+	// launch dispatch through the identical resolve -> serialize -> dispatch
+	// path (REL-113/114/115) an edge rule does, and REL-115's per-device lock
+	// actually serializes one against the other when both target the same
+	// physical device (internal/relay/keepalive's own package doc, "Dispatch
+	// is serialized").
+	commandSurface := deviceplane.NewCommandSurface(devController, deviceRegistry, devResolver)
+
 	// Boot the schedule resolver (internal/relay/schedulehost, REL-065/DAT-113-118)
 	// from the SAME verified Applied value bootAutomationStack read above: it
 	// parses applied.Schedule into a data-model/1 RowStore and, for every screen
@@ -412,16 +426,8 @@ func main() {
 	// pairingSrv, replacing the app-authored screen_programs baseline
 	// SetServedProgram just configured. A screen the schedule does not govern
 	// (no carried scope node, or no applicable schedule) is left exactly as
-	// SetServedProgram configured it — the additive serving policy. The device
-	// plane's command surface mirrors bootAutomationStack's own construction
-	// (same loopback controller, the SAME canonical deviceRegistry as
-	// CommandVocab, and entity resolver) so a fired preset batch dispatches
-	// through the identical resolve -> serialize -> dispatch path
-	// (REL-113/114/115) an edge rule does.
-	scheduleSink := automation.NewCommandSink(
-		deviceplane.NewCommandSurface(devController, deviceRegistry, devResolver),
-		relayID.RelayID,
-	)
+	// SetServedProgram configured it — the additive serving policy.
+	scheduleSink := automation.NewCommandSink(commandSurface, relayID.RelayID)
 
 	// rootCtx governs every long-lived background loop this process starts — the
 	// per-screen schedule resolve loops and the desired-state re-pull loop — for
@@ -455,15 +461,14 @@ func main() {
 		log.Printf("waiveo-relay device polling live (%d target(s), every %s)", len(pollTargets), cfg.pollInterval)
 	}
 
-	// Screen keep-alive (internal/relay/keepalive, player/1 PLY-150-154): a
+	// Screen keep-alive (internal/relay/keepalive, player/1 PLY-150-157): a
 	// second, independent ECP poller over the SAME cfg.ecpTargets that
 	// re-launches a screen's player channel once it safely idles at Home
 	// (power-on settle delay, ≥2-consecutive-poll Home confirmation, never
-	// while standby) — see keepalive's own package doc for why this needs its
-	// OWN Poller rather than sharing the one host.Run above already exclusively
-	// consumes. reuses devController so a keepalive-issued launch dispatches
-	// through the identical device plane adapter as every other command
-	// (REL-112/113). Off by default (WAIVEO_RELAY_KEEPALIVE unset).
+	// while standby, never while the screen's own active Lease is blank) —
+	// see keepalive's own package doc for why this needs its OWN Poller
+	// rather than sharing the one host.Run above already exclusively
+	// consumes. Off by default (WAIVEO_RELAY_KEEPALIVE unset).
 	if cfg.keepaliveOn && len(cfg.ecpTargets) > 0 {
 		kaTargets := make(map[string]keepalive.Target, len(cfg.ecpTargets))
 		for entityID, t := range cfg.ecpTargets {
@@ -472,7 +477,20 @@ func main() {
 		ka := keepalive.New(keepalive.Config{
 			Targets:      kaTargets,
 			PollInterval: cfg.pollInterval,
-			Controller:   devController,
+			// The SAME commandSurface the schedule-preset path dispatches
+			// through, wrapped exactly as that path wraps it (REL-112/113/115
+			// — see commandSurface's own comment above and keepalive's
+			// package doc, "Dispatch is serialized"): a keep-alive recovery
+			// launch is indistinguishable, from the device plane's side, from
+			// an app-peer-, edge-rule-, or preset-batch-issued command, and
+			// takes the identical per-device dispatch lock.
+			Controller: automation.NewCommandSink(commandSurface, relayID.RelayID),
+			// Wave-1 bridge (playerserver.Server.CurrentDisplay's own doc):
+			// exactly one screen-program is served system-wide today, so
+			// every entityID maps to that SAME currently active Lease
+			// display — the real PLY-155 signal (internal/relay/keepalive's
+			// package doc, "PLY-155/156" section).
+			ActiveDisplay: func(string) string { return pairingSrv.CurrentDisplay() },
 		})
 		go func() {
 			if err := ka.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {

@@ -9,9 +9,14 @@ import (
 	"net/url"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/maaxton/waiveo-next/internal/relay/automation"
+	"github.com/maaxton/waiveo-next/internal/relay/deviceplane"
+	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
+	"github.com/maaxton/waiveo-next/internal/rules/registry"
 	"github.com/maaxton/waiveo-next/internal/rules/state"
 )
 
@@ -396,5 +401,224 @@ func TestRunStopsOnContextCancellation(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return after context cancellation")
+	}
+}
+
+// --- PLY-155/156: blank-Lease suppression, delegated to playerserver.EvaluateRecovery ---
+
+// TestBlankActiveLeaseSuppressesRecovery pins PLY-155: a screen that would
+// otherwise confirm a Home recovery (PowerOn, past the settle delay, two
+// consecutive Home polls) must NEVER dispatch while Config.ActiveDisplay
+// reports the screen's own currently active Lease is blank — an
+// intentionally off-air screen is not a recovery target, regardless of how
+// far the Home streak has progressed. Once the Lease stops being blank, the
+// streak must be reconfirmed fresh (not fire immediately on stale
+// pre-suppression progress).
+func TestBlankActiveLeaseSuppressesRecovery(t *testing.T) {
+	fc := &fakeController{}
+	var blank int32 = 1 // atomic bool: 1 = the active Lease is blank
+	k := New(Config{
+		LaunchDelay: time.Millisecond,
+		Controller:  fc,
+		ActiveDisplay: func(string) string {
+			if atomic.LoadInt32(&blank) == 1 {
+				return playerserver.DisplayBlank
+			}
+			return playerserver.DisplayContent
+		},
+	})
+	t0 := time.Unix(1700000000, 0)
+
+	k.recordObservation(obsFor("scr1", "PowerOn", "app"), t0)
+	k.recordObservation(obsFor("scr1", "PowerOn", "home"), t0.Add(time.Second))
+	k.recordObservation(obsFor("scr1", "PowerOn", "home"), t0.Add(2*time.Second))
+	if got := fc.callCount(); got != 0 {
+		t.Fatalf("launch calls while the active Lease is blank = %d, want 0 (PLY-155 must suppress regardless of the confirmed Home streak)", got)
+	}
+
+	// Un-blank: PLY-155 no longer suppresses, but the streak must be
+	// reconfirmed fresh — never fire immediately on stale pre-suppression
+	// progress.
+	atomic.StoreInt32(&blank, 0)
+	k.recordObservation(obsFor("scr1", "PowerOn", "home"), t0.Add(3*time.Second))
+	if got := fc.callCount(); got != 0 {
+		t.Fatalf("launch calls on the FIRST post-suppression Home poll = %d, want 0 (the streak resets under suppression, PLY-155)", got)
+	}
+	k.recordObservation(obsFor("scr1", "PowerOn", "home"), t0.Add(4*time.Second))
+	if got := fc.callCount(); got != 1 {
+		t.Fatalf("launch calls after the second post-suppression confirming Home poll = %d, want exactly 1", got)
+	}
+}
+
+// TestNilActiveDisplayNeverSuppresses proves the documented Config.ActiveDisplay
+// zero-value degrade: leaving it unset behaves exactly as every pre-existing
+// test above already assumes — PLY-155 has no effect, never a false
+// suppression a production relay would notice as "keepalive silently stopped
+// working." (A production relay MUST wire it — see Config's own doc — this
+// only pins the safe degrade for a test/Config that doesn't.)
+func TestNilActiveDisplayNeverSuppresses(t *testing.T) {
+	fc := &fakeController{}
+	k := New(Config{LaunchDelay: time.Millisecond, Controller: fc}) // ActiveDisplay left nil
+	t0 := time.Unix(1700000000, 0)
+
+	k.recordObservation(obsFor("scr1", "PowerOn", "app"), t0)
+	k.recordObservation(obsFor("scr1", "PowerOn", "home"), t0.Add(time.Second))
+	k.recordObservation(obsFor("scr1", "PowerOn", "home"), t0.Add(2*time.Second))
+	if got := fc.callCount(); got != 1 {
+		t.Fatalf("launch calls with ActiveDisplay left nil = %d, want exactly 1 (nil must not suppress)", got)
+	}
+}
+
+// --- REL-115: keepalive's dispatch must be serialized like every other command ---
+
+// blockingKAController is a deviceplane.DeviceController test double whose
+// Dispatch records the call and then invokes onDispatch synchronously (which
+// may itself block until a test releases it) — this package's own analogue
+// of internal/relay/deviceplane/serialize_test.go's blockingController, used
+// here to prove keepalive's OWN dispatch call sites (dispatchLaunch,
+// evaluateAll) behave correctly once wired through a real
+// deviceplane.CommandSurface, exactly as cmd/waiveo-relay/main.go wires them.
+type blockingKAController struct {
+	mu         sync.Mutex
+	calls      []string
+	onDispatch func(entityID string)
+}
+
+func (b *blockingKAController) Dispatch(entityID, command string, params map[string]any) error {
+	b.mu.Lock()
+	b.calls = append(b.calls, entityID)
+	b.mu.Unlock()
+	if b.onDispatch != nil {
+		b.onDispatch(entityID)
+	}
+	return nil
+}
+
+// seedConfirmable directly seeds k's internal cache/state so evaluateAll's
+// very next call fires a launch for id on its own — one confirming Home poll
+// away from threshold, already past the settle delay — without driving the
+// whole recordObservation sequence (which would itself synchronously
+// dispatch before the test can observe concurrency). Same-package test file,
+// so it may reach into k's unexported fields directly.
+func seedConfirmable(k *Keepalive, id string, asOf time.Time) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.known[id] = pollSnapshot{powerMode: "PowerOn", appType: "home"}
+	k.screens[id] = &screenState{wasPoweredOn: true, poweredOnAt: asOf.Add(-time.Hour), homeStreak: 1}
+}
+
+// TestEvaluateAllSerializesPerDeviceButNotAcrossScreens is the integrated
+// proof of both the REL-115 dispatch fix and the per-screen concurrency fix
+// together: entities scrA and scrB are two entities of the SAME physical
+// device (data-model/1 fan-out), while scrC is an entirely independent
+// device. All three become confirmable in the SAME evaluateAll pass.
+//
+//   - scrA/scrB's dispatches must never overlap inside the controller (REL-115
+//     — proves keepalive's Controller now goes through a
+//     deviceplane.CommandSurface, not a bare DeviceController, per finding 2).
+//   - scrC's dispatch must complete without waiting for scrA/scrB to be
+//     released (proves evaluateAll's own per-screen dispatch is concurrent,
+//     per finding 5) — the exact scenario finding 2 named: "an edge rule or a
+//     scheduled preset batch dispatches a command to the same device_id at
+//     the same moment keepalive's ticker fires a recovery launch."
+func TestEvaluateAllSerializesPerDeviceButNotAcrossScreens(t *testing.T) {
+	entered := make(chan string, 8)
+	release := make(chan struct{})
+	var inFlightDeviceX int32
+	var overlapDeviceX int32
+
+	controller := &blockingKAController{onDispatch: func(entityID string) {
+		if entityID == "scrA" || entityID == "scrB" {
+			if atomic.AddInt32(&inFlightDeviceX, 1) > 1 {
+				atomic.StoreInt32(&overlapDeviceX, 1)
+			}
+			entered <- entityID
+			<-release
+			atomic.AddInt32(&inFlightDeviceX, -1)
+			return
+		}
+		entered <- entityID // scrC: an independent device, never blocks
+	}}
+
+	surface := deviceplane.NewCommandSurface(controller, registry.FixtureRegistry{},
+		func(entityID string) (deviceID, deviceClass string, ok bool) {
+			switch entityID {
+			case "scrA", "scrB":
+				return "device-X", "media-player", true
+			case "scrC":
+				return "device-Y", "media-player", true
+			}
+			return "", "", false
+		})
+	sink := automation.NewCommandSink(surface, "01J8Z3K4N5P6Q7R8S9T0V1RELY")
+
+	k := New(Config{LaunchDelay: time.Millisecond, Controller: sink})
+	now := time.Now()
+	seedConfirmable(k, "scrA", now)
+	seedConfirmable(k, "scrB", now)
+	seedConfirmable(k, "scrC", now)
+
+	k.evaluateAll(now)
+
+	seenC := false
+	deadline := time.After(2 * time.Second)
+	for !seenC {
+		select {
+		case id := <-entered:
+			if id == "scrC" {
+				seenC = true
+			}
+		case <-deadline:
+			t.Fatal("scrC's (independent device) dispatch never entered the controller while scrA/scrB were blocked — evaluateAll must not serialize dispatch across independent screens (finding 5)")
+		}
+	}
+
+	close(release)
+	k.dispatchWG.Wait()
+
+	if atomic.LoadInt32(&overlapDeviceX) != 0 {
+		t.Fatal("scrA and scrB (two entities of the SAME physical device) were dispatched into the controller concurrently — REL-115 requires per-device serialization; keepalive must dispatch through a deviceplane.CommandSurface to get it (finding 2)")
+	}
+}
+
+// TestRunCancelsPromptlyWhileADispatchIsInFlight proves Run's ctx-cancellation
+// promptness holds even UNDER LOAD — while one screen's recovery dispatch is
+// still outstanding (blocked, modeling a slow/unreachable device) — rather
+// than only when idle. Before evaluateAll's per-screen dispatch was made
+// concurrent (finding 5), a single stuck dispatch ran inline inside Run's own
+// ticker branch, so cancellation would have had to wait behind it too.
+func TestRunCancelsPromptlyWhileADispatchIsInFlight(t *testing.T) {
+	hold := make(chan struct{}) // never closed: models a permanently hung device
+	entered := make(chan struct{}, 1)
+	controller := &blockingKAController{onDispatch: func(string) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-hold
+	}}
+	k := New(Config{PollInterval: 20 * time.Millisecond, LaunchDelay: time.Millisecond, Controller: controller})
+	seedConfirmable(k, "scr1", time.Now())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- k.Run(ctx) }()
+
+	select {
+	case <-entered:
+		// The seeded screen's dispatch is now in flight and permanently
+		// blocked — this is the "under load" condition the minor asked for.
+	case <-time.After(2 * time.Second):
+		t.Fatal("the seeded screen's dispatch never entered the controller — test setup produced no load to cancel under")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("Run returned %v, want context.Canceled", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Run did not return promptly after cancellation while a dispatch was still in flight — evaluateAll's per-screen dispatch must never block ctx cancellation")
 	}
 }

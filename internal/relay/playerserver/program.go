@@ -181,6 +181,24 @@ func (s *Server) SetServedProgram(generation int64, sp wire.ScreenProgram, signi
 	s.SetProgram(generation, sp.ProgramRevision, sp.Priority, sp.Display, content, signingKey)
 }
 
+// CurrentDisplay returns the `display` value (PLY-093: DisplayContent or
+// DisplayBlank) of whatever Lease this server is currently configured to
+// issue — SetProgram/SetServedProgram's own program.Display, read under the
+// same lock those setters take. This is the real signal
+// internal/relay/keepalive's screen-liveness recovery gates PLY-155's
+// blank-Lease suppression on (Config.ActiveDisplay, playerserver.LivenessSignal
+// via liveness.go's EvaluateRecovery). Wave-1 first-photon carries exactly one
+// applied screen-program system-wide (program's own doc above), so this
+// reports that ONE program's display regardless of which screen asks — the
+// same simplification cmd/waiveo-relay's own Wave-1 bridge resolvers already
+// make elsewhere (e.g. loopbackResolver's "a configured ECP target IS the
+// adopted entity").
+func (s *Server) CurrentDisplay() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.program.Display
+}
+
 // LeaseAck returns a previously recorded lease/ack for leaseID, and
 // whether one has been recorded — exposed for tests and any later task
 // wanting to inspect ack state (a real relay/1 upstream forward of
