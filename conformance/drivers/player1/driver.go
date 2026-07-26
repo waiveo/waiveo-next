@@ -31,10 +31,12 @@
 // drives every case in the frozen corpus — nothing is PENDING.
 // TestPlayer1CorpusFullyAccountedFor independently re-derives the corpus
 // directory's own case set and fails loudly if a future corpus addition is
-// ever left untriaged. Against a target that reports itself unable to
-// observe a commitment mismatch (CommitmentMismatchCapable, e.g.
-// RemoteECPPlayerTarget's relay-observed mode), PLY-057 alone is recorded
-// PENDING with a stated reason instead — see pendPLY057NotCapable.
+// ever left untriaged. Against a target that cannot guarantee drivePLY057's
+// relay-side assertions hold — that its Pair(mismatched) call never reaches
+// the relay at all, and that the SAME shared grant survives for a follow-up
+// correct attempt (PLY057Driveable, e.g. RemoteECPPlayerTarget in EITHER
+// observation mode) — PLY-057 alone is recorded PENDING with a stated reason
+// instead — see pendPLY057NotDriveable.
 package player1
 
 import (
@@ -139,10 +141,10 @@ func Run(target PlayerTarget, relay Relay) report.Report {
 	}
 
 	drivePLY055(&rep, target, relay, cases)
-	if commitmentMismatchCapable(target) {
+	if ply057Driveable(target) {
 		drivePLY057(&rep, target, relay, cases)
 	} else {
-		pendPLY057NotCapable(&rep, target, cases)
+		pendPLY057NotDriveable(&rep, target, cases)
 	}
 	drivePLY050(&rep, target, relay, cases)
 
@@ -652,61 +654,77 @@ func drivePLY055(rep *report.Report, target PlayerTarget, relay Relay, cases map
 		"trust_anchor_persisted / trust_outcome=commitment_verified: the virtual player pins in-process (TLS VerifyConnection); on-disk persistence is not observable from the wire, but the commitment check that gates it is (commitment_match).")
 }
 
-// CommitmentMismatchCapable is implemented by a PlayerTarget that can
+// PLY057Driveable is implemented by a PlayerTarget that can be driven
+// through drivePLY057's FULL assertion set: not merely one that can
 // distinguish a client-local OOB fingerprint-commitment-mismatch rejection
 // (PairResult.CommitmentMismatch, PLY-057) from an ordinary successful
-// pairing. VirtualPlayerTarget makes this distinction BY CONSTRUCTION — its
-// TLS VerifyConnection callback IS the commitment check, so a mismatch never
+// pairing, but one whose Pair(mismatched) call is provably NEVER seen by the
+// relay at all, so that drivePLY057's relay-side assertions —
+// Relay.PairCallCount() == 0 for the mismatched attempt, and the SAME shared
+// one-time grant still redeemable by a follow-up correct attempt — hold by
+// construction rather than by accident.
+//
+// VirtualPlayerTarget satisfies this BY CONSTRUCTION — its TLS
+// VerifyConnection callback IS the commitment check, so a mismatch never
 // even completes a connection the relay's own recorder can see (see
 // virtualplayer.pinnedTLSConfig's own doc) — and so does not need to
 // implement this interface at all: a target Run cannot type-assert to
-// CommitmentMismatchCapable is simply assumed capable, which is exactly
+// PLY057Driveable is simply assumed driveable, which is exactly
 // VirtualPlayerTarget's (and the test-only brokenNoPinTarget's) existing,
 // unchanged behavior.
 //
-// A target that genuinely cannot make this distinction implements it
-// returning false. RemoteECPPlayerTarget in its relay-observed mode (no
-// debug console wired) is the concrete example: see its own doc for why the
-// relay's wire view alone (Relay.PairCallCount/PairResponses) is IDENTICAL
-// for a correct and a commitment-mismatched pairing code on real player-v3
-// hardware — the mismatch is detected entirely inside the device, AFTER a
-// bootstrap POST that already completed with TLS verification disabled
-// (player-v3/source/Pairing.brs). Run then records PLY-057 PENDING with a
-// reason instead of driving it to a guaranteed-wrong FAIL (§10 "no silent
+// A target that cannot make this guarantee implements it returning false.
+// RemoteECPPlayerTarget is the concrete example, in BOTH of its observation
+// modes: it drives an ACTUAL on-LAN player-v3 device over ECP, and
+// player-v3/source/Pairing.brs's bootstrap POST to /player/v1/pair always
+// completes — TLS verification explicitly disabled (peerVerify: false,
+// hostVerify: false) — before the commitment is ever compared, locally,
+// against the response's own trust_anchors (PLY-052). The relay IS reached
+// on every attempt, and internal/relay/playerserver's redeem() unconditionally
+// marks a one-time grant redeemed on that same completed call, with no
+// notion of commitment at all (it never receives fingerprint_commitment back
+// from a player, REL-126) — regardless of whether the mismatch is later
+// detected client-side. debug-console mode's ability to READ that later,
+// client-side detection (telnetDebugConsole reading player-v3's own "pairing
+// FAILED: fingerprint commitment MISMATCH" print) is real, but it is a
+// narrower guarantee than this interface asks for and does not make
+// drivePLY057's relay-side assertions hold — they fail exactly as they would
+// in relay-observed mode, just with the local-rejection field itself
+// correctly reported. Run then records PLY-057 PENDING with a reason instead
+// of driving it to a guaranteed-wrong FAIL in EITHER mode (§10 "no silent
 // caps": a case a target genuinely cannot exercise gets a stated PENDING,
 // never a silently-skipped or falsely-failing one).
-type CommitmentMismatchCapable interface {
-	SupportsCommitmentMismatchDetection() bool
+type PLY057Driveable interface {
+	DriveablePLY057() bool
 }
 
-// commitmentMismatchCapable reports whether target can distinguish a
-// commitment-mismatch rejection from a successful pairing (see
-// CommitmentMismatchCapable's own doc). A target that does not implement the
-// interface is assumed capable, preserving VirtualPlayerTarget's and
-// brokenNoPinTarget's existing behavior (PLY-057 always driven against them)
-// exactly.
-func commitmentMismatchCapable(target PlayerTarget) bool {
-	c, ok := target.(CommitmentMismatchCapable)
+// ply057Driveable reports whether target can be safely driven through
+// drivePLY057's full assertion set (see PLY057Driveable's own doc). A target
+// that does not implement the interface is assumed driveable, preserving
+// VirtualPlayerTarget's and brokenNoPinTarget's existing behavior (PLY-057
+// always driven against them) exactly.
+func ply057Driveable(target PlayerTarget) bool {
+	c, ok := target.(PLY057Driveable)
 	if !ok {
 		return true
 	}
-	return c.SupportsCommitmentMismatchDetection()
+	return c.DriveablePLY057()
 }
 
-// pendPLY057NotCapable records PLY-057 PENDING for a target that reported
-// itself unable to distinguish a commitment-mismatch rejection from an
-// ordinary successful pairing (CommitmentMismatchCapable.
-// SupportsCommitmentMismatchDetection() == false) — see that interface's own
-// doc for why driving PLY-057 against such a target would either hang or
-// falsely FAIL rather than exercise anything meaningful.
-func pendPLY057NotCapable(rep *report.Report, target PlayerTarget, cases map[string]corpus.Case) {
+// pendPLY057NotDriveable records PLY-057 PENDING for a target that reported
+// itself unable to guarantee drivePLY057's relay-side assertions
+// (PLY057Driveable.DriveablePLY057() == false) — see that interface's own
+// doc for why driving PLY-057 against such a target would falsely FAIL
+// rather than exercise anything meaningful, even when the target can
+// correctly observe the commitment mismatch itself.
+func pendPLY057NotDriveable(rep *report.Report, target PlayerTarget, cases map[string]corpus.Case) {
 	c, ok := corpus.ByID(cases, "PLY-057")
 	if !ok {
 		rep.Fail("PLY-057", contract, "case not found in frozen corpus")
 		return
 	}
 	rep.Pending(c.CaseID, contract, fmt.Sprintf(
-		"target %q reports SupportsCommitmentMismatchDetection()=false: it cannot observe a client-local OOB commitment-mismatch rejection over the wire it has access to. See RemoteECPPlayerTarget's own doc — in relay-observed mode, the relay redeems a commitment-mismatched pairing code identically to a correct one (player-v3's bootstrap POST completes with TLS verification disabled, and the mismatch is detected locally, after the fact, inside the device); wire a debug-console reader (RemoteECPPlayerTarget's default mode) to drive this case remotely instead.",
+		"target %q reports DriveablePLY057()=false: it cannot guarantee its Pair() call for a commitment-mismatched code never reaches the relay, nor that the shared one-time grant survives the attempt. See RemoteECPPlayerTarget's own doc — a real player-v3 device's bootstrap POST to /player/v1/pair always completes (TLS verification disabled) and reaches the relay, which redeems a commitment-mismatched pairing code identically to a correct one and consumes a one-time grant on that same call; the mismatch is detected locally, after the fact, inside the device, in EITHER of RemoteECPPlayerTarget's observation modes — wiring a debug-console reader changes only whether that local detection is observable, not whether the relay was reached.",
 		target.Name()))
 }
 

@@ -129,7 +129,9 @@ type inProcessRelayConfig struct {
 // WithBindHost overrides the interface the in-process feeder+relay TCP
 // listeners bind to (default "127.0.0.1", loopback-only). An actual on-LAN
 // player device (RemoteECPPlayerTarget) cannot reach a loopback-bound
-// listener, so remote-target mode binds "0.0.0.0" (every interface) instead.
+// listener, so remote-target mode binds "0.0.0.0" (every interface) instead
+// — pair a wildcard bindHost with WithDialHost (see its own doc), or
+// NewInProcessRelay returns an error rather than silently dialing "0.0.0.0".
 func WithBindHost(host string) InProcessRelayOption {
 	return func(c *inProcessRelayConfig) { c.bindHost = host }
 }
@@ -141,7 +143,8 @@ func WithBindHost(host string) InProcessRelayOption {
 // LAN IP a Roku on the same subnet can reach. Defaults to bindHost when
 // unset, which is correct both for the loopback-only default (bindHost IS
 // dialable) and for a bindHost that is itself already a concrete dialable
-// address.
+// address — but NOT for a wildcard bindHost, which NewInProcessRelay refuses
+// outright rather than silently defaulting to an undialable address.
 func WithDialHost(host string) InProcessRelayOption {
 	return func(c *inProcessRelayConfig) { c.dialHost = host }
 }
@@ -157,6 +160,18 @@ func NewInProcessRelay(opts ...InProcessRelayOption) (*InProcessRelay, error) {
 		opt(&cfg)
 	}
 	if cfg.dialHost == "" {
+		// A wildcard bind address (WithBindHost("0.0.0.0"), the whole point of
+		// which is to accept connections from any interface) is never itself a
+		// meaningful dial target: defaulting dialHost to it here would silently
+		// embed "0.0.0.0" into every formed pairing code's dial address and
+		// content-origin URL, which no real player can ever reach. This is
+		// specifically the WithBindHost-without-WithDialHost misuse — a bindHost
+		// that is ALREADY a concrete dialable address (including the loopback
+		// default) is exactly the case this default-to-bindHost fallback exists
+		// for, and is left unchanged below.
+		if cfg.bindHost == "0.0.0.0" || cfg.bindHost == "::" {
+			return nil, fmt.Errorf("player1: NewInProcessRelay: WithBindHost(%q) is a wildcard bind address with no WithDialHost given — a formed pairing code would embed %q as the address a player dials, which is not reachable; pass WithDialHost explicitly", cfg.bindHost, cfg.bindHost)
+		}
 		cfg.dialHost = cfg.bindHost
 	}
 

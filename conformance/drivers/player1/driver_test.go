@@ -15,6 +15,7 @@ import (
 	"github.com/maaxton/waiveo-next/conformance/drivers/player1"
 	"github.com/maaxton/waiveo-next/conformance/drivers/report"
 	"github.com/maaxton/waiveo-next/internal/shared/paircode"
+	"github.com/maaxton/waiveo-next/internal/shared/tlsboot"
 )
 
 // expectedPending is the enumerated PENDING set the player1 driver must
@@ -66,6 +67,29 @@ func TestPlayer1DriverGreen(t *testing.T) {
 	if !rep.OK() {
 		t.Errorf("report not OK:\n%s", rep.String())
 	}
+}
+
+// TestNewInProcessRelayRejectsWildcardBindWithoutDialHost proves
+// NewInProcessRelay refuses a wildcard WithBindHost given with no
+// WithDialHost, rather than silently defaulting the dial address embedded
+// into every formed pairing code and content-origin URL to "0.0.0.0" — an
+// address no real player could ever dial.
+func TestNewInProcessRelayRejectsWildcardBindWithoutDialHost(t *testing.T) {
+	_, err := player1.NewInProcessRelay(player1.WithBindHost("0.0.0.0"))
+	if err == nil {
+		t.Fatal("NewInProcessRelay(WithBindHost(\"0.0.0.0\")) with no WithDialHost: err = nil, want a configuration error")
+	}
+}
+
+// TestNewInProcessRelayLoopbackBindStillDefaultsDialHost proves the fix above
+// does not disturb the ordinary default (no options at all, or a concrete,
+// already-dialable bindHost): dialHost still silently defaults to bindHost.
+func TestNewInProcessRelayLoopbackBindStillDefaultsDialHost(t *testing.T) {
+	relay, err := player1.NewInProcessRelay()
+	if err != nil {
+		t.Fatalf("NewInProcessRelay(): %v", err)
+	}
+	defer relay.Close()
 }
 
 // TestPlayer1DriverHasTeeth proves the driver can FAIL: it points the SAME
@@ -149,14 +173,14 @@ func TestPlayer1CorpusFullyAccountedFor(t *testing.T) {
 }
 
 // TestPlayer1DriverPLY057PendingWhenTargetNotCapable proves Run's
-// target-capability gate (driver.go's commitmentMismatchCapable/
-// pendPLY057NotCapable) end to end against a REAL in-process relay: a target
-// that completes every pairing attempt but reports itself unable to detect a
-// commitment mismatch (player1.CommitmentMismatchCapable
-// .SupportsCommitmentMismatchDetection()==false — the exact shape
-// RemoteECPPlayerTarget's relay-observed mode reports, see remotetarget.go's
-// own doc) drives PLY-050/055 plus every Phase-2/3 case as usual, but records
-// PLY-057 PENDING instead of a guaranteed-wrong FAIL.
+// target-capability gate (driver.go's ply057Driveable/
+// pendPLY057NotDriveable) end to end against a REAL in-process relay: a
+// target that completes every pairing attempt but reports itself unable to
+// guarantee drivePLY057's relay-side assertions (player1.PLY057Driveable
+// .DriveablePLY057()==false — the exact shape RemoteECPPlayerTarget reports
+// in BOTH observation modes, see remotetarget.go's own doc) drives
+// PLY-050/055 plus every Phase-2/3 case as usual, but records PLY-057
+// PENDING instead of a guaranteed-wrong FAIL.
 func TestPlayer1DriverPLY057PendingWhenTargetNotCapable(t *testing.T) {
 	relay, err := player1.NewInProcessRelay()
 	if err != nil {
@@ -164,7 +188,7 @@ func TestPlayer1DriverPLY057PendingWhenTargetNotCapable(t *testing.T) {
 	}
 	defer relay.Close()
 
-	rep := player1.Run(notCapableTarget{}, relay)
+	rep := player1.Run(notDriveableTarget{}, relay)
 	t.Logf("\n%s", rep.String())
 
 	wantPending := []string{"PLY-057-invalid-oob-authentication-mismatch-rejected"}
@@ -187,20 +211,20 @@ func TestPlayer1DriverPLY057PendingWhenTargetNotCapable(t *testing.T) {
 	}
 }
 
-// notCapableTarget wraps the REAL VirtualPlayerTarget (so PLY-050/055 still
+// notDriveableTarget wraps the REAL VirtualPlayerTarget (so PLY-050/055 still
 // genuinely redeem against the live relay, exactly as TestPlayer1DriverGreen
-// drives them) but reports itself unable to distinguish an OOB
-// commitment-mismatch rejection from an ordinary successful pairing
-// (player1.CommitmentMismatchCapable) — the exact shape RemoteECPPlayerTarget's
-// relay-observed mode reports (see remotetarget.go's own doc). It exists to
-// prove TestPlayer1DriverPLY057PendingWhenTargetNotCapable's PENDING gate
-// without needing a real device.
-type notCapableTarget struct {
+// drives them) but reports itself unable to guarantee drivePLY057's
+// relay-side assertions (player1.PLY057Driveable) — the exact shape
+// RemoteECPPlayerTarget reports in BOTH observation modes (see
+// remotetarget.go's own doc). It exists to prove
+// TestPlayer1DriverPLY057PendingWhenTargetNotCapable's PENDING gate without
+// needing a real device.
+type notDriveableTarget struct {
 	player1.VirtualPlayerTarget
 }
 
-func (notCapableTarget) Name() string                              { return "virtualplayer-not-capable-fake" }
-func (notCapableTarget) SupportsCommitmentMismatchDetection() bool { return false }
+func (notDriveableTarget) Name() string          { return "virtualplayer-not-driveable-fake" }
+func (notDriveableTarget) DriveablePLY057() bool { return false }
 
 // TestPlayer1DriverAgainstRealRokuTarget drives the ENTIRE player/1 corpus
 // against an actual on-LAN player-v3 device instead of VirtualPlayerTarget —
@@ -240,13 +264,11 @@ func TestPlayer1DriverAgainstRealRokuTarget(t *testing.T) {
 		t.Errorf("driven case(s) FAILED against the real device %q: %v", env.Target.Host, got)
 	}
 
-	var wantPending []string
-	if !target.SupportsCommitmentMismatchDetection() {
-		// Relay-observed mode (WAIVEO_CONF_PLAYER_ROKU_DEBUG_PORT=off): PLY-057
-		// cannot be distinguished from a successful pairing over the wire alone
-		// — see player1.CommitmentMismatchCapable's own doc.
-		wantPending = []string{"PLY-057-invalid-oob-authentication-mismatch-rejected"}
-	}
+	// PLY-057 is PENDING against a real device in EITHER observation mode —
+	// RemoteECPPlayerTarget.DriveablePLY057() reports false unconditionally
+	// (see remotetarget.go's own package doc for why debug-console mode's
+	// ability to OBSERVE the mismatch does not make it safe to drive).
+	wantPending := []string{"PLY-057-invalid-oob-authentication-mismatch-rejected"}
 	if !reflect.DeepEqual(rep.PendingIDs(), wantPending) {
 		t.Errorf("pending set = %v, want %v", rep.PendingIDs(), wantPending)
 	}
@@ -301,4 +323,143 @@ func (brokenNoPinTarget) Pair(pairingCode string) player1.PairResult {
 	}
 	tok, _ := out["channel_token"].(string)
 	return player1.PairResult{Completed: tok != ""}
+}
+
+// postHocRejectingTarget models what a REAL player-v3 device actually does
+// for PLY-057 (player-v3/source/Pairing.brs): it completes the bootstrap
+// POST to /player/v1/pair over TLS with NO peer verification
+// (InsecureSkipVerify — mirroring Pairing.brs's peerVerify:false/
+// hostVerify:false), so the relay is reached UNCONDITIONALLY, and only AFTER
+// that response is in hand does it compute the SHA-256 SPKI digest over the
+// connection's own peer certificate and compare it, locally, against the
+// pairing code's own fingerprint_commitment (Pairing.brs's PLY-052 check) —
+// discarding the response and refusing to proceed on a mismatch, but never
+// avoiding the relay round trip itself, exactly like real hardware.
+//
+// It exists to prove the exact gap driver.go/remotetarget.go's fix closes:
+// driving PLY-057's relay-side assertions (Relay.PairCallCount()==0, the
+// shared one-time grant surviving a follow-up correct attempt) against a
+// target with this — entirely real, entirely contract-compliant
+// (PLY-040/041/052/057/058) — architecture produces a guaranteed-wrong FAIL
+// regardless of whether the mismatch itself is correctly detected (see
+// TestPlayer1DriverPLY057FailsAgainstPostHocTargetNotDeclaringItself), and
+// that reporting DriveablePLY057()==false (RemoteECPPlayerTarget's actual,
+// fixed behavior) avoids it (see
+// TestPlayer1DriverPLY057PendingAgainstPostHocTarget).
+type postHocRejectingTarget struct {
+	driveable bool
+}
+
+func (t postHocRejectingTarget) Name() string { return "post-hoc-rejecting (real player-v3 shape)" }
+
+func (t postHocRejectingTarget) DriveablePLY057() bool { return t.driveable }
+
+func (postHocRejectingTarget) Pair(pairingCode string) player1.PairResult {
+	host, port, grantSelector, commitment, err := paircode.Decode(pairingCode)
+	if err != nil {
+		return player1.PairResult{Rejected: true, Err: err.Error()}
+	}
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // models Pairing.brs's disabled bootstrap-fetch verification (PLY-040/041) — the commitment check below is the real, local check.
+		},
+	}
+	body, _ := json.Marshal(map[string]any{
+		"hardware_id":    "post-hoc-rejecting-fake",
+		"grant_selector": grantSelector,
+		"capabilities":   map[string]any{"content_types": []string{"image"}, "player_version": "3.0.0"},
+	})
+	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
+
+	resp, err := client.Post("https://"+addr+"/player/v1/pair", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return player1.PairResult{Rejected: true, Err: err.Error()}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return player1.PairResult{Rejected: true, Err: fmt.Sprintf("status %d", resp.StatusCode)}
+	}
+	if resp.TLS == nil || len(resp.TLS.PeerCertificates) == 0 {
+		return player1.PairResult{Rejected: true, Err: "no peer certificate observed"}
+	}
+
+	// PLY-052: the commitment comparison, run only AFTER the bootstrap POST
+	// above already completed and reached the relay — exactly Pairing.brs's
+	// own ordering (verify trust_anchors AFTER the response is in hand).
+	ok, verr := tlsboot.VerifyCommitmentForCertDER(resp.TLS.PeerCertificates[0].Raw, commitment)
+	if verr != nil {
+		return player1.PairResult{Rejected: true, Err: verr.Error()}
+	}
+	if !ok {
+		return player1.PairResult{Rejected: true, CommitmentMismatch: true, Err: "fingerprint commitment MISMATCH — refusing to pair (possible MITM)"}
+	}
+
+	var out map[string]any
+	if json.NewDecoder(resp.Body).Decode(&out) != nil {
+		return player1.PairResult{Rejected: true}
+	}
+	tok, _ := out["channel_token"].(string)
+	return player1.PairResult{Completed: tok != ""}
+}
+
+// TestPlayer1DriverPLY057FailsAgainstPostHocTargetNotDeclaringItself proves,
+// against the REAL in-process relay, the exact failure mode the
+// PLY057Driveable fix exists to prevent: a target that behaves like real
+// player-v3 hardware (reaches the relay, then rejects a commitment mismatch
+// locally — postHocRejectingTarget) but does NOT declare itself
+// not-driveable is, by ply057Driveable's own "not-implementing = assumed
+// driveable" default, driven through drivePLY057's full assertion set —
+// and legitimately FAILS it, with precisely the two diffs the finding this
+// test guards against described: the relay WAS reached
+// (Relay.PairCallCount()==1, not 0), and the shared one-time grant was
+// genuinely consumed (a follow-up correct-code attempt over the same grant
+// no longer redeems, since internal/relay/playerserver's redeem() marks a
+// one-time grant redeemed unconditionally, with no notion of commitment at
+// all). This is the "zero test coverage" gap the review flagged: before this
+// fix, RemoteECPPlayerTarget's debug-console mode reported exactly this
+// shape (SupportsCommitmentMismatchDetection()==true while still reaching
+// the relay) and so would have produced this same guaranteed-wrong FAIL the
+// first time it ran against real hardware.
+func TestPlayer1DriverPLY057FailsAgainstPostHocTargetNotDeclaringItself(t *testing.T) {
+	relay, err := player1.NewInProcessRelay()
+	if err != nil {
+		t.Fatalf("NewInProcessRelay: %v", err)
+	}
+	defer relay.Close()
+
+	rep := player1.Run(postHocRejectingTarget{driveable: true}, relay)
+	t.Logf("\n%s", rep.String())
+
+	if !caseFailed(rep, "PLY-057") {
+		t.Errorf("expected PLY-057 to FAIL against a target that reaches the relay but claims itself driveable, but it did not; report:\n%s", rep.String())
+	}
+}
+
+// TestPlayer1DriverPLY057PendingAgainstPostHocTarget proves the fix itself:
+// the SAME postHocRejectingTarget, correctly reporting
+// DriveablePLY057()==false (RemoteECPPlayerTarget's actual, fixed behavior
+// in both of its observation modes), is recorded PENDING for PLY-057 rather
+// than driven to the guaranteed-wrong FAIL
+// TestPlayer1DriverPLY057FailsAgainstPostHocTargetNotDeclaringItself proves
+// — while PLY-050/055 and every Phase-2/3 case still drive and PASS
+// normally, since only PLY-057's own relay-side assertions are unsound for
+// this target's architecture.
+func TestPlayer1DriverPLY057PendingAgainstPostHocTarget(t *testing.T) {
+	relay, err := player1.NewInProcessRelay()
+	if err != nil {
+		t.Fatalf("NewInProcessRelay: %v", err)
+	}
+	defer relay.Close()
+
+	rep := player1.Run(postHocRejectingTarget{driveable: false}, relay)
+	t.Logf("\n%s", rep.String())
+
+	if got := rep.Failed(); len(got) != 0 {
+		t.Errorf("no case should FAIL: %v", got)
+	}
+	wantPending := []string{"PLY-057-invalid-oob-authentication-mismatch-rejected"}
+	if !reflect.DeepEqual(rep.PendingIDs(), wantPending) {
+		t.Errorf("pending set = %v, want %v", rep.PendingIDs(), wantPending)
+	}
 }

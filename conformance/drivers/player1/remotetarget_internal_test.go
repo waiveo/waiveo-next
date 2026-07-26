@@ -10,7 +10,7 @@ package player1
 // RemoteECPPlayerTarget's own fields are all unexported — exactly the seams
 // this file exists to drive fakes through. driver_test.go (package
 // player1_test) covers the exported, target-agnostic surface
-// (CommitmentMismatchCapable, Run) with a fake target of its own.
+// (PLY057Driveable, Run) with a fake target of its own.
 
 import (
 	"bufio"
@@ -28,17 +28,26 @@ import (
 // --- fakes -------------------------------------------------------------
 
 // fakeLauncher is a test-only ecpLauncher: it never touches the network.
+// onLaunch, when set, runs after recording the call — relay-observed-mode
+// tests use it to simulate the real ECP-launch-causes-a-relay-hit sequence
+// (the launched device dialing the relay), so awaitViaRelay's baseline
+// correlation (Pair captures PairCallCount() BEFORE Launch, then waits for
+// it to advance) has something to actually observe advancing.
 type fakeLauncher struct {
-	err     error
-	calls   int
-	channel string
-	args    map[string]string
+	err      error
+	calls    int
+	channel  string
+	args     map[string]string
+	onLaunch func()
 }
 
 func (f *fakeLauncher) Launch(channel string, args map[string]string) error {
 	f.calls++
 	f.channel = channel
 	f.args = args
+	if f.onLaunch != nil {
+		f.onLaunch()
+	}
 	return f.err
 }
 
@@ -267,8 +276,12 @@ func TestRemoteECPPlayerTargetPairDebugConsoleMode(t *testing.T) {
 		},
 	}
 
-	if !target.SupportsCommitmentMismatchDetection() {
-		t.Errorf("debug-console mode must support commitment-mismatch detection")
+	// Debug-console mode can correctly OBSERVE a commitment mismatch (see
+	// TestClassifyPlayerV3Line), but that alone does not make drivePLY057's
+	// relay-side assertions hold against a real device — DriveablePLY057
+	// reports false in BOTH modes (see remotetarget.go's own package doc).
+	if target.DriveablePLY057() {
+		t.Errorf("DriveablePLY057() = true, want false in every mode (see package doc)")
 	}
 	if got, want := target.Name(), "roku-ecp:(debug-console)"; got != want {
 		t.Errorf("Name() = %q, want %q", got, want)
@@ -342,16 +355,24 @@ func TestRemoteECPPlayerTargetPairLaunchError(t *testing.T) {
 // --- RemoteECPPlayerTarget.Pair: relay-observed mode ---------------------
 
 func TestRemoteECPPlayerTargetPairRelayObservedModeCompleted(t *testing.T) {
-	relay := &fakeRelay{pairCallCount: 1, pairResponses: [][]byte{[]byte(`{"channel_token":"tok-123"}`)}}
+	// pairCallCount starts at 0 (a PRIOR attempt, not this one) so Pair's
+	// baseline capture is exercised for real; onLaunch simulates the launched
+	// device's own dial reaching the relay exactly once, recording the
+	// response THIS attempt caused.
+	relay := &fakeRelay{}
+	launcher := &fakeLauncher{onLaunch: func() {
+		relay.pairCallCount++
+		relay.pairResponses = append(relay.pairResponses, []byte(`{"channel_token":"tok-123"}`))
+	}}
 	target := &RemoteECPPlayerTarget{
 		cfg:      RemoteTargetConfig{}.withDefaults(),
-		launcher: &fakeLauncher{},
+		launcher: launcher,
 		relay:    relay,
 		// dialObserver left nil => relay-observed mode.
 	}
 
-	if target.SupportsCommitmentMismatchDetection() {
-		t.Errorf("relay-observed mode must report false (see CommitmentMismatchCapable's own doc)")
+	if target.DriveablePLY057() {
+		t.Errorf("DriveablePLY057() = true, want false in every mode (see package doc)")
 	}
 	if got, want := target.Name(), "roku-ecp:(relay-observed)"; got != want {
 		t.Errorf("Name() = %q, want %q", got, want)
@@ -367,10 +388,14 @@ func TestRemoteECPPlayerTargetPairRelayObservedModeCompleted(t *testing.T) {
 }
 
 func TestRemoteECPPlayerTargetPairRelayObservedModeRejectedNoToken(t *testing.T) {
-	relay := &fakeRelay{pairCallCount: 1, pairResponses: [][]byte{[]byte(`{}`)}}
+	relay := &fakeRelay{}
+	launcher := &fakeLauncher{onLaunch: func() {
+		relay.pairCallCount++
+		relay.pairResponses = append(relay.pairResponses, []byte(`{}`))
+	}}
 	target := &RemoteECPPlayerTarget{
 		cfg:      RemoteTargetConfig{}.withDefaults(),
-		launcher: &fakeLauncher{},
+		launcher: launcher,
 		relay:    relay,
 	}
 
@@ -380,12 +405,38 @@ func TestRemoteECPPlayerTargetPairRelayObservedModeRejectedNoToken(t *testing.T)
 	}
 }
 
+// TestRemoteECPPlayerTargetPairRelayObservedModeIgnoresStaleCall proves the
+// per-attempt correlation fix directly: a call already recorded BEFORE this
+// attempt's Launch (e.g. a previous, unrelated attempt) must not be mistaken
+// for THIS attempt's own outcome — Pair must wait for PairCallCount to
+// advance PAST its pre-Launch baseline, not merely become nonzero.
+func TestRemoteECPPlayerTargetPairRelayObservedModeIgnoresStaleCall(t *testing.T) {
+	// One call already on the books before this attempt even launches, with a
+	// response that would misclassify as Rejected if (incorrectly) read as
+	// "the" latest response.
+	relay := &fakeRelay{pairCallCount: 1, pairResponses: [][]byte{[]byte(`{}`)}}
+	launcher := &fakeLauncher{onLaunch: func() {
+		relay.pairCallCount++
+		relay.pairResponses = append(relay.pairResponses, []byte(`{"channel_token":"tok-456"}`))
+	}}
+	target := &RemoteECPPlayerTarget{
+		cfg:      RemoteTargetConfig{}.withDefaults(),
+		launcher: launcher,
+		relay:    relay,
+	}
+
+	got := target.Pair("some-code")
+	if !got.Completed {
+		t.Errorf("Pair = %+v, want Completed (must read back THIS attempt's own response, not the stale prior one)", got)
+	}
+}
+
 // TestAwaitViaRelayTimeout drives awaitViaRelay directly with an
 // already-elapsed deadline so the timeout path is deterministic (no real
 // relayPollInterval sleep needed to observe it).
 func TestAwaitViaRelayTimeout(t *testing.T) {
 	target := &RemoteECPPlayerTarget{relay: &fakeRelay{}}
-	got := target.awaitViaRelay(time.Now().Add(-time.Millisecond))
+	got := target.awaitViaRelay(time.Now().Add(-time.Millisecond), 0)
 	if !got.Rejected {
 		t.Errorf("awaitViaRelay = %+v, want Rejected on an already-elapsed deadline", got)
 	}
@@ -559,50 +610,49 @@ func TestRemoteEnvFromEnvExplicitOverrides(t *testing.T) {
 	}
 }
 
-// --- commitmentMismatchCapable / pendPLY057NotCapable (driver.go) --------
+// --- ply057Driveable / pendPLY057NotDriveable (driver.go) ----------------
 
 // capabilityFakeTarget is a minimal PlayerTarget (+ optionally
-// CommitmentMismatchCapable) fake for exercising driver.go's target-capability
-// gate directly, without booting the in-process relay.
+// PLY057Driveable) fake for exercising driver.go's target-capability gate
+// directly, without booting the in-process relay.
 type capabilityFakeTarget struct {
-	name     string
-	supports bool
+	name      string
+	driveable bool
 }
 
-func (f capabilityFakeTarget) Name() string                              { return f.name }
-func (f capabilityFakeTarget) Pair(string) PairResult                    { return PairResult{Completed: true} }
-func (f capabilityFakeTarget) SupportsCommitmentMismatchDetection() bool { return f.supports }
+func (f capabilityFakeTarget) Name() string           { return f.name }
+func (f capabilityFakeTarget) Pair(string) PairResult { return PairResult{Completed: true} }
+func (f capabilityFakeTarget) DriveablePLY057() bool  { return f.driveable }
 
-// noInterfaceTarget implements ONLY PlayerTarget — no
-// CommitmentMismatchCapable at all — mirroring VirtualPlayerTarget's actual
-// shape, so commitmentMismatchCapable's "not-implementing = assumed capable"
-// fallback is exercised against a target that genuinely lacks the interface,
-// not just one that reports true.
+// noInterfaceTarget implements ONLY PlayerTarget — no PLY057Driveable at
+// all — mirroring VirtualPlayerTarget's actual shape, so ply057Driveable's
+// "not-implementing = assumed driveable" fallback is exercised against a
+// target that genuinely lacks the interface, not just one that reports true.
 type noInterfaceTarget struct{}
 
 func (noInterfaceTarget) Name() string           { return "no-interface-fake" }
 func (noInterfaceTarget) Pair(string) PairResult { return PairResult{Completed: true} }
 
-func TestCommitmentMismatchCapable(t *testing.T) {
-	if !commitmentMismatchCapable(noInterfaceTarget{}) {
-		t.Errorf("a target not implementing CommitmentMismatchCapable must be assumed capable")
+func TestPLY057Driveable(t *testing.T) {
+	if !ply057Driveable(noInterfaceTarget{}) {
+		t.Errorf("a target not implementing PLY057Driveable must be assumed driveable")
 	}
-	if !commitmentMismatchCapable(capabilityFakeTarget{supports: true}) {
-		t.Errorf("a target reporting supports=true must be reported capable")
+	if !ply057Driveable(capabilityFakeTarget{driveable: true}) {
+		t.Errorf("a target reporting driveable=true must be reported driveable")
 	}
-	if commitmentMismatchCapable(capabilityFakeTarget{supports: false}) {
-		t.Errorf("a target reporting supports=false must be reported NOT capable")
+	if ply057Driveable(capabilityFakeTarget{driveable: false}) {
+		t.Errorf("a target reporting driveable=false must be reported NOT driveable")
 	}
 }
 
-func TestPendPLY057NotCapableRecordsExactlyPLY057Pending(t *testing.T) {
+func TestPendPLY057NotDriveableRecordsExactlyPLY057Pending(t *testing.T) {
 	cases, err := LoadCorpus()
 	if err != nil {
 		t.Fatalf("LoadCorpus: %v", err)
 	}
 
 	var rep report.Report
-	pendPLY057NotCapable(&rep, capabilityFakeTarget{name: "fake-relay-observed", supports: false}, cases)
+	pendPLY057NotDriveable(&rep, capabilityFakeTarget{name: "fake-relay-observed", driveable: false}, cases)
 
 	ids := rep.PendingIDs()
 	if len(ids) != 1 || ids[0] != "PLY-057-invalid-oob-authentication-mismatch-rejected" {

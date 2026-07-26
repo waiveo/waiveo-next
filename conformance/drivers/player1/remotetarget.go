@@ -24,27 +24,36 @@
 //     debug console (telnet, default port 8085 — the same one
 //     `docs`/memory's Roku fleet dev access already assumes is reachable)
 //     BEFORE launching, then reads player-v3's own print statements
-//     (PlayerTask.brs) for a terminal status line. This is the mode that can
-//     drive ALL THREE pairing-subset cases (PLY-050/055/057), including the
-//     commitment-mismatch rejection, because player-v3 itself prints the
-//     exact outcome ("pairing FAILED: fingerprint commitment MISMATCH…") —
-//     see telnetDebugConsole's own doc.
+//     (PlayerTask.brs) for a terminal status line, including reading a
+//     commitment-mismatch rejection directly off player-v3's own "pairing
+//     FAILED: fingerprint commitment MISMATCH…" print — see
+//     telnetDebugConsole's own doc.
 //   - relay-observed mode (RemoteTargetConfig.NoDebugConsole): infers the
 //     outcome purely from the SAME Relay wire recorder the driver already
 //     uses for the differential oracle (Relay.PairCallCount/PairResponses) —
 //     usable when the device's debug console is unreachable (e.g.
 //     firewalled off), but it CANNOT distinguish a commitment-mismatched
-//     pairing code from a correct one: player-v3/source/Pairing.brs performs
-//     its bootstrap POST to /player/v1/pair with TLS verification DISABLED
-//     (peerVerify: false, hostVerify: false) and only compares the OOB
-//     fingerprint_commitment against the response's own trust_anchors AFTER
-//     that POST has already completed — so the relay redeems the SAME
-//     one-time grant and returns the SAME channel_token whether the code was
-//     correct or commitment-mismatched; the rejection is decided entirely
-//     inside the device, with nothing distinguishing it on the wire the relay
-//     can see. SupportsCommitmentMismatchDetection reports false in this
-//     mode, and Run (driver.go) correspondingly records PLY-057 PENDING
-//     rather than driving it to a guaranteed-wrong FAIL.
+//     pairing code from a correct one at all.
+//
+// Both modes share a DIFFERENT problem that sinks PLY-057 either way:
+// player-v3/source/Pairing.brs performs its bootstrap POST to
+// /player/v1/pair with TLS verification DISABLED (peerVerify: false,
+// hostVerify: false) and only compares the OOB fingerprint_commitment
+// against the response's own trust_anchors AFTER that POST has already
+// completed — so the relay redeems the SAME one-time grant and returns the
+// SAME channel_token whether the code was correct or commitment-mismatched;
+// the rejection is decided entirely inside the device, AFTER the relay was
+// already reached and that one-time grant already consumed
+// (internal/relay/playerserver's redeem() has no notion of commitment at
+// all, REL-126). drivePLY057 (driver.go) asserts exactly the two relay-side
+// properties this breaks — Relay.PairCallCount() == 0 for the mismatched
+// attempt, and that the SAME shared grant still redeems a follow-up correct
+// attempt — and BOTH assertions fail against a real device regardless of
+// observation mode: debug-console mode can correctly read that the device
+// itself rejected the mismatch, but it cannot make the relay have been
+// left unreached, or the one-time grant have survived. DriveablePLY057
+// therefore reports false in BOTH modes, and Run (driver.go) correspondingly
+// records PLY-057 PENDING rather than driving it to a guaranteed-wrong FAIL.
 //
 // Per-case remote-driveability, stated plainly:
 //   - PLY-055 (cross-VLAN manual-entry commitment happy path): remote-driveable
@@ -57,9 +66,9 @@
 //     TOFU-specific fields this package has never asserted against ANY
 //     target, virtual or real (player-v3 always performs a commitment check,
 //     same as VirtualPlayerTarget).
-//   - PLY-057 (OOB commitment-mismatch rejection): remote-driveable ONLY in
-//     debug-console mode, for the reason above. In relay-observed mode it is
-//     PENDING, not driven.
+//   - PLY-057 (OOB commitment-mismatch rejection): NOT remote-driveable in
+//     EITHER mode, for the reason above — PENDING against a real device
+//     either way.
 //
 // # Env-gated wiring
 //
@@ -111,7 +120,8 @@ type RemoteTargetConfig struct {
 	DebugPort int
 	// NoDebugConsole switches RemoteECPPlayerTarget to relay-observed mode
 	// (see package doc): usable when the device's debug console is
-	// unreachable, at the cost of PLY-057 becoming PENDING instead of driven.
+	// unreachable. PLY-057 is PENDING against a real device in EITHER mode
+	// (see package doc) — NoDebugConsole does not change that.
 	NoDebugConsole bool
 	// LaunchTimeout bounds a single ECP launch POST. 0 => defaultLaunchTimeout.
 	LaunchTimeout time.Duration
@@ -422,10 +432,14 @@ func (t *RemoteECPPlayerTarget) Name() string {
 	return fmt.Sprintf("roku-ecp:%s(%s)", t.cfg.Host, mode)
 }
 
-// SupportsCommitmentMismatchDetection implements CommitmentMismatchCapable —
-// see this file's own package doc for why only debug-console mode can.
-func (t *RemoteECPPlayerTarget) SupportsCommitmentMismatchDetection() bool {
-	return t.dialObserver != nil
+// DriveablePLY057 implements player1.PLY057Driveable: it reports false in
+// BOTH observation modes — see this file's own package doc for why. Reading
+// a real device's own commitment-mismatch print (debug-console mode) is a
+// real, narrower capability, but it does not make drivePLY057's relay-side
+// assertions (the relay was never reached; the shared one-time grant
+// survived) hold, so it must not gate them.
+func (t *RemoteECPPlayerTarget) DriveablePLY057() bool {
+	return false
 }
 
 // Pair implements PlayerTarget: it launches the device's channel over ECP
@@ -443,6 +457,15 @@ func (t *RemoteECPPlayerTarget) Pair(pairingCode string) PairResult {
 		defer func() { _ = obs.Close() }()
 	}
 
+	// Recorded BEFORE Launch, in relay-observed mode only, so awaitViaRelay
+	// can wait for and read back the SPECIFIC response THIS attempt caused —
+	// not merely whatever the relay's recorder currently considers "last" —
+	// even if another attempt's call is recorded concurrently.
+	var baseline int
+	if obs == nil {
+		baseline = t.relay.PairCallCount()
+	}
+
 	if err := t.launcher.Launch(t.cfg.Channel, map[string]string{"pairingCode": pairingCode}); err != nil {
 		return PairResult{Rejected: true, Err: fmt.Sprintf("ECP launch: %v", err)}
 	}
@@ -451,19 +474,23 @@ func (t *RemoteECPPlayerTarget) Pair(pairingCode string) PairResult {
 	if obs != nil {
 		return obs.AwaitOutcome(deadline)
 	}
-	return t.awaitViaRelay(deadline)
+	return t.awaitViaRelay(deadline, baseline)
 }
 
 // awaitViaRelay implements relay-observed mode: it polls the Relay's own wire
-// recorder until it sees a /player/v1/pair call this attempt caused, or
-// deadline elapses. It can report Completed/Rejected but never
-// CommitmentMismatch — see SupportsCommitmentMismatchDetection.
-func (t *RemoteECPPlayerTarget) awaitViaRelay(deadline time.Time) PairResult {
+// recorder until it sees a /player/v1/pair call this attempt caused — i.e.
+// PairCallCount() advancing past baseline (the count Pair captured before
+// launching THIS attempt) — or deadline elapses. Reading resps[baseline],
+// rather than always the newest response, is what ties the read back to
+// THIS attempt's own call rather than a later, unrelated one recorded before
+// the poll loop notices. It can report Completed/Rejected but never
+// CommitmentMismatch — see DriveablePLY057.
+func (t *RemoteECPPlayerTarget) awaitViaRelay(deadline time.Time, baseline int) PairResult {
 	for {
-		if t.relay.PairCallCount() > 0 {
+		if t.relay.PairCallCount() > baseline {
 			resps := t.relay.PairResponses()
-			last := resps[len(resps)-1]
-			if jsonNonEmptyString(last, "channel_token") {
+			mine := resps[baseline]
+			if jsonNonEmptyString(mine, "channel_token") {
 				return PairResult{Completed: true}
 			}
 			return PairResult{Rejected: true, Err: "relay observed a /player/v1/pair response without a channel_token"}
