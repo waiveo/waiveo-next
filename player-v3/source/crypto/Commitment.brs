@@ -55,6 +55,13 @@ end function
 ' byte-correctness the golden self-check (SelfCheck.brs) confirms before pairing
 ' ever depends on it (player-1.md:162 draft-note; spike findings.md:294).
 function wvSha256Hex(bytes as Object) as String
+    ' Empty input is UNSUPPORTED by roEVPDigest on observed firmware (15.2.4,
+    ' The Hanger self-check: both Process(empty) and Setup+Final() return "").
+    ' No production path hashes empty input (commitment guards non-empty SPKIs,
+    ' content bytes are non-empty), so fail closed deterministically instead of
+    ' returning a firmware-dependent value.
+    if bytes = invalid then return ""
+    if bytes.Count() = 0 then return ""
     digest = CreateObject("roEVPDigest")
     digest.Setup("sha256")
     out = digest.Process(bytes)
@@ -122,15 +129,16 @@ function wvHexEqualConstant(a as String, b as String) as Boolean
     return (diff = 0)
 end function
 
-' wvTrim strips leading/trailing spaces, CR, and tabs (BrightScript String has
-' no built-in Trim on all firmware).
+' wvTrim strips leading/trailing spaces, CR, LF, and tabs (BrightScript String
+' has no built-in Trim on all firmware). LF matters: a committed fixture file's
+' trailing newline made three self-check comparisons fail invisibly on-device.
 function wvTrim(s as String) as String
     if s = invalid then return ""
     out = s
     ' Trailing.
     while out.Len() > 0
         c = out.Right(1)
-        if c = " " or c = Chr(13) or c = Chr(9)
+        if c = " " or c = Chr(13) or c = Chr(10) or c = Chr(9)
             out = out.Left(out.Len() - 1)
         else
             exit while
@@ -139,7 +147,7 @@ function wvTrim(s as String) as String
     ' Leading.
     while out.Len() > 0
         c = out.Left(1)
-        if c = " " or c = Chr(13) or c = Chr(9)
+        if c = " " or c = Chr(13) or c = Chr(10) or c = Chr(9)
             out = out.Mid(1)
         else
             exit while

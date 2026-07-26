@@ -27,11 +27,21 @@ sub wvRunSelfCheck()
         return
     end if
 
-    ' --- roEVPDigest sanity: sha256("") has a known value (RFC/NIST). ---
+    ' --- empty input fails closed by contract: roEVPDigest on observed firmware
+    ' (15.2.4) cannot digest zero-length input (Process(empty) and Final()
+    ' without update both return ""), so wvSha256Hex returns "" deterministically
+    ' and every caller treats "" as failure. ---
     empty = CreateObject("roByteArray")
     emptyHex = wvSha256Hex(empty)
-    wantEmpty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    wvResult("roEVPDigest sha256(empty) vs known vector", emptyHex = wantEmpty, "got=" + emptyHex)
+    wvResult("wvSha256Hex(empty) fails closed (returns empty)", emptyHex = "", "got=" + emptyHex)
+
+    ' --- roEVPDigest sanity on the Process() path pairing actually uses: a
+    ' non-empty NIST vector, sha256("abc"). ---
+    abc = CreateObject("roByteArray")
+    abc.FromAsciiString("abc")
+    abcHex = wvSha256Hex(abc)
+    wantAbc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    wvResult("roEVPDigest sha256(abc) vs known vector", abcHex = wantAbc, "got=" + abcHex)
 
     ' --- PEM -> DER -> SPKI -> commitment == golden committed hex ---
     derRes = wvPemToDer(goldenPem)
