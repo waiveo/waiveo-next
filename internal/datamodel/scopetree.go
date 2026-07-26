@@ -1,6 +1,9 @@
 package datamodel
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // ScopeNode is a scope-node-tree row (DAT-001): the platform's unit of placement
 // and the anchor every scheduling-core row hangs off (DAT-006). kind is one of the
@@ -60,9 +63,14 @@ var permittedChildKinds = map[string]map[string]bool{
 
 var validScopeKind = map[string]bool{"org": true, "site": true, "group": true, "screen": true}
 
+// maxScopeNodeNameLen is DAT-001a's upper bound on a scope node's name.
+const maxScopeNodeNameLen = 200
+
 // BuildScopeTree indexes and validates a set of scope nodes, returning the tree and
 // every structural error found. It enforces the scope-node-tree MUSTs this task
 // owns:
+//   - DAT-001a: name is a non-empty string of at most 200 characters
+//     (SCOPE_NODE_NAME_INVALID);
 //   - DAT-001: kind is one of the closed vocabulary (SCOPE_NODE_KIND_INVALID);
 //   - DAT-002: parent_id null iff kind is org (SCOPE_NODE_PARENT_INVALID); at most
 //     one org node, and no org node parented under another (SCOPE_NODE_MULTIPLE_ORG);
@@ -92,6 +100,16 @@ func BuildScopeTree(nodes []ScopeNode) (ScopeTree, []Error) {
 	}
 
 	for _, n := range nodes {
+		// DAT-001a: name is a non-empty string of at most 200 characters. This
+		// check MUST sit above the kind check below: the kind check's continue
+		// short-circuits the rest of this node's checks on an invalid kind, and
+		// a node can independently fail both name and kind at once (API-013's
+		// multi-field aggregation) — appending the name error first, without a
+		// continue of its own, is what lets both survive into errs.
+		if strings.TrimSpace(n.Name) == "" || len(n.Name) > maxScopeNodeNameLen {
+			errs = append(errs, Error{Field: "name", Code: "SCOPE_NODE_NAME_INVALID", Message: "a scope node's name MUST be a non-empty string of at most 200 characters (DAT-001a)"})
+		}
+
 		if !validScopeKind[n.Kind] {
 			errs = append(errs, Error{Field: "kind", Code: "SCOPE_NODE_KIND_INVALID", Message: "scope-node kind must be one of org, site, group, screen (DAT-001)"})
 			continue

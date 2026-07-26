@@ -3,6 +3,7 @@ package datamodel
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -110,9 +111,9 @@ func TestDAT033ScreenTZOverride(t *testing.T) {
 // therefore resolves screen to geoA / ancestor-site, never geoB.
 func TestEffectiveGeoWalksToNearestSiteNotIntermediateGroup(t *testing.T) {
 	nodes := []ScopeNode{
-		{ID: "site1", Kind: "site", ParentID: ptrStr("org1"), TZ: ptrStr("America/Denver"), Lat: ptrF64(39.7392), Long: ptrF64(-104.9903)},
-		{ID: "grp1", Kind: "group", ParentID: ptrStr("site1"), TZ: ptrStr("America/New_York"), Lat: ptrF64(40.7128), Long: ptrF64(-74.0060)},
-		{ID: "scr1", Kind: "screen", ParentID: ptrStr("grp1")},
+		{ID: "site1", Kind: "site", ParentID: ptrStr("org1"), Name: "Site One", TZ: ptrStr("America/Denver"), Lat: ptrF64(39.7392), Long: ptrF64(-104.9903)},
+		{ID: "grp1", Kind: "group", ParentID: ptrStr("site1"), Name: "Group One", TZ: ptrStr("America/New_York"), Lat: ptrF64(40.7128), Long: ptrF64(-74.0060)},
+		{ID: "scr1", Kind: "screen", ParentID: ptrStr("grp1"), Name: "Screen One"},
 	}
 	tree, errs := BuildScopeTree(nodes)
 	if len(errs) != 0 {
@@ -218,4 +219,59 @@ func TestScopeTreeValidationRejects(t *testing.T) {
 			}
 		})
 	}
+}
+
+// DAT-001a: a scope node's name MUST be a non-empty string of at most 200
+// characters. The name check sits ABOVE the kind check in BuildScopeTree's
+// per-node loop (load-bearing placement: the kind check's continue must not
+// swallow a name error), so a node with both an invalid name and an invalid
+// kind surfaces BOTH errors, name first.
+func TestScopeNodeNameValidation(t *testing.T) {
+	validSite := func(name string) ScopeNode {
+		return ScopeNode{ID: "s1", Kind: "site", ParentID: ptrStr("org1"), Name: name, TZ: ptrStr("America/Denver"), Lat: ptrF64(1), Long: ptrF64(2)}
+	}
+
+	t.Run("empty name alone", func(t *testing.T) {
+		_, errs := BuildScopeTree([]ScopeNode{validSite("")})
+		if !hasErr(errs, "SCOPE_NODE_NAME_INVALID", "name") {
+			t.Errorf("want SCOPE_NODE_NAME_INVALID on field name; got %+v", errs)
+		}
+	})
+
+	t.Run("whitespace-only name", func(t *testing.T) {
+		_, errs := BuildScopeTree([]ScopeNode{validSite("   ")})
+		if !hasErr(errs, "SCOPE_NODE_NAME_INVALID", "name") {
+			t.Errorf("want SCOPE_NODE_NAME_INVALID on field name; got %+v", errs)
+		}
+	})
+
+	t.Run("name and kind both bad: exactly two errors in field order name,kind", func(t *testing.T) {
+		nodes := []ScopeNode{{ID: "n1", Kind: "building", ParentID: ptrStr("org1"), Name: ""}}
+		_, errs := BuildScopeTree(nodes)
+		if len(errs) != 2 {
+			t.Fatalf("want exactly 2 errors, got %d: %+v", len(errs), errs)
+		}
+		if errs[0].Field != "name" || errs[0].Code != "SCOPE_NODE_NAME_INVALID" {
+			t.Errorf("errs[0] = %+v, want field name / SCOPE_NODE_NAME_INVALID (name check must run above the kind check)", errs[0])
+		}
+		if errs[1].Field != "kind" || errs[1].Code != "SCOPE_NODE_KIND_INVALID" {
+			t.Errorf("errs[1] = %+v, want field kind / SCOPE_NODE_KIND_INVALID", errs[1])
+		}
+	})
+
+	t.Run("201-character name is rejected", func(t *testing.T) {
+		name := strings.Repeat("a", 201)
+		_, errs := BuildScopeTree([]ScopeNode{validSite(name)})
+		if !hasErr(errs, "SCOPE_NODE_NAME_INVALID", "name") {
+			t.Errorf("want SCOPE_NODE_NAME_INVALID on a 201-char name; got %+v", errs)
+		}
+	})
+
+	t.Run("200-character name is valid", func(t *testing.T) {
+		name := strings.Repeat("a", 200)
+		_, errs := BuildScopeTree([]ScopeNode{validSite(name)})
+		if hasErr(errs, "SCOPE_NODE_NAME_INVALID", "") {
+			t.Errorf("a 200-char name must not be rejected; got %+v", errs)
+		}
+	})
 }

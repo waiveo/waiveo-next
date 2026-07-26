@@ -184,13 +184,13 @@ func (srv *server) writeInstallError(w http.ResponseWriter, r *http.Request, err
 	var aerr *packs.ArtifactError
 	if errors.As(err, &aerr) {
 		apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), http.StatusUnprocessableEntity,
-			"VALIDATION_FAILED", "Unprocessable Entity", aerr.Message, artifactErrorExtra(aerr))
+			"VALIDATION_FAILED", "Validation Failed", aerr.Message, artifactErrorExtra(aerr))
 		return
 	}
 	var merr *packs.ManifestError
 	if errors.As(err, &merr) {
 		apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), http.StatusUnprocessableEntity,
-			"VALIDATION_FAILED", "Unprocessable Entity",
+			"VALIDATION_FAILED", "Validation Failed",
 			"The pack manifest failed validation.", manifestErrorsExtra(merr.Errors))
 		return
 	}

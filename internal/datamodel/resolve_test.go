@@ -31,9 +31,9 @@ func mustLocalMs(t *testing.T, tzName, local string) int64 {
 func denverTree(t *testing.T) ScopeTree {
 	t.Helper()
 	nodes := []ScopeNode{
-		{ID: "01JORGNDE1PG2X7R5JQC42EJ00", Kind: "org", ParentID: nil},
-		{ID: "01JSITENDE1EWH0AVNH9DN6R00", Kind: "site", ParentID: ptrStr("01JORGNDE1PG2X7R5JQC42EJ00"), TZ: ptrStr("America/Denver"), Lat: ptrF64(39.7392), Long: ptrF64(-104.9903)},
-		{ID: "01JSCRNVERRDEF4W6305FAT000", Kind: "screen", ParentID: ptrStr("01JSITENDE1EWH0AVNH9DN6R00")},
+		{ID: "01JORGNDE1PG2X7R5JQC42EJ00", Kind: "org", ParentID: nil, Name: "Denver Org"},
+		{ID: "01JSITENDE1EWH0AVNH9DN6R00", Kind: "site", ParentID: ptrStr("01JORGNDE1PG2X7R5JQC42EJ00"), Name: "Denver Site", TZ: ptrStr("America/Denver"), Lat: ptrF64(39.7392), Long: ptrF64(-104.9903)},
+		{ID: "01JSCRNVERRDEF4W6305FAT000", Kind: "screen", ParentID: ptrStr("01JSITENDE1EWH0AVNH9DN6R00"), Name: "Denver Screen"},
 	}
 	tree, errs := BuildScopeTree(nodes)
 	if len(errs) != 0 {
@@ -307,9 +307,9 @@ func TestResolveDisplayPowerOffProjectsBlank(t *testing.T) {
 	// the effective tz resolves by ancestor walk (DAT-033).
 	const grpID = "01JGRPNDE1PG2X7R5JQC42EJ5E"
 	nodes := []ScopeNode{
-		{ID: orgID, Kind: "org", ParentID: nil},
-		{ID: siteID, Kind: "site", ParentID: ptrStr(orgID), TZ: ptrStr("America/Denver"), Lat: ptrF64(39.7392), Long: ptrF64(-104.9903)},
-		{ID: grpID, Kind: "group", ParentID: ptrStr(siteID)},
+		{ID: orgID, Kind: "org", ParentID: nil, Name: "Denver Org"},
+		{ID: siteID, Kind: "site", ParentID: ptrStr(orgID), Name: "Denver Site", TZ: ptrStr("America/Denver"), Lat: ptrF64(39.7392), Long: ptrF64(-104.9903)},
+		{ID: grpID, Kind: "group", ParentID: ptrStr(siteID), Name: "Lobby Group"},
 	}
 	tree, errs := BuildScopeTree(nodes)
 	if len(errs) != 0 {

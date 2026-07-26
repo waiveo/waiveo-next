@@ -441,7 +441,7 @@ func (srv *server) writeRowValidation(w http.ResponseWriter, r *http.Request, er
 		arr = append(arr, map[string]string{"field": e.Field, "code": e.Code, "message": e.Message})
 	}
 	apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), http.StatusUnprocessableEntity,
-		"VALIDATION_FAILED", "Unprocessable Entity",
+		"VALIDATION_FAILED", "Validation Failed",
 		"One or more fields failed validation.", map[string]any{"errors": arr})
 }
 

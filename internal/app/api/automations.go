@@ -273,11 +273,11 @@ func (srv *server) bulkEnableExec(w http.ResponseWriter, r *http.Request, body [
 	// (apiselector), so it is rejected 422 rather than silently targeting the whole
 	// fleet — the schema requires it precisely to force an explicit target predicate.
 	if req.Selector == nil || strings.TrimSpace(*req.Selector) == "" {
-		writeProblem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Unprocessable Entity", "`selector` is required.")
+		writeProblem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Validation Failed", "`selector` is required.")
 		return
 	}
 	if req.Enabled == nil {
-		writeProblem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Unprocessable Entity", "`enabled` is required.")
+		writeProblem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Validation Failed", "`enabled` is required.")
 		return
 	}
 

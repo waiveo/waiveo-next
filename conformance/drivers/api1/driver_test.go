@@ -45,10 +45,6 @@ var expectedPending = []string{
 // than silently going green over a still-broken case, or silently going red
 // over a NEW regression this map hasn't been told about yet.
 var expectedFailing = map[string]string{
-	"API-013-valid-multi-field-validation-problem": "status/code/message mismatch: the corpus pins 400/ENUM_MISMATCH/TOO_SHORT " +
-		"for an invalid kind + empty name; the live scope-node validator (datamodel.BuildScopeTree) always emits 422 and has no " +
-		"TOO_SHORT check on `name` at all (only SCOPE_NODE_KIND_INVALID for kind) — the corpus predates (or was never reconciled " +
-		"with) the 422-uniformly decision the later scheduling-core plan settled on.",
 	"API-032-valid-pagination-roundtrip": "the corpus pins the UNSCOPED bare-ULID cursor form for the automations list " +
 		"(\"...pinned to the unscoped bare-ULID cursor form\", ADR embedded in the old driver's own comment); the live " +
 		"automations list (api.go's automationsConfig.resourceType=\"automations\") scopes every cursor uniformly like every " +

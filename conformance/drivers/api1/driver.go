@@ -403,27 +403,16 @@ func driveProblemNotFound(rep *report.Report, c corpus.Case) {
 	rep.Pass(c.CaseID, contract)
 }
 
-// driveProblemValidation drives API-013: creating a scope node with two
-// independently-invalid fields. The prior version of this driver recorded
-// this PENDING, reasoning "a multi-field VALIDATION_FAILED `errors`-array
-// aggregator ... does not exist yet" — that too was wrong: api.go's
-// writeStoreError already renders a store.ValidationError's per-field list as
-// the `errors` extension (validationExtra). Driven for real, THIS case
-// diverges from the live handler in more than one way, and both are reported
-// rather than papered over:
-//   - status: the corpus pins 400; every VALIDATION_FAILED the live code
-//     emits (api.go's writeValidationFailed / writeStoreError) is 422, per
-//     the later scheduling-core plan that settled on 422 uniformly.
-//   - codes: the corpus pins ENUM_MISMATCH/TOO_SHORT; the live scope-node
-//     validator (internal/datamodel.BuildScopeTree) has no such codes — an
-//     invalid kind is SCOPE_NODE_KIND_INVALID, and there is no `name` length
-//     validation on a scope node at all today, so the corpus's second
-//     pinned field failure has no live counterpart to reproduce.
-//
-// This is a corpus-vs-implementation reconciliation question (which side is
-// stale), not a driver bug, so it is left FAILING with the concrete diffs
-// rather than "fixed" by loosening the assertion or renaming a live error
-// code to match.
+// driveProblemValidation drives API-013: creating a scope node with an
+// invalid kind and an empty name returns one VALIDATION_FAILED Problem
+// carrying both field failures in its `errors` extension (api.go's
+// writeValidationFailed renders a *datamodel.ScopeNode validator's per-field
+// list, one entry per failing field). Per API-013a a body-validation
+// VALIDATION_FAILED is 422; per DAT-001a the scope-node validator
+// (internal/datamodel.BuildScopeTree) checks name ABOVE kind in its per-node
+// loop, so a node failing both surfaces SCOPE_NODE_NAME_INVALID first and
+// SCOPE_NODE_KIND_INVALID second — the corpus fixture is pinned to that same
+// 422 status and errors order.
 func driveProblemValidation(rep *report.Report, c corpus.Case) {
 	var in struct {
 		Method  string            `json:"method"`
@@ -729,7 +718,7 @@ func driveSelector(rep *report.Report, c corpus.Case) {
 	defer h.close()
 
 	for _, row := range in.CollectionState {
-		m := map[string]any{"id": row.ID, "kind": row.Kind, "parent_id": row.ParentID}
+		m := map[string]any{"id": row.ID, "kind": row.Kind, "parent_id": row.ParentID, "name": "Node " + row.ID}
 		if row.Kind == "site" {
 			siteGeo(m)
 		}
@@ -801,7 +790,7 @@ func driveExternalID(rep *report.Report, c corpus.Case) {
 	defer h.close()
 
 	for _, row := range in.CollectionState {
-		m := map[string]any{"id": row.ID, "kind": row.Kind, "parent_id": row.ParentID, "external_id": row.ExternalID}
+		m := map[string]any{"id": row.ID, "kind": row.Kind, "parent_id": row.ParentID, "external_id": row.ExternalID, "name": "Node " + row.ID}
 		if err := h.seedScopeNode(m); err != nil {
 			rep.Fail(c.CaseID, contract, fmt.Sprintf("seed scope node %s: %v", row.ID, err))
 			return
@@ -1024,7 +1013,7 @@ func driveJob(rep *report.Report, c corpus.Case) {
 	// selector's `scope_node subtree` term resolves against the SAME tree the
 	// live inSubtreeFn reads, not a driver-modeled membership set.
 	const siteNode = "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5"
-	siteBody := map[string]any{"id": siteNode, "kind": "site", "parent_id": "01J8Z0JOBPLACEHOLDERORG01"}
+	siteBody := map[string]any{"id": siteNode, "kind": "site", "parent_id": "01J8Z0JOBPLACEHOLDERORG01", "name": "Bulk-Enable Site"}
 	siteGeo(siteBody)
 	if err := h.seedScopeNode(siteBody); err != nil {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("seed site scope node: %v", err))
@@ -1035,7 +1024,7 @@ func driveJob(rep *report.Report, c corpus.Case) {
 		screenNodes[row.ScopeNode] = true
 	}
 	for screenID := range screenNodes {
-		if err := h.seedScopeNode(map[string]any{"id": screenID, "kind": "screen", "parent_id": siteNode}); err != nil {
+		if err := h.seedScopeNode(map[string]any{"id": screenID, "kind": "screen", "parent_id": siteNode, "name": "Screen " + screenID}); err != nil {
 			rep.Fail(c.CaseID, contract, fmt.Sprintf("seed screen scope node %s: %v", screenID, err))
 			return
 		}

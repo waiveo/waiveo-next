@@ -579,7 +579,7 @@ func (rs *resource) writeValidationFailed(w http.ResponseWriter, r *http.Request
 		return false
 	}
 	apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), http.StatusUnprocessableEntity,
-		"VALIDATION_FAILED", "Unprocessable Entity",
+		"VALIDATION_FAILED", "Validation Failed",
 		"One or more fields failed validation.", validationExtra(verrs))
 	return true
 }
@@ -605,13 +605,13 @@ func (rs *resource) writeStoreError(w http.ResponseWriter, r *http.Request, err 
 	var cerr *compile.CompileError
 	if errors.As(err, &cerr) {
 		apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), http.StatusUnprocessableEntity,
-			"VALIDATION_FAILED", "Unprocessable Entity", cerr.Message, compileErrorExtra(cerr))
+			"VALIDATION_FAILED", "Validation Failed", cerr.Message, compileErrorExtra(cerr))
 		return
 	}
 	var verr *store.ValidationError
 	if errors.As(err, &verr) {
 		apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), http.StatusUnprocessableEntity,
-			"VALIDATION_FAILED", "Unprocessable Entity",
+			"VALIDATION_FAILED", "Validation Failed",
 			"One or more fields failed validation.", validationExtra(verr.Errors))
 		return
 	}

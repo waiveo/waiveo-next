@@ -415,9 +415,9 @@ func checkDisplayPowerOff074(t *testing.T, rawIn, rawExp json.RawMessage) {
 	// Denver site so the effective tz resolves by ancestor walk (DAT-033).
 	grp := in.Schedule.ScopeNode
 	nodes := []ScopeNode{
-		{ID: "01JORGNDE1PG2X7R5JQC42EJ00", Kind: "org"},
-		{ID: "01JSITENDE1EWH0AVNH9DN6R00", Kind: "site", ParentID: ptrStr("01JORGNDE1PG2X7R5JQC42EJ00"), TZ: ptrStr("America/Denver"), Lat: ptrF64(39.7392), Long: ptrF64(-104.9903)},
-		{ID: grp, Kind: "group", ParentID: ptrStr("01JSITENDE1EWH0AVNH9DN6R00")},
+		{ID: "01JORGNDE1PG2X7R5JQC42EJ00", Kind: "org", Name: "Denver Org"},
+		{ID: "01JSITENDE1EWH0AVNH9DN6R00", Kind: "site", ParentID: ptrStr("01JORGNDE1PG2X7R5JQC42EJ00"), Name: "Denver Site", TZ: ptrStr("America/Denver"), Lat: ptrF64(39.7392), Long: ptrF64(-104.9903)},
+		{ID: grp, Kind: "group", ParentID: ptrStr("01JSITENDE1EWH0AVNH9DN6R00"), Name: "Effective Group"},
 	}
 	tree, errs := BuildScopeTree(nodes)
 	if len(errs) != 0 {
