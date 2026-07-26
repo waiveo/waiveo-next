@@ -24,16 +24,15 @@ function wvDoPairing(pairingCode as String) as Object
     ' --- bootstrap POST /player/v1/pair, verification DISABLED (PLY-040/041) ---
     r.phase = "bootstrap"
     base = "https://" + dec.host + ":" + dec.port.toStr()
-    ' content_types (PLY-012) MUST match what this player can actually render
-    ' (Program.brs makes the identical declaration on every later program
-    ' poll, PLY-013) — "image", "video", and "composed" are all real here:
-    ' Program.brs's fetch path verifies and hands back any of the three, and
-    ' PhotonScene renders each via a Poster, a Video node, or a stacked group
-    ' of both (composed, PLY-015).
+    ' content_types (PLY-012) MUST match Program.brs's identical declaration
+    ' on every later program poll (PLY-013) — see that declaration's own
+    ' comment for why "composed" is deliberately absent (no Go producer can
+    ' construct one, so declaring it would be a pure over-claim) while
+    ' "video" stays declared (PLY-014's content-type floor, unconditional).
     reqBody = FormatJson({
         hardware_id: wvHardwareId(),
         grant_selector: dec.grantSelector,
-        capabilities: { content_types: ["image", "video", "composed"], player_version: "3.0.0" }
+        capabilities: { content_types: ["image", "video"], player_version: "3.0.0" }
     })
 
     resp = wvHttpJson({

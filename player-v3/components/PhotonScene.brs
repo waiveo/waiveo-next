@@ -1,10 +1,14 @@
 ' PhotonScene.brs — renders the first photon. Creates the PlayerTask, starts it
-' once a pairing code is available (or the device is already paired), and swaps
-' in a "cast" (PLY-083a: an ordered, cycling sequence of one-or-more verified
-' Poster/Video content items) or a stacked group of full-screen Poster/Video
-' children (composed, PLY-015) when the task reports content that has already
-' been fetched AND asset_ref-verified (Program.brs never hands back a
-' contentUri, or a composed layer, that has not passed that check).
+' once a pairing code is available (or the device is already paired), and
+' renders the "cast" the task reports (PLY-083a: an ordered, cycling sequence
+' of one-or-more verified content items, in Lease `content` array order, with
+' NO type-based exception) once that content has already been fetched AND
+' asset_ref-verified (Program.brs never hands back a contentUri, or a composed
+' layer, that has not passed that check). A cast entry is either a plain
+' image (Poster) or video (Video node) item, or a `composed` item (PLY-015)
+' rendered as a stacked group of full-screen Poster/Video children — all
+' three entry kinds cycle through the exact same renderCastItem/advanceCast
+' path, so a Lease mixing them presents every one of them in order.
 
 sub init()
     m.bg = m.top.findNode("bg")
@@ -69,15 +73,11 @@ sub onPhotonResult()
     if res = invalid then return
 
     if res.ok
-        if res.contentType = "composed"
-            stopCastTimer()
-            renderComposed(res.layers)
-        else
-            ' "cast" — one or more already-fetched, already-verified image/video
-            ' items (PLY-083a); a single-item cast is the degenerate case of the
-            ' exact same cycling logic (renderCastItem loops back to itself).
-            startCast(res.items)
-        end if
+        ' One or more already-fetched, already-verified cast items (PLY-083a),
+        ' each either plain image/video or composed (PLY-015); a single-item
+        ' cast is the degenerate case of the exact same cycling logic
+        ' (renderCastItem loops back to itself).
+        startCast(res.items)
         m.status.visible = false
     else
         stopCastTimer()
@@ -107,19 +107,40 @@ sub startCast(items as Object)
     renderCastItem()
 end sub
 
-' renderCastItem presents m.castItems[m.castIndex]: a Poster for an image item
-' (arming castTimer for its own dwell time, PLY-083b, falling back to this
-' player's own default when the item carries none) or the Video node for a
-' video item (its own "finished" state is the advance signal, PLY-083a) —
-' castTimer is left stopped for a video item. Both node types were already
-' fetched + asset_ref-verified by Program.brs before this ever runs.
+' renderCastItem presents m.castItems[m.castIndex]: a Poster for an image
+' item (arming castTimer for its own dwell time, PLY-083b, falling back to
+' this player's own default when the item carries none), the Video node for
+' a video item (its own "finished" state is the advance signal, PLY-083a —
+' castTimer is left stopped for a video item), or a stacked composedLayers
+' group for a composed item (PLY-015, arming castTimer with this player's own
+' default dwell time as its advance signal — PLY-083a defines no per-layer
+' "natural end" for composed, Scope). Every node/URI here was already fetched
+' + asset_ref-verified by Program.brs before this ever runs. Whichever of the
+' three is NOT being shown is explicitly torn down every call (clearComposed/
+' stop-and-hide-video/hide-poster) so a Lease cycling between item kinds never
+' leaves a stale node from a prior item visible or (for a composed video
+' layer) still decoding behind the new one.
 sub renderCastItem()
     if m.castItems = invalid or m.castItems.Count() = 0 then return
     item = m.castItems[m.castIndex]
 
     stopCastTimer()
 
-    if item.contentType = "video"
+    if item.contentType = "composed"
+        m.poster.visible = false
+        m.video.control = "stop"
+        m.video.visible = false
+        renderComposed(item.layers) ' renderComposed clears any prior composed children itself.
+
+        durationMs = wvClampCastDurationMs(item.durationMs)
+        m.castTimer.duration = durationMs / 1000.0
+        m.castTimer.control = "start"
+        layerCount = 0
+        if item.layers <> invalid then layerCount = item.layers.Count()
+        print "[player-v3] cast item " + m.castIndex.toStr() + "/" + m.castItems.Count().toStr() + " (composed, " + layerCount.toStr() + " layers, " + durationMs.toStr() + "ms dwell — this player's own default advance signal, PLY-083a defines none for composed): advancing on timer"
+
+    else if item.contentType = "video"
+        clearComposed()
         m.poster.visible = false
         format = item.streamFormat
         if format = "" then format = "mp4"
@@ -127,23 +148,55 @@ sub renderCastItem()
         content.url = item.contentUri
         content.streamFormat = format
         content.live = false
+        ' A Video node arriving here in "finished" state — a single-video
+        ' cast whose prior play-through already ended (advanceCast wraps
+        ' back to index 0, which is itself for a 1-item video cast), or any
+        ' video-to-video transition — will NOT reliably restart on a bare
+        ' content reassignment; SceneGraph requires an explicit stop first.
+        ' Always stop before assigning new content rather than assume the
+        ' node is already in a state that accepts one.
+        m.video.control = "stop"
         m.video.content = content
         m.video.visible = true
         m.video.control = "play"
         print "[player-v3] cast item " + m.castIndex.toStr() + "/" + m.castItems.Count().toStr() + " (video, advances on end-of-stream): " + item.contentUri
+
     else
+        clearComposed()
         m.video.control = "stop"
         m.video.visible = false
         m.poster.uri = item.contentUri
         m.poster.visible = true
 
-        durationMs = item.durationMs
-        if durationMs = invalid or durationMs = 0 then durationMs = wvDefaultImageDurationMs()
+        durationMs = wvClampCastDurationMs(item.durationMs)
         m.castTimer.duration = durationMs / 1000.0
         m.castTimer.control = "start"
         print "[player-v3] cast item " + m.castIndex.toStr() + "/" + m.castItems.Count().toStr() + " (image, " + durationMs.toStr() + "ms dwell): " + item.contentUri
     end if
 end sub
+
+' wvClampCastDurationMs resolves a cast item's own duration_ms (already
+' clamped once in Program.brs's wvItemDurationMs, and once more at the
+' relay's own emission point, playerserver.leaseContentMinDurationMS) to the
+' value actually armed on castTimer: absent/zero falls back to this player's
+' own default dwell time (PLY-083b fixes no default), and any surviving
+' non-zero value below this player's own floor is raised to it. This is
+' belt-and-suspenders: castTimer.duration is a SceneGraph Timer field this
+' player's render thread re-arms on every fire, so the value reaching it here
+' is checked one last time regardless of what already clamped it upstream —
+' an unclamped near-zero value would re-arm the timer at a CPU-saturating
+' rate and starve the render thread, the classic Roku freeze signature.
+function wvClampCastDurationMs(durationMs as Integer) as Integer
+    if durationMs <= 0 then return wvDefaultImageDurationMs()
+    if durationMs < wvMinCastTimerDurationMs() then return wvMinCastTimerDurationMs()
+    return durationMs
+end function
+
+' wvMinCastTimerDurationMs is the floor wvClampCastDurationMs enforces — see
+' its own doc.
+function wvMinCastTimerDurationMs() as Integer
+    return 500
+end function
 
 ' advanceCast moves to the next item, wrapping back to index 0 after the
 ' last (PLY-083a's "continuously repeating cycle").
