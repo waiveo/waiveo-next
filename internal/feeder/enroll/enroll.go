@@ -412,12 +412,18 @@ func (s *Server) issueRelayCert(csr *x509.CertificateRequest, relayID string) (c
 	na := now.Add(relayCertValidity)
 
 	template := &x509.Certificate{
-		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: relayID},
-		NotBefore:             nb,
-		NotAfter:              na,
-		KeyUsage:              x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: relayID},
+		NotBefore:    nb,
+		NotAfter:     na,
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		// The relay presents this one leaf in BOTH roles: as a TLS client to
+		// the feeder (mTLS re-enrollment) and as the player/1 TLS SERVER to
+		// screens. A client-auth-only EKU made a PLY-060 ordinary-verification
+		// client (the Roku player, firmware 15.2.4) reject the program poll
+		// with "unsuitable certificate purpose" — a failure the virtualplayer's
+		// skip-verify+SPKI-pin posture could never surface.
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
 	}
 
