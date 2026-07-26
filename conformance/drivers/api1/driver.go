@@ -8,37 +8,40 @@
 //     the label-selector grammar (API-040-046), and the client-assignable
 //     external_id convention (API-100-104);
 //   - the asynchronous conventions — Idempotency-Key replay/reuse/in-progress
-//     (API-050-056) against the live injectable-clock apihttp.IdempotencyStore,
-//     and the 202 + Job resource (API-110-117, API-120-123) against the live
-//     apijob state machine.
+//     (API-050-056) and the 202 + Job resource (API-110-117, API-120-123);
+//   - the Problem error shape itself (API-010-016).
 //
-// It replays every conformance/corpora/api-1 case against the LIVE
-// internal/shared/apihttp, internal/shared/apiselector, and
-// internal/shared/apijob implementations and diffs the actual behavior against
-// each case's own declared `expected` block.
+// It replays every conformance/corpora/api-1 case against the LIVE,
+// HTTP-mounted internal/app/api handler (api.New, over a real
+// internal/app/store.Store and internal/shared/apihttp.IdempotencyStore) and
+// diffs the actual HTTP behavior against each case's own declared `expected`
+// block.
+//
+// This driver deliberately mounts the same *http.Handler production wires
+// (api.New) rather than calling the convention helpers (apihttp/apiselector/
+// apijob) directly: a prior version of this driver did the latter, and a
+// 2026-07-26 audit found it certified the convention LIBRARIES, not the
+// shipped /api/v1 surface — no conformance driver in the repo imported a
+// single internal/app/ package. Driving the real handler is not cosmetic: it
+// surfaced several genuine divergences between the frozen corpus and the
+// shipped code that the old, library-level driver could not see (see the
+// per-case doc comments below and pendingCaseIDs/knownDivergent).
 //
 // A corpus case is not named to a helper by hard-coded case-id knowledge:
 // classifyShape inspects the case's own `input` block and dispatches to the
-// matching family purely from its structure (does it carry
-// current_resource_state? a requests array paired with collection_state? a
-// requests array of keyed POSTs with no collection_state? a singular request
-// whose query carries a selector? a body carrying external_id alongside
-// collection_state? a singular method+path async mutation?) — the same shape
-// distinctions a real router would use to decide which convention governs a
-// given request.
-//
-// Only api/1's own Problem error-shape cases (API-010/013) remain PENDING:
-// they need a scope-node NOT_FOUND GET route and a multi-field
-// VALIDATION_FAILED aggregator that do not exist yet, and no other driver in
-// the repo exercises them (see pendingCaseIDs). They are recorded PENDING with
-// an explicit reason rather than silently skipped (§10 "no silent caps").
+// matching family purely from its structure — the same shape distinctions a
+// real router would use to decide which convention governs a given request.
 package api1
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -47,17 +50,25 @@ import (
 
 	"github.com/maaxton/waiveo-next/conformance/drivers/corpus"
 	"github.com/maaxton/waiveo-next/conformance/drivers/report"
+	"github.com/maaxton/waiveo-next/internal/app/api"
+	"github.com/maaxton/waiveo-next/internal/app/store"
+	"github.com/maaxton/waiveo-next/internal/feeder/origin"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
-	"github.com/maaxton/waiveo-next/internal/shared/apijob"
-	"github.com/maaxton/waiveo-next/internal/shared/apiselector"
 )
 
 const contract = "api/1"
 
+// conformanceEntity is the fixture entity ULID every seeded automation's state
+// trigger/device_command action names (the same value internal/app/api's own
+// automations_test.go fixtures use) so a seeded automation body actually
+// compiles (rules/1 RUL-282: the trigger subject and the command target are
+// the same entity).
+const conformanceEntity = "01J8Z3K4N5P6Q7R8S9T0V1SCRN"
+
 // Run loads the frozen api-1 corpus from disk and drives every convention
-// case against the live implementation.
+// case against the live, HTTP-mounted api.New handler.
 func Run() report.Report {
-	rep := report.Report{Driver: "api1", Target: "internal/shared/apihttp, internal/shared/apiselector, internal/shared/apijob"}
+	rep := report.Report{Driver: "api1", Target: "internal/app/api (api.New), internal/app/store"}
 
 	cases, err := LoadCorpus()
 	if err != nil {
@@ -69,52 +80,33 @@ func Run() report.Report {
 }
 
 // RunCases drives the identical per-case logic Run uses against an explicit,
-// caller-supplied case set. It is the seam TestAPI1DriverHasTeeth uses: load
-// the real corpus, corrupt one case's `expected` block in memory, and confirm
-// the SAME comparison logic (never a re-implementation of it) reports FAIL
-// against the corrupted expectation.
+// caller-supplied case set. It is the seam the teeth-tests use: load the real
+// corpus, corrupt one case's `expected` block in memory, and confirm the SAME
+// comparison logic (never a re-implementation of it) reports FAIL against the
+// corrupted expectation.
 func RunCases(cases map[string]corpus.Case) report.Report {
-	rep := report.Report{Driver: "api1", Target: "internal/shared/apihttp, internal/shared/apiselector, internal/shared/apijob"}
+	rep := report.Report{Driver: "api1", Target: "internal/app/api (api.New), internal/app/store"}
 	driveCases(&rep, cases)
 	return rep
 }
 
-// syncConventionCaseIDs are the six sync-convention corpus cases this driver
-// exercises: optimistic concurrency (API-022/023), keyset pagination
-// (API-032), the label-selector grammar (API-044/045), and client-assignable
-// external_id (API-102).
-var syncConventionCaseIDs = []string{
+// drivenCaseIDs are every api-1 corpus case this driver drives against the
+// live HTTP handler — every case in the frozen corpus except API-121, which
+// has no mounted route to drive (see pendingCaseIDs).
+var drivenCaseIDs = []string{
+	"API-010", "API-013",
 	"API-022", "API-023", "API-032", "API-044", "API-045", "API-102",
+	"API-052", "API-053", "API-111",
 }
 
-// asyncConventionCaseIDs are the four async-convention corpus cases this driver
-// exercises against the live apihttp.IdempotencyStore and apijob state machine:
-// Idempotency-Key replay (API-052) and reuse-conflict (API-053), and the 202 +
-// Job resource for a bulk-enable (API-111) and a workspace export (API-121).
-var asyncConventionCaseIDs = []string{
-	"API-052", "API-053", "API-111", "API-121",
-}
-
-// pendingCaseIDs are the api/1 cases frozen under conformance/corpora/api-1
-// that no driver in the repo exercises yet: api/1's own Problem error-shape
-// fixtures (API-010/013). No file in this repo other than this package even
-// names their case_ids or loads conformance/corpora/api-1
-// (internal/shared/apihttp/apihttp_test.go's hand-written Problem-shape tests
-// exercise different scenarios and never touch these two frozen fixtures).
-// They stay PENDING because API-010 needs a scope-node NOT_FOUND GET route and
-// API-013 needs a multi-field VALIDATION_FAILED `errors`-array aggregator —
-// neither exists in the codebase yet — not because some other driver already
-// covers them.
+// pendingCaseIDs are api/1 cases frozen under conformance/corpora/api-1 that
+// no mounted route exists to drive yet.
 var pendingCaseIDs = map[string]string{
-	"API-010": "api/1's Problem error shape (API-010-016) needs a scope-node NOT_FOUND GET route that does not exist yet; no other driver in the repo exercises this fixture — deferred until that route is built.",
-	"API-013": "api/1's Problem error shape (API-010-016) needs a multi-field VALIDATION_FAILED `errors`-array aggregator that does not exist yet; no other driver in the repo exercises this fixture — deferred until that aggregator is built.",
+	"API-121": "api.New's mux (internal/app/api/api.go) mounts no /api/v1/workspace/export route — the 2026-07-26 reconciliation audit confirms it is one of several openapi-declared paths (/jobs/{job_id}, /workspace/export, /workspace/delete, /auth/login, /principals, /devices, /entities, /casts, /system/health, /packs/{pack}/actions/{name}) with no handler in the tree. Deferred until that route is built (plan G8).",
 }
 
 func driveCases(rep *report.Report, cases map[string]corpus.Case) {
-	for _, short := range syncConventionCaseIDs {
-		driveByShape(rep, cases, short)
-	}
-	for _, short := range asyncConventionCaseIDs {
+	for _, short := range drivenCaseIDs {
 		driveByShape(rep, cases, short)
 	}
 	for _, short := range sortedKeys(pendingCaseIDs) {
@@ -138,8 +130,7 @@ func sortedKeys(m map[string]string) []string {
 
 // driveByShape looks up the named case, classifies its `input` block's shape,
 // and dispatches to the matching helper family. A shape the driver does not
-// recognize is a driver FAIL, not a silent skip — every one of the six sync-
-// convention cases MUST resolve to exactly one of the four known families.
+// recognize is a driver FAIL, not a silent skip.
 func driveByShape(rep *report.Report, cases map[string]corpus.Case, short string) {
 	c, ok := corpus.ByID(cases, short)
 	if !ok {
@@ -147,7 +138,11 @@ func driveByShape(rep *report.Report, cases map[string]corpus.Case, short string
 		return
 	}
 
-	switch classifyShape(c.Input) {
+	switch classifyShape(c.CaseID, c.Input) {
+	case shapeProblemNotFound:
+		driveProblemNotFound(rep, c)
+	case shapeProblemValidation:
+		driveProblemValidation(rep, c)
 	case shapeConcurrency:
 		driveConcurrency(rep, c)
 	case shapePagination:
@@ -161,7 +156,7 @@ func driveByShape(rep *report.Report, cases map[string]corpus.Case, short string
 	case shapeJob:
 		driveJob(rep, c)
 	default:
-		rep.Fail(c.CaseID, contract, "input block did not match any known api/1 convention shape (concurrency/pagination/selector/external_id/idempotency/job)")
+		rep.Fail(c.CaseID, contract, "input block did not match any known api/1 convention shape")
 	}
 }
 
@@ -171,6 +166,8 @@ type shape int
 
 const (
 	shapeUnknown shape = iota
+	shapeProblemNotFound
+	shapeProblemValidation
 	shapeConcurrency
 	shapePagination
 	shapeSelector
@@ -179,27 +176,19 @@ const (
 	shapeJob
 )
 
-// classifyShape inspects a case's `input` block and reports which convention
-// family it belongs to, purely from its structure:
-//
-//   - `current_resource_state` present → a conditional write against a
-//     mutable resource's revision: optimistic concurrency (API-020-025).
-//   - a `requests` array paired with `collection_state` → a sequence of list
-//     requests against a fixed collection: keyset pagination (API-030-036).
-//   - a `requests` array of POSTs each carrying an `Idempotency-Key` header,
-//     with NO `collection_state` → the Idempotency-Key replay/reuse convention
-//     (API-050-056).
-//   - a singular `request` whose `query` carries a `selector` → the label-
-//     selector grammar (API-040-046), whether or not the case also supplies
-//     `collection_state` (a malformed-selector case needs none).
-//   - a `body` carrying an `external_id` key alongside `collection_state` →
-//     the client-assignable external_id convention (API-100-104).
-//   - a singular top-level `method`+`path` async mutation (a bulk-mutating
-//     operation or a workspace export/delete) → the 202 + Job convention
-//     (API-110-117, API-120-123).
-//
-// Anything else classifies shapeUnknown.
-func classifyShape(input map[string]any) shape {
+// classifyShape inspects a case's own id and `input` block and reports which
+// convention family it belongs to. API-010/013 are named explicitly (their
+// input shape — a bare method+path+headers, or a bare method+path+body — is
+// not otherwise distinguishable from a job-mutation shape without the case's
+// own req_ids); every other case is classified purely from its input's
+// structure, as a real router would dispatch on request shape.
+func classifyShape(caseID string, input map[string]any) shape {
+	switch caseID {
+	case "API-010-valid-simple-problem":
+		return shapeProblemNotFound
+	case "API-013-valid-multi-field-validation-problem":
+		return shapeProblemValidation
+	}
 	if _, ok := input["current_resource_state"]; ok {
 		return shapeConcurrency
 	}
@@ -227,8 +216,6 @@ func classifyShape(input map[string]any) shape {
 			}
 		}
 	}
-	// A singular async mutation carries its method and path at the top level
-	// (unlike the label-selector cases, which nest them under `request`).
 	if _, ok := input["method"].(string); ok {
 		if _, ok := input["path"].(string); ok {
 			return shapeJob
@@ -237,10 +224,6 @@ func classifyShape(input map[string]any) shape {
 	return shapeUnknown
 }
 
-// requestsCarryIdempotencyKey reports whether every request in a `requests`
-// array carries an Idempotency-Key header — the structural marker of an
-// Idempotency-Key replay/reuse case (API-050-056), distinguishing it from any
-// other requests-array shape.
 func requestsCarryIdempotencyKey(reqs []any) bool {
 	if len(reqs) == 0 {
 		return false
@@ -261,23 +244,252 @@ func requestsCarryIdempotencyKey(reqs []any) bool {
 	return true
 }
 
+// --- the live harness -------------------------------------------------------
+
+// harness mounts the SAME http.Handler production wires (api.New) over a real,
+// in-memory internal/app/store.Store and a real apihttp.IdempotencyStore under
+// an injected clock. Every case drives requests through h.do — the exact
+// dispatch a real client's request takes, never a hand-built http.HandlerFunc.
+type harness struct {
+	store *store.Store
+	h     http.Handler
+}
+
+// newHarness opens a fresh in-memory store and mounts api.New over it. nowMs
+// is the fixed clock every Idempotency-Key / Job timestamp in this harness's
+// lifetime is stamped with — never the wall clock — so a case's outcome is
+// reproducible.
+func newHarness(nowMs int64) (*harness, error) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		return nil, fmt.Errorf("store.Open: %w", err)
+	}
+	clock := func() int64 { return nowMs }
+	idem := apihttp.NewIdempotencyStore(clock, 0)
+	h := api.New(st, idem, clock, origin.New(), "https://origin.example")
+	return &harness{store: st, h: h}, nil
+}
+
+func (h *harness) close() { _ = h.store.Close() }
+
+// result is the decoded outcome of one request driven through the live
+// handler.
+type result struct {
+	status int
+	header http.Header
+	body   map[string]any
+	raw    []byte
+}
+
+// do drives one HTTP request through the live handler — no network, but the
+// exact http.Handler a real listener would dispatch to.
+func (h *harness) do(method, path string, body []byte, headers map[string]string) result {
+	var rdr io.Reader
+	if body != nil {
+		rdr = bytes.NewReader(body)
+	}
+	req := httptest.NewRequest(method, path, rdr)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	rec := httptest.NewRecorder()
+	h.h.ServeHTTP(rec, req)
+	var decoded map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &decoded)
+	return result{status: rec.Code, header: rec.Header(), body: decoded, raw: rec.Body.Bytes()}
+}
+
+// seedScopeNode writes a scope-node row directly into the store (fixture
+// setup, not the operation under test — the same pattern internal/app/api's
+// own e2e tests use: seed via the store, drive the case under test through the
+// live handler). fields is marshaled as-is as the row body.
+func (h *harness) seedScopeNode(fields map[string]any) error {
+	b, err := json.Marshal(fields)
+	if err != nil {
+		return err
+	}
+	_, err = h.store.Create(context.Background(), store.KindScopeNode, b)
+	return err
+}
+
+// seedAutomation writes a compile-clean edge-automation row directly into the
+// store (fixture setup). Every seeded automation shares the same trigger/
+// action shape (a state trigger rising to "on" firing a device_command on
+// conformanceEntity) so it clears the rules/1 compile-gate every write path
+// runs — the corpus's own collection_state fixtures for the automations kind
+// carry only the api/1-relevant fields (id/scope_node/labels/name), never a
+// full rule, since they were designed against the convention libraries
+// directly; this driver supplies the rest of a valid rule so the SAME
+// api/1-relevant fields can be seeded through the real, compile-gated store
+// write path.
+func (h *harness) seedAutomation(id, scopeNode string, labels map[string]string) error {
+	m := map[string]any{
+		"id":         id,
+		"name":       "Conformance Fixture Automation",
+		"scope_node": scopeNode,
+		"enabled":    true,
+		"mode":       "single",
+		"triggers":   []any{map[string]any{"type": "state", "entity_id": conformanceEntity, "to": []string{"on"}}},
+		"conditions": []any{},
+		"actions":    []any{map[string]any{"type": "device_command", "entity_id": conformanceEntity, "command": "launch"}},
+	}
+	if labels != nil {
+		m["labels"] = labels
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	_, err = h.store.Create(context.Background(), store.KindAutomation, b)
+	return err
+}
+
+// --- api/1's own Problem error shape (API-010-016) --------------------------
+
+// driveProblemNotFound drives API-010: GET on a scope-node id that does not
+// exist. The prior version of this driver recorded this case PENDING,
+// reasoning "a scope-node NOT_FOUND GET route ... does not exist yet" — a
+// 2026-07-26 audit found that reasoning was itself wrong: the route
+// (GET /api/v1/scope-nodes/{id}) has existed since it was built (api.go's
+// generic resource GET, `rs.notFound`) and this driver was simply never wired
+// to call it. Driven for real, the corpus's pinned `detail` — "No scope node
+// exists with this identifier." — diverges from the live handler, which emits
+// the resource-kind-agnostic generic detail every kind's 404 shares ("No
+// resource exists at this identifier.", api.go's rs.notFound): a genuine,
+// pre-existing corpus-vs-code mismatch this driver surfaces rather than
+// silently reproducing.
+func driveProblemNotFound(rep *report.Report, c corpus.Case) {
+	var in struct {
+		Method  string            `json:"method"`
+		Path    string            `json:"path"`
+		Headers map[string]string `json:"headers"`
+	}
+	if err := decodeField(c.Input, &in); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode input: %v", err))
+		return
+	}
+
+	h, err := newHarness(fixedNowMs)
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("newHarness: %v", err))
+		return
+	}
+	defer h.close()
+
+	res := h.do(in.Method, in.Path, nil, in.Headers)
+
+	var diffs []report.Diff
+	if want, ok := expectInt(c, "status"); ok && res.status != want {
+		diffs = append(diffs, report.Diff{Field: "status", Expected: want, Actual: res.status})
+	}
+	if want, ok := expectString(c, "content_type"); ok && want != "" {
+		if got := res.header.Get("Content-Type"); got != want {
+			diffs = append(diffs, report.Diff{Field: "content_type", Expected: want, Actual: got})
+		}
+	}
+	if want, ok := c.Expected["headers"].(map[string]any); ok {
+		if wantTrace, ok := want["Trace-Id"].(string); ok {
+			if got := res.header.Get("Trace-Id"); got != wantTrace {
+				diffs = append(diffs, report.Diff{Field: "headers.Trace-Id", Expected: wantTrace, Actual: got})
+			}
+		}
+	}
+	diffs = append(diffs, bodyDiffs(c, res.body)...)
+
+	if len(diffs) > 0 {
+		rep.Fail(c.CaseID, contract, "api/1 Problem (NOT_FOUND) diverged from the corpus expectation", diffs...)
+		return
+	}
+	rep.Pass(c.CaseID, contract)
+}
+
+// driveProblemValidation drives API-013: creating a scope node with two
+// independently-invalid fields. The prior version of this driver recorded
+// this PENDING, reasoning "a multi-field VALIDATION_FAILED `errors`-array
+// aggregator ... does not exist yet" — that too was wrong: api.go's
+// writeStoreError already renders a store.ValidationError's per-field list as
+// the `errors` extension (validationExtra). Driven for real, THIS case
+// diverges from the live handler in more than one way, and both are reported
+// rather than papered over:
+//   - status: the corpus pins 400; every VALIDATION_FAILED the live code
+//     emits (api.go's writeValidationFailed / writeStoreError) is 422, per
+//     the later scheduling-core plan that settled on 422 uniformly.
+//   - codes: the corpus pins ENUM_MISMATCH/TOO_SHORT; the live scope-node
+//     validator (internal/datamodel.BuildScopeTree) has no such codes — an
+//     invalid kind is SCOPE_NODE_KIND_INVALID, and there is no `name` length
+//     validation on a scope node at all today, so the corpus's second
+//     pinned field failure has no live counterpart to reproduce.
+//
+// This is a corpus-vs-implementation reconciliation question (which side is
+// stale), not a driver bug, so it is left FAILING with the concrete diffs
+// rather than "fixed" by loosening the assertion or renaming a live error
+// code to match.
+func driveProblemValidation(rep *report.Report, c corpus.Case) {
+	var in struct {
+		Method  string            `json:"method"`
+		Path    string            `json:"path"`
+		Headers map[string]string `json:"headers"`
+		Body    map[string]any    `json:"body"`
+	}
+	if err := decodeField(c.Input, &in); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode input: %v", err))
+		return
+	}
+
+	h, err := newHarness(fixedNowMs)
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("newHarness: %v", err))
+		return
+	}
+	defer h.close()
+
+	bodyBytes, err := json.Marshal(in.Body)
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("marshal input.body: %v", err))
+		return
+	}
+	res := h.do(in.Method, in.Path, bodyBytes, in.Headers)
+
+	var diffs []report.Diff
+	if want, ok := expectInt(c, "status"); ok && res.status != want {
+		diffs = append(diffs, report.Diff{Field: "status", Expected: want, Actual: res.status})
+	}
+	if want, ok := expectString(c, "content_type"); ok && want != "" {
+		if got := res.header.Get("Content-Type"); got != want {
+			diffs = append(diffs, report.Diff{Field: "content_type", Expected: want, Actual: got})
+		}
+	}
+	diffs = append(diffs, bodyDiffs(c, res.body)...)
+
+	if len(diffs) > 0 {
+		rep.Fail(c.CaseID, contract, "api/1 Problem (VALIDATION_FAILED) diverged from the corpus expectation", diffs...)
+		return
+	}
+	rep.Pass(c.CaseID, contract)
+}
+
 // --- concurrency (API-020-025) -------------------------------------------
+
+const fixedNowMs = int64(1_700_000_000_000)
 
 type concurrencyInput struct {
 	Path                 string            `json:"path"`
 	Headers              map[string]string `json:"headers"`
+	Body                 map[string]any    `json:"body"`
 	CurrentResourceState struct {
-		Revision int64 `json:"revision"`
+		ID       string `json:"id"`
+		Revision int64  `json:"revision"`
 	} `json:"current_resource_state"`
 }
 
 // driveConcurrency drives a conditional-write corpus case (API-022/023)
-// against apihttp.CheckIfMatch: a missing If-Match rejects 428/
-// IF_MATCH_REQUIRED before any write (API-022); an If-Match that no longer
-// matches the resource's current ETag rejects 412/REVISION_CONFLICT carrying
-// current_revision, again before any write (API-023). One function drives
-// both cases identically — the shape and the write-discipline invariant (no
-// write on a non-OK outcome) are the same for either rejection.
+// against the live PATCH /api/v1/scope-nodes/{id} handler: a missing If-Match
+// rejects 428/IF_MATCH_REQUIRED before any write (API-022); an If-Match that
+// no longer matches the resource's current ETag rejects 412/REVISION_CONFLICT
+// carrying current_revision (API-023). The target row is seeded, then bumped
+// to the case's own current_resource_state.revision via two real writes
+// (store.Update), so its live ETag genuinely is the corpus-pinned revision —
+// never asserted by construction.
 func driveConcurrency(rep *report.Report, c corpus.Case) {
 	var in concurrencyInput
 	if err := decodeField(c.Input, &in); err != nil {
@@ -285,42 +497,61 @@ func driveConcurrency(rep *report.Report, c corpus.Case) {
 		return
 	}
 
-	ifMatch, present := in.Headers["If-Match"]
-	rev := in.CurrentResourceState.Revision
-	out := apihttp.CheckIfMatch(ifMatch, present, rev)
-
-	// Model the write path a handler follows: a non-OK outcome MUST NOT
-	// perform the write (API-022's "no unconditional write path"); an OK
-	// outcome would.
-	writeExecuted := out.OK
-	gotStatus := http.StatusOK
-	gotCT := ""
-	var gotBody map[string]any
-
-	if !out.OK {
-		w := httptest.NewRecorder()
-		r := httptest.NewRequest(http.MethodPatch, in.Path, nil)
-		var extra map[string]any
-		if out.CurrentRevision != nil {
-			extra = map[string]any{"current_revision": *out.CurrentRevision}
-		}
-		apihttp.WriteProblemExt(w, r, in.Headers["Trace-Id"], out.Status, out.Code, out.Title, out.Detail, extra)
-		gotStatus = w.Code
-		gotCT = w.Header().Get("Content-Type")
-		gotBody = decodeJSONBody(w)
+	h, err := newHarness(fixedNowMs)
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("newHarness: %v", err))
+		return
 	}
+	defer h.close()
+
+	id := in.CurrentResourceState.ID
+	// A screen (not a site) needs no geo columns (DAT-031 only binds a site),
+	// so seeding needs no fields beyond what the concurrency convention itself
+	// cares about: identity and revision.
+	if err := h.seedScopeNode(map[string]any{"id": id, "kind": "screen", "parent_id": "01J8Z0PLACEHOLDERPARENT01", "name": "Original Site"}); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("seed scope node: %v", err))
+		return
+	}
+	cur, _, err := h.store.Get(context.Background(), store.KindScopeNode, id)
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("get seeded scope node: %v", err))
+		return
+	}
+	for cur.Revision < in.CurrentResourceState.Revision {
+		cur, err = h.store.Update(context.Background(), store.KindScopeNode, id, cur.Revision, []byte(`{"name":"Original Site"}`))
+		if err != nil {
+			rep.Fail(c.CaseID, contract, fmt.Sprintf("bump seeded scope node to revision %d: %v", in.CurrentResourceState.Revision, err))
+			return
+		}
+	}
+	if cur.Revision != in.CurrentResourceState.Revision {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("seeded scope node landed at revision %d, want the corpus's pinned %d", cur.Revision, in.CurrentResourceState.Revision))
+		return
+	}
+
+	bodyBytes, err := json.Marshal(in.Body)
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("marshal input.body: %v", err))
+		return
+	}
+	res := h.do("PATCH", in.Path, bodyBytes, in.Headers)
+
+	afterRev, _, _ := h.store.Get(context.Background(), store.KindScopeNode, id)
+	writeExecuted := afterRev.Revision != cur.Revision
 
 	var diffs []report.Diff
 	if want, ok := expectBool(c, "write_executed"); ok && writeExecuted != want {
 		diffs = append(diffs, report.Diff{Field: "write_executed", Expected: want, Actual: writeExecuted})
 	}
-	if want, ok := expectInt(c, "status"); ok && gotStatus != want {
-		diffs = append(diffs, report.Diff{Field: "status", Expected: want, Actual: gotStatus})
+	if want, ok := expectInt(c, "status"); ok && res.status != want {
+		diffs = append(diffs, report.Diff{Field: "status", Expected: want, Actual: res.status})
 	}
-	if want, ok := expectString(c, "content_type"); ok && want != "" && gotCT != want {
-		diffs = append(diffs, report.Diff{Field: "content_type", Expected: want, Actual: gotCT})
+	if want, ok := expectString(c, "content_type"); ok && want != "" {
+		if got := res.header.Get("Content-Type"); got != want {
+			diffs = append(diffs, report.Diff{Field: "content_type", Expected: want, Actual: got})
+		}
 	}
-	diffs = append(diffs, bodyDiffs(c, gotBody)...)
+	diffs = append(diffs, bodyDiffs(c, res.body)...)
 
 	if len(diffs) > 0 {
 		rep.Fail(c.CaseID, contract, "optimistic-concurrency outcome diverged from the corpus expectation", diffs...)
@@ -348,18 +579,22 @@ type paginationExpected struct {
 	CombinedItemsCoverCollectionExactlyOnce bool `json:"combined_items_cover_collection_exactly_once"`
 }
 
-// listItem is the response projection a list endpoint emits per row (API-032:
-// `items:[{id:...}]`, never the full stored row).
-type listItem struct {
-	ID string `json:"id"`
-}
-
-// drivePagination drives the keyset-pagination roundtrip case (API-032): over
-// a fixed collection, replay each request in sequence through
-// apihttp.ParsePageParams / DecodeCursor / Page and diff the resulting
-// {items, cursor} envelope against that request's own pinned expected
-// response — then confirm every row across all pages was returned exactly
-// once (API-034).
+// drivePagination drives the keyset-pagination roundtrip case (API-032)
+// against the live GET /api/v1/automations handler: the corpus's
+// collection_state rows are seeded as compile-clean automations (see
+// seedAutomation), then each request in sequence is replayed through the
+// live handler and diffed against that request's own pinned expected
+// response.
+//
+// The live automations list scopes its cursor by resourceType ("automations",
+// api.go's automationsConfig + apihttp.EncodeCursor), whereas this corpus
+// case pins the UNSCOPED bare-ULID cursor form ("the automations list is
+// pinned to the unscoped bare-ULID cursor form", the prior driver's own
+// comment). No unscoped list route exists in the shipped code — every
+// resource's cursor is scoped uniformly — so this is a genuine, confirmed
+// corpus-vs-code divergence (not a driver bug) that this case now correctly
+// FAILS on, where the old library-level driver could not see it at all (it
+// called apihttp.Page("", ...) directly, choosing the unscoped form itself).
 func drivePagination(rep *report.Report, c corpus.Case) {
 	var in paginationInput
 	if err := decodeField(c.Input, &in); err != nil {
@@ -372,11 +607,20 @@ func drivePagination(rep *report.Report, c corpus.Case) {
 		return
 	}
 
-	sorted := make([]listItem, 0, len(in.CollectionState))
-	for _, row := range in.CollectionState {
-		sorted = append(sorted, listItem{ID: row.ID})
+	h, err := newHarness(fixedNowMs)
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("newHarness: %v", err))
+		return
 	}
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
+	defer h.close()
+
+	const scopeNode = "01J8Z0PAGINATIONSCOPENODE1"
+	for _, row := range in.CollectionState {
+		if err := h.seedAutomation(row.ID, scopeNode, nil); err != nil {
+			rep.Fail(c.CaseID, contract, fmt.Sprintf("seed automation %s: %v", row.ID, err))
+			return
+		}
+	}
 
 	if len(in.Requests) != len(exp.Responses) {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("corpus has %d requests but %d expected responses", len(in.Requests), len(exp.Responses)))
@@ -386,20 +630,16 @@ func drivePagination(rep *report.Report, c corpus.Case) {
 	var diffs []report.Diff
 	seen := map[string]int{}
 	for i, req := range in.Requests {
-		status, body, err := servePage(sorted, req.Query["cursor"], req.Query["limit"])
-		if err != nil {
-			diffs = append(diffs, report.Diff{Field: fmt.Sprintf("responses[%d]", i), Expected: "a servable page", Actual: err.Error()})
-			continue
-		}
+		path := "/api/v1/automations?" + encodeQuery(req.Query)
+		res := h.do("GET", path, nil, nil)
 		want := exp.Responses[i]
-		if status != want.Status {
-			diffs = append(diffs, report.Diff{Field: fmt.Sprintf("responses[%d].status", i), Expected: want.Status, Actual: status})
+		if res.status != want.Status {
+			diffs = append(diffs, report.Diff{Field: fmt.Sprintf("responses[%d].status", i), Expected: want.Status, Actual: res.status})
 		}
-		if !reflect.DeepEqual(body, want.Body) {
-			diffs = append(diffs, report.Diff{Field: fmt.Sprintf("responses[%d].body", i), Expected: want.Body, Actual: body})
+		for _, d := range listBodyDiffsRaw(fmt.Sprintf("responses[%d].body", i), want.Body, res.body) {
+			diffs = append(diffs, d)
 		}
-
-		if items, ok := body["items"].([]any); ok {
+		if items, ok := res.body["items"].([]any); ok {
 			for _, it := range items {
 				if m, ok := it.(map[string]any); ok {
 					if id, ok := m["id"].(string); ok {
@@ -428,46 +668,13 @@ func drivePagination(rep *report.Report, c corpus.Case) {
 	rep.Pass(c.CaseID, contract)
 }
 
-// servePage models the read path a list handler follows for one request:
-// parse the page params, decode a supplied cursor to its keyset position,
-// select the rows after that position, and cut the page with apihttp.Page.
-// The automations list is pinned to the unscoped bare-ULID cursor form
-// (API-032), so scope is always "".
-func servePage(sorted []listItem, rawCursor, rawLimit string) (status int, body map[string]any, err error) {
-	cursor, limit, perr := apihttp.ParsePageParams(rawCursor, rawLimit)
-	if perr != nil {
-		return 0, nil, fmt.Errorf("ParsePageParams(%q, %q) rejected a valid corpus request: %+v", rawCursor, rawLimit, perr)
+// encodeQuery builds a URL query string from a plain string map.
+func encodeQuery(q map[string]string) string {
+	v := url.Values{}
+	for k, val := range q {
+		v.Set(k, val)
 	}
-
-	lastID := ""
-	if cursor != "" {
-		id, derr := apihttp.DecodeCursor("", cursor)
-		if derr != nil {
-			return 0, nil, fmt.Errorf("DecodeCursor(%q) rejected a valid corpus cursor: %+v", cursor, derr)
-		}
-		lastID = id
-	}
-
-	after := make([]listItem, 0, len(sorted))
-	for _, row := range sorted {
-		if row.ID > lastID {
-			after = append(after, row)
-		}
-	}
-	if len(after) > limit+1 {
-		after = after[:limit+1]
-	}
-
-	env := apihttp.Page("", after, limit, func(it listItem) string { return it.ID })
-	raw, merr := json.Marshal(env)
-	if merr != nil {
-		return 0, nil, fmt.Errorf("marshal page envelope: %w", merr)
-	}
-	var decoded map[string]any
-	if uerr := json.Unmarshal(raw, &decoded); uerr != nil {
-		return 0, nil, fmt.Errorf("decode page envelope: %w", uerr)
-	}
-	return http.StatusOK, decoded, nil
+	return v.Encode()
 }
 
 // --- label-selector grammar (API-040-046) ---------------------------------
@@ -486,15 +693,27 @@ type selectorInput struct {
 	} `json:"request"`
 }
 
-// driveSelector drives a label-selector corpus case against
-// apiselector.Parse. When the selector parses (API-044): evaluate it over the
-// collection (placement modeled as an id→parent_id tree, `kind` carried as the
-// resource's sole label) and diff the selected + paginated ids against the
-// pinned {items, cursor} envelope. When it fails to parse (API-045): write the
-// resulting *ParseError through the same apihttp.WriteProblemExt round-trip
-// the concurrency/external_id helpers use, and diff the genuine
-// Content-Type header + JSON body against the pinned Problem — never the
-// *ParseError's fields compared to themselves.
+// siteGeo is synthetic (non-corpus) geo data this driver supplies for every
+// seeded site-kind scope node — DAT-031 requires a site to declare non-null
+// tz/lat/long, a rule orthogonal to what these selector/pagination/
+// external_id cases assert (kind + placement + label matching), so seeding
+// omits nothing the corpus itself pins; it only satisfies a live-store
+// invariant the corpus's collection_state fixtures (written against the
+// convention libraries directly) never had to satisfy.
+func siteGeo(m map[string]any) {
+	m["tz"] = "America/Chicago"
+	m["lat"] = 41.8781
+	m["long"] = -87.6298
+}
+
+// driveSelector drives a label-selector corpus case against the live
+// GET /api/v1/scope-nodes handler. When the selector parses (API-044): seed
+// the collection as real scope-node rows (site rows get synthetic geo, see
+// siteGeo) and diff the selected + paginated ids against the pinned
+// {items, cursor} envelope — the subtree containment comes from the REAL
+// scope-node tree the handler reads (store.DesiredStateRows +
+// datamodel.BuildScopeTree), not a driver-modeled parent map. When it fails to
+// parse (API-045): diff the genuine response the live handler emits.
 func driveSelector(rep *report.Report, c corpus.Case) {
 	var in selectorInput
 	if err := decodeField(c.Input, &in); err != nil {
@@ -502,116 +721,45 @@ func driveSelector(rep *report.Report, c corpus.Case) {
 		return
 	}
 
-	sel, perr := apiselector.Parse(in.Request.Query["selector"])
-	if perr != nil {
-		driveSelectorParseError(rep, c, in, perr)
+	h, err := newHarness(fixedNowMs)
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("newHarness: %v", err))
 		return
 	}
-	driveSelectorMatch(rep, c, in, sel)
-}
+	defer h.close()
 
-// driveSelectorParseError drives a malformed-selector corpus case (API-045).
-// apiselector.ParseError never reaches an HTTP response on its own — it has
-// no Content-Type or Type field of its own — so this writes one via the
-// LIVE apihttp.WriteProblemExt (the same helper a real handler would call)
-// against a real httptest.ResponseRecorder, then diffs the observed status,
-// Content-Type header, and JSON body against the case's pinned expectation
-// using the same bodyDiffs helper driveConcurrency/driveExternalID use. This
-// is what lets a wrong Content-Type header or a wrong `type` Problem member
-// actually fail this case, rather than only checking the corpus fixture's
-// own internal consistency.
-func driveSelectorParseError(rep *report.Report, c corpus.Case, in selectorInput, perr *apiselector.ParseError) {
+	for _, row := range in.CollectionState {
+		m := map[string]any{"id": row.ID, "kind": row.Kind, "parent_id": row.ParentID}
+		if row.Kind == "site" {
+			siteGeo(m)
+		}
+		if err := h.seedScopeNode(m); err != nil {
+			rep.Fail(c.CaseID, contract, fmt.Sprintf("seed scope node %s: %v", row.ID, err))
+			return
+		}
+	}
+
 	method := in.Request.Method
 	if method == "" {
 		method = http.MethodGet
 	}
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest(method, in.Request.Path, nil)
-	apihttp.WriteProblemExt(w, r, in.Headers["Trace-Id"], perr.Status, perr.Code, perr.Title, perr.Detail, nil)
-	gotStatus := w.Code
-	gotCT := w.Header().Get("Content-Type")
-	gotBody := decodeJSONBody(w)
+	path := in.Request.Path + "?" + encodeQuery(in.Request.Query)
+	headers := in.Headers
+	res := h.do(method, path, nil, headers)
 
 	var diffs []report.Diff
-	if want, ok := expectInt(c, "status"); ok && gotStatus != want {
-		diffs = append(diffs, report.Diff{Field: "status", Expected: want, Actual: gotStatus})
+	if want, ok := expectInt(c, "status"); ok && res.status != want {
+		diffs = append(diffs, report.Diff{Field: "status", Expected: want, Actual: res.status})
 	}
-	if want, ok := expectString(c, "content_type"); ok && want != "" && gotCT != want {
-		diffs = append(diffs, report.Diff{Field: "content_type", Expected: want, Actual: gotCT})
+	if want, ok := expectString(c, "content_type"); ok && want != "" {
+		if got := res.header.Get("Content-Type"); got != want {
+			diffs = append(diffs, report.Diff{Field: "content_type", Expected: want, Actual: got})
+		}
 	}
-	diffs = append(diffs, bodyDiffs(c, gotBody)...)
+	diffs = append(diffs, listBodyDiffs(c, res.body)...)
 
 	if len(diffs) > 0 {
-		rep.Fail(c.CaseID, contract, "selector parse-error Problem diverged from the corpus expectation", diffs...)
-		return
-	}
-	rep.Pass(c.CaseID, contract)
-}
-
-func driveSelectorMatch(rep *report.Report, c corpus.Case, in selectorInput, sel apiselector.Selector) {
-	parent := map[string]string{}
-	for _, row := range in.CollectionState {
-		parent[row.ID] = row.ParentID
-	}
-	inSubtree := func(ancestor, node string) bool {
-		for cur := node; ; {
-			p, ok := parent[cur]
-			if !ok {
-				return false
-			}
-			if p == ancestor {
-				return true
-			}
-			cur = p
-		}
-	}
-
-	var matched []listItem
-	for _, row := range in.CollectionState {
-		if sel.Matches(map[string]string{"kind": row.Kind}, row.ID, inSubtree) {
-			matched = append(matched, listItem{ID: row.ID})
-		}
-	}
-	sort.Slice(matched, func(i, j int) bool { return matched[i].ID < matched[j].ID })
-
-	env := apihttp.Page("", matched, apihttp.DefaultPageLimit, func(it listItem) string { return it.ID })
-
-	var diffs []report.Diff
-	if want, ok := expectInt(c, "status"); ok && want != http.StatusOK {
-		diffs = append(diffs, report.Diff{Field: "status", Expected: want, Actual: http.StatusOK})
-	}
-	body, _ := c.Expected["body"].(map[string]any)
-	wantItems, _ := body["items"].([]any)
-	wantIDs := make([]string, 0, len(wantItems))
-	for _, it := range wantItems {
-		if m, ok := it.(map[string]any); ok {
-			if id, ok := m["id"].(string); ok {
-				wantIDs = append(wantIDs, id)
-			}
-		}
-	}
-	sort.Strings(wantIDs)
-	gotIDs := make([]string, 0, len(env.Items))
-	for _, it := range env.Items {
-		gotIDs = append(gotIDs, it.ID)
-	}
-	if !reflect.DeepEqual(gotIDs, wantIDs) {
-		diffs = append(diffs, report.Diff{Field: "body.items[].id", Expected: wantIDs, Actual: gotIDs})
-	}
-	if cursorRaw, present := body["cursor"]; present {
-		if cursorRaw == nil {
-			if env.Cursor != nil {
-				diffs = append(diffs, report.Diff{Field: "body.cursor", Expected: nil, Actual: *env.Cursor})
-			}
-		} else if s, ok := cursorRaw.(string); ok {
-			if env.Cursor == nil || *env.Cursor != s {
-				diffs = append(diffs, report.Diff{Field: "body.cursor", Expected: s, Actual: env.Cursor})
-			}
-		}
-	}
-
-	if len(diffs) > 0 {
-		rep.Fail(c.CaseID, contract, "selector evaluation diverged from the corpus expectation", diffs...)
+		rep.Fail(c.CaseID, contract, "selector outcome diverged from the corpus expectation", diffs...)
 		return
 	}
 	rep.Pass(c.CaseID, contract)
@@ -620,13 +768,9 @@ func driveSelectorMatch(rep *report.Report, c corpus.Case, in selectorInput, sel
 // --- client-assignable external_id (API-100-104) --------------------------
 
 type externalIDInput struct {
-	Path    string            `json:"path"`
-	Headers map[string]string `json:"headers"`
-	Body    struct {
-		Kind       string `json:"kind"`
-		ParentID   string `json:"parent_id"`
-		ExternalID string `json:"external_id"`
-	} `json:"body"`
+	Path            string            `json:"path"`
+	Headers         map[string]string `json:"headers"`
+	Body            map[string]any    `json:"body"`
 	CollectionState []struct {
 		ID         string `json:"id"`
 		Kind       string `json:"kind"`
@@ -636,9 +780,15 @@ type externalIDInput struct {
 }
 
 // driveExternalID drives the external_id-conflict corpus case (API-102)
-// against apihttp.CheckExternalIDUnique: a create whose external_id already
-// names another resource of the same type under the same scope node rejects
-// 400/EXTERNAL_ID_CONFLICT before the write executes.
+// against the live POST /api/v1/scope-nodes handler: a create whose
+// external_id already names another resource of the same kind under the same
+// parent scope node is rejected before the write executes.
+//
+// The live handler scopes the uniqueness check by resourceConfig.resourceType
+// (api.go's refsFrom), which is the generic tag "scope-nodes" for every
+// scope-node kind — not the row's own `kind` ("screen") the corpus's pinned
+// detail names ("already in use by another screen under this parent."). This
+// is a genuine wording divergence this case now correctly surfaces.
 func driveExternalID(rep *report.Report, c corpus.Case) {
 	var in externalIDInput
 	if err := decodeField(c.Input, &in); err != nil {
@@ -646,41 +796,54 @@ func driveExternalID(rep *report.Report, c corpus.Case) {
 		return
 	}
 
-	existing := make([]apihttp.ExternalRef, 0, len(in.CollectionState))
+	h, err := newHarness(fixedNowMs)
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("newHarness: %v", err))
+		return
+	}
+	defer h.close()
+
 	for _, row := range in.CollectionState {
-		existing = append(existing, apihttp.ExternalRef{
-			ID: row.ID, ExternalID: row.ExternalID, ResourceType: row.Kind, ScopeNode: row.ParentID,
-		})
+		m := map[string]any{"id": row.ID, "kind": row.Kind, "parent_id": row.ParentID, "external_id": row.ExternalID}
+		if err := h.seedScopeNode(m); err != nil {
+			rep.Fail(c.CaseID, contract, fmt.Sprintf("seed scope node %s: %v", row.ID, err))
+			return
+		}
 	}
 
-	// selfID is empty: this is a create, so no existing record can be "this
-	// same resource" and the check can never suppress itself (API-102).
-	prob := apihttp.CheckExternalIDUnique(existing, in.Body.Kind, in.Body.ParentID, in.Body.ExternalID, "")
-
-	writeExecuted := prob == nil
-	gotStatus := http.StatusOK
-	gotCT := ""
-	var gotBody map[string]any
-	if prob != nil {
-		w := httptest.NewRecorder()
-		r := httptest.NewRequest(http.MethodPost, in.Path, nil)
-		apihttp.WriteProblemExt(w, r, in.Headers["Trace-Id"], prob.Status, prob.Code, prob.Title, prob.Detail, nil)
-		gotStatus = w.Code
-		gotCT = w.Header().Get("Content-Type")
-		gotBody = decodeJSONBody(w)
+	before, err := h.store.List(context.Background(), store.KindScopeNode, store.ListFilter{})
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("list before create: %v", err))
+		return
 	}
+
+	bodyBytes, err := json.Marshal(in.Body)
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("marshal input.body: %v", err))
+		return
+	}
+	res := h.do("POST", in.Path, bodyBytes, in.Headers)
+
+	after, err := h.store.List(context.Background(), store.KindScopeNode, store.ListFilter{})
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("list after create: %v", err))
+		return
+	}
+	writeExecuted := len(after) != len(before)
 
 	var diffs []report.Diff
 	if want, ok := expectBool(c, "write_executed"); ok && writeExecuted != want {
 		diffs = append(diffs, report.Diff{Field: "write_executed", Expected: want, Actual: writeExecuted})
 	}
-	if want, ok := expectInt(c, "status"); ok && gotStatus != want {
-		diffs = append(diffs, report.Diff{Field: "status", Expected: want, Actual: gotStatus})
+	if want, ok := expectInt(c, "status"); ok && res.status != want {
+		diffs = append(diffs, report.Diff{Field: "status", Expected: want, Actual: res.status})
 	}
-	if want, ok := expectString(c, "content_type"); ok && want != "" && gotCT != want {
-		diffs = append(diffs, report.Diff{Field: "content_type", Expected: want, Actual: gotCT})
+	if want, ok := expectString(c, "content_type"); ok && want != "" {
+		if got := res.header.Get("Content-Type"); got != want {
+			diffs = append(diffs, report.Diff{Field: "content_type", Expected: want, Actual: got})
+		}
 	}
-	diffs = append(diffs, bodyDiffs(c, gotBody)...)
+	diffs = append(diffs, bodyDiffs(c, res.body)...)
 
 	if len(diffs) > 0 {
 		rep.Fail(c.CaseID, contract, "external_id uniqueness outcome diverged from the corpus expectation", diffs...)
@@ -693,11 +856,10 @@ func driveExternalID(rep *report.Report, c corpus.Case) {
 
 type idempotencyDriverInput struct {
 	Requests []struct {
-		Method    string            `json:"method"`
-		Path      string            `json:"path"`
-		Headers   map[string]string `json:"headers"`
-		Principal string            `json:"principal"`
-		Body      map[string]any    `json:"body"`
+		Method  string            `json:"method"`
+		Path    string            `json:"path"`
+		Headers map[string]string `json:"headers"`
+		Body    map[string]any    `json:"body"`
 	} `json:"requests"`
 }
 
@@ -711,20 +873,19 @@ type idempotencyDriverExpected struct {
 	ResourcesCreated int `json:"resources_created"`
 }
 
-// driveIdempotency drives an Idempotency-Key corpus case (API-052/053) against
-// the live apihttp.IdempotencyStore: it replays each request in sequence
-// through the store under an INJECTED fixed clock (the store never reads the
-// wall clock, API-052/055) and diffs each response — plus the total number of
-// create side effects — against the case's own pinned expectation.
+// driveIdempotency drives an Idempotency-Key corpus case (API-052/053)
+// against the live POST /api/v1/scope-nodes handler under a fixed injected
+// clock: each request in the case is replayed in sequence and diffed against
+// its own pinned expectation, plus the total create side effects.
 //
-// A BeginFresh outcome models the create executing and recording its pinned
-// 201; a BeginReplay returns the retained response verbatim and marks the
-// response replayed (API-052); a BeginConflict renders the pinned 409
-// IDEMPOTENCY_KEY_REUSED Problem through the same live apihttp.WriteProblemExt
-// round-trip the sync helpers use (API-053). The store's own Fresh/Replay/
-// Conflict decisions — not a re-implementation of them — drive both the
-// per-response diff and the resources_created count, so a store that
-// re-executed a replay or mis-hashed a body fails this case.
+// Both frozen API-052/053 fixtures create a `kind: site` scope node carrying
+// no tz/lat/long. DAT-031 requires a site to declare all three — a rule this
+// driver's own harness enforces for real, since it is the live store — so the
+// very first request in each case is rejected 422/VALIDATION_FAILED by the
+// live handler instead of succeeding 201, and the whole case fails from
+// there. This is a genuine, confirmed corpus-vs-code divergence: the
+// Idempotency-Key fixtures were written before (or independent of) DAT-031's
+// site-geo-required rule and have never been reconciled with it.
 func driveIdempotency(rep *report.Report, c corpus.Case) {
 	var in idempotencyDriverInput
 	if err := decodeField(c.Input, &in); err != nil {
@@ -741,67 +902,46 @@ func driveIdempotency(rep *report.Report, c corpus.Case) {
 		return
 	}
 
-	// A single fixed injected clock exercises the whole case: the store's
-	// behavior comes from the scope/key/hash, not from time passing.
-	const nowMs = int64(1_700_000_000_000)
-	store := apihttp.NewIdempotencyStore(func() int64 { return nowMs }, 0)
+	h, err := newHarness(fixedNowMs)
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("newHarness: %v", err))
+		return
+	}
+	defer h.close()
 
-	creates := 0
-	var diffs []report.Diff
-	for i, req := range in.Requests {
-		scope := apihttp.IdempotencyScope{Principal: req.Principal, Method: req.Method, Path: req.Path}
-		key := req.Headers["Idempotency-Key"]
-		bodyBytes, _ := json.Marshal(req.Body) // json.Marshal sorts map keys → a stable body hash
-		hash := apihttp.IdempotencyBodyHash(bodyBytes)
-
-		var gotStatus int
-		var gotCT string
-		var gotBody map[string]any
-		replayed := false
-
-		out := store.Begin(scope, key, hash, store.Now())
-		switch out.Kind {
-		case apihttp.BeginFresh:
-			creates++ // the create side effect runs here, and only here
-			createBody, _ := json.Marshal(exp.Responses[i].Body)
-			store.Complete(scope, key, hash, apihttp.StoredResponse{Status: 201, Body: createBody, ContentType: "application/json"}, store.Now())
-			gotStatus = 201
-			gotCT = "application/json"
-			_ = json.Unmarshal(createBody, &gotBody)
-		case apihttp.BeginReplay:
-			replayed = true
-			gotStatus = out.Response.Status
-			gotCT = out.Response.ContentType
-			_ = json.Unmarshal(out.Response.Body, &gotBody)
-		case apihttp.BeginConflict:
-			w := httptest.NewRecorder()
-			r := httptest.NewRequest(req.Method, req.Path, nil)
-			apihttp.WriteProblemExt(w, r, req.Headers["Trace-Id"], http.StatusConflict, apihttp.CodeIdempotencyKeyReused, "Conflict", apihttp.IdempotencyReuseDetail(key), nil)
-			gotStatus = w.Code
-			gotCT = w.Header().Get("Content-Type")
-			gotBody = decodeJSONBody(w)
-		case apihttp.BeginInProgress:
-			w := httptest.NewRecorder()
-			r := httptest.NewRequest(req.Method, req.Path, nil)
-			apihttp.WriteProblemExt(w, r, req.Headers["Trace-Id"], http.StatusConflict, apihttp.CodeIdempotencyKeyInProgress, "Conflict", "", nil)
-			gotStatus = w.Code
-			gotCT = w.Header().Get("Content-Type")
-			gotBody = decodeJSONBody(w)
-		}
-
-		want := exp.Responses[i]
-		if gotStatus != want.Status {
-			diffs = append(diffs, report.Diff{Field: fmt.Sprintf("responses[%d].status", i), Expected: want.Status, Actual: gotStatus})
-		}
-		if want.ContentType != "" && gotCT != want.ContentType {
-			diffs = append(diffs, report.Diff{Field: fmt.Sprintf("responses[%d].content_type", i), Expected: want.ContentType, Actual: gotCT})
-		}
-		if replayed != want.Replayed {
-			diffs = append(diffs, report.Diff{Field: fmt.Sprintf("responses[%d].replayed", i), Expected: want.Replayed, Actual: replayed})
-		}
-		diffs = append(diffs, memberDiffs(fmt.Sprintf("responses[%d].body", i), want.Body, gotBody)...)
+	before, err := h.store.List(context.Background(), store.KindScopeNode, store.ListFilter{})
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("list before: %v", err))
+		return
 	}
 
+	var diffs []report.Diff
+	for i, req := range in.Requests {
+		bodyBytes, err := json.Marshal(req.Body)
+		if err != nil {
+			rep.Fail(c.CaseID, contract, fmt.Sprintf("marshal requests[%d].body: %v", i, err))
+			return
+		}
+		res := h.do(req.Method, req.Path, bodyBytes, req.Headers)
+
+		want := exp.Responses[i]
+		if res.status != want.Status {
+			diffs = append(diffs, report.Diff{Field: fmt.Sprintf("responses[%d].status", i), Expected: want.Status, Actual: res.status})
+		}
+		if want.ContentType != "" {
+			if got := res.header.Get("Content-Type"); got != want.ContentType {
+				diffs = append(diffs, report.Diff{Field: fmt.Sprintf("responses[%d].content_type", i), Expected: want.ContentType, Actual: got})
+			}
+		}
+		diffs = append(diffs, memberDiffs(fmt.Sprintf("responses[%d].body", i), want.Body, res.body)...)
+	}
+
+	after, err := h.store.List(context.Background(), store.KindScopeNode, store.ListFilter{})
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("list after: %v", err))
+		return
+	}
+	creates := len(after) - len(before)
 	if creates != exp.ResourcesCreated {
 		diffs = append(diffs, report.Diff{Field: "resources_created", Expected: exp.ResourcesCreated, Actual: creates})
 	}
@@ -821,6 +961,7 @@ type jobDriverInput struct {
 	Headers map[string]string `json:"headers"`
 	Body    struct {
 		Selector string `json:"selector"`
+		Enabled  bool   `json:"enabled"`
 	} `json:"body"`
 	CollectionState []struct {
 		ID        string `json:"id"`
@@ -832,32 +973,36 @@ type jobDriverInput struct {
 	} `json:"collection_state"`
 }
 
-type jobExpectedBody struct {
-	ID        string `json:"id"`
-	CreatedBy string `json:"created_by"`
-	CreatedAt string `json:"created_at"`
-	Targets   []struct {
-		TargetID string `json:"target_id"`
-	} `json:"targets"`
-}
-
-// driveJob drives a 202 + Job corpus case (API-111 bulk-enable, API-121
-// workspace export) against the live apijob state machine. It computes the
-// job's targets — for a selector-carrying bulk mutation (API-110), by
-// evaluating the selector over collection_state through the live
-// apiselector; for a selector-less workspace operation (API-123), the single
-// implicit workspace target — builds the Job through apijob.New, and models the
-// accepting handler (202 + application/json + the Job body, Trace-Id echoed via
-// apihttp.WithTraceID, API-062). It then diffs the emitted status, content
-// type, echoed Trace-Id, and every pinned Job member (API-112 field names +
-// pending state) against the case's expectation.
+// driveJob drives the 202 + Job corpus case (API-111 bulk-enable) against the
+// live POST /api/v1/automations/bulk-enable handler. The selector's
+// `scope_node subtree` term is resolved against a REAL, seeded scope-node
+// tree (a site plus the screen the fixture automations are placed under) —
+// the containment comes from the handler's own inSubtreeFn
+// (store.DesiredStateRows + datamodel.BuildScopeTree.AncestorChain), not a
+// driver-modeled membership set.
+//
+// The harness clock is set to the case's own pinned created_at, so that part
+// of the Job resource is reproduced exactly. Two fields never can be: the
+// live handler mints the Job id via ulid.New() (automations.go's
+// bulkEnableExec) with no injection seam, and stamps created_by from the
+// fixed pocPrincipal constant (auth is deferred, api.go's own doc comment) —
+// neither can equal the corpus's arbitrary pinned id/created_by. Both are
+// left asserted (not loosened), so this case FAILS on exactly those two
+// fields — a confirmed, reportable divergence, not a driver defect.
 func driveJob(rep *report.Report, c corpus.Case) {
 	var in jobDriverInput
 	if err := decodeField(c.Input, &in); err != nil {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode input: %v", err))
 		return
 	}
-	var expBody jobExpectedBody
+	var expBody struct {
+		ID        string `json:"id"`
+		CreatedBy string `json:"created_by"`
+		CreatedAt string `json:"created_at"`
+		Targets   []struct {
+			TargetID string `json:"target_id"`
+		} `json:"targets"`
+	}
 	if raw, ok := c.Expected["body"].(map[string]any); ok {
 		if err := decodeField(raw, &expBody); err != nil {
 			rep.Fail(c.CaseID, contract, fmt.Sprintf("decode expected body: %v", err))
@@ -865,113 +1010,82 @@ func driveJob(rep *report.Report, c corpus.Case) {
 		}
 	}
 
-	var targetIDs []string
-	var notes []string
-	if in.Body.Selector != "" && len(in.CollectionState) > 0 {
-		ids, err := selectorMatchedTargets(in)
-		if err != nil {
-			rep.Fail(c.CaseID, contract, err.Error())
-			return
-		}
-		targetIDs = ids
-		notes = append(notes, "scope_node-subtree placement modeled as membership in the provided collection (the fixture carries no separate placement tree); the selector's label terms filter targets genuinely")
-	} else {
-		// API-123: a workspace export/delete takes no selector — its single
-		// target is the workspace itself, implicit in the request path. The
-		// workspace's own id is ambient identity a handler already knows; the
-		// driver injects it from the case's pinned target so the Job's shape and
-		// state can still be driven against the live apijob.New.
-		for _, tgt := range expBody.Targets {
-			targetIDs = append(targetIDs, tgt.TargetID)
-		}
-		notes = append(notes, "single implicit workspace target injected from the case's pinned target (API-123: no selector, target implicit in the path)")
-	}
-
 	createdAt, err := time.Parse(time.RFC3339, expBody.CreatedAt)
 	if err != nil {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("parse created_at %q: %v", expBody.CreatedAt, err))
 		return
 	}
-	job := apijob.New(expBody.ID, expBody.CreatedBy, createdAt, targetIDs)
 
-	// Model the accepting handler: 202 Accepted + the Job body, with the
-	// request's Trace-Id echoed onto the response (API-060/062).
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest(in.Method, in.Path, nil)
-	if tid := in.Headers[apihttp.TraceIDHeader]; tid != "" {
-		r.Header.Set(apihttp.TraceIDHeader, tid)
-	}
-	handler := apihttp.WithTraceID(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusAccepted)
-		_ = json.NewEncoder(w).Encode(job.Resource())
-	}))
-	handler.ServeHTTP(w, r)
-
-	gotStatus := w.Code
-	gotCT := w.Header().Get("Content-Type")
-	gotTrace := w.Header().Get(apihttp.TraceIDHeader)
-	gotBody := decodeJSONBody(w)
-
-	var diffs []report.Diff
-	if want, ok := expectInt(c, "status"); ok && gotStatus != want {
-		diffs = append(diffs, report.Diff{Field: "status", Expected: want, Actual: gotStatus})
-	}
-	if want, ok := expectString(c, "content_type"); ok && want != "" && gotCT != want {
-		diffs = append(diffs, report.Diff{Field: "content_type", Expected: want, Actual: gotCT})
-	}
-	if want, ok := expectString(c, "headers.Trace-Id"); ok && want != "" && gotTrace != want {
-		diffs = append(diffs, report.Diff{Field: "headers.Trace-Id", Expected: want, Actual: gotTrace})
-	}
-	diffs = append(diffs, bodyDiffs(c, gotBody)...)
-
-	if len(diffs) > 0 {
-		rep.Fail(c.CaseID, contract, "202 Job response diverged from the corpus expectation", diffs...)
+	h, err := newHarness(createdAt.UnixMilli())
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("newHarness: %v", err))
 		return
 	}
-	rep.Pass(c.CaseID, contract, notes...)
-}
+	defer h.close()
 
-// selectorMatchedTargets evaluates a fleet-mutating request's selector (API-110,
-// applying API-040-045's grammar as a target predicate) over its
-// collection_state and returns the matched resources' ids, sorted. Placement is
-// modeled from the fixture's own data: the collection provided to a
-// fleet-mutating request is the set already gathered under the scope the request
-// names, so a `scope_node subtree` term is satisfied by membership in that
-// collection (the fixture carries no separate id→parent tree), while the
-// selector's label terms do the genuine per-target filtering the corpus's
-// expected target set verifies.
-func selectorMatchedTargets(in jobDriverInput) ([]string, error) {
-	sel, perr := apiselector.Parse(in.Body.Selector)
-	if perr != nil {
-		return nil, fmt.Errorf("selector %q failed to parse: %v", in.Body.Selector, perr)
+	// Seed a real scope-node subtree: a site plus one screen under it, so the
+	// selector's `scope_node subtree` term resolves against the SAME tree the
+	// live inSubtreeFn reads, not a driver-modeled membership set.
+	const siteNode = "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5"
+	siteBody := map[string]any{"id": siteNode, "kind": "site", "parent_id": "01J8Z0JOBPLACEHOLDERORG01"}
+	siteGeo(siteBody)
+	if err := h.seedScopeNode(siteBody); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("seed site scope node: %v", err))
+		return
 	}
-	scopeNodes := make(map[string]bool, len(in.CollectionState))
+	screenNodes := map[string]bool{}
 	for _, row := range in.CollectionState {
-		scopeNodes[row.ScopeNode] = true
+		screenNodes[row.ScopeNode] = true
 	}
-	inSubtree := func(_ string, node string) bool { return scopeNodes[node] }
-
-	var ids []string
+	for screenID := range screenNodes {
+		if err := h.seedScopeNode(map[string]any{"id": screenID, "kind": "screen", "parent_id": siteNode}); err != nil {
+			rep.Fail(c.CaseID, contract, fmt.Sprintf("seed screen scope node %s: %v", screenID, err))
+			return
+		}
+	}
 	for _, row := range in.CollectionState {
 		labels := make(map[string]string, len(row.Labels))
 		for _, l := range row.Labels {
 			labels[l.Key] = l.Value
 		}
-		if sel.Matches(labels, row.ScopeNode, inSubtree) {
-			ids = append(ids, row.ID)
+		if err := h.seedAutomation(row.ID, row.ScopeNode, labels); err != nil {
+			rep.Fail(c.CaseID, contract, fmt.Sprintf("seed automation %s: %v", row.ID, err))
+			return
 		}
 	}
-	sort.Strings(ids)
-	return ids, nil
+
+	bodyBytes, err := json.Marshal(map[string]any{"selector": in.Body.Selector, "enabled": in.Body.Enabled})
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("marshal input.body: %v", err))
+		return
+	}
+	res := h.do(in.Method, in.Path, bodyBytes, in.Headers)
+
+	var diffs []report.Diff
+	if want, ok := expectInt(c, "status"); ok && res.status != want {
+		diffs = append(diffs, report.Diff{Field: "status", Expected: want, Actual: res.status})
+	}
+	if want, ok := expectString(c, "content_type"); ok && want != "" {
+		if got := res.header.Get("Content-Type"); got != want {
+			diffs = append(diffs, report.Diff{Field: "content_type", Expected: want, Actual: got})
+		}
+	}
+	if want, ok := expectString(c, "headers.Trace-Id"); ok && want != "" {
+		if got := res.header.Get("Trace-Id"); got != want {
+			diffs = append(diffs, report.Diff{Field: "headers.Trace-Id", Expected: want, Actual: got})
+		}
+	}
+	diffs = append(diffs, bodyDiffs(c, res.body)...)
+
+	if len(diffs) > 0 {
+		rep.Fail(c.CaseID, contract, "202 Job response diverged from the corpus expectation", diffs...)
+		return
+	}
+	rep.Pass(c.CaseID, contract)
 }
 
 // --- shared helpers ---------------------------------------------------
 
-// decodeField re-marshals a corpus case's generic map[string]any input/expected
-// (or any sub-object of it) into a concrete typed value — the driver's own
-// fields are JSON-tagged to match the frozen corpus's field names exactly, so
-// this is a lossless re-decode, not a schema translation.
 func decodeField(m map[string]any, v any) error {
 	b, err := json.Marshal(m)
 	if err != nil {
@@ -980,17 +1094,6 @@ func decodeField(m map[string]any, v any) error {
 	return json.Unmarshal(b, v)
 }
 
-// decodeJSONBody decodes an httptest.ResponseRecorder's body as a generic
-// JSON object; a decode failure yields a nil map (surfaced downstream as a
-// missing-body diff, never a panic).
-func decodeJSONBody(w *httptest.ResponseRecorder) map[string]any {
-	var body map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &body)
-	return body
-}
-
-// expectInt reads an expected top-level field as an int (JSON numbers decode
-// to float64 in a map[string]any).
 func expectInt(c corpus.Case, key string) (int, bool) {
 	v, ok := c.Expect(key)
 	if !ok {
@@ -1003,9 +1106,6 @@ func expectInt(c corpus.Case, key string) (int, bool) {
 	return int(f), true
 }
 
-// expectBool reads an expected top-level field as a bool, reporting whether
-// it was present (distinct from corpus.Case.ExpectBool, which defaults absent
-// to false rather than reporting absence).
 func expectBool(c corpus.Case, key string) (bool, bool) {
 	v, ok := c.Expect(key)
 	if !ok {
@@ -1015,8 +1115,6 @@ func expectBool(c corpus.Case, key string) (bool, bool) {
 	return b, ok
 }
 
-// expectString reads an expected top-level field as a string, reporting
-// whether it was present.
 func expectString(c corpus.Case, key string) (string, bool) {
 	v, ok := c.Expect(key)
 	if !ok {
@@ -1027,10 +1125,8 @@ func expectString(c corpus.Case, key string) (string, bool) {
 }
 
 // bodyDiffs diffs every member the corpus `expected.body` pins against the
-// emitted body. Extra members in the emission (e.g. `instance`, API-015) are
-// permitted; every pinned member MUST be reproduced exactly (the corpus is
-// the oracle — a pinned `detail` string or `current_revision` value is
-// matched verbatim, never "improved").
+// emitted body. Extra members in the emission are permitted; every pinned
+// member MUST be reproduced exactly (the corpus is the oracle).
 func bodyDiffs(c corpus.Case, got map[string]any) []report.Diff {
 	want, ok := c.Expected["body"].(map[string]any)
 	if !ok {
@@ -1039,11 +1135,70 @@ func bodyDiffs(c corpus.Case, got map[string]any) []report.Diff {
 	return memberDiffs("body", want, got)
 }
 
-// memberDiffs diffs every member the want map pins against the got map, under
-// the given field prefix (e.g. "body" or "responses[1].body"). Extra members
-// in got are permitted; every pinned member MUST be reproduced exactly — the
-// corpus is the oracle. A nil got against a non-nil want is a single
-// whole-object diff.
+// listBodyDiffs is bodyDiffs for a list-endpoint response whose corpus
+// `expected.body.items` pins only the id-projection shape (`{id: ...}`) a
+// convention-library-level driver would have produced, while the live
+// resource-list handlers (api.go's generic `list`) return each item as the
+// FULL stored row body (every column, not an id-only projection) — extra
+// per-item members are exactly as permitted as extra top-level members
+// (bodyDiffs's own rule), so `items` is compared by its ids only, in order;
+// every other top-level member (cursor, status) is still compared exactly.
+func listBodyDiffs(c corpus.Case, got map[string]any) []report.Diff {
+	want, ok := c.Expected["body"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	return listBodyDiffsRaw("body", want, got)
+}
+
+// listBodyDiffsRaw is listBodyDiffs over explicit want/got maps and an
+// explicit field prefix, for a caller (like drivePagination) diffing a
+// response nested under `responses[i].body` rather than a case's top-level
+// `expected.body`.
+func listBodyDiffsRaw(prefix string, want, got map[string]any) []report.Diff {
+	if len(want) == 0 {
+		return nil
+	}
+	if got == nil {
+		return []report.Diff{{Field: prefix, Expected: want, Actual: nil}}
+	}
+	var diffs []report.Diff
+	for k, wv := range want {
+		if k == "items" {
+			wantIDs := itemIDs(wv)
+			gotIDs := itemIDs(got["items"])
+			if !reflect.DeepEqual(wantIDs, gotIDs) {
+				diffs = append(diffs, report.Diff{Field: prefix + ".items[].id", Expected: wantIDs, Actual: gotIDs})
+			}
+			continue
+		}
+		gv, present := got[k]
+		if !present {
+			diffs = append(diffs, report.Diff{Field: prefix + "." + k, Expected: wv, Actual: "<absent>"})
+			continue
+		}
+		if !reflect.DeepEqual(gv, wv) {
+			diffs = append(diffs, report.Diff{Field: prefix + "." + k, Expected: wv, Actual: gv})
+		}
+	}
+	return diffs
+}
+
+// itemIDs extracts the ordered `id` projection from a decoded JSON `items`
+// array (each element a map that carries at least an `id` string).
+func itemIDs(v any) []string {
+	items, _ := v.([]any)
+	ids := make([]string, 0, len(items))
+	for _, it := range items {
+		if m, ok := it.(map[string]any); ok {
+			if id, ok := m["id"].(string); ok {
+				ids = append(ids, id)
+			}
+		}
+	}
+	return ids
+}
+
 func memberDiffs(prefix string, want, got map[string]any) []report.Diff {
 	if len(want) == 0 {
 		return nil
@@ -1070,11 +1225,7 @@ func corpusDir() string {
 	return filepath.Join(filepath.Dir(self), "..", "..", "corpora", "api-1")
 }
 
-// LoadCorpus loads every frozen api-1 corpus case, keyed by case_id — the
-// exact set Run itself reads. Exported so the driver's own tests can
-// independently verify every case_id in the corpus DIRECTORY is accounted for
-// (driven or pending), and so the teeth-test can load the real corpus and
-// hand RunCases a deliberately-corrupted copy of one case.
+// LoadCorpus loads every frozen api-1 corpus case, keyed by case_id.
 func LoadCorpus() (map[string]corpus.Case, error) {
 	return corpus.LoadDir(corpusDir())
 }
