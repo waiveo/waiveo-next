@@ -314,11 +314,14 @@ func (rs *resource) createExec(w http.ResponseWriter, r *http.Request, raw []byt
 // kind's own identity field (id, or a preset-batch's preset_id), when raw
 // carries a non-empty client-supplied identity, and reports whether it wrote a
 // response so the caller aborts before any store write. A resource's id is
-// exclusively server-assigned: api/1's Definitions name id as the server-minted
-// identity, external_id (API-100–104) is the sanctioned client-assigned
-// identity slot, and every Create schema api/openapi.yaml declares already
-// omits id (additionalProperties: false) — this closes the gap where the HTTP
-// handlers did not yet enforce that schema at runtime. Applying the same check
+// exclusively server-assigned (API-105): api/1's Definitions name id as the
+// server-minted identity, external_id (API-100–104) is the sanctioned
+// client-assigned identity slot, and every Create schema api/openapi.yaml
+// declares already omits id (additionalProperties: false) — this closes the gap
+// where the HTTP handlers did not yet enforce that schema at runtime. The
+// per-field `errors[]` code this writes, ID_SERVER_ASSIGNED, is api/1's own
+// (Error taxonomy) — id is an api/1-native field (API-013's "contract that owns
+// the failing field's rule"), not a data-model/1 one. Applying the same check
 // to a PATCH body (rs.patch) additionally prevents a client from overwriting a
 // resource's already-assigned id after creation, which store.Update's
 // merge-over-current-body would otherwise accept with no id-immutability check

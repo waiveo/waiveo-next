@@ -441,7 +441,7 @@ func TestExternalIDConflict(t *testing.T) {
 // non-empty "id" — whether or not it collides with an existing row — is a
 // well-defined client Problem (422 VALIDATION_FAILED with an id-field error,
 // ID_SERVER_ASSIGNED), never a masked 500 INTERNAL. A resource's id is
-// exclusively server-assigned (api/1 API-100); rejectClientSuppliedID rejects
+// exclusively server-assigned (api/1 API-105); rejectClientSuppliedID rejects
 // it upfront, before the request ever reaches the store's own identity checks.
 func TestCreateClientSuppliedIDRejectedAsClientProblem(t *testing.T) {
 	e := newEnv(t)
@@ -470,6 +470,63 @@ func TestCreateClientSuppliedIDRejectedAsClientProblem(t *testing.T) {
 	resp, _ = e.do(t, http.MethodGet, "/api/v1/scope-nodes/"+siteID, nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("original site missing after rejected create: status %d", resp.StatusCode)
+	}
+}
+
+// TestPatchClientSuppliedIDRejectedAsClientProblem: a PATCH body naming a
+// non-empty "id" is rejected the same way a create is (422 VALIDATION_FAILED,
+// ID_SERVER_ASSIGNED on field "id") — and, crucially, the row is left entirely
+// untouched: not merely its id, but every OTHER field the same patch tried to
+// change. This pins the exact danger commit 76dd3a3 named as its own motivation
+// for calling rejectClientSuppliedID from patch() too: store.Update's
+// merge-over-current-body has no id-immutability check of its own, so a patch
+// smuggling an "id" alongside a legitimate field change must never reach it —
+// the guard was ADDED to api.go's patch path but, before this test, had zero
+// test coverage of its own on that path (only the create path was pinned).
+func TestPatchClientSuppliedIDRejectedAsClientProblem(t *testing.T) {
+	e := newEnv(t)
+	siteID := e.createNode(t, siteNode(""))
+
+	patch := mustJSON(t, map[string]any{"id": "someone-elses-id", "name": "Renamed Site"})
+	resp, raw := e.do(t, http.MethodPatch, "/api/v1/scope-nodes/"+siteID, patch, map[string]string{"If-Match": `"1"`})
+	if resp.StatusCode == http.StatusInternalServerError {
+		t.Fatalf("client-supplied id on PATCH surfaced as 500 INTERNAL (body %s)", raw)
+	}
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("client-supplied-id PATCH status = %d, want 422 VALIDATION_FAILED, body %s", resp.StatusCode, raw)
+	}
+	p := assertProblem(t, resp, raw, "VALIDATION_FAILED")
+	errsAny, _ := p["errors"].([]any)
+	if len(errsAny) == 0 {
+		t.Fatalf("VALIDATION_FAILED carried no per-field errors array (body %s)", raw)
+	}
+	first, _ := errsAny[0].(map[string]any)
+	if first["field"] != "id" {
+		t.Fatalf("client-supplied-id PATCH error field = %v, want id (body %s)", first["field"], raw)
+	}
+	if first["code"] != "ID_SERVER_ASSIGNED" {
+		t.Fatalf("client-supplied-id PATCH error code = %v, want ID_SERVER_ASSIGNED (body %s)", first["code"], raw)
+	}
+
+	// The row is untouched: same id, same (never-renamed) name, same revision —
+	// the rejected patch wrote nothing, neither the smuggled id nor the
+	// legitimate name change riding alongside it.
+	resp, raw = e.do(t, http.MethodGet, "/api/v1/scope-nodes/"+siteID, nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("original site missing after rejected patch: status %d", resp.StatusCode)
+	}
+	var got datamodel.ScopeNode
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("decode site: %v (body %s)", err, raw)
+	}
+	if got.ID != siteID {
+		t.Fatalf("site id after rejected patch = %q, want unchanged %q", got.ID, siteID)
+	}
+	if got.Name != "Demo Site" {
+		t.Fatalf("site name after rejected patch = %q, want unchanged \"Demo Site\" (patch must not have applied)", got.Name)
+	}
+	if got.Revision != 1 {
+		t.Fatalf("site revision after rejected patch = %d, want unchanged 1", got.Revision)
 	}
 }
 
