@@ -10,14 +10,14 @@
         "path": "/api/v1/scope-nodes",
         "headers": { "Idempotency-Key": "3f1b1e2a-6c4d-4a9b-8f2e-9d7c6b5a4321" },
         "principal": "usr_01J8Z000000000000000000001",
-        "body": { "kind": "site", "name": "New Site" }
+        "body": { "kind": "site", "name": "New Site", "parent_id": "01J8Z0A0000000000000000000", "tz": "America/Chicago", "lat": 41.8781, "long": -87.6298 }
       },
       {
         "method": "POST",
         "path": "/api/v1/scope-nodes",
         "headers": { "Idempotency-Key": "3f1b1e2a-6c4d-4a9b-8f2e-9d7c6b5a4321" },
         "principal": "usr_01J8Z000000000000000000001",
-        "body": { "kind": "site", "name": "New Site" }
+        "body": { "kind": "site", "name": "New Site", "parent_id": "01J8Z0A0000000000000000000", "tz": "America/Chicago", "lat": 41.8781, "long": -87.6298 }
       }
     ]
   },
@@ -25,11 +25,11 @@
     "responses": [
       {
         "status": 201,
-        "body": { "id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZA", "kind": "site", "name": "New Site", "revision": 1 }
+        "body": { "id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZA", "kind": "site", "name": "New Site", "parent_id": "01J8Z0A0000000000000000000", "tz": "America/Chicago", "lat": 41.8781, "long": -87.6298, "revision": 1 }
       },
       {
         "status": 201,
-        "body": { "id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZA", "kind": "site", "name": "New Site", "revision": 1 },
+        "body": { "id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZA", "kind": "site", "name": "New Site", "parent_id": "01J8Z0A0000000000000000000", "tz": "America/Chicago", "lat": 41.8781, "long": -87.6298, "revision": 1 },
         "replayed": true
       }
     ],

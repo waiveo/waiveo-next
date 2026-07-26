@@ -50,11 +50,6 @@ var expectedFailing = map[string]string{
 		"automations list (api.go's automationsConfig.resourceType=\"automations\") scopes every cursor uniformly like every " +
 		"other resource — there is no unscoped list route in the shipped code, so the corpus's second-page request (built with " +
 		"the bare-ULID cursor) is rejected 400/CURSOR_INVALID by the live handler instead of returning page 2.",
-	"API-052-valid-idempotency-replay": "the fixture's create body is `{kind:\"site\",name:\"New Site\"}` with no tz/lat/long; " +
-		"DAT-031 requires a site to declare all three, so the live store rejects the very first request 422/VALIDATION_FAILED " +
-		"instead of creating it 201 — the Idempotency-Key fixtures were never reconciled with the site-geo-required rule.",
-	"API-053-invalid-idempotency-key-reused-different-body": "same DAT-031 site-geo-required mismatch as API-052: the first " +
-		"request in the case is rejected 422 instead of succeeding 201.",
 	"API-111-valid-bulk-enable-202-job": "created_by can never equal the corpus's arbitrary pinned value: the live handler " +
 		"stamps it from the fixed pocPrincipal constant because auth is deferred (api.go's own doc comment), and " +
 		"contracts/api-1.md's Conformance notes treat a principal as a given, opaque INPUT — this fixture pins created_by as " +

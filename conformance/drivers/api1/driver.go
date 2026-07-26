@@ -887,14 +887,24 @@ type idempotencyDriverExpected struct {
 // clock: each request in the case is replayed in sequence and diffed against
 // its own pinned expectation, plus the total create side effects.
 //
-// Both frozen API-052/053 fixtures create a `kind: site` scope node carrying
-// no tz/lat/long. DAT-031 requires a site to declare all three — a rule this
-// driver's own harness enforces for real, since it is the live store — so the
-// very first request in each case is rejected 422/VALIDATION_FAILED by the
-// live handler instead of succeeding 201, and the whole case fails from
-// there. This is a genuine, confirmed corpus-vs-code divergence: the
-// Idempotency-Key fixtures were written before (or independent of) DAT-031's
-// site-geo-required rule and have never been reconciled with it.
+// The frozen API-052/053 fixtures predate two datamodel rules this driver's
+// harness enforces for real, since it is the live store: DAT-002 (a non-org
+// scope node MUST carry a non-null parent_id) and DAT-031 (a site MUST
+// declare tz/lat/long together). Both fixtures now carry a parent_id —
+// 01J8Z0A0000000000000000000, a never-created boundary parent, valid because
+// BuildScopeTree is subtree-tolerant of a parent absent from the tree
+// (internal/datamodel/scopetree.go) — plus the same synthetic geo every other
+// site-creating case in this driver uses (siteGeo's tz/lat/long values).
+//
+// The corpus pins each case's server-minted id (…W2ZA / …W2ZB). The id
+// source, like driveJob's, is driven FROM the fixture: a closure returns the
+// case's own pinned expected.responses[0].body.id on its first call — the
+// only create either case ever executes, since API-052's second request
+// replays and API-053's second request conflicts before any write — and
+// falls through to the ordinary deterministicIDs() default on any call
+// beyond that (there should be none, for either case, but a second call
+// reusing the same id would be a silent id collision rather than a loud
+// failure).
 func driveIdempotency(rep *report.Report, c corpus.Case) {
 	var in idempotencyDriverInput
 	if err := decodeField(c.Input, &in); err != nil {
@@ -911,7 +921,22 @@ func driveIdempotency(rep *report.Report, c corpus.Case) {
 		return
 	}
 
-	h, err := newHarness(fixedNowMs, deterministicIDs())
+	def := deterministicIDs()
+	newID := def
+	if len(exp.Responses) > 0 {
+		if pinned, ok := exp.Responses[0].Body["id"].(string); ok && pinned != "" {
+			used := false
+			newID = func() string {
+				if used {
+					return def()
+				}
+				used = true
+				return pinned
+			}
+		}
+	}
+
+	h, err := newHarness(fixedNowMs, newID)
 	if err != nil {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("newHarness: %v", err))
 		return
@@ -925,6 +950,7 @@ func driveIdempotency(rep *report.Report, c corpus.Case) {
 	}
 
 	var diffs []report.Diff
+	var rawResponses [][]byte
 	for i, req := range in.Requests {
 		bodyBytes, err := json.Marshal(req.Body)
 		if err != nil {
@@ -932,6 +958,7 @@ func driveIdempotency(rep *report.Report, c corpus.Case) {
 			return
 		}
 		res := h.do(req.Method, req.Path, bodyBytes, req.Headers)
+		rawResponses = append(rawResponses, res.raw)
 
 		want := exp.Responses[i]
 		if res.status != want.Status {
@@ -943,6 +970,20 @@ func driveIdempotency(rep *report.Report, c corpus.Case) {
 			}
 		}
 		diffs = append(diffs, memberDiffs(fmt.Sprintf("responses[%d].body", i), want.Body, res.body)...)
+
+		// replayed:true is the fixture's own claim that this response was NOT
+		// freshly executed but returned verbatim from the Idempotency-Key
+		// cache (api.go's replay(), fed the exact bytes an earlier createExec
+		// captured) — so the assertion this earns is byte-for-byte equality
+		// against that earlier response, strictly stronger than the
+		// field-subset memberDiffs check above.
+		if want.Replayed {
+			if i == 0 {
+				diffs = append(diffs, report.Diff{Field: fmt.Sprintf("responses[%d].replayed", i), Expected: "a prior response in this case to replay", Actual: "responses[0] has no prior response"})
+			} else if !bytes.Equal(res.raw, rawResponses[0]) {
+				diffs = append(diffs, report.Diff{Field: fmt.Sprintf("responses[%d].body", i), Expected: string(rawResponses[0]) + " (byte-identical to responses[0], replayed:true)", Actual: string(res.raw)})
+			}
+		}
 	}
 
 	after, err := h.store.List(context.Background(), store.KindScopeNode, store.ListFilter{})
