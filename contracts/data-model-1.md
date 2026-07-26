@@ -14,6 +14,7 @@ data-model/1 defines the platform's core relational data model: the scope-node t
 ## Definitions
 
 - **ULID** — as defined in `manifest/1`: a 26-character Crockford-base32, time-sortable identifier.
+- **Canonical ULID** — a ULID (above) in the strict encoded form DAT-005a validates: exactly 26 characters, each one of the 32 UPPERCASE Crockford-base32 symbols (`0`–`9`, `A`–`Z` excluding `I`, `L`, `O`, `U`) — a lowercase letter, or any character outside that set, is not canonical — with a leading character in `0`–`7`. The leading-character bound follows from the encoding itself: 26 symbols of 5 bits each hold 130 bits behind a 128-bit value, so the first symbol carries only 3 significant bits, and a value above 7 there would overflow the representable width; the largest Canonical ULID is `7ZZZZZZZZZZZZZZZZZZZZZZZZZ`.
 - **Timestamp** — as defined in `rules/1`: an integer number of milliseconds since the Unix epoch (UTC).
 - **Scope node** — a node in this contract's own tree (Scope-node tree); the placement every resource row this contract or another contract defines carries, and the subject-placement `events/1`'s durable-event envelope carries (`events/1` EVT-012).
 - **Kind** — a scope node's own closed classification: `org`, `site`, `group`, or `screen` (Scope-node tree).
@@ -51,7 +52,7 @@ data-model/1 defines the platform's core relational data model: the scope-node t
 
 **[DAT-005]** Every row this contract defines — a scope node (Scope-node tree) and every scheduling-core row (Scheduling core: playlist, Scheduling core: schedule, Scheduling core: validity window, Scheduling core: daypart, Scheduling core: fallback, Scheduling core: preset batch) — is a `resource` in `api/1`'s own sense (`api/1` Definitions) and MUST carry `api/1`'s resource-row baseline: an `id` (ULID) unique among rows of its own type, a `revision` (integer, `api/1` API-020) for optimistic concurrency, and MAY carry an `external_id` (`api/1` API-100–104) and `labels` conforming to `api/1`'s label-selector key/value grammar (`api/1` API-042). A preset-batch row's own identity field is `preset_id`, not `id` (Scheduling core: preset batch) — the sole exception, kept for byte-exact continuity with the field name `rules/1` RUL-170 already fixes for a reference to it.
 
-**[DAT-005a]** Every row's `id` (a preset-batch's `preset_id`) MUST be a syntactically valid canonical ULID; a create or update request violating this MUST be rejected (`ROW_ID_INVALID`, Error taxonomy).
+**[DAT-005a]** Every row's `id` (a preset-batch's `preset_id`) MUST be a syntactically valid Canonical ULID; a create or update request violating this MUST be rejected (`ROW_ID_INVALID`, Error taxonomy).
 
 **[DAT-006]** Every row this contract defines other than a scope node itself MUST carry `scope_node`: the `id` of the scope node (Scope-node tree) it is placed under, in the same field name and role `relay/1`'s `site_binding` (`relay/1` REL-036), `events/1`'s durable-event envelope (`events/1` EVT-010/EVT-012), and `api/1`'s own `scope_node` selector term (`api/1` API-044) already use for this identical concept.
 
@@ -375,7 +376,7 @@ This contract has no live wire handshake of its own; `api/1`'s CRUD operations a
 |---|---|---|
 | `SCOPE_NODE_KIND_INVALID` | A scope node's `kind` is not one of `org`, `site`, `group`, `screen` (DAT-001). | no |
 | `SCOPE_NODE_NAME_INVALID` | A scope node's `name` is empty, whitespace-only, or exceeds 200 characters (DAT-001a). | no |
-| `ROW_ID_INVALID` | A row's `id` (a preset-batch's `preset_id`) is not a syntactically valid canonical ULID (DAT-005a). | no |
+| `ROW_ID_INVALID` | A row's `id` (a preset-batch's `preset_id`) is not a syntactically valid Canonical ULID (DAT-005a). | no |
 | `SCOPE_NODE_PARENT_INVALID` | A scope node's `kind` is not a permitted child of its `parent_id`'s own `kind` (DAT-003), or `parent_id` is null on a non-`org` node or non-null on an `org` node (DAT-002). | no |
 | `SCOPE_NODE_MULTIPLE_ORG` | A scope-node tree contains more than one `org`-kind node, or a node's ancestor chain reaches a second `org`-kind node (DAT-002). | no |
 | `SCOPE_NODE_GEO_REQUIRED` | A `site`-kind scope node's `tz`/`lat`/`long` is missing or null (DAT-031). | no |
