@@ -212,7 +212,7 @@ describe("resolveDefaultScopeNode — the create target from the deployment's sc
   // cold-open create that shipped broken; the resolver MUST fall through to the site.
   it("falls through to the site when no org row exists (the make dev-up seed)", () => {
     const nodes = [
-      node({ id: ULID_ROOT, kind: "site", parent_id: "01J8Z0DEMOORGANCESTORBOUND" }),
+      node({ id: ULID_ROOT, kind: "site", parent_id: "01J8Z0DEM00RGANCEST0RB0VND" }),
       node({ id: ULID_C, kind: "screen", parent_id: ULID_ROOT }),
     ];
     expect(resolveDefaultScopeNode(nodes)).toBe(ULID_ROOT);
@@ -346,7 +346,7 @@ describe("Pack page — pack-data create / edit over the api/1 conventions", () 
       // the returned set, and a screen sits under the site — exactly the seed shape.
       http.get("*/api/v1/scope-nodes", () =>
         dataPage([
-          { id: SITE, kind: "site", parent_id: "01J8Z0DEMOORGANCESTORBOUND", name: "Demo Site", revision: 1 },
+          { id: SITE, kind: "site", parent_id: "01J8Z0DEM00RGANCEST0RB0VND", name: "Demo Site", revision: 1 },
           { id: ULID_C, kind: "screen", parent_id: SITE, name: "Demo Screen", revision: 1 },
         ]),
       ),
@@ -397,9 +397,9 @@ describe("Pack page — pack-data create / edit over the api/1 conventions", () 
         // to the unfiltered walk it would additionally drag in the screen — the very
         // rows the bounded query exists to avoid fetching.
         return selector === "kind in (org,site)"
-          ? dataPage([{ id: SITE, kind: "site", parent_id: "01J8Z0DEMOORGANCESTORBOUND", name: "Demo Site", revision: 1 }])
+          ? dataPage([{ id: SITE, kind: "site", parent_id: "01J8Z0DEM00RGANCEST0RB0VND", name: "Demo Site", revision: 1 }])
           : dataPage([
-              { id: SITE, kind: "site", parent_id: "01J8Z0DEMOORGANCESTORBOUND", name: "Demo Site", revision: 1 },
+              { id: SITE, kind: "site", parent_id: "01J8Z0DEM00RGANCEST0RB0VND", name: "Demo Site", revision: 1 },
               { id: ULID_C, kind: "screen", parent_id: SITE, name: "Demo Screen", revision: 1 },
             ]);
       }),
