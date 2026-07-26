@@ -82,13 +82,13 @@ func TestPushBatchMarshalsRel090Shape(t *testing.T) {
 	batch := PushBatch{
 		Entries: []Entry{
 			{
-				Seq:    1001,
-				Schema: SchemaAutomationRun,
+				Seq:     1001,
+				Schema:  SchemaAutomationRun,
 				Payload: json.RawMessage(`{"rule_id":"01J8Z3K4N5P6Q7R8S9T0V1W2Z1","rule_revision":4,"mode_disposition":"ran"}`),
 			},
 			{
-				Seq:    1002,
-				Schema: SchemaContentPlayed,
+				Seq:     1002,
+				Schema:  SchemaContentPlayed,
 				Payload: json.RawMessage(`{"asset_ref":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85","screen_id":"01J8Z3K4N5P6Q7R8S9T0V1W2X6"}`),
 			},
 		},
@@ -147,8 +147,8 @@ func TestPushBatchLossMarkersEmptyStillPresent(t *testing.T) {
 	batch := PushBatch{
 		Entries: []Entry{
 			{
-				Seq:    2002,
-				Schema: SchemaDeviceHeartbeat,
+				Seq:     2002,
+				Schema:  SchemaDeviceHeartbeat,
 				Payload: json.RawMessage(`{"device_id":"01J8Z3K4N5P6Q7R8S9T0V1W2YA","power_state":"on","app_state":"app","now_playing_content_id":"01J8Z3K4N5P6Q7R8S9T0V1W2X6"}`),
 			},
 		},

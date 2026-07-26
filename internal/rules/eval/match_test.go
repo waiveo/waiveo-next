@@ -119,9 +119,11 @@ func (r fixtureRegistryFromCorpus) SemanticGroups(deviceClass, state string) []s
 	}
 	return out
 }
-func (r fixtureRegistryFromCorpus) AttributeType(deviceClass, attr string) registry.ValueType { return registry.Unknown }
-func (r fixtureRegistryFromCorpus) ChangeEmission(deviceClass, attr string) string             { return "" }
-func (r fixtureRegistryFromCorpus) CommandExists(deviceClass, command string) bool             { return false }
+func (r fixtureRegistryFromCorpus) AttributeType(deviceClass, attr string) registry.ValueType {
+	return registry.Unknown
+}
+func (r fixtureRegistryFromCorpus) ChangeEmission(deviceClass, attr string) string { return "" }
+func (r fixtureRegistryFromCorpus) CommandExists(deviceClass, command string) bool { return false }
 
 var _ registry.Registry = fixtureRegistryFromCorpus{}
 

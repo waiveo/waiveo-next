@@ -140,9 +140,9 @@ func TestEvaluate_Round(t *testing.T) {
 		raw  string
 		want float64
 	}{
-		{`{"expr":"2.5 | round"}`, 3},        // half rounds up toward +inf
-		{`{"expr":"-2.5 | round"}`, -2},      // ties toward +inf
-		{`{"expr":"2.4 | round"}`, 2},        //
+		{`{"expr":"2.5 | round"}`, 3},   // half rounds up toward +inf
+		{`{"expr":"-2.5 | round"}`, -2}, // ties toward +inf
+		{`{"expr":"2.4 | round"}`, 2},   //
 		{`{"expr":"2.345 | round(2)"}`, 2.35},
 		{`{"expr":"1.244 | round(2)"}`, 1.24},
 	}

@@ -325,8 +325,8 @@ type rul101Corpus struct {
 			Conditions []json.RawMessage `json:"conditions"`
 		} `json:"rule"`
 		Evaluations []struct {
-			ID              string `json:"id"`
-			PoweredOn       bool   `json:"powered_on"`
+			ID               string `json:"id"`
+			PoweredOn        bool   `json:"powered_on"`
 			OtherEntityState string `json:"other_entity_state"`
 		} `json:"evaluations"`
 	} `json:"input"`

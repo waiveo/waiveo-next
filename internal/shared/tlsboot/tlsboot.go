@@ -106,8 +106,8 @@ func GenSelfSigned() (certPEM, keyPEM []byte) {
 		Subject: pkix.Name{
 			CommonName: "waiveo-relay",
 		},
-		NotBefore:             now.Add(-time.Hour),
-		NotAfter:              now.AddDate(10, 0, 0),
+		NotBefore: now.Add(-time.Hour),
+		NotAfter:  now.AddDate(10, 0, 0),
 		// CA-shaped on purpose: the Roku TLS stack (firmware 15.2.4, first-photon
 		// hardware run) refuses a CA:FALSE self-signed cert as its own trust
 		// anchor with "unsuitable certificate purpose" — it does not implement

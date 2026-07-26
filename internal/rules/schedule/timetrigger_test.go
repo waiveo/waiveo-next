@@ -34,8 +34,8 @@ func TestTimeTriggerDailyFire(t *testing.T) {
 		t.Fatalf("NewTimeTrigger: %v", err)
 	}
 
-	from := atMillis(tz, 2026, 6, 1, 8, 0, 0)  // before the day-1 fire
-	to := atMillis(tz, 2026, 6, 3, 10, 0, 0)   // after the day-3 fire
+	from := atMillis(tz, 2026, 6, 1, 8, 0, 0) // before the day-1 fire
+	to := atMillis(tz, 2026, 6, 3, 10, 0, 0)  // after the day-3 fire
 	want := []int64{
 		atMillis(tz, 2026, 6, 1, 9, 0, 0),
 		atMillis(tz, 2026, 6, 2, 9, 0, 0),

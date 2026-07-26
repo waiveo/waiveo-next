@@ -12,10 +12,10 @@ import (
 // fixture ULIDs for the generation-swap cases (contracts/rules-1.md corpus
 // convention: fixture ULIDs / 192.0.2.0/24).
 const (
-	ruleA    = "01J8Z3K4N5P6Q7R8S9T0V1RULEA"
-	ruleB    = "01J8Z3K4N5P6Q7R8S9T0V1RULEB"
-	entityA  = "01J8Z3K4N5P6Q7R8S9T0V1ENTA"
-	entityB  = "01J8Z3K4N5P6Q7R8S9T0V1ENTB"
+	ruleA   = "01J8Z3K4N5P6Q7R8S9T0V1RULEA"
+	ruleB   = "01J8Z3K4N5P6Q7R8S9T0V1RULEB"
+	entityA = "01J8Z3K4N5P6Q7R8S9T0V1ENTA"
+	entityB = "01J8Z3K4N5P6Q7R8S9T0V1ENTB"
 )
 
 // delayRule builds a rule that on a state trigger (off->on of entityID) runs a

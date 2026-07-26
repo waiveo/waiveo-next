@@ -206,16 +206,16 @@ func TestValidAcceptsCanonical(t *testing.T) {
 // would overflow the 48-bit timestamp past the 128-bit value width).
 func TestValidRejectsMalformed(t *testing.T) {
 	for _, s := range []string{
-		"",                              // empty
-		"01J8Z3K4N5P6Q7R8S9T0V1W2Z",     // 25 chars, too short
-		"01J8Z3K4N5P6Q7R8S9T0V1W2Z11",   // 27 chars, too long
-		"01J8Z3K4N5P6Q7R8S9T0V1W2ZI",    // I is excluded from Crockford
-		"01J8Z3K4N5P6Q7R8S9T0V1W2ZL",    // L is excluded from Crockford
-		"01j8z3k4n5p6q7r8s9t0v1w2zf",    // lowercase is non-canonical
-		"8ZZZZZZZZZZZZZZZZZZZZZZZZZ",     // leading 8 overflows the timestamp
-		"ZZZZZZZZZZZZZZZZZZZZZZZZZZ",     // leading Z overflows the timestamp
-		"01J8Z3K4N5P6Q7R8S9T0V1W2Z-",    // '-' is not a Crockford symbol
-		"not a cursor!!",                // clearly not a ULID
+		"",                            // empty
+		"01J8Z3K4N5P6Q7R8S9T0V1W2Z",   // 25 chars, too short
+		"01J8Z3K4N5P6Q7R8S9T0V1W2Z11", // 27 chars, too long
+		"01J8Z3K4N5P6Q7R8S9T0V1W2ZI",  // I is excluded from Crockford
+		"01J8Z3K4N5P6Q7R8S9T0V1W2ZL",  // L is excluded from Crockford
+		"01j8z3k4n5p6q7r8s9t0v1w2zf",  // lowercase is non-canonical
+		"8ZZZZZZZZZZZZZZZZZZZZZZZZZ",  // leading 8 overflows the timestamp
+		"ZZZZZZZZZZZZZZZZZZZZZZZZZZ",  // leading Z overflows the timestamp
+		"01J8Z3K4N5P6Q7R8S9T0V1W2Z-",  // '-' is not a Crockford symbol
+		"not a cursor!!",              // clearly not a ULID
 	} {
 		if Valid(s) {
 			t.Errorf("Valid(%q) = true, want false (not a canonical ULID)", s)
