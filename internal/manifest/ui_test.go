@@ -7,8 +7,8 @@ import (
 
 // man020File is the frozen oracle for a full-featured manifest exercising
 // capabilities, egress, resources, a device contribution, a playable
-// contribution, and automation/action contributions — the fixture Task 4's UI/
-// device/playable tests extend via mutation (per the plan's Step 1).
+// contribution, and automation/action contributions — the fixture the UI/
+// device/playable tests extend via mutation.
 var man020File = filepath.Join("..", "..", "conformance", "corpora", "manifest-1", "MAN-020-valid-full-featured.json")
 
 // TestValidateFullFeaturedClean pins the full-featured fixture's own baseline:

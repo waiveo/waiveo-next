@@ -13,7 +13,7 @@ import (
 // REL-090's telemetry.push (entries + a non-empty loss_markers) and
 // telemetry.ack, and REL-094's telemetry.push (a single surviving entry with
 // an explicitly empty loss_markers array). Values are wired from the corpus
-// documents themselves, not invented, per the plan's oracle instruction.
+// documents themselves, not invented — the corpus is the oracle.
 
 const (
 	rel090Corpus = "../../../conformance/corpora/relay-1/REL-090-valid-telemetry-overflow-loss-marker.json"
