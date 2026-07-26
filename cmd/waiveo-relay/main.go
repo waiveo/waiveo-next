@@ -29,7 +29,9 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -63,6 +65,28 @@ import (
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
+
+// buildVersion/buildChannel are this binary's channel-index/1 identity
+// (contracts/channel-index.md): the exact `{version}` entry, on the exact
+// `channel` (CHI-040), that scripts/install-from-channel-index.sh resolved
+// and installed this binary from. Both default to "dev" for an ordinary
+// `go build`/`go run` (Wave-1 first-photon's own dev/CI binary keeps today's
+// identity-free behavior byte-for-byte); a released build overrides both via
+// -ldflags at build time -- see scripts/install-from-channel-index.sh's own
+// header comment for the exact invocation this mirrors.
+var (
+	buildVersion = "dev"
+	buildChannel = "dev"
+)
+
+// printVersion writes this binary's channel-index/1 identity
+// (buildVersion/buildChannel) to w in the one line both the --version flag
+// and the boot-time startup log (main, below) print, so a deployed unit's
+// answer to "what did I install" reads identically whether taken from a
+// live process's stdout or its own log.
+func printVersion(w io.Writer, version, channel string) {
+	fmt.Fprintf(w, "waiveo-relay %s (channel %s)\n", version, channel)
+}
 
 // config is the relay's deployment-time addressing. Defaults keep the Wave-1
 // loopback dev/CI behavior byte-identical; the on-box deployment overrides
@@ -208,6 +232,14 @@ const (
 )
 
 func main() {
+	versionFlag := flag.Bool("version", false, "print the relay's channel-index/1 build identity (version/channel) and exit")
+	flag.Parse()
+	if *versionFlag {
+		printVersion(os.Stdout, buildVersion, buildChannel)
+		return
+	}
+	log.Printf("waiveo-relay starting: version=%s channel=%s", buildVersion, buildChannel)
+
 	cfg, err := loadConfig(os.Getenv)
 	if err != nil {
 		log.Fatalf("waiveo-relay: config: %v", err)
