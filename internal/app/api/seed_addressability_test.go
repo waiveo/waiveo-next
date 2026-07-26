@@ -10,8 +10,10 @@ package api_test
 // every seeded row of that kind.
 //
 // Before DAT-005a's own datamodel.ValidateRows/BuildScopeTree enforcement, the
-// demo seed's ids were NOT valid ULIDs (6 of its 8 constants carried a
-// disallowed Crockford character), so this exact test — run against those old
+// demo seed's ids were NOT valid ULIDs (7 of its 8 constants carried a
+// disallowed Crockford character; 6 tripped SeedDemo — the seventh, the org
+// ancestor, is referenced but never inserted), so this exact test — run
+// against those old
 // constants — fails at the very first line, SeedDemo itself: see this file's
 // sibling commit message for the quoted pre-fix failure.
 

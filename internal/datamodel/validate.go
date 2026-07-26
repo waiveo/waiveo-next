@@ -189,7 +189,7 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 // CheckRowID enforces DAT-005a: a row's own identity field — id for every kind
 // but preset-batch, whose identity field is preset_id (DAT-005's byte-exact
 // exception) — MUST be a syntactically valid canonical ULID. It is the one
-// helper shared by every ValidateRows decode loop below, by BuildScopeTree's
+// helper shared by every ValidateRows decode loop in this file, by BuildScopeTree's
 // per-node loop (scopetree.go), and by the store package's own post-write
 // check for automations (internal/app/store/scheduling.go) — automations sit
 // outside RawRows/RowSet entirely (they are gated by the rules compiler, not
