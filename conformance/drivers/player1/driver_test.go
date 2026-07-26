@@ -148,6 +148,110 @@ func TestPlayer1CorpusFullyAccountedFor(t *testing.T) {
 	}
 }
 
+// TestPlayer1DriverPLY057PendingWhenTargetNotCapable proves Run's
+// target-capability gate (driver.go's commitmentMismatchCapable/
+// pendPLY057NotCapable) end to end against a REAL in-process relay: a target
+// that completes every pairing attempt but reports itself unable to detect a
+// commitment mismatch (player1.CommitmentMismatchCapable
+// .SupportsCommitmentMismatchDetection()==false — the exact shape
+// RemoteECPPlayerTarget's relay-observed mode reports, see remotetarget.go's
+// own doc) drives PLY-050/055 plus every Phase-2/3 case as usual, but records
+// PLY-057 PENDING instead of a guaranteed-wrong FAIL.
+func TestPlayer1DriverPLY057PendingWhenTargetNotCapable(t *testing.T) {
+	relay, err := player1.NewInProcessRelay()
+	if err != nil {
+		t.Fatalf("NewInProcessRelay: %v", err)
+	}
+	defer relay.Close()
+
+	rep := player1.Run(notCapableTarget{}, relay)
+	t.Logf("\n%s", rep.String())
+
+	wantPending := []string{"PLY-057-invalid-oob-authentication-mismatch-rejected"}
+	if !reflect.DeepEqual(rep.PendingIDs(), wantPending) {
+		t.Errorf("pending set = %v, want %v", rep.PendingIDs(), wantPending)
+	}
+	wantDriven := []string{
+		"PLY-050-valid-pairing-happy-path-tofu-same-network",
+		"PLY-055-valid-cross-vlan-manual-entry-pairing-code-commitment",
+		"PLY-101-valid-lease-preemption-interrupt-now",
+		"PLY-130-valid-server-moved-relocate-never-wipe",
+		"PLY-136-valid-token-revoked-reconnect-clears-token-only",
+		"PLY-155-valid-power-schedule-interaction",
+	}
+	if !reflect.DeepEqual(rep.Driven(), wantDriven) {
+		t.Errorf("driven set = %v, want %v", rep.Driven(), wantDriven)
+	}
+	if got := rep.Failed(); len(got) != 0 {
+		t.Errorf("no case should FAIL against an always-completing target: %v", got)
+	}
+}
+
+// notCapableTarget wraps the REAL VirtualPlayerTarget (so PLY-050/055 still
+// genuinely redeem against the live relay, exactly as TestPlayer1DriverGreen
+// drives them) but reports itself unable to distinguish an OOB
+// commitment-mismatch rejection from an ordinary successful pairing
+// (player1.CommitmentMismatchCapable) — the exact shape RemoteECPPlayerTarget's
+// relay-observed mode reports (see remotetarget.go's own doc). It exists to
+// prove TestPlayer1DriverPLY057PendingWhenTargetNotCapable's PENDING gate
+// without needing a real device.
+type notCapableTarget struct {
+	player1.VirtualPlayerTarget
+}
+
+func (notCapableTarget) Name() string                              { return "virtualplayer-not-capable-fake" }
+func (notCapableTarget) SupportsCommitmentMismatchDetection() bool { return false }
+
+// TestPlayer1DriverAgainstRealRokuTarget drives the ENTIRE player/1 corpus
+// against an actual on-LAN player-v3 device instead of VirtualPlayerTarget —
+// the remote-target mode WAIVEO_CONF_PLAYER_TARGET=roku enables (see
+// player1.RemoteEnvFromEnv's own doc for the full env var list, and
+// remotetarget.go's package doc for per-case remote-driveability). CI never
+// sets WAIVEO_CONF_PLAYER_TARGET (see .github/workflows/pr-tier.yml and
+// merge-tier.yml's plain `go test ./conformance/drivers/...`), so this test
+// SKIPs there — TestPlayer1DriverGreen above (hardcoded to
+// VirtualPlayerTarget, independent of any env var) is what CI's PASS/PENDING
+// set is actually pinned to. This test is the operator-driven path onto real
+// hardware: point WAIVEO_CONF_PLAYER_ROKU_HOST/WAIVEO_CONF_RELAY_DIAL_HOST at
+// a signage Roku on the same LAN as the box running `go test` and rerun it.
+func TestPlayer1DriverAgainstRealRokuTarget(t *testing.T) {
+	env, enabled, err := player1.RemoteEnvFromEnv()
+	if err != nil {
+		t.Fatalf("RemoteEnvFromEnv: %v", err)
+	}
+	if !enabled {
+		t.Skip("WAIVEO_CONF_PLAYER_TARGET != \"roku\": remote-target mode not requested — this is the CI-default path (nothing here runs in CI)")
+	}
+
+	relay, err := player1.NewInProcessRelay(
+		player1.WithBindHost(env.RelayBindHost),
+		player1.WithDialHost(env.RelayDialHost),
+	)
+	if err != nil {
+		t.Fatalf("NewInProcessRelay(bind=%q, dial=%q): %v", env.RelayBindHost, env.RelayDialHost, err)
+	}
+	defer relay.Close()
+
+	target := player1.NewRemoteECPPlayerTarget(env.Target, relay)
+	rep := player1.Run(target, relay)
+	t.Logf("\n%s", rep.String())
+
+	if got := rep.Failed(); len(got) != 0 {
+		t.Errorf("driven case(s) FAILED against the real device %q: %v", env.Target.Host, got)
+	}
+
+	var wantPending []string
+	if !target.SupportsCommitmentMismatchDetection() {
+		// Relay-observed mode (WAIVEO_CONF_PLAYER_ROKU_DEBUG_PORT=off): PLY-057
+		// cannot be distinguished from a successful pairing over the wire alone
+		// — see player1.CommitmentMismatchCapable's own doc.
+		wantPending = []string{"PLY-057-invalid-oob-authentication-mismatch-rejected"}
+	}
+	if !reflect.DeepEqual(rep.PendingIDs(), wantPending) {
+		t.Errorf("pending set = %v, want %v", rep.PendingIDs(), wantPending)
+	}
+}
+
 func caseFailed(rep report.Report, short string) bool {
 	for _, c := range rep.Cases {
 		if len(c.CaseID) >= len(short) && c.CaseID[:len(short)] == short {

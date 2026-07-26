@@ -9,23 +9,32 @@
 // against each case's own declared `expected` block.
 //
 // The target is pluggable ON PURPOSE for the pairing subset (§10 "drivers
-// take ANY target, diff behavior"): the first-photon target is the in-process
-// virtual player (VirtualPlayerTarget, wrapping internal/virtualplayer.Photon),
-// and the SAME driver validates a real BrightScript player in a later wave by
-// plugging in a different PlayerTarget — the corpus, the assertions, and the
-// oracle stay identical; only the client changes. Task 5's four Phase-2/3
-// cases are deliberately driven at the decision-function level rather than
-// through PlayerTarget (see each drivePLY10*/drivePLY136/drivePLY155's own
-// doc): a BrightScript player-v3 exercising these same behaviors on-device is
-// a deliberately deferred hardware target (this plan proves the player/1
-// SEMANTICS in software); each Phase-2/3 case's Pass note also points at the
-// package's own live end-to-end test proving the identical function wired to
-// a real relay over the wire.
+// take ANY target, diff behavior"): the first-photon (and CI-default) target
+// is the in-process virtual player (VirtualPlayerTarget, wrapping
+// internal/virtualplayer.Photon), and the SAME driver validates a real
+// BrightScript player-v3 device by plugging in RemoteECPPlayerTarget (see
+// remotetarget.go) instead — the corpus, the assertions, and the oracle stay
+// identical; only the client changes. RemoteECPPlayerTarget is env-gated
+// (RemoteEnvFromEnv, WAIVEO_CONF_PLAYER_TARGET=roku) and drives an actual
+// on-LAN device over its ECP launch deep-link; without the env, Run's
+// behavior — including which cases end up PENDING — is completely unchanged.
+// Task 5's four Phase-2/3 cases are deliberately driven at the
+// decision-function level rather than through PlayerTarget (see each
+// drivePLY10*/drivePLY136/drivePLY155's own doc): a BrightScript player-v3
+// exercising these same behaviors on-device is a deliberately deferred
+// hardware target (this plan proves the player/1 SEMANTICS in software);
+// each Phase-2/3 case's Pass note also points at the package's own live
+// end-to-end test proving the identical function wired to a real relay over
+// the wire.
 //
-// §10 "no silent caps": Run drives every case in the frozen corpus — nothing
-// is PENDING. TestPlayer1CorpusFullyAccountedFor independently re-derives the
-// corpus directory's own case set and fails loudly if a future corpus
-// addition is ever left untriaged.
+// §10 "no silent caps": against the CI-default VirtualPlayerTarget, Run
+// drives every case in the frozen corpus — nothing is PENDING.
+// TestPlayer1CorpusFullyAccountedFor independently re-derives the corpus
+// directory's own case set and fails loudly if a future corpus addition is
+// ever left untriaged. Against a target that reports itself unable to
+// observe a commitment mismatch (CommitmentMismatchCapable, e.g.
+// RemoteECPPlayerTarget's relay-observed mode), PLY-057 alone is recorded
+// PENDING with a stated reason instead — see pendPLY057NotCapable.
 package player1
 
 import (
@@ -130,7 +139,11 @@ func Run(target PlayerTarget, relay Relay) report.Report {
 	}
 
 	drivePLY055(&rep, target, relay, cases)
-	drivePLY057(&rep, target, relay, cases)
+	if commitmentMismatchCapable(target) {
+		drivePLY057(&rep, target, relay, cases)
+	} else {
+		pendPLY057NotCapable(&rep, target, cases)
+	}
 	drivePLY050(&rep, target, relay, cases)
 
 	// Phase-2/3 cases (Task 5): each drives the exact committed decision
@@ -637,6 +650,64 @@ func drivePLY055(rep *report.Report, target PlayerTarget, relay Relay, cases map
 		fmt.Sprintf("screen_id value is relay-minted, not the corpus fixture %q — asserted present, not byte-equal.", c.ExpectString("screen_id")),
 		"poll_continues_until_redeemed: the first-photon relay redeems synchronously (no pending→redeemed poll loop in the REST subset) — the redeemed terminal state is observed, the multi-poll transit is not.",
 		"trust_anchor_persisted / trust_outcome=commitment_verified: the virtual player pins in-process (TLS VerifyConnection); on-disk persistence is not observable from the wire, but the commitment check that gates it is (commitment_match).")
+}
+
+// CommitmentMismatchCapable is implemented by a PlayerTarget that can
+// distinguish a client-local OOB fingerprint-commitment-mismatch rejection
+// (PairResult.CommitmentMismatch, PLY-057) from an ordinary successful
+// pairing. VirtualPlayerTarget makes this distinction BY CONSTRUCTION — its
+// TLS VerifyConnection callback IS the commitment check, so a mismatch never
+// even completes a connection the relay's own recorder can see (see
+// virtualplayer.pinnedTLSConfig's own doc) — and so does not need to
+// implement this interface at all: a target Run cannot type-assert to
+// CommitmentMismatchCapable is simply assumed capable, which is exactly
+// VirtualPlayerTarget's (and the test-only brokenNoPinTarget's) existing,
+// unchanged behavior.
+//
+// A target that genuinely cannot make this distinction implements it
+// returning false. RemoteECPPlayerTarget in its relay-observed mode (no
+// debug console wired) is the concrete example: see its own doc for why the
+// relay's wire view alone (Relay.PairCallCount/PairResponses) is IDENTICAL
+// for a correct and a commitment-mismatched pairing code on real player-v3
+// hardware — the mismatch is detected entirely inside the device, AFTER a
+// bootstrap POST that already completed with TLS verification disabled
+// (player-v3/source/Pairing.brs). Run then records PLY-057 PENDING with a
+// reason instead of driving it to a guaranteed-wrong FAIL (§10 "no silent
+// caps": a case a target genuinely cannot exercise gets a stated PENDING,
+// never a silently-skipped or falsely-failing one).
+type CommitmentMismatchCapable interface {
+	SupportsCommitmentMismatchDetection() bool
+}
+
+// commitmentMismatchCapable reports whether target can distinguish a
+// commitment-mismatch rejection from a successful pairing (see
+// CommitmentMismatchCapable's own doc). A target that does not implement the
+// interface is assumed capable, preserving VirtualPlayerTarget's and
+// brokenNoPinTarget's existing behavior (PLY-057 always driven against them)
+// exactly.
+func commitmentMismatchCapable(target PlayerTarget) bool {
+	c, ok := target.(CommitmentMismatchCapable)
+	if !ok {
+		return true
+	}
+	return c.SupportsCommitmentMismatchDetection()
+}
+
+// pendPLY057NotCapable records PLY-057 PENDING for a target that reported
+// itself unable to distinguish a commitment-mismatch rejection from an
+// ordinary successful pairing (CommitmentMismatchCapable.
+// SupportsCommitmentMismatchDetection() == false) — see that interface's own
+// doc for why driving PLY-057 against such a target would either hang or
+// falsely FAIL rather than exercise anything meaningful.
+func pendPLY057NotCapable(rep *report.Report, target PlayerTarget, cases map[string]corpus.Case) {
+	c, ok := corpus.ByID(cases, "PLY-057")
+	if !ok {
+		rep.Fail("PLY-057", contract, "case not found in frozen corpus")
+		return
+	}
+	rep.Pending(c.CaseID, contract, fmt.Sprintf(
+		"target %q reports SupportsCommitmentMismatchDetection()=false: it cannot observe a client-local OOB commitment-mismatch rejection over the wire it has access to. See RemoteECPPlayerTarget's own doc — in relay-observed mode, the relay redeems a commitment-mismatched pairing code identically to a correct one (player-v3's bootstrap POST completes with TLS verification disabled, and the mismatch is detected locally, after the fact, inside the device); wire a debug-console reader (RemoteECPPlayerTarget's default mode) to drive this case remotely instead.",
+		target.Name()))
 }
 
 // drivePLY057 drives the out-of-band commitment-mismatch MITM negative: a

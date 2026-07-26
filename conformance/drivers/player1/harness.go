@@ -111,28 +111,78 @@ func (p *pairRecorder) snapshot() (int, [][]byte, [][]byte) {
 	return p.count, append([][]byte(nil), p.reqs...), append([][]byte(nil), p.resps...)
 }
 
+// InProcessRelayOption configures NewInProcessRelay. The zero value of every
+// option preserves today's loopback-only behavior (bind and dial both
+// "127.0.0.1", exactly what every existing driver test uses) — see
+// WithBindHost/WithDialHost's own doc for when a genuinely remote (on-LAN)
+// player device needs something else.
+type InProcessRelayOption func(*inProcessRelayConfig)
+
+// inProcessRelayConfig is InProcessRelayOption's target — unexported, so the
+// zero value (both hosts empty) is only ever observed inside NewInProcessRelay
+// itself, which fills in the "127.0.0.1"/bindHost defaults before use.
+type inProcessRelayConfig struct {
+	bindHost string
+	dialHost string
+}
+
+// WithBindHost overrides the interface the in-process feeder+relay TCP
+// listeners bind to (default "127.0.0.1", loopback-only). An actual on-LAN
+// player device (RemoteECPPlayerTarget) cannot reach a loopback-bound
+// listener, so remote-target mode binds "0.0.0.0" (every interface) instead.
+func WithBindHost(host string) InProcessRelayOption {
+	return func(c *inProcessRelayConfig) { c.bindHost = host }
+}
+
+// WithDialHost overrides the host embedded into a formed pairing code's dial
+// address and the feeder's own content-origin base URL (the address a player
+// actually connects to) — which may differ from bindHost, e.g. bind
+// "0.0.0.0" to accept from any interface but dial the box's one specific
+// LAN IP a Roku on the same subnet can reach. Defaults to bindHost when
+// unset, which is correct both for the loopback-only default (bindHost IS
+// dialable) and for a bindHost that is itself already a concrete dialable
+// address.
+func WithDialHost(host string) InProcessRelayOption {
+	return func(c *inProcessRelayConfig) { c.dialHost = host }
+}
+
 // NewInProcessRelay boots the feeder+relay stack and returns a ready Relay.
-// The caller MUST Close it.
-func NewInProcessRelay() (*InProcessRelay, error) {
+// The caller MUST Close it. With no options this is loopback-only, exactly
+// as before remote-target support existed; WithBindHost/WithDialHost are
+// what let RemoteECPPlayerTarget's own driver test point this same stack at
+// an actual on-LAN device instead of the in-process VirtualPlayerTarget.
+func NewInProcessRelay(opts ...InProcessRelayOption) (*InProcessRelay, error) {
+	cfg := inProcessRelayConfig{bindHost: "127.0.0.1"}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	if cfg.dialHost == "" {
+		cfg.dialHost = cfg.bindHost
+	}
+
 	r := &InProcessRelay{rec: &pairRecorder{}}
 
-	feederBaseURL, cleanupFeeder, err := bootFeeder()
+	feederBaseURL, cleanupFeeder, err := bootFeeder(cfg.bindHost, cfg.dialHost)
 	if err != nil {
 		return nil, fmt.Errorf("player1: boot feeder: %w", err)
 	}
 	r.closeFns = append(r.closeFns, cleanupFeeder)
 
-	if err := r.bootRelay(feederBaseURL); err != nil {
+	if err := r.bootRelay(feederBaseURL, cfg.bindHost, cfg.dialHost); err != nil {
 		r.Close()
 		return nil, fmt.Errorf("player1: boot relay: %w", err)
 	}
 	return r, nil
 }
 
-// bootFeeder boots an in-process feeder over a real loopback TLS listener —
-// the content origin a player later fetches from DIRECT (PLY-084), so it
-// needs a concrete dialable address, not an httptest fake transport.
-func bootFeeder() (baseURL string, cleanup func(), err error) {
+// bootFeeder boots an in-process feeder over a real TLS listener bound to
+// bindHost — the content origin a player later fetches from DIRECT
+// (PLY-084), so it needs a concrete dialable address, not an httptest fake
+// transport. The returned baseURL (and so every content-origin URL a formed
+// Lease ever carries) is composed from dialHost, not bindHost, so a remote
+// player dials an address it can actually reach even when bindHost is the
+// unroutable wildcard "0.0.0.0".
+func bootFeeder(bindHost, dialHost string) (baseURL string, cleanup func(), err error) {
 	dir, err := os.MkdirTemp("", "player1-driver-feeder-*")
 	if err != nil {
 		return "", nil, fmt.Errorf("os.MkdirTemp: %w", err)
@@ -143,12 +193,18 @@ func bootFeeder() (baseURL string, cleanup func(), err error) {
 		return "", nil, fmt.Errorf("feedersigning.LoadOrCreate: %w", err)
 	}
 
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	lis, err := net.Listen("tcp", net.JoinHostPort(bindHost, "0"))
 	if err != nil {
 		_ = os.RemoveAll(dir)
 		return "", nil, fmt.Errorf("net.Listen: %w", err)
 	}
-	baseURL = "https://" + lis.Addr().String()
+	_, listenPort, err := net.SplitHostPort(lis.Addr().String())
+	if err != nil {
+		_ = lis.Close()
+		_ = os.RemoveAll(dir)
+		return "", nil, fmt.Errorf("net.SplitHostPort(%q): %w", lis.Addr().String(), err)
+	}
+	baseURL = "https://" + net.JoinHostPort(dialHost, listenPort)
 
 	img := []byte("player1-conformance-driver-image-bytes")
 	contentStore := origin.New()
@@ -193,9 +249,11 @@ func bootFeeder() (baseURL string, cleanup func(), err error) {
 }
 
 // bootRelay enrolls a fresh relay against feederBaseURL, pulls+verifies its
-// desired state, and serves player/1 over its own loopback TLS listener with
-// the /player/v1/pair recorder wired in.
-func (r *InProcessRelay) bootRelay(feederBaseURL string) error {
+// desired state, and serves player/1 over its own TLS listener (bound to
+// bindHost) with the /player/v1/pair recorder wired in. The Relay's
+// BaseURL/host/port a formed pairing code dials are composed from dialHost,
+// not bindHost — see bootFeeder's own doc for why the two can differ.
+func (r *InProcessRelay) bootRelay(feederBaseURL, bindHost, dialHost string) error {
 	store, err := identity.Open(":memory:")
 	if err != nil {
 		return fmt.Errorf("identity.Open: %w", err)
@@ -255,7 +313,7 @@ func (r *InProcessRelay) bootRelay(feederBaseURL string) error {
 		rec.record(reqBody, cw.body.Bytes())
 	})
 
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	lis, err := net.Listen("tcp", net.JoinHostPort(bindHost, "0"))
 	if err != nil {
 		return fmt.Errorf("net.Listen: %w", err)
 	}
@@ -267,7 +325,7 @@ func (r *InProcessRelay) bootRelay(feederBaseURL string) error {
 	go func() { _ = srv.ServeTLS(lis, "", "") }()
 	r.closeFns = append(r.closeFns, func() { _ = srv.Close() })
 
-	h, p, err := net.SplitHostPort(lis.Addr().String())
+	_, p, err := net.SplitHostPort(lis.Addr().String())
 	if err != nil {
 		return fmt.Errorf("net.SplitHostPort: %w", err)
 	}
@@ -275,8 +333,8 @@ func (r *InProcessRelay) bootRelay(feederBaseURL string) error {
 	if err != nil {
 		return fmt.Errorf("strconv.Atoi(%q): %w", p, err)
 	}
-	r.host, r.port = h, port
-	r.baseURL = "https://" + lis.Addr().String()
+	r.host, r.port = dialHost, port
+	r.baseURL = "https://" + net.JoinHostPort(dialHost, p)
 	return nil
 }
 
