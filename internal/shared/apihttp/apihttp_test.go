@@ -131,3 +131,76 @@ func TestWriteProblemShapeAndTraceIDAgreement(t *testing.T) {
 		t.Errorf("instance = %q, want the request's own path %q (API-015)", body.Instance, "/enroll")
 	}
 }
+
+// TestWriteProblemEchoesCodeInProblemCodeHeader asserts every Problem this
+// package writes carries its own `code` in the ProblemCodeHeader response
+// header, byte-identical to the body's `code` member (player/1 PLY-008). This
+// is the channel a client whose platform drops the response body still reads
+// the taxonomy code from — see ProblemCodeHeader's own doc for the measured
+// firmware behavior that motivates it. Both writers are covered, and both a
+// 401 (the path that provably needs it) and a non-401 (the uniform-scope
+// decision: the header rides every Problem, not just the one status).
+func TestWriteProblemEchoesCodeInProblemCodeHeader(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		code   string
+		write  func(w http.ResponseWriter, r *http.Request, traceID string, status int, code string)
+	}{
+		{
+			name:   "WriteProblem/401",
+			status: http.StatusUnauthorized,
+			code:   "CHANNEL_TOKEN_REVOKED",
+			write: func(w http.ResponseWriter, r *http.Request, traceID string, status int, code string) {
+				WriteProblem(w, r, traceID, status, code, "Channel Token Revoked")
+			},
+		},
+		{
+			name:   "WriteProblem/400",
+			status: http.StatusBadRequest,
+			code:   "VALIDATION_FAILED",
+			write: func(w http.ResponseWriter, r *http.Request, traceID string, status int, code string) {
+				WriteProblem(w, r, traceID, status, code, "Validation Failed")
+			},
+		},
+		{
+			name:   "WriteProblemExt/401",
+			status: http.StatusUnauthorized,
+			code:   "CHANNEL_TOKEN_EXPIRED",
+			write: func(w http.ResponseWriter, r *http.Request, traceID string, status int, code string) {
+				WriteProblemExt(w, r, traceID, status, code, "Channel Token Expired", "token past expires_at", nil)
+			},
+		},
+		{
+			name:   "WriteProblemExt/409",
+			status: http.StatusConflict,
+			code:   "REVISION_CONFLICT",
+			write: func(w http.ResponseWriter, r *http.Request, traceID string, status int, code string) {
+				WriteProblemExt(w, r, traceID, status, code, "Revision Conflict", "", map[string]any{"current_revision": "r7"})
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodGet, "/player/v1/program", nil)
+			tc.write(w, r, TraceID(r), tc.status, tc.code)
+
+			got := w.Header().Get(ProblemCodeHeader)
+			if got != tc.code {
+				t.Errorf("%s header = %q, want %q (PLY-008: the header MUST echo the body's own code)", ProblemCodeHeader, got, tc.code)
+			}
+
+			var body struct {
+				Code string `json:"code"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode problem body: %v", err)
+			}
+			if body.Code != got {
+				t.Errorf("body code = %q but %s header = %q; PLY-008 requires them byte-identical", body.Code, ProblemCodeHeader, got)
+			}
+		})
+	}
+}

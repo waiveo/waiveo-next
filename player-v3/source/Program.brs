@@ -385,15 +385,48 @@ function wvProgramErrorText(resp as Object) as String
             end if
         end if
     end if
+    ' Body-less rejection (the firmware 401 case wv401Code documents): the
+    ' Problem-Code header (PLY-008) still names the code, so the console
+    ' evidence trail reports the real taxonomy value instead of a bare status.
+    if resp.DoesExist("headers")
+        hdrCode = wvHeaderValue(resp.headers, "Problem-Code")
+        if hdrCode <> ""
+            return "program rejected: " + hdrCode + " (from Problem-Code header; response body was empty)"
+        end if
+    end if
     if resp.startFailed then return "could not reach relay: " + resp.failureReason
     return "program HTTP " + resp.code.toStr() + " " + resp.failureReason
 end function
 
-' wv401Code extracts the Error taxonomy `code` field (e.g.
-' "CHANNEL_TOKEN_EXPIRED") from a Problem-shaped 401 response body, or ""
-' if the body carries none — the caller's classification then falls back
-' to the same least-destructive handling as an unrecognized code.
+' wv401Code extracts the Error taxonomy `code` (e.g. "CHANNEL_TOKEN_EXPIRED")
+' from a Problem-shaped 401 response, preferring the `Problem-Code` response
+' header (player/1 PLY-008) and falling back to the Problem body's own `code`
+' member (PLY-005). Returns "" when neither carrier yields one — the caller's
+' classification then falls back to the same least-destructive handling as an
+' unrecognized code.
+'
+' The header is tried FIRST because on observed Roku firmware it is the only
+' carrier that survives: roUrlTransfer hands back an EMPTY body for ANY 401
+' regardless of what the relay sent (verified on device for two request shapes,
+' against a relay whose 177-byte application/problem+json body curl reads
+' correctly), while GetResponseHeaders() delivers that same response's headers
+' intact. Reading only the body collapsed CHANNEL_TOKEN_INVALID,
+' CHANNEL_TOKEN_REVOKED and CHANNEL_TOKEN_EXPIRED into one branch here and made
+' PLY-073's clear-token-and-re-pair requirement unreachable on real hardware:
+' a genuinely revoked screen retried forever instead of re-pairing.
+'
+' The body fallback is retained, not vestigial — PLY-008 makes the two carriers
+' byte-identical, so on any client or firmware where the body DOES arrive (and
+' for any older relay predating PLY-008) this still classifies correctly. The
+' header wins when both are present: they cannot legitimately disagree, and
+' preferring one deterministically beats an ordering that varies by platform.
 function wv401Code(resp as Object) as String
+    fromHeader = ""
+    if resp.DoesExist("headers")
+        fromHeader = wvHeaderValue(resp.headers, "Problem-Code")
+    end if
+    if fromHeader <> "" then return fromHeader
+
     if resp.body = "" then return ""
     pb = ParseJson(resp.body)
     if pb = invalid then return ""

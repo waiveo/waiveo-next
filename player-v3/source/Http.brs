@@ -21,10 +21,20 @@
 '   certFile (path String or invalid), peerVerify (Boolean or invalid),
 '   hostVerify (Boolean or invalid), timeoutMs (Integer, default 8000)
 ' }
-' Returns { ok: Boolean(2xx), code: Integer, body: String, failureReason: String,
-'           startFailed: Boolean }.
+' Returns { ok: Boolean(2xx), code: Integer, body: String, headers: AA,
+'           failureReason: String, startFailed: Boolean }.
+'
+' `headers` carries the response headers verbatim (roUrlEvent.GetResponseHeaders),
+' empty when the transfer never produced a response. It is NOT a convenience: on
+' observed Roku firmware GetString() returns an EMPTY body for ANY 401 no matter
+' what the server sent, while the headers for that same response arrive intact
+' (measured on device against this relay, which demonstrably sends a correct
+' application/problem+json body a non-Roku client reads fine). The response's
+' `Problem-Code` header (player/1 PLY-008) is therefore the ONLY channel through
+' which the Error-taxonomy code of a 401 reaches this player at all — see
+' wv401Code in Program.brs.
 function wvHttpJson(opts as Object) as Object
-    result = { ok: false, code: -9999, body: "", failureReason: "", startFailed: false }
+    result = { ok: false, code: -9999, body: "", headers: {}, failureReason: "", startFailed: false }
 
     tr = CreateObject("roUrlTransfer")
     tr.SetUrl(opts.url)
@@ -94,6 +104,13 @@ function wvHttpJson(opts as Object) as Object
 
     result.code = msg.GetResponseCode()
     result.body = msg.GetString()
+    hdrs = invalid
+    try
+        hdrs = msg.GetResponseHeaders()
+    catch e
+        hdrs = invalid
+    end try
+    if hdrs <> invalid then result.headers = hdrs
     reason = msg.GetFailureReason()
     if reason = invalid then reason = ""
     result.failureReason = reason
@@ -101,6 +118,27 @@ function wvHttpJson(opts as Object) as Object
         if result.code < 300 then result.ok = true
     end if
     return result
+end function
+
+' wvHeaderValue reads one header out of a response header map, case-insensitively
+' and without assuming the map's own lookup mode. roUrlEvent.GetResponseHeaders
+' returns whatever key casing the firmware chose ("Problem-Code", "problem-code",
+' …) in an associative array whose case-sensitivity mode this code does not
+' control, so neither a direct `headers[name]` index nor a fixed-case one is
+' safe. Iterating and comparing LCase(key) is correct under every combination.
+' Returns "" when headers is invalid/empty or carries no such header — an absent
+' header is never itself a value (PLY-008: a client falls back to the body).
+function wvHeaderValue(headers as Object, name as String) as String
+    if headers = invalid then return ""
+    want = LCase(name)
+    for each k in headers
+        if LCase(k) = want
+            v = headers[k]
+            if v = invalid then return ""
+            return wvStr(v)
+        end if
+    end for
+    return ""
 end function
 
 ' wvHttpGetToFile fetches url directly to a local file path (binary-safe, for

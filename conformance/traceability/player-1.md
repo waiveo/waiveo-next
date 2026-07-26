@@ -11,6 +11,7 @@ One row per requirement ID `contracts/player-1.md` defines. Format: `conformance
 | PLY-005 | `contracts/player-1.md#error-responses` | - | TBD-wave1 |
 | PLY-006 | `contracts/player-1.md#error-responses` | - | TBD-wave1 |
 | PLY-007 | `contracts/player-1.md#error-responses` | - | TBD-wave1 |
+| PLY-008 | `contracts/player-1.md#error-responses` | - | TBD-wave1 |
 | PLY-010 | `contracts/player-1.md#capability-handshake` | - | TBD-wave1 |
 | PLY-011 | `contracts/player-1.md#capability-handshake` | - | TBD-wave1 |
 | PLY-012 | `contracts/player-1.md#capability-handshake` | - | TBD-wave1 |

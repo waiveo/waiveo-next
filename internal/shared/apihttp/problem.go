@@ -9,6 +9,34 @@ import (
 // error-response body.
 const ProblemContentType = "application/problem+json"
 
+// ProblemCodeHeader is the response header every Problem this package writes
+// echoes its own `code` member into (player/1 PLY-008). It exists because a
+// real client platform in this system — Roku firmware's roUrlTransfer, which
+// player-v3 is built on — returns an EMPTY response body for a 401 regardless
+// of what the server sent, while delivering the response HEADERS intact
+// (measured on device against this relay: the relay sends a correct 177-byte
+// application/problem+json body that curl reads fine and the firmware drops).
+// Without a header channel such a client cannot tell CHANNEL_TOKEN_INVALID
+// from CHANNEL_TOKEN_EXPIRED from CHANNEL_TOKEN_REVOKED, and PLY-073's
+// requirement that the first two clear the channel token and re-pair while the
+// third only renews is simply unimplementable there.
+//
+// The body stays canonical: the header is an ADDITIONAL, byte-identical
+// carrier of the same `code`, never a replacement, and never carries anything
+// the body does not already carry to the same caller in the same response.
+//
+// Set here — in the one function that already owns writing `code` into a
+// Problem — rather than at the individual 401 call sites, so the invariant is
+// "wherever a `code` reaches a body, the identical `code` reaches this header"
+// with no second rule about which statuses qualify for a future handler to get
+// wrong. See problem.go's own package tests for the assertion.
+//
+// Header-value safety: `code` is drawn from a contract's closed error-code
+// registry (API-011/PLY-007) — uppercase ASCII and underscores — so it cannot
+// carry a header-injecting control character; net/http additionally replaces
+// CR/LF in a header value with spaces when writing.
+const ProblemCodeHeader = "Problem-Code"
+
 // problemType is the `type` member every Problem this package writes
 // carries. api/1 API-016 mandates the literal string "about:blank" for this
 // contract version — `code` (API-011) is the sole machine-readable
@@ -39,8 +67,12 @@ type problem struct {
 // traceID MUST be the same value the response's Trace-Id header carries
 // (API-062) — ordinarily apihttp.TraceID(r), the value WithTraceID already
 // resolved and set as the response header for this same request.
+//
+// The same code is also echoed into the ProblemCodeHeader response header
+// (PLY-008) — see that constant's own doc for why.
 func WriteProblem(w http.ResponseWriter, r *http.Request, traceID string, status int, code, title string) {
 	w.Header().Set("Content-Type", ProblemContentType)
+	w.Header().Set(ProblemCodeHeader, code)
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(problem{
 		Type:     problemType,
@@ -62,7 +94,8 @@ func WriteProblem(w http.ResponseWriter, r *http.Request, traceID string, status
 // WriteProblem, code MUST come from the calling contract's own closed error-
 // code registry (API-011) — this helper does not validate it — and traceID
 // MUST equal the response's Trace-Id header value (API-062). extra MUST NOT
-// shadow a base member.
+// shadow a base member. As with WriteProblem, `code` is also echoed into the
+// ProblemCodeHeader response header (PLY-008).
 func WriteProblemExt(w http.ResponseWriter, r *http.Request, traceID string, status int, code, title, detail string, extra map[string]any) {
 	body := map[string]any{
 		"type":     problemType,
@@ -82,6 +115,7 @@ func WriteProblemExt(w http.ResponseWriter, r *http.Request, traceID string, sta
 	}
 
 	w.Header().Set("Content-Type", ProblemContentType)
+	w.Header().Set(ProblemCodeHeader, code)
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(body)
 }

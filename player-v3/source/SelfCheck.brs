@@ -124,6 +124,40 @@ sub wvRunSelfCheck()
     trustAfter2 = wvStorageGet("trust_pem")
     wvResult("wvStorageClearTrustAndToken clears both", tokAfter2 = "" and trustAfter2 = "", "token=[" + tokAfter2 + "] trust=[" + trustAfter2 + "]")
 
+    ' --- 401 taxonomy must survive a body-less response (PLY-008/PLY-073) ---
+    ' BrightScript has no unit runner, so this is the on-device expression of
+    ' the property the Go side asserts in
+    ' internal/relay/playerserver/authcode_test.go: a 401 whose BODY IS EMPTY —
+    ' which is every 401 on this firmware, measured — must still classify,
+    ' via the Problem-Code response header. Before the header path existed
+    ' wv401Code returned "" for exactly this input and all three CHANNEL_TOKEN_*
+    ' codes collapsed into the single non-destructive branch.
+    '
+    ' The header map is built CASE-SENSITIVE with a lowercased key on purpose:
+    ' that is the hostile shape for a lookup helper (a plain headers["Problem-Code"]
+    ' index misses it), and a helper that survives it survives whatever casing
+    ' and lookup mode the firmware's own GetResponseHeaders() map happens to use.
+    hdrs = CreateObject("roAssociativeArray")
+    hdrs.SetModeCaseSensitive(true)
+    hdrs.AddReplace("content-type", "application/problem+json")
+    hdrs.AddReplace("problem-code", "CHANNEL_TOKEN_REVOKED")
+
+    wvResult("wvHeaderValue finds a differently-cased header key", wvHeaderValue(hdrs, "Problem-Code") = "CHANNEL_TOKEN_REVOKED", "got=[" + wvHeaderValue(hdrs, "Problem-Code") + "]")
+    wvResult("wvHeaderValue returns empty for an absent header", wvHeaderValue(hdrs, "Trace-Id") = "", "got=[" + wvHeaderValue(hdrs, "Trace-Id") + "]")
+    wvResult("wvHeaderValue tolerates an invalid header map", wvHeaderValue(invalid, "Problem-Code") = "", "")
+
+    emptyBody401 = { code: 401, body: "", headers: hdrs }
+    gotCode = wv401Code(emptyBody401)
+    wvResult("wv401Code reads the code from headers when the body is empty", gotCode = "CHANNEL_TOKEN_REVOKED", "got=[" + gotCode + "]")
+
+    noHdr401 = { code: 401, body: "{""type"":""about:blank"",""code"":""CHANNEL_TOKEN_EXPIRED"",""title"":""Channel Token Expired""}", headers: {} }
+    gotCode2 = wv401Code(noHdr401)
+    wvResult("wv401Code falls back to the body when no header is present", gotCode2 = "CHANNEL_TOKEN_EXPIRED", "got=[" + gotCode2 + "]")
+
+    neither401 = { code: 401, body: "", headers: {} }
+    gotCode3 = wv401Code(neither401)
+    wvResult("wv401Code yields empty when neither carrier has a code", gotCode3 = "", "got=[" + gotCode3 + "]")
+
     if savedToken = ""
         reg.Delete("channel_token")
     else

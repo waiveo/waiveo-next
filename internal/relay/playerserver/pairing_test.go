@@ -359,7 +359,10 @@ func TestPairStatusRejectsUnknownPollToken(t *testing.T) {
 // PLY-005 Problem shape (api/1 API-010) with `code` == wantCode — never a
 // pairing_status: pending shape that can never resolve (PLY-036). It also
 // confirms the Trace-Id response header (PLY-006/API-060) is present and
-// equals the body's own trace_id extension member (API-062).
+// equals the body's own trace_id extension member (API-062), and that the
+// Problem-Code response header (PLY-008) echoes the body's own `code` — the
+// channel a client whose platform drops an error body still reads the taxonomy
+// code from.
 func assertTypedError(t *testing.T, resp *http.Response, raw map[string]json.RawMessage, wantCode string) {
 	t.Helper()
 
@@ -402,6 +405,14 @@ func assertTypedError(t *testing.T, resp *http.Response, raw map[string]json.Raw
 	}
 	if pb.TraceID != headerTraceID {
 		t.Errorf("body trace_id = %q, want it to equal the Trace-Id header %q (API-062)", pb.TraceID, headerTraceID)
+	}
+
+	headerCode := resp.Header.Get(apihttp.ProblemCodeHeader)
+	if headerCode != wantCode {
+		t.Errorf("%s header = %q, want %q (PLY-008: a client that cannot read the body reads the code here)", apihttp.ProblemCodeHeader, headerCode, wantCode)
+	}
+	if pb.Code != headerCode {
+		t.Errorf("body code = %q but %s header = %q; PLY-008 requires them byte-identical", pb.Code, apihttp.ProblemCodeHeader, headerCode)
 	}
 }
 

@@ -51,6 +51,8 @@ player/1 defines the protocol between a screen's player and its relay: capabilit
 
 **[PLY-007]** A `code` value in this contract's own Error taxonomy is a distinct registry from `api/1`'s (API-011): a player/1 error response's `code` MUST be drawn from this contract's table, not `api/1`'s, except where this contract's table explicitly reuses an `api/1` code value by name (Error taxonomy) for a genuinely identical failure class.
 
+**[PLY-008]** Every error response this contract's operations produce MUST additionally carry that response's own Problem `code` (PLY-005) in a `Problem-Code` response header, byte-identical to the body's `code` member. The body remains the canonical form — this header is a second, equivalent carrier of a value the same response already returns to the same caller, never a replacement for it and never a channel for anything the body does not carry. A relay MUST NOT emit a `Problem-Code` whose value differs from the accompanying body's `code`, and MUST NOT emit the header on a success response. A player MAY read a response's `code` from either carrier; a player that reads the header MUST fall back to the body when the header is absent, and MUST NOT treat an absent header as a code value of its own. This requirement exists because a client platform can be unable to observe an error response's body at all while still receiving that response's headers intact — a platform constraint no server behavior can compensate for from the body alone — which would otherwise leave the `CHANNEL_TOKEN_INVALID`/`CHANNEL_TOKEN_EXPIRED`/`CHANNEL_TOKEN_REVOKED` distinction PLY-072 draws, and PLY-073 requires a player act differently on, unreachable on that platform. Since the failure mode is a property of a client platform rather than of any one status code, the header rides every error response uniformly, not a selected subset.
+
 ### Capability handshake
 
 **[PLY-010]** Every request this section's capability fields apply to MUST carry `protocol_version` (a `major.minor` string). A relay implementing no minor of the player's declared major MUST refuse with `PROTOCOL_VERSION_UNSUPPORTED` (Error taxonomy) rather than partially interpret the request.
@@ -560,6 +562,8 @@ USN: relay:01J8Z4K4N5P6Q7R8S9T0V1W3A1
 - **Credential renewal without re-pairing** — a channel token renews (PLY-074–075) without repeating Pairing redemption or Out-of-band cert authentication, for as long as a player's underlying trust-anchor material and screen identity remain valid; only trust-anchor loss (PLY-063), token revocation (PLY-073), or an unrecognized `screen_id` (PLY-075) forces a fresh pairing attempt.
 
 ## Error taxonomy
+
+Every code below is carried twice on the response that reports it: in the Problem body's `code` member (PLY-005) and, byte-identically, in the `Problem-Code` response header (PLY-008).
 
 | code | meaning | retryable |
 |---|---|---|
