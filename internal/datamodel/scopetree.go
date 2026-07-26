@@ -72,6 +72,7 @@ const maxScopeNodeNameLen = 200
 // owns:
 //   - DAT-001a: name is a non-empty, non-whitespace-only string of at most 200
 //     characters (SCOPE_NODE_NAME_INVALID);
+//   - DAT-005a: id is a syntactically valid canonical ULID (ROW_ID_INVALID);
 //   - DAT-001: kind is one of the closed vocabulary (SCOPE_NODE_KIND_INVALID);
 //   - DAT-002: parent_id null iff kind is org (SCOPE_NODE_PARENT_INVALID); at most
 //     one org node, and no org node parented under another (SCOPE_NODE_MULTIPLE_ORG);
@@ -113,6 +114,14 @@ func BuildScopeTree(nodes []ScopeNode) (ScopeTree, []Error) {
 		// only 150 characters) — utf8.RuneCountInString counts code points instead.
 		if strings.TrimSpace(n.Name) == "" || utf8.RuneCountInString(n.Name) > maxScopeNodeNameLen {
 			errs = append(errs, Error{Field: "name", Code: "SCOPE_NODE_NAME_INVALID", Message: "a scope node's name MUST be a non-empty string of at most 200 characters (DAT-001a)"})
+		}
+
+		// DAT-005a: id MUST be a syntactically valid canonical ULID. Same
+		// independent-check placement as the name check above — it neither
+		// short-circuits nor is short-circuited by the kind check below, so a
+		// node can surface a bad id alongside a bad kind in one pass.
+		if e := checkRowID(n.ID, "id"); e != nil {
+			errs = append(errs, *e)
 		}
 
 		if !validScopeKind[n.Kind] {

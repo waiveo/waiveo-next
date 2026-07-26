@@ -19,14 +19,14 @@ import (
 // different sites. Every id is a fixture ULID (no secrets); the site geo is
 // documentation-range placement data.
 const (
-	seedOrgAncestorScopeNodeID = "01J8Z0DEMOORGANCESTORBOUND"
+	seedOrgAncestorScopeNodeID = "01J8Z0DEM00RGANCEST0RB0VND"
 	seedSiteScopeNodeID        = "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5"
-	seedScreenScopeNodeID      = "01J8Z4DEMOSCREENFIRSTPHOTN"
-	seedScheduleID             = "01J8Z5DEMOSCHEDULETWODAYPT"
-	seedPlaylistID             = "01J8Z6DEMOPLAYLISTCONTENT1"
-	seedContentDaypartID       = "01J8Z7DEMODAYPARTCONTENT01"
-	seedOvernightDaypartID     = "01J8Z7DEMODAYPARTOVERNIGHT"
-	seedPresetBatchID          = "01J8Z8DEMOPRESETBATCHFIRE1"
+	seedScreenScopeNodeID      = "01J8Z4DEM0SCREENF1RSTPH0TN"
+	seedScheduleID             = "01J8Z5DEM0SCHEDV1ETW0DAYPT"
+	seedPlaylistID             = "01J8Z6DEM0P1AY11STC0NTENT1"
+	seedContentDaypartID       = "01J8Z7DEM0DAYPARTC0NTENT01"
+	seedOvernightDaypartID     = "01J8Z7DEM0DAYPART0VERN1GHT"
+	seedPresetBatchID          = "01J8Z8DEM0PRESETBATCHF1RE1"
 	seedRuleEntityID           = "01J8Z3K4N5P6Q7R8S9T0V1SCRN"
 
 	// seedDemoAutomationID is the SAME rule id the pre-store feeder hardcoded as

@@ -31,9 +31,9 @@ func mustLocalMs(t *testing.T, tzName, local string) int64 {
 func denverTree(t *testing.T) ScopeTree {
 	t.Helper()
 	nodes := []ScopeNode{
-		{ID: "01JORGNDE1PG2X7R5JQC42EJ00", Kind: "org", ParentID: nil, Name: "Denver Org"},
-		{ID: "01JSITENDE1EWH0AVNH9DN6R00", Kind: "site", ParentID: ptrStr("01JORGNDE1PG2X7R5JQC42EJ00"), Name: "Denver Site", TZ: ptrStr("America/Denver"), Lat: ptrF64(39.7392), Long: ptrF64(-104.9903)},
-		{ID: "01JSCRNVERRDEF4W6305FAT000", Kind: "screen", ParentID: ptrStr("01JSITENDE1EWH0AVNH9DN6R00"), Name: "Denver Screen"},
+		{ID: orgID, Kind: "org", ParentID: nil, Name: "Denver Org"},
+		{ID: siteID, Kind: "site", ParentID: ptrStr(orgID), Name: "Denver Site", TZ: ptrStr("America/Denver"), Lat: ptrF64(39.7392), Long: ptrF64(-104.9903)},
+		{ID: scrnID, Kind: "screen", ParentID: ptrStr(siteID), Name: "Denver Screen"},
 	}
 	tree, errs := BuildScopeTree(nodes)
 	if len(errs) != 0 {
@@ -43,8 +43,8 @@ func denverTree(t *testing.T) ScopeTree {
 }
 
 const (
-	orgID  = "01JORGNDE1PG2X7R5JQC42EJ00"
-	siteID = "01JSITENDE1EWH0AVNH9DN6R00"
+	orgID  = "01J0RGNDE1PG2X7R5JQC42EJ00"
+	siteID = "01JS1TENDE1EWH0AVNH9DN6R00"
 	scrnID = "01JSCRNVERRDEF4W6305FAT000"
 )
 

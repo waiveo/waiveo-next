@@ -32,7 +32,7 @@ import (
 // (its own demoScreenScopeNodeID constant is unexported, so this is a
 // byte-exact copy — the cross-package fixture-sharing pattern this codebase
 // already uses, e.g. internal/relay/automationhost's testScreenEntity).
-const demoScreenScopeNodeID = "01J8Z4DEMOSCREENFIRSTPHOTN"
+const demoScreenScopeNodeID = "01J8Z4DEM0SCREENF1RSTPH0TN"
 
 // buildDemoSection runs the real feeder Build path to obtain the exact
 // wire.ScheduleSection a relay receives over the wire (REL-065) — a
@@ -183,12 +183,12 @@ func TestBuildStoreMalformedRowDegradesWithoutPanic(t *testing.T) {
 // exists anywhere in the store".
 func TestGovernsAncestorCascade(t *testing.T) {
 	const (
-		cascadeOrgAncestorID     = "01J8Z9CASCADEORGBOUND00001"
-		cascadeSiteID            = "01J8Z9CASCADESITE000000001"
+		cascadeOrgAncestorID     = "01J8Z9CASCADE0RGB0VND00001"
+		cascadeSiteID            = "01J8Z9CASCADES1TE000000001"
 		cascadeScreenID          = "01J8Z9CASCADESCREEN0000001"
-		cascadeSiblingID         = "01J8Z9CASCADESIBLING000001"
-		cascadeSiteScheduleID    = "01J8Z9CASCADESCHEDULESIT01"
-		cascadeSiblingScheduleID = "01J8Z9CASCADESCHEDULESIB01"
+		cascadeSiblingID         = "01J8Z9CASCADES1B11NG000001"
+		cascadeSiteScheduleID    = "01J8Z9CASCADESCHEDV1ES1T01"
+		cascadeSiblingScheduleID = "01J8Z9CASCADESCHEDV1ES1B01"
 	)
 	orgParentID := cascadeOrgAncestorID
 	siteParentID := cascadeSiteID
@@ -344,10 +344,10 @@ func governedTerminalStore(t *testing.T) (datamodel.RowStore, string) {
 	tz := demoSiteTZ
 	lat := 41.8781
 	long := -87.6298
-	orgBound := "01J8ZATERMINALORGBOUND0001"
-	siteID := "01J8ZATERMINALSITE00000001"
-	screenID := "01J8ZATERMINALSCREEN000001"
-	scheduleID := "01J8ZATERMINALSCHEDULE0001"
+	orgBound := "01J8ZATERM1NA10RGB0VND0001"
+	siteID := "01J8ZATERM1NA1S1TE00000001"
+	screenID := "01J8ZATERM1NA1SCREEN000001"
+	scheduleID := "01J8ZATERM1NA1SCHEDV1E0001"
 	siteParent := siteID
 
 	nodes := []datamodel.ScopeNode{
@@ -622,8 +622,8 @@ func unresolvableTZStore(t *testing.T) (datamodel.RowStore, string) {
 	badTZ := "Not/ARealZone"
 	lat := 1.0
 	long := 1.0
-	siteBound := "01J8ZBUNRESOLVTZSITEBND001"
-	screenID := "01J8ZBUNRESOLVTZSCREEN0001"
+	siteBound := "01J8ZBVNRES01VTZS1TEBND001"
+	screenID := "01J8ZBVNRES01VTZSCREEN0001"
 
 	nodes := []datamodel.ScopeNode{
 		{ID: screenID, Kind: "screen", ParentID: &siteBound, Name: "Bad TZ Screen", TZ: &badTZ, Lat: &lat, Long: &long, Revision: 1, CreatedAt: 1, UpdatedAt: 1},
@@ -669,8 +669,8 @@ func TestResolveNowUnresolvableTZLeavesSetProgramUncalledAndErrors(t *testing.T)
 // cross-package fixture-sharing pattern.
 const (
 	demoRuleEntityID     = "01J8Z3K4N5P6Q7R8S9T0V1SCRN"
-	demoContentDaypartID = "01J8Z7DEMODAYPARTCONTENT01"
-	demoPresetBatchID    = "01J8Z8DEMOPRESETBATCHFIRE1"
+	demoContentDaypartID = "01J8Z7DEM0DAYPARTC0NTENT01"
+	demoPresetBatchID    = "01J8Z8DEM0PRESETBATCHF1RE1"
 )
 
 // recordController records every physical dispatch it receives — the same
@@ -807,14 +807,14 @@ func TestFirePresetNilFireDispatchesNothing(t *testing.T) {
 // the holiday layer is effective and the base daypart is MASKED (DAT-111): only
 // the effective daypart's preset must ever fire (DAT-075).
 const (
-	maskedSiteID           = "01J8ZCMASKEDSITE0000000001"
+	maskedSiteID           = "01J8ZCMASKEDS1TE0000000001"
 	maskedScreenID         = "01J8ZCMASKEDSCREEN00000001"
-	maskedBaseScheduleID   = "01J8ZCMASKEDBASESCHEDULE01"
-	maskedHolidayScheduleI = "01J8ZCMASKEDHOLISCHEDULE01"
+	maskedBaseScheduleID   = "01J8ZCMASKEDBASESCHEDV1E01"
+	maskedHolidayScheduleI = "01J8ZCMASKEDH011SCHEDV1E01"
 	maskedBaseDaypartID    = "01J8ZCMASKEDBASEDAYPART001"
-	maskedHolidayDaypartID = "01J8ZCMASKEDHOLIDAYPART001"
+	maskedHolidayDaypartID = "01J8ZCMASKEDH011DAYPART001"
 	maskedPresetID         = "01J8ZCMASKEDPRESETBASE0001"
-	effectivePresetID      = "01J8ZCEFFECTIVEPRESETHOL01"
+	effectivePresetID      = "01J8ZCEFFECT1VEPRESETH0101"
 	maskedEntity           = "01J8ZCMASKEDENTITYBASE0001"
 	effectiveEntity        = "01J8ZCEFFECTIVEENTITYHOL01"
 )
@@ -824,7 +824,7 @@ func maskedStore(t *testing.T) datamodel.RowStore {
 	tz := demoSiteTZ
 	lat := 41.8781
 	long := -87.6298
-	orgBound := "01J8ZCMASKEDORGBOUND000001"
+	orgBound := "01J8ZCMASKED0RGB0VND000001"
 	siteParent := maskedSiteID
 	basePriority := 0
 	holidayPriority := 100
@@ -927,12 +927,12 @@ func TestLoopDrivesTickOnInjectedTicks(t *testing.T) {
 // restart landing inside an already-active daypart's window, DAT-075's boot/
 // resume case) bound to one preset batch.
 const (
-	resumeMisfireSiteID     = "01J8ZRMISFIRESITE00000001"
-	resumeMisfireScreenID   = "01J8ZRMISFIRESCREEN0000001"
-	resumeMisfireScheduleID = "01J8ZRMISFIRESCHEDULE00001"
-	resumeMisfireDaypartID  = "01J8ZRMISFIREDAYPART000001"
-	resumeMisfirePresetID   = "01J8ZRMISFIREPRESET0000001"
-	resumeMisfireEntity     = "01J8ZRMISFIREENTITY0000001"
+	resumeMisfireSiteID     = "01J8ZRM1SF1RES1TE000000010"
+	resumeMisfireScreenID   = "01J8ZRM1SF1RESCREEN0000001"
+	resumeMisfireScheduleID = "01J8ZRM1SF1RESCHEDV1E00001"
+	resumeMisfireDaypartID  = "01J8ZRM1SF1REDAYPART000001"
+	resumeMisfirePresetID   = "01J8ZRM1SF1REPRESET0000001"
+	resumeMisfireEntity     = "01J8ZRM1SF1REENT1TY0000001"
 )
 
 // resumeMisfireStore builds a single-screen store with one all-day daypart
@@ -944,7 +944,7 @@ func resumeMisfireStore(t *testing.T, daypartMisfire string) datamodel.RowStore 
 	tz := demoSiteTZ
 	lat := 41.8781
 	long := -87.6298
-	orgBound := "01J8ZRMISFIREORGBOUND00001"
+	orgBound := "01J8ZRM1SF1RE0RGB0VND00001"
 	siteParent := resumeMisfireSiteID
 
 	nodes := []datamodel.ScopeNode{

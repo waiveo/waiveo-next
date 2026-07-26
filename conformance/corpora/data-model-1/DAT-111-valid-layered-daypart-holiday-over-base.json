@@ -5,13 +5,13 @@
   "description": "Per-instant layering across two applicable schedules on the same screen: a higher-priority holiday schedule covers only 10:00-14:00, a base schedule covers 06:00-22:00. At noon the holiday daypart wins; at 16:00 the holiday schedule has no holding daypart, so the base schedule's daypart shows through. Same row set, two instants, two winners -- proves layering is evaluated per instant, not per schedule.",
   "input": {
     "scope_nodes": [
-      { "id": "01JORGNDE1PG2X7R5JQC42EJ00", "kind": "org", "parent_id": null },
-      { "id": "01JSITENDE1EWH0AVNH9DN6R00", "kind": "site", "parent_id": "01JORGNDE1PG2X7R5JQC42EJ00", "tz": "America/Denver", "lat": 39.7392, "long": -104.9903 },
-      { "id": "01JSCRNVERRDEF4W6305FAT000", "kind": "screen", "parent_id": "01JSITENDE1EWH0AVNH9DN6R00" }
+      { "id": "01J0RGNDE1PG2X7R5JQC42EJ00", "kind": "org", "parent_id": null },
+      { "id": "01JS1TENDE1EWH0AVNH9DN6R00", "kind": "site", "parent_id": "01J0RGNDE1PG2X7R5JQC42EJ00", "tz": "America/Denver", "lat": 39.7392, "long": -104.9903 },
+      { "id": "01JSCRNVERRDEF4W6305FAT000", "kind": "screen", "parent_id": "01JS1TENDE1EWH0AVNH9DN6R00" }
     ],
     "schedules": [
       { "id": "01JSCHEDBASE0RGXJVZ9CJD000", "scope_node": "01JSCRNVERRDEF4W6305FAT000", "name": "Base", "priority": 0, "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 },
-      { "id": "01JSCHEDHOLI0RGXJVZ9CJD000", "scope_node": "01JSCRNVERRDEF4W6305FAT000", "name": "Holiday", "priority": 100, "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 }
+      { "id": "01JSCHEDH0110RGXJVZ9CJD000", "scope_node": "01JSCRNVERRDEF4W6305FAT000", "name": "Holiday", "priority": 100, "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 }
     ],
     "dayparts": [
       {
@@ -23,22 +23,22 @@
         "start_time": "06:00:00",
         "end_time": "22:00:00",
         "display_power": "on",
-        "playlist_id": "01JPAYSTBASE1MGDMFGS8KX00",
+        "playlist_id": "01JPAYSTBASE1MGDMFGS8KX000",
         "preset_batch_id": null,
         "revision": 1,
         "created_at": 1752537600000,
         "updated_at": 1752537600000
       },
       {
-        "id": "01JDAYPARTHOLI7RCG2V0CQV00",
-        "schedule_id": "01JSCHEDHOLI0RGXJVZ9CJD000",
+        "id": "01JDAYPARTH0117RCG2V0CQV00",
+        "schedule_id": "01JSCHEDH0110RGXJVZ9CJD000",
         "scope_node": "01JSCRNVERRDEF4W6305FAT000",
         "name": "Holiday Midday",
         "days_of_week": [0, 1, 2, 3, 4, 5, 6],
         "start_time": "10:00:00",
         "end_time": "14:00:00",
         "display_power": "on",
-        "playlist_id": "01JPAYSTHOLI1MGDMFGS8KX00",
+        "playlist_id": "01JPAYSTH0111MGDMFGS8KX000",
         "preset_batch_id": null,
         "revision": 1,
         "created_at": 1752537600000,
@@ -53,19 +53,19 @@
   },
   "expected": {
     "valid": true,
-    "applicable_schedule_ids_by_precedence": ["01JSCHEDHOLI0RGXJVZ9CJD000", "01JSCHEDBASE0RGXJVZ9CJD000"],
+    "applicable_schedule_ids_by_precedence": ["01JSCHEDH0110RGXJVZ9CJD000", "01JSCHEDBASE0RGXJVZ9CJD000"],
     "results": [
       {
         "label": "noon",
-        "winning_schedule_id": "01JSCHEDHOLI0RGXJVZ9CJD000",
-        "effective_daypart_id": "01JDAYPARTHOLI7RCG2V0CQV00",
-        "lease_projection": { "display": "content", "content_source": "playlist:01JPAYSTHOLI1MGDMFGS8KX00" }
+        "winning_schedule_id": "01JSCHEDH0110RGXJVZ9CJD000",
+        "effective_daypart_id": "01JDAYPARTH0117RCG2V0CQV00",
+        "lease_projection": { "display": "content", "content_source": "playlist:01JPAYSTH0111MGDMFGS8KX000" }
       },
       {
         "label": "late-afternoon",
         "winning_schedule_id": "01JSCHEDBASE0RGXJVZ9CJD000",
         "effective_daypart_id": "01JDAYPARTBASE7RCG2V0CQV00",
-        "lease_projection": { "display": "content", "content_source": "playlist:01JPAYSTBASE1MGDMFGS8KX00" }
+        "lease_projection": { "display": "content", "content_source": "playlist:01JPAYSTBASE1MGDMFGS8KX000" }
       }
     ]
   }

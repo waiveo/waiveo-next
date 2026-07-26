@@ -1,6 +1,10 @@
 package datamodel
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/maaxton/waiveo-next/internal/shared/ulid"
+)
 
 // Error is a data-model/1 validation failure: the contract's own error code (the
 // Error taxonomy where it names one; a descriptive reference-impl code for a MUST
@@ -54,6 +58,9 @@ var validMisfire = map[string]bool{"catch_up_once": true, "skip": true, "fire_ea
 
 // ValidateRows parses and validates a complete scheduling-core row bundle,
 // returning the typed RowSet and every validation error found. It enforces:
+//   - resource-row baseline (DAT-005a): every row's own identity field (id, or
+//     a preset-batch's preset_id) is a syntactically valid canonical ULID
+//     (ROW_ID_INVALID);
 //   - platform ownership (DAT-100/101): no row carries a row-level pack field;
 //   - closed vocabularies (DAT-074 display_power, DAT-120 misfire);
 //   - row-shape MUSTs (DAT-061 validity range, DAT-091 non-empty commands);
@@ -78,6 +85,9 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 		if !decode(r, &v, &errs) {
 			continue
 		}
+		if e := checkRowID(v.ID, "id"); e != nil {
+			errs = append(errs, *e)
+		}
 		rs.Playlists = append(rs.Playlists, v)
 	}
 	for _, r := range raw.Schedules {
@@ -88,6 +98,9 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 		var v Schedule
 		if !decode(r, &v, &errs) {
 			continue
+		}
+		if e := checkRowID(v.ID, "id"); e != nil {
+			errs = append(errs, *e)
 		}
 		if v.Misfire != "" && !validMisfire[v.Misfire] {
 			errs = append(errs, Error{Field: "misfire", Code: "MISFIRE_INVALID", Message: "misfire must be one of catch_up_once, skip, fire_each (DAT-120)"})
@@ -103,6 +116,9 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 		if !decode(r, &v, &errs) {
 			continue
 		}
+		if e := checkRowID(v.ID, "id"); e != nil {
+			errs = append(errs, *e)
+		}
 		if v.StartsAt != nil && v.EndsAt != nil && *v.EndsAt <= *v.StartsAt {
 			errs = append(errs, Error{Field: "ends_at", Code: "VALIDITY_WINDOW_RANGE_INVALID", Message: "ends_at must be strictly greater than starts_at when both are non-null (DAT-061)"})
 		}
@@ -116,6 +132,9 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 		var v Daypart
 		if !decode(r, &v, &errs) {
 			continue
+		}
+		if e := checkRowID(v.ID, "id"); e != nil {
+			errs = append(errs, *e)
 		}
 		if !validDisplayPower[v.DisplayPower] {
 			errs = append(errs, Error{Field: "display_power", Code: "DISPLAY_POWER_INVALID", Message: "display_power must be one of on, off, blank (DAT-074)"})
@@ -134,6 +153,9 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 		if !decode(r, &v, &errs) {
 			continue
 		}
+		if e := checkRowID(v.ID, "id"); e != nil {
+			errs = append(errs, *e)
+		}
 		if !validDisplayPower[v.DisplayPower] {
 			errs = append(errs, Error{Field: "display_power", Code: "DISPLAY_POWER_INVALID", Message: "display_power must be one of on, off, blank (DAT-074)"})
 		}
@@ -148,6 +170,9 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 		if !decode(r, &v, &errs) {
 			continue
 		}
+		if e := checkRowID(v.PresetID, "preset_id"); e != nil {
+			errs = append(errs, *e)
+		}
 		if len(v.Commands) == 0 {
 			errs = append(errs, Error{Field: "commands", Code: "PRESET_BATCH_COMMANDS_EMPTY", Message: "a preset-batch row's commands array MUST be non-empty (DAT-091)"})
 		}
@@ -159,6 +184,19 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 		errs = append(errs, *e)
 	}
 	return rs, errs
+}
+
+// checkRowID enforces DAT-005a: a row's own identity field — id for every kind
+// but preset-batch, whose identity field is preset_id (DAT-005's byte-exact
+// exception) — MUST be a syntactically valid canonical ULID. It is the one
+// helper shared by every ValidateRows decode loop below and by
+// BuildScopeTree's per-node loop (scopetree.go), so DAT-005a is enforced
+// identically for all seven row kinds from a single implementation.
+func checkRowID(id, field string) *Error {
+	if !ulid.Valid(id) {
+		return &Error{Field: field, Code: "ROW_ID_INVALID", Message: "a row's id (a preset-batch's preset_id) MUST be a syntactically valid canonical ULID (DAT-005a)"}
+	}
+	return nil
 }
 
 // checkPackOwnership rejects a scheduling-core row (any of the six kinds) that

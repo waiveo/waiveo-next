@@ -163,7 +163,7 @@ func TestBuildFromStoreGenerationAdvances(t *testing.T) {
 	// Author a new playlist over the store (an api-shaped write): the generation
 	// must advance.
 	newPlaylist := datamodel.Playlist{
-		ID: "01J8ZNEWPLAYLISTAUTHORED1", ScopeNode: "01J8Z4DEMOSCREENFIRSTPHOTN",
+		ID: "01J8ZNEWP1AY11STAVTH0RED10", ScopeNode: "01J8Z4DEM0SCREENF1RSTPH0TN",
 		Name: "Authored Playlist", Items: []datamodel.PlaylistItem{{Source: "asset", AssetRef: assetRef}},
 	}
 	pb, _ := json.Marshal(newPlaylist)

@@ -5,18 +5,18 @@
   "description": "A site-level schedule is applicable to a screen beneath it that carries no schedule of its own: the screen's governing state cascades down the parent_id chain from the site node, so the site schedule's effective daypart drives the screen's Lease even though nothing is attached directly at the screen.",
   "input": {
     "scope_nodes": [
-      { "id": "01JORGNDE1PG2X7R5JQC42EJ00", "kind": "org", "parent_id": null },
-      { "id": "01JSITENDE1EWH0AVNH9DN6R00", "kind": "site", "parent_id": "01JORGNDE1PG2X7R5JQC42EJ00", "tz": "America/Denver", "lat": 39.7392, "long": -104.9903 },
-      { "id": "01JSCRNVERRDEF4W6305FAT000", "kind": "screen", "parent_id": "01JSITENDE1EWH0AVNH9DN6R00" }
+      { "id": "01J0RGNDE1PG2X7R5JQC42EJ00", "kind": "org", "parent_id": null },
+      { "id": "01JS1TENDE1EWH0AVNH9DN6R00", "kind": "site", "parent_id": "01J0RGNDE1PG2X7R5JQC42EJ00", "tz": "America/Denver", "lat": 39.7392, "long": -104.9903 },
+      { "id": "01JSCRNVERRDEF4W6305FAT000", "kind": "screen", "parent_id": "01JS1TENDE1EWH0AVNH9DN6R00" }
     ],
     "schedules": [
-      { "id": "01JSCHEDSITE0RGXJVZ9CJD000", "scope_node": "01JSITENDE1EWH0AVNH9DN6R00", "name": "Site Base", "priority": 0, "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 }
+      { "id": "01JSCHEDS1TE0RGXJVZ9CJD000", "scope_node": "01JS1TENDE1EWH0AVNH9DN6R00", "name": "Site Base", "priority": 0, "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 }
     ],
     "dayparts": [
       {
-        "id": "01JDAYPARTSITE7RCG2V0CQV00",
-        "schedule_id": "01JSCHEDSITE0RGXJVZ9CJD000",
-        "scope_node": "01JSITENDE1EWH0AVNH9DN6R00",
+        "id": "01JDAYPARTS1TE7RCG2V0CQV00",
+        "schedule_id": "01JSCHEDS1TE0RGXJVZ9CJD000",
+        "scope_node": "01JS1TENDE1EWH0AVNH9DN6R00",
         "name": "Business Hours",
         "days_of_week": [1, 2, 3, 4, 5],
         "start_time": "06:00:00",
@@ -34,8 +34,8 @@
   },
   "expected": {
     "valid": true,
-    "applicable_schedule_ids": ["01JSCHEDSITE0RGXJVZ9CJD000"],
-    "effective_daypart_id": "01JDAYPARTSITE7RCG2V0CQV00",
+    "applicable_schedule_ids": ["01JSCHEDS1TE0RGXJVZ9CJD000"],
+    "effective_daypart_id": "01JDAYPARTS1TE7RCG2V0CQV00",
     "lease_projection": { "display": "content", "content_source": "playlist:01JPAYST15TMGDMFGS8KXM40X6" }
   }
 }

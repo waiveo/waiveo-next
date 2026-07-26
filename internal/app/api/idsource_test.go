@@ -30,8 +30,8 @@ func TestInjectedIDSourceMintsBothCreateAndJobIDs(t *testing.T) {
 	content := origin.New()
 
 	minted := []string{
-		"01J8Z9SEAM0FIRSTMINTEDID01",
-		"01J8Z9SEAM0SECONDMINTED02",
+		"01J8Z9SEAM0F1RSTM1NTED1D01",
+		"01J8Z9SEAM0SEC0NDM1NTED020",
 	}
 	next := 0
 	newID := func() string {

@@ -137,6 +137,48 @@ func TestReferentialIntegrity(t *testing.T) {
 	}
 }
 
+// DAT-005a: every scheduling-core row kind's own identity field (id, or a
+// preset-batch's preset_id) MUST be a syntactically valid canonical ULID; a
+// syntactically invalid one is rejected (ROW_ID_INVALID) regardless of how the
+// rest of the row is otherwise shaped.
+func TestDAT005aRowIDMustBeValidULID(t *testing.T) {
+	const badID = "totally-not-a-ulid"
+
+	playlist := json.RawMessage(`{"id":"` + badID + `","scope_node":"01JN10NENDVPG2X7R5JQC42EJ0","name":"p","items":[],"revision":1,"created_at":1,"updated_at":1}`)
+	if _, errs := ValidateRows(RawRows{Playlists: []json.RawMessage{playlist}}); !hasErr(errs, "ROW_ID_INVALID", "id") {
+		t.Errorf("playlist: want ROW_ID_INVALID on field id, got %+v", errs)
+	}
+
+	schedule := json.RawMessage(`{"id":"` + badID + `","scope_node":"01JN10NENDVPG2X7R5JQC42EJ0","name":"s","revision":1,"created_at":1,"updated_at":1}`)
+	if _, errs := ValidateRows(RawRows{Schedules: []json.RawMessage{schedule}}); !hasErr(errs, "ROW_ID_INVALID", "id") {
+		t.Errorf("schedule: want ROW_ID_INVALID on field id, got %+v", errs)
+	}
+
+	validityWindow := json.RawMessage(`{"id":"` + badID + `","schedule_id":"01JSCHED0NENDVGXJVZ9CJD000","scope_node":"01JN10NENDVPG2X7R5JQC42EJ0","starts_at":null,"ends_at":null,"revision":1,"created_at":1,"updated_at":1}`)
+	if _, errs := ValidateRows(RawRows{ValidityWindows: []json.RawMessage{validityWindow}}); !hasErr(errs, "ROW_ID_INVALID", "id") {
+		t.Errorf("validity window: want ROW_ID_INVALID on field id, got %+v", errs)
+	}
+
+	daypart := json.RawMessage(`{"id":"` + badID + `","schedule_id":"01JSCHED0NENDVGXJVZ9CJD000","scope_node":"01JN10NENDVPG2X7R5JQC42EJ0","days_of_week":[1],"start_time":"06:00:00","end_time":"22:00:00","display_power":"on","revision":1,"created_at":1,"updated_at":1}`)
+	if _, errs := ValidateRows(RawRows{Dayparts: []json.RawMessage{daypart}}); !hasErr(errs, "ROW_ID_INVALID", "id") {
+		t.Errorf("daypart: want ROW_ID_INVALID on field id, got %+v", errs)
+	}
+
+	fallback := json.RawMessage(`{"id":"` + badID + `","scope_node":"01JN10NENDVPG2X7R5JQC42EJ0","name":"f","display_power":"on","revision":1,"created_at":1,"updated_at":1}`)
+	if _, errs := ValidateRows(RawRows{Fallbacks: []json.RawMessage{fallback}}); !hasErr(errs, "ROW_ID_INVALID", "id") {
+		t.Errorf("fallback: want ROW_ID_INVALID on field id, got %+v", errs)
+	}
+
+	presetBatch := json.RawMessage(`{"preset_id":"` + badID + `","scope_node":"01JN10NENDVPG2X7R5JQC42EJ0","name":"pb","commands":[{"entity_id":"01JE10NENDVPG2X7R5JQC42EJ0","command":"power"}],"revision":1,"created_at":1,"updated_at":1}`)
+	if _, errs := ValidateRows(RawRows{PresetBatches: []json.RawMessage{presetBatch}}); !hasErr(errs, "ROW_ID_INVALID", "preset_id") {
+		t.Errorf("preset batch: want ROW_ID_INVALID on field preset_id, got %+v", errs)
+	}
+
+	// A syntactically valid ULID id is accepted (no ROW_ID_INVALID) — the
+	// TestCompleteConsistentRowSetIsValid case below already proves the
+	// clean-row-set path stays error-free with valid ids.
+}
+
 // Closed vocabularies and simple row-shape rejections with taxonomy codes.
 func TestVocabAndShapeRejections(t *testing.T) {
 	// display_power outside {on,off,blank} (DAT-074)

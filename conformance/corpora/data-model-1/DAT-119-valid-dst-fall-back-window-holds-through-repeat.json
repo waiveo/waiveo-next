@@ -5,23 +5,23 @@
   "description": "A daypart window 00:30:00-02:30:00 local on a screen in America/New_York on the fall-back date (2026-11-01, when 02:00 EDT falls back to 01:00 EST and local 01:00-01:59 repeats). A daypart is a state, so membership is decided per absolute instant by that instant's own unambiguous local reading: the window holds continuously through BOTH occurrences of the repeated hour, a longer window that date. This contrasts with rules/1 RUL-342, under which a one-shot trigger at a repeated local time fires exactly once, keyed to the first occurrence only.",
   "input": {
     "scope_nodes": [
-      { "id": "01JORGNDE1PG2X7R5JQC42EJ00", "kind": "org", "parent_id": null },
-      { "id": "01JSCRNYCDE1EWH0AVNH9DN600", "kind": "screen", "parent_id": "01JORGNDE1PG2X7R5JQC42EJ00", "tz": "America/New_York", "lat": 40.7128, "long": -74.0060 }
+      { "id": "01J0RGNDE1PG2X7R5JQC42EJ00", "kind": "org", "parent_id": null },
+      { "id": "01JSCRNYCDE1EWH0AVNH9DN600", "kind": "screen", "parent_id": "01J0RGNDE1PG2X7R5JQC42EJ00", "tz": "America/New_York", "lat": 40.7128, "long": -74.0060 }
     ],
     "schedules": [
-      { "id": "01JSCHEDNITE0RGXJVZ9CJD000", "scope_node": "01JSCRNYCDE1EWH0AVNH9DN600", "name": "Overnight", "priority": 0, "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 }
+      { "id": "01JSCHEDN1TE0RGXJVZ9CJD000", "scope_node": "01JSCRNYCDE1EWH0AVNH9DN600", "name": "Overnight", "priority": 0, "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 }
     ],
     "dayparts": [
       {
-        "id": "01JDAYPARTNITE7RCG2V0CQV00",
-        "schedule_id": "01JSCHEDNITE0RGXJVZ9CJD000",
+        "id": "01JDAYPARTN1TE7RCG2V0CQV00",
+        "schedule_id": "01JSCHEDN1TE0RGXJVZ9CJD000",
         "scope_node": "01JSCRNYCDE1EWH0AVNH9DN600",
         "name": "Late Night",
         "days_of_week": [0],
         "start_time": "00:30:00",
         "end_time": "02:30:00",
         "display_power": "on",
-        "playlist_id": "01JPAYSTNITE1MGDMFGS8KX00",
+        "playlist_id": "01JPAYSTN1TE1MGDMFGS8KX000",
         "preset_batch_id": null,
         "revision": 1,
         "created_at": 1752537600000,
@@ -42,10 +42,10 @@
     "valid": true,
     "errors": [],
     "results": [
-      { "label": "before-repeat", "holds": true, "effective_daypart_id": "01JDAYPARTNITE7RCG2V0CQV00" },
-      { "label": "repeated-hour-first-EDT", "holds": true, "effective_daypart_id": "01JDAYPARTNITE7RCG2V0CQV00" },
-      { "label": "repeated-hour-second-EST", "holds": true, "effective_daypart_id": "01JDAYPARTNITE7RCG2V0CQV00" },
-      { "label": "after-repeat-still-in-window", "holds": true, "effective_daypart_id": "01JDAYPARTNITE7RCG2V0CQV00" },
+      { "label": "before-repeat", "holds": true, "effective_daypart_id": "01JDAYPARTN1TE7RCG2V0CQV00" },
+      { "label": "repeated-hour-first-EDT", "holds": true, "effective_daypart_id": "01JDAYPARTN1TE7RCG2V0CQV00" },
+      { "label": "repeated-hour-second-EST", "holds": true, "effective_daypart_id": "01JDAYPARTN1TE7RCG2V0CQV00" },
+      { "label": "after-repeat-still-in-window", "holds": true, "effective_daypart_id": "01JDAYPARTN1TE7RCG2V0CQV00" },
       { "label": "past-window-end", "holds": false, "effective_daypart_id": null }
     ],
     "window_holds_continuously_through_repeat": true,

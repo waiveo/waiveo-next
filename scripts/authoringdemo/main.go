@@ -44,8 +44,8 @@ import (
 // known.
 const (
 	feederAPIBase       = "https://127.0.0.1:7420"
-	contentDaypartID    = "01J8Z7DEMODAYPARTCONTENT01"
-	overnightDaypartID  = "01J8Z7DEMODAYPARTOVERNIGHT"
+	contentDaypartID    = "01J8Z7DEM0DAYPARTC0NTENT01"
+	overnightDaypartID  = "01J8Z7DEM0DAYPART0VERN1GHT"
 	resolverLineMarker  = "SCHEDULE RESOLVER OK"
 	displayToken        = "display:"
 	observeWindow       = 25 * time.Second

@@ -5,8 +5,8 @@
   "description": "One schedule partitions the fall-back night into two adjacent dayparts, D1 00:30:00-01:30:00 and D2 01:30:00-02:30:00 local, on a screen in America/New_York on 2026-11-01 (when 02:00 EDT falls back to 01:00 EST and local 01:00-01:59 repeats). The D1/D2 boundary at 01:30 local sits inside the repeated hour, so N's effective-daypart identity flickers D1->D2->D1->D2 across the repeat and each daypart's preset batch fires on EVERY rising edge -- including the fall-back re-entry -- with no de-duplication by wall-clock ambiguity (DAT-075): a preset batch expresses desired device state (DAT-091) and is safely re-applied, exactly as a fall-through re-fires. This pins the design call that DAT-119's spanning-window no-re-fire statement is scoped to a single daypart spanning the whole repeated hour, not to a boundary landing inside it.",
   "input": {
     "scope_nodes": [
-      { "id": "01JORGNDE1PG2X7R5JQC42EJ00", "kind": "org", "parent_id": null },
-      { "id": "01JSCRNYCDE1EWH0AVNH9DN600", "kind": "screen", "parent_id": "01JORGNDE1PG2X7R5JQC42EJ00", "tz": "America/New_York", "lat": 40.7128, "long": -74.0060 }
+      { "id": "01J0RGNDE1PG2X7R5JQC42EJ00", "kind": "org", "parent_id": null },
+      { "id": "01JSCRNYCDE1EWH0AVNH9DN600", "kind": "screen", "parent_id": "01J0RGNDE1PG2X7R5JQC42EJ00", "tz": "America/New_York", "lat": 40.7128, "long": -74.0060 }
     ],
     "schedules": [
       { "id": "01JSCHEDBDRY0RGXJVZ9CJD000", "scope_node": "01JSCRNYCDE1EWH0AVNH9DN600", "name": "Overnight Boundary", "priority": 0, "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 }

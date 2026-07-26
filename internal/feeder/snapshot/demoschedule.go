@@ -31,7 +31,7 @@ const (
 	// the carried scope-node set. BuildScopeTree treats an absent-parent
 	// reference as a subtree boundary, not a referential-integrity error
 	// (its own documented tolerance).
-	demoOrgAncestorScopeNodeID = "01J8Z0DEMOORGANCESTORBOUND"
+	demoOrgAncestorScopeNodeID = "01J8Z0DEM00RGANCEST0RB0VND"
 
 	// demoSiteScopeNodeID is the SAME site scope node id
 	// cmd/waiveo-feeder's firstPhotonSite (REL-036) binds a relay to via
@@ -40,12 +40,12 @@ const (
 	// can never disagree about this site's placement.
 	demoSiteScopeNodeID = "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5"
 
-	demoScreenScopeNodeID  = "01J8Z4DEMOSCREENFIRSTPHOTN"
-	demoScheduleID         = "01J8Z5DEMOSCHEDULETWODAYPT"
-	demoPlaylistID         = "01J8Z6DEMOPLAYLISTCONTENT1"
-	demoContentDaypartID   = "01J8Z7DEMODAYPARTCONTENT01"
-	demoOvernightDaypartID = "01J8Z7DEMODAYPARTOVERNIGHT"
-	demoPresetBatchID      = "01J8Z8DEMOPRESETBATCHFIRE1"
+	demoScreenScopeNodeID  = "01J8Z4DEM0SCREENF1RSTPH0TN"
+	demoScheduleID         = "01J8Z5DEM0SCHEDV1ETW0DAYPT"
+	demoPlaylistID         = "01J8Z6DEM0P1AY11STC0NTENT1"
+	demoContentDaypartID   = "01J8Z7DEM0DAYPARTC0NTENT01"
+	demoOvernightDaypartID = "01J8Z7DEM0DAYPART0VERN1GHT"
+	demoPresetBatchID      = "01J8Z8DEM0PRESETBATCHF1RE1"
 
 	// demoRowTimestampMs is a fixed, deterministic created_at/updated_at for
 	// every demo row (a fixture instant, not a real wall-clock read) —

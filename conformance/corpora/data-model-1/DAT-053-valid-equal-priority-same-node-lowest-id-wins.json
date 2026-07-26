@@ -5,9 +5,9 @@
   "description": "Two schedules attached at the SAME scope node (the screen) with equal priority, each holding a daypart at the instant. Priority ties (key 1) and specificity ties (key 2, same scope_node), so the strict precedence order falls to key 3: lowest schedule id (ULID) wins. Because id is unique among schedule rows (DAT-005) this key never ties, making the order strictly total. The lower-id schedule's daypart drives the Lease.",
   "input": {
     "scope_nodes": [
-      { "id": "01JORGNDE1PG2X7R5JQC42EJ00", "kind": "org", "parent_id": null },
-      { "id": "01JSITENDE1EWH0AVNH9DN6R00", "kind": "site", "parent_id": "01JORGNDE1PG2X7R5JQC42EJ00", "tz": "America/Denver", "lat": 39.7392, "long": -104.9903 },
-      { "id": "01JSCRNVERRDEF4W6305FAT000", "kind": "screen", "parent_id": "01JSITENDE1EWH0AVNH9DN6R00" }
+      { "id": "01J0RGNDE1PG2X7R5JQC42EJ00", "kind": "org", "parent_id": null },
+      { "id": "01JS1TENDE1EWH0AVNH9DN6R00", "kind": "site", "parent_id": "01J0RGNDE1PG2X7R5JQC42EJ00", "tz": "America/Denver", "lat": 39.7392, "long": -104.9903 },
+      { "id": "01JSCRNVERRDEF4W6305FAT000", "kind": "screen", "parent_id": "01JS1TENDE1EWH0AVNH9DN6R00" }
     ],
     "schedules": [
       { "id": "01JSCHEDAA0RGXJVZ9CJD00000", "scope_node": "01JSCRNVERRDEF4W6305FAT000", "name": "Alpha (lower id)", "priority": 5, "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 },
@@ -15,7 +15,7 @@
     ],
     "dayparts": [
       {
-        "id": "01JDAYPARTALPHA7RCG2V0CQV0",
+        "id": "01JDAYPARTA1PHA7RCG2V0CQV0",
         "schedule_id": "01JSCHEDAA0RGXJVZ9CJD00000",
         "scope_node": "01JSCRNVERRDEF4W6305FAT000",
         "name": "Alpha Business Hours",
@@ -23,14 +23,14 @@
         "start_time": "06:00:00",
         "end_time": "22:00:00",
         "display_power": "on",
-        "playlist_id": "01JPAYSTALPHA1MGDMFGS8KX0",
+        "playlist_id": "01JPAYSTA1PHA1MGDMFGS8KX00",
         "preset_batch_id": null,
         "revision": 1,
         "created_at": 1752537600000,
         "updated_at": 1752537600000
       },
       {
-        "id": "01JDAYPARTZULU7RCG2V0CQV00",
+        "id": "01JDAYPARTZV1V7RCG2V0CQV00",
         "schedule_id": "01JSCHEDZZ0RGXJVZ9CJD00000",
         "scope_node": "01JSCRNVERRDEF4W6305FAT000",
         "name": "Zulu Business Hours",
@@ -38,7 +38,7 @@
         "start_time": "06:00:00",
         "end_time": "22:00:00",
         "display_power": "on",
-        "playlist_id": "01JPAYSTZULU1MGDMFGS8KX00",
+        "playlist_id": "01JPAYSTZV1V1MGDMFGS8KX000",
         "preset_batch_id": null,
         "revision": 1,
         "created_at": 1752537600000,
@@ -53,7 +53,7 @@
     "applicable_schedule_ids_by_precedence": ["01JSCHEDAA0RGXJVZ9CJD00000", "01JSCHEDZZ0RGXJVZ9CJD00000"],
     "precedence_tiebreak": "lowest_id",
     "winning_schedule_id": "01JSCHEDAA0RGXJVZ9CJD00000",
-    "effective_daypart_id": "01JDAYPARTALPHA7RCG2V0CQV0",
-    "lease_projection": { "display": "content", "content_source": "playlist:01JPAYSTALPHA1MGDMFGS8KX0" }
+    "effective_daypart_id": "01JDAYPARTA1PHA7RCG2V0CQV0",
+    "lease_projection": { "display": "content", "content_source": "playlist:01JPAYSTA1PHA1MGDMFGS8KX00" }
   }
 }

@@ -92,7 +92,7 @@ func TestLoadConfigExplicitContentURLWins(t *testing.T) {
 // feederE2EContentDaypartID is the seed demo's content daypart (fixture ULID,
 // mirroring internal/app/store/seed.go). Blanking it over the api is the authored
 // edit that must reach the served desired-state.
-const feederE2EContentDaypartID = "01J8Z7DEMODAYPARTCONTENT01"
+const feederE2EContentDaypartID = "01J8Z7DEM0DAYPARTC0NTENT01"
 
 // TestDesiredStateSourceCurrentRebuildsOnAPIWriteGenerationBump covers the real
 // propagation seam desiredStateSource.current() is: main wires it to /state/pull

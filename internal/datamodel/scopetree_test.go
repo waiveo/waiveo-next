@@ -110,29 +110,34 @@ func TestDAT033ScreenTZOverride(t *testing.T) {
 // intervening group override. site(geoA) -> group(geoB override) -> screen(none)
 // therefore resolves screen to geoA / ancestor-site, never geoB.
 func TestEffectiveGeoWalksToNearestSiteNotIntermediateGroup(t *testing.T) {
+	const (
+		site1ID = "01JS1TE0NENDVGH0AVNH9DN6R0"
+		grp1ID  = "01JGRP0NENDVPG2X7R5JQC42EJ"
+		scr1ID  = "01JSCR0NENDV6RHXQAQPDH4AFA"
+	)
 	nodes := []ScopeNode{
-		{ID: "site1", Kind: "site", ParentID: ptrStr("org1"), Name: "Site One", TZ: ptrStr("America/Denver"), Lat: ptrF64(39.7392), Long: ptrF64(-104.9903)},
-		{ID: "grp1", Kind: "group", ParentID: ptrStr("site1"), Name: "Group One", TZ: ptrStr("America/New_York"), Lat: ptrF64(40.7128), Long: ptrF64(-74.0060)},
-		{ID: "scr1", Kind: "screen", ParentID: ptrStr("grp1"), Name: "Screen One"},
+		{ID: site1ID, Kind: "site", ParentID: ptrStr("01J0RG0NENDVPG2X7R5JQC42EJ"), Name: "Site One", TZ: ptrStr("America/Denver"), Lat: ptrF64(39.7392), Long: ptrF64(-104.9903)},
+		{ID: grp1ID, Kind: "group", ParentID: ptrStr(site1ID), Name: "Group One", TZ: ptrStr("America/New_York"), Lat: ptrF64(40.7128), Long: ptrF64(-74.0060)},
+		{ID: scr1ID, Kind: "screen", ParentID: ptrStr(grp1ID), Name: "Screen One"},
 	}
 	tree, errs := BuildScopeTree(nodes)
 	if len(errs) != 0 {
 		t.Fatalf("unexpected build errors: %+v", errs)
 	}
 	// group resolves to its own override.
-	if g, e := tree.EffectiveGeo("grp1"); e != nil || g.TZ != "America/New_York" || g.Source != "own" {
+	if g, e := tree.EffectiveGeo(grp1ID); e != nil || g.TZ != "America/New_York" || g.Source != "own" {
 		t.Errorf("group EffectiveGeo = %+v, err=%v; want own America/New_York", g, e)
 	}
 	// screen with no override skips the group override and lands on the site.
-	g, e := tree.EffectiveGeo("scr1")
+	g, e := tree.EffectiveGeo(scr1ID)
 	if e != nil {
 		t.Fatalf("screen EffectiveGeo error: %v", e)
 	}
 	if g.TZ != "America/Denver" || g.Lat != 39.7392 || g.Long != -104.9903 {
 		t.Errorf("screen EffectiveGeo = %+v; want site geo America/Denver", g)
 	}
-	if g.Source != "ancestor-site:site1" {
-		t.Errorf("screen source = %q; want ancestor-site:site1", g.Source)
+	if g.Source != "ancestor-site:"+site1ID {
+		t.Errorf("screen source = %q; want ancestor-site:%s", g.Source, site1ID)
 	}
 }
 
@@ -221,6 +226,28 @@ func TestScopeTreeValidationRejects(t *testing.T) {
 	}
 }
 
+// DAT-005a: a scope node's own id MUST be a syntactically valid canonical
+// ULID; a syntactically invalid one is rejected (ROW_ID_INVALID) independent
+// of whether the rest of the node is otherwise valid.
+func TestScopeNodeIDMustBeValidULID(t *testing.T) {
+	nodes := []ScopeNode{
+		{ID: "totally-not-a-ulid", Kind: "org", ParentID: nil, Name: "Bad Org"},
+	}
+	_, errs := BuildScopeTree(nodes)
+	if !hasErr(errs, "ROW_ID_INVALID", "id") {
+		t.Errorf("want ROW_ID_INVALID on field id; got %+v", errs)
+	}
+
+	// A syntactically valid ULID id is accepted.
+	valid := []ScopeNode{
+		{ID: "01JN10NENDVPG2X7R5JQC42EJ0", Kind: "org", ParentID: nil, Name: "Good Org"},
+	}
+	_, errs = BuildScopeTree(valid)
+	if hasErr(errs, "ROW_ID_INVALID", "") {
+		t.Errorf("a valid ULID id must not be rejected; got %+v", errs)
+	}
+}
+
 // DAT-001a: a scope node's name MUST be a non-empty string of at most 200
 // characters. The name check sits ABOVE the kind check in BuildScopeTree's
 // per-node loop (load-bearing placement: the kind check's continue must not
@@ -246,7 +273,7 @@ func TestScopeNodeNameValidation(t *testing.T) {
 	})
 
 	t.Run("name and kind both bad: exactly two errors in field order name,kind", func(t *testing.T) {
-		nodes := []ScopeNode{{ID: "n1", Kind: "building", ParentID: ptrStr("org1"), Name: ""}}
+		nodes := []ScopeNode{{ID: "01JN10NENDVPG2X7R5JQC42EJ0", Kind: "building", ParentID: ptrStr("org1"), Name: ""}}
 		_, errs := BuildScopeTree(nodes)
 		if len(errs) != 2 {
 			t.Fatalf("want exactly 2 errors, got %d: %+v", len(errs), errs)

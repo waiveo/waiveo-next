@@ -37,7 +37,7 @@ func singleAssetStore(playlistID, assetRef string) datamodel.RowStore {
 // expires_at — the single-sourced REL-061 URL grammar, no box-local origin.
 func TestPlaylistContentThreadsContentOriginURL(t *testing.T) {
 	const (
-		playlistID = "01J8ZURLFIXTUREPLAYLIST001"
+		playlistID = "01J8ZVR1F1XTVREP1AY11ST001"
 		assetRef   = "sha256:ABC"
 	)
 	store := singleAssetStore(playlistID, assetRef)
@@ -89,7 +89,7 @@ func multiAssetStore(playlistID string, assetRefs [3]string, middleDurationSecon
 // duration_ms key at all (omitempty, byte-identical to this function's
 // pre-existing no-duration output).
 func TestPlaylistContentOrderedMultiItemCarriesDurationOverride(t *testing.T) {
-	const playlistID = "01J8ZURLFIXTUREPLAYLIST004"
+	const playlistID = "01J8ZVR1F1XTVREP1AY11ST004"
 	assetRefs := [3]string{"sha256:AAA", "sha256:BBB", "sha256:CCC"}
 	store := multiAssetStore(playlistID, assetRefs, 9)
 
@@ -119,7 +119,7 @@ func TestPlaylistContentOrderedMultiItemCarriesDurationOverride(t *testing.T) {
 // fabricated box-local origin (REL-140).
 func TestPlaylistContentEmptyOriginLeavesURLEmpty(t *testing.T) {
 	const (
-		playlistID = "01J8ZURLFIXTUREPLAYLIST002"
+		playlistID = "01J8ZVR1F1XTVREP1AY11ST002"
 		assetRef   = "sha256:ABC"
 	)
 	store := singleAssetStore(playlistID, assetRef)
@@ -146,9 +146,9 @@ func TestScheduleResolvedURLMatchesSnapshotBuildByteForByte(t *testing.T) {
 	const base = "https://origin.example"
 
 	assetRef := signhash.ContentID(img)
-	store := singleAssetStore("01J8ZURLFIXTUREPLAYLIST003", assetRef)
+	store := singleAssetStore("01J8ZVR1F1XTVREP1AY11ST003", assetRef)
 
-	resolved := playlistContent(store, "01J8ZURLFIXTUREPLAYLIST003", base)
+	resolved := playlistContent(store, "01J8ZVR1F1XTVREP1AY11ST003", base)
 	if len(resolved) != 1 {
 		t.Fatalf("playlistContent returned %d items, want 1", len(resolved))
 	}

@@ -415,9 +415,9 @@ func checkDisplayPowerOff074(t *testing.T, rawIn, rawExp json.RawMessage) {
 	// Denver site so the effective tz resolves by ancestor walk (DAT-033).
 	grp := in.Schedule.ScopeNode
 	nodes := []ScopeNode{
-		{ID: "01JORGNDE1PG2X7R5JQC42EJ00", Kind: "org", Name: "Denver Org"},
-		{ID: "01JSITENDE1EWH0AVNH9DN6R00", Kind: "site", ParentID: ptrStr("01JORGNDE1PG2X7R5JQC42EJ00"), Name: "Denver Site", TZ: ptrStr("America/Denver"), Lat: ptrF64(39.7392), Long: ptrF64(-104.9903)},
-		{ID: grp, Kind: "group", ParentID: ptrStr("01JSITENDE1EWH0AVNH9DN6R00"), Name: "Effective Group"},
+		{ID: "01J0RGNDE1PG2X7R5JQC42EJ00", Kind: "org", Name: "Denver Org"},
+		{ID: "01JS1TENDE1EWH0AVNH9DN6R00", Kind: "site", ParentID: ptrStr("01J0RGNDE1PG2X7R5JQC42EJ00"), Name: "Denver Site", TZ: ptrStr("America/Denver"), Lat: ptrF64(39.7392), Long: ptrF64(-104.9903)},
+		{ID: grp, Kind: "group", ParentID: ptrStr("01JS1TENDE1EWH0AVNH9DN6R00"), Name: "Effective Group"},
 	}
 	tree, errs := BuildScopeTree(nodes)
 	if len(errs) != 0 {
@@ -892,7 +892,7 @@ func checkSpringForward119(t *testing.T, rawIn, rawExp json.RawMessage) {
 	if got := scheduleIDs(ApplicableSchedules(store, in.ResolveFor, firstMs)); !eqStrs(got, exp.ApplicableByPrec) {
 		t.Fatalf("applicable = %v, want %v", got, exp.ApplicableByPrec)
 	}
-	dpA := daypartByID(in.Dayparts, "01JDAYPARTAAA7RCG2V0CQV00")
+	dpA := daypartByID(in.Dayparts, "01JDAYPARTAAA7RCG2V0CQV000")
 	dpB := daypartByID(in.Dayparts, exp.WhollyInGap.DaypartID)
 	for i, e := range in.Evaluations {
 		tMs := evalMs(t, store, in.ResolveFor, e)

@@ -31,8 +31,8 @@ import (
 // no secrets): the screen node the demo schedule governs, and the content daypart
 // (06:00-22:00) an authored edit blanks.
 const (
-	e2eScreenNodeID     = "01J8Z4DEMOSCREENFIRSTPHOTN"
-	e2eContentDaypartID = "01J8Z7DEMODAYPARTCONTENT01"
+	e2eScreenNodeID     = "01J8Z4DEM0SCREENF1RSTPH0TN"
+	e2eContentDaypartID = "01J8Z7DEM0DAYPARTC0NTENT01"
 )
 
 // e2eContentInstant is a fixed wall-clock instant inside the seed demo's content

@@ -16,11 +16,11 @@ import (
 // scope node, a screen under it, and a schedule/playlist/daypart on the screen.
 const (
 	siteNodeID   = "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5"
-	orgParentID  = "01J8Z0DEMOORGANCESTORBOUND"
-	screenNodeID = "01J8Z4DEMOSCREENFIRSTPHOTN"
-	scheduleID   = "01J8Z5DEMOSCHEDULETWODAYPT"
-	playlistID   = "01J8Z6DEMOPLAYLISTCONTENT1"
-	daypartID    = "01J8Z7DEMODAYPARTCONTENT01"
+	orgParentID  = "01J8Z0DEM00RGANCEST0RB0VND"
+	screenNodeID = "01J8Z4DEM0SCREENF1RSTPH0TN"
+	scheduleID   = "01J8Z5DEM0SCHEDV1ETW0DAYPT"
+	playlistID   = "01J8Z6DEM0P1AY11STC0NTENT1"
+	daypartID    = "01J8Z7DEM0DAYPARTC0NTENT01"
 
 	siteTZ   = "America/Chicago"
 	siteLat  = 41.8781
@@ -144,7 +144,7 @@ func TestWriteGuardRunsAtomicallyAndCanReject(t *testing.T) {
 
 	// A create the guard rejects: error is returned verbatim, nothing written.
 	dupSite := siteNode()
-	dupSite.ID = "01J8Z9SECONDSITENODEFORGRD"
+	dupSite.ID = "01J8Z9SEC0NDS1TEN0DEF0RGRD"
 	_, err := s.Create(ctx, store.KindScopeNode, mustJSON(t, dupSite), guard)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("guarded create error = %v, want the sentinel verbatim", err)
@@ -522,7 +522,7 @@ func TestConcurrentWritesSerialized(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			// Distinct 26-char fixture id per goroutine (zero-padded index).
-			id := "01J8ZPLAYLIST" + padID(i)
+			id := "01J8ZP1AY11ST" + padID(i)
 			pl := datamodel.Playlist{ID: id, ScopeNode: screenNodeID, Name: "PL", Items: []datamodel.PlaylistItem{{Source: "asset", AssetRef: "sha256:cafef00d"}}}
 			if _, err := s.Create(ctx, store.KindPlaylist, mustJSON(t, pl)); err != nil {
 				errCh <- err
@@ -631,9 +631,11 @@ func TestDesiredStateGenerationBindsConsistentEdgeRuleContent(t *testing.T) {
 }
 
 // padID renders i as a fixed-width 13-char suffix so every generated fixture id
-// is a distinct 26-char string.
+// is a distinct 26-char string. digits is restricted to the Crockford base32
+// alphabet (no I, L, O, U) so a suffix concatenated onto a 13-char valid-ULID
+// prefix stays a syntactically valid canonical ULID (DAT-005a).
 func padID(i int) string {
-	const digits = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	const digits = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 	buf := []byte("0000000000000")
 	j := len(buf) - 1
 	for i > 0 && j >= 0 {
