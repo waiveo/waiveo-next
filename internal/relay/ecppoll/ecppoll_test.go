@@ -79,9 +79,9 @@ func (fx *fixtureServer) target(t *testing.T) Target {
 
 func (fx *fixtureServer) Close() { fx.srv.Close() }
 
-// --- first-observation semantics ---
+// --- first-observation semantics (C2: single-stream self-transition seed) ---
 
-func TestFirstSnapshotSeedsWithoutEmitting(t *testing.T) {
+func TestFirstSnapshotEmitsSelfTransitionSeed(t *testing.T) {
 	fx := newFixtureServer()
 	defer fx.Close()
 
@@ -89,17 +89,23 @@ func TestFirstSnapshotSeedsWithoutEmitting(t *testing.T) {
 	ctx := context.Background()
 	p.pollAll(ctx)
 
-	seeds := p.Seeds()
-	if len(seeds) != 1 {
-		t.Fatalf("Seeds() len = %d, want 1", len(seeds))
+	obs, ok := p.Next()
+	if !ok {
+		t.Fatalf("expected a self-transition seed Observation on the first snapshot")
 	}
-	if seeds[0].ID != "tv1" || seeds[0].State != "on" {
-		t.Fatalf("Seeds()[0] = %+v, want ID=tv1 State=on", seeds[0])
+	if obs.StateChanged {
+		t.Fatalf("StateChanged = true, want false (self-transition seed: prev==curr)")
+	}
+	if len(obs.ChangedAttrs) != 0 {
+		t.Fatalf("ChangedAttrs = %v, want empty (self-transition seed)", obs.ChangedAttrs)
+	}
+	if obs.Entity.ID != "tv1" || obs.Entity.State != "on" {
+		t.Fatalf("Entity = %+v, want ID=tv1 State=on", obs.Entity)
 	}
 
 	select {
-	case obs := <-p.ch:
-		t.Fatalf("expected no emitted Observation on first snapshot, got %+v", obs)
+	case extra := <-p.ch:
+		t.Fatalf("expected exactly one Observation from the first snapshot, got an extra one: %+v", extra)
 	default:
 	}
 }
@@ -110,7 +116,10 @@ func TestSecondIdenticalPollEmitsNothing(t *testing.T) {
 
 	p := New(map[string]Target{"tv1": fx.target(t)}, time.Hour)
 	ctx := context.Background()
-	p.pollAll(ctx) // seed
+	p.pollAll(ctx) // seed: emits a self-transition Observation
+	if _, ok := p.Next(); !ok {
+		t.Fatalf("expected the seed self-transition Observation to be available")
+	}
 	p.pollAll(ctx) // identical snapshot: quiet tick
 
 	select {
@@ -127,6 +136,9 @@ func TestAppChangeEmitsObservationWithChangedAttrsOnly(t *testing.T) {
 	p := New(map[string]Target{"tv1": fx.target(t)}, time.Hour)
 	ctx := context.Background()
 	p.pollAll(ctx) // seed: app id=12 TestApp v1.0
+	if _, ok := p.Next(); !ok {
+		t.Fatalf("expected the seed self-transition Observation to be available")
+	}
 
 	fx.setActiveApp(`<active-app><app id="99" type="appl" version="2.0">OtherApp</app></active-app>`)
 	p.pollAll(ctx)
@@ -165,6 +177,9 @@ func TestStandbyDerivation(t *testing.T) {
 	p := New(map[string]Target{"tv1": fx.target(t)}, time.Hour)
 	ctx := context.Background()
 	p.pollAll(ctx) // seed: PowerOn / on
+	if _, ok := p.Next(); !ok {
+		t.Fatalf("expected the seed self-transition Observation to be available")
+	}
 
 	fx.setDeviceInfo(`<device-info><power-mode>Suspend</power-mode></device-info>`)
 	p.pollAll(ctx)
@@ -181,6 +196,34 @@ func TestStandbyDerivation(t *testing.T) {
 	}
 }
 
+// TestUnknownPowerModeDerivesOff asserts I1's whitelist fix: a power-mode
+// value that is neither "PowerOn" nor a recognized member of
+// standbyPowerModes (a value this driver has never seen, e.g. a future
+// firmware string) classifies to the media-player class's own REG-062
+// unknown_state_fallback, "off" — never "standby" and never "on".
+func TestUnknownPowerModeDerivesOff(t *testing.T) {
+	fx := newFixtureServer()
+	defer fx.Close()
+
+	p := New(map[string]Target{"tv1": fx.target(t)}, time.Hour)
+	ctx := context.Background()
+	p.pollAll(ctx) // seed: PowerOn / on
+	if _, ok := p.Next(); !ok {
+		t.Fatalf("expected the seed self-transition Observation to be available")
+	}
+
+	fx.setDeviceInfo(`<device-info><power-mode>SomeFutureFirmwareValue</power-mode></device-info>`)
+	p.pollAll(ctx)
+
+	obs, ok := p.Next()
+	if !ok {
+		t.Fatalf("expected an emitted Observation on power-mode change")
+	}
+	if !obs.StateChanged || obs.Entity.State != "off" {
+		t.Fatalf("Entity = %+v StateChanged=%v, want State=off StateChanged=true", obs.Entity, obs.StateChanged)
+	}
+}
+
 func TestScreensaverDerivation(t *testing.T) {
 	fx := newFixtureServer()
 	defer fx.Close()
@@ -188,6 +231,9 @@ func TestScreensaverDerivation(t *testing.T) {
 	p := New(map[string]Target{"tv1": fx.target(t)}, time.Hour)
 	ctx := context.Background()
 	p.pollAll(ctx) // seed: app on
+	if _, ok := p.Next(); !ok {
+		t.Fatalf("expected the seed self-transition Observation to be available")
+	}
 
 	fx.setActiveApp(`<active-app><screensaver id="7" type="ss">MyScreensaver</screensaver></active-app>`)
 	p.pollAll(ctx)
@@ -226,12 +272,12 @@ func TestHomeScreenDynamicMenuDerivesIdle(t *testing.T) {
 	ctx := context.Background()
 	p.pollAll(ctx)
 
-	seeds := p.Seeds()
-	if len(seeds) != 1 || seeds[0].State != "idle" {
-		t.Fatalf("Seeds()[0] = %+v, want State=idle", seeds[0])
+	seed, ok := p.Next()
+	if !ok || seed.Entity.State != "idle" {
+		t.Fatalf("seed Observation = %+v ok=%v, want State=idle", seed, ok)
 	}
-	if seeds[0].Attributes["app_type"] != nil {
-		t.Fatalf("app_type = %v, want nil (type attr absent, literal map only)", seeds[0].Attributes["app_type"])
+	if seed.Entity.Attributes["app_type"] != nil {
+		t.Fatalf("app_type = %v, want nil (type attr absent, literal map only)", seed.Entity.Attributes["app_type"])
 	}
 }
 
@@ -244,9 +290,9 @@ func TestMissingAppElementDerivesIdle(t *testing.T) {
 	ctx := context.Background()
 	p.pollAll(ctx)
 
-	seeds := p.Seeds()
-	if len(seeds) != 1 || seeds[0].State != "idle" {
-		t.Fatalf("Seeds()[0] = %+v, want State=idle", seeds[0])
+	seed, ok := p.Next()
+	if !ok || seed.Entity.State != "idle" {
+		t.Fatalf("seed Observation = %+v ok=%v, want State=idle", seed, ok)
 	}
 }
 
@@ -261,11 +307,11 @@ func TestUnreachableDerivesUnavailable(t *testing.T) {
 	ctx := context.Background()
 	p.pollAll(ctx)
 
-	seeds := p.Seeds()
-	if len(seeds) != 1 {
-		t.Fatalf("Seeds() len = %d, want 1", len(seeds))
+	seed, ok := p.Next()
+	if !ok {
+		t.Fatalf("expected the seed self-transition Observation to be available")
 	}
-	assertUnavailable(t, seeds[0])
+	assertUnavailable(t, seed.Entity)
 }
 
 func TestXMLGarbageDerivesUnavailable(t *testing.T) {
@@ -277,11 +323,11 @@ func TestXMLGarbageDerivesUnavailable(t *testing.T) {
 	ctx := context.Background()
 	p.pollAll(ctx)
 
-	seeds := p.Seeds()
-	if len(seeds) != 1 {
-		t.Fatalf("Seeds() len = %d, want 1", len(seeds))
+	seed, ok := p.Next()
+	if !ok {
+		t.Fatalf("expected the seed self-transition Observation to be available")
 	}
-	assertUnavailable(t, seeds[0])
+	assertUnavailable(t, seed.Entity)
 }
 
 func assertUnavailable(t *testing.T, e state.Entity) {
@@ -355,6 +401,17 @@ func TestChannelOverflowDropsOldestAndCounts(t *testing.T) {
 	firstID := received[0]
 	if firstID == "1" || firstID == "2" {
 		t.Fatalf("first surviving Observation had active_app_id=%s, want a late id (oldest should have been dropped, not newest)", firstID)
+	}
+}
+
+// TestTargetAddrBracketsIPv6 asserts M1's fix: an IPv6 literal host is
+// correctly bracketed in the rendered URL rather than producing a malformed
+// authority (e.g. "http://::1:8060", which net/url/net/http would not parse
+// as host "::1" port "8060").
+func TestTargetAddrBracketsIPv6(t *testing.T) {
+	got := (Target{Host: "::1", Port: 8060}).addr()
+	if want := "http://[::1]:8060"; got != want {
+		t.Fatalf("addr() = %q, want %q", got, want)
 	}
 }
 

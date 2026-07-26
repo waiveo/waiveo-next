@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -121,7 +122,7 @@ func TestSweepObservesMatchingST(t *testing.T) {
 		return []foundService{{ST: st}}, nil
 	}
 
-	d.sweep()
+	d.sweep(context.Background())
 
 	cands := store.Report().Body.Candidates
 	if len(cands) != 1 {
@@ -153,7 +154,7 @@ func TestSweepIgnoresNonMatchingST(t *testing.T) {
 		return []foundService{{ST: "urn:some-other:device:1"}}, nil
 	}
 
-	d.sweep()
+	d.sweep(context.Background())
 
 	if cands := store.Report().Body.Candidates; len(cands) != 0 {
 		t.Fatalf("got %d candidates, want 0: %+v", len(cands), cands)
@@ -179,9 +180,9 @@ func TestSweepRepeatedHitsBumpLastSeenNotDuplicate(t *testing.T) {
 		return []foundService{{ST: st}, {ST: st}}, nil
 	}
 
-	d.sweep()
+	d.sweep(context.Background())
 	nowVal = 2000
-	d.sweep()
+	d.sweep(context.Background())
 
 	cands := store.Report().Body.Candidates
 	if len(cands) != 1 {
@@ -215,7 +216,7 @@ func TestSweepSearchErrorDoesNotStopOtherPatterns(t *testing.T) {
 		return []foundService{{ST: st}}, nil
 	}
 
-	d.sweep()
+	d.sweep(context.Background())
 
 	cands := store.Report().Body.Candidates
 	if len(cands) != 1 {
@@ -315,6 +316,86 @@ func TestRunStopsPromptlyOnContextCancel(t *testing.T) {
 	}
 	if !mon.closed {
 		t.Error("Run() did not close the alive monitor before returning")
+	}
+}
+
+// TestRunStopsPromptlyDuringSlowSearch is C1's regression test: it proves Run
+// returns promptly on ctx cancellation even while a real, blocking search is
+// still in flight (the earlier TestRunStopsPromptlyOnContextCancel only ever
+// exercised a zero-latency fake search, which could never detect this), AND
+// that the search's eventual late result — which arrives well after Run has
+// already returned — is discarded rather than reaching the Store (the
+// Important stray-goroutine finding).
+func TestRunStopsPromptlyDuringSlowSearch(t *testing.T) {
+	store := deviceplane.NewStore("relay-1")
+	now := func() int64 { return 1000 }
+	pattern := mustMatch(t, `{"ssdp":"urn:roku-com:device:player:1"}`)
+
+	d, err := New(Config{
+		Patterns:  []deviceplane.Match{pattern},
+		Store:     store,
+		NowMillis: now,
+		Interval:  time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	mon := &fakeMonitor{}
+	d.newMonitor = func(onAlive func(string)) ssdpMonitor { return mon }
+
+	searchStarted := make(chan struct{})
+	releaseSearch := make(chan struct{})
+	var searchStartedOnce sync.Once
+	d.search = func(st string, wait int) ([]foundService, error) {
+		searchStartedOnce.Do(func() { close(searchStarted) })
+		<-releaseSearch // held open well past ctx cancellation and Run's return
+		return []foundService{{ST: st}}, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() { done <- d.Run(ctx) }()
+
+	<-searchStarted // make sure sweep is blocked mid-search before canceling
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("Run() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run() did not return promptly while a search was still blocked")
+	}
+
+	// Run has returned while the search goroutine is still blocked. Release
+	// it now and give it time to (wrongly) reach the Store if the ctx guard
+	// in searchPattern were missing.
+	close(releaseSearch)
+	time.Sleep(100 * time.Millisecond)
+
+	if cands := store.Report().Body.Candidates; len(cands) != 0 {
+		t.Fatalf("got %d candidates after Run returned, want 0 (a late search result must be discarded, not Observed)", len(cands))
+	}
+}
+
+// TestNewClampsSubSecondSearchWaitToOneSecond asserts M5's fix: a positive
+// but sub-second Config.SearchWait is floored to 1s rather than silently
+// truncating (via sweep's int(searchWait/time.Second)) to a 0-second wait
+// that would collect zero responses every sweep.
+func TestNewClampsSubSecondSearchWaitToOneSecond(t *testing.T) {
+	store := deviceplane.NewStore("relay-1")
+	now := func() int64 { return 1000 }
+	pat := []deviceplane.Match{mustMatch(t, `{"ssdp":"urn:roku-com:device:player:1"}`)}
+
+	d, err := New(Config{Patterns: pat, Store: store, NowMillis: now, SearchWait: 500 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if d.searchWait != time.Second {
+		t.Errorf("searchWait = %v, want floored to 1s", d.searchWait)
 	}
 }
 

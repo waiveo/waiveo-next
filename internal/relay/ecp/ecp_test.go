@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/maaxton/waiveo-next/internal/relay/deviceplane"
@@ -191,12 +192,16 @@ func TestDispatchKeypressMissingKey(t *testing.T) {
 
 // TestDispatchUnknownEntity: an entityID absent from the Controller's own
 // targets map has nowhere to dispatch to, so Dispatch fails closed
-// COMMAND_TARGET_UNREACHABLE — distinct from the device-command surface's own
-// entity resolution (REL-112/113), which this controller sits behind.
+// COMMAND_UNRESOLVED (I2: a config/wiring gap — this controller's own address
+// book has no Target for the entity — not a device that was reached and
+// failed, so it must not share COMMAND_TARGET_UNREACHABLE with that case).
+// Distinct from the device-command surface's own entity resolution
+// (REL-112/113), which this controller sits behind and uses the identical
+// code for.
 func TestDispatchUnknownEntity(t *testing.T) {
 	c := New(map[string]Target{})
 	err := c.Dispatch("ghost", "home", nil)
-	assertControllerError(t, err, "COMMAND_TARGET_UNREACHABLE")
+	assertControllerError(t, err, "COMMAND_UNRESOLVED")
 }
 
 // TestDispatchUnknownCommand: a command name outside REG-066's media-player
@@ -257,6 +262,85 @@ func TestDispatchConnectionRefused(t *testing.T) {
 func TestDefaultPortZero(t *testing.T) {
 	if got := (Target{Host: "10.0.0.5"}).addr(); got != "10.0.0.5:8060" {
 		t.Errorf("addr() = %q, want 10.0.0.5:8060", got)
+	}
+}
+
+// TestAddrBracketsIPv6 asserts M1's fix: an IPv6 literal host is correctly
+// bracketed in the rendered authority rather than producing a malformed one
+// (e.g. "::1:8060", which is not parseable as host "::1" port "8060").
+func TestAddrBracketsIPv6(t *testing.T) {
+	if got := (Target{Host: "::1", Port: 8060}).addr(); got != "[::1]:8060" {
+		t.Errorf("addr() = %q, want [::1]:8060", got)
+	}
+}
+
+// TestWithHTTPClientNilIgnored asserts M2's fix: WithHTTPClient(nil) must not
+// zero out Controller.client (which would panic the next Dispatch inside a
+// nil *http.Client.Do) — New's constructed default is retained instead,
+// matching ecppoll.WithHTTPClient's own nil-guard convention.
+func TestWithHTTPClientNilIgnored(t *testing.T) {
+	srv, recv := newFakeECP(t, http.StatusOK)
+	target := targetFromServer(t, srv)
+	c := New(map[string]Target{"entity-1": target}, WithHTTPClient(nil))
+
+	if err := c.Dispatch("entity-1", "home", nil); err != nil {
+		t.Fatalf("Dispatch with WithHTTPClient(nil) = %v, want nil (nil client must be ignored)", err)
+	}
+	select {
+	case <-recv:
+	default:
+		t.Fatal("server never received a request")
+	}
+}
+
+// countingListener wraps a net.Listener and counts every accepted TCP
+// connection, used by TestDispatchDrainsBodyForConnectionReuse to detect
+// whether Dispatch's http.Client.Transport was able to reuse a connection
+// across sequential requests.
+type countingListener struct {
+	net.Listener
+	accepted atomic.Int32
+}
+
+func (l *countingListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err == nil {
+		l.accepted.Add(1)
+	}
+	return conn, err
+}
+
+// TestDispatchDrainsBodyForConnectionReuse asserts M3's fix: Dispatch must
+// drain a response body before Close()ing it so http.Client's Transport can
+// return the underlying TCP connection to its keep-alive pool. A non-2xx
+// response with a non-trivial body (large enough that an undrained Close
+// forces the Transport to tear down the connection rather than reuse it) is
+// dispatched several times in a row against the same server; if the body is
+// drained, every dispatch after the first should reuse the one accepted
+// connection instead of opening a fresh one each time.
+func TestDispatchDrainsBodyForConnectionReuse(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/keypress/Home", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(strings.Repeat("x", 8192)))
+	})
+	srv := httptest.NewUnstartedServer(mux)
+	cl := &countingListener{Listener: srv.Listener}
+	srv.Listener = cl
+	srv.Start()
+	t.Cleanup(srv.Close)
+
+	target := targetFromServer(t, srv)
+	c := New(map[string]Target{"entity-1": target})
+
+	for i := 0; i < 5; i++ {
+		if err := c.Dispatch("entity-1", "home", nil); err == nil {
+			t.Fatal("Dispatch = nil, want an error for a non-2xx ECP response")
+		}
+	}
+
+	if got := cl.accepted.Load(); got > 1 {
+		t.Errorf("server accepted %d TCP connections across 5 sequential Dispatch calls, want 1 (response body must be drained before Close so the client's Transport can reuse the connection)", got)
 	}
 }
 

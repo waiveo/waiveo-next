@@ -30,6 +30,14 @@ import (
 const (
 	defaultInterval   = 60 * time.Second
 	defaultSearchWait = 3 * time.Second
+
+	// minSearchWait is the floor a positive Config.SearchWait is clamped to
+	// (M5). go-ssdp's Search/MX API only accepts whole seconds — sweep's own
+	// waitSec computation truncates via integer division by time.Second — so
+	// a sub-second SearchWait would otherwise silently truncate to a
+	// 0-second wait and collect zero responses every sweep, with no error or
+	// visible degradation.
+	minSearchWait = 1 * time.Second
 )
 
 // foundService is the minimal shape of an SSDP search response discovery
@@ -153,8 +161,12 @@ func New(cfg Config) (*Discoverer, error) {
 		interval = defaultInterval
 	}
 	searchWait := cfg.SearchWait
-	if searchWait <= 0 {
+	switch {
+	case searchWait <= 0:
 		searchWait = defaultSearchWait
+	case searchWait < minSearchWait:
+		// M5: floor rather than silently degrading to a 0-second wait.
+		searchWait = minSearchWait
 	}
 
 	return &Discoverer{
@@ -173,8 +185,31 @@ func New(cfg Config) (*Discoverer, error) {
 // immediately, then sweeps again every Interval. The monitor is always
 // closed before Run returns. Run returns ctx.Err() once ctx is done, or an
 // error starting the alive monitor.
+//
+// Cancellation is honored PROMPTLY even mid-sweep (C1): the production
+// searchFn (defaultSearch) is go-ssdp's ssdp.Search, which takes no
+// context.Context at all and blocks for the entire SearchWait regardless of
+// ctx — so sweep runs each pattern's search in its own goroutine via
+// searchPattern and races it against ctx.Done() rather than waiting on it
+// synchronously. An abandoned search keeps running in the background (it
+// cannot be killed) but its eventual result is discarded, never Observed,
+// once ctx is done — searchPattern and the alive-monitor callback below both
+// re-check ctx.Err() immediately before every Store.Observe call, so no
+// Observe can land on the Store once Run has returned to its caller
+// (Important, stray-goroutine finding: go-ssdp's own per-packet NOTIFY
+// goroutines can briefly outlive Monitor.Close(), and a blocked Search
+// goroutine can outlive Run itself).
 func (d *Discoverer) Run(ctx context.Context) error {
-	mon := d.newMonitor(d.observeAlive)
+	mon := d.newMonitor(func(nt string) {
+		if ctx.Err() != nil {
+			// Run has already been asked to stop (or has returned): a NOTIFY
+			// from go-ssdp's own detached per-packet goroutine — which can
+			// outlive Monitor.Close() — must never reach the Store this
+			// late.
+			return
+		}
+		d.observeAlive(nt)
+	})
 	if err := mon.Start(); err != nil {
 		return fmt.Errorf("discovery: starting alive monitor: %w", err)
 	}
@@ -183,43 +218,87 @@ func (d *Discoverer) Run(ctx context.Context) error {
 	ticker := time.NewTicker(d.interval)
 	defer ticker.Stop()
 
-	d.sweep()
+	d.sweep(ctx)
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			d.sweep()
+			d.sweep(ctx)
 		}
 	}
 }
 
 // sweep runs one SSDP M-SEARCH round: for every distinct configured pattern
-// string, it searches and Observes every response whose ST exactly matches
-// that pattern (MAN-071's search-target string) into the Store
-// (REL-110/111). Repeated hits — within a sweep or across sweeps — dedup
-// via the Store's own Match.Key() dedup, bumping last_seen rather than
+// string, it searches (via searchPattern) and Observes every response whose
+// ST exactly matches that pattern (MAN-071's search-target string) into the
+// Store (REL-110/111). Repeated hits — within a sweep or across sweeps —
+// dedup via the Store's own Match.Key() dedup, bumping last_seen rather than
 // accumulating. A response with a mismatched ST is ignored; a per-pattern
 // search error is also ignored so one bad/unreachable pattern never stops
 // the sweep from trying the rest.
-func (d *Discoverer) sweep() {
-	waitSec := int(d.searchWait / time.Second)
+//
+// ctx is checked between every pattern (C1): if it is already done, sweep
+// returns immediately rather than searching every remaining pattern in this
+// round, each at the already-doomed full SearchWait cost.
+func (d *Discoverer) sweep(ctx context.Context) {
 	for st, m := range d.byST {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		d.searchPattern(ctx, st, m)
+	}
+}
+
+// searchPattern runs one pattern's M-SEARCH in its own goroutine and races it
+// against ctx.Done() (C1): the production searchFn (defaultSearch) has no
+// context.Context parameter and blocks for the entire SearchWait regardless
+// of cancellation, so this is the only way sweep/Run can return promptly
+// when ctx is canceled during a real search.
+//
+// If ctx is canceled before the search goroutine finishes, searchPattern
+// returns immediately without waiting for or acting on the eventual result.
+// The goroutine keeps running to completion in the background (it cannot be
+// interrupted), but its result-handling closure re-checks ctx.Err()
+// immediately before every Store.Observe call, so a late result is
+// discarded rather than landing on the Store after Run has already returned
+// to its caller.
+func (d *Discoverer) searchPattern(ctx context.Context, st string, m deviceplane.Match) {
+	waitSec := int(d.searchWait / time.Second)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
 		found, err := d.search(st, waitSec)
 		if err != nil {
-			continue
+			return
+		}
+		if ctx.Err() != nil {
+			return
 		}
 		for _, f := range found {
-			if f.ST == st {
-				d.store.Observe(m, deviceplane.ProvenanceDiscovered, d.nowMillis())
+			if f.ST != st {
+				continue
 			}
+			if ctx.Err() != nil {
+				return
+			}
+			d.store.Observe(m, deviceplane.ProvenanceDiscovered, d.nowMillis())
 		}
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
 	}
 }
 
 // observeAlive is the alive-monitor callback (REL-110/111): an alive NOTIFY
 // whose NT exactly matches a configured pattern (MAN-071's search-target
-// string) is Observed into the Store; any other NT is ignored.
+// string) is Observed into the Store; any other NT is ignored. Pure lookup
+// logic only — Run wraps this in a ctx.Err() guard (see Run's doc) before
+// wiring it to the real monitor, so this method itself stays directly
+// testable without a context.
 func (d *Discoverer) observeAlive(nt string) {
 	m, ok := d.byST[nt]
 	if !ok {

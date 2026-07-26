@@ -16,8 +16,11 @@ package ecp
 
 import (
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/relay/deviceplane"
@@ -25,19 +28,41 @@ import (
 
 // codeTargetUnreachable is relay/1's Error-taxonomy code for "the relay could
 // not reach the target device to attempt the command" (contracts/relay-1.md
-// Error taxonomy, retryable). This controller raises it both when an entityID
-// has no configured Target (there is no address to reach) and when dialing or
-// exchanging with a configured Target's ECP port fails outright.
+// Error taxonomy, retryable) — a TRANSIENT condition: the entity has a
+// configured Target, but dialing or exchanging with it over ECP failed
+// outright (connection refused/reset, timeout, DNS failure). This controller
+// raises it ONLY for that case.
+//
+// I2: it must NOT be reused for "no Target is configured for this entityID at
+// all" — that is a config/wiring gap between this controller's own address
+// book and the caller, discovered because there is nowhere to send the
+// command, not because a device was dialed and failed to answer. See
+// codeUnresolved below, which this controller uses for that case instead.
 const codeTargetUnreachable = "COMMAND_TARGET_UNREACHABLE"
 
 // codeUnresolved is relay/1's REL-113 taxonomy code for a command that does
-// not resolve against a device class's command vocabulary. The device-command
-// surface (deviceplane.CommandSurface) already rejects an out-of-vocabulary
-// command before ever calling Dispatch (REL-113), but this controller fails
-// closed with the same code for an unknown command name or a missing/invalid
-// param — REG-066's own vocabulary and shapes are what it resolves against
-// here, so the code fits identically even though the failure surfaces one
-// layer deeper than the surface's own check.
+// not resolve. Two shapes both use it here:
+//
+//  1. The device-command surface (deviceplane.CommandSurface) already rejects
+//     an out-of-vocabulary command before ever calling Dispatch (REL-113), but
+//     this controller fails closed with the same code for an unknown command
+//     name or a missing/invalid param — REG-066's own vocabulary and shapes
+//     are what it resolves against here, so the code fits identically even
+//     though the failure surfaces one layer deeper than the surface's own
+//     check.
+//
+//  2. (I2) An entityID this Controller has no configured Target for at all.
+//     deviceplane.CommandSurface's own execute() already uses this exact code
+//     (command.go's codeCommandUnresolved) for its "no adopted entity" check —
+//     an entityID missing from THIS controller's targets map, caught one
+//     layer deeper, is the identical shape of problem: the system does not
+//     know how to route to this entity, a config/wiring gap, not a device
+//     that was reached and failed. An earlier revision of this controller
+//     reused codeTargetUnreachable for this case; that made "can't route to
+//     this entity" surface under two different codes depending on which layer
+//     detected it, which would read as inconsistent to anything built on the
+//     taxonomy for observability/alerting/retry policy. Using
+//     codeUnresolved here instead keeps both layers consistent.
 const codeUnresolved = "COMMAND_UNRESOLVED"
 
 // defaultPort is Roku ECP's well-known port, used whenever a Target's Port is
@@ -60,13 +85,15 @@ type Target struct {
 }
 
 // addr renders t as a dispatchable "host:port" pair, substituting
-// defaultPort for a zero Port.
+// defaultPort for a zero Port. Uses net.JoinHostPort (M1) so an IPv6 literal
+// host is correctly bracketed (e.g. "[::1]:8060") rather than producing a
+// malformed authority.
 func (t Target) addr() string {
 	port := t.Port
 	if port == 0 {
 		port = defaultPort
 	}
-	return fmt.Sprintf("%s:%d", t.Host, port)
+	return net.JoinHostPort(t.Host, strconv.Itoa(port))
 }
 
 // Option configures an optional Controller collaborator. New applies each in
@@ -77,9 +104,15 @@ type Option func(*Controller)
 // WithHTTPClient overrides the *http.Client Dispatch issues ECP requests
 // through — tests point it at an httptest.Server-backed client or one with a
 // shorter timeout; production leaves it at New's default (a plain client with
-// defaultTimeout).
+// defaultTimeout). A nil client is ignored (M2), matching
+// ecppoll.WithHTTPClient's own convention, so New's constructed default is
+// retained rather than leaving Dispatch to panic against a nil *http.Client.
 func WithHTTPClient(client *http.Client) Option {
-	return func(c *Controller) { c.client = client }
+	return func(c *Controller) {
+		if client != nil {
+			c.client = client
+		}
+	}
 }
 
 // Controller is the ECP-backed deviceplane.DeviceController: it dispatches a
@@ -92,10 +125,12 @@ type Controller struct {
 
 // New builds a Controller that dispatches to targets, keyed by entityID.
 // entityIDs absent from targets fail every Dispatch closed with
-// COMMAND_TARGET_UNREACHABLE — the device plane's own EntityResolver may know
-// an entity, but if this controller has no Target for it there is nowhere to
-// send the command. The default *http.Client has a defaultTimeout deadline;
-// opts (e.g. WithHTTPClient) may override it.
+// COMMAND_UNRESOLVED (I2: no Target configured for this entityID is a
+// config/wiring gap, not a device the relay tried and failed to reach) — the
+// device plane's own EntityResolver may know an entity, but if this
+// controller has no Target for it there is nowhere to send the command. The
+// default *http.Client has a defaultTimeout deadline; opts (e.g.
+// WithHTTPClient) may override it.
 func New(targets map[string]Target, opts ...Option) *Controller {
 	c := &Controller{
 		targets: targets,
@@ -117,8 +152,13 @@ func New(targets map[string]Target, opts ...Option) *Controller {
 func (c *Controller) Dispatch(entityID, command string, params map[string]any) error {
 	target, ok := c.targets[entityID]
 	if !ok {
+		// I2: no configured Target is a config/wiring gap (this controller's
+		// own address book has nothing for entityID), not a device that was
+		// dialed and failed to answer — codeUnresolved, not
+		// codeTargetUnreachable, matches deviceplane.CommandSurface's own
+		// "unknown entity" code one layer up.
 		return &deviceplane.ControllerError{
-			Code:    codeTargetUnreachable,
+			Code:    codeUnresolved,
 			Message: fmt.Sprintf("no ECP target configured for entity %q", entityID),
 		}
 	}
@@ -145,13 +185,30 @@ func (c *Controller) Dispatch(entityID, command string, params map[string]any) e
 			Message: fmt.Sprintf("dispatching %s to entity %q at %s: %v", command, entityID, target.addr(), err),
 		}
 	}
-	defer resp.Body.Close()
+	defer func() {
+		// M3: drain before Close so http.Client's Transport can return the
+		// underlying TCP connection to its keep-alive pool for reuse by the
+		// next Dispatch to this same device, instead of being forced to tear
+		// it down. ECP responses are small, so the cost here is negligible;
+		// discarding a body-read error is deliberate — Dispatch has already
+		// captured everything it needs (the status code) by this point.
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// The device was reachable but refused/failed the command. No
-		// taxonomy code names "the device rejected this command", so this is
-		// a plain error — the device-command surface buckets it as the
-		// unclassified INTERNAL code (command.go).
+		// M4: the device was reachable but refused/failed the command — not
+		// really "an unclassified SERVER-side failure" in the sense
+		// contracts/relay-1.md's Error taxonomy documents INTERNAL ("An
+		// unclassified server-side failure"), but no taxonomy code names
+		// "device reachable but rejected the command" today (a gap this
+		// controller is the first real driver to hit — see also I2, a second
+		// data point that the taxonomy may want a dedicated code here). Until
+		// one exists, returning a plain (non-ControllerError) error is the
+		// deliberate, tested choice (TestDispatchNon2xxResponse): the
+		// device-command surface's own fallback buckets any plain error as
+		// INTERNAL (deviceplane/command.go's codeInternal), which is the
+		// closest existing fit, not a misclassification introduced here.
 		return fmt.Errorf("ecp: %s to entity %q returned status %d", command, entityID, resp.StatusCode)
 	}
 	return nil

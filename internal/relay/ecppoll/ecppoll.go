@@ -33,7 +33,16 @@
 //     absent or empty.
 //
 // The canonical State string is derived, in order:
-//  1. power-mode != "PowerOn" (including absent/empty) -> "standby".
+//  1. power-mode == "PowerOn" -> continue to steps 2-6 below. Any OTHER raw
+//     power-mode value is classified by a WHITELIST, never a blacklist
+//     (device-class-registry/1 REG-021): a small set of other raw values
+//     this driver has actually observed ("Suspend", "Ready", "DisplayOff" —
+//     a driver-distinguishable low-power condition short of "off", REG-061)
+//     map to "standby"; every OTHER raw value — including an absent/empty
+//     <power-mode>, or a value from a future firmware this package has
+//     never seen — maps to the media-player class's own REG-062
+//     unknown_state_fallback, "off", never to a permissive default. See
+//     standbyPowerModes/unknownPowerModeState below.
 //  2. a <screensaver> element is present -> "idle".
 //  3. no <app> element is present either -> "idle" (a bare active-app response
 //     with neither child is ECP's idle-at-home shape on some firmware).
@@ -44,70 +53,51 @@
 //     distinguish it — this id/name pair is the only signal available) -> "idle".
 //  6. otherwise -> "on".
 //
-// # First-observation semantics — investigated conclusion
+// # First-observation semantics (C2, coordinator-ruled single-stream design)
 //
 // RUL-330's state.NewObservation classifies a TRANSITION between two real
-// snapshots (prev, curr); there is no meaningful prev on an entity's very first
-// poll. Two INDEPENDENT first-observation mechanisms exist in this stack, and
-// this package is responsible for exactly one of them:
+// snapshots (prev, curr); there is no meaningful prev on an entity's very
+// first poll. An earlier revision of this package withheld that first
+// snapshot from the stream entirely (a Seeds() method the wiring had to
+// drain separately before ever starting to feed Next() into the engine) —
+// that design is GONE. Instead, an entity's first successful snapshot —
+// "successful" meaning a poll cycle completed and produced an Entity value,
+// which includes one derived as "unavailable" from a fetch failure, since
+// fetchEntity always returns SOME Entity and never a bare Go error — emits a
+// SELF-transition Observation, state.NewObservation(reg, seed, seed) with
+// seed used as BOTH prev and curr, through the exact same channel Next()
+// serves for every later Observation. Because prev==curr, StateChanged is
+// always false and ChangedAttrs is always empty for this one Observation —
+// it can never itself cause a trigger to fire.
 //
-//  1. This package's own seam (RUL-330): Poller withholds emitting any
-//     Observation for an entity until it has TWO real snapshots. The first
-//     successful poll of an entity — "successful" meaning a poll cycle
-//     completed and produced an Entity value, which includes one derived as
-//     "unavailable" from a fetch failure, since fetchEntity always returns
-//     SOME Entity and never a bare Go error — is stored as that entity's prev
-//     and surfaced via Seeds(), never handed to state.NewObservation. From the
-//     second poll of that entity onward, NewObservation classifies prev->curr
-//     and Poller emits only when it reports StateChanged or a non-empty
-//     ChangedAttrs; a quiet tick (identical snapshot) emits nothing.
+// Feeding this Observation through automationhost.Host.Observe (the normal
+// path Host.Run's src.Next() loop drives) still seeds the rules engine's own
+// per-trigger baseline (RUL-300/304, internal/rules/eval/trigger_state.go's
+// StateTrigger.Observe / eval.TriggerBaseline.Known): engine.Observe
+// computes next.State/next.Attr/next.AttrKnown from the passed-in curr
+// Entity UNCONDITIONALLY, on every call including a StateChanged=false one —
+// so this self-transition Observation seeds State AND every attribute's
+// baseline in one call. (A plain engine.SeedEntityState(entityID, state)
+// call, by contrast, seeds TriggerBaseline.State only — an
+// attribute-scoped trigger's AttrKnown would stay unset. This package's
+// self-transition Observation has no such gap.)
 //
-//  2. The rules engine's OWN, SEPARATE first-observation suppression
-//     (RUL-300/304, investigated in internal/rules/engine/engine.go's
-//     SeedEntityState and internal/rules/eval/trigger_state.go's
-//     StateTrigger.Observe): every triggerRuntime carries its own durable
-//     eval.TriggerBaseline, independent of anything this package computes.
-//     StateTrigger.Observe's own doc is explicit: "First-ever observation (no
-//     durable prior): never a transition, even if the value equals to:... Record
-//     and do not fire." That guard fires on baseline.Known, which starts false
-//     for every trigger and is set true ONLY by a real Observe call or by
-//     engine.SeedEntityState(entityID, state string) — which seeds the STATE
-//     baseline only, not attributes (eval.TriggerBaseline.Attr/AttrKnown are
-//     left zero; there is no attribute-seeding entry point today).
+// Run drains one target at a time in a fixed per-poll (sorted) order and
+// observe()/send() execute synchronously inside Run's own single goroutine,
+// so an entity's seed Observation is always sent to the channel strictly
+// before that same entity's first real transition — per-entity ordering is
+// inherent to this single stream, not something the wiring has to defend
+// separately (the earlier Seeds()-based design forced exactly that race:
+// "has every target's first poll completed yet?").
 //
-//     Consequence: if the wiring starts feeding this Poller's Next() into
-//     automationhost.Host.Run/Observe WITHOUT seeding the engine first, the very
-//     first Observation this package ever emits for an entity (which already
-//     represents a genuine prev->curr transition, by construction #1 above) is
-//     STILL the engine's own first-ever Observe call for that entity, and every
-//     state trigger on it is unconditionally suppressed by RUL-300/304 — a real,
-//     already-classified transition would silently fail to fire anything.
-//
-//     Investigated existing seam: internal/relay/automationhost has NO exposed
-//     seeding wrapper today. engine.SeedEntityState is called from exactly one
-//     place in the whole tree (internal/app/api/automations.go), against a
-//     throwaway *engine.Engine built for one synchronous test-run of a single
-//     automation — entirely decoupled from automationhost.Host, whose `engine`
-//     field is unexported and which exposes no Host.SeedEntityState method (unlike
-//     SetLocation/SetClockTrust, which DO forward to engine methods under Host's mu).
-//
-//     Conclusion / required wiring contract: before the binary starts feeding a
-//     Poller's Next() into Host.Run, it must walk poller.Seeds() and seed each
-//     entity's State into the engine — e.g. a small Host.SeedEntityState(entityID,
-//     state string) forwarding wrapper (mirroring SetLocation/SetClockTrust's
-//     mu-guarded pattern in host.go) called once per Seeds() entry — so the
-//     engine's own per-trigger baseline is Known=true before the FIRST real
-//     Observation this package ever emits reaches it. That wrapper is NOT part of
-//     this package (it touches automationhost, out of this lane's scope) but IS a
-//     precondition for correct wiring; recorded here per this package's own
-//     house-rule requirement to document the seam it was built against. A residual
-//     gap this investigation surfaces but does not close: engine.SeedEntityState
-//     seeds State only, so an attribute-scoped trigger's baseline (AttrKnown) is
-//     still unset after seeding, and StateTrigger.Observe's unbounded
-//     attribute-scoped case (RUL-023 case 2) fires unconditionally the first time
-//     AttrKnown is false — a pre-existing engine-level nuance orthogonal to this
-//     package, left to whoever wires attribute-scoped edge rules against this
-//     source.
+// Consumer wiring is therefore just: feed this Poller's Next() into
+// automationhost.Host.Run (or call Host.Observe directly per Next() result).
+// There is no separate seeding step, and no new Host method (e.g. a
+// Host.SeedEntityState wrapper) is needed. From an entity's second
+// successful snapshot on, observe() classifies prev->curr via
+// state.NewObservation exactly as before and only sends when it reports
+// StateChanged or a non-empty ChangedAttrs; a quiet subsequent tick
+// (identical snapshot) still emits nothing.
 //
 // # Channel semantics
 //
@@ -125,8 +115,10 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
+	"net"
 	"net/http"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -165,12 +157,14 @@ type Target struct {
 }
 
 // addr renders t's http://host:port base URL, applying the default port.
+// Uses net.JoinHostPort (M1) so an IPv6 literal host is correctly bracketed
+// (e.g. "http://[::1]:8060") rather than producing a malformed authority.
 func (t Target) addr() string {
 	port := t.Port
 	if port == 0 {
 		port = defaultPort
 	}
-	return fmt.Sprintf("http://%s:%d", t.Host, port)
+	return "http://" + net.JoinHostPort(t.Host, strconv.Itoa(port))
 }
 
 // Option configures a Poller at construction. See WithChannelSize,
@@ -288,29 +282,12 @@ func (p *Poller) Dropped() uint64 {
 	return p.dropped.Load()
 }
 
-// Seeds returns the latest known snapshot of every target that has completed
-// at least one poll, sorted by entity ID. See the package doc's
-// first-observation section for the wiring contract this exists to support:
-// the caller must seed the engine's own baseline from these BEFORE feeding
-// this Poller's Next() into it, or the engine's first real Observe call per
-// entity is unconditionally suppressed by its own RUL-300/304 mechanism.
-func (p *Poller) Seeds() []state.Entity {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	ids := make([]string, 0, len(p.prev))
-	for id := range p.prev {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	out := make([]state.Entity, 0, len(ids))
-	for _, id := range ids {
-		out = append(out, p.prev[id])
-	}
-	return out
-}
-
 // pollAll snapshots every target once, in a deterministic (sorted) order, and
-// classifies/emits per entity via observe.
+// classifies/emits per entity via observe. ctx is checked between every
+// target (I3): if it is already done, pollAll stops rather than racing
+// through every remaining target — each of which would otherwise fail fast
+// (ctx already canceled) and enqueue a spurious "unavailable" transition
+// right at shutdown.
 func (p *Poller) pollAll(ctx context.Context) {
 	ids := make([]string, 0, len(p.targets))
 	for id := range p.targets {
@@ -318,16 +295,24 @@ func (p *Poller) pollAll(ctx context.Context) {
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
 		curr := p.fetchEntity(ctx, id, p.targets[id])
 		p.observe(id, curr)
 	}
 }
 
 // observe folds one freshly-fetched snapshot into id's prior state and emits
-// an Observation per the package doc's first-observation contract: a first
-// snapshot is stored and never classified; from the second on, NewObservation
-// classifies prev->curr and only a genuine change (StateChanged or a
-// non-empty ChangedAttrs) is sent.
+// an Observation per the package doc's first-observation contract (C2): an
+// entity's first successful snapshot emits a SELF-transition Observation
+// (state.NewObservation(reg, curr, curr), so StateChanged is always false and
+// ChangedAttrs is always empty) through the same channel every later
+// Observation uses; from the second snapshot on, NewObservation classifies
+// prev->curr and only a genuine change (StateChanged or a non-empty
+// ChangedAttrs) is sent.
 func (p *Poller) observe(id string, curr state.Entity) {
 	p.mu.Lock()
 	prev, existed := p.prev[id]
@@ -335,6 +320,12 @@ func (p *Poller) observe(id string, curr state.Entity) {
 	p.mu.Unlock()
 
 	if !existed {
+		// First successful snapshot: emit a self-transition seed Observation
+		// rather than withholding it (see the package doc's First-observation
+		// semantics section) — it can never fire a trigger itself, but still
+		// seeds the engine's per-entity/per-attribute baseline once fed
+		// through Host.Observe.
+		p.send(state.NewObservation(p.reg, curr, curr))
 		return
 	}
 	obs := state.NewObservation(p.reg, prev, curr)
@@ -505,10 +496,40 @@ func deriveEntity(id string, aa ecpActiveApp, di ecpDeviceInfo) state.Entity {
 	return state.Entity{ID: id, DeviceClass: mediaPlayerClass, State: st, Attributes: attrs}
 }
 
+// standbyPowerModes is the whitelist (I1, device-class-registry/1 REG-021)
+// of recognized non-"PowerOn" raw <power-mode> values this driver has
+// actually observed that classify to the "standby" state (REG-061: "a
+// driver-distinguishable low-power condition short of off"). REG-021
+// requires a classifier be implemented as a whitelist, never a blacklist
+// that maps known-bad values away from a permissive default — so any raw
+// value that is NEITHER "PowerOn" NOR a member of this whitelist (an
+// absent/empty <power-mode>, or a future firmware string this package has
+// never seen) falls through to unknownPowerModeState instead, never to
+// "standby" and never to "on".
+var standbyPowerModes = map[string]bool{
+	"Suspend":    true,
+	"Ready":      true,
+	"DisplayOff": true,
+}
+
+// unknownPowerModeState is the media-player class's own REG-062
+// unknown_state_fallback: what deriveState resolves an unrecognized raw
+// power-mode value to (never "on" or "standby" — see standbyPowerModes).
+const unknownPowerModeState = "off"
+
 // deriveState applies the package doc's six-step State derivation.
 func deriveState(powerMode string, isScreensaver bool, app *ecpAppElem, appType string) string {
-	if powerMode != "PowerOn" {
+	switch {
+	case powerMode == "PowerOn":
+		// Recognized as powered-on: fall through to the idle/on branches
+		// below.
+	case standbyPowerModes[powerMode]:
 		return "standby"
+	default:
+		// I1/REG-021: whitelist, not a blacklist — an unrecognized raw value
+		// (including absent/empty) resolves to the class's own REG-062
+		// unknown_state_fallback, "off".
+		return unknownPowerModeState
 	}
 	if isScreensaver {
 		return "idle"
