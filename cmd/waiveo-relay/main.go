@@ -53,6 +53,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
 	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
 	"github.com/maaxton/waiveo-next/internal/relay/schedulehost"
+	"github.com/maaxton/waiveo-next/internal/relay/ssdpresponder"
 	"github.com/maaxton/waiveo-next/internal/relay/telemetry"
 	"github.com/maaxton/waiveo-next/internal/relay/telemetryhttp"
 	"github.com/maaxton/waiveo-next/internal/rules/registry"
@@ -79,10 +80,15 @@ type config struct {
 	// (WAIVEO_RELAY_ECP_TARGETS="entity=host[:port],..."). pollInterval is
 	// the ECP state-poll period (WAIVEO_RELAY_POLL_MS, default 5000).
 	// discoveryOn enables the SSDP client sweep feeding the candidate store
-	// (WAIVEO_RELAY_DISCOVERY=1, REL-110/111).
+	// (WAIVEO_RELAY_DISCOVERY=1, REL-110/111). ssdpAnnounce enables the SSDP
+	// RESPONDER — answering a player's own M-SEARCH for this relay's
+	// player/1 pairing surface (WAIVEO_RELAY_SSDP_ANNOUNCE=1, PLY-021/022).
+	// Both default off: CI and loopback dev runs must never multicast, so
+	// dev/CI stay byte-identical to today.
 	ecpTargets   map[string]ecp.Target
 	pollInterval time.Duration
 	discoveryOn  bool
+	ssdpAnnounce bool
 }
 
 // loadConfig reads the relay config from env (os.Getenv in main), falling back
@@ -111,6 +117,7 @@ func loadConfig(env func(string) string) (config, error) {
 		ecpTargets:   targets,
 		pollInterval: time.Duration(pollMS) * time.Millisecond,
 		discoveryOn:  env("WAIVEO_RELAY_DISCOVERY") == "1" || env("WAIVEO_RELAY_DISCOVERY") == "true",
+		ssdpAnnounce: env("WAIVEO_RELAY_SSDP_ANNOUNCE") == "1" || env("WAIVEO_RELAY_SSDP_ANNOUNCE") == "true",
 	}, nil
 }
 
@@ -451,6 +458,31 @@ func main() {
 			}
 		}()
 		log.Printf("waiveo-relay SSDP discovery live (pattern roku:ecp)")
+	}
+
+	// SSDP RESPONDER (player/1 PLY-021/022): answer a player's same-network
+	// M-SEARCH for ssdpresponder.SearchTarget with this relay's own
+	// resolvable /player/v1 base URL, built from the SAME cfg.pairHost/
+	// cfg.pairPort a formed pairing code already dials (REL-126) — so a
+	// screen that locates this relay via discovery and one that redeems a
+	// pairing code end up dialing the identical address. Off by default
+	// (WAIVEO_RELAY_SSDP_ANNOUNCE unset): CI and loopback dev runs must
+	// never multicast.
+	if cfg.ssdpAnnounce {
+		baseURL := fmt.Sprintf("https://%s/player/v1", net.JoinHostPort(cfg.pairHost, strconv.Itoa(cfg.pairPort)))
+		responder, err := ssdpresponder.New(ssdpresponder.Config{
+			BaseURL: baseURL,
+			USN:     fmt.Sprintf("uuid:waiveo-relay:%s", relayID.RelayID),
+		})
+		if err != nil {
+			log.Fatalf("waiveo-relay: configure SSDP responder: %v", err)
+		}
+		go func() {
+			if err := responder.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("waiveo-relay: SSDP responder ended: %v", err)
+			}
+		}()
+		log.Printf("waiveo-relay SSDP responder live (%s -> %s)", ssdpresponder.SearchTarget, baseURL)
 	}
 
 	driver := &scheduleDriver{
