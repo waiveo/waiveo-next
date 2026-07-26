@@ -91,6 +91,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/maaxton/waiveo-next/internal/shared/paircode"
 )
 
 // Default tuning for a RemoteTargetConfig's zero-valued fields — see
@@ -462,8 +464,25 @@ func (t *RemoteECPPlayerTarget) Pair(pairingCode string) PairResult {
 	// not merely whatever the relay's recorder currently considers "last" —
 	// even if another attempt's call is recorded concurrently.
 	var baseline int
+	var wantSelector string
+	var haveSelector bool
 	if obs == nil {
 		baseline = t.relay.PairCallCount()
+		// pairingCode itself carries the grant_selector THIS attempt's own
+		// /player/v1/pair request will present (paircode.Decode reverses
+		// playerserver.FormPairingCode's Encode, and each formed code is
+		// minted over its own single-use grant — see harness.go's
+		// grantPoolSize doc — so the selector is unique per attempt).
+		// Decoding it here is what lets awaitViaRelay correlate the call
+		// this attempt caused by CONTENT, not merely by landing first after
+		// baseline — the latter could misattribute a late-arriving retry
+		// from an earlier, unrelated attempt. A pairingCode that fails to
+		// decode (never true for a relay-formed code; only reachable from a
+		// malformed literal, e.g. a test fixture) falls back to the prior
+		// baseline-only correlation rather than failing the attempt outright.
+		if _, _, sel, _, err := paircode.Decode(pairingCode); err == nil {
+			wantSelector, haveSelector = sel, true
+		}
 	}
 
 	if err := t.launcher.Launch(t.cfg.Channel, map[string]string{"pairingCode": pairingCode}); err != nil {
@@ -474,30 +493,58 @@ func (t *RemoteECPPlayerTarget) Pair(pairingCode string) PairResult {
 	if obs != nil {
 		return obs.AwaitOutcome(deadline)
 	}
-	return t.awaitViaRelay(deadline, baseline)
+	return t.awaitViaRelay(deadline, baseline, wantSelector, haveSelector)
 }
 
 // awaitViaRelay implements relay-observed mode: it polls the Relay's own wire
-// recorder until it sees a /player/v1/pair call this attempt caused — i.e.
-// PairCallCount() advancing past baseline (the count Pair captured before
-// launching THIS attempt) — or deadline elapses. Reading resps[baseline],
-// rather than always the newest response, is what ties the read back to
-// THIS attempt's own call rather than a later, unrelated one recorded before
-// the poll loop notices. It can report Completed/Rejected but never
-// CommitmentMismatch — see DriveablePLY057.
-func (t *RemoteECPPlayerTarget) awaitViaRelay(deadline time.Time, baseline int) PairResult {
+// recorder until it sees a /player/v1/pair call this attempt caused, then
+// reads back that SAME call's response, or deadline elapses.
+//
+// When haveSelector, "the call this attempt caused" is decided by CONTENT:
+// findGrantSelector scans every request recorded from baseline onward for the
+// one carrying wantSelector (this attempt's own decoded grant_selector,
+// unique per one-time grant — see Pair's own doc) — not merely the one
+// landing first — so a still-in-flight retry from an earlier, unrelated
+// attempt that happens to land after this attempt's baseline cannot be
+// misattributed to it. When !haveSelector (pairingCode did not decode; never
+// true for a relay-formed code), it falls back to the baseline-only
+// assumption Pair's own doc describes. It can report Completed/Rejected but
+// never CommitmentMismatch — see DriveablePLY057.
+func (t *RemoteECPPlayerTarget) awaitViaRelay(deadline time.Time, baseline int, wantSelector string, haveSelector bool) PairResult {
 	for {
 		if t.relay.PairCallCount() > baseline {
-			resps := t.relay.PairResponses()
-			mine := resps[baseline]
-			if jsonNonEmptyString(mine, "channel_token") {
-				return PairResult{Completed: true}
+			idx, ok := baseline, true
+			if haveSelector {
+				idx, ok = findGrantSelector(t.relay.PairRequests(), baseline, wantSelector)
 			}
-			return PairResult{Rejected: true, Err: "relay observed a /player/v1/pair response without a channel_token"}
+			if ok {
+				mine := t.relay.PairResponses()[idx]
+				if jsonNonEmptyString(mine, "channel_token") {
+					return PairResult{Completed: true}
+				}
+				return PairResult{Rejected: true, Err: "relay observed a /player/v1/pair response without a channel_token"}
+			}
+			// Call count advanced past baseline, but no recorded request yet
+			// carries this attempt's own grant_selector — a still-in-flight
+			// call from a DIFFERENT attempt landed first; keep waiting rather
+			// than misattributing it to this one.
 		}
 		if time.Now().After(deadline) {
 			return PairResult{Rejected: true, Err: "timed out: relay observed no /player/v1/pair call for this attempt"}
 		}
 		time.Sleep(relayPollInterval)
 	}
+}
+
+// findGrantSelector scans reqs[from:] for the first request whose
+// grant_selector field equals want, returning its absolute index — the
+// content-based correlation awaitViaRelay uses instead of assuming ordinal
+// position.
+func findGrantSelector(reqs [][]byte, from int, want string) (int, bool) {
+	for i := from; i < len(reqs); i++ {
+		if jsonStringEquals(reqs[i], "grant_selector", want) {
+			return i, true
+		}
+	}
+	return 0, false
 }

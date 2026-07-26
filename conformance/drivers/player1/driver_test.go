@@ -92,6 +92,27 @@ func TestNewInProcessRelayLoopbackBindStillDefaultsDialHost(t *testing.T) {
 	defer relay.Close()
 }
 
+// TestNewInProcessRelayRejectsEmptyBindWithoutDialHost proves the same
+// wildcard-bind guard catches WithBindHost("") — net.Listen's OWN "every
+// interface" spelling, and just as undialable as "0.0.0.0"/"::" — not only
+// the two literal strings the original fix named.
+func TestNewInProcessRelayRejectsEmptyBindWithoutDialHost(t *testing.T) {
+	_, err := player1.NewInProcessRelay(player1.WithBindHost(""))
+	if err == nil {
+		t.Fatal("NewInProcessRelay(WithBindHost(\"\")) with no WithDialHost: err = nil, want a configuration error")
+	}
+}
+
+// TestNewInProcessRelayRejectsIPv6WildcardWithoutDialHost proves the guard
+// also catches an IPv6 unspecified-address spelling other than the literal
+// "::" (isWildcardBindHost parses the address rather than string-matching).
+func TestNewInProcessRelayRejectsIPv6WildcardWithoutDialHost(t *testing.T) {
+	_, err := player1.NewInProcessRelay(player1.WithBindHost("0:0:0:0:0:0:0:0"))
+	if err == nil {
+		t.Fatal("NewInProcessRelay(WithBindHost(\"0:0:0:0:0:0:0:0\")) with no WithDialHost: err = nil, want a configuration error")
+	}
+}
+
 // TestPlayer1DriverHasTeeth proves the driver can FAIL: it points the SAME
 // driver at a deliberately-broken target that skips the commitment check and
 // redeems any pairing code — the exact MITM vulnerability PLY-057 forbids.

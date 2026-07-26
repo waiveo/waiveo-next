@@ -879,3 +879,14 @@ func jsonNonEmptyString(body []byte, key string) bool {
 	s, ok := m[key].(string)
 	return ok && s != ""
 }
+
+// jsonStringEquals reports whether body decodes as a JSON object whose key
+// is a string equal to want.
+func jsonStringEquals(body []byte, key, want string) bool {
+	var m map[string]any
+	if json.Unmarshal(body, &m) != nil {
+		return false
+	}
+	s, ok := m[key].(string)
+	return ok && s == want
+}

@@ -62,9 +62,12 @@ func (f *fakeObserver) Close() error                      { f.closed = true; ret
 
 // fakeRelay is a minimal Relay fake for exercising awaitViaRelay
 // (relay-observed mode) without booting the real in-process feeder+relay
-// stack — only PairCallCount/PairResponses are ever read by that path.
+// stack. pairRequests is read only by the grant_selector-correlation path
+// (haveSelector==true); every other relay-observed test passes an
+// undecodable pairingCode ("some-code"), which never reaches it.
 type fakeRelay struct {
 	pairCallCount int
+	pairRequests  [][]byte
 	pairResponses [][]byte
 }
 
@@ -72,7 +75,7 @@ func (f *fakeRelay) BaseURL() string                              { return "" }
 func (f *fakeRelay) FormPairingCode() (string, error)             { return "", nil }
 func (f *fakeRelay) FormPairingCodePair() (string, string, error) { return "", "", nil }
 func (f *fakeRelay) PairCallCount() int                           { return f.pairCallCount }
-func (f *fakeRelay) PairRequests() [][]byte                       { return nil }
+func (f *fakeRelay) PairRequests() [][]byte                       { return f.pairRequests }
 func (f *fakeRelay) PairResponses() [][]byte                      { return f.pairResponses }
 func (f *fakeRelay) Reset()                                       {}
 
@@ -436,9 +439,51 @@ func TestRemoteECPPlayerTargetPairRelayObservedModeIgnoresStaleCall(t *testing.T
 // relayPollInterval sleep needed to observe it).
 func TestAwaitViaRelayTimeout(t *testing.T) {
 	target := &RemoteECPPlayerTarget{relay: &fakeRelay{}}
-	got := target.awaitViaRelay(time.Now().Add(-time.Millisecond), 0)
+	got := target.awaitViaRelay(time.Now().Add(-time.Millisecond), 0, "", false)
 	if !got.Rejected {
 		t.Errorf("awaitViaRelay = %+v, want Rejected on an already-elapsed deadline", got)
+	}
+}
+
+// TestAwaitViaRelayCorrelatesByGrantSelectorNotOrdinalPosition proves the
+// per-attempt correlation fix directly: when a call from a DIFFERENT,
+// unrelated attempt lands FIRST after baseline (e.g. its own late-arriving
+// retry), awaitViaRelay must not read it back as this attempt's own outcome
+// merely because it happened to land at index baseline — it must keep
+// looking for the request that actually carries wantSelector.
+func TestAwaitViaRelayCorrelatesByGrantSelectorNotOrdinalPosition(t *testing.T) {
+	relay := &fakeRelay{
+		pairCallCount: 1,
+		pairRequests:  [][]byte{[]byte(`{"grant_selector":"other-attempts-grant"}`)},
+		pairResponses: [][]byte{[]byte(`{}`)}, // would misclassify as Rejected if read positionally
+	}
+	target := &RemoteECPPlayerTarget{relay: relay}
+
+	// This attempt's own call, carrying ITS OWN grant_selector, lands second.
+	relay.pairCallCount++
+	relay.pairRequests = append(relay.pairRequests, []byte(`{"grant_selector":"this-attempts-grant"}`))
+	relay.pairResponses = append(relay.pairResponses, []byte(`{"channel_token":"tok-789"}`))
+
+	got := target.awaitViaRelay(time.Now().Add(5*time.Second), 0, "this-attempts-grant", true)
+	if !got.Completed {
+		t.Errorf("awaitViaRelay = %+v, want Completed (must correlate by grant_selector, not by landing first after baseline)", got)
+	}
+}
+
+// TestAwaitViaRelayGrantSelectorNeverArrivesTimesOut proves the correlation
+// path still honors the deadline when calls keep arriving after baseline but
+// none of them ever carries this attempt's own grant_selector.
+func TestAwaitViaRelayGrantSelectorNeverArrivesTimesOut(t *testing.T) {
+	relay := &fakeRelay{
+		pairCallCount: 1,
+		pairRequests:  [][]byte{[]byte(`{"grant_selector":"someone-elses-grant"}`)},
+		pairResponses: [][]byte{[]byte(`{"channel_token":"tok-000"}`)},
+	}
+	target := &RemoteECPPlayerTarget{relay: relay}
+
+	got := target.awaitViaRelay(time.Now().Add(-time.Millisecond), 0, "this-attempts-grant", true)
+	if !got.Rejected {
+		t.Errorf("awaitViaRelay = %+v, want Rejected on an already-elapsed deadline when no recorded call carries this attempt's grant_selector", got)
 	}
 }
 
