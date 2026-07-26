@@ -293,6 +293,7 @@ func main() {
 	// is no persisted snapshot to fall back on; otherwise the relay proceeds in
 	// offline-serve mode (REL-055/061) with no live site adopted.
 	site, err := helloWithRetry(cfg, relayIdent)
+	helloOK := err == nil
 	if err != nil {
 		if fatal := offlineServeFallback(err, hasPersisted); fatal != nil {
 			log.Fatalf("waiveo-relay: hello: %v", fatal)
@@ -309,16 +310,33 @@ func main() {
 	// non-fatal: the relay keeps that durable copy and serves it offline
 	// (REL-055/061), rather than exiting and leaving every screen unable to
 	// pull /player/v1/program.
-	applied, err := desiredstate.Pull(cfg.feederURL, store)
-	if err != nil {
-		if fatal := offlineServeFallback(err, hasPersisted); fatal != nil {
-			log.Fatalf("waiveo-relay: pull desired state: %v", fatal)
-		}
-		log.Printf("waiveo-relay: pull desired state failed (%v); serving persisted last-applied offline (REL-055/061)", err)
-		applied = desiredstate.Applied{}
+	//
+	// This pull is gated on helloOK: a Pull the app peer would sign is a
+	// SEPARATE authorization decision from the hello handshake's own channel-
+	// binding proof (REL-030/032), and a hello the peer just REFUSED (a
+	// CHANNEL_BINDING_INVALID 403, or any other hello rejection) means this
+	// relay does not hold a live, authorized session with that peer right
+	// now. Pulling anyway would honor the peer's content signature (integrity
+	// survives) while silently overriding the peer's own authorization
+	// refusal — exactly the offline-continuity path this function just logged
+	// it was taking. So a failed hello skips the live pull entirely and falls
+	// straight to serving the persisted last-applied snapshot, instead of
+	// reaching the feeder a second time on a session the peer just rejected.
+	var applied desiredstate.Applied
+	if !helloOK {
+		log.Printf("waiveo-relay: skipping desired-state pull — hello was not accepted by the app peer; serving persisted last-applied offline (REL-055/061)")
 	} else {
-		log.Printf("waiveo-relay applied desired state generation %d (screen %s, program %s, image %s)",
-			applied.Generation, applied.ScreenID, applied.ProgramRevision, applied.Image.AssetRef)
+		applied, err = desiredstate.Pull(cfg.feederURL, store)
+		if err != nil {
+			if fatal := offlineServeFallback(err, hasPersisted); fatal != nil {
+				log.Fatalf("waiveo-relay: pull desired state: %v", fatal)
+			}
+			log.Printf("waiveo-relay: pull desired state failed (%v); serving persisted last-applied offline (REL-055/061)", err)
+			applied = desiredstate.Applied{}
+		} else {
+			log.Printf("waiveo-relay applied desired state generation %d (screen %s, program %s, image %s)",
+				applied.Generation, applied.ScreenID, applied.ProgramRevision, applied.Image.AssetRef)
+		}
 	}
 
 	// Reuse the enrollment identity read above (relayIdent) as the relay's
