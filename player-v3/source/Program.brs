@@ -100,9 +100,45 @@ function wvDoProgram(state as Object) as Object
     })
 
     if not resp.ok
-        ' 401 CHANNEL_TOKEN_INVALID/EXPIRED (PLY-072/073): the token must be
-        ' re-paired; signal the caller rather than looping.
-        if resp.code = 401 then r.needsRepair = true
+        ' Auth error taxonomy (PLY-072/073/136; relay-side in
+        ' internal/relay/playerserver/program.go's handleProgram): a 401 from
+        ' THIS relay carries exactly one of three codes today —
+        ' CHANNEL_TOKEN_INVALID (absent, malformed, or unresolvable token),
+        ' CHANNEL_TOKEN_REVOKED (token's screen_id is revoked, or no longer
+        ' exists at all), or CHANNEL_TOKEN_EXPIRED (token past its own
+        ' expires_at). PLY-073 requires these be handled differently:
+        '
+        ' - CHANNEL_TOKEN_EXPIRED is retryable via renewal (PLY-074), never a
+        '   trigger to re-enter Pairing redemption. Neither PLY-074's
+        '   dedicated renewal call nor its inline-refresh variant exists yet
+        '   on this relay (see handleProgram's own PLY-074 note), so the
+        '   least-destructive thing this player can do today is leave the
+        '   credential untouched and let the caller's ordinary poll cadence
+        '   retry — needsRepair stays false, so PlayerTask.brs treats this
+        '   exactly like any other transient poll failure.
+        '
+        ' - CHANNEL_TOKEN_REVOKED and CHANNEL_TOKEN_INVALID are BOTH terminal
+        '   for this token (PLY-073/PLY-136): a revoked/gone-screen token and
+        '   a token that never validated at all are the same "this token no
+        '   longer validates" signal PLY-136 names, so both clear ONLY the
+        '   channel token (never the trust anchor, PLY-136) and re-enter
+        '   Pairing redemption — signaled here as needsRepair.
+        '
+        ' - Any OTHER 401 code — one this relay does not emit today, or a
+        '   future one this player doesn't yet recognize — takes the SAME
+        '   path as CHANNEL_TOKEN_EXPIRED, not the REVOKED/INVALID path: an
+        '   unrecognized code is not evidence the credential is actually
+        '   invalid, so treating it as terminal would risk destroying a
+        '   still-good session over a response this player doesn't
+        '   understand. Retrying is the least destructive action that still
+        '   makes progress if the condition clears, and it never wipes a
+        '   credential it doesn't have solid grounds to.
+        if resp.code = 401
+            code401 = wv401Code(resp)
+            if code401 = "CHANNEL_TOKEN_REVOKED" or code401 = "CHANNEL_TOKEN_INVALID"
+                r.needsRepair = true
+            end if
+        end if
         r.error = wvProgramErrorText(resp)
         return r
     end if
@@ -351,4 +387,16 @@ function wvProgramErrorText(resp as Object) as String
     end if
     if resp.startFailed then return "could not reach relay: " + resp.failureReason
     return "program HTTP " + resp.code.toStr() + " " + resp.failureReason
+end function
+
+' wv401Code extracts the Error taxonomy `code` field (e.g.
+' "CHANNEL_TOKEN_EXPIRED") from a Problem-shaped 401 response body, or ""
+' if the body carries none — the caller's classification then falls back
+' to the same least-destructive handling as an unrecognized code.
+function wv401Code(resp as Object) as String
+    if resp.body = "" then return ""
+    pb = ParseJson(resp.body)
+    if pb = invalid then return ""
+    if pb.code = invalid then return ""
+    return wvStr(pb.code)
 end function

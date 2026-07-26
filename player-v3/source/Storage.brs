@@ -5,9 +5,14 @@
 ' Wave-0 spike finding).
 '
 ' Never-wipe: the relay address is persisted on first successful pairing and
-' NEVER cleared on a mere connection failure. Only an explicit trust loss clears
-' the channel token + trust anchor (wvStorageClearCredentials), and even then the
-' address stays so a re-pair can target the same relay.
+' NEVER cleared on a mere connection failure. A token-only credential problem
+' (401 CHANNEL_TOKEN_REVOKED/CHANNEL_TOKEN_INVALID, PLY-073/136) clears ONLY
+' the channel token (wvStorageClearChannelToken) — the trust anchor is a
+' separate credential class and MUST NOT be destroyed just because a token
+' turned out bad. An explicit trust-loss event (PLY-063) is the one case that
+' clears both (wvStorageClearTrustAndToken), a deliberately separate and more
+' destructive function with no caller in this increment. Either way the
+' relay address stays so a re-pair can target the same relay.
 
 function wvStorageSection() as Object
     return CreateObject("roRegistrySection", "waiveo_player_v3")
@@ -54,9 +59,33 @@ sub wvStoragePersistPairing(channelToken as String, screenId as String, relayHos
     reg.Flush()
 end sub
 
-' wvStorageClearCredentials clears ONLY the channel token + trust anchor on an
-' explicit trust loss (PLY-063), keeping the relay address (never-wipe).
-sub wvStorageClearCredentials()
+' wvStorageClearChannelToken clears ONLY the channel token — the correct
+' (and only) credential-clearing action for a 401
+' CHANNEL_TOKEN_REVOKED/CHANNEL_TOKEN_INVALID response (PLY-073/PLY-136).
+' The pinned trust anchor is a separate credential class with its own,
+' narrower loss condition (PLY-063, wvStorageClearTrustAndToken below) and
+' MUST NOT be destroyed here: a bad token says nothing about whether the
+' trust anchor a player pinned its connection against is still good. The
+' relay address is untouched either way (never-wipe) so a re-pair can
+' target the same relay.
+sub wvStorageClearChannelToken()
+    reg = wvStorageSection()
+    reg.Delete("channel_token")
+    reg.Flush()
+end sub
+
+' wvStorageClearTrustAndToken clears BOTH the channel token and the pinned
+' trust anchor. This is deliberately its OWN function, separate from the
+' common 401-handling path above (wvStorageClearChannelToken) — it exists
+' only for an explicit trust-loss event (PLY-063: storage corruption, a
+' factory reset, or any other event that independently leaves the trust
+' anchor itself unusable), where the trust material is already gone and
+' this call just makes that loss explicit before Pairing redemption. No
+' caller in this increment reaches PLY-063's trust-loss condition; the
+' function is kept available, under its own explicit name, for whichever
+' future caller detects it rather than folding a rare full wipe into the
+' ordinary token-clearing path.
+sub wvStorageClearTrustAndToken()
     reg = wvStorageSection()
     reg.Delete("channel_token")
     reg.Delete("trust_pem")

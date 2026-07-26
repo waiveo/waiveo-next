@@ -98,6 +98,44 @@ sub wvRunSelfCheck()
         end if
     end if
 
+    ' --- storage-scoping regression (PLY-073/PLY-136): a 401
+    ' CHANNEL_TOKEN_REVOKED/INVALID clears ONLY the channel token, never the
+    ' pinned trust anchor; only the separate, explicit-trust-loss function
+    ' (PLY-063) clears both. This exercises the REAL registry section
+    ' production Storage.brs uses (wvStorageSection), so it saves whatever
+    ' is already persisted there first and restores it byte-for-byte
+    ' afterward — this check must never be what corrupts a real paired
+    ' screen's credentials if selfcheck=1 is ever run against one. ---
+    reg = wvStorageSection()
+    savedToken = wvStorageGet("channel_token")
+    savedTrust = wvStorageGet("trust_pem")
+
+    wvStorageSet("channel_token", "selfcheck-dummy-token")
+    wvStorageSet("trust_pem", "selfcheck-dummy-trust-pem")
+    wvStorageClearChannelToken()
+    tokAfter = wvStorageGet("channel_token")
+    trustAfter = wvStorageGet("trust_pem")
+    wvResult("wvStorageClearChannelToken clears token, keeps trust_pem", tokAfter = "" and trustAfter = "selfcheck-dummy-trust-pem", "token=[" + tokAfter + "] trust=[" + trustAfter + "]")
+
+    wvStorageSet("channel_token", "selfcheck-dummy-token")
+    wvStorageSet("trust_pem", "selfcheck-dummy-trust-pem")
+    wvStorageClearTrustAndToken()
+    tokAfter2 = wvStorageGet("channel_token")
+    trustAfter2 = wvStorageGet("trust_pem")
+    wvResult("wvStorageClearTrustAndToken clears both", tokAfter2 = "" and trustAfter2 = "", "token=[" + tokAfter2 + "] trust=[" + trustAfter2 + "]")
+
+    if savedToken = ""
+        reg.Delete("channel_token")
+    else
+        wvStorageSet("channel_token", savedToken)
+    end if
+    if savedTrust = ""
+        reg.Delete("trust_pem")
+    else
+        wvStorageSet("trust_pem", savedTrust)
+    end if
+    reg.Flush()
+
     print "=================================================================="
     print "self-check complete — grep [RESULT] lines above"
     print "=================================================================="

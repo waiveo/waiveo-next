@@ -15,12 +15,17 @@
 ' than never, which is what a one-shot pull-and-exit left the screen with.
 ' A transient poll failure mid-loop does not blank an already-rendering
 ' screen (never-wipe): it is logged and the loop simply retries at the next
-' interval. A 401 needsRepair failure (PLY-072/073, at any point — the first
-' pull or a later one) is different: the credential is no longer usable at
-' all, so the credential is cleared and the loop stops, publishing a
-' failure so the operator sees a "needs re-pairing" status rather than a
-' screen that silently keeps showing content under a token the relay has
-' already revoked.
+' interval — this includes a 401 CHANNEL_TOKEN_EXPIRED (PLY-073), which
+' wvDoProgram does NOT surface as needsRepair (see Program.brs's own 401
+' classification comment): it is retryable via renewal, never a trigger to
+' clear anything or re-pair, so it rides this same transient path. A 401
+' needsRepair failure (CHANNEL_TOKEN_REVOKED or CHANNEL_TOKEN_INVALID,
+' PLY-072/073/136, at any point — the first pull or a later one) is
+' different: that token is no longer usable at all, so ONLY the channel
+' token is cleared (the trust anchor is a separate credential PLY-136
+' forbids clearing here) and the loop stops, publishing a failure so the
+' operator sees a "needs re-pairing" status rather than a screen that
+' silently keeps showing content under a token the relay has rejected.
 '
 ' Interruptible sleep (wvSleepInterruptible): a Task node whose functionName
 ' is still running when its owner sets control="stop" is NOT preemptively
@@ -104,13 +109,15 @@ sub runPhoton()
             m.top.photonResult = result
 
         else if prog.needsRepair
-            ' PLY-072/073: the channel token itself is no longer usable
-            ' (revoked or expired) — clear only the credential, keep the
-            ' relay address, and stop this loop rather than keep polling a
-            ' token that will never succeed again without a fresh pairing
-            ' code (delivered by a future maybeStart re-provisioning, not by
+            ' PLY-072/073/136: the channel token itself is no longer usable
+            ' at all (revoked, or never valid — CHANNEL_TOKEN_EXPIRED does
+            ' NOT reach this branch, see Program.brs) — clear ONLY that
+            ' credential (never the trust anchor, PLY-136), keep the relay
+            ' address, and stop this loop rather than keep polling a token
+            ' that will never succeed again without a fresh pairing code
+            ' (delivered by a future maybeStart re-provisioning, not by
             ' retrying in place).
-            wvStorageClearCredentials()
+            wvStorageClearChannelToken()
             result = { phase: "program_failed", ok: false, contentType: "", items: invalid, status: "program failed", error: prog.error }
             print "[player-v3] program FAILED (needs repair): " + prog.error
             m.top.photonResult = result
