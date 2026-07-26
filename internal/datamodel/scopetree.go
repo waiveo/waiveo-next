@@ -3,6 +3,7 @@ package datamodel
 import (
 	"encoding/json"
 	"strings"
+	"unicode/utf8"
 )
 
 // ScopeNode is a scope-node-tree row (DAT-001): the platform's unit of placement
@@ -69,8 +70,8 @@ const maxScopeNodeNameLen = 200
 // BuildScopeTree indexes and validates a set of scope nodes, returning the tree and
 // every structural error found. It enforces the scope-node-tree MUSTs this task
 // owns:
-//   - DAT-001a: name is a non-empty string of at most 200 characters
-//     (SCOPE_NODE_NAME_INVALID);
+//   - DAT-001a: name is a non-empty, non-whitespace-only string of at most 200
+//     characters (SCOPE_NODE_NAME_INVALID);
 //   - DAT-001: kind is one of the closed vocabulary (SCOPE_NODE_KIND_INVALID);
 //   - DAT-002: parent_id null iff kind is org (SCOPE_NODE_PARENT_INVALID); at most
 //     one org node, and no org node parented under another (SCOPE_NODE_MULTIPLE_ORG);
@@ -100,13 +101,17 @@ func BuildScopeTree(nodes []ScopeNode) (ScopeTree, []Error) {
 	}
 
 	for _, n := range nodes {
-		// DAT-001a: name is a non-empty string of at most 200 characters. This
-		// check MUST sit above the kind check below: the kind check's continue
-		// short-circuits the rest of this node's checks on an invalid kind, and
-		// a node can independently fail both name and kind at once (API-013's
-		// multi-field aggregation) — appending the name error first, without a
-		// continue of its own, is what lets both survive into errs.
-		if strings.TrimSpace(n.Name) == "" || len(n.Name) > maxScopeNodeNameLen {
+		// DAT-001a: name is a non-empty, non-whitespace-only string of at most 200
+		// characters. This check MUST sit above the kind check below: the kind
+		// check's continue short-circuits the rest of this node's checks on an
+		// invalid kind, and a node can independently fail both name and kind at
+		// once (API-013's multi-field aggregation) — appending the name error
+		// first, without a continue of its own, is what lets both survive into
+		// errs. The 200 limit is a character (Unicode code point) count, not a
+		// byte count: len() on a Go string counts bytes, which would wrongly
+		// reject a multi-byte-rune name (e.g. 150 "é" characters is 300 bytes but
+		// only 150 characters) — utf8.RuneCountInString counts code points instead.
+		if strings.TrimSpace(n.Name) == "" || utf8.RuneCountInString(n.Name) > maxScopeNodeNameLen {
 			errs = append(errs, Error{Field: "name", Code: "SCOPE_NODE_NAME_INVALID", Message: "a scope node's name MUST be a non-empty string of at most 200 characters (DAT-001a)"})
 		}
 

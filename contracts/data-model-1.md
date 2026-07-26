@@ -31,7 +31,7 @@ data-model/1 defines the platform's core relational data model: the scope-node t
 
 **[DAT-001]** A scope node MUST be `{id, kind, parent_id, name, external_id?, labels?, revision, created_at, updated_at}` at minimum (ScopeNode, Wire shapes), plus the additional columns Org node: account state and entitlements and Time as data define. `kind` MUST be exactly one of `org`, `site`, `group`, or `screen` — the platform's complete, closed scope-node kind vocabulary; a value outside it MUST be rejected (`SCOPE_NODE_KIND_INVALID`, Error taxonomy). `group` is the generic grouping kind (for instance, a floor, wing, or department — an "area"), carrying no meaning beyond its place in the tree.
 
-**[DAT-001a]** A scope node's `name` MUST be a non-empty string of at most 200 characters; a create or update request violating this MUST be rejected (`SCOPE_NODE_NAME_INVALID`, Error taxonomy).
+**[DAT-001a]** A scope node's `name` MUST be a non-empty string, not consisting solely of whitespace, of at most 200 characters (Unicode code points, not bytes — a multi-byte character such as `é` counts as one); a create or update request violating this MUST be rejected (`SCOPE_NODE_NAME_INVALID`, Error taxonomy).
 
 **[DAT-002]** `parent_id` MUST be null if and only if `kind` is `org`; every non-`org` scope node's `parent_id` MUST reference an existing scope node (a violation rejected `SCOPE_NODE_PARENT_INVALID`, Error taxonomy). A conformant scope-node tree MUST contain exactly one `org`-kind node, which MUST be its own root — no node's ancestor chain reaches a second `org`-kind node (a second `org` node rejected `SCOPE_NODE_MULTIPLE_ORG`, Error taxonomy).
 

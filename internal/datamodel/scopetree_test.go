@@ -274,4 +274,29 @@ func TestScopeNodeNameValidation(t *testing.T) {
 			t.Errorf("a 200-char name must not be rejected; got %+v", errs)
 		}
 	})
+
+	// DAT-001a's 200 limit is a character count, not a byte count: "é" is a single
+	// character encoded as 2 UTF-8 bytes, so 150 of them is a 150-character,
+	// 300-byte name. It MUST be accepted — len() on a Go string counts bytes, so a
+	// naive len(n.Name) > 200 check wrongly rejects this as too long.
+	t.Run("150-character multi-byte-rune name is valid despite exceeding 200 bytes", func(t *testing.T) {
+		name := strings.Repeat("é", 150)
+		if len(name) <= maxScopeNodeNameLen {
+			t.Fatalf("test fixture invariant broken: name byte length = %d, want > %d", len(name), maxScopeNodeNameLen)
+		}
+		_, errs := BuildScopeTree([]ScopeNode{validSite(name)})
+		if hasErr(errs, "SCOPE_NODE_NAME_INVALID", "") {
+			t.Errorf("a 150-character (300-byte) name must not be rejected; got %+v", errs)
+		}
+	})
+
+	// The 201-character boundary MUST be enforced on the character count too, even
+	// when every character is multi-byte.
+	t.Run("201-character multi-byte-rune name is rejected", func(t *testing.T) {
+		name := strings.Repeat("é", 201)
+		_, errs := BuildScopeTree([]ScopeNode{validSite(name)})
+		if !hasErr(errs, "SCOPE_NODE_NAME_INVALID", "name") {
+			t.Errorf("want SCOPE_NODE_NAME_INVALID on a 201-character multi-byte name; got %+v", errs)
+		}
+	})
 }
