@@ -51,6 +51,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/enroll"
 	"github.com/maaxton/waiveo-next/internal/relay/hello"
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
+	"github.com/maaxton/waiveo-next/internal/relay/keepalive"
 	"github.com/maaxton/waiveo-next/internal/relay/mdns"
 	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
 	"github.com/maaxton/waiveo-next/internal/relay/schedulehost"
@@ -87,13 +88,19 @@ type config struct {
 	// empty/unset is off, internal/relay/mdns). ssdpAnnounce enables the
 	// SSDP RESPONDER — answering a player's own M-SEARCH for this relay's
 	// player/1 pairing surface (WAIVEO_RELAY_SSDP_ANNOUNCE=1, PLY-021/022).
-	// All three default off: CI and loopback dev runs must never multicast,
-	// so dev/CI stay byte-identical to today.
+	// keepaliveOn enables the screen keep-alive capability
+	// (WAIVEO_RELAY_KEEPALIVE=1, internal/relay/keepalive, player/1
+	// PLY-150-154): a second ECP poller over the SAME ecpTargets that
+	// re-launches a screen's player channel once it safely idles at Home.
+	// All four default off: CI and loopback dev runs must never multicast,
+	// and must not dispatch an unrequested launch, so dev/CI stay
+	// byte-identical to today.
 	ecpTargets   map[string]ecp.Target
 	pollInterval time.Duration
 	discoveryOn  bool
 	mdnsPatterns []string
 	ssdpAnnounce bool
+	keepaliveOn  bool
 }
 
 // loadConfig reads the relay config from env (os.Getenv in main), falling back
@@ -124,6 +131,7 @@ func loadConfig(env func(string) string) (config, error) {
 		discoveryOn:  env("WAIVEO_RELAY_DISCOVERY") == "1" || env("WAIVEO_RELAY_DISCOVERY") == "true",
 		mdnsPatterns: parseMDNSPatterns(env("WAIVEO_RELAY_MDNS_PATTERNS")),
 		ssdpAnnounce: env("WAIVEO_RELAY_SSDP_ANNOUNCE") == "1" || env("WAIVEO_RELAY_SSDP_ANNOUNCE") == "true",
+		keepaliveOn:  env("WAIVEO_RELAY_KEEPALIVE") == "1" || env("WAIVEO_RELAY_KEEPALIVE") == "true",
 	}, nil
 }
 
@@ -445,6 +453,33 @@ func main() {
 			}
 		}()
 		log.Printf("waiveo-relay device polling live (%d target(s), every %s)", len(pollTargets), cfg.pollInterval)
+	}
+
+	// Screen keep-alive (internal/relay/keepalive, player/1 PLY-150-154): a
+	// second, independent ECP poller over the SAME cfg.ecpTargets that
+	// re-launches a screen's player channel once it safely idles at Home
+	// (power-on settle delay, ≥2-consecutive-poll Home confirmation, never
+	// while standby) — see keepalive's own package doc for why this needs its
+	// OWN Poller rather than sharing the one host.Run above already exclusively
+	// consumes. reuses devController so a keepalive-issued launch dispatches
+	// through the identical device plane adapter as every other command
+	// (REL-112/113). Off by default (WAIVEO_RELAY_KEEPALIVE unset).
+	if cfg.keepaliveOn && len(cfg.ecpTargets) > 0 {
+		kaTargets := make(map[string]keepalive.Target, len(cfg.ecpTargets))
+		for entityID, t := range cfg.ecpTargets {
+			kaTargets[entityID] = keepalive.Target{Host: t.Host, Port: t.Port}
+		}
+		ka := keepalive.New(keepalive.Config{
+			Targets:      kaTargets,
+			PollInterval: cfg.pollInterval,
+			Controller:   devController,
+		})
+		go func() {
+			if err := ka.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("waiveo-relay: screen keep-alive ended: %v", err)
+			}
+		}()
+		log.Printf("waiveo-relay screen keep-alive live (%d target(s), every %s)", len(kaTargets), cfg.pollInterval)
 	}
 
 	// Discovery (REL-110/111): SSDP client sweep + mDNS listener each mint

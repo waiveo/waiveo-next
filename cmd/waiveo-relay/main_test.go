@@ -195,6 +195,7 @@ func TestLoadConfigECPTargetsAndPolling(t *testing.T) {
 		"WAIVEO_RELAY_DISCOVERY":     "1",
 		"WAIVEO_RELAY_MDNS_PATTERNS": "_waiveo._tcp",
 		"WAIVEO_RELAY_SSDP_ANNOUNCE": "1",
+		"WAIVEO_RELAY_KEEPALIVE":     "1",
 	}
 	cfg, err := loadConfig(func(k string) string { return env[k] })
 	if err != nil {
@@ -218,6 +219,9 @@ func TestLoadConfigECPTargetsAndPolling(t *testing.T) {
 	if !cfg.ssdpAnnounce {
 		t.Error("ssdpAnnounce = false, want true for WAIVEO_RELAY_SSDP_ANNOUNCE=1")
 	}
+	if !cfg.keepaliveOn {
+		t.Error("keepaliveOn = false, want true for WAIVEO_RELAY_KEEPALIVE=1")
+	}
 }
 
 func TestLoadConfigDeviceDefaultsOff(t *testing.T) {
@@ -238,6 +242,9 @@ func TestLoadConfigDeviceDefaultsOff(t *testing.T) {
 	}
 	if cfg.ssdpAnnounce {
 		t.Error("ssdpAnnounce = true, want false by default (CI/dev loopback must not multicast)")
+	}
+	if cfg.keepaliveOn {
+		t.Error("keepaliveOn = true, want false by default (must not dispatch an unrequested launch)")
 	}
 	if cfg.pollInterval != 5*time.Second {
 		t.Errorf("pollInterval = %s, want the 5s default", cfg.pollInterval)
