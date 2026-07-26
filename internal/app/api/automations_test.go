@@ -446,6 +446,21 @@ func TestBulkEnableReturnsJobOverMatchedIDs(t *testing.T) {
 	assertProblem(t, resp, raw, "SELECTOR_INVALID")
 }
 
+// TestBulkEnableMalformedBodyIs422: API-013a binds VALIDATION_FAILED to 422 when
+// the failure is in the request body — an unparseable JSON body is exactly that
+// (not a query-parameter failure), and POST /scope-nodes already returns 422 for
+// the identical failure class (parseFields absorbs the parse error into
+// zero-valued fields, which then fail datamodel validation). bulk-enable MUST
+// agree, not carry a second, 400 status for the same VALIDATION_FAILED code.
+func TestBulkEnableMalformedBodyIs422(t *testing.T) {
+	e := newEnv(t)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations/bulk-enable", []byte("{not json"), nil)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("malformed-body bulk-enable status = %d, want 422 (body %s)", resp.StatusCode, raw)
+	}
+	assertProblem(t, resp, raw, "VALIDATION_FAILED")
+}
+
 // TestBulkEnableRequiresSelector: `selector` is required (openapi
 // AutomationBulkEnableRequest.required). An absent OR empty/whitespace selector
 // is rejected 422 / VALIDATION_FAILED rather than silently matching every stored

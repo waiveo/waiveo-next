@@ -264,7 +264,12 @@ func (srv *server) bulkEnableAutomations(w http.ResponseWriter, r *http.Request)
 func (srv *server) bulkEnableExec(w http.ResponseWriter, r *http.Request, body []byte) {
 	var req bulkEnableRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		writeProblem(w, r, http.StatusBadRequest, "VALIDATION_FAILED", "Bad Request", "The request body could not be parsed.")
+		// API-013a: VALIDATION_FAILED MUST carry 422 when the failure is in the
+		// request body, never 400 — an unparseable body is a body failure, not a
+		// query-parameter one, and POST /scope-nodes already returns 422 for the
+		// identical failure class (parseFields absorbs the parse error into
+		// zero-valued fields, which then fail datamodel validation).
+		writeProblem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Validation Failed", "The request body could not be parsed.")
 		return
 	}
 	// `selector` is required (openapi AutomationBulkEnableRequest.required): an
