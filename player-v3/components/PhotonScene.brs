@@ -1,10 +1,14 @@
 ' PhotonScene.brs — renders the first photon. Creates the PlayerTask, starts it
 ' once a pairing code is available (or the device is already paired), and swaps
-' the Poster in when the task reports a verified image.
+' in a Poster (image) or a Video node (video) when the task reports content
+' that has already been fetched AND asset_ref-verified (Program.brs never hands
+' back a contentUri that has not passed that check).
 
 sub init()
     m.bg = m.top.findNode("bg")
     m.poster = m.top.findNode("contentPoster")
+    m.video = m.top.findNode("contentVideo")
+    m.video.observeField("state", "onVideoStateChange")
     m.status = m.top.findNode("statusLabel")
     m.status.text = "Waiveo Player v3 — starting…"
 
@@ -51,13 +55,58 @@ sub onPhotonResult()
     if res = invalid then return
 
     if res.ok
-        m.poster.uri = res.imageUri
-        m.poster.visible = true
+        if res.contentType = "video"
+            format = res.streamFormat
+            if format = "" then format = "mp4"
+            content = CreateObject("roSGNode", "ContentNode")
+            content.url = res.contentUri
+            content.streamFormat = format
+            content.live = false
+
+            m.poster.visible = false
+            m.video.content = content
+            m.video.visible = true
+            m.video.control = "play"
+        else
+            ' image (or any future non-video type this player does not yet
+            ' distinguish): stop and hide the Video node first so a prior
+            ' playback does not keep running behind a poster.
+            m.video.control = "stop"
+            m.video.visible = false
+            m.poster.uri = res.contentUri
+            m.poster.visible = true
+        end if
         m.status.visible = false
     else
+        m.video.control = "stop"
+        m.video.visible = false
+        m.poster.visible = false
         detail = res.status
         if res.error <> "" then detail = detail + " — " + res.error
         m.status.text = "Waiveo Player v3 — " + detail
+        m.status.visible = true
+    end if
+end sub
+
+' onVideoStateChange handles the Video node's end-of-stream and error states.
+' There is no further-lease-pull loop yet (PlayerTask fetches its one photon
+' item once) — a "finished" video is deliberately restarted so a screen never
+' goes dark simply because its single verified item finished playing, mirroring
+' PLY-087's "keep showing what you have" posture for the no-further-content
+' case. "error" is surfaced to the status label rather than left as a frozen or
+' blank video frame — a silent stuck screen is worse than a visible error.
+sub onVideoStateChange()
+    state = m.video.state
+    if state = "finished"
+        print "[player-v3] video finished — restarting playback (end-of-stream)"
+        m.video.control = "play"
+    else if state = "error"
+        errCode = m.video.errorCode
+        errMsg = m.video.errorMsg
+        if errMsg = invalid then errMsg = ""
+        print "[player-v3] video ERROR code=" + errCode.toStr() + " msg=" + errMsg
+        m.video.visible = false
+        m.status.text = "Waiveo Player v3 — video playback error (" + errCode.toStr() + ") " + errMsg
         m.status.visible = true
     end if
 end sub

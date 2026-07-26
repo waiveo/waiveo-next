@@ -7,7 +7,7 @@ sub init()
 end sub
 
 sub runPhoton()
-    result = { phase: "start", ok: false, imageUri: "", status: "starting", error: "" }
+    result = { phase: "start", ok: false, contentUri: "", contentType: "", streamFormat: "", status: "starting", error: "" }
 
     state = wvStorageLoad()
 
@@ -59,10 +59,12 @@ sub runPhoton()
         return
     end if
 
-    print "[player-v3] PHOTON — image verified + ready to render (" + prog.imageUri + ")"
+    print "[player-v3] PHOTON — " + prog.contentType + " verified + ready to render (" + prog.contentUri + ")"
     result.ok = true
     result.phase = "done"
     result.status = "photon"
-    result.imageUri = prog.imageUri
+    result.contentUri = prog.contentUri
+    result.contentType = prog.contentType
+    result.streamFormat = prog.streamFormat
     m.top.photonResult = result
 end sub

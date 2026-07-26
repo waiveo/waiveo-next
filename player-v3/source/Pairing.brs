@@ -24,6 +24,11 @@ function wvDoPairing(pairingCode as String) as Object
     ' --- bootstrap POST /player/v1/pair, verification DISABLED (PLY-040/041) ---
     r.phase = "bootstrap"
     base = "https://" + dec.host + ":" + dec.port.toStr()
+    ' content_types (PLY-012) MUST match what this player can actually render
+    ' (Program.brs makes the identical declaration on every later program
+    ' poll, PLY-013) — both "image" and "video" are real here: Program.brs's
+    ' fetch path verifies and hands back either, and PhotonScene renders
+    ' either via a Poster or a Video node.
     reqBody = FormatJson({
         hardware_id: wvHardwareId(),
         grant_selector: dec.grantSelector,
