@@ -51,6 +51,8 @@ data-model/1 defines the platform's core relational data model: the scope-node t
 
 **[DAT-005]** Every row this contract defines — a scope node (Scope-node tree) and every scheduling-core row (Scheduling core: playlist, Scheduling core: schedule, Scheduling core: validity window, Scheduling core: daypart, Scheduling core: fallback, Scheduling core: preset batch) — is a `resource` in `api/1`'s own sense (`api/1` Definitions) and MUST carry `api/1`'s resource-row baseline: an `id` (ULID) unique among rows of its own type, a `revision` (integer, `api/1` API-020) for optimistic concurrency, and MAY carry an `external_id` (`api/1` API-100–104) and `labels` conforming to `api/1`'s label-selector key/value grammar (`api/1` API-042). A preset-batch row's own identity field is `preset_id`, not `id` (Scheduling core: preset batch) — the sole exception, kept for byte-exact continuity with the field name `rules/1` RUL-170 already fixes for a reference to it.
 
+**[DAT-005a]** Every row's `id` (a preset-batch's `preset_id`) MUST be a syntactically valid canonical ULID; a create or update request violating this MUST be rejected (`ROW_ID_INVALID`, Error taxonomy).
+
 **[DAT-006]** Every row this contract defines other than a scope node itself MUST carry `scope_node`: the `id` of the scope node (Scope-node tree) it is placed under, in the same field name and role `relay/1`'s `site_binding` (`relay/1` REL-036), `events/1`'s durable-event envelope (`events/1` EVT-010/EVT-012), and `api/1`'s own `scope_node` selector term (`api/1` API-044) already use for this identical concept.
 
 **[DAT-007]** A daypart or validity-window row's own `scope_node` MUST equal its owning schedule row's own `scope_node` — carried directly on each row per DAT-006, rather than requiring a consumer to join through `schedule_id` to place it in the tree. This is what lets `relay/1`'s own `schedule` snapshot section carry this scheduling core "keyed by scope node" for every row kind alike (`relay/1` REL-065), not only for the schedule row itself.
@@ -373,6 +375,7 @@ This contract has no live wire handshake of its own; `api/1`'s CRUD operations a
 |---|---|---|
 | `SCOPE_NODE_KIND_INVALID` | A scope node's `kind` is not one of `org`, `site`, `group`, `screen` (DAT-001). | no |
 | `SCOPE_NODE_NAME_INVALID` | A scope node's `name` is empty, whitespace-only, or exceeds 200 characters (DAT-001a). | no |
+| `ROW_ID_INVALID` | A row's `id` (a preset-batch's `preset_id`) is not a syntactically valid canonical ULID (DAT-005a). | no |
 | `SCOPE_NODE_PARENT_INVALID` | A scope node's `kind` is not a permitted child of its `parent_id`'s own `kind` (DAT-003), or `parent_id` is null on a non-`org` node or non-null on an `org` node (DAT-002). | no |
 | `SCOPE_NODE_MULTIPLE_ORG` | A scope-node tree contains more than one `org`-kind node, or a node's ancestor chain reaches a second `org`-kind node (DAT-002). | no |
 | `SCOPE_NODE_GEO_REQUIRED` | A `site`-kind scope node's `tz`/`lat`/`long` is missing or null (DAT-031). | no |

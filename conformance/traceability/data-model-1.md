@@ -10,6 +10,7 @@ One row per requirement ID `contracts/data-model-1.md` defines. Format: `conform
 | DAT-003 | `contracts/data-model-1.md#scope-node-tree` | `DAT-001-valid-scope-node-tree` | covered |
 | DAT-004 | `contracts/data-model-1.md#scope-node-tree` | `DAT-001-valid-scope-node-tree` | covered |
 | DAT-005 | `contracts/data-model-1.md#resource-row-baseline` | `DAT-001-valid-scope-node-tree` | covered |
+| DAT-005a | `contracts/data-model-1.md#resource-row-baseline` | - | TBD-wave1 |
 | DAT-006 | `contracts/data-model-1.md#resource-row-baseline` | `DAT-001-valid-scope-node-tree` | covered |
 | DAT-007 | `contracts/data-model-1.md#resource-row-baseline` | - | TBD-wave1 |
 | DAT-008 | `contracts/data-model-1.md#resource-row-baseline` | `DAT-001-valid-scope-node-tree` | covered |
