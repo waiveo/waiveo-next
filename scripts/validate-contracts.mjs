@@ -24,7 +24,10 @@ import { join } from "node:path";
 const CONTRACTS_ROOT = "contracts";
 const TRACEABILITY_ROOT = join("conformance", "traceability");
 const EXEMPT_NAMES = new Set(["README.md", "TEMPLATE.md"]);
-const REQUIREMENT_ID_RE = /^\*\*\[([A-Z]{3}-\d{3}[a-z]?)\]\*\*/;
+// Anchored at column 0 on purpose, but tolerant of leading whitespace so an
+// indented anchor cannot slip past every check unseen: an ID the scanner never
+// sees is not merely untraced, it is also exempt from duplicate detection.
+const REQUIREMENT_ID_RE = /^\s*\*\*\[([A-Z]{3}-\d{3}[a-z]?)\]\*\*/;
 const TRACEABILITY_ID_RE = /^[A-Z]{3}-\d{3}[a-z]?$/;
 
 const failures = [];
@@ -56,7 +59,16 @@ const idOwner = new Map();
 
 function collectRequirementIds(path, lines) {
   let found = 0;
+  // A fenced block holds illustrative text, not normative requirements: an
+  // anchor-shaped line inside one is an example, and counting it would demand
+  // a traceability row for a requirement that does not exist.
+  let inFence = false;
   lines.forEach((line, i) => {
+    if (/^\s*(```|~~~)/.test(line)) {
+      inFence = !inFence;
+      return;
+    }
+    if (inFence) return;
     const m = REQUIREMENT_ID_RE.exec(line);
     if (!m) return;
     found++;

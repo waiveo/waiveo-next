@@ -268,3 +268,42 @@ test("contract doc with zero requirement IDs fails", () => {
     }
   );
 });
+
+test("an indented requirement anchor is still seen (cannot hide from any check)", () => {
+  // An anchor the scanner never sees is not merely untraced — it also escapes
+  // duplicate detection, so leading whitespace must not make an ID invisible.
+  withFixture(
+    (write) => {
+      writeGoodCorpus(write);
+      write(
+        "contracts/example-2.md",
+        "# Example Contract Two\n\n**Contract:** example/2\n**Version:** 1.0\n**Status:** draft\n\n  **[XXX-050]** Indented anchor with no traceability row.\n"
+      );
+      write("conformance/traceability/example-2.md", GOOD_TRACEABILITY_MAP.replace(/XXX-00\d/g, "XXX-001"));
+    },
+    (root) => {
+      const res = runValidator(root);
+      assert.notEqual(res.status, 0, `indented anchor must be caught, not ignored\n${res.stdout}${res.stderr}`);
+      assert.match(res.stdout + res.stderr, /XXX-050/);
+    }
+  );
+});
+
+test("an anchor-shaped line inside a fenced block is an example, not a requirement", () => {
+  // Fenced blocks hold illustrative text; demanding a traceability row for an
+  // example would force rows for requirements that do not exist.
+  withFixture(
+    (write) => {
+      writeGoodCorpus(write);
+      write(
+        "contracts/example-1.md",
+        GOOD_CONTRACT + "\n```\n**[XXX-777]** illustrative only, not normative\n```\n"
+      );
+    },
+    (root) => {
+      const res = runValidator(root);
+      assert.equal(res.status, 0, `fenced example must not be treated as a requirement\n${res.stdout}${res.stderr}`);
+      assert.doesNotMatch(res.stdout + res.stderr, /XXX-777/);
+    }
+  );
+});
