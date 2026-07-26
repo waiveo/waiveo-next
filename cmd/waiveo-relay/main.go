@@ -294,6 +294,13 @@ func main() {
 	// offline-serve mode (REL-055/061) with no live site adopted.
 	site, err := helloWithRetry(cfg, relayIdent)
 	helloOK := err == nil
+	// helloErr is captured under its own name (rather than read back from err
+	// later) because err itself is reused by several unrelated `:=` statements
+	// further down this function — by the time the live-loop gate below wants
+	// to know WHY hello failed (to decide whether background recovery is
+	// worth attempting, helloRefusalIsRecoverable), the shared err variable no
+	// longer holds this value.
+	helloErr := err
 	if err != nil {
 		if fatal := offlineServeFallback(err, hasPersisted); fatal != nil {
 			log.Fatalf("waiveo-relay: hello: %v", fatal)
@@ -693,7 +700,63 @@ func main() {
 		rePullTicker := time.NewTicker(rePullInterval)
 		go rePullLoop(rootCtx, rePullTicker.C, puller)
 	} else {
-		log.Printf("waiveo-relay: live desired-state loop NOT started — hello was not accepted by the app peer; serving persisted last-applied offline until re-enrolled (REL-055/061)")
+		log.Printf("waiveo-relay: live desired-state loop NOT started — hello was not accepted by the app peer; serving persisted last-applied offline (REL-055/061)")
+
+		// relay/1's own Error taxonomy does NOT treat every hello refusal as
+		// permanent: CHANNEL_BINDING_INVALID and RELAY_IDENTITY_MISMATCH are
+		// both annotated "reconnect and retry the handshake"
+		// (contracts/relay-1.md, Error taxonomy) — exactly the outcome a
+		// feeder restart's enrollment-registry amnesia produced before
+		// internal/feeder/enroll.Server.EnablePersistence's own fix, and
+		// exactly the outcome a transient network hiccup produces too.
+		// Without this, a relay that hit either refusal (or any transport
+		// failure) at boot stays offline-only for the rest of the process's
+		// life — "until re-enrolled" meant, in practice, an operator had to
+		// notice, stop the relay, wipe its identity dir, and restart it, even
+		// though nothing about the relay's own credential was actually wrong.
+		// Retry the handshake in the background instead, so this relay
+		// self-heals the moment the app peer starts accepting it again. A
+		// refusal the taxonomy gives no such guidance for
+		// (PROTOCOL_VERSION_UNSUPPORTED) is left exactly as permanent as it
+		// is today — see helloRefusalIsRecoverable's own doc.
+		if helloRefusalIsRecoverable(helloErr) {
+			recoverer := &helloRecoverer{
+				hello: func() (hello.SiteBinding, error) {
+					ack, err := hello.PerformHello(cfg.feederURL, relayID.PrivateKey, relayID.RelayID, relayHelloDeclaration(cfg))
+					if err != nil {
+						return hello.SiteBinding{}, err
+					}
+					return ack.Body.SiteBinding, nil
+				},
+				onAccepted: func(recoveredSite hello.SiteBinding) {
+					// Adopt the newly-negotiated site for every FUTURE
+					// schedule-resolver apply (REL-036); driver is untouched
+					// by any other goroutine while helloOK is false, since
+					// the live loop this recovery is about to start is the
+					// only other writer, and it does not exist yet.
+					driver.site = recoveredSite
+
+					puller := &rePuller{
+						pull:    func() (desiredstate.Applied, error) { return desiredstate.Pull(cfg.feederURL, store) },
+						driver:  driver,
+						host:    host,
+						nowFn:   func() int64 { return time.Now().UnixMilli() },
+						lastGen: applied.Generation,
+					}
+					// Apply immediately if a generation is available now,
+					// rather than waiting a full rePullInterval for the
+					// first tick — the same immediacy the boot-accepted path
+					// gets from its own boot-time Pull.
+					puller.tick(rootCtx)
+					rePullTicker := time.NewTicker(rePullInterval)
+					go rePullLoop(rootCtx, rePullTicker.C, puller)
+					log.Printf("waiveo-relay: hello recovered — live desired-state loop started (REL-055/061)")
+				},
+			}
+			recoveryTicker := time.NewTicker(helloRecoveryInterval)
+			go helloRecoveryLoop(rootCtx, recoveryTicker.C, recoverer)
+			log.Printf("waiveo-relay: hello recovery loop started — retrying the handshake every %s until the app peer accepts this relay", helloRecoveryInterval)
+		}
 	}
 
 	// Wire the relay's telemetry upstream channel (relay/1 REL-090/092/097): the
@@ -1030,21 +1093,33 @@ func scheduleScreenNodeIDs(sec wire.ScheduleSection) []string {
 	return ids
 }
 
-// helloWithRetry performs the relay/1 connection handshake against the
-// co-located app peer, retrying a transport failure (e.g. the feeder's
-// listener not up yet, or its handshake routes mid-registration) until
-// enrollRetryBudget elapses — mirroring enrollWithRetry's tolerance of the
-// dev harness starting both binaries with no ordering. A typed *hello.RefusedError
-// (a channel-binding or protocol-version refusal) is decisive and returned
-// immediately, never retried: the app peer answered and declined.
-func helloWithRetry(cfg config, relayIdent identity.RelayIdentity) (hello.SiteBinding, error) {
-	decl := hello.Declaration{
+// relayHelloDeclaration builds this relay's hello Declaration (relay/1
+// REL-031), shared by every hello attempt this binary makes — the boot
+// handshake (helloWithRetry) and the background recovery loop's retries
+// (helloRecoverer, hellorecovery.go) alike — so they declare identically
+// regardless of which call site is asking.
+func relayHelloDeclaration(cfg config) hello.Declaration {
+	return hello.Declaration{
 		ProtocolVersion: "1.0",
 		Features:        []string{"telemetry.latest_only_v1"},
 		SiteBinding:     hello.SiteBinding{}, // no cached site pre-pull; the relay adopts the app peer's authoritative copy
 		SubnetMetadata:  hello.SubnetMetadata{AdvertisedAddress: cfg.listen},
 		ClockState:      hello.ClockState{State: "untrusted", Source: "cold_boot"},
 	}
+}
+
+// helloWithRetry performs the relay/1 connection handshake against the
+// co-located app peer, retrying a transport failure (e.g. the feeder's
+// listener not up yet, or its handshake routes mid-registration) until
+// enrollRetryBudget elapses — mirroring enrollWithRetry's tolerance of the
+// dev harness starting both binaries with no ordering. A typed *hello.RefusedError
+// (a channel-binding or protocol-version refusal) is decisive and returned
+// immediately, never retried within this bounded budget: the app peer
+// answered and declined. (The live-loop gate in main, above, separately
+// decides whether that decisive refusal is worth retrying indefinitely in
+// the background — helloRefusalIsRecoverable, hellorecovery.go.)
+func helloWithRetry(cfg config, relayIdent identity.RelayIdentity) (hello.SiteBinding, error) {
+	decl := relayHelloDeclaration(cfg)
 
 	deadline := time.Now().Add(enrollRetryBudget)
 	var lastErr error
