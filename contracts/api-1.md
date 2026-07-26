@@ -229,8 +229,8 @@ The single `/api/v1` prefix (API-001) replaces a legacy core/extension URL split
   "code": "VALIDATION_FAILED",
   "trace_id": "01J8Z3K4N5P6Q7R8S9T0V1W2X5",
   "errors": [
-    { "field": "kind", "code": "SCOPE_NODE_KIND_INVALID", "message": "scope-node kind must be one of org, site, group, screen (DAT-001)" },
-    { "field": "name", "code": "SCOPE_NODE_NAME_INVALID", "message": "a scope node's name MUST be a non-empty string (DAT-001a)" }
+    { "field": "name", "code": "SCOPE_NODE_NAME_INVALID", "message": "a scope node's name MUST be a non-empty string of at most 200 characters (DAT-001a)" },
+    { "field": "kind", "code": "SCOPE_NODE_KIND_INVALID", "message": "scope-node kind must be one of org, site, group, screen (DAT-001)" }
   ]
 }
 ```

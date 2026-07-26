@@ -13,7 +13,7 @@ re-drive originally surfaced seven genuine, confirmed divergences between
 frozen expectations and the live handler's actual behavior (wording/
 status-code mismatches, two fixtures that violated a datamodel rule built
 after they were frozen, and two Job-resource fields with no determinism
-seam). After this change series, of the eleven driven cases exactly ONE
+seam). After this change series, of the thirteen driven cases exactly ONE
 still diverges: `API-111-valid-bulk-enable-202-job`'s `created_by` field,
 which the live handler stamps from a fixed principal because auth is
 deferred — see `conformance/drivers/api1/driver_test.go`'s `expectedFailing`

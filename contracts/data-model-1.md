@@ -372,7 +372,7 @@ This contract has no live wire handshake of its own; `api/1`'s CRUD operations a
 | code | meaning | retryable |
 |---|---|---|
 | `SCOPE_NODE_KIND_INVALID` | A scope node's `kind` is not one of `org`, `site`, `group`, `screen` (DAT-001). | no |
-| `SCOPE_NODE_NAME_INVALID` | A scope node's `name` is empty or exceeds 200 characters (DAT-001a). | no |
+| `SCOPE_NODE_NAME_INVALID` | A scope node's `name` is empty, whitespace-only, or exceeds 200 characters (DAT-001a). | no |
 | `SCOPE_NODE_PARENT_INVALID` | A scope node's `kind` is not a permitted child of its `parent_id`'s own `kind` (DAT-003), or `parent_id` is null on a non-`org` node or non-null on an `org` node (DAT-002). | no |
 | `SCOPE_NODE_MULTIPLE_ORG` | A scope-node tree contains more than one `org`-kind node, or a node's ancestor chain reaches a second `org`-kind node (DAT-002). | no |
 | `SCOPE_NODE_GEO_REQUIRED` | A `site`-kind scope node's `tz`/`lat`/`long` is missing or null (DAT-031). | no |

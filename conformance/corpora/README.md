@@ -44,8 +44,10 @@ Fields:
   input. Shape mirrors whatever the contract defines as the response/output
   for this kind of input.
 
-A request field whose string value starts with `$responses[` (e.g.
-`$responses[0].cursor`) is a chain marker, not a literal value: it names a
+A request field whose string value is exactly of the form
+`$responses[N].field` (e.g. `$responses[0].cursor` — the driver matches the
+whole value, so a marker with trailing or leading text is sent as a literal)
+is a chain marker, not a literal value: it names a
 member of an EARLIER response within the same case, and the driver resolves
 it against the actual response body it observed for that request before
 issuing the request that carries the marker. This exists so a roundtrip case
