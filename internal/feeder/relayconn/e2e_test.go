@@ -28,6 +28,7 @@
 package relayconn_test
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/tls"
@@ -43,7 +44,7 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/net/websocket"
+	"github.com/coder/websocket"
 
 	feederenroll "github.com/maaxton/waiveo-next/internal/feeder/enroll"
 	feederrelayconn "github.com/maaxton/waiveo-next/internal/feeder/relayconn"
@@ -153,6 +154,10 @@ func (h *harness) listen(t *testing.T) *httptest.Server {
 	ts.TLS = &tls.Config{
 		ClientAuth: tls.VerifyClientCertIfGiven,
 		ClientCAs:  h.enrollSrv.ClientCAPool(),
+		// The TLS 1.3 floor the production feeder listener pins (REL-040:
+		// the challenge nonce derives from the session's exporter keying
+		// material, so the session must be exporter-capable).
+		MinVersion: tls.VersionTLS13,
 	}
 	ts.StartTLS()
 	t.Cleanup(ts.Close)
@@ -459,27 +464,61 @@ func rawWS(t *testing.T, h *harness, store *identity.Store) *websocket.Conn {
 	if err != nil || !ok {
 		t.Fatalf("store.Identity: ok=%v err=%v", ok, err)
 	}
-	block, _ := pemDecode(id.CertPEM)
+	ws, err := rawDial(t, h, store, id.CertPEM, []string{wire.Subprotocol})
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	t.Cleanup(func() { _ = ws.CloseNow() })
+	return ws
+}
+
+// rawDial dials the harness's /relay/v1 with the store's client certificate
+// and the given subprotocol offer, returning the transport error verbatim.
+func rawDial(t *testing.T, h *harness, store *identity.Store, certPEM []byte, subprotocols []string) (*websocket.Conn, error) {
+	t.Helper()
+	id, ok, err := store.Identity()
+	if err != nil || !ok {
+		t.Fatalf("store.Identity: ok=%v err=%v", ok, err)
+	}
+	block, _ := pemDecode(certPEM)
 
 	wsURL := "wss" + strings.TrimPrefix(h.ts.URL, "https") + "/relay/v1"
-	cfg, err := websocket.NewConfig(wsURL, h.ts.URL)
-	if err != nil {
-		t.Fatalf("websocket.NewConfig: %v", err)
-	}
-	cfg.Protocol = []string{wire.Subprotocol}
-	cfg.TlsConfig = &tls.Config{
+	hc := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
 		InsecureSkipVerify: true, //nolint:gosec // test dials its own httptest listener
+		MinVersion:         tls.VersionTLS13,
 		Certificates: []tls.Certificate{{
 			Certificate: [][]byte{block},
 			PrivateKey:  id.PrivateKey,
 		}},
-	}
-	ws, err := cfg.DialContext(t.Context())
+	}}}
+	ws, _, err := websocket.Dial(t.Context(), wsURL, &websocket.DialOptions{
+		HTTPClient:   hc,
+		Subprotocols: subprotocols,
+	})
+	return ws, err
+}
+
+// wsSend / wsRecv exchange one wire.Frame on a raw test connection.
+func wsSend(t *testing.T, ws *websocket.Conn, f wire.Frame) error {
+	t.Helper()
+	data, err := json.Marshal(f)
 	if err != nil {
-		t.Fatalf("websocket dial: %v", err)
+		t.Fatalf("marshal frame: %v", err)
 	}
-	t.Cleanup(func() { _ = ws.Close() })
-	return ws
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	return ws.Write(ctx, websocket.MessageText, data)
+}
+
+func wsRecv(t *testing.T, ws *websocket.Conn, f *wire.Frame) error {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	_, data, err := ws.Read(ctx)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, f)
 }
 
 // pemDecode returns the first PEM block's DER bytes.
@@ -516,7 +555,7 @@ func TestHelloWrongKeyDrawsTypedRefusal(t *testing.T) {
 	ws := rawWS(t, h, store)
 
 	var challenge wire.Frame
-	if err := websocket.JSON.Receive(ws, &challenge); err != nil {
+	if err := wsRecv(t, ws, &challenge); err != nil {
 		t.Fatalf("read challenge: %v", err)
 	}
 	if challenge.Type != wire.FrameTypeChallenge || challenge.RelayID != id.RelayID {
@@ -542,12 +581,12 @@ func TestHelloWrongKeyDrawsTypedRefusal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFrame: %v", err)
 	}
-	if err := websocket.JSON.Send(ws, helloFrame); err != nil {
+	if err := wsSend(t, ws, helloFrame); err != nil {
 		t.Fatalf("send hello: %v", err)
 	}
 
 	var refusal wire.Frame
-	if err := websocket.JSON.Receive(ws, &refusal); err != nil {
+	if err := wsRecv(t, ws, &refusal); err != nil {
 		t.Fatalf("read refusal: %v", err)
 	}
 	if refusal.Type != wire.FrameTypeError || refusal.Code != "CHANNEL_BINDING_INVALID" {
@@ -558,7 +597,7 @@ func TestHelloWrongKeyDrawsTypedRefusal(t *testing.T) {
 	}
 
 	var next wire.Frame
-	if err := websocket.JSON.Receive(ws, &next); err == nil {
+	if err := wsRecv(t, ws, &next); err == nil {
 		t.Fatalf("connection stayed open after refusal; received %+v", next)
 	}
 }
@@ -576,7 +615,7 @@ func TestPullBeforeHelloIsProtocolViolation(t *testing.T) {
 	ws := rawWS(t, h, store)
 
 	var challenge wire.Frame
-	if err := websocket.JSON.Receive(ws, &challenge); err != nil {
+	if err := wsRecv(t, ws, &challenge); err != nil {
 		t.Fatalf("read challenge: %v", err)
 	}
 
@@ -584,12 +623,12 @@ func TestPullBeforeHelloIsProtocolViolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFrame: %v", err)
 	}
-	if err := websocket.JSON.Send(ws, pull); err != nil {
+	if err := wsSend(t, ws, pull); err != nil {
 		t.Fatalf("send pull: %v", err)
 	}
 
 	var refusal wire.Frame
-	if err := websocket.JSON.Receive(ws, &refusal); err != nil {
+	if err := wsRecv(t, ws, &refusal); err != nil {
 		t.Fatalf("read refusal: %v", err)
 	}
 	if refusal.Type != wire.FrameTypeError || refusal.Code != "PROTOCOL_VIOLATION" || refusal.ID != "eager-pull-1" {
@@ -597,7 +636,7 @@ func TestPullBeforeHelloIsProtocolViolation(t *testing.T) {
 	}
 
 	var next wire.Frame
-	if err := websocket.JSON.Receive(ws, &next); err == nil {
+	if err := wsRecv(t, ws, &next); err == nil {
 		t.Fatalf("connection stayed open after protocol violation; received %+v", next)
 	}
 }
@@ -664,23 +703,10 @@ func TestSubprotocolRequired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.Identity: %v", err)
 	}
-	block, _ := pemDecode(id.CertPEM)
 
-	wsURL := "wss" + strings.TrimPrefix(h.ts.URL, "https") + "/relay/v1"
-	cfg, err := websocket.NewConfig(wsURL, h.ts.URL)
-	if err != nil {
-		t.Fatalf("websocket.NewConfig: %v", err)
-	}
-	// No cfg.Protocol offered.
-	cfg.TlsConfig = &tls.Config{
-		InsecureSkipVerify: true, //nolint:gosec // test dials its own httptest listener
-		Certificates: []tls.Certificate{{
-			Certificate: [][]byte{block},
-			PrivateKey:  id.PrivateKey,
-		}},
-	}
-	if ws, err := cfg.DialContext(t.Context()); err == nil {
-		ws.Close()
+	// No subprotocol offered.
+	if ws, err := rawDial(t, h, store, id.CertPEM, nil); err == nil {
+		ws.CloseNow()
 		t.Fatal("upgrade without the relay.v1+json subprotocol succeeded; want refusal")
 	}
 }

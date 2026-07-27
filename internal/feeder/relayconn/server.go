@@ -1,5 +1,5 @@
 // Package relayconn is the app-peer (feeder) side of the relay/1 persistent
-// connection SPIKE: one WebSocket endpoint at the contract's own stable path
+// connection: one WebSocket endpoint at the contract's own stable path
 // (/relay/v1, REL-001 — the claim-credential example's
 // wss://…/relay/v1), upgraded from the feeder's existing HTTPS listener,
 // exchanging exactly one UTF-8 JSON message per WS message (REL-002,
@@ -17,34 +17,48 @@
 //	  self-asserted relay_id (REL-041; a mismatched hello.relay_id is
 //	  refused RELAY_IDENTITY_MISMATCH) — negotiates, answers `hello-ack`
 //	→ steady state: `state.pull` answered with `state.snapshot` or
-//	  `state.unchanged` (REL-050/051), and generation-advance notifications
-//	  pushed server→relay (NotifyGenerationAdvance).
+//	  `state.unchanged` (REL-050/051), and generation-advance nudges
+//	  (`state.changed`, REL-057) pushed server→relay
+//	  (NotifyGenerationAdvance).
 //
 // Any pre-hello frame that is not `hello` is refused with a top-level error
 // frame (PROTOCOL_VIOLATION) and the connection is closed (REL-039 posture);
 // every post-enrollment frame the server sends carries relay_id (REL-005)
 // and echoes its request's id + trace_id (REL-006/007).
 //
-// SPIKE CORNERS (deliberate, recorded): no read deadlines, no ping/pong
-// heartbeat, no write flow control (a stalled relay blocks
-// NotifyGenerationAdvance on that conn's write mutex), no per-connection
-// limit, unknown frame types are silently ignored (REL-004 forward
-// tolerance without the contract's ack story).
+// The transport is github.com/coder/websocket: context-governed reads and
+// writes (per-operation deadlines), concurrent-safe writes, Ping for
+// protocol-level dead-peer detection, and a proper RFC 6455 close
+// handshake.
 package relayconn
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
+	"strings"
 	"sync"
+	"time"
 
-	"golang.org/x/net/websocket"
+	"github.com/coder/websocket"
 
 	"github.com/maaxton/waiveo-next/internal/relay/hello"
 	"github.com/maaxton/waiveo-next/internal/shared/ulid"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
+
+// writeTimeout bounds any single frame write to a relay: a peer that cannot
+// take a frame within it has its connection torn down (the transport closes
+// the connection when a write's context expires) — the slow-consumer
+// posture that keeps one stalled relay from wedging the feeder.
+const writeTimeout = 10 * time.Second
+
+// maxInboundFrameBytes bounds one inbound frame on this side: a relay sends
+// small control frames (hello, state.pull, state.ack) — nothing remotely
+// near this bound; a frame exceeding it closes the connection.
+const maxInboundFrameBytes = 1 << 20
 
 // SnapshotProvider returns the feeder's CURRENT signed desired-state
 // snapshot — the same func the HTTP pull endpoint serves
@@ -108,44 +122,82 @@ func New(
 	return s
 }
 
-// Handler returns the http.Handler to mount at /relay/v1. The WS handshake
-// refuses a client that does not offer the relay/1 subprotocol
-// (wire.Subprotocol) before any frame is exchanged.
+// Handler returns the http.Handler to mount at /relay/v1. A client that
+// does not offer the relay/1 subprotocol (wire.Subprotocol) is refused at
+// the HTTP upgrade, before any frame is exchanged.
 func (s *Server) Handler() http.Handler {
-	return websocket.Server{
-		Handshake: func(config *websocket.Config, req *http.Request) error {
-			if !slices.Contains(config.Protocol, wire.Subprotocol) {
-				return fmt.Errorf("relayconn: client did not offer subprotocol %q", wire.Subprotocol)
-			}
-			config.Protocol = []string{wire.Subprotocol}
-			return nil
-		},
-		Handler: s.serve,
-	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !offersSubprotocol(r) {
+			http.Error(w, fmt.Sprintf("subprotocol %q required", wire.Subprotocol), http.StatusBadRequest)
+			return
+		}
+		ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+			Subprotocols: []string{wire.Subprotocol},
+		})
+		if err != nil {
+			return // Accept already wrote the HTTP-level refusal
+		}
+		ws.SetReadLimit(maxInboundFrameBytes)
+		s.serve(r, ws)
+	})
 }
 
-// serverConn is one live, authenticated relay connection. writeMu
-// serializes frame writes (request replies vs. NotifyGenerationAdvance
-// pushes race otherwise — x/net/websocket permits one concurrent writer).
+// offersSubprotocol reports whether the upgrade request offers the relay/1
+// subprotocol — checked before Accept so a client offering none (or the
+// wrong one) is refused at the handshake, never negotiated down to the
+// empty subprotocol.
+func offersSubprotocol(r *http.Request) bool {
+	for _, header := range r.Header.Values("Sec-WebSocket-Protocol") {
+		for _, p := range strings.Split(header, ",") {
+			if strings.TrimSpace(p) == wire.Subprotocol {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// serverConn is one live, authenticated relay connection. Writes are
+// concurrent-safe (the transport serializes them) and individually bounded
+// by writeTimeout.
 type serverConn struct {
 	ws      *websocket.Conn
 	relayID string
-	writeMu sync.Mutex
 }
 
 func (c *serverConn) send(f wire.Frame) error {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	return websocket.JSON.Send(c.ws, f)
+	ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
+	defer cancel()
+	return sendFrame(ctx, c.ws, f)
+}
+
+func sendFrame(ctx context.Context, ws *websocket.Conn, f wire.Frame) error {
+	data, err := json.Marshal(f)
+	if err != nil {
+		return fmt.Errorf("relayconn: encode frame: %w", err)
+	}
+	return ws.Write(ctx, websocket.MessageText, data)
+}
+
+// readFrame reads one frame off ws into f.
+func readFrame(ctx context.Context, ws *websocket.Conn, f *wire.Frame) error {
+	_, data, err := ws.Read(ctx)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(data, f); err != nil {
+		return fmt.Errorf("relayconn: decode frame: %w", err)
+	}
+	return nil
 }
 
 // serve runs one connection's whole life: identity, challenge, hello,
 // steady state. It returns (closing the conn) on any refusal or transport
 // error.
-func (s *Server) serve(ws *websocket.Conn) {
-	defer ws.Close()
+func (s *Server) serve(req *http.Request, ws *websocket.Conn) {
+	defer ws.CloseNow()
+	ctx := context.Background()
 
-	req := ws.Request()
 	tlsState := req.TLS
 
 	// REL-003/041: the connection MUST be mutually authenticated, and the
@@ -153,9 +205,9 @@ func (s *Server) serve(ws *websocket.Conn) {
 	// self-asserted relay_id. The listener already verified the chain
 	// against the enrollment CA (ClientCAs); no cert at all means this
 	// connection cannot be authenticated. No relay_id is known to stamp on
-	// this refusal (REL-005's stamp needs an authenticated identity first).
+	// this refusal (REL-005's pre-authentication exception).
 	if tlsState == nil || len(tlsState.PeerCertificates) == 0 {
-		_ = websocket.JSON.Send(ws, wire.NewErrorFrame("", "", "",
+		_ = sendFrame(ctx, ws, wire.NewErrorFrame("", "", "",
 			"CHANNEL_BINDING_INVALID", "client certificate required (REL-041)"))
 		return
 	}
@@ -163,7 +215,7 @@ func (s *Server) serve(ws *websocket.Conn) {
 
 	pub, ok := s.lookup(relayID)
 	if !ok {
-		_ = websocket.JSON.Send(ws, wire.NewErrorFrame("", "", relayID,
+		_ = sendFrame(ctx, ws, wire.NewErrorFrame("", "", relayID,
 			"CHANNEL_BINDING_INVALID", "Channel Binding Invalid"))
 		return
 	}
@@ -174,7 +226,7 @@ func (s *Server) serve(ws *websocket.Conn) {
 	// the two-request HTTP handshake disappears entirely).
 	nonce, err := hello.ExporterChallengeNonce(tlsState)
 	if err != nil {
-		_ = websocket.JSON.Send(ws, wire.NewErrorFrame("", "", relayID,
+		_ = sendFrame(ctx, ws, wire.NewErrorFrame("", "", relayID,
 			"INTERNAL", "challenge derivation failed"))
 		return
 	}
@@ -191,7 +243,7 @@ func (s *Server) serve(ws *websocket.Conn) {
 	// First relay frame MUST be hello (REL-031/039): anything else is a
 	// protocol violation, refused with a top-level error frame and a close.
 	var f wire.Frame
-	if err := websocket.JSON.Receive(ws, &f); err != nil {
+	if err := readFrame(ctx, ws, &f); err != nil {
 		return
 	}
 	if f.Type != wire.FrameTypeHello {
@@ -250,7 +302,7 @@ func (s *Server) serve(ws *websocket.Conn) {
 
 	for {
 		var f wire.Frame
-		if err := websocket.JSON.Receive(ws, &f); err != nil {
+		if err := readFrame(ctx, ws, &f); err != nil {
 			return // relay went away (or sent a non-frame); connection over
 		}
 		switch f.Type {
@@ -268,8 +320,11 @@ func (s *Server) serve(ws *websocket.Conn) {
 
 // handleStatePull answers one state.pull (REL-050/051): state.unchanged
 // when since_generation already names the provider's current generation,
-// else the full state.snapshot. The reply echoes the request's id and
-// trace_id (REL-006) and carries relay_id (REL-005).
+// else the full state.snapshot — including when since_generation names a
+// generation GREATER than the current one (REL-051: the divergence then
+// surfaces at the relay's own REL-052 gate, never behind a lying
+// unchanged). The reply echoes the request's id and trace_id (REL-006) and
+// carries relay_id (REL-005).
 func (s *Server) handleStatePull(conn *serverConn, req wire.Frame) error {
 	var body wire.StatePullBody
 	if len(req.Body) > 0 { // an absent body is a pull with no since_generation claim
@@ -315,16 +370,16 @@ func (s *Server) CloseAll() {
 	}
 	s.mu.Unlock()
 	for _, c := range conns {
-		_ = c.ws.Close()
+		_ = c.ws.CloseNow()
 	}
 }
 
 // NotifyGenerationAdvance tells every authenticated connection the feeder's
 // desired-state generation advanced. Default (REL-050-conformant) form: a
-// `state.changed` nudge carrying the new generation, to which a relay
-// responds with its own state.pull. With WithDirectSnapshotPush, the full
-// state.snapshot is pushed instead (REL-050-violating spike variant). A
-// per-connection send failure is that connection's problem (its read loop
+// `state.changed` nudge carrying the new generation (REL-057), to which a
+// relay responds with its own state.pull. With WithDirectSnapshotPush, the
+// full state.snapshot is pushed instead (REL-050-violating spike variant).
+// A per-connection send failure is that connection's problem (its read loop
 // will reap it); Notify keeps going.
 func (s *Server) NotifyGenerationAdvance() {
 	snap, err := s.provider()

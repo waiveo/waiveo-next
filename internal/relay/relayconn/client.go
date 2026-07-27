@@ -1,9 +1,9 @@
-// Package relayconn is the relay side of the relay/1 persistent connection
-// SPIKE: the outbound-only dialer (REL-001 — a relay is always the
-// connecting party) that opens ONE mutually authenticated WS connection to
-// the app peer's /relay/v1 and runs the whole exchange over it: challenge →
-// hello → hello-ack, then correlated request/response (state.pull) plus
-// server-initiated frames (state.changed nudges / pushed snapshots).
+// Package relayconn is the relay side of the relay/1 persistent connection:
+// the outbound-only dialer (REL-001 — a relay is always the connecting
+// party) that opens ONE mutually authenticated WS connection to the app
+// peer's /relay/v1 and runs the whole exchange over it: challenge → hello →
+// hello-ack, then correlated request/response (state.pull) plus
+// server-initiated frames (state.changed nudges, REL-057).
 //
 // Transport trust is exactly the enrollment-anchored posture the HTTP paths
 // already use, now on one connection:
@@ -17,25 +17,33 @@
 //     session's exporter keying material on this side and compared to the
 //     received challenge (REL-040): a challenge minted on any other TLS
 //     channel cannot match, so the REL-032 signature binds the enrollment
-//     key to THIS channel.
+//     key to THIS channel. The dialer pins TLS 1.3 (REL-040's exporter
+//     requirement — recorded beside the contract's label pin) even though
+//     the HTTP-era paths still accept 1.2.
 //
-// SPIKE CORNERS (deliberate, recorded): Dial does not auto-reconnect (a
-// dropped connection surfaces via Done/Err and the owner re-Dials), there
-// is no heartbeat, per-request timeout is a fixed constant, and
-// instrumentation (SentFrames/ReceivedFrames) grows without bound — it
-// exists for the e2e proof, not production.
+// The transport is github.com/coder/websocket: context-governed dial, read,
+// write (per-operation deadlines), concurrent-safe writes, an initiable
+// Ping that round-trips a pong (protocol-level dead-peer detection), and a
+// proper RFC 6455 close handshake — none of which the frozen
+// x/net/websocket exposes.
+//
+// Dial does not auto-reconnect: a dropped connection surfaces via Done/Err
+// and the owner re-Dials (the reconnect supervisor lives above this type).
 package relayconn
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"net"
+	"net/http"
 	"net/url"
 	"sync"
 	"time"
 
-	"golang.org/x/net/websocket"
+	"github.com/coder/websocket"
 
 	"github.com/maaxton/waiveo-next/internal/relay/clocktrust"
 	"github.com/maaxton/waiveo-next/internal/relay/hello"
@@ -45,12 +53,21 @@ import (
 )
 
 // dialTimeout bounds the whole TCP+TLS+WS+challenge+hello handshake;
-// requestTimeout bounds one correlated request/response exchange. Loopback
-// deployment values — generous, not tuned.
+// requestTimeout bounds one correlated request/response exchange;
+// writeTimeout bounds any single frame write (a write that cannot complete
+// within it tears the connection down — the transport's slow-peer
+// posture). Loopback deployment values — generous, not tuned.
 const (
 	dialTimeout    = 10 * time.Second
 	requestTimeout = 10 * time.Second
+	writeTimeout   = 10 * time.Second
 )
+
+// maxInboundFrameBytes bounds one inbound frame on this side: the client
+// receives full state.snapshot bodies (every desired-state section for a
+// site), so the bound is generous — but present, so a misbehaving peer
+// cannot balloon memory with one frame.
+const maxInboundFrameBytes = 16 << 20
 
 // Config configures Dial.
 type Config struct {
@@ -73,9 +90,9 @@ type Config struct {
 	Now          func() time.Time
 
 	// OnServerFrame, when non-nil, receives every server-initiated frame
-	// (one whose id matches no in-flight request) — state.changed nudges,
-	// pushed snapshots. Frames are delivered IN ORDER on one dedicated
-	// goroutine; the callback may itself call Pull.
+	// (one whose id matches no in-flight request) — state.changed nudges.
+	// Frames are delivered IN ORDER on one dedicated goroutine; the
+	// callback may itself call Pull.
 	OnServerFrame func(wire.Frame)
 }
 
@@ -96,7 +113,6 @@ type Client struct {
 	ws       *websocket.Conn
 	relayID  string
 	ackBody  hello.HelloAckBody
-	writeMu  sync.Mutex
 	mu       sync.Mutex
 	pending  map[string]chan wire.Frame
 	done     chan struct{}
@@ -145,31 +161,49 @@ func Dial(cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("relayconn: Dial: %w", err)
 	}
 
+	// One context over the whole handshake: TCP+TLS dial, WS upgrade,
+	// challenge → hello → hello-ack.
+	hsCtx, cancel := context.WithTimeout(context.Background(), dialTimeout)
+	defer cancel()
+
 	// REL-136/137 posture verbatim from the HTTP-era verifier: SPKI pin, no
 	// chain validation, temporal check deferred on an untrusted clock —
-	// plus the client certificate that makes the connection mutual (REL-003).
+	// plus the client certificate that makes the connection mutual
+	// (REL-003), and a TLS 1.3 floor: REL-040's exporter derivation needs
+	// an exporter-capable session, and on this transport the relay refuses
+	// to negotiate anything older rather than discover mid-handshake that
+	// the session cannot bind the channel.
 	tlsCfg := clocktrust.AppPeerTLSConfig(pin, cfg.ClockTrusted, now(), time.Duration(clocktrust.DefaultBoundedGraceMs)*time.Millisecond)
 	tlsCfg.Certificates = []tls.Certificate{leaf}
+	tlsCfg.MinVersion = tls.VersionTLS13
 
-	tlsConn, err := tls.Dial("tcp", hostPort, tlsCfg)
+	// Pre-dial the TLS session ourselves so its ConnectionState (the
+	// exporter keying material, REL-040) stays in hand, then feed the
+	// established conn to the WS dialer through a single-use transport.
+	dialer := &tls.Dialer{Config: tlsCfg}
+	rawConn, err := dialer.DialContext(hsCtx, "tcp", hostPort)
 	if err != nil {
 		return nil, fmt.Errorf("relayconn: Dial: TLS dial %s: %w", hostPort, err)
 	}
-	// One deadline over the whole handshake; cleared before steady state.
-	_ = tlsConn.SetDeadline(now().Add(dialTimeout))
-
-	wsCfg, err := websocket.NewConfig(wsURL, "https://"+hostPort)
-	if err != nil {
-		tlsConn.Close()
-		return nil, fmt.Errorf("relayconn: Dial: ws config: %w", err)
+	tlsConn, ok := rawConn.(*tls.Conn)
+	if !ok {
+		rawConn.Close()
+		return nil, fmt.Errorf("relayconn: Dial: dialer returned a %T, not *tls.Conn", rawConn)
 	}
-	wsCfg.Protocol = []string{wire.Subprotocol}
 
-	ws, err := websocket.NewClient(wsCfg, tlsConn)
+	ws, _, err := websocket.Dial(hsCtx, wsURL, &websocket.DialOptions{
+		HTTPClient:   singleUseClient(tlsConn),
+		Subprotocols: []string{wire.Subprotocol},
+	})
 	if err != nil {
 		tlsConn.Close()
 		return nil, fmt.Errorf("relayconn: Dial: ws upgrade: %w", err)
 	}
+	if ws.Subprotocol() != wire.Subprotocol {
+		ws.Close(websocket.StatusPolicyViolation, "subprotocol not negotiated")
+		return nil, fmt.Errorf("relayconn: Dial: server negotiated subprotocol %q, want %q", ws.Subprotocol(), wire.Subprotocol)
+	}
+	ws.SetReadLimit(maxInboundFrameBytes)
 
 	c := &Client{
 		ws:       ws,
@@ -179,11 +213,10 @@ func Dial(cfg Config) (*Client, error) {
 		serverCh: make(chan wire.Frame, 16),
 	}
 
-	if err := c.handshake(tlsConn, id, cfg.Declaration); err != nil {
-		ws.Close()
+	if err := c.handshake(hsCtx, tlsConn, id, cfg.Declaration); err != nil {
+		ws.CloseNow()
 		return nil, err
 	}
-	_ = tlsConn.SetDeadline(time.Time{})
 
 	go c.readLoop()
 	if cfg.OnServerFrame != nil {
@@ -196,11 +229,34 @@ func Dial(cfg Config) (*Client, error) {
 	return c, nil
 }
 
-// handshake runs challenge → hello → hello-ack on the fresh connection.
-func (c *Client) handshake(tlsConn *tls.Conn, id identity.RelayIdentity, decl hello.Declaration) error {
+// singleUseClient wraps an already-established TLS connection in an
+// http.Client whose transport hands it out exactly once — the seam that
+// lets the WS dialer ride the exact TLS session whose exporter keying
+// material the handshake's REL-040 check derives from.
+func singleUseClient(conn *tls.Conn) *http.Client {
+	var mu sync.Mutex
+	used := false
+	return &http.Client{
+		Transport: &http.Transport{
+			DialTLSContext: func(context.Context, string, string) (net.Conn, error) {
+				mu.Lock()
+				defer mu.Unlock()
+				if used {
+					return nil, fmt.Errorf("relayconn: single-use TLS connection already consumed")
+				}
+				used = true
+				return conn, nil
+			},
+		},
+	}
+}
+
+// handshake runs challenge → hello → hello-ack on the fresh connection,
+// bounded by ctx.
+func (c *Client) handshake(ctx context.Context, tlsConn *tls.Conn, id identity.RelayIdentity, decl hello.Declaration) error {
 	// The server's challenge MUST be the first frame (REL-030).
 	var challenge wire.Frame
-	if err := c.receive(&challenge); err != nil {
+	if err := c.receive(ctx, &challenge); err != nil {
 		return fmt.Errorf("relayconn: handshake: read challenge: %w", err)
 	}
 	if challenge.Type == wire.FrameTypeError {
@@ -243,12 +299,12 @@ func (c *Client) handshake(tlsConn *tls.Conn, id identity.RelayIdentity, decl he
 	if err != nil {
 		return fmt.Errorf("relayconn: handshake: %w", err)
 	}
-	if err := c.send(helloFrame); err != nil {
+	if err := c.sendCtx(ctx, helloFrame); err != nil {
 		return fmt.Errorf("relayconn: handshake: send hello: %w", err)
 	}
 
 	var reply wire.Frame
-	if err := c.receive(&reply); err != nil {
+	if err := c.receive(ctx, &reply); err != nil {
 		return fmt.Errorf("relayconn: handshake: read hello-ack: %w", err)
 	}
 	if reply.Type == wire.FrameTypeError {
@@ -273,7 +329,7 @@ func (c *Client) handshake(tlsConn *tls.Conn, id identity.RelayIdentity, decl he
 func (c *Client) readLoop() {
 	for {
 		var f wire.Frame
-		if err := websocket.JSON.Receive(c.ws, &f); err != nil {
+		if err := c.readFrame(context.Background(), &f); err != nil {
 			c.mu.Lock()
 			c.readErr = err
 			pending := c.pending
@@ -306,6 +362,18 @@ func (c *Client) readLoop() {
 			// production wants flow control, not silent loss).
 		}
 	}
+}
+
+// readFrame reads one frame off the connection into f.
+func (c *Client) readFrame(ctx context.Context, f *wire.Frame) error {
+	_, data, err := c.ws.Read(ctx)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(data, f); err != nil {
+		return fmt.Errorf("relayconn: decode frame: %w", err)
+	}
+	return nil
 }
 
 // Pull sends one state.pull (REL-050) and returns the correlated reply —
@@ -363,7 +431,7 @@ func (c *Client) RelayID() string { return c.relayID }
 // feature subset, the app peer's authoritative site_binding).
 func (c *Client) HelloAck() hello.HelloAckBody { return c.ackBody }
 
-// Done is closed when the connection dies; Err then reports why. The spike
+// Done is closed when the connection dies; Err then reports why. The
 // client never reconnects itself — the owner re-Dials.
 func (c *Client) Done() <-chan struct{} { return c.done }
 
@@ -374,8 +442,15 @@ func (c *Client) Err() error {
 	return c.readErr
 }
 
-// Close tears the connection down.
-func (c *Client) Close() error { return c.ws.Close() }
+// Close tears the connection down: a proper RFC 6455 close handshake when
+// the peer cooperates, a hard close otherwise.
+func (c *Client) Close() error {
+	err := c.ws.Close(websocket.StatusNormalClosure, "")
+	if err != nil {
+		return c.ws.CloseNow()
+	}
+	return nil
+}
 
 // SentFrames / ReceivedFrames return copies of every frame this client sent
 // or received (challenge included), in order — e2e-proof instrumentation.
@@ -396,10 +471,21 @@ func (c *Client) record(log *[]wire.Frame, f wire.Frame) {
 	c.instMu.Unlock()
 }
 
+// send writes one frame under the standard per-write deadline. Writes are
+// concurrent-safe (the transport serializes them); a write that cannot
+// complete within the deadline closes the connection.
 func (c *Client) send(f wire.Frame) error {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	if err := websocket.JSON.Send(c.ws, f); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
+	defer cancel()
+	return c.sendCtx(ctx, f)
+}
+
+func (c *Client) sendCtx(ctx context.Context, f wire.Frame) error {
+	data, err := json.Marshal(f)
+	if err != nil {
+		return fmt.Errorf("relayconn: encode frame: %w", err)
+	}
+	if err := c.ws.Write(ctx, websocket.MessageText, data); err != nil {
 		return err
 	}
 	c.record(&c.sent, f)
@@ -408,8 +494,8 @@ func (c *Client) send(f wire.Frame) error {
 
 // receive reads one frame during the handshake (before readLoop starts),
 // recording it in the instrumentation log.
-func (c *Client) receive(f *wire.Frame) error {
-	if err := websocket.JSON.Receive(c.ws, f); err != nil {
+func (c *Client) receive(ctx context.Context, f *wire.Frame) error {
+	if err := c.readFrame(ctx, f); err != nil {
 		return err
 	}
 	c.record(&c.received, *f)

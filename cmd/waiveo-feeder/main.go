@@ -355,6 +355,12 @@ func main() {
 			// leaves it issued before the restart.
 			ClientAuth: tls.VerifyClientCertIfGiven,
 			ClientCAs:  enrollSrv.ClientCAPool(),
+			// TLS 1.3 floor: the /relay/v1 challenge nonce derives from the
+			// session's TLS exporter keying material (relay/1 REL-040), so
+			// every session this listener accepts must be exporter-capable —
+			// pinned here beside the relay dialer's own identical floor
+			// rather than discovered per-connection.
+			MinVersion: tls.VersionTLS13,
 		},
 	}
 
