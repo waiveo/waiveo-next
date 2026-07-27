@@ -43,6 +43,12 @@ type Config struct {
 	// Sink receives the audit events the fixture's authenticator emits; nil for
 	// a fixture that does not assert on them.
 	Sink auth.EventSink
+	// Sealer is the at-rest protection a recoverable credential secret is held
+	// under. Nil (the default) mirrors a deployment holding no workspace key: a
+	// TOTP enrollment is then REFUSED rather than written in the clear, which is
+	// the honest default for a fixture that is not exercising second factors.
+	// A harness that drives the enrollment operations supplies a real sealer.
+	Sealer auth.SecretSealer
 }
 
 // Fixture is a seeded auth environment plus the credential to drive it with.
@@ -87,7 +93,11 @@ func New(cfg Config) (*Fixture, error) {
 	}
 
 	newID := seededIDs(cfg.PrincipalID)
-	store, err := auth.Open(":memory:", cfg.NowMs, newID)
+	var opts []auth.StoreOption
+	if cfg.Sealer != nil {
+		opts = append(opts, auth.WithSecretSealer(cfg.Sealer))
+	}
+	store, err := auth.Open(":memory:", cfg.NowMs, newID, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("authtest: open store: %w", err)
 	}
