@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/maaxton/waiveo-next/internal/shared/secretfile"
 )
 
 // workspace.go is the store half of api/1's two data-subject operations
@@ -117,13 +119,30 @@ func (s *Store) WorkspaceRoot(ctx context.Context) (id string, accountState stri
 // the snapshot. path MUST NOT already exist — SQLite refuses to overwrite, and
 // that refusal is left to surface rather than papered over with a pre-delete,
 // since an export writing over an existing file is a caller bug worth seeing.
+//
+// # The mode is part of the contract this function keeps
+//
+// What lands at path is a CLEARTEXT copy of the entire workspace — every row of
+// every resource, in a file any SQLite client can open. `VACUUM INTO` creates it
+// 0644, which would leave a complete copy of the workspace world-readable beside
+// the 0600 encrypted container an export exists to produce. SQLite offers no way
+// to ask for a different mode, so this tightens it the instant the statement
+// returns, and treats a failure to tighten as a failure of the whole operation:
+// a snapshot nobody can restrict is worse than no snapshot, so it is REMOVED
+// rather than returned.
+//
+// The parent directory is created 0700 and tightened if it already exists
+// (os.MkdirAll applies its mode only to directories it creates, so an existing
+// 0755 directory would otherwise stay 0755) — which also bounds the window
+// between the file appearing at 0644 and the chmod landing: during it, the file
+// is inside a directory only this user may traverse.
 func (s *Store) SnapshotInto(ctx context.Context, path string) error {
 	if path == "" {
 		return errors.New("store: snapshot: empty destination path")
 	}
 	if dir := filepath.Dir(path); dir != "." {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return fmt.Errorf("store: snapshot: create dir %s: %w", dir, err)
+		if err := secretfile.EnsureDir(dir); err != nil {
+			return fmt.Errorf("store: snapshot: %w", err)
 		}
 	}
 	s.mu.RLock()
@@ -133,6 +152,10 @@ func (s *Store) SnapshotInto(ctx context.Context, path string) error {
 	// so a path containing one cannot terminate the literal early.
 	quoted := "'" + escapeSQLiteLiteral(path) + "'"
 	if _, err := s.db.ExecContext(ctx, `VACUUM INTO `+quoted); err != nil {
+		return fmt.Errorf("store: snapshot into %s: %w", path, err)
+	}
+	if err := secretfile.Harden(path); err != nil {
+		_ = os.Remove(path)
 		return fmt.Errorf("store: snapshot into %s: %w", path, err)
 	}
 	return nil
