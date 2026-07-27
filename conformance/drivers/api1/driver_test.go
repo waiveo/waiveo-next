@@ -22,6 +22,7 @@ var expectedDriven = []string{
 	"API-022-invalid-if-match-missing",
 	"API-023-invalid-if-match-conflict",
 	"API-032-valid-pagination-roundtrip",
+	"API-034-valid-identity-resource-create-then-select-and-page",
 	"API-035-invalid-cursor-foreign-resource",
 	"API-044-valid-selector-scope-subtree",
 	"API-045-invalid-selector-malformed",

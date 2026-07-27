@@ -32,6 +32,8 @@ type corpusCase struct {
 // corpusHandlers maps case_id → its assertion. Every file MUST have an entry.
 var corpusHandlers = map[string]func(*testing.T, json.RawMessage, json.RawMessage){
 	"DAT-001-valid-scope-node-tree":                                     checkScopeTree001,
+	"DAT-004a-valid-screen-and-device-identity-rows":                    checkIdentityRows004a,
+	"DAT-005b-invalid-identity-rows-missing-baseline":                   checkIdentityBaseline005b,
 	"DAT-010-valid-org-account-states":                                  checkAccountStates010,
 	"DAT-033-valid-screen-tz-override":                                  checkEffectiveGeo033,
 	"DAT-051-valid-site-schedule-cascades-to-screen":                    checkSingleWinner,
@@ -720,6 +722,116 @@ func checkPackOwned101(t *testing.T, rawIn, rawExp json.RawMessage) {
 	}
 	if errs[0].Code != exp.Errors[0].Code || errs[0].Field != exp.Errors[0].Field {
 		t.Fatalf("error = {%s,%s}, want {%s,%s}", errs[0].Field, errs[0].Code, exp.Errors[0].Field, exp.Errors[0].Code)
+	}
+}
+
+// --- DAT-004a/DAT-005b: the two identity rows ---------------------------------
+
+// checkIdentityRows004a asserts a conformant screen identity row and device row
+// validate, and — the substance of DAT-004a — that the identifiers a screen_id
+// and a device_id name are the ROWS' own ids and are none of the scope-node ids
+// in the same fixture, including the screen-KIND node's. It also asserts the
+// placement freedom DAT-004 grants: neither row is placed at a screen-kind node.
+func checkIdentityRows004a(t *testing.T, rawIn, rawExp json.RawMessage) {
+	var in struct {
+		ScopeNodes map[string]string `json:"scope_nodes"`
+		Screens    []json.RawMessage `json:"screens"`
+		Devices    []json.RawMessage `json:"devices"`
+	}
+	if err := json.Unmarshal(rawIn, &in); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	var exp struct {
+		Valid                      bool   `json:"valid"`
+		ScreenIDIsScreenRowsOwnID  string `json:"screen_id_is_the_screen_rows_own_id"`
+		DeviceIDIsDeviceRowsOwnID  string `json:"device_id_is_the_device_rows_own_id"`
+		IdentityIDsAreNotScopeIDs  bool   `json:"identity_ids_are_not_scope_node_ids"`
+		PlacementsAreNotScreenKind bool   `json:"placements_are_not_screen_kind_nodes"`
+	}
+	if err := json.Unmarshal(rawExp, &exp); err != nil {
+		t.Fatalf("decode expected: %v", err)
+	}
+
+	set, errs := ValidateIdentityRows(RawIdentityRows{Screens: in.Screens, Devices: in.Devices})
+	if exp.Valid && len(errs) != 0 {
+		t.Fatalf("a conformant identity bundle was rejected: %+v", errs)
+	}
+	if len(set.Screens) != 1 || len(set.Devices) != 1 {
+		t.Fatalf("parsed %d screen(s)/%d device(s), want 1/1", len(set.Screens), len(set.Devices))
+	}
+
+	if got := set.Screens[0].ID; got != exp.ScreenIDIsScreenRowsOwnID {
+		t.Errorf("the screen row's own id = %q, but the case names the screen_id as %q", got, exp.ScreenIDIsScreenRowsOwnID)
+	}
+	if got := set.Devices[0].ID; got != exp.DeviceIDIsDeviceRowsOwnID {
+		t.Errorf("the device row's own id = %q, but the case names the device_id as %q", got, exp.DeviceIDIsDeviceRowsOwnID)
+	}
+
+	if exp.IdentityIDsAreNotScopeIDs {
+		for role, nodeID := range in.ScopeNodes {
+			if set.Screens[0].ID == nodeID {
+				t.Errorf("the screen identity row's id equals the %s scope node's id — DAT-004a makes them distinct rows", role)
+			}
+			if set.Devices[0].ID == nodeID {
+				t.Errorf("the device row's id equals the %s scope node's id — DAT-004a makes them distinct rows", role)
+			}
+		}
+	}
+	if exp.PlacementsAreNotScreenKind {
+		screenKindNode := in.ScopeNodes["screen_kind_node"]
+		if screenKindNode == "" {
+			t.Fatal("the case claims placements avoid a screen-kind node but names none")
+		}
+		if set.Screens[0].ScopeNode == screenKindNode || set.Devices[0].ScopeNode == screenKindNode {
+			t.Error("a row is placed at the screen-kind node, so this case would not demonstrate DAT-004's placement freedom")
+		}
+	}
+}
+
+// checkIdentityBaseline005b asserts the identity rows are held to DAT-005a's id
+// grammar and DAT-006's placement requirement — the baseline DAT-005b binds them
+// to — by rejecting a pair that carries neither.
+func checkIdentityBaseline005b(t *testing.T, rawIn, rawExp json.RawMessage) {
+	var in struct {
+		Screens []json.RawMessage `json:"screens"`
+		Devices []json.RawMessage `json:"devices"`
+	}
+	if err := json.Unmarshal(rawIn, &in); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	var exp struct {
+		Valid  bool `json:"valid"`
+		Errors []struct {
+			Field string `json:"field"`
+			Code  string `json:"code"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(rawExp, &exp); err != nil {
+		t.Fatalf("decode expected: %v", err)
+	}
+	if exp.Valid {
+		t.Fatal("this case is the negative half; a `valid: true` expectation would assert nothing")
+	}
+
+	_, errs := ValidateIdentityRows(RawIdentityRows{Screens: in.Screens, Devices: in.Devices})
+	if len(errs) == 0 {
+		t.Fatal("an identity bundle with neither a canonical id nor a placement was accepted")
+	}
+	// Every {field, code} the case pins must be present. The comparison is by
+	// SET rather than by index: the two tables are validated in a fixed order,
+	// but a case asserting that order would be asserting an implementation
+	// detail rather than the requirement.
+	for _, want := range exp.Errors {
+		var found bool
+		for _, got := range errs {
+			if got.Field == want.Field && got.Code == want.Code {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected a {%s, %s} error; got %+v", want.Field, want.Code, errs)
+		}
 	}
 }
 

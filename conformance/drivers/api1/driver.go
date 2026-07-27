@@ -104,7 +104,7 @@ func RunCases(cases map[string]corpus.Case) report.Report {
 // is every case in the frozen corpus with none left pending.
 var drivenCaseIDs = []string{
 	"API-010", "API-013",
-	"API-022", "API-023", "API-032", "API-035", "API-044", "API-045", "API-101", "API-102",
+	"API-022", "API-023", "API-032", "API-034", "API-035", "API-044", "API-045", "API-101", "API-102",
 	"API-052", "API-053", "API-111", "API-121",
 	"API-063",
 }
@@ -173,6 +173,8 @@ func driveByShape(rep *report.Report, cases map[string]corpus.Case, short string
 		driveJob(rep, c)
 	case shapeWorkspaceJob:
 		driveWorkspaceJob(rep, c)
+	case shapeResourceLifecycle:
+		driveResourceLifecycle(rep, c)
 	case shapeTracePropagation:
 		driveTracePropagation(rep, c)
 	default:
@@ -196,6 +198,7 @@ const (
 	shapeJob
 	shapeWorkspaceJob
 	shapeTracePropagation
+	shapeResourceLifecycle
 )
 
 // classifyShape inspects a case's own id and `input` block and reports which
@@ -220,6 +223,13 @@ func classifyShape(caseID string, input map[string]any) shape {
 	if reqs, ok := input["requests"].([]any); ok {
 		if _, ok := input["collection_state"]; ok {
 			return shapePagination
+		}
+		// A case that seeds only a scope-node TREE and then AUTHORS the rows it
+		// goes on to enumerate is the resource-lifecycle shape: unlike the
+		// pagination shape, whose collection_state is seeded behind the API, its
+		// collection is created through the create verb itself.
+		if _, ok := input["seed"]; ok {
+			return shapeResourceLifecycle
 		}
 		if requestsCarryIdempotencyKey(reqs) {
 			return shapeIdempotency

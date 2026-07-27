@@ -1,0 +1,111 @@
+{
+  "case_id": "API-034-valid-identity-resource-create-then-select-and-page",
+  "contract": "api/1",
+  "req_ids": ["API-030", "API-032", "API-033", "API-034", "API-040", "API-044", "API-100", "API-105"],
+  "description": "A screen identity row and an adopted-device row are CREATED through the ordinary create verb — the server assigns the id (API-105) while the client's own external_id is carried back unchanged (API-100) — and are then enumerated through the ordinary list conventions: a label term selects one screen out of two, a scope_node subtree term selects an adopted device by placement, and a limit=1 keyset walk pages the screens collection using the cursor page 1 actually minted (API-033 forbids a client-constructed one), covering every row exactly once. Rows are identified in the expectations by their client-assigned external_id rather than by id, because the id is server-minted and a corpus that pinned one would be asserting an id generator rather than a convention. This is the case that distinguishes a first-class resource kind from a kind whose create merely answers 201: the same selector, the same opaque cursor, and the same keyset order every other family is addressable through.",
+  "input": {
+    "seed": {
+      "scope_nodes": [
+        {
+          "id": "01J8ZB0RGN0DEAAAAAAAAAAAA1",
+          "kind": "org",
+          "name": "Demo Org",
+          "account_state": "active",
+          "entitlements": {}
+        },
+        {
+          "id": "01J8ZBS1TEN0DEAAAAAAAAAAA1",
+          "kind": "site",
+          "parent_id": "01J8ZB0RGN0DEAAAAAAAAAAAA1",
+          "name": "Demo Site",
+          "tz": "America/Chicago",
+          "lat": 41.8781,
+          "long": -87.6298
+        },
+        {
+          "id": "01J8ZBGR0VPN0DEAAAAAAAAAA1",
+          "kind": "group",
+          "parent_id": "01J8ZBS1TEN0DEAAAAAAAAAAA1",
+          "name": "Demo Group"
+        }
+      ]
+    },
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/api/v1/screens",
+        "body": {
+          "external_id": "lobby",
+          "name": "Lobby Screen",
+          "scope_node": "01J8ZBS1TEN0DEAAAAAAAAAAA1",
+          "labels": { "env": "prod" }
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/screens",
+        "body": {
+          "external_id": "atrium",
+          "name": "Atrium Screen",
+          "scope_node": "01J8ZBGR0VPN0DEAAAAAAAAAA1",
+          "labels": { "env": "staging" }
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/adopted-devices",
+        "body": {
+          "external_id": "lobby-roku",
+          "name": "Lobby Roku",
+          "scope_node": "01J8ZBS1TEN0DEAAAAAAAAAAA1",
+          "driver": "roku-ecp",
+          "native_id": "10.0.0.41",
+          "labels": { "env": "prod" },
+          "entities": [
+            {
+              "entity_id": "01J8ZBENTTYMEDAPAYERAAAAA1",
+              "device_class": "media-player",
+              "enabled": true,
+              "hidden": false,
+              "display_name": "Lobby Roku",
+              "category": "primary"
+            }
+          ]
+        }
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/screens",
+        "query": { "selector": "env=prod" }
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/adopted-devices",
+        "query": { "selector": "scope_node subtree 01J8ZBS1TEN0DEAAAAAAAAAAA1" }
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/screens",
+        "query": { "limit": "1" }
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/screens",
+        "query": { "limit": "1", "cursor": "$responses[5].cursor" }
+      }
+    ]
+  },
+  "expected": {
+    "responses": [
+      { "status": 201, "body": { "external_id": "lobby", "revision": 1 } },
+      { "status": 201, "body": { "external_id": "atrium", "revision": 1 } },
+      { "status": 201, "body": { "external_id": "lobby-roku", "revision": 1 } },
+      { "status": 200, "body": { "items": [{ "external_id": "lobby" }], "cursor": null } },
+      { "status": 200, "body": { "items": [{ "external_id": "lobby-roku" }], "cursor": null } },
+      { "status": 200, "body": { "items": [{ "external_id": "lobby" }] } },
+      { "status": 200, "body": { "items": [{ "external_id": "atrium" }], "cursor": null } }
+    ],
+    "server_assigned_ids_are_canonical_ulids": true,
+    "paged_screens_cover_collection_exactly_once": ["lobby", "atrium"]
+  }
+}

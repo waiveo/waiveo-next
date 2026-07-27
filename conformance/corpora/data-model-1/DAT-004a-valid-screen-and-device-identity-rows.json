@@ -1,0 +1,60 @@
+{
+  "case_id": "DAT-004a-valid-screen-and-device-identity-rows",
+  "contract": "data-model/1",
+  "req_ids": ["DAT-004", "DAT-004a", "DAT-005b"],
+  "description": "A screen identity row and a device row, each carrying the full resource-row baseline and a scope_node placement, are accepted — and both are placed under nodes that are NOT screen-kind (the screen under a group, the device under the site), which is the placement freedom DAT-004 grants and the reason a screen_id cannot be read as the id of the screen-kind node a screen happens to sit under. The screen's own id is what a screen_id names and the device's own id is what a device_id names (DAT-004a), so neither is any of the scope-node ids present in the same fixture: the case asserts that separation directly rather than leaving it to convention.",
+  "input": {
+    "scope_nodes": {
+      "org": "01J0RGN0DEQA7AK61KRSC4F6K1",
+      "site": "01JS1TEN0DEQA7AK61KRSC4F6A",
+      "group": "01JGR0VPN0DEQA7AK61KRSC4FA",
+      "screen_kind_node": "01JSCREENKNDN0DEQA7AK61KRA"
+    },
+    "screens": [
+      {
+        "id": "01JSCREEN1DENT1TYR0WQA7AKA",
+        "scope_node": "01JGR0VPN0DEQA7AK61KRSC4FA",
+        "name": "Lobby Screen",
+        "device_id": "01JDEVCEAD0PTEDR0WQA7AK61A",
+        "external_id": "lobby",
+        "labels": { "env": "prod" },
+        "revision": 1,
+        "created_at": 1752537600000,
+        "updated_at": 1752537600000
+      }
+    ],
+    "devices": [
+      {
+        "id": "01JDEVCEAD0PTEDR0WQA7AK61A",
+        "scope_node": "01JS1TEN0DEQA7AK61KRSC4F6A",
+        "name": "Lobby Roku",
+        "driver": "roku-ecp",
+        "native_id": "10.0.0.41",
+        "poll_cadence_seconds": 30,
+        "entities": [
+          {
+            "entity_id": "01JENT1TYMEDAPAYERQA7AK61A",
+            "device_class": "media-player",
+            "enabled": true,
+            "hidden": false,
+            "display_name": "Lobby Roku",
+            "category": "primary"
+          }
+        ],
+        "external_id": "lobby-roku",
+        "labels": { "env": "prod" },
+        "revision": 1,
+        "created_at": 1752537600000,
+        "updated_at": 1752537600000
+      }
+    ]
+  },
+  "expected": {
+    "valid": true,
+    "errors": [],
+    "screen_id_is_the_screen_rows_own_id": "01JSCREEN1DENT1TYR0WQA7AKA",
+    "device_id_is_the_device_rows_own_id": "01JDEVCEAD0PTEDR0WQA7AK61A",
+    "identity_ids_are_not_scope_node_ids": true,
+    "placements_are_not_screen_kind_nodes": true
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "case_id": "DAT-005b-invalid-identity-rows-missing-baseline",
+  "contract": "data-model/1",
+  "req_ids": ["DAT-005a", "DAT-005b", "DAT-006"],
+  "description": "The negative half of DAT-005b: a screen identity row whose id is not a canonical ULID and which carries no scope_node, and a device row with the same two defects, are both rejected — the identity rows are held to exactly the id grammar (DAT-005a) and the placement requirement (DAT-006) every other row this contract governs is held to, rather than to a weaker convention of their own. The screen's id here is the literal placeholder a pre-identity-row build shipped in its snapshot's screen_programs section, which is precisely the value DAT-005b makes unrepresentable.",
+  "input": {
+    "screens": [
+      {
+        "id": "screen-first-photon",
+        "scope_node": "",
+        "name": "Placeholder Screen",
+        "device_id": null,
+        "revision": 1,
+        "created_at": 1752537600000,
+        "updated_at": 1752537600000
+      }
+    ],
+    "devices": [
+      {
+        "id": "dev-1",
+        "scope_node": "",
+        "name": "Placeholder Device",
+        "driver": "roku-ecp",
+        "native_id": "10.0.0.41",
+        "poll_cadence_seconds": null,
+        "entities": [],
+        "revision": 1,
+        "created_at": 1752537600000,
+        "updated_at": 1752537600000
+      }
+    ]
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      { "field": "id", "code": "ROW_ID_INVALID" },
+      { "field": "scope_node", "code": "ROW_SCOPE_NODE_MISSING" },
+      { "field": "id", "code": "ROW_ID_INVALID" },
+      { "field": "scope_node", "code": "ROW_SCOPE_NODE_MISSING" }
+    ]
+  }
+}

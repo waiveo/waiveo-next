@@ -8,12 +8,12 @@ One row per requirement ID `contracts/data-model-1.md` defines. Format: `conform
 | DAT-001a | `contracts/data-model-1.md#scope-node-tree` | - | TBD-wave1 |
 | DAT-002 | `contracts/data-model-1.md#scope-node-tree` | `DAT-001-valid-scope-node-tree` | covered |
 | DAT-003 | `contracts/data-model-1.md#scope-node-tree` | `DAT-001-valid-scope-node-tree` | covered |
-| DAT-004 | `contracts/data-model-1.md#scope-node-tree` | `DAT-001-valid-scope-node-tree` | covered |
-| DAT-004a | `contracts/data-model-1.md#scope-node-tree` | - | TBD-wave1 |
+| DAT-004 | `contracts/data-model-1.md#scope-node-tree` | `DAT-001-valid-scope-node-tree`, `DAT-004a-valid-screen-and-device-identity-rows` | covered |
+| DAT-004a | `contracts/data-model-1.md#scope-node-tree` | `DAT-004a-valid-screen-and-device-identity-rows` | covered |
 | DAT-005 | `contracts/data-model-1.md#resource-row-baseline` | `DAT-001-valid-scope-node-tree` | covered |
-| DAT-005a | `contracts/data-model-1.md#resource-row-baseline` | - | TBD-wave1 |
-| DAT-005b | `contracts/data-model-1.md#resource-row-baseline` | - | TBD-wave1 |
-| DAT-006 | `contracts/data-model-1.md#resource-row-baseline` | `DAT-001-valid-scope-node-tree` | covered |
+| DAT-005a | `contracts/data-model-1.md#resource-row-baseline` | `DAT-005b-invalid-identity-rows-missing-baseline` | covered |
+| DAT-005b | `contracts/data-model-1.md#resource-row-baseline` | `DAT-004a-valid-screen-and-device-identity-rows`, `DAT-005b-invalid-identity-rows-missing-baseline` | covered |
+| DAT-006 | `contracts/data-model-1.md#resource-row-baseline` | `DAT-001-valid-scope-node-tree`, `DAT-005b-invalid-identity-rows-missing-baseline` | covered |
 | DAT-007 | `contracts/data-model-1.md#resource-row-baseline` | - | TBD-wave1 |
 | DAT-008 | `contracts/data-model-1.md#resource-row-baseline` | `DAT-001-valid-scope-node-tree` | covered |
 | DAT-010 | `contracts/data-model-1.md#org-node-account-state-and-entitlements` | `DAT-010-valid-org-account-states` | covered |
