@@ -193,6 +193,46 @@ describe("binding grammar (UIS-066/UIS-100 → BINDING_PATH_INVALID)", () => {
   });
 });
 
+describe("entity-picker binding shape (UIS-073a → BINDING_TYPE_MISMATCH)", () => {
+  const picker = (props: Record<string, unknown>) =>
+    settingsForm({
+      type: "entity-picker",
+      bind: "entity_id",
+      props: { labelMsg: "msg:entity", ...props },
+    });
+
+  it("accepts the object shape by default, and either member named explicitly", () => {
+    expect(codes(picker({}))).toEqual([]);
+    expect(codes(picker({ bindShape: "entityRef" }))).toEqual([]);
+    expect(codes(picker({ bindShape: "entityId" }))).toEqual([]);
+  });
+
+  it("rejects a bindShape outside the closed set rather than defaulting it", () => {
+    // The typo case: silently falling back to `entityRef` is what paints an
+    // empty control over a record that does carry an entity.
+    const e = firstError(picker({ bindShape: "entityid" }));
+    expect(e?.code).toBe("BINDING_TYPE_MISMATCH");
+    expect(e?.path).toBe("sections[0].fields[0].props.bindShape");
+  });
+
+  it("accepts a scalar-shape picker whose modes name only the entity form", () => {
+    expect(codes(picker({ bindShape: "entityId", modes: ["entity"] }))).toEqual([]);
+  });
+
+  it("rejects a mode the scalar shape cannot carry, naming modes as the offender", () => {
+    for (const mode of ["selector", "deviceClass"]) {
+      const e = firstError(picker({ bindShape: "entityId", modes: ["entity", mode] }));
+      expect(e?.code, mode).toBe("BINDING_TYPE_MISMATCH");
+      expect(e?.path, mode).toBe("sections[0].fields[0].props.modes");
+    }
+  });
+
+  it("leaves those same modes valid under the object shape", () => {
+    expect(codes(picker({ modes: ["entity", "selector", "deviceClass"] }))).toEqual([]);
+    expect(codes(picker({ bindShape: "entityRef", modes: ["selector"] }))).toEqual([]);
+  });
+});
+
 describe("option sources (UIS-130–132 → OPTION_SOURCE_INVALID / VOCAB_REF_UNKNOWN)", () => {
   const withOptions = (options: unknown) =>
     settingsForm({ type: "select", bind: "mode", props: { labelMsg: "msg:mode", options } });

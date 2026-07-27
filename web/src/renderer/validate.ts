@@ -14,6 +14,9 @@
 import {
   ACTION_VERBS,
   COMPUTE_FNS,
+  ENTITY_PICKER_BIND_SHAPES,
+  ENTITY_PICKER_SCALAR_MODES,
+  ENTITY_PICKER_SCALAR_SHAPE,
   ISO_4217_PATTERN,
   OPTION_SOURCE_KINDS,
   PAGE_TYPES,
@@ -572,6 +575,34 @@ function validatePropByKind(def: PropDef, value: unknown, path: string, ctx: Ctx
   }
 }
 
+/** UIS-073a: an `entity-picker`'s declared binding shape and the forms it can
+ * carry. A `bindShape` outside the closed set would otherwise fall back to the
+ * object shape and paint an empty control over a record that does carry an
+ * entity; a `selector`/`deviceClass` mode has nowhere to live in a bare scalar.
+ * Both fail as BINDING_TYPE_MISMATCH at the offending prop's own path. */
+function validateEntityPickerShape(props: Record<string, unknown>, path: string, ctx: Ctx): void {
+  const shape = props.bindShape;
+  if (shape !== undefined && !(ENTITY_PICKER_BIND_SHAPES as readonly unknown[]).includes(shape)) {
+    fail(
+      ctx,
+      "BINDING_TYPE_MISMATCH",
+      `${path}.props.bindShape`,
+      `"${String(shape)}" is not an entity-picker binding shape — expected one of ${ENTITY_PICKER_BIND_SHAPES.join(", ")} (UIS-073a)`,
+    );
+    return; // an unknown shape says nothing about which modes it can carry
+  }
+  if (shape !== ENTITY_PICKER_SCALAR_SHAPE || !Array.isArray(props.modes)) return;
+  const unusable = props.modes.filter((m) => !ENTITY_PICKER_SCALAR_MODES.includes(String(m)));
+  if (unusable.length > 0) {
+    fail(
+      ctx,
+      "BINDING_TYPE_MISMATCH",
+      `${path}.props.modes`,
+      `bindShape "${ENTITY_PICKER_SCALAR_SHAPE}" binds a bare entity id, which cannot carry the ${unusable.map(String).join("/")} form (UIS-073a)`,
+    );
+  }
+}
+
 function validateWidget(node: unknown, path: string, ctx: Ctx): void {
   if (!isObject(node)) {
     fail(ctx, "UNKNOWN_WIDGET_TYPE", path, "a widget node must be an object with a type (UIS-060)");
@@ -612,6 +643,13 @@ function validateWidget(node: unknown, path: string, ctx: Ctx): void {
     }
     validatePropByKind(def, props[key], `${path}.props.${key}`, ctx);
   }
+
+  // entity-picker binding shape (UIS-073a). Two checks the generic prop kinds
+  // cannot express, both enforced rather than left to render time (UIS-200):
+  // `bindShape` is a closed two-member set, and the scalar shape can only carry
+  // the `entity` form, so a `modes` naming `selector`/`deviceClass` beside it is
+  // a static contradiction.
+  if (type === "entity-picker") validateEntityPickerShape(props, path, ctx);
 
   // on (UIS-062): only declared events, required events present, each an ActionRef
   const on = isObject(node.on) ? node.on : {};

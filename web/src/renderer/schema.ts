@@ -167,6 +167,24 @@ export const OPTION_SOURCE_KINDS = ["literal", "vocab", "data"] as const;
 
 export const RESERVED_ROOTS = ["$root", "$ui", "$context", "$params", "item", "$index"] as const;
 
+// ── entity-picker binding shapes (UIS-073a) ─────────────────────────────────
+// Which shape an `entity-picker`'s `bind` addresses: `entityRef` — UIS-073's
+// EntityRef object, the default the picker has always had — or `entityId`, the
+// scalar entity-id string `rules/1` inlines into a trigger/condition/action
+// (RUL-010). A closed two-member set, enforced rather than presence-checked
+// (UIS-073a): a typo would silently revert the picker to the object shape and
+// paint an empty control, the very failure the scalar shape removes.
+
+export const ENTITY_PICKER_BIND_SHAPES = ["entityRef", "entityId"] as const;
+export type EntityPickerBindShape = (typeof ENTITY_PICKER_BIND_SHAPES)[number];
+
+/** The scalar shape's own name — the one a node opts into. */
+export const ENTITY_PICKER_SCALAR_SHAPE: EntityPickerBindShape = "entityId";
+
+/** The only UIS-073 form a scalar bind can express: a bare entity id carries no
+ * discriminant, so `selector`/`deviceClass` have nowhere to live (UIS-073a). */
+export const ENTITY_PICKER_SCALAR_MODES: readonly string[] = ["entity"];
+
 // ── Widget catalog (UIS-070) ────────────────────────────────────────────────
 
 export type WidgetCategory = "structural" | "display" | "input" | "action";
@@ -338,7 +356,10 @@ export const WIDGET_CATALOG: Record<string, WidgetSpec> = {
     category: "input",
     children: false,
     bind: "required",
-    props: { labelMsg: req("msg"), modes: p("modes") },
+    // `bindShape` (UIS-073a) selects which shape `bind` addresses: the EntityRef
+    // object (`entityRef`, the default) or the scalar entity id rules/1 inlines
+    // (`entityId`). Declared, never inferred from the bound value.
+    props: { labelMsg: req("msg"), bindShape: p("enum"), modes: p("modes") },
     events: { change: { required: false } },
   },
   "time-of-day": {

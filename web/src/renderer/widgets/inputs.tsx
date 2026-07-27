@@ -9,10 +9,14 @@
 // read-write by contract (UIS-065): the control shows the scope-resolved value
 // and writes edits straight back to that path, firing an optional `on.change`
 // ActionRef alongside (never instead of) the intrinsic write. A `number-input`
-// writes `null` — never 0 — when cleared (UIS-072).
+// writes `null` — never 0 — when cleared (UIS-072). An `entity-picker` binds
+// either an EntityRef object or, under `bindShape: "entityId"`, the bare entity
+// id `rules/1` inlines — a scalar write that never touches its parent
+// (UIS-073a).
 
 import { FormField, type FormFieldControl } from "@/components/kit";
 import { resolvePath, resolveWriteLocation, resolveOptions } from "../bindings";
+import { ENTITY_PICKER_SCALAR_SHAPE } from "../schema";
 import { asLiveBinding, useLive } from "../live";
 import { runAction } from "../actions";
 import { useRenderer } from "../state";
@@ -272,6 +276,31 @@ const KEY_MODE: Record<string, string> = { entity_id: "entity", selector: "selec
 export function EntityPickerWidget({ node, scope }: WidgetProps) {
   const { value, write, msg, error } = useBoundField(node, scope);
   const label = msg(String(node.props?.labelMsg ?? ""));
+
+  // UIS-073a: WHICH shape `bind` addresses is declared on the node, never
+  // sniffed from the bound value. Under `entityId` the bind names the scalar
+  // entity id `rules/1` inlines into a trigger/condition/action (RUL-010), so
+  // the picker is a single field over that one string — and the write goes to
+  // that scalar path alone. It MUST NOT write the parent object: replacing the
+  // parent with a freshly-built {entity_id: …}, which is exactly what the
+  // `entityRef` branch below does to its own bound object, would erase the
+  // record's sibling members (a state trigger's `type`, `to`, `for`).
+  if (node.props?.bindShape === ENTITY_PICKER_SCALAR_SHAPE) {
+    return (
+      <FormField label={label} {...(error ? { error } : {})}>
+        {(field: FormFieldControl) => (
+          <input
+            {...field}
+            type="text"
+            className={FIELD_CLASS}
+            value={value == null ? "" : String(value)}
+            onChange={(e) => write(e.target.value)}
+          />
+        )}
+      </FormField>
+    );
+  }
+
   const modes: string[] = Array.isArray(node.props?.modes)
     ? (node.props?.modes as string[])
     : ["entity", "selector", "deviceClass"];
