@@ -241,7 +241,7 @@ export interface paths {
         put?: never;
         /**
          * Export the workspace as a portable archive
-         * @description Data-subject export operation (`contracts/api-1.md#data-subject-export--delete`): delegates to the archive/1 container format. Specced; full data-subject-request workflow tooling beyond this operation's own shape is a deferred implementation.
+         * @description Data-subject export operation (`contracts/api-1.md#data-subject-export--delete`). API-121 makes this the API-facing trigger for the container `archive/1` defines, not a second export format: the Job's success means exactly that container now exists for this workspace. Owner-role only — an export carries the whole workspace, so no scope-node-narrowed role can invoke it. A fuller data-subject-request workflow (intake and tracking for a request arriving outside this API) is the deferred implementation API-124 names.
          */
         post: operations["exportWorkspace"];
         delete?: never;
@@ -261,7 +261,7 @@ export interface paths {
         put?: never;
         /**
          * Erase the workspace's data via key-material destruction
-         * @description Data-subject delete operation (`contracts/api-1.md#data-subject-export--delete`): triggers the workspace's key-material destruction path. Specced; full data-subject-request workflow tooling beyond this operation's own shape is a deferred implementation.
+         * @description Data-subject delete operation (`contracts/api-1.md#data-subject-export--delete`). API-122 routes it to the workspace's key-material destruction path (`security-model.md` SEC-121) — this IS that destruction, not a separate deletion mechanism. It is irreversible: owner-role only, and the body MUST name the workspace being destroyed (`confirm_workspace_id`), so no single blind request can erase a deployment. A fuller data-subject-request workflow is the deferred implementation API-124 names.
          */
         post: operations["deleteWorkspace"];
         delete?: never;
@@ -693,6 +693,19 @@ export interface components {
             selector: string;
             /** @description The `enabled` value to apply to every automation the selector matches. */
             enabled: boolean;
+        };
+        /** @description The request body for the data-subject export operation (API-120/121). It carries the export passphrase and nothing else: the operation's target is the workspace itself, implicit in the path (API-123). */
+        WorkspaceExportRequest: {
+            /**
+             * @description The export passphrase `archive/1` derives the container's encryption key from (ARC-010). It is a per-export secret known only to whoever performed or received that export, and is distinct from the workspace's own emergency-kit recovery passphrase (ARC-112) — neither substitutes for the other.
+             * @example correct-horse-battery-staple
+             */
+            passphrase: string;
+        };
+        /** @description The request body for the data-subject delete operation (API-120/122). The confirmation is the only member: the operation's target is the workspace itself, implicit in the path (API-123). */
+        WorkspaceDeleteRequest: {
+            /** @description The id of the workspace this request destroys — the deployment's own org-kind scope node (data-model/1 DAT-012, the row that reaches `purged` once this operation has run). It MUST equal that id exactly; any other value, or none, refuses the request without destroying anything. */
+            confirm_workspace_id: components["schemas"]["Ulid"];
         };
         /** @description A relay's permanent identity, assigned to it by enrollment and unchanged across every later certificate renewal or re-enrollment (`relay/1` REL-012/014). Deliberately NOT typed as a ULID: unlike a resource this API mints, a relay id is issued by the enrollment path and is opaque here — this API reads it, routes a command by it, and never constructs or parses one. */
         RelayId: string;
@@ -1460,7 +1473,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceExportRequest"];
+            };
+        };
         responses: {
             /** @description Export accepted; poll the returned Job resource for completion. */
             202: {
@@ -1474,6 +1491,8 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["UnprocessableContent"];
             429: components["responses"]["TooManyRequests"];
         };
     };
@@ -1489,7 +1508,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceDeleteRequest"];
+            };
+        };
         responses: {
             /** @description Deletion accepted; poll the returned Job resource for completion. */
             202: {
@@ -1503,6 +1526,8 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["UnprocessableContent"];
             429: components["responses"]["TooManyRequests"];
         };
     };

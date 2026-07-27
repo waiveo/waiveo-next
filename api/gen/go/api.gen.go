@@ -767,6 +767,18 @@ type ValidationFieldError struct {
 	Message string `json:"message"`
 }
 
+// WorkspaceDeleteRequest The request body for the data-subject delete operation (API-120/122). The confirmation is the only member: the operation's target is the workspace itself, implicit in the path (API-123).
+type WorkspaceDeleteRequest struct {
+	// ConfirmWorkspaceId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ConfirmWorkspaceId Ulid `json:"confirm_workspace_id"`
+}
+
+// WorkspaceExportRequest The request body for the data-subject export operation (API-120/121). It carries the export passphrase and nothing else: the operation's target is the workspace itself, implicit in the path (API-123).
+type WorkspaceExportRequest struct {
+	// Passphrase The export passphrase `archive/1` derives the container's encryption key from (ARC-010). It is a per-export secret known only to whoever performed or received that export, and is distinct from the workspace's own emergency-kit recovery passphrase (ARC-112) — neither substitutes for the other.
+	Passphrase string `json:"passphrase"`
+}
+
 // CursorParam An opaque, URL-safe continuation token. `null` signals no further rows. Never constructed, parsed, or compared for meaning by a client.
 type CursorParam = Cursor
 
@@ -1055,6 +1067,12 @@ type CreateScopeNodeJSONRequestBody = ScopeNodeCreate
 // UpdateScopeNodeJSONRequestBody defines body for UpdateScopeNode for application/json ContentType.
 type UpdateScopeNodeJSONRequestBody = ScopeNodeUpdate
 
+// DeleteWorkspaceJSONRequestBody defines body for DeleteWorkspace for application/json ContentType.
+type DeleteWorkspaceJSONRequestBody = WorkspaceDeleteRequest
+
+// ExportWorkspaceJSONRequestBody defines body for ExportWorkspace for application/json ContentType.
+type ExportWorkspaceJSONRequestBody = WorkspaceExportRequest
+
 // RequestEditorFn  is the function signature for the RequestEditor callback function
 type RequestEditorFn func(ctx context.Context, req *http.Request) error
 
@@ -1221,11 +1239,15 @@ type ClientInterface interface {
 	// GetSystemHealth request
 	GetSystemHealth(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// DeleteWorkspace request
-	DeleteWorkspace(ctx context.Context, params *DeleteWorkspaceParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// DeleteWorkspaceWithBody request with any body
+	DeleteWorkspaceWithBody(ctx context.Context, params *DeleteWorkspaceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// ExportWorkspace request
-	ExportWorkspace(ctx context.Context, params *ExportWorkspaceParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	DeleteWorkspace(ctx context.Context, params *DeleteWorkspaceParams, body DeleteWorkspaceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ExportWorkspaceWithBody request with any body
+	ExportWorkspaceWithBody(ctx context.Context, params *ExportWorkspaceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	ExportWorkspace(ctx context.Context, params *ExportWorkspaceParams, body ExportWorkspaceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 }
 
 func (c *Client) LoginWithBody(ctx context.Context, params *LoginParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -1636,8 +1658,8 @@ func (c *Client) GetSystemHealth(ctx context.Context, reqEditors ...RequestEdito
 	return c.Client.Do(req)
 }
 
-func (c *Client) DeleteWorkspace(ctx context.Context, params *DeleteWorkspaceParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewDeleteWorkspaceRequest(c.Server, params)
+func (c *Client) DeleteWorkspaceWithBody(ctx context.Context, params *DeleteWorkspaceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteWorkspaceRequestWithBody(c.Server, params, contentType, body)
 	if err != nil {
 		return nil, err
 	}
@@ -1648,8 +1670,32 @@ func (c *Client) DeleteWorkspace(ctx context.Context, params *DeleteWorkspacePar
 	return c.Client.Do(req)
 }
 
-func (c *Client) ExportWorkspace(ctx context.Context, params *ExportWorkspaceParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewExportWorkspaceRequest(c.Server, params)
+func (c *Client) DeleteWorkspace(ctx context.Context, params *DeleteWorkspaceParams, body DeleteWorkspaceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteWorkspaceRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ExportWorkspaceWithBody(ctx context.Context, params *ExportWorkspaceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewExportWorkspaceRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ExportWorkspace(ctx context.Context, params *ExportWorkspaceParams, body ExportWorkspaceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewExportWorkspaceRequest(c.Server, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -3139,8 +3185,19 @@ func NewGetSystemHealthRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
-// NewDeleteWorkspaceRequest generates requests for DeleteWorkspace
-func NewDeleteWorkspaceRequest(server string, params *DeleteWorkspaceParams) (*http.Request, error) {
+// NewDeleteWorkspaceRequest calls the generic DeleteWorkspace builder with application/json body
+func NewDeleteWorkspaceRequest(server string, params *DeleteWorkspaceParams, body DeleteWorkspaceJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewDeleteWorkspaceRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewDeleteWorkspaceRequestWithBody generates requests for DeleteWorkspace with any type of body
+func NewDeleteWorkspaceRequestWithBody(server string, params *DeleteWorkspaceParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -3158,10 +3215,12 @@ func NewDeleteWorkspaceRequest(server string, params *DeleteWorkspaceParams) (*h
 		return nil, err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
 	if err != nil {
 		return nil, err
 	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	if params != nil {
 
@@ -3192,8 +3251,19 @@ func NewDeleteWorkspaceRequest(server string, params *DeleteWorkspaceParams) (*h
 	return req, nil
 }
 
-// NewExportWorkspaceRequest generates requests for ExportWorkspace
-func NewExportWorkspaceRequest(server string, params *ExportWorkspaceParams) (*http.Request, error) {
+// NewExportWorkspaceRequest calls the generic ExportWorkspace builder with application/json body
+func NewExportWorkspaceRequest(server string, params *ExportWorkspaceParams, body ExportWorkspaceJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewExportWorkspaceRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewExportWorkspaceRequestWithBody generates requests for ExportWorkspace with any type of body
+func NewExportWorkspaceRequestWithBody(server string, params *ExportWorkspaceParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -3211,10 +3281,12 @@ func NewExportWorkspaceRequest(server string, params *ExportWorkspaceParams) (*h
 		return nil, err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
 	if err != nil {
 		return nil, err
 	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	if params != nil {
 
@@ -3381,11 +3453,15 @@ type ClientWithResponsesInterface interface {
 	// GetSystemHealthWithResponse request
 	GetSystemHealthWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetSystemHealthResponse, error)
 
-	// DeleteWorkspaceWithResponse request
-	DeleteWorkspaceWithResponse(ctx context.Context, params *DeleteWorkspaceParams, reqEditors ...RequestEditorFn) (*DeleteWorkspaceResponse, error)
+	// DeleteWorkspaceWithBodyWithResponse request with any body
+	DeleteWorkspaceWithBodyWithResponse(ctx context.Context, params *DeleteWorkspaceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*DeleteWorkspaceResponse, error)
 
-	// ExportWorkspaceWithResponse request
-	ExportWorkspaceWithResponse(ctx context.Context, params *ExportWorkspaceParams, reqEditors ...RequestEditorFn) (*ExportWorkspaceResponse, error)
+	DeleteWorkspaceWithResponse(ctx context.Context, params *DeleteWorkspaceParams, body DeleteWorkspaceJSONRequestBody, reqEditors ...RequestEditorFn) (*DeleteWorkspaceResponse, error)
+
+	// ExportWorkspaceWithBodyWithResponse request with any body
+	ExportWorkspaceWithBodyWithResponse(ctx context.Context, params *ExportWorkspaceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ExportWorkspaceResponse, error)
+
+	ExportWorkspaceWithResponse(ctx context.Context, params *ExportWorkspaceParams, body ExportWorkspaceJSONRequestBody, reqEditors ...RequestEditorFn) (*ExportWorkspaceResponse, error)
 }
 
 type LoginResponse struct {
@@ -4225,6 +4301,8 @@ type DeleteWorkspaceResponse struct {
 	JSON202                   *Job
 	ApplicationproblemJSON401 *Unauthorized
 	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON422 *UnprocessableContent
 	ApplicationproblemJSON429 *TooManyRequests
 }
 
@@ -4258,6 +4336,8 @@ type ExportWorkspaceResponse struct {
 	JSON202                   *Job
 	ApplicationproblemJSON401 *Unauthorized
 	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON422 *UnprocessableContent
 	ApplicationproblemJSON429 *TooManyRequests
 }
 
@@ -4582,18 +4662,34 @@ func (c *ClientWithResponses) GetSystemHealthWithResponse(ctx context.Context, r
 	return ParseGetSystemHealthResponse(rsp)
 }
 
-// DeleteWorkspaceWithResponse request returning *DeleteWorkspaceResponse
-func (c *ClientWithResponses) DeleteWorkspaceWithResponse(ctx context.Context, params *DeleteWorkspaceParams, reqEditors ...RequestEditorFn) (*DeleteWorkspaceResponse, error) {
-	rsp, err := c.DeleteWorkspace(ctx, params, reqEditors...)
+// DeleteWorkspaceWithBodyWithResponse request with arbitrary body returning *DeleteWorkspaceResponse
+func (c *ClientWithResponses) DeleteWorkspaceWithBodyWithResponse(ctx context.Context, params *DeleteWorkspaceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*DeleteWorkspaceResponse, error) {
+	rsp, err := c.DeleteWorkspaceWithBody(ctx, params, contentType, body, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
 	return ParseDeleteWorkspaceResponse(rsp)
 }
 
-// ExportWorkspaceWithResponse request returning *ExportWorkspaceResponse
-func (c *ClientWithResponses) ExportWorkspaceWithResponse(ctx context.Context, params *ExportWorkspaceParams, reqEditors ...RequestEditorFn) (*ExportWorkspaceResponse, error) {
-	rsp, err := c.ExportWorkspace(ctx, params, reqEditors...)
+func (c *ClientWithResponses) DeleteWorkspaceWithResponse(ctx context.Context, params *DeleteWorkspaceParams, body DeleteWorkspaceJSONRequestBody, reqEditors ...RequestEditorFn) (*DeleteWorkspaceResponse, error) {
+	rsp, err := c.DeleteWorkspace(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteWorkspaceResponse(rsp)
+}
+
+// ExportWorkspaceWithBodyWithResponse request with arbitrary body returning *ExportWorkspaceResponse
+func (c *ClientWithResponses) ExportWorkspaceWithBodyWithResponse(ctx context.Context, params *ExportWorkspaceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ExportWorkspaceResponse, error) {
+	rsp, err := c.ExportWorkspaceWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseExportWorkspaceResponse(rsp)
+}
+
+func (c *ClientWithResponses) ExportWorkspaceWithResponse(ctx context.Context, params *ExportWorkspaceParams, body ExportWorkspaceJSONRequestBody, reqEditors ...RequestEditorFn) (*ExportWorkspaceResponse, error) {
+	rsp, err := c.ExportWorkspace(ctx, params, body, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -5852,6 +5948,20 @@ func ParseDeleteWorkspaceResponse(rsp *http.Response) (*DeleteWorkspaceResponse,
 		}
 		response.ApplicationproblemJSON403 = &dest
 
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
 		var dest TooManyRequests
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
@@ -5898,6 +6008,20 @@ func ParseExportWorkspaceResponse(rsp *http.Response) (*ExportWorkspaceResponse,
 			return nil, err
 		}
 		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
 		var dest TooManyRequests

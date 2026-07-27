@@ -660,7 +660,10 @@ paths:
   # workspace — data-subject export/delete, specced at the shape level
   # (contracts/api-1.md#data-subject-export--delete). Both return 202 with
   # a Job resource, exactly like a fleet-mutating operation, since neither
-  # completes within its own request/response cycle.
+  # completes within its own request/response cycle. Neither takes a
+  # selector: API-123 makes each operation's target the workspace itself,
+  # implicit in the request path, so API-110's selector convention does not
+  # apply.
   # ---------------------------------------------------------------------
   /workspace/export:
     post:
@@ -668,14 +671,24 @@ paths:
       summary: Export the workspace as a portable archive
       description: >-
         Data-subject export operation
-        (`contracts/api-1.md#data-subject-export--delete`): delegates to
-        the archive/1 container format. Specced; full data-subject-request
-        workflow tooling beyond this operation's own shape is a deferred
-        implementation.
+        (`contracts/api-1.md#data-subject-export--delete`). API-121 makes
+        this the API-facing trigger for the container `archive/1` defines,
+        not a second export format: the Job's success means exactly that
+        container now exists for this workspace. Owner-role only — an
+        export carries the whole workspace, so no scope-node-narrowed role
+        can invoke it. A fuller data-subject-request workflow (intake and
+        tracking for a request arriving outside this API) is the deferred
+        implementation API-124 names.
       tags: [workspace, "mcp:act"]
       parameters:
         - $ref: "#/components/parameters/IdempotencyKeyParam"
         - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceExportRequest"
       responses:
         "202":
           description: Export accepted; poll the returned Job resource for completion.
@@ -690,6 +703,10 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
         "429":
           $ref: "#/components/responses/TooManyRequests"
   /workspace/delete:
@@ -698,14 +715,24 @@ paths:
       summary: Erase the workspace's data via key-material destruction
       description: >-
         Data-subject delete operation
-        (`contracts/api-1.md#data-subject-export--delete`): triggers the
-        workspace's key-material destruction path. Specced; full
-        data-subject-request workflow tooling beyond this operation's own
-        shape is a deferred implementation.
+        (`contracts/api-1.md#data-subject-export--delete`). API-122 routes
+        it to the workspace's key-material destruction path
+        (`security-model.md` SEC-121) — this IS that destruction, not a
+        separate deletion mechanism. It is irreversible: owner-role only,
+        and the body MUST name the workspace being destroyed
+        (`confirm_workspace_id`), so no single blind request can erase a
+        deployment. A fuller data-subject-request workflow is the deferred
+        implementation API-124 names.
       tags: [workspace, "mcp:act"]
       parameters:
         - $ref: "#/components/parameters/IdempotencyKeyParam"
         - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceDeleteRequest"
       responses:
         "202":
           description: Deletion accepted; poll the returned Job resource for completion.
@@ -720,6 +747,10 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
         "429":
           $ref: "#/components/responses/TooManyRequests"
 
@@ -1645,6 +1676,48 @@ components:
         enabled:
           type: boolean
           description: The `enabled` value to apply to every automation the selector matches.
+
+    # -----------------------------------------------------------------
+    # workspace — the two data-subject operations' request bodies
+    # (contracts/api-1.md#data-subject-export--delete).
+    # -----------------------------------------------------------------
+    WorkspaceExportRequest:
+      type: object
+      description: >-
+        The request body for the data-subject export operation (API-120/121).
+        It carries the export passphrase and nothing else: the operation's
+        target is the workspace itself, implicit in the path (API-123).
+      required: [passphrase]
+      additionalProperties: false
+      properties:
+        passphrase:
+          type: string
+          minLength: 12
+          description: >-
+            The export passphrase `archive/1` derives the container's
+            encryption key from (ARC-010). It is a per-export secret known
+            only to whoever performed or received that export, and is
+            distinct from the workspace's own emergency-kit recovery
+            passphrase (ARC-112) — neither substitutes for the other.
+          example: "correct-horse-battery-staple"
+
+    WorkspaceDeleteRequest:
+      type: object
+      description: >-
+        The request body for the data-subject delete operation
+        (API-120/122). The confirmation is the only member: the operation's
+        target is the workspace itself, implicit in the path (API-123).
+      required: [confirm_workspace_id]
+      additionalProperties: false
+      properties:
+        confirm_workspace_id:
+          $ref: "#/components/schemas/Ulid"
+          description: >-
+            The id of the workspace this request destroys — the deployment's
+            own org-kind scope node (data-model/1 DAT-012, the row that
+            reaches `purged` once this operation has run). It MUST equal
+            that id exactly; any other value, or none, refuses the request
+            without destroying anything.
 
     # -----------------------------------------------------------------
     # devices + entities — the device plane's read surface and the
