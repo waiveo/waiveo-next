@@ -8,6 +8,7 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/koron/go-ssdp v0.9.1
 	github.com/oapi-codegen/runtime v1.5.0
+	golang.org/x/crypto v0.53.0
 	golang.org/x/net v0.56.0
 	modernc.org/sqlite v1.54.0
 )

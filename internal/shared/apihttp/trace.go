@@ -10,10 +10,10 @@ package apihttp
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"net/http"
 	"regexp"
+
+	"github.com/maaxton/waiveo-next/internal/shared/ulid"
 )
 
 // TraceIDHeader is the header name api/1 API-060 defines, request and
@@ -34,23 +34,26 @@ func validTraceID(v string) bool {
 	return traceIDPattern.MatchString(v) && len(v) >= 20 && len(v) <= 36
 }
 
-// newTraceID generates a fresh server-side trace id: 32 lowercase hex
-// characters from crypto/rand. That satisfies API-061 (length 32, within
-// [20,36]; charset a strict subset of [A-Za-z0-9-]) without requiring a real
-// ULID library, per this codebase's existing random-hex-id convention
-// (internal/feeder/enroll.randomHex and internal/relay/playerserver's
-// newOpaqueToken use the same pattern for their own opaque ids).
+// newTraceID generates a fresh server-side trace id as a real ULID
+// (internal/shared/ulid), which API-061 requires by name: "A value failing
+// this check MUST be discarded and replaced with a freshly server-generated
+// ULID."
+//
+// This was previously 32 lowercase hex characters, which satisfies API-061's
+// GRAMMAR (length within [20,36]; charset a subset of [A-Za-z0-9-]) but not
+// its stated TYPE, and the difference is load-bearing rather than pedantic.
+// API-063 requires that "when a request causes work in another component (a
+// relay-bound command, a durable event, a background job), the server MUST
+// propagate the same Trace-Id value into that component's own record of the
+// work" — and events/1 EVT-010 types a durable event's own `trace_id` field
+// as a ULID, enforced by events.Validate. A hex trace id therefore could not
+// be propagated into an events/1 envelope at all: it would fail the EVT-013
+// delivery gate, so a producer had to substitute a fresh, uncorrelated id and
+// API-063 silently did not hold. Minting a ULID here closes that, and costs
+// nothing — internal/shared/ulid already exists (it was added later than this
+// function's original hex convention, which is why the hex predated it).
 func newTraceID() string {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		// crypto/rand.Reader failing is a fatal environment problem
-		// (entropy source unavailable); there is no meaningful error to
-		// propagate through this value-returning helper, matching the
-		// existing panic convention for the same failure elsewhere in this
-		// codebase (e.g. internal/feeder/enroll.randomHex).
-		panic("apihttp: newTraceID: " + err.Error())
-	}
-	return hex.EncodeToString(b)
+	return ulid.New()
 }
 
 // resolveTraceID implements API-060/061: the request's own Trace-Id header

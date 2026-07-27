@@ -17,22 +17,25 @@ type schemaClass struct {
 
 // classBySchema maps each registered schema whose class this codebase pins to
 // its {cost_class, retention_class}, sourced from the schema file's own class
-// constants (no second copy of the strings). It covers exactly the five schemas
-// the relay's telemetry channel carries (relay/1 REL-095) — the ones an ingester
+// constants (no second copy of the strings). It covers the five schemas the
+// relay's telemetry channel carries (relay/1 REL-095) — the ones an ingester
 // (internal/app/eventingest) reconstructs into envelopes — so every telemetry
 // record reaches its payload validator and is classed, never dropped merely for
-// lacking a class. events/1 additionally registers audit.event and
-// variable.changed (EVT-020), but relay/1 does not relay either over this
-// channel, so neither is classed here; any pack-namespaced schema (EVT-021/022)
-// is likewise absent. For an absent schema ClassFor reports ok=false, so an
-// ingester drops+logs a record it cannot class rather than minting an envelope
-// with an empty, un-validatable class (EVT-013).
+// lacking a class. audit.event is classed here too, though relay/1 does not
+// relay it: it has an app-side producer (internal/app/auth emits one per
+// security-model/1 SEC-150 flow), and its class is deliberately the long-lived
+// one EVT-082 requires rather than the telemetry tier. variable.changed has no
+// producer yet and so stays unclassed, as does any pack-namespaced schema
+// (EVT-021/022). For an absent schema ClassFor reports ok=false, so a producer
+// drops+logs a record it cannot class rather than minting an envelope with an
+// empty, un-validatable class (EVT-013).
 var classBySchema = map[string]schemaClass{
 	SchemaAutomationRun:      {cost: automationRunCostClass, retention: automationRunRetentionClass},
 	SchemaContentPlayed:      {cost: contentPlayedCostClass, retention: contentPlayedRetentionClass},
 	SchemaEntityStateChanged: {cost: entityStateChangedCostClass, retention: entityStateChangedRetentionClass},
 	SchemaDeviceHeartbeat:    {cost: deviceHeartbeatCostClass, retention: deviceHeartbeatRetentionClass},
 	SchemaBoxVitals:          {cost: boxVitalsCostClass, retention: boxVitalsRetentionClass},
+	SchemaAuditEvent:         {cost: auditEventCostClass, retention: auditEventRetentionClass},
 }
 
 // ClassFor returns the cost_class and retention_class the platform assigns an
