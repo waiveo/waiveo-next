@@ -111,6 +111,23 @@ type Config struct {
 	// ignored as REL-004 additive tolerance.
 	OnGenerationAdvance func(generation int64)
 
+	// OnDeviceCommand, when non-nil, handles an app-initiated
+	// `device.command` (REL-112) and returns the result body the correlated
+	// `device.command_result` carries. It runs on its OWN goroutine per
+	// command — never the read loop — so a dispatch that waits on a physical
+	// device cannot stall the connection (the read loop must stay live to
+	// carry the reply itself, plus any concurrent pull). Per-device
+	// serialization (REL-115) is the handler's own concern, enforced inside
+	// the device plane's command surface, not by serializing this transport.
+	//
+	// Leaving it nil is a relay with no device plane wired: an arriving
+	// command is answered {ok:false, INTERNAL} rather than dropped, since
+	// REL-112 requires a result for every command.
+	//
+	// The body's `params` MAY carry per-dispatch credential material
+	// (REL-114) — a handler must not persist or log it.
+	OnDeviceCommand func(wire.DeviceCommandBody) wire.DeviceCommandResultBody
+
 	// PingInterval / PingTimeout govern the protocol-level heartbeat: a
 	// ping every PingInterval, its pong bounded by PingTimeout; a failed
 	// round-trip closes the connection (dead-peer detection for half-open
@@ -147,6 +164,7 @@ type Client struct {
 	relayID string
 	ackBody hello.HelloAckBody
 	observe func(sent bool, f wire.Frame)
+	command func(wire.DeviceCommandBody) wire.DeviceCommandResultBody
 	mu      sync.Mutex
 	pending map[string]chan wire.Frame
 	done    chan struct{}
@@ -247,6 +265,7 @@ func Dial(cfg Config) (*Client, error) {
 		ws:      ws,
 		relayID: id.RelayID,
 		observe: cfg.ObserveFrame,
+		command: cfg.OnDeviceCommand,
 		pending: map[string]chan wire.Frame{},
 		done:    make(chan struct{}),
 		nudgeCh: make(chan struct{}, 1),
@@ -453,9 +472,56 @@ func (c *Client) readLoop() {
 			c.noteGeneration(body.Generation)
 			continue
 		}
+		if f.Type == wire.FrameTypeDeviceCommand {
+			// Off the read loop: a command dispatch waits on a physical
+			// device, and the reply it produces has to travel back through a
+			// connection this loop must still be reading.
+			go c.handleDeviceCommand(f)
+			continue
+		}
 		// Unknown server-initiated frame type: REL-004 additive tolerance —
 		// a newer app peer's new verb is ignored, never a failure.
 	}
+}
+
+// handleDeviceCommand answers ONE app-initiated `device.command` (REL-112):
+// it decodes the body, runs the configured handler, and sends the
+// correlated `device.command_result` echoing the request's id and trace_id
+// (REL-006) with this relay's own relay_id (REL-005).
+//
+// Every arriving command draws exactly one answer — REL-112 admits no
+// silent drop:
+//   - an undecodable body is refused with REL-007's top-level error frame
+//     (MALFORMED_MESSAGE: the frame failed its type's minimum shape,
+//     REL-002), since there is no well-formed command to produce a result
+//     for;
+//   - a relay with no device plane wired answers {ok:false, INTERNAL};
+//   - otherwise the handler's own result body is returned verbatim,
+//     including its typed refusals (COMMAND_UNRESOLVED,
+//     COMMAND_TARGET_UNREACHABLE) — those ride the result's own `error`
+//     field, never an additional error frame (REL-007).
+//
+// A send failure is dropped: the connection is already dying, and the read
+// loop will surface its death through Done/Err.
+func (c *Client) handleDeviceCommand(req wire.Frame) {
+	var body wire.DeviceCommandBody
+	if err := req.DecodeBody(&body); err != nil {
+		_ = c.send(wire.NewErrorFrame(req.ID, req.TraceID, c.relayID,
+			"MALFORMED_MESSAGE", "device.command body did not decode"))
+		return
+	}
+
+	result := wire.NewDeviceCommandError("INTERNAL", "this relay has no device plane wired to execute commands")
+	if c.command != nil {
+		result = c.command(body)
+	}
+
+	reply, err := wire.NewFrame(wire.FrameTypeDeviceCommandResult, req.ID, c.relayID, result)
+	if err != nil {
+		return
+	}
+	reply.TraceID = req.TraceID
+	_ = c.send(reply)
 }
 
 // readFrame reads one frame off the connection into f.

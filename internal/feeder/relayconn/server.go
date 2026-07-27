@@ -25,9 +25,11 @@
 //	  self-asserted relay_id (REL-041; a mismatched hello.relay_id is
 //	  refused RELAY_IDENTITY_MISMATCH) — negotiates, answers `hello-ack`
 //	→ steady state: `state.pull` answered with `state.snapshot` or
-//	  `state.unchanged` (REL-050/051), and generation-advance nudges
+//	  `state.unchanged` (REL-050/051), generation-advance nudges
 //	  (`state.changed`, REL-057) pushed server→relay
-//	  (NotifyGenerationAdvance).
+//	  (NotifyGenerationAdvance), and app-initiated `device.command`
+//	  requests correlated to their `device.command_result` replies
+//	  (REL-112, SendDeviceCommand).
 //
 // Any pre-hello frame that is not `hello` is refused with a top-level error
 // frame (PROTOCOL_VIOLATION) and the connection is closed (REL-039 posture);
@@ -182,6 +184,148 @@ func (s *Server) LastStateAck(relayID string) (wire.Frame, bool) {
 	return f, ok
 }
 
+// ErrRelayNotConnected is returned by SendDeviceCommand when the named
+// relay has no live authenticated connection to carry the command — the
+// relay is offline, mid-reconnect, or was never enrolled.
+//
+// relay/1 defines no store-and-forward for `device.command`: the device
+// plane's command surface is a live request/response exchange (REL-112),
+// and the contract's own offline continuity (Negotiation, Offline
+// continuity) covers a relay evaluating its ALREADY-PULLED desired state
+// while disconnected, never an app peer queuing operator commands for
+// later delivery. Silently dropping the command is therefore not an option
+// this contract leaves open: the caller is refused explicitly and decides
+// whether to retry.
+var ErrRelayNotConnected = errors.New("relayconn: relay has no live connection")
+
+// RefusalError is a REL-007 top-level error frame received in place of an
+// expected reply — a typed refusal of an app-initiated request, carrying
+// the Error-taxonomy code verbatim. It is distinct from a
+// `device.command_result` whose own `error` field is populated: that is a
+// well-formed answer the relay produced (REL-112/113) and is returned as a
+// result body, not as this error.
+type RefusalError struct {
+	Code    string
+	Message string
+}
+
+func (e *RefusalError) Error() string {
+	return fmt.Sprintf("relayconn: relay refused the request: %s: %s", e.Code, e.Message)
+}
+
+// SendDeviceCommand dispatches one `device.command` to relayID over its
+// EXISTING authenticated connection and returns the correlated
+// `device.command_result` body (REL-112). traceID is the originating
+// operation's own trace id, carried so one identifier correlates the
+// operation across the app peer, the relay, and any record it produces
+// (REL-006); pass "" when the command traces to no such operation.
+//
+// The exchange is synchronous by contract shape: REL-112 pairs the command
+// with a single result frame on the same connection, so the caller's own
+// request/response cycle can carry the outcome and api/1's 202-plus-Job
+// rule for not-synchronously-completable work (API-111) does not apply.
+// ctx bounds the wait; a caller MUST supply a deadline, since a relay that
+// accepts the frame and never answers would otherwise block forever.
+//
+// Errors: ErrRelayNotConnected when no live connection exists (never a
+// silent drop); *RefusalError when the relay answered with a REL-007 typed
+// error frame; ctx.Err() when the wait ended first; and a plain error when
+// the connection died mid-exchange. A returned result body with
+// `ok:false` is NOT an error — it is the relay's own typed answer
+// (COMMAND_UNRESOLVED, COMMAND_TARGET_UNREACHABLE) and is returned intact.
+//
+// body.Params MAY carry credential material scoped to this one dispatch
+// (REL-114). This method never logs it and never writes it anywhere: it is
+// marshaled into the outbound frame and dropped.
+func (s *Server) SendDeviceCommand(ctx context.Context, relayID, traceID string, body wire.DeviceCommandBody) (wire.DeviceCommandResultBody, error) {
+	conn, ok := s.connFor(relayID)
+	if !ok {
+		return wire.DeviceCommandResultBody{}, ErrRelayNotConnected
+	}
+	// REL-016: a command is a steady-state frame like any other — a revoked
+	// relay is refused and disconnected rather than handed an operator's
+	// command to execute.
+	if s.isRevoked(conn.relayID, conn.serial) {
+		go s.closeRevoked(conn)
+		return wire.DeviceCommandResultBody{}, ErrRelayNotConnected
+	}
+
+	id := ulid.New()
+	req, err := wire.NewFrame(wire.FrameTypeDeviceCommand, id, relayID, body)
+	if err != nil {
+		return wire.DeviceCommandResultBody{}, err
+	}
+	req.TraceID = traceID
+
+	ch, err := conn.register(id)
+	if err != nil {
+		return wire.DeviceCommandResultBody{}, err
+	}
+	if err := conn.send(req); err != nil {
+		conn.reap(id)
+		return wire.DeviceCommandResultBody{}, fmt.Errorf("relayconn: SendDeviceCommand: send: %w", err)
+	}
+
+	select {
+	case reply, open := <-ch:
+		if !open {
+			// closePending: the connection died with this request in flight.
+			return wire.DeviceCommandResultBody{}, ErrRelayNotConnected
+		}
+		if reply.Type == wire.FrameTypeError {
+			return wire.DeviceCommandResultBody{}, &RefusalError{Code: reply.Code, Message: reply.Message}
+		}
+		if reply.Type != wire.FrameTypeDeviceCommandResult {
+			return wire.DeviceCommandResultBody{}, fmt.Errorf("relayconn: SendDeviceCommand: reply is %q, want %s", reply.Type, wire.FrameTypeDeviceCommandResult)
+		}
+		var out wire.DeviceCommandResultBody
+		if err := reply.DecodeBody(&out); err != nil {
+			return wire.DeviceCommandResultBody{}, fmt.Errorf("relayconn: SendDeviceCommand: %w", err)
+		}
+		return out, nil
+	case <-ctx.Done():
+		// The caller gave up first: drop the correlation entry so an answer
+		// that arrives later is treated as uncorrelated (and ignored) rather
+		// than accumulating in the map forever.
+		conn.reap(id)
+		return wire.DeviceCommandResultBody{}, ctx.Err()
+	}
+}
+
+// connFor returns the live connection authenticated as relayID. A relay
+// holds at most one connection at a time in practice; when a reconnect has
+// briefly left two registered, the most recently registered one is
+// indistinguishable from the other here and either is a correct carrier —
+// both are authenticated as the same enrolled identity.
+func (s *Server) connFor(relayID string) (*serverConn, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for c := range s.conns {
+		if c.relayID == relayID {
+			return c, true
+		}
+	}
+	return nil, false
+}
+
+// PendingCommandCount reports how many app-initiated requests are awaiting
+// a reply across every live connection — observability for tests and
+// operators. A correctly reaped exchange leaves this at zero; a leaked
+// correlation entry would not.
+func (s *Server) PendingCommandCount() int {
+	s.mu.Lock()
+	conns := make([]*serverConn, 0, len(s.conns))
+	for c := range s.conns {
+		conns = append(conns, c)
+	}
+	s.mu.Unlock()
+	n := 0
+	for _, c := range conns {
+		n += c.pendingCount()
+	}
+	return n
+}
+
 // ConnCount reports the number of live authenticated connections —
 // observability for tests and operators (a reaped connection leaves this
 // count; a leaked one would not).
@@ -241,11 +385,89 @@ func offersSubprotocol(r *http.Request) bool {
 // closes the connection — the slow-consumer disconnect policy (a relay
 // that stops draining its socket is torn down, never allowed to wedge the
 // feeder behind its buffer).
+//
+// pending is this side's request/reply correlation map — the mirror image
+// of the relay client's own, for the ONE exchange the app peer originates
+// (`device.command` → `device.command_result`, REL-112/006). An entry lives
+// exactly as long as its request is outstanding: the read loop removes it
+// when the correlated reply (or a REL-007 error frame carrying the same id)
+// arrives, the requester removes it when its context ends first, and
+// closePending drains the whole map when the connection dies — so a peer
+// that never answers, or dies mid-exchange, leaks no entry and blocks no
+// caller.
 type serverConn struct {
 	ws           *websocket.Conn
 	relayID      string
 	serial       string // presented client-cert serial, for REL-016 re-checks
 	writeTimeout time.Duration
+
+	pendingMu sync.Mutex
+	pending   map[string]chan wire.Frame
+	closed    bool
+}
+
+// register claims id in the correlation map and returns the channel its
+// reply will be delivered on, or an error if the connection is already
+// gone (so a request is never armed against a dead conn).
+func (c *serverConn) register(id string) (chan wire.Frame, error) {
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+	if c.closed {
+		return nil, ErrRelayNotConnected
+	}
+	ch := make(chan wire.Frame, 1)
+	c.pending[id] = ch
+	return ch, nil
+}
+
+// reap removes id from the correlation map — the requester's own cleanup
+// when its context ends before a reply arrives. Idempotent: the read loop
+// may already have resolved and removed the entry.
+func (c *serverConn) reap(id string) {
+	c.pendingMu.Lock()
+	delete(c.pending, id)
+	c.pendingMu.Unlock()
+}
+
+// resolve delivers f to the waiter registered under f.ID, reporting whether
+// one existed. The entry is removed under the same lock the lookup takes,
+// so exactly one delivery can ever happen for a given correlation id — two
+// replies bearing the same id cannot both complete a request.
+func (c *serverConn) resolve(f wire.Frame) bool {
+	c.pendingMu.Lock()
+	ch, ok := c.pending[f.ID]
+	if ok {
+		delete(c.pending, f.ID)
+	}
+	c.pendingMu.Unlock()
+	if !ok {
+		return false
+	}
+	ch <- f // buffered(1) and single-delivery: never blocks the read loop
+	return true
+}
+
+// closePending marks the connection dead and closes every outstanding
+// waiter's channel, so a caller blocked on a reply that will now never
+// arrive unblocks with the connection-closed error instead of hanging
+// until its own deadline.
+func (c *serverConn) closePending() {
+	c.pendingMu.Lock()
+	pending := c.pending
+	c.pending = map[string]chan wire.Frame{}
+	c.closed = true
+	c.pendingMu.Unlock()
+	for _, ch := range pending {
+		close(ch)
+	}
+}
+
+// pendingCount is how many app-initiated requests are outstanding on this
+// connection.
+func (c *serverConn) pendingCount() int {
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+	return len(c.pending)
 }
 
 func (c *serverConn) send(f wire.Frame) error {
@@ -335,7 +557,10 @@ func (s *Server) serve(req *http.Request, ws *websocket.Conn) {
 	if err != nil {
 		return
 	}
-	conn := &serverConn{ws: ws, relayID: relayID, serial: serial, writeTimeout: s.writeTimeout}
+	conn := &serverConn{
+		ws: ws, relayID: relayID, serial: serial, writeTimeout: s.writeTimeout,
+		pending: map[string]chan wire.Frame{},
+	}
 	if err := conn.send(challenge); err != nil {
 		return
 	}
@@ -401,6 +626,11 @@ func (s *Server) serve(req *http.Request, ws *websocket.Conn) {
 		s.mu.Lock()
 		delete(s.conns, conn)
 		s.mu.Unlock()
+		// Every app-initiated request still awaiting a reply on this
+		// connection is now unanswerable: unblock its caller and clear the
+		// correlation map rather than leaving entries (and goroutines)
+		// behind on a dead conn.
+		conn.closePending()
 	}()
 
 	// Heartbeat: a half-open connection (NAT drop, power-cut relay) never
@@ -434,6 +664,14 @@ func (s *Server) serve(req *http.Request, ws *websocket.Conn) {
 			_ = conn.send(wire.NewErrorFrame(f.ID, f.TraceID, relayID,
 				"CERT_REVOKED", "the presented certificate has been revoked (REL-016)"))
 			return
+		}
+		// A frame whose id matches an outstanding app-initiated request
+		// completes it (REL-006: the pair shares one correlation id). This
+		// runs BEFORE the verb switch so it covers both the
+		// `device.command_result` reply and a REL-007 top-level error frame
+		// refusing the same request — the requester classifies which it got.
+		if f.ID != "" && conn.resolve(f) {
+			continue
 		}
 		switch f.Type {
 		case wire.FrameTypeStatePull:

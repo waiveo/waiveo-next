@@ -41,6 +41,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/rules/engine"
 	"github.com/maaxton/waiveo-next/internal/rules/model"
 	"github.com/maaxton/waiveo-next/internal/rules/registry"
+	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
 // telemetryCapacity bounds the durable telemetry buffer's drop-oldest overflow
@@ -90,10 +91,10 @@ type Host struct {
 
 	// surface is the device-command surface New wires the canonical registry
 	// into as its CommandVocab (REG-052/REL-113) — the app-dispatched
-	// device.command entry point (deviceplane.CommandSurface.Execute) a later
-	// wire receiver calls into directly, and the one this package's own tests
-	// drive to prove command resolution against the real media-player
-	// vocabulary end to end.
+	// device.command entry point, reached from the wire through DeviceCommand
+	// and from the edge engine through its own command sink, and the one this
+	// package's own tests drive to prove command resolution against the real
+	// media-player vocabulary end to end.
 	surface *deviceplane.CommandSurface
 
 	// appliedGen is the desired-state generation whose edge_rules are currently
@@ -213,6 +214,43 @@ func (h *Host) ApplyEdgeRules(edgeRules []json.RawMessage, generation int) error
 	h.hasApplied = true
 	h.loadedEdge = loaded
 	return nil
+}
+
+// DeviceCommand executes one app-dispatched `device.command` body through the
+// relay's own command surface and returns the `device.command_result` body
+// (relay/1 REL-112). It is the seam the persistent connection's inbound handler
+// (internal/relay/relayconn's Config.OnDeviceCommand) calls, so an operator's
+// command from the management API takes the IDENTICAL resolve → per-device
+// serialize → dispatch path an edge rule's own device_command takes
+// (REL-113/114/115) — one command surface, never a second implementation for
+// the wire.
+//
+// It deliberately does NOT take h.mu: the command surface is independent of the
+// engine (it holds its own per-device locks, REL-115), and blocking a device
+// dispatch behind a generation apply — or a generation apply behind a device
+// that is slow to answer — would couple two subsystems the contract keeps
+// separate.
+//
+// The correlation envelope (id, relay_id, trace_id) is the transport's to echo,
+// so only the bodies cross this seam. body.Params is passed straight through to
+// the surface, which carries it in memory to the controller and never to a log
+// or a store (REL-114).
+func (h *Host) DeviceCommand(body wire.DeviceCommandBody) wire.DeviceCommandResultBody {
+	res := h.surface.Execute(deviceplane.DeviceCommand{
+		Body: deviceplane.CommandBody{
+			EntityID: body.EntityID,
+			Command:  body.Command,
+			Params:   body.Params,
+		},
+	})
+	out := wire.DeviceCommandResultBody{OK: res.Body.OK}
+	if res.Body.Error != nil {
+		out.Error = &wire.CommandErrorBody{
+			Code:    res.Body.Error.Code,
+			Message: res.Body.Error.Message,
+		}
+	}
+	return out
 }
 
 // EdgeRuleCount is how many edge-class rules the last ApplyEdgeRules loaded into
