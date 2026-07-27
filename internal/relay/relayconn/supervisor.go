@@ -76,11 +76,24 @@ type SupervisorConfig struct {
 	OnPermanentRefusal func(*Refusal)
 
 	// InitialBackoff/MaxBackoff bound the exponential redial backoff
-	// (doubled per consecutive failure, reset on success, jittered to
-	// [0.5x, 1.5x) so a fleet of relays does not re-dial in lockstep after
-	// an app-peer restart). Zero values take the defaults.
+	// (doubled per consecutive failed attempt, jittered to [0.5x, 1.5x) so
+	// a fleet of relays does not re-dial in lockstep after an app-peer
+	// restart). Zero values take the defaults.
 	InitialBackoff time.Duration
 	MaxBackoff     time.Duration
+
+	// MinStableUptime is the minimum time a connection must survive for its
+	// death to be treated as an isolated drop (redial immediately, ladder
+	// reset) rather than as one more failed attempt (ladder engages). This
+	// is the guard against an accept-then-drop peer: one that completes the
+	// handshake and then kills every connection would otherwise never trip
+	// the failure ladder at all — Connect keeps "succeeding" — and the loop
+	// degenerates into a full-rate dial storm (TLS handshake + ed25519
+	// channel-binding sign/verify + WS upgrade per iteration) that pins CPU
+	// on BOTH peers of a Pi-class appliance. A zero value defaults to
+	// MaxBackoff, which bounds the steady-flap dial rate at roughly one
+	// attempt per MaxBackoff regardless of how the peer misbehaves.
+	MinStableUptime time.Duration
 }
 
 // Supervisor keeps one relay persistently connected (package doc). Start
@@ -102,6 +115,9 @@ func StartSupervisor(cfg SupervisorConfig) *Supervisor {
 	}
 	if cfg.MaxBackoff == 0 {
 		cfg.MaxBackoff = defaultMaxBackoff
+	}
+	if cfg.MinStableUptime == 0 {
+		cfg.MinStableUptime = cfg.MaxBackoff
 	}
 	s := &Supervisor{
 		cfg:  cfg,
@@ -151,16 +167,14 @@ func (s *Supervisor) run() {
 				}
 				return
 			}
-			select {
-			case <-s.stop:
+			if !s.sleep(jitter(backoff)) {
 				return
-			case <-time.After(jitter(backoff)):
 			}
 			backoff = min(backoff*2, s.cfg.MaxBackoff)
 			continue
 		}
 
-		backoff = s.cfg.InitialBackoff // a successful connect resets the ladder
+		connectedAt := time.Now()
 		s.mu.Lock()
 		s.client = client
 		s.mu.Unlock()
@@ -175,11 +189,35 @@ func (s *Supervisor) run() {
 			s.clearClient()
 			return
 		case <-client.Done():
-			// The connection died on its own; loop straight into a re-dial
-			// (the fresh attempt is immediate — backoff applies only to
-			// consecutive FAILED attempts).
 			s.clearClient()
+			if time.Since(connectedAt) >= s.cfg.MinStableUptime {
+				// The connection proved stable before dying (an isolated
+				// drop, an app-peer restart): reset the ladder and re-dial
+				// immediately — backoff exists to pace FAILURES, not to
+				// delay recovery from a one-off death.
+				backoff = s.cfg.InitialBackoff
+				continue
+			}
+			// The connection died almost as soon as it was accepted. A peer
+			// that completes the handshake and then drops every connection
+			// is a failing peer in all but name — count this attempt against
+			// the ladder exactly like a refused dial, or the loop becomes a
+			// full-rate reconnect storm (MinStableUptime's doc).
+			if !s.sleep(jitter(backoff)) {
+				return
+			}
+			backoff = min(backoff*2, s.cfg.MaxBackoff)
 		}
+	}
+}
+
+// sleep waits d or until Stop, reporting false when supervision should end.
+func (s *Supervisor) sleep(d time.Duration) bool {
+	select {
+	case <-s.stop:
+		return false
+	case <-time.After(d):
+		return true
 	}
 }
 

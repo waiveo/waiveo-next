@@ -43,6 +43,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -930,6 +931,108 @@ func TestClientHeartbeatReapsUnresponsiveServer(t *testing.T) {
 		// the heartbeat detected the dead peer and tore the connection down
 	case <-time.After(10 * time.Second):
 		t.Fatal("client never detected the unresponsive app peer (heartbeat did not reap)")
+	}
+}
+
+// TestSupervisorThrottlesShortLivedConnections is the reconnect-storm
+// regression proof: against a peer that ACCEPTS the handshake and then loses
+// every connection immediately (staged here from the owner side — OnConnected
+// closes the fresh client at once, so every connection dies well under
+// MinStableUptime), the supervisor's backoff ladder MUST engage exactly as it
+// does for refused dials. Before the min-uptime guard, this loop re-dialed at
+// full rate (hundreds of TLS handshakes + channel-binding signatures per
+// second — measured ~265 dials/s); throttled, a 1.5s window fits only the
+// ladder's worth of attempts.
+func TestSupervisorThrottlesShortLivedConnections(t *testing.T) {
+	h := newHarness(t)
+	store := enrolledRelay(t, h)
+
+	var dials atomic.Int64
+	sup := relayclient.StartSupervisor(relayclient.SupervisorConfig{
+		Connect: func() (*relayclient.Client, error) {
+			dials.Add(1)
+			return relayclient.Dial(relayclient.Config{
+				URL: h.ts.URL, Store: store, Declaration: testDeclaration,
+			})
+		},
+		// The accept-then-drop peer stand-in: the connection authenticates
+		// fully, then dies instantly.
+		OnConnected:    func(c *relayclient.Client) { _ = c.Close() },
+		InitialBackoff: 50 * time.Millisecond,
+		MaxBackoff:     400 * time.Millisecond,
+		// MinStableUptime defaults to MaxBackoff — every one of these
+		// instant deaths counts as a failed attempt.
+	})
+	defer func() {
+		sup.Stop()
+		select {
+		case <-sup.Done():
+		case <-time.After(5 * time.Second):
+			t.Error("supervisor never stopped")
+		}
+	}()
+
+	time.Sleep(1500 * time.Millisecond)
+	n := dials.Load()
+	// Ladder floor (all-minimum jitter): waits of 25, 50, 100, 200, 200…ms
+	// between attempts allow at most ~11 dials in 1.5s even before dial
+	// latency; an unthrottled loop measured hundreds.
+	if n > 15 {
+		t.Fatalf("%d dials in 1.5s against an accept-then-drop peer — the backoff ladder is not engaging (reconnect storm)", n)
+	}
+	if n < 2 {
+		t.Fatalf("dials = %d — the supervisor stopped re-dialing entirely", n)
+	}
+}
+
+// TestSupervisorStableConnectionRedialsImmediately proves the other half of
+// the min-uptime guard (and that the guard is what throttles the storm test
+// above): a connection whose uptime exceeds MinStableUptime is an isolated
+// drop — its death re-dials immediately and resets the ladder, so a long
+// window fits MANY more attempts than the throttled ladder ever would.
+func TestSupervisorStableConnectionRedialsImmediately(t *testing.T) {
+	h := newHarness(t)
+	store := enrolledRelay(t, h)
+
+	var dials atomic.Int64
+	sup := relayclient.StartSupervisor(relayclient.SupervisorConfig{
+		Connect: func() (*relayclient.Client, error) {
+			dials.Add(1)
+			return relayclient.Dial(relayclient.Config{
+				URL: h.ts.URL, Store: store, Declaration: testDeclaration,
+			})
+		},
+		OnConnected: func(c *relayclient.Client) {
+			time.Sleep(10 * time.Millisecond) // outlive MinStableUptime
+			_ = c.Close()
+		},
+		// Backoff rungs of 2s: if these deaths were (wrongly) ladder-paced,
+		// every re-dial would wait >= 1s (the jitter floor); the immediate
+		// path is bounded by handshake latency only. The two behaviors are
+		// orders of magnitude apart, so the assertion below cannot pass by
+		// jitter luck.
+		InitialBackoff:  2 * time.Second,
+		MaxBackoff:      2 * time.Second,
+		MinStableUptime: time.Millisecond,
+	})
+	defer func() {
+		sup.Stop()
+		select {
+		case <-sup.Done():
+		case <-time.After(5 * time.Second):
+			t.Error("supervisor never stopped")
+		}
+	}()
+
+	start := time.Now()
+	deadline := start.Add(3 * time.Second)
+	for dials.Load() < 5 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	// 5 attempts under the 2s ladder would need >= 4 waits x 1s = 4s of
+	// pure waiting; the immediate path needs only 5 handshakes + 4x10ms.
+	if n := dials.Load(); n < 5 {
+		t.Fatalf("only %d dials in 3s — stable connections are being back-off-paced instead of re-dialed immediately", n)
 	}
 }
 
