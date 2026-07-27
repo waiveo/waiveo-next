@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/app/api"
+	"github.com/maaxton/waiveo-next/internal/app/auth/authtest"
 	"github.com/maaxton/waiveo-next/internal/app/devices"
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/feeder/origin"
@@ -84,8 +85,18 @@ func newAPIOverConnection(t *testing.T, h *harness, relayID string) *httptest.Se
 	t.Cleanup(func() { _ = st.Close() })
 
 	clock := func() int64 { return apiFixedNowMs }
+	// api.New requires an authenticator: the surface refuses a request whose
+	// principal cannot be resolved (security-model/1 SEC-005), so this
+	// whole-stack test drives a real seeded principal rather than an
+	// unauthenticated request the shipped handler would reject.
+	fixture, err := authtest.New(authtest.Config{NowMs: clock})
+	if err != nil {
+		t.Fatalf("authtest.New: %v", err)
+	}
+	t.Cleanup(fixture.Close)
+	apiAuth = fixture
 	handler := api.New(st, apihttp.NewIdempotencyStore(clock, 0), clock, ulid.Monotonic(),
-		origin.New(), apiContentBase,
+		origin.New(), apiContentBase, fixture.Auth,
 		// The connection server IS the dispatcher: no adapter, no shim — the
 		// api layer's CommandDispatcher is exactly its SendDeviceCommand.
 		api.WithDevicePlane(registry, h.connSrv))
@@ -93,6 +104,11 @@ func newAPIOverConnection(t *testing.T, h *harness, relayID string) *httptest.Se
 	t.Cleanup(ts.Close)
 	return ts
 }
+
+// apiAuth is the fixture the most recently started api server was mounted with;
+// postCommand presents its credential. A package-level handoff keeps the two
+// helpers' existing signatures, which every case in this file already calls.
+var apiAuth *authtest.Fixture
 
 // postCommand issues the real HTTP request an operator's client would.
 func postCommand(t *testing.T, ts *httptest.Server, entityID, body string, headers map[string]string) (*http.Response, []byte) {
@@ -105,6 +121,7 @@ func postCommand(t *testing.T, ts *httptest.Server, entityID, body string, heade
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
+	apiAuth.Authorize(req)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("POST command: %v", err)

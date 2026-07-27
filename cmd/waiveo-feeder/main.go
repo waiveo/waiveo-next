@@ -20,11 +20,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/app/api"
+	"github.com/maaxton/waiveo-next/internal/app/auth"
 	"github.com/maaxton/waiveo-next/internal/app/devices"
 	"github.com/maaxton/waiveo-next/internal/app/eventingest"
 	"github.com/maaxton/waiveo-next/internal/app/eventsse"
@@ -80,6 +82,7 @@ type config struct {
 	listen         string // TCP bind address for the HTTPS listener
 	contentBaseURL string // scheme+host the direct-fetch content URL is built from
 	storePath      string // SQLite file the app store persists scope-nodes + scheduling rows to
+	authDir        string // directory the security-model/1 auth state (database + setup code) lives in
 	contentPath    string // directory the content origin persists uploaded asset bytes to
 	demoCast       string // "" (default, single first-photon image) or "multi" (the real 3-item demo cast)
 }
@@ -126,6 +129,20 @@ const defaultContentPath = ".dev/feeder-content"
 // restart, rather than the app peer forgetting the relay ever enrolled.
 const defaultEnrollDir = ".dev/feeder-enroll"
 
+// defaultAuthDir is the make-dev-local directory the security-model/1 auth state
+// lives in: the principal/credential/session/role/grant database and the
+// first-boot setup code. Git-ignored under .dev/, a sibling of the signing keys.
+//
+// It is a SEPARATE directory (and a separate SQLite file) from the authoring
+// store deliberately. Every write to the authoring store bumps the desired-state
+// generation and nudges every live relay connection to re-pull (relay/1
+// REL-057); a login has no business advancing desired state, and folding the two
+// together would make every session issuance look like an authored change.
+const defaultAuthDir = ".dev/feeder-auth"
+
+// authStoreFile is the auth database's filename inside defaultAuthDir.
+const authStoreFile = "auth.db"
+
 // loadConfig reads the feeder config from env (via `env`, os.Getenv in main),
 // falling back to the loopback defaults. contentBaseURL defaults to the listen
 // address so an unconfigured feeder behaves exactly as before.
@@ -135,6 +152,7 @@ func loadConfig(env func(string) string) config {
 		listen:         listen,
 		contentBaseURL: envOr(env, "WAIVEO_FEEDER_CONTENT_URL", "https://"+listen),
 		storePath:      envOr(env, "WAIVEO_FEEDER_STORE", defaultStorePath),
+		authDir:        envOr(env, "WAIVEO_FEEDER_AUTH_DIR", defaultAuthDir),
 		contentPath:    envOr(env, "WAIVEO_FEEDER_CONTENT_DIR", defaultContentPath),
 		demoCast:       envOr(env, "WAIVEO_FEEDER_DEMO_CAST", ""),
 	}
@@ -292,8 +310,6 @@ func main() {
 
 	nowMs := func() int64 { return time.Now().UnixMilli() }
 	idem := apihttp.NewIdempotencyStore(nowMs, 0)
-	apiHandler := api.New(st, idem, nowMs, ulid.New, contentStore, contentBaseURL,
-		api.WithDevicePlane(deviceRegistry, relayConnSrv))
 
 	// The live observability plane (events/1 EVT-010/013/100/130-144): ONE shared
 	// event log the relay-telemetry ingest writes into and the /events/v1 SSE
@@ -314,13 +330,65 @@ func main() {
 	// below the first, delivering them out of recording order and, in a narrow
 	// interleaving with a live drain, permanently dropping one from a lagging
 	// subscriber's stream (EVT-011, REL-094/097, EVT-135/143). The monotonic factory
-	// makes same-millisecond ids sort in mint (recording) order. Auth is DEFERRED
-	// for this dev-lab POC — the ingest + SSE endpoints are unauthenticated
-	// (EVT-110-114 is the documented seam), and the relay pushes over the existing
-	// feeder TLS.
+	// makes same-millisecond ids sort in mint (recording) order.
+	//
+	// /events/v1 is authenticated (EVT-110-114, wired below). /telemetry/v1/push
+	// is NOT: it is a relay pushing over the mTLS-capable feeder listener with an
+	// enrollment-issued client certificate, which is its own authentication path
+	// (relay/1), not a platform session — an unauthenticated- or scoped-intake
+	// operation in API-092's sense rather than an api/1 route that forgot to
+	// authenticate.
 	eventLog := events.NewEventLog(feederEventLogRetention)
 	eventHub := eventsse.NewHub(eventLog)
 	telemetryIngest := eventingest.New(eventHub, firstPhotonSite.ScopeNode, ulid.Monotonic())
+
+	// The security-model/1 auth plane. It is built AFTER the event hub because
+	// its auditor publishes through it: every flow security-model/1 defines
+	// emits an ordinary events/1 audit.event (SEC-150), never a second audit
+	// schema of its own, so a login lands in the same stream an operator is
+	// already watching.
+	authStore, err := auth.OpenDefault(filepath.Join(cfg.authDir, authStoreFile))
+	if err != nil {
+		log.Fatalf("waiveo-feeder: open auth store: %v", err)
+	}
+	defer authStore.Close()
+
+	// The revocation registry EVT-114 hangs off: revoking a session closes every
+	// events/1 stream that session authenticated, rather than merely refusing
+	// its next connect.
+	revocations := auth.NewRevocations()
+	authStore.OnRevoke(revocations.Revoked)
+
+	// clockAssessment is reported on every login-failure audit record (SEC-091).
+	// It is hardcoded to `untrusted` because that is the honest reading: SEC-068
+	// defines `untrusted` as "while it holds no independently verified time above
+	// the floor", and this app maintains no persisted monotonic clock floor yet
+	// (SEC-066-068). It becomes a real reading when that floor lands; reporting
+	// `trusted` in the meantime would put a claim in the audit trail that nothing
+	// backs.
+	clockAssessment := func() string { return auth.ClockUntrusted }
+	auditor := auth.NewAuditor(eventHub, firstPhotonSite.ScopeNode, nowMs, ulid.New, clockAssessment)
+	authn := auth.NewAuthenticator(authStore, auditor, auth.NewDefaultLockout(), revocations)
+
+	// The first-boot claim window (SEC-120). On an unclaimed box this mints a
+	// one-time setup grant and persists its code 0600; the setup endpoint is
+	// claimable ONLY by redeeming it, so an installed-but-unclaimed box on a
+	// shared network is never first-come-first-served.
+	claim, err := auth.EnsureClaimWindow(ctx, authStore, cfg.authDir, auth.RootScopeNode, auditor)
+	if err != nil {
+		log.Fatalf("waiveo-feeder: evaluate first-boot claim window: %v", err)
+	}
+	if claim.Claimed {
+		log.Printf("waiveo-feeder: workspace is claimed; sign in at /api/v1/auth/login")
+	} else {
+		// Printed, not merely persisted: SEC-120 requires the installer present
+		// the code "printed, as a QR code, or on-screen", and a headless box's
+		// screen is its startup log.
+		log.Printf("waiveo-feeder: WORKSPACE UNCLAIMED — claim it with this one-time setup code (also at %s):\n\n    %s\n", claim.CodePath, claim.Code)
+	}
+
+	apiHandler := api.New(st, idem, nowMs, ulid.New, contentStore, contentBaseURL, authn,
+		api.WithDevicePlane(deviceRegistry, relayConnSrv))
 
 	// The embedded console SPA, served at "/" for every non-API path. The API,
 	// event-stream, content-origin, telemetry and enrollment/handshake routes are
@@ -337,7 +405,7 @@ func main() {
 	mux.Handle("/content/", contentStore.Handler())
 	mux.Handle("/api/v1/", apiHandler)
 	mux.Handle("/telemetry/v1/push", telemetryIngest)
-	mux.Handle("/events/v1", eventsse.New(eventHub))
+	mux.Handle("/events/v1", eventsse.New(eventHub, authn))
 	mux.Handle("/", webUI)
 	enrollSrv.Register(mux)
 

@@ -281,9 +281,69 @@ export interface paths {
         put?: never;
         /**
          * Exchange credentials for a session
-         * @description Credential-exchange operation (`contracts/api-1.md#security-override-convention`): authenticates the request from credentials in the body, not a pre-existing session or API key.
+         * @description Credential-exchange operation (`contracts/api-1.md#security-override-convention`, API-090/091): authenticates the request from credentials in the body, not a pre-existing session or API key. On success it sets a host-only session cookie (`security-model.md` SEC-023) and a companion, script-readable CSRF cookie whose value every mutating request must echo in `X-CSRF-Token` (SEC-024). Repeated failures lock the presented credential per source-IP class with exponential backoff (SEC-090, `CREDENTIAL_LOCKED`).
          */
         post: operations["login"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revoke the calling session
+         * @description Revokes the session or API key that authenticated this request (`security-model.md` SEC-020) and expires its cookies. Ordinary authenticated operation — deliberately NOT `security: []`, so a browser caller is subject to the same double-submit CSRF requirement every other mutating route carries (SEC-024) and a cross-site page cannot sign a user out.
+         */
+        post: operations["logout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the calling principal's own session
+         * @description Returns the caller's own principal, effective role, and assurance level — what a console reads on load to decide whether to render the application or the sign-in page.
+         */
+        get: operations["getSession"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Claim an unclaimed workspace by redeeming the one-time setup grant
+         * @description First-boot claim (`security-model.md` SEC-120). The installer generates a one-time `setup`-purpose grant and presents its code; this endpoint is claimable ONLY by redeeming that code, so an installed-but-unclaimed box on a shared network is never first-come-first-served. Redemption is an atomic check-and-consume (SEC-036): of two concurrent claims presenting one code, at most one succeeds and the other is refused `GRANT_ALREADY_REDEEMED`. Credential-exchange operation (API-090/091) — it mints the very first principal on the box, so it cannot require a pre-existing session.
+         */
+        post: operations["claimWorkspace"];
         delete?: never;
         options?: never;
         head?: never;
@@ -443,10 +503,47 @@ export interface components {
             current_revision?: number;
         };
         /**
-         * @description The stable, additive-only machine-readable error registry (`contracts/api-1.md#error-taxonomy`).
+         * @description The stable, additive-only machine-readable error registry (`contracts/api-1.md#error-taxonomy`), plus the codes a sibling contract owns for operations that ride this same `/api/v1` binding. api/1's own registry governs API-011 for api/1's own rules; a sibling contract's Problem carries a `code` from ITS registry, by name — the same reuse-by-name discipline `player/1` PLY-007 applies. The four trailing values below belong to `security-model.md`'s Error taxonomy and appear only on the `auth` operations.
          * @enum {string}
          */
-        ErrorCode: "VALIDATION_FAILED" | "UNAUTHENTICATED" | "FORBIDDEN" | "NOT_FOUND" | "REVISION_CONFLICT" | "IF_MATCH_REQUIRED" | "CURSOR_INVALID" | "SELECTOR_INVALID" | "IDEMPOTENCY_KEY_REUSED" | "IDEMPOTENCY_KEY_IN_PROGRESS" | "EXTERNAL_ID_CONFLICT" | "RATE_LIMITED" | "INTERNAL" | "UNAVAILABLE";
+        ErrorCode: "VALIDATION_FAILED" | "UNAUTHENTICATED" | "FORBIDDEN" | "NOT_FOUND" | "REVISION_CONFLICT" | "IF_MATCH_REQUIRED" | "CURSOR_INVALID" | "SELECTOR_INVALID" | "IDEMPOTENCY_KEY_REUSED" | "IDEMPOTENCY_KEY_IN_PROGRESS" | "EXTERNAL_ID_CONFLICT" | "RATE_LIMITED" | "INTERNAL" | "UNAVAILABLE" | "CREDENTIAL_LOCKED" | "GRANT_EXPIRED" | "GRANT_ALREADY_REDEEMED" | "GRANT_PURPOSE_MISMATCH";
+        /** @description The credentials a login authenticates from (API-091 — carried in the BODY, never as a precondition session). */
+        LoginRequest: {
+            /** @description The login handle the `password` credential is registered under. */
+            identifier: string;
+            /** Format: password */
+            password: string;
+        };
+        /** @description A first-boot claim (SEC-120): the one-time setup code, plus the credential the first owner is choosing. */
+        ClaimRequest: {
+            /** @description The one-time `setup`-purpose grant code the installer presented. At least 128 bits of entropy (SEC-032). */
+            code: string;
+            identifier: string;
+            /** Format: password */
+            password: string;
+        };
+        /** @description The caller's own session. It deliberately carries NO session token: that value rides the HttpOnly cookie and is never readable by the page. `csrf_token` is present only on the responses that MINT a session (login, claim), since it is the double-submit value the client must then echo (SEC-024). */
+        SessionSummary: {
+            principal_id: components["schemas"]["Ulid"];
+            /**
+             * @description The principal kind (`security-model.md` SEC-001).
+             * @enum {string}
+             */
+            kind: "user" | "screen" | "relay" | "pack-service" | "ingest-token" | "system-console";
+            /**
+             * @description The effective role this principal holds (`security-model.md` SEC-010).
+             * @enum {string}
+             */
+            role: "owner" | "admin" | "operator" | "viewer";
+            /**
+             * @description Authenticator Assurance Level (SEC-021/022). A `recovery` session is minted by redeeming a recovery-purpose grant and is restricted until the target principal completes TOTP re-enrolment.
+             * @enum {string}
+             */
+            aal: "standard" | "recovery";
+            session_id: components["schemas"]["Ulid"];
+            /** @description The double-submit CSRF token, returned only when this response minted the session. Echo it in `X-CSRF-Token` on every mutating request (SEC-024). */
+            csrf_token?: string;
+        };
         /** @description A node in the org → site → group → screen tree. */
         ScopeNode: {
             id: components["schemas"]["Ulid"];
@@ -1412,20 +1509,126 @@ export interface operations {
     login: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LoginRequest"];
+            };
+        };
+        responses: {
+            /** @description The session the presented credentials minted. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    /** @description The `session` cookie (HttpOnly, host-only, SameSite) and the `csrf_token` cookie (readable by the page's own script — that readability IS the double-submit mechanism, SEC-024). */
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionSummary"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    logout: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Stub — resource detail intentionally deferred. */
-            200: {
+            /** @description The session was revoked. */
+            204: {
                 headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
                     [name: string]: unknown;
                 };
                 content?: never;
             };
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    getSession: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The calling session. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionSummary"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    claimWorkspace: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ClaimRequest"];
+            };
+        };
+        responses: {
+            /** @description The workspace was claimed; the first owner principal and its session. */
+            201: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    /** @description The `session` and `csrf_token` cookies, as for `login`. */
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionSummary"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description The grant was expired (`GRANT_EXPIRED`), already redeemed (`GRANT_ALREADY_REDEEMED`), or of a purpose that does not match this endpoint (`GRANT_PURPOSE_MISMATCH`) — `security-model.md` SEC-035. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["TooManyRequests"];
         };
     };
     listPrincipals: {

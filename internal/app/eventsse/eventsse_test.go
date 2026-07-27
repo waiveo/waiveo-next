@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maaxton/waiveo-next/internal/app/auth/authtest"
 	"github.com/maaxton/waiveo-next/internal/events"
 )
 
@@ -75,6 +76,25 @@ func autoEnv(id string) events.Envelope {
 // headers, asserts a 200 text/event-stream response, and returns a buffered
 // reader over the live body plus a cancel that tears the connection down (firing
 // the handler's request-context close path). The caller MUST call cancel.
+// testAuth is the one seeded auth fixture every SSE test in this package
+// connects as. The binding authenticates every connection before any stream
+// begins (EVT-110/111/113), so there is no unauthenticated path left to drive;
+// a test exercising the STREAM semantics presents a real credential first. One
+// shared fixture suffices — no test here asserts which principal is connected,
+// only how the stream behaves. The authentication behavior itself is driven by
+// auth_binding_test.go.
+var testAuth = sync.OnceValue(func() *authtest.Fixture {
+	f, err := authtest.New(authtest.Config{})
+	if err != nil {
+		panic("eventsse: seed auth fixture: " + err.Error())
+	}
+	return f
+})
+
+// newTestServer mounts the live SSE handler over hub, authenticated as the
+// shared fixture.
+func newTestServer(hub *Hub) http.Handler { return New(hub, testAuth().Auth) }
+
 func dialSSE(t *testing.T, srv *httptest.Server, query string, header http.Header) (*bufio.Reader, context.CancelFunc) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -88,6 +108,10 @@ func dialSSE(t *testing.T, srv *httptest.Server, query string, header http.Heade
 		t.Fatalf("building request: %v", err)
 	}
 	req.Header.Set("Accept", "text/event-stream")
+	// EVT-111: a browser's native EventSource cannot set custom headers, so the
+	// SSE binding authenticates by the session cookie — which is what this dial
+	// presents.
+	testAuth().Authorize(req)
 	for k, vs := range header {
 		for _, v := range vs {
 			req.Header.Set(k, v)
@@ -171,7 +195,7 @@ func TestSSE_FreshConnectionStreamsOnlyLiveAppends(t *testing.T) {
 	log.Append(autoEnv(idB))
 	hub := NewHub(log)
 
-	srv := httptest.NewServer(New(hub))
+	srv := httptest.NewServer(newTestServer(hub))
 	defer srv.Close()
 
 	br, closeConn := dialSSE(t, srv, "", nil)
@@ -207,7 +231,7 @@ func TestSSE_ResumeFromStreamsBacklogThenLive(t *testing.T) {
 	log.Append(autoEnv(idC))
 	hub := NewHub(log)
 
-	srv := httptest.NewServer(New(hub))
+	srv := httptest.NewServer(newTestServer(hub))
 	defer srv.Close()
 
 	br, closeConn := dialSSE(t, srv, "resume_from="+idA, nil)
@@ -238,7 +262,7 @@ func TestSSE_LastEventIDTakesPrecedenceOverResumeFromQuery(t *testing.T) {
 	log.Append(autoEnv(idC))
 	hub := NewHub(log)
 
-	srv := httptest.NewServer(New(hub))
+	srv := httptest.NewServer(newTestServer(hub))
 	defer srv.Close()
 
 	// query says resume from idA (would replay idB, idC); Last-Event-ID says idB,
@@ -258,10 +282,11 @@ func TestSSE_LastEventIDTakesPrecedenceOverResumeFromQuery(t *testing.T) {
 // (EVT-134) — not treated as an omitted (fresh) resume.
 func TestSSE_MalformedResumeFromRejectedBeforeStream(t *testing.T) {
 	log := events.NewEventLog(0)
-	h := New(NewHub(log))
+	h := newTestServer(NewHub(log))
 
 	req := httptest.NewRequest(http.MethodGet, "/events/v1?resume_from=not_a_ulid", nil)
 	req.Header.Set("Accept", "text/event-stream")
+	testAuth().Authorize(req)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -297,7 +322,7 @@ func TestSSE_AgedOutResumeFromEmitsGapFirst(t *testing.T) {
 	// retained now: idB, idC; oldest = idB.
 	hub := NewHub(log)
 
-	srv := httptest.NewServer(New(hub))
+	srv := httptest.NewServer(newTestServer(hub))
 	defer srv.Close()
 
 	br, closeConn := dialSSE(t, srv, "resume_from="+idA, nil)
@@ -342,7 +367,7 @@ func TestSSE_MultipleSubscribersEachReceiveLiveAppend(t *testing.T) {
 	log := events.NewEventLog(0)
 	hub := NewHub(log)
 
-	srv := httptest.NewServer(New(hub))
+	srv := httptest.NewServer(newTestServer(hub))
 	defer srv.Close()
 
 	br1, close1 := dialSSE(t, srv, "", nil)
@@ -373,7 +398,7 @@ func TestSSE_ConcurrentAppendsAndReadsAreRaceFree(t *testing.T) {
 	log := events.NewEventLog(0)
 	hub := NewHub(log)
 
-	srv := httptest.NewServer(New(hub))
+	srv := httptest.NewServer(newTestServer(hub))
 	defer srv.Close()
 
 	br, closeConn := dialSSE(t, srv, "", nil)
@@ -459,7 +484,7 @@ func TestSSE_FreshDeliversEveryAppendAfterConnect(t *testing.T) {
 	log.Append(autoEnv(idA)) // pre-existing — a fresh subscriber must NOT replay it
 	hub := NewHub(log)
 
-	srv := httptest.NewServer(New(hub))
+	srv := httptest.NewServer(newTestServer(hub))
 	defer srv.Close()
 
 	br, closeConn := dialSSE(t, srv, "", nil)
@@ -578,7 +603,7 @@ func TestHub_CloseEndsLiveSubscribers(t *testing.T) {
 	log := events.NewEventLog(0)
 	hub := NewHub(log)
 
-	srv := httptest.NewServer(New(hub))
+	srv := httptest.NewServer(newTestServer(hub))
 	defer srv.Close()
 
 	br, closeConn := dialSSE(t, srv, "", nil)

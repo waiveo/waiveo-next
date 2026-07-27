@@ -24,7 +24,11 @@ servers:
     description: Same-origin deployment — the app serves the web UI and this API on one origin; the CLI and MCP server address it over the network binding.
 tags:
   - name: auth
-    description: Session and API-key issuance/revocation. Path stub.
+    description: >-
+      Session issuance and revocation, and the first-boot workspace claim.
+      `login` and `setup` are credential-exchange operations declaring
+      `security: []` (API-090/091); `logout` and `session` are ordinary
+      authenticated operations.
   - name: principals
     description: Users, API-key clients, and internal service principals. Path stub.
   - name: scope-nodes
@@ -729,16 +733,150 @@ paths:
       summary: Exchange credentials for a session
       description: >-
         Credential-exchange operation
-        (`contracts/api-1.md#security-override-convention`): authenticates
-        the request from credentials in the body, not a pre-existing
-        session or API key.
+        (`contracts/api-1.md#security-override-convention`, API-090/091):
+        authenticates the request from credentials in the body, not a
+        pre-existing session or API key. On success it sets a host-only
+        session cookie (`security-model.md` SEC-023) and a companion,
+        script-readable CSRF cookie whose value every mutating request must
+        echo in `X-CSRF-Token` (SEC-024). Repeated failures lock the
+        presented credential per source-IP class with exponential backoff
+        (SEC-090, `CREDENTIAL_LOCKED`).
       tags: [auth]
       security: []
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
       responses:
         "200":
-          description: Stub — resource detail intentionally deferred.
+          description: The session the presented credentials minted.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+            Set-Cookie:
+              description: >-
+                The `session` cookie (HttpOnly, host-only, SameSite) and the
+                `csrf_token` cookie (readable by the page's own script — that
+                readability IS the double-submit mechanism, SEC-024).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionSummary"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+  /auth/logout:
+    post:
+      operationId: logout
+      summary: Revoke the calling session
+      description: >-
+        Revokes the session or API key that authenticated this request
+        (`security-model.md` SEC-020) and expires its cookies. Ordinary
+        authenticated operation — deliberately NOT `security: []`, so a
+        browser caller is subject to the same double-submit CSRF requirement
+        every other mutating route carries (SEC-024) and a cross-site page
+        cannot sign a user out.
+      tags: [auth]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "204":
+          description: The session was revoked.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /auth/session:
+    get:
+      operationId: getSession
+      summary: Read the calling principal's own session
+      description: >-
+        Returns the caller's own principal, effective role, and assurance
+        level — what a console reads on load to decide whether to render the
+        application or the sign-in page.
+      tags: [auth, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The calling session.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /auth/setup:
+    post:
+      operationId: claimWorkspace
+      summary: Claim an unclaimed workspace by redeeming the one-time setup grant
+      description: >-
+        First-boot claim (`security-model.md` SEC-120). The installer
+        generates a one-time `setup`-purpose grant and presents its code;
+        this endpoint is claimable ONLY by redeeming that code, so an
+        installed-but-unclaimed box on a shared network is never
+        first-come-first-served. Redemption is an atomic check-and-consume
+        (SEC-036): of two concurrent claims presenting one code, at most one
+        succeeds and the other is refused `GRANT_ALREADY_REDEEMED`.
+        Credential-exchange operation (API-090/091) — it mints the very first
+        principal on the box, so it cannot require a pre-existing session.
+      tags: [auth]
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClaimRequest"
+      responses:
+        "201":
+          description: The workspace was claimed; the first owner principal and its session.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+            Set-Cookie:
+              description: The `session` and `csrf_token` cookies, as for `login`.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: >-
+            The grant was expired (`GRANT_EXPIRED`), already redeemed
+            (`GRANT_ALREADY_REDEEMED`), or of a purpose that does not match
+            this endpoint (`GRANT_PURPOSE_MISMATCH`) — `security-model.md`
+            SEC-035.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
   /principals:
     get:
       operationId: listPrincipals
@@ -1059,7 +1197,15 @@ components:
 
     ErrorCode:
       type: string
-      description: The stable, additive-only machine-readable error registry (`contracts/api-1.md#error-taxonomy`).
+      description: >-
+        The stable, additive-only machine-readable error registry
+        (`contracts/api-1.md#error-taxonomy`), plus the codes a sibling
+        contract owns for operations that ride this same `/api/v1` binding.
+        api/1's own registry governs API-011 for api/1's own rules; a sibling
+        contract's Problem carries a `code` from ITS registry, by name — the
+        same reuse-by-name discipline `player/1` PLY-007 applies. The four
+        trailing values below belong to `security-model.md`'s Error taxonomy
+        and appear only on the `auth` operations.
       enum:
         - VALIDATION_FAILED
         - UNAUTHENTICATED
@@ -1075,6 +1221,86 @@ components:
         - RATE_LIMITED
         - INTERNAL
         - UNAVAILABLE
+        - CREDENTIAL_LOCKED
+        - GRANT_EXPIRED
+        - GRANT_ALREADY_REDEEMED
+        - GRANT_PURPOSE_MISMATCH
+
+    LoginRequest:
+      type: object
+      description: >-
+        The credentials a login authenticates from (API-091 — carried in the
+        BODY, never as a precondition session).
+      required: [identifier, password]
+      additionalProperties: false
+      properties:
+        identifier:
+          type: string
+          description: The login handle the `password` credential is registered under.
+          minLength: 1
+        password:
+          type: string
+          format: password
+          minLength: 1
+
+    ClaimRequest:
+      type: object
+      description: >-
+        A first-boot claim (SEC-120): the one-time setup code, plus the
+        credential the first owner is choosing.
+      required: [code, identifier, password]
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+          description: >-
+            The one-time `setup`-purpose grant code the installer presented.
+            At least 128 bits of entropy (SEC-032).
+          minLength: 1
+        identifier:
+          type: string
+          minLength: 1
+        password:
+          type: string
+          format: password
+          minLength: 1
+
+    SessionSummary:
+      type: object
+      description: >-
+        The caller's own session. It deliberately carries NO session token:
+        that value rides the HttpOnly cookie and is never readable by the
+        page. `csrf_token` is present only on the responses that MINT a
+        session (login, claim), since it is the double-submit value the client
+        must then echo (SEC-024).
+      required: [principal_id, kind, role, aal, session_id]
+      additionalProperties: false
+      properties:
+        principal_id:
+          $ref: "#/components/schemas/Ulid"
+        kind:
+          type: string
+          description: The principal kind (`security-model.md` SEC-001).
+          enum: [user, screen, relay, pack-service, ingest-token, system-console]
+        role:
+          type: string
+          description: The effective role this principal holds (`security-model.md` SEC-010).
+          enum: [owner, admin, operator, viewer]
+        aal:
+          type: string
+          description: >-
+            Authenticator Assurance Level (SEC-021/022). A `recovery` session
+            is minted by redeeming a recovery-purpose grant and is restricted
+            until the target principal completes TOTP re-enrolment.
+          enum: [standard, recovery]
+        session_id:
+          $ref: "#/components/schemas/Ulid"
+        csrf_token:
+          type: string
+          description: >-
+            The double-submit CSRF token, returned only when this response
+            minted the session. Echo it in `X-CSRF-Token` on every mutating
+            request (SEC-024).
 
     ScopeNode:
       type: object

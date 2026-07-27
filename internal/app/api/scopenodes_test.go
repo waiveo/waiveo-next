@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/maaxton/waiveo-next/internal/app/api"
+	"github.com/maaxton/waiveo-next/internal/app/auth/authtest"
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/datamodel"
 	"github.com/maaxton/waiveo-next/internal/feeder/origin"
@@ -69,6 +70,25 @@ type testEnv struct {
 	store       *store.Store
 	content     *origin.Store
 	contentBase string
+	// auth is the seeded principal every request in this package is driven AS.
+	// api.New requires an authenticator and refuses a request whose principal
+	// cannot be resolved (SEC-005), so these tests hold a real credential rather
+	// than a bypass — which is what keeps them exercising the handler that
+	// actually ships.
+	auth *authtest.Fixture
+}
+
+// newAuthFixture seeds one owner principal with a live session, or fails the
+// test. Each env gets its own so a test that revokes or re-binds cannot leak
+// into another.
+func newAuthFixture(t *testing.T) *authtest.Fixture {
+	t.Helper()
+	f, err := authtest.New(authtest.Config{NowMs: func() int64 { return fixedNowMs }})
+	if err != nil {
+		t.Fatalf("authtest.New: %v", err)
+	}
+	t.Cleanup(f.Close)
+	return f
 }
 
 // testContentBase is the fixed content-origin base URL the api-layer tests
@@ -98,9 +118,10 @@ func newEnvWithContent(t *testing.T, content *origin.Store) *testEnv {
 	// guarantees each successive create mints a STRICTLY greater id even within
 	// the same millisecond, preserving the "creation order == id order" invariant
 	// several list/pagination tests depend on.
-	ts := httptest.NewServer(api.New(st, idem, clock, ulid.Monotonic(), content, testContentBase))
+	fixture := newAuthFixture(t)
+	ts := httptest.NewServer(api.New(st, idem, clock, ulid.Monotonic(), content, testContentBase, fixture.Auth))
 	t.Cleanup(ts.Close)
-	return &testEnv{ts: ts, store: st, content: content, contentBase: testContentBase}
+	return &testEnv{ts: ts, store: st, content: content, contentBase: testContentBase, auth: fixture}
 }
 
 func (e *testEnv) do(t *testing.T, method, path string, body []byte, headers map[string]string) (*http.Response, []byte) {
@@ -116,6 +137,9 @@ func (e *testEnv) do(t *testing.T, method, path string, body []byte, headers map
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
+	// The env's real session cookie and CSRF token, attached centrally so no
+	// individual test carries credentials that are not part of what it asserts.
+	e.auth.Authorize(req)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("do %s %s: %v", method, path, err)

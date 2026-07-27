@@ -21,11 +21,19 @@
 // EVT-103/104 line framing (events.SSEEventLine / events.SSEGapLine), and the
 // api/1 Problem shape (apihttp.WriteProblem) are all called, not rebuilt.
 //
+// Binding authentication (EVT-110–114) is enforced by internal/app/auth's
+// middleware, mounted here rather than by the caller so the stream cannot be
+// served without it: a connection is authenticated by the session cookie or an
+// `Authorization: Bearer` API key and REFUSED BEFORE any upgrade or stream
+// begins (EVT-113), and a revocation tears the live stream down rather than
+// merely blocking the next connect (EVT-114 — see the revocation select in the
+// live loop below).
+//
 // Deferred, documented seams: the WebSocket binding (Go stdlib has no websocket;
 // the WS frame logic in internal/events/delivery.go is already conformance-driven
-// but a live WS server is a dependency decision), and binding authentication
-// (EVT-110–114) + the roles-based visible set (EVT-120), which land with the
-// security model — the POC endpoint is unauthenticated.
+// but a live WS server is a dependency decision), and the roles-based visible set
+// (EVT-120), which narrows WHICH events a subscriber sees rather than whether it
+// may subscribe at all.
 package eventsse
 
 import (
@@ -33,6 +41,7 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/maaxton/waiveo-next/internal/app/auth"
 	"github.com/maaxton/waiveo-next/internal/events"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 )
@@ -200,6 +209,12 @@ func (sub *Subscription) close() {
 // Hub's per-subscriber fan-out.
 type server struct {
 	hub *Hub
+	// authn authenticates every connection before any upgrade or stream begins
+	// (EVT-110/111/113). It is a required constructor argument rather than an
+	// option: an event stream carries platform state, and a binding that could
+	// be constructed without an authenticator is a binding that will eventually
+	// be constructed without one.
+	authn *auth.Authenticator
 	// logf records a non-fatal streaming hiccup (an envelope that fails to
 	// serialize, EVT-103) — it defaults to the stdlib logger and is a field so a
 	// corrupt frame is logged and skipped, never emitted.
@@ -213,8 +228,8 @@ type server struct {
 // so new events push live to all of them (EVT-100). The same hub instance is
 // passed to eventingest.New as its EventSink, which is what wires the writer's
 // Append to this reader's wake.
-func New(hub *Hub) http.Handler {
-	return &server{hub: hub, logf: stdlog.Printf}
+func New(hub *Hub, authn *auth.Authenticator) http.Handler {
+	return &server{hub: hub, authn: authn, logf: stdlog.Printf}
 }
 
 // ServeHTTP handles an SSE subscribe (EVT-100–105, 130–144). It selects the SSE
@@ -228,6 +243,21 @@ func New(hub *Hub) http.Handler {
 // (EVT-134).
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	traceID := apihttp.TraceID(r)
+
+	// EVT-113: authentication is resolved BEFORE the binding is selected and
+	// before any header is written, "never with a WS/SSE-level frame, since no
+	// session has been established yet to frame one over". A refusal here is an
+	// ordinary api/1 Problem with events/1's AUTH_REQUIRED code.
+	principal, ok := s.authn.Authenticate(w, r, auth.EventsCodes)
+	if !ok {
+		return
+	}
+
+	// EVT-114: register for this session's revocation BEFORE the stream opens,
+	// so a revocation racing the handshake still tears the stream down rather
+	// than slipping into the window between "authenticated" and "watching".
+	revoked, unwatch := s.authn.Revocations().Watch(principal.SessionID)
+	defer unwatch()
 
 	if r.Method != http.MethodGet {
 		apihttp.WriteProblem(w, r, traceID, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method Not Allowed")
@@ -319,6 +349,12 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			return
 		case <-s.hub.done:
+			return
+		case <-revoked:
+			// EVT-114: the credential that authenticated this stream was
+			// revoked. Ending the stream is the whole requirement — refusing
+			// the NEXT connect would leave this already-open pipe delivering
+			// platform state to a revoked credential indefinitely.
 			return
 		case <-sub.wake():
 			// Drain the not-yet-delivered tail. If the subscriber lagged far enough

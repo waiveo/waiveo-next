@@ -25,7 +25,7 @@ func TestWire_TelemetryPushDrivesLiveSSE(t *testing.T) {
 	hub := NewHub(log)
 
 	// Reader and writer share one Hub — the Hub IS the wiring seam.
-	sseSrv := httptest.NewServer(New(hub))
+	sseSrv := httptest.NewServer(newTestServer(hub))
 	defer sseSrv.Close()
 	ingestSrv := httptest.NewServer(eventingest.New(hub, siteScope, ulidSeq()))
 	defer ingestSrv.Close()

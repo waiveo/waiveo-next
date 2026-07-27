@@ -138,9 +138,13 @@ func (e EntityCommandErrorCode) Valid() bool {
 
 // Defines values for ErrorCode.
 const (
+	ErrorCodeCREDENTIALLOCKED         ErrorCode = "CREDENTIAL_LOCKED"
 	ErrorCodeCURSORINVALID            ErrorCode = "CURSOR_INVALID"
 	ErrorCodeEXTERNALIDCONFLICT       ErrorCode = "EXTERNAL_ID_CONFLICT"
 	ErrorCodeFORBIDDEN                ErrorCode = "FORBIDDEN"
+	ErrorCodeGRANTALREADYREDEEMED     ErrorCode = "GRANT_ALREADY_REDEEMED"
+	ErrorCodeGRANTEXPIRED             ErrorCode = "GRANT_EXPIRED"
+	ErrorCodeGRANTPURPOSEMISMATCH     ErrorCode = "GRANT_PURPOSE_MISMATCH"
 	ErrorCodeIDEMPOTENCYKEYINPROGRESS ErrorCode = "IDEMPOTENCY_KEY_IN_PROGRESS"
 	ErrorCodeIDEMPOTENCYKEYREUSED     ErrorCode = "IDEMPOTENCY_KEY_REUSED"
 	ErrorCodeIFMATCHREQUIRED          ErrorCode = "IF_MATCH_REQUIRED"
@@ -157,11 +161,19 @@ const (
 // Valid indicates whether the value is a known member of the ErrorCode enum.
 func (e ErrorCode) Valid() bool {
 	switch e {
+	case ErrorCodeCREDENTIALLOCKED:
+		return true
 	case ErrorCodeCURSORINVALID:
 		return true
 	case ErrorCodeEXTERNALIDCONFLICT:
 		return true
 	case ErrorCodeFORBIDDEN:
+		return true
+	case ErrorCodeGRANTALREADYREDEEMED:
+		return true
+	case ErrorCodeGRANTEXPIRED:
+		return true
+	case ErrorCodeGRANTPURPOSEMISMATCH:
 		return true
 	case ErrorCodeIDEMPOTENCYKEYINPROGRESS:
 		return true
@@ -289,6 +301,78 @@ func (e ScopeNodeCreateKind) Valid() bool {
 	}
 }
 
+// Defines values for SessionSummaryAal.
+const (
+	Recovery SessionSummaryAal = "recovery"
+	Standard SessionSummaryAal = "standard"
+)
+
+// Valid indicates whether the value is a known member of the SessionSummaryAal enum.
+func (e SessionSummaryAal) Valid() bool {
+	switch e {
+	case Recovery:
+		return true
+	case Standard:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SessionSummaryKind.
+const (
+	IngestToken   SessionSummaryKind = "ingest-token"
+	PackService   SessionSummaryKind = "pack-service"
+	Relay         SessionSummaryKind = "relay"
+	Screen        SessionSummaryKind = "screen"
+	SystemConsole SessionSummaryKind = "system-console"
+	User          SessionSummaryKind = "user"
+)
+
+// Valid indicates whether the value is a known member of the SessionSummaryKind enum.
+func (e SessionSummaryKind) Valid() bool {
+	switch e {
+	case IngestToken:
+		return true
+	case PackService:
+		return true
+	case Relay:
+		return true
+	case Screen:
+		return true
+	case SystemConsole:
+		return true
+	case User:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SessionSummaryRole.
+const (
+	Admin    SessionSummaryRole = "admin"
+	Operator SessionSummaryRole = "operator"
+	Owner    SessionSummaryRole = "owner"
+	Viewer   SessionSummaryRole = "viewer"
+)
+
+// Valid indicates whether the value is a known member of the SessionSummaryRole enum.
+func (e SessionSummaryRole) Valid() bool {
+	switch e {
+	case Admin:
+		return true
+	case Operator:
+		return true
+	case Owner:
+		return true
+	case Viewer:
+		return true
+	default:
+		return false
+	}
+}
+
 // Automation The management-API resource envelope around a rules/1 Rule. `mode`, `max`, `triggers`, `conditions`, and `actions` are exactly rules/1's own vocabulary (rules/1 Wire shapes); the remaining fields are this API's own resource envelope (identity, placement, labels, revision).
 type Automation struct {
 	// Actions rules/1's Action vocabulary — full shape defined there, not restated here.
@@ -395,6 +479,14 @@ type AutomationUpdate struct {
 // AutomationUpdateMode defines model for AutomationUpdate.Mode.
 type AutomationUpdateMode string
 
+// ClaimRequest A first-boot claim (SEC-120): the one-time setup code, plus the credential the first owner is choosing.
+type ClaimRequest struct {
+	// Code The one-time `setup`-purpose grant code the installer presented. At least 128 bits of entropy (SEC-032).
+	Code       string `json:"code"`
+	Identifier string `json:"identifier"`
+	Password   string `json:"password"`
+}
+
 // Cursor An opaque, URL-safe continuation token. `null` signals no further rows. Never constructed, parsed, or compared for meaning by a client.
 type Cursor = *string
 
@@ -488,7 +580,7 @@ type EntityListResponse struct {
 	Items  []Entity `json:"items"`
 }
 
-// ErrorCode The stable, additive-only machine-readable error registry (`contracts/api-1.md#error-taxonomy`).
+// ErrorCode The stable, additive-only machine-readable error registry (`contracts/api-1.md#error-taxonomy`), plus the codes a sibling contract owns for operations that ride this same `/api/v1` binding. api/1's own registry governs API-011 for api/1's own rules; a sibling contract's Problem carries a `code` from ITS registry, by name — the same reuse-by-name discipline `player/1` PLY-007 applies. The four trailing values below belong to `security-model.md`'s Error taxonomy and appear only on the `auth` operations.
 type ErrorCode string
 
 // Job The accepted-work resource returned by 202 Accepted. A client polls this resource (`GET /jobs/{job_id}`) until `state` reaches a terminal value (`succeeded`, `failed`, or `partial`).
@@ -529,9 +621,16 @@ type Label struct {
 // LabelMap A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
 type LabelMap map[string]string
 
+// LoginRequest The credentials a login authenticates from (API-091 — carried in the BODY, never as a precondition session).
+type LoginRequest struct {
+	// Identifier The login handle the `password` credential is registered under.
+	Identifier string `json:"identifier"`
+	Password   string `json:"password"`
+}
+
 // Problem RFC 9457 problem+json, extended with `code` (this contract's machine-readable error registry) and `trace_id`. `code` is the discriminant a client asserts on; `title`/`detail` are for humans.
 type Problem struct {
-	// Code The stable, additive-only machine-readable error registry (`contracts/api-1.md#error-taxonomy`).
+	// Code The stable, additive-only machine-readable error registry (`contracts/api-1.md#error-taxonomy`), plus the codes a sibling contract owns for operations that ride this same `/api/v1` binding. api/1's own registry governs API-011 for api/1's own rules; a sibling contract's Problem carries a `code` from ITS registry, by name — the same reuse-by-name discipline `player/1` PLY-007 applies. The four trailing values below belong to `security-model.md`'s Error taxonomy and appear only on the `auth` operations.
 	Code ErrorCode `json:"code"`
 
 	// CurrentRevision Present only when `code` is REVISION_CONFLICT — the resource's current revision, so the client can re-read and retry.
@@ -623,6 +722,36 @@ type ScopeNodeUpdate struct {
 	Tz         *string  `json:"tz,omitempty"`
 }
 
+// SessionSummary The caller's own session. It deliberately carries NO session token: that value rides the HttpOnly cookie and is never readable by the page. `csrf_token` is present only on the responses that MINT a session (login, claim), since it is the double-submit value the client must then echo (SEC-024).
+type SessionSummary struct {
+	// Aal Authenticator Assurance Level (SEC-021/022). A `recovery` session is minted by redeeming a recovery-purpose grant and is restricted until the target principal completes TOTP re-enrolment.
+	Aal SessionSummaryAal `json:"aal"`
+
+	// CsrfToken The double-submit CSRF token, returned only when this response minted the session. Echo it in `X-CSRF-Token` on every mutating request (SEC-024).
+	CsrfToken *string `json:"csrf_token,omitempty"`
+
+	// Kind The principal kind (`security-model.md` SEC-001).
+	Kind SessionSummaryKind `json:"kind"`
+
+	// PrincipalId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	PrincipalId Ulid `json:"principal_id"`
+
+	// Role The effective role this principal holds (`security-model.md` SEC-010).
+	Role SessionSummaryRole `json:"role"`
+
+	// SessionId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	SessionId Ulid `json:"session_id"`
+}
+
+// SessionSummaryAal Authenticator Assurance Level (SEC-021/022). A `recovery` session is minted by redeeming a recovery-purpose grant and is restricted until the target principal completes TOTP re-enrolment.
+type SessionSummaryAal string
+
+// SessionSummaryKind The principal kind (`security-model.md` SEC-001).
+type SessionSummaryKind string
+
+// SessionSummaryRole The effective role this principal holds (`security-model.md` SEC-010).
+type SessionSummaryRole string
+
 // TraceId A ULID- or UUID-class trace identifier, 20-36 characters, restricted charset.
 type TraceId = string
 
@@ -691,6 +820,30 @@ type apiKeyContextKey string
 
 // sessionCookieContextKey is the context key for SessionCookie security scheme
 type sessionCookieContextKey string
+
+// LoginParams defines parameters for Login.
+type LoginParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// LogoutParams defines parameters for Logout.
+type LogoutParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// GetSessionParams defines parameters for GetSession.
+type GetSessionParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// ClaimWorkspaceParams defines parameters for ClaimWorkspace.
+type ClaimWorkspaceParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
 
 // ListAutomationsParams defines parameters for ListAutomations.
 type ListAutomationsParams struct {
@@ -875,6 +1028,12 @@ type ExportWorkspaceParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// LoginJSONRequestBody defines body for Login for application/json ContentType.
+type LoginJSONRequestBody = LoginRequest
+
+// ClaimWorkspaceJSONRequestBody defines body for ClaimWorkspace for application/json ContentType.
+type ClaimWorkspaceJSONRequestBody = ClaimRequest
+
 // CreateAutomationJSONRequestBody defines body for CreateAutomation for application/json ContentType.
 type CreateAutomationJSONRequestBody = AutomationCreate
 
@@ -969,8 +1128,21 @@ func WithRequestEditorFn(fn RequestEditorFn) ClientOption {
 
 // The interface specification for the client above.
 type ClientInterface interface {
-	// Login request
-	Login(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// LoginWithBody request with any body
+	LoginWithBody(ctx context.Context, params *LoginParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	Login(ctx context.Context, params *LoginParams, body LoginJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// Logout request
+	Logout(ctx context.Context, params *LogoutParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetSession request
+	GetSession(ctx context.Context, params *GetSessionParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ClaimWorkspaceWithBody request with any body
+	ClaimWorkspaceWithBody(ctx context.Context, params *ClaimWorkspaceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	ClaimWorkspace(ctx context.Context, params *ClaimWorkspaceParams, body ClaimWorkspaceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListAutomations request
 	ListAutomations(ctx context.Context, params *ListAutomationsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -1056,8 +1228,68 @@ type ClientInterface interface {
 	ExportWorkspace(ctx context.Context, params *ExportWorkspaceParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 }
 
-func (c *Client) Login(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewLoginRequest(c.Server)
+func (c *Client) LoginWithBody(ctx context.Context, params *LoginParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewLoginRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) Login(ctx context.Context, params *LoginParams, body LoginJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewLoginRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) Logout(ctx context.Context, params *LogoutParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewLogoutRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetSession(ctx context.Context, params *GetSessionParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetSessionRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ClaimWorkspaceWithBody(ctx context.Context, params *ClaimWorkspaceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewClaimWorkspaceRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ClaimWorkspace(ctx context.Context, params *ClaimWorkspaceParams, body ClaimWorkspaceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewClaimWorkspaceRequest(c.Server, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -1428,8 +1660,19 @@ func (c *Client) ExportWorkspace(ctx context.Context, params *ExportWorkspacePar
 	return c.Client.Do(req)
 }
 
-// NewLoginRequest generates requests for Login
-func NewLoginRequest(server string) (*http.Request, error) {
+// NewLoginRequest calls the generic Login builder with application/json body
+func NewLoginRequest(server string, params *LoginParams, body LoginJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewLoginRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewLoginRequestWithBody generates requests for Login with any type of body
+func NewLoginRequestWithBody(server string, params *LoginParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -1447,9 +1690,165 @@ func NewLoginRequest(server string) (*http.Request, error) {
 		return nil, err
 	}
 
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewLogoutRequest generates requests for Logout
+func NewLogoutRequest(server string, params *LogoutParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/auth/logout")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
 	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
 	if err != nil {
 		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewGetSessionRequest generates requests for GetSession
+func NewGetSessionRequest(server string, params *GetSessionParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/auth/session")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewClaimWorkspaceRequest calls the generic ClaimWorkspace builder with application/json body
+func NewClaimWorkspaceRequest(server string, params *ClaimWorkspaceParams, body ClaimWorkspaceJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewClaimWorkspaceRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewClaimWorkspaceRequestWithBody generates requests for ClaimWorkspace with any type of body
+func NewClaimWorkspaceRequestWithBody(server string, params *ClaimWorkspaceParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/auth/setup")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
 	}
 
 	return req, nil
@@ -2889,8 +3288,21 @@ func WithBaseURL(baseURL string) ClientOption {
 
 // ClientWithResponsesInterface is the interface specification for the client with responses above.
 type ClientWithResponsesInterface interface {
-	// LoginWithResponse request
-	LoginWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*LoginResponse, error)
+	// LoginWithBodyWithResponse request with any body
+	LoginWithBodyWithResponse(ctx context.Context, params *LoginParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*LoginResponse, error)
+
+	LoginWithResponse(ctx context.Context, params *LoginParams, body LoginJSONRequestBody, reqEditors ...RequestEditorFn) (*LoginResponse, error)
+
+	// LogoutWithResponse request
+	LogoutWithResponse(ctx context.Context, params *LogoutParams, reqEditors ...RequestEditorFn) (*LogoutResponse, error)
+
+	// GetSessionWithResponse request
+	GetSessionWithResponse(ctx context.Context, params *GetSessionParams, reqEditors ...RequestEditorFn) (*GetSessionResponse, error)
+
+	// ClaimWorkspaceWithBodyWithResponse request with any body
+	ClaimWorkspaceWithBodyWithResponse(ctx context.Context, params *ClaimWorkspaceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ClaimWorkspaceResponse, error)
+
+	ClaimWorkspaceWithResponse(ctx context.Context, params *ClaimWorkspaceParams, body ClaimWorkspaceJSONRequestBody, reqEditors ...RequestEditorFn) (*ClaimWorkspaceResponse, error)
 
 	// ListAutomationsWithResponse request
 	ListAutomationsWithResponse(ctx context.Context, params *ListAutomationsParams, reqEditors ...RequestEditorFn) (*ListAutomationsResponse, error)
@@ -2979,7 +3391,10 @@ type ClientWithResponsesInterface interface {
 type LoginResponse struct {
 	Body                      []byte
 	HTTPResponse              *http.Response
+	JSON200                   *SessionSummary
 	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON422 *UnprocessableContent
+	ApplicationproblemJSON429 *TooManyRequests
 }
 
 // Status returns HTTPResponse.Status
@@ -3000,6 +3415,103 @@ func (r LoginResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r LoginResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type LogoutResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r LogoutResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r LogoutResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r LogoutResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetSessionResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *SessionSummary
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r GetSessionResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetSessionResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetSessionResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ClaimWorkspaceResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON201                   *SessionSummary
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Problem
+	ApplicationproblemJSON422 *UnprocessableContent
+	ApplicationproblemJSON429 *TooManyRequests
+}
+
+// Status returns HTTPResponse.Status
+func (r ClaimWorkspaceResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ClaimWorkspaceResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ClaimWorkspaceResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -3773,13 +4285,56 @@ func (r ExportWorkspaceResponse) ContentType() string {
 	return ""
 }
 
-// LoginWithResponse request returning *LoginResponse
-func (c *ClientWithResponses) LoginWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*LoginResponse, error) {
-	rsp, err := c.Login(ctx, reqEditors...)
+// LoginWithBodyWithResponse request with arbitrary body returning *LoginResponse
+func (c *ClientWithResponses) LoginWithBodyWithResponse(ctx context.Context, params *LoginParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*LoginResponse, error) {
+	rsp, err := c.LoginWithBody(ctx, params, contentType, body, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
 	return ParseLoginResponse(rsp)
+}
+
+func (c *ClientWithResponses) LoginWithResponse(ctx context.Context, params *LoginParams, body LoginJSONRequestBody, reqEditors ...RequestEditorFn) (*LoginResponse, error) {
+	rsp, err := c.Login(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseLoginResponse(rsp)
+}
+
+// LogoutWithResponse request returning *LogoutResponse
+func (c *ClientWithResponses) LogoutWithResponse(ctx context.Context, params *LogoutParams, reqEditors ...RequestEditorFn) (*LogoutResponse, error) {
+	rsp, err := c.Logout(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseLogoutResponse(rsp)
+}
+
+// GetSessionWithResponse request returning *GetSessionResponse
+func (c *ClientWithResponses) GetSessionWithResponse(ctx context.Context, params *GetSessionParams, reqEditors ...RequestEditorFn) (*GetSessionResponse, error) {
+	rsp, err := c.GetSession(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetSessionResponse(rsp)
+}
+
+// ClaimWorkspaceWithBodyWithResponse request with arbitrary body returning *ClaimWorkspaceResponse
+func (c *ClientWithResponses) ClaimWorkspaceWithBodyWithResponse(ctx context.Context, params *ClaimWorkspaceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ClaimWorkspaceResponse, error) {
+	rsp, err := c.ClaimWorkspaceWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseClaimWorkspaceResponse(rsp)
+}
+
+func (c *ClientWithResponses) ClaimWorkspaceWithResponse(ctx context.Context, params *ClaimWorkspaceParams, body ClaimWorkspaceJSONRequestBody, reqEditors ...RequestEditorFn) (*ClaimWorkspaceResponse, error) {
+	rsp, err := c.ClaimWorkspace(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseClaimWorkspaceResponse(rsp)
 }
 
 // ListAutomationsWithResponse request returning *ListAutomationsResponse
@@ -4059,12 +4614,160 @@ func ParseLoginResponse(rsp *http.Response) (*LoginResponse, error) {
 	}
 
 	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest SessionSummary
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
 		var dest Unauthorized
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}
 		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseLogoutResponse parses an HTTP response from a LogoutWithResponse call
+func ParseLogoutResponse(rsp *http.Response) (*LogoutResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &LogoutResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetSessionResponse parses an HTTP response from a GetSessionWithResponse call
+func ParseGetSessionResponse(rsp *http.Response) (*GetSessionResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetSessionResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest SessionSummary
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseClaimWorkspaceResponse parses an HTTP response from a ClaimWorkspaceWithResponse call
+func ParseClaimWorkspaceResponse(rsp *http.Response) (*ClaimWorkspaceResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ClaimWorkspaceResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest SessionSummary
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Problem
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
 
 	}
 

@@ -52,10 +52,12 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/maaxton/waiveo-next/conformance/drivers/corpus"
 	"github.com/maaxton/waiveo-next/conformance/drivers/report"
+	"github.com/maaxton/waiveo-next/internal/app/auth/authtest"
 	"github.com/maaxton/waiveo-next/internal/app/eventingest"
 	"github.com/maaxton/waiveo-next/internal/app/eventsse"
 	"github.com/maaxton/waiveo-next/internal/events"
@@ -827,7 +829,7 @@ func driveHelloFreshSubscribe(rep *report.Report, cases map[string]corpus.Case) 
 	log := events.NewEventLog(0)
 	log.Append(fixtureAutomationRunEnvelope("01J8Z3K4N5P6Q7R8S9T0V1W2ZC"))
 	hub := eventsse.NewHub(log)
-	srv := httptest.NewServer(eventsse.New(hub))
+	srv := httptest.NewServer(newSSEHandler(hub))
 	defer srv.Close()
 
 	br, cancel := dialSSE(srv, "", nil)
@@ -884,8 +886,9 @@ func driveMalformedResumeFrom(rep *report.Report, cases map[string]corpus.Case) 
 
 	req := httptest.NewRequest(http.MethodGet, "/events/v1?resume_from="+input.Frame.ResumeFrom, nil)
 	req.Header.Set("Accept", "text/event-stream")
+	sseAuth().Authorize(req)
 	rec := httptest.NewRecorder()
-	eventsse.New(hub).ServeHTTP(rec, req)
+	newSSEHandler(hub).ServeHTTP(rec, req)
 
 	var diffs []report.Diff
 	if rec.Code != http.StatusBadRequest {
@@ -963,7 +966,7 @@ func driveResumeWithGap(rep *report.Report, cases map[string]corpus.Case) {
 	log.Append(fixtureAutomationRunEnvelope(input.Frame.ResumeFrom))
 	log.Append(fixtureAutomationRunEnvelope(input.OldestRetainedID))
 	hub := eventsse.NewHub(log)
-	srv := httptest.NewServer(eventsse.New(hub))
+	srv := httptest.NewServer(newSSEHandler(hub))
 	defer srv.Close()
 
 	br, cancel := dialSSE(srv, "resume_from="+input.Frame.ResumeFrom, nil)
@@ -1109,6 +1112,31 @@ type sseFrame struct {
 
 // dialSSE opens a streaming GET /events/v1 against srv and returns a buffered
 // reader over the live body plus a cancel func the caller MUST call.
+// sseAuth is the one seeded auth fixture every SSE case in this driver connects
+// as. events/1 EVT-110/111 require the binding to authenticate every connection
+// and EVT-113 requires it refuse before any stream begins, so eventsse.New now
+// takes an authenticator and there is no unauthenticated path to drive — a
+// driver exercising the STREAM semantics has to hold a real credential first.
+// One shared fixture is enough: no case here asserts anything about WHICH
+// principal is connected, only that the stream behaves.
+//
+// sync.OnceValue rather than a package var so a fixture-construction failure
+// surfaces as a panic at first use with a real message, instead of a nil
+// authenticator dereferenced deep inside a handler.
+var sseAuth = sync.OnceValue(func() *authtest.Fixture {
+	f, err := authtest.New(authtest.Config{})
+	if err != nil {
+		panic("events1 driver: seed auth fixture: " + err.Error())
+	}
+	return f
+})
+
+// newSSEHandler mounts the live /events/v1 handler over hub, authenticated as
+// the shared fixture.
+func newSSEHandler(hub *eventsse.Hub) http.Handler {
+	return eventsse.New(hub, sseAuth().Auth)
+}
+
 func dialSSE(srv *httptest.Server, query string, header http.Header) (*bufio.Reader, func()) {
 	ctx, cancel := context.WithCancel(context.Background())
 	url := srv.URL + "/events/v1"
@@ -1121,6 +1149,10 @@ func dialSSE(srv *httptest.Server, query string, header http.Header) (*bufio.Rea
 		return bufio.NewReader(strings.NewReader("")), func() {}
 	}
 	req.Header.Set("Accept", "text/event-stream")
+	// A browser's native EventSource cannot set custom headers, so the SSE
+	// binding authenticates by the session cookie (EVT-111) — which is exactly
+	// what this dial presents.
+	sseAuth().Authorize(req)
 	for k, vs := range header {
 		for _, v := range vs {
 			req.Header.Set(k, v)

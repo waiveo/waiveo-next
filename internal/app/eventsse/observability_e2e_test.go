@@ -77,7 +77,7 @@ func TestObservability_FiredRuleStreamsToSSESubscriber(t *testing.T) {
 	hub := NewHub(log)
 	mux := http.NewServeMux()
 	mux.Handle("/telemetry/v1/push", eventingest.New(hub, siteScope, ulidSeq()))
-	mux.Handle("/events/v1", New(hub))
+	mux.Handle("/events/v1", newTestServer(hub))
 	app := httptest.NewServer(mux)
 	defer app.Close()
 

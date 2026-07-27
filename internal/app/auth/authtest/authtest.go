@@ -132,6 +132,72 @@ func New(cfg Config) (*Fixture, error) {
 	}, nil
 }
 
+// Credential is one seeded principal's presentable credential set: the identity
+// plus the browser-shaped proof of it.
+type Credential struct {
+	PrincipalID string
+	SessionID   string
+	Token       string
+	CSRFToken   string
+}
+
+// Authorize stamps r with this principal's session cookie and CSRF token.
+func (c Credential) Authorize(r *http.Request) {
+	r.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: c.Token})
+	r.Header.Set(auth.CSRFHeaderName, c.CSRFToken)
+}
+
+// AddPrincipal seeds a SECOND (third, …) principal on the same store, with its
+// own role binding and its own live session, and returns its credential.
+//
+// It exists for the tests that must distinguish two callers rather than merely
+// have one: API-051's rule that an Idempotency-Key is scoped to (authenticated
+// principal, method, path) is only observable with two principals presenting the
+// same key, and API-101's rule that external_id uniqueness is scoped by
+// (resource type, scope node) — and NOT by principal — is only observable the
+// same way.
+func (f *Fixture) AddPrincipal(cfg Config) (Credential, error) {
+	if cfg.Kind == "" {
+		cfg.Kind = auth.KindUser
+	}
+	if cfg.Role == "" {
+		cfg.Role = auth.RoleOwner
+	}
+	if cfg.ScopeNode == "" {
+		cfg.ScopeNode = auth.RootScopeNode
+	}
+	ctx := context.Background()
+	p, err := f.Store.CreatePrincipal(ctx, cfg.Kind, "fixture")
+	if err != nil {
+		return Credential{}, fmt.Errorf("authtest: create principal: %w", err)
+	}
+	if _, err := f.Store.PutRoleBinding(ctx, p.PrincipalID, cfg.ScopeNode, cfg.Role); err != nil {
+		return Credential{}, fmt.Errorf("authtest: bind role: %w", err)
+	}
+	minted, err := f.Store.MintSession(ctx, p.PrincipalID, auth.TokenKindSession, "", auth.AALStandard,
+		map[string]string{"user_agent": "authtest", "ip_class": auth.IPClassLoopback})
+	if err != nil {
+		return Credential{}, fmt.Errorf("authtest: mint session: %w", err)
+	}
+	return Credential{
+		PrincipalID: p.PrincipalID,
+		SessionID:   minted.Session.SessionID,
+		Token:       minted.Token,
+		CSRFToken:   minted.CSRFToken,
+	}, nil
+}
+
+// Credential returns the fixture's own principal as a Credential, so a test can
+// treat the built-in principal and an added one uniformly.
+func (f *Fixture) Credential() Credential {
+	return Credential{
+		PrincipalID: f.PrincipalID,
+		SessionID:   f.SessionID,
+		Token:       f.Token,
+		CSRFToken:   f.CSRFToken,
+	}
+}
+
 // Close releases the fixture's store.
 func (f *Fixture) Close() { _ = f.Store.Close() }
 
@@ -158,7 +224,9 @@ func (f *Fixture) AuthorizeHeaders() map[string]string {
 // Deterministic rather than random so a fixture's ids are reproducible across
 // runs, and ascending so they sort in mint order like a real ULID would.
 func seededIDs(first string) func() string {
-	const prefix = "01J8Z9AUTHTEST0F1XTURE00"
+	// A 24-symbol Crockford-base32 prefix (the ULID alphabet excludes I, L, O
+	// and U, so the mnemonic is spelled without them) plus a 2-symbol counter.
+	const prefix = "01J8Z9AVTHTEST0F1XTVRE00"
 	const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 	n := 0
 	pinned := first

@@ -45,16 +45,17 @@ var expectedPending = []string{
 // test keeps proving the driver has teeth on whatever remains broken, rather
 // than silently going green over a still-broken case, or silently going red
 // over a NEW regression this map hasn't been told about yet.
-var expectedFailing = map[string]string{
-	"API-111-valid-bulk-enable-202-job": "created_by can never equal the corpus's arbitrary pinned value: the live handler " +
-		"stamps it from the fixed pocPrincipal constant because auth is deferred (api.go's own doc comment), and " +
-		"contracts/api-1.md's Conformance notes treat a principal as a given, opaque INPUT — this fixture pins created_by as " +
-		"an expected OUTPUT with no corresponding input.principal to drive it from. Resolving this for real needs both an " +
-		"input.principal on the fixture and a request-scoped principal seam, which belong to the deferred auth work, not this " +
-		"driver. id/created_at/targets/state all match now (the harness drives both its clock and its id source FROM the " +
-		"case's own pinned created_at/id, exactly as api.New's injected nowMs/newID seams allow) — confirming created_by is " +
-		"the ONLY remaining genuine divergence, not a systemic Job-shape bug.",
-}
+//
+// It is currently EMPTY. Its one entry was API-111, whose Job `created_by`
+// could not match the corpus while the live handler stamped that field from a
+// fixed constant standing in for a deferred auth model. The handler now stamps
+// it from the real authenticated principal, so the driver seeds that principal
+// with the case's own pinned `created_by` — the same drive-it-from-the-fixture
+// technique it already applies to the clock and the id source, and exactly what
+// contracts/api-1.md's Conformance notes sanction ("cases that need a principal
+// treat one as a given, opaque input"). The map itself stays: its job is to make
+// a NEW divergence loud, not to record any particular one.
+var expectedFailing = map[string]string{}
 
 // TestAPI1DriverGreen replays every frozen api-1 corpus case against the LIVE
 // api.New handler: the driven/pending sets are exactly as declared, every

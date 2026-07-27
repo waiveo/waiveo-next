@@ -15,11 +15,14 @@
 //   - the RFC 9457 Problem shape (every error) + Trace-Id propagation via
 //     apihttp.WriteProblem / WriteProblemExt / WithTraceID.
 //
-// Auth is DEFERRED for this dev-lab POC: the surface is unauthenticated (api/1
-// treats the principal as an opaque given; the sessions/API-keys/roles model is
-// a separate security-model contract). The Idempotency-Key scope's principal is
-// therefore a single fixed POC principal (pocPrincipal) — documented here, not
-// silently omitted.
+// Every request is authenticated and authorized before a handler sees it
+// (internal/app/auth, security-model/1): the principal an Idempotency-Key is
+// scoped by (API-051) and a Job's created_by is stamped from (API-112) is the
+// REAL authenticated caller, resolved from a live session or API key. There is
+// no fallback identity — SEC-005 requires a route that cannot resolve an
+// authorization decision to refuse rather than default-permit, so a request that
+// reaches a handler always carries a principal and a handler never has to invent
+// one.
 package api
 
 import (
@@ -29,6 +32,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/maaxton/waiveo-next/internal/app/auth"
 	"github.com/maaxton/waiveo-next/internal/app/devices"
 	"github.com/maaxton/waiveo-next/internal/app/packs"
 	"github.com/maaxton/waiveo-next/internal/app/store"
@@ -38,12 +42,6 @@ import (
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/apiselector"
 )
-
-// pocPrincipal is the fixed dev-lab POC principal the Idempotency-Key scope is
-// keyed by while auth is deferred (see the package doc). It is an opaque,
-// fixture ULID — never a credential — and is the single principal every request
-// in this unauthenticated increment is attributed to.
-const pocPrincipal = "01J8Z0DEV00PRNC0PA00000000"
 
 // contentTypeJSON is the media type every success response body uses; error
 // bodies use apihttp.ProblemContentType instead.
@@ -85,6 +83,27 @@ type server struct {
 	dispatch CommandDispatcher
 }
 
+// authExemptPaths are the api/1 operations that declare their own
+// `security: []` override in api/openapi.yaml (API-090) and so are mounted
+// AHEAD of the auth middleware rather than behind it. The list is deliberately
+// short, explicit, and kept here beside the mount that honours it, so "which
+// routes are reachable unauthenticated" is one readable set rather than a
+// property emergent from mux pattern precedence.
+//
+// Both entries are credential-exchange operations under API-091: a login mints
+// the session a caller does not yet hold, and the first-boot claim mints the
+// very first principal on the box. Requiring a pre-existing session for either
+// would be circular. Everything else under /api/v1 — including logout and the
+// session read — is authenticated, which is what subjects logout to the same
+// CSRF discipline as any other mutating browser route (SEC-024).
+var authExemptPaths = map[string]bool{
+	apiPrefix + "/auth/login": true,
+	apiPrefix + "/auth/setup": true,
+}
+
+// authExempt reports whether r names one of the `security: []` operations.
+func authExempt(r *http.Request) bool { return authExemptPaths[r.URL.Path] }
+
 // New builds the api/1 HTTP handler: a /api/v1-prefixed mux exposing the
 // scope-nodes and scheduling-core (schedules/dayparts/playlists) CRUD
 // operations over st, plus the content-addressed asset upload (POST
@@ -100,7 +119,14 @@ type server struct {
 // the feeder's content-origin base URL the upload's returned url is built
 // from. opts wire the optional collaborators — currently the device plane
 // (WithDevicePlane), whose routes mount whether or not it is supplied.
-func New(st *store.Store, idem *apihttp.IdempotencyStore, nowMs func() int64, newID func() string, content *origin.Store, contentBase string, opts ...Option) http.Handler {
+//
+// authn is REQUIRED, not an option, and that is the point: it is a positional
+// parameter precisely so a caller cannot construct this handler without
+// deciding who may reach it. Every route below hangs behind its middleware
+// except the two credential-exchange operations in authExemptPaths, so an
+// unauthenticated request to any resource family is refused before a handler
+// runs (SEC-005).
+func New(st *store.Store, idem *apihttp.IdempotencyStore, nowMs func() int64, newID func() string, content *origin.Store, contentBase string, authn *auth.Authenticator, opts ...Option) http.Handler {
 	srv := &server{
 		store: st, idem: idem, nowMs: nowMs, newID: newID, content: content, contentBase: contentBase,
 		installer: packs.NewInstaller(st),
@@ -128,7 +154,24 @@ func New(st *store.Store, idem *apihttp.IdempotencyStore, nowMs func() int64, ne
 	// relay's own discovery and adoption plane, with no revision to condition a
 	// write on (devices.go).
 	srv.mountDevicePlane(mux)
-	return apihttp.WithTraceID(mux)
+
+	// The session-management half of the auth family rides the AUTHENTICATED
+	// mux: both operations act on the caller's own live session, so neither has
+	// anything to do without one.
+	authHandlers := auth.NewHandlers(authn, nil, auth.RootScopeNode)
+	mux.HandleFunc("POST "+apiPrefix+"/auth/logout", authHandlers.Logout)
+	mux.HandleFunc("GET "+apiPrefix+"/auth/session", authHandlers.Session)
+
+	// The credential-exchange half (API-090/091) mounts on the ROOT mux, ahead
+	// of the middleware. Go's ServeMux prefers the more specific method+path
+	// pattern over the "/" catch-all, so these two reach their handlers directly
+	// while every other path falls through to the authenticated mux.
+	root := http.NewServeMux()
+	root.HandleFunc("POST "+apiPrefix+"/auth/login", authHandlers.Login)
+	root.HandleFunc("POST "+apiPrefix+"/auth/setup", authHandlers.Claim)
+	root.Handle("/", authn.Middleware(auth.APICodes, authExempt)(mux))
+
+	return apihttp.WithTraceID(root)
 }
 
 // resourceConfig parameterizes the generic resource handler for one resource
@@ -255,7 +298,11 @@ func (rs *resource) create(w http.ResponseWriter, r *http.Request) {
 	// Idempotency-Key (optional, API-050): a keyed repeat replays or conflicts
 	// before any write; an unkeyed request always executes.
 	key := r.Header.Get("Idempotency-Key")
-	scope := apihttp.IdempotencyScope{Principal: pocPrincipal, Method: r.Method, Path: r.URL.Path}
+	// API-051: an Idempotency-Key is scoped to (authenticated principal, method,
+	// path), so the SAME key value presented by a DIFFERENT principal is an
+	// unrelated, fresh request and never a replay. The principal comes from the
+	// request's resolved identity — the middleware guarantees one is present.
+	scope := apihttp.IdempotencyScope{Principal: auth.PrincipalID(r), Method: r.Method, Path: r.URL.Path}
 	hash := apihttp.IdempotencyBodyHash(raw)
 	now := rs.srv.nowMs()
 	if key != "" {

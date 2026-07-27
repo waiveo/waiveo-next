@@ -117,12 +117,13 @@ func newDevicePlaneEnv(t *testing.T) *devicePlaneEnv {
 	clock := func() int64 { return fixedNowMs }
 	idem := apihttp.NewIdempotencyStore(clock, 0)
 	content := origin.New()
-	ts := httptest.NewServer(api.New(st, idem, clock, ulid.Monotonic(), content, testContentBase,
+	fixture := newAuthFixture(t)
+	ts := httptest.NewServer(api.New(st, idem, clock, ulid.Monotonic(), content, testContentBase, fixture.Auth,
 		api.WithDevicePlane(registry, dispatcher)))
 	t.Cleanup(ts.Close)
 
 	return &devicePlaneEnv{
-		testEnv:    &testEnv{ts: ts, store: st, content: content, contentBase: testContentBase},
+		testEnv:    &testEnv{ts: ts, store: st, content: content, contentBase: testContentBase, auth: fixture},
 		registry:   registry,
 		dispatcher: dispatcher,
 	}
@@ -424,10 +425,11 @@ func TestSendEntityCommandWithoutADispatcherIs503(t *testing.T) {
 		DeviceClass: "media-player", Name: "Lobby TV player", ScopeNode: devScopeA,
 	})
 	clock := func() int64 { return fixedNowMs }
+	fixture := newAuthFixture(t)
 	ts := httptest.NewServer(api.New(st, apihttp.NewIdempotencyStore(clock, 0), clock,
-		ulid.Monotonic(), origin.New(), testContentBase, api.WithDevicePlane(registry, nil)))
+		ulid.Monotonic(), origin.New(), testContentBase, fixture.Auth, api.WithDevicePlane(registry, nil)))
 	t.Cleanup(ts.Close)
-	e := &testEnv{ts: ts, store: st, content: origin.New(), contentBase: testContentBase}
+	e := &testEnv{ts: ts, store: st, content: origin.New(), contentBase: testContentBase, auth: fixture}
 
 	resp, raw := e.do(t, http.MethodPost, "/api/v1/entities/"+devEntity1+"/commands",
 		mustJSON(t, map[string]any{"command": "home"}), nil)

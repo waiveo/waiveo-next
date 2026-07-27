@@ -53,6 +53,7 @@ import (
 	"github.com/maaxton/waiveo-next/conformance/drivers/corpus"
 	"github.com/maaxton/waiveo-next/conformance/drivers/report"
 	"github.com/maaxton/waiveo-next/internal/app/api"
+	"github.com/maaxton/waiveo-next/internal/app/auth/authtest"
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/datamodel"
 	"github.com/maaxton/waiveo-next/internal/feeder/origin"
@@ -256,6 +257,14 @@ func requestsCarryIdempotencyKey(reqs []any) bool {
 type harness struct {
 	store *store.Store
 	h     http.Handler
+	// auth is the seeded auth fixture every request is driven AS. api.New now
+	// requires an authenticator and refuses an unresolvable principal (SEC-005),
+	// so a driver that wants to exercise the api/1 conventions has to hold a
+	// real credential — there is no bypass, which is exactly the property that
+	// keeps SEC-005 a tested claim rather than an asserted one. api/1's own
+	// Conformance notes already anticipate this: "cases that need a principal
+	// treat one as a given, opaque input."
+	auth *authtest.Fixture
 }
 
 // newHarness opens a fresh in-memory store and mounts api.New over it. nowMs
@@ -266,17 +275,33 @@ type harness struct {
 // drawn from in this harness's lifetime — never a package-level generator —
 // so a case's outcome is reproducible on that axis too.
 func newHarness(nowMs int64, newID func() string) (*harness, error) {
+	return newHarnessAs(nowMs, newID, "")
+}
+
+// newHarnessAs is newHarness with the driving principal's id pinned — for a case
+// whose own frozen expectation names a principal-derived field (API-111's Job
+// created_by), which is then driven FROM the fixture exactly as that case's
+// clock and id source already are.
+func newHarnessAs(nowMs int64, newID func() string, principalID string) (*harness, error) {
 	st, err := store.Open(":memory:")
 	if err != nil {
 		return nil, fmt.Errorf("store.Open: %w", err)
 	}
 	clock := func() int64 { return nowMs }
+	fixture, err := authtest.New(authtest.Config{NowMs: clock, PrincipalID: principalID})
+	if err != nil {
+		_ = st.Close()
+		return nil, fmt.Errorf("authtest.New: %w", err)
+	}
 	idem := apihttp.NewIdempotencyStore(clock, 0)
-	h := api.New(st, idem, clock, newID, origin.New(), "https://origin.example")
-	return &harness{store: st, h: h}, nil
+	h := api.New(st, idem, clock, newID, origin.New(), "https://origin.example", fixture.Auth)
+	return &harness{store: st, h: h, auth: fixture}, nil
 }
 
-func (h *harness) close() { _ = h.store.Close() }
+func (h *harness) close() {
+	_ = h.store.Close()
+	h.auth.Close()
+}
 
 // deterministicIDs mints deterministic, ascending, valid 26-char ULIDs — the
 // injected id source (server.newID) this driver's harness supplies to every
@@ -318,6 +343,10 @@ func (h *harness) do(method, path string, body []byte, headers map[string]string
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
+	// The fixture's real session cookie and CSRF token, attached centrally so no
+	// individual case has to carry credentials that are not part of what it is
+	// asserting.
+	h.auth.Authorize(req)
 	rec := httptest.NewRecorder()
 	h.h.ServeHTTP(rec, req)
 	var decoded map[string]any
@@ -1179,22 +1208,19 @@ type jobDriverInput struct {
 // (store.DesiredStateRows + datamodel.BuildScopeTree.AncestorChain), not a
 // driver-modeled membership set.
 //
-// The harness clock is set to the case's own pinned created_at, and the
-// harness id source is likewise a closure returning the case's own pinned
-// expected body id, so both of those fields are now reproduced exactly (the
-// live handler mints the Job id through the same injected server.newID seam
-// as everything else, automations.go's bulkEnableExec — there is no longer a
-// package-level generator standing between the corpus and the live id). One
-// field never can be: created_by is stamped from the fixed pocPrincipal
-// constant (auth is deferred, api.go's own doc comment), which cannot equal
-// the corpus's arbitrary pinned created_by — contracts/api-1.md's own
-// Conformance notes say a case that needs a principal "treat[s] one as a
-// given, opaque input", and this fixture pins created_by as an EXPECTED
-// OUTPUT with no corresponding input.principal to drive it from. Closing this
-// for real needs both an input.principal on the fixture and a request-scoped
-// principal seam — both belong to the deferred auth work, not this driver.
-// The field is left asserted (not loosened), so this case FAILS on exactly
-// that one field — a confirmed, reportable divergence, not a driver defect.
+// All four asserted fields are driven FROM the case's own frozen expectation,
+// through the three seams api.New exposes for exactly that purpose: the
+// harness clock is the case's pinned created_at, the harness id source is a
+// closure returning the case's pinned Job id, and the harness's seeded
+// principal is created with the case's pinned created_by.
+//
+// created_by used to be the one field this driver could not reproduce, because
+// the live handler stamped it from a fixed constant while auth was deferred.
+// It now comes from the REAL authenticated caller, so pinning the fixture's
+// principal id closes it — the same technique already applied to the clock and
+// the id source, and squarely what contracts/api-1.md's own Conformance notes
+// sanction: "cases that need a principal treat one as a given, opaque input."
+// The value is an input the driver supplies, not an output it relaxes.
 func driveJob(rep *report.Report, c corpus.Case) {
 	var in jobDriverInput
 	if err := decodeField(c.Input, &in); err != nil {
@@ -1227,7 +1253,7 @@ func driveJob(rep *report.Report, c corpus.Case) {
 	// id now reproduces the corpus exactly (see the doc comment above) — the
 	// remaining, genuinely-unclosable divergence is created_by alone.
 	pinnedID := func() string { return expBody.ID }
-	h, err := newHarness(createdAt.UnixMilli(), pinnedID)
+	h, err := newHarnessAs(createdAt.UnixMilli(), pinnedID, expBody.CreatedBy)
 	if err != nil {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("newHarness: %v", err))
 		return

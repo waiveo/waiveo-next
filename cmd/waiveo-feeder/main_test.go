@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/app/api"
+	"github.com/maaxton/waiveo-next/internal/app/auth"
+	"github.com/maaxton/waiveo-next/internal/app/auth/authtest"
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/feeder/enroll"
 	"github.com/maaxton/waiveo-next/internal/feeder/grant"
@@ -177,7 +179,7 @@ func TestDesiredStateSourceCurrentRebuildsOnAPIWriteGenerationBump(t *testing.T)
 	// under If-Match. The store validates + bumps revision + generation atomically.
 	clock := func() int64 { return int64(1_700_000_000_000) }
 	idem := apihttp.NewIdempotencyStore(clock, 0)
-	ts := httptest.NewServer(api.New(st, idem, clock, ulid.New, origin.New(), "https://192.0.2.12:7420"))
+	ts := httptest.NewServer(api.New(st, idem, clock, ulid.New, origin.New(), "https://192.0.2.12:7420", newFeederAPIAuth(t, clock)))
 	t.Cleanup(ts.Close)
 
 	getResp, _ := doFeederReq(t, ts, http.MethodGet, "/api/v1/dayparts/"+feederE2EContentDaypartID, nil, nil)
@@ -242,6 +244,7 @@ func doFeederReq(t *testing.T, ts *httptest.Server, method, path string, body []
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
+	feederAPIAuth.Authorize(req)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("do %s %s: %v", method, path, err)
@@ -397,7 +400,7 @@ func TestAPIWriteNudgesConnectedRelayEndToEnd(t *testing.T) {
 	// The authoring write, over the REAL api handler (the same surface main
 	// mounts): PATCH the seeded content daypart under If-Match.
 	clock := func() int64 { return int64(1_700_000_000_000) }
-	apiTS := httptest.NewServer(api.New(st, apihttp.NewIdempotencyStore(clock, 0), clock, ulid.New, origin.New(), "https://192.0.2.12:7420"))
+	apiTS := httptest.NewServer(api.New(st, apihttp.NewIdempotencyStore(clock, 0), clock, ulid.New, origin.New(), "https://192.0.2.12:7420", newFeederAPIAuth(t, clock)))
 	t.Cleanup(apiTS.Close)
 	getResp, _ := doFeederReq(t, apiTS, http.MethodGet, "/api/v1/dayparts/"+feederE2EContentDaypartID, nil, nil)
 	if getResp.StatusCode != http.StatusOK {
@@ -505,4 +508,26 @@ func TestDesiredStateSourceMultiItemCastOrderedAndVerifiable(t *testing.T) {
 			t.Errorf("item %d: content_type = %q, want %q", i, content[i].ContentType, "image")
 		}
 	}
+}
+
+// feederAPIAuth is the auth fixture the most recently started api server in this
+// file was mounted with; doFeederReq presents its credential. api.New requires
+// an authenticator and refuses a request whose principal cannot be resolved
+// (security-model/1 SEC-005), so these whole-stack tests drive a real seeded
+// principal — the same middleware, session lookup and authorization decision a
+// browser goes through — rather than an unauthenticated request the shipped
+// handler would reject.
+var feederAPIAuth *authtest.Fixture
+
+// newFeederAPIAuth seeds that fixture on the given injected clock and returns
+// its authenticator for api.New.
+func newFeederAPIAuth(t *testing.T, clock func() int64) *auth.Authenticator {
+	t.Helper()
+	f, err := authtest.New(authtest.Config{NowMs: clock})
+	if err != nil {
+		t.Fatalf("authtest.New: %v", err)
+	}
+	t.Cleanup(f.Close)
+	feederAPIAuth = f
+	return f.Auth
 }

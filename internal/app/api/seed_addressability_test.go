@@ -53,9 +53,10 @@ func TestSeedDemoRowsAddressableThroughAPIConventions(t *testing.T) {
 
 	clock := func() int64 { return fixedNowMs }
 	idem := apihttp.NewIdempotencyStore(clock, 0)
-	ts := httptest.NewServer(api.New(st, idem, clock, ulid.Monotonic(), origin.New(), testContentBase))
+	fixture := newAuthFixture(t)
+	ts := httptest.NewServer(api.New(st, idem, clock, ulid.Monotonic(), origin.New(), testContentBase, fixture.Auth))
 	t.Cleanup(ts.Close)
-	e := &testEnv{ts: ts, store: st, content: origin.New(), contentBase: testContentBase}
+	e := &testEnv{ts: ts, store: st, content: origin.New(), contentBase: testContentBase, auth: fixture}
 
 	list := func(t *testing.T, path, selector string) []json.RawMessage {
 		t.Helper()

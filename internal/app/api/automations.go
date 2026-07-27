@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maaxton/waiveo-next/internal/app/auth"
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/rules/clock"
 	"github.com/maaxton/waiveo-next/internal/rules/compile"
@@ -316,7 +317,11 @@ func (srv *server) bulkEnableExec(w http.ResponseWriter, r *http.Request, body [
 	// preserves whatever Location it carries. The Job's id comes from the same
 	// injected srv.newID seam every other server-minted id draws from — never a
 	// package-level generator of its own.
-	job := apijob.New(srv.newID(), pocPrincipal, time.UnixMilli(srv.nowMs()).UTC(), targetIDs)
+	// created_by is the REAL authenticated caller (API-112), resolved by the
+	// auth middleware from the presented session or API key — not a fixed
+	// constant, and not something this handler can invent, since a request that
+	// reaches here always carries a principal (SEC-005).
+	job := apijob.New(srv.newID(), auth.PrincipalID(r), time.UnixMilli(srv.nowMs()).UTC(), targetIDs)
 	writeJSONValue(w, http.StatusAccepted, job.Resource())
 }
 
@@ -332,7 +337,8 @@ func (srv *server) bulkEnableExec(w http.ResponseWriter, r *http.Request, body [
 // body the replay-vs-reuse content hash is taken over (API-052).
 func (srv *server) idempotent(w http.ResponseWriter, r *http.Request, raw []byte, exec func(http.ResponseWriter)) {
 	key := r.Header.Get("Idempotency-Key")
-	scope := apihttp.IdempotencyScope{Principal: pocPrincipal, Method: r.Method, Path: r.URL.Path}
+	// API-051's scope tuple: (authenticated principal, method, path).
+	scope := apihttp.IdempotencyScope{Principal: auth.PrincipalID(r), Method: r.Method, Path: r.URL.Path}
 	hash := apihttp.IdempotencyBodyHash(raw)
 	now := srv.nowMs()
 	if key != "" {
