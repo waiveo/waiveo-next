@@ -372,6 +372,22 @@ func (s *Server) IsRevoked(relayID, serial string) bool {
 	return false
 }
 
+// ClientCAPool returns a fresh x509.CertPool holding this feeder's
+// enrollment CA certificate — the pool a TLS listener sets as ClientCAs so
+// the leaf certificates this feeder itself issued at enrollment
+// (issueRelayCert) verify as client certificates on the mutually
+// authenticated relay/1 connection (REL-003/041). Call it AFTER
+// EnablePersistence, which may replace the in-memory CA with the persisted
+// one; the pool is a point-in-time copy and does not track a later CA
+// change (none occurs within a process lifetime today).
+func (s *Server) ClientCAPool() *x509.CertPool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pool := x509.NewCertPool()
+	pool.AddCert(s.caCert)
+	return pool
+}
+
 // SetSnapshotProvider installs a desired-state source that supersedes the static
 // snapshot: every subsequent desired-state pull is answered by calling provider,
 // so the feeder can serve a store-derived snapshot at the store's current
