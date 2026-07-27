@@ -52,17 +52,22 @@ import (
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
-// eventRetentionSweepInterval is how often the feeder applies the events/1
-// retention policy to the persisted event log (deleting rows past their class's
-// window, trimming a class past its row cap).
+// retentionSweepInterval is how often the feeder retires rows that have outlived
+// their window: the events/1 retention policy over the persisted event log
+// (deleting rows past their class's window, trimming a class past its row cap),
+// and the pending second-factor enrollments past their ttl (SEC-004,
+// auth.PendingTOTPEnrollmentTTLMs).
 //
-// It is a SWEEP cadence, not the retention guarantee. The guarantee is the
-// policy's per-class window, and a window is a floor — "retained for a bounded
-// window" (EVT-010) — so a row that outlives its window by up to one sweep is
-// still inside the guarantee, while one deleted early would not be. Hourly is
-// therefore free to be coarse: the shortest window the policy configures is
-// measured in days.
-const eventRetentionSweepInterval = time.Hour
+// It is a SWEEP cadence, not a guarantee, and that is why one cadence can serve
+// two windows of very different sizes. For the event log the guarantee is the
+// policy's per-class window, which is a floor — "retained for a bounded window"
+// (EVT-010) — so a row that outlives it by up to one sweep is still inside the
+// guarantee, and the shortest window the policy configures is measured in days.
+// For a pending enrollment the guarantee is not the sweep at all: an expired
+// enrollment stops arming anything the instant it expires, checked against the
+// clock on every read and inside the arming transaction, so the sweep only keeps
+// the abandoned rows from piling up. Neither is weakened by being coarse.
+const retentionSweepInterval = time.Hour
 
 // firstPhotonSite is the app peer's authoritative site_binding for Wave-1
 // first-photon (relay/1 REL-036): the site a relay is bound to, and that
@@ -620,6 +625,17 @@ func main() {
 		log.Printf("waiveo-feeder: repointed %d authorization record(s) at canonicalized scope nodes", n)
 	}
 
+	// Retire second-factor enrollments that were started, never confirmed, and
+	// have since aged out (SEC-004). At boot because a box that was off for a
+	// month comes back holding every enrollment that was in flight when it
+	// stopped; those secrets are already refused on every path, and this is what
+	// stops them sitting in the database as well.
+	if n, err := authStore.PruneExpiredTOTPEnrollments(ctx); err != nil {
+		log.Printf("waiveo-feeder: WARNING — the pending-enrollment sweep failed at boot: %v", err)
+	} else if n > 0 {
+		log.Printf("waiveo-feeder: retired %d abandoned second-factor enrollment(s) past their window", n)
+	}
+
 	// The revocation registry EVT-114 hangs off: revoking a session closes every
 	// events/1 stream that session authenticated, rather than merely refusing
 	// its next connect.
@@ -757,20 +773,25 @@ func main() {
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.ListenAndServeTLS("", "") }()
 
-	// Keep applying the event-log retention policy while the process runs. The
-	// boot sweep above covers everything that expired while the box was off;
-	// this covers a box that stays up for months. Stopped on shutdown so the
-	// sweep never races the drain below.
-	retentionSweep := time.NewTicker(eventRetentionSweepInterval)
+	// Keep retiring expired rows while the process runs. The boot sweeps above
+	// cover everything that expired while the box was off; this covers a box that
+	// stays up for months. Stopped on shutdown so the sweep never races the drain
+	// below.
+	//
+	// The two halves are independent: one failing must not skip the other, which
+	// is why neither arm short-circuits the loop iteration.
+	retentionSweep := time.NewTicker(retentionSweepInterval)
 	go func() {
 		for range retentionSweep.C {
-			pruned, err := eventLog.Prune()
-			if err != nil {
+			if pruned, err := eventLog.Prune(); err != nil {
 				log.Printf("waiveo-feeder: WARNING — the event-log retention sweep failed: %v", err)
-				continue
-			}
-			if pruned.Rows > 0 {
+			} else if pruned.Rows > 0 {
 				log.Printf("waiveo-feeder: retired %d event(s) past their retention window %v", pruned.Rows, pruned.ByClass)
+			}
+			if n, err := authStore.PruneExpiredTOTPEnrollments(ctx); err != nil {
+				log.Printf("waiveo-feeder: WARNING — the pending-enrollment sweep failed: %v", err)
+			} else if n > 0 {
+				log.Printf("waiveo-feeder: retired %d abandoned second-factor enrollment(s) past their window", n)
 			}
 		}
 	}()

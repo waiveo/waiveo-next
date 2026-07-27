@@ -421,6 +421,179 @@ func TestArmingWithoutAPendingEnrollmentIsRefused(t *testing.T) {
 	}
 }
 
+// ---- store: a pending enrollment expires ----------------------------------
+
+// pendingTOTPRows counts principalID's rows in the pending relation, read
+// straight off the table.
+//
+// The count is the point. Every other assertion below could be satisfied by an
+// implementation that merely REFUSED an aged-out enrollment while leaving the
+// sealed secret in the database forever, and "the row is gone" is a different
+// claim from "the row is ignored" — this is what tells them apart.
+func pendingTOTPRows(t *testing.T, st *Store, principalID string) int {
+	t.Helper()
+	var n int
+	if err := st.db.QueryRow(
+		`SELECT COUNT(*) FROM totp_pending WHERE principal_id = ?`, principalID).Scan(&n); err != nil {
+		t.Fatalf("count pending enrollments: %v", err)
+	}
+	return n
+}
+
+// TestPendingEnrollmentExpiresAtItsTTL drives the window's far edge on the read
+// path: at exactly created_at + ttl the enrollment is gone, and the row with it.
+//
+// The clock is INJECTED — the enrollment ages by half an hour without the test
+// taking half an hour, and without a sleep whose duration would have to be
+// guessed against a machine's load.
+func TestPendingEnrollmentExpiresAtItsTTL(t *testing.T) {
+	st, clock := totpStore(t)
+	p := totpPrincipal(t, st)
+	ctx := context.Background()
+
+	if _, err := st.BeginTOTPEnrollment(ctx, p.PrincipalID, false); err != nil {
+		t.Fatalf("BeginTOTPEnrollment: %v", err)
+	}
+	clock.advance(PendingTOTPEnrollmentTTLMs)
+
+	if _, err := st.PendingTOTPSecret(ctx, p.PrincipalID); !errors.Is(err, ErrNoPendingTOTP) {
+		t.Fatalf("an enrollment at its ttl was still readable: %v", err)
+	}
+	if n := pendingTOTPRows(t, st, p.PrincipalID); n != 0 {
+		t.Fatalf("%d expired pending row(s) survived the read; an expired secret must be removed, not merely ignored", n)
+	}
+}
+
+// TestPendingEnrollmentInsideItsWindowStillArms is the other edge: one
+// millisecond short of the ttl the enrollment is untouched and arms normally.
+// Without it, "expired" would be satisfied by an implementation that expired
+// everything.
+func TestPendingEnrollmentInsideItsWindowStillArms(t *testing.T) {
+	st, clock := totpStore(t)
+	p := totpPrincipal(t, st)
+	ctx := context.Background()
+
+	secret, err := st.BeginTOTPEnrollment(ctx, p.PrincipalID, false)
+	if err != nil {
+		t.Fatalf("BeginTOTPEnrollment: %v", err)
+	}
+	clock.advance(PendingTOTPEnrollmentTTLMs - 1)
+
+	got, err := st.PendingTOTPSecret(ctx, p.PrincipalID)
+	if err != nil {
+		t.Fatalf("an enrollment one millisecond inside its window was refused: %v", err)
+	}
+	if string(got) != string(secret) {
+		t.Fatal("the pending secret changed inside its window")
+	}
+	if _, err := st.ArmTOTPCredential(ctx, p.PrincipalID, secret, TOTPStep(clock.now())); err != nil {
+		t.Fatalf("ArmTOTPCredential inside the window: %v", err)
+	}
+	armed, _ := st.HasTOTPCredential(ctx, p.PrincipalID)
+	if !armed {
+		t.Fatal("confirming inside the window did not arm the credential")
+	}
+}
+
+// TestArmingRefusesAnExpiredEnrollment goes straight at the arming transaction,
+// never touching the read path first.
+//
+// That is the check that has to hold: a caller that read the secret while the
+// window was open and arrived here after it closed reaches this code with a
+// valid secret in hand, and only the check inside the consuming transaction
+// stands between it and a live second factor.
+func TestArmingRefusesAnExpiredEnrollment(t *testing.T) {
+	st, clock := totpStore(t)
+	p := totpPrincipal(t, st)
+	ctx := context.Background()
+
+	secret, err := st.BeginTOTPEnrollment(ctx, p.PrincipalID, false)
+	if err != nil {
+		t.Fatalf("BeginTOTPEnrollment: %v", err)
+	}
+	clock.advance(PendingTOTPEnrollmentTTLMs)
+
+	if _, err := st.ArmTOTPCredential(ctx, p.PrincipalID, secret, TOTPStep(clock.now())); !errors.Is(err, ErrNoPendingTOTP) {
+		t.Fatalf("arming an expired enrollment = %v; want ErrNoPendingTOTP", err)
+	}
+	armed, err := st.HasTOTPCredential(ctx, p.PrincipalID)
+	if err != nil {
+		t.Fatalf("HasTOTPCredential: %v", err)
+	}
+	if armed {
+		t.Fatal("an expired enrollment armed a second factor")
+	}
+	if n := pendingTOTPRows(t, st, p.PrincipalID); n != 0 {
+		t.Fatalf("%d expired pending row(s) survived the refused arming", n)
+	}
+}
+
+// TestRestartingAnEnrollmentResetsItsWindow: the upsert rewrites created_at, so
+// an operator who lets one attempt lapse and starts again gets a full window on
+// the NEW secret rather than the remains of the old one's.
+func TestRestartingAnEnrollmentResetsItsWindow(t *testing.T) {
+	st, clock := totpStore(t)
+	p := totpPrincipal(t, st)
+	ctx := context.Background()
+
+	if _, err := st.BeginTOTPEnrollment(ctx, p.PrincipalID, false); err != nil {
+		t.Fatalf("BeginTOTPEnrollment: %v", err)
+	}
+	clock.advance(PendingTOTPEnrollmentTTLMs - 1)
+	restarted, err := st.BeginTOTPEnrollment(ctx, p.PrincipalID, false)
+	if err != nil {
+		t.Fatalf("restart BeginTOTPEnrollment: %v", err)
+	}
+	// Past the FIRST enrollment's ttl, comfortably, but inside the second's.
+	clock.advance(PendingTOTPEnrollmentTTLMs - 1)
+
+	if _, err := st.ArmTOTPCredential(ctx, p.PrincipalID, restarted, TOTPStep(clock.now())); err != nil {
+		t.Fatalf("a restarted enrollment inside its own window was refused: %v", err)
+	}
+}
+
+// TestPruneExpiredTOTPEnrollmentsRetiresOnlyExpiredRows drives the sweep the
+// feeder runs at boot and hourly: it must clear what has aged out and leave an
+// enrollment somebody is in the middle of completely alone.
+func TestPruneExpiredTOTPEnrollmentsRetiresOnlyExpiredRows(t *testing.T) {
+	st, clock := totpStore(t)
+	stale := totpPrincipal(t, st)
+	live := totpPrincipal(t, st)
+	ctx := context.Background()
+
+	if _, err := st.BeginTOTPEnrollment(ctx, stale.PrincipalID, false); err != nil {
+		t.Fatalf("BeginTOTPEnrollment: %v", err)
+	}
+	clock.advance(PendingTOTPEnrollmentTTLMs)
+	liveSecret, err := st.BeginTOTPEnrollment(ctx, live.PrincipalID, false)
+	if err != nil {
+		t.Fatalf("BeginTOTPEnrollment: %v", err)
+	}
+
+	n, err := st.PruneExpiredTOTPEnrollments(ctx)
+	if err != nil {
+		t.Fatalf("PruneExpiredTOTPEnrollments: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("the sweep retired %d row(s); exactly one had aged out", n)
+	}
+	if rows := pendingTOTPRows(t, st, stale.PrincipalID); rows != 0 {
+		t.Fatalf("the expired enrollment survived the sweep (%d row(s))", rows)
+	}
+	got, err := st.PendingTOTPSecret(ctx, live.PrincipalID)
+	if err != nil {
+		t.Fatalf("the sweep took an enrollment that was still in its window: %v", err)
+	}
+	if string(got) != string(liveSecret) {
+		t.Fatal("the surviving enrollment's secret changed")
+	}
+
+	// Idempotent: a second sweep with nothing left to do retires nothing.
+	if n, err := st.PruneExpiredTOTPEnrollments(ctx); err != nil || n != 0 {
+		t.Fatalf("a repeat sweep retired %d row(s) (err=%v); want 0", n, err)
+	}
+}
+
 // TestFactoryResetClearsTOTPState is SEC-121's "force fresh enrollment on every
 // principal", applied to the two relations this feature adds.
 func TestFactoryResetClearsTOTPState(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -459,6 +460,77 @@ func TestConfirmWithoutAnEnrollmentIs404(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("confirm with nothing in flight = %d; want 404", rec.Code)
 	}
+}
+
+// TestExpiredEnrollmentIsIndistinguishableFromNoEnrollment drives the ttl
+// through the real surface, and pins the shape of the refusal.
+//
+// The code presented is one that WOULD match — computed for the step the clock
+// now reads — so nothing about the digits explains the refusal. The enrollment
+// is refused because its window closed, and it is refused with the identical
+// response an operator gets when they never started one: same status, same code,
+// same detail, differing only in the per-request trace id. That equality is
+// asserted against a SECOND request made after the row is provably gone, not
+// against a string this test wrote down — the property under test is that the
+// two paths agree, and a hardcoded expectation could not tell whether they did.
+func TestExpiredEnrollmentIsIndistinguishableFromNoEnrollment(t *testing.T) {
+	h := newHTTPHarness(t)
+	token, csrf, _ := h.signIn(t, "")
+
+	rec := h.do(authedRequest(http.MethodPost, "/api/v1/auth/totp/enroll", "", token, csrf))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("enroll = %d %s; want 200", rec.Code, rec.Body.String())
+	}
+	var enroll totpEnrollmentResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &enroll); err != nil {
+		t.Fatalf("decode enrollment: %v", err)
+	}
+	secret, err := DecodeTOTPSecret(enroll.Secret)
+	if err != nil {
+		t.Fatalf("the returned secret is not base32: %v", err)
+	}
+
+	// Half an hour passes on the injected clock: no sleep, and the QR code the
+	// operator is looking at is now stale.
+	h.clock.advance(PendingTOTPEnrollmentTTLMs)
+
+	code := TOTPCode(secret, TOTPStep(h.clock.now()))
+	body, _ := json.Marshal(totpConfirmRequest{Code: code})
+	expired := h.do(authedRequest(http.MethodPost, "/api/v1/auth/totp/confirm", string(body), token, csrf))
+	if expired.Code != http.StatusNotFound {
+		t.Fatalf("confirming an expired enrollment = %d %s; want 404", expired.Code, expired.Body.String())
+	}
+	if armed, _ := h.store.HasTOTPCredential(context.Background(), h.owner.PrincipalID); armed {
+		t.Fatal("an expired enrollment armed a second factor")
+	}
+	if pendingTOTPRows(t, h.store, h.owner.PrincipalID) != 0 {
+		t.Fatal("the expired enrollment's sealed secret is still in the database")
+	}
+	if strings.Contains(expired.Body.String(), enroll.Secret) {
+		t.Fatal("the refusal echoes the shared secret")
+	}
+
+	// The row is gone, so this second attempt is the genuine no-enrollment case.
+	absent := h.do(authedRequest(http.MethodPost, "/api/v1/auth/totp/confirm", string(body), token, csrf))
+	if absent.Code != expired.Code {
+		t.Fatalf("expired = %d but absent = %d; the two refusals must not be distinguishable", expired.Code, absent.Code)
+	}
+	if got, want := problemBodySansTrace(t, expired), problemBodySansTrace(t, absent); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the expired refusal %v differs from the no-enrollment refusal %v", got, want)
+	}
+}
+
+// problemBodySansTrace decodes a problem body with the one member that is
+// legitimately per-request removed, so two refusals can be compared for the
+// difference that would actually leak something.
+func problemBodySansTrace(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode problem body: %v", err)
+	}
+	delete(body, "trace_id")
+	return body
 }
 
 func TestConfirmBodyValidationIs422(t *testing.T) {

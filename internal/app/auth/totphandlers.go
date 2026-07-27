@@ -219,6 +219,20 @@ func (h *Handlers) EnrollTOTP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// writeNoPendingEnrollment is the ONE refusal for every way a confirmation can
+// find nothing to confirm: no enrollment was ever started, one was started and
+// has expired (Store.PendingTOTPEnrollmentTTLMs), or one was consumed by a
+// concurrent request. It is a single function rather than three call sites so
+// the three cannot drift into three distinguishable answers — and it can be a
+// single answer honestly, because an expired row is DELETED before this is
+// reached, so "no enrollment is in progress" is a description of the database
+// rather than a euphemism. The instruction is the same in every case: start one.
+func writeNoPendingEnrollment(w http.ResponseWriter, r *http.Request, traceID string) {
+	apihttp.WriteProblemExt(w, r, traceID, http.StatusNotFound,
+		"NOT_FOUND", "Not Found",
+		"No second-factor enrollment is in progress for this principal; start one first.", nil)
+}
+
 // ConfirmTOTP arms the pending enrollment once the calling principal returns a
 // code computed from it.
 //
@@ -237,8 +251,10 @@ func (h *Handlers) EnrollTOTP(w http.ResponseWriter, r *http.Request) {
 //
 // The confirmation is not rate-limited beyond the ordinary authenticated
 // surface, and that is a deliberate omission rather than a gap: the secret being
-// confirmed was handed to THIS caller, in cleartext, seconds ago. There is
-// nothing here to guess.
+// confirmed was handed to THIS caller, in cleartext, within the enrollment's
+// ttl (Store.PendingTOTPEnrollmentTTLMs) — which is now a bound the code
+// enforces rather than an assumption this comment makes. There is nothing here
+// to guess.
 func (h *Handlers) ConfirmTOTP(w http.ResponseWriter, r *http.Request) {
 	traceID := apihttp.TraceID(r)
 	p, err := RequirePrincipal(r.Context())
@@ -261,9 +277,7 @@ func (h *Handlers) ConfirmTOTP(w http.ResponseWriter, r *http.Request) {
 	secret, err := store.PendingTOTPSecret(ctx, p.ID)
 	switch {
 	case errors.Is(err, ErrNoPendingTOTP):
-		apihttp.WriteProblemExt(w, r, traceID, http.StatusNotFound,
-			"NOT_FOUND", "Not Found",
-			"No second-factor enrollment is in progress for this principal; start one first.", nil)
+		writeNoPendingEnrollment(w, r, traceID)
 		return
 	case errors.Is(err, ErrNoSecretSealer):
 		apihttp.WriteProblemExt(w, r, traceID, http.StatusServiceUnavailable,
@@ -286,7 +300,16 @@ func (h *Handlers) ConfirmTOTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cred, err := store.ArmTOTPCredential(ctx, p.ID, secret, step)
-	if err != nil {
+	switch {
+	case errors.Is(err, ErrNoPendingTOTP):
+		// The enrollment's window closed between the read above and the arming
+		// transaction, or a concurrent request armed it first. Either way this is
+		// the same fact the read path reports, so it gets the same answer rather
+		// than a 500 — a narrow race is not a server fault, and telling the
+		// operator to start again is the correct instruction in both cases.
+		writeNoPendingEnrollment(w, r, traceID)
+		return
+	case err != nil:
 		writeInternal(w, r, traceID)
 		return
 	}

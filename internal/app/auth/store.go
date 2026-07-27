@@ -91,6 +91,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS role_bindings_unique
 -- One pending enrollment per principal — the primary key — so starting a second
 -- enrollment discards the first rather than leaving two live secrets either of
 -- which could arm the credential.
+--
+-- created_at is not bookkeeping: it is the row's EXPIRY, since a pending row is
+-- armable only while created_at + auth.PendingTOTPEnrollmentTTLMs is still
+-- ahead of the injected clock. There is no ttl_ms column beside it, and no index
+-- on created_at either — the table holds at most one row per principal, and only
+-- for principals with an enrollment in flight, so the sweep's predicate scans a
+-- table that is normally empty.
 CREATE TABLE IF NOT EXISTS totp_pending (
 	principal_id  TEXT PRIMARY KEY,
 	sealed_secret TEXT NOT NULL,
