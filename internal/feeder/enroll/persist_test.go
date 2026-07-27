@@ -1,36 +1,34 @@
 package enroll
 
 import (
+	"crypto/tls"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
-	"github.com/maaxton/waiveo-next/internal/feeder/grant"
-	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
+	feederrelayconn "github.com/maaxton/waiveo-next/internal/feeder/relayconn"
+	relayenroll "github.com/maaxton/waiveo-next/internal/relay/enroll"
 	"github.com/maaxton/waiveo-next/internal/relay/hello"
+	"github.com/maaxton/waiveo-next/internal/relay/identity"
+	relayclient "github.com/maaxton/waiveo-next/internal/relay/relayconn"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
 // newPersistedTestServer builds an enroll.Server exactly like newTestServer,
 // except it also enables durable persistence to dir — the shape
-// cmd/waiveo-feeder wires in production (EnablePersistence). withHello also
-// mounts the connection handshake's app-peer server (internal/relay/hello)
-// on the same mux, wired to this Server's own RelayEnrollmentKey, so a test
-// can perform a real hello against it.
-func newPersistedTestServer(t *testing.T, dir string, withHello bool) (*Server, *httptest.Server) {
+// cmd/waiveo-feeder wires in production (EnablePersistence). withConn also
+// mounts the persistent-connection server (internal/feeder/relayconn) on the
+// same mux — wired to this Server's own RelayEnrollmentKey/IsRevoked, over
+// an mTLS listener validating against this Server's own ClientCAPool — so a
+// test can run the real challenge → hello → hello-ack handshake against it.
+func newPersistedTestServer(t *testing.T, dir string, withConn bool) (*Server, *httptest.Server) {
 	t.Helper()
 	id := testIdentity(t)
-	img := loadTestImage(t)
-	g := grant.Mint()
 
-	snap, err := snapshot.Build(img, "https://origin.example", id, []wire.PairingGrant{g})
-	if err != nil {
-		t.Fatalf("snapshot.Build: %v", err)
-	}
-
-	srv, err := NewServer(id, snap)
+	srv, err := NewServer(id)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -40,13 +38,32 @@ func newPersistedTestServer(t *testing.T, dir string, withHello bool) (*Server, 
 
 	mux := http.NewServeMux()
 	srv.Register(mux)
-	if withHello {
-		helloSrv := hello.NewAppPeerServer(srv.RelayEnrollmentKey, hello.SiteBinding{}, hello.AppPeerImplementedMinors(1, 1), nil, nil)
-		helloSrv.Register(mux)
+	if !withConn {
+		ts := httptest.NewTLSServer(apihttp.WithTraceID(mux))
+		t.Cleanup(ts.Close)
+		return srv, ts
 	}
-	ts := httptest.NewTLSServer(apihttp.WithTraceID(mux))
-	t.Cleanup(ts.Close)
 
+	connSrv := feederrelayconn.New(
+		func() (wire.StateSnapshotBody, error) { return wire.StateSnapshotBody{Generation: 1}, nil },
+		srv.RelayEnrollmentKey,
+		srv.IsRevoked,
+		hello.SiteBinding{},
+		hello.AppPeerImplementedMinors(1, 1),
+		nil,
+	)
+	mux.Handle("/relay/v1", connSrv.Handler())
+	ts := httptest.NewUnstartedServer(apihttp.WithTraceID(mux))
+	ts.TLS = &tls.Config{
+		// ClientCAPool is read AFTER EnablePersistence, exactly as
+		// cmd/waiveo-feeder reads it, so a restarted server keeps verifying
+		// leaves the pre-restart CA issued.
+		ClientAuth: tls.VerifyClientCertIfGiven,
+		ClientCAs:  srv.ClientCAPool(),
+		MinVersion: tls.VersionTLS13,
+	}
+	ts.StartTLS()
+	t.Cleanup(ts.Close)
 	return srv, ts
 }
 
@@ -109,50 +126,60 @@ func TestEnablePersistenceSurvivesRestart(t *testing.T) {
 }
 
 // TestHelloSucceedsAfterFeederRestartWithPersistedEnrollment reproduces the
-// field defect end to end at the protocol layer: a relay enrolls, its hello
-// is accepted, the feeder process "restarts" (a fresh Server + fresh
-// hello.AppPeerServer, same persist dir, new httptest listener — nothing
-// about the relay's own identity changes), and the SAME relay's next hello
-// MUST still be accepted rather than failing CHANNEL_BINDING_INVALID.
-// Without EnablePersistence's restore, the second server's RelayKeyLookup
-// has no record of the relay and this hello is refused exactly as it was on
-// the box (REL-032, HTTP 403).
+// field defect end to end at the protocol layer, on the persistent
+// transport: a relay enrolls, its connection handshake is accepted, the
+// feeder process "restarts" (a fresh Server + fresh /relay/v1 server, same
+// persist dir, new httptest listener — nothing about the relay's own
+// identity changes), and the SAME relay's next dial MUST still be accepted
+// rather than refused CHANNEL_BINDING_INVALID. Without EnablePersistence's
+// restore, the second server's RelayKeyLookup has no record of the relay
+// (and its fresh CA would not even validate the relay's leaf), so the
+// handshake is refused exactly as it was on the box (REL-032).
 func TestHelloSucceedsAfterFeederRestartWithPersistedEnrollment(t *testing.T) {
 	dir := t.TempDir()
 
-	// --- boot 1: enroll + hello succeeds ---
+	// --- boot 1: enroll + connection handshake succeeds ---
 	_, ts1 := newPersistedTestServer(t, dir, true)
 
-	client := ts1.Client()
-	claimToken := fetchClaimToken(t, client, ts1.URL)
-	_, relayPriv, csrPEM := generateCSR(t, "test-relay")
-	resp, body := postEnroll(t, client, ts1.URL, claimToken, csrPEM)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("POST /enroll status = %d, want 200", resp.StatusCode)
+	store, err := identity.Open(filepath.Join(t.TempDir(), "relay.db"))
+	if err != nil {
+		t.Fatalf("identity.Open: %v", err)
 	}
-	relayID := body.RelayID
+	t.Cleanup(func() { _ = store.Close() })
+	if err := relayenroll.Run(ts1.URL, store); err != nil {
+		t.Fatalf("relayenroll.Run: %v", err)
+	}
 
 	decl := hello.Declaration{
 		ProtocolVersion: "1.0",
 		ClockState:      hello.ClockState{State: "untrusted", Source: "cold_boot"},
 	}
-	if _, err := hello.PerformHello(ts1.URL, relayPriv, relayID, decl); err != nil {
-		t.Fatalf("first hello (pre-restart): %v", err)
+	c1, err := relayclient.Dial(relayclient.Config{URL: ts1.URL, Store: store, Declaration: decl})
+	if err != nil {
+		t.Fatalf("first dial (pre-restart): %v", err)
 	}
+	_ = c1.Close()
 	ts1.Close()
 
 	// --- boot 2: simulated feeder restart, same persist dir ---
+	//
+	// NOTE: the httptest listener presents the SAME fixed leaf across both
+	// boots, exactly like a feeder that persists its serving identity
+	// (signing.LoadOrCreate), so the relay's enrollment-captured SPKI pin
+	// (REL-137) still matches — what breaks without persistence is the
+	// SERVER's memory of the relay, which is this test's subject.
 	_, ts2 := newPersistedTestServer(t, dir, true)
 
-	ack, err := hello.PerformHello(ts2.URL, relayPriv, relayID, decl)
+	c2, err := relayclient.Dial(relayclient.Config{URL: ts2.URL, Store: store, Declaration: decl})
 	if err != nil {
-		var refused *hello.RefusedError
+		var refused *relayclient.Refusal
 		if errors.As(err, &refused) {
-			t.Fatalf("hello after simulated feeder restart was refused (%s): %s — the restarted app peer forgot this relay's enrollment", refused.Code, refused.Title)
+			t.Fatalf("handshake after simulated feeder restart was refused (%s): %s — the restarted app peer forgot this relay's enrollment", refused.Code, refused.Message)
 		}
-		t.Fatalf("hello after simulated feeder restart: %v", err)
+		t.Fatalf("dial after simulated feeder restart: %v", err)
 	}
-	if ack.Body.NegotiatedVersion == "" {
+	defer c2.Close()
+	if c2.HelloAck().NegotiatedVersion == "" {
 		t.Error("hello-ack after restart carried no negotiated_version")
 	}
 }

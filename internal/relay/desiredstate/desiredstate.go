@@ -1,47 +1,40 @@
-// Package desiredstate implements the relay's client side of relay/1
-// desired-state pull (REL-051): fetching the feeder's signed
-// `state.snapshot` over `/state/pull` (internal/feeder/enroll's own
-// handler), VERIFYING it against the relay's persisted, enrollment-anchored
+// Package desiredstate implements the relay's verify/apply half of relay/1
+// desired-state movement (REL-050–056): VERIFYING a received
+// `state.snapshot` against the relay's persisted, enrollment-anchored
 // trust anchor (REL-071, `#28`), enforcing generation monotonicity
-// (REL-052), and persisting `{generation, hash}` as last-applied (REL-055,
-// internal/relay/identity).
+// (REL-052), and persisting `{generation, hash, screen_programs}` as
+// last-applied (REL-055, internal/relay/identity). The bytes arrive over
+// the persistent connection (internal/relay/relayconn's state.pull —
+// relayconn.SnapshotFromFrame hands VerifyAndApply exactly the pair it
+// needs); this package owns no transport of its own.
 //
 // Only feeder-signed state applies: a snapshot whose `sections` doesn't
 // hash to its own `hash`, or whose `signature` doesn't verify under the
 // persisted `desired_state_verification_key`, is rejected outright —
 // nothing is applied and last-applied is left untouched. This is the
-// security-load-bearing gate a later player/1 server (Task 9) sits behind:
-// Pull's returned Applied value is the only screen-program state that ever
-// reaches a screen.
+// security-load-bearing gate the player/1 server sits behind:
+// VerifyAndApply's returned Applied value is the only screen-program state
+// that ever reaches a screen.
 package desiredstate
 
 import (
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"time"
 
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
-// pullHTTPTimeout bounds the desired-state pull exchange — this is a
-// co-located, same-host call in Wave-1 first-photon's loopback deployment
-// (mirroring internal/relay/enroll's own bootstrap timeout), so a short
-// timeout is generous, not tight.
-const pullHTTPTimeout = 10 * time.Second
-
-// Errors Pull returns for each of relay/1's typed rejection reasons. All
-// are checked with errors.Is, and each leaves the persisted last-applied
-// generation untouched — no section is EVER applied on any of these paths.
+// Errors VerifyAndApply returns for each of relay/1's typed rejection
+// reasons. All are checked with errors.Is, and each leaves the persisted
+// last-applied generation untouched — no section is EVER applied on any of
+// these paths.
 var (
 	// ErrNoTrustAnchor is returned when the store holds no persisted
 	// desired_state_verification_key yet (the relay has not enrolled) —
 	// there is nothing to verify a snapshot's signature against.
-	ErrNoTrustAnchor = errors.New("desiredstate: no desired_state_verification_key persisted — relay must enroll before pulling desired state")
+	ErrNoTrustAnchor = errors.New("desiredstate: no desired_state_verification_key persisted — relay must enroll before applying desired state")
 
 	// ErrSnapshotHashMismatch is returned when a pulled snapshot's `hash`
 	// does not equal sha256 over its own `sections` (REL-053) — the
@@ -79,7 +72,7 @@ var (
 // result: the one screen-program's one image content item a later player/1
 // server (Task 9, and Task 10's program delivery) serves to the screen,
 // plus the generation it came from. The zero value (Applied{}) is what
-// Pull returns alongside every rejection error above — never a
+// VerifyAndApply returns alongside every rejection error above — never a
 // partially-populated value.
 //
 // Priority and Display carry the applied screen-program's own
@@ -156,47 +149,6 @@ type Applied struct {
 	Schedule wire.ScheduleSection
 }
 
-// Pull fetches the feeder's signed desired-state snapshot from
-// feederBaseURL's `/state/pull` (internal/feeder/enroll's handler),
-// verifies it against store's persisted desired_state_verification_key
-// trust anchor (REL-071), enforces generation monotonicity (REL-052), and
-// on success persists `{generation, hash}` as last-applied (REL-055,
-// idempotent — re-pulling the same, already-applied generation is a
-// no-op, REL-070) before returning the applied screen-program.
-//
-// On ANY verification failure (hash mismatch, signature invalid, or a
-// regressed generation), Pull returns a zero Applied and a typed error
-// (one of the Err* values above) — no section is applied, and the
-// persisted last-applied generation is left exactly as it was.
-func Pull(feederBaseURL string, store *identity.Store) (Applied, error) {
-	if store == nil {
-		return Applied{}, fmt.Errorf("desiredstate: Pull: store must not be nil")
-	}
-
-	// Check the trust anchor BEFORE fetching: an unenrolled relay has nothing
-	// to verify a snapshot against, so it never even contacts the feeder —
-	// preserving Pull's original no-fetch-without-anchor behavior.
-	// VerifyAndApply re-checks it as part of its own transport-independent
-	// gate sequence.
-	if _, ok, err := store.DesiredStateVerificationKey(); err != nil {
-		return Applied{}, fmt.Errorf("desiredstate: Pull: read desired_state_verification_key: %w", err)
-	} else if !ok {
-		return Applied{}, ErrNoTrustAnchor
-	}
-
-	body, rawSections, err := fetchSnapshot(feederBaseURL)
-	if err != nil {
-		return Applied{}, fmt.Errorf("desiredstate: Pull: fetch snapshot: %w", err)
-	}
-
-	// The full verify/persist gate sequence (REL-060 structural gate → hash
-	// recompute → signature verification → generation monotonicity → atomic
-	// apply) lives in VerifyAndApply, shared with the persistent-connection
-	// transport (internal/relay/relayconn) — one verify chain, however the
-	// bytes arrived.
-	return VerifyAndApply(store, body, rawSections)
-}
-
 // ServedProgram returns the relay's persisted last-applied screen_programs
 // (REL-061) from store, decoded — the relay's OFFLINE serve path. Its sole
 // input is the durable operational store: it performs no network I/O and
@@ -226,70 +178,7 @@ func ServedProgram(store *identity.Store) ([]wire.ScreenProgram, error) {
 	return programs, nil
 }
 
-// fetchSnapshot performs relay/1's desired-state pull (`GET /state/pull`,
-// REL-051) against the feeder at feederBaseURL, decoding its full
-// state.snapshot body. /state/pull always returns a full snapshot in
-// Wave-1 first-photon — internal/feeder/enroll's handler implements no
-// `since_generation`/`state.unchanged` branch, so none is coded against
-// here.
-// It returns both the decoded typed body AND the raw `sections` JSON bytes:
-// the raw bytes are what REL-060's structural completeness gate
-// (wire.ValidateSectionsComplete) checks, since a Go-decoded Sections struct
-// always materializes all seven fields and so cannot reveal an omitted key.
-func fetchSnapshot(feederBaseURL string) (wire.StateSnapshotBody, json.RawMessage, error) {
-	client := bootstrapClient()
-
-	resp, err := client.Get(feederBaseURL + "/state/pull")
-	if err != nil {
-		return wire.StateSnapshotBody{}, nil, fmt.Errorf("GET /state/pull: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return wire.StateSnapshotBody{}, nil, fmt.Errorf("GET /state/pull: unexpected status %d", resp.StatusCode)
-	}
-
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return wire.StateSnapshotBody{}, nil, fmt.Errorf("read /state/pull response: %w", err)
-	}
-
-	var body wire.StateSnapshotBody
-	if err := json.Unmarshal(raw, &body); err != nil {
-		return wire.StateSnapshotBody{}, nil, fmt.Errorf("decode /state/pull response: %w", err)
-	}
-
-	// Re-extract the `sections` value as raw bytes for the REL-060
-	// completeness gate — from the same response bytes, so it reflects
-	// exactly what the feeder sent.
-	var envelope struct {
-		Sections json.RawMessage `json:"sections"`
-	}
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return wire.StateSnapshotBody{}, nil, fmt.Errorf("decode /state/pull sections: %w", err)
-	}
-	return body, envelope.Sections, nil
-}
-
-// bootstrapClient returns an http.Client for the desired-state pull
-// exchange. It mirrors internal/relay/enroll's own bootstrapClient
-// exactly: server-authenticated TLS with no trust anchor to validate the
-// feeder's self-signed listener certificate against — REL-010/011's
-// bootstrap exception, made concrete for Wave-1 first-photon's co-located
-// feeder+relay loopback deployment. This is deliberately independent of
-// REL-071's desired_state_verification_key trust anchor, which this
-// package verifies the *snapshot payload's signature* against, not the
-// TLS connection.
-func bootstrapClient() *http.Client {
-	return &http.Client{
-		Timeout: pullHTTPTimeout,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // REL-010/011 bootstrap exception, see doc above
-		},
-	}
-}
-
-// extractApplied builds Pull's returned Applied from a verified snapshot's
+// extractApplied builds VerifyAndApply's returned Applied from a verified snapshot's
 // sections: Wave-1 first-photon's one screen-program showing one image
 // (internal/feeder/snapshot.Build's own shape). A sections value that
 // doesn't carry at least one screen-program with at least one content item

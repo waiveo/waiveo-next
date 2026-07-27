@@ -42,6 +42,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/desiredstate"
 	"github.com/maaxton/waiveo-next/internal/relay/hello"
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
+	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
 // RelayClient is the pluggable relay/1 implementation under test: the two
@@ -53,18 +54,24 @@ type RelayClient interface {
 	// Name identifies the implementation (e.g. "real-relay").
 	Name() string
 	// Enroll redeems a claim credential at feederBaseURL and persists the
-	// resulting identity + desired-state verification key into store.
+	// resulting identity + desired-state verification key into store — the
+	// HTTP bootstrap (REL-010), the one surface that cannot ride the
+	// authenticated connection it exists to bootstrap.
 	Enroll(feederBaseURL string, store *identity.Store) error
-	// Pull fetches, verifies, and applies the feeder's signed desired-state
-	// snapshot from feederBaseURL, returning the applied state or a typed
-	// rejection error (leaving last-applied untouched on rejection).
-	Pull(feederBaseURL string, store *identity.Store) (desiredstate.Applied, error)
-	// Hello performs the relay/1 connection handshake (REL-030–039) against
-	// feederBaseURL, declaring decl and signing the app peer's challenge
-	// nonce with the enrollment identity Enroll persisted into store,
-	// returning the app peer's hello-ack or a typed refusal
-	// (*hello.RefusedError).
-	Hello(feederBaseURL string, store *identity.Store, decl hello.Declaration) (hello.HelloAck, error)
+	// Pull opens one authenticated persistent connection to connectURL,
+	// performs one state.pull, and verifies + applies the answered
+	// snapshot, returning the applied state or a typed rejection error
+	// (leaving last-applied untouched on rejection) and acknowledging the
+	// outcome on the wire with a correlated state.ack (REL-050–054/072).
+	Pull(connectURL string, store *identity.Store) (desiredstate.Applied, error)
+	// Hello performs the relay/1 connection handshake (REL-030–041) against
+	// connectURL over the persistent transport — the challenge → hello →
+	// hello-ack exchange inside the dial — declaring decl and signing the
+	// app peer's exporter-derived challenge nonce with the enrollment
+	// identity Enroll persisted into store, returning the app peer's
+	// hello-ack as observed on the wire or a typed refusal
+	// (*relayconn.Refusal carrying the taxonomy code).
+	Hello(connectURL string, store *identity.Store, decl hello.Declaration) (hello.HelloAck, error)
 	// ReEnroll drives the Expired-certificate re-enrollment path
 	// (REL-020/024) for store's already-persisted identity against
 	// feederBaseURL: proving possession of its current certificate's own
@@ -77,28 +84,34 @@ type RelayClient interface {
 }
 
 // Feeder is the LIVE counterparty the driver stages each case against: the
-// enrollment endpoint (REL-010), plus the ability to serve a
-// validly-feeder-signed snapshot at a chosen generation (to stage REL-070's
-// gen-42→gen-43 reapply) and an impostor-signed snapshot (REL-071). A
-// concrete Feeder owns the feeder's signing identity, so the valid snapshots
-// it serves verify against the exact key a relay enrolled against it learned.
+// enrollment endpoint (REL-010), the /relay/v1 persistent-connection server
+// desired state now moves over exclusively, plus the ability to stage the
+// snapshot that connection's next state.pull answers with — validly
+// feeder-signed at a chosen generation (REL-070's gen-42→gen-43 reapply) or
+// impostor-signed (REL-071). A concrete Feeder owns the feeder's signing
+// identity, so the valid snapshots it serves verify against the exact key a
+// relay enrolled against it learned.
 type Feeder interface {
 	// EnrollBaseURL is the feeder's enrollment base URL (/claim-token,
-	// /enroll).
+	// /enroll). The same listener carries /relay/v1, so this is also the
+	// persistent-connection URL a driven client dials.
 	EnrollBaseURL() string
 	// CurrentClaimToken returns the feeder's currently-pending claim token
 	// (minting one if none is pending) WITHOUT redeeming it — so the driver
 	// knows which token a subsequent enrollment will consume, to later prove
 	// its single-use refusal (REL-010).
 	CurrentClaimToken() (string, error)
-	// SignedSnapshotURL points /state/pull at a snapshot validly signed by
-	// this feeder's own signing key at the given generation (same sections,
-	// hence same hash, across generations — REL-070's byte-identical reapply).
-	SignedSnapshotURL(generation int64) (string, error)
-	// WrongKeySnapshotURL points /state/pull at a snapshot at the given
-	// generation signed by a DIFFERENT key than this feeder's own — REL-071's
-	// impostor snapshot.
-	WrongKeySnapshotURL(generation int64) (string, error)
+	// StageSnapshot installs the snapshot the connection's next state.pull
+	// answers with, at the given generation over the SAME canonical sections
+	// (same content, hence same hash, across generations — REL-070's
+	// byte-identical reapply). foreignKey=true signs it with a key that is
+	// NOT this feeder's own — REL-071's impostor snapshot.
+	StageSnapshot(generation int64, foreignKey bool) error
+	// LastStateAck returns the most recent wire state.ack the connection
+	// server received from relayID (REL-054), and whether one has arrived —
+	// the driver's window onto the WIRE acknowledgment a pull's apply
+	// outcome produced.
+	LastStateAck(relayID string) (wire.Frame, bool)
 	// AppPeerLeafSPKI returns the DER-encoded SubjectPublicKeyInfo of the app
 	// peer's own TLS leaf certificate — the enrollment-anchored `trust_pin`
 	// (REL-011) a relay pins the connection against under REL-136/137. The
@@ -260,7 +273,7 @@ func driveREL030(rep *report.Report, client RelayClient, feeder Feeder, cases ma
 	if err != nil {
 		// channel_binding_verified=false / connection_refused=true: the corpus
 		// declares the valid path, so any refusal or transport failure here IS
-		// the divergence — a *hello.RefusedError included verbatim.
+		// the divergence — a *relayconn.Refusal included verbatim.
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("hello handshake refused/failed (corpus expects channel_binding_verified=true, connection_refused=false): %v", err))
 		return
 	}
@@ -363,12 +376,11 @@ func driveREL070(rep *report.Report, client RelayClient, feeder Feeder, cases ma
 
 	var diffs []report.Diff
 
-	url42, err := feeder.SignedSnapshotURL(42)
-	if err != nil {
+	if err := feeder.StageSnapshot(42, false); err != nil {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("stage gen-42 snapshot: %v", err))
 		return
 	}
-	if _, err := client.Pull(url42, store); err != nil {
+	if _, err := client.Pull(feeder.EnrollBaseURL(), store); err != nil {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("apply gen-42 snapshot: %v", err))
 		return
 	}
@@ -377,12 +389,11 @@ func driveREL070(rep *report.Report, client RelayClient, feeder Feeder, cases ma
 		diffs = append(diffs, report.Diff{Field: "last_applied after gen-42", Expected: int64(42), Actual: gen1})
 	}
 
-	url43, err := feeder.SignedSnapshotURL(43)
-	if err != nil {
+	if err := feeder.StageSnapshot(43, false); err != nil {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("stage gen-43 snapshot: %v", err))
 		return
 	}
-	if _, err := client.Pull(url43, store); err != nil {
+	if _, err := client.Pull(feeder.EnrollBaseURL(), store); err != nil {
 		diffs = append(diffs, report.Diff{Field: "reapply gen-43 (treated_as_noop)", Expected: "no-op success", Actual: err.Error()})
 	}
 	gen2, hash2, _, _ := store.LastAppliedGeneration()
@@ -430,24 +441,22 @@ func driveREL071(rep *report.Report, client RelayClient, feeder Feeder, cases ma
 
 	var diffs []report.Diff
 
-	url42, err := feeder.SignedSnapshotURL(42)
-	if err != nil {
+	if err := feeder.StageSnapshot(42, false); err != nil {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("stage gen-42 snapshot: %v", err))
 		return
 	}
-	if _, err := client.Pull(url42, store); err != nil {
+	if _, err := client.Pull(feeder.EnrollBaseURL(), store); err != nil {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("apply gen-42 snapshot: %v", err))
 		return
 	}
 	genBefore, hashBefore, _, _ := store.LastAppliedGeneration()
 
 	// The impostor snapshot at gen 43 signed with a foreign key.
-	urlBad, err := feeder.WrongKeySnapshotURL(43)
-	if err != nil {
+	if err := feeder.StageSnapshot(43, true); err != nil {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("stage wrong-key snapshot: %v", err))
 		return
 	}
-	_, pullErr := client.Pull(urlBad, store)
+	_, pullErr := client.Pull(feeder.EnrollBaseURL(), store)
 
 	// signature_verifies=false: Pull must reject (a real client returns
 	// ErrSnapshotSignatureInvalid; any non-nil rejection here is the

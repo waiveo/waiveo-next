@@ -11,29 +11,15 @@ import (
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/maaxton/waiveo-next/internal/feeder/grant"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
-	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
 	"github.com/maaxton/waiveo-next/internal/relay/reenroll"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
-	"github.com/maaxton/waiveo-next/internal/shared/signhash"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
-
-const testImagePath = "../origin/testdata/photon.png"
-
-func loadTestImage(t *testing.T) []byte {
-	t.Helper()
-	b, err := os.ReadFile(testImagePath)
-	if err != nil {
-		t.Fatalf("read fixture image %s: %v", testImagePath, err)
-	}
-	return b
-}
 
 func testIdentity(t *testing.T) *signing.Identity {
 	t.Helper()
@@ -44,23 +30,16 @@ func testIdentity(t *testing.T) *signing.Identity {
 	return id
 }
 
-// newTestServer builds an enroll.Server carrying a real signed snapshot
-// (Task 5's Build) with one grant.Mint() grant riding it, and mounts it on
-// an httptest TLS server — a relay client presenting the loopback claim
-// token over server-authenticated TLS (REL-010), exactly the deployment
-// shape this package serves in cmd/waiveo-feeder.
+// newTestServer builds an enroll.Server and mounts it on an httptest TLS
+// server — a relay client presenting the loopback claim token over
+// server-authenticated TLS (REL-010), exactly the deployment shape this
+// package serves in cmd/waiveo-feeder.
 func newTestServer(t *testing.T) (*Server, *httptest.Server, *signing.Identity, wire.PairingGrant) {
 	t.Helper()
 	id := testIdentity(t)
-	img := loadTestImage(t)
 	g := grant.Mint()
 
-	snap, err := snapshot.Build(img, "https://origin.example", id, []wire.PairingGrant{g})
-	if err != nil {
-		t.Fatalf("snapshot.Build: %v", err)
-	}
-
-	srv, err := NewServer(id, snap)
+	srv, err := NewServer(id)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -450,123 +429,3 @@ func TestClaimTokenSuccessCarriesTraceID(t *testing.T) {
 		t.Error("success response carries no Trace-Id header (API-060)")
 	}
 }
-
-// TestStatePullReturnsVerifiableSignedSnapshot asserts the pull endpoint
-// serves the exact signed snapshot the server was constructed with: its
-// signature verifies under the feeder's own SigningPub() (REL-071's own
-// verification recipe: wire.DecodeSignature + signhash.Verify over
-// {generation, hash}), and sections.pairing_grants carries exactly the one
-// REL-121 grant this test minted.
-func TestStatePullReturnsVerifiableSignedSnapshot(t *testing.T) {
-	_, ts, id, g := newTestServer(t)
-	client := ts.Client()
-
-	resp, err := client.Get(ts.URL + "/state/pull")
-	if err != nil {
-		t.Fatalf("GET /state/pull: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /state/pull status = %d, want 200", resp.StatusCode)
-	}
-
-	var pulled wire.StateSnapshotBody
-	if err := json.NewDecoder(resp.Body).Decode(&pulled); err != nil {
-		t.Fatalf("decode state.snapshot body: %v", err)
-	}
-
-	if pulled.Generation != 1 {
-		t.Errorf("Generation = %d, want 1", pulled.Generation)
-	}
-
-	sigBytes, err := wire.DecodeSignature(pulled.Signature)
-	if err != nil {
-		t.Fatalf("wire.DecodeSignature: %v", err)
-	}
-	canon, err := json.Marshal(struct {
-		Generation int64  `json:"generation"`
-		Hash       string `json:"hash"`
-	}{pulled.Generation, pulled.Hash})
-	if err != nil {
-		t.Fatalf("marshal {generation,hash} canon: %v", err)
-	}
-	if !signhash.Verify(id.SigningPub(), canon, sigBytes) {
-		t.Error("pulled snapshot signature did not verify under the feeder's own SigningPub()")
-	}
-
-	if len(pulled.Sections.PairingGrants) != 1 {
-		t.Fatalf("Sections.PairingGrants = %#v, want exactly 1 grant", pulled.Sections.PairingGrants)
-	}
-	if pulled.Sections.PairingGrants[0] != g {
-		t.Errorf("pulled grant = %#v, want the minted grant %#v", pulled.Sections.PairingGrants[0], g)
-	}
-}
-
-// TestStatePullServesProviderCurrentGeneration asserts an installed snapshot
-// provider supersedes the static snapshot: the pull endpoint serves whatever the
-// provider currently returns, so a store-derived rebuild at a higher generation
-// is picked up on the very next pull (the authoring loop's serving half). A nil
-// provider reverts to the static snapshot.
-func TestStatePullServesProviderCurrentGeneration(t *testing.T) {
-	srv, ts, _, _ := newTestServer(t)
-	client := ts.Client()
-
-	pull := func() wire.StateSnapshotBody {
-		t.Helper()
-		resp, err := client.Get(ts.URL + "/state/pull")
-		if err != nil {
-			t.Fatalf("GET /state/pull: %v", err)
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("GET /state/pull status = %d, want 200", resp.StatusCode)
-		}
-		var body wire.StateSnapshotBody
-		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-			t.Fatalf("decode state.snapshot body: %v", err)
-		}
-		return body
-	}
-
-	// Before a provider: the static snapshot (generation 1).
-	if got := pull().Generation; got != 1 {
-		t.Fatalf("static pull generation = %d, want 1", got)
-	}
-
-	// A provider whose current generation the test advances between pulls.
-	current := wire.StateSnapshotBody{Generation: 42}
-	srv.SetSnapshotProvider(func() (wire.StateSnapshotBody, error) { return current, nil })
-	if got := pull().Generation; got != 42 {
-		t.Fatalf("provider pull generation = %d, want 42", got)
-	}
-	current = wire.StateSnapshotBody{Generation: 43}
-	if got := pull().Generation; got != 43 {
-		t.Fatalf("post-advance pull generation = %d, want 43 (each pull serves the current generation)", got)
-	}
-
-	// A provider error surfaces as a 500 (the relay treats it as a non-fatal
-	// pull failure, REL-055) — never a corrupt 200.
-	srv.SetSnapshotProvider(func() (wire.StateSnapshotBody, error) {
-		return wire.StateSnapshotBody{}, errProviderUnavailable
-	})
-	resp, err := client.Get(ts.URL + "/state/pull")
-	if err != nil {
-		t.Fatalf("GET /state/pull (provider error): %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("provider-error pull status = %d, want 500", resp.StatusCode)
-	}
-
-	// Clearing the provider reverts to the static snapshot.
-	srv.SetSnapshotProvider(nil)
-	if got := pull().Generation; got != 1 {
-		t.Fatalf("reverted pull generation = %d, want the static 1", got)
-	}
-}
-
-var errProviderUnavailable = errorString("desired state unavailable")
-
-type errorString string
-
-func (e errorString) Error() string { return string(e) }

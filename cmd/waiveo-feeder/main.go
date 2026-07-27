@@ -224,12 +224,13 @@ func main() {
 		store: st, items: castItems, contentBaseURL: contentBaseURL, id: id,
 		grants: []wire.PairingGrant{g},
 	}
-	initialSnap, err := src.current()
-	if err != nil {
+	// Fail fast if the seeded/persisted store cannot derive a signed snapshot
+	// at all — better a boot-time exit than every relay pull failing later.
+	if _, err := src.current(); err != nil {
 		log.Fatalf("waiveo-feeder: build initial desired state: %v", err)
 	}
 
-	enrollSrv, err := enroll.NewServer(id, initialSnap)
+	enrollSrv, err := enroll.NewServer(id)
 	if err != nil {
 		log.Fatalf("waiveo-feeder: enrollment server: %v", err)
 	}
@@ -242,23 +243,6 @@ func main() {
 	if err := enrollSrv.EnablePersistence(defaultEnrollDir); err != nil {
 		log.Fatalf("waiveo-feeder: enable enrollment persistence: %v", err)
 	}
-	// Serve the store-derived, generation-tracked desired state from the pull
-	// endpoint (superseding the static initialSnap).
-	enrollSrv.SetSnapshotProvider(src.current)
-
-	// The connection handshake's app-peer server (relay/1 REL-030–039): it
-	// issues the challenge nonce and answers a relay's hello, verifying the
-	// channel binding against the enrollment key the enroll server recorded
-	// (REL-032, RelayEnrollmentKey), negotiating the version (REL-033/034,
-	// N−1 via AppPeerImplementedMinors), and returning this feeder's
-	// authoritative site_binding (REL-036).
-	helloSrv := hello.NewAppPeerServer(
-		enrollSrv.RelayEnrollmentKey,
-		firstPhotonSite,
-		hello.AppPeerImplementedMinors(1, 1),
-		firstPhotonRecognizedFeatures,
-		nil,
-	)
 
 	// The api/1 authoring surface (scope-nodes + scheduling-core CRUD), mounted
 	// under /api/v1 on the same TLS listener. Auth is DEFERRED for this dev-lab
@@ -323,16 +307,17 @@ func main() {
 	mux.Handle("/events/v1", eventsse.New(eventHub))
 	mux.Handle("/", webUI)
 	enrollSrv.Register(mux)
-	helloSrv.Register(mux)
 
 	// The relay/1 persistent-connection endpoint (REL-001's stable path,
 	// upgraded to a WS carrying one JSON message per frame, REL-002): the
-	// same snapshot provider the HTTP pull serves, the enrollment key
-	// looked up by the mTLS client-certificate identity (REL-041), and the
-	// enrollment registry's revocation record checked at every connection
-	// attempt and before every steady-state frame (REL-016). The legacy
-	// per-request routes above stay mounted until the relay binary cuts
-	// over to this transport.
+	// ONLY route desired state and the connection handshake move over. The
+	// store-derived snapshot provider answers state.pull (REL-050/051), the
+	// enrollment key is looked up by the mTLS client-certificate identity
+	// (REL-041), and the enrollment registry's revocation record is checked
+	// at every connection attempt and before every steady-state frame
+	// (REL-016). The bootstrap HTTP routes above (enrollment +
+	// re-enrollment) are the only pre-mTLS surface left — they exist to
+	// bootstrap the identity this connection authenticates with.
 	relayConnSrv := relayconn.New(
 		src.current,
 		enrollSrv.RelayEnrollmentKey,

@@ -1,14 +1,9 @@
 package relay1_test
 
 import (
-	"crypto/tls"
-	"encoding/json"
-	"fmt"
-	"net/http"
 	"reflect"
 	"sort"
 	"testing"
-	"time"
 
 	"github.com/maaxton/waiveo-next/conformance/drivers/relay1"
 	"github.com/maaxton/waiveo-next/conformance/drivers/report"
@@ -17,6 +12,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/hello"
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
 	"github.com/maaxton/waiveo-next/internal/relay/reenroll"
+	"github.com/maaxton/waiveo-next/internal/relay/relayconn"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
@@ -177,17 +173,15 @@ func (brokenSkipVerifyClient) Enroll(feederBaseURL string, store *identity.Store
 
 // Hello delegates to the real handshake client — REL-071 is the only
 // vulnerability this strawman stages; it has no broken hello behavior of its
-// own to prove, so it just performs a normal hello using the store's
-// enrolled identity.
-func (brokenSkipVerifyClient) Hello(feederBaseURL string, store *identity.Store, decl hello.Declaration) (hello.HelloAck, error) {
-	id, ok, err := store.Identity()
+// own to prove, so it just performs a normal connection handshake using the
+// store's enrolled identity.
+func (brokenSkipVerifyClient) Hello(connectURL string, store *identity.Store, decl hello.Declaration) (hello.HelloAck, error) {
+	client, err := relayconn.Dial(relayconn.Config{URL: connectURL, Store: store, Declaration: decl})
 	if err != nil {
 		return hello.HelloAck{}, err
 	}
-	if !ok {
-		return hello.HelloAck{}, fmt.Errorf("brokenSkipVerifyClient: no enrolled identity")
-	}
-	return hello.PerformHello(feederBaseURL, id.PrivateKey, id.RelayID, decl)
+	defer client.Close()
+	return hello.HelloAck{Type: wire.FrameTypeHelloAck, RelayID: client.RelayID(), Body: client.HelloAck()}, nil
 }
 
 // ReEnroll delegates to the real Expired-certificate re-enrollment client —
@@ -197,20 +191,24 @@ func (brokenSkipVerifyClient) ReEnroll(feederBaseURL string, store *identity.Sto
 	return reenroll.ReEnroll(feederBaseURL, store)
 }
 
-func (brokenSkipVerifyClient) Pull(feederBaseURL string, store *identity.Store) (desiredstate.Applied, error) {
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // broken teeth strawman, test-only.
+func (brokenSkipVerifyClient) Pull(connectURL string, store *identity.Store) (desiredstate.Applied, error) {
+	client, err := relayconn.Dial(relayconn.Config{
+		URL: connectURL, Store: store,
+		Declaration: hello.Declaration{
+			ProtocolVersion: "1.0",
+			ClockState:      hello.ClockState{State: "untrusted", Source: "cold_boot"},
 		},
-	}
-	resp, err := client.Get(feederBaseURL + "/state/pull")
+	})
 	if err != nil {
 		return desiredstate.Applied{}, err
 	}
-	defer resp.Body.Close()
+	defer client.Close()
+	reply, err := client.Pull("", nil)
+	if err != nil {
+		return desiredstate.Applied{}, err
+	}
 	var body wire.StateSnapshotBody
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if err := reply.DecodeBody(&body); err != nil {
 		return desiredstate.Applied{}, err
 	}
 	// The vulnerability: apply without verifying the signature.

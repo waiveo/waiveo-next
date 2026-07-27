@@ -76,7 +76,7 @@ func TestServedProgramOfflineFromPersistedSnapshot(t *testing.T) {
 
 	// Stage the relay's OWN durable operational store as if a prior generation
 	// had already been applied and persisted — the only state the serve path
-	// is allowed to read here. No feeder, no /state/pull, no app peer.
+	// is allowed to read here. No feeder, no connection, no app peer.
 	store, err := identity.Open(filepath.Join(t.TempDir(), "relay.db"))
 	if err != nil {
 		t.Fatalf("identity.Open: %v", err)
@@ -119,12 +119,12 @@ func TestServedProgramOfflineFromPersistedSnapshot(t *testing.T) {
 	}
 }
 
-// TestPullPersistsScreenProgramsForOfflineServe asserts the write half of the
-// offline-continuity loop: a successful live Pull persists the applied
+// TestApplyPersistsScreenProgramsForOfflineServe asserts the write half of
+// the offline-continuity loop: a successful live apply persists the applied
 // screen_programs into the durable store, so a subsequent ServedProgram —
 // with no further app-peer contact — returns exactly the array the verified
 // snapshot carried (REL-055/061).
-func TestPullPersistsScreenProgramsForOfflineServe(t *testing.T) {
+func TestApplyPersistsScreenProgramsForOfflineServe(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
@@ -133,34 +133,35 @@ func TestPullPersistsScreenProgramsForOfflineServe(t *testing.T) {
 		t.Fatalf("snapshot.Build: %v", err)
 	}
 
-	ts := newTestFeeder(t, id, snap)
+	ts := newTestFeeder(t, id)
 	store := enrolledStore(t, ts)
 
-	applied, err := Pull(ts.URL, store)
+	applied, err := applySnapshot(t, store, snap)
 	if err != nil {
-		t.Fatalf("Pull: %v", err)
+		t.Fatalf("VerifyAndApply: %v", err)
 	}
 
 	served, err := ServedProgram(store)
 	if err != nil {
-		t.Fatalf("ServedProgram after Pull: %v", err)
+		t.Fatalf("ServedProgram after apply: %v", err)
 	}
 	if !reflect.DeepEqual(served, snap.Sections.ScreenPrograms) {
-		t.Errorf("ServedProgram after Pull = %+v, want the applied snapshot's screen_programs %+v", served, snap.Sections.ScreenPrograms)
+		t.Errorf("ServedProgram after apply = %+v, want the applied snapshot's screen_programs %+v", served, snap.Sections.ScreenPrograms)
 	}
 	if !reflect.DeepEqual(served, applied.ScreenPrograms) {
-		t.Errorf("ServedProgram after Pull = %+v, want Applied.ScreenPrograms %+v (same persisted array)", served, applied.ScreenPrograms)
+		t.Errorf("ServedProgram after apply = %+v, want Applied.ScreenPrograms %+v (same persisted array)", served, applied.ScreenPrograms)
 	}
 }
 
-// TestPullAppliesGenerationAndProgramsInLockstep is the REL-056 atomic-swap
-// property observed at the Pull boundary: a single successful Pull leaves the
-// persisted last-applied generation AND the persisted screen_programs both
-// reflecting the SAME pulled snapshot — never the new generation paired with a
-// prior generation's program. Pull persists them through the store's single
-// atomic apply-unit (identity.ApplyGeneration), so the two facets can never
-// read back cross-generation.
-func TestPullAppliesGenerationAndProgramsInLockstep(t *testing.T) {
+// TestApplyAppliesGenerationAndProgramsInLockstep is the REL-056 atomic-swap
+// property observed at the VerifyAndApply boundary: a single successful apply
+// leaves the persisted last-applied generation AND the persisted
+// screen_programs both reflecting the SAME snapshot — never the new
+// generation paired with a prior generation's program. VerifyAndApply
+// persists them through the store's single atomic apply-unit
+// (identity.ApplyGeneration), so the two facets can never read back
+// cross-generation.
+func TestApplyAppliesGenerationAndProgramsInLockstep(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
@@ -169,12 +170,12 @@ func TestPullAppliesGenerationAndProgramsInLockstep(t *testing.T) {
 		t.Fatalf("snapshot.Build: %v", err)
 	}
 
-	ts := newTestFeeder(t, id, snap)
+	ts := newTestFeeder(t, id)
 	store := enrolledStore(t, ts)
 
-	applied, err := Pull(ts.URL, store)
+	applied, err := applySnapshot(t, store, snap)
 	if err != nil {
-		t.Fatalf("Pull: %v", err)
+		t.Fatalf("VerifyAndApply: %v", err)
 	}
 
 	// The persisted generation must equal the generation whose programs were

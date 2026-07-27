@@ -106,21 +106,23 @@ func TestLoadConfigExplicitContentURLWins(t *testing.T) {
 const feederE2EContentDaypartID = "01J8Z7DEM0DAYPARTC0NTENT01"
 
 // TestDesiredStateSourceCurrentRebuildsOnAPIWriteGenerationBump covers the real
-// propagation seam desiredStateSource.current() is: main wires it to /state/pull
-// (enrollSrv.SetSnapshotProvider(src.current)), so it is the ONLY thing that makes
-// an authored edit reach the wire. It caches the signed snapshot by store
-// generation and must rebuild when an api write advances that generation.
+// propagation seam desiredStateSource.current() is: main wires it as the
+// /relay/v1 connection server's SnapshotProvider (relayconn.New(src.current,
+// …)), so it is the ONLY thing that makes an authored edit reach the wire. It
+// caches the signed snapshot by store generation and must rebuild when an api
+// write advances that generation.
 //
 // This is the feeder half of the authoring loop the e2e oracle (internal/app/api)
 // does NOT exercise — that oracle calls snapshot.BuildFromStore directly and never
 // touches current(). Without this test, a regression that made current() build
 // once and cache forever (or key its cache on a constant/wrong field) would leave
 // every test green while the served program never flipped: the api PATCH would
-// bump the store generation, but /state/pull would keep serving the old one, so
-// the relay would never see a higher generation. The test drives current() across
-// a real api-handler PATCH (the same authoring surface main mounts) and asserts
-// the served snapshot advances to the new generation with new content, while an
-// unchanged generation is served from cache (both branches of current()).
+// bump the store generation, but every state.pull would keep answering with the
+// old one, so the relay would never see a higher generation. The test drives
+// current() across a real api-handler PATCH (the same authoring surface main
+// mounts) and asserts the served snapshot advances to the new generation with
+// new content, while an unchanged generation is served from cache (both
+// branches of current()).
 func TestDesiredStateSourceCurrentRebuildsOnAPIWriteGenerationBump(t *testing.T) {
 	ctx := context.Background()
 
@@ -287,11 +289,10 @@ func TestAPIWriteNudgesConnectedRelayEndToEnd(t *testing.T) {
 		contentBaseURL: "https://192.0.2.12:7420", id: id,
 		grants: []wire.PairingGrant{grant.Mint()},
 	}
-	initialSnap, err := src.current()
-	if err != nil {
+	if _, err := src.current(); err != nil {
 		t.Fatalf("src.current: %v", err)
 	}
-	enrollSrv, err := enroll.NewServer(id, initialSnap)
+	enrollSrv, err := enroll.NewServer(id)
 	if err != nil {
 		t.Fatalf("enroll.NewServer: %v", err)
 	}

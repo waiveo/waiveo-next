@@ -18,12 +18,15 @@ import (
 	"github.com/maaxton/waiveo-next/internal/feeder/enroll"
 	"github.com/maaxton/waiveo-next/internal/feeder/grant"
 	"github.com/maaxton/waiveo-next/internal/feeder/origin"
+	feederrelayconn "github.com/maaxton/waiveo-next/internal/feeder/relayconn"
 	feedersigning "github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
 	"github.com/maaxton/waiveo-next/internal/relay/desiredstate"
 	relayenroll "github.com/maaxton/waiveo-next/internal/relay/enroll"
+	"github.com/maaxton/waiveo-next/internal/relay/hello"
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
 	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
+	relayclient "github.com/maaxton/waiveo-next/internal/relay/relayconn"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/tlsboot"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
@@ -255,16 +258,29 @@ func bootFeeder(bindHost, dialHost string) (baseURL string, cleanup func(), err 
 		return "", nil, fmt.Errorf("snapshot.Build: %w", err)
 	}
 
-	enrollSrv, err := enroll.NewServer(id, snap)
+	enrollSrv, err := enroll.NewServer(id)
 	if err != nil {
 		_ = lis.Close()
 		_ = os.RemoveAll(dir)
 		return "", nil, fmt.Errorf("enroll.NewServer: %w", err)
 	}
 
+	// The /relay/v1 persistent-connection server: desired state moves only
+	// over the authenticated connection now (REL-050), so this in-process
+	// feeder mounts it beside enrollment, exactly as cmd/waiveo-feeder does.
+	connSrv := feederrelayconn.New(
+		func() (wire.StateSnapshotBody, error) { return snap, nil },
+		enrollSrv.RelayEnrollmentKey,
+		enrollSrv.IsRevoked,
+		hello.SiteBinding{},
+		hello.AppPeerImplementedMinors(1, 1),
+		nil,
+	)
+
 	mux := http.NewServeMux()
 	mux.Handle("/content/", contentStore.Handler())
 	enrollSrv.Register(mux)
+	mux.Handle("/relay/v1", connSrv.Handler())
 
 	cert, err := tls.X509KeyPair(id.TLSCertPEM(), id.TLSKeyPEM())
 	if err != nil {
@@ -274,9 +290,17 @@ func bootFeeder(bindHost, dialHost string) (baseURL string, cleanup func(), err 
 	}
 
 	srv := &http.Server{
-		Handler:   apihttp.WithTraceID(mux),
-		TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}},
-		ErrorLog:  quietErrorLog,
+		Handler: apihttp.WithTraceID(mux),
+		TLSConfig: &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			// mTLS for /relay/v1 (REL-003/041), optional so enrollment and
+			// content stay certificate-free — the production feeder
+			// listener's exact posture.
+			ClientAuth: tls.VerifyClientCertIfGiven,
+			ClientCAs:  enrollSrv.ClientCAPool(),
+			MinVersion: tls.VersionTLS13,
+		},
+		ErrorLog: quietErrorLog,
 	}
 	go func() { _ = srv.ServeTLS(lis, "", "") }()
 	return baseURL, func() { _ = srv.Close(); _ = os.RemoveAll(dir) }, nil
@@ -297,9 +321,34 @@ func (r *InProcessRelay) bootRelay(feederBaseURL, bindHost, dialHost string) err
 	if err := relayenroll.Run(feederBaseURL, store); err != nil {
 		return fmt.Errorf("relayenroll.Run: %w", err)
 	}
-	applied, err := desiredstate.Pull(feederBaseURL, store)
+	// Pull the desired state over the persistent connection (dial subsumes
+	// the challenge → hello → hello-ack handshake), verifying + applying
+	// through the shared chain — cmd/waiveo-relay's own boot sequence.
+	conn, err := relayclient.Dial(relayclient.Config{
+		URL:   feederBaseURL,
+		Store: store,
+		Declaration: hello.Declaration{
+			ProtocolVersion: "1.0",
+			ClockState:      hello.ClockState{State: "untrusted", Source: "cold_boot"},
+		},
+	})
 	if err != nil {
-		return fmt.Errorf("desiredstate.Pull: %w", err)
+		return fmt.Errorf("relayclient.Dial: %w", err)
+	}
+	reply, err := conn.Pull("", nil)
+	if err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("state.pull: %w", err)
+	}
+	body, rawSections, err := relayclient.SnapshotFromFrame(reply)
+	if err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("relayclient.SnapshotFromFrame: %w", err)
+	}
+	applied, err := desiredstate.VerifyAndApply(store, body, rawSections)
+	_ = conn.Close()
+	if err != nil {
+		return fmt.Errorf("desiredstate.VerifyAndApply: %w", err)
 	}
 	if len(applied.PairingGrants) == 0 {
 		return fmt.Errorf("applied desired state carried no pairing_grants")

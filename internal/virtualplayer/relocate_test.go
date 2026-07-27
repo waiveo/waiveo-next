@@ -242,10 +242,7 @@ func bootRelocatableRelay(t *testing.T, feederBaseURL string) (primaryHost strin
 	if err := relayenroll.Run(feederBaseURL, store); err != nil {
 		t.Fatalf("relayenroll.Run: %v", err)
 	}
-	applied, err = desiredstate.Pull(feederBaseURL, store)
-	if err != nil {
-		t.Fatalf("desiredstate.Pull: %v", err)
-	}
+	applied = pullDesiredState(t, feederBaseURL, store)
 
 	relayID, ok, err := store.Identity()
 	if err != nil {

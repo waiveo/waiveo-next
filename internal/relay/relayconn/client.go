@@ -91,7 +91,7 @@ type Config struct {
 	Store *identity.Store
 
 	// Declaration is everything the relay declares in its hello except the
-	// channel-binding signature, exactly as hello.PerformHello takes it.
+	// channel-binding signature (hello.Declaration).
 	Declaration hello.Declaration
 
 	// ClockTrusted and Now feed the REL-136 temporal decision on the app

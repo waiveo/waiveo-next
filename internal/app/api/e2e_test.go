@@ -149,7 +149,7 @@ func resolveThroughDesiredState(t *testing.T, st *store.Store, img []byte, id *s
 	}
 
 	// Apply gate: the same verification the relay's desiredstate.Pull performs,
-	// reproduced in-process (no /state/pull network hop).
+	// reproduced in-process (no state.pull network hop).
 	recomputed, err := wire.HashSections(snap.Sections)
 	if err != nil {
 		t.Fatalf("HashSections: %v", err)

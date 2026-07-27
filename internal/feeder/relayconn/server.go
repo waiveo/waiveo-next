@@ -135,7 +135,7 @@ func WithHeartbeat(interval, timeout time.Duration) Option {
 // every steady-state frame (enroll.Server.IsRevoked; nil disables the
 // check and is for tests only — production always wires it);
 // site/minors/features feed hello negotiation exactly as
-// hello.NewAppPeerServer's do.
+// the HTTP-era handshake server's did.
 func New(
 	provider SnapshotProvider,
 	lookup hello.RelayKeyLookup,

@@ -7,21 +7,15 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"testing"
 
 	feederenroll "github.com/maaxton/waiveo-next/internal/feeder/enroll"
-	"github.com/maaxton/waiveo-next/internal/feeder/grant"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
-	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
 	relayenroll "github.com/maaxton/waiveo-next/internal/relay/enroll"
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
 	"github.com/maaxton/waiveo-next/internal/relay/reenroll"
-	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
-
-const testImagePath = "../../feeder/origin/testdata/photon.png"
 
 // newTestFeeder builds a real feeder enrollment + re-enrollment server
 // (internal/feeder/enroll) on an httptest TLS listener — the exact loopback
@@ -33,16 +27,7 @@ func newTestFeeder(t *testing.T) (*httptest.Server, *signing.Identity) {
 	if err != nil {
 		t.Fatalf("signing.LoadOrCreate: %v", err)
 	}
-	img, err := os.ReadFile(testImagePath)
-	if err != nil {
-		t.Fatalf("read fixture image %s: %v", testImagePath, err)
-	}
-	g := grant.Mint()
-	snap, err := snapshot.Build(img, "https://origin.example", id, []wire.PairingGrant{g})
-	if err != nil {
-		t.Fatalf("snapshot.Build: %v", err)
-	}
-	srv, err := feederenroll.NewServer(id, snap)
+	srv, err := feederenroll.NewServer(id)
 	if err != nil {
 		t.Fatalf("feederenroll.NewServer: %v", err)
 	}

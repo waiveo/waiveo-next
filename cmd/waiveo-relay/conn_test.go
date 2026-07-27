@@ -59,7 +59,7 @@ func newConnTestHarness(t *testing.T) *connTestHarness {
 	if err != nil {
 		t.Fatalf("snapshot.Build: %v", err)
 	}
-	enrollSrv, err := feederenroll.NewServer(feederID, snap)
+	enrollSrv, err := feederenroll.NewServer(feederID)
 	if err != nil {
 		t.Fatalf("feederenroll.NewServer: %v", err)
 	}

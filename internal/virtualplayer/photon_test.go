@@ -17,12 +17,15 @@ import (
 	"github.com/maaxton/waiveo-next/internal/feeder/enroll"
 	"github.com/maaxton/waiveo-next/internal/feeder/grant"
 	"github.com/maaxton/waiveo-next/internal/feeder/origin"
+	feederrelayconn "github.com/maaxton/waiveo-next/internal/feeder/relayconn"
 	feedersigning "github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
 	"github.com/maaxton/waiveo-next/internal/relay/desiredstate"
 	relayenroll "github.com/maaxton/waiveo-next/internal/relay/enroll"
+	"github.com/maaxton/waiveo-next/internal/relay/hello"
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
 	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
+	relayclient "github.com/maaxton/waiveo-next/internal/relay/relayconn"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/signhash"
 	"github.com/maaxton/waiveo-next/internal/shared/tlsboot"
@@ -81,14 +84,27 @@ func bootTestFeeder(t *testing.T) (baseURL string, img []byte) {
 		t.Fatalf("snapshot.Build: %v", err)
 	}
 
-	enrollSrv, err := enroll.NewServer(id, snap)
+	enrollSrv, err := enroll.NewServer(id)
 	if err != nil {
 		t.Fatalf("enroll.NewServer: %v", err)
 	}
 
+	// The /relay/v1 persistent-connection server: desired state moves only
+	// over the authenticated connection now (REL-050), so the in-process
+	// feeder mounts it beside enrollment, exactly as cmd/waiveo-feeder does.
+	connSrv := feederrelayconn.New(
+		func() (wire.StateSnapshotBody, error) { return snap, nil },
+		enrollSrv.RelayEnrollmentKey,
+		enrollSrv.IsRevoked,
+		hello.SiteBinding{},
+		hello.AppPeerImplementedMinors(1, 1),
+		nil,
+	)
+
 	mux := http.NewServeMux()
 	mux.Handle("/content/", contentStore.Handler())
 	enrollSrv.Register(mux)
+	mux.Handle("/relay/v1", connSrv.Handler())
 
 	cert, err := tls.X509KeyPair(id.TLSCertPEM(), id.TLSKeyPEM())
 	if err != nil {
@@ -96,14 +112,56 @@ func bootTestFeeder(t *testing.T) (baseURL string, img []byte) {
 	}
 
 	srv := &http.Server{
-		Handler:   apihttp.WithTraceID(mux),
-		TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}},
-		ErrorLog:  quietErrorLog,
+		Handler: apihttp.WithTraceID(mux),
+		TLSConfig: &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			// mTLS for the /relay/v1 connection (REL-003/041), optional so
+			// enrollment and content stay certificate-free — the production
+			// feeder listener's exact posture.
+			ClientAuth: tls.VerifyClientCertIfGiven,
+			ClientCAs:  enrollSrv.ClientCAPool(),
+			MinVersion: tls.VersionTLS13,
+		},
+		ErrorLog: quietErrorLog,
 	}
 	go func() { _ = srv.ServeTLS(lis, "", "") }()
 	t.Cleanup(func() { _ = srv.Close() })
 
 	return baseURL, img
+}
+
+// pullDesiredState enrolls-then-pulls the feeder's desired state over the
+// persistent connection — dial (challenge → hello → hello-ack inside
+// relayclient.Dial), one state.pull, verify + apply through the shared
+// chain — mirroring cmd/waiveo-relay's own boot sequence on the framed
+// transport.
+func pullDesiredState(t *testing.T, feederBaseURL string, store *identity.Store) desiredstate.Applied {
+	t.Helper()
+	client, err := relayclient.Dial(relayclient.Config{
+		URL:   feederBaseURL,
+		Store: store,
+		Declaration: hello.Declaration{
+			ProtocolVersion: "1.0",
+			ClockState:      hello.ClockState{State: "untrusted", Source: "cold_boot"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("relayclient.Dial: %v", err)
+	}
+	defer client.Close()
+	reply, err := client.Pull("", nil)
+	if err != nil {
+		t.Fatalf("state.pull: %v", err)
+	}
+	body, raw, err := relayclient.SnapshotFromFrame(reply)
+	if err != nil {
+		t.Fatalf("SnapshotFromFrame: %v", err)
+	}
+	applied, err := desiredstate.VerifyAndApply(store, body, raw)
+	if err != nil {
+		t.Fatalf("VerifyAndApply: %v", err)
+	}
+	return applied
 }
 
 // bootTestRelay enrolls a fresh relay (internal/relay/enroll) against the
@@ -136,10 +194,7 @@ func bootTestRelay(t *testing.T, feederBaseURL string) (host string, port int, c
 		t.Fatalf("relayenroll.Run: %v", err)
 	}
 
-	applied, err = desiredstate.Pull(feederBaseURL, store)
-	if err != nil {
-		t.Fatalf("desiredstate.Pull: %v", err)
-	}
+	applied = pullDesiredState(t, feederBaseURL, store)
 
 	relayID, ok, err := store.Identity()
 	if err != nil {

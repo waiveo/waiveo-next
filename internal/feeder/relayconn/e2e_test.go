@@ -153,7 +153,7 @@ func newHarness(t *testing.T, opts ...feederrelayconn.Option) *harness {
 		t.Fatalf("snapshot.Build: %v", err)
 	}
 
-	enrollSrv, err := feederenroll.NewServer(feederID, snap1)
+	enrollSrv, err := feederenroll.NewServer(feederID)
 	if err != nil {
 		t.Fatalf("feederenroll.NewServer: %v", err)
 	}
@@ -696,6 +696,27 @@ func TestPullBeforeHelloIsProtocolViolation(t *testing.T) {
 	var next wire.Frame
 	if err := wsRecv(t, ws, &next); err == nil {
 		t.Fatalf("connection stayed open after protocol violation; received %+v", next)
+	}
+}
+
+// TestProtocolVersionUnsupportedDrawsTypedRefusal pins REL-033 on the wire:
+// a relay declaring a major the app peer implements no minor of is refused
+// PROTOCOL_VERSION_UNSUPPORTED in place of hello-ack — the channel binding is
+// checked first (the declaration is otherwise genuine), so this exercises the
+// negotiation refusal itself, the coverage the HTTP-era handshake tests
+// carried before that transport was deleted.
+func TestProtocolVersionUnsupportedDrawsTypedRefusal(t *testing.T) {
+	h := newHarness(t)
+	store := enrolledRelay(t, h)
+
+	decl := testDeclaration
+	decl.ProtocolVersion = "2.0" // the app peer implements only major 1
+	_, err := relayclient.Dial(relayclient.Config{
+		URL: h.ts.URL, Store: store, Declaration: decl,
+	})
+	var refusal *relayclient.Refusal
+	if !errors.As(err, &refusal) || refusal.Code != "PROTOCOL_VERSION_UNSUPPORTED" {
+		t.Fatalf("Dial declaring major 2 = %v, want a PROTOCOL_VERSION_UNSUPPORTED refusal (REL-033)", err)
 	}
 }
 

@@ -40,14 +40,17 @@ func testFeederIdentity(t *testing.T) *signing.Identity {
 	return id
 }
 
-// newTestFeeder builds a real feeder enrollment + desired-state-pull server
-// (Task 6's package) serving snap, mounted on an httptest TLS server —
-// exactly the shape Pull fetches from in production, only over a loopback
-// httptest listener rather than cmd/waiveo-feeder's own :7420.
-func newTestFeeder(t *testing.T, id *signing.Identity, snap wire.StateSnapshotBody) *httptest.Server {
+// newTestFeeder builds a real feeder enrollment server mounted on an
+// httptest TLS server — the bootstrap surface enrolledStore obtains its
+// trust anchor from. Desired state itself no longer moves over HTTP: each
+// test hands its snapshot straight to the verify chain (applySnapshot),
+// exactly as a state.snapshot frame received on the persistent connection
+// would reach it (internal/relay/relayconn.SnapshotFromFrame →
+// VerifyAndApply).
+func newTestFeeder(t *testing.T, id *signing.Identity) *httptest.Server {
 	t.Helper()
 
-	srv, err := feederenroll.NewServer(id, snap)
+	srv, err := feederenroll.NewServer(id)
 	if err != nil {
 		t.Fatalf("feederenroll.NewServer: %v", err)
 	}
@@ -57,6 +60,37 @@ func newTestFeeder(t *testing.T, id *signing.Identity, snap wire.StateSnapshotBo
 	ts := httptest.NewTLSServer(mux)
 	t.Cleanup(ts.Close)
 	return ts
+}
+
+// applySnapshot runs snap through the verify chain exactly as a received
+// state.snapshot frame would: marshal to the wire bytes, re-extract the raw
+// `sections` (the REL-060 structural gate must see the original JSON — a
+// Go-decoded Sections cannot reveal an omitted key), VerifyAndApply.
+func applySnapshot(t *testing.T, store *identity.Store, snap wire.StateSnapshotBody) (Applied, error) {
+	t.Helper()
+	raw, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+	return applyRawSnapshot(t, store, raw)
+}
+
+// applyRawSnapshot is applySnapshot for hand-crafted wire bytes (e.g. a body
+// with a sections key omitted) that the typed wire.StateSnapshotBody could
+// never itself marshal.
+func applyRawSnapshot(t *testing.T, store *identity.Store, raw []byte) (Applied, error) {
+	t.Helper()
+	var body wire.StateSnapshotBody
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("unmarshal snapshot body: %v", err)
+	}
+	var envelope struct {
+		Sections json.RawMessage `json:"sections"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatalf("extract raw sections: %v", err)
+	}
+	return VerifyAndApply(store, body, envelope.Sections)
 }
 
 func openStore(t *testing.T) *identity.Store {
@@ -71,7 +105,7 @@ func openStore(t *testing.T) *identity.Store {
 
 // enrolledStore builds a store already enrolled against ts (the real
 // relay/enroll.Run client flow), so it holds a persisted
-// desired_state_verification_key trust anchor before Pull is exercised.
+// desired_state_verification_key trust anchor before the verify chain is exercised.
 func enrolledStore(t *testing.T, ts *httptest.Server) *identity.Store {
 	t.Helper()
 	store := openStore(t)
@@ -81,10 +115,10 @@ func enrolledStore(t *testing.T, ts *httptest.Server) *identity.Store {
 	return store
 }
 
-// TestPullAppliesScreenProgram is Step 1's core assertion: Pull against a
-// live feeder, enrollment-verified end to end, returns the applied
-// screen-program's one image content item and persists last-applied.
-func TestPullAppliesScreenProgram(t *testing.T) {
+// TestApplyAppliesScreenProgram is the core assertion: a feeder-signed
+// snapshot, enrollment-verified end to end, applies the screen-program's
+// one image content item and persists last-applied.
+func TestApplyAppliesScreenProgram(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
@@ -93,12 +127,12 @@ func TestPullAppliesScreenProgram(t *testing.T) {
 		t.Fatalf("snapshot.Build: %v", err)
 	}
 
-	ts := newTestFeeder(t, id, snap)
+	ts := newTestFeeder(t, id)
 	store := enrolledStore(t, ts)
 
-	applied, err := Pull(ts.URL, store)
+	applied, err := applySnapshot(t, store, snap)
 	if err != nil {
-		t.Fatalf("Pull: %v", err)
+		t.Fatalf("VerifyAndApply: %v", err)
 	}
 
 	wantAssetRef := signhash.ContentID(img)
@@ -132,19 +166,19 @@ func TestPullAppliesScreenProgram(t *testing.T) {
 		t.Fatalf("LastAppliedGeneration: %v", err)
 	}
 	if !ok {
-		t.Fatal("LastAppliedGeneration ok = false after a successful Pull, want true")
+		t.Fatal("LastAppliedGeneration ok = false after a successful apply, want true")
 	}
 	if gen != 1 || hash != snap.Hash {
 		t.Errorf("LastAppliedGeneration = (%d, %q), want (1, %q)", gen, hash, snap.Hash)
 	}
 }
 
-// TestPullExposesEdgeRules asserts a verified snapshot's edge_rules section
+// TestApplyExposesEdgeRules asserts a verified snapshot's edge_rules section
 // (REL-062) is surfaced on Applied.EdgeRules unmodified — the raw rules/1
 // authored-rule JSON the feeder signed, which Task 2's automationhost
 // compiles + loads into the edge engine. It rides the SAME hash/signature
 // verification as the screen-program: no separate trust step applies to it.
-func TestPullExposesEdgeRules(t *testing.T) {
+func TestApplyExposesEdgeRules(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
@@ -156,12 +190,12 @@ func TestPullExposesEdgeRules(t *testing.T) {
 		t.Fatal("precondition: snapshot.Build emitted no edge rules")
 	}
 
-	ts := newTestFeeder(t, id, snap)
+	ts := newTestFeeder(t, id)
 	store := enrolledStore(t, ts)
 
-	applied, err := Pull(ts.URL, store)
+	applied, err := applySnapshot(t, store, snap)
 	if err != nil {
-		t.Fatalf("Pull: %v", err)
+		t.Fatalf("VerifyAndApply: %v", err)
 	}
 
 	if !reflect.DeepEqual(applied.EdgeRules, []json.RawMessage(snap.Sections.EdgeRules.Rules)) {
@@ -170,13 +204,13 @@ func TestPullExposesEdgeRules(t *testing.T) {
 	}
 }
 
-// TestPullRejectsWrongKeyEdgeRulesSnapshot is the signed-section-discipline
+// TestApplyRejectsWrongKeyEdgeRulesSnapshot is the signed-section-discipline
 // test (REL-062/056): a snapshot whose edge_rules section was tampered and
 // then re-signed under a key OTHER than the enrollment-learned trust anchor
 // MUST be rejected by the SAME signature check that rejects a wrong-key
 // screen-program — there is NO second trust path for edge_rules. Nothing is
 // applied and last-applied is left untouched.
-func TestPullRejectsWrongKeyEdgeRulesSnapshot(t *testing.T) {
+func TestApplyRejectsWrongKeyEdgeRulesSnapshot(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
@@ -209,15 +243,15 @@ func TestPullRejectsWrongKeyEdgeRulesSnapshot(t *testing.T) {
 	}
 	tampered.Signature = wire.EncodeSignature(signhash.Sign(attackerPriv, canon))
 
-	ts := newTestFeeder(t, id, tampered)
+	ts := newTestFeeder(t, id)
 	store := enrolledStore(t, ts)
 
-	applied, err := Pull(ts.URL, store)
+	applied, err := applySnapshot(t, store, tampered)
 	if !errors.Is(err, ErrSnapshotSignatureInvalid) {
-		t.Fatalf("Pull error = %v, want ErrSnapshotSignatureInvalid (edge_rules rides the same trust path)", err)
+		t.Fatalf("apply error = %v, want ErrSnapshotSignatureInvalid (edge_rules rides the same trust path)", err)
 	}
 	if !reflect.DeepEqual(applied, Applied{}) {
-		t.Errorf("Pull returned a non-zero Applied on rejection: %+v", applied)
+		t.Errorf("apply returned a non-zero Applied on rejection: %+v", applied)
 	}
 
 	_, _, ok, err := store.LastAppliedGeneration()
@@ -229,13 +263,13 @@ func TestPullRejectsWrongKeyEdgeRulesSnapshot(t *testing.T) {
 	}
 }
 
-// TestPullRejectsWrongKeySignedSnapshot is the load-bearing security test
+// TestApplyRejectsWrongKeySignedSnapshot is the load-bearing security test
 // (REL-071/072, `#28`): a snapshot whose `signature` verifies under some
 // key OTHER than the persisted desired_state_verification_key trust
 // anchor must be rejected outright — no section applied, last-applied
 // unchanged — even though the enrollment response itself carried the
 // correct (real feeder) verification key.
-func TestPullRejectsWrongKeySignedSnapshot(t *testing.T) {
+func TestApplyRejectsWrongKeySignedSnapshot(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
@@ -257,17 +291,17 @@ func TestPullRejectsWrongKeySignedSnapshot(t *testing.T) {
 	tampered.Signature = wire.EncodeSignature(signhash.Sign(attackerPriv, canon))
 
 	// The enrollment endpoint still hands out id's own (real) signing pub
-	// as the trust anchor — only /state/pull's served snapshot is signed
+	// as the trust anchor — only the applied snapshot is signed
 	// wrong.
-	ts := newTestFeeder(t, id, tampered)
+	ts := newTestFeeder(t, id)
 	store := enrolledStore(t, ts)
 
-	applied, err := Pull(ts.URL, store)
+	applied, err := applySnapshot(t, store, tampered)
 	if !errors.Is(err, ErrSnapshotSignatureInvalid) {
-		t.Fatalf("Pull error = %v, want ErrSnapshotSignatureInvalid", err)
+		t.Fatalf("apply error = %v, want ErrSnapshotSignatureInvalid", err)
 	}
 	if !reflect.DeepEqual(applied, Applied{}) {
-		t.Errorf("Pull returned a non-zero Applied on rejection: %+v", applied)
+		t.Errorf("apply returned a non-zero Applied on rejection: %+v", applied)
 	}
 
 	_, _, ok, err := store.LastAppliedGeneration()
@@ -279,10 +313,10 @@ func TestPullRejectsWrongKeySignedSnapshot(t *testing.T) {
 	}
 }
 
-// TestPullRejectsTamperedSections asserts a snapshot whose `sections` no
+// TestApplyRejectsTamperedSections asserts a snapshot whose `sections` no
 // longer hashes to its own `hash` field is rejected outright, without ever
 // reaching signature verification.
-func TestPullRejectsTamperedSections(t *testing.T) {
+func TestApplyRejectsTamperedSections(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
@@ -297,15 +331,15 @@ func TestPullRejectsTamperedSections(t *testing.T) {
 	// Hash and Signature are left as Build produced them for the ORIGINAL
 	// sections — now stale relative to the tampered sections.
 
-	ts := newTestFeeder(t, id, tampered)
+	ts := newTestFeeder(t, id)
 	store := enrolledStore(t, ts)
 
-	applied, err := Pull(ts.URL, store)
+	applied, err := applySnapshot(t, store, tampered)
 	if !errors.Is(err, ErrSnapshotHashMismatch) {
-		t.Fatalf("Pull error = %v, want ErrSnapshotHashMismatch", err)
+		t.Fatalf("apply error = %v, want ErrSnapshotHashMismatch", err)
 	}
 	if !reflect.DeepEqual(applied, Applied{}) {
-		t.Errorf("Pull returned a non-zero Applied on rejection: %+v", applied)
+		t.Errorf("apply returned a non-zero Applied on rejection: %+v", applied)
 	}
 
 	_, _, ok, err := store.LastAppliedGeneration()
@@ -317,11 +351,11 @@ func TestPullRejectsTamperedSections(t *testing.T) {
 	}
 }
 
-// TestPullSameGenerationIsIdempotent asserts re-pulling the same
+// TestApplySameGenerationIsIdempotent asserts re-pulling the same
 // (verified, unchanged) generation is a no-op: it succeeds and returns the
 // same applied program, and last-applied stays exactly what it was
 // (REL-070).
-func TestPullSameGenerationIsIdempotent(t *testing.T) {
+func TestApplySameGenerationIsIdempotent(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
@@ -330,29 +364,29 @@ func TestPullSameGenerationIsIdempotent(t *testing.T) {
 		t.Fatalf("snapshot.Build: %v", err)
 	}
 
-	ts := newTestFeeder(t, id, snap)
+	ts := newTestFeeder(t, id)
 	store := enrolledStore(t, ts)
 
-	first, err := Pull(ts.URL, store)
+	first, err := applySnapshot(t, store, snap)
 	if err != nil {
-		t.Fatalf("first Pull: %v", err)
+		t.Fatalf("first apply: %v", err)
 	}
 	genAfterFirst, hashAfterFirst, ok, err := store.LastAppliedGeneration()
 	if err != nil || !ok {
-		t.Fatalf("LastAppliedGeneration after first Pull: gen=%d hash=%q ok=%v err=%v", genAfterFirst, hashAfterFirst, ok, err)
+		t.Fatalf("LastAppliedGeneration after first apply: gen=%d hash=%q ok=%v err=%v", genAfterFirst, hashAfterFirst, ok, err)
 	}
 
-	second, err := Pull(ts.URL, store)
+	second, err := applySnapshot(t, store, snap)
 	if err != nil {
-		t.Fatalf("second (idempotent) Pull: %v", err)
+		t.Fatalf("second (idempotent) apply: %v", err)
 	}
 	if !reflect.DeepEqual(second, first) {
-		t.Errorf("second Pull = %+v, want identical to first %+v", second, first)
+		t.Errorf("second apply = %+v, want identical to first %+v", second, first)
 	}
 
 	genAfterSecond, hashAfterSecond, ok, err := store.LastAppliedGeneration()
 	if err != nil || !ok {
-		t.Fatalf("LastAppliedGeneration after second Pull: gen=%d hash=%q ok=%v err=%v", genAfterSecond, hashAfterSecond, ok, err)
+		t.Fatalf("LastAppliedGeneration after second apply: gen=%d hash=%q ok=%v err=%v", genAfterSecond, hashAfterSecond, ok, err)
 	}
 	if genAfterSecond != genAfterFirst || hashAfterSecond != hashAfterFirst {
 		t.Errorf("last-applied changed across an idempotent re-pull: first=(%d,%q) second=(%d,%q)",
@@ -360,10 +394,10 @@ func TestPullSameGenerationIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestPullRejectsLowerGeneration asserts a pulled snapshot's generation
+// TestApplyRejectsLowerGeneration asserts a pulled snapshot's generation
 // lower than the persisted last-applied generation is rejected outright
 // (REL-052), and last-applied is left unchanged.
-func TestPullRejectsLowerGeneration(t *testing.T) {
+func TestApplyRejectsLowerGeneration(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
@@ -373,7 +407,7 @@ func TestPullRejectsLowerGeneration(t *testing.T) {
 		t.Fatalf("snapshot.Build: %v", err)
 	}
 
-	ts := newTestFeeder(t, id, snap)
+	ts := newTestFeeder(t, id)
 	store := enrolledStore(t, ts)
 
 	// Simulate the relay having already applied a LATER generation than
@@ -383,12 +417,12 @@ func TestPullRejectsLowerGeneration(t *testing.T) {
 		t.Fatalf("SetLastAppliedGeneration: %v", err)
 	}
 
-	applied, err := Pull(ts.URL, store)
+	applied, err := applySnapshot(t, store, snap)
 	if !errors.Is(err, ErrGenerationRegressed) {
-		t.Fatalf("Pull error = %v, want ErrGenerationRegressed", err)
+		t.Fatalf("apply error = %v, want ErrGenerationRegressed", err)
 	}
 	if !reflect.DeepEqual(applied, Applied{}) {
-		t.Errorf("Pull returned a non-zero Applied on rejection: %+v", applied)
+		t.Errorf("apply returned a non-zero Applied on rejection: %+v", applied)
 	}
 
 	gen, hash, ok, err := store.LastAppliedGeneration()
@@ -400,29 +434,12 @@ func TestPullRejectsLowerGeneration(t *testing.T) {
 	}
 }
 
-// newRawPullServer serves rawBody verbatim from /state/pull over an
-// httptest TLS listener — used to exercise Pull against a hand-crafted
-// snapshot body (e.g. one with a section key omitted) that the typed
-// wire.StateSnapshotBody could never itself marshal.
-func newRawPullServer(t *testing.T, rawBody []byte) *httptest.Server {
-	t.Helper()
-	mux := http.NewServeMux()
-	mux.HandleFunc("/state/pull", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(rawBody)
-	})
-	ts := httptest.NewTLSServer(mux)
-	t.Cleanup(ts.Close)
-	return ts
-}
-
-// TestPullExposesSiteEffective asserts a verified snapshot's
+// TestApplyExposesSiteEffective asserts a verified snapshot's
 // revocation_and_site.site_effective (REL-066) is surfaced on
 // Applied.SiteEffective unmodified — the persisted site placement a relay's
 // dayparting/sun evaluation uses across a restart, riding the same
 // hash/signature verification as everything else.
-func TestPullExposesSiteEffective(t *testing.T) {
+func TestApplyExposesSiteEffective(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
@@ -435,25 +452,25 @@ func TestPullExposesSiteEffective(t *testing.T) {
 		t.Fatal("precondition: snapshot.Build emitted an empty site_effective")
 	}
 
-	ts := newTestFeeder(t, id, snap)
+	ts := newTestFeeder(t, id)
 	store := enrolledStore(t, ts)
 
-	applied, err := Pull(ts.URL, store)
+	applied, err := applySnapshot(t, store, snap)
 	if err != nil {
-		t.Fatalf("Pull: %v", err)
+		t.Fatalf("VerifyAndApply: %v", err)
 	}
 	if applied.SiteEffective != want {
 		t.Errorf("applied.SiteEffective = %+v, want %+v (REL-066, unmodified)", applied.SiteEffective, want)
 	}
 }
 
-// TestPullExposesContentOrigin asserts a verified snapshot's
+// TestApplyExposesContentOrigin asserts a verified snapshot's
 // revocation_and_site.content_origin (REL-061/066) is surfaced on
 // Applied.ContentOrigin unmodified — the content-origin base URL a later
 // relay-side schedule resolver (internal/relay/schedulehost) derives
 // fetchable content URLs from. It rides the SAME hash/signature verification
 // as every other section member.
-func TestPullExposesContentOrigin(t *testing.T) {
+func TestApplyExposesContentOrigin(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
@@ -466,23 +483,23 @@ func TestPullExposesContentOrigin(t *testing.T) {
 		t.Fatal("precondition: snapshot.Build emitted an empty content_origin")
 	}
 
-	ts := newTestFeeder(t, id, snap)
+	ts := newTestFeeder(t, id)
 	store := enrolledStore(t, ts)
 
-	applied, err := Pull(ts.URL, store)
+	applied, err := applySnapshot(t, store, snap)
 	if err != nil {
-		t.Fatalf("Pull: %v", err)
+		t.Fatalf("VerifyAndApply: %v", err)
 	}
 	if applied.ContentOrigin != want {
 		t.Errorf("applied.ContentOrigin = %q, want %q (REL-061/066, unmodified)", applied.ContentOrigin, want)
 	}
 }
 
-// TestPullExposesScreenPrograms asserts a verified snapshot's full
+// TestApplyExposesScreenPrograms asserts a verified snapshot's full
 // screen_programs array (REL-061) is surfaced on Applied.ScreenPrograms
 // unmodified — carrying priority/display/content through for Task 2's
 // offline program delivery.
-func TestPullExposesScreenPrograms(t *testing.T) {
+func TestApplyExposesScreenPrograms(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
@@ -491,19 +508,19 @@ func TestPullExposesScreenPrograms(t *testing.T) {
 		t.Fatalf("snapshot.Build: %v", err)
 	}
 
-	ts := newTestFeeder(t, id, snap)
+	ts := newTestFeeder(t, id)
 	store := enrolledStore(t, ts)
 
-	applied, err := Pull(ts.URL, store)
+	applied, err := applySnapshot(t, store, snap)
 	if err != nil {
-		t.Fatalf("Pull: %v", err)
+		t.Fatalf("VerifyAndApply: %v", err)
 	}
 	if !reflect.DeepEqual(applied.ScreenPrograms, snap.Sections.ScreenPrograms) {
 		t.Errorf("applied.ScreenPrograms = %+v, want %+v (REL-061, unmodified)", applied.ScreenPrograms, snap.Sections.ScreenPrograms)
 	}
 }
 
-// TestPullExposesSchedule asserts a verified snapshot's schedule section
+// TestApplyExposesSchedule asserts a verified snapshot's schedule section
 // (REL-065) is surfaced on Applied.Schedule unmodified — the raw
 // scheduling-core rows + scope nodes the feeder signed, which a later
 // relay-side resolver derives a dayparting timeline from. It rides the SAME
@@ -511,7 +528,7 @@ func TestPullExposesScreenPrograms(t *testing.T) {
 // and a populated schedule leaves the byte-identical-marshaling → hash
 // invariant intact: repopulate the section, recompute the hash + re-sign under
 // the feeder's own key, and Pull verifies it exactly as it does every section.
-func TestPullExposesSchedule(t *testing.T) {
+func TestApplyExposesSchedule(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
@@ -562,23 +579,23 @@ func TestPullExposesSchedule(t *testing.T) {
 	}
 	snap.Signature = wire.EncodeSignature(signhash.Sign(id.SigningPriv(), canon))
 
-	ts := newTestFeeder(t, id, snap)
+	ts := newTestFeeder(t, id)
 	store := enrolledStore(t, ts)
 
-	applied, err := Pull(ts.URL, store)
+	applied, err := applySnapshot(t, store, snap)
 	if err != nil {
-		t.Fatalf("Pull: %v", err)
+		t.Fatalf("VerifyAndApply: %v", err)
 	}
 	if !reflect.DeepEqual(applied.Schedule, sched) {
 		t.Errorf("applied.Schedule = %+v, want %+v (REL-065, unmodified, riding the same hash/signature)", applied.Schedule, sched)
 	}
 }
 
-// TestPullRejectsIncompleteSections asserts a snapshot whose `sections`
+// TestApplyRejectsIncompleteSections asserts a snapshot whose `sections`
 // object omits any one of the seven REL-060 keys is rejected outright
 // (ErrSectionsIncomplete) — the structural completeness gate fires before
 // hash/signature verification, and nothing is applied.
-func TestPullRejectsIncompleteSections(t *testing.T) {
+func TestApplyRejectsIncompleteSections(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
@@ -588,7 +605,7 @@ func TestPullRejectsIncompleteSections(t *testing.T) {
 	}
 
 	// Enroll against a real feeder so the store holds the trust anchor.
-	realTS := newTestFeeder(t, id, snap)
+	realTS := newTestFeeder(t, id)
 	store := enrolledStore(t, realTS)
 
 	// Craft a body whose sections omits `schedule` (any one key would do).
@@ -614,13 +631,12 @@ func TestPullRejectsIncompleteSections(t *testing.T) {
 		t.Fatalf("Marshal incomplete body: %v", err)
 	}
 
-	ts := newRawPullServer(t, rawBody)
-	applied, err := Pull(ts.URL, store)
+	applied, err := applyRawSnapshot(t, store, rawBody)
 	if !errors.Is(err, ErrSectionsIncomplete) {
-		t.Fatalf("Pull error = %v, want ErrSectionsIncomplete (REL-060)", err)
+		t.Fatalf("apply error = %v, want ErrSectionsIncomplete (REL-060)", err)
 	}
 	if !reflect.DeepEqual(applied, Applied{}) {
-		t.Errorf("Pull returned a non-zero Applied on rejection: %+v", applied)
+		t.Errorf("apply returned a non-zero Applied on rejection: %+v", applied)
 	}
 	if _, _, ok, err := store.LastAppliedGeneration(); err != nil {
 		t.Fatalf("LastAppliedGeneration: %v", err)
@@ -629,12 +645,12 @@ func TestPullRejectsIncompleteSections(t *testing.T) {
 	}
 }
 
-// TestPullIgnoresWorkflowGeneration asserts the relay accepts and
+// TestApplyIgnoresWorkflowGeneration asserts the relay accepts and
 // structurally ignores a non-empty workflow_generation section (REL-068,
 // RESERVED): a snapshot carrying arbitrary content there — re-hashed and
 // re-signed under the feeder's own key — still applies its screen-program
 // exactly as one carrying the reserved null placeholder.
-func TestPullIgnoresWorkflowGeneration(t *testing.T) {
+func TestApplyIgnoresWorkflowGeneration(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
@@ -656,23 +672,23 @@ func TestPullIgnoresWorkflowGeneration(t *testing.T) {
 	}
 	snap.Signature = wire.EncodeSignature(signhash.Sign(id.SigningPriv(), canon))
 
-	ts := newTestFeeder(t, id, snap)
+	ts := newTestFeeder(t, id)
 	store := enrolledStore(t, ts)
 
-	applied, err := Pull(ts.URL, store)
+	applied, err := applySnapshot(t, store, snap)
 	if err != nil {
-		t.Fatalf("Pull: %v", err)
+		t.Fatalf("VerifyAndApply: %v", err)
 	}
 	if applied.Generation != 1 || applied.ScreenID != snap.Sections.ScreenPrograms[0].ScreenID {
 		t.Errorf("applied = %+v, want the screen-program applied despite non-empty workflow_generation (REL-068)", applied)
 	}
 }
 
-// TestPullFailsWithoutTrustAnchor asserts Pull refuses to even attempt
+// TestApplyFailsWithoutTrustAnchor asserts VerifyAndApply refuses to even attempt
 // verification when the store holds no persisted
 // desired_state_verification_key yet (never enrolled) — there is no trust
 // anchor to check anything against.
-func TestPullFailsWithoutTrustAnchor(t *testing.T) {
+func TestApplyFailsWithoutTrustAnchor(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
@@ -681,11 +697,11 @@ func TestPullFailsWithoutTrustAnchor(t *testing.T) {
 		t.Fatalf("snapshot.Build: %v", err)
 	}
 
-	ts := newTestFeeder(t, id, snap)
-	store := openStore(t) // deliberately NOT enrolled
+	_ = newTestFeeder(t, id) // the bootstrap listener exists; this relay never enrolls against it
+	store := openStore(t)    // deliberately NOT enrolled
 
-	_, err = Pull(ts.URL, store)
+	_, err = applySnapshot(t, store, snap)
 	if !errors.Is(err, ErrNoTrustAnchor) {
-		t.Fatalf("Pull error = %v, want ErrNoTrustAnchor", err)
+		t.Fatalf("apply error = %v, want ErrNoTrustAnchor", err)
 	}
 }

@@ -4,9 +4,12 @@
 // that issues the relay a certificate and hands it the feeder's own
 // desired-state signing public key — the trust anchor the relay persists
 // and verifies every subsequent snapshot against (REL-012, REL-071,
-// enrollment-anchored trust) — and a desired-state pull endpoint serving
-// the feeder's one signed generation (Task 5's snapshot.Build output,
-// relay/1 REL-051).
+// enrollment-anchored trust) — and the Expired-certificate re-enrollment
+// surface (REL-020–027). These are the ONLY pre-mTLS HTTP routes: desired
+// state itself moves exclusively over the authenticated persistent
+// connection (internal/feeder/relayconn, state.pull/state.snapshot,
+// REL-050/051), which this server feeds through its enrollment registry
+// (RelayEnrollmentKey, IsRevoked, ClientCAPool).
 //
 // The feeder acts as a minimal certificate authority for this loopback
 // deployment: NewServer generates a fresh, in-memory, self-signed CA
@@ -38,7 +41,6 @@ import (
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/relay/reenroll"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
-	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
 // relayCertValidity is how long an issued relay leaf certificate is valid
@@ -56,19 +58,10 @@ const (
 	reEnrollRateWindowMs = 60_000
 )
 
-// Server is the feeder's relay/1 enrollment + desired-state-pull server.
-// Safe for concurrent use (its claim-token bookkeeping is mutex-guarded).
+// Server is the feeder's relay/1 enrollment server. Safe for concurrent use
+// (its claim-token bookkeeping is mutex-guarded).
 type Server struct {
 	identity *signing.Identity
-	snapshot wire.StateSnapshotBody
-
-	// snapshotProvider, when set (SetSnapshotProvider), supersedes the static
-	// snapshot: handleStatePull calls it to obtain the CURRENT-generation desired
-	// state on each pull, so the feeder can serve a store-derived snapshot rebuilt
-	// as the app store's generation advances (the authoring loop) rather than one
-	// frozen snapshot. nil (the default) preserves the original behavior — serve
-	// the snapshot NewServer was given, verbatim. Read/written under mu.
-	snapshotProvider func() (wire.StateSnapshotBody, error)
 
 	caCert *x509.Certificate
 	caKey  ed25519.PrivateKey
@@ -109,12 +102,11 @@ type issuance struct {
 }
 
 // NewServer builds an enroll.Server that issues relay certificates under a
-// fresh, in-memory feeder CA, hands out identity's own desired-state
-// signing public key as `desired_state_verification_key`, and serves
-// snapshot verbatim from its pull endpoint. snapshot is expected to
-// already be identity-signed (snapshot.Build's output) — NewServer does
-// not sign or otherwise modify it.
-func NewServer(identity *signing.Identity, snapshot wire.StateSnapshotBody) (*Server, error) {
+// fresh, in-memory feeder CA and hands out identity's own desired-state
+// signing public key as `desired_state_verification_key` — the trust anchor
+// every snapshot the relay later pulls over the persistent connection
+// verifies against (REL-012/071).
+func NewServer(identity *signing.Identity) (*Server, error) {
 	if identity == nil {
 		return nil, fmt.Errorf("enroll: NewServer: identity must not be nil")
 	}
@@ -126,7 +118,6 @@ func NewServer(identity *signing.Identity, snapshot wire.StateSnapshotBody) (*Se
 
 	return &Server{
 		identity:  identity,
-		snapshot:  snapshot,
 		caCert:    caCert,
 		caKey:     caKey,
 		reLimiter: reenroll.NewRateLimiter(reEnrollRateLimit, reEnrollRateWindowMs),
@@ -136,14 +127,16 @@ func NewServer(identity *signing.Identity, snapshot wire.StateSnapshotBody) (*Se
 	}, nil
 }
 
-// Register mounts the server's three routes (`/claim-token`, `/enroll`,
-// `/state/pull`) onto mux. Callers serve mux over the feeder's own HTTPS
-// listener (signing.Identity's TLS cert/key) — REL-010's server-authenticated,
-// no-client-cert bootstrap TLS.
+// Register mounts the server's bootstrap routes (`/claim-token`, `/enroll`,
+// and the re-enrollment pair below) onto mux. Callers serve mux over the
+// feeder's own HTTPS listener (signing.Identity's TLS cert/key) — REL-010's
+// server-authenticated, no-client-cert bootstrap TLS. These are the routes
+// that CANNOT ride the authenticated persistent connection: they exist to
+// bootstrap the very identity that connection authenticates with
+// (REL-010/026).
 func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/claim-token", s.handleClaimToken)
 	mux.HandleFunc("/enroll", s.handleEnroll)
-	mux.HandleFunc("/state/pull", s.handleStatePull)
 	// Expired-certificate re-enrollment bootstrap surface (REL-020/024/026):
 	// a challenge issuer and the pop-guarded renew handler, served over the
 	// same server-authenticated bootstrap TLS as the rest of enrollment.
@@ -406,51 +399,6 @@ func (s *Server) ClientCAPool() *x509.CertPool {
 	pool := x509.NewCertPool()
 	pool.AddCert(s.caCert)
 	return pool
-}
-
-// SetSnapshotProvider installs a desired-state source that supersedes the static
-// snapshot: every subsequent desired-state pull is answered by calling provider,
-// so the feeder can serve a store-derived snapshot at the store's current
-// generation (rebuilt as the generation advances). Passing nil reverts to serving
-// the static snapshot NewServer was given. Intended to be called once at startup
-// before the listener accepts pulls; guarded by mu so it is nonetheless safe
-// against a concurrent pull.
-func (s *Server) SetSnapshotProvider(provider func() (wire.StateSnapshotBody, error)) {
-	s.mu.Lock()
-	s.snapshotProvider = provider
-	s.mu.Unlock()
-}
-
-// currentSnapshot returns the desired state to serve: the provider's
-// current-generation snapshot when one is installed, else the static snapshot.
-func (s *Server) currentSnapshot() (wire.StateSnapshotBody, error) {
-	s.mu.Lock()
-	provider := s.snapshotProvider
-	static := s.snapshot
-	s.mu.Unlock()
-	if provider != nil {
-		return provider()
-	}
-	return static, nil
-}
-
-// handleStatePull implements relay/1's desired-state pull (REL-051), serving the
-// feeder's current signed generation — the provider-derived one when a snapshot
-// provider is installed (the store-driven authoring loop), else the static
-// snapshot verbatim. A provider error is a 500: the relay treats a failed pull as
-// non-fatal and keeps serving its last-applied generation (REL-055), so a
-// transient derive failure never corrupts the served program.
-func (s *Server) handleStatePull(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	snap, err := s.currentSnapshot()
-	if err != nil {
-		http.Error(w, "desired state unavailable", http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, http.StatusOK, snap)
 }
 
 // issueRelayCert issues a per-relay leaf certificate under s's CA, over
