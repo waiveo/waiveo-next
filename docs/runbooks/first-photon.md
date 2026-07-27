@@ -59,6 +59,46 @@ The relay log line `listening (HTTPS) on 0.0.0.0:7421 (pairing code dial
 <LAN-IP>:7421)` must show the LAN IP, not loopback. Optionally run the Task-11
 conformance drivers against the live box to confirm the surfaces conform.
 
+### 2a. Upgrading a box that already has a store
+
+Skip this on a genuinely fresh box — there is nothing to check. Do it on any box
+that has run a feeder before, **including the lab appliance.**
+
+Every row id has to be a canonical ULID, and the store validates the whole row
+set on every write. A store seeded before that rule landed is therefore readable
+but **write-dead**: it serves screens, and every attempt to author anything fails
+with `ROW_ID_INVALID` naming a row nobody touched. The feeder repairs this at
+boot — it rewrites the offending ids and every reference to them in one
+transaction, touching nothing else, and leaves an already-conforming store
+completely alone. Look before you restart anyway:
+
+```
+# on the box, as the waiveo user, with the feeder still running the old build
+sudo -u waiveo /opt/waiveo-next/bin/waiveo-feeder -store-check
+```
+
+It writes nothing. Three outcomes:
+
+- *"every row id is already a canonical ULID"* — nothing to do; restart normally.
+- A list of `old -> new` rewrites — that is exactly what the next boot will
+  change, and the ids are derived from the old ones, so they are recognisable.
+  Restart and confirm the same list in `journalctl -u waiveo-feeder`.
+- A refusal (non-zero exit) — **stop.** The feeder will decline to start against
+  this store. Nothing has been changed. Capture the output and the store file
+  before doing anything else.
+
+Take a copy of the store first regardless; it is one file and it is the only
+place authored content lives:
+
+```
+sudo -u waiveo cp -a /opt/waiveo-next/.dev/feeder-store.db{,.pre-upgrade}
+```
+
+After the restart, the store's generation advances by one, so every connected
+relay re-pulls the desired state and picks the new ids up on its own — no relay
+or player action is needed. Re-running the repair is safe: a second boot finds
+nothing to do.
+
 ## 3. Confirm the player crypto on the target firmware (once)
 
 Sideload `player-v3` and launch the console-only self-check — no screen needed,
