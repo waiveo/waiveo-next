@@ -110,6 +110,28 @@ var kindDeclaredMembers = map[Kind][]declaredMember{
 		{key: "max", value: json.RawMessage(`null`)},
 		{key: "conditions", value: json.RawMessage(`[]`), overNull: true},
 	},
+	KindScreen: {
+		// `device_id` — `null`. player/1 PLY-124 makes a screen's reference to an
+		// adopted device OPTIONAL, and the declared type is `["string","null"]`,
+		// so null is the schema's own spelling of "no device is bound to this
+		// screen" and is exactly what an absent member meant. Deliberately NOT
+		// overNull, for the same reason `parent_id` and `max` are not: there,
+		// null IS the value.
+		{key: "device_id", value: json.RawMessage(`null`)},
+	},
+	KindAdoptedDevice: {
+		// `entities` — `[]`. A device adopted before its entity policy has been
+		// authored exposes no entities yet, which is what an absent list already
+		// meant to the desired-state projection (relay/1 REL-063's `entities` is
+		// an array, never absent). The empty list is the same statement spelled
+		// out, and a typed client never meets a missing member.
+		{key: "entities", value: json.RawMessage(`[]`), overNull: true},
+		// `poll_cadence_seconds` — `null`. REL-063 states no default, so null is
+		// "this deployment has not stated a cadence"; materializing a NUMBER here
+		// would invent a polling policy the operator never wrote, exactly as a
+		// number in `max` would invent a concurrency policy.
+		{key: "poll_cadence_seconds", value: json.RawMessage(`null`)},
+	},
 	KindWebhookEndpoint: {
 		// `schemas` — `[]`. An endpoint that named no schemas subscribes to
 		// every registered schema its scope admits (EVT-124: a schemas

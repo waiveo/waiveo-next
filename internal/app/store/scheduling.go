@@ -21,6 +21,20 @@ var schedulingKinds = map[Kind]bool{
 	KindPresetBatch:    true,
 }
 
+// identityKinds is the subset of resource kinds whose writes are validated
+// through datamodel.ValidateIdentityRows: the screen identity row and the device
+// row data-model/1 DAT-004/DAT-005b define.
+//
+// The two are validated TOGETHER, whichever of them was written, because a
+// screen's optional device_id link (player/1 PLY-124) can only be resolved
+// against the device table — so deleting a device a screen still points at is
+// caught by the screen table's own re-validation, exactly as deleting a playlist
+// a daypart still points at is caught by the scheduling set's.
+var identityKinds = map[Kind]bool{
+	KindScreen:        true,
+	KindAdoptedDevice: true,
+}
+
 // validateAfterWrite runs, inside the write transaction, the datamodel/1
 // validation appropriate to the kind just written, over the RESULTING full
 // row-set — so a write is judged against the state it produced, and a failure
@@ -46,6 +60,15 @@ func validateAfterWrite(ctx context.Context, tx *sql.Tx, kind Kind) error {
 			return err
 		}
 		if _, errs := datamodel.ValidateRows(raw); len(errs) > 0 {
+			return &ValidationError{Errors: errs}
+		}
+		return nil
+	case identityKinds[kind]:
+		raw, err := readIdentityRows(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if _, errs := datamodel.ValidateIdentityRows(raw); len(errs) > 0 {
 			return &ValidationError{Errors: errs}
 		}
 		return nil
@@ -128,6 +151,22 @@ func readRawRows(ctx context.Context, q queryer) (datamodel.RawRows, error) {
 		return rr, err
 	}
 	return rr, nil
+}
+
+// readIdentityRows loads the screen and device row bodies, each ordered by id,
+// into the datamodel.RawIdentityRows bundle ValidateIdentityRows consumes — the
+// identity-kind counterpart of readRawRows, and the reason a write to EITHER
+// table re-validates BOTH (a screen's PLY-124 device link crosses them).
+func readIdentityRows(ctx context.Context, q queryer) (datamodel.RawIdentityRows, error) {
+	var ri datamodel.RawIdentityRows
+	var err error
+	if ri.Screens, err = readBodies(ctx, q, string(KindScreen)); err != nil {
+		return ri, err
+	}
+	if ri.Devices, err = readBodies(ctx, q, string(KindAdoptedDevice)); err != nil {
+		return ri, err
+	}
+	return ri, nil
 }
 
 // readBodies returns every row body of a table, ordered by id ascending.

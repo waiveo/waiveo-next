@@ -59,16 +59,33 @@ const (
 	// would be a secret handed to every reader. Both live in the private
 	// webhook_delivery_state table instead (webhooks.go).
 	KindWebhookEndpoint Kind = "webhook_endpoints"
+	// KindScreen is the screen's own identity row (data-model/1 DAT-004/DAT-004a):
+	// the row a `screen_id` NAMES. It is deliberately not the `screen`-kind scope
+	// node — that is a placement classification (DAT-001), and DAT-004 lets a
+	// screen row sit under a node of any kind, so two screens may share one node
+	// and a screen may sit directly under a site. Its writes are validated through
+	// datamodel.ValidateIdentityRows (identityKinds, below).
+	KindScreen Kind = "screens"
+	// KindAdoptedDevice is the device row (DAT-004/DAT-004a): the row a `device_id`
+	// names, carrying the members relay/1 REL-063's `device_inventory` entry is
+	// defined as. It is an ADOPTION RECORD, not a copy of the relay's live view —
+	// the relay reports discovered-but-unadopted candidates upward (REL-110/111)
+	// and the app peer ships the adoption decision back down — which is why it is
+	// a durable, authored resource here while the relay's own current report stays
+	// the in-memory read model internal/app/devices serves.
+	KindAdoptedDevice Kind = "adopted_devices"
 )
 
 // allKinds is every resource table in schema order (scope_nodes first, then the
-// six scheduling-core kinds, then automations). schedulingKinds is the subset
-// validated through datamodel.ValidateRows; automations are compile-gated
+// six scheduling-core kinds, then automations, webhook endpoints, and the two
+// identity kinds). schedulingKinds is the subset validated through
+// datamodel.ValidateRows; identityKinds the subset validated through
+// datamodel.ValidateIdentityRows; automations are compile-gated
 // (compile.Compile) instead — see automations.go.
 var allKinds = []Kind{
 	KindScopeNode, KindPlaylist, KindSchedule, KindDaypart,
 	KindValidityWindow, KindFallback, KindPresetBatch, KindAutomation,
-	KindWebhookEndpoint,
+	KindWebhookEndpoint, KindScreen, KindAdoptedDevice,
 }
 
 var kindSet = func() map[Kind]bool {

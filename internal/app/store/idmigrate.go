@@ -130,8 +130,8 @@ func (e *IDMigrationBlockedError) Error() string {
 // source of the plan for both the read-only report and the migrating write — so
 // what an operator is shown is computed by the same code that later acts.
 //
-// It covers two populations. The first is every row's own id across all eight
-// resource tables (for preset_batches the id column holds the body's preset_id,
+// It covers two populations. The first is every row's own id across every
+// resource table (for preset_batches the id column holds the body's preset_id,
 // DAT-005's byte-exact exception, so it is reached the same way). The second is
 // scope-node parent_id values, which are the ONLY reference the data model lets
 // dangle: an absent parent is a subtree boundary, so a parent_id need not appear
@@ -268,7 +268,7 @@ func remap(id string, mapping map[string]string) string {
 }
 
 // applyIDRewrites performs the whole rewrite inside the caller's transaction:
-// the id and scope_node columns and the body of all eight resource tables, and
+// the id and scope_node columns and the body of every resource table, and
 // the two subsystem tables that store a bare copy of an identifier — job_targets
 // (target_id, and the scope_node frozen at acceptance) and pack_rows
 // (scope_node).
@@ -373,8 +373,10 @@ func applyIDRewrites(ctx context.Context, tx *sql.Tx, plan []IDRewrite) error {
 func verifyAfterIDRewrite(ctx context.Context, tx *sql.Tx, plan []IDRewrite) error {
 	// KindScopeNode selects BuildScopeTree, KindPlaylist selects ValidateRows
 	// over the whole scheduling-core set (not just playlists), KindAutomation
-	// the id check the rules compiler does not make.
-	for _, kind := range []Kind{KindScopeNode, KindPlaylist, KindAutomation} {
+	// the id check the rules compiler does not make, and KindScreen selects
+	// ValidateIdentityRows over BOTH identity tables (a screen's device_id link
+	// crosses them, so one kind selects the pair).
+	for _, kind := range []Kind{KindScopeNode, KindPlaylist, KindAutomation, KindScreen} {
 		if err := validateAfterWrite(ctx, tx, kind); err != nil {
 			return fmt.Errorf("store: canonicalized row ids did not validate: %w", err)
 		}
