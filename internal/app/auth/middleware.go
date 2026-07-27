@@ -84,6 +84,19 @@ func (a *Authenticator) Store() *Store { return a.store }
 // Revocations exposes the live-stream revocation registry, or nil.
 func (a *Authenticator) Revocations() *Revocations { return a.sessions }
 
+// Auditor exposes the Auditor this Authenticator emits its own security-model/1
+// records through, so a surface mounted BEHIND this middleware audits through
+// the same sink rather than being handed a second one to keep in step.
+//
+// That sharing is the point rather than a convenience. SEC-150 requires every
+// audited flow to produce "an ordinary events/1 audit.event" and adds "no second
+// audit schema"; giving a downstream surface its own sink is how a deployment
+// ends up with two audit trails that disagree about which events exist. Reaching
+// the one already wired here also means an audited surface inherits its sink
+// from a collaborator it CANNOT be constructed without, so there is no separate
+// wiring step to forget. May be nil (an Auditor is nil-safe and silent).
+func (a *Authenticator) Auditor() *Auditor { return a.auditor }
+
 // Middleware returns an http.Handler that authenticates and authorizes every
 // request before next sees it, refusing in codes' vocabulary. exempt, when
 // non-nil, reports the requests that carry their own `security: []` override

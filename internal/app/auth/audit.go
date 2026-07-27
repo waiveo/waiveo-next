@@ -102,6 +102,22 @@ type Record struct {
 	// Purpose and IssuedVia are set on grant records (SEC-034).
 	Purpose   string
 	IssuedVia string
+	// ScopeNode is the node THIS record is filed at, overriding the Auditor's
+	// own. Empty means "the Auditor's node", which is the right answer for every
+	// flow this package emits: authentication, session and grant handling are
+	// workspace-level acts with no narrower subject to place them under.
+	//
+	// It exists because EVT-012 places an event at "the scope node the event's
+	// SUBJECT resource ... is itself placed under", and an audit record ABOUT a
+	// resource has a subject that is genuinely placed somewhere — a schedule
+	// under a screen, a pack row under a site. Since scope filtering on the event
+	// stream is per event against the subscriber's visible set (EVT-120/123),
+	// that placement decides who can see the record: filing a mutation of a Site
+	// A row at the workspace node would hide it from the Site A operator whose
+	// own screens it changed while showing it to a Site B operator with no
+	// authority over it. A producer with a placed subject therefore supplies it
+	// here rather than accepting the deployment-wide default.
+	ScopeNode string
 }
 
 // Emit publishes r as an `audit.event`. A login-failure record automatically
@@ -120,10 +136,14 @@ func (a *Auditor) Emit(r Record) {
 	if r.Action == ActionLoginFailure || r.Action == ActionLoginLockout {
 		clock = a.clockAssessment()
 	}
+	scopeNode := r.ScopeNode
+	if scopeNode == "" {
+		scopeNode = a.scopeNode
+	}
 	env := events.AuditEventEnvelope(events.AuditEvent{
 		ID:              a.newID(),
 		TS:              a.nowMs(),
-		ScopeNode:       a.scopeNode,
+		ScopeNode:       scopeNode,
 		TraceID:         a.envelopeTraceID(r.TraceID),
 		ActorPrincipal:  r.Actor,
 		OnBehalfOf:      r.OnBehalfOf,
