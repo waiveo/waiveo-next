@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sync"
 	"testing"
 
+	"github.com/maaxton/waiveo-next/internal/app/eventingest/ingesttest"
 	"github.com/maaxton/waiveo-next/internal/events"
 	"github.com/maaxton/waiveo-next/internal/relay/telemetry"
 	"github.com/maaxton/waiveo-next/internal/shared/ulid"
@@ -63,18 +65,47 @@ func seqIDs() func() string {
 	}
 }
 
-// postBatch encodes batch as the REL-090 telemetry.push body, drives it through
-// h, and returns the parsed telemetry.ack. It fails the test on a non-200 or a
-// non-JSON ack.
-func postBatch(t *testing.T, h http.Handler, batch telemetry.PushBatch) telemetry.Ack {
+// testRelay is the one minted relay identity every push in this file is driven
+// as. The route is mutually authenticated (relay/1 REL-003/041/016), so there is
+// no anonymous push path left to drive; the fixture mints a real CA and a real
+// leaf rather than switching the check off, which keeps these tests exercising
+// the identity extraction and authorization decision that actually ships.
+var testRelay = sync.OnceValue(func() *ingesttest.Relay {
+	r, err := ingesttest.NewRelay("01J8Z3K4N5P6Q7R8S9T0V1W2ZR")
+	if err != nil {
+		panic("eventingest: mint relay identity: " + err.Error())
+	}
+	return r
+})
+
+// newTestIngest mounts the live handler over log, admitting exactly the fixture
+// relay identity.
+func newTestIngest(t *testing.T, sink EventSink) http.Handler {
+	t.Helper()
+	return New(sink, siteScope, seqIDs(), testRelay().Authorizer())
+}
+
+// pushRequest builds the REL-090 telemetry.push request, carrying the connection
+// state a verifying listener would have populated for the fixture relay's client
+// certificate.
+func pushRequest(t *testing.T, batch telemetry.PushBatch) *http.Request {
 	t.Helper()
 	body, err := json.Marshal(batch)
 	if err != nil {
 		t.Fatalf("marshaling push batch: %v", err)
 	}
 	req := httptest.NewRequest(http.MethodPost, "/telemetry/v1/push", bytes.NewReader(body))
+	testRelay().Present(req)
+	return req
+}
+
+// postBatch encodes batch as the REL-090 telemetry.push body, drives it through
+// h, and returns the parsed telemetry.ack. It fails the test on a non-200 or a
+// non-JSON ack.
+func postBatch(t *testing.T, h http.Handler, batch telemetry.PushBatch) telemetry.Ack {
+	t.Helper()
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
+	h.ServeHTTP(rec, pushRequest(t, batch))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("telemetry push must respond 200; got %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -100,7 +131,7 @@ func pushBatch(entries ...telemetry.Entry) telemetry.PushBatch {
 // (REL-090/092, EVT-010/013).
 func TestIngest_AppendsValidAutomationRunEnvelopeAndAcks(t *testing.T) {
 	log := events.NewEventLog(0)
-	h := New(log, siteScope, seqIDs())
+	h := newTestIngest(t, log)
 
 	payload := validAutomationRunPayload()
 	ack := postBatch(t, h, pushBatch(autoEntry(1, payload)))
@@ -181,7 +212,7 @@ func TestIngest_AppendsEveryRelayTelemetrySchema(t *testing.T) {
 			}
 
 			log := events.NewEventLog(0)
-			h := New(log, siteScope, seqIDs())
+			h := newTestIngest(t, log)
 			var logged []string
 			h.(*ingest).logf = func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
 
@@ -214,7 +245,7 @@ func TestIngest_AppendsEveryRelayTelemetrySchema(t *testing.T) {
 // relay does not retry an un-fixable record forever (REL-097 progress).
 func TestIngest_DropsInvalidPayloadButAcksBatch(t *testing.T) {
 	log := events.NewEventLog(0)
-	h := New(log, siteScope, seqIDs())
+	h := newTestIngest(t, log)
 
 	var logged []string
 	in := h.(*ingest)
@@ -245,7 +276,7 @@ func TestIngest_DropsInvalidPayloadButAcksBatch(t *testing.T) {
 // record, so the dedup MUST be on the telemetry seq, before the id is minted.
 func TestIngest_IdempotentOnSeq(t *testing.T) {
 	log := events.NewEventLog(0)
-	h := New(log, siteScope, seqIDs())
+	h := newTestIngest(t, log)
 
 	batch := pushBatch(autoEntry(1, validAutomationRunPayload()))
 	ack1 := postBatch(t, h, batch)
@@ -269,7 +300,7 @@ func TestIngest_IdempotentOnSeq(t *testing.T) {
 // bare, unaccounted gap at seq 1000.
 func TestIngest_AckIsHighestSeqReceived_JumpsMarkedAndSupersededGaps(t *testing.T) {
 	log := events.NewEventLog(0)
-	h := New(log, siteScope, seqIDs())
+	h := newTestIngest(t, log)
 
 	batch := telemetry.PushBatch{
 		Entries: []telemetry.Entry{
@@ -326,7 +357,7 @@ func TestIngest_AckIsHighestSeqReceived_JumpsMarkedAndSupersededGaps(t *testing.
 // telemetry as false loss.
 func TestIngest_AckJumpsLossMarkerFromOverflow(t *testing.T) {
 	log := events.NewEventLog(0)
-	h := New(log, siteScope, seqIDs())
+	h := newTestIngest(t, log)
 
 	if ack := postBatch(t, h, pushBatch(autoEntry(1, validAutomationRunPayload()))); ack.AckThroughSeq != 1 {
 		t.Fatalf("a lone seq 1 must ack 1; got %d", ack.AckThroughSeq)

@@ -59,6 +59,7 @@ import (
 	"github.com/maaxton/waiveo-next/conformance/drivers/report"
 	"github.com/maaxton/waiveo-next/internal/app/auth/authtest"
 	"github.com/maaxton/waiveo-next/internal/app/eventingest"
+	"github.com/maaxton/waiveo-next/internal/app/eventingest/ingesttest"
 	"github.com/maaxton/waiveo-next/internal/app/eventsse"
 	"github.com/maaxton/waiveo-next/internal/datamodel"
 	"github.com/maaxton/waiveo-next/internal/events"
@@ -125,11 +126,32 @@ func driveCases(rep *report.Report, cases map[string]corpus.Case) {
 type ingestHarness struct {
 	log     *events.EventLog
 	handler http.Handler
+	relay   *ingesttest.Relay
 }
+
+// pushRelay is the one minted relay identity every ingest case in this driver
+// pushes as. The ingest route is mutually authenticated (relay/1 REL-003/041):
+// it identifies the pusher by its enrollment-issued client certificate and
+// checks the enrollment registry's revocation record (REL-016), so there is no
+// anonymous push path left to drive. The fixture mints a real CA and a real
+// leaf rather than switching the check off, so this driver exercises exactly
+// the identity extraction and authorization decision that ships.
+var pushRelay = sync.OnceValue(func() *ingesttest.Relay {
+	r, err := ingesttest.NewRelay("01J8Z3K4N5P6Q7R8S9T0V1RELY")
+	if err != nil {
+		panic("events1 driver: mint relay identity: " + err.Error())
+	}
+	return r
+})
 
 func newIngestHarness() *ingestHarness {
 	log := events.NewEventLog(0)
-	return &ingestHarness{log: log, handler: eventingest.New(log, siteScope, monotonicIDs())}
+	relay := pushRelay()
+	return &ingestHarness{
+		log:     log,
+		handler: eventingest.New(log, siteScope, monotonicIDs(), relay.Authorizer()),
+		relay:   relay,
+	}
 }
 
 // push drives one telemetry.push batch through the live handler and returns
@@ -137,6 +159,9 @@ func newIngestHarness() *ingestHarness {
 func (h *ingestHarness) push(batch telemetry.PushBatch) (telemetry.Ack, int) {
 	body, _ := json.Marshal(batch)
 	req := httptest.NewRequest(http.MethodPost, "/telemetry/v1/push", strings.NewReader(string(body)))
+	// The connection state a verifying listener would have populated for this
+	// relay's client certificate.
+	h.relay.Present(req)
 	rec := httptest.NewRecorder()
 	h.handler.ServeHTTP(rec, req)
 	var ack telemetry.Ack

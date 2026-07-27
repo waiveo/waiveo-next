@@ -2,16 +2,52 @@ package eventsse
 
 import (
 	"bytes"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/app/eventingest"
+	"github.com/maaxton/waiveo-next/internal/app/eventingest/ingesttest"
 	"github.com/maaxton/waiveo-next/internal/events"
 	"github.com/maaxton/waiveo-next/internal/relay/telemetry"
 )
+
+// pushRelay is the one minted relay identity the two end-to-end tests in this
+// package push telemetry as. The ingest route identifies its caller by the
+// enrollment-issued mTLS client certificate (relay/1 REL-003/041) and checks the
+// enrollment registry's revocation record (REL-016), so a harness needs a real
+// relay identity rather than a way to skip the check — which is exactly what
+// keeps these end-to-ends proving the shipped path.
+var pushRelay = sync.OnceValue(func() *ingesttest.Relay {
+	r, err := ingesttest.NewRelay("01J8Z3K4N5P6Q7R8S9T0V1RELY")
+	if err != nil {
+		panic("eventsse: mint relay identity: " + err.Error())
+	}
+	return r
+})
+
+// newIngestServer mounts the telemetry ingest over hub on a REAL mutual-TLS
+// listener — VerifyClientCertIfGiven against the enrollment CA, exactly as the
+// feeder's own listener is configured — and returns it plus a client presenting
+// the relay's leaf. Nothing here stamps a synthetic connection state: the
+// verified chain the handler requires is produced by the TLS stack.
+func newIngestServer(t *testing.T, hub *Hub) (*httptest.Server, *http.Client) {
+	t.Helper()
+	relay := pushRelay()
+	srv := httptest.NewUnstartedServer(eventingest.New(hub, siteScope, ulidSeq(), relay.Authorizer()))
+	srv.TLS = relay.ServerTLSConfig(&tls.Config{MinVersion: tls.VersionTLS13})
+	srv.StartTLS()
+
+	serverCAs := x509.NewCertPool()
+	serverCAs.AddCert(srv.Certificate())
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: relay.ClientTLSConfig(serverCAs)}}
+	return srv, client
+}
 
 // TestWire_TelemetryPushDrivesLiveSSE is the finding-5 regression: the live-push
 // half of EVT-100 must be driven by the REAL writer, not a manually manufactured
@@ -27,7 +63,11 @@ func TestWire_TelemetryPushDrivesLiveSSE(t *testing.T) {
 	// Reader and writer share one Hub — the Hub IS the wiring seam.
 	sseSrv := httptest.NewServer(newTestServer(hub))
 	defer sseSrv.Close()
-	ingestSrv := httptest.NewServer(eventingest.New(hub, siteScope, ulidSeq()))
+	// The ingest is mutually authenticated (relay/1 REL-003/041): it is mounted
+	// on a real TLS listener that verifies a client certificate against the
+	// enrollment CA, and pushed to by a client presenting the relay's leaf —
+	// the same shape the deployed feeder and relay use.
+	ingestSrv, ingestClient := newIngestServer(t, hub)
 	defer ingestSrv.Close()
 
 	br, closeConn := dialSSE(t, sseSrv, "", nil)
@@ -42,7 +82,7 @@ func TestWire_TelemetryPushDrivesLiveSSE(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshaling push batch: %v", err)
 	}
-	resp, err := http.Post(ingestSrv.URL+"/telemetry/v1/push", "application/json", bytes.NewReader(body))
+	resp, err := ingestClient.Post(ingestSrv.URL+"/telemetry/v1/push", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("posting telemetry push: %v", err)
 	}

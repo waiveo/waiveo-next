@@ -860,9 +860,29 @@ func main() {
 	// or rejecting) is retained and retried on the next tick (REL-097 — no silent
 	// loss). This is the live delivery that carries a fired rule's event off the
 	// relay to the app's event log.
+	//
+	// The push is mutually authenticated: the client presents this relay's
+	// enrollment-issued leaf, re-read from the persisted identity on every
+	// handshake so a renewed certificate (REL-015) takes effect without a
+	// restart, falling back to the leaf loaded at boot if the store cannot be
+	// re-read (that leaf is still valid until its own expiry, and refusing to
+	// push telemetry over a transient store read error would discard
+	// observability for no safety gain — the app peer still verifies whatever is
+	// presented).
+	currentLeaf := func() (*tls.Certificate, error) {
+		id, enrolled, err := store.Identity()
+		if err != nil || !enrolled {
+			return &cert, nil
+		}
+		renewed, _, err := relayTLSCertificate(id)
+		if err != nil {
+			return &cert, nil
+		}
+		return &renewed, nil
+	}
 	telemetryChannel := telemetry.NewChannel(
 		host.TelemetryBuffer(),
-		telemetryhttp.New(cfg.feederURL, feederTLSClient()),
+		telemetryhttp.New(cfg.feederURL, feederTLSClient(currentLeaf)),
 		nil, // single-attempt per Flush; an un-acked batch rides the next flush tick
 	)
 	telemetryFlushTicker := time.NewTicker(telemetryFlushInterval)
@@ -1291,19 +1311,32 @@ func telemetryFlushLoop(ctx context.Context, ticks <-chan time.Time, ch *telemet
 	}
 }
 
-// feederTLSClient returns the relay's feeder-trusting HTTP client for the
-// telemetry upstream push (REL-090): server-authenticated TLS with no separate
-// trust anchor to validate the co-located feeder/app-peer's self-signed listener
-// certificate against, mirroring the relay's existing enroll / desired-state /
-// hello bootstrap clients (REL-010/011 bootstrap exception, made concrete for
-// the Wave-1 co-located feeder+relay loopback deployment). It is independent of
-// the telemetry retention/ack logic, which the Channel owns; this client only
-// carries the batch on the wire.
-func feederTLSClient() *http.Client {
+// feederTLSClient returns the relay's HTTP client for the telemetry upstream
+// push (REL-090). Its server half is unchanged: no separate trust anchor to
+// validate the co-located feeder/app-peer's self-signed listener certificate
+// against, mirroring the relay's existing enroll / desired-state / hello
+// bootstrap clients (REL-010/011 bootstrap exception, made concrete for the
+// co-located feeder+relay loopback deployment).
+//
+// Its CLIENT half now presents this relay's enrollment-issued leaf, exactly as
+// the /relay/v1 connection does (REL-003/041) — the app peer's telemetry ingest
+// identifies the pusher by that certificate and checks it against the enrollment
+// registry's revocation record (REL-016). The certificate is supplied through
+// GetClientCertificate rather than a fixed Certificates slice so a proactive
+// renewal (REL-015) is picked up on the next handshake, the same way the relay
+// connection picks it up on the next redial, instead of pinning this client to
+// the leaf that happened to be persisted at boot.
+//
+// This client is independent of the telemetry retention/ack logic, which the
+// Channel owns; it only carries the batch on the wire.
+func feederTLSClient(currentLeaf func() (*tls.Certificate, error)) *http.Client {
 	return &http.Client{
 		Timeout: telemetryPushTimeout,
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // REL-010/011 co-located bootstrap exception, see doc above
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify:   true, //nolint:gosec // REL-010/011 co-located bootstrap exception, see doc above
+				GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { return currentLeaf() },
+			},
 		},
 	}
 }

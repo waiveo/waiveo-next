@@ -332,15 +332,26 @@ func main() {
 	// subscriber's stream (EVT-011, REL-094/097, EVT-135/143). The monotonic factory
 	// makes same-millisecond ids sort in mint (recording) order.
 	//
-	// /events/v1 is authenticated (EVT-110-114, wired below). /telemetry/v1/push
-	// is NOT: it is a relay pushing over the mTLS-capable feeder listener with an
-	// enrollment-issued client certificate, which is its own authentication path
-	// (relay/1), not a platform session — an unauthenticated- or scoped-intake
-	// operation in API-092's sense rather than an api/1 route that forgot to
-	// authenticate.
+	// Both routes are authenticated, by the credential each caller actually
+	// holds. /events/v1 takes a platform session or API key (EVT-110-114, wired
+	// below). /telemetry/v1/push takes the pushing relay's own enrollment-issued
+	// mTLS client certificate: this listener already verifies a presented client
+	// certificate against the enrollment CA (see ClientAuth/ClientCAs below), so
+	// the ingest reads the identity off that certificate and asks the enrollment
+	// registry the same two questions the /relay/v1 connection asks — did we
+	// enroll this relay (REL-041), and is this serial revoked (REL-016). It is
+	// the relay/1 channel's own peer authentication applied to the HTTP transport
+	// that stands in for a telemetry.push frame, not a second, weaker credential
+	// minted for the same peer.
 	eventLog := events.NewEventLog(feederEventLogRetention)
 	eventHub := eventsse.NewHub(eventLog)
-	telemetryIngest := eventingest.New(eventHub, firstPhotonSite.ScopeNode, ulid.Monotonic())
+	telemetryIngest := eventingest.New(eventHub, firstPhotonSite.ScopeNode, ulid.Monotonic(),
+		func(relayID, serial string) bool {
+			if _, enrolled := enrollSrv.RelayEnrollmentKey(relayID); !enrolled {
+				return false
+			}
+			return !enrollSrv.IsRevoked(relayID, serial)
+		})
 
 	// The security-model/1 auth plane. It is built AFTER the event hub because
 	// its auditor publishes through it: every flow security-model/1 defines
@@ -439,8 +450,12 @@ func main() {
 			Certificates: []tls.Certificate{cert},
 			// Accept (and verify) a client certificate when one is offered —
 			// an enrolled relay presenting its enrollment-issued leaf on
-			// /relay/v1 (REL-003/041) — while browsers on /api/v1 and screens
-			// on /content/ remain certificate-free. ClientCAPool is read
+			// /relay/v1 (REL-003/041) and on /telemetry/v1/push — while
+			// browsers on /api/v1 and screens on /content/ remain
+			// certificate-free. This verification is what the telemetry
+			// ingest's own identity check stands on: it requires a VERIFIED
+			// chain, so a listener wired without ClientCAs refuses every push
+			// rather than trusting an unverified leaf. ClientCAPool is read
 			// AFTER EnablePersistence, so a restarted feeder keeps verifying
 			// leaves it issued before the restart.
 			ClientAuth: tls.VerifyClientCertIfGiven,

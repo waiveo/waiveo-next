@@ -3,13 +3,11 @@ package eventsse
 import (
 	"context"
 	"encoding/json"
-	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/maaxton/waiveo-next/internal/app/eventingest"
 	"github.com/maaxton/waiveo-next/internal/deviceclass"
 	"github.com/maaxton/waiveo-next/internal/events"
 	"github.com/maaxton/waiveo-next/internal/relay/automationhost"
@@ -70,16 +68,21 @@ func obsEnt(st string) state.Entity {
 }
 
 func TestObservability_FiredRuleStreamsToSSESubscriber(t *testing.T) {
-	// --- App: one shared event log, one Hub, ingest (writer) + SSE (reader) on
-	// one mux over real HTTP. The ingest and the SSE server share the SAME Hub —
-	// the seam that makes an ingested telemetry event push live (EVT-100). ---
+	// --- App: one shared event log, one Hub, ingest (writer) + SSE (reader)
+	// over real HTTP. The ingest and the SSE server share the SAME Hub — the
+	// seam that makes an ingested telemetry event push live (EVT-100). ---
 	log := events.NewEventLog(0)
 	hub := NewHub(log)
-	mux := http.NewServeMux()
-	mux.Handle("/telemetry/v1/push", eventingest.New(hub, siteScope, ulidSeq()))
-	mux.Handle("/events/v1", newTestServer(hub))
-	app := httptest.NewServer(mux)
+	// The subscriber's listener. The INGEST gets its own listener because it is
+	// mutually authenticated: the relay presents its enrollment-issued client
+	// certificate on the push (relay/1 REL-003/041) and the app peer verifies it
+	// against the enrollment CA, while a browser-shaped /events/v1 subscriber
+	// carries a session cookie and no certificate at all. Two listeners, one Hub
+	// — the Hub is the seam this test is about, and it is unchanged.
+	app := httptest.NewServer(newTestServer(hub))
 	defer app.Close()
+	ingestSrv, ingestClient := newIngestServer(t, hub)
+	defer ingestSrv.Close()
 
 	// --- Relay: the automation host over a fresh operational store, loaded with
 	// the authored edge rule, and the telemetry channel pushing its durable
@@ -96,7 +99,10 @@ func TestObservability_FiredRuleStreamsToSSESubscriber(t *testing.T) {
 	if err := host.ApplyEdgeRules([]json.RawMessage{obsEdgeRule}, 1); err != nil {
 		t.Fatalf("ApplyEdgeRules: %v", err)
 	}
-	channel := telemetry.NewChannel(host.TelemetryBuffer(), telemetryhttp.New(app.URL, app.Client()), nil)
+	// The REAL relay-side transport, over the REAL mutually authenticated client
+	// — the same telemetryhttp.Upstream the relay binary constructs, differing
+	// only in which certificate the client presents.
+	channel := telemetry.NewChannel(host.TelemetryBuffer(), telemetryhttp.New(ingestSrv.URL, ingestClient), nil)
 
 	// --- A fresh SSE subscriber connects BEFORE the rule fires, so it must
 	// receive the firing as a live push (EVT-132: fresh delivers from-now). ---
