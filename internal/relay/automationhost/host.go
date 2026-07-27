@@ -163,8 +163,8 @@ func New(store *identity.Store, dc deviceclass.Registry, controller deviceplane.
 //
 // Re-applying an already-applied generation is a no-op (REL-070): the same
 // signed generation pulled again neither reloads rules nor perturbs any in-flight
-// run. A lower generation is likewise ignored here (desiredstate.Pull already
-// rejects a regressed generation, REL-052).
+// run. A lower generation is likewise ignored here (desiredstate.VerifyAndApply
+// already rejects a regressed generation, REL-052).
 func (h *Host) ApplyEdgeRules(edgeRules []json.RawMessage, generation int) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()

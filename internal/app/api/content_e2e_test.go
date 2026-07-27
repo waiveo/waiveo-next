@@ -5,7 +5,7 @@ package api_test
 // referencing the uploaded asset_ref + a schedule showing it), the feeder's
 // store-derived signed desired-state (snapshot.BuildFromStore, carrying the
 // content-origin base in revocation_and_site.content_origin), the relay's
-// desired-state apply gate (the hash + signature verification desiredstate.Pull
+// desired-state apply gate (the hash + signature verification desiredstate.VerifyAndApply
 // performs), and the relay's schedule resolver (schedulehost) IN-PROCESS — no
 // network — and then performs the fetch a real screen would: a GET of the
 // resolved Lease content item's url against the content origin's own Handler().
@@ -229,7 +229,7 @@ func TestPlaylistReauthoringSurvivesOriginRestart(t *testing.T) {
 // resolveContentThroughDesiredState runs the make-it-real path a relay drives, in
 // process and with no network: it derives the store's desired state, signs it
 // (snapshot.BuildFromStore, carrying content_origin), verifies it with the exact
-// gate the relay's desiredstate.Pull enforces (the sections hash to the snapshot's
+// gate the relay's desiredstate.VerifyAndApply enforces (the sections hash to the snapshot's
 // own hash, REL-053, and the signature verifies under the feeder key, REL-075),
 // then parses the carried schedule section into a data-model RowStore and projects
 // the governed screen's Lease at nowMs — carrying the desired-state content-origin
@@ -254,7 +254,7 @@ func resolveContentThroughDesiredState(t *testing.T, e *testEnv, screenNodeID st
 		t.Fatalf("BuildFromStore: %v", err)
 	}
 
-	// Apply gate: the same verification the relay's desiredstate.Pull performs.
+	// Apply gate: the same verification the relay's desiredstate.VerifyAndApply performs.
 	recomputed, err := wire.HashSections(snap.Sections)
 	if err != nil {
 		t.Fatalf("HashSections: %v", err)

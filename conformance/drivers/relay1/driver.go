@@ -362,7 +362,7 @@ func driveREL030(rep *report.Report, client RelayClient, feeder Feeder, cases ma
 	}
 	rep.Pass(c.CaseID, contract,
 		"relay_id / channel_binding_signature: runtime-issued (relay_id from REL-010 enrollment, the signature computed fresh over this connection's own single-use nonce) — asserted self-consistent (hello_ack.relay_id echoes the enrolling identity), not byte-equal to the corpus's static fixture values.",
-		"challenge.body.nonce: minted fresh per connection by the live app peer (crypto/rand, REL-030); not the corpus's static nonce.",
+		"challenge.body.nonce: derived per connection from the TLS exporter keying material by the live app peer (hello.ExporterChallengeNonce, REL-030/040); not the corpus's static nonce.",
 	)
 }
 

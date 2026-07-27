@@ -406,7 +406,7 @@ func pairAndPull(t *testing.T, srv *playerserver.Server, grantID string) players
 // buildDemoAppliedForTest runs the real feeder Build path (the same demo
 // schedule Task 2 authored, REL-065) and adapts its output into a
 // desiredstate.Applied value — the exact shape bootScheduleResolverAt receives
-// from a verified pull, without standing up a live feeder + desiredstate.Pull
+// from a verified pull, without standing up a live feeder + pull-over-frames
 // round trip (already covered by internal/relay/desiredstate's own tests).
 func buildDemoAppliedForTest(t *testing.T) desiredstate.Applied {
 	t.Helper()
@@ -687,7 +687,7 @@ const (
 // buildRePullContentApplied builds a desiredstate.Applied at generation gen whose
 // carried schedule governs one screen resolving (at a content-hour instant) to
 // display:content sourced from a one-item playlist carrying assetRef — the exact
-// shape a verified desiredstate.Pull returns. Two at successive generations,
+// shape a verified pull (desiredstate.VerifyAndApply) produces. Two at successive generations,
 // differing only in assetRef, are the A->B authored-schedule edit the re-pull
 // loop applies. It mirrors internal/feeder/snapshot's own demo authoring, using
 // a single all-day daypart so any instant lands inside its window.

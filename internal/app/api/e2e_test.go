@@ -3,7 +3,7 @@ package api_test
 // This is the make-it-real end-to-end oracle: it wires the app store, the api/1
 // authoring handler, the feeder's store-derived signed desired-state
 // (snapshot.BuildFromStore), the relay's desired-state apply gate (the hash +
-// signature + generation-monotonicity verification the relay's desiredstate.Pull
+// signature + generation-monotonicity verification the relay's desiredstate.VerifyAndApply
 // performs), and the relay's schedule resolver (schedulehost) IN-PROCESS — no
 // network — and proves the whole loop: an authored schedule edit made over the
 // api handler changes the program the relay resolves for a screen (A -> B).
@@ -128,7 +128,7 @@ func TestAuthoringLoopAPIEditChangesResolvedProgram(t *testing.T) {
 // resolveThroughDesiredState runs the full make-it-real path a relay drives, in
 // process and with no network: it derives the store's desired state
 // (store.DesiredState), signs it (snapshot.BuildFromStore), verifies it with the
-// exact gate the relay's desiredstate.Pull enforces before any section reaches a
+// exact gate the relay's desiredstate.VerifyAndApply enforces before any section reaches a
 // screen — the sections hash to the snapshot's own hash (REL-053), the signature
 // verifies under the feeder's signing key (REL-075), and the generation has not
 // regressed below the last-applied one (REL-052) — then parses the carried
@@ -148,7 +148,7 @@ func resolveThroughDesiredState(t *testing.T, st *store.Store, img []byte, id *s
 		t.Fatalf("BuildFromStore: %v", err)
 	}
 
-	// Apply gate: the same verification the relay's desiredstate.Pull performs,
+	// Apply gate: the same verification the relay's desiredstate.VerifyAndApply performs,
 	// reproduced in-process (no state.pull network hop).
 	recomputed, err := wire.HashSections(snap.Sections)
 	if err != nil {

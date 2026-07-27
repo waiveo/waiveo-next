@@ -336,7 +336,7 @@ func (s *Store) SetLastAppliedGeneration(generation int64, hash string) error {
 // screen_programs are still the prior generation's array.
 //
 // This is the single apply-unit primitive the desired-state apply path
-// (internal/relay/desiredstate.Pull) MUST use instead of a separate
+// (internal/relay/desiredstate.VerifyAndApply) MUST use instead of a separate
 // SetLastAppliedGeneration + SetServedScreenPrograms pair: those are two
 // distinct, un-transacted row writes, so a process killed between their two
 // commits (a power-pull) surfaces exactly the torn state REL-056 forbids — the
@@ -391,7 +391,7 @@ func (s *Store) LastAppliedGeneration() (generation int64, hash string, ok bool,
 //
 // This is a facet of the singleton last-applied row, so a last-applied
 // generation MUST already be persisted (SetLastAppliedGeneration) when this is
-// called; in the desired-state apply path (internal/relay/desiredstate.Pull)
+// called; in the desired-state apply path (internal/relay/desiredstate.VerifyAndApply)
 // that ordering always holds. An empty or nil screenProgramsJSON is stored as
 // the REL-060 empty placeholder (`[]`).
 func (s *Store) SetServedScreenPrograms(screenProgramsJSON []byte) error {

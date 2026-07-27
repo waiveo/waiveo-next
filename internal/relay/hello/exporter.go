@@ -9,10 +9,10 @@ import (
 // exporterLabel is the RFC 5705 exporter label the relay/1 connection's
 // challenge nonce derives under (REL-040: the nonce MUST derive from the
 // connection's TLS exporter keying material, RFC 5705 / RFC 9266-style).
-// SPIKE NOTE: this exact label string is a protocol constant the contract
-// does not yet pin — production must record it (and its context/length) in
-// contracts/relay-1.md before a second implementation exists, and a
-// private-use label formally wants IANA-registry treatment per RFC 5705.
+// The label, context, and output length are pinned normatively in
+// contracts/relay-1.md (REL-040); changing any of them here without the
+// contract is a protocol break. A private-use label formally wants
+// IANA-registry treatment per RFC 5705 if this ever leaves this platform.
 const exporterLabel = "EXPORTER-waiveo-relay1-challenge"
 
 // exporterNonceBytes is the exporter output length: 32 bytes, comfortably
