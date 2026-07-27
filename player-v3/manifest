@@ -7,5 +7,9 @@ minor_version=0
 build_version=0
 ui_resolutions=fhd
 bs_const=DEBUG=true
+# screensaver_private describes a screensaver a channel SHIPS (this one ships
+# none). It does NOT stop the platform drawing its own idle surface over a
+# running player, which real hardware confirms — keeping the platform's idle
+# surface off assigned content is done in code (PLY-158, source/IdleDefeat.brs).
 screensaver_private=true
 run_as_process=1

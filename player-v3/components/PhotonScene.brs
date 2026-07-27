@@ -15,6 +15,11 @@ sub init()
     m.poster = m.top.findNode("contentPoster")
     m.video = m.top.findNode("contentVideo")
     m.video.observeField("state", "onVideoStateChange")
+    ' Secondary, free coverage for PLY-158 while a video item is actually
+    ' playing — the platform suppresses its idle surface for a playing video
+    ' node on its own. It covers only video items, so it is not the mechanism
+    ' (an image cast plays nothing); see IdleDefeat.brs.
+    m.video.disableScreenSaver = true
     m.composedLayers = m.top.findNode("composedLayers")
     m.status = m.top.findNode("statusLabel")
     m.status.text = "Waiveo Player v3 — starting…"
@@ -26,6 +31,18 @@ sub init()
     ' this timer — the timer is simply left stopped while a video item shows.
     m.castTimer = m.top.findNode("castTimer")
     m.castTimer.observeField("fire", "onCastTimerFire")
+
+    ' idleDefeatTimer holds this platform's own idle/inactivity surface off
+    ' assigned content (PLY-158). It is XML-declared and wired exactly once
+    ' here — never per cast, per item, or per render — and only RUNS while
+    ' content is actually assigned (setIdleDefeat). See IdleDefeat.brs for
+    ' why the manifest's screensaver_private flag does not cover this and why
+    ' a permanently-playing hidden video was rejected.
+    m.idleDefeatTimer = m.top.findNode("idleDefeatTimer")
+    m.idleDefeatTimer.duration = wvIdleDefeatIntervalSeconds()
+    m.idleDefeatTimer.observeField("fire", "onIdleDefeatTick")
+    m.idleDefeatEngaged = false
+    m.idleDefeatTicks = 0
 
     m.castItems = []
     m.castIndex = 0
@@ -91,9 +108,21 @@ sub onPhotonResult()
             m.castSignature = sig
             startCast(res.items)
         end if
+
+        ' PLY-158: content is assigned right now, so the platform's idle
+        ' surface must not be allowed to cover it. Re-evaluated on EVERY
+        ' successful poll rather than only on a changed cast — the engaged
+        ' state has to track what is assigned now, not what last changed —
+        ' and setIdleDefeat is a no-op when that state already matches.
+        setIdleDefeat(wvIdleDefeatShouldEngage(res.contentType, res.items))
+
         m.status.visible = false
     else
         stopCastTimer()
+        ' PLY-158's obligation is tied to being actively assigned non-blank
+        ' content; this branch has torn the content down and is showing a
+        ' status line, so stop holding the platform awake.
+        setIdleDefeat(false)
         clearComposed()
         m.video.control = "stop"
         m.video.visible = false
@@ -256,6 +285,43 @@ sub onCastTimerFire()
     advanceCast()
 end sub
 
+' setIdleDefeat engages or disengages PLY-158's defeat of this platform's own
+' idle/inactivity surface. Called on every program result, so it acts only on
+' an actual transition — which is also exactly what makes the two console
+' lines below readable: one when the mechanism starts holding the platform's
+' idle clock off assigned content, one when it stops, and nothing in between
+' (onIdleDefeatTick's own heartbeat aside). On engage the clock is refreshed
+' immediately as well as on the timer: it has been running untouched for as
+' long as this player had nothing assigned, so waiting a full interval could
+' let it expire between the first item appearing and the first tick.
+sub setIdleDefeat(engage as Boolean)
+    if engage = m.idleDefeatEngaged then return
+    m.idleDefeatEngaged = engage
+
+    if engage
+        m.idleDefeatTicks = 0
+        wvIdleDefeatPing()
+        m.idleDefeatTimer.control = "start"
+        print "[player-v3] idle-defeat ENGAGED (PLY-158) — content assigned; refreshing this platform's idle clock every " + wvIdleDefeatIntervalSeconds().toStr() + "s"
+    else
+        m.idleDefeatTimer.control = "stop"
+        print "[player-v3] idle-defeat DISENGAGED (PLY-158) — no content assigned; this platform's idle surface is free to engage"
+    end if
+end sub
+
+' onIdleDefeatTick is idleDefeatTimer's own "fire" handler: one refresh of the
+' platform's last-input time per tick (wvIdleDefeatPing), plus a periodic
+' heartbeat line so on-device verification can READ that the mechanism is
+' still running deep into a device's idle delay rather than infer it from the
+' absence of a screensaver. See wvIdleDefeatHeartbeatTicks for the ratio.
+sub onIdleDefeatTick()
+    wvIdleDefeatPing()
+    m.idleDefeatTicks = m.idleDefeatTicks + 1
+    if m.idleDefeatTicks mod wvIdleDefeatHeartbeatTicks() = 0
+        print "[player-v3] idle-defeat alive (PLY-158) — " + m.idleDefeatTicks.toStr() + " refreshes, " + (m.idleDefeatTicks * wvIdleDefeatIntervalSeconds()).toStr() + "s engaged"
+    end if
+end sub
+
 ' stopCastTimer halts castTimer so a superseded cast (a fresh photonResult
 ' arriving, or a switch to a composed item) never fires a stale advance
 ' against content that is no longer showing.
@@ -294,6 +360,7 @@ sub renderComposed(layers as Object)
             v = CreateObject("roSGNode", "Video")
             v.width = 1920
             v.height = 1080
+            v.disableScreenSaver = true ' Same free, video-only PLY-158 coverage as the plain content Video node (init).
             v.observeField("state", "onComposedVideoStateChange")
             format = layer.streamFormat
             if format = "" then format = "mp4"

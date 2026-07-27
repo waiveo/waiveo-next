@@ -6,16 +6,19 @@
      (PLY-083b), a "composedLayers" Group that holds dynamically created
      full-screen Poster/Video children for a "composed" item (PLY-015 —
      stacked in layers array order, index 0 furthest back), and a status
-     Label shown until content renders. pairingCode is set by Main from the
-     launch args; the scene starts the PlayerTask once it has a code (or is
-     already paired). Storage is included for wvStorageLoad (component scopes
-     do not inherit pkg:/source globals). -->
+     Label shown until content renders, and idleDefeatTimer holding the
+     platform's own idle/inactivity surface off assigned content (PLY-158 —
+     see IdleDefeat.brs). pairingCode is set by Main from the launch args; the
+     scene starts the PlayerTask once it has a code (or is already paired).
+     Storage and IdleDefeat are included for wvStorageLoad / the idle-defeat
+     helpers (component scopes do not inherit pkg:/source globals). -->
 <component name="PhotonScene" extends="Scene">
   <interface>
     <field id="pairingCode" type="string" />
   </interface>
   <script type="text/brightscript" uri="pkg:/components/PhotonScene.brs" />
   <script type="text/brightscript" uri="pkg:/source/Storage.brs" />
+  <script type="text/brightscript" uri="pkg:/source/IdleDefeat.brs" />
   <children>
     <Rectangle id="bg" width="1920" height="1080" color="0x000000FF" />
     <Poster id="contentPoster" width="1920" height="1080" loadDisplayMode="scaleToFill" visible="false" />
@@ -23,5 +26,10 @@
     <Group id="composedLayers" visible="false" />
     <Label id="statusLabel" text="Waiveo Player v3" translation="[80,960]" width="1760" />
     <Timer id="castTimer" repeat="false" />
+    <!-- The ONE node behind PLY-158's idle defeat: a single repeating timer,
+         declared here rather than created anywhere at runtime, started only
+         while content is actually assigned. Its duration is set in init from
+         wvIdleDefeatIntervalSeconds() so the cadence has exactly one home. -->
+    <Timer id="idleDefeatTimer" repeat="true" />
   </children>
 </component>

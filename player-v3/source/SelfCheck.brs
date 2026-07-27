@@ -158,6 +158,21 @@ sub wvRunSelfCheck()
     gotCode3 = wv401Code(neither401)
     wvResult("wv401Code yields empty when neither carrier has a code", gotCode3 = "", "got=[" + gotCode3 + "]")
 
+    ' --- PLY-158 idle-defeat gate: engaged ONLY while non-blank content is
+    ' actually assigned. The gate is the one part of the idle-defeat path that
+    ' is a pure decision; the refresh itself is a platform call driven by a
+    ' render-thread Timer and is verifiable only on real hardware (see this
+    ' change's own verification steps). Asserting the gate here at least
+    ' proves on-device that a player with nothing assigned does not hold the
+    ' platform awake — the half of PLY-158 that is easy to get backwards.
+    idleItems = [{ contentType: "image", contentUri: "tmp:/selfcheck.jpg" }]
+    wvResult("idle-defeat engages for an assigned 1-item cast", wvIdleDefeatShouldEngage("cast", idleItems), "")
+    wvResult("idle-defeat stays off for a cast with no items", not wvIdleDefeatShouldEngage("cast", []), "")
+    wvResult("idle-defeat stays off when nothing is assigned", not wvIdleDefeatShouldEngage("", invalid), "")
+    wvResult("idle-defeat stays off for a non-cast program (e.g. blank)", not wvIdleDefeatShouldEngage("blank", idleItems), "")
+    idleInterval = wvIdleDefeatIntervalSeconds()
+    wvResult("idle-defeat refresh cadence beats the shortest selectable idle delay", idleInterval > 0 and idleInterval <= 30, "interval=" + idleInterval.toStr() + "s (must stay well under 60s)")
+
     if savedToken = ""
         reg.Delete("channel_token")
     else
