@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/maaxton/waiveo-next/internal/shared/ulid"
 )
 
 // identityrows.go is the reference implementation of the two IDENTITY rows
@@ -154,8 +156,9 @@ const maxIdentityRowNameLen = 200
 //     canonical ULID (ROW_ID_INVALID) and carries a `scope_node` (DAT-006);
 //   - a stated, bounded `name` on both kinds;
 //   - relay/1 REL-063's device shape: a non-empty `driver` and `native_id`, a
-//     positive `poll_cadence_seconds` when stated, and per entity a non-empty
-//     `entity_id`/`device_class` with a `category` from the closed vocabulary;
+//     positive `poll_cadence_seconds` when stated, and per entity a canonical-ULID
+//     `entity_id`, a non-empty `device_class`, and a `category` from the closed
+//     vocabulary;
 //   - relay/1 REL-153's device identity: `(driver, native_id)` is unique across
 //     device rows, since re-adopting one physical device MUST resolve to one
 //     `device_id`;
@@ -286,6 +289,18 @@ func checkDeviceEntry(d Device, identityTuples map[string]string) []Error {
 				Field:   field + ".entity_id",
 				Code:    "ENTITY_ID_MISSING",
 				Message: "a device row's entity MUST carry an entity_id — it is the unit a device command is addressed to (relay/1 REL-063/REL-112)",
+			})
+		} else if !ulid.Valid(ent.EntityID) {
+			// An entity_id is a platform-minted identifier like any other: the
+			// device/entity read model refuses a non-ULID one (internal/app/devices),
+			// events/1 types the ids in a durable payload as ULIDs, and the
+			// api/1 surface declares this member as one. Accepting a
+			// free-form string HERE would let an authored row name an entity
+			// that no other plane could ever address.
+			errs = append(errs, Error{
+				Field:   field + ".entity_id",
+				Code:    "ENTITY_ID_INVALID",
+				Message: "a device row's entity_id MUST be a syntactically valid canonical ULID",
 			})
 		} else if seenEntity[ent.EntityID] {
 			errs = append(errs, Error{

@@ -214,9 +214,10 @@ func TestDeviceEntityPolicyValidated(t *testing.T) {
 		{EntityID: "", DeviceClass: "", Category: "primary"},
 		{EntityID: "01J8Z4ENTTYMEDAPAYERAAAAA1", DeviceClass: "media-player", Category: "auxiliary"},
 		{EntityID: "01J8Z4ENTTYMEDAPAYERAAAAA1", DeviceClass: "media-player", Category: "diagnostic"},
+		{EntityID: "entity-1", DeviceClass: "media-player", Category: "primary"},
 	}
 	_, errs := ValidateIdentityRows(RawIdentityRows{Devices: []json.RawMessage{rawOf(t, d)}})
-	for _, want := range []string{"ENTITY_ID_MISSING", "DEVICE_CLASS_MISSING", "ENTITY_CATEGORY_INVALID", "ENTITY_ID_DUPLICATE"} {
+	for _, want := range []string{"ENTITY_ID_MISSING", "ENTITY_ID_INVALID", "DEVICE_CLASS_MISSING", "ENTITY_CATEGORY_INVALID", "ENTITY_ID_DUPLICATE"} {
 		if !hasCode(errs, want) {
 			t.Errorf("expected %s among the reported codes, got %v", want, codes(errs))
 		}
