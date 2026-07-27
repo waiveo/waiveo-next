@@ -35,6 +35,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/app/eventingest"
 	"github.com/maaxton/waiveo-next/internal/app/eventsse"
 	"github.com/maaxton/waiveo-next/internal/app/store"
+	"github.com/maaxton/waiveo-next/internal/app/webhookdeliver"
 	"github.com/maaxton/waiveo-next/internal/app/webui"
 	"github.com/maaxton/waiveo-next/internal/app/workspacekey"
 	"github.com/maaxton/waiveo-next/internal/events"
@@ -587,6 +588,14 @@ func main() {
 		log.Fatalf("waiveo-feeder: derive the workspace secret sealer: %v\n"+
 			"    a recoverable credential secret (SEC-004's TOTP shared secret) cannot be stored without it", err)
 	}
+	// ONE Secrets over that sealer, shared by the two halves of the outbound
+	// webhook surface: the api operation that installs an endpoint's signing
+	// secret seals through it, and the delivery loop below opens through it.
+	// Two instances would be two objects over the same key and would work, but
+	// sharing one is what makes "the thing that writes the secret and the thing
+	// that reads it are the same construction" a fact of the wiring rather than
+	// a coincidence two call sites have to keep.
+	webhookSecrets := webhookdeliver.NewSecrets(secretSealer)
 
 	// The security-model/1 auth plane. It is built AFTER the event hub because
 	// its auditor publishes through it: every flow security-model/1 defines
@@ -661,8 +670,20 @@ func main() {
 
 	apiHandler := api.New(st, idem, nowMs, ulid.New, contentStore, contentBaseURL, authn,
 		api.WithDevicePlane(deviceRegistry, relayConnSrv), api.WithJobRunner(jobRunner),
+		api.WithWebhookSecrets(webhookSecrets, webhookRotationOverlapMs),
 		api.WithWorkspaceArchive(&api.WorkspaceArchive{Dir: cfg.archiveDir, Key: wsKey}))
 	jobRunner.Start()
+
+	// The outbound-webhook delivery loop (events/1 EVT-150-158). It is started
+	// here, beside the job runner, because it is the same kind of thing: work an
+	// api/1 surface has already accepted and which no request goroutine is
+	// waiting on. Without it the registration surface above would accept an
+	// endpoint, seal its signing secret, report its delivery state — and never
+	// POST anything.
+	webhookLoop, err := startWebhookDelivery(st, eventLog, eventHub, webhookSecrets, nowMs)
+	if err != nil {
+		log.Fatalf("waiveo-feeder: start the webhook delivery loop: %v", err)
+	}
 
 	// The embedded console SPA, served at "/" for every non-API path. The API,
 	// event-stream, content-origin, telemetry and enrollment/handshake routes are
@@ -788,7 +809,86 @@ func main() {
 		if err := jobRunner.Shutdown(shutdownCtx); err != nil {
 			log.Printf("waiveo-feeder: job runner shutdown: %v", err)
 		}
+		// Webhook delivery drains last and on the SAME budget: it talks to a
+		// third party this process does not control, so it is the one drain
+		// whose slowest case is somebody else's server. Missing the budget
+		// abandons the attempt in flight rather than holding the process open —
+		// at-least-once (EVT-156) means the receiver sees that delivery again
+		// after the restart, under the same delivery id, never not at all.
+		if err := webhookLoop.Shutdown(shutdownCtx); err != nil {
+			log.Printf("waiveo-feeder: webhook delivery shutdown: %v (an in-flight delivery was abandoned; it redelivers on the next boot)", err)
+		}
 	}
+}
+
+// webhookRotationOverlapMs is how long a rotated-away signing secret stays
+// acceptable (EVT-158). ONE constant feeds both halves deliberately: the api
+// rotation response publishes this instant to the operator, and the delivery
+// loop is what actually stops emitting the prior signature at it. Wiring them
+// from separate figures would let the platform publish a window it does not
+// honour, which is worse than publishing none.
+const webhookRotationOverlapMs = events.DefaultRotationOverlapMs
+
+// startWebhookDelivery builds and starts the outbound-webhook delivery loop for
+// this deployment, returning the handle the shutdown path drains.
+//
+// It exists as a function rather than inline in main so the whole-stack test can
+// drive the IDENTICAL wiring — the same HTTP client, the same clock and id
+// source, the same hub hook, the same interval. A test that reassembled the
+// wiring itself would pass while main's copy of it was missing, which is exactly
+// the gap this loop was added to close.
+//
+// log is read directly rather than through hub, which is safe here and would not
+// be for every events.Log: this deployment's log is the SQLite-backed
+// *store.EventLog, whose own doc states it is concurrency-safe (reads take the
+// store's read lock, writes its write lock). The boot and hourly retention
+// sweeps in main already read it the same way. The in-memory events.EventLog
+// would NOT be safe to share like this.
+func startWebhookDelivery(
+	st *store.Store,
+	eventLog events.Log,
+	hub *eventsse.Hub,
+	secrets *webhookdeliver.Secrets,
+	nowMs func() int64,
+) (*webhookdeliver.Loop, error) {
+	loop, err := webhookdeliver.NewLoop(webhookdeliver.Config{
+		Store: st,
+		Log:   eventLog,
+		// A client of this process's own, not http.DefaultClient: an endpoint
+		// URL is operator-supplied, so its connection pool and its timeouts
+		// belong to this loop and not to every other HTTP caller in the binary.
+		// The per-attempt deadline is the Deliverer's (EVT-153), applied through
+		// the request context, so none is set here.
+		HTTP:     &http.Client{},
+		NowMs:    nowMs,
+		NewID:    ulid.New,
+		Secrets:  secrets,
+		Endpoint: events.EndpointConfig{RotationOverlapMs: webhookRotationOverlapMs},
+		OnDisabled: func(endpointID, url string) {
+			// EVT-154's operator-facing signal. A log line is what this
+			// deployment has; the disabled status is durable regardless, and an
+			// operator re-enables through /api/v1/webhook-endpoints/{id}/enable.
+			log.Printf("waiveo-feeder: WEBHOOK ENDPOINT DISABLED — %s (%s) failed too many consecutive deliveries and will receive no more until it is re-enabled", endpointID, url)
+		},
+		OnError: func(endpointID string, err error) {
+			if endpointID == "" {
+				log.Printf("waiveo-feeder: webhook delivery: %v", err)
+				return
+			}
+			log.Printf("waiveo-feeder: webhook delivery for endpoint %s: %v", endpointID, err)
+		},
+	}, webhookdeliver.DefaultInterval)
+	if err != nil {
+		return nil, err
+	}
+	// The wake seam. Every event this process records — a relay telemetry push
+	// and a security-model audit record alike — lands through the hub's Append,
+	// so hooking it here is what makes a fresh event reach a receiver promptly
+	// instead of at the next tick. Registered BEFORE Start so no append between
+	// the two is missed.
+	hub.OnAppend(loop.Notify)
+	loop.Start()
+	return loop, nil
 }
 
 // desiredStateSource rebuilds the feeder's signed desired-state snapshot from the

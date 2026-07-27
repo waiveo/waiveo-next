@@ -105,6 +105,12 @@ type Hub struct {
 	// stream can be torn down without waiting for the client to disconnect.
 	done     chan struct{}
 	shutdown bool
+	// onAppend (OnAppend) runs after every appended envelope, outside the lock —
+	// the seam a non-subscriber consumer of the log hangs off. The subscriber
+	// fan-out above cannot serve it: a subscriber is a connection with a cursor
+	// and a visible set, and the outbound-webhook delivery loop is neither. It
+	// is guarded by mu so a hook registered at startup is never observed torn.
+	onAppend func()
 }
 
 // subscriber is one connected SSE stream's wake mailbox: a buffered(1) channel
@@ -151,6 +157,19 @@ func NewHub(log events.Log) *Hub {
 // keeps just the one pending, because the drain reads the entire After(lastID)
 // tail.
 func (h *Hub) Append(env events.Envelope) {
+	// Outside the lock, in the same spirit as the store's post-commit hook: a
+	// hook that read the log back would otherwise deadlock against the very
+	// Append that invoked it, and one that blocked would stall every producer.
+	if hook := h.appendUnderLock(env); hook != nil {
+		hook()
+	}
+}
+
+// appendUnderLock is Append's locked half, split out so the unlock stays a defer
+// (a panicking substrate must not leave the Hub permanently locked) while the
+// OnAppend hook still runs outside it. It returns the hook rather than calling
+// it.
+func (h *Hub) appendUnderLock(env events.Envelope) func() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.log.Append(env)
@@ -160,6 +179,27 @@ func (h *Hub) Append(env events.Envelope) {
 		default: // already signalled and not yet drained — coalesced
 		}
 	}
+	return h.onAppend
+}
+
+// OnAppend registers fn to run after every appended envelope, on the appending
+// goroutine and after the lock is released.
+//
+// It is the seam a consumer that is NOT a stream subscriber hangs off — the
+// outbound-webhook delivery loop, whose "subscription" is a persisted cursor on
+// a row rather than a live connection. Registering here rather than wrapping the
+// Hub is what makes the wake unmissable: this type's own contract is that every
+// log mutation goes through Append, so a producer added later cannot forget to
+// notify a wrapper it does not know exists.
+//
+// fn MUST NOT block and MUST NOT re-enter the Hub — it runs on the producer's
+// goroutine, so anything slow belongs behind a non-blocking signal of the hook's
+// own (Loop.Notify is exactly that shape). Passing nil clears the hook.
+// Intended to be set once at startup, before any producer is running.
+func (h *Hub) OnAppend(fn func()) {
+	h.mu.Lock()
+	h.onAppend = fn
+	h.mu.Unlock()
 }
 
 // Close ends every live subscriber stream for a graceful server shutdown by

@@ -22,8 +22,10 @@
 // against the injected clock at the top of each pass, which is the same
 // lazily-checked-deadline shape the rules engine's stabilization window uses.
 //
-// A production wiring calls Tick on a ticker; a test calls it directly and
-// advances the clock between calls. Both drive the identical code path.
+// A production wiring drives Tick from the Loop in loop.go — woken by the event
+// hub's append seam and by a ticker sized against the retry deadline; a test
+// calls Tick directly and advances the clock between calls. Both drive the
+// identical code path.
 //
 // # Why one failing endpoint cannot stall a healthy one
 //
@@ -141,6 +143,17 @@ type Config struct {
 	// OnError reports a per-endpoint condition that is not a delivery failure —
 	// an unopenable secret, a cursor the log cannot resolve. Optional.
 	OnError func(endpointID string, err error)
+	// OnDelivered reports one envelope this pass got a 2xx for and committed
+	// the cursor advance of. It fires AFTER the write, so a caller acting on it
+	// is acting on durable progress rather than on an observation a crash could
+	// still undo.
+	//
+	// It exists because a pass makes at most one attempt per endpoint, which
+	// leaves the scheduler above with no other way to tell "this endpoint is
+	// caught up" from "this endpoint owes thousands more and is draining one
+	// per pass". Loop uses it to re-arm its own wake; a deployment can equally
+	// use it for a delivery log line. Optional.
+	OnDelivered func(endpointID, eventID string)
 }
 
 // Deliverer makes one delivery pass per Tick over every registered endpoint.
@@ -357,7 +370,13 @@ func (d *Deliverer) deliverOne(ctx context.Context, ep endpointRow, tree datamod
 		p := state.Progress()
 		next.Status, next.ConsecutiveFailures, next.LastDeliveredID = p.Status, p.ConsecutiveFailures, p.LastDeliveredID
 		next.Attempt, next.DeliveryID, next.NextAttemptAtMs = 0, "", 0
-		return d.cfg.Store.PutWebhookDeliveryProgress(ctx, next)
+		if err := d.cfg.Store.PutWebhookDeliveryProgress(ctx, next); err != nil {
+			return err
+		}
+		if d.cfg.OnDelivered != nil {
+			d.cfg.OnDelivered(ep.ID, env.ID)
+		}
+		return nil
 	}
 
 	// A failed attempt does NOT advance the cursor, so the next pass hands out
