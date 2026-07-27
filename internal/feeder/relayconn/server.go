@@ -9,6 +9,10 @@
 //
 //	TLS (mutual: the relay presents its enrollment-issued leaf; the listener
 //	verifies it against the enrollment CA, enroll.Server.ClientCAPool)
+//	→ REL-016 revocation check on the presented certificate's serial —
+//	  refused CERT_REVOKED at every connection attempt, and re-checked
+//	  before every steady-state frame so a mid-session revocation lands on
+//	  the very next frame
 //	→ server sends `challenge` — nonce DERIVED from this connection's TLS
 //	  exporter keying material (REL-040, hello.ExporterChallengeNonce)
 //	→ relay sends `hello` (channel-binding signature over that nonce)
@@ -78,11 +82,22 @@ const maxInboundFrameBytes = 1 << 20
 // generation-cached desiredStateSource.current).
 type SnapshotProvider func() (wire.StateSnapshotBody, error)
 
+// RevocationCheck reports whether the certificate with this serial, issued
+// to relayID, has been revoked — enroll.Server.IsRevoked. REL-016: the
+// check runs at EVERY connection attempt, not only at issuance time, and
+// again before every steady-state frame is served, so a revocation lands
+// mid-session on the very next frame rather than waiting out the
+// connection. serial is the presented client certificate's own
+// SerialNumber, lowercase hex (big.Int.Text(16)) — the exact string form
+// the issuance record keys.
+type RevocationCheck func(relayID, serial string) bool
+
 // Server serves /relay/v1. Safe for concurrent connections; its live-conn
 // set is mutex-guarded.
 type Server struct {
 	provider           SnapshotProvider
 	lookup             hello.RelayKeyLookup
+	revoked            RevocationCheck
 	site               hello.SiteBinding
 	implementedMinors  []string
 	recognizedFeatures []string
@@ -93,6 +108,7 @@ type Server struct {
 
 	mu    sync.Mutex
 	conns map[*serverConn]struct{}
+	acks  map[string]wire.Frame // relay_id -> last received state.ack frame (REL-054)
 }
 
 // Option configures a Server.
@@ -114,11 +130,16 @@ func WithHeartbeat(interval, timeout time.Duration) Option {
 
 // New builds the app peer's /relay/v1 server. provider serves state.pull;
 // lookup resolves a relay's enrollment public key by its mTLS-authenticated
-// identity (REL-041 — enroll.Server.RelayEnrollmentKey); site/minors/
-// features feed hello negotiation exactly as hello.NewAppPeerServer's do.
+// identity (REL-041 — enroll.Server.RelayEnrollmentKey); revoked is the
+// REL-016 revocation check run at every connection attempt and before
+// every steady-state frame (enroll.Server.IsRevoked; nil disables the
+// check and is for tests only — production always wires it);
+// site/minors/features feed hello negotiation exactly as
+// hello.NewAppPeerServer's do.
 func New(
 	provider SnapshotProvider,
 	lookup hello.RelayKeyLookup,
+	revoked RevocationCheck,
 	site hello.SiteBinding,
 	implementedMinors []string,
 	recognizedFeatures []string,
@@ -127,6 +148,7 @@ func New(
 	s := &Server{
 		provider:           provider,
 		lookup:             lookup,
+		revoked:            revoked,
 		site:               site,
 		implementedMinors:  implementedMinors,
 		recognizedFeatures: recognizedFeatures,
@@ -134,11 +156,22 @@ func New(
 		pingInterval:       defaultPingInterval,
 		pingTimeout:        defaultPingTimeout,
 		conns:              map[*serverConn]struct{}{},
+		acks:               map[string]wire.Frame{},
 	}
 	for _, opt := range opts {
 		opt(s)
 	}
 	return s
+}
+
+// LastStateAck returns the most recent state.ack frame received from
+// relayID (REL-054) and whether one has arrived — observability for tests
+// and operators.
+func (s *Server) LastStateAck(relayID string) (wire.Frame, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f, ok := s.acks[relayID]
+	return f, ok
 }
 
 // ConnCount reports the number of live authenticated connections —
@@ -236,21 +269,38 @@ func (s *Server) serve(req *http.Request, ws *websocket.Conn) {
 	// relay's identity is the mTLS client certificate's — never the
 	// self-asserted relay_id. The listener already verified the chain
 	// against the enrollment CA (ClientCAs); no cert at all means this
-	// connection cannot be authenticated. No relay_id is known to stamp on
-	// this refusal (REL-005's pre-authentication exception).
+	// connection does not satisfy REL-003's mutual-authentication shape —
+	// MALFORMED_MESSAGE is the taxonomy's REL-003 entry. No relay_id is
+	// known to stamp on this refusal (REL-005's pre-authentication
+	// exception).
 	if tlsState == nil || len(tlsState.PeerCertificates) == 0 {
 		_ = sendFrame(ctx, ws, wire.NewErrorFrame("", "", "",
-			"CHANNEL_BINDING_INVALID", "client certificate required (REL-041)"))
+			"MALFORMED_MESSAGE", "client certificate required — the connection is not mutually authenticated (REL-003)"))
 		return
 	}
-	relayID := tlsState.PeerCertificates[0].Subject.CommonName
+	leafCert := tlsState.PeerCertificates[0]
+	relayID := leafCert.Subject.CommonName
+	// The presented serial, rendered exactly as the issuance record keys it
+	// (big.Int.Text(16) — see enroll.issueRelayCert).
+	serial := leafCert.SerialNumber.Text(16)
 
-	pub, ok := s.lookup(relayID)
-	if !ok {
+	// REL-016: revocation is checked at EVERY connection attempt, before
+	// the handshake proceeds. The mTLS identity IS established here, so the
+	// refusal carries relay_id (REL-005).
+	if s.isRevoked(relayID, serial) {
 		_ = sendFrame(ctx, ws, wire.NewErrorFrame("", "", relayID,
-			"CHANNEL_BINDING_INVALID", "Channel Binding Invalid"))
+			"CERT_REVOKED", "the presented certificate has been revoked (REL-016)"))
 		return
 	}
+
+	// An mTLS identity with no enrollment record on file is NOT refused
+	// here: the handshake proceeds and hello's channel-binding verification
+	// fails against the absent enrollment key (VerifyChannelBinding fails
+	// closed on a nil key), drawing CHANNEL_BINDING_INVALID at the point
+	// the taxonomy defines it (REL-032) — and never giving an
+	// unauthenticated prober a pre-hello oracle for which identities are
+	// enrolled.
+	pub, _ := s.lookup(relayID)
 
 	// REL-030/040: the challenge nonce derives from THIS connection's TLS
 	// exporter keying material — per-connection by construction, no
@@ -292,8 +342,11 @@ func (s *Server) serve(req *http.Request, ws *websocket.Conn) {
 	}
 	var hb hello.HelloBody
 	if err := f.DecodeBody(&hb); err != nil {
+		// An undecodable body fails the type's minimum shape — the
+		// taxonomy's MALFORMED_MESSAGE (REL-002), not a message-ordering
+		// PROTOCOL_VIOLATION.
 		_ = conn.send(wire.NewErrorFrame(f.ID, f.TraceID, relayID,
-			"PROTOCOL_VIOLATION", "hello body did not decode"))
+			"MALFORMED_MESSAGE", "hello body did not decode"))
 		return
 	}
 
@@ -349,17 +402,42 @@ func (s *Server) serve(req *http.Request, ws *websocket.Conn) {
 		if err := readFrame(ctx, ws, &f); err != nil {
 			return // relay went away (or sent a non-frame); connection over
 		}
+		// REL-016 mid-session: a revocation landing while the connection is
+		// up takes effect on the very next frame — refused with the same
+		// typed CERT_REVOKED a fresh connection attempt draws, then closed.
+		if s.isRevoked(relayID, serial) {
+			_ = conn.send(wire.NewErrorFrame(f.ID, f.TraceID, relayID,
+				"CERT_REVOKED", "the presented certificate has been revoked (REL-016)"))
+			return
+		}
 		switch f.Type {
 		case wire.FrameTypeStatePull:
 			if err := s.handleStatePull(conn, f); err != nil {
 				return
 			}
+		case wire.FrameTypeStateAck:
+			var ack wire.StateAckBody
+			if err := f.DecodeBody(&ack); err != nil {
+				if err := conn.send(wire.NewErrorFrame(f.ID, f.TraceID, relayID,
+					"MALFORMED_MESSAGE", "state.ack body did not decode")); err != nil {
+					return
+				}
+				continue
+			}
+			s.mu.Lock()
+			s.acks[relayID] = f
+			s.mu.Unlock()
 		default:
 			// Unknown verb: REL-004 additive tolerance — a newer relay's
 			// new message type is ignored, never a refusal, exactly as
 			// REL-057 prescribes for its own nudge at an older peer.
 		}
 	}
+}
+
+// isRevoked applies the REL-016 check when one is wired (nil = tests only).
+func (s *Server) isRevoked(relayID, serial string) bool {
+	return s.revoked != nil && s.revoked(relayID, serial)
 }
 
 // handleStatePull answers one state.pull (REL-050/051): state.unchanged
@@ -373,8 +451,9 @@ func (s *Server) handleStatePull(conn *serverConn, req wire.Frame) error {
 	var body wire.StatePullBody
 	if len(req.Body) > 0 { // an absent body is a pull with no since_generation claim
 		if err := req.DecodeBody(&body); err != nil {
+			// Undecodable body: the taxonomy's MALFORMED_MESSAGE (REL-002).
 			return conn.send(wire.NewErrorFrame(req.ID, req.TraceID, conn.relayID,
-				"PROTOCOL_VIOLATION", "state.pull body did not decode"))
+				"MALFORMED_MESSAGE", "state.pull body did not decode"))
 		}
 	}
 

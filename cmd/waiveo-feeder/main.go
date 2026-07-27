@@ -327,12 +327,16 @@ func main() {
 
 	// The relay/1 persistent-connection endpoint (REL-001's stable path,
 	// upgraded to a WS carrying one JSON message per frame, REL-002): the
-	// same snapshot provider the HTTP pull serves, with the enrollment key
-	// looked up by the mTLS client-certificate identity (REL-041). The
-	// legacy per-request routes above stay mounted during the spike.
+	// same snapshot provider the HTTP pull serves, the enrollment key
+	// looked up by the mTLS client-certificate identity (REL-041), and the
+	// enrollment registry's revocation record checked at every connection
+	// attempt and before every steady-state frame (REL-016). The legacy
+	// per-request routes above stay mounted until the relay binary cuts
+	// over to this transport.
 	relayConnSrv := relayconn.New(
 		src.current,
 		enrollSrv.RelayEnrollmentKey,
+		enrollSrv.IsRevoked,
 		firstPhotonSite,
 		hello.AppPeerImplementedMinors(1, 1),
 		firstPhotonRecognizedFeatures,

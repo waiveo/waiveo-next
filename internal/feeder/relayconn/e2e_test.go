@@ -30,8 +30,10 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -104,7 +106,8 @@ func (h *snapshotHolder) setStall(stall chan struct{}) {
 }
 
 // harness is one fully-wired app peer: real enrollment server + WS server
-// on one mTLS httptest listener.
+// on one mTLS httptest listener. lookupOverride, when set, replaces the
+// enrollment registry's key lookup (the unknown-identity refusal test).
 type harness struct {
 	enrollSrv *feederenroll.Server
 	connSrv   *feederrelayconn.Server
@@ -112,6 +115,25 @@ type harness struct {
 	feederID  *signing.Identity
 	mux       *http.ServeMux
 	ts        *httptest.Server
+
+	lookupMu       sync.Mutex
+	lookupOverride hello.RelayKeyLookup
+}
+
+func (h *harness) lookup(relayID string) (ed25519.PublicKey, bool) {
+	h.lookupMu.Lock()
+	override := h.lookupOverride
+	h.lookupMu.Unlock()
+	if override != nil {
+		return override(relayID)
+	}
+	return h.enrollSrv.RelayEnrollmentKey(relayID)
+}
+
+func (h *harness) setLookupOverride(l hello.RelayKeyLookup) {
+	h.lookupMu.Lock()
+	h.lookupOverride = l
+	h.lookupMu.Unlock()
 }
 
 func newHarness(t *testing.T, opts ...feederrelayconn.Option) *harness {
@@ -136,9 +158,13 @@ func newHarness(t *testing.T, opts ...feederrelayconn.Option) *harness {
 	}
 
 	holder := &snapshotHolder{snap: snap1}
-	connSrv := feederrelayconn.New(
+	h := &harness{
+		enrollSrv: enrollSrv, holder: holder, feederID: feederID,
+	}
+	h.connSrv = feederrelayconn.New(
 		holder.get,
-		enrollSrv.RelayEnrollmentKey,
+		h.lookup,
+		enrollSrv.IsRevoked,
 		testSite,
 		hello.AppPeerImplementedMinors(1, 1),
 		[]string{"telemetry.latest_only_v1"},
@@ -147,12 +173,8 @@ func newHarness(t *testing.T, opts ...feederrelayconn.Option) *harness {
 
 	mux := http.NewServeMux()
 	enrollSrv.Register(mux)
-	mux.Handle("/relay/v1", connSrv.Handler())
-
-	h := &harness{
-		enrollSrv: enrollSrv, connSrv: connSrv, holder: holder,
-		feederID: feederID, mux: mux,
-	}
+	mux.Handle("/relay/v1", h.connSrv.Handler())
+	h.mux = mux
 	h.ts = h.listen(t)
 	return h
 }
@@ -316,6 +338,12 @@ func TestPersistentConnectionEndToEnd(t *testing.T) {
 			return
 		}
 		applied, err := desiredstate.VerifyAndApply(store, snapBody, rawSections)
+		if err == nil {
+			// REL-054: acknowledge the applied snapshot, correlated to the
+			// pull exchange that delivered it.
+			err = c.SendStateAck(reply.ID, reply.TraceID,
+				wire.StateAckBody{AppliedGeneration: applied.Generation})
+		}
 		pushCh <- pushResult{applied: applied, at: time.Now(), err: err}
 	}
 
@@ -374,6 +402,38 @@ func TestPersistentConnectionEndToEnd(t *testing.T) {
 	}
 	if gen, _, ok, err := store.LastAppliedGeneration(); err != nil || !ok || gen != 1 {
 		t.Fatalf("persisted last-applied = (%d,%v,%v), want (1,true,nil)", gen, ok, err)
+	}
+
+	// REL-054: the relay acknowledges the applied snapshot with state.ack
+	// carrying the PULL exchange's correlation id; the app peer records it.
+	if err := client.SendStateAck(reply.ID, reply.TraceID,
+		wire.StateAckBody{AppliedGeneration: applied.Generation}); err != nil {
+		t.Fatalf("SendStateAck: %v", err)
+	}
+	waitFor(t, 5*time.Second, func() bool {
+		f, ok := h.connSrv.LastStateAck(relayID)
+		return ok && f.ID == reply.ID
+	}, "state.ack never arrived at the app peer with the pull's correlation id (REL-054)")
+	ackFrame, _ := h.connSrv.LastStateAck(relayID)
+	if ackFrame.TraceID != "trace-op-1" || ackFrame.RelayID != relayID {
+		t.Fatalf("state.ack envelope = trace %q relay %q, want trace-op-1/%s (REL-005/006)", ackFrame.TraceID, ackFrame.RelayID, relayID)
+	}
+	var ackKeys map[string]json.RawMessage
+	if err := json.Unmarshal(ackFrame.Body, &ackKeys); err != nil {
+		t.Fatalf("decode state.ack body: %v", err)
+	}
+	if _, hasErr := ackKeys["error"]; hasErr {
+		t.Fatalf("successful state.ack carries error: %s (REL-054: present only on failure)", ackFrame.Body)
+	}
+	if _, hasDiv := ackKeys["divergence_reason"]; hasDiv {
+		t.Fatalf("successful state.ack carries divergence_reason: %s (REL-054)", ackFrame.Body)
+	}
+	var ackBody wire.StateAckBody
+	if err := ackFrame.DecodeBody(&ackBody); err != nil {
+		t.Fatalf("decode state.ack: %v", err)
+	}
+	if ackBody.AppliedGeneration != 1 {
+		t.Fatalf("state.ack applied_generation = %d, want 1", ackBody.AppliedGeneration)
 	}
 
 	// REL-005: every post-enrollment frame received so far — challenge,
@@ -441,6 +501,15 @@ func TestPersistentConnectionEndToEnd(t *testing.T) {
 	if gen, _, ok, err := store.LastAppliedGeneration(); err != nil || !ok || gen != 2 {
 		t.Fatalf("after nudge, persisted last-applied = (%d,%v,%v), want (2,true,nil)", gen, ok, err)
 	}
+	// REL-054 again for the nudge-applied generation: the wire ack advanced.
+	waitFor(t, 5*time.Second, func() bool {
+		f, ok := h.connSrv.LastStateAck(relayID)
+		if !ok {
+			return false
+		}
+		var b wire.StateAckBody
+		return f.DecodeBody(&b) == nil && b.AppliedGeneration == 2
+	}, "no state.ack for the nudge-applied generation 2 (REL-054)")
 }
 
 // rawWS opens a bare authenticated WS connection (mTLS client cert from the
@@ -839,5 +908,169 @@ func TestClientHeartbeatReapsUnresponsiveServer(t *testing.T) {
 		// the heartbeat detected the dead peer and tore the connection down
 	case <-time.After(10 * time.Second):
 		t.Fatal("client never detected the unresponsive app peer (heartbeat did not reap)")
+	}
+}
+
+// certSerial reads the enrolled identity's relay_id and presented
+// certificate serial, rendered exactly as the issuance record keys it
+// (big.Int.Text(16) — enroll.issueRelayCert's own form).
+func certSerial(t *testing.T, store *identity.Store) (relayID, serial string) {
+	t.Helper()
+	id, ok, err := store.Identity()
+	if err != nil || !ok {
+		t.Fatalf("store.Identity: ok=%v err=%v", ok, err)
+	}
+	der, _ := pemDecode(id.CertPEM)
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("parse enrolled certificate: %v", err)
+	}
+	return id.RelayID, cert.SerialNumber.Text(16)
+}
+
+// TestRevokedCertRefusedAtConnect is REL-016's connection-time half: a
+// revoked certificate is refused with typed CERT_REVOKED at the very next
+// connection attempt, even though it remains within its validity window.
+func TestRevokedCertRefusedAtConnect(t *testing.T) {
+	h := newHarness(t)
+	store := enrolledRelay(t, h)
+	relayID, serial := certSerial(t, store)
+	if !h.enrollSrv.Revoke(relayID, serial) {
+		t.Fatalf("Revoke(%s, %s) found no issuance on record", relayID, serial)
+	}
+
+	_, err := relayclient.Dial(relayclient.Config{
+		URL: h.ts.URL, Store: store, Declaration: testDeclaration,
+	})
+	var refusal *relayclient.Refusal
+	if !errors.As(err, &refusal) || refusal.Code != "CERT_REVOKED" {
+		t.Fatalf("Dial with a revoked certificate = %v, want a CERT_REVOKED refusal (REL-016)", err)
+	}
+}
+
+// TestRevocationLandsMidSession is REL-016's mid-session half: a
+// revocation recorded while the connection is live takes effect on the
+// very next frame — the frame draws typed CERT_REVOKED and the connection
+// closes; the relay does not get to ride out its session.
+func TestRevocationLandsMidSession(t *testing.T) {
+	h := newHarness(t)
+	store := enrolledRelay(t, h)
+	client, _ := dialClient(t, h, store, nil)
+
+	if _, err := client.Pull("trace-pre-revoke", nil); err != nil {
+		t.Fatalf("pre-revocation Pull: %v", err)
+	}
+
+	relayID, serial := certSerial(t, store)
+	if !h.enrollSrv.Revoke(relayID, serial) {
+		t.Fatalf("Revoke(%s, %s) found no issuance on record", relayID, serial)
+	}
+
+	_, err := client.Pull("trace-post-revoke", nil)
+	var refusal *relayclient.Refusal
+	if !errors.As(err, &refusal) || refusal.Code != "CERT_REVOKED" {
+		t.Fatalf("post-revocation Pull = %v, want a CERT_REVOKED refusal (REL-016 mid-session)", err)
+	}
+	select {
+	case <-client.Done():
+		// the app peer closed the connection after the refusal
+	case <-time.After(5 * time.Second):
+		t.Fatal("connection stayed open after a mid-session CERT_REVOKED refusal")
+	}
+}
+
+// TestMissingClientCertDrawsMalformedMessage: a connection presenting no
+// client certificate cannot satisfy REL-003's mutual authentication; it is
+// refused with MALFORMED_MESSAGE — the taxonomy's REL-003 entry — and the
+// pre-authentication refusal omits relay_id (REL-005: no identity was ever
+// established to stamp).
+func TestMissingClientCertDrawsMalformedMessage(t *testing.T) {
+	h := newHarness(t)
+
+	wsURL := "wss" + strings.TrimPrefix(h.ts.URL, "https") + "/relay/v1"
+	hc := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
+		InsecureSkipVerify: true, //nolint:gosec // test dials its own httptest listener
+		MinVersion:         tls.VersionTLS13,
+	}}}
+	ws, _, err := websocket.Dial(t.Context(), wsURL, &websocket.DialOptions{
+		HTTPClient:   hc,
+		Subprotocols: []string{wire.Subprotocol},
+	})
+	if err != nil {
+		t.Fatalf("certless dial: %v", err)
+	}
+	t.Cleanup(func() { _ = ws.CloseNow() })
+
+	var refusal wire.Frame
+	if err := wsRecv(t, ws, &refusal); err != nil {
+		t.Fatalf("read refusal: %v", err)
+	}
+	if refusal.Type != wire.FrameTypeError || refusal.Code != "MALFORMED_MESSAGE" {
+		t.Fatalf("refusal = %+v, want type=error code=MALFORMED_MESSAGE (the taxonomy's REL-003 row)", refusal)
+	}
+	if refusal.RelayID != "" {
+		t.Fatalf("pre-authentication refusal carries relay_id %q, want none (REL-005's pre-auth exception)", refusal.RelayID)
+	}
+}
+
+// TestUnknownIdentityRefusedAtHello: an mTLS identity with no enrollment
+// record is NOT pre-refused before the handshake (that would hand an
+// unauthenticated prober an enrollment oracle); the challenge is issued
+// and hello's channel-binding verification fails against the absent
+// enrollment key — CHANNEL_BINDING_INVALID exactly where REL-032 defines
+// it.
+func TestUnknownIdentityRefusedAtHello(t *testing.T) {
+	h := newHarness(t)
+	store := enrolledRelay(t, h)
+	h.setLookupOverride(func(string) (ed25519.PublicKey, bool) { return nil, false })
+
+	log := &frameLog{}
+	_, err := relayclient.Dial(relayclient.Config{
+		URL: h.ts.URL, Store: store, Declaration: testDeclaration,
+		ObserveFrame: log.observe,
+	})
+	var refusal *relayclient.Refusal
+	if !errors.As(err, &refusal) || refusal.Code != "CHANNEL_BINDING_INVALID" {
+		t.Fatalf("Dial with an unknown identity = %v, want a CHANNEL_BINDING_INVALID refusal (REL-032)", err)
+	}
+	received := log.Received()
+	if len(received) == 0 || received[0].Type != wire.FrameTypeChallenge {
+		t.Fatalf("first server frame = %+v, want challenge — an unknown identity must not be refused pre-hello (enrollment oracle)", received)
+	}
+}
+
+// TestMalformedHelloBodyDrawsMalformedMessage: an undecodable hello body
+// fails its type's minimum shape — MALFORMED_MESSAGE (REL-002), never the
+// message-ordering PROTOCOL_VIOLATION the spike misassigned.
+func TestMalformedHelloBodyDrawsMalformedMessage(t *testing.T) {
+	h := newHarness(t)
+	store := enrolledRelay(t, h)
+	id, _, err := store.Identity()
+	if err != nil {
+		t.Fatalf("store.Identity: %v", err)
+	}
+
+	ws := rawWS(t, h, store)
+	var challenge wire.Frame
+	if err := wsRecv(t, ws, &challenge); err != nil {
+		t.Fatalf("read challenge: %v", err)
+	}
+
+	badHello := wire.Frame{
+		Type:    wire.FrameTypeHello,
+		ID:      "bad-body-1",
+		RelayID: id.RelayID,
+		Body:    json.RawMessage(`42`), // not a hello body shape
+	}
+	if err := wsSend(t, ws, badHello); err != nil {
+		t.Fatalf("send malformed hello: %v", err)
+	}
+
+	var refusal wire.Frame
+	if err := wsRecv(t, ws, &refusal); err != nil {
+		t.Fatalf("read refusal: %v", err)
+	}
+	if refusal.Type != wire.FrameTypeError || refusal.Code != "MALFORMED_MESSAGE" || refusal.ID != "bad-body-1" {
+		t.Fatalf("refusal = %+v, want type=error code=MALFORMED_MESSAGE id=bad-body-1 (REL-002)", refusal)
 	}
 }

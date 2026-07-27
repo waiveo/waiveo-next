@@ -355,18 +355,38 @@ func (s *Server) MostRecentSerial(relayID string) (string, ed25519.PublicKey, bo
 
 // IsRevoked reports whether the certificate with this serial, issued to
 // relayID, is recorded as revoked — satisfying reenroll.IssuanceRecord
-// (REL-022). An unknown relay_id/serial pair is reported not-revoked; the
-// caller's most-recently-issued check (reenroll.Eligible) is what refuses an
-// unknown serial. Wave-1 first-photon has no revocation surface yet (REL-016
-// is a deferred follow-up), so no issuance is ever marked revoked today; this
-// method exists so the eligibility oracle is complete and honours a revoked
-// entry the moment that surface lands.
+// (REL-022), and consulted by the /relay/v1 connection listener at every
+// connection attempt (REL-016, internal/feeder/relayconn). An unknown
+// relay_id/serial pair is reported not-revoked; the caller's
+// most-recently-issued check (reenroll.Eligible) is what refuses an
+// unknown serial.
 func (s *Server) IsRevoked(relayID, serial string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, iss := range s.issuances[relayID] {
 		if iss.serial == serial {
 			return iss.revoked
+		}
+	}
+	return false
+}
+
+// Revoke marks the certificate with this serial, issued to relayID, as
+// revoked in the issuance record — the revocation authority REL-016's
+// connection-time check (IsRevoked, consumed by internal/feeder/relayconn)
+// and REL-022's re-enrollment eligibility oracle both read. It reports
+// whether a matching issuance was found; the update is persisted when
+// persistence is enabled, so a revocation survives a feeder restart.
+func (s *Server) Revoke(relayID, serial string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, iss := range s.issuances[relayID] {
+		if iss.serial == serial {
+			s.issuances[relayID][i].revoked = true
+			if err := s.persistLocked(); err != nil {
+				log.Printf("enroll: persist enrollment state after revoking %s/%s: %v", relayID, serial, err)
+			}
+			return true
 		}
 	}
 	return false

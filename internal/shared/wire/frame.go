@@ -51,6 +51,7 @@ const (
 	FrameTypeStateSnapshot  = "state.snapshot"
 	FrameTypeStateUnchanged = "state.unchanged"
 	FrameTypeStateChanged   = "state.changed"
+	FrameTypeStateAck       = "state.ack"
 	FrameTypeError          = "error"
 )
 
@@ -135,4 +136,27 @@ type StateUnchangedBody struct {
 // generation can skip the pull entirely.
 type StateChangedBody struct {
 	Generation int64 `json:"generation"`
+}
+
+// StateAckBody is `state.ack`'s body (REL-054): the relay's acknowledgment
+// after applying a snapshot. `error` and `divergence_reason` are present
+// ONLY when the apply did not fully succeed (both marshal absent on
+// success); `applied_generation` is the relay's actual last-applied
+// generation — on a rejected snapshot (REL-072) that is the UNADVANCED
+// prior generation, never the rejected one. The ack's envelope carries the
+// correlation id of the state.pull exchange that delivered the
+// acknowledged snapshot (REL-054).
+type StateAckBody struct {
+	AppliedGeneration int64         `json:"applied_generation"`
+	Error             *AckErrorBody `json:"error,omitempty"`
+	DivergenceReason  string        `json:"divergence_reason,omitempty"`
+}
+
+// AckErrorBody is the `{code, message}` object an unsuccessful apply's
+// `state.ack.error` carries — `code` an Error-taxonomy value (e.g.
+// SNAPSHOT_SIGNATURE_INVALID), exactly the contract's own rejected-ack
+// wire shape.
+type AckErrorBody struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }

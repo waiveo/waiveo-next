@@ -103,3 +103,44 @@ func TestStatePullBodyOmitsAbsentSinceGeneration(t *testing.T) {
 		t.Fatalf("empty StatePullBody = %s, want {}", b)
 	}
 }
+
+// TestStateAckBodyMarshalShape pins REL-054's conditional fields: a
+// successful ack marshals applied_generation ONLY (error and
+// divergence_reason absent, not null), and a rejected ack carries the
+// {code, message} error object plus the implementation-defined
+// divergence_reason.
+func TestStateAckBodyMarshalShape(t *testing.T) {
+	okBytes, err := json.Marshal(StateAckBody{AppliedGeneration: 42})
+	if err != nil {
+		t.Fatalf("marshal success ack: %v", err)
+	}
+	if string(okBytes) != `{"applied_generation":42}` {
+		t.Fatalf("success ack = %s, want applied_generation only (REL-054)", okBytes)
+	}
+
+	rejected := StateAckBody{
+		AppliedGeneration: 41,
+		Error:             &AckErrorBody{Code: "SNAPSHOT_SIGNATURE_INVALID", Message: "did not verify"},
+		DivergenceReason:  "signature-rejected",
+	}
+	rejBytes, err := json.Marshal(rejected)
+	if err != nil {
+		t.Fatalf("marshal rejected ack: %v", err)
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(rejBytes, &keys); err != nil {
+		t.Fatalf("re-decode rejected ack: %v", err)
+	}
+	for _, key := range []string{"applied_generation", "error", "divergence_reason"} {
+		if _, ok := keys[key]; !ok {
+			t.Fatalf("rejected ack %s lacks %q", rejBytes, key)
+		}
+	}
+	var round StateAckBody
+	if err := json.Unmarshal(rejBytes, &round); err != nil {
+		t.Fatalf("round-trip rejected ack: %v", err)
+	}
+	if round.Error == nil || round.Error.Code != "SNAPSHOT_SIGNATURE_INVALID" {
+		t.Fatalf("round-tripped error = %+v, want SNAPSHOT_SIGNATURE_INVALID", round.Error)
+	}
+}

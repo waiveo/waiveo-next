@@ -518,6 +518,25 @@ func (c *Client) Pull(traceID string, sinceGeneration *int64) (wire.Frame, error
 	}
 }
 
+// SendStateAck sends REL-054's state.ack acknowledging the snapshot a
+// state.pull exchange delivered: the ack carries that exchange's own
+// correlation id and trace id (REL-054/006) — pass the reply frame's ID
+// and the pull's traceID. The owner calls this after
+// desiredstate.VerifyAndApply resolves, with the apply's real outcome
+// (applied_generation advanced on success; error + unadvanced generation
+// on a rejected snapshot, REL-072).
+func (c *Client) SendStateAck(correlationID, traceID string, body wire.StateAckBody) error {
+	f, err := wire.NewFrame(wire.FrameTypeStateAck, correlationID, c.relayID, body)
+	if err != nil {
+		return fmt.Errorf("relayconn: SendStateAck: %w", err)
+	}
+	f.TraceID = traceID
+	if err := c.send(f); err != nil {
+		return fmt.Errorf("relayconn: SendStateAck: send: %w", err)
+	}
+	return nil
+}
+
 // RelayID returns the enrolled relay identity this connection authenticated as.
 func (c *Client) RelayID() string { return c.relayID }
 
