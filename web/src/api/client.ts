@@ -16,6 +16,19 @@
 //     freshly generated key so a retry-on-timeout cannot double-create.
 //   - Trace-Id: every response's Trace-Id is captured (also onto each error) so a
 //     toast can quote the id that correlates the failure server-side.
+//   - Session + CSRF (security-model/1 SEC-023/024): the session rides an
+//     HttpOnly, host-only cookie the browser attaches to every same-origin
+//     request automatically — there is no token for this client to hold, and
+//     deliberately so, since a token it could read is a token a script injection
+//     could steal. What it DOES carry is the double-submit CSRF token: a
+//     companion, script-readable cookie whose value every mutating request
+//     echoes in `X-CSRF-Token`. SameSite alone is explicitly not sufficient
+//     (SEC-024), so this header is not optional decoration — a mutating request
+//     without it is refused 403.
+//   - 401 handling: an UNAUTHENTICATED response means the session is gone
+//     (expired, revoked, never established). The client raises that ONCE through
+//     an injectable `onUnauthenticated` hook so the shell can send the operator
+//     to sign in, rather than every page inventing its own redirect.
 //
 // The generated OpenAPI types (api/gen/ts/api.d.ts, produced by
 // openapi-typescript) are the source of truth for the Problem/ErrorCode shapes.
@@ -37,6 +50,32 @@ export type FieldErrors = Record<string, string>;
  * serves the SPA, this API, and the event stream on ONE origin, so the default is
  * a root-relative path with no host (the vite dev proxy covers `web-dev`). */
 export const API_BASE = "/api/v1";
+
+/** The script-readable cookie carrying the double-submit CSRF token, and the
+ * header a mutating request echoes it in (security-model/1 SEC-024). The names
+ * match the server's own constants (internal/app/auth/middleware.go). */
+export const CSRF_COOKIE = "csrf_token";
+export const CSRF_HEADER = "X-CSRF-Token";
+
+/** Reads a cookie by name from `document.cookie`.
+ *
+ * The CSRF cookie is deliberately NOT HttpOnly — the page's own script must be
+ * able to read it in order to echo it back, and that readability is the
+ * mechanism rather than a weakness: a cross-site page can cause the browser to
+ * SEND the cookie but cannot READ it, which is exactly the asymmetry
+ * double-submit exploits. The session cookie itself stays HttpOnly and is never
+ * read here. */
+export function readCookie(name: string, cookieString?: string): string | null {
+  const raw = cookieString ?? (typeof document === "undefined" ? "" : document.cookie);
+  for (const part of raw.split(";")) {
+    const [k, ...rest] = part.trim().split("=");
+    if (k === name) return decodeURIComponent(rest.join("="));
+  }
+  return null;
+}
+
+/** HTTP methods that cannot change state, and so carry no CSRF requirement. */
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
 /** Every non-2xx api/1 response, parsed. Carries the machine-readable `code` a
  * caller asserts on, the human `detail`/`title`, the `traceId` for a toast, and —
@@ -113,6 +152,25 @@ export interface ApiClientOptions {
   /** Idempotency-Key generator; defaults to `crypto.randomUUID`. Injectable so a
    * test can assert a create carried a specific key. */
   newIdempotencyKey?: () => string;
+  /** Called when a response is 401 UNAUTHENTICATED — the session expired, was
+   * revoked, or never existed. The default sends the browser to the sign-in
+   * page, preserving where the operator was so they land back there. Injectable
+   * so a test can observe the call without navigating, and so the shell can
+   * substitute an in-app transition. It fires at most once per client, since a
+   * page issuing four parallel reads should produce one redirect, not four. */
+  onUnauthenticated?: () => void;
+  /** Reads the CSRF cookie; defaults to `document.cookie`. Injectable for tests
+   * running without a document. */
+  readCsrfToken?: () => string | null;
+}
+
+/** The default 401 response: navigate to the sign-in page, carrying the current
+ * location so the operator returns to it after signing in. */
+function redirectToLogin(): void {
+  if (typeof window === "undefined") return;
+  const here = window.location.pathname + window.location.search;
+  const next = here && here !== "/login" ? `?next=${encodeURIComponent(here)}` : "";
+  window.location.assign(`/login${next}`);
 }
 
 /** The low-level api/1 transport. The typed per-resource modules (resources.ts)
@@ -128,12 +186,18 @@ export class ApiClient {
 
   private readonly doFetch: typeof fetch;
   private readonly newKey: () => string;
+  private readonly onUnauthenticated: () => void;
+  private readonly readCsrf: () => string | null;
+  /** Guards the 401 hook so N parallel in-flight requests produce ONE redirect. */
+  private unauthenticatedRaised = false;
 
   constructor(opts: ApiClientOptions = {}) {
     this.baseUrl = (opts.baseUrl ?? API_BASE).replace(/\/$/, "");
     const f = opts.fetch ?? globalThis.fetch;
     this.doFetch = f.bind(globalThis);
     this.newKey = opts.newIdempotencyKey ?? (() => crypto.randomUUID());
+    this.onUnauthenticated = opts.onUnauthenticated ?? redirectToLogin;
+    this.readCsrf = opts.readCsrfToken ?? (() => readCookie(CSRF_COOKIE));
   }
 
   /** The captured ETag for a resource path, if one has been observed. */
@@ -158,6 +222,12 @@ export class ApiClient {
     const headers = new Headers(opts.headers);
     if (opts.ifMatch !== undefined) headers.set("If-Match", opts.ifMatch);
     if (opts.idempotencyKey !== undefined) headers.set("Idempotency-Key", opts.idempotencyKey);
+    // SEC-024's double-submit half, on every mutating request. The session
+    // cookie itself needs no plumbing — the browser attaches it same-origin.
+    if (!SAFE_METHODS.has(method.toUpperCase())) {
+      const csrf = this.readCsrf();
+      if (csrf) headers.set(CSRF_HEADER, csrf);
+    }
 
     const res = await this.doFetch(this.buildUrl(path, opts.query), {
       method,
@@ -182,6 +252,17 @@ export class ApiClient {
     } catch {
       // Non-JSON (or empty) error body — there is no Problem to parse; the status
       // code alone drives the error below.
+    }
+    // A 401 means the session is gone. Raise it once so the shell can send the
+    // operator to sign in, then still throw — the caller's own error path (a
+    // toast, an error card) runs as it would for any other failure, because a
+    // redirect is not instantaneous and a page must not be left mid-render
+    // pretending the read succeeded.
+    if (res.status === 401) {
+      if (!this.unauthenticatedRaised) {
+        this.unauthenticatedRaised = true;
+        this.onUnauthenticated();
+      }
     }
     if (res.status === 412 || problem?.code === "REVISION_CONFLICT") {
       throw new RevisionConflictError(res.status, problem, traceId);
@@ -247,6 +328,43 @@ export class ApiClient {
       body: body === undefined ? null : JSON.stringify(body),
       idempotencyKey: this.newKey(),
     });
+    if (!res.ok) await this.fail(res);
+    return (await res.json()) as T;
+  }
+
+  /** POST a JSON body and read a JSON response, with NO Idempotency-Key.
+   *
+   * It is the credential-exchange verb (`/auth/login`, `/auth/setup`). Those
+   * operations deliberately carry no key: an Idempotency-Key is scoped to the
+   * AUTHENTICATED principal (API-051), and a caller that does not yet hold a
+   * session has no principal for a key to be scoped by — so a key here would be
+   * scoped to nothing, shared by every anonymous caller at once. */
+  async post<T>(path: string, body: unknown): Promise<T> {
+    const res = await this.send("POST", path, {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) await this.fail(res);
+    return (await res.json()) as T;
+  }
+
+  /** POST expecting a 204 (a logout). */
+  async postNoContent(path: string): Promise<void> {
+    const res = await this.send("POST", path);
+    if (!res.ok) await this.fail(res);
+  }
+
+  /** GET a resource, returning null on a 401 instead of throwing OR raising the
+   * unauthenticated hook.
+   *
+   * This is the session probe, and the exemption is deliberate rather than a
+   * convenience: "am I signed in?" is precisely the question whose answer is a
+   * 401, so treating that as a failure would be wrong, and routing it through
+   * the redirect hook would send the sign-in page itself to the sign-in page in
+   * a loop. Every other 401 in this client keeps its normal meaning. */
+  async getOrNull<T>(path: string): Promise<T | null> {
+    const res = await this.send("GET", path);
+    if (res.status === 401) return null;
     if (!res.ok) await this.fail(res);
     return (await res.json()) as T;
   }

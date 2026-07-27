@@ -5,10 +5,24 @@
 // data sources that render over these resources.
 
 export {
+  createAuthModule,
+  type AuthModule,
+  type SessionSummary,
+  type LoginRequest,
+  type ClaimRequest,
+  type PrincipalKind,
+  type Role,
+  type AAL,
+} from "./auth";
+
+export {
   ApiClient,
   ApiError,
   RevisionConflictError,
   API_BASE,
+  CSRF_COOKIE,
+  CSRF_HEADER,
+  readCookie,
   type Problem,
   type ErrorCode,
   type ValidationFieldError,

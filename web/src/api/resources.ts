@@ -16,6 +16,7 @@ import type { components } from "../../../api/gen/ts/api";
 import { ApiClient, RevisionConflictError, type ApiClientOptions, type Read } from "./client";
 import { type Page } from "./pagination";
 import { crud } from "./crud";
+import { createAuthModule, type AuthModule } from "./auth";
 import {
   createPacksModule,
   packData,
@@ -235,6 +236,9 @@ function contentModule(client: ApiClient): ContentModule {
 
 export interface WaiveoApi {
   client: ApiClient;
+  /** Sign in / sign out / read the current session, plus the first-boot claim
+   * (`security-model.md`). No token handling — see api/auth.ts. */
+  auth: AuthModule;
   scopeNodes: ResourceModule<ScopeNode, ScopeNodeCreate, ScopeNodeUpdate>;
   schedules: ResourceModule<Schedule, ScheduleCreate, ScheduleUpdate>;
   dayparts: ResourceModule<Daypart, DaypartCreate, DaypartUpdate>;
@@ -256,6 +260,7 @@ export function createApi(opts?: ApiClientOptions): WaiveoApi {
   const client = new ApiClient(opts);
   return {
     client,
+    auth: createAuthModule(client),
     scopeNodes: crud<ScopeNode, ScopeNodeCreate, ScopeNodeUpdate>(client, "/scope-nodes"),
     schedules: crud<Schedule, ScheduleCreate, ScheduleUpdate>(client, "/schedules"),
     dayparts: crud<Daypart, DaypartCreate, DaypartUpdate>(client, "/dayparts"),

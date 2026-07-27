@@ -1,6 +1,8 @@
 import { BrowserRouter, Routes, Route } from "react-router";
 import { ThemeProvider } from "@/components/theme/theme-provider";
+import { SessionGate } from "@/auth/session-gate";
 import { AppShell } from "@/shell/app-shell";
+import LoginRoute from "@/routes/login/login-route";
 import OverviewRoute from "@/routes/overview/overview-route";
 import ScreensRoute from "@/routes/screens/screens-route";
 import SchedulesRoute from "@/routes/schedules/schedules-route";
@@ -18,12 +20,25 @@ import PackPageRoute from "@/routes/packs/pack-page-route";
 // content region. The console pages talk to the feeder over the same-origin
 // api/1 client and the ui-schema renderer; Activity streams the live /events/v1
 // SSE. The full console navigation is wired here.
+//
+// Every api/1 route is authenticated (security-model/1 SEC-005), so the whole
+// shell sits behind a SessionGate: it probes /auth/session once and either
+// renders the console or redirects to /login. /login itself is OUTSIDE the gate
+// and outside the shell — a sign-in page behind a sign-in requirement would
+// never render, and the shell's own pages all assume a session.
 export default function App() {
   return (
     <ThemeProvider>
       <BrowserRouter>
         <Routes>
-          <Route element={<AppShell />}>
+          <Route path="/login" element={<LoginRoute />} />
+          <Route
+            element={
+              <SessionGate>
+                <AppShell />
+              </SessionGate>
+            }
+          >
             <Route path="/" element={<OverviewRoute />} />
             <Route path="/screens" element={<ScreensRoute />} />
             <Route path="/schedules" element={<SchedulesRoute />} />
