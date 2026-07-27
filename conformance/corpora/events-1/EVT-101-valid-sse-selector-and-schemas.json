@@ -1,0 +1,43 @@
+{
+  "case_id": "EVT-101-valid-sse-selector-and-schemas",
+  "contract": "events/1",
+  "req_ids": ["EVT-101", "EVT-121", "EVT-122", "EVT-124"],
+  "description": "The SSE binding's initial request carries selector and schemas as query parameters, since SSE offers no later client-to-server frame. A subtree selector inside the principal's reach narrows delivery; a schemas list restricts by schema alongside scope-node filtering rather than in place of it; a selector naming a scope node outside the readable set matches nothing and is answered 200 with an empty stream, never an error that would let the selector probe for that node's existence. A selector that does not PARSE is still refused 400 / SELECTOR_INVALID, which is a statement about the request's syntax and reveals nothing about which nodes exist.",
+  "input": {
+    "scope_nodes": [
+      { "id": "01J8Z7A0B1C2D3E4F5G6H7Z0RG", "kind": "org", "name": "org" },
+      { "id": "01J8Z7A0B1C2D3E4F5G6H7Z5A0", "kind": "site", "parent_id": "01J8Z7A0B1C2D3E4F5G6H7Z0RG", "name": "site A", "tz": "UTC", "lat": 1, "long": 2 },
+      { "id": "01J8Z7A0B1C2D3E4F5G6H7Z5B0", "kind": "site", "parent_id": "01J8Z7A0B1C2D3E4F5G6H7Z0RG", "name": "site B", "tz": "UTC", "lat": 3, "long": 4 },
+      { "id": "01J8Z7A0B1C2D3E4F5G6H7ZCA0", "kind": "screen", "parent_id": "01J8Z7A0B1C2D3E4F5G6H7Z5A0", "name": "screen A" }
+    ],
+    "subscriber_binding": { "scope_node": "01J8Z7A0B1C2D3E4F5G6H7Z5A0", "role": "viewer" },
+    "resume_from": "01J8Z3K4N5P6Q7R8S9T0V1W2X0",
+    "recorded_events": [
+      { "id": "01J8Z3K4N5P6Q7R8S9T0V1W2X0", "scope_node": "01J8Z7A0B1C2D3E4F5G6H7Z5A0", "schema": "automation.run" },
+      { "id": "01J8Z3K4N5P6Q7R8S9T0V1W2X1", "scope_node": "01J8Z7A0B1C2D3E4F5G6H7ZCA0", "schema": "automation.run" },
+      { "id": "01J8Z3K4N5P6Q7R8S9T0V1W2X2", "scope_node": "01J8Z7A0B1C2D3E4F5G6H7Z5B0", "schema": "automation.run" },
+      { "id": "01J8Z3K4N5P6Q7R8S9T0V1W2X3", "scope_node": "01J8Z7A0B1C2D3E4F5G6H7ZCA0", "schema": "content.played" },
+      { "id": "01J8Z3K4N5P6Q7R8S9T0V1W2X4", "scope_node": "01J8Z7A0B1C2D3E4F5G6H7Z5A0", "schema": "automation.run" }
+    ],
+    "requests": [
+      { "name": "no selector and no schemas", "query": "" },
+      { "name": "selector narrows to a subtree in reach", "query": "selector=scope_node%20subtree%2001J8Z7A0B1C2D3E4F5G6H7ZCA0" },
+      { "name": "selector names an ancestor above the binding", "query": "selector=scope_node%20subtree%2001J8Z7A0B1C2D3E4F5G6H7Z0RG" },
+      { "name": "selector names a scope node out of reach", "query": "selector=scope_node%20subtree%2001J8Z7A0B1C2D3E4F5G6H7Z5B0" },
+      { "name": "schemas restricts alongside scope filtering", "query": "schemas=automation.run" },
+      { "name": "schemas naming only an unregistered schema", "query": "schemas=no.such_schema" },
+      { "name": "selector that does not parse", "query": "selector=kind%20%3D%20screen" }
+    ]
+  },
+  "expected": {
+    "responses": [
+      { "name": "no selector and no schemas", "status": 200, "delivered_ids": ["01J8Z3K4N5P6Q7R8S9T0V1W2X1", "01J8Z3K4N5P6Q7R8S9T0V1W2X3", "01J8Z3K4N5P6Q7R8S9T0V1W2X4"] },
+      { "name": "selector narrows to a subtree in reach", "status": 200, "delivered_ids": ["01J8Z3K4N5P6Q7R8S9T0V1W2X1", "01J8Z3K4N5P6Q7R8S9T0V1W2X3"] },
+      { "name": "selector names an ancestor above the binding", "status": 200, "delivered_ids": ["01J8Z3K4N5P6Q7R8S9T0V1W2X1", "01J8Z3K4N5P6Q7R8S9T0V1W2X3", "01J8Z3K4N5P6Q7R8S9T0V1W2X4"] },
+      { "name": "selector names a scope node out of reach", "status": 200, "delivered_ids": [] },
+      { "name": "schemas restricts alongside scope filtering", "status": 200, "delivered_ids": ["01J8Z3K4N5P6Q7R8S9T0V1W2X1", "01J8Z3K4N5P6Q7R8S9T0V1W2X4"] },
+      { "name": "schemas naming only an unregistered schema", "status": 200, "delivered_ids": [] },
+      { "name": "selector that does not parse", "status": 400, "error_code": "SELECTOR_INVALID", "delivered_ids": [] }
+    ]
+  }
+}

@@ -29,6 +29,8 @@ var expectedDriven = []string{
 	"EVT-070-valid-box-vitals",
 	"EVT-080-valid-audit-login-failure",
 	"EVT-091-valid-hello-fresh-subscribe",
+	"EVT-101-valid-sse-selector-and-schemas",
+	"EVT-120-valid-scope-filtered-subscription",
 	"EVT-134-invalid-resume-from-malformed",
 	"EVT-140-valid-resume-with-gap",
 	"EVT-151-valid-webhook-delivery-signed",

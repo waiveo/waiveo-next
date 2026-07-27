@@ -57,6 +57,7 @@ import (
 
 	"github.com/maaxton/waiveo-next/conformance/drivers/corpus"
 	"github.com/maaxton/waiveo-next/conformance/drivers/report"
+	"github.com/maaxton/waiveo-next/internal/app/auth"
 	"github.com/maaxton/waiveo-next/internal/app/auth/authtest"
 	"github.com/maaxton/waiveo-next/internal/app/eventingest"
 	"github.com/maaxton/waiveo-next/internal/app/eventingest/ingesttest"
@@ -112,6 +113,8 @@ func driveCases(rep *report.Report, cases map[string]corpus.Case) {
 	driveMalformedResumeFrom(rep, cases)
 	driveResumeWithGap(rep, cases)
 	driveWebhookDeliverySigned(rep, cases)
+	driveScopeFilteredSubscription(rep, cases)
+	driveSelectorAndSchemasParameters(rep, cases)
 }
 
 // --- the live ingest harness ------------------------------------------------
@@ -1326,4 +1329,220 @@ func corpusDir() string {
 // LoadCorpus loads every frozen events-1 corpus case, keyed by case_id.
 func LoadCorpus() (map[string]corpus.Case, error) {
 	return corpus.LoadDir(corpusDir())
+}
+
+// --- EVT-101/120-124 scope-node filtering over the live SSE binding ---------
+
+// scopeCase is the shape both scope-filtering corpus cases share on their input
+// side: the scope-node tree the subscriber's visible set resolves against, the
+// binding its principal holds, the recorded events, and the resume anchor.
+type scopeCase struct {
+	ScopeNodes        []datamodel.ScopeNode `json:"scope_nodes"`
+	SubscriberBinding struct {
+		ScopeNode string `json:"scope_node"`
+		Role      string `json:"role"`
+	} `json:"subscriber_binding"`
+	ResumeFrom     string `json:"resume_from"`
+	RecordedEvents []struct {
+		ID        string `json:"id"`
+		ScopeNode string `json:"scope_node"`
+		Schema    string `json:"schema"`
+	} `json:"recorded_events"`
+}
+
+// scopeHarness is a live /events/v1 handler whose subscriber holds a REAL
+// principal bound at one scope node, over a REAL scope tree, reading a log
+// already holding the case's recorded events.
+//
+// The Hub is CLOSED before any request is driven. That is what makes the
+// delivered set observable without a timer: the handler writes and flushes the
+// whole resolved backlog before it ever reaches its live select, and that select
+// then returns at once on the closed done channel — so one ServeHTTP call
+// against a ResponseRecorder yields exactly "the filtered backlog", complete,
+// synchronously. The filtering under test is the same code path either way
+// (EVT-123 applies it per event at delivery time, backlog and tail alike).
+type scopeHarness struct {
+	handler http.Handler
+	cred    authtest.Credential
+	fixture *authtest.Fixture
+}
+
+func newScopeHarness(in scopeCase) (*scopeHarness, error) {
+	role := auth.Role(in.SubscriberBinding.Role)
+	fixture, err := authtest.New(authtest.Config{Role: role, ScopeNode: in.SubscriberBinding.ScopeNode})
+	if err != nil {
+		return nil, fmt.Errorf("seed the subscriber's principal: %w", err)
+	}
+
+	log := events.NewEventLog(0)
+	for _, e := range in.RecordedEvents {
+		log.Append(scopedFixtureEnvelope(e.ID, e.ScopeNode, e.Schema))
+	}
+	hub := eventsse.NewHub(log)
+	hub.Close()
+
+	nodes := in.ScopeNodes
+	handler := eventsse.New(hub, fixture.Auth, func(context.Context) ([]datamodel.ScopeNode, error) {
+		return nodes, nil
+	})
+	return &scopeHarness{handler: handler, cred: fixture.Credential(), fixture: fixture}, nil
+}
+
+func (h *scopeHarness) close() { h.fixture.Close() }
+
+// get drives one GET /events/v1 with the case's resume anchor plus query, and
+// returns the status and every envelope id the response actually carried.
+func (h *scopeHarness) get(resumeFrom, query string) (int, []string, string) {
+	target := "/events/v1?resume_from=" + resumeFrom
+	if query != "" {
+		target += "&" + query
+	}
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	req.Header.Set("Accept", "text/event-stream")
+	h.cred.Authorize(req)
+	rec := httptest.NewRecorder()
+	h.handler.ServeHTTP(rec, req)
+
+	ids := []string{}
+	for _, line := range strings.Split(rec.Body.String(), "\n") {
+		if strings.HasPrefix(line, "id: ") {
+			ids = append(ids, strings.TrimPrefix(line, "id: "))
+		}
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	return rec.Code, ids, body.Code
+}
+
+// scopedFixtureEnvelope builds a valid envelope placed at scopeNode. schema
+// defaults to automation.run; content.played carries its own corpus-shaped
+// payload so the envelope is genuinely that schema rather than an automation.run
+// body wearing a different name.
+func scopedFixtureEnvelope(id, scopeNode, schema string) events.Envelope {
+	env := fixtureAutomationRunEnvelope(id)
+	env.ScopeNode = scopeNode
+	if schema != "" {
+		env.Schema = schema
+	}
+	if env.Schema == events.SchemaContentPlayed {
+		env.Payload = json.RawMessage(`{"asset_ref":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85",` +
+			`"screen_id":"01J8Z3K4N5P6Q7R8S9T0V1W2ZE","program_revision":"rev-00042","t_start":1752537000000,` +
+			`"t_end":1752537030000,"cause":"scheduled","completion":"completed"}`)
+	}
+	return env
+}
+
+// driveScopeFilteredSubscription drives EVT-120/123 through the live GET
+// /events/v1 handler: a subscriber bound at one site receives exactly the events
+// whose envelope scope_node (EVT-012) falls in its own subtree.
+func driveScopeFilteredSubscription(rep *report.Report, cases map[string]corpus.Case) {
+	const id = "EVT-120-valid-scope-filtered-subscription"
+	c, ok := corpus.ByID(cases, id)
+	if !ok {
+		rep.Fail(id, contract, "case not found in frozen corpus")
+		return
+	}
+
+	var in scopeCase
+	if err := decodeInto(c.Input, &in); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode input: %v", err))
+		return
+	}
+	var want struct {
+		Status       int      `json:"status"`
+		DeliveredIDs []string `json:"delivered_ids"`
+	}
+	if err := decodeInto(c.Expected, &want); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode expected: %v", err))
+		return
+	}
+
+	h, err := newScopeHarness(in)
+	if err != nil {
+		rep.Fail(c.CaseID, contract, err.Error())
+		return
+	}
+	defer h.close()
+
+	status, ids, _ := h.get(in.ResumeFrom, "")
+
+	var diffs []report.Diff
+	if status != want.Status {
+		diffs = append(diffs, report.Diff{Field: "status", Expected: want.Status, Actual: status})
+	}
+	if !reflect.DeepEqual(ids, want.DeliveredIDs) {
+		diffs = append(diffs, report.Diff{Field: "delivered_ids", Expected: want.DeliveredIDs, Actual: ids})
+	}
+	finishCase(rep, c, diffs)
+}
+
+// driveSelectorAndSchemasParameters drives EVT-101/121/122/124 through the live
+// GET /events/v1 handler: each of the case's query parameterizations is a real
+// request, and the delivered set is read off the real response.
+func driveSelectorAndSchemasParameters(rep *report.Report, cases map[string]corpus.Case) {
+	const id = "EVT-101-valid-sse-selector-and-schemas"
+	c, ok := corpus.ByID(cases, id)
+	if !ok {
+		rep.Fail(id, contract, "case not found in frozen corpus")
+		return
+	}
+
+	var in struct {
+		scopeCase
+		Requests []struct {
+			Name  string `json:"name"`
+			Query string `json:"query"`
+		} `json:"requests"`
+	}
+	if err := decodeInto(c.Input, &in); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode input: %v", err))
+		return
+	}
+	var want struct {
+		Responses []struct {
+			Name         string   `json:"name"`
+			Status       int      `json:"status"`
+			ErrorCode    string   `json:"error_code"`
+			DeliveredIDs []string `json:"delivered_ids"`
+		} `json:"responses"`
+	}
+	if err := decodeInto(c.Expected, &want); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode expected: %v", err))
+		return
+	}
+	if len(want.Responses) != len(in.Requests) {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("corpus declares %d requests but %d expected responses", len(in.Requests), len(want.Responses)))
+		return
+	}
+
+	h, err := newScopeHarness(in.scopeCase)
+	if err != nil {
+		rep.Fail(c.CaseID, contract, err.Error())
+		return
+	}
+	defer h.close()
+
+	var diffs []report.Diff
+	for i, req := range in.Requests {
+		exp := want.Responses[i]
+		if exp.Name != req.Name {
+			diffs = append(diffs, report.Diff{Field: "requests[" + strconv.Itoa(i) + "].name", Expected: req.Name, Actual: exp.Name})
+			continue
+		}
+		status, ids, code := h.get(in.ResumeFrom, req.Query)
+		if status != exp.Status {
+			diffs = append(diffs, report.Diff{Field: req.Name + ".status", Expected: exp.Status, Actual: status})
+		}
+		if exp.ErrorCode != "" && code != exp.ErrorCode {
+			diffs = append(diffs, report.Diff{Field: req.Name + ".error_code", Expected: exp.ErrorCode, Actual: code})
+		}
+		// A 400 body is a Problem document, whose own `instance` member is not an
+		// SSE id: line, so ids is empty for it by construction.
+		if !reflect.DeepEqual(ids, exp.DeliveredIDs) {
+			diffs = append(diffs, report.Diff{Field: req.Name + ".delivered_ids", Expected: exp.DeliveredIDs, Actual: ids})
+		}
+	}
+	finishCase(rep, c, diffs)
 }

@@ -1,0 +1,27 @@
+{
+  "case_id": "EVT-120-valid-scope-filtered-subscription",
+  "contract": "events/1",
+  "req_ids": ["EVT-012", "EVT-120", "EVT-123"],
+  "description": "A subscriber whose principal is bound at site A receives exactly the events whose subject placement (the envelope's scope_node) falls in its own subtree. An event placed under the sibling site B is not delivered, and neither is one placed at the org node ABOVE the binding — a role bound at a scope node inherits downward, never upward. The filtering is per event at delivery time, so it applies to a replayed backlog exactly as it does to a live tail.",
+  "input": {
+    "scope_nodes": [
+      { "id": "01J8Z7A0B1C2D3E4F5G6H7Z0RG", "kind": "org", "name": "org" },
+      { "id": "01J8Z7A0B1C2D3E4F5G6H7Z5A0", "kind": "site", "parent_id": "01J8Z7A0B1C2D3E4F5G6H7Z0RG", "name": "site A", "tz": "UTC", "lat": 1, "long": 2 },
+      { "id": "01J8Z7A0B1C2D3E4F5G6H7Z5B0", "kind": "site", "parent_id": "01J8Z7A0B1C2D3E4F5G6H7Z0RG", "name": "site B", "tz": "UTC", "lat": 3, "long": 4 },
+      { "id": "01J8Z7A0B1C2D3E4F5G6H7ZCA0", "kind": "screen", "parent_id": "01J8Z7A0B1C2D3E4F5G6H7Z5A0", "name": "screen A" }
+    ],
+    "subscriber_binding": { "scope_node": "01J8Z7A0B1C2D3E4F5G6H7Z5A0", "role": "viewer" },
+    "resume_from": "01J8Z3K4N5P6Q7R8S9T0V1W2X0",
+    "recorded_events": [
+      { "id": "01J8Z3K4N5P6Q7R8S9T0V1W2X0", "scope_node": "01J8Z7A0B1C2D3E4F5G6H7Z5A0" },
+      { "id": "01J8Z3K4N5P6Q7R8S9T0V1W2X1", "scope_node": "01J8Z7A0B1C2D3E4F5G6H7ZCA0" },
+      { "id": "01J8Z3K4N5P6Q7R8S9T0V1W2X2", "scope_node": "01J8Z7A0B1C2D3E4F5G6H7Z5B0" },
+      { "id": "01J8Z3K4N5P6Q7R8S9T0V1W2X3", "scope_node": "01J8Z7A0B1C2D3E4F5G6H7Z0RG" },
+      { "id": "01J8Z3K4N5P6Q7R8S9T0V1W2X4", "scope_node": "01J8Z7A0B1C2D3E4F5G6H7Z5A0" }
+    ]
+  },
+  "expected": {
+    "status": 200,
+    "delivered_ids": ["01J8Z3K4N5P6Q7R8S9T0V1W2X1", "01J8Z3K4N5P6Q7R8S9T0V1W2X4"]
+  }
+}

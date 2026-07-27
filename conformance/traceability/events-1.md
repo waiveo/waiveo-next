@@ -21,6 +21,18 @@ driver never opened a real SSE connection); `EVT-091-valid-hello-fresh-
 subscribe` and `EVT-140-valid-resume-with-gap` now drive a real
 `httptest.Server`-backed SSE connection end to end.
 
+**Scope-node filtering note:** `EVT-120-valid-scope-filtered-subscription` and
+`EVT-101-valid-sse-selector-and-schemas` drive the live `GET /events/v1` handler
+with a REAL scope-node tree and a REAL principal bound at one site (a seeded
+`authtest` fixture), so EVT-012/101/120–124 are answered by the shipping
+visible-set computation rather than by a driver-side model of it. Both close the
+Hub before driving, which makes the delivered set observable synchronously: the
+handler writes and flushes its whole resolved backlog before reaching the live
+select, and that select returns at once on the closed done channel — no timer
+decides when a stream has finished. EVT-123's live-tail half is additionally
+driven by `internal/app/eventsse`'s own tests, which watch two differently-bound
+principals across one interleaved append sequence.
+
 | req-id | contract §anchor | case-id(s) | status |
 |---|---|---|---|
 | EVT-001 | `contracts/events-1.md#versioning--transport-surface` | - | TBD-wave1 |
@@ -28,7 +40,7 @@ subscribe` and `EVT-140-valid-resume-with-gap` now drive a real
 | EVT-003 | `contracts/events-1.md#versioning--transport-surface` | - | TBD-wave1 |
 | EVT-010 | `contracts/events-1.md#durable-event-envelope` | `EVT-010-valid-entity-state-changed` | covered |
 | EVT-011 | `contracts/events-1.md#durable-event-envelope` | - | TBD-wave1 |
-| EVT-012 | `contracts/events-1.md#durable-event-envelope` | - | TBD-wave1 |
+| EVT-012 | `contracts/events-1.md#durable-event-envelope` | `EVT-120-valid-scope-filtered-subscription` | covered |
 | EVT-013 | `contracts/events-1.md#durable-event-envelope` | `EVT-010-valid-entity-state-changed`, `EVT-013-invalid-unregistered-schema-payload`, `EVT-013-invalid-registered-schema-malformed-payload` | covered |
 | EVT-020 | `contracts/events-1.md#registered-schema-catalog--general` | - | TBD-wave1 |
 | EVT-021 | `contracts/events-1.md#registered-schema-catalog--general` | `EVT-013-invalid-unregistered-schema-payload` | covered |
@@ -61,7 +73,7 @@ subscribe` and `EVT-140-valid-resume-with-gap` now drive a real
 | EVT-095 | `contracts/events-1.md#ws-binding` | - | TBD-wave1 |
 | EVT-096 | `contracts/events-1.md#ws-binding` | - | TBD-wave1 |
 | EVT-100 | `contracts/events-1.md#sse-binding` | `EVT-091-valid-hello-fresh-subscribe`, `EVT-140-valid-resume-with-gap` | covered |
-| EVT-101 | `contracts/events-1.md#sse-binding` | - | TBD-wave1 |
+| EVT-101 | `contracts/events-1.md#sse-binding` | `EVT-101-valid-sse-selector-and-schemas` | covered |
 | EVT-102 | `contracts/events-1.md#sse-binding` | `EVT-134-invalid-resume-from-malformed`, `EVT-140-valid-resume-with-gap` | covered |
 | EVT-103 | `contracts/events-1.md#sse-binding` | `EVT-140-valid-resume-with-gap` | covered |
 | EVT-104 | `contracts/events-1.md#sse-binding` | `EVT-140-valid-resume-with-gap` | covered |
@@ -71,11 +83,11 @@ subscribe` and `EVT-140-valid-resume-with-gap` now drive a real
 | EVT-112 | `contracts/events-1.md#authentication` | - | TBD-wave1 |
 | EVT-113 | `contracts/events-1.md#authentication` | - | TBD-wave1 |
 | EVT-114 | `contracts/events-1.md#authentication` | - | TBD-wave1 |
-| EVT-120 | `contracts/events-1.md#scope-node-filtering` | - | TBD-wave1 |
-| EVT-121 | `contracts/events-1.md#scope-node-filtering` | `EVT-091-valid-hello-fresh-subscribe` | covered |
-| EVT-122 | `contracts/events-1.md#scope-node-filtering` | - | TBD-wave1 |
-| EVT-123 | `contracts/events-1.md#scope-node-filtering` | - | TBD-wave1 |
-| EVT-124 | `contracts/events-1.md#scope-node-filtering` | - | TBD-wave1 |
+| EVT-120 | `contracts/events-1.md#scope-node-filtering` | `EVT-120-valid-scope-filtered-subscription`, `EVT-101-valid-sse-selector-and-schemas` | covered |
+| EVT-121 | `contracts/events-1.md#scope-node-filtering` | `EVT-091-valid-hello-fresh-subscribe`, `EVT-101-valid-sse-selector-and-schemas` | covered |
+| EVT-122 | `contracts/events-1.md#scope-node-filtering` | `EVT-101-valid-sse-selector-and-schemas` | covered |
+| EVT-123 | `contracts/events-1.md#scope-node-filtering` | `EVT-120-valid-scope-filtered-subscription` | covered |
+| EVT-124 | `contracts/events-1.md#scope-node-filtering` | `EVT-101-valid-sse-selector-and-schemas` | covered |
 | EVT-130 | `contracts/events-1.md#resume-cursor` | - | TBD-wave1 |
 | EVT-131 | `contracts/events-1.md#resume-cursor` | `EVT-134-invalid-resume-from-malformed` | covered |
 | EVT-132 | `contracts/events-1.md#resume-cursor` | `EVT-091-valid-hello-fresh-subscribe` | covered |
