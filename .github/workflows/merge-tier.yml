@@ -22,6 +22,8 @@ jobs:
           go-version-file: go.mod
       - run: node scripts/validate-contracts.mjs
       - run: node scripts/validate-coverage.mjs
+      - name: api/1 — `mcp:` operation-tag curation (API-070/071/072)
+        run: node scripts/validate-mcp-tags.mjs
       - run: node scripts/check-public-hygiene.mjs
       - name: ui-schema/1 — automation-builder fixture-lint
         run: node conformance/fixtures/fixture-lint.mjs

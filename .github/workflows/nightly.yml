@@ -21,6 +21,7 @@ jobs:
           node scripts/validate-contracts.mjs 2>&1 | tee lane.log
           node scripts/check-public-hygiene.mjs 2>&1 | tee -a lane.log
           node scripts/validate-coverage.mjs 2>&1 | tee -a lane.log
+          node scripts/validate-mcp-tags.mjs 2>&1 | tee -a lane.log
       - if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
