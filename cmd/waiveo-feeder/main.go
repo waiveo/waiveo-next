@@ -326,12 +326,19 @@ func main() {
 	// desired-state check below — a feeder that cannot accept a write is not
 	// something to discover later. `waiveo-feeder -store-check` reports what this
 	// would do, without writing, before the restart.
+	// renamedScopeNodes carries the scope-node half of the rewrite to the auth
+	// store, which is a separate file opened much later in this function and
+	// holds role bindings and grants that name these nodes.
+	renamedScopeNodes := map[string]string{}
 	if m, err := st.MigrateRowIDs(ctx); err != nil {
 		log.Fatalf("waiveo-feeder: canonicalize store row ids: %v\n"+
 			"    run `waiveo-feeder -store-check` to inspect %s; nothing was changed", err, cfg.storePath)
 	} else if len(m.Rewrites) > 0 {
 		for _, rw := range m.Rewrites {
 			log.Printf("waiveo-feeder: canonicalized %s id %q -> %q", rw.Kind, rw.From, rw.To)
+			if rw.Kind == store.KindScopeNode {
+				renamedScopeNodes[rw.From] = rw.To
+			}
 		}
 		log.Printf("waiveo-feeder: canonicalized %d store row id(s) in %s", len(m.Rewrites), cfg.storePath)
 	}
@@ -473,6 +480,18 @@ func main() {
 		log.Fatalf("waiveo-feeder: open auth store: %v", err)
 	}
 	defer authStore.Close()
+
+	// A role binding and a grant name a scope node that lives in the authoring
+	// store, so a node the canonicalization above renamed has to be followed
+	// here too. A binding left pointing at the old id would authorize a node
+	// that no longer exists, and the principal would quietly lose the subtree
+	// they were granted — a silent, security-shaped failure rather than a loud
+	// one. Nothing happens unless a scope node actually moved.
+	if n, err := authStore.RemapScopeNodes(ctx, renamedScopeNodes); err != nil {
+		log.Fatalf("waiveo-feeder: follow canonicalized scope nodes into the auth store: %v", err)
+	} else if n > 0 {
+		log.Printf("waiveo-feeder: repointed %d authorization record(s) at canonicalized scope nodes", n)
+	}
 
 	// The revocation registry EVT-114 hangs off: revoking a session closes every
 	// events/1 stream that session authenticated, rather than merely refusing

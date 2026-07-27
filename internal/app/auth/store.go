@@ -830,3 +830,54 @@ func (s *Store) CountOwnerBindings(ctx context.Context) (int, error) {
 	}
 	return n, nil
 }
+
+// RemapScopeNodes rewrites every authorization record that names a scope node
+// the authoring store renamed, and reports how many rows it changed.
+//
+// It exists because a role binding and a grant both carry a scope node that
+// lives in the OTHER database. When the authoring store canonicalizes a scope
+// node's id, a binding still naming the old one stops granting anything: the
+// node it authorizes no longer exists, and the principal silently loses access
+// to the subtree they were given. Rewriting it here is what keeps the two files
+// describing the same tree.
+//
+// It only ever substitutes a value the caller supplies, one exact match at a
+// time. It creates no binding, deletes none, and changes no principal or role —
+// nothing here can widen anyone's authority beyond the node they already held,
+// because a rewritten node IS the node they held. The workspace-root sentinel
+// and the empty scope node are never map keys (neither is a ULID, so the
+// authoring store never rewrites them), and a mapping that would collide with a
+// binding the principal already holds fails the whole call rather than merging
+// two grants of authority.
+func (s *Store) RemapScopeNodes(ctx context.Context, mapping map[string]string) (int, error) {
+	if len(mapping) == 0 {
+		return 0, nil
+	}
+	var changed int
+	err := s.writeTx(ctx, func(tx *sql.Tx) error {
+		for from, to := range mapping {
+			if from == "" || from == RootScopeNode {
+				continue
+			}
+			for _, stmt := range []string{
+				`UPDATE role_bindings SET scope_node = ? WHERE scope_node = ?`,
+				`UPDATE grants SET scope_node = ? WHERE scope_node = ?`,
+			} {
+				res, err := tx.ExecContext(ctx, stmt, to, from)
+				if err != nil {
+					return fmt.Errorf("auth: remap scope node %q: %w", from, err)
+				}
+				n, err := res.RowsAffected()
+				if err != nil {
+					return fmt.Errorf("auth: remap scope node %q: %w", from, err)
+				}
+				changed += int(n)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return changed, nil
+}
