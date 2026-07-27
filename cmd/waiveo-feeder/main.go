@@ -31,6 +31,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/feeder/enroll"
 	"github.com/maaxton/waiveo-next/internal/feeder/grant"
 	"github.com/maaxton/waiveo-next/internal/feeder/origin"
+	"github.com/maaxton/waiveo-next/internal/feeder/relayconn"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
 	"github.com/maaxton/waiveo-next/internal/relay/hello"
@@ -322,15 +323,39 @@ func main() {
 	enrollSrv.Register(mux)
 	helloSrv.Register(mux)
 
+	// The relay/1 persistent-connection endpoint (REL-001's stable path,
+	// upgraded to a WS carrying one JSON message per frame, REL-002): the
+	// same snapshot provider the HTTP pull serves, with the enrollment key
+	// looked up by the mTLS client-certificate identity (REL-041). The
+	// legacy per-request routes above stay mounted during the spike.
+	relayConnSrv := relayconn.New(
+		src.current,
+		enrollSrv.RelayEnrollmentKey,
+		firstPhotonSite,
+		hello.AppPeerImplementedMinors(1, 1),
+		firstPhotonRecognizedFeatures,
+	)
+	mux.Handle("/relay/v1", relayConnSrv.Handler())
+
 	cert, err := tls.X509KeyPair(id.TLSCertPEM(), id.TLSKeyPEM())
 	if err != nil {
 		log.Fatalf("waiveo-feeder: load TLS cert: %v", err)
 	}
 
 	server := &http.Server{
-		Addr:      cfg.listen,
-		Handler:   apihttp.WithTraceID(mux),
-		TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}},
+		Addr:    cfg.listen,
+		Handler: apihttp.WithTraceID(mux),
+		TLSConfig: &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			// Accept (and verify) a client certificate when one is offered —
+			// an enrolled relay presenting its enrollment-issued leaf on
+			// /relay/v1 (REL-003/041) — while browsers on /api/v1 and screens
+			// on /content/ remain certificate-free. ClientCAPool is read
+			// AFTER EnablePersistence, so a restarted feeder keeps verifying
+			// leaves it issued before the restart.
+			ClientAuth: tls.VerifyClientCertIfGiven,
+			ClientCAs:  enrollSrv.ClientCAPool(),
+		},
 	}
 
 	log.Printf("waiveo-feeder listening (HTTPS) on %s (content base %s)", cfg.listen, cfg.contentBaseURL)
