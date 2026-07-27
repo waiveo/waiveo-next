@@ -24,10 +24,16 @@
 //     builds a deliverable events.Envelope, and it is relay-telemetry-scoped
 //     (always origin: relay). This is a real, confirmed gap (D3/D8 in the
 //     2026-07-26 reconciliation), not a driver shortcut.
-//   - the webhook-signing case (EVT-151): internal/events/webhook.go's own
-//     doc comment defers the live HTTP delivery transport; WebhookSignature
-//     itself (the real signer, not a stub) is exercised against an
-//     independent crypto/hmac+sha256 reference computation.
+//
+// The webhook-signing case (EVT-151) is driven in two legs. Its corpus
+// `event` is the contract's own abbreviated envelope, so the FORMULA leg pins
+// the literal signed_material and its hex HMAC-SHA256 against an independent
+// crypto/hmac+sha256 reference computation; the TRANSPORT leg then registers a
+// real endpoint, appends a real envelope to the durable log, runs the shipping
+// delivery loop (internal/app/webhookdeliver) against an in-process receiving
+// server, and verifies the signature the RECEIVER got over the bytes it
+// actually received. A signer correct in isolation but mis-wired at the call
+// site passes the first leg and fails the second.
 //
 // The two WS-shaped cases (EVT-091's hello/hello-ack exchange and EVT-140's
 // hello-ack-then-gap sequence) are now driven over a REAL WebSocket connection
@@ -47,6 +53,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -66,9 +73,12 @@ import (
 	"github.com/maaxton/waiveo-next/internal/app/eventingest"
 	"github.com/maaxton/waiveo-next/internal/app/eventingest/ingesttest"
 	"github.com/maaxton/waiveo-next/internal/app/eventsse"
+	"github.com/maaxton/waiveo-next/internal/app/store"
+	"github.com/maaxton/waiveo-next/internal/app/webhookdeliver"
 	"github.com/maaxton/waiveo-next/internal/datamodel"
 	"github.com/maaxton/waiveo-next/internal/events"
 	"github.com/maaxton/waiveo-next/internal/relay/telemetry"
+	"github.com/maaxton/waiveo-next/internal/shared/secretseal"
 )
 
 const contract = "events/1"
@@ -1168,13 +1178,23 @@ func driveResumeWithGapOverWS(srv *httptest.Server, resumeFrom string, ackWant, 
 
 // --- webhook delivery signing (EVT-151) -------------------------------------
 
-// driveWebhookDeliverySigned drives EVT-151 against the real
-// events.WebhookSignature signer — internal/events/webhook.go's own doc
-// comment defers the live HTTP delivery transport (no endpoint registration,
-// no delivery loop caller), so there is no live handler to mount; the
-// signature is checked against an INDEPENDENT crypto/hmac+sha256 reference
-// computation, never a call into the code under test, so a broken signer is
-// actually caught.
+// driveWebhookDeliverySigned drives EVT-151 in two legs, because the corpus
+// case pins two different things and one leg cannot check both.
+//
+// The FORMULA leg checks the corpus's literal signed_material and its hex
+// HMAC-SHA256 against an INDEPENDENT crypto/hmac+sha256 reference computation —
+// never a call into the code under test, so a broken signer is actually caught.
+// The fixture's `event` is the contract's own abbreviated envelope (its wire
+// shape elides the rest with "..."), so those exact bytes are what the formula
+// is pinned over.
+//
+// The TRANSPORT leg registers a real endpoint, appends a real envelope to the
+// durable log, and runs the shipping delivery loop against an in-process
+// receiving server — then verifies the signature the RECEIVER got, over the
+// bytes the receiver actually received, under the endpoint's own secret. That
+// is what says the shipping transport applies the formula the first leg pinned,
+// rather than some other one; a signer that was correct in isolation and
+// mis-wired at the call site passes the first leg and fails this one.
 func driveWebhookDeliverySigned(rep *report.Report, cases map[string]corpus.Case) {
 	const id = "EVT-151-valid-webhook-delivery-signed"
 	c, ok := corpus.ByID(cases, id)
@@ -1239,11 +1259,152 @@ func driveWebhookDeliverySigned(rep *report.Report, cases map[string]corpus.Case
 		diffs = append(diffs, report.Diff{Field: "body_schema", Expected: want.Request.BodySchema, Actual: env.Schema})
 	}
 
-	finishCase(rep, c, diffs,
-		"no live HTTP delivery transport exists for the webhook loop (webhook.go's own doc comment: no endpoint "+
-			"registration, no delivery-loop caller) — events.WebhookSignature is exercised against an independent "+
-			"crypto/hmac+sha256 reference computation; expected.request.method (always POST) has no field on "+
-			"events.WebhookRequest to assert against, so it is not checked")
+	diffs = append(diffs, driveWebhookDeliveryOverHTTP(rep, c, input.EndpointSigningSecret, input.DeliveryID, input.Timestamp, env.Schema)...)
+
+	finishCase(rep, c, diffs, "")
+}
+
+// driveWebhookDeliveryOverHTTP is the transport leg: it stands the shipping
+// delivery loop up over a real store, a real durable event log and an
+// in-process receiving server, registers one endpoint, and checks the POST the
+// receiver observes.
+//
+// Every assertion is made from the RECEIVER's side, against the bytes on the
+// wire: the method, the three EVT-151 headers, and a signature recomputed
+// independently over `<timestamp>.<body>` with the endpoint's own secret. It
+// deliberately does not reuse the corpus's literal signed_material — the
+// envelope delivered here is a full one, not the fixture's abbreviation — so
+// what this leg pins is that the shipping loop signs the bytes it actually
+// sent, under the secret that endpoint was registered with.
+func driveWebhookDeliveryOverHTTP(rep *report.Report, c corpus.Case, secret, deliveryID string, timestampSec int64, schema string) []report.Diff {
+	const endpointID = "01J8Z3K4N5P6Q7R8S9T0V1WHK1"
+	const envelopeID = "01J8Z3K4N5P6Q7R8S9T0V1W2YB"
+
+	fail := func(what string, err error) []report.Diff {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("%s: %v", what, err))
+		return nil
+	}
+
+	type observed struct {
+		method  string
+		headers http.Header
+		body    []byte
+	}
+	seen := make(chan observed, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		seen <- observed{method: r.Method, headers: r.Header.Clone(), body: body}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	st, err := store.Open(":memory:")
+	if err != nil {
+		return fail("open store", err)
+	}
+	defer st.Close()
+
+	// The clock is injected and fixed at the corpus's own timestamp, so the
+	// X-Waiveo-Timestamp the receiver observes is a value this case states
+	// rather than whatever second the run happened to land in.
+	nowMs := timestampSec * 1000
+	log, err := store.OpenEventLog(st, events.DefaultRetentionPolicy(), func() int64 { return nowMs }, func(error) {})
+	if err != nil {
+		return fail("open event log", err)
+	}
+
+	endpointBody, err := json.Marshal(map[string]any{
+		"id": endpointID, "name": "Conformance Endpoint",
+		"scope_node": siteScope, "url": srv.URL, "schemas": []string{schema},
+	})
+	if err != nil {
+		return fail("marshal endpoint", err)
+	}
+	if _, err := st.Create(context.Background(), store.KindWebhookEndpoint, endpointBody); err != nil {
+		return fail("register endpoint", err)
+	}
+
+	key := make([]byte, secretseal.KeySize)
+	for i := range key {
+		key[i] = byte(i*13 + 5)
+	}
+	sealer, err := secretseal.New(key)
+	if err != nil {
+		return fail("build sealer", err)
+	}
+	secrets := webhookdeliver.NewSecrets(sealer)
+	sealed, err := secrets.Seal(endpointID, []byte(secret))
+	if err != nil {
+		return fail("seal signing secret", err)
+	}
+	if err := st.RotateWebhookSecret(context.Background(), endpointID, sealed, "", nowMs); err != nil {
+		return fail("install signing secret", err)
+	}
+
+	log.Append(events.Envelope{
+		ID: envelopeID, Schema: schema, TS: nowMs, ScopeNode: siteScope,
+		TraceID: "01J8Z3K4N5P6Q7R8S9T0V1W2TR", CostClass: "cheap",
+		RetentionClass: "operational", Origin: "internal",
+		Payload: json.RawMessage(`{}`),
+	})
+
+	d, err := webhookdeliver.New(webhookdeliver.Config{
+		Store: st, Log: log, HTTP: srv.Client(),
+		NowMs: func() int64 { return nowMs },
+		// The corpus's own delivery id, so the header the receiver observes is
+		// the value this case names rather than a freshly minted one.
+		NewID:   func() string { return deliveryID },
+		Secrets: secrets,
+	})
+	if err != nil {
+		return fail("build deliverer", err)
+	}
+	if err := d.Tick(context.Background()); err != nil {
+		return fail("delivery pass", err)
+	}
+
+	var got observed
+	select {
+	case got = <-seen:
+	default:
+		rep.Fail(c.CaseID, contract, "the delivery loop made no HTTP request to the registered endpoint")
+		return nil
+	}
+
+	var diffs []report.Diff
+	if got.method != http.MethodPost {
+		diffs = append(diffs, report.Diff{Field: "live.method", Expected: http.MethodPost, Actual: got.method})
+	}
+	if id := got.headers.Get(events.HeaderDeliveryID); id != deliveryID {
+		diffs = append(diffs, report.Diff{Field: "live." + events.HeaderDeliveryID, Expected: deliveryID, Actual: id})
+	}
+	wantTS := strconv.FormatInt(timestampSec, 10)
+	if ts := got.headers.Get(events.HeaderTimestamp); ts != wantTS {
+		diffs = append(diffs, report.Diff{Field: "live." + events.HeaderTimestamp, Expected: wantTS, Actual: ts})
+	}
+	// The independent reference computation, over the bytes the receiver got.
+	liveMac := hmac.New(sha256.New, []byte(secret))
+	liveMac.Write([]byte(got.headers.Get(events.HeaderTimestamp) + "." + string(got.body)))
+	wantLive := hex.EncodeToString(liveMac.Sum(nil))
+	if sig := got.headers.Get(events.HeaderSignature); sig != wantLive {
+		diffs = append(diffs, report.Diff{Field: "live." + events.HeaderSignature, Expected: wantLive, Actual: sig})
+	}
+	// No rotation has happened, so no overlap window is open and the additive
+	// prior-signature header must be absent.
+	if prior := got.headers.Get(events.HeaderPriorSignature); prior != "" {
+		diffs = append(diffs, report.Diff{Field: "live." + events.HeaderPriorSignature, Expected: "", Actual: prior})
+	}
+	var liveEnv events.Envelope
+	if err := json.Unmarshal(got.body, &liveEnv); err != nil {
+		return fail("the delivered body is not a durable-event envelope", err)
+	}
+	if liveEnv.ID != envelopeID {
+		diffs = append(diffs, report.Diff{Field: "live.body.id", Expected: envelopeID, Actual: liveEnv.ID})
+	}
+	if liveEnv.Schema != schema {
+		diffs = append(diffs, report.Diff{Field: "live.body.schema", Expected: schema, Actual: liveEnv.Schema})
+	}
+	return diffs
 }
 
 // --- SSE dial/frame helpers --------------------------------------------------
