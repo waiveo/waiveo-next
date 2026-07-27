@@ -18,6 +18,7 @@ import (
 
 var expectedDriven = []string{
 	"REL-010-valid-fresh-enroll",
+	"REL-015-valid-renew-ahead-of-expiry",
 	"REL-020-valid-re-enroll-after-cert-expiry",
 	"REL-022-invalid-re-enroll-superseded-cert",
 	"REL-027-invalid-re-enroll-pop-signature-invalid",
@@ -191,6 +192,13 @@ func (brokenSkipVerifyClient) Hello(connectURL string, store *identity.Store, de
 // re-enroll behavior of its own to prove.
 func (brokenSkipVerifyClient) ReEnroll(feederBaseURL string, store *identity.Store) error {
 	return reenroll.ReEnroll(feederBaseURL, store)
+}
+
+// Renew delegates to the real proactive-renewal client — REL-071 is the
+// only vulnerability this strawman stages; it has no broken renewal
+// behavior of its own to prove.
+func (brokenSkipVerifyClient) Renew(feederBaseURL string, store *identity.Store) error {
+	return reenroll.Renew(feederBaseURL, store)
 }
 
 func (brokenSkipVerifyClient) Pull(connectURL string, store *identity.Store) (desiredstate.Applied, error) {

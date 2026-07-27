@@ -113,6 +113,7 @@
     "driver": "conformance/drivers/relay1 (go run ./conformance/cmd/driven-manifest -write)",
     "driven": [
       "REL-010-valid-fresh-enroll",
+      "REL-015-valid-renew-ahead-of-expiry",
       "REL-020-valid-re-enroll-after-cert-expiry",
       "REL-022-invalid-re-enroll-superseded-cert",
       "REL-027-invalid-re-enroll-pop-signature-invalid",

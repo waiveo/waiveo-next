@@ -58,6 +58,7 @@ var quietErrorLog = log.New(io.Discard, "", 0)
 type InProcessFeeder struct {
 	id           *feedersigning.Identity
 	enrollBase   string
+	enrollSrv    *enroll.Server
 	connSrv      *feederrelayconn.Server
 	baseSections wire.Sections
 	baseHash     string
@@ -103,6 +104,7 @@ func NewInProcessFeeder() (*InProcessFeeder, error) {
 		f.Close()
 		return nil, fmt.Errorf("relay1: enroll.NewServer: %w", err)
 	}
+	f.enrollSrv = enrollSrv
 	mux := http.NewServeMux()
 	enrollSrv.Register(mux)
 
@@ -229,6 +231,13 @@ func (f *InProcessFeeder) StageSnapshot(generation int64, foreignKey bool) error
 // apply outcome produced, not just the client's local return value.
 func (f *InProcessFeeder) LastStateAck(relayID string) (wire.Frame, bool) {
 	return f.connSrv.LastStateAck(relayID)
+}
+
+// IsRevoked implements Feeder: the live enrollment server's own issuance
+// record's revocation status for serial under relayID (driver.go's Feeder
+// doc — the "superseded, not thereby revoked" oracle for REL-015).
+func (f *InProcessFeeder) IsRevoked(relayID, serial string) bool {
+	return f.enrollSrv.IsRevoked(relayID, serial)
 }
 
 // NotifyGenerationAdvance implements Feeder: push REL-057's state.changed

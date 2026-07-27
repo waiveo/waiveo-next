@@ -44,8 +44,11 @@ import (
 )
 
 // relayCertValidity is how long an issued relay leaf certificate is valid
-// for. Wave-1 first-photon has no in-band renewal (REL-015) yet, so this
-// is generous rather than tuned.
+// for. The in-band renew verb (REL-015) has not landed yet, but the relay
+// now renews proactively over the bootstrap exchange (the REL-015
+// draft-note's blessed transport) once a leaf enters its renewal window —
+// cmd/waiveo-relay's relayRenewalWindow, 30 days ahead of this — so this
+// stays generous rather than tuned.
 const relayCertValidity = 365 * 24 * time.Hour
 
 // reEnrollRateLimit / reEnrollRateWindowMs bound how often a single relay_id
@@ -86,6 +89,33 @@ type Server struct {
 	// in-memory-only, forgets-on-restart behavior unchanged for every
 	// caller that never opts in (tests, conformance drivers).
 	persistPath string
+
+	// nowFn, when non-nil, replaces time.Now for certificate-issuance
+	// validity windows (issueRelayCert) — the injectable-clock seam the
+	// conformance notes require for timing-dependent behavior (renewal
+	// windows), letting a test enroll a relay whose leaf is ALREADY expired
+	// under this feeder's real CA without any wall-clock sleep. Production
+	// never sets it.
+	nowFn func() time.Time
+}
+
+// SetNowFunc installs (or, with nil, clears) the certificate-issuance clock
+// override — see the nowFn field doc. Test-only by intent.
+func (s *Server) SetNowFunc(fn func() time.Time) {
+	s.mu.Lock()
+	s.nowFn = fn
+	s.mu.Unlock()
+}
+
+// now returns the issuance clock: nowFn when set, else time.Now.
+func (s *Server) now() time.Time {
+	s.mu.Lock()
+	fn := s.nowFn
+	s.mu.Unlock()
+	if fn != nil {
+		return fn()
+	}
+	return time.Now()
 }
 
 // issuance is one certificate this feeder issued under a relay_id: its serial
@@ -411,7 +441,7 @@ func (s *Server) issueRelayCert(csr *x509.CertificateRequest, relayID string) (c
 		return nil, "", 0, 0, fmt.Errorf("enroll: issueRelayCert: generate serial: %w", err)
 	}
 
-	now := time.Now()
+	now := s.now()
 	nb := now.Add(-time.Hour) // small backdate, tolerating minor clock skew
 	na := now.Add(relayCertValidity)
 

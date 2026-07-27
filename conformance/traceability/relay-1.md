@@ -15,8 +15,8 @@ One row per requirement ID `contracts/relay-1.md` defines. Format: `conformance/
 | REL-011 | `contracts/relay-1.md#enrollment` | `REL-010-valid-fresh-enroll` | covered |
 | REL-012 | `contracts/relay-1.md#enrollment` | `REL-010-valid-fresh-enroll` | covered |
 | REL-013 | `contracts/relay-1.md#enrollment` | `REL-010-valid-fresh-enroll` | covered |
-| REL-014 | `contracts/relay-1.md#enrollment` | `REL-010-valid-fresh-enroll`, `REL-020-valid-re-enroll-after-cert-expiry` | covered |
-| REL-015 | `contracts/relay-1.md#enrollment` | - | TBD-wave1 |
+| REL-014 | `contracts/relay-1.md#enrollment` | `REL-010-valid-fresh-enroll`, `REL-015-valid-renew-ahead-of-expiry`, `REL-020-valid-re-enroll-after-cert-expiry` | covered |
+| REL-015 | `contracts/relay-1.md#enrollment` | `REL-015-valid-renew-ahead-of-expiry` | covered |
 | REL-016 | `contracts/relay-1.md#enrollment` | - | TBD-wave1 |
 | REL-017 | `contracts/relay-1.md#enrollment` | `REL-020-valid-re-enroll-after-cert-expiry` | covered |
 | REL-018 | `contracts/relay-1.md#enrollment` | - | TBD-wave1 |

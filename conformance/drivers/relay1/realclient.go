@@ -156,3 +156,10 @@ func (c *helloAckCapture) frame() (wire.Frame, bool) {
 func (RealRelayClient) ReEnroll(feederBaseURL string, store *identity.Store) error {
 	return reenroll.ReEnroll(feederBaseURL, store)
 }
+
+// Renew implements RelayClient via internal/relay/reenroll.Renew — the
+// proactive ahead-of-expiry renewal the relay's reconnect supervisor drives
+// once the leaf enters its renewal window (REL-015).
+func (RealRelayClient) Renew(feederBaseURL string, store *identity.Store) error {
+	return reenroll.Renew(feederBaseURL, store)
+}

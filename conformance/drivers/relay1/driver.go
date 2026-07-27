@@ -16,7 +16,8 @@
 // oracle actually needs to reproduce a case.
 //
 // Applicability triage (§10 "no silent caps"): Run DRIVES every case in the
-// frozen relay-1 corpus (REL-010 fresh enroll, REL-020/022/027
+// frozen relay-1 corpus (REL-010 fresh enroll, REL-015 ahead-of-expiry
+// renewal, REL-020/022/027
 // Expired-certificate re-enrollment, REL-030 hello/negotiate, REL-051
 // ahead-of-current since_generation drawing the full snapshot — refused at
 // the relay's REL-052 gate, acked with the pull exchange's correlation id
@@ -85,6 +86,14 @@ type RelayClient interface {
 	// A typed refusal (CERT_EXPIRED_INELIGIBLE / RE_ENROLL_POP_INVALID /
 	// RE_ENROLL_RATE_LIMITED) is returned as a *reenroll.ReEnrollError.
 	ReEnroll(feederBaseURL string, store *identity.Store) error
+	// Renew drives PROACTIVE, ahead-of-expiry certificate renewal
+	// (REL-015) for store's already-persisted identity against
+	// feederBaseURL — over the bootstrap exchange (the contract's REL-015
+	// draft-note's blessed transport until the in-band verb lands),
+	// persisting a fresh certificate under the SAME relay_id (REL-014)
+	// and, unlike ReEnroll, over the SAME keypair (the player-pinned SPKI
+	// survives renewal). Typed refusals surface as *reenroll.ReEnrollError.
+	Renew(feederBaseURL string, store *identity.Store) error
 }
 
 // Feeder is the LIVE counterparty the driver stages each case against: the
@@ -126,6 +135,11 @@ type Feeder interface {
 	// feeder serves this exact leaf on its TLS listener, so a relay dialing
 	// EnrollBaseURL validates the real presented certificate against it.
 	AppPeerLeafSPKI() ([]byte, error)
+	// IsRevoked reports the feeder issuance record's revocation status for
+	// serial under relayID — the driver's window onto what a renewal did
+	// (and did NOT do) to the superseded certificate: REL-015 requires it
+	// become superseded (REL-021/022) but never thereby revoked (REL-016).
+	IsRevoked(relayID, serial string) bool
 }
 
 const contract = "relay/1"
@@ -142,6 +156,7 @@ func Run(client RelayClient, feeder Feeder) report.Report {
 	}
 
 	driveREL010(&rep, client, feeder, cases)
+	driveREL015(&rep, client, feeder, cases)
 	driveREL020(&rep, client, feeder, cases)
 	driveREL022(&rep, client, feeder, cases)
 	driveREL027(&rep, client, feeder, cases)
