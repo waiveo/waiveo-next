@@ -33,10 +33,12 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1275,6 +1277,141 @@ func TestMissingClientCertDrawsMalformedMessage(t *testing.T) {
 	if refusal.RelayID != "" {
 		t.Fatalf("pre-authentication refusal carries relay_id %q, want none (REL-005's pre-auth exception)", refusal.RelayID)
 	}
+}
+
+// mintForeignCAClientLeaf mints a self-signed CA the harness's listener
+// does NOT trust, plus a client leaf issued under it — shaped exactly like
+// the enrollment CA's issuance (ed25519 keys, digital-signature key usage,
+// client+server-auth EKU, currently valid) so the ONLY defect a verifier
+// can find is the untrusted issuer.
+func mintForeignCAClientLeaf(t *testing.T) tls.Certificate {
+	t.Helper()
+
+	caPub, caPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate foreign CA key: %v", err)
+	}
+	now := time.Now()
+	caTmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "foreign-ca"},
+		NotBefore:             now.Add(-time.Hour),
+		NotAfter:              now.Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTmpl, caTmpl, caPub, caPriv)
+	if err != nil {
+		t.Fatalf("create foreign CA certificate: %v", err)
+	}
+	caCert, err := x509.ParseCertificate(caDER)
+	if err != nil {
+		t.Fatalf("parse foreign CA certificate: %v", err)
+	}
+
+	leafPub, leafPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate foreign leaf key: %v", err)
+	}
+	leafTmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(2),
+		Subject:               pkix.Name{CommonName: "relay-under-foreign-ca"},
+		NotBefore:             now.Add(-time.Hour),
+		NotAfter:              now.Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+	}
+	leafDER, err := x509.CreateCertificate(rand.Reader, leafTmpl, caCert, leafPub, caPriv)
+	if err != nil {
+		t.Fatalf("create foreign leaf certificate: %v", err)
+	}
+	return tls.Certificate{Certificate: [][]byte{leafDER}, PrivateKey: leafPriv}
+}
+
+// TestForeignCALeafRefusedAtHandshake pins the mTLS enforcement the
+// listener's VerifyClientCertIfGiven + ClientCAs wiring provides (the same
+// wiring as cmd/waiveo-feeder's production listener), in BOTH of a TLS
+// client's possible behaviors with a leaf under an untrusted CA:
+//
+//	(a) forced presentation — GetClientCertificate ignores the server's
+//	    advertised acceptable CAs, exactly what a hostile non-Go client
+//	    does — must die at the TLS handshake on the server's
+//	    certificate-verification alert: no WebSocket, no frames ever.
+//	(b) the polite-client path — a stock Go client holding ONLY the
+//	    foreign leaf in Certificates withholds it (its issuer matches no
+//	    CA the CertificateRequest advertises) and arrives certless,
+//	    landing on the same typed MALFORMED_MESSAGE refusal as
+//	    TestMissingClientCertDrawsMalformedMessage (REL-003).
+//
+// (b) doubles as the regression tripwire for the ClientCAs wiring: a
+// listener that stopped advertising the enrollment CA would flip (b) into
+// a handshake rejection, and one that stopped verifying would flip (a)
+// into an accepted connection.
+func TestForeignCALeafRefusedAtHandshake(t *testing.T) {
+	h := newHarness(t)
+	foreign := mintForeignCAClientLeaf(t)
+
+	t.Run("forced presentation dies at the handshake", func(t *testing.T) {
+		conn, err := tls.Dial("tcp", h.ts.Listener.Addr().String(), &tls.Config{
+			InsecureSkipVerify: true, //nolint:gosec // test dials its own httptest listener
+			MinVersion:         tls.VersionTLS13,
+			GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+				return &foreign, nil
+			},
+		})
+		if err == nil {
+			// TLS 1.3: the client's handshake completes locally before the
+			// server verifies the client certificate, so the rejection alert
+			// surfaces on the first read. The deadline is a bounded budget —
+			// a rejection arrives immediately; only a would-be acceptance
+			// (the server sitting in its HTTP read loop awaiting a request
+			// this test never sends) would run it out.
+			t.Cleanup(func() { _ = conn.Close() })
+			if derr := conn.SetReadDeadline(time.Now().Add(10 * time.Second)); derr != nil {
+				t.Fatalf("SetReadDeadline: %v", derr)
+			}
+			_, err = conn.Read(make([]byte, 1))
+		}
+		if err == nil {
+			t.Fatal("foreign-CA client leaf was accepted, want a handshake rejection")
+		}
+		if !strings.Contains(err.Error(), "certificate") {
+			t.Fatalf("foreign-CA dial error = %v, want the peer's certificate-verification alert (a timeout here means the leaf was ACCEPTED)", err)
+		}
+		if n := h.connSrv.ConnCount(); n != 0 {
+			t.Fatalf("ConnCount = %d after a handshake-refused dial, want 0", n)
+		}
+	})
+
+	t.Run("polite client withholds the leaf and lands on REL-003", func(t *testing.T) {
+		wsURL := "wss" + strings.TrimPrefix(h.ts.URL, "https") + "/relay/v1"
+		hc := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true, //nolint:gosec // test dials its own httptest listener
+			MinVersion:         tls.VersionTLS13,
+			Certificates:       []tls.Certificate{foreign},
+		}}}
+		ws, _, err := websocket.Dial(t.Context(), wsURL, &websocket.DialOptions{
+			HTTPClient:   hc,
+			Subprotocols: []string{wire.Subprotocol},
+		})
+		if err != nil {
+			t.Fatalf("dial holding a withholdable foreign leaf: %v — a stock Go client must arrive certless, not die at the handshake", err)
+		}
+		t.Cleanup(func() { _ = ws.CloseNow() })
+
+		var refusal wire.Frame
+		if err := wsRecv(t, ws, &refusal); err != nil {
+			t.Fatalf("read refusal: %v", err)
+		}
+		if refusal.Type != wire.FrameTypeError || refusal.Code != "MALFORMED_MESSAGE" {
+			t.Fatalf("refusal = %+v, want type=error code=MALFORMED_MESSAGE (the certless REL-003 row)", refusal)
+		}
+		if refusal.RelayID != "" {
+			t.Fatalf("pre-authentication refusal carries relay_id %q, want none (REL-005's pre-auth exception)", refusal.RelayID)
+		}
+	})
 }
 
 // TestUnknownIdentityRefusedAtHello: an mTLS identity with no enrollment
