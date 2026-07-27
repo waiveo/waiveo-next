@@ -230,10 +230,11 @@ func (e *EndpointState) Enable() {
 // rerr is non-nil only if Resolve itself cannot resolve LastDeliveredID at
 // all (its own RESUME_FROM_INVALID case) — expected only if the log this
 // call is given was reconstructed without the envelope LastDeliveredID names
-// (EventLog is in-memory per eventlog.go's own doc comment, so a process
-// restart is exactly such a case; nothing in EndpointState pins log to the
-// same instance across calls, since PendingAfter takes it as a parameter
-// every time). In that case Events and Gap are both nil: PendingAfter never
+// (nothing in EndpointState pins log to the same instance across calls, since
+// PendingAfter takes it as a parameter every time; a log built over the
+// in-memory EventLog rather than the persistent store implementation is
+// exactly such a case, since it starts empty on every process). In that case
+// Events and Gap are both nil: PendingAfter never
 // falls back to log.After("") — a gap-free full backlog would be
 // bit-for-bit indistinguishable from an endpoint that has never lost
 // anything, which is exactly the "silently treated as fresh" behavior
@@ -241,7 +242,7 @@ func (e *EndpointState) Enable() {
 // forbids for any discontinuity. The caller (the deferred delivery loop)
 // must surface rerr as an operator-visible condition, never resolve it as
 // delivery-as-normal.
-func (e *EndpointState) PendingAfter(log *EventLog) ([]Envelope, *GapFrame, *ResumeError) {
+func (e *EndpointState) PendingAfter(log Log) ([]Envelope, *GapFrame, *ResumeError) {
 	if e.LastDeliveredID == "" {
 		// Nothing has ever been delivered to this endpoint, so it owes the
 		// entire retained log — there is no prior point to gap against.

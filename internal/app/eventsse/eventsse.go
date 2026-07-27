@@ -78,7 +78,7 @@ import (
 // the wake to only one of N waiting subscribers (EVT-100).
 type Hub struct {
 	mu   sync.Mutex
-	log  *events.EventLog
+	log  events.Log
 	subs map[*subscriber]struct{}
 	// done is closed once by Close for a graceful server shutdown; every
 	// subscriber loop selects on it and returns, so an otherwise-endless SSE
@@ -110,9 +110,14 @@ type Subscription struct {
 
 // NewHub returns a live-transport Hub owning log. After this call, log MUST be
 // mutated only through Hub.Append and read only through the Hub, so the
-// EventLog's single-writer/single-reader contract holds across the concurrent
+// substrate's single-writer/single-reader contract holds across the concurrent
 // ingest and subscriber goroutines a real net/http server runs them on.
-func NewHub(log *events.EventLog) *Hub {
+//
+// log is the events.Log substrate — the in-memory events.EventLog for a
+// fixture, or the persistent SQLite implementation
+// (internal/app/store.(*Store).EventLog) a deployment wires, so a restart does
+// not take the audit trail and every resumable cursor with it.
+func NewHub(log events.Log) *Hub {
 	return &Hub{log: log, subs: make(map[*subscriber]struct{}), done: make(chan struct{})}
 }
 
@@ -194,9 +199,9 @@ func (h *Hub) drain(lastID string) (*events.GapFrame, []events.Envelope) {
 	tail := h.log.After(lastID)
 	if h.log.EvictedAfter(lastID) {
 		// The subscriber's own last-delivered point (and undelivered events after
-		// it) aged out: mark the loss and resume AT the oldest retained id, which
-		// is exactly where After(lastID) picks the tail up.
-		g := events.BufferExceededGap(lastID, h.log.OldestRetainedID())
+		// it) aged out: mark the loss and resume AT the oldest retained id above
+		// that point, which is exactly where After(lastID) picks the tail up.
+		g := events.BufferExceededGap(lastID, h.log.OldestRetainedAfter(lastID))
 		return &g, tail
 	}
 	return nil, tail
@@ -204,13 +209,12 @@ func (h *Hub) drain(lastID string) (*events.GapFrame, []events.Envelope) {
 
 // headLocked is the newest retained id — the fresh-subscribe watermark; the
 // caller holds mu. It is "" for an empty log (after("") then yields the whole
-// first live batch).
+// first live batch). It asks the substrate for the head rather than reading the
+// whole log and taking its last entry: on the persistent implementation that
+// difference is one indexed MAX(id) versus loading every retained event into
+// memory on every connect.
 func (h *Hub) headLocked() string {
-	all := h.log.After("")
-	if len(all) == 0 {
-		return ""
-	}
-	return all[len(all)-1].ID
+	return h.log.HeadID()
 }
 
 // wake is the subscriber's wake channel; the live loop blocks on it.

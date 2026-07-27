@@ -126,3 +126,65 @@ func TestEventLog_RetentionHorizon(t *testing.T) {
 		t.Fatalf("retained set must be exactly [Y7 Y8]; got %v", got)
 	}
 }
+
+// TestEventLog_SubstrateQuestions exercises the three Log questions the
+// generic resume/live path asks that are NOT plain membership or slicing:
+// HeadID (the fresh-subscribe watermark and a restarted process's id floor),
+// OldestRetainedAfter (the id an aged-out resume resumes AT), and AgedOut (the
+// retention_expired condition). They are stated on the in-memory log here and
+// re-stated against the persistent one in internal/app/store, so the two
+// implementations of the same interface are held to one behaviour.
+func TestEventLog_SubstrateQuestions(t *testing.T) {
+	const (
+		y5 = "01J8Z3K4N5P6Q7R8S9T0V1W2Y5"
+		y6 = "01J8Z3K4N5P6Q7R8S9T0V1W2Y6"
+		y7 = "01J8Z3K4N5P6Q7R8S9T0V1W2Y7"
+		y8 = "01J8Z3K4N5P6Q7R8S9T0V1W2Y8"
+		y9 = "01J8Z3K4N5P6Q7R8S9T0V1W2Y9"
+	)
+
+	empty := NewEventLog(0)
+	if got := empty.HeadID(); got != "" {
+		t.Fatalf("an empty log has no head; got %q", got)
+	}
+	if empty.AgedOut(y6) {
+		t.Fatal("an empty log has evicted nothing, so no id has aged out of it")
+	}
+	if got := empty.OldestRetainedAfter(""); got != "" {
+		t.Fatalf("an empty log retains nothing after any point; got %q", got)
+	}
+
+	l := NewEventLog(2)
+	l.Append(env(y6))
+	l.Append(env(y7))
+	l.Append(env(y8)) // overflows retention 2 → Y6 ages out; retained: Y7, Y8
+
+	if got := l.HeadID(); got != y8 {
+		t.Fatalf("HeadID must be the newest retained id Y8; got %q", got)
+	}
+	if got := l.OldestRetainedAfter(""); got != y7 {
+		t.Fatalf("OldestRetainedAfter(\"\") must be the oldest retained id Y7; got %q", got)
+	}
+	if got := l.OldestRetainedAfter(y7); got != y8 {
+		t.Fatalf("OldestRetainedAfter must be STRICTLY after its argument: after Y7 that is Y8; got %q", got)
+	}
+	if got := l.OldestRetainedAfter(y8); got != "" {
+		t.Fatalf("nothing is retained after the head; got %q", got)
+	}
+
+	if !l.AgedOut(y6) {
+		t.Fatal("Y6 was evicted by the retention horizon, so a resume from it has aged out (EVT-141)")
+	}
+	if !l.AgedOut(y5) {
+		t.Fatal("Y5 predates everything the log ever held, so it is likewise unreconstructible")
+	}
+	if l.AgedOut(y7) || l.AgedOut(y8) {
+		t.Fatal("a RETAINED id must never report as aged out — it resumes cleanly (EVT-133)")
+	}
+	if l.AgedOut(y9) {
+		t.Fatal("an id ahead of the whole log was never recorded, which is EVT-134's rejection, not EVT-141's gap")
+	}
+	if l.AgedOut("") {
+		t.Fatal("an omitted resume_from is a fresh subscribe (EVT-132), never an aged-out one")
+	}
+}

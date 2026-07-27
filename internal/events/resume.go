@@ -72,8 +72,9 @@ type ResumeOutcome struct {
 //   - resumeFrom == ""            → fresh, no backlog (EVT-132).
 //   - malformed resumeFrom        → RESUME_FROM_INVALID, zero events, NOT fresh
 //     (fails the grammar or is not a ULID; EVT-131/134).
-//   - aged out (< OldestRetainedID) → gap, reason retention_expired, to_id the
-//     oldest retained id, delivery resumes AT it inclusive (EVT-140/141/143).
+//   - aged out (Log.AgedOut)      → gap, reason retention_expired, to_id the
+//     oldest retained id ABOVE the requested point, delivery resumes AT it
+//     inclusive (EVT-140/141/143).
 //   - never recorded (not aged, not in log) → RESUME_FROM_INVALID (EVT-134).
 //   - retained id                 → resumed, the backlog strictly after it,
 //     gap-free and duplicate-free (EVT-133).
@@ -81,7 +82,21 @@ type ResumeOutcome struct {
 // The aged-out check precedes the membership check so a resume_from older than
 // the retention horizon is a gap, not a silent RESUME_FROM_INVALID — a
 // discontinuity is always marked, never silently lost (EVT-143).
-func Resolve(log *EventLog, resumeFrom string) (ResumeOutcome, *ResumeError) {
+//
+// to_id is OldestRetainedAfter(resumeFrom), not the oldest retained id. Under a
+// single uniform horizon those are the same value (everything below the front
+// has aged out). Under per-retention-class windows they are not: a 300-day-old
+// audit record can still be retained while last week's telemetry has expired, so
+// naming the oldest retained id as to_id would tell the subscriber delivery
+// resumes BEHIND the point it already reached, and replay events it has
+// already seen as though they were the gap's far side.
+//
+// An aged-out point with nothing retained above it has no id delivery can
+// resume at, so it falls through to EVT-134's rejection rather than emitting a
+// gap naming an id that does not exist. That is a refusal, not a silent hole:
+// the subscriber is told its cursor is unusable and reconnects fresh, which is
+// exactly the outcome EVT-134 defines for a point the platform cannot serve.
+func Resolve(log Log, resumeFrom string) (ResumeOutcome, *ResumeError) {
 	if resumeFrom == "" {
 		return ResumeOutcome{Result: ResumeResultFresh}, nil // EVT-132
 	}
@@ -90,17 +105,16 @@ func Resolve(log *EventLog, resumeFrom string) (ResumeOutcome, *ResumeError) {
 		return ResumeOutcome{}, &ResumeError{Code: ResumeFromInvalidCode}
 	}
 
-	oldest := log.OldestRetainedID()
-	if oldest != "" && resumeFrom < oldest {
+	if to := log.OldestRetainedAfter(resumeFrom); to != "" && log.AgedOut(resumeFrom) {
 		// older than the retention horizon: the requested point is no longer
 		// reconstructible, so mark a retention_expired gap and resume at the
-		// oldest recoverable id — never a silent loss (EVT-140/141/143).
+		// oldest recoverable id above it — never a silent loss (EVT-140/141/143).
 		from := resumeFrom
 		return ResumeOutcome{
 			Result:     ResumeResultGap,
-			Gap:        &GapFrame{Type: FrameTypeGap, FromID: &from, ToID: oldest, Reason: ReasonRetentionExpired},
-			ResumeAtID: oldest,
-			Events:     log.from(oldest),
+			Gap:        &GapFrame{Type: FrameTypeGap, FromID: &from, ToID: to, Reason: ReasonRetentionExpired},
+			ResumeAtID: to,
+			Events:     log.From(to),
 		}, nil
 	}
 
