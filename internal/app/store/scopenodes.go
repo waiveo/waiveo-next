@@ -28,6 +28,32 @@ func readScopeNodes(ctx context.Context, q queryer) ([]datamodel.ScopeNode, erro
 	return nodes, nil
 }
 
+// readScreens loads every screen identity row body, ordered by id, into typed
+// datamodel.Screen values — the input the desired-state derivation resolves ONE
+// screen_programs entry per (internal/feeder/snapshot).
+//
+// It is the screen half of readIdentityRows (scheduling.go), typed rather than
+// raw: the write path validates the two identity tables together as raw bundles,
+// while the read path here wants the screen rows alone, already parsed, because
+// the only thing derivation needs from a screen is its id and its scope_node
+// placement. Every row in this table has already passed ValidateIdentityRows at
+// write time, so a decode failure here is a corrupted store, not authoring input.
+func readScreens(ctx context.Context, q queryer) ([]datamodel.Screen, error) {
+	bodies, err := readBodies(ctx, q, string(KindScreen))
+	if err != nil {
+		return nil, err
+	}
+	screens := make([]datamodel.Screen, 0, len(bodies))
+	for _, b := range bodies {
+		var s datamodel.Screen
+		if err := json.Unmarshal(b, &s); err != nil {
+			return nil, fmt.Errorf("store: decode screen row: %w", err)
+		}
+		screens = append(screens, s)
+	}
+	return screens, nil
+}
+
 // desiredStateRows is the unlocked core of DesiredStateRows: it reads the scope
 // nodes and the six scheduling-core row kinds and derives site_effective, but
 // takes no lock itself — every caller wraps it in its OWN read-lock section, so
@@ -95,31 +121,52 @@ func (s *Store) ScopeNodes(ctx context.Context) ([]datamodel.ScopeNode, error) {
 // tz/lat/long from the SITE node per DAT-033, and the store generation the read
 // was taken at) PLUS EdgeRules — the store's edge-classified automations
 // (Store.EdgeRuleBodies, REL-062) wire-shaped for BuildFromStore's edge_rules
-// section — so BuildFromStore never needs box-local state nor a hardcoded rule.
+// section — and DeviceInventory, the adopted-device rows projected into REL-063
+// entries alongside the installed packs' declared discovery-match patterns
+// (REL-064, deviceinventory.go) — and Screens, the screen identity rows whose
+// placements the screen_programs section is resolved per (REL-061, DAT-004a) —
+// so BuildFromStore never needs box-local state nor a hardcoded rule, device,
+// pattern, or screen.
 type DesiredStateResult struct {
-	ScopeNodes    []datamodel.ScopeNode
-	Rows          datamodel.RawRows
-	SiteEffective wire.SiteEffective
-	EdgeRules     wire.EdgeRules
-	Generation    int64
+	ScopeNodes      []datamodel.ScopeNode
+	Rows            datamodel.RawRows
+	SiteEffective   wire.SiteEffective
+	EdgeRules       wire.EdgeRules
+	DeviceInventory wire.DeviceInventory
+
+	// Screens is every screen identity row (DAT-004/DAT-004a), ordered by id —
+	// the rows a `screen_id` NAMES, each carrying the scope_node placement the
+	// schedule-applicability cascade (DAT-051) is walked from to resolve THAT
+	// screen's program. It is deliberately the screen ROWS and not the
+	// `screen`-kind scope nodes: a screen row may hang off a node of any kind
+	// and two screen rows may share one node, so the nodes cannot stand in for
+	// the screens without losing (or duplicating) one.
+	Screens []datamodel.Screen
+
+	Generation int64
 }
 
 // DesiredState is DesiredStateRows returned as one DesiredStateResult value — the
 // single-argument form snapshot.BuildFromStore takes. It reads scope nodes,
-// scheduling rows, the site effective placement, AND the store's edge-classified
+// scheduling rows, the site effective placement, the store's edge-classified
 // automations (the same query readEdgeRuleBodies/EdgeRuleBodies runs) so the
 // result's EdgeRules field carries them wire-shaped (REL-062) — an app-classified
-// rule is never included, only edge rules ride edge_rules.
+// rule is never included, only edge rules ride edge_rules — AND the device
+// inventory (deviceInventory: the adopted-device rows projected into REL-063
+// entries, plus the installed packs' declared discovery-match patterns, REL-064)
+// AND the screen identity rows (readScreens) the screen_programs section is
+// resolved one entry per (REL-061).
 //
-// All four reads (scope nodes, scheduling rows, edge rule bodies, generation)
-// happen inside ONE s.mu.RLock() section — not composed from DesiredStateRows and
-// EdgeRuleBodies's own separate lock sections. Composing those two public,
-// independently-locked methods would let a write commit (and bump the shared
-// generation) in the gap between the first RUnlock and the second RLock: the
-// result would then carry one read's generation alongside a LATER read's edge-
-// rule content, binding a stale generation to fresher content and breaking the
-// (generation, hash) signing invariant REL-053/075 depends on — a bug this
-// composed form does not have, since no lock is ever released mid-read here.
+// All six reads (scope nodes, scheduling rows, edge rule bodies, device
+// inventory, screens, generation) happen inside ONE s.mu.RLock() section — not composed
+// from DesiredStateRows, EdgeRuleBodies and DeviceInventory's own separate lock
+// sections. Composing those public, independently-locked methods would let a
+// write commit (and bump the shared generation) in the gap between one RUnlock
+// and the next RLock: the result would then carry one read's generation alongside
+// a LATER read's content, binding a stale generation to fresher content and
+// breaking the (generation, hash) signing invariant REL-053/075 depends on — a
+// bug this composed form does not have, since no lock is ever released mid-read
+// here.
 func (s *Store) DesiredState(ctx context.Context) (DesiredStateResult, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -132,16 +179,26 @@ func (s *Store) DesiredState(ctx context.Context) (DesiredStateResult, error) {
 	if err != nil {
 		return DesiredStateResult{}, err
 	}
+	inv, err := deviceInventory(ctx, s.db)
+	if err != nil {
+		return DesiredStateResult{}, err
+	}
+	screens, err := readScreens(ctx, s.db)
+	if err != nil {
+		return DesiredStateResult{}, err
+	}
 	generation, err := readGeneration(ctx, s.db)
 	if err != nil {
 		return DesiredStateResult{}, err
 	}
 	return DesiredStateResult{
-		ScopeNodes:    nodes,
-		Rows:          rows,
-		SiteEffective: se,
-		EdgeRules:     wire.EdgeRules{RulesMinorVersion: rulesMinorVersion, Rules: bodies},
-		Generation:    generation,
+		ScopeNodes:      nodes,
+		Rows:            rows,
+		SiteEffective:   se,
+		EdgeRules:       wire.EdgeRules{RulesMinorVersion: rulesMinorVersion, Rules: bodies},
+		DeviceInventory: inv,
+		Screens:         screens,
+		Generation:      generation,
 	}, nil
 }
 

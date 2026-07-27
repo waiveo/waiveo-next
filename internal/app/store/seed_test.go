@@ -28,16 +28,16 @@ func TestSeedDemoInsertsResolvableProgram(t *testing.T) {
 	if err := s.SeedDemo(ctx, seedAssetRef); err != nil {
 		t.Fatalf("SeedDemo: %v", err)
 	}
-	if g := gen(t, s); g != 8 {
-		t.Fatalf("generation after seed = %d, want 8 (2 scope nodes + playlist + schedule + preset + 2 dayparts + 1 automation)", g)
+	if g := gen(t, s); g != 9 {
+		t.Fatalf("generation after seed = %d, want 9 (2 scope nodes + screen row + playlist + schedule + preset + 2 dayparts + 1 automation)", g)
 	}
 
 	nodes, rows, se, generation, err := s.DesiredStateRows(ctx)
 	if err != nil {
 		t.Fatalf("DesiredStateRows: %v", err)
 	}
-	if generation != 8 {
-		t.Fatalf("DesiredStateRows generation = %d, want 8", generation)
+	if generation != 9 {
+		t.Fatalf("DesiredStateRows generation = %d, want 9", generation)
 	}
 
 	// The scheduling rows validate as a complete, referentially-sound set.
@@ -71,8 +71,8 @@ func TestSeedDemoInsertsResolvableProgram(t *testing.T) {
 	if len(bodies) != 1 {
 		t.Fatalf("EdgeRuleBodies after seed = %d, want 1 (the seeded demo automation)", len(bodies))
 	}
-	if edgeGen != 8 {
-		t.Fatalf("EdgeRuleBodies generation = %d, want 8", edgeGen)
+	if edgeGen != 9 {
+		t.Fatalf("EdgeRuleBodies generation = %d, want 9", edgeGen)
 	}
 }
 
@@ -108,8 +108,8 @@ func TestDesiredStateBundlesTheRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DesiredState: %v", err)
 	}
-	if ds.Generation != 8 {
-		t.Fatalf("DesiredState.Generation = %d, want 8", ds.Generation)
+	if ds.Generation != 9 {
+		t.Fatalf("DesiredState.Generation = %d, want 9", ds.Generation)
 	}
 	if len(ds.ScopeNodes) != 2 || len(ds.Rows.Dayparts) != 2 {
 		t.Fatalf("DesiredState bundled nodes:%d dayparts:%d, want 2/2", len(ds.ScopeNodes), len(ds.Rows.Dayparts))

@@ -181,13 +181,101 @@ type EdgeRules struct {
 	Rules             []json.RawMessage `json:"rules"`
 }
 
-// DeviceInventory is the relay/1 `device_inventory` section
-// (REL-063/064). Devices and PackMatchPatterns elements are left as raw
-// JSON here — their producer (device adoption / pack manifests) is out of
-// this package's scope.
+// DeviceInventory is the relay/1 `device_inventory` section (REL-063/064).
+//
+// The two arrays answer two different questions and are derived from two
+// different sources:
+//
+//   - `devices` (REL-063) is the app peer's ADOPTED set — the adoption
+//     decision the app authors and ships down, never a copy of what a relay
+//     discovered (REL-110/111 keep the relay authoritative for what exists).
+//     DeviceEntry below is the typed shape a producer builds each element
+//     from.
+//   - `pack_match_patterns` (REL-064) is manifest/1's device-contribution
+//     shape (MAN-070/071), sourced from every INSTALLED PACK's declared
+//     `devices` contribution. REL-064 is explicit that these are "the
+//     patterns a relay watches for during discovery INDEPENDENT of what is
+//     already adopted", so the adopted set does not select them.
+//
+// Both arrays carry their elements as raw JSON, for the same reason
+// `edge_rules.rules` and every `schedule` row array do: this struct is
+// re-marshaled on the RELAY side to recompute `hash` from the decoded
+// snapshot (wire.HashSections, internal/relay/desiredstate), and a
+// json.RawMessage round-trips byte-for-byte where a typed re-marshal would
+// silently re-order keys or drop members a future minor added — either of
+// which would break the REL-053 hash check on a snapshot that was in fact
+// intact.
+//
+// Call Normalized before hashing/signing so an empty section marshals as
+// `{"devices":[],"pack_match_patterns":[]}` rather than carrying a `null`
+// array (REL-060).
 type DeviceInventory struct {
 	Devices           []json.RawMessage `json:"devices"`
 	PackMatchPatterns []json.RawMessage `json:"pack_match_patterns"`
+}
+
+// Normalized returns a copy of inv with each nil array replaced by a non-nil
+// empty slice, so both marshal as `[]` rather than `null` (REL-060) — the
+// DeviceInventory counterpart of ScheduleSection.Normalized, and normalizing
+// only nil-ness, so it preserves the byte-identical-marshaling → hash
+// invariant (REL-053).
+func (inv DeviceInventory) Normalized() DeviceInventory {
+	if inv.Devices == nil {
+		inv.Devices = []json.RawMessage{}
+	}
+	if inv.PackMatchPatterns == nil {
+		inv.PackMatchPatterns = []json.RawMessage{}
+	}
+	return inv
+}
+
+// DeviceEntry is one relay/1 `device_inventory.devices` entry (REL-063):
+// `{device_id, driver, native_id, poll_cadence_seconds, entities}`, and
+// exactly those five members. It is the PRODUCER-side type — an app peer
+// marshals one of these per adopted device into the section's raw `devices`
+// array — so the entry's contract shape and its field order live here, in the
+// relay/1 wire package that owns them, rather than being spelled out ad hoc
+// by whichever component happens to build a snapshot.
+//
+// The app peer's adopted-device row carries the api/1 resource baseline
+// around these five (name, scope_node, labels, revision, timestamps); none of
+// that is relay-facing, so building this type from a row is a SELECTION of
+// the five contract members rather than a dump of the stored row.
+//
+// DeviceID is the adopted-device row's own id — the `device_id` REL-063
+// names, whose identity is the `(site, driver, native_id)` tuple (REL-153),
+// never the relay that happens to currently report the device.
+//
+// PollCadenceSeconds is a pointer with NO omitempty: REL-063 lists the member
+// on every entry and fixes no default, so an unstated cadence marshals as an
+// explicit `null` ("this deployment has not stated one") rather than as an
+// absent key or as a fabricated `0` that a relay would read as "poll
+// continuously".
+type DeviceEntry struct {
+	DeviceID           string         `json:"device_id"`
+	Driver             string         `json:"driver"`
+	NativeID           string         `json:"native_id"`
+	PollCadenceSeconds *int           `json:"poll_cadence_seconds"`
+	Entities           []DeviceEntity `json:"entities"`
+}
+
+// DeviceEntity is one entry of a DeviceEntry's `entities` array (REL-063):
+// `{entity_id, device_class, enabled, hidden, display_name, category}`, with
+// `category` one of `primary` or `diagnostic`.
+//
+// Every member but `entity_id`/`device_class` is authored POLICY rather than
+// a discovered fact — whether an adopted entity is enabled, whether it is
+// hidden, what it is called, and whether it is a primary or a diagnostic
+// surface are decisions no discovery sweep can report. That is what makes
+// this section desired state travelling DOWN to a relay rather than a
+// projection of the relay's own report.
+type DeviceEntity struct {
+	EntityID    string `json:"entity_id"`
+	DeviceClass string `json:"device_class"`
+	Enabled     bool   `json:"enabled"`
+	Hidden      bool   `json:"hidden"`
+	DisplayName string `json:"display_name"`
+	Category    string `json:"category"`
 }
 
 // RevocationAndSite is the relay/1 `revocation_and_site` section

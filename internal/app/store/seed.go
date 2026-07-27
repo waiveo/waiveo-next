@@ -23,11 +23,30 @@ const (
 	seedSiteScopeNodeID        = "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5"
 	seedScreenScopeNodeID      = "01J8Z4DEM0SCREENF1RSTPH0TN"
 	seedScheduleID             = "01J8Z5DEM0SCHEDV1ETW0DAYPT"
-	seedPlaylistID             = "01J8Z6DEM0P1AY11STC0NTENT1"
-	seedContentDaypartID       = "01J8Z7DEM0DAYPARTC0NTENT01"
-	seedOvernightDaypartID     = "01J8Z7DEM0DAYPART0VERN1GHT"
-	seedPresetBatchID          = "01J8Z8DEM0PRESETBATCHF1RE1"
-	seedRuleEntityID           = "01J8Z3K4N5P6Q7R8S9T0V1SCRN"
+
+	// SeedScreenID is the id of the demo SCREEN IDENTITY ROW (DAT-004/DAT-004a)
+	// — the row a `screen_id` names, and the id every derived screen_programs
+	// entry for the demo deployment carries (relay/1 REL-061).
+	//
+	// It is exported because the fixture snapshot path
+	// (internal/feeder/snapshot.Build, used by the conformance drivers and the
+	// virtual-player first-light proof) has no store to read a screen out of and
+	// must still name a REAL screen row rather than an invented placeholder
+	// string. Single-sourcing it here is what keeps the fixture path and a
+	// freshly-seeded store naming the same screen instead of two.
+	//
+	// It is deliberately NOT seedScreenScopeNodeID: a `screen`-kind scope node
+	// is a placement classification and never a screen identity (DAT-004a), and
+	// a `screen_id` that resolves to a node rather than to a screen row MUST be
+	// rejected.
+	SeedScreenID = "01J8Z9DEM0SCREENR0WF1RSTPH"
+
+	seedScreenName         = "Demo Screen"
+	seedPlaylistID         = "01J8Z6DEM0P1AY11STC0NTENT1"
+	seedContentDaypartID   = "01J8Z7DEM0DAYPARTC0NTENT01"
+	seedOvernightDaypartID = "01J8Z7DEM0DAYPART0VERN1GHT"
+	seedPresetBatchID      = "01J8Z8DEM0PRESETBATCHF1RE1"
+	seedRuleEntityID       = "01J8Z3K4N5P6Q7R8S9T0V1SCRN"
 
 	// seedDemoAutomationID is the SAME rule id the pre-store feeder hardcoded as
 	// demoRuleID (internal/feeder/snapshot's former demoEdgeRuleJSON constant),
@@ -80,26 +99,45 @@ var seedDemoAutomationJSON = json.RawMessage(`{"id":"` + seedDemoAutomationID + 
 	`"actions":[{"type":"device_command","entity_id":"` + seedRuleEntityID + `","command":"launch","params":{"channel":"dev"}}]}`)
 
 // SeedDemo inserts the make-dev demo as authored store rows: a two-node scope
-// tree (a site + a screen under it), a playlist whose one item is assetRef, a
-// schedule on the screen, two non-overlapping dayparts partitioning the day (a
-// content daypart 06:00–22:00 playing the playlist and firing a rising-edge
-// preset, and a blank overnight daypart 22:00–06:00), and one edge-classified
-// automation (seedDemoAutomationJSON) — the same shape the former hardcoded
-// feeder demo carried (both the schedule AND the edge_rules constant), so a
-// fresh make dev still resolves a program and loads one edge rule, but now both
-// are editable over the api.
+// tree (a site + a screen-kind node under it), a SCREEN IDENTITY ROW placed on
+// that node, a playlist whose items are assetRefs in order, a schedule on the
+// screen node, two non-overlapping dayparts partitioning the day (a content
+// daypart 06:00–22:00 playing the playlist and firing a rising-edge preset, and
+// a blank overnight daypart 22:00–06:00), and one edge-classified automation
+// (seedDemoAutomationJSON) — the same shape the former hardcoded feeder demo
+// carried (both the schedule AND the edge_rules constant), so a fresh make dev
+// still resolves a program and loads one edge rule, but now all of it is
+// editable over the api.
+//
+// The screen row is what makes the demo deployment produce a screen_programs
+// entry at all: that section is resolved one entry per screen ROW (REL-061,
+// DAT-004a), so a store with a screen-kind scope node but no screen row has a
+// schedule governing nothing and delivers no program.
 //
 // Rows are inserted in dependency order so each write's pre-commit
-// datamodel.ValidateRows / BuildScopeTree sees a referentially complete set: the
-// scope nodes first (a child after its parent), then the playlist + preset before
-// the daypart that references them, the schedule before its dayparts. The
+// datamodel.ValidateRows / BuildScopeTree / ValidateIdentityRows sees a
+// referentially complete set: the scope nodes first (a child after its parent),
+// then the screen row on the node it is placed under, then the playlist + preset
+// before the daypart that references them, the schedule before its dayparts. The
 // automation row has no scheduling-core dependency, so its position is
 // immaterial; it is inserted last. Every accepted Create bumps the store
-// generation in its own transaction, so a freshly seeded store lands at
-// generation 8. assetRef is the content id the demo playlist item points at (the
-// same asset the feeder's screen_programs item shows). SeedDemo is meant for an
-// empty store — the feeder seeds only when the generation is still 0.
-func (s *Store) SeedDemo(ctx context.Context, assetRef string) error {
+// generation in its own transaction.
+//
+// assetRefs are the content ids the demo playlist's items point at, IN PLAYBACK
+// ORDER — one item per ref, so a caller that added N assets to the content origin
+// gets an N-item playlist and therefore an N-item derived screen program. Passing
+// none is refused rather than seeding a content daypart pointing at an empty
+// playlist. SeedDemo is meant for an empty store — the feeder seeds only when the
+// generation is still 0.
+func (s *Store) SeedDemo(ctx context.Context, assetRefs ...string) error {
+	if len(assetRefs) == 0 {
+		return fmt.Errorf("store: seed demo: at least one asset ref is required")
+	}
+	items := make([]datamodel.PlaylistItem, 0, len(assetRefs))
+	for _, ref := range assetRefs {
+		items = append(items, datamodel.PlaylistItem{Source: "asset", AssetRef: ref})
+	}
+
 	orgParent := seedOrgAncestorScopeNodeID
 	siteParent := seedSiteScopeNodeID
 	tz := seedSiteTZ
@@ -115,11 +153,14 @@ func (s *Store) SeedDemo(ctx context.Context, assetRef string) error {
 			TZ: &tz, Lat: &lat, Long: &long,
 		}},
 		{KindScopeNode, datamodel.ScopeNode{
-			ID: seedScreenScopeNodeID, Kind: "screen", ParentID: &siteParent, Name: "Demo Screen",
+			ID: seedScreenScopeNodeID, Kind: "screen", ParentID: &siteParent, Name: seedScreenName,
+		}},
+		{KindScreen, datamodel.Screen{
+			ID: SeedScreenID, ScopeNode: seedScreenScopeNodeID, Name: seedScreenName,
 		}},
 		{KindPlaylist, datamodel.Playlist{
 			ID: seedPlaylistID, ScopeNode: seedScreenScopeNodeID, Name: "Demo Content Playlist",
-			Items: []datamodel.PlaylistItem{{Source: "asset", AssetRef: assetRef}},
+			Items: items,
 		}},
 		{KindSchedule, datamodel.Schedule{
 			ID: seedScheduleID, ScopeNode: seedScreenScopeNodeID, Name: "Demo Two-Daypart Schedule",

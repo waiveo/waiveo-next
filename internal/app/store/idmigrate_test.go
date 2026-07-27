@@ -299,7 +299,7 @@ func TestMigrateRowIDsUnsticksAPreRuleStore(t *testing.T) {
 	// production seed path before the fixture is regressed, never from the
 	// migration.
 	wantIDs := storedIDs(t, dsn)
-	wantGeneration := int64(8)
+	wantGeneration := int64(9)
 
 	regressToPreRuleIDs(t, dsn)
 
