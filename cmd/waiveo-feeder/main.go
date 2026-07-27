@@ -32,6 +32,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/app/eventsse"
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/app/webui"
+	"github.com/maaxton/waiveo-next/internal/app/workspacekey"
 	"github.com/maaxton/waiveo-next/internal/events"
 	"github.com/maaxton/waiveo-next/internal/feeder/enroll"
 	"github.com/maaxton/waiveo-next/internal/feeder/grant"
@@ -84,6 +85,7 @@ type config struct {
 	storePath      string // SQLite file the app store persists scope-nodes + scheduling rows to
 	authDir        string // directory the security-model/1 auth state (database + setup code) lives in
 	contentPath    string // directory the content origin persists uploaded asset bytes to
+	archiveDir     string // directory the data-subject export writes archive/1 containers into
 	demoCast       string // "" (default, single first-photon image) or "multi" (the real 3-item demo cast)
 }
 
@@ -143,6 +145,17 @@ const defaultAuthDir = ".dev/feeder-auth"
 // authStoreFile is the auth database's filename inside defaultAuthDir.
 const authStoreFile = "auth.db"
 
+// defaultArchiveDir is the make-dev-local directory the data-subject export
+// operation (api/1 API-120/121) writes its archive/1 containers into, and where
+// the workspace signing key those containers are signed with (security-model.md
+// SEC-046) persists.
+//
+// It is git-ignored under .dev/ alongside the other key material. A container is
+// an ENCRYPTED export of the whole workspace and the key beside it is a secret,
+// so neither belongs anywhere a repo or a backup sweep would pick it up by
+// accident.
+const defaultArchiveDir = ".dev/feeder-archive"
+
 // loadConfig reads the feeder config from env (via `env`, os.Getenv in main),
 // falling back to the loopback defaults. contentBaseURL defaults to the listen
 // address so an unconfigured feeder behaves exactly as before.
@@ -154,6 +167,7 @@ func loadConfig(env func(string) string) config {
 		storePath:      envOr(env, "WAIVEO_FEEDER_STORE", defaultStorePath),
 		authDir:        envOr(env, "WAIVEO_FEEDER_AUTH_DIR", defaultAuthDir),
 		contentPath:    envOr(env, "WAIVEO_FEEDER_CONTENT_DIR", defaultContentPath),
+		archiveDir:     envOr(env, "WAIVEO_FEEDER_ARCHIVE_DIR", defaultArchiveDir),
 		demoCast:       envOr(env, "WAIVEO_FEEDER_DEMO_CAST", ""),
 	}
 }
@@ -405,8 +419,19 @@ func main() {
 	// shutdown path below drains it, so a SIGTERM does not abandon a job
 	// halfway through its target list without waiting to see if it can finish.
 	jobRunner := api.NewJobRunner()
+
+	// The workspace signing key (SEC-046) and the destination the data-subject
+	// export writes its archive/1 container to (API-120/121). Establishing the
+	// key here, at boot, rather than lazily inside the export means a deployment
+	// that cannot hold key material fails loudly at startup instead of at the
+	// moment an owner asks for their data.
+	wsKey, err := workspacekey.LoadOrCreate(cfg.archiveDir, ulid.New)
+	if err != nil {
+		log.Fatalf("waiveo-feeder: load workspace signing key: %v", err)
+	}
 	apiHandler := api.New(st, idem, nowMs, ulid.New, contentStore, contentBaseURL, authn,
-		api.WithDevicePlane(deviceRegistry, relayConnSrv), api.WithJobRunner(jobRunner))
+		api.WithDevicePlane(deviceRegistry, relayConnSrv), api.WithJobRunner(jobRunner),
+		api.WithWorkspaceArchive(&api.WorkspaceArchive{Dir: cfg.archiveDir, Key: wsKey}))
 	jobRunner.Start()
 
 	// The embedded console SPA, served at "/" for every non-API path. The API,
