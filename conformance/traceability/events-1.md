@@ -34,12 +34,23 @@ driven by `internal/app/eventsse`'s own tests, which watch two differently-bound
 principals across one interleaved append sequence.
 
 EVT-012 stays `TBD-wave1` on purpose. These cases FILTER on the envelope's
-`scope_node`; neither proves a PRODUCER sets it to the subject resource's own
-placement, and today's only envelope-constructing producer
-(`internal/app/eventingest`) stamps the site node on every ingested record — a
-per-record, subject-derived scope is a deferred concern its own doc comment
-names. Marking the row covered off a case that supplies `scope_node` as input
-would claim the requirement is met when it is not.
+`scope_node`; none of them proves a PRODUCER sets it to the subject resource's
+own placement, and marking the row covered off a case that supplies `scope_node`
+as input would claim the requirement is met when it is not.
+
+There is now one producer that genuinely derives it: the api/1 surface's audit
+middleware (`internal/app/api/audit.go`) reads each mutating request's subject
+row and files that request's `audit.event` at the subject's own placement, which
+`internal/app/api`'s own tests drive end to end — two differently-bound
+principals watching one live `/events/v1` stream, each receiving only the record
+whose subject sits in their subtree. That is a Go-package case, not a
+conformance corpus case, so it does not populate the case-id column; the row
+moves when a corpus case drives a producer. The relay telemetry ingest
+(`internal/app/eventingest`) still stamps the site node on every record it
+reconstructs, which is correct for its own traffic rather than an outstanding
+EVT-012 defect: `relay/1` does not carry `audit.event` over the telemetry
+channel at all (`internal/relay/telemetry/schema.go`), so no audit record is
+ever placed by that path.
 
 | req-id | contract §anchor | case-id(s) | status |
 |---|---|---|---|
