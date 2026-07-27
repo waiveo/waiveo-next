@@ -1,10 +1,11 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { PageRenderer } from "./PageRenderer";
 import { validatePage } from "./validate";
+import type { ActionHandler } from "./types";
 import { FRAGMENT_DEPTH_CEILING } from "./widgets/common";
 
 // THE AUTOMATION-BUILDER FIXTURE DRIVER.
@@ -53,7 +54,10 @@ interface Automation {
   name: string;
   mode: string;
   max: number;
-  triggers: { type: string }[];
+  /** A `rules/1` trigger inlines its own fields — `entity_id`, `to`, `for`, …
+   * — beside `type` (RUL-010); the extra members are what an entity-picker
+   * edit must leave alone (UIS-073a). */
+  triggers: (Record<string, unknown> & { type: string; entity_id?: string })[];
   conditions: Condition[];
   actions: { type: string }[];
 }
@@ -83,6 +87,7 @@ const messages: Record<string, string> = {
   "msg:automations.detail.empty": "Select an automation to edit it.",
   "msg:automations.detail.nameLabel": "Automation name",
   "msg:automations.detail.triggerKindLabel": "Trigger type",
+  "msg:automations.detail.triggerEntityLabel": "Trigger entity",
   "msg:automations.detail.conditionKindLabel": "Condition type",
   "msg:automations.detail.actionKindLabel": "Action type",
   "msg:automations.detail.andGroup": "All of",
@@ -101,6 +106,7 @@ const messages: Record<string, string> = {
 function renderFixture(over?: {
   data?: Record<string, unknown>;
   initialUi?: Record<string, unknown>;
+  handler?: ActionHandler;
 }) {
   return render(
     <PageRenderer
@@ -108,6 +114,7 @@ function renderFixture(over?: {
       data={over?.data ?? data}
       messages={messages}
       initialUi={over?.initialUi ?? {}}
+      {...(over?.handler ? { handler: over.handler } : {})}
     />,
   );
 }
@@ -252,35 +259,71 @@ describe("the automation-builder fixture, through the real renderer", () => {
     expect(screen.queryByLabelText(messages["msg:automations.detail.modeMaxLabel"])).toBeNull();
   });
 
-  // ── An unresolved fixture/contract disagreement, pinned so it cannot rot ────
+  // ── The scalar binding shape, end to end (UIS-073a) ─────────────────────────
   //
-  // This case asserts BROKEN output on purpose. It is a tripwire, not a
-  // specification: whichever way the disagreement below is settled, this case
-  // MUST be rewritten, and until then it keeps the divergence from being
-  // rediscovered by accident.
+  // Every entity-picker in this fixture binds an entity id `rules/1` INLINES into
+  // the trigger/condition/action object itself (`{"type":"state","entity_id":…,
+  // "to":…,"for":…}`, RUL-010) — there is no EntityRef-shaped sub-object in a
+  // rules/1 record for UIS-073's object shape to bind to. Each declares
+  // `bindShape: "entityId"` and binds the scalar directly.
   //
-  // UIS-073 says an `entity-picker`'s bound value MUST be an OBJECT carrying
-  // exactly one of `entity_id` / `selector` / `device_class` (rules/1's EntityRef,
-  // RUL-010). But rules/1 INLINES those keys into the trigger/condition/action
-  // object itself — its own wire shapes are `{"type":"state","entity_id":…,"to":…}`
-  // — so a rules/1 record contains no EntityRef-shaped sub-object to bind to. The
-  // fixture resolves that by binding the picker to the scalar `item.entity_id`,
-  // which is not the object UIS-073 requires, so the picker finds none of the three
-  // form keys and renders an EMPTY control: the record's entity is invisible and
-  // uneditable. Binding to `item` instead would DISPLAY correctly but write
-  // destructively — the picker replaces its whole bound value with `{<form key>: …}`
-  // (inputs.tsx), which would erase the sibling `type`/`to`/`for` fields.
-  //
-  // Resolving it is a contract decision (an EntityRef sub-object in rules/1, or a
-  // merge-write rule for `entity-picker` in ui-schema/1), not something this driver
-  // can pick — so nothing here is "fixed" to make the fixture look green.
-  it("KNOWN GAP: entity-picker renders empty because the fixture binds a scalar, not an EntityRef (UIS-073)", () => {
+  // Two things must hold, and the second is the one that matters: the picker must
+  // SHOW the record's entity, and editing it must write ONLY that scalar. The
+  // alternative once considered — binding the enclosing `item` under the object
+  // shape — would have displayed correctly and then erased the trigger's siblings
+  // on the first keystroke, because that shape replaces its whole bound value with
+  // a freshly-built `{<form key>: …}` (inputs.tsx). So the edit is asserted through
+  // the `submit` seam against the WHOLE sample record: anything the write touched
+  // beyond the one scalar shows up as an inequality.
+
+  /** The sample record's own triggers that carry an inlined entity id, in array
+   * order — the triggers whose editor therefore paints an entity picker. */
+  const entityTriggers = record.triggers.filter(
+    (t) => typeof (t as Record<string, unknown>).entity_id === "string",
+  );
+
+  it("paints each trigger's inlined entity id in its own picker (UIS-073a)", () => {
     renderFixture({ initialUi: { selected: record.id } });
-    const pickers = screen.getAllByLabelText("Trigger Entity Label");
-    expect(pickers.length).toBeGreaterThan(0);
-    for (const picker of pickers) expect(picker).toHaveValue("");
-    // …while the record it is bound to genuinely carries an entity.
-    expect(record.triggers[0]).toHaveProperty("entity_id");
+    // The fixture must actually exercise the shape, or this case proves nothing.
+    expect(entityTriggers.length).toBeGreaterThan(0);
+    const pickers = screen.getAllByLabelText(messages["msg:automations.detail.triggerEntityLabel"]);
+    expect(pickers).toHaveLength(entityTriggers.length);
+    entityTriggers.forEach((trigger, i) => {
+      expect(pickers[i]).toHaveValue(trigger.entity_id);
+    });
+  });
+
+  it("writes only the scalar it binds, leaving the trigger's siblings intact (UIS-073a)", async () => {
+    // An id the record does not already hold anywhere, so a stale render cannot
+    // pass by accident.
+    const NEXT_ENTITY = "01J8Z3K4N5P6Q7R8S9T0V1W2D7";
+    expect(JSON.stringify(record)).not.toContain(NEXT_ENTITY);
+    // The trigger being edited genuinely has siblings to lose.
+    expect(Object.keys(record.triggers[0]).length).toBeGreaterThan(1);
+
+    const submit = vi.fn();
+    renderFixture({ initialUi: { selected: record.id }, handler: { submit } });
+    const picker = screen.getAllByLabelText(
+      messages["msg:automations.detail.triggerEntityLabel"],
+    )[0];
+
+    await userEvent.clear(picker);
+    await userEvent.type(picker, NEXT_ENTITY);
+    expect(picker).toHaveValue(NEXT_ENTITY);
+
+    // Save persists the bound record through the seam (UIS-160/161), which is how
+    // the edited tree — not just the DOM — becomes assertable.
+    await userEvent.click(screen.getByRole("button", { name: messages["msg:automations.detail.save"] }));
+    expect(submit).toHaveBeenCalledTimes(1);
+    const persisted = submit.mock.calls[0][1];
+
+    // The whole record, derived from the sample data: exactly one scalar moved.
+    // `type`, `to` and `for` on the edited trigger — and every other trigger,
+    // condition and action — are the sample record's own values, untouched.
+    expect(persisted).toEqual({
+      ...record,
+      triggers: [{ ...record.triggers[0], entity_id: NEXT_ENTITY }, ...record.triggers.slice(1)],
+    });
   });
 
   // The oracle must bite: the "no alert" assertion above is only meaningful if a

@@ -128,7 +128,7 @@
                         "render": {
                           "type": "section",
                           "children": [
-                            { "type": "entity-picker", "bind": "item.entity_id", "props": { "labelMsg": "msg:automations.detail.conditionEntityLabel" } },
+                            { "type": "entity-picker", "bind": "item.entity_id", "props": { "labelMsg": "msg:automations.detail.conditionEntityLabel", "bindShape": "entityId" } },
                             {
                               "type": "multi-select",
                               "bind": "item.state",
@@ -150,7 +150,7 @@
                         "render": {
                           "type": "section",
                           "children": [
-                            { "type": "entity-picker", "bind": "item.entity_id", "props": { "labelMsg": "msg:automations.detail.conditionEntityLabel" } },
+                            { "type": "entity-picker", "bind": "item.entity_id", "props": { "labelMsg": "msg:automations.detail.conditionEntityLabel", "bindShape": "entityId" } },
                             { "type": "number-input", "bind": "item.above", "props": { "labelMsg": "msg:automations.detail.conditionAboveLabel" } },
                             { "type": "number-input", "bind": "item.below", "props": { "labelMsg": "msg:automations.detail.conditionBelowLabel" } }
                           ]
@@ -315,7 +315,7 @@
                             "render": {
                               "type": "section",
                               "children": [
-                                { "type": "entity-picker", "bind": "item.entity_id", "props": { "labelMsg": "msg:automations.detail.triggerEntityLabel" } },
+                                { "type": "entity-picker", "bind": "item.entity_id", "props": { "labelMsg": "msg:automations.detail.triggerEntityLabel", "bindShape": "entityId" } },
                                 {
                                   "type": "multi-select",
                                   "bind": "item.to",
@@ -340,7 +340,7 @@
                             "render": {
                               "type": "section",
                               "children": [
-                                { "type": "entity-picker", "bind": "item.entity_id", "props": { "labelMsg": "msg:automations.detail.triggerEntityLabel", "modes": ["entity", "selector"] } },
+                                { "type": "entity-picker", "bind": "item.entity_id", "props": { "labelMsg": "msg:automations.detail.triggerEntityLabel", "bindShape": "entityId", "modes": ["entity"] } },
                                 { "type": "text-input", "bind": "item.attribute", "props": { "labelMsg": "msg:automations.detail.triggerAttributeLabel", "placeholderMsg": "msg:automations.detail.attributePlaceholder" } },
                                 { "type": "number-input", "bind": "item.above", "props": { "labelMsg": "msg:automations.detail.triggerAboveLabel" } },
                                 { "type": "duration-input", "bind": "item.for", "props": { "labelMsg": "msg:automations.detail.triggerForLabel" } }
@@ -501,7 +501,7 @@
                             "render": {
                               "type": "section",
                               "children": [
-                                { "type": "entity-picker", "bind": "item.entity_id", "props": { "labelMsg": "msg:automations.detail.actionEntityLabel" } },
+                                { "type": "entity-picker", "bind": "item.entity_id", "props": { "labelMsg": "msg:automations.detail.actionEntityLabel", "bindShape": "entityId" } },
                                 { "type": "text-input", "bind": "item.command", "props": { "labelMsg": "msg:automations.detail.actionCommandLabel", "placeholderMsg": "msg:automations.detail.commandPlaceholder" } }
                               ]
                             }

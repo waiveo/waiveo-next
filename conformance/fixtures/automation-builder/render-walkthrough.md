@@ -71,7 +71,7 @@ own Scope (UIS-107) and renders:
    | `when` | rendered fields | widgets used | sample value exercised |
    |---|---|---|---|
    | `state` | entity, `to` (multi-value), `for` | `entity-picker`, `multi-select` (`literal` OptionSource, UIS-131), `duration-input` | `to: ["off","standby"]`, `for: 300` |
-   | `numeric` | entity (`modes` restricted to `["entity","selector"]`, proving UIS-073's `modes` prop is live), `attribute`, `above`, `for` | `entity-picker`, `text-input`, `number-input`, `duration-input` | `attribute: "cpu_temp"`, `above: 80` |
+   | `numeric` | entity (`modes` declared as `["entity"]` — the only form its scalar `bindShape` can carry, UIS-073a, proving the prop is live and the compatibility rule holds), `attribute`, `above`, `for` | `entity-picker`, `text-input`, `number-input`, `duration-input` | `attribute: "cpu_temp"`, `above: 80` |
    | `time` | `at`, `misfire` | `time-of-day`, `select` (`vocab`-kind, `rules/1:misfire`) | `at: "22:00:00"`, `misfire: "catch_up_once"` |
    | `sun` | `event`, `offset` | `select` (`literal`-kind: `sunrise`/`sunset`), `number-input` | `event: "sunset"`, `offset: -900` |
    | `template` | `expression.expr` | `text-input` (`multiline: true`) | an `{expr: "..."}` pipeline string (UIS-123: presented as opaque string data, never parsed by this contract's own grammar) |
@@ -293,20 +293,25 @@ Rendering it for the first time turned up two things the lint could not see.
    same mechanism `repeat` uses, UIS-107", and UIS-107's mechanism rebinds the
    itemScope name as well as the unprefixed scope; the renderer now does both.
    The nested tree renders one group per group and descends into the leaf.
-2. **An unresolved fixture/contract disagreement (open).** UIS-073 requires an
-   `entity-picker`'s bound value to be an *object* carrying exactly one of
+2. **A contract gap (closed).** UIS-073 required an `entity-picker`'s bound
+   value to be an *object* carrying exactly one of
    `entity_id`/`selector`/`device_class`, but `rules/1` inlines those keys into
    the trigger/condition/action object itself (its wire shapes are
    `{"type": "state", "entity_id": …, "to": …}`), so a rules/1 record holds no
    EntityRef-shaped sub-object to bind to. This fixture binds the scalar
-   `item.entity_id`, and every entity-picker consequently renders **empty** —
-   the record's entity is neither shown nor editable. Binding `item` instead
-   would display correctly but write destructively, since the picker replaces
-   its whole bound value with `{<form key>: …}` and would erase the sibling
-   `type`/`to`/`for` fields. Settling it needs a contract decision (an EntityRef
-   sub-object in `rules/1`, or a merge-write rule for `entity-picker` in
-   ui-schema/1), so neither side was changed; the render driver pins the current
-   behavior as an explicitly-labelled tripwire so it cannot rot unnoticed.
+   `item.entity_id`, and every entity-picker consequently rendered **empty** —
+   the record's entity neither shown nor editable. Binding `item` instead would
+   have displayed correctly and written destructively, since the object shape
+   replaces its whole bound value with `{<form key>: …}` and would erase the
+   sibling `type`/`to`/`for` fields — so the fix went into `ui-schema/1`, not
+   into rules/1's wire shape (consumed by the rules engine, the relay's edge
+   rules and frozen corpus cases) and not into a renderer merge-write (which
+   risks exactly the sibling erasure this defect is about). UIS-073a gives the
+   picker a second, *declared* binding shape: `bindShape: "entityId"` binds the
+   inlined scalar directly and writes only that scalar. Every picker in this
+   fixture now declares it, and the render driver asserts both halves — the
+   entity paints, and an edit through it leaves the trigger's other members
+   byte-identical to the sample record's own.
 
 Everything else the fixture declares paints from the sample record: the list
 table's computed cells, the row-press → `detail.source` predicate-index
