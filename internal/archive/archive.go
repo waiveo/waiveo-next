@@ -189,6 +189,10 @@ var b64 = base64.RawStdEncoding
 // is about to write, Open canonicalizes the header bytes it just read. One
 // function, no chance of the two drifting apart on the signed scope.
 func canonicalSignedHeader(headerJSON []byte) ([]byte, error) {
+	if err := rejectDuplicateMembers(headerJSON); err != nil {
+		return nil, fmt.Errorf("canonicalize header: %w", err)
+	}
+
 	dec := json.NewDecoder(bytes.NewReader(headerJSON))
 	dec.UseNumber()
 
@@ -210,6 +214,74 @@ func canonicalSignedHeader(headerJSON []byte) ([]byte, error) {
 		return nil, fmt.Errorf("canonicalize header: %w", err)
 	}
 	return b, nil
+}
+
+// rejectDuplicateMembers refuses a header in which any JSON object declares the
+// same member name twice.
+//
+// The signature covers a CANONICALIZATION of the header rather than its raw
+// bytes (see canonicalSignedHeader), and encoding/json resolves a duplicate
+// member by keeping the LAST occurrence. Nothing in JSON makes that the only
+// reading: an implementation built on a parser that keeps the first — and there
+// are several — would canonicalize the same signed bytes into a different
+// header, verify the same signature, and then act on a different `digest`,
+// `signer_key_id` or `kdf` than this one does. That is a divergence between two
+// conformant readers over a container both consider valid, which is worse than
+// either one refusing.
+//
+// So a duplicate is refused outright, on the write side and the read side alike
+// (one function serves both). No legitimate producer emits one, and the refusal
+// costs a container nothing it should have had.
+func rejectDuplicateMembers(raw []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	return scanForDuplicateMembers(dec)
+}
+
+// scanForDuplicateMembers consumes exactly one JSON value from dec, descending
+// into every object and array it contains.
+func scanForDuplicateMembers(dec *json.Decoder) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	delim, ok := tok.(json.Delim)
+	if !ok {
+		// A scalar: nothing beneath it to check.
+		return nil
+	}
+	switch delim {
+	case '{':
+		seen := map[string]bool{}
+		for dec.More() {
+			keyTok, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyTok.(string)
+			if !ok {
+				return fmt.Errorf("object member name is %T, not a string", keyTok)
+			}
+			if seen[key] {
+				return fmt.Errorf("object declares the member %q more than once", key)
+			}
+			seen[key] = true
+			if err := scanForDuplicateMembers(dec); err != nil {
+				return err
+			}
+		}
+	case '[':
+		for dec.More() {
+			if err := scanForDuplicateMembers(dec); err != nil {
+				return err
+			}
+		}
+	}
+	// The matching closing delimiter.
+	if _, err := dec.Token(); err != nil {
+		return err
+	}
+	return nil
 }
 
 // majorMinor splits an `archive_format_version` into its two components

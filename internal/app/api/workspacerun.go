@@ -55,9 +55,6 @@ type WorkspaceArchive struct {
 	// substitute lighter ones so a suite does not spend a second per export
 	// stretching a passphrase it does not care about.
 	KDF archive.KDFParams
-	// Rand is the randomness source for the per-archive KDF salt and base nonce
-	// (ARC-010/017). Nil means crypto/rand.
-	Rand io.Reader
 }
 
 // WithWorkspaceArchive wires the export operation's archive destination and
@@ -180,7 +177,6 @@ func (srv *server) writeWorkspaceArchive(ctx context.Context, jobID, workspaceID
 		Signer:      cfg.Key.Private(),
 		SignerKeyID: cfg.Key.KeyID(),
 		KDF:         cfg.KDF,
-		Rand:        cfg.Rand,
 	})
 	closeErr := out.Close()
 	if writeErr != nil || closeErr != nil {

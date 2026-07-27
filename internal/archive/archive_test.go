@@ -34,9 +34,10 @@ const (
 // this one.
 func lightKDF() KDFParams { return KDFParams{MemoryKiB: 8, Iterations: 1, Parallelism: 1} }
 
-// fixedRand is Options.Rand for the suite: a fixed byte stream, so a container's
+// fixedRand is Options.rand for the suite: a fixed byte stream, so a container's
 // KDF salt and base nonce are the same on every run and a failure is
-// reproducible. Production leaves Rand nil and gets crypto/rand.Reader.
+// reproducible. It is settable only from inside this package (Options.rand is
+// unexported); production leaves it nil and gets crypto/rand.Reader.
 func fixedRand() io.Reader {
 	b := make([]byte, 256)
 	for i := range b {
@@ -137,7 +138,7 @@ func testWrapDataKey(wrapKey []byte) (string, error) {
 }
 
 // exportKeys re-derives the export sub-keys any container createContainer wrote
-// is encrypted and wrapped under. The suite pins Options.Rand, so this archive's
+// is encrypted and wrapped under. The suite pins Options.rand, so this archive's
 // KDF salt is the first saltSize bytes of that stream and its cost profile is
 // lightKDF — both EXPLICIT inputs. Deriving the expectation from them, rather
 // than from the header or the wrap the container emitted, is what keeps the
@@ -216,8 +217,8 @@ func createContainer(t *testing.T, f *fixture, opt Options) []byte {
 	if opt.KDF == (KDFParams{}) {
 		opt.KDF = lightKDF()
 	}
-	if opt.Rand == nil {
-		opt.Rand = fixedRand()
+	if opt.rand == nil {
+		opt.rand = fixedRand()
 	}
 	if opt.Passphrase == "" {
 		opt.Passphrase = testPassphrase
@@ -485,7 +486,7 @@ func TestCreateHeaderIsSignedInPlace(t *testing.T) {
 	}
 
 	// ARC-017: the base nonce is fresh random material, not something derived
-	// from the passphrase or the workspace id. It comes from Options.Rand, which
+	// from the passphrase or the workspace id. It comes from Options.rand, which
 	// the suite pins — so it must equal that stream's bytes 16..40 (the salt
 	// takes the first 16).
 	wantRand := make([]byte, 256)
@@ -493,7 +494,7 @@ func TestCreateHeaderIsSignedInPlace(t *testing.T) {
 		wantRand[i] = byte(i * 7)
 	}
 	if got := b64.EncodeToString(wantRand[saltSize : saltSize+24]); h.BaseNonce != got {
-		t.Errorf("header.BaseNonce = %q, want %q — the base nonce must come from Options.Rand (ARC-017)", h.BaseNonce, got)
+		t.Errorf("header.BaseNonce = %q, want %q — the base nonce must come from Options.rand (ARC-017)", h.BaseNonce, got)
 	}
 }
 
@@ -994,6 +995,13 @@ func TestCreateRejectsMalformedInput(t *testing.T) {
 		"a missing snapshot":          {mutate: func(s *Source) { s.Snapshot = nil }},
 		"no signer key":               {mutate: func(*Source) {}, opt: Options{Signer: ed25519.PrivateKey{}, SignerKeyID: testSignerKeyID}},
 		"no signer_key_id":            {mutate: func(*Source) {}, opt: Options{Signer: priv}},
+		// A destroyed workspace signing key (security-model.md SEC-121) that was
+		// zeroed in place is exactly this: full length, all zeros, and still
+		// perfectly capable of returning 64 bytes from ed25519.Sign. The length
+		// check above accepts it, which is why this case exists separately.
+		"a zeroed signer key": {mutate: func(*Source) {}, opt: Options{
+			Signer: make(ed25519.PrivateKey, ed25519.PrivateKeySize), SignerKeyID: testSignerKeyID,
+		}},
 		"an impossible kdf profile": {mutate: func(*Source) {}, opt: Options{
 			Signer: priv, SignerKeyID: testSignerKeyID, KDF: KDFParams{MemoryKiB: 1024, Iterations: 0, Parallelism: 1},
 		}},
@@ -1012,13 +1020,169 @@ func TestCreateRejectsMalformedInput(t *testing.T) {
 				opt.KDF = lightKDF()
 			}
 			opt.Passphrase = testPassphrase
-			opt.Rand = fixedRand()
+			opt.rand = fixedRand()
 
 			var out memFile
 			if err := Create(&out, f.src, opt); err == nil {
 				t.Fatalf("Create() with %s = nil, want an error", name)
 			}
 		})
+	}
+}
+
+// TestCreateWritesNoContainerForAZeroedSigner is the archive half of the
+// destroyed-key regression.
+//
+// A workspace signing key destroyed in place is 64 zero bytes. ed25519.Sign
+// accepts them and returns a well-formed 64-byte signature, so a writer that
+// only length-checked its signer emitted a complete, plausible container whose
+// signature verifies under nothing — and reported success. The operator is then
+// holding a backup no restorer can open, and does not know it.
+//
+// Create must refuse BEFORE writing anything: an unusable container that exists
+// is worse than no container, because only the first one gets mistaken for a
+// backup.
+func TestCreateWritesNoContainerForAZeroedSigner(t *testing.T) {
+	f := newFixture()
+	zeroed := make(ed25519.PrivateKey, ed25519.PrivateKeySize)
+
+	var out memFile
+	err := Create(&out, f.src, Options{
+		Passphrase: testPassphrase, Signer: zeroed, SignerKeyID: testSignerKeyID,
+		KDF: lightKDF(), rand: fixedRand(),
+	})
+	if err == nil {
+		t.Fatal("Create() with an all-zero signer = nil, want an error")
+	}
+	if len(out.buf) != 0 {
+		t.Errorf("Create() wrote %d bytes before refusing; a partial container must never reach the destination", len(out.buf))
+	}
+}
+
+// TestCreateRefusesASignerWhosePublicHalfDisagrees covers the general case the
+// all-zeros check alone does not: key material that signs, is not all zeros, and
+// still produces a signature no reader can verify — an ed25519 private key whose
+// trailing public half has been swapped for a different key's.
+//
+// Go's ed25519.Sign derives the signature from the seed but the VERIFIER resolves
+// `signer_key_id` to the public half. When the two disagree, every conformant
+// restorer sees ARCHIVE_SIGNATURE_INVALID on a container this deployment called a
+// success. Create catches it by verifying the signature it just produced against
+// the signer's own public half before writing it.
+func TestCreateRefusesASignerWhosePublicHalfDisagrees(t *testing.T) {
+	f := newFixture()
+	_, priv := testSigner(t)
+
+	otherSeed := make([]byte, ed25519.SeedSize)
+	for i := range otherSeed {
+		otherSeed[i] = byte(0x11 + i)
+	}
+	other := ed25519.NewKeyFromSeed(otherSeed)
+
+	mismatched := make(ed25519.PrivateKey, ed25519.PrivateKeySize)
+	copy(mismatched, priv)
+	copy(mismatched[ed25519.SeedSize:], other[ed25519.SeedSize:])
+	if mismatched.Equal(priv) {
+		t.Fatal("precondition: the mismatched key is identical to the well-formed one")
+	}
+
+	var out memFile
+	if err := Create(&out, f.src, Options{
+		Passphrase: testPassphrase, Signer: mismatched, SignerKeyID: testSignerKeyID,
+		KDF: lightKDF(), rand: fixedRand(),
+	}); err == nil {
+		t.Fatal("Create() with a signer whose public half disagrees with its seed = nil, want an error")
+	}
+}
+
+// TestCreateRefusesAnEmptyPassphrase: a container whose body key is stretched
+// from "" is decryptable by anyone who knows this format, which is not
+// encryption. api/1's twelve-character floor is policy stated at the surface;
+// this is the floor below which the format's own guarantee stops existing, and it
+// belongs where the encryption happens.
+func TestCreateRefusesAnEmptyPassphrase(t *testing.T) {
+	f := newFixture()
+	_, priv := testSigner(t)
+
+	var out memFile
+	err := Create(&out, f.src, Options{
+		Passphrase: "", Signer: priv, SignerKeyID: testSignerKeyID,
+		KDF: lightKDF(), rand: fixedRand(),
+	})
+	if err == nil {
+		t.Fatal("Create() with an empty passphrase = nil, want an error")
+	}
+	if len(out.buf) != 0 {
+		t.Errorf("Create() wrote %d bytes before refusing an empty passphrase", len(out.buf))
+	}
+}
+
+// TestCanonicalSignedHeaderRefusesDuplicateMembers closes a divergence between
+// two readers that both consider a container valid.
+//
+// The signature covers a canonicalization of the header, not its raw bytes, and
+// encoding/json resolves a duplicated member by keeping the LAST occurrence.
+// A reader built on a parser that keeps the FIRST — several do — canonicalizes
+// the same signed bytes into a different header, verifies the same signature,
+// and then honors a different digest or signer_key_id than this reader does.
+// Refusing the duplicate outright is what keeps the two from disagreeing.
+func TestCanonicalSignedHeaderRefusesDuplicateMembers(t *testing.T) {
+	tests := map[string]string{
+		"a duplicated top-level member": `{"format":"waiveo-archive","signer_key_id":"A","signer_key_id":"B"}`,
+		"a duplicated nested member":    `{"format":"waiveo-archive","kdf":{"algorithm":"argon2id","algorithm":"scrypt"}}`,
+		"a duplicated signature member": `{"format":"waiveo-archive","signature":"AAA","signature":"BBB"}`,
+	}
+	for name, raw := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := canonicalSignedHeader([]byte(raw)); err == nil {
+				t.Fatalf("canonicalSignedHeader(%s) = nil, want an error", raw)
+			}
+		})
+	}
+
+	// The control: a header with no duplicate still canonicalizes, so the case
+	// above is refusing duplicates rather than everything.
+	ok := `{"format":"waiveo-archive","kdf":{"algorithm":"argon2id"},"signature":"AAA"}`
+	got, err := canonicalSignedHeader([]byte(ok))
+	if err != nil {
+		t.Fatalf("canonicalSignedHeader on a well-formed header = %v, want nil", err)
+	}
+	if bytes.Contains(got, []byte("signature")) {
+		t.Errorf("canonicalization %s still carries the signature member", got)
+	}
+}
+
+// TestOpenRefusesAHeaderWithDuplicateMembers is the same rule reached through
+// the real read path, on a real container: the duplicate is refused during
+// verification, so no member of a header this reader would read differently from
+// another one ever reaches a decision.
+func TestOpenRefusesAHeaderWithDuplicateMembers(t *testing.T) {
+	f := newFixture()
+	pub, _ := testSigner(t)
+	container := createContainer(t, f, Options{})
+
+	headerJSON, body := splitContainer(t, container)
+	// Splice a second `signer_key_id` in textually: json.Marshal cannot emit a
+	// duplicate member, and a hostile producer is under no such constraint.
+	const marker = `{"format":`
+	if !bytes.HasPrefix(headerJSON, []byte(marker)) {
+		t.Fatalf("header does not begin with %s: %s", marker, headerJSON)
+	}
+	spliced := append([]byte(`{"signer_key_id":"01J8Z3K4N5P6Q7R8S9T0V1W2ZZ","format":`), headerJSON[len(marker):]...)
+
+	var buf bytes.Buffer
+	var lenBE [4]byte
+	binary.BigEndian.PutUint32(lenBE[:], uint32(len(spliced)))
+	buf.Write(lenBE[:])
+	buf.Write(spliced)
+	buf.Write(body)
+
+	_, _, err := Open(bytes.NewReader(buf.Bytes()), testPassphrase, pub)
+	if err == nil {
+		t.Fatal("Open() on a header carrying a duplicated member = nil, want a refusal")
+	}
+	if got := Code(err); got != CodeArchiveSignatureInvalid {
+		t.Errorf("Open() = %v (code %q), want code %q", err, got, CodeArchiveSignatureInvalid)
 	}
 }
 
@@ -1032,7 +1196,7 @@ func TestCreateWritesNothingBeyondTheContainer(t *testing.T) {
 	var out memFile
 	if err := Create(&out, f.src, Options{
 		Passphrase: testPassphrase, Signer: priv, SignerKeyID: testSignerKeyID,
-		KDF: lightKDF(), Rand: fixedRand(),
+		KDF: lightKDF(), rand: fixedRand(),
 	}); err != nil {
 		t.Fatalf("Create() = %v, want nil", err)
 	}

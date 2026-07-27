@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	cryptorand "crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -18,6 +19,8 @@ import (
 	"github.com/klauspost/compress/zstd"
 
 	"golang.org/x/crypto/chacha20poly1305"
+
+	"github.com/maaxton/waiveo-next/internal/shared/signhash"
 )
 
 // Source is everything one container carries, already collected by the caller.
@@ -82,6 +85,13 @@ type Options struct {
 	// stretched from. It is a DISTINCT secret from the workspace's recovery
 	// passphrase (ARC-112): neither substitutes for the other, and only this one
 	// takes part in a container's encryption.
+	//
+	// It MUST NOT be empty. A container encrypted under the stretch of "" is
+	// readable by anyone who knows this format, which is not encryption; refusing
+	// it here means the property holds for every caller rather than for the ones
+	// that remembered to check. The LENGTH policy (api/1's twelve-character
+	// floor) stays with the surface that has an operator to tell — this package
+	// enforces only the floor below which the encryption stops existing at all.
 	Passphrase string
 	// Signer is the workspace signing key's private half (security-model/1
 	// SEC-046) that produces the header signature (ARC-021).
@@ -91,11 +101,17 @@ type Options struct {
 	// KDF is the argon2id cost profile. The zero value resolves to
 	// DefaultKDFParams.
 	KDF KDFParams
-	// Rand is the randomness source for the per-archive KDF salt and base nonce.
-	// nil resolves to crypto/rand.Reader. It is injectable so a test can pin the
-	// two values a container's identity otherwise varies on — never so
-	// production can weaken them.
-	Rand io.Reader
+	// rand is the randomness source for the per-archive KDF salt and base nonce.
+	// nil resolves to crypto/rand.Reader.
+	//
+	// It is UNEXPORTED, and that is the whole design. A fixed source makes two
+	// archives share a KDF salt AND a base nonce, which is total keystream reuse
+	// across them — the single worst thing a caller could do to this format, and
+	// one line of code away if the seam is reachable from outside the package.
+	// This package's own tests are in this package, so they can pin it; nothing
+	// else can reach it, so no production call site can weaken a container's
+	// randomness by mistake or by "just for this environment".
+	rand io.Reader
 	// FrameSize is the plaintext each body frame carries. 0 resolves to
 	// DefaultFrameSize (1 MiB).
 	FrameSize int
@@ -147,11 +163,14 @@ func Create(dst io.WriteSeeker, src Source, opt Options) error {
 	if dst == nil {
 		return fmt.Errorf("archive: Create: dst is nil")
 	}
-	if len(opt.Signer) != ed25519.PrivateKeySize {
-		return fmt.Errorf("archive: Create: signer key is %d bytes, want %d (ARC-021)", len(opt.Signer), ed25519.PrivateKeySize)
+	if err := validateSigner(opt.Signer); err != nil {
+		return err
 	}
 	if opt.SignerKeyID == "" {
 		return fmt.Errorf("archive: Create: signer_key_id is empty (ARC-002)")
+	}
+	if opt.Passphrase == "" {
+		return fmt.Errorf("archive: Create: passphrase is empty — a container stretched from no passphrase is not encrypted against anyone who knows this format (ARC-010)")
 	}
 	if src.Snapshot == nil {
 		return fmt.Errorf("archive: Create: Source.Snapshot is nil — every archive embeds the workspace snapshot in full (ARC-085/091)")
@@ -161,7 +180,7 @@ func Create(dst io.WriteSeeker, src Source, opt Options) error {
 	if err := kdfParams.validate(); err != nil {
 		return err
 	}
-	randSrc := opt.Rand
+	randSrc := opt.rand
 	if randSrc == nil {
 		randSrc = cryptorand.Reader
 	}
@@ -269,7 +288,21 @@ func Create(dst io.WriteSeeker, src Source, opt Options) error {
 	if err != nil {
 		return fmt.Errorf("archive: Create: %w", err)
 	}
-	header.Signature = b64.EncodeToString(ed25519.Sign(opt.Signer, signedBytes))
+	sig := ed25519.Sign(opt.Signer, signedBytes)
+	// The signature is verified against the signer's OWN public half before it is
+	// written. This is not paranoia about ed25519; it is the last gate on the one
+	// failure mode that produces a container which looks completely successful and
+	// is worthless: key material that still signs but no longer corresponds to
+	// anything a reader can resolve. A workspace signing key destroyed in place
+	// (SEC-121) is exactly that — its bytes are still 64 long and ed25519.Sign
+	// still returns 64 bytes for them — and an operator whose export "succeeded"
+	// against such a key holds a backup no restorer will ever open. Better a
+	// failed export than a false one.
+	pub, ok := opt.Signer.Public().(ed25519.PublicKey)
+	if !ok || !signhash.Verify(pub, signedBytes, sig) {
+		return fmt.Errorf("archive: Create: the header signature does not verify under the signer's own public half — the signing key is corrupt or destroyed, and this container would be unreadable by any conformant restorer (ARC-021)")
+	}
+	header.Signature = b64.EncodeToString(sig)
 
 	finalJSON, err := json.Marshal(header)
 	if err != nil {
@@ -299,6 +332,30 @@ func Create(dst io.WriteSeeker, src Source, opt Options) error {
 	// one thing into the same file is not surprised by a rewound cursor.
 	if _, err := dst.Seek(end, io.SeekStart); err != nil {
 		return fmt.Errorf("archive: Create: restore write position: %w", err)
+	}
+	return nil
+}
+
+// validateSigner refuses signing key material that cannot produce a signature
+// anyone will be able to verify — BEFORE a byte of the container is written, so
+// a refusal costs nothing and leaves nothing behind.
+//
+// The all-zeros case is called out by name because it is not hypothetical. It is
+// what a workspace signing key looks like after a destruction that zeroed it in
+// place, and what an unfilled ed25519.PrivateKey looks like: 64 bytes, the right
+// length, and cryptographically useless. A length check alone accepts it, which
+// is precisely how a destroyed key kept producing "successful" exports.
+//
+// The comparison is constant-time out of habit rather than necessity — nothing
+// here is attacker-timed — but the habit is cheap and the alternative invites a
+// reader to wonder whether it should have been.
+func validateSigner(priv ed25519.PrivateKey) error {
+	if len(priv) != ed25519.PrivateKeySize {
+		return fmt.Errorf("archive: Create: signer key is %d bytes, want %d (ARC-021)", len(priv), ed25519.PrivateKeySize)
+	}
+	var zero [ed25519.PrivateKeySize]byte
+	if subtle.ConstantTimeCompare(priv, zero[:]) == 1 {
+		return fmt.Errorf("archive: Create: signer key is all zeros — a destroyed or never-established workspace signing key cannot sign an export (SEC-046/SEC-121, ARC-021)")
 	}
 	return nil
 }
