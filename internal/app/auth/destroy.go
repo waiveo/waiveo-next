@@ -13,7 +13,7 @@ import (
 // SEC-121 fixes the outcome in two clauses this file is written against: the
 // destruction "MUST force fresh enrollment on every principal and MUST re-open
 // the first-boot claim window (SEC-120)". Both fall out of removing every row in
-// this package's five tables rather than from a separate flag anywhere:
+// this package's tables rather than from a separate flag anywhere:
 //
 //   - Fresh enrollment is forced because every credential, session and API key is
 //     gone. There is no principal left holding anything to present, so no
@@ -51,7 +51,12 @@ import (
 // enforcement added later cannot turn this into a partial delete.
 func (s *Store) DestroyAllPrincipals(ctx context.Context) error {
 	return s.writeTx(ctx, func(tx *sql.Tx) error {
-		for _, table := range []string{"grants", "sessions", "credentials", "role_bindings", "principals"} {
+		// totp_pending and totp_steps ride the same delete. A pending enrollment
+		// left behind would let a code minted before the reset arm a credential
+		// after it; a step floor left behind would attach to a credential id that
+		// no longer exists and, worse, would survive as a stale high-water mark if
+		// that id were ever minted again by a deterministic id source.
+		for _, table := range []string{"grants", "sessions", "totp_steps", "totp_pending", "credentials", "role_bindings", "principals"} {
 			if _, err := tx.ExecContext(ctx, `DELETE FROM `+table); err != nil {
 				return fmt.Errorf("auth: destroy %s: %w", table, err)
 			}

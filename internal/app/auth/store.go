@@ -81,6 +81,39 @@ CREATE TABLE IF NOT EXISTS role_bindings (
 CREATE UNIQUE INDEX IF NOT EXISTS role_bindings_unique
 	ON role_bindings(principal_id, scope_node);
 
+-- A TOTP enrollment that has been STARTED but not yet proven (SEC-004). It is
+-- deliberately NOT a credential row: until the enrolling principal has returned
+-- a code computed from this secret, nothing has demonstrated that the secret
+-- reached an authenticator at all, and a credential relation holding rows that
+-- cannot yet authenticate anything is a relation whose rows do not mean what
+-- SEC-003 says they mean ("a provable means of acting as a principal").
+--
+-- One pending enrollment per principal — the primary key — so starting a second
+-- enrollment discards the first rather than leaving two live secrets either of
+-- which could arm the credential.
+CREATE TABLE IF NOT EXISTS totp_pending (
+	principal_id  TEXT PRIMARY KEY,
+	sealed_secret TEXT NOT NULL,
+	created_at    INTEGER NOT NULL
+);
+
+-- The high-water time step each armed TOTP credential has consumed. It is what
+-- makes a code SINGLE-USE rather than valid-for-its-whole-window (the ordinary
+-- TOTP replay hole), and, because it never moves backward, it is also the
+-- credential-grain expression of SEC-066's monotonic clock floor: a host clock
+-- rolled back cannot re-open a window this credential has already spent.
+--
+-- It is its own relation rather than a column on the credentials table for the
+-- reason SEC-001/003 give that relation its shape: a credential row is identity
+-- material, and a per-login counter that advances on every successful
+-- authentication is operational state about USING it. Keeping them apart also
+-- means the login path's hot write never touches the credential row itself.
+CREATE TABLE IF NOT EXISTS totp_steps (
+	credential_id TEXT PRIMARY KEY,
+	last_step     INTEGER NOT NULL,
+	updated_at    INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS grants (
 	grant_id                 TEXT PRIMARY KEY,
 	purpose                  TEXT NOT NULL,
@@ -110,6 +143,16 @@ type Store struct {
 	nowMs func() int64
 	newID func() string
 
+	// sealer protects the one class of credential secret that cannot be hashed:
+	// a TOTP shared secret, which the server must recover in cleartext to
+	// recompute a code from (totp.go). It is supplied at Open through
+	// WithSecretSealer and is NEVER defaulted to a no-op — a store without one
+	// refuses to begin a TOTP enrollment (ErrNoSecretSealer) rather than writing
+	// the secret bare beside a password hash, which is the failure mode a
+	// silently-permissive default would produce on the one deployment that
+	// forgot to wire it.
+	sealer SecretSealer
+
 	// onRevoke (OnRevoke) runs after every session this store revokes, with
 	// that session's id. It is the seam EVT-114's live-stream teardown hangs
 	// off: the events binding registers a hook that closes every open stream
@@ -129,7 +172,7 @@ type Store struct {
 // nowMs and newID are the injected clock and id source. newID MUST mint valid
 // ULIDs (DAT-005a) — every insert checks, so a misconfigured source fails at the
 // first write rather than persisting an id no other component can parse.
-func Open(dsn string, nowMs func() int64, newID func() string) (*Store, error) {
+func Open(dsn string, nowMs func() int64, newID func() string, opts ...StoreOption) (*Store, error) {
 	if nowMs == nil || newID == nil {
 		return nil, errors.New("auth: Open requires a clock and an id source")
 	}
@@ -174,12 +217,40 @@ func Open(dsn string, nowMs func() int64, newID func() string) (*Store, error) {
 			return nil, fmt.Errorf("auth: chmod %s: %w", dsn, err)
 		}
 	}
-	return &Store{db: db, nowMs: nowMs, newID: newID}, nil
+	s := &Store{db: db, nowMs: nowMs, newID: newID}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s, nil
+}
+
+// StoreOption configures a Store at Open. Options rather than setters, so a
+// store's collaborators are fixed at construction: a sealer installed later
+// could be installed AFTER a secret had already been written without one.
+type StoreOption func(*Store)
+
+// SecretSealer is the at-rest protection a recoverable credential secret is
+// held under — satisfied by internal/shared/secretseal.Sealer, keyed from the
+// per-workspace data key (SEC-040, workspacekey.Key.SecretSealer).
+//
+// It is an interface here for the same reason EventSink is: this package neither
+// imports the key hierarchy nor requires one to exist in order to be unit
+// tested, and a deployment that has no data key gets a refusal rather than a
+// weaker default.
+type SecretSealer interface {
+	Seal(plaintext, aad []byte) (string, error)
+	Open(sealed string, aad []byte) ([]byte, error)
+}
+
+// WithSecretSealer installs the sealer every recoverable credential secret is
+// stored under.
+func WithSecretSealer(sealer SecretSealer) StoreOption {
+	return func(s *Store) { s.sealer = sealer }
 }
 
 // OpenDefault opens the auth store at dsn with the wall clock and ulid.New.
-func OpenDefault(dsn string) (*Store, error) {
-	return Open(dsn, func() int64 { return time.Now().UnixMilli() }, ulid.New)
+func OpenDefault(dsn string, opts ...StoreOption) (*Store, error) {
+	return Open(dsn, func() int64 { return time.Now().UnixMilli() }, ulid.New, opts...)
 }
 
 // Close closes the database handle, flushing the WAL best-effort first.
