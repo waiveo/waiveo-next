@@ -40,6 +40,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"os"
@@ -65,6 +66,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/keepalive"
 	"github.com/maaxton/waiveo-next/internal/relay/mdns"
 	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
+	"github.com/maaxton/waiveo-next/internal/relay/reenroll"
 	"github.com/maaxton/waiveo-next/internal/relay/relayconn"
 	"github.com/maaxton/waiveo-next/internal/relay/schedulehost"
 	"github.com/maaxton/waiveo-next/internal/relay/ssdpresponder"
@@ -236,6 +238,54 @@ func envOr(env func(string) string, key, def string) string {
 // both binaries with no start-up ordering, and scripts/dev-smoke.sh already
 // gives the pair up to ~10s to answer /healthz — this matches that budget
 // rather than failing the relay outright on the first connection refused.
+// relayRenewalWindow is how far ahead of the leaf's not_after the relay
+// begins attempting proactive certificate renewal (REL-015; the contract
+// draft-note's proposed default) — ~8% of the feeder's 365-day leaf
+// lifetime, so a renewal that keeps failing still has thousands of paced
+// retry opportunities (the supervisor's loop cadence + hourly connected
+// ticker) before hard expiry ever threatens. relayRenewalWindowJitter
+// widens each process's effective window by a random slice so a fleet of
+// relays enrolled the same day does not converge on the feeder's
+// re-enroll rate limit (REL-025) in lockstep.
+const (
+	relayRenewalWindow       = 30 * 24 * time.Hour
+	relayRenewalWindowJitter = 3 * 24 * time.Hour
+)
+
+// renewalDue reports whether the persisted leaf is inside its proactive
+// renewal window (REL-015), evaluated on a floor-aware clock: the LATEST of
+// the OS wall clock, the persisted clock floor (REL-130 — advance-only, so
+// a backwards-jumped OS clock can never suppress renewal past a time the
+// relay already verified; REL-135's discipline that an untrusted relay
+// clock must not block credential recovery), and the hint-adjusted runtime
+// clock (REL-133-bounded; before any accepted hint it reads as bare uptime
+// and never wins the max). A store with no persisted identity, or one whose
+// certificate cannot be parsed, is reported not-due — enrollment (or the
+// operator) owns those states, and a renewal loop must not spin on them.
+func renewalDue(store *identity.Store, clock *clocktrust.RuntimeClock, window time.Duration) bool {
+	id, ok, err := store.Identity()
+	if err != nil {
+		log.Printf("waiveo-relay: renewal predicate: read persisted identity: %v", err)
+		return false
+	}
+	if !ok {
+		return false
+	}
+	nowMs := time.Now().UnixMilli()
+	if floorMs, ok, err := store.ClockFloor(); err == nil && ok && floorMs > nowMs {
+		nowMs = floorMs
+	}
+	if runtimeMs := clock.WallMillis(); runtimeMs > nowMs {
+		nowMs = runtimeMs
+	}
+	due, err := reenroll.ExpiresWithin(id.CertPEM, time.UnixMilli(nowMs), window)
+	if err != nil {
+		log.Printf("waiveo-relay: renewal predicate: %v", err)
+		return false
+	}
+	return due
+}
+
 const (
 	enrollRetryBudget   = 10 * time.Second
 	enrollRetryInterval = 250 * time.Millisecond
@@ -751,7 +801,28 @@ func main() {
 		// second one; every later connect is a fresh dial.
 		var seedMu sync.Mutex
 		seed := client // nil when the boot dial failed
+		// Proactive certificate renewal rides the supervisor's own cadence
+		// (REL-015): renewalDue watches the persisted leaf's not_after on a
+		// floor-aware clock, and reenroll.Renew reuses the enrollment
+		// keypair (its own doc: the SPKI is the player-pinned trust anchor,
+		// REL-126/PLY-052, and the lease-signing key — rotation would
+		// strand every paired player at the next restart). A successful
+		// renewal touches ONLY the store: this process keeps serving
+		// players from the in-memory relayID leaf it booted with, the live
+		// app-peer connection continues under the leaf it authenticated
+		// with (REL-015's cutover sentence), and the fresh leaf rides the
+		// next redial — relayconn.Dial re-reads the store on every dial.
+		renewWindow := relayRenewalWindow + rand.N(relayRenewalWindowJitter)
 		relayconn.StartSupervisor(relayconn.SupervisorConfig{
+			NeedsRenewal: func() bool { return renewalDue(store, clockCtl.Clock(), renewWindow) },
+			Renew: func() error {
+				if err := reenroll.Renew(cfg.feederURL, store); err != nil {
+					log.Printf("waiveo-relay: proactive certificate renewal failed (retrying on the supervisor cadence): %v", err)
+					return err
+				}
+				log.Printf("waiveo-relay: certificate renewed ahead of expiry (REL-015) — fresh leaf persisted; it takes effect on the next redial")
+				return nil
+			},
 			Connect: func() (*relayconn.Client, error) {
 				seedMu.Lock()
 				c := seed

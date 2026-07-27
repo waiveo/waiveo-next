@@ -219,17 +219,12 @@ func buildCSR(priv ed25519.PrivateKey) (string, error) {
 // decode/parse is an error (a corrupt store), never silently treated as valid.
 // This is the relay-side trigger for the Expired-certificate re-enrollment path
 // (REL-020); the app peer independently re-establishes expiry + eligibility on
-// its own trusted time (REL-023).
+// its own trusted time (REL-023). It is reenroll.ExpiresWithin's window-zero
+// degenerate case — one shared parse for every NotAfter evaluation, so the
+// boot-time check and the supervisor's proactive-renewal predicate (REL-015)
+// can never disagree on what "expired" means.
 func certExpired(certPEM []byte, now time.Time) (bool, error) {
-	block, _ := pem.Decode(certPEM)
-	if block == nil || block.Type != "CERTIFICATE" {
-		return false, fmt.Errorf("persisted certificate did not decode to a CERTIFICATE PEM block")
-	}
-	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return false, fmt.Errorf("parse persisted certificate: %w", err)
-	}
-	return !now.Before(cert.NotAfter), nil
+	return reenroll.ExpiresWithin(certPEM, now, 0)
 }
 
 // fetchClaimToken performs REL-011's `GET /claim-token` against the

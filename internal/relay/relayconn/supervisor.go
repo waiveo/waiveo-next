@@ -26,6 +26,7 @@ package relayconn
 import (
 	"errors"
 	"math/rand/v2"
+	"strings"
 	"sync"
 	"time"
 )
@@ -35,6 +36,13 @@ const (
 	defaultInitialBackoff = 500 * time.Millisecond
 	defaultMaxBackoff     = 30 * time.Second
 )
+
+// defaultRenewalCheckInterval is the mid-session cadence the proactive
+// certificate-renewal predicate (SupervisorConfig.NeedsRenewal) is
+// re-evaluated on while a connection is up. The renewal window is measured
+// in days (REL-015's draft-note proposes 30), so an hourly check leaves
+// hundreds of attempts before hard expiry while adding no measurable load.
+const defaultRenewalCheckInterval = time.Hour
 
 // RefusalIsRecoverable reports whether a Connect failure is one the Error
 // taxonomy directs a relay to recover from by reconnecting and retrying
@@ -82,6 +90,37 @@ type SupervisorConfig struct {
 	InitialBackoff time.Duration
 	MaxBackoff     time.Duration
 
+	// NeedsRenewal and Renew, when BOTH are non-nil, drive proactive
+	// certificate renewal (REL-015). NeedsRenewal — the predicate deciding
+	// whether the persisted leaf is inside its renewal window (or already
+	// past expiry) — is evaluated at the top of every loop iteration, BEFORE
+	// the connection attempt, and on RenewalCheckInterval while connected.
+	// When it reports true, Renew performs ONE renewal attempt.
+	//
+	// A successful renewal changes only the persisted identity: per
+	// REL-015's cutover sentence the fresh leaf takes effect at the next
+	// connection attempt (Connect's Dial re-reads the store), and the
+	// supervisor NEVER tears down a live connection over it — the
+	// connection continues under the certificate it authenticated with. A
+	// failed renewal is swallowed and retried on the next evaluation (the
+	// window is deliberately wide; the owner's Renew closure is where a
+	// failure gets logged), and never blocks dialing: the current leaf may
+	// still be perfectly valid.
+	//
+	// Belt-and-suspenders: when a connection attempt fails with the TLS
+	// stack's expired-leaf handshake refusal (a transport-level error, not
+	// a typed *Refusal — see renewOnExpiredLeafHandshake), Renew is
+	// triggered even if NeedsRenewal said false, covering the clock-skew
+	// case where the relay's own clock believes an expired leaf is valid.
+	NeedsRenewal func() bool
+	Renew        func() error
+
+	// RenewalCheckInterval overrides the mid-session cadence NeedsRenewal
+	// is re-evaluated on while connected (defaultRenewalCheckInterval when
+	// zero). Pre-dial evaluations are not affected — they ride every loop
+	// iteration regardless.
+	RenewalCheckInterval time.Duration
+
 	// MinStableUptime is the minimum time a connection must survive for its
 	// death to be treated as an isolated drop (redial immediately, ladder
 	// reset) rather than as one more failed attempt (ladder engages). This
@@ -118,6 +157,9 @@ func StartSupervisor(cfg SupervisorConfig) *Supervisor {
 	}
 	if cfg.MinStableUptime == 0 {
 		cfg.MinStableUptime = cfg.MaxBackoff
+	}
+	if cfg.RenewalCheckInterval == 0 {
+		cfg.RenewalCheckInterval = defaultRenewalCheckInterval
 	}
 	s := &Supervisor{
 		cfg:  cfg,
@@ -157,6 +199,16 @@ func (s *Supervisor) run() {
 		default:
 		}
 
+		// Proactive renewal rides the loop's own cadence, ahead of the dial
+		// (SupervisorConfig.NeedsRenewal): a leaf inside its renewal window
+		// — or already expired — is renewed FIRST, so the dial below
+		// presents the fresh leaf deterministically, never depending on the
+		// peer's handshake error to notice expiry. Retry pacing is the
+		// loop's own: the backoff ladder while disconnected, the renewal
+		// ticker while connected — never a hot loop against the feeder's
+		// re-enroll rate limit (REL-025).
+		s.maybeRenew()
+
 		client, err := s.cfg.Connect()
 		if err != nil {
 			if !RefusalIsRecoverable(err) {
@@ -167,6 +219,7 @@ func (s *Supervisor) run() {
 				}
 				return
 			}
+			s.renewOnExpiredLeafHandshake(err)
 			if !s.sleep(jitter(backoff)) {
 				return
 			}
@@ -183,32 +236,98 @@ func (s *Supervisor) run() {
 			s.cfg.OnConnected(client)
 		}
 
-		select {
-		case <-s.stop:
-			_ = client.Close()
-			s.clearClient()
-			return
-		case <-client.Done():
-			s.clearClient()
-			if time.Since(connectedAt) >= s.cfg.MinStableUptime {
-				// The connection proved stable before dying (an isolated
-				// drop, an app-peer restart): reset the ladder and re-dial
-				// immediately — backoff exists to pace FAILURES, not to
-				// delay recovery from a one-off death.
-				backoff = s.cfg.InitialBackoff
-				continue
-			}
-			// The connection died almost as soon as it was accepted. A peer
-			// that completes the handshake and then drops every connection
-			// is a failing peer in all but name — count this attempt against
-			// the ladder exactly like a refused dial, or the loop becomes a
-			// full-rate reconnect storm (MinStableUptime's doc).
-			if !s.sleep(jitter(backoff)) {
-				return
-			}
-			backoff = min(backoff*2, s.cfg.MaxBackoff)
+		// While connected, the proactive-renewal predicate keeps riding a
+		// slow ticker (RenewalCheckInterval): a relay that stays connected
+		// for months — the healthy steady state — must still renew ahead of
+		// expiry, and a successful mid-session renewal deliberately does
+		// NOT touch the live connection (REL-015's cutover sentence): the
+		// fresh leaf simply rides the next redial, whenever this connection
+		// naturally dies.
+		var renewTicker *time.Ticker
+		var renewTick <-chan time.Time
+		if s.cfg.NeedsRenewal != nil && s.cfg.Renew != nil {
+			renewTicker = time.NewTicker(s.cfg.RenewalCheckInterval)
+			renewTick = renewTicker.C
 		}
+
+	connected:
+		for {
+			select {
+			case <-s.stop:
+				if renewTicker != nil {
+					renewTicker.Stop()
+				}
+				_ = client.Close()
+				s.clearClient()
+				return
+			case <-renewTick:
+				s.maybeRenew()
+			case <-client.Done():
+				s.clearClient()
+				break connected
+			}
+		}
+		if renewTicker != nil {
+			renewTicker.Stop() // per-connection ticker: never outlive the connection it paced
+		}
+		if time.Since(connectedAt) >= s.cfg.MinStableUptime {
+			// The connection proved stable before dying (an isolated
+			// drop, an app-peer restart): reset the ladder and re-dial
+			// immediately — backoff exists to pace FAILURES, not to
+			// delay recovery from a one-off death.
+			backoff = s.cfg.InitialBackoff
+			continue
+		}
+		// The connection died almost as soon as it was accepted. A peer
+		// that completes the handshake and then drops every connection
+		// is a failing peer in all but name — count this attempt against
+		// the ladder exactly like a refused dial, or the loop becomes a
+		// full-rate reconnect storm (MinStableUptime's doc).
+		if !s.sleep(jitter(backoff)) {
+			return
+		}
+		backoff = min(backoff*2, s.cfg.MaxBackoff)
 	}
+}
+
+// maybeRenew evaluates the proactive-renewal predicate and, when due, runs
+// one renewal attempt (SupervisorConfig.NeedsRenewal's doc). A Renew error
+// is deliberately swallowed here — the owner's closure logs it, and the
+// next evaluation (loop iteration or renewal tick) retries; a renewal
+// failure must never surface as a connection failure.
+func (s *Supervisor) maybeRenew() {
+	if s.cfg.NeedsRenewal == nil || s.cfg.Renew == nil {
+		return
+	}
+	if !s.cfg.NeedsRenewal() {
+		return
+	}
+	_ = s.cfg.Renew()
+}
+
+// renewOnExpiredLeafHandshake triggers Renew when a connection attempt died
+// on the peer's expired-leaf TLS refusal — the belt-and-suspenders half of
+// expiry classification. The pre-dial NeedsRenewal check is the
+// deterministic path; this fallback exists for clock skew, where the
+// relay's own clock believes an expired leaf is still valid but the peer's
+// TLS stack knows better. The refusal surfaces client-side only as an
+// unexported *tls.permanentError whose string is
+// "remote error: tls: expired certificate" (tls.AlertError does not match
+// through errors.As — verified empirically), so a string match is the only
+// classification available; it deliberately runs AFTER the typed-*Refusal
+// path, so a taxonomy refusal can never reach it.
+func (s *Supervisor) renewOnExpiredLeafHandshake(err error) {
+	if s.cfg.Renew == nil || err == nil {
+		return
+	}
+	var refused *Refusal
+	if errors.As(err, &refused) {
+		return // typed refusals are classified by the taxonomy, never renewed past
+	}
+	if !strings.Contains(err.Error(), "tls: expired certificate") {
+		return
+	}
+	_ = s.cfg.Renew()
 }
 
 // sleep waits d or until Stop, reporting false when supervision should end.

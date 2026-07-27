@@ -1122,3 +1122,72 @@ func TestLivePullRidesTheAuthenticatedConnectionOnly(t *testing.T) {
 		t.Fatalf("fresh connHolder holds %v, want nil while disconnected", c)
 	}
 }
+
+// TestRenewalDue pins the proactive-renewal predicate's clock discipline
+// (REL-015 + REL-130/135): due exactly when the persisted leaf is inside
+// the renewal window, evaluated on the LATEST of the OS wall clock, the
+// persisted clock floor, and the hint-adjusted runtime clock — so a
+// backwards-jumped OS clock can never suppress renewal past a time the
+// relay already verified, and a store with no identity is simply not due
+// (enrollment's problem, not renewal's).
+func TestRenewalDue(t *testing.T) {
+	const window = 30 * 24 * time.Hour
+
+	newStoreWithCert := func(t *testing.T, notAfter time.Time) *identity.Store {
+		t.Helper()
+		store, err := identity.Open(":memory:")
+		if err != nil {
+			t.Fatalf("identity.Open(:memory:): %v", err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: selfSignedCertDER(t, notAfter)})
+		_, priv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatalf("generate key: %v", err)
+		}
+		if err := store.SetIdentity("relay-test", certPEM, priv); err != nil {
+			t.Fatalf("SetIdentity: %v", err)
+		}
+		return store
+	}
+
+	t.Run("far from expiry is not due", func(t *testing.T) {
+		store := newStoreWithCert(t, time.Now().Add(400*24*time.Hour))
+		if renewalDue(store, clocktrust.NewRuntimeClock(), window) {
+			t.Error("renewalDue = true for a leaf 400 days from expiry, want false")
+		}
+	})
+
+	t.Run("inside the window is due", func(t *testing.T) {
+		store := newStoreWithCert(t, time.Now().Add(10*24*time.Hour))
+		if !renewalDue(store, clocktrust.NewRuntimeClock(), window) {
+			t.Error("renewalDue = false for a leaf 10 days from expiry with a 30-day window, want true")
+		}
+	})
+
+	t.Run("persisted floor overrides a lagging wall clock", func(t *testing.T) {
+		// The leaf is far from expiry by the OS wall clock, but the relay
+		// has VERIFIED a later time (the persisted floor sits past
+		// NotAfter-window): the floor must win, or a backwards-jumped OS
+		// clock could suppress renewal past real expiry (REL-130/132).
+		notAfter := time.Now().Add(400 * 24 * time.Hour)
+		store := newStoreWithCert(t, notAfter)
+		if advanced, err := store.SetClockFloor(notAfter.Add(-time.Hour).UnixMilli()); err != nil || !advanced {
+			t.Fatalf("SetClockFloor: advanced=%v err=%v", advanced, err)
+		}
+		if !renewalDue(store, clocktrust.NewRuntimeClock(), window) {
+			t.Error("renewalDue = false with the persisted floor inside the window, want true (floor-aware clock)")
+		}
+	})
+
+	t.Run("no persisted identity is not due", func(t *testing.T) {
+		store, err := identity.Open(":memory:")
+		if err != nil {
+			t.Fatalf("identity.Open(:memory:): %v", err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		if renewalDue(store, clocktrust.NewRuntimeClock(), window) {
+			t.Error("renewalDue = true for an unenrolled store, want false")
+		}
+	})
+}
