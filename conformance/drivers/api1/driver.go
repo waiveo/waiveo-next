@@ -1183,10 +1183,11 @@ func driveIdempotency(rep *report.Report, c corpus.Case) {
 // --- 202 + Job resource (API-110-117, API-120-123) ------------------------
 
 type jobDriverInput struct {
-	Method  string            `json:"method"`
-	Path    string            `json:"path"`
-	Headers map[string]string `json:"headers"`
-	Body    struct {
+	Method    string            `json:"method"`
+	Path      string            `json:"path"`
+	Headers   map[string]string `json:"headers"`
+	Principal string            `json:"principal"`
+	Body      struct {
 		Selector string `json:"selector"`
 		Enabled  bool   `json:"enabled"`
 	} `json:"body"`
@@ -1208,19 +1209,21 @@ type jobDriverInput struct {
 // (store.DesiredStateRows + datamodel.BuildScopeTree.AncestorChain), not a
 // driver-modeled membership set.
 //
-// All four asserted fields are driven FROM the case's own frozen expectation,
-// through the three seams api.New exposes for exactly that purpose: the
-// harness clock is the case's pinned created_at, the harness id source is a
-// closure returning the case's pinned Job id, and the harness's seeded
-// principal is created with the case's pinned created_by.
+// Three asserted fields are driven through the seams api.New exposes for
+// exactly that purpose: the harness clock is the case's pinned created_at and
+// the harness id source is a closure returning the case's pinned Job id, both
+// read from the case's own expectation (server-derived outputs whose
+// determinism the Conformance notes sanction seaming). created_by is
+// different: it is an INPUT, read from the case's own input.principal, and the
+// expectation is then checked against it. Seeding it from expected.created_by
+// instead would make that assertion pass by construction.
 //
 // created_by used to be the one field this driver could not reproduce, because
 // the live handler stamped it from a fixed constant while auth was deferred.
-// It now comes from the REAL authenticated caller, so pinning the fixture's
-// principal id closes it — the same technique already applied to the clock and
-// the id source, and squarely what contracts/api-1.md's own Conformance notes
-// sanction: "cases that need a principal treat one as a given, opaque input."
-// The value is an input the driver supplies, not an output it relaxes.
+// It now comes from the REAL authenticated caller, so the case declaring its
+// own input.principal — the shape API-052/053 already use — closes it, exactly
+// as contracts/api-1.md's Conformance notes describe: "cases that need a
+// principal treat one as a given, opaque input."
 func driveJob(rep *report.Report, c corpus.Case) {
 	var in jobDriverInput
 	if err := decodeField(c.Input, &in); err != nil {
@@ -1253,7 +1256,13 @@ func driveJob(rep *report.Report, c corpus.Case) {
 	// id now reproduces the corpus exactly (see the doc comment above) — the
 	// remaining, genuinely-unclosable divergence is created_by alone.
 	pinnedID := func() string { return expBody.ID }
-	h, err := newHarnessAs(createdAt.UnixMilli(), pinnedID, expBody.CreatedBy)
+	if in.Principal == "" {
+		rep.Fail(c.CaseID, contract, "case declares no input.principal: a Job's created_by is the authenticated caller, "+
+			"which this driver must be TOLD (contracts/api-1.md's Conformance notes: a case that needs a principal treats "+
+			"one as a given, opaque input) — deriving it from the case's own expectation would let the assertion pass by construction")
+		return
+	}
+	h, err := newHarnessAs(createdAt.UnixMilli(), pinnedID, in.Principal)
 	if err != nil {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("newHarness: %v", err))
 		return
