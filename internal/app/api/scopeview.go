@@ -114,6 +114,21 @@ type scopeView struct {
 	// set canRead is, so a single request cannot decide "may I see this row?"
 	// and "may I write it here?" against two differently-timed snapshots.
 	canWrite func(node string) bool
+	// roleAt resolves the actual ROLE the request's principal holds at node
+	// (SEC-010's inheritance, auth.Resolve), and whether any binding applies.
+	//
+	// canRead/canWrite answer the two coarse floors every ordinary read and
+	// write on this surface funnels through, and that is all any of them needs:
+	// security-model/1's own draft-note beneath SEC-012 leaves "the complete
+	// permission matrix for admin/operator/viewer against every individual
+	// api/1 operation ... as per-operation api/1 configuration". roleAt is what
+	// an operation configured ABOVE those floors asks — today the two
+	// data-subject operations (workspace.go), which SEC-011's owner-exclusivity
+	// argument places at `owner`. It resolves through the SAME auth.Resolve the
+	// two floors do, over the same tree read and the same bindings, so a third
+	// answer to "what authority does this caller hold here?" cannot disagree
+	// with the first two.
+	roleAt func(node string) (auth.Role, bool)
 }
 
 // scopeView builds r's view of the scope-node tree. The tree is read fresh per
@@ -178,6 +193,9 @@ func (srv *server) scopeView(r *http.Request) (scopeView, error) {
 			v := auth.CanWrite(bindings, tree.AncestorChain(node))
 			seenWrite[node] = v
 			return v
+		},
+		roleAt: func(node string) (auth.Role, bool) {
+			return auth.Resolve(bindings, tree.AncestorChain(node))
 		},
 	}, nil
 }

@@ -91,6 +91,20 @@ type server struct {
 	// second audit trail) and there is no additional wiring step a deployment
 	// can omit. May be nil — an Auditor is nil-safe and silent.
 	auditor *auth.Auditor
+	// authn is the REQUIRED authenticator itself, retained because one operation
+	// needs more from it than the middleware does: the data-subject delete
+	// (workspacerun.go) destroys every principal, credential and session through
+	// authn.Store(), which is SEC-121's "force fresh enrollment on every
+	// principal". Holding the authenticator rather than a second handle on its
+	// store keeps that destruction pointed at the SAME store the middleware
+	// authenticates against — two handles is how a deployment ends up erasing
+	// one and authenticating from the other.
+	authn *auth.Authenticator
+	// workspaceArchive is where the data-subject export writes its archive/1
+	// container, and the workspace signing key it signs the header with
+	// (workspacerun.go). Optional: without it the export route still mounts and
+	// still authorizes, and answers UNAVAILABLE.
+	workspaceArchive *WorkspaceArchive
 	// families is the CRUD resource registry the audit middleware reads a
 	// request's subject metadata out of, keyed by URL path segment. It is
 	// populated by mount() itself, so a family's audit identity and its routes
@@ -146,6 +160,7 @@ func New(st *store.Store, idem *apihttp.IdempotencyStore, nowMs func() int64, ne
 		store: st, idem: idem, nowMs: nowMs, newID: newID, content: content, contentBase: contentBase,
 		installer: packs.NewInstaller(st),
 		auditor:   authn.Auditor(),
+		authn:     authn,
 		families:  map[string]resourceConfig{},
 	}
 	for _, opt := range opts {
@@ -181,6 +196,12 @@ func New(st *store.Store, idem *apihttp.IdempotencyStore, nowMs func() int64, ne
 	// resourceConfig mount — a Job carries no revision to condition a write on,
 	// and has no write operations at all (jobs.go).
 	mux.HandleFunc("GET "+apiPrefix+"/jobs/{job_id}", srv.getJob)
+	// The two data-subject operations (API-120-124, openapi exportWorkspace /
+	// deleteWorkspace). They are not a resourceConfig mount and never could be:
+	// their subject is the workspace as a whole, which has no id in the path, no
+	// revision to condition a write on, and no collection to list (workspace.go).
+	mux.HandleFunc("POST "+apiPrefix+"/workspace/export", srv.exportWorkspace)
+	mux.HandleFunc("POST "+apiPrefix+"/workspace/delete", srv.deleteWorkspace)
 	// The device plane's two read families and its one mutating operation. They
 	// are not resourceConfig mounts: a device is a read-only projection of the
 	// relay's own discovery and adoption plane, with no revision to condition a

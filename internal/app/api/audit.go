@@ -263,6 +263,19 @@ func (srv *server) auditRouteOf(r *http.Request) (auditRoute, bool) {
 	case family == "content" && len(segs) == 1:
 		return auditRoute{action: "content.upload", resourceType: "content", created: true}, true
 
+	// POST /workspace/export and POST /workspace/delete — the two data-subject
+	// operations (API-120–123). The literal second segment IS the act, so the
+	// action is spelled from it rather than from the method's CRUD verb: a POST
+	// that erases a deployment recorded as `workspace.create` would be an audit
+	// trail actively misdescribing the most consequential act on this surface.
+	//
+	// The record files at the deployment's own node (an empty subject node, see
+	// auditSubjectNode's call site) because the subject IS the workspace as a
+	// whole — there is no narrower placement, and every principal who can see
+	// the record at all is one whose authority reaches the whole workspace.
+	case family == "workspace" && len(segs) == 2 && r.Method == http.MethodPost:
+		return auditRoute{action: "workspace." + segs[1], resourceType: "workspace"}, true
+
 	// POST /entities/{id}/commands — a command dispatched at a physical device.
 	case family == "entities" && len(segs) == 3 && segs[2] == "commands":
 		return auditRoute{
