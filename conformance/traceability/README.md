@@ -22,7 +22,13 @@ Columns:
   `conformance/corpora/` (envelope format: `conformance/corpora/README.md`)
   that exercise this requirement, or `-` when `status` is `TBD-wave1`.
 - **status** — one of exactly two values:
-  - `covered` — at least one listed case exercises this requirement today.
+  - `covered` — at least one listed case is a real, frozen corpus case AND
+    appears in some conformance driver's DRIVEN set
+    (`conformance/driven-manifest.json`) — the bar is EXECUTION, not passing:
+    a case a driver drives and FAILs still counts (e.g. api/1's API-111 is
+    driven-but-FAILING by design). A case that merely exists in the corpus
+    but that no driver actually replays against a live implementation does
+    NOT earn `covered`.
   - `TBD-wave1` — coverage is deliberately deferred; the requirement exists
     but no case exercises it yet.
 
@@ -32,11 +38,19 @@ unimplemented. Both directions of that are machine-checked by
 `scripts/validate-contracts.mjs`: a row's req-id must resolve to a real
 requirement defined in the contract this file maps to (forward, check #4),
 and every requirement ID a contract defines must have >=1 row in its own
-traceability map (reverse, check #5). Neither direction checks the
-**case-id(s)** or **status** cell contents — a row can cite a case-id that
-doesn't exist in `conformance/corpora/`, or claim `covered` with a stale or
-mismatched case list, and the validator will not catch it; that's future
-work, not assumed here.
+traceability map (reverse, check #5). `scripts/validate-contracts.mjs` does
+NOT check the **case-id(s)** or **status** cell contents — that is
+`scripts/validate-coverage.mjs`'s job (wired into pr-tier/merge-tier/nightly
+right after validate-contracts): it fails the build if a row cites a
+case-id with no matching file under `conformance/corpora/`, if a `covered`
+row's cases are all absent from every driver's driven set (the row must
+downgrade to `TBD-wave1` until a driver actually runs one of them), if a
+corpus envelope's own fields (`case_id`, `contract`, `req_ids`) drift from
+the contract or filename they claim to match, or if
+`conformance/traceability/INDEX.md`'s roll-up numbers disagree with the
+real per-contract counts. A row citing a case-id that doesn't exist, or
+claiming `covered` on a stale or mismatched case list, is no longer
+unenforced — the validator catches both.
 
 This file (`README.md`) documents the format only; it carries no real rows
 and is exempt from the "req-id must exist" check the same way

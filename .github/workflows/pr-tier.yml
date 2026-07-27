@@ -19,6 +19,7 @@ jobs:
         with:
           go-version-file: go.mod
       - run: node scripts/validate-contracts.mjs
+      - run: node scripts/validate-coverage.mjs
       - run: node scripts/check-public-hygiene.mjs
       - name: ui-schema/1 — automation-builder fixture-lint
         run: node conformance/fixtures/fixture-lint.mjs

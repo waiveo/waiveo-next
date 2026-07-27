@@ -6,8 +6,8 @@ One row per requirement ID `contracts/ctx-1.md` defines. Format: `conformance/tr
 |---|---|---|---|
 | CTX-001 | `contracts/ctx-1.md#framing` | - | TBD-wave1 |
 | CTX-002 | `contracts/ctx-1.md#framing` | - | TBD-wave1 |
-| CTX-003 | `contracts/ctx-1.md#framing` | `CTX-004-invalid-malformed-frame` | covered |
-| CTX-004 | `contracts/ctx-1.md#framing` | `CTX-004-invalid-malformed-frame` | covered |
+| CTX-003 | `contracts/ctx-1.md#framing` | - | TBD-wave1 |
+| CTX-004 | `contracts/ctx-1.md#framing` | - | TBD-wave1 |
 | CTX-010 | `contracts/ctx-1.md#transport-bindings` | - | TBD-wave1 |
 | CTX-011 | `contracts/ctx-1.md#transport-bindings` | - | TBD-wave1 |
 | CTX-012 | `contracts/ctx-1.md#transport-bindings` | - | TBD-wave1 |
@@ -15,10 +15,10 @@ One row per requirement ID `contracts/ctx-1.md` defines. Format: `conformance/tr
 | CTX-014 | `contracts/ctx-1.md#transport-bindings` | - | TBD-wave1 |
 | CTX-015 | `contracts/ctx-1.md#transport-bindings` | - | TBD-wave1 |
 | CTX-016 | `contracts/ctx-1.md#transport-bindings` | - | TBD-wave1 |
-| CTX-020 | `contracts/ctx-1.md#hello--negotiate` | `CTX-020-valid-hello-handshake` | covered |
-| CTX-021 | `contracts/ctx-1.md#hello--negotiate` | `CTX-020-valid-hello-handshake` | covered |
-| CTX-022 | `contracts/ctx-1.md#hello--negotiate` | `CTX-022-invalid-incompatible-major` | covered |
-| CTX-023 | `contracts/ctx-1.md#hello--negotiate` | `CTX-022-invalid-incompatible-major`, `CTX-023-valid-minor-mismatch-negotiate-down` | covered |
+| CTX-020 | `contracts/ctx-1.md#hello--negotiate` | - | TBD-wave1 |
+| CTX-021 | `contracts/ctx-1.md#hello--negotiate` | - | TBD-wave1 |
+| CTX-022 | `contracts/ctx-1.md#hello--negotiate` | - | TBD-wave1 |
+| CTX-023 | `contracts/ctx-1.md#hello--negotiate` | - | TBD-wave1 |
 | CTX-024 | `contracts/ctx-1.md#hello--negotiate` | - | TBD-wave1 |
 | CTX-030 | `contracts/ctx-1.md#verb-family-catalog` | - | TBD-wave1 |
 | CTX-031 | `contracts/ctx-1.md#verb-family-catalog` | - | TBD-wave1 |
@@ -29,8 +29,8 @@ One row per requirement ID `contracts/ctx-1.md` defines. Format: `conformance/tr
 | CTX-051 | `contracts/ctx-1.md#secrets-and-connections-families` | - | TBD-wave1 |
 | CTX-052 | `contracts/ctx-1.md#secrets-and-connections-families` | - | TBD-wave1 |
 | CTX-060 | `contracts/ctx-1.md#assets-family` | - | TBD-wave1 |
-| CTX-061 | `contracts/ctx-1.md#assets-family` | `CTX-061-valid-assets-derive-async` | covered |
-| CTX-062 | `contracts/ctx-1.md#assets-family` | `CTX-061-valid-assets-derive-async` | covered |
+| CTX-061 | `contracts/ctx-1.md#assets-family` | - | TBD-wave1 |
+| CTX-062 | `contracts/ctx-1.md#assets-family` | - | TBD-wave1 |
 | CTX-070 | `contracts/ctx-1.md#events-family` | - | TBD-wave1 |
 | CTX-071 | `contracts/ctx-1.md#events-family` | - | TBD-wave1 |
 | CTX-080 | `contracts/ctx-1.md#notify-family` | - | TBD-wave1 |
