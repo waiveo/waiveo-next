@@ -14,8 +14,14 @@ info:
     this document implements those conventions as reusable components and
     applies them to every operation below. `scope-nodes` and `automations`
     are worked fully end to end (schemas, every verb, every error response);
-    every other tag is a path stub — summary and tag only — reserved for a
-    later minor.
+    the remaining operations are SHAPE stubs — path, summary, tag and
+    parameters, with the response schema reserved for a later minor.
+
+    Every operation below is served by a real handler, and every route the
+    server mounts appears below: the two sets are diffed against each other
+    on every build (`internal/app/api`'s surface test), so this document
+    cannot promise a generated client an operation that 404s, and a handler
+    cannot be added that no client can discover and no schema constrains.
   license:
     name: GNU Affero General Public License v3.0 only
     identifier: AGPL-3.0-only
@@ -29,8 +35,6 @@ tags:
       `login` and `setup` are credential-exchange operations declaring
       `security: []` (API-090/091); `logout` and `session` are ordinary
       authenticated operations.
-  - name: principals
-    description: Users, API-key clients, and internal service principals. Path stub.
   - name: scope-nodes
     description: The org → site → group → screen tree every resource and durable event attaches to. Worked fully.
   - name: devices
@@ -49,10 +53,32 @@ tags:
       command is sent to.
   - name: automations
     description: Rules — triggers, conditions, actions, and modes (rules/1 defines the vocabulary; this API manages the resource envelope around it). Worked fully.
-  - name: casts
-    description: Screen content — casts, slides, and playback assignment. Path stub.
+  - name: schedules
+    description: >-
+      The scheduling core's schedule rows (`data-model/1`) — the container a
+      daypart hangs off and the applicability cascade resolves against. Served
+      end to end; the resource schema is a later minor.
+  - name: dayparts
+    description: >-
+      The scheduling core's daypart rows (`data-model/1`) — a schedule's
+      day-of-week/time windows and the playlist each one plays. Served end to
+      end; the resource schema is a later minor.
+  - name: playlists
+    description: >-
+      The scheduling core's playlist rows (`data-model/1`) — the ordered item
+      list a daypart plays, whose `asset_ref`s must resolve in the content
+      origin. Served end to end; the resource schema is a later minor.
+  - name: content
+    description: >-
+      The content-addressed asset origin — the upload that puts bytes behind an
+      `asset_ref` a playlist item can name. Served; the request/response schema
+      is a later minor.
   - name: packs
-    description: Installed packs and their declared actions. Path stub.
+    description: >-
+      Installed declarative packs (`manifest/1`): the install/list/read/delete
+      lifecycle, a pack's rendered pages and message catalogs
+      (`ui-schema/1`), and CRUD over the rows of a collection the pack
+      declares. Served end to end; the resource schemas are a later minor.
   - name: jobs
     description: >-
       The async Job resource a fleet-mutating or otherwise
@@ -64,8 +90,6 @@ tags:
       Workspace-level data-subject export and delete; see
       `contracts/api-1.md#data-subject-export--delete`. Specced; full
       data-subject-request workflow tooling is a deferred implementation.
-  - name: system
-    description: Platform health, logs, and maintenance operations. Path stub.
   - name: "mcp:read"
     description: Curation tag — every operation carrying this tag is exposed as a non-mutating MCP tool. Not a resource family; see `contracts/api-1.md#mcp-operation-tag-curation`.
   - name: "mcp:act"
@@ -908,74 +932,626 @@ paths:
           $ref: "#/components/responses/UnprocessableContent"
         "429":
           $ref: "#/components/responses/TooManyRequests"
-  /principals:
+  # ---------------------------------------------------------------------
+  # scheduling core — schedules, dayparts, playlists (data-model/1's rows).
+  #
+  # Each family is the SAME five-operation resource shape scope-nodes is
+  # worked as, served by the same generic handler and honouring the same
+  # conventions: keyset pagination + label selector on the list,
+  # Idempotency-Key on the create, ETag on every read and write, If-Match
+  # required on update and delete, external_id uniqueness under the scope
+  # node. The row SCHEMAS are data-model/1's and land in a later minor —
+  # these are shape stubs. The operations are declared now because they are
+  # SERVED now, and an operation the server answers that this document does
+  # not name is one no generated client can reach and no schema constrains.
+  # ---------------------------------------------------------------------
+  /schedules:
     get:
-      operationId: listPrincipals
-      summary: List principals (users, API-key clients, internal service principals)
-      tags: [principals, "mcp:read"]
-      responses:
-        "200":
-          description: Stub — resource detail intentionally deferred.
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-  /casts:
-    get:
-      operationId: listCasts
-      summary: List casts
-      tags: [casts, "mcp:read"]
-      responses:
-        "200":
-          description: Stub — resource detail intentionally deferred.
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-  /packs:
-    get:
-      operationId: listPacks
-      summary: List installed packs
-      tags: [packs, "mcp:read"]
-      responses:
-        "200":
-          description: Stub — resource detail intentionally deferred.
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-  /packs/{pack}/actions/{name}:
-    post:
-      operationId: invokePackAction
-      summary: Invoke a pack-declared action
-      description: >-
-        The auto-surfaced management-API route for every action a pack
-        declares. `pack` is the pack's `<publisher>/<name>` identity,
-        percent-encoded where it contains a literal slash.
-      tags: [packs, "mcp:act"]
+      operationId: listSchedules
+      summary: List schedules
+      tags: [schedules]
       parameters:
-        - name: pack
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: name
-          in: path
-          required: true
-          schema:
-            type: string
-        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/CursorParam"
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/SelectorParam"
+        - $ref: "#/components/parameters/TraceIdParam"
       responses:
         "200":
-          description: Stub — resource detail intentionally deferred.
+          description: A page of schedules. Shape stub — the row schema is a later minor.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createSchedule
+      summary: Create a schedule
+      tags: [schedules]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "201":
+          description: The created schedule. Shape stub — the row schema is a later minor.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+  /schedules/{schedule_id}:
+    parameters:
+      - name: schedule_id
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/Ulid"
+    get:
+      operationId: getSchedule
+      summary: Read a schedule
+      tags: [schedules]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The schedule. Shape stub — the row schema is a later minor.
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
-  /system/health:
-    get:
-      operationId: getSystemHealth
-      summary: Platform health summary
-      tags: [system, "mcp:read"]
+    patch:
+      operationId: updateSchedule
+      summary: Update a schedule
+      description: Partial update. Requires If-Match against the schedule's current ETag/revision.
+      tags: [schedules]
+      parameters:
+        - $ref: "#/components/parameters/IfMatchParam"
+        - $ref: "#/components/parameters/TraceIdParam"
       responses:
         "200":
-          description: Stub — resource detail intentionally deferred.
+          description: The updated schedule. Shape stub — the row schema is a later minor.
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
+    delete:
+      operationId: deleteSchedule
+      summary: Delete a schedule
+      tags: [schedules]
+      parameters:
+        - $ref: "#/components/parameters/IfMatchParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "204":
+          description: Deleted.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
+  /dayparts:
+    get:
+      operationId: listDayparts
+      summary: List dayparts
+      tags: [dayparts]
+      parameters:
+        - $ref: "#/components/parameters/CursorParam"
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/SelectorParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: A page of dayparts. Shape stub — the row schema is a later minor.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createDaypart
+      summary: Create a daypart
+      tags: [dayparts]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "201":
+          description: The created daypart. Shape stub — the row schema is a later minor.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+  /dayparts/{daypart_id}:
+    parameters:
+      - name: daypart_id
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/Ulid"
+    get:
+      operationId: getDaypart
+      summary: Read a daypart
+      tags: [dayparts]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The daypart. Shape stub — the row schema is a later minor.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateDaypart
+      summary: Update a daypart
+      description: Partial update. Requires If-Match against the daypart's current ETag/revision.
+      tags: [dayparts]
+      parameters:
+        - $ref: "#/components/parameters/IfMatchParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The updated daypart. Shape stub — the row schema is a later minor.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
+    delete:
+      operationId: deleteDaypart
+      summary: Delete a daypart
+      tags: [dayparts]
+      parameters:
+        - $ref: "#/components/parameters/IfMatchParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "204":
+          description: Deleted.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
+  /playlists:
+    get:
+      operationId: listPlaylists
+      summary: List playlists
+      tags: [playlists]
+      parameters:
+        - $ref: "#/components/parameters/CursorParam"
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/SelectorParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: A page of playlists. Shape stub — the row schema is a later minor.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createPlaylist
+      summary: Create a playlist
+      description: >-
+        Every item's `asset_ref` must already resolve in the content origin
+        (data-model/1 DAT-041) — content is uploaded first (`POST /content`),
+        then scheduled. An unresolvable ref is a 422, and nothing is stored.
+      tags: [playlists]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "201":
+          description: The created playlist. Shape stub — the row schema is a later minor.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+  /playlists/{playlist_id}:
+    parameters:
+      - name: playlist_id
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/Ulid"
+    get:
+      operationId: getPlaylist
+      summary: Read a playlist
+      tags: [playlists]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The playlist. Shape stub — the row schema is a later minor.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updatePlaylist
+      summary: Update a playlist
+      description: >-
+        Partial update. Requires If-Match against the playlist's current
+        ETag/revision, and the POST-DEFINED effective item list is
+        re-validated against the content origin (data-model/1 DAT-041), so a
+        patch cannot introduce an `asset_ref` that was never uploaded.
+      tags: [playlists]
+      parameters:
+        - $ref: "#/components/parameters/IfMatchParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The updated playlist. Shape stub — the row schema is a later minor.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
+    delete:
+      operationId: deletePlaylist
+      summary: Delete a playlist
+      tags: [playlists]
+      parameters:
+        - $ref: "#/components/parameters/IfMatchParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "204":
+          description: Deleted.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
+
+  # ---------------------------------------------------------------------
+  # content — the content-addressed asset upload.
+  #
+  # The one operation on this API whose request body is asset BYTES rather
+  # than a resource description. It declares no Idempotency-Key because it
+  # needs none and the server honours none: the stored bytes are addressed
+  # by their own sha256, so re-posting identical bytes yields the identical
+  # `asset_ref` with no duplicate to collapse.
+  # ---------------------------------------------------------------------
+  /content:
+    post:
+      operationId: uploadContent
+      summary: Upload an asset to the content origin
+      description: >-
+        The raw request body is stored under its own sha256 and answered with
+        the server-computed `{asset_ref, url}` — a client-supplied ref is never
+        trusted. A playlist item may name an `asset_ref` only once this has
+        returned it (data-model/1 DAT-041).
+      tags: [content]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "201":
+          description: The stored asset's content-addressed ref and origin URL. Shape stub — the response schema is a later minor.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ---------------------------------------------------------------------
+  # packs — installed declarative packs (manifest/1).
+  #
+  # A pack id is `<publisher>/<name>` (MAN-001) — TWO path segments, never
+  # one opaque percent-encoded one, which is why every item path below
+  # templates `{publisher}` and `{name}` separately. A pack's own pages
+  # (ui-schema/1) may be nested, so the page path's final template is a
+  # multi-segment remainder.
+  # ---------------------------------------------------------------------
+  /packs:
+    get:
+      operationId: listPacks
+      summary: List installed packs
+      description: >-
+        Keyset-paginated. No `selector`: a pack is installed workspace-wide
+        rather than placed at a scope node, so there are no labels for the
+        label-selector grammar to evaluate.
+      tags: [packs, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/CursorParam"
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: A page of installed packs. Shape stub — the pack envelope schema is a later minor.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: installPack
+      summary: Install a pack from its artifact
+      description: >-
+        The request body is the pack artifact's bytes. Installation is
+        manifest-gated (manifest/1) and executes nothing — a pack is data.
+      tags: [packs]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "200":
+          description: The pack was already installed and has been updated in place. Shape stub.
+        "201":
+          description: The pack was installed. Shape stub — the install summary schema is a later minor.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+  /packs/{publisher}/{name}:
+    parameters:
+      - $ref: "#/components/parameters/PackPublisherParam"
+      - $ref: "#/components/parameters/PackNameParam"
+    get:
+      operationId: getPack
+      summary: Read an installed pack
+      tags: [packs, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The pack envelope and its manifest. Shape stub — the schema is a later minor.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      operationId: uninstallPack
+      summary: Uninstall a pack
+      tags: [packs]
+      parameters:
+        - $ref: "#/components/parameters/IfMatchParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "204":
+          description: Uninstalled.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
+  /packs/{publisher}/{name}/pages/{path}:
+    parameters:
+      - $ref: "#/components/parameters/PackPublisherParam"
+      - $ref: "#/components/parameters/PackNameParam"
+      - name: path
+        in: path
+        required: true
+        description: >-
+          The page's own path within the pack (ui-schema/1 UIS-001). It MAY
+          span several segments, so the slashes inside it are part of the
+          value rather than separators between parameters.
+        schema:
+          type: string
+    get:
+      operationId: getPackPage
+      summary: Read a pack-declared page definition
+      tags: [packs, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The page's ui-schema/1 definition. Shape stub — the schema is ui-schema/1's, declared in a later minor.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /packs/{publisher}/{name}/messages/{locale}:
+    parameters:
+      - $ref: "#/components/parameters/PackPublisherParam"
+      - $ref: "#/components/parameters/PackNameParam"
+      - name: locale
+        in: path
+        required: true
+        description: BCP 47 locale tag naming the catalog to serve (manifest/1 MAN-110).
+        schema:
+          type: string
+    get:
+      operationId: getPackMessages
+      summary: Read a pack's message catalog for one locale
+      tags: [packs, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The resolved message catalog. Shape stub — the schema is a later minor.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /packs/{publisher}/{name}/data/{collection}:
+    parameters:
+      - $ref: "#/components/parameters/PackPublisherParam"
+      - $ref: "#/components/parameters/PackNameParam"
+      - $ref: "#/components/parameters/PackCollectionParam"
+    get:
+      operationId: listPackRows
+      summary: List the rows of a pack-declared collection
+      description: >-
+        Keyset-paginated over the collection's universal-envelope rows
+        (manifest/1 MAN-051/052), scoped to the caller's visible set. No
+        `selector`: the row envelope's labels are not yet exposed to the
+        label-selector grammar on this collection.
+      tags: [packs, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/CursorParam"
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: A page of rows. Shape stub — the row schema is the pack's own declaration, not this document's.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      operationId: createPackRow
+      summary: Create a row in a pack-declared collection
+      tags: [packs]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "201":
+          description: The created row. Shape stub — the row schema is the pack's own declaration.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+  /packs/{publisher}/{name}/data/{collection}/{entity_id}:
+    parameters:
+      - $ref: "#/components/parameters/PackPublisherParam"
+      - $ref: "#/components/parameters/PackNameParam"
+      - $ref: "#/components/parameters/PackCollectionParam"
+      - name: entity_id
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/Ulid"
+    get:
+      operationId: getPackRow
+      summary: Read one row of a pack-declared collection
+      tags: [packs, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The row. Shape stub — the row schema is the pack's own declaration.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updatePackRow
+      summary: Update one row of a pack-declared collection
+      description: Partial update. Requires If-Match against the row's current ETag/revision.
+      tags: [packs]
+      parameters:
+        - $ref: "#/components/parameters/IfMatchParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The updated row. Shape stub — the row schema is the pack's own declaration.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
+    delete:
+      operationId: deletePackRow
+      summary: Delete one row of a pack-declared collection
+      tags: [packs]
+      parameters:
+        - $ref: "#/components/parameters/IfMatchParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "204":
+          description: Deleted.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
 
 components:
   securitySchemes:
@@ -1043,6 +1619,34 @@ components:
       description: Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
       schema:
         $ref: "#/components/schemas/TraceId"
+
+    PackPublisherParam:
+      name: publisher
+      in: path
+      required: true
+      description: >-
+        The publisher half of a pack's `<publisher>/<name>` identity
+        (manifest/1 MAN-001). It is its own path segment rather than half of
+        one percent-encoded value, so a pack id is addressable without the
+        client having to escape the slash inside it.
+      schema:
+        type: string
+
+    PackNameParam:
+      name: name
+      in: path
+      required: true
+      description: The name half of a pack's `<publisher>/<name>` identity (manifest/1 MAN-001).
+      schema:
+        type: string
+
+    PackCollectionParam:
+      name: collection
+      in: path
+      required: true
+      description: The name of a collection the pack's manifest declares (manifest/1 MAN-051).
+      schema:
+        type: string
 
   headers:
     ETag:
@@ -1169,7 +1773,6 @@ components:
         own `created_at`: a Job's timestamp is minted in Go as a `time.Time`
         and serialized RFC 3339, because a Job is not a stored row of this
         baseline.
-
 
     ValidationFieldError:
       type: object
@@ -1929,7 +2532,6 @@ components:
             that baseline — it is minted by the accepting handler and
             serialized from a Go `time.Time` — so the two shapes differ
             because the two things differ, not by oversight.
-
 
     JobTarget:
       type: object
