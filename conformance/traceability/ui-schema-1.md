@@ -1,6 +1,6 @@
 # Traceability: ui-schema/1
 
-One row per requirement ID `contracts/ui-schema-1.md` defines. Format: `conformance/traceability/README.md`. The automation-builder fixture (`conformance/fixtures/automation-builder/`) exercises many more of these IDs than the `covered` rows below show — its own `fixture-lint` script and `render-walkthrough.md` are its verification mechanism, a separate track from this map's per-`case_id` corpus coverage (`contracts/ui-schema-1.md` Conformance notes explains the split).
+One row per requirement ID `contracts/ui-schema-1.md` defines. Format: `conformance/traceability/README.md`. The automation-builder fixture (`conformance/fixtures/automation-builder/`) exercises many more of these IDs than the `covered` rows below show — its own `fixture-lint` script, its `render-walkthrough.md`, and the render driver that paints it through the real renderer (`web/src/renderer/fixture-automation-builder.test.tsx`) are its verification mechanism, a separate track from this map's per-`case_id` corpus coverage (`contracts/ui-schema-1.md` Conformance notes explains the split). The fixture is not a frozen corpus case, so nothing it exercises earns a `covered` row here.
 
 | req-id | contract §anchor | case-id(s) | status |
 |---|---|---|---|

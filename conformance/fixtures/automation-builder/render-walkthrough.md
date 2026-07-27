@@ -269,14 +269,49 @@ SUMMARY: fixture-lint: OK (0 undefined references)
 
 `fixture-lint` checks binding-string *syntax* and closed-vocabulary reference
 closure — it deliberately does NOT model Scope resolution (which array a given
-`item` binds to at a given nesting depth). That semantic layer was verified
-separately by a throwaway resolver run against `sample-data.json`, confirming:
-`detail.source`'s predicate-index binding resolves to the selected record; the
-mode/`max` `visibleIf` `eq(mode, {lit:"parallel"})` yields `true` for the
-sample's `parallel` mode; and a nested-condition-group `repeat-remove`
-self-targeting `item` removes exactly the intended element from the correct
-inner array (while the pre-fix `target: "item.or"` form resolves to
-`undefined`, confirming the gap the fix closes).
+`item` binds to at a given nesting depth), nor whether the renderer accepts the
+document at all.
+
+That semantic layer is now driven, not walked: `web/src/renderer/fixture-automation-builder.test.tsx`
+reads this same directory (no copies) and renders the fixture against
+`sample-data.json` through the real ui-schema/1 renderer — the same
+`validatePage` + `PageRenderer` entry point the `case_id` corpus driver uses —
+asserting the structure the document declares actually paints. It runs in the
+web vitest suite, so a regression is a build failure rather than a note here.
+
+## What the real render found
+
+Rendering it for the first time turned up two things the lint could not see.
+
+1. **A renderer defect (fixed).** A `fragment` node's `bind` narrowed only the
+   unprefixed scope, not the reserved `item` name — so the `not` arm's
+   `{"type": "fragment", "bind": "item.not", …}` (the shape UIS-183 and the
+   contract's own wire example both use) re-read the *outer* condition forever:
+   32 stacked "Not group" sections terminated by the UIS-182
+   `FRAGMENT_RECURSION_DEPTH_EXCEEDED` fail-closed, with the negated leaf never
+   reached. UIS-183 calls a bound fragment "an ordinary Scope narrowing, the
+   same mechanism `repeat` uses, UIS-107", and UIS-107's mechanism rebinds the
+   itemScope name as well as the unprefixed scope; the renderer now does both.
+   The nested tree renders one group per group and descends into the leaf.
+2. **An unresolved fixture/contract disagreement (open).** UIS-073 requires an
+   `entity-picker`'s bound value to be an *object* carrying exactly one of
+   `entity_id`/`selector`/`device_class`, but `rules/1` inlines those keys into
+   the trigger/condition/action object itself (its wire shapes are
+   `{"type": "state", "entity_id": …, "to": …}`), so a rules/1 record holds no
+   EntityRef-shaped sub-object to bind to. This fixture binds the scalar
+   `item.entity_id`, and every entity-picker consequently renders **empty** —
+   the record's entity is neither shown nor editable. Binding `item` instead
+   would display correctly but write destructively, since the picker replaces
+   its whole bound value with `{<form key>: …}` and would erase the sibling
+   `type`/`to`/`for` fields. Settling it needs a contract decision (an EntityRef
+   sub-object in `rules/1`, or a merge-write rule for `entity-picker` in
+   ui-schema/1), so neither side was changed; the render driver pins the current
+   behavior as an explicitly-labelled tripwire so it cannot rot unnoticed.
+
+Everything else the fixture declares paints from the sample record: the list
+table's computed cells, the row-press → `detail.source` predicate-index
+selection, one editor per trigger and per action on its own kind, the
+`$context.presets` data OptionSource, and the mode/`max` `visibleIf` gate.
 
 Widgets defined in the catalog but **not** exercised by this fixture: `slot`,
 `text`, `stat-tile` — all three are dashboard/cross-pack-composition oriented
