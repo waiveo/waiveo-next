@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/maaxton/waiveo-next/internal/shared/secretfile"
 )
 
 // SetupGrantFile is the filename the first-boot setup code is persisted under,
@@ -111,50 +113,17 @@ func EnsureClaimWindow(ctx context.Context, store *Store, dir, scopeNode string,
 	return Bootstrap{Claimed: false, Code: minted.Code, CodePath: path}, nil
 }
 
-// writeSecret persists a secret to path with mode 0600, atomically: the bytes go
-// to a temporary file in the SAME directory (so the rename cannot cross a
-// filesystem boundary), are fsynced, and only then renamed into place.
+// writeSecret persists the setup code through the tree's shared secret-file
+// discipline (internal/shared/secretfile): 0600, inside a 0700 directory,
+// installed by rename.
 //
-// The tmp-and-rename discipline is what internal/feeder/signing and
-// internal/feeder/enroll/persist already apply to key material, and it matters
-// for the same reason here: a crash mid-write must leave EITHER the old code or
-// the new one readable, never a truncated file that authenticates nothing and
-// leaves an operator locked out of an unclaimed box with no way to read the code
-// the process is enforcing.
-//
-// The temporary file is created 0600 from the outset rather than chmod'ed after,
-// so the secret is never momentarily world-readable.
+// The atomicity matters here for a specific reason: a crash mid-write must leave
+// EITHER the old code or the new one readable, never a truncated file that
+// authenticates nothing and leaves an operator locked out of an unclaimed box
+// with no way to read the code the process is enforcing.
 func writeSecret(path, secret string) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("auth: create dir %s: %w", dir, err)
-	}
-	tmp, err := os.CreateTemp(dir, ".setup-code-*")
-	if err != nil {
-		return fmt.Errorf("auth: create temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-	defer func() {
-		// Best-effort cleanup of a temp file the rename below never claimed.
-		_ = os.Remove(tmpName)
-	}()
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("auth: chmod temp file: %w", err)
-	}
-	if _, err := tmp.WriteString(secret + "\n"); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("auth: write setup code: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("auth: sync setup code: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("auth: close setup code: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("auth: install setup code: %w", err)
+	if err := secretfile.Write(path, []byte(secret+"\n")); err != nil {
+		return fmt.Errorf("auth: persist setup code: %w", err)
 	}
 	return nil
 }
