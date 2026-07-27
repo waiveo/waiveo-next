@@ -70,6 +70,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/app/auth/authtest"
 	"github.com/maaxton/waiveo-next/internal/app/devices"
 	"github.com/maaxton/waiveo-next/internal/app/store"
+	"github.com/maaxton/waiveo-next/internal/app/webhookdeliver"
 	"github.com/maaxton/waiveo-next/internal/app/workspacekey"
 	"github.com/maaxton/waiveo-next/internal/feeder/origin"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
@@ -386,6 +387,10 @@ func newSchemaProbeEnv(t *testing.T) *schemaProbeEnv {
 		content, testContentBase, fixture.Auth,
 		api.WithJobRunner(jobs),
 		api.WithDevicePlane(registry, &fakeDispatcher{result: wire.DeviceCommandResultBody{OK: true}}),
+		// The REAL sealing construction, over the same workspace key the TOTP
+		// probes seal under — a stub would let the rotate probe pass against an
+		// implementation that never sealed the signing secret it was handed.
+		api.WithWebhookSecrets(webhookdeliver.NewSecrets(sealer), 0),
 		api.WithWorkspaceArchive(&api.WorkspaceArchive{Dir: t.TempDir(), Key: key, KDF: lightKDF()})))
 	t.Cleanup(ts.Close)
 
@@ -409,6 +414,27 @@ func (e *schemaProbeEnv) mintOrg(t *testing.T) string {
 		mustJSON(t, map[string]any{"kind": "org", "name": "Fixture Org", "account_state": "active"}), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("mint org node: %d %s", resp.StatusCode, raw)
+	}
+	return decodeID(t, raw)
+}
+
+// rsWebhookSecret is the fixture signing secret the rotate probes install. It
+// is at the surface's own 32-character floor so the probe exercises the accepted
+// path rather than an over-long value that would pass any floor.
+const rsWebhookSecret = "whsec_probe_0123456789abcdef0123"
+
+// mintWebhookEndpoint registers an endpoint under scopeNode and returns its id.
+func (e *schemaProbeEnv) mintWebhookEndpoint(t *testing.T, scopeNode string) string {
+	t.Helper()
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/webhook-endpoints", mustJSON(t, map[string]any{
+		"name":       "Fixture Endpoint",
+		"scope_node": scopeNode,
+		"url":        "https://hooks.example.invalid/waiveo",
+		"labels":     map[string]string{"env": "prod"},
+		"schemas":    []string{"automation.run"},
+	}), nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("mint webhook endpoint: %d %s", resp.StatusCode, raw)
 	}
 	return decodeID(t, raw)
 }
@@ -596,6 +622,52 @@ var probes = map[string]probe{
 		code := auth.TOTPCode(secret, auth.TOTPStep(fixedNowMs))
 		return e.do(t, http.MethodPost, "/api/v1/auth/totp/confirm",
 			mustJSON(t, map[string]any{"code": code}), nil)
+	},
+
+	// --- webhook-endpoints ------------------------------------------------
+	"createWebhookEndpoint": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		// The MINIMAL create: exactly WebhookEndpointCreate's own required
+		// members and nothing more. `labels` and `schemas` are declared
+		// required on the RESPONSE and named by neither, which is the whole
+		// class of drift this check exists for.
+		return e.do(t, http.MethodPost, "/api/v1/webhook-endpoints", mustJSON(t, map[string]any{
+			"name":       "Minimal Endpoint",
+			"scope_node": e.mintOrg(t),
+			"url":        "https://hooks.example.invalid/waiveo",
+		}), nil)
+	},
+	"getWebhookEndpoint": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		id := e.mintWebhookEndpoint(t, e.mintOrg(t))
+		return e.do(t, http.MethodGet, "/api/v1/webhook-endpoints/"+id, nil, nil)
+	},
+	"updateWebhookEndpoint": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		id := e.mintWebhookEndpoint(t, e.mintOrg(t))
+		return e.do(t, http.MethodPatch, "/api/v1/webhook-endpoints/"+id,
+			mustJSON(t, map[string]any{"name": "Renamed Endpoint"}),
+			map[string]string{"If-Match": e.etagOf(t, "/api/v1/webhook-endpoints/"+id)})
+	},
+	"listWebhookEndpoints": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		e.mintWebhookEndpoint(t, e.mintOrg(t))
+		return e.do(t, http.MethodGet, "/api/v1/webhook-endpoints", nil, nil)
+	},
+	"rotateWebhookSigningSecret": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		id := e.mintWebhookEndpoint(t, e.mintOrg(t))
+		return e.do(t, http.MethodPost, "/api/v1/webhook-endpoints/"+id+"/signing-secret",
+			mustJSON(t, map[string]any{"secret": rsWebhookSecret}), nil)
+	},
+	"enableWebhookEndpoint": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		id := e.mintWebhookEndpoint(t, e.mintOrg(t))
+		return e.do(t, http.MethodPost, "/api/v1/webhook-endpoints/"+id+"/enable", []byte(`{}`), nil)
+	},
+	"getWebhookDeliveryState": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		id := e.mintWebhookEndpoint(t, e.mintOrg(t))
+		// Install a secret first, so `secret_set_at_ms` is probed with a real
+		// value rather than only in its null form.
+		if resp, raw := e.do(t, http.MethodPost, "/api/v1/webhook-endpoints/"+id+"/signing-secret",
+			mustJSON(t, map[string]any{"secret": rsWebhookSecret}), nil); resp.StatusCode != http.StatusOK {
+			t.Fatalf("install signing secret: %d %s", resp.StatusCode, raw)
+		}
+		return e.do(t, http.MethodGet, "/api/v1/webhook-endpoints/"+id+"/delivery", nil, nil)
 	},
 }
 

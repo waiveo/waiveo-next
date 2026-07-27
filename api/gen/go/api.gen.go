@@ -406,6 +406,24 @@ func (e TotpCredentialKind) Valid() bool {
 	}
 }
 
+// Defines values for WebhookDeliveryStateStatus.
+const (
+	Active   WebhookDeliveryStateStatus = "active"
+	Disabled WebhookDeliveryStateStatus = "disabled"
+)
+
+// Valid indicates whether the value is a known member of the WebhookDeliveryStateStatus enum.
+func (e WebhookDeliveryStateStatus) Valid() bool {
+	switch e {
+	case Active:
+		return true
+	case Disabled:
+		return true
+	default:
+		return false
+	}
+}
+
 // Automation The management-API resource envelope around a rules/1 Rule. `mode`, `max`, `triggers`, `conditions`, and `actions` are exactly rules/1's own vocabulary (rules/1 Wire shapes); the remaining fields are this API's own resource envelope (identity, placement, labels, revision).
 type Automation struct {
 	// Actions rules/1's Action vocabulary — full shape defined there, not restated here.
@@ -878,6 +896,107 @@ type ValidationFieldError struct {
 	// Field Dot-path to the offending field in the request body, or the query-parameter name.
 	Field   string `json:"field"`
 	Message string `json:"message"`
+}
+
+// WebhookDeliveryState An endpoint's delivery state: platform-owned execution state about the registration, not part of the registration itself. It carries no revision and no If-Match surface — a stale conditional write must not be able to revert an auto-disable the platform had just decided on.
+type WebhookDeliveryState struct {
+	// ConsecutiveFailures The current unbroken run of deliveries that exhausted their whole retry budget (EVT-153). Counted per exhausted delivery, not per attempt, and reset by any success.
+	ConsecutiveFailures int `json:"consecutive_failures"`
+
+	// EndpointId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	EndpointId Ulid `json:"endpoint_id"`
+
+	// LastDeliveredId EVT-155's resume cursor — the id of the most recent envelope a delivery for actually succeeded. Null before the first success. Delivery resumes strictly after it, which is what makes delivery at-least-once rather than at-most-once across a restart.
+	LastDeliveredId *string `json:"last_delivered_id"`
+
+	// SecretSetAtMs When this endpoint's current signing secret was installed. Null when it has none — such an endpoint is never delivered to, since an unsigned POST is not a delivery events/1 defines.
+	SecretSetAtMs *int64 `json:"secret_set_at_ms"`
+
+	// Status `disabled` is EVT-154's auto-disable after a bounded run of fully-exhausted deliveries. A disabled endpoint receives no further attempts until `enableWebhookEndpoint` is called.
+	Status WebhookDeliveryStateStatus `json:"status"`
+}
+
+// WebhookDeliveryStateStatus `disabled` is EVT-154's auto-disable after a bounded run of fully-exhausted deliveries. A disabled endpoint receives no further attempts until `enableWebhookEndpoint` is called.
+type WebhookDeliveryStateStatus string
+
+// WebhookEndpoint A registered outbound webhook endpoint. `events/1` EVT-150 defers this registration resource to api/1 while defining the delivery mechanics given one.
+// The endpoint's signing secret is deliberately NOT a member. A row's stored body is what this API serves back on every read, so a secret carried here would be a secret handed to every principal who may read the row; it lives sealed in platform-private storage and is installed through `rotateWebhookSigningSecret` instead.
+type WebhookEndpoint struct {
+	// CreatedAt A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC 3339 string. The store stamps `created_at`/`updated_at` on every row it writes as an integer millisecond count and returns that value unchanged, so this is what a client reads and what an export/apply round trip carries back. Deliberately not `format: date-time`: the two are not interchangeable, and a client that parsed one as the other would silently read 1970 for every resource on this surface.
+	// The `Job` resource is the one exception on this API and says so at its own `created_at`: a Job's timestamp is minted in Go as a `time.Time` and serialized RFC 3339, because a Job is not a stored row of this baseline.
+	CreatedAt Timestamp `json:"created_at"`
+
+	// ExternalId Client-assigned identifier (contracts/api-1.md#client-assignable-external_id). Optional; unique within this resource's scope node among resources of the same type.
+	ExternalId **string `json:"external_id,omitempty"`
+
+	// Id A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	Id Ulid `json:"id"`
+
+	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
+	Labels   LabelMap `json:"labels"`
+	Name     string   `json:"name"`
+	Revision int      `json:"revision"`
+
+	// Schemas The registered-schema names this endpoint subscribes to (EVT-124). An empty list imposes no schema restriction — scope-node filtering still applies in full, since EVT-124's restriction is alongside it and never in place of it.
+	Schemas []string `json:"schemas"`
+
+	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScopeNode Ulid `json:"scope_node"`
+
+	// UpdatedAt A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC 3339 string. The store stamps `created_at`/`updated_at` on every row it writes as an integer millisecond count and returns that value unchanged, so this is what a client reads and what an export/apply round trip carries back. Deliberately not `format: date-time`: the two are not interchangeable, and a client that parsed one as the other would silently read 1970 for every resource on this surface.
+	// The `Job` resource is the one exception on this API and says so at its own `created_at`: a Job's timestamp is minted in Go as a `time.Time` and serialized RFC 3339, because a Job is not a stored row of this baseline.
+	UpdatedAt Timestamp `json:"updated_at"`
+
+	// Url The absolute http or https URL each delivery is POSTed to (EVT-151). It must carry neither userinfo credentials nor a query string: this value is served on every read and named in operator-facing errors, so anything embedded in it is disclosed wherever it appears.
+	Url string `json:"url"`
+}
+
+// WebhookEndpointCreate The client-supplied half of a webhook endpoint. `id`, `revision` and the timestamps are server-assigned (API-030) and rejected here.
+type WebhookEndpointCreate struct {
+	ExternalId **string `json:"external_id,omitempty"`
+
+	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
+	Labels  *LabelMap `json:"labels,omitempty"`
+	Name    string    `json:"name"`
+	Schemas *[]string `json:"schemas,omitempty"`
+
+	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScopeNode Ulid   `json:"scope_node"`
+	Url       string `json:"url"`
+}
+
+// WebhookEndpointListResponse defines model for WebhookEndpointListResponse.
+type WebhookEndpointListResponse struct {
+	// Cursor An opaque, URL-safe continuation token. `null` signals no further rows. Never constructed, parsed, or compared for meaning by a client.
+	Cursor Cursor            `json:"cursor"`
+	Items  []WebhookEndpoint `json:"items"`
+}
+
+// WebhookEndpointUpdate Partial update — every member optional, at least one present.
+type WebhookEndpointUpdate struct {
+	ExternalId **string `json:"external_id,omitempty"`
+
+	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
+	Labels  *LabelMap `json:"labels,omitempty"`
+	Name    *string   `json:"name,omitempty"`
+	Schemas *[]string `json:"schemas,omitempty"`
+	Url     *string   `json:"url,omitempty"`
+}
+
+// WebhookSigningSecretRequest The secret every delivery to this endpoint is signed with (EVT-151's HMAC-SHA256 key). Supplied by the caller, because the same value has to end up configured on a receiving server this platform does not own.
+type WebhookSigningSecretRequest struct {
+	// Secret At least 32 characters. EVT-151 states no minimum; this is a deployment-side floor, chosen because a secret shorter than the digest it keys is the length an offline search reaches first.
+	Secret string `json:"secret"`
+}
+
+// WebhookSigningSecretRotation A rotation's timing. It carries no secret: the caller supplied the value and already has it, and a copy in a response body is a copy in every proxy log and every retained idempotency replay in between.
+type WebhookSigningSecretRotation struct {
+	// PriorSecretExpiresAtMs When the superseded secret stops being accepted (EVT-158's overlap window). Null on the FIRST install, which supersedes nothing and so opens no overlap.
+	PriorSecretExpiresAtMs *int64 `json:"prior_secret_expires_at_ms"`
+
+	// RotatedAtMs A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC 3339 string. The store stamps `created_at`/`updated_at` on every row it writes as an integer millisecond count and returns that value unchanged, so this is what a client reads and what an export/apply round trip carries back. Deliberately not `format: date-time`: the two are not interchangeable, and a client that parsed one as the other would silently read 1970 for every resource on this surface.
+	// The `Job` resource is the one exception on this API and says so at its own `created_at`: a Job's timestamp is minted in Go as a `time.Time` and serialized RFC 3339, because a Job is not a stored row of this baseline.
+	RotatedAtMs Timestamp `json:"rotated_at_ms"`
 }
 
 // WorkspaceDeleteRequest The request body for the data-subject delete operation (API-120/122). The confirmation is the only member: the operation's target is the workspace itself, implicit in the path (API-123).
@@ -1393,6 +1512,78 @@ type UpdateScopeNodeParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// ListWebhookEndpointsParams defines parameters for ListWebhookEndpoints.
+type ListWebhookEndpointsParams struct {
+	// Cursor Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client.
+	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Limit Maximum rows to return in this page.
+	Limit *LimitParam `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Selector A label-selector string: comma-separated, ANDed terms (equality, inequality, set-membership, set-exclusion, existence, non-existence, or a `scope_node subtree <ulid>` term). See `contracts/api-1.md#label-selector-grammar` for the full grammar.
+	Selector *SelectorParam `form:"selector,omitempty" json:"selector,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// CreateWebhookEndpointParams defines parameters for CreateWebhookEndpoint.
+type CreateWebhookEndpointParams struct {
+	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
+	IdempotencyKey *IdempotencyKeyParam `json:"Idempotency-Key,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// DeleteWebhookEndpointParams defines parameters for DeleteWebhookEndpoint.
+type DeleteWebhookEndpointParams struct {
+	// IfMatch The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists.
+	IfMatch IfMatchParam `json:"If-Match"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// GetWebhookEndpointParams defines parameters for GetWebhookEndpoint.
+type GetWebhookEndpointParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// UpdateWebhookEndpointParams defines parameters for UpdateWebhookEndpoint.
+type UpdateWebhookEndpointParams struct {
+	// IfMatch The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists.
+	IfMatch IfMatchParam `json:"If-Match"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// GetWebhookDeliveryStateParams defines parameters for GetWebhookDeliveryState.
+type GetWebhookDeliveryStateParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// EnableWebhookEndpointParams defines parameters for EnableWebhookEndpoint.
+type EnableWebhookEndpointParams struct {
+	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
+	IdempotencyKey *IdempotencyKeyParam `json:"Idempotency-Key,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// RotateWebhookSigningSecretParams defines parameters for RotateWebhookSigningSecret.
+type RotateWebhookSigningSecretParams struct {
+	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
+	IdempotencyKey *IdempotencyKeyParam `json:"Idempotency-Key,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // DeleteWorkspaceParams defines parameters for DeleteWorkspace.
 type DeleteWorkspaceParams struct {
 	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
@@ -1440,6 +1631,15 @@ type CreateScopeNodeJSONRequestBody = ScopeNodeCreate
 
 // UpdateScopeNodeJSONRequestBody defines body for UpdateScopeNode for application/json ContentType.
 type UpdateScopeNodeJSONRequestBody = ScopeNodeUpdate
+
+// CreateWebhookEndpointJSONRequestBody defines body for CreateWebhookEndpoint for application/json ContentType.
+type CreateWebhookEndpointJSONRequestBody = WebhookEndpointCreate
+
+// UpdateWebhookEndpointJSONRequestBody defines body for UpdateWebhookEndpoint for application/json ContentType.
+type UpdateWebhookEndpointJSONRequestBody = WebhookEndpointUpdate
+
+// RotateWebhookSigningSecretJSONRequestBody defines body for RotateWebhookSigningSecret for application/json ContentType.
+type RotateWebhookSigningSecretJSONRequestBody = WebhookSigningSecretRequest
 
 // DeleteWorkspaceJSONRequestBody defines body for DeleteWorkspace for application/json ContentType.
 type DeleteWorkspaceJSONRequestBody = WorkspaceDeleteRequest
@@ -1686,6 +1886,36 @@ type ClientInterface interface {
 	UpdateScopeNodeWithBody(ctx context.Context, scopeNodeId Ulid, params *UpdateScopeNodeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	UpdateScopeNode(ctx context.Context, scopeNodeId Ulid, params *UpdateScopeNodeParams, body UpdateScopeNodeJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListWebhookEndpoints request
+	ListWebhookEndpoints(ctx context.Context, params *ListWebhookEndpointsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CreateWebhookEndpointWithBody request with any body
+	CreateWebhookEndpointWithBody(ctx context.Context, params *CreateWebhookEndpointParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	CreateWebhookEndpoint(ctx context.Context, params *CreateWebhookEndpointParams, body CreateWebhookEndpointJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteWebhookEndpoint request
+	DeleteWebhookEndpoint(ctx context.Context, webhookEndpointId Ulid, params *DeleteWebhookEndpointParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetWebhookEndpoint request
+	GetWebhookEndpoint(ctx context.Context, webhookEndpointId Ulid, params *GetWebhookEndpointParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// UpdateWebhookEndpointWithBody request with any body
+	UpdateWebhookEndpointWithBody(ctx context.Context, webhookEndpointId Ulid, params *UpdateWebhookEndpointParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	UpdateWebhookEndpoint(ctx context.Context, webhookEndpointId Ulid, params *UpdateWebhookEndpointParams, body UpdateWebhookEndpointJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetWebhookDeliveryState request
+	GetWebhookDeliveryState(ctx context.Context, webhookEndpointId Ulid, params *GetWebhookDeliveryStateParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// EnableWebhookEndpoint request
+	EnableWebhookEndpoint(ctx context.Context, webhookEndpointId Ulid, params *EnableWebhookEndpointParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RotateWebhookSigningSecretWithBody request with any body
+	RotateWebhookSigningSecretWithBody(ctx context.Context, webhookEndpointId Ulid, params *RotateWebhookSigningSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	RotateWebhookSigningSecret(ctx context.Context, webhookEndpointId Ulid, params *RotateWebhookSigningSecretParams, body RotateWebhookSigningSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// DeleteWorkspaceWithBody request with any body
 	DeleteWorkspaceWithBody(ctx context.Context, params *DeleteWorkspaceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2396,6 +2626,138 @@ func (c *Client) UpdateScopeNodeWithBody(ctx context.Context, scopeNodeId Ulid, 
 
 func (c *Client) UpdateScopeNode(ctx context.Context, scopeNodeId Ulid, params *UpdateScopeNodeParams, body UpdateScopeNodeJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewUpdateScopeNodeRequest(c.Server, scopeNodeId, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListWebhookEndpoints(ctx context.Context, params *ListWebhookEndpointsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListWebhookEndpointsRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateWebhookEndpointWithBody(ctx context.Context, params *CreateWebhookEndpointParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateWebhookEndpointRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateWebhookEndpoint(ctx context.Context, params *CreateWebhookEndpointParams, body CreateWebhookEndpointJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateWebhookEndpointRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) DeleteWebhookEndpoint(ctx context.Context, webhookEndpointId Ulid, params *DeleteWebhookEndpointParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteWebhookEndpointRequest(c.Server, webhookEndpointId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetWebhookEndpoint(ctx context.Context, webhookEndpointId Ulid, params *GetWebhookEndpointParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetWebhookEndpointRequest(c.Server, webhookEndpointId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) UpdateWebhookEndpointWithBody(ctx context.Context, webhookEndpointId Ulid, params *UpdateWebhookEndpointParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUpdateWebhookEndpointRequestWithBody(c.Server, webhookEndpointId, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) UpdateWebhookEndpoint(ctx context.Context, webhookEndpointId Ulid, params *UpdateWebhookEndpointParams, body UpdateWebhookEndpointJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUpdateWebhookEndpointRequest(c.Server, webhookEndpointId, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetWebhookDeliveryState(ctx context.Context, webhookEndpointId Ulid, params *GetWebhookDeliveryStateParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetWebhookDeliveryStateRequest(c.Server, webhookEndpointId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) EnableWebhookEndpoint(ctx context.Context, webhookEndpointId Ulid, params *EnableWebhookEndpointParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewEnableWebhookEndpointRequest(c.Server, webhookEndpointId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RotateWebhookSigningSecretWithBody(ctx context.Context, webhookEndpointId Ulid, params *RotateWebhookSigningSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRotateWebhookSigningSecretRequestWithBody(c.Server, webhookEndpointId, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RotateWebhookSigningSecret(ctx context.Context, webhookEndpointId Ulid, params *RotateWebhookSigningSecretParams, body RotateWebhookSigningSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRotateWebhookSigningSecretRequest(c.Server, webhookEndpointId, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -5630,6 +5992,525 @@ func NewUpdateScopeNodeRequestWithBody(server string, scopeNodeId Ulid, params *
 	return req, nil
 }
 
+// NewListWebhookEndpointsRequest generates requests for ListWebhookEndpoints
+func NewListWebhookEndpointsRequest(server string, params *ListWebhookEndpointsParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/webhook-endpoints")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.Cursor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "cursor", *params.Cursor, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "limit", *params.Limit, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Selector != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "selector", *params.Selector, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewCreateWebhookEndpointRequest calls the generic CreateWebhookEndpoint builder with application/json body
+func NewCreateWebhookEndpointRequest(server string, params *CreateWebhookEndpointParams, body CreateWebhookEndpointJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewCreateWebhookEndpointRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewCreateWebhookEndpointRequestWithBody generates requests for CreateWebhookEndpoint with any type of body
+func NewCreateWebhookEndpointRequestWithBody(server string, params *CreateWebhookEndpointParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/webhook-endpoints")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.IdempotencyKey != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Idempotency-Key", *params.IdempotencyKey, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Idempotency-Key", headerParam0)
+		}
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewDeleteWebhookEndpointRequest generates requests for DeleteWebhookEndpoint
+func NewDeleteWebhookEndpointRequest(server string, webhookEndpointId Ulid, params *DeleteWebhookEndpointParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "webhook_endpoint_id", webhookEndpointId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/webhook-endpoints/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("If-Match", headerParam0)
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewGetWebhookEndpointRequest generates requests for GetWebhookEndpoint
+func NewGetWebhookEndpointRequest(server string, webhookEndpointId Ulid, params *GetWebhookEndpointParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "webhook_endpoint_id", webhookEndpointId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/webhook-endpoints/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewUpdateWebhookEndpointRequest calls the generic UpdateWebhookEndpoint builder with application/json body
+func NewUpdateWebhookEndpointRequest(server string, webhookEndpointId Ulid, params *UpdateWebhookEndpointParams, body UpdateWebhookEndpointJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewUpdateWebhookEndpointRequestWithBody(server, webhookEndpointId, params, "application/json", bodyReader)
+}
+
+// NewUpdateWebhookEndpointRequestWithBody generates requests for UpdateWebhookEndpoint with any type of body
+func NewUpdateWebhookEndpointRequestWithBody(server string, webhookEndpointId Ulid, params *UpdateWebhookEndpointParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "webhook_endpoint_id", webhookEndpointId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/webhook-endpoints/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("If-Match", headerParam0)
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewGetWebhookDeliveryStateRequest generates requests for GetWebhookDeliveryState
+func NewGetWebhookDeliveryStateRequest(server string, webhookEndpointId Ulid, params *GetWebhookDeliveryStateParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "webhook_endpoint_id", webhookEndpointId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/webhook-endpoints/%s/delivery", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewEnableWebhookEndpointRequest generates requests for EnableWebhookEndpoint
+func NewEnableWebhookEndpointRequest(server string, webhookEndpointId Ulid, params *EnableWebhookEndpointParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "webhook_endpoint_id", webhookEndpointId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/webhook-endpoints/%s/enable", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.IdempotencyKey != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Idempotency-Key", *params.IdempotencyKey, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Idempotency-Key", headerParam0)
+		}
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewRotateWebhookSigningSecretRequest calls the generic RotateWebhookSigningSecret builder with application/json body
+func NewRotateWebhookSigningSecretRequest(server string, webhookEndpointId Ulid, params *RotateWebhookSigningSecretParams, body RotateWebhookSigningSecretJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewRotateWebhookSigningSecretRequestWithBody(server, webhookEndpointId, params, "application/json", bodyReader)
+}
+
+// NewRotateWebhookSigningSecretRequestWithBody generates requests for RotateWebhookSigningSecret with any type of body
+func NewRotateWebhookSigningSecretRequestWithBody(server string, webhookEndpointId Ulid, params *RotateWebhookSigningSecretParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "webhook_endpoint_id", webhookEndpointId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/webhook-endpoints/%s/signing-secret", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.IdempotencyKey != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Idempotency-Key", *params.IdempotencyKey, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Idempotency-Key", headerParam0)
+		}
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
 // NewDeleteWorkspaceRequest calls the generic DeleteWorkspace builder with application/json body
 func NewDeleteWorkspaceRequest(server string, params *DeleteWorkspaceParams, body DeleteWorkspaceJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
@@ -5971,6 +6852,36 @@ type ClientWithResponsesInterface interface {
 	UpdateScopeNodeWithBodyWithResponse(ctx context.Context, scopeNodeId Ulid, params *UpdateScopeNodeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateScopeNodeResponse, error)
 
 	UpdateScopeNodeWithResponse(ctx context.Context, scopeNodeId Ulid, params *UpdateScopeNodeParams, body UpdateScopeNodeJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateScopeNodeResponse, error)
+
+	// ListWebhookEndpointsWithResponse request
+	ListWebhookEndpointsWithResponse(ctx context.Context, params *ListWebhookEndpointsParams, reqEditors ...RequestEditorFn) (*ListWebhookEndpointsResponse, error)
+
+	// CreateWebhookEndpointWithBodyWithResponse request with any body
+	CreateWebhookEndpointWithBodyWithResponse(ctx context.Context, params *CreateWebhookEndpointParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateWebhookEndpointResponse, error)
+
+	CreateWebhookEndpointWithResponse(ctx context.Context, params *CreateWebhookEndpointParams, body CreateWebhookEndpointJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateWebhookEndpointResponse, error)
+
+	// DeleteWebhookEndpointWithResponse request
+	DeleteWebhookEndpointWithResponse(ctx context.Context, webhookEndpointId Ulid, params *DeleteWebhookEndpointParams, reqEditors ...RequestEditorFn) (*DeleteWebhookEndpointResponse, error)
+
+	// GetWebhookEndpointWithResponse request
+	GetWebhookEndpointWithResponse(ctx context.Context, webhookEndpointId Ulid, params *GetWebhookEndpointParams, reqEditors ...RequestEditorFn) (*GetWebhookEndpointResponse, error)
+
+	// UpdateWebhookEndpointWithBodyWithResponse request with any body
+	UpdateWebhookEndpointWithBodyWithResponse(ctx context.Context, webhookEndpointId Ulid, params *UpdateWebhookEndpointParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateWebhookEndpointResponse, error)
+
+	UpdateWebhookEndpointWithResponse(ctx context.Context, webhookEndpointId Ulid, params *UpdateWebhookEndpointParams, body UpdateWebhookEndpointJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateWebhookEndpointResponse, error)
+
+	// GetWebhookDeliveryStateWithResponse request
+	GetWebhookDeliveryStateWithResponse(ctx context.Context, webhookEndpointId Ulid, params *GetWebhookDeliveryStateParams, reqEditors ...RequestEditorFn) (*GetWebhookDeliveryStateResponse, error)
+
+	// EnableWebhookEndpointWithResponse request
+	EnableWebhookEndpointWithResponse(ctx context.Context, webhookEndpointId Ulid, params *EnableWebhookEndpointParams, reqEditors ...RequestEditorFn) (*EnableWebhookEndpointResponse, error)
+
+	// RotateWebhookSigningSecretWithBodyWithResponse request with any body
+	RotateWebhookSigningSecretWithBodyWithResponse(ctx context.Context, webhookEndpointId Ulid, params *RotateWebhookSigningSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RotateWebhookSigningSecretResponse, error)
+
+	RotateWebhookSigningSecretWithResponse(ctx context.Context, webhookEndpointId Ulid, params *RotateWebhookSigningSecretParams, body RotateWebhookSigningSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*RotateWebhookSigningSecretResponse, error)
 
 	// DeleteWorkspaceWithBodyWithResponse request with any body
 	DeleteWorkspaceWithBodyWithResponse(ctx context.Context, params *DeleteWorkspaceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*DeleteWorkspaceResponse, error)
@@ -7616,6 +8527,279 @@ func (r UpdateScopeNodeResponse) ContentType() string {
 	return ""
 }
 
+type ListWebhookEndpointsResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *WebhookEndpointListResponse
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON429 *TooManyRequests
+}
+
+// Status returns HTTPResponse.Status
+func (r ListWebhookEndpointsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListWebhookEndpointsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ListWebhookEndpointsResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type CreateWebhookEndpointResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON201                   *WebhookEndpoint
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON409 *Conflict
+	ApplicationproblemJSON422 *UnprocessableContent
+}
+
+// Status returns HTTPResponse.Status
+func (r CreateWebhookEndpointResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r CreateWebhookEndpointResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r CreateWebhookEndpointResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type DeleteWebhookEndpointResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON412 *PreconditionFailed
+	ApplicationproblemJSON428 *PreconditionRequired
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteWebhookEndpointResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteWebhookEndpointResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r DeleteWebhookEndpointResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetWebhookEndpointResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *WebhookEndpoint
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON404 *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r GetWebhookEndpointResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetWebhookEndpointResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetWebhookEndpointResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type UpdateWebhookEndpointResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *WebhookEndpoint
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON412 *PreconditionFailed
+	ApplicationproblemJSON422 *UnprocessableContent
+	ApplicationproblemJSON428 *PreconditionRequired
+}
+
+// Status returns HTTPResponse.Status
+func (r UpdateWebhookEndpointResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r UpdateWebhookEndpointResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r UpdateWebhookEndpointResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetWebhookDeliveryStateResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *WebhookDeliveryState
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON404 *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r GetWebhookDeliveryStateResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetWebhookDeliveryStateResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetWebhookDeliveryStateResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type EnableWebhookEndpointResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *WebhookDeliveryState
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON409 *Conflict
+}
+
+// Status returns HTTPResponse.Status
+func (r EnableWebhookEndpointResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r EnableWebhookEndpointResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r EnableWebhookEndpointResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type RotateWebhookSigningSecretResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *WebhookSigningSecretRotation
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON409 *Conflict
+	ApplicationproblemJSON422 *UnprocessableContent
+	ApplicationproblemJSON503 *ServiceUnavailable
+}
+
+// Status returns HTTPResponse.Status
+func (r RotateWebhookSigningSecretResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r RotateWebhookSigningSecretResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r RotateWebhookSigningSecretResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type DeleteWorkspaceResponse struct {
 	Body                      []byte
 	HTTPResponse              *http.Response
@@ -8205,6 +9389,102 @@ func (c *ClientWithResponses) UpdateScopeNodeWithResponse(ctx context.Context, s
 		return nil, err
 	}
 	return ParseUpdateScopeNodeResponse(rsp)
+}
+
+// ListWebhookEndpointsWithResponse request returning *ListWebhookEndpointsResponse
+func (c *ClientWithResponses) ListWebhookEndpointsWithResponse(ctx context.Context, params *ListWebhookEndpointsParams, reqEditors ...RequestEditorFn) (*ListWebhookEndpointsResponse, error) {
+	rsp, err := c.ListWebhookEndpoints(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListWebhookEndpointsResponse(rsp)
+}
+
+// CreateWebhookEndpointWithBodyWithResponse request with arbitrary body returning *CreateWebhookEndpointResponse
+func (c *ClientWithResponses) CreateWebhookEndpointWithBodyWithResponse(ctx context.Context, params *CreateWebhookEndpointParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateWebhookEndpointResponse, error) {
+	rsp, err := c.CreateWebhookEndpointWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateWebhookEndpointResponse(rsp)
+}
+
+func (c *ClientWithResponses) CreateWebhookEndpointWithResponse(ctx context.Context, params *CreateWebhookEndpointParams, body CreateWebhookEndpointJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateWebhookEndpointResponse, error) {
+	rsp, err := c.CreateWebhookEndpoint(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateWebhookEndpointResponse(rsp)
+}
+
+// DeleteWebhookEndpointWithResponse request returning *DeleteWebhookEndpointResponse
+func (c *ClientWithResponses) DeleteWebhookEndpointWithResponse(ctx context.Context, webhookEndpointId Ulid, params *DeleteWebhookEndpointParams, reqEditors ...RequestEditorFn) (*DeleteWebhookEndpointResponse, error) {
+	rsp, err := c.DeleteWebhookEndpoint(ctx, webhookEndpointId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteWebhookEndpointResponse(rsp)
+}
+
+// GetWebhookEndpointWithResponse request returning *GetWebhookEndpointResponse
+func (c *ClientWithResponses) GetWebhookEndpointWithResponse(ctx context.Context, webhookEndpointId Ulid, params *GetWebhookEndpointParams, reqEditors ...RequestEditorFn) (*GetWebhookEndpointResponse, error) {
+	rsp, err := c.GetWebhookEndpoint(ctx, webhookEndpointId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetWebhookEndpointResponse(rsp)
+}
+
+// UpdateWebhookEndpointWithBodyWithResponse request with arbitrary body returning *UpdateWebhookEndpointResponse
+func (c *ClientWithResponses) UpdateWebhookEndpointWithBodyWithResponse(ctx context.Context, webhookEndpointId Ulid, params *UpdateWebhookEndpointParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateWebhookEndpointResponse, error) {
+	rsp, err := c.UpdateWebhookEndpointWithBody(ctx, webhookEndpointId, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUpdateWebhookEndpointResponse(rsp)
+}
+
+func (c *ClientWithResponses) UpdateWebhookEndpointWithResponse(ctx context.Context, webhookEndpointId Ulid, params *UpdateWebhookEndpointParams, body UpdateWebhookEndpointJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateWebhookEndpointResponse, error) {
+	rsp, err := c.UpdateWebhookEndpoint(ctx, webhookEndpointId, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUpdateWebhookEndpointResponse(rsp)
+}
+
+// GetWebhookDeliveryStateWithResponse request returning *GetWebhookDeliveryStateResponse
+func (c *ClientWithResponses) GetWebhookDeliveryStateWithResponse(ctx context.Context, webhookEndpointId Ulid, params *GetWebhookDeliveryStateParams, reqEditors ...RequestEditorFn) (*GetWebhookDeliveryStateResponse, error) {
+	rsp, err := c.GetWebhookDeliveryState(ctx, webhookEndpointId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetWebhookDeliveryStateResponse(rsp)
+}
+
+// EnableWebhookEndpointWithResponse request returning *EnableWebhookEndpointResponse
+func (c *ClientWithResponses) EnableWebhookEndpointWithResponse(ctx context.Context, webhookEndpointId Ulid, params *EnableWebhookEndpointParams, reqEditors ...RequestEditorFn) (*EnableWebhookEndpointResponse, error) {
+	rsp, err := c.EnableWebhookEndpoint(ctx, webhookEndpointId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseEnableWebhookEndpointResponse(rsp)
+}
+
+// RotateWebhookSigningSecretWithBodyWithResponse request with arbitrary body returning *RotateWebhookSigningSecretResponse
+func (c *ClientWithResponses) RotateWebhookSigningSecretWithBodyWithResponse(ctx context.Context, webhookEndpointId Ulid, params *RotateWebhookSigningSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RotateWebhookSigningSecretResponse, error) {
+	rsp, err := c.RotateWebhookSigningSecretWithBody(ctx, webhookEndpointId, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRotateWebhookSigningSecretResponse(rsp)
+}
+
+func (c *ClientWithResponses) RotateWebhookSigningSecretWithResponse(ctx context.Context, webhookEndpointId Ulid, params *RotateWebhookSigningSecretParams, body RotateWebhookSigningSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*RotateWebhookSigningSecretResponse, error) {
+	rsp, err := c.RotateWebhookSigningSecret(ctx, webhookEndpointId, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRotateWebhookSigningSecretResponse(rsp)
 }
 
 // DeleteWorkspaceWithBodyWithResponse request with arbitrary body returning *DeleteWorkspaceResponse
@@ -10650,6 +11930,445 @@ func ParseUpdateScopeNodeResponse(rsp *http.Response) (*UpdateScopeNodeResponse,
 			return nil, err
 		}
 		response.ApplicationproblemJSON428 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListWebhookEndpointsResponse parses an HTTP response from a ListWebhookEndpointsWithResponse call
+func ParseListWebhookEndpointsResponse(rsp *http.Response) (*ListWebhookEndpointsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListWebhookEndpointsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest WebhookEndpointListResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseCreateWebhookEndpointResponse parses an HTTP response from a CreateWebhookEndpointWithResponse call
+func ParseCreateWebhookEndpointResponse(rsp *http.Response) (*CreateWebhookEndpointResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &CreateWebhookEndpointResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest WebhookEndpoint
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseDeleteWebhookEndpointResponse parses an HTTP response from a DeleteWebhookEndpointWithResponse call
+func ParseDeleteWebhookEndpointResponse(rsp *http.Response) (*DeleteWebhookEndpointResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteWebhookEndpointResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 412:
+		var dest PreconditionFailed
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON412 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 428:
+		var dest PreconditionRequired
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON428 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetWebhookEndpointResponse parses an HTTP response from a GetWebhookEndpointWithResponse call
+func ParseGetWebhookEndpointResponse(rsp *http.Response) (*GetWebhookEndpointResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetWebhookEndpointResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest WebhookEndpoint
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseUpdateWebhookEndpointResponse parses an HTTP response from a UpdateWebhookEndpointWithResponse call
+func ParseUpdateWebhookEndpointResponse(rsp *http.Response) (*UpdateWebhookEndpointResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &UpdateWebhookEndpointResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest WebhookEndpoint
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 412:
+		var dest PreconditionFailed
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON412 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 428:
+		var dest PreconditionRequired
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON428 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetWebhookDeliveryStateResponse parses an HTTP response from a GetWebhookDeliveryStateWithResponse call
+func ParseGetWebhookDeliveryStateResponse(rsp *http.Response) (*GetWebhookDeliveryStateResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetWebhookDeliveryStateResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest WebhookDeliveryState
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseEnableWebhookEndpointResponse parses an HTTP response from a EnableWebhookEndpointWithResponse call
+func ParseEnableWebhookEndpointResponse(rsp *http.Response) (*EnableWebhookEndpointResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &EnableWebhookEndpointResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest WebhookDeliveryState
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseRotateWebhookSigningSecretResponse parses an HTTP response from a RotateWebhookSigningSecretWithResponse call
+func ParseRotateWebhookSigningSecretResponse(rsp *http.Response) (*RotateWebhookSigningSecretResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &RotateWebhookSigningSecretResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest WebhookSigningSecretRotation
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest ServiceUnavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
 
 	}
 

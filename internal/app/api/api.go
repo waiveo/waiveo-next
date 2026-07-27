@@ -106,6 +106,19 @@ type server struct {
 	// (workspacerun.go). Optional: without it the export route still mounts and
 	// still authorizes, and answers UNAVAILABLE.
 	workspaceArchive *WorkspaceArchive
+	// webhookSecrets seals and opens a registered webhook endpoint's signing
+	// secret (internal/app/webhookdeliver). Optional (WithWebhookSecrets): the
+	// registration routes mount either way, and without it the rotate operation
+	// answers UNAVAILABLE rather than storing a secret in the clear — the same
+	// posture the auth store takes for a recoverable credential secret with no
+	// sealer.
+	webhookSecrets WebhookSecretSealer
+	// webhookRotationOverlap is the window a rotation's superseded secret stays
+	// acceptable for (EVT-158), in ms. It exists here only so a rotation's
+	// response can name the instant the sender ACTUALLY stops emitting the prior
+	// signature: a published window the delivery loop did not honour would be
+	// worse than publishing none. Zero means the contract's proposed default.
+	webhookRotationOverlap int64
 	// families is the CRUD resource registry the audit middleware reads a
 	// request's subject metadata out of, keyed by URL path segment. It is
 	// populated by mount() itself, so a family's audit identity and its routes
@@ -252,6 +265,11 @@ func (srv *server) mountAll(rt, rootRT *router, authHandlers *auth.Handlers) {
 	srv.mount(rt, daypartsConfig())
 	srv.mount(rt, playlistsConfig())
 	srv.mount(rt, automationsConfig())
+	// The outbound-webhook registration family plus the three operations a
+	// registered endpoint needs that plain CRUD does not express — installing or
+	// rotating its signing secret, re-enabling it after an auto-disable, and
+	// reading its delivery state (webhookendpoints.go).
+	srv.mountWebhookEndpoints(rt)
 	srv.mountPacks(rt)
 	// The automations family adds two operations beyond plain resource CRUD: a
 	// synchronous per-automation run (openapi runAutomation) and a selector-targeted

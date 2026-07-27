@@ -539,6 +539,123 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/webhook-endpoints": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List webhook endpoints
+         * @description Returns a keyset-paginated, selector-filterable page of registered outbound webhook endpoints.
+         */
+        get: operations["listWebhookEndpoints"];
+        put?: never;
+        /**
+         * Register a webhook endpoint
+         * @description Registers an endpoint durable events are delivered to. The endpoint receives nothing until a signing secret is installed (`rotateWebhookSigningSecret`): an unsigned POST is not a delivery `events/1` defines.
+         */
+        post: operations["createWebhookEndpoint"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/webhook-endpoints/{webhook_endpoint_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                webhook_endpoint_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        /** Read a webhook endpoint */
+        get: operations["getWebhookEndpoint"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete a webhook endpoint
+         * @description Deletes the registration. The endpoint's delivery progress and its sealed signing secret are destroyed with it — a deleted endpoint leaves no credential material behind.
+         */
+        delete: operations["deleteWebhookEndpoint"];
+        options?: never;
+        head?: never;
+        /**
+         * Update a webhook endpoint
+         * @description Partial update. Requires If-Match against the endpoint's current ETag/revision.
+         */
+        patch: operations["updateWebhookEndpoint"];
+        trace?: never;
+    };
+    "/webhook-endpoints/{webhook_endpoint_id}/signing-secret": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                webhook_endpoint_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Install or rotate a webhook endpoint's signing secret
+         * @description Installs the secret every delivery to this endpoint is signed with (`events/1` EVT-151). The first call arms the endpoint — until it lands the endpoint receives nothing. Every later call is a rotation: the secret being replaced stays acceptable for a stated overlap window (EVT-158), during which a delivery carries a second signature computed under it, so a receiver has time to adopt the new secret before the old one stops working. The secret is supplied by the caller and appears in no response.
+         */
+        post: operations["rotateWebhookSigningSecret"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/webhook-endpoints/{webhook_endpoint_id}/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                webhook_endpoint_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Re-enable an auto-disabled webhook endpoint
+         * @description `events/1` EVT-154 disables an endpoint whose deliveries have failed past a bounded consecutive-failure count, and a disabled endpoint receives no further attempts until an operator re-enables it. This is that act. The endpoint's delivery cursor is left exactly where it was, so it resumes from where it stopped rather than skipping what it never received (EVT-155). Enabling an already-active endpoint is not an error.
+         */
+        post: operations["enableWebhookEndpoint"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/webhook-endpoints/{webhook_endpoint_id}/delivery": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                webhook_endpoint_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Read a webhook endpoint's delivery state
+         * @description Reports whether the endpoint is active or auto-disabled (EVT-154), how far delivery has got (EVT-155's `last_delivered_id`), and how long its current unbroken failure run is. This is the durable, operator-facing view of the auto-disable signal: the fact survives whether or not anyone was listening when it happened.
+         */
+        get: operations["getWebhookDeliveryState"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/packs": {
         parameters: {
             query?: never;
@@ -1095,6 +1212,77 @@ export interface components {
             code: components["schemas"]["ErrorCode"];
             /** @description A human-readable explanation specific to this occurrence, carrying exactly the weight `Problem.detail` carries: `code` is the discriminant a client asserts on, `detail` is for the human reading the job report. Optional, because `code` alone is a complete machine-readable diagnosis — one code can cover several occurrences (`INTERNAL` for an unreadable row and for an interrupted run) and `detail` is what tells them apart in an operator's eyes. */
             detail?: string;
+        };
+        /**
+         * @description A registered outbound webhook endpoint. `events/1` EVT-150 defers this registration resource to api/1 while defining the delivery mechanics given one.
+         *     The endpoint's signing secret is deliberately NOT a member. A row's stored body is what this API serves back on every read, so a secret carried here would be a secret handed to every principal who may read the row; it lives sealed in platform-private storage and is installed through `rotateWebhookSigningSecret` instead.
+         */
+        WebhookEndpoint: {
+            id: components["schemas"]["Ulid"];
+            /** @description Client-assigned identifier (contracts/api-1.md#client-assignable-external_id). Optional; unique within this resource's scope node among resources of the same type. */
+            external_id?: string | null;
+            name: string;
+            scope_node: components["schemas"]["Ulid"];
+            /**
+             * Format: uri
+             * @description The absolute http or https URL each delivery is POSTed to (EVT-151). It must carry neither userinfo credentials nor a query string: this value is served on every read and named in operator-facing errors, so anything embedded in it is disclosed wherever it appears.
+             */
+            url: string;
+            labels: components["schemas"]["LabelMap"];
+            /** @description The registered-schema names this endpoint subscribes to (EVT-124). An empty list imposes no schema restriction — scope-node filtering still applies in full, since EVT-124's restriction is alongside it and never in place of it. */
+            schemas: string[];
+            revision: number;
+            created_at: components["schemas"]["Timestamp"];
+            updated_at: components["schemas"]["Timestamp"];
+        };
+        /** @description The client-supplied half of a webhook endpoint. `id`, `revision` and the timestamps are server-assigned (API-030) and rejected here. */
+        WebhookEndpointCreate: {
+            external_id?: string | null;
+            name: string;
+            scope_node: components["schemas"]["Ulid"];
+            /** Format: uri */
+            url: string;
+            labels?: components["schemas"]["LabelMap"];
+            schemas?: string[];
+        };
+        /** @description Partial update — every member optional, at least one present. */
+        WebhookEndpointUpdate: {
+            external_id?: string | null;
+            name?: string;
+            /** Format: uri */
+            url?: string;
+            labels?: components["schemas"]["LabelMap"];
+            schemas?: string[];
+        };
+        WebhookEndpointListResponse: {
+            items: components["schemas"]["WebhookEndpoint"][];
+            cursor: components["schemas"]["Cursor"];
+        };
+        /** @description The secret every delivery to this endpoint is signed with (EVT-151's HMAC-SHA256 key). Supplied by the caller, because the same value has to end up configured on a receiving server this platform does not own. */
+        WebhookSigningSecretRequest: {
+            /** @description At least 32 characters. EVT-151 states no minimum; this is a deployment-side floor, chosen because a secret shorter than the digest it keys is the length an offline search reaches first. */
+            secret: string;
+        };
+        /** @description A rotation's timing. It carries no secret: the caller supplied the value and already has it, and a copy in a response body is a copy in every proxy log and every retained idempotency replay in between. */
+        WebhookSigningSecretRotation: {
+            rotated_at_ms: components["schemas"]["Timestamp"];
+            /** @description When the superseded secret stops being accepted (EVT-158's overlap window). Null on the FIRST install, which supersedes nothing and so opens no overlap. */
+            prior_secret_expires_at_ms: number | null;
+        };
+        /** @description An endpoint's delivery state: platform-owned execution state about the registration, not part of the registration itself. It carries no revision and no If-Match surface — a stale conditional write must not be able to revert an auto-disable the platform had just decided on. */
+        WebhookDeliveryState: {
+            endpoint_id: components["schemas"]["Ulid"];
+            /**
+             * @description `disabled` is EVT-154's auto-disable after a bounded run of fully-exhausted deliveries. A disabled endpoint receives no further attempts until `enableWebhookEndpoint` is called.
+             * @enum {string}
+             */
+            status: "active" | "disabled";
+            /** @description The current unbroken run of deliveries that exhausted their whole retry budget (EVT-153). Counted per exhausted delivery, not per attempt, and reset by any success. */
+            consecutive_failures: number;
+            /** @description EVT-155's resume cursor — the id of the most recent envelope a delivery for actually succeeded. Null before the first success. Delivery resumes strictly after it, which is what makes delivery at-least-once rather than at-most-once across a restart. */
+            last_delivered_id: string | null;
+            /** @description When this endpoint's current signing secret was installed. Null when it has none — such an endpoint is never delivered to, since an unsigned POST is not a delivery events/1 defines. */
+            secret_set_at_ms: number | null;
         };
     };
     responses: {
@@ -2498,6 +2686,273 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+        };
+    };
+    listWebhookEndpoints: {
+        parameters: {
+            query?: {
+                /** @description Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client. */
+                cursor?: components["parameters"]["CursorParam"];
+                /** @description Maximum rows to return in this page. */
+                limit?: components["parameters"]["LimitParam"];
+                /** @description A label-selector string: comma-separated, ANDed terms (equality, inequality, set-membership, set-exclusion, existence, non-existence, or a `scope_node subtree <ulid>` term). See `contracts/api-1.md#label-selector-grammar` for the full grammar. */
+                selector?: components["parameters"]["SelectorParam"];
+            };
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of webhook endpoints. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookEndpointListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    createWebhookEndpoint: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WebhookEndpointCreate"];
+            };
+        };
+        responses: {
+            /** @description The registered webhook endpoint. */
+            201: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookEndpoint"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableContent"];
+        };
+    };
+    getWebhookEndpoint: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                webhook_endpoint_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The webhook endpoint. */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookEndpoint"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    deleteWebhookEndpoint: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists. */
+                "If-Match": components["parameters"]["IfMatchParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                webhook_endpoint_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            412: components["responses"]["PreconditionFailed"];
+            428: components["responses"]["PreconditionRequired"];
+        };
+    };
+    updateWebhookEndpoint: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists. */
+                "If-Match": components["parameters"]["IfMatchParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                webhook_endpoint_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WebhookEndpointUpdate"];
+            };
+        };
+        responses: {
+            /** @description The updated webhook endpoint. */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookEndpoint"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            412: components["responses"]["PreconditionFailed"];
+            422: components["responses"]["UnprocessableContent"];
+            428: components["responses"]["PreconditionRequired"];
+        };
+    };
+    rotateWebhookSigningSecret: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                webhook_endpoint_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WebhookSigningSecretRequest"];
+            };
+        };
+        responses: {
+            /** @description The rotation's timing. Never the secret. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookSigningSecretRotation"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableContent"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    enableWebhookEndpoint: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                webhook_endpoint_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The endpoint's delivery state after re-enabling. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookDeliveryState"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    getWebhookDeliveryState: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                webhook_endpoint_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The endpoint's delivery state. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookDeliveryState"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
         };
     };
     listPacks: {

@@ -118,6 +118,18 @@ func newEnv(t *testing.T) *testEnv {
 // restart regression to hand the api handler an origin.Open'd store already
 // carrying content uploaded in a prior "lifetime".
 func newEnvWithContent(t *testing.T, content *origin.Store) *testEnv {
+	return newEnvWith(t, content, nil)
+}
+
+// newEnvWithOptions is newEnv with extra api.New options — the seam a family
+// whose behaviour depends on an optional dependency (the webhook secret sealer)
+// builds its own env from, without every other env growing that dependency.
+func newEnvWithOptions(t *testing.T, opts ...api.Option) *testEnv {
+	t.Helper()
+	return newEnvWith(t, origin.New(), opts)
+}
+
+func newEnvWith(t *testing.T, content *origin.Store, opts []api.Option) *testEnv {
 	t.Helper()
 	st, err := store.Open(":memory:")
 	if err != nil {
@@ -135,7 +147,7 @@ func newEnvWithContent(t *testing.T, content *origin.Store) *testEnv {
 	fixture := newAuthFixture(t)
 	jobs := api.NewJobRunner()
 	ts := httptest.NewServer(api.New(st, idem, clock, ulid.Monotonic(), content, testContentBase, fixture.Auth,
-		api.WithJobRunner(jobs)))
+		append([]api.Option{api.WithJobRunner(jobs)}, opts...)...))
 	t.Cleanup(ts.Close)
 	return &testEnv{ts: ts, store: st, content: content, contentBase: testContentBase, auth: fixture, jobs: jobs}
 }

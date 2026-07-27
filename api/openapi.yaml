@@ -90,6 +90,15 @@ tags:
       Workspace-level data-subject export and delete; see
       `contracts/api-1.md#data-subject-export--delete`. Specced; full
       data-subject-request workflow tooling is a deferred implementation.
+  - name: webhook-endpoints
+    description: >-
+      Registration of outbound webhook endpoints — the URL a durable event is
+      POSTed to, the schemas it subscribes to, and its scope-node placement.
+      `events/1` EVT-150 defines the delivery mechanics given a registered
+      endpoint and explicitly defers the registration resource itself to this
+      contract. An endpoint's signing secret is never a member of its
+      representation: it is installed and rotated through its own operation and
+      appears in no response body.
   - name: "mcp:read"
     description: Curation tag — every operation carrying this tag is exposed as a non-mutating MCP tool. Not a resource family; see `contracts/api-1.md#mcp-operation-tag-curation`.
   - name: "mcp:act"
@@ -1377,6 +1386,306 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
 
+  # ---------------------------------------------------------------------
+  # webhook-endpoints — outbound webhook registration (events/1 EVT-150).
+  #
+  # The five CRUD operations are the SAME resource shape every other family
+  # is worked as, served by the same generic handler and honouring the same
+  # conventions. The three operations beyond them exist because a signing
+  # secret has no representation to GET, an endpoint's delivery state carries
+  # no revision to condition a write on, and re-enabling is an act rather than
+  # an edit — modelling any of them as a member of the endpoint's own body
+  # would put platform-owned execution state under If-Match.
+  #
+  # No response on this family carries a signing secret. The rotate operation
+  # takes one and answers with the rotation's timing only: the caller supplied
+  # the value and already has it, and a copy in a response body is a copy in
+  # every proxy log and every retained idempotency replay between here and
+  # them.
+  # ---------------------------------------------------------------------
+  /webhook-endpoints:
+    get:
+      operationId: listWebhookEndpoints
+      summary: List webhook endpoints
+      description: Returns a keyset-paginated, selector-filterable page of registered outbound webhook endpoints.
+      tags: [webhook-endpoints, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/CursorParam"
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/SelectorParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: A page of webhook endpoints.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookEndpointListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+    post:
+      operationId: createWebhookEndpoint
+      summary: Register a webhook endpoint
+      description: >-
+        Registers an endpoint durable events are delivered to. The endpoint
+        receives nothing until a signing secret is installed
+        (`rotateWebhookSigningSecret`): an unsigned POST is not a delivery
+        `events/1` defines.
+      tags: [webhook-endpoints, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebhookEndpointCreate"
+      responses:
+        "201":
+          description: The registered webhook endpoint.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookEndpoint"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+  /webhook-endpoints/{webhook_endpoint_id}:
+    parameters:
+      - name: webhook_endpoint_id
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/Ulid"
+    get:
+      operationId: getWebhookEndpoint
+      summary: Read a webhook endpoint
+      tags: [webhook-endpoints, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The webhook endpoint.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookEndpoint"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateWebhookEndpoint
+      summary: Update a webhook endpoint
+      description: Partial update. Requires If-Match against the endpoint's current ETag/revision.
+      tags: [webhook-endpoints, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IfMatchParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebhookEndpointUpdate"
+      responses:
+        "200":
+          description: The updated webhook endpoint.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookEndpoint"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
+    delete:
+      operationId: deleteWebhookEndpoint
+      summary: Delete a webhook endpoint
+      description: >-
+        Deletes the registration. The endpoint's delivery progress and its
+        sealed signing secret are destroyed with it — a deleted endpoint leaves
+        no credential material behind.
+      tags: [webhook-endpoints, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IfMatchParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "204":
+          description: Deleted.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
+  /webhook-endpoints/{webhook_endpoint_id}/signing-secret:
+    parameters:
+      - name: webhook_endpoint_id
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/Ulid"
+    post:
+      operationId: rotateWebhookSigningSecret
+      summary: Install or rotate a webhook endpoint's signing secret
+      description: >-
+        Installs the secret every delivery to this endpoint is signed with
+        (`events/1` EVT-151). The first call arms the endpoint — until it lands
+        the endpoint receives nothing. Every later call is a rotation: the
+        secret being replaced stays acceptable for a stated overlap window
+        (EVT-158), during which a delivery carries a second signature computed
+        under it, so a receiver has time to adopt the new secret before the old
+        one stops working. The secret is supplied by the caller and appears in
+        no response.
+      tags: [webhook-endpoints, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebhookSigningSecretRequest"
+      responses:
+        "200":
+          description: The rotation's timing. Never the secret.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookSigningSecretRotation"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /webhook-endpoints/{webhook_endpoint_id}/enable:
+    parameters:
+      - name: webhook_endpoint_id
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/Ulid"
+    post:
+      operationId: enableWebhookEndpoint
+      summary: Re-enable an auto-disabled webhook endpoint
+      description: >-
+        `events/1` EVT-154 disables an endpoint whose deliveries have failed
+        past a bounded consecutive-failure count, and a disabled endpoint
+        receives no further attempts until an operator re-enables it. This is
+        that act. The endpoint's delivery cursor is left exactly where it was,
+        so it resumes from where it stopped rather than skipping what it never
+        received (EVT-155). Enabling an already-active endpoint is not an error.
+      tags: [webhook-endpoints, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The endpoint's delivery state after re-enabling.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookDeliveryState"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /webhook-endpoints/{webhook_endpoint_id}/delivery:
+    parameters:
+      - name: webhook_endpoint_id
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/Ulid"
+    get:
+      operationId: getWebhookDeliveryState
+      summary: Read a webhook endpoint's delivery state
+      description: >-
+        Reports whether the endpoint is active or auto-disabled (EVT-154), how
+        far delivery has got (EVT-155's `last_delivered_id`), and how long its
+        current unbroken failure run is. This is the durable, operator-facing
+        view of the auto-disable signal: the fact survives whether or not
+        anyone was listening when it happened.
+      tags: [webhook-endpoints, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The endpoint's delivery state.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookDeliveryState"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
   # ---------------------------------------------------------------------
   # packs — installed declarative packs (manifest/1).
   #
@@ -2750,3 +3059,201 @@ components:
             machine-readable diagnosis — one code can cover several occurrences
             (`INTERNAL` for an unreadable row and for an interrupted run) and
             `detail` is what tells them apart in an operator's eyes.
+
+    WebhookEndpoint:
+      type: object
+      description: >-
+        A registered outbound webhook endpoint. `events/1` EVT-150 defers this
+        registration resource to api/1 while defining the delivery mechanics
+        given one.
+
+        The endpoint's signing secret is deliberately NOT a member. A row's
+        stored body is what this API serves back on every read, so a secret
+        carried here would be a secret handed to every principal who may read
+        the row; it lives sealed in platform-private storage and is installed
+        through `rotateWebhookSigningSecret` instead.
+      required: [id, name, scope_node, url, labels, schemas, revision, created_at, updated_at]
+      additionalProperties: false
+      properties:
+        id:
+          $ref: "#/components/schemas/Ulid"
+        external_id:
+          type: ["string", "null"]
+          description: >-
+            Client-assigned identifier (contracts/api-1.md#client-assignable-external_id).
+            Optional; unique within this resource's scope node among resources
+            of the same type.
+          x-go-type: "*string"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        scope_node:
+          $ref: "#/components/schemas/Ulid"
+        url:
+          type: string
+          format: uri
+          description: >-
+            The absolute http or https URL each delivery is POSTed to
+            (EVT-151). It must carry neither userinfo credentials nor a query
+            string: this value is served on every read and named in
+            operator-facing errors, so anything embedded in it is disclosed
+            wherever it appears.
+        labels:
+          $ref: "#/components/schemas/LabelMap"
+        schemas:
+          type: array
+          description: >-
+            The registered-schema names this endpoint subscribes to (EVT-124).
+            An empty list imposes no schema restriction — scope-node filtering
+            still applies in full, since EVT-124's restriction is alongside it
+            and never in place of it.
+          items:
+            type: string
+        revision:
+          type: integer
+          minimum: 1
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        updated_at:
+          $ref: "#/components/schemas/Timestamp"
+
+    WebhookEndpointCreate:
+      type: object
+      description: >-
+        The client-supplied half of a webhook endpoint. `id`, `revision` and
+        the timestamps are server-assigned (API-030) and rejected here.
+      required: [name, scope_node, url]
+      additionalProperties: false
+      properties:
+        external_id:
+          type: ["string", "null"]
+          x-go-type: "*string"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        scope_node:
+          $ref: "#/components/schemas/Ulid"
+        url:
+          type: string
+          format: uri
+        labels:
+          $ref: "#/components/schemas/LabelMap"
+        schemas:
+          type: array
+          items:
+            type: string
+
+    WebhookEndpointUpdate:
+      type: object
+      description: Partial update — every member optional, at least one present.
+      minProperties: 1
+      additionalProperties: false
+      properties:
+        external_id:
+          type: ["string", "null"]
+          x-go-type: "*string"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        url:
+          type: string
+          format: uri
+        labels:
+          $ref: "#/components/schemas/LabelMap"
+        schemas:
+          type: array
+          items:
+            type: string
+
+    WebhookEndpointListResponse:
+      type: object
+      required: [items, cursor]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/WebhookEndpoint"
+        cursor:
+          $ref: "#/components/schemas/Cursor"
+
+    WebhookSigningSecretRequest:
+      type: object
+      description: >-
+        The secret every delivery to this endpoint is signed with (EVT-151's
+        HMAC-SHA256 key). Supplied by the caller, because the same value has to
+        end up configured on a receiving server this platform does not own.
+      required: [secret]
+      additionalProperties: false
+      properties:
+        secret:
+          type: string
+          minLength: 32
+          description: >-
+            At least 32 characters. EVT-151 states no minimum; this is a
+            deployment-side floor, chosen because a secret shorter than the
+            digest it keys is the length an offline search reaches first.
+
+    WebhookSigningSecretRotation:
+      type: object
+      description: >-
+        A rotation's timing. It carries no secret: the caller supplied the
+        value and already has it, and a copy in a response body is a copy in
+        every proxy log and every retained idempotency replay in between.
+      required: [rotated_at_ms, prior_secret_expires_at_ms]
+      additionalProperties: false
+      properties:
+        rotated_at_ms:
+          $ref: "#/components/schemas/Timestamp"
+        prior_secret_expires_at_ms:
+          type: ["integer", "null"]
+          description: >-
+            When the superseded secret stops being accepted (EVT-158's overlap
+            window). Null on the FIRST install, which supersedes nothing and so
+            opens no overlap.
+          x-go-type: "*int64"
+
+    WebhookDeliveryState:
+      type: object
+      description: >-
+        An endpoint's delivery state: platform-owned execution state about the
+        registration, not part of the registration itself. It carries no
+        revision and no If-Match surface — a stale conditional write must not be
+        able to revert an auto-disable the platform had just decided on.
+      required: [endpoint_id, status, consecutive_failures, last_delivered_id, secret_set_at_ms]
+      additionalProperties: false
+      properties:
+        endpoint_id:
+          $ref: "#/components/schemas/Ulid"
+        status:
+          type: string
+          enum: [active, disabled]
+          description: >-
+            `disabled` is EVT-154's auto-disable after a bounded run of
+            fully-exhausted deliveries. A disabled endpoint receives no further
+            attempts until `enableWebhookEndpoint` is called.
+        consecutive_failures:
+          type: integer
+          minimum: 0
+          description: >-
+            The current unbroken run of deliveries that exhausted their whole
+            retry budget (EVT-153). Counted per exhausted delivery, not per
+            attempt, and reset by any success.
+        last_delivered_id:
+          type: ["string", "null"]
+          description: >-
+            EVT-155's resume cursor — the id of the most recent envelope a
+            delivery for actually succeeded. Null before the first success.
+            Delivery resumes strictly after it, which is what makes delivery
+            at-least-once rather than at-most-once across a restart.
+          x-go-type: "*string"
+        secret_set_at_ms:
+          type: ["integer", "null"]
+          description: >-
+            When this endpoint's current signing secret was installed. Null
+            when it has none — such an endpoint is never delivered to, since an
+            unsigned POST is not a delivery events/1 defines.
+          x-go-type: "*int64"
