@@ -103,10 +103,10 @@ func TestEvents1DriverHasTeeth(t *testing.T) {
 	}
 }
 
-// TestEvents1ResumeGapHasTeeth proves the live-SSE-transport EVT-140 case
-// actually reads the real stream rather than rubber-stamping: it corrupts
-// ONLY the declared gap-marker reason, leaving the live handler's real
-// buffer_exceeded/retention_expired marker untouched.
+// TestEvents1ResumeGapHasTeeth proves the live-transport EVT-140 case actually
+// reads the real streams — it is driven over both bindings — rather than
+// rubber-stamping: it corrupts ONLY the declared gap-marker reason, leaving the
+// live handler's real buffer_exceeded/retention_expired marker untouched.
 func TestEvents1ResumeGapHasTeeth(t *testing.T) {
 	cases, err := events1.LoadCorpus()
 	if err != nil {

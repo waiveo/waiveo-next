@@ -28,12 +28,14 @@
 //     doc comment defers the live HTTP delivery transport; WebhookSignature
 //     itself (the real signer, not a stub) is exercised against an
 //     independent crypto/hmac+sha256 reference computation.
-//   - the WS hello/hello-ack frame protocol (EVT-091's own corpus shape):
-//     the live transport is SSE-only (eventsse.go's own doc comment: the WS
-//     binding is deferred, Go stdlib has no websocket). This driver exercises
-//     the SSE-transport equivalent of a fresh subscribe (no resume_from) via
-//     the live eventsse handler, and keeps the WS-specific hello/selector
-//     assertions at the library level, documented as such.
+//
+// The two WS-shaped cases (EVT-091's hello/hello-ack exchange and EVT-140's
+// hello-ack-then-gap sequence) are now driven over a REAL WebSocket connection
+// to the same live handler — internal/app/eventsse serves both events/1
+// bindings at one path (EVT-001), so a corpus case written in WS frames is
+// answered by the shipping transport rather than by library calls standing in
+// for one. EVT-140 is additionally driven over SSE, since its gap has a
+// distinct SSE framing (EVT-104) the same case pins.
 package events1
 
 import (
@@ -55,6 +57,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coder/websocket"
+
 	"github.com/maaxton/waiveo-next/conformance/drivers/corpus"
 	"github.com/maaxton/waiveo-next/conformance/drivers/report"
 	"github.com/maaxton/waiveo-next/internal/app/auth"
@@ -65,7 +69,6 @@ import (
 	"github.com/maaxton/waiveo-next/internal/datamodel"
 	"github.com/maaxton/waiveo-next/internal/events"
 	"github.com/maaxton/waiveo-next/internal/relay/telemetry"
-	"github.com/maaxton/waiveo-next/internal/shared/apiselector"
 )
 
 const contract = "events/1"
@@ -798,19 +801,18 @@ func driveAuditEvent(rep *report.Report, cases map[string]corpus.Case) {
 
 // --- the live SSE transport (EVT-091/134/140) -------------------------------
 
-// driveHelloFreshSubscribe drives the SSE-transport equivalent of EVT-091. The
-// corpus's own case shape is a WS hello frame (subprotocol events.v1+json,
-// frame.type hello, a selector) — the live transport is SSE-only (eventsse.go's
-// own doc comment: the WS binding is deferred, Go stdlib has no websocket) — so
-// this driver keeps the WS-specific structural checks (subprotocol
-// negotiation, hello-first validation, the selector's own well-formedness) at
-// the library level, and ADDS the live behavior the corpus's own
-// resume_result: fresh assertion actually maps to on the real transport: a
-// fresh GET /events/v1 (no resume_from, no Last-Event-ID) against a log that
-// already holds a backlog event does NOT replay that backlog — only a
-// live-appended event streams — proven against the real eventsse.New handler
-// (internal/app/eventsse's own test suite's TestSSE_FreshConnectionStreamsOnlyLiveAppends
-// pattern), not a driver-modeled subscription.
+// driveHelloFreshSubscribe drives EVT-091 as the corpus writes it: over a REAL
+// WebSocket connection to the live /events/v1 handler. The case's own input is a
+// WS handshake (subprotocol events.v1+json) plus a hello frame carrying a
+// scope-node selector; its expectation is the server's hello-ack naming
+// resume_result: fresh. Every one of those is now answered by the shipping
+// transport — the negotiated subprotocol comes off the real handshake
+// (EVT-090), the hello goes on the wire and the hello-ack comes back off it
+// (EVT-091/092).
+//
+// It then drives what `fresh` MEANS (EVT-132) on both bindings: against a log
+// that already holds a backlog event, neither a WS subscriber nor an SSE
+// subscriber replays it — only the live append arrives.
 func driveHelloFreshSubscribe(rep *report.Report, cases map[string]corpus.Case) {
 	const id = "EVT-091-valid-hello-fresh-subscribe"
 	c, ok := corpus.ByID(cases, id)
@@ -835,46 +837,81 @@ func driveHelloFreshSubscribe(rep *report.Report, cases map[string]corpus.Case) 
 		return
 	}
 
-	var diffs []report.Diff
-	if _, negotiated := events.NegotiateSubprotocol([]string{input.Subprotocol}); !negotiated {
-		diffs = append(diffs, report.Diff{Field: "subprotocol", Expected: events.Subprotocol, Actual: input.Subprotocol})
-	}
-	if err := events.ValidateHelloFirst(input.Frame.Type); err != nil {
-		diffs = append(diffs, report.Diff{Field: "hello_first_frame", Expected: "accepted (EVT-091)", Actual: err.Error()})
-	}
-	if _, perr := apiselector.Parse(input.Frame.Selector); perr != nil {
-		diffs = append(diffs, report.Diff{Field: "selector", Expected: "a well-formed apiselector (EVT-121)", Actual: perr.Error()})
-	}
-	ack, handled := events.AckHello(input.Frame)
-	if !handled {
-		diffs = append(diffs, report.Diff{Field: "hello_ack.handled", Expected: true, Actual: false})
-	}
-	if ack.ResumeResult != want.Frame.ResumeResult {
-		diffs = append(diffs, report.Diff{Field: "hello_ack.resume_result", Expected: want.Frame.ResumeResult, Actual: ack.ResumeResult})
-	}
+	const backlogID = "01J8Z3K4N5P6Q7R8S9T0V1W2ZC"
+	const liveID = "01J8Z3K4N5P6Q7R8S9T0V1W2ZD"
 
-	// The live-transport equivalent: a fresh SSE connect does not replay a
-	// pre-existing backlog event, and DOES stream a live append.
+	var diffs []report.Diff
+
 	log := events.NewEventLog(0)
-	log.Append(fixtureAutomationRunEnvelope("01J8Z3K4N5P6Q7R8S9T0V1W2ZC"))
+	log.Append(fixtureAutomationRunEnvelope(backlogID))
 	hub := eventsse.NewHub(log)
-	srv := httptest.NewServer(newSSEHandler(hub, nil))
+	srv := httptest.NewServer(newEventsHandler(hub, nil))
 	defer srv.Close()
 
+	// EVT-090: the case's own offered subprotocol, negotiated by a real
+	// handshake against the real handler.
+	ws, err := dialWS(srv, input.Subprotocol)
+	if err != nil {
+		diffs = append(diffs, report.Diff{Field: "ws.handshake", Expected: "an upgrade negotiating " + input.Subprotocol, Actual: err.Error()})
+		finishCase(rep, c, diffs)
+		return
+	}
+	defer ws.close()
+	if got := ws.conn.Subprotocol(); got != events.Subprotocol {
+		diffs = append(diffs, report.Diff{Field: "ws.subprotocol", Expected: events.Subprotocol, Actual: got})
+	}
+
+	// EVT-091/092: the case's own hello frame goes on the wire; the server's
+	// answer is read back off it.
+	if err := ws.send(input.Frame); err != nil {
+		diffs = append(diffs, report.Diff{Field: "ws.hello", Expected: "the hello frame is accepted", Actual: err.Error()})
+		finishCase(rep, c, diffs)
+		return
+	}
+	ack, err := ws.next(2 * time.Second)
+	if err != nil {
+		diffs = append(diffs, report.Diff{Field: "ws.hello_ack", Expected: "a hello-ack within 2s", Actual: err.Error()})
+		finishCase(rep, c, diffs)
+		return
+	}
+	if ack.Type != want.Frame.Type {
+		diffs = append(diffs, report.Diff{Field: "ws.hello_ack.type", Expected: want.Frame.Type, Actual: ack.Type})
+	}
+	if ack.ResumeResult != want.Frame.ResumeResult {
+		diffs = append(diffs, report.Diff{Field: "ws.hello_ack.resume_result", Expected: want.Frame.ResumeResult, Actual: ack.ResumeResult})
+	}
+
+	// What `fresh` means (EVT-132), on the binding the case is written for: the
+	// pre-existing backlog is NOT replayed, and the live append arrives.
+	hub.Append(fixtureAutomationRunEnvelope(liveID))
+	wsEvent, err := ws.next(2 * time.Second)
+	if err != nil {
+		diffs = append(diffs, report.Diff{Field: "ws.fresh_connect_live_frame", Expected: "one event frame within 2s", Actual: err.Error()})
+	} else if wsEvent.Type != events.FrameTypeEvent || wsEvent.Event.ID != liveID {
+		diffs = append(diffs, report.Diff{
+			Field:    "ws.fresh_connect_live_frame",
+			Expected: liveID + " as a type:event frame (the live append; a fresh subscribe must not replay the pre-existing backlog)",
+			Actual:   fmt.Sprintf("type=%s id=%s", wsEvent.Type, wsEvent.Event.ID),
+		})
+	}
+
+	// And the same case's `fresh` semantics on the OTHER binding, which carries
+	// the same subscription on its initial request instead of a hello (EVT-105).
 	br, cancel := dialSSE(srv, "", nil)
 	defer cancel()
-	hub.Append(fixtureAutomationRunEnvelope("01J8Z3K4N5P6Q7R8S9T0V1W2ZD"))
+	sseLiveID := "01J8Z3K4N5P6Q7R8S9T0V1W2ZE"
+	hub.Append(fixtureAutomationRunEnvelope(sseLiveID))
 	frame, err := readFrame(br, 2*time.Second)
 	if err != nil {
 		diffs = append(diffs, report.Diff{Field: "sse.fresh_connect_live_frame", Expected: "one SSE event frame within 2s", Actual: err.Error()})
-	} else if frame.id != "01J8Z3K4N5P6Q7R8S9T0V1W2ZD" {
-		diffs = append(diffs, report.Diff{Field: "sse.fresh_connect_live_frame.id", Expected: "01J8Z3K4N5P6Q7R8S9T0V1W2ZD (the live append; a fresh subscribe must not replay the pre-existing backlog)", Actual: frame.id})
+	} else if frame.id != sseLiveID {
+		diffs = append(diffs, report.Diff{Field: "sse.fresh_connect_live_frame.id", Expected: sseLiveID + " (the live append; a fresh subscribe must not replay the pre-existing backlog)", Actual: frame.id})
 	}
 
 	finishCase(rep, c, diffs,
-		"the WS hello/hello-ack frame protocol and the hello's own selector (EVT-121 scope-node filtering) are not "+
-			"exercised by the live transport — the WS binding is deferred (eventsse.go's own doc comment); the "+
-			"subprotocol/hello-first/selector/AckHello checks above are library-level, not driven through a live handler")
+		"the hello's own selector term is carried on the wire and accepted by the live handler, but this case's "+
+			"expectation asserts only the hello-ack — the selector's FILTERING effect (EVT-121/122) is the subject of "+
+			"EVT-101-valid-sse-selector-and-schemas, driven separately")
 }
 
 // driveMalformedResumeFrom drives EVT-134 through the live GET /events/v1
@@ -917,7 +954,7 @@ func driveMalformedResumeFrom(rep *report.Report, cases map[string]corpus.Case) 
 	req.Header.Set("Accept", "text/event-stream")
 	sseAuth().Authorize(req)
 	rec := httptest.NewRecorder()
-	newSSEHandler(hub, nil).ServeHTTP(rec, req)
+	newEventsHandler(hub, nil).ServeHTTP(rec, req)
 
 	var diffs []report.Diff
 	if rec.Code != http.StatusBadRequest {
@@ -943,11 +980,17 @@ func driveMalformedResumeFrom(rep *report.Report, cases map[string]corpus.Case) 
 	finishCase(rep, c, diffs)
 }
 
-// driveResumeWithGap drives EVT-140 through the live GET /events/v1 handler
-// over a bounded log: resume_from names an id that has aged out of
-// retention; the live handler streams an `event: gap` frame first (id ==
-// to_id, the oldest retained id), then resumes delivery AT that id
-// inclusive — read from a REAL SSE stream, not a driver-modeled Resolve call.
+// driveResumeWithGap drives EVT-140 through the live /events/v1 handler over a
+// bounded log, on BOTH bindings: resume_from names an id that has aged out of
+// retention.
+//
+// On WS the case maps to the wire one-for-one — its `expected.frames` array IS
+// the WS exchange: a hello-ack naming resume_result: gap (frames[0]), then the
+// explicit gap frame that must immediately follow it (frames[1], EVT-094), then
+// delivery resuming AT to_id inclusive. On SSE the same discontinuity is framed
+// as an `event: gap` whose id is the gap's to_id (EVT-104), which the same case
+// also pins. Both are read from real streams, not from a driver-modeled Resolve
+// call.
 func driveResumeWithGap(rep *report.Report, cases map[string]corpus.Case) {
 	const id = "EVT-140-valid-resume-with-gap"
 	c, ok := corpus.ByID(cases, id)
@@ -985,7 +1028,7 @@ func driveResumeWithGap(rep *report.Report, cases map[string]corpus.Case) {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("corpus expected.frames has %d entries; want 2 (hello-ack + gap)", len(want.Frames)))
 		return
 	}
-	gapWant := want.Frames[1]
+	ackWant, gapWant := want.Frames[0], want.Frames[1]
 
 	// Bounded log (retention 1): appending resume_from then oldest_retained_id
 	// evicts resume_from, so oldest_retained_id is the sole retained event —
@@ -995,13 +1038,15 @@ func driveResumeWithGap(rep *report.Report, cases map[string]corpus.Case) {
 	log.Append(fixtureAutomationRunEnvelope(input.Frame.ResumeFrom))
 	log.Append(fixtureAutomationRunEnvelope(input.OldestRetainedID))
 	hub := eventsse.NewHub(log)
-	srv := httptest.NewServer(newSSEHandler(hub, nil))
+	srv := httptest.NewServer(newEventsHandler(hub, nil))
 	defer srv.Close()
+
+	var diffs []report.Diff
+	diffs = append(diffs, driveResumeWithGapOverWS(srv, input.Frame.ResumeFrom, ackWant, gapWant, want.DeliveryResumesAt)...)
 
 	br, cancel := dialSSE(srv, "resume_from="+input.Frame.ResumeFrom, nil)
 	defer cancel()
 
-	var diffs []report.Diff
 	gapFrame, err := readFrame(br, 2*time.Second)
 	if err != nil {
 		diffs = append(diffs, report.Diff{Field: "sse.gap_frame", Expected: "an event: gap frame within 2s", Actual: err.Error()})
@@ -1046,9 +1091,78 @@ func driveResumeWithGap(rep *report.Report, cases map[string]corpus.Case) {
 	}
 
 	finishCase(rep, c, diffs,
-		"the corpus's frames[0] (a WS hello-ack naming resume_result: gap) has no separate wire representation on the "+
-			"live SSE transport — the gap frame itself is the first thing streamed; only frames[1] (the gap marker) and "+
-			"the resumed delivery are checked against the real handler")
+		"the corpus's frames[0] (a hello-ack naming resume_result: gap) is checked on the WS binding, where it exists; "+
+			"on SSE it has no separate wire representation (EVT-105) and the gap frame itself is the first thing "+
+			"streamed, so only frames[1] and the resumed delivery are checked there")
+}
+
+// driveResumeWithGapOverWS is EVT-140's WS half: the corpus's expected.frames
+// array read straight off a real socket — the hello-ack naming resume_result:
+// gap, the explicit gap frame that must IMMEDIATELY follow it (EVT-094), then
+// delivery resuming AT to_id inclusive with no silent loss (EVT-143).
+func driveResumeWithGapOverWS(srv *httptest.Server, resumeFrom string, ackWant, gapWant struct {
+	Type         string  `json:"type"`
+	ResumeResult string  `json:"resume_result"`
+	FromID       *string `json:"from_id"`
+	ToID         string  `json:"to_id"`
+	Reason       string  `json:"reason"`
+}, resumesAt string) []report.Diff {
+	var diffs []report.Diff
+
+	ws, err := dialWS(srv, events.Subprotocol)
+	if err != nil {
+		return append(diffs, report.Diff{Field: "ws.handshake", Expected: "an upgrade negotiating " + events.Subprotocol, Actual: err.Error()})
+	}
+	defer ws.close()
+
+	if err := ws.send(events.HelloFrame{Type: events.FrameTypeHello, ResumeFrom: resumeFrom}); err != nil {
+		return append(diffs, report.Diff{Field: "ws.hello", Expected: "the hello frame is accepted", Actual: err.Error()})
+	}
+
+	ack, err := ws.next(2 * time.Second)
+	if err != nil {
+		return append(diffs, report.Diff{Field: "ws.frames[0]", Expected: "a hello-ack within 2s", Actual: err.Error()})
+	}
+	if ack.Type != ackWant.Type || ack.ResumeResult != ackWant.ResumeResult {
+		diffs = append(diffs, report.Diff{
+			Field:    "ws.frames[0]",
+			Expected: fmt.Sprintf("{type:%s,resume_result:%s}", ackWant.Type, ackWant.ResumeResult),
+			Actual:   fmt.Sprintf("{type:%s,resume_result:%s}", ack.Type, ack.ResumeResult),
+		})
+	}
+
+	gap, err := ws.next(2 * time.Second)
+	if err != nil {
+		return append(diffs, report.Diff{Field: "ws.frames[1]", Expected: "a gap frame immediately after the hello-ack (EVT-094)", Actual: err.Error()})
+	}
+	var wantFromID string
+	if gapWant.FromID != nil {
+		wantFromID = *gapWant.FromID
+	}
+	var gotFromID string
+	if gap.FromID != nil {
+		gotFromID = *gap.FromID
+	}
+	if gap.Type != gapWant.Type || gotFromID != wantFromID || gap.ToID != gapWant.ToID || gap.Reason != gapWant.Reason {
+		diffs = append(diffs, report.Diff{
+			Field:    "ws.frames[1]",
+			Expected: fmt.Sprintf("{type:%s,from_id:%s,to_id:%s,reason:%s}", gapWant.Type, wantFromID, gapWant.ToID, gapWant.Reason),
+			Actual:   fmt.Sprintf("{type:%s,from_id:%s,to_id:%s,reason:%s}", gap.Type, gotFromID, gap.ToID, gap.Reason),
+		})
+	}
+
+	resumed, err := ws.next(2 * time.Second)
+	if err != nil {
+		return append(diffs, report.Diff{Field: "ws.delivery_resumes_at", Expected: "an event frame within 2s", Actual: err.Error()})
+	}
+	if resumed.Type != events.FrameTypeEvent || resumed.Event.ID != resumesAt {
+		diffs = append(diffs, report.Diff{
+			Field:    "ws.delivery_resumes_at",
+			Expected: resumesAt + " as a type:event frame (delivery resumes AT to_id inclusive)",
+			Actual:   fmt.Sprintf("type=%s id=%s", resumed.Type, resumed.Event.ID),
+		})
+	}
+	return diffs
 }
 
 // --- webhook delivery signing (EVT-151) -------------------------------------
@@ -1160,13 +1274,87 @@ var sseAuth = sync.OnceValue(func() *authtest.Fixture {
 	return f
 })
 
-// newSSEHandler mounts the live /events/v1 handler over hub, authenticated as
+// newEventsHandler mounts the live /events/v1 handler over hub, authenticated as
 // the shared fixture, with the scope tree the fixture's own visible set
-// (EVT-120) resolves against.
-func newSSEHandler(hub *eventsse.Hub, nodes []datamodel.ScopeNode) http.Handler {
+// (EVT-120) resolves against. One handler serves BOTH bindings (EVT-001), which
+// is why the WS-shaped cases and the SSE-shaped cases mount the same thing.
+func newEventsHandler(hub *eventsse.Hub, nodes []datamodel.ScopeNode) http.Handler {
 	return eventsse.New(hub, sseAuth().Auth, func(context.Context) ([]datamodel.ScopeNode, error) {
 		return nodes, nil
 	})
+}
+
+// wsFrame is any server→client WS frame, decoded into the union of the fields
+// the frame types this driver observes carry (EVT-092/093/094).
+type wsFrame struct {
+	Type         string          `json:"type"`
+	ResumeResult string          `json:"resume_result"`
+	Event        events.Envelope `json:"event"`
+	FromID       *string         `json:"from_id"`
+	ToID         string          `json:"to_id"`
+	Reason       string          `json:"reason"`
+}
+
+// wsSubscriber is a driven events/1 WS client.
+type wsSubscriber struct {
+	conn   *websocket.Conn
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+// dialWS opens a WS connection to srv's /events/v1, offering subprotocol
+// (empty = offer none, the EVT-090 refusal case) and authenticating with the
+// shared fixture's session cookie — never a query-string credential (EVT-112).
+func dialWS(srv *httptest.Server, subprotocol string) (*wsSubscriber, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	header := http.Header{}
+	for k, v := range sseAuth().AuthorizeHeaders() {
+		header.Set(k, v)
+	}
+	var offered []string
+	if subprotocol != "" {
+		offered = []string{subprotocol}
+	}
+	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/events/v1", &websocket.DialOptions{
+		Subprotocols: offered,
+		HTTPHeader:   header,
+	})
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	return &wsSubscriber{conn: conn, ctx: ctx, cancel: cancel}, nil
+}
+
+// send writes one client→server frame (EVT-002: one UTF-8 JSON message).
+func (w *wsSubscriber) send(frame any) error {
+	data, err := json.Marshal(frame)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(w.ctx, 2*time.Second)
+	defer cancel()
+	return w.conn.Write(ctx, websocket.MessageText, data)
+}
+
+// next reads one server frame, erroring if none arrives within d.
+func (w *wsSubscriber) next(d time.Duration) (wsFrame, error) {
+	ctx, cancel := context.WithTimeout(w.ctx, d)
+	defer cancel()
+	_, data, err := w.conn.Read(ctx)
+	if err != nil {
+		return wsFrame{}, err
+	}
+	var f wsFrame
+	if err := json.Unmarshal(data, &f); err != nil {
+		return wsFrame{}, fmt.Errorf("decode WS frame %s: %w", data, err)
+	}
+	return f, nil
+}
+
+func (w *wsSubscriber) close() {
+	w.cancel()
+	_ = w.conn.CloseNow()
 }
 
 func dialSSE(srv *httptest.Server, query string, header http.Header) (*bufio.Reader, func()) {
