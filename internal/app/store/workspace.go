@@ -215,7 +215,12 @@ func (s *Store) PurgeWorkspace(ctx context.Context) error {
 				return fmt.Errorf("store: purge %s: %w", table, err)
 			}
 		}
-		for _, table := range []string{"pack_rows", "pack_files", "packs"} {
+		// webhook_delivery_state rides this list rather than the allKinds loop
+		// above: it is not a resource Kind, and it holds the sealed signing
+		// secrets of every registered endpoint. Leaving it behind would survive a
+		// purge that just destroyed the endpoints those secrets belong to —
+		// credential material for rows that no longer exist.
+		for _, table := range []string{"pack_rows", "pack_files", "packs", "webhook_delivery_state"} {
 			if _, err := tx.ExecContext(ctx, `DELETE FROM `+table); err != nil {
 				return fmt.Errorf("store: purge %s: %w", table, err)
 			}

@@ -50,6 +50,15 @@ const (
 	// (edge/app). Its writes are gated by the rules compiler rather than
 	// datamodel.ValidateRows (see automations.go).
 	KindAutomation Kind = "automations"
+	// KindWebhookEndpoint is the events/1 outbound-webhook registration kind
+	// (EVT-150: "a management-plane resource this contract does not define").
+	// The row carries only the endpoint's public configuration — its URL, the
+	// schemas it subscribes to, its placement, its labels. Its SIGNING SECRET
+	// and its delivery progress are deliberately NOT in this body: the body is
+	// served back verbatim by the generic read handlers, so a secret stored here
+	// would be a secret handed to every reader. Both live in the private
+	// webhook_delivery_state table instead (webhooks.go).
+	KindWebhookEndpoint Kind = "webhook_endpoints"
 )
 
 // allKinds is every resource table in schema order (scope_nodes first, then the
@@ -59,6 +68,7 @@ const (
 var allKinds = []Kind{
 	KindScopeNode, KindPlaylist, KindSchedule, KindDaypart,
 	KindValidityWindow, KindFallback, KindPresetBatch, KindAutomation,
+	KindWebhookEndpoint,
 }
 
 var kindSet = func() map[Kind]bool {
@@ -270,6 +280,15 @@ func Open(dsn string) (*Store, error) {
 	if _, err := db.Exec(eventsSchema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: migrate events: %w", err)
+	}
+	// The outbound-webhook delivery state (webhook_delivery_state) is its own
+	// subsystem for the same reason jobs are: it is execution state ABOUT a
+	// resource row rather than a resource row itself, and it holds the sealed
+	// signing secrets that must never appear in a served representation
+	// (webhooks.go).
+	if _, err := db.Exec(webhooksSchema); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("store: migrate webhook delivery state: %w", err)
 	}
 	for _, k := range allKinds {
 		if _, err := db.Exec(fmt.Sprintf(resourceTableDDL, string(k))); err != nil {

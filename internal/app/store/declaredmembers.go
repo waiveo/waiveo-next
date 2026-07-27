@@ -110,6 +110,15 @@ var kindDeclaredMembers = map[Kind][]declaredMember{
 		{key: "max", value: json.RawMessage(`null`)},
 		{key: "conditions", value: json.RawMessage(`[]`), overNull: true},
 	},
+	KindWebhookEndpoint: {
+		// `schemas` — `[]`. An endpoint that named no schemas subscribes to
+		// every registered schema its scope admits (EVT-124: a schemas
+		// restriction applies only when one was supplied), which is exactly what
+		// the empty list already meant to the delivery filter. Materializing it
+		// states that reading rather than leaving a typed client to discover the
+		// member is sometimes missing.
+		{key: "schemas", value: json.RawMessage(`[]`), overNull: true},
+	},
 }
 
 // injectDeclaredMembers returns body with every declared-required member of

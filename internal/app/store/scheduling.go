@@ -76,6 +76,28 @@ func validateAfterWrite(ctx context.Context, tx *sql.Tx, kind Kind) error {
 			return &ValidationError{Errors: errs}
 		}
 		return nil
+	case kind == KindWebhookEndpoint:
+		// A webhook endpoint has no datamodel/1 row schema and no compiler: its
+		// body is validated by the api layer's own per-kind check before the
+		// write (a URL that is not an absolute http/https origin is a 422, never
+		// a stored row). What is enforced here is the same identity rule the
+		// automations arm above enforces, for the same reason — an in-process
+		// writer that bypasses the HTTP layer must not be able to persist a
+		// non-ULID id that cursor pagination would then refuse to page past.
+		ids, err := readIDs(ctx, tx, string(KindWebhookEndpoint))
+		if err != nil {
+			return err
+		}
+		var errs []datamodel.Error
+		for _, id := range ids {
+			if e := datamodel.CheckRowID(id, "id"); e != nil {
+				errs = append(errs, *e)
+			}
+		}
+		if len(errs) > 0 {
+			return &ValidationError{Errors: errs}
+		}
+		return nil
 	default:
 		return fmt.Errorf("store: no validator for kind %q", kind)
 	}
