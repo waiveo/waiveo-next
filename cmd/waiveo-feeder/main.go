@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/app/api"
+	"github.com/maaxton/waiveo-next/internal/app/devices"
 	"github.com/maaxton/waiveo-next/internal/app/eventingest"
 	"github.com/maaxton/waiveo-next/internal/app/eventsse"
 	"github.com/maaxton/waiveo-next/internal/app/store"
@@ -258,9 +259,41 @@ func main() {
 	// handler below serves from (one origin.Store instance), so an uploaded asset
 	// is immediately servable; contentBaseURL is this feeder's own content-origin
 	// base the upload's returned url is built from (REL-061/140).
+	// The relay/1 persistent-connection endpoint (REL-001's stable path,
+	// upgraded to a WS carrying one JSON message per frame, REL-002): the
+	// ONLY route desired state and the connection handshake move over. The
+	// store-derived snapshot provider answers state.pull (REL-050/051), the
+	// enrollment key is looked up by the mTLS client-certificate identity
+	// (REL-041), and the enrollment registry's revocation record is checked
+	// at every connection attempt and before every steady-state frame
+	// (REL-016). The bootstrap HTTP routes below (enrollment +
+	// re-enrollment) are the only pre-mTLS surface left — they exist to
+	// bootstrap the identity this connection authenticates with.
+	//
+	// It is built here, ahead of the api handler, because the api's device
+	// plane dispatches its commands down this server's live connections.
+	relayConnSrv := relayconn.New(
+		src.current,
+		enrollSrv.RelayEnrollmentKey,
+		enrollSrv.IsRevoked,
+		firstPhotonSite,
+		hello.AppPeerImplementedMinors(1, 1),
+		firstPhotonRecognizedFeatures,
+	)
+
+	// The device plane's read model: the adopted devices and entities the
+	// devices/entities list operations serve, and the resolver a command's
+	// target entity is looked up in to find the relay that owns it (REL-112).
+	// It starts empty — a relay populates it from its own discovery and
+	// adoption reports (REL-110/111), which is a separate pipeline; until then
+	// the routes are live and answer truthfully rather than 404-ing as
+	// unmounted paths.
+	deviceRegistry := devices.New()
+
 	nowMs := func() int64 { return time.Now().UnixMilli() }
 	idem := apihttp.NewIdempotencyStore(nowMs, 0)
-	apiHandler := api.New(st, idem, nowMs, ulid.New, contentStore, contentBaseURL)
+	apiHandler := api.New(st, idem, nowMs, ulid.New, contentStore, contentBaseURL,
+		api.WithDevicePlane(deviceRegistry, relayConnSrv))
 
 	// The live observability plane (events/1 EVT-010/013/100/130-144): ONE shared
 	// event log the relay-telemetry ingest writes into and the /events/v1 SSE
@@ -308,24 +341,6 @@ func main() {
 	mux.Handle("/", webUI)
 	enrollSrv.Register(mux)
 
-	// The relay/1 persistent-connection endpoint (REL-001's stable path,
-	// upgraded to a WS carrying one JSON message per frame, REL-002): the
-	// ONLY route desired state and the connection handshake move over. The
-	// store-derived snapshot provider answers state.pull (REL-050/051), the
-	// enrollment key is looked up by the mTLS client-certificate identity
-	// (REL-041), and the enrollment registry's revocation record is checked
-	// at every connection attempt and before every steady-state frame
-	// (REL-016). The bootstrap HTTP routes above (enrollment +
-	// re-enrollment) are the only pre-mTLS surface left — they exist to
-	// bootstrap the identity this connection authenticates with.
-	relayConnSrv := relayconn.New(
-		src.current,
-		enrollSrv.RelayEnrollmentKey,
-		enrollSrv.IsRevoked,
-		firstPhotonSite,
-		hello.AppPeerImplementedMinors(1, 1),
-		firstPhotonRecognizedFeatures,
-	)
 	mux.Handle("/relay/v1", relayConnSrv.Handler())
 
 	// Nudge every live relay connection when the desired-state generation

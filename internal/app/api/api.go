@@ -29,6 +29,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/maaxton/waiveo-next/internal/app/devices"
 	"github.com/maaxton/waiveo-next/internal/app/packs"
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/datamodel"
@@ -75,6 +76,13 @@ type server struct {
 	// POST /api/v1/packs handler drives (internal/app/packs). It shares the same
 	// store every other resource handler writes through.
 	installer *packs.Installer
+	// devices is the device plane's read model (adopted devices and the entities
+	// they expose) the devices/entities list operations serve, and the resolver a
+	// command's target entity is looked up in; dispatch carries that command down
+	// the owning relay's persistent connection. Both are optional (WithDevicePlane)
+	// — the routes mount either way, see devices.go.
+	devices  *devices.Registry
+	dispatch CommandDispatcher
 }
 
 // New builds the api/1 HTTP handler: a /api/v1-prefixed mux exposing the
@@ -90,11 +98,15 @@ type server struct {
 // content is the shared origin store the feeder also serves GET /content/<hex>
 // from (one instance, so an upload is immediately servable); contentBase is
 // the feeder's content-origin base URL the upload's returned url is built
-// from.
-func New(st *store.Store, idem *apihttp.IdempotencyStore, nowMs func() int64, newID func() string, content *origin.Store, contentBase string) http.Handler {
+// from. opts wire the optional collaborators — currently the device plane
+// (WithDevicePlane), whose routes mount whether or not it is supplied.
+func New(st *store.Store, idem *apihttp.IdempotencyStore, nowMs func() int64, newID func() string, content *origin.Store, contentBase string, opts ...Option) http.Handler {
 	srv := &server{
 		store: st, idem: idem, nowMs: nowMs, newID: newID, content: content, contentBase: contentBase,
 		installer: packs.NewInstaller(st),
+	}
+	for _, opt := range opts {
+		opt(srv)
 	}
 	mux := http.NewServeMux()
 	srv.mount(mux, scopeNodesConfig())
@@ -111,6 +123,11 @@ func New(st *store.Store, idem *apihttp.IdempotencyStore, nowMs func() int64, ne
 	mux.HandleFunc("POST "+apiPrefix+"/automations/{id}/run", srv.runAutomation)
 	mux.HandleFunc("POST "+apiPrefix+"/automations/bulk-enable", srv.bulkEnableAutomations)
 	mux.HandleFunc("POST "+apiPrefix+"/content", srv.uploadContent)
+	// The device plane's two read families and its one mutating operation. They
+	// are not resourceConfig mounts: a device is a read-only projection of the
+	// relay's own discovery and adoption plane, with no revision to condition a
+	// write on (devices.go).
+	srv.mountDevicePlane(mux)
 	return apihttp.WithTraceID(mux)
 }
 
