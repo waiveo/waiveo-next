@@ -1104,6 +1104,106 @@ func TestRevocationLandsMidSession(t *testing.T) {
 	}
 }
 
+// TestRevocationReapsSilentSession is REL-016's silent-relay half: a relay
+// whose certificate is revoked mid-session and which then sends NOTHING
+// further (the stolen-credential holder's posture — keep the authenticated
+// TLS session open, never trip the inbound-frame re-check) is proactively
+// refused and disconnected on the heartbeat cadence, its conn slot
+// reclaimed — it does not get to ride out the session.
+func TestRevocationReapsSilentSession(t *testing.T) {
+	h := newHarness(t, feederrelayconn.WithHeartbeat(50*time.Millisecond, time.Second))
+	store := enrolledRelay(t, h)
+
+	log := &frameLog{}
+	client, err := relayclient.Dial(relayclient.Config{
+		URL: h.ts.URL, Store: store, Declaration: testDeclaration,
+		ObserveFrame: log.observe,
+	})
+	if err != nil {
+		t.Fatalf("relayconn.Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	waitFor(t, 5*time.Second, func() bool { return h.connSrv.ConnCount() == 1 },
+		"authenticated connection never registered")
+
+	relayID, serial := certSerial(t, store)
+	if !h.enrollSrv.Revoke(relayID, serial) {
+		t.Fatalf("Revoke(%s, %s) found no issuance on record", relayID, serial)
+	}
+
+	// The relay sends nothing after the revocation. The sweep must still
+	// tear the session down within a few heartbeat ticks.
+	select {
+	case <-client.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("silent revoked session was never torn down (REL-016 sweep did not reap it)")
+	}
+	waitFor(t, 5*time.Second, func() bool { return h.connSrv.ConnCount() == 0 },
+		"revoked connection still holds its conn slot after teardown")
+
+	// The teardown was the typed refusal, not a bare socket close: the
+	// relay received the same CERT_REVOKED error frame a fresh connection
+	// attempt draws.
+	var sawRefusal bool
+	for _, f := range log.Received() {
+		if f.Type == wire.FrameTypeError && f.Code == "CERT_REVOKED" {
+			sawRefusal = true
+		}
+	}
+	if !sawRefusal {
+		t.Fatalf("no CERT_REVOKED error frame preceded the close; received: %+v", log.Received())
+	}
+}
+
+// TestNotifyGenerationAdvanceGatesRevoked: server-initiated pushes are
+// revocation-gated (REL-016) — a revoked relay never receives fresh
+// generation metadata via state.changed; the push path closes its
+// connection instead. The heartbeat cadence is pushed out of the test
+// window so the push-path gate is provably what enforces it.
+func TestNotifyGenerationAdvanceGatesRevoked(t *testing.T) {
+	h := newHarness(t, feederrelayconn.WithHeartbeat(time.Hour, time.Second))
+	store := enrolledRelay(t, h)
+
+	nudges := make(chan int64, 4)
+	client, _ := dialClient(t, h, store, func(gen int64) { nudges <- gen })
+
+	// Sanity: an un-revoked connection receives the nudge.
+	h.advanceGeneration(t, 2)
+	h.connSrv.NotifyGenerationAdvance()
+	select {
+	case gen := <-nudges:
+		if gen != 2 {
+			t.Fatalf("nudge carried generation %d, want 2", gen)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no state.changed nudge before revocation (harness broken)")
+	}
+
+	relayID, serial := certSerial(t, store)
+	if !h.enrollSrv.Revoke(relayID, serial) {
+		t.Fatalf("Revoke(%s, %s) found no issuance on record", relayID, serial)
+	}
+
+	h.advanceGeneration(t, 3)
+	h.connSrv.NotifyGenerationAdvance()
+
+	// The push path must close the revoked connection...
+	select {
+	case <-client.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("revoked connection stayed open through NotifyGenerationAdvance (REL-016)")
+	}
+	waitFor(t, 5*time.Second, func() bool { return h.connSrv.ConnCount() == 0 },
+		"revoked connection still holds its conn slot after the gated push")
+
+	// ...and no generation-3 nudge may have reached the revoked relay.
+	select {
+	case gen := <-nudges:
+		t.Fatalf("revoked relay received state.changed generation %d (REL-016: pushes must be revocation-gated)", gen)
+	default:
+	}
+}
+
 // TestMissingClientCertDrawsMalformedMessage: a connection presenting no
 // client certificate cannot satisfy REL-003's mutual authentication; it is
 // refused with MALFORMED_MESSAGE — the taxonomy's REL-003 entry — and the

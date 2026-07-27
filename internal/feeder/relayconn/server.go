@@ -10,9 +10,13 @@
 //	TLS (mutual: the relay presents its enrollment-issued leaf; the listener
 //	verifies it against the enrollment CA, enroll.Server.ClientCAPool)
 //	→ REL-016 revocation check on the presented certificate's serial —
-//	  refused CERT_REVOKED at every connection attempt, and re-checked
-//	  before every steady-state frame so a mid-session revocation lands on
-//	  the very next frame
+//	  refused CERT_REVOKED at every connection attempt, re-checked before
+//	  every steady-state frame so a mid-session revocation lands on the
+//	  very next frame, and swept on the heartbeat cadence so a revoked
+//	  relay that simply goes SILENT is proactively refused + disconnected
+//	  (its conn slot reclaimed) rather than riding out an open session;
+//	  server-initiated pushes are gated the same way
+//	  (NotifyGenerationAdvance never nudges a revoked connection)
 //	→ server sends `challenge` — nonce DERIVED from this connection's TLS
 //	  exporter keying material (REL-040, hello.ExporterChallengeNonce)
 //	→ relay sends `hello` (channel-binding signature over that nonce)
@@ -84,12 +88,15 @@ type SnapshotProvider func() (wire.StateSnapshotBody, error)
 
 // RevocationCheck reports whether the certificate with this serial, issued
 // to relayID, has been revoked — enroll.Server.IsRevoked. REL-016: the
-// check runs at EVERY connection attempt, not only at issuance time, and
-// again before every steady-state frame is served, so a revocation lands
-// mid-session on the very next frame rather than waiting out the
-// connection. serial is the presented client certificate's own
-// SerialNumber, lowercase hex (big.Int.Text(16)) — the exact string form
-// the issuance record keys.
+// check runs at EVERY connection attempt, not only at issuance time; again
+// before every steady-state frame is served, so a revocation lands
+// mid-session on the very next frame from a relay that keeps talking; on
+// every server-initiated push (NotifyGenerationAdvance); and on the
+// heartbeat cadence, so a revoked relay that goes silent — keeping its
+// authenticated TLS session open while sending nothing — is proactively
+// disconnected rather than holding its conn slot and its session forever.
+// serial is the presented client certificate's own SerialNumber, lowercase
+// hex (big.Int.Text(16)) — the exact string form the issuance record keys.
 type RevocationCheck func(relayID, serial string) bool
 
 // Server serves /relay/v1. Safe for concurrent connections; its live-conn
@@ -227,6 +234,7 @@ func offersSubprotocol(r *http.Request) bool {
 type serverConn struct {
 	ws           *websocket.Conn
 	relayID      string
+	serial       string // presented client-cert serial, for REL-016 re-checks
 	writeTimeout time.Duration
 }
 
@@ -317,7 +325,7 @@ func (s *Server) serve(req *http.Request, ws *websocket.Conn) {
 	if err != nil {
 		return
 	}
-	conn := &serverConn{ws: ws, relayID: relayID, writeTimeout: s.writeTimeout}
+	conn := &serverConn{ws: ws, relayID: relayID, serial: serial, writeTimeout: s.writeTimeout}
 	if err := conn.send(challenge); err != nil {
 		return
 	}
@@ -397,6 +405,13 @@ func (s *Server) serve(req *http.Request, ws *websocket.Conn) {
 		}
 	}()
 
+	// REL-016's silent-relay half: the inbound-loop re-check below only
+	// fires when the relay SENDS something, so a revoked relay that simply
+	// goes quiet would otherwise keep its authenticated session (and this
+	// conns slot) open indefinitely. This sweep re-checks revocation on the
+	// heartbeat cadence and tears a revoked connection down proactively.
+	go s.revocationSweep(hbCtx, conn)
+
 	for {
 		var f wire.Frame
 		if err := readFrame(ctx, ws, &f); err != nil {
@@ -438,6 +453,36 @@ func (s *Server) serve(req *http.Request, ws *websocket.Conn) {
 // isRevoked applies the REL-016 check when one is wired (nil = tests only).
 func (s *Server) isRevoked(relayID, serial string) bool {
 	return s.revoked != nil && s.revoked(relayID, serial)
+}
+
+// revocationSweep re-checks conn's certificate against the revocation
+// record on the heartbeat cadence until the connection ends, closing it as
+// soon as a revocation is found (RevocationCheck's doc: the enforcement
+// path for a revoked relay that goes silent).
+func (s *Server) revocationSweep(ctx context.Context, conn *serverConn) {
+	ticker := time.NewTicker(s.pingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if s.isRevoked(conn.relayID, conn.serial) {
+				s.closeRevoked(conn)
+				return
+			}
+		}
+	}
+}
+
+// closeRevoked sends the typed CERT_REVOKED refusal (best-effort — the
+// same frame a fresh connection attempt draws, REL-016) and hard-closes
+// the connection; the closed socket errors the conn's read loop out, which
+// unregisters it from the live-conn set.
+func (s *Server) closeRevoked(conn *serverConn) {
+	_ = conn.send(wire.NewErrorFrame("", "", conn.relayID,
+		"CERT_REVOKED", "the presented certificate has been revoked (REL-016)"))
+	_ = conn.ws.CloseNow()
 }
 
 // handleStatePull answers one state.pull (REL-050/051): state.unchanged
@@ -523,6 +568,13 @@ func (s *Server) NotifyGenerationAdvance() {
 	s.mu.Unlock()
 
 	for _, c := range conns {
+		// REL-016: a server-initiated push is a steady-state frame like any
+		// other — a revoked relay draws the typed refusal and a close, never
+		// fresh generation metadata.
+		if s.isRevoked(c.relayID, c.serial) {
+			go s.closeRevoked(c)
+			continue
+		}
 		f, err := wire.NewFrame(wire.FrameTypeStateChanged, ulid.New(), c.relayID,
 			wire.StateChangedBody{Generation: snap.Generation})
 		if err != nil {
