@@ -21,7 +21,9 @@ import (
 // identical bytes yields the same asset_ref. A zero-length body is rejected
 // 400 / VALIDATION_FAILED — empty content cannot be stored.
 func (srv *server) uploadContent(w http.ResponseWriter, r *http.Request) {
-	body, ok := readBody(w, r)
+	// The one route whose body is asset bytes rather than a resource description,
+	// so it carries its own, much larger ceiling (see maxContentUploadBytes).
+	body, ok := readBodyLimit(w, r, maxContentUploadBytes)
 	if !ok {
 		return
 	}

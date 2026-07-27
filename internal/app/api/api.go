@@ -29,6 +29,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 
@@ -999,13 +1000,55 @@ func (rs *resource) internal(w http.ResponseWriter, r *http.Request, _ error) {
 	rs.problem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
 }
 
+// maxJSONBodyBytes caps a JSON request body at 1 MiB.
+//
+// Every handler here buffers the whole body before it decides anything — it has
+// to, because an Idempotency-Key replay is keyed on those exact bytes (API-051)
+// — and the read happens BEFORE the handler's own authorization check, so the
+// allocation is driven by a principal whose authority for the operation has not
+// been established yet. Authentication has (the mux sits behind
+// auth.Middleware), so this is not an anonymous lever; it is still one
+// authenticated principal deciding how much memory the process spends on a
+// request it may not be allowed to make.
+//
+// A megabyte is far beyond any resource this surface accepts — the largest is a
+// playlist with its items — and far below anything worth worrying about.
+const maxJSONBodyBytes = 1 << 20
+
+// maxContentUploadBytes caps a content-origin upload at 64 MiB.
+//
+// It is a separate, much larger limit because the content route carries asset
+// BYTES rather than a resource description. It is not generous in the way a
+// streaming ingest would be: origin.Store.Add takes a byte slice, so an upload
+// is buffered in full whatever this number says, and the honest reading is that
+// large-media ingest needs a streaming path rather than a bigger constant. Until
+// then this bounds the buffer instead of leaving it to the client.
+const maxContentUploadBytes = 64 << 20
+
 // readBody reads the full request body, writing a 400 Problem and returning
-// ok=false on a read failure.
+// ok=false on a read failure — including a body that exceeds maxJSONBodyBytes.
 func readBody(w http.ResponseWriter, r *http.Request) (body []byte, ok bool) {
-	b, err := io.ReadAll(r.Body)
+	return readBodyLimit(w, r, maxJSONBodyBytes)
+}
+
+// readBodyLimit is readBody with an explicit ceiling, for the one route whose
+// payload is not a JSON resource.
+//
+// http.MaxBytesReader, rather than io.LimitReader, is what makes the limit an
+// error instead of a silent truncation: a truncated body would reach
+// json.Unmarshal as malformed JSON and be reported as a validation failure the
+// client cannot act on, while an oversize body reported as oversize tells them
+// exactly what to change.
+func readBodyLimit(w http.ResponseWriter, r *http.Request, max int64) (body []byte, ok bool) {
+	b, err := io.ReadAll(http.MaxBytesReader(w, r.Body, max))
 	if err != nil {
+		detail := "The request body could not be read."
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			detail = fmt.Sprintf("The request body exceeds the %d-byte limit for this operation.", max)
+		}
 		apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), http.StatusBadRequest,
-			"VALIDATION_FAILED", "Bad Request", "The request body could not be read.", nil)
+			"VALIDATION_FAILED", "Bad Request", detail, nil)
 		return nil, false
 	}
 	return b, true
