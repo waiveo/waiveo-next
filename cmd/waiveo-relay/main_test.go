@@ -503,7 +503,7 @@ func TestBootScheduleResolverServesResolvedProgramForGovernedScreen(t *testing.T
 // behavior, preserved.
 func TestBootScheduleResolverEmptyScheduleLeavesAppAuthoredProgramUnchanged(t *testing.T) {
 	appAuthored := wire.ScreenProgram{
-		ScreenID:        "screen-first-photon",
+		ScreenID:        "01J8Z9DEM0SCREENR0WF1RSTPH", // a screen identity row's id (DAT-004a), never a scope node's
 		ProgramRevision: "rev-1",
 		Priority:        "scheduled",
 		Display:         "content",

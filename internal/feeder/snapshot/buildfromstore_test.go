@@ -55,7 +55,7 @@ func TestBuildFromStoreOverSeededStore(t *testing.T) {
 		t.Fatalf("DesiredState: %v", err)
 	}
 
-	snap, err := BuildFromStore(ds, img, "https://origin.example", id, nil)
+	snap, _, err := BuildFromStore(ds, "https://origin.example", id, nil, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -83,10 +83,14 @@ func TestBuildFromStoreOverSeededStore(t *testing.T) {
 		t.Errorf("site_effective.TZ = %q, want America/Chicago (the site node's own tz)", se.TZ)
 	}
 
-	// The baseline screen_programs / edge_rules / pairing_grants shape matches Build:
-	// one image screen-program, one demo edge rule, an empty (non-nil) grants slice.
+	// screen_programs is derived: one entry per seeded SCREEN ROW, named by that
+	// row's id (DAT-004a) — never by the screen-kind scope node it sits under —
+	// and showing the seeded playlist's own asset inside the content daypart.
 	if len(snap.Sections.ScreenPrograms) != 1 || snap.Sections.ScreenPrograms[0].Display != "content" {
-		t.Errorf("ScreenPrograms = %+v, want one display:content program", snap.Sections.ScreenPrograms)
+		t.Fatalf("ScreenPrograms = %+v, want one display:content program", snap.Sections.ScreenPrograms)
+	}
+	if got := snap.Sections.ScreenPrograms[0].ScreenID; got != store.SeedScreenID {
+		t.Errorf("screen_id = %q, want the seeded screen ROW id %q", got, store.SeedScreenID)
 	}
 	if snap.Sections.ScreenPrograms[0].Content[0].AssetRef != assetRef {
 		t.Errorf("screen program asset_ref = %q, want %q", snap.Sections.ScreenPrograms[0].Content[0].AssetRef, assetRef)
@@ -155,7 +159,7 @@ func TestBuildFromStoreGenerationAdvances(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DesiredState #1: %v", err)
 	}
-	snap1, err := BuildFromStore(ds1, img, "https://origin.example", id, nil)
+	snap1, _, err := BuildFromStore(ds1, "https://origin.example", id, nil, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore #1: %v", err)
 	}
@@ -175,7 +179,7 @@ func TestBuildFromStoreGenerationAdvances(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DesiredState #2: %v", err)
 	}
-	snap2, err := BuildFromStore(ds2, img, "https://origin.example", id, nil)
+	snap2, _, err := BuildFromStore(ds2, "https://origin.example", id, nil, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore #2: %v", err)
 	}
@@ -220,7 +224,7 @@ func TestBuildFromStoreEmitsContentOrigin(t *testing.T) {
 		t.Fatalf("DesiredState: %v", err)
 	}
 
-	snap, err := BuildFromStore(ds, img, "https://origin.example", id, nil)
+	snap, _, err := BuildFromStore(ds, "https://origin.example", id, nil, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -256,7 +260,7 @@ func TestBuildFromStoreRejectsNilIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DesiredState: %v", err)
 	}
-	if _, err := BuildFromStore(ds, img, "https://origin.example", nil, nil); err == nil {
+	if _, _, err := BuildFromStore(ds, "https://origin.example", nil, nil, contentInstant(t)); err == nil {
 		t.Error("BuildFromStore(nil identity) succeeded, want an error")
 	}
 }
@@ -324,7 +328,7 @@ func TestBuildFromStoreCarriesSeededDemoAsEdgeRule(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DesiredState: %v", err)
 	}
-	snap, err := BuildFromStore(ds, img, "https://origin.example", id, nil)
+	snap, _, err := BuildFromStore(ds, "https://origin.example", id, nil, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -354,7 +358,7 @@ func TestBuildFromStoreEdgeRulesAdvanceWithAuthoredRule(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DesiredState #1: %v", err)
 	}
-	snap1, err := BuildFromStore(ds1, img, "https://origin.example", id, nil)
+	snap1, _, err := BuildFromStore(ds1, "https://origin.example", id, nil, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore #1: %v", err)
 	}
@@ -370,7 +374,7 @@ func TestBuildFromStoreEdgeRulesAdvanceWithAuthoredRule(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DesiredState #2: %v", err)
 	}
-	snap2, err := BuildFromStore(ds2, img, "https://origin.example", id, nil)
+	snap2, _, err := BuildFromStore(ds2, "https://origin.example", id, nil, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore #2: %v", err)
 	}
@@ -413,7 +417,7 @@ func TestBuildFromStoreEdgeRulesExcludeAppClassifiedRule(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DesiredState: %v", err)
 	}
-	snap, err := BuildFromStore(ds, img, "https://origin.example", id, nil)
+	snap, _, err := BuildFromStore(ds, "https://origin.example", id, nil, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -426,115 +430,6 @@ func TestBuildFromStoreEdgeRulesExcludeAppClassifiedRule(t *testing.T) {
 		if id == appAutomationID {
 			t.Fatalf("app-classified rule %q was carried into edge_rules — REL-062 violation", appAutomationID)
 		}
-	}
-
-	recomputed, err := hashSections(snap.Sections)
-	if err != nil {
-		t.Fatalf("hashSections: %v", err)
-	}
-	if recomputed != snap.Hash {
-		t.Errorf("recomputed hash %q != snapshot hash %q (REL-053)", recomputed, snap.Hash)
-	}
-}
-
-// TestBuildFromStoreCastSingleItemByteIdenticalToBuildFromStore asserts
-// BuildFromStoreCast, called with one CastItem carrying no ContentType/
-// DurationMS, produces wire output byte-identical to BuildFromStore's own —
-// the same single-item-preserving property BuildCast has over Build,
-// carried through the store-driven path make dev and CI both exercise.
-func TestBuildFromStoreCastSingleItemByteIdenticalToBuildFromStore(t *testing.T) {
-	img := loadTestImage(t)
-	id := testIdentity(t)
-	assetRef := signhash.ContentID(img)
-	s := seededStore(t, assetRef)
-
-	ds, err := s.DesiredState(context.Background())
-	if err != nil {
-		t.Fatalf("DesiredState: %v", err)
-	}
-
-	viaBuildFromStore, err := BuildFromStore(ds, img, "https://origin.example", id, nil)
-	if err != nil {
-		t.Fatalf("BuildFromStore: %v", err)
-	}
-	viaCast, err := BuildFromStoreCast(ds, []CastItem{{Bytes: img}}, "https://origin.example", id, nil)
-	if err != nil {
-		t.Fatalf("BuildFromStoreCast: %v", err)
-	}
-
-	if viaCast.Hash != viaBuildFromStore.Hash {
-		t.Errorf("BuildFromStoreCast single-item hash = %q, want %q (BuildFromStore's own hash)", viaCast.Hash, viaBuildFromStore.Hash)
-	}
-	if viaCast.Generation != viaBuildFromStore.Generation {
-		t.Errorf("BuildFromStoreCast Generation = %d, want %d", viaCast.Generation, viaBuildFromStore.Generation)
-	}
-
-	rawWant, err := json.Marshal(viaBuildFromStore.Sections)
-	if err != nil {
-		t.Fatalf("Marshal(viaBuildFromStore.Sections): %v", err)
-	}
-	rawGot, err := json.Marshal(viaCast.Sections)
-	if err != nil {
-		t.Fatalf("Marshal(viaCast.Sections): %v", err)
-	}
-	if string(rawWant) != string(rawGot) {
-		t.Errorf("BuildFromStoreCast single-item sections marshal differs from BuildFromStore's:\nBuildFromStore:     %s\nBuildFromStoreCast: %s", rawWant, rawGot)
-	}
-}
-
-// TestBuildFromStoreCastOrderedMultiItem asserts BuildFromStoreCast's
-// screen_programs[0].content carries the full ordered cast (one ContentRef
-// per item, each independently asset_ref-verifiable and carrying its own
-// content_type/duration_ms), while every other section (schedule, edge_rules,
-// site_effective) still derives from the store exactly as BuildFromStore's
-// own does.
-func TestBuildFromStoreCastOrderedMultiItem(t *testing.T) {
-	img := loadTestImage(t)
-	id := testIdentity(t)
-	assetRef := signhash.ContentID(img)
-	s := seededStore(t, assetRef)
-
-	ds, err := s.DesiredState(context.Background())
-	if err != nil {
-		t.Fatalf("DesiredState: %v", err)
-	}
-
-	items := []CastItem{
-		{Bytes: []byte("store-cast-item-one"), ContentType: "image", DurationMS: 5000},
-		{Bytes: []byte("store-cast-item-two"), ContentType: "video", DurationMS: 20000},
-	}
-
-	snap, err := BuildFromStoreCast(ds, items, "https://origin.example", id, nil)
-	if err != nil {
-		t.Fatalf("BuildFromStoreCast: %v", err)
-	}
-
-	content := snap.Sections.ScreenPrograms[0].Content
-	if len(content) != len(items) {
-		t.Fatalf("len(Content) = %d, want %d", len(content), len(items))
-	}
-	for i, item := range items {
-		got := content[i]
-		wantAssetRef := signhash.ContentID(item.Bytes)
-		if got.AssetRef != wantAssetRef {
-			t.Errorf("item %d: AssetRef = %q, want %q", i, got.AssetRef, wantAssetRef)
-		}
-		if got.ContentType != item.ContentType {
-			t.Errorf("item %d: ContentType = %q, want %q", i, got.ContentType, item.ContentType)
-		}
-		if got.DurationMS != item.DurationMS {
-			t.Errorf("item %d: DurationMS = %d, want %d", i, got.DurationMS, item.DurationMS)
-		}
-	}
-
-	// The store-derived sections (schedule/edge_rules/site_effective) are
-	// unaffected by which items populate the direct screen_programs cast —
-	// same seeded-demo shape BuildFromStore itself produces.
-	if got, want := len(snap.Sections.EdgeRules.Rules), 1; got != want {
-		t.Errorf("EdgeRules.Rules = %d, want %d (the seeded demo automation)", got, want)
-	}
-	if snap.Sections.RevocationAndSite.SiteEffective.TZ == "" {
-		t.Error("SiteEffective.TZ is empty, want the seeded site's tz")
 	}
 
 	recomputed, err := hashSections(snap.Sections)

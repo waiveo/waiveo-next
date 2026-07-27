@@ -546,9 +546,16 @@ func main() {
 		log.Fatalf("waiveo-relay: read persisted screen_programs for offline serve: %v", err)
 	}
 	if len(served) == 0 {
-		log.Fatalf("waiveo-relay: persisted last-applied snapshot carried no screen_programs to serve")
+		// An empty section is REL-060's stated empty placeholder, not a fault:
+		// the app peer derives one entry per authored screen row, so a site with
+		// no screens yet has nothing to serve. Leave the player server with no
+		// configured program — a pull gets an empty program rather than a
+		// fabricated one — and keep booting, so pairing, the device plane and
+		// the schedule resolver all still come up.
+		log.Printf("waiveo-relay: persisted last-applied snapshot carried no screen_programs; serving no program until one is authored")
+	} else {
+		pairingSrv.SetServedProgram(applied.Generation, served[0], relayID.PrivateKey)
 	}
-	pairingSrv.SetServedProgram(applied.Generation, served[0], relayID.PrivateKey)
 
 	// commandSurface is the ONE relay/1 REL-112/113/115 device-command surface
 	// this binary's non-edge-rule dispatch paths share — the schedule-preset

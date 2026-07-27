@@ -143,7 +143,7 @@ func resolveThroughDesiredState(t *testing.T, st *store.Store, img []byte, id *s
 	if err != nil {
 		t.Fatalf("DesiredState: %v", err)
 	}
-	snap, err := snapshot.BuildFromStore(ds, img, "https://origin.example", id, nil)
+	snap, _, err := snapshot.BuildFromStore(ds, "https://origin.example", id, nil, nowMs)
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}

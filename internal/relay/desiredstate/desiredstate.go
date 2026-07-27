@@ -178,20 +178,38 @@ func ServedProgram(store *identity.Store) ([]wire.ScreenProgram, error) {
 	return programs, nil
 }
 
-// extractApplied builds VerifyAndApply's returned Applied from a verified snapshot's
-// sections: Wave-1 first-photon's one screen-program showing one image
-// (internal/feeder/snapshot.Build's own shape). A sections value that
-// doesn't carry at least one screen-program with at least one content item
-// is a malformed snapshot — refused with a plain error, since it is not one
-// of relay/1's own typed rejection reasons (it would mean the feeder itself
-// built a malformed sections, not that verification failed).
+// extractApplied builds VerifyAndApply's returned Applied from a verified
+// snapshot's sections. ScreenPrograms carries the whole section; the flat
+// convenience fields (ScreenID, ProgramRevision, Priority, Display, Image)
+// mirror entry [0] for the single-screen callers that predate the section being
+// per-screen.
+//
+// It refuses NOTHING structural about screen_programs, and deliberately so.
+// Both shapes it used to refuse are now states the app peer legitimately
+// derives and REL-060/061 legitimately describe:
+//
+//   - an EMPTY screen_programs array is REL-060's own stated "empty array where
+//     a site currently has nothing to populate a section with" — a deployment
+//     with no screen rows yet. The flat fields stay zero and the relay serves
+//     nothing to nobody, which is the correct answer, not a malformed snapshot.
+//   - a screen-program with EMPTY content is what a `display: blank` assignment
+//     IS: a screen the schedule says to blank (data-model/1 DAT-114/115) or one
+//     the terminal default resolves for (DAT-118) is powered on and showing
+//     nothing, so it has nothing to fetch. Refusing that would have made a
+//     relay reject every generation built during an overnight blank daypart —
+//     an outage exactly when the schedule was working correctly.
+//
+// A genuinely malformed snapshot is still caught: hash and signature
+// verification run before this, and every typed rejection reason relay/1 owns
+// is raised there.
 func extractApplied(generation int64, sections wire.Sections) (Applied, error) {
-	if len(sections.ScreenPrograms) == 0 {
-		return Applied{}, errors.New("verified sections carried no screen_programs")
+	var prog wire.ScreenProgram
+	if len(sections.ScreenPrograms) > 0 {
+		prog = sections.ScreenPrograms[0]
 	}
-	prog := sections.ScreenPrograms[0]
-	if len(prog.Content) == 0 {
-		return Applied{}, fmt.Errorf("verified screen_program %q carried no content", prog.ScreenID)
+	var image wire.ContentRef
+	if len(prog.Content) > 0 {
+		image = prog.Content[0]
 	}
 
 	return Applied{
@@ -200,7 +218,7 @@ func extractApplied(generation int64, sections wire.Sections) (Applied, error) {
 		ProgramRevision: prog.ProgramRevision,
 		Priority:        prog.Priority,
 		Display:         prog.Display,
-		Image:           prog.Content[0],
+		Image:           image,
 		PairingGrants:   sections.PairingGrants,
 		EdgeRules:       sections.EdgeRules.Rules,
 		ScreenPrograms:  sections.ScreenPrograms,

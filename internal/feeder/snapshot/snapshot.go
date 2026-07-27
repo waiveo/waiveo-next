@@ -1,8 +1,18 @@
 // Package snapshot builds and signs the feeder's relay/1 desired-state
-// generations (`state.snapshot` bodies, REL-051). Wave 1's first photon
-// covers the minimal case: one generation carrying exactly one
-// screen-program that shows one image, over the feeder's own signing
-// identity (internal/feeder/signing).
+// generations (`state.snapshot` bodies, REL-051), over the feeder's own
+// signing identity (internal/feeder/signing).
+//
+// There are two builders, and only one of them ships in the running feeder:
+//
+//   - BuildFromStore derives EVERY section from the app store's authored rows —
+//     including one `screen_programs` entry per screen identity row, resolved
+//     through the data-model/1 scheduling core at that screen's own placement
+//     (screenprograms.go). This is the builder the feeder uses, and the reason
+//     an operator's edit reaches a screen.
+//   - Build/BuildCast are the store-less FIXTURE builders, for the paths that
+//     have no store to derive from (the conformance drivers, the virtual-player
+//     first-light proof). They assign one program, showing the cast they are
+//     handed, to one fixture screen.
 //
 // Canonicalization (no separate spec to consult beyond this package's own
 // behavior — a later relay-side verifier, internal/relay/desiredstate,
@@ -36,6 +46,7 @@ import (
 	"strings"
 
 	"github.com/maaxton/waiveo-next/internal/app/store"
+	"github.com/maaxton/waiveo-next/internal/datamodel"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/shared/signhash"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
@@ -47,15 +58,19 @@ import (
 // relay-side verifier) work against the exact contract field names.
 type SignedSnapshot = wire.StateSnapshotBody
 
-// Wave 1 first-photon placeholders: this task builds exactly one
-// screen-program for a single hard-coded screen, ahead of any real
-// screen-registration/pairing task that would supply these IDs and a real
-// content-URL TTL policy.
-const (
-	firstPhotonScreenID        = "screen-first-photon"
-	firstPhotonProgramRevision = "rev-1"
-	firstPhotonExpiresAt       = 0 // no TTL policy defined yet this wave
-)
+// fixtureScreenID is the screen the STORE-LESS builders (Build/BuildCast)
+// assign their one program to: the id of the real screen identity row
+// store.SeedDemo inserts (DAT-004/DAT-004a), single-sourced from the store
+// package so the fixture path and a freshly-seeded store name the same screen
+// rather than two.
+//
+// Those builders exist for the paths that have no store to derive from — the
+// conformance drivers and the virtual-player first-light proof — and a fixture
+// screen is still a screen: it needs an id that is a canonical ULID (DAT-005a)
+// and that resolves to a screen ROW, not a `screen`-kind scope node (DAT-004a).
+// The store-derived path does not use this at all; it names every screen from
+// the row it resolved (DeriveScreenPrograms).
+const fixtureScreenID = store.SeedScreenID
 
 // Wave-1 first-automation edge_rules placeholders (REL-062). The feeder
 // emits one hard-coded demo edge rule ahead of any real
@@ -126,7 +141,7 @@ func contentRefFor(item CastItem, contentBaseURL string) wire.ContentRef {
 	return wire.ContentRef{
 		AssetRef:    assetRef,
 		URL:         contentBaseURL + "/content/" + hexDigest,
-		ExpiresAt:   firstPhotonExpiresAt,
+		ExpiresAt:   contentURLExpiresAt,
 		ContentType: item.ContentType,
 		DurationMS:  item.DurationMS,
 	}
@@ -222,24 +237,32 @@ func BuildCast(items []CastItem, contentBaseURL string, id *signing.Identity, gr
 		return SignedSnapshot{}, fmt.Errorf("demo schedule: %w", err)
 	}
 
+	// The fixture program: the whole cast, shown on the fixture screen. Its
+	// program_revision is derived from the program itself (programRevisionFor),
+	// the same derivation the store-driven path uses — so a fixture built from
+	// different bytes carries a different revision, and one rebuilt from the
+	// same bytes reproduces it exactly.
+	fixtureProgram := wire.ScreenProgram{
+		ScreenID: fixtureScreenID,
+		Priority: leasePriorityScheduled,
+		Display:  displayContent,
+		Content:  content,
+	}
+	fixtureProgram.ProgramRevision = programRevisionFor(fixtureProgram)
+
 	sections := wire.Sections{
-		ScreenPrograms: []wire.ScreenProgram{
-			{
-				ScreenID:        firstPhotonScreenID,
-				ProgramRevision: firstPhotonProgramRevision,
-				Priority:        "scheduled",
-				Display:         "content",
-				Content:         content,
-			},
-		},
+		ScreenPrograms: []wire.ScreenProgram{fixtureProgram},
 		EdgeRules: wire.EdgeRules{
 			RulesMinorVersion: rulesMinorVersion,
 			Rules:             []json.RawMessage{demoEdgeRuleJSON},
 		},
-		DeviceInventory: wire.DeviceInventory{
-			Devices:           []json.RawMessage{},
-			PackMatchPatterns: []json.RawMessage{},
-		},
+		// device_inventory (REL-063/064) is empty on this store-less path:
+		// both arrays are derived from authored state (the adopted-device
+		// rows and the installed packs), and this builder has no store to
+		// derive them from. Normalized() keeps both arrays `[]` rather than
+		// `null` (REL-060). The store-derived path (BuildFromStoreCast)
+		// carries the real inventory.
+		DeviceInventory: wire.DeviceInventory{}.Normalized(),
 		// The schedule section (REL-065) carries the Wave-2 demo schedule
 		// (buildDemoScheduleSection): a two-daypart schedule on the
 		// first-photon screen's scope node the relay resolves per-instant
@@ -279,21 +302,48 @@ func BuildCast(items []CastItem, contentBaseURL string, id *signing.Identity, gr
 
 // BuildFromStore builds and signs a relay/1 desired-state snapshot from the app
 // store's authored rows (rows, a consistent read at the store's generation, from
-// store.DesiredState). It is the store-derived counterpart to Build: the
-// `schedule` section (REL-065) carries the store's scope nodes + scheduling-core
-// rows (no longer the hardcoded buildDemoScheduleSection), and
-// `revocation_and_site.site_effective` (REL-066) is the site node's own
-// tz/lat/long (rows.SiteEffective, derived in the store from the SITE scope node
-// per data-model DAT-033 — never the feeder's OS locale), and
-// `revocation_and_site.content_origin` (REL-061/066) is contentBaseURL verbatim,
-// exactly as Build emits it. The `edge_rules` section (REL-062) carries
-// rows.EdgeRules — the store's edge-classified authored automations
-// (store.EdgeRuleBodies, no longer the hardcoded demoEdgeRuleJSON constant): an
-// app-classified stored rule is never carried here (its execution is app-side,
-// deferred). Every other section keeps the exact baseline shape Build produces:
-// one image screen-program showing img (asset_ref = img's content id, url under
-// contentBaseURL), an empty device_inventory, grants in pairing_grants, and the
-// reserved workflow_generation.
+// store.DesiredState) — the store-derived counterpart to Build, and the only
+// builder the running feeder uses. EVERY section it emits is derived from
+// authored state:
+//
+//   - `screen_programs` (REL-061) is ONE entry per screen identity row, each
+//     resolved through the data-model/1 scheduling core at that screen's own
+//     placement and at nowMs (DeriveScreenPrograms, screenprograms.go). Editing a
+//     playlist, a daypart, a schedule, or a screen's placement therefore changes
+//     what that screen is delivered on the next rebuild — which is the whole
+//     point of the section, and what a single hardcoded entry could never do.
+//   - `schedule` (REL-065) carries the store's scope nodes + scheduling-core rows,
+//     so the relay can re-resolve the same rows per-instant between generations.
+//   - `edge_rules` (REL-062) carries rows.EdgeRules — the store's edge-classified
+//     authored automations; an app-classified stored rule is never carried here.
+//   - `device_inventory` (REL-063/064) carries rows.DeviceInventory: the store's
+//     adopted-device rows projected into REL-063 entries — each carrying its
+//     per-entity enabled/hidden/display_name/category policy, decisions no
+//     discovery sweep can report — alongside the discovery-match patterns every
+//     INSTALLED PACK declares (REL-064), which are watched for independent of
+//     what is already adopted.
+//   - `revocation_and_site` (REL-066) carries the site node's own tz/lat/long
+//     (rows.SiteEffective, per DAT-033 — never the feeder's OS locale) and
+//     contentBaseURL as the content origin.
+//
+// nowMs is the instant the generation's programs are resolved at, injected rather
+// than read from a clock here: scheduling is per-instant by construction
+// (DAT-111), so the instant is an INPUT to the snapshot, and a caller that wants
+// a reproducible generation passes a fixed one. Because it is an input, a rebuild
+// of the SAME store generation at a materially later instant — one that crosses a
+// daypart boundary — can differ from the first build of it. That is not a
+// versioning hazard in practice: the feeder caches its built snapshot by store
+// generation, and a relay ignores a pull that does not strictly advance the
+// generation it has (REL-052/070), so a given generation is applied exactly once.
+// What keeps a screen correct BETWEEN generations is not this section at all —
+// it is the relay's own resolver re-reading the `schedule` section carried
+// alongside it (internal/relay/schedulehost).
+//
+// The returned []datamodel.Error is DeriveScreenPrograms' per-screen degrade
+// list, not a build failure: a screen whose effective tz cannot be resolved is
+// omitted from the section (DAT-034 — never resolved against a substituted zone)
+// and reported here for the caller to log. The snapshot itself is complete and
+// signed regardless.
 //
 // The snapshot's `generation` is the store's own monotonic counter
 // (rows.Generation) rather than a constant, so an api write that advances the
@@ -303,57 +353,27 @@ func BuildCast(items []CastItem, contentBaseURL string, id *signing.Identity, gr
 // are preserved: this reuses the exact same wire helpers Build does
 // (hashSections / signGenerationHash), so signing here and verifying on the relay
 // (internal/relay/desiredstate) cannot drift.
-func BuildFromStore(rows store.DesiredStateResult, img []byte, contentBaseURL string, id *signing.Identity, grants []wire.PairingGrant) (SignedSnapshot, error) {
-	snap, err := BuildFromStoreCast(rows, []CastItem{{Bytes: img}}, contentBaseURL, id, grants)
-	if err != nil {
-		return SignedSnapshot{}, fmt.Errorf("snapshot: BuildFromStore: %w", err)
-	}
-	return snap, nil
-}
-
-// BuildFromStoreCast is BuildFromStore's ordered-multi-item generalization —
-// the store-derived counterpart to BuildCast, exactly as BuildFromStore is
-// Build's: every other section (schedule from the store, edge_rules from the
-// store, site_effective from the store) is unchanged from BuildFromStore's
-// own behavior; only `screen_programs[0].content` becomes the full ordered
-// cast (one wire.ContentRef per items element, via contentRefFor) instead of
-// a single hard-coded image. BuildFromStore(rows, img, ...) is exactly
-// BuildFromStoreCast(rows, []CastItem{{Bytes: img}}, ...) — a single item
-// with no ContentType/DurationMS set, so a 1-item call produces
-// byte-identical wire output (and therefore an identical `hash`, REL-053) to
-// BuildFromStore's own pre-existing output, per ContentRef's `omitempty`
-// tags.
-//
-// items MUST be non-empty. Like BuildCast, this function does not itself add
-// any item's bytes to a content origin (internal/feeder/origin) — a caller
-// does that first.
-func BuildFromStoreCast(rows store.DesiredStateResult, items []CastItem, contentBaseURL string, id *signing.Identity, grants []wire.PairingGrant) (SignedSnapshot, error) {
+func BuildFromStore(rows store.DesiredStateResult, contentBaseURL string, id *signing.Identity, grants []wire.PairingGrant, nowMs int64) (SignedSnapshot, []datamodel.Error, error) {
 	if id == nil {
-		return SignedSnapshot{}, fmt.Errorf("snapshot: BuildFromStoreCast: id must not be nil")
-	}
-	if len(items) == 0 {
-		return SignedSnapshot{}, fmt.Errorf("snapshot: BuildFromStoreCast: items must be non-empty")
+		return SignedSnapshot{}, nil, fmt.Errorf("snapshot: BuildFromStore: id must not be nil")
 	}
 
 	if grants == nil {
 		grants = []wire.PairingGrant{}
 	}
 
-	content := make([]wire.ContentRef, 0, len(items))
-	for _, item := range items {
-		content = append(content, contentRefFor(item, contentBaseURL))
-	}
+	screenPrograms, degrades := DeriveScreenPrograms(rows, contentBaseURL, nowMs)
 
 	scheduleSection, err := scheduleSectionFromStore(rows)
 	if err != nil {
-		return SignedSnapshot{}, fmt.Errorf("schedule section: %w", err)
+		return SignedSnapshot{}, degrades, fmt.Errorf("schedule section: %w", err)
 	}
 
 	// edge_rules (REL-062) is the store's own edge-classified automations
 	// (rows.EdgeRules, from store.EdgeRuleBodies). Rules is defensively
 	// normalized to a non-nil empty slice (REL-060: a store with zero edge
 	// rules must still marshal `[]`, never `null`) — DesiredState already
-	// guarantees this via EdgeRuleBodies, but BuildFromStoreCast does not
+	// guarantees this via EdgeRuleBodies, but BuildFromStore does not
 	// trust a caller-assembled DesiredStateResult to have done so.
 	edgeRules := rows.EdgeRules
 	if edgeRules.Rules == nil {
@@ -361,21 +381,20 @@ func BuildFromStoreCast(rows store.DesiredStateResult, items []CastItem, content
 	}
 
 	sections := wire.Sections{
-		ScreenPrograms: []wire.ScreenProgram{
-			{
-				ScreenID:        firstPhotonScreenID,
-				ProgramRevision: firstPhotonProgramRevision,
-				Priority:        "scheduled",
-				Display:         "content",
-				Content:         content,
-			},
-		},
-		EdgeRules: edgeRules,
-		DeviceInventory: wire.DeviceInventory{
-			Devices:           []json.RawMessage{},
-			PackMatchPatterns: []json.RawMessage{},
-		},
-		Schedule: scheduleSection,
+		ScreenPrograms: screenPrograms,
+		EdgeRules:      edgeRules,
+		// device_inventory (REL-063/064) is the store's own derivation
+		// (rows.DeviceInventory, store.deviceInventory): the adopted-device
+		// rows projected into REL-063 entries — carrying each entity's
+		// authored enabled/hidden/display_name/category policy — alongside
+		// the discovery-match patterns every INSTALLED PACK declares
+		// (REL-064), which REL-064 requires be watched for "independent of
+		// what is already adopted". Normalized defensively so a
+		// caller-assembled DesiredStateResult that left an array nil still
+		// marshals `[]`, never `null` (REL-060) — DesiredState already
+		// guarantees it.
+		DeviceInventory: rows.DeviceInventory.Normalized(),
+		Schedule:        scheduleSection,
 		RevocationAndSite: wire.RevocationAndSite{
 			Revoked:       []string{},
 			SiteEffective: rows.SiteEffective,
@@ -387,14 +406,14 @@ func BuildFromStoreCast(rows store.DesiredStateResult, items []CastItem, content
 
 	hash, err := hashSections(sections)
 	if err != nil {
-		return SignedSnapshot{}, err
+		return SignedSnapshot{}, degrades, err
 	}
 
 	generation := rows.Generation
 
 	signature, err := signGenerationHash(generation, hash, id)
 	if err != nil {
-		return SignedSnapshot{}, err
+		return SignedSnapshot{}, degrades, err
 	}
 
 	return SignedSnapshot{
@@ -402,7 +421,7 @@ func BuildFromStoreCast(rows store.DesiredStateResult, items []CastItem, content
 		Hash:       hash,
 		Signature:  signature,
 		Sections:   sections,
-	}, nil
+	}, degrades, nil
 }
 
 // scheduleSectionFromStore assembles the REL-065 `schedule` section from a store

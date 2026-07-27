@@ -106,23 +106,21 @@ type config struct {
 
 // demoCastModeMulti is loadConfig's WAIVEO_FEEDER_DEMO_CAST value that swaps
 // the single first-photon image for snapshot.DemoCastItems' real 3-item
-// ordered demo cast on the DIRECT screen_programs[0].content path (REL-061).
-// Any other value (including unset/"") keeps today's exact single-image
-// behavior — unset is the make-dev/CI default, so neither is affected by
-// this flag's existence.
+// ordered demo cast. Any other value (including unset/"") keeps today's exact
+// single-image behavior — unset is the make-dev/CI default, so neither is
+// affected by this flag's existence.
 //
-// CAVEAT, stated here rather than left implicit: this flag changes ONLY the
-// app-authored screen_programs baseline SetServedProgram configures at boot
-// (cmd/waiveo-relay/main.go). A screen GOVERNED by a schedule (this codebase's
-// separate, already multi-item-capable playlist/daypart resolution engine,
-// internal/relay/schedulehost) has its Lease re-derived from that schedule's
-// own playlist on every resolve, which supersedes this baseline the moment the
-// schedule resolver first ticks (cmd/waiveo-relay/main.go's own doc: "replacing
-// the app-authored screen_programs baseline"). The make-dev/box seed
-// (store.SeedDemo) DOES seed a governing schedule, so this flag's effect is
-// visible at boot and on any screen the seeded schedule does not govern; making
-// it durably win over an active governing schedule is a separate, larger change
-// to the schedule/playlist engine, out of this flag's scope.
+// The cast is seeded as the demo PLAYLIST's items, in order (store.SeedDemo),
+// which is the only way content reaches a screen: every screen_programs entry
+// is resolved from the playlist the screen's effective daypart selects
+// (snapshot.DeriveScreenPrograms). A multi-item cast therefore rides the real
+// playlist/daypart engine end to end rather than a parallel direct path — the
+// caveat this doc used to carry, that a governing schedule superseded the flag,
+// no longer applies because there is no longer a second path for it to lose to.
+//
+// Because it is seeded, the flag takes effect only on an EMPTY store (SeedDemo
+// runs when the generation is still 0). A store that already has an authored
+// playlist keeps it; edit that playlist instead.
 const demoCastModeMulti = "multi"
 
 // defaultStorePath is the make-dev-local SQLite file the feeder's app store lives
@@ -325,16 +323,13 @@ func main() {
 		log.Fatalf("waiveo-feeder: persist placeholder image: %v", err)
 	}
 
-	// The direct screen_programs.content cast this feeder builds
-	// (snapshot.BuildFromStoreCast): the single placeholder image by default —
-	// {Bytes: img} with NO ContentType/DurationMS set, so it marshals
-	// byte-identically to every prior release (snapshot.Build's own doc on
-	// ContentRef's omitempty tags) — or the real 3-item demo cast
-	// (snapshot.DemoCastItems) when WAIVEO_FEEDER_DEMO_CAST=multi. Every
-	// item's bytes are added to the SAME contentStore the placeholder above
-	// uses, so each is immediately servable at its own content-addressed URL —
-	// each item keeps its own digest, independently verifiable, not just the
-	// first (CastItem's doc).
+	// The demo cast this feeder SEEDS as the demo playlist's items: the single
+	// placeholder image by default, or the real 3-item demo cast
+	// (snapshot.DemoCastItems) when WAIVEO_FEEDER_DEMO_CAST=multi. Every item's
+	// bytes are added to the SAME contentStore the placeholder above uses, so
+	// each is immediately servable at its own content-addressed URL — each item
+	// keeps its own digest, independently verifiable, not just the first
+	// (CastItem's doc).
 	castItems := []snapshot.CastItem{{Bytes: img}}
 	if cfg.demoCast == demoCastModeMulti {
 		items, err := snapshot.DemoCastItems()
@@ -347,7 +342,7 @@ func main() {
 			}
 		}
 		castItems = items
-		log.Printf("waiveo-feeder: multi-item demo cast enabled (%d items) — see demoCastModeMulti's doc for its interaction with a governing schedule", len(items))
+		log.Printf("waiveo-feeder: multi-item demo cast enabled (%d items) — seeded as the demo playlist's items on an empty store only (demoCastModeMulti's doc)", len(items))
 	}
 
 	contentBaseURL := cfg.contentBaseURL
@@ -396,22 +391,31 @@ func main() {
 		log.Printf("waiveo-feeder: canonicalized %d store row id(s) in %s", len(m.Rewrites), cfg.storePath)
 	}
 
-	assetRef := signhash.ContentID(img)
+	// The demo cast's asset refs, in play order — the items the seeded demo
+	// PLAYLIST points at. The cast reaches a screen the only way content reaches
+	// a screen now: through an authored playlist a daypart selects, resolved per
+	// screen (snapshot.DeriveScreenPrograms). There is no second, direct path for
+	// it to take and therefore nothing left for a governing schedule to supersede
+	// — the caveat demoCastModeMulti's own doc used to carry is gone with it.
+	assetRefs := make([]string, 0, len(castItems))
+	for _, item := range castItems {
+		assetRefs = append(assetRefs, signhash.ContentID(item.Bytes))
+	}
 	if gen, err := st.Generation(ctx); err != nil {
 		log.Fatalf("waiveo-feeder: read store generation: %v", err)
 	} else if gen == 0 {
-		if err := st.SeedDemo(ctx, assetRef); err != nil {
+		if err := st.SeedDemo(ctx, assetRefs...); err != nil {
 			log.Fatalf("waiveo-feeder: seed demo: %v", err)
 		}
-		log.Printf("waiveo-feeder seeded make-dev demo into %s", cfg.storePath)
+		log.Printf("waiveo-feeder seeded make-dev demo into %s (%d playlist item(s))", cfg.storePath, len(assetRefs))
 	}
 
 	// The desired-state source: rebuilds the signed snapshot from the store,
 	// cached by generation and invalidated when an api write advances it — so each
 	// pull serves the current generation (the authoring loop's serving half).
 	src := &desiredStateSource{
-		store: st, items: castItems, contentBaseURL: contentBaseURL, id: id,
-		grants: []wire.PairingGrant{g},
+		store: st, contentBaseURL: contentBaseURL, id: id,
+		grants: []wire.PairingGrant{g}, nowMs: func() int64 { return time.Now().UnixMilli() },
 	}
 	// Fail fast if the seeded/persisted store cannot derive a signed snapshot
 	// at all — better a boot-time exit than every relay pull failing later.
@@ -920,17 +924,16 @@ func startWebhookDelivery(
 // keeping desired-state derivation entirely store-driven (site_effective comes
 // from the site node, never box-local state).
 type desiredStateSource struct {
-	store *store.Store
-	// items is the direct screen_programs[0].content ordered cast
-	// (BuildFromStoreCast) — main's default single-image boot passes a single
-	// CastItem with no ContentType/DurationMS set (byte-identical to the
-	// pre-cast BuildFromStore path, ContentRef's own doc comment); a
-	// WAIVEO_FEEDER_DEMO_CAST=multi boot passes snapshot.DemoCastItems'
-	// 3-item cast instead. MUST be non-empty.
-	items          []snapshot.CastItem
+	store          *store.Store
 	contentBaseURL string
 	id             *signing.Identity
 	grants         []wire.PairingGrant
+
+	// nowMs is the instant each rebuild resolves every screen's program at
+	// (snapshot.BuildFromStore). It is injected rather than read inline because
+	// scheduling resolution is per-instant (DAT-111): the instant is an input to
+	// the built generation, so a test pins it exactly as it pins any other input.
+	nowMs func() int64
 
 	mu        sync.Mutex
 	cached    wire.StateSnapshotBody
@@ -958,9 +961,16 @@ func (d *desiredStateSource) current() (wire.StateSnapshotBody, error) {
 	if err != nil {
 		return wire.StateSnapshotBody{}, err
 	}
-	snap, err := snapshot.BuildFromStoreCast(ds, d.items, d.contentBaseURL, d.id, d.grants)
+	snap, degrades, err := snapshot.BuildFromStore(ds, d.contentBaseURL, d.id, d.grants, d.nowMs())
 	if err != nil {
 		return wire.StateSnapshotBody{}, err
+	}
+	// A degraded screen is OMITTED from screen_programs rather than resolved
+	// against a substituted timezone (DAT-034), so without this line an operator
+	// would see a screen silently stop being delivered and have nothing to read.
+	for _, e := range degrades {
+		log.Printf("waiveo-feeder: desired state generation %d: screen program omitted: %s: %s: %s",
+			ds.Generation, e.Field, e.Code, e.Message)
 	}
 	d.cached = snap
 	d.cachedGen = ds.Generation

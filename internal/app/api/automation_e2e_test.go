@@ -38,6 +38,14 @@ import (
 	"github.com/maaxton/waiveo-next/internal/rules/state"
 )
 
+// automationE2EInstantMs is the fixed instant this oracle resolves desired state
+// at. Building a snapshot resolves every screen's program as well, and that
+// resolution is per-instant (data-model/1 DAT-111), so the instant is pinned
+// rather than read from a wall clock — nothing here asserts on a program, and a
+// test that silently changed shape with the hour it ran at would be worse than
+// one that does.
+const automationE2EInstantMs = int64(1_784_120_400_000) // 2026-07-15T12:00:00 America/Chicago
+
 // e2eRelayID is the relay identity stamped onto every device.command the fired
 // rule dispatches (fixture-ULID; no secrets).
 const e2eRelayID = "01J8ZE2E0000000000000RELAY0"
@@ -120,7 +128,7 @@ func TestAutomationAuthoringLoopAuthoredRuleLoadsAndFires(t *testing.T) {
 	if err != nil {
 		t.Fatalf("signing.LoadOrCreate: %v", err)
 	}
-	snap, err := snapshot.BuildFromStore(ds, []byte("automation-authoring-e2e-image"), e.contentBase, id, nil)
+	snap, _, err := snapshot.BuildFromStore(ds, e.contentBase, id, nil, automationE2EInstantMs)
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -250,7 +258,7 @@ func TestAutomationAuthoringLoopDisabledRuleNeverFires(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DesiredState: %v", err)
 	}
-	snap, err := snapshot.BuildFromStore(ds, []byte("automation-authoring-disabled-e2e-image"), e.contentBase, mustSigning(t), nil)
+	snap, _, err := snapshot.BuildFromStore(ds, e.contentBase, mustSigning(t), nil, automationE2EInstantMs)
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}

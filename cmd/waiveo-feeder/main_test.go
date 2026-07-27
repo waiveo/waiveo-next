@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -198,10 +199,10 @@ func TestDesiredStateSourceCurrentRebuildsOnAPIWriteGenerationBump(t *testing.T)
 	// The desired-state source exactly as main wires it (fixture content host).
 	src := &desiredStateSource{
 		store:          st,
-		items:          []snapshot.CastItem{{Bytes: img}},
 		contentBaseURL: "https://192.0.2.12:7420",
 		id:             id,
 		grants:         []wire.PairingGrant{grant.Mint()},
+		nowMs:          feederContentInstant(t),
 	}
 
 	// --- Snapshot A: the seeded generation.
@@ -335,9 +336,10 @@ func TestAPIWriteNudgesConnectedRelayEndToEnd(t *testing.T) {
 	// as main wires them (one mux, one mTLS listener, the store's post-commit
 	// hook nudging the connection server).
 	src := &desiredStateSource{
-		store: st, items: []snapshot.CastItem{{Bytes: img}},
+		store:          st,
 		contentBaseURL: "https://192.0.2.12:7420", id: id,
 		grants: []wire.PairingGrant{grant.Mint()},
+		nowMs:  feederContentInstant(t),
 	}
 	if _, err := src.current(); err != nil {
 		t.Fatalf("src.current: %v", err)
@@ -492,13 +494,34 @@ func TestLoadConfigDemoCastDefaultAndOverride(t *testing.T) {
 	}
 }
 
-// TestDesiredStateSourceMultiItemCastOrderedAndVerifiable asserts a
-// desiredStateSource configured with snapshot.DemoCastItems' real 3-item cast
-// (the WAIVEO_FEEDER_DEMO_CAST=multi path) serves a snapshot whose
-// screen_programs[0].content carries all 3 items, in order, each keeping its
-// own asset_ref matching its own bytes — the per-item content-digest
-// integrity property, exercised here against this codebase's real committed
-// demo assets rather than synthetic fixture bytes.
+// feederContentInstant is a FIXED instant inside the seeded demo's content
+// daypart (06:00–22:00 America/Chicago), returned as the injected clock a
+// desiredStateSource resolves its programs at.
+//
+// Every desired-state test in this file pins it rather than reading a wall
+// clock: a screen's program is resolved per instant (data-model/1 DAT-111), so a
+// suite that ran against `time.Now()` would deliver content by day and blank
+// overnight and its assertions would flip with the hour it happened to run at.
+func feederContentInstant(t *testing.T) func() int64 {
+	t.Helper()
+	loc, err := time.LoadLocation("America/Chicago")
+	if err != nil {
+		t.Fatalf("LoadLocation: %v", err)
+	}
+	at := time.Date(2026, 7, 15, 12, 0, 0, 0, loc).UnixMilli()
+	return func() int64 { return at }
+}
+
+// TestDesiredStateSourceMultiItemCastOrderedAndVerifiable asserts the real
+// 3-item demo cast (the WAIVEO_FEEDER_DEMO_CAST=multi path) reaches a screen's
+// delivered program in order, each item keeping its own asset_ref matching its
+// own bytes — the per-item content-digest integrity property, exercised against
+// this codebase's real committed demo assets rather than synthetic fixture bytes.
+//
+// The cast reaches the program the only way content does now: seeded as the demo
+// PLAYLIST's items, resolved onto the screen by its daypart. That is what main
+// does with it too, so this exercises the shipped path rather than a parallel
+// test-only one.
 func TestDesiredStateSourceMultiItemCastOrderedAndVerifiable(t *testing.T) {
 	ctx := context.Background()
 
@@ -508,17 +531,19 @@ func TestDesiredStateSourceMultiItemCastOrderedAndVerifiable(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
-	img := placeholderImage()
-	if err := st.SeedDemo(ctx, signhash.ContentID(img)); err != nil {
-		t.Fatalf("SeedDemo: %v", err)
-	}
-
 	items, err := snapshot.DemoCastItems()
 	if err != nil {
 		t.Fatalf("snapshot.DemoCastItems: %v", err)
 	}
 	if len(items) < 2 {
 		t.Fatalf("DemoCastItems returned %d items, want at least 2 to exercise ordering", len(items))
+	}
+	assetRefs := make([]string, 0, len(items))
+	for _, item := range items {
+		assetRefs = append(assetRefs, signhash.ContentID(item.Bytes))
+	}
+	if err := st.SeedDemo(ctx, assetRefs...); err != nil {
+		t.Fatalf("SeedDemo: %v", err)
 	}
 
 	id, err := signing.LoadOrCreate(t.TempDir())
@@ -528,10 +553,10 @@ func TestDesiredStateSourceMultiItemCastOrderedAndVerifiable(t *testing.T) {
 
 	src := &desiredStateSource{
 		store:          st,
-		items:          items,
 		contentBaseURL: "https://192.0.2.12:7420",
 		id:             id,
 		grants:         []wire.PairingGrant{grant.Mint()},
+		nowMs:          feederContentInstant(t),
 	}
 
 	snap, err := src.current()
@@ -540,7 +565,7 @@ func TestDesiredStateSourceMultiItemCastOrderedAndVerifiable(t *testing.T) {
 	}
 
 	if len(snap.Sections.ScreenPrograms) != 1 {
-		t.Fatalf("len(ScreenPrograms) = %d, want 1", len(snap.Sections.ScreenPrograms))
+		t.Fatalf("len(ScreenPrograms) = %d, want 1 (the one seeded screen row)", len(snap.Sections.ScreenPrograms))
 	}
 	content := snap.Sections.ScreenPrograms[0].Content
 	if len(content) != len(items) {
@@ -551,8 +576,9 @@ func TestDesiredStateSourceMultiItemCastOrderedAndVerifiable(t *testing.T) {
 		if content[i].AssetRef != wantAssetRef {
 			t.Errorf("item %d: asset_ref = %q, want %q (its own content digest)", i, content[i].AssetRef, wantAssetRef)
 		}
-		if content[i].ContentType != "image" {
-			t.Errorf("item %d: content_type = %q, want %q", i, content[i].ContentType, "image")
+		wantURL := "https://192.0.2.12:7420/content/" + strings.TrimPrefix(wantAssetRef, "sha256:")
+		if content[i].URL != wantURL {
+			t.Errorf("item %d: url = %q, want %q", i, content[i].URL, wantURL)
 		}
 	}
 }
