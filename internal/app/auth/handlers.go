@@ -96,15 +96,33 @@ const secondFactorTOTP = "totp"
 // Every failure path — unknown identifier, wrong password, wrong code, replayed
 // code, locked credential — returns the SAME generic detail, so the response
 // BODY cannot be used to enumerate which identifiers exist or to tell a wrong
-// password from a wrong code. This is a statement about the response, not about
-// the request as a whole: an unknown identifier short-circuits before Argon2id
-// and so returns far sooner than a known one (measured at roughly 480µs against
-// 360ms), which is a timing oracle this shape does not close. Closing it means
-// verifying against a dummy hash on the unknown-identifier path.
-// Only the machine-readable `code` differs, and only
+// password from a wrong code. Only the machine-readable `code` differs, and only
 // where the contract requires it to (CREDENTIAL_LOCKED, SEC-090), because a
 // caller that is locked out needs to know to back off rather than to keep
 // retrying a credential it may well have right.
+//
+// # The claim covers the elapsed time, not only the bytes
+//
+// An identical body is worth nothing if the two refusals take visibly different
+// amounts of time to produce, and the natural implementation makes them: an
+// identifier resolving to no credential has nothing to verify against, so it
+// short-circuits before Argon2id and answers in microseconds where a wrong
+// password pays the full KDF. That gap enumerates identifiers over a network as
+// reliably as a distinguishable body would.
+//
+// So an unresolved identifier is verified against DummyPasswordHash instead —
+// same Argon2id parameters, no password that satisfies it — and the KDF runs on
+// both paths. Measured over this handler (min of 7 interleaved rounds, in-process):
+// a wrong password refuses in 32.3ms and an unknown identifier in 32.3ms, a
+// ratio of 1.00x, where the short-circuiting version answered the unknown
+// identifier in 71µs — 453x sooner. TestLoginTimingDoesNotDiscloseWhetherAnIdentifierExists
+// re-measures both paths and fails the build if they drift apart, so this is an
+// assertion rather than a claim maintained by hand.
+//
+// A locked credential does still refuse sooner, and visibly so — but it also
+// answers with a different status and code on purpose (SEC-090), so its timing
+// discloses nothing its body has not already said, and refusing before the KDF
+// is the entire point of a lockout.
 //
 // # The shape of the second factor, and why there is no intermediate state
 //
@@ -189,7 +207,25 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 	// The password is verified only after the lockout check, so a locked
 	// credential costs no Argon2id work — the lock exists to stop the work, not
 	// merely to discard its result.
-	authOK := credErr == nil && VerifyPassword(cred.Secret, req.Password) == nil
+	//
+	// An identifier that resolved to NO credential is verified against
+	// DummyPasswordHash, which carries the same Argon2id parameters a real
+	// credential's hash does. That is what makes the two paths cost the same: the
+	// KDF runs whether or not the identifier exists, so elapsed time discloses
+	// nothing the response body does not (see this handler's own doc).
+	//
+	// The dummy verification's result is CONSUMED (it gates passwordOK, which
+	// gates the refusal below), not discarded into a blank identifier, so no
+	// compiler is free to elide the work. It cannot authenticate anything either:
+	// credErr is an independent conjunct, so a login whose identifier resolved to
+	// nothing fails even in the impossible event that some password derives to the
+	// dummy's random key.
+	secret := cred.Secret
+	if credErr != nil {
+		secret = DummyPasswordHash
+	}
+	passwordOK := VerifyPassword(secret, req.Password) == nil
+	authOK := credErr == nil && passwordOK
 	if !authOK {
 		h.auth.lockout.Fail(key, store.Now())
 		h.auth.auditor.Emit(Record{

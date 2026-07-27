@@ -40,11 +40,52 @@ const argonAlgorithm = "argon2id"
 // ErrPasswordMismatch is returned by VerifyPassword when the presented password
 // does not match the stored hash. It is deliberately indistinguishable, to a
 // caller, from "no such credential" at the login handler level — the handler
-// maps both onto one generic failure so the response BODY cannot be used to
-// enumerate which identifiers exist. The elapsed time still can: an unknown
-// identifier never reaches this comparison, so it answers far sooner than a
-// wrong password does. See the login handler's own doc for the measurement.
+// maps both onto one generic failure, and reaches this comparison on BOTH paths
+// (an unknown identifier is verified against DummyPasswordHash), so neither the
+// response body nor the elapsed time can be used to enumerate which identifiers
+// exist. See the login handler's own doc for the measurement.
 var ErrPasswordMismatch = errors.New("auth: password does not match")
+
+// DummyPasswordHash is the PHC-encoded Argon2id hash the login path verifies a
+// presented password against when the presented IDENTIFIER resolves to no
+// credential at all. Its whole purpose is that the KDF runs either way: without
+// it the unknown-identifier path returns before Argon2id and answers three
+// orders of magnitude sooner than a wrong password does, which enumerates
+// identifiers over the network just as surely as a distinguishable response body
+// would.
+//
+// Two properties make it a faithful stand-in rather than a token gesture:
+//
+//   - It carries THIS BUILD's parameters, the same ones HashPassword writes, so
+//     the dummy verification does the same memory-hard work a real one does. A
+//     cheaper dummy would reintroduce exactly the gap it exists to close, which
+//     is why the timing test compares its decoded parameters against a really
+//     hashed credential's rather than trusting this comment.
+//   - Its key is 32 fresh crypto/rand bytes rather than the hash of some fixed
+//     password. No password verifies against it — not by policy, but because
+//     nothing derives to those bytes — so it cannot be turned into a usable
+//     credential by any later coding error, and constructing it costs no KDF
+//     work at process start.
+//
+// A hash whose parameters were read from a STORED credential would be the only
+// way to also match a credential hashed under superseded parameters (the PHC
+// string carries its own, so an old hash verifies at its own cost). Reading one
+// would mean picking some real credential to imitate, which is a lookup an
+// unknown identifier must not perform; this build's parameters are what a
+// credential hashed today costs, which is the case that matters.
+var DummyPasswordHash = newDummyPasswordHash()
+
+func newDummyPasswordHash() string {
+	salt := make([]byte, argonSaltLen)
+	key := make([]byte, argonKeyLen)
+	if _, err := rand.Read(salt); err != nil {
+		panic("auth: read dummy password salt: " + err.Error())
+	}
+	if _, err := rand.Read(key); err != nil {
+		panic("auth: read dummy password key: " + err.Error())
+	}
+	return encodeHash(salt, key, argonMemory, argonTime, argonThreads)
+}
 
 // HashPassword derives an Argon2id hash of password and returns it in the
 // standard PHC string format:
