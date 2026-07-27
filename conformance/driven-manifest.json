@@ -161,7 +161,7 @@
     "pending": []
   },
   "ui-schema/1": {
-    "driver": "web/src/renderer/corpus.test.tsx (hand-maintained: vitest asserts the exact case-id Set literal in that file's own accounting test; NOT wired into any CI workflow as of this entry — pr-tier/merge-tier run Go tests only, so this entry's freshness is not machine-enforced in CI today)",
+    "driver": "web/src/renderer/corpus.test.tsx (hand-maintained: lives in a vitest compilation unit, not importable by conformance/cmd/driven-manifest; kept fresh by that file's own driven-manifest-vs-corpus assertion, mirroring TestDataModel1DrivenManifestMatchesRuntime/TestRulesDrivenManifestMatchesRuntime; wired into pr-tier and merge-tier CI via `npm run test` under web/)",
     "driven": [
       "UIS-020-valid-list-detail-presets",
       "UIS-030-valid-settings-form",

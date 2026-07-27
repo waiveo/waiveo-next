@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -237,6 +239,30 @@ describe("ui-schema/1 corpus — the render + reject driver", () => {
     expect(new Set(validPageCases.map((c) => c.input.pageType as string))).toEqual(
       new Set(["list-detail", "settings-form", "dashboard", "wizard"]),
     );
+  });
+
+  it("conformance/driven-manifest.json's ui-schema/1 entry matches what this driver actually runs, in both directions", () => {
+    // The Set-literal assertion above only proves this file is internally
+    // consistent with itself — it never reads driven-manifest.json, so a
+    // hand-edited manifest entry (the only way ui-schema/1's entry can be
+    // updated at all, since conformance/cmd/driven-manifest cannot import a
+    // vitest compilation unit) could drift from reality with nothing to catch
+    // it. This is the bidirectional check data-model/1 and rules/1 already
+    // get for free from their own Go driven-manifest tests
+    // (internal/datamodel/driven_manifest_test.go,
+    // internal/rules/driven_manifest_test.go) — mirrored here so ui-schema/1's
+    // entry has the same teeth.
+    // A plain path (not a `new URL(..., import.meta.url)`) — jsdom's global
+    // `URL` shadows Node's in this test environment, and Node's `fs` rejects
+    // that shape with "The URL must be of scheme file" even though it prints
+    // as one.
+    const manifestPath = join(import.meta.dirname, "..", "..", "..", "conformance", "driven-manifest.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const entry = manifest["ui-schema/1"];
+    expect(entry, `${manifestPath} has no "ui-schema/1" entry`).toBeDefined();
+    const actualDriven = [...cases.map((c) => c.case_id)].sort();
+    expect([...entry.driven].sort()).toEqual(actualDriven);
+    expect(entry.pending ?? []).toEqual([]);
   });
 
   describe("valid page documents validate clean and render their expected structure", () => {
