@@ -86,6 +86,7 @@ type config struct {
 	authDir        string // directory the security-model/1 auth state (database + setup code) lives in
 	contentPath    string // directory the content origin persists uploaded asset bytes to
 	archiveDir     string // directory the data-subject export writes archive/1 containers into
+	keyDir         string // directory the workspace signing key + data key persist in — NEVER the archive dir
 	demoCast       string // "" (default, single first-photon image) or "multi" (the real 3-item demo cast)
 }
 
@@ -146,15 +147,34 @@ const defaultAuthDir = ".dev/feeder-auth"
 const authStoreFile = "auth.db"
 
 // defaultArchiveDir is the make-dev-local directory the data-subject export
-// operation (api/1 API-120/121) writes its archive/1 containers into, and where
-// the workspace signing key those containers are signed with (security-model.md
-// SEC-046) persists.
+// operation (api/1 API-120/121) writes its archive/1 containers into.
 //
-// It is git-ignored under .dev/ alongside the other key material. A container is
-// an ENCRYPTED export of the whole workspace and the key beside it is a secret,
-// so neither belongs anywhere a repo or a backup sweep would pick it up by
-// accident.
+// It is git-ignored under .dev/. A container is an ENCRYPTED export of the whole
+// workspace, so it does not belong anywhere a repo or a backup sweep would pick
+// it up by accident — but it IS the artifact an operator is meant to take away,
+// copy, and hand to someone. See defaultWorkspaceKeyDir for what that makes
+// impossible to keep here.
 const defaultArchiveDir = ".dev/feeder-archive"
+
+// defaultWorkspaceKeyDir is the make-dev-local directory the workspace signing
+// key (security-model.md SEC-046) and the per-workspace data key (SEC-040)
+// persist in.
+//
+// It is a SEPARATE directory from defaultArchiveDir, and the separation is the
+// requirement rather than tidiness. SEC-047 places the signing key's private
+// half in "the same root-owned keyfile as the box key (SEC-041)" — key custody,
+// deliberately apart from workspace content. An export directory is the opposite
+// of that by design: its whole purpose is to hold files an operator copies off
+// the box, mails to a data subject, or sweeps into a backup. Key material and
+// export output in one directory means every one of those actions silently
+// carries the private key that signs the exports and the cleartext data key that
+// wraps the workspace's secrets — and the archive's encryption assumes the
+// attacker does NOT have them.
+//
+// The directory is 0700 and every file in it 0600, enforced on every boot by
+// workspacekey.LoadOrCreate rather than assumed from the mode it was created
+// with.
+const defaultWorkspaceKeyDir = ".dev/feeder-keys"
 
 // loadConfig reads the feeder config from env (via `env`, os.Getenv in main),
 // falling back to the loopback defaults. contentBaseURL defaults to the listen
@@ -168,6 +188,7 @@ func loadConfig(env func(string) string) config {
 		authDir:        envOr(env, "WAIVEO_FEEDER_AUTH_DIR", defaultAuthDir),
 		contentPath:    envOr(env, "WAIVEO_FEEDER_CONTENT_DIR", defaultContentPath),
 		archiveDir:     envOr(env, "WAIVEO_FEEDER_ARCHIVE_DIR", defaultArchiveDir),
+		keyDir:         envOr(env, "WAIVEO_FEEDER_KEY_DIR", defaultWorkspaceKeyDir),
 		demoCast:       envOr(env, "WAIVEO_FEEDER_DEMO_CAST", ""),
 	}
 }
@@ -425,9 +446,21 @@ func main() {
 	// key here, at boot, rather than lazily inside the export means a deployment
 	// that cannot hold key material fails loudly at startup instead of at the
 	// moment an owner asks for their data.
-	wsKey, err := workspacekey.LoadOrCreate(cfg.archiveDir, ulid.New)
+	//
+	// Two directories, never one: cfg.keyDir holds custody, cfg.archiveDir holds
+	// output an operator is expected to copy away (see defaultWorkspaceKeyDir).
+	wsKey, err := workspacekey.LoadOrCreate(cfg.keyDir, ulid.New)
 	if err != nil {
 		log.Fatalf("waiveo-feeder: load workspace signing key: %v", err)
+	}
+	// A deployment that ran a build where the two shared a directory still has
+	// the old key material sitting among its exports. Nothing here can safely
+	// delete it — it may be the key that signed archives an operator still holds
+	// — so this says so, loudly, every boot until someone moves or destroys it.
+	if stray := workspacekey.StrayKeyFiles(cfg.archiveDir); len(stray) > 0 {
+		log.Printf("waiveo-feeder: WARNING — workspace key material is sitting in the archive directory %s: %v. "+
+			"Anyone who copies that directory copies the private signing key and the cleartext data key. "+
+			"Move it to %s or destroy it.", cfg.archiveDir, stray, cfg.keyDir)
 	}
 	apiHandler := api.New(st, idem, nowMs, ulid.New, contentStore, contentBaseURL, authn,
 		api.WithDevicePlane(deviceRegistry, relayConnSrv), api.WithJobRunner(jobRunner),

@@ -75,6 +75,53 @@ func TestLoadConfigContentDirDefaultAndOverride(t *testing.T) {
 	}
 }
 
+// TestLoadConfigKeepsKeyMaterialOutOfTheArchiveDir pins the separation
+// security-model.md SEC-047 asks for: the workspace signing key's private half
+// and the workspace data key are custody state, and the archive directory is
+// output an operator is expected to copy off the box, mail to a data subject, or
+// sweep into a backup. Sharing one directory means every one of those actions
+// carries the private key that signs the exports and the cleartext data key —
+// against an attacker the archive's own encryption assumes does not have them.
+//
+// Both defaults and both overrides are checked: a deployment that points only
+// one of the two at its data volume must not silently re-merge them.
+func TestLoadConfigKeepsKeyMaterialOutOfTheArchiveDir(t *testing.T) {
+	def := loadConfig(func(string) string { return "" })
+	if def.archiveDir == def.keyDir {
+		t.Fatalf("archiveDir and keyDir both default to %q; key material must not live in the export directory", def.archiveDir)
+	}
+	if def.archiveDir != ".dev/feeder-archive" {
+		t.Errorf("default archiveDir = %q, want .dev/feeder-archive", def.archiveDir)
+	}
+	if def.keyDir != ".dev/feeder-keys" {
+		t.Errorf("default keyDir = %q, want .dev/feeder-keys", def.keyDir)
+	}
+
+	env := map[string]string{
+		"WAIVEO_FEEDER_ARCHIVE_DIR": "/var/lib/waiveo/archives",
+		"WAIVEO_FEEDER_KEY_DIR":     "/var/lib/waiveo/keys",
+	}
+	got := loadConfig(func(k string) string { return env[k] })
+	if got.archiveDir != "/var/lib/waiveo/archives" {
+		t.Errorf("archiveDir = %q, want the explicit override", got.archiveDir)
+	}
+	if got.keyDir != "/var/lib/waiveo/keys" {
+		t.Errorf("keyDir = %q, want the explicit override", got.keyDir)
+	}
+
+	// Overriding only the archive destination must not drag the key directory
+	// along with it.
+	onlyArchive := loadConfig(func(k string) string {
+		if k == "WAIVEO_FEEDER_ARCHIVE_DIR" {
+			return "/var/lib/waiveo/archives"
+		}
+		return ""
+	})
+	if onlyArchive.keyDir == onlyArchive.archiveDir {
+		t.Errorf("keyDir followed archiveDir to %q when only the archive dir was overridden", onlyArchive.archiveDir)
+	}
+}
+
 func TestLoadConfigContentURLDefaultsToListen(t *testing.T) {
 	// Overriding only the listen address carries into the content base URL, so
 	// a screen's direct fetch targets the same host the feeder binds — unless
