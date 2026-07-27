@@ -19,10 +19,11 @@ package events
 // operator-configured figure of its own (the stabilization-window precedent,
 // internal/rules/engine/stabilization.go).
 //
-// The live HTTP transport that actually issues the POST is a deferred thin
-// net/http wrapper (identical posture to the deferred WS/SSE socket in
-// delivery.go): this file builds the exact signed request and drives the
-// per-endpoint state machine in software, which is what the corpus tests.
+// This file builds the exact signed request and drives the per-endpoint state
+// machine; it issues no I/O of its own and reads no clock of its own. The
+// caller that turns a WebhookRequest into an actual POST, persists
+// EndpointProgress across a restart, and paces the retries is
+// internal/app/webhookdeliver.
 
 import (
 	"crypto/hmac"
@@ -37,6 +38,32 @@ const (
 	HeaderTimestamp  = "X-Waiveo-Timestamp"
 	HeaderSignature  = "X-Waiveo-Signature"
 )
+
+// HeaderPriorSignature carries the SAME signed material as HeaderSignature
+// computed under the immediately prior signing secret, and rides a delivery
+// ONLY while a rotation's overlap window is open (EVT-158).
+//
+// It exists because EVT-158 requires rotation "without a delivery gap", and a
+// single-valued signature header cannot deliver that on its own. Whichever one
+// secret the sender picks during the overlap, the receiver holding the other
+// one rejects every delivery — which is precisely the gap the requirement
+// forbids. The three shapes that could close it are: a multi-valued
+// X-Waiveo-Signature, signing under the prior secret until the window closes,
+// or an additive second header. Only the third leaves EVT-151 untouched:
+// X-Waiveo-Signature keeps carrying exactly one hex HMAC-SHA256 under exactly
+// the endpoint's current signing secret, on every delivery, in and out of a
+// rotation — so a receiver that verifies it today verifies it unchanged
+// tomorrow, and the corpus's own single-valued expectation still describes the
+// wire. EVT-151's "MUST carry three headers" is a floor on what a delivery
+// carries, not a ceiling (the contract's own wire shape shows Host and
+// Content-Type beside them), so an additional header is additive rather than a
+// departure.
+//
+// What it asks of a receiver is stated plainly: to adopt a rotated secret
+// without an outage, a receiver accepts a delivery whose EITHER signature
+// header verifies under a secret it holds. Outside a rotation window the header
+// is absent and there is nothing to consider.
+const HeaderPriorSignature = "X-Waiveo-Signature-Prior"
 
 // Endpoint status values (EVT-154).
 const (
@@ -165,6 +192,93 @@ func NewEndpointState(secret string, maxConsecutiveFailures int, backoffBaseMs, 
 		secret:                 secret,
 		rotationOverlapMs:      rotationOverlapMs,
 	}
+}
+
+// EndpointProgress is the part of an EndpointState a delivery loop must persist
+// to survive a restart: the disable/enable status (EVT-154), the current
+// unbroken failure run, and the resume cursor (EVT-155). It deliberately
+// carries NO secret — a caller that needs to write the secrets writes them
+// through its own sealed-at-rest path, and a progress record that happened to
+// include them would be one accidental log line away from disclosing one.
+type EndpointProgress struct {
+	Status              string
+	ConsecutiveFailures int
+	LastDeliveredID     string
+}
+
+// EndpointConfig names the four figures none of which is fixed by any normative
+// source yet (contracts/events-1.md EVT-153/154/158 draft-notes), so a
+// deployment can carry its own without any of them becoming a baked constant.
+// The Default* values above are the contract's own proposals.
+type EndpointConfig struct {
+	MaxConsecutiveFailures int
+	BackoffBaseMs          int64
+	BackoffCapMs           int64
+	RotationOverlapMs      int64
+}
+
+// Progress returns this endpoint's persistable delivery progress.
+func (e *EndpointState) Progress() EndpointProgress {
+	return EndpointProgress{
+		Status:              e.Status,
+		ConsecutiveFailures: e.ConsecutiveFailures,
+		LastDeliveredID:     e.LastDeliveredID,
+	}
+}
+
+// RestoreEndpointState rebuilds an EndpointState from persisted progress and
+// the endpoint's current signing state — the constructor a delivery loop uses
+// on every pass, so nothing about an endpoint's delivery position lives only in
+// one process's memory (EVT-155: re-enabling or resuming an endpoint resumes
+// from last_delivered_id, which a restart must therefore not forget).
+//
+// priorSecret is empty when no rotation has happened yet; rotatedAtMs is the
+// instant the current secret took over, which is what bounds the overlap
+// window. An empty progress.Status restores as active — a row written before
+// any delivery attempt has no status to remember and is not disabled.
+func RestoreEndpointState(secret, priorSecret string, rotatedAtMs int64, p EndpointProgress, cfg EndpointConfig) *EndpointState {
+	status := p.Status
+	if status == "" {
+		status = EndpointActive
+	}
+	return &EndpointState{
+		Status:                 status,
+		ConsecutiveFailures:    p.ConsecutiveFailures,
+		LastDeliveredID:        p.LastDeliveredID,
+		maxConsecutiveFailures: cfg.MaxConsecutiveFailures,
+		backoffBaseMs:          cfg.BackoffBaseMs,
+		backoffCapMs:           cfg.BackoffCapMs,
+		secret:                 secret,
+		priorSecret:            priorSecret,
+		hasPriorSecret:         priorSecret != "",
+		rotatedAtMs:            rotatedAtMs,
+		rotationOverlapMs:      cfg.RotationOverlapMs,
+	}
+}
+
+// BuildDelivery builds one signed delivery attempt for env under THIS
+// endpoint's own signing state as of nowMs — BuildWebhookDelivery's three
+// EVT-151 headers, plus HeaderPriorSignature while a rotation's overlap window
+// is still open (EVT-158). It is the constructor a delivery loop uses, so
+// whether a rotation is in overlap is read from the endpoint's own state rather
+// than decided at each call site.
+func (e *EndpointState) BuildDelivery(url, deliveryID, timestampSec string, env Envelope, nowMs int64) (WebhookRequest, error) {
+	req, err := BuildWebhookDelivery(url, deliveryID, timestampSec, e.secret, env)
+	if err != nil {
+		return WebhookRequest{}, err
+	}
+	if e.inRotationOverlap(nowMs) {
+		req.Headers[HeaderPriorSignature] = WebhookSignature(e.priorSecret, timestampSec, req.Body)
+	}
+	return req, nil
+}
+
+// inRotationOverlap reports whether a rotation has happened and its overlap
+// window (EVT-158) is still open at nowMs — the one place that boundary is
+// evaluated, so emission (BuildDelivery) and acceptance (AcceptSignature) can
+// never disagree about when the prior secret stops working.
+func (e *EndpointState) inRotationOverlap(nowMs int64) bool {
+	return e.hasPriorSecret && nowMs-e.rotatedAtMs <= e.rotationOverlapMs
 }
 
 // RecordAttempt records the outcome of one delivery attempt at nowMs
@@ -303,7 +417,7 @@ func (e *EndpointState) AcceptSignature(body []byte, timestamp, sig string, nowM
 	if hmac.Equal([]byte(sig), want) {
 		return true
 	}
-	if e.hasPriorSecret && nowMs-e.rotatedAtMs <= e.rotationOverlapMs {
+	if e.inRotationOverlap(nowMs) {
 		wantPrior := []byte(WebhookSignature(e.priorSecret, timestamp, body))
 		if hmac.Equal([]byte(sig), wantPrior) {
 			return true

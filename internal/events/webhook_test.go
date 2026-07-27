@@ -412,6 +412,119 @@ func TestEndpointState_AcceptSignature_RotationOverlap(t *testing.T) {
 	}
 }
 
+// TestEndpointState_BuildDelivery_PriorSignatureOnlyDuringOverlap (EVT-158):
+// the delivery a rotated endpoint emits carries the prior secret's signature
+// alongside the current one for exactly as long as the overlap window is open,
+// and never outside it. That additive header is what makes the rotation
+// gapless: a receiver still holding the old secret has something it can verify,
+// and one that has adopted the new secret verifies the ordinary EVT-151 header
+// throughout.
+func TestEndpointState_BuildDelivery_PriorSignatureOnlyDuringOverlap(t *testing.T) {
+	const initialSecret = "whsec_fixture_build_initial_7c6b"
+	const rotatedSecret = "whsec_fixture_build_rotated_2d3e"
+	const overlapMs = int64(24 * 60 * 60 * 1000)
+	const timestamp = "1752537603"
+
+	st := NewEndpointState(initialSecret, 10, DefaultBackoffBaseMs, DefaultBackoffCapMs, overlapMs)
+	env := Envelope{ID: "01J8Z3K4N5P6Q7R8S9T0V1W2YB", Schema: SchemaAutomationRun}
+
+	// Before any rotation there is no prior secret, so no prior header.
+	before, err := st.BuildDelivery("https://ops.example.invalid/hooks/waiveo", "01J8Z3K4N5P6Q7R8S9T0V1W2YF", timestamp, env, 0)
+	if err != nil {
+		t.Fatalf("BuildDelivery: %v", err)
+	}
+	if _, ok := before.Headers[HeaderPriorSignature]; ok {
+		t.Fatalf("%s present before any rotation; want absent", HeaderPriorSignature)
+	}
+	if got, want := before.Headers[HeaderSignature], WebhookSignature(initialSecret, timestamp, before.Body); got != want {
+		t.Fatalf("%s = %q; want the current secret's signature", HeaderSignature, got)
+	}
+
+	const rotateAt = int64(1_000_000)
+	st.RotateSecret(rotatedSecret, rotateAt)
+
+	// Inside the overlap: BOTH signatures ride, each verifying under its own
+	// secret over the SAME signed material.
+	during, err := st.BuildDelivery("https://ops.example.invalid/hooks/waiveo", "01J8Z3K4N5P6Q7R8S9T0V1W2YF", timestamp, env, rotateAt+overlapMs-1)
+	if err != nil {
+		t.Fatalf("BuildDelivery (overlap): %v", err)
+	}
+	if got, want := during.Headers[HeaderSignature], WebhookSignature(rotatedSecret, timestamp, during.Body); got != want {
+		t.Fatalf("%s = %q; want the CURRENT (rotated) secret's signature — EVT-151's header never changes meaning", HeaderSignature, got)
+	}
+	if got, want := during.Headers[HeaderPriorSignature], WebhookSignature(initialSecret, timestamp, during.Body); got != want {
+		t.Fatalf("%s = %q; want the prior secret's signature over the same material (EVT-158)", HeaderPriorSignature, got)
+	}
+
+	// Past the window: the prior signature stops being emitted.
+	after, err := st.BuildDelivery("https://ops.example.invalid/hooks/waiveo", "01J8Z3K4N5P6Q7R8S9T0V1W2YF", timestamp, env, rotateAt+overlapMs+1)
+	if err != nil {
+		t.Fatalf("BuildDelivery (past overlap): %v", err)
+	}
+	if _, ok := after.Headers[HeaderPriorSignature]; ok {
+		t.Fatalf("%s still present past the overlap window; want absent (EVT-158)", HeaderPriorSignature)
+	}
+	if got, want := after.Headers[HeaderSignature], WebhookSignature(rotatedSecret, timestamp, after.Body); got != want {
+		t.Fatalf("%s = %q; want the current secret's signature", HeaderSignature, got)
+	}
+}
+
+// TestRestoreEndpointState_RoundTripsProgressAndSigningState (EVT-155): an
+// endpoint rebuilt from persisted progress resumes at exactly the cursor it was
+// persisted with, keeps its disabled status, and still emits the rotation
+// overlap's prior signature — the delivery position and the signing state both
+// survive the process, which is what makes "resume from last_delivered_id"
+// mean anything across a restart.
+func TestRestoreEndpointState_RoundTripsProgressAndSigningState(t *testing.T) {
+	const overlapMs = int64(24 * 60 * 60 * 1000)
+	cfg := EndpointConfig{
+		MaxConsecutiveFailures: DefaultMaxConsecutiveFailures,
+		BackoffBaseMs:          DefaultBackoffBaseMs,
+		BackoffCapMs:           DefaultBackoffCapMs,
+		RotationOverlapMs:      overlapMs,
+	}
+
+	live := NewEndpointState("whsec_fixture_restore_initial", 2, DefaultBackoffBaseMs, DefaultBackoffCapMs, overlapMs)
+	live.RecordDelivered("01J8Z3K4N5P6Q7R8S9T0V1W2Y7")
+	live.RecordAttempt(false, 0)
+	live.RecordAttempt(false, 1000) // trips the bound of 2 -> disabled
+	live.RotateSecret("whsec_fixture_restore_rotated", 5_000)
+
+	got := live.Progress()
+	want := EndpointProgress{
+		Status:              EndpointDisabled,
+		ConsecutiveFailures: 2,
+		LastDeliveredID:     "01J8Z3K4N5P6Q7R8S9T0V1W2Y7",
+	}
+	if got != want {
+		t.Fatalf("Progress() = %+v; want %+v", got, want)
+	}
+
+	restored := RestoreEndpointState("whsec_fixture_restore_rotated", "whsec_fixture_restore_initial", 5_000, got, cfg)
+	if restored.Progress() != want {
+		t.Fatalf("restored Progress() = %+v; want %+v (the cursor and status must survive the process)", restored.Progress(), want)
+	}
+
+	// The restored endpoint still accepts the prior secret inside the window
+	// and refuses it outside — the rotation instant survived too, so a restart
+	// neither reopens a closed window nor closes an open one.
+	body := []byte(`{"id":"01J8Z3K4N5P6Q7R8S9T0V1W2YB","schema":"automation.run"}`)
+	priorSig := WebhookSignature("whsec_fixture_restore_initial", "1752537603", body)
+	if !restored.AcceptSignature(body, "1752537603", priorSig, 5_000+overlapMs-1) {
+		t.Fatal("a restored endpoint must still accept the prior secret inside its overlap window (EVT-158)")
+	}
+	if restored.AcceptSignature(body, "1752537603", priorSig, 5_000+overlapMs+1) {
+		t.Fatal("a restored endpoint must stop accepting the prior secret past its overlap window (EVT-158)")
+	}
+
+	// An endpoint restored with no persisted status is active, not disabled:
+	// a row written before any attempt has nothing to remember.
+	fresh := RestoreEndpointState("whsec_fixture_restore_fresh", "", 0, EndpointProgress{}, cfg)
+	if fresh.Status != EndpointActive {
+		t.Fatalf("restored status with no persisted status = %q; want %q", fresh.Status, EndpointActive)
+	}
+}
+
 func stringSlicesEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
