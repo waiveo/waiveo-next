@@ -1198,6 +1198,14 @@ func TestNotifyGenerationAdvanceGatesRevoked(t *testing.T) {
 	nudges := make(chan int64, 4)
 	client, _ := dialClient(t, h, store, func(gen int64) { nudges <- gen })
 
+	// A nudge is best-effort fan-out over the REGISTERED connection set —
+	// dialClient returning means the handshake finished on the client side,
+	// not that the server has inserted the conn into that set yet. Wait for
+	// registration, or a loaded runner loses the sanity nudge to the gap
+	// (nothing retries a nudge; the next one or a reconnect pull recovers).
+	waitFor(t, 5*time.Second, func() bool { return h.connSrv.ConnCount() == 1 },
+		"connection never registered for server-initiated pushes")
+
 	// Sanity: an un-revoked connection receives the nudge.
 	h.advanceGeneration(t, 2)
 	h.connSrv.NotifyGenerationAdvance()
