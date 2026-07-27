@@ -11,10 +11,41 @@ import "encoding/json"
 // relevant payload field per schema (e.g. device_id for device.heartbeat,
 // relay_id for box.vitals); it is a Buffer bookkeeping field only and is
 // never part of the {seq,schema,payload} wire shape REL-090 defines.
+//
+// TraceID is the correlation id REL-006 requires a relay/1 message to carry
+// when its work traces to a single originating operation, "so one identifier
+// correlates the operation across the app peer, the relay, and any durable
+// record the operation eventually produces". This entry IS the relay's own
+// record of that work, and the durable record it eventually produces is the
+// events/1 envelope the app peer reconstructs from it — whose `trace_id`
+// EVT-010 defines as "the originating operation's trace ID, propagated from
+// wherever the event was recorded". The event is recorded HERE, at the relay,
+// so this is the field that carries it; without it the app-side ingest has
+// nothing to propagate and has to fabricate an uncorrelated value, which makes
+// api/1 API-063's promise false for every relay-originated event.
+//
+// It rides PER ENTRY, not per telemetry.push batch, for the reason REL-006
+// itself gives: the trace identifies ONE originating operation. A push batches
+// entries recorded independently over a whole disconnection window — a rule
+// firing, a playback, a state transition — each with its own causal chain. A
+// batch-level trace id would give unrelated events one shared value, which
+// corrupts correlation in the other direction (a trace fanning out across work
+// it never caused) rather than establishing it.
+//
+// It is optional on the wire (`omitempty`), which is a deliberate compatibility
+// statement, not laxity: an older relay predating this field sends no trace_id
+// at all, and the app-side ingest MUST still be able to deliver its events. See
+// internal/app/eventingest.resolveTraceID for what the app peer does with an
+// absent — or malformed — value, and why neither may poison the envelope.
+// REL-105's "exactly these fields, no more" clause is scoped to the loss-marker
+// object alone; REL-090's entry shape carries no such closure, and REL-006 is
+// the requirement that puts a correlation id on a relay/1 message in the first
+// place.
 type Entry struct {
 	Seq     int64           `json:"seq"`
 	Schema  string          `json:"schema"`
 	Payload json.RawMessage `json:"payload"`
+	TraceID string          `json:"trace_id,omitempty"`
 	Subject string          `json:"-"`
 	// RecordedAt is the relay's record-time wall-clock reading (the atMs
 	// passed to Record), retained as durable retention/backoff bookkeeping

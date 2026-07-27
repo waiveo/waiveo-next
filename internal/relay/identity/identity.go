@@ -148,6 +148,10 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("identity: create telemetry schema: %w", err)
 	}
+	if err := migrateTelemetrySchema(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("identity: migrate telemetry schema: %w", err)
+	}
 	if _, err := db.Exec(playerSessionSchema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("identity: create player-session schema: %w", err)

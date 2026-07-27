@@ -55,6 +55,17 @@ func (s *SyntheticSource) Next() (state.Observation, bool) {
 // the generation-swap Canceled outcome arises solely from ApplyGeneration, never
 // from an observation, so AutomationRunEntry's EVT-041 enum is never fed an
 // out-of-band value here.
+//
+// Each recorded entry leaves here carrying a correlation id (relay/1 REL-006),
+// assigned by Buffer.Record at the same moment it assigns the REL-091 seq, and
+// it rides the telemetry wire into the delivered events/1 envelope's trace_id
+// (EVT-010) — which is what makes api/1 API-063's cross-component correlation
+// hold for an edge firing. Record rather than RecordTraced is the right call
+// here: an edge-evaluated rule fires from a device observation the relay made
+// itself, so this IS where the operation originates and there is no upstream
+// trace to propagate. A firing that DOES trace to an app-dispatched operation
+// (the engine does not yet carry one down from a device.command) would record
+// through Buffer.RecordTraced with that operation's own trace id instead.
 func (h *Host) Observe(obs state.Observation) ([]engine.RunDisposition, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

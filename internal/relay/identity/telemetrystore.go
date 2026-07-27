@@ -13,13 +13,21 @@ import (
 // state relay/1 REL-142 scopes (identity + trust + last-applied + clock floor
 // + this bounded telemetry buffer, Telemetry upstream). Both are ordinary
 // small-row tables: telemetry_queue holds one row per undelivered
-// durable-class event ({seq, schema, payload, subject, recorded_at}, REL-090),
-// telemetry_loss_marker one row per not-yet-acknowledged loss marker. Neither
-// can hold asset/media bytes — `payload` is a small event body, never content
-// (`#52` gateway posture: the relay caches no media anywhere).
+// durable-class event ({seq, schema, payload, trace_id, subject, recorded_at},
+// REL-090), telemetry_loss_marker one row per not-yet-acknowledged loss marker.
+// Neither can hold asset/media bytes — `payload` is a small event body, never
+// content (`#52` gateway posture: the relay caches no media anywhere).
 //
 // seq is the queue's own primary key: per-relay monotonic (REL-091) and unique,
 // so a durable entry is written exactly once.
+//
+// trace_id is the entry's record-time correlation id (REL-006), persisted for
+// the same reason the entry body is: the whole point of the durable queue is a
+// backlog that survives a disconnect or a power-pull, and that is precisely the
+// window where correlation is most valuable. Dropping the trace on the floor at
+// restart would leave a resumed backlog delivering events whose trace_id the app
+// peer has to mint fresh — the exact uncorrelated-envelope hole this field
+// closes, reappearing at the least convenient moment.
 //
 // telemetry_seq_high_water is a singleton (id=1) holding the highest seq the
 // relay has ever assigned — durable OR latest-only. It is part of the bounded
@@ -35,7 +43,8 @@ CREATE TABLE IF NOT EXISTS telemetry_queue (
 	schema       TEXT NOT NULL,
 	payload      BLOB NOT NULL,
 	subject      TEXT NOT NULL,
-	recorded_at  INTEGER NOT NULL
+	recorded_at  INTEGER NOT NULL,
+	trace_id     TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS telemetry_loss_marker (
 	from_seq                  INTEGER NOT NULL,
@@ -50,6 +59,47 @@ CREATE TABLE IF NOT EXISTS telemetry_seq_high_water (
 );
 `
 
+// migrateTelemetrySchema brings a telemetry_queue created by an earlier build up
+// to the current column set. `CREATE TABLE IF NOT EXISTS` is a no-op against an
+// existing table, so a relay that has been running since before trace_id existed
+// would otherwise keep a four-column queue and fail every insert — the whole
+// durable backlog silently unwritable. The check is a PRAGMA read rather than a
+// blind `ALTER TABLE ... ADD COLUMN` whose "duplicate column" error is swallowed:
+// swallowing an error class to make a statement idempotent also swallows the
+// unrelated failures that share it.
+func migrateTelemetrySchema(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(telemetry_queue)`)
+	if err != nil {
+		return fmt.Errorf("inspect telemetry_queue: %w", err)
+	}
+	defer rows.Close()
+
+	hasTraceID := false
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
+			return fmt.Errorf("scan telemetry_queue column: %w", err)
+		}
+		if name == "trace_id" {
+			hasTraceID = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate telemetry_queue columns: %w", err)
+	}
+	if hasTraceID {
+		return nil
+	}
+	if _, err := db.Exec(`ALTER TABLE telemetry_queue ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add telemetry_queue.trace_id: %w", err)
+	}
+	return nil
+}
+
 // AppendTelemetry durably persists one durable-class telemetry entry to the
 // relay's bounded queue (REL-090/093), so a committed entry survives a
 // power-pull. A latest-only entry (device.heartbeat, box.vitals) or a schema
@@ -61,8 +111,8 @@ func (s *Store) AppendTelemetry(e telemetry.Entry) error {
 		return nil // latest-only / unknown schema: never durably persisted (REL-094)
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO telemetry_queue (seq, schema, payload, subject, recorded_at) VALUES (?, ?, ?, ?, ?)`,
-		e.Seq, e.Schema, []byte(e.Payload), e.Subject, e.RecordedAt,
+		`INSERT INTO telemetry_queue (seq, schema, payload, subject, recorded_at, trace_id) VALUES (?, ?, ?, ?, ?, ?)`,
+		e.Seq, e.Schema, []byte(e.Payload), e.Subject, e.RecordedAt, e.TraceID,
 	)
 	if err != nil {
 		return fmt.Errorf("identity: AppendTelemetry(seq=%d): %w", e.Seq, err)
@@ -88,8 +138,8 @@ func (s *Store) AppendWithEviction(appended telemetry.Entry, pruneThroughSeq int
 
 	if class, ok := telemetry.ClassOf(appended.Schema); ok && class == telemetry.Durable {
 		if _, err := tx.Exec(
-			`INSERT INTO telemetry_queue (seq, schema, payload, subject, recorded_at) VALUES (?, ?, ?, ?, ?)`,
-			appended.Seq, appended.Schema, []byte(appended.Payload), appended.Subject, appended.RecordedAt,
+			`INSERT INTO telemetry_queue (seq, schema, payload, subject, recorded_at, trace_id) VALUES (?, ?, ?, ?, ?, ?)`,
+			appended.Seq, appended.Schema, []byte(appended.Payload), appended.Subject, appended.RecordedAt, appended.TraceID,
 		); err != nil {
 			return fmt.Errorf("identity: AppendWithEviction: append(seq=%d): %w", appended.Seq, err)
 		}
@@ -217,7 +267,7 @@ func (s *Store) LoadTelemetry() ([]telemetry.Entry, []telemetry.LossMarker, erro
 }
 
 func (s *Store) loadTelemetryEntries() ([]telemetry.Entry, error) {
-	rows, err := s.db.Query(`SELECT seq, schema, payload, subject, recorded_at FROM telemetry_queue ORDER BY seq`)
+	rows, err := s.db.Query(`SELECT seq, schema, payload, subject, recorded_at, trace_id FROM telemetry_queue ORDER BY seq`)
 	if err != nil {
 		return nil, fmt.Errorf("identity: LoadTelemetry: query queue: %w", err)
 	}
@@ -227,7 +277,7 @@ func (s *Store) loadTelemetryEntries() ([]telemetry.Entry, error) {
 	for rows.Next() {
 		var e telemetry.Entry
 		var payload []byte
-		if err := rows.Scan(&e.Seq, &e.Schema, &payload, &e.Subject, &e.RecordedAt); err != nil {
+		if err := rows.Scan(&e.Seq, &e.Schema, &payload, &e.Subject, &e.RecordedAt, &e.TraceID); err != nil {
 			return nil, fmt.Errorf("identity: LoadTelemetry: scan entry: %w", err)
 		}
 		e.Payload = append(json.RawMessage(nil), payload...)

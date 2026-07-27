@@ -3,6 +3,8 @@ package telemetry
 import (
 	"encoding/json"
 	"sync"
+
+	"github.com/maaxton/waiveo-next/internal/shared/ulid"
 )
 
 // Buffer is the relay's bounded, seq-ordered telemetry buffer (REL-090-096).
@@ -54,7 +56,40 @@ func NewBuffer(capacity int) *Buffer {
 // buffered-not-yet-delivered entry of the same schema AND subject: that older
 // entry is discarded (the newer one already reports everything it would have),
 // and — per REL-104 — the discard is NOT loss and produces no loss marker.
+//
+// Record assigns the entry a freshly minted record-time trace id. Use
+// RecordTraced instead when the work being recorded traces to an operation that
+// already has one (REL-006).
 func (b *Buffer) Record(schema string, payload json.RawMessage, subject string, atMs int64) Entry {
+	return b.RecordTraced(schema, payload, subject, atMs, "")
+}
+
+// RecordTraced is Record with an explicit originating trace id — REL-006's
+// "that operation's own trace_id", the value the app peer sent along with the
+// operation that ultimately caused this entry. It is the seam an incoming
+// trace propagates through: a relay/1 message that arrives carrying a trace_id
+// (a dispatched device.command, a state pull) and whose work produces a
+// telemetry entry passes that same value here, and it rides the entry all the
+// way into the delivered events/1 envelope.
+//
+// traceID is normalized, not trusted: a value that is not a canonical ULID —
+// including the empty string a caller with no originating operation passes — is
+// replaced with a freshly minted record-time ULID. Two reasons, both load
+// bearing. First, events/1 EVT-010 TYPES the envelope's trace_id as a ULID and
+// events.Validate enforces it, so an entry carrying anything else would be
+// dropped at the app peer's EVT-013 gate — a correlation-metadata defect
+// silently escalating into durable-class event loss, which REL-093/103 exist to
+// forbid. Second, an entry with NO trace id is exactly the fabricate-a-fresh-one
+// hole this field closes; minting here, at the same moment and in the same place
+// REL-091's record-time seq is assigned, means every entry this relay ever
+// buffers leaves with a real correlation id and no producer can forget to set
+// one. The app-side ingest normalizes again on receipt (it cannot assume the
+// pushing peer is this implementation), but it should never have to.
+func (b *Buffer) RecordTraced(schema string, payload json.RawMessage, subject string, atMs int64, traceID string) Entry {
+	if !ulid.Valid(traceID) {
+		traceID = ulid.New()
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -63,7 +98,7 @@ func (b *Buffer) Record(schema string, payload json.RawMessage, subject string, 
 	}
 
 	b.nextSeq++
-	e := Entry{Seq: b.nextSeq, Schema: schema, Payload: payload, Subject: subject, RecordedAt: atMs}
+	e := Entry{Seq: b.nextSeq, Schema: schema, Payload: payload, TraceID: traceID, Subject: subject, RecordedAt: atMs}
 	b.entries = append(b.entries, e)
 	evicted := b.enforceCapacity()
 	b.persistRecord(e, evicted)
