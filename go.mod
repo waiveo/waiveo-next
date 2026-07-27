@@ -6,6 +6,7 @@ tool github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen
 
 require (
 	github.com/coder/websocket v1.8.15
+	github.com/klauspost/compress v1.17.9
 	github.com/koron/go-ssdp v0.9.1
 	github.com/oapi-codegen/runtime v1.5.0
 	golang.org/x/crypto v0.53.0
