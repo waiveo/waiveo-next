@@ -1,9 +1,11 @@
 // Package eventingest is the app-side telemetry ingest (REL-090, events/1
 // EVT-010/011/013): the POST /telemetry/v1/push handler the relay's telemetry
 // channel delivers to. It reads a telemetry.push batch and, for each record
-// {seq, schema, payload}, reconstructs a full events/1 durable-event Envelope —
-// assigning the recording-order id (EVT-011), origin: relay (EVT-042), the site
-// scope_node, a fresh trace_id, ts, and the schema's cost/retention class — then
+// {seq, schema, payload, trace_id}, reconstructs a full events/1 durable-event
+// Envelope — assigning the recording-order id (EVT-011), origin: relay
+// (EVT-042), the site scope_node, ts, and the schema's cost/retention class,
+// and PROPAGATING the record's own trace_id (EVT-010, relay/1 REL-006, api/1
+// API-063 — see resolveTraceID) — then
 // validates it (EVT-013: an invalid record is dropped and logged, NEVER
 // appended) and appends it to the shared events.EventLog the /events/v1 SSE
 // server reads. It acks the highest ordinary-entry seq it has RECEIVED
@@ -286,9 +288,10 @@ func (in *ingest) processOne(e telemetry.Entry) {
 // buildEnvelope assigns the app-side envelope fields onto a wire record and
 // validates the result (EVT-010/011/013). It carries the payload through
 // byte-for-byte (REL-090 — the relay already mapped it, this layer never
-// re-maps a schema's payload) and returns an error for any record it cannot turn
-// into a deliverable envelope (an unclassed schema, or a payload that fails
-// events.Validate).
+// re-maps a schema's payload) and PROPAGATES the record's own trace id rather
+// than fabricating one (see resolveTraceID). It returns an error for any record
+// it cannot turn into a deliverable envelope (an unclassed schema, or a payload
+// that fails events.Validate).
 func (in *ingest) buildEnvelope(e telemetry.Entry) (events.Envelope, error) {
 	cost, retention, ok := events.ClassFor(e.Schema)
 	if !ok {
@@ -299,7 +302,7 @@ func (in *ingest) buildEnvelope(e telemetry.Entry) (events.Envelope, error) {
 		Schema:         e.Schema,
 		TS:             time.Now().UnixMilli(),
 		ScopeNode:      in.siteScopeNode,
-		TraceID:        ulid.New(),
+		TraceID:        in.resolveTraceID(e),
 		CostClass:      cost,
 		RetentionClass: retention,
 		Origin:         "relay",
@@ -309,4 +312,64 @@ func (in *ingest) buildEnvelope(e telemetry.Entry) (events.Envelope, error) {
 		return events.Envelope{}, err
 	}
 	return env, nil
+}
+
+// resolveTraceID decides the envelope's trace_id from the wire record's own
+// (relay/1 REL-006, events/1 EVT-010, api/1 API-063). The caller holds mu.
+//
+// The rule is: propagate a canonical ULID, substitute a fresh one for anything
+// else, and NEVER let the incoming value decide whether the event is delivered.
+//
+// Propagating is the whole point. EVT-010 defines trace_id as "the originating
+// operation's trace ID, propagated from wherever the event was recorded", and a
+// relay-originated event was recorded at the relay — so the value the relay set
+// at record time IS the correct one, and minting a fresh one here (as this did
+// before the wire record carried a trace at all) made API-063's cross-component
+// correlation promise false for every event real hardware produces. It is a
+// pure carry-through: this layer never rewrites a trace it can use.
+//
+// The substitution rules are where the type contract is defended, and the two
+// non-ULID cases are genuinely different:
+//
+//   - ABSENT is an expected, legitimate shape, not a defect. The wire field is
+//     optional (telemetry.Entry), so a relay built before it existed sends no
+//     trace_id and there is nothing to propagate. A fresh ULID keeps the event
+//     deliverable and is logged at nothing — an older peer would otherwise emit
+//     one log line per entry across its entire backlog, which buries the case
+//     below that actually needs attention.
+//   - MALFORMED is a defect in the pushing peer and is logged. This relay's own
+//     buffer normalizes at record time and cannot produce one; a value arriving
+//     here that is not a canonical ULID means some peer is putting a
+//     non-conformant identifier on the wire, and that is worth surfacing exactly
+//     once per record rather than absorbing in silence.
+//
+// What neither case may do is fail the event. It would be easy to argue that a
+// malformed trace_id should be handed to events.Validate and dropped by the
+// EVT-013 gate — but consider what that costs: an automation.run is
+// durable-class (REL-093), the relay retains it until acknowledged, and this
+// ingest acks a dropped-invalid seq as RECEIVED (so one un-fixable record cannot
+// wedge the channel). Dropping on a bad trace id therefore turns a defect in
+// CORRELATION METADATA into permanent, unrecoverable loss of the event's actual
+// content — with no loss marker, because the relay's accounting shows it
+// delivered. REL-103 forbids exactly that silent durable-class loss, and
+// trace_id is not subject data: nothing about what happened is carried in it.
+// Substituting keeps the payload, keeps EVT-010's ULID type intact, and leaves
+// a log line naming the record whose correlation was broken.
+//
+// A tempting third option is to fall back to the PUSH REQUEST's own Trace-Id
+// (apihttp.TraceID) instead of minting. It is rejected: one push carries a whole
+// disconnection window's entries, recorded independently, so that fallback would
+// stamp one trace across a batch of unrelated operations — asserting a causal
+// link that does not exist, which is worse than admitting there is none.
+func (in *ingest) resolveTraceID(e telemetry.Entry) string {
+	if ulid.Valid(e.TraceID) {
+		return e.TraceID // propagate (EVT-010, REL-006, API-063)
+	}
+	if e.TraceID != "" {
+		in.logf("eventingest: telemetry seq %d schema %q carried a malformed trace_id %q "+
+			"(events/1 EVT-010 types it as a ULID); substituting a fresh one — the event is still delivered, "+
+			"but it no longer correlates to the operation that produced it (api/1 API-063)",
+			e.Seq, e.Schema, e.TraceID)
+	}
+	return ulid.New()
 }
