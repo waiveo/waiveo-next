@@ -501,24 +501,33 @@ func TestSendEntityCommandIdempotencyKeyReplays(t *testing.T) {
 	}
 }
 
-// TestRegistryRejectsNonUlidIdentifiers pins DAT-005a at the registry boundary:
-// a row whose id, device_id, or relay_id is not a canonical ULID is refused and
-// not stored, so it can never become an out-of-order page boundary or an
-// unroutable command target.
-func TestRegistryRejectsNonUlidIdentifiers(t *testing.T) {
+// TestRegistryRejectsMalformedIdentifiers pins DAT-005a at the registry
+// boundary — a row whose own id (or an entity's device_id) is not a canonical
+// ULID is refused and not stored, so it can never become an out-of-order page
+// boundary — and pins the deliberate exception: relay_id is minted by the
+// enrollment path (relay/1 REL-012/014), is NOT a ULID in the running system,
+// and is required only to be present.
+func TestRegistryRejectsMalformedIdentifiers(t *testing.T) {
 	r := devices.New()
 	if err := r.PutDevice(devices.Device{ID: "not-a-ulid", RelayID: devRelayA}); err == nil {
 		t.Fatal("PutDevice accepted a non-ULID id")
 	}
-	if err := r.PutDevice(devices.Device{ID: devDevice1, RelayID: "relay-1"}); err == nil {
-		t.Fatal("PutDevice accepted a non-ULID relay_id")
+	if err := r.PutDevice(devices.Device{ID: devDevice1}); err == nil {
+		t.Fatal("PutDevice accepted a device with no relay_id — it would be uncommandable")
 	}
 	if err := r.PutEntity(devices.Entity{ID: devEntity1, DeviceID: "dev-1", RelayID: devRelayA}); err == nil {
 		t.Fatal("PutEntity accepted a non-ULID device_id")
 	}
+	if err := r.PutEntity(devices.Entity{ID: devEntity1, DeviceID: devDevice1}); err == nil {
+		t.Fatal("PutEntity accepted an entity with no relay_id")
+	}
 	if n := len(r.Devices()) + len(r.Entities()); n != 0 {
 		t.Fatalf("registry holds %d row(s) after rejected writes, want 0", n)
 	}
+
+	// An enrollment-shaped relay id — the form the enrollment path actually
+	// mints — is accepted, since relay_id is not a row id of this platform's.
+	mustPutDevice(t, r, devices.Device{ID: devDevice2, RelayID: "relay-0f1e2d3c4b5a69788796a5b4c3d2e1f0"})
 
 	// The accepting path still works, and reads back in id order.
 	mustPutEntity(t, r, devices.Entity{ID: devEntity2, DeviceID: devDevice1, RelayID: devRelayA})

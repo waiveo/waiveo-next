@@ -597,6 +597,8 @@ export interface components {
             /** @description The `enabled` value to apply to every automation the selector matches. */
             enabled: boolean;
         };
+        /** @description A relay's permanent identity, assigned to it by enrollment and unchanged across every later certificate renewal or re-enrollment (`relay/1` REL-012/014). Deliberately NOT typed as a ULID: unlike a resource this API mints, a relay id is issued by the enrollment path and is opaque here — this API reads it, routes a command by it, and never constructs or parses one. */
+        RelayId: string;
         /** @description A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping. */
         LabelMap: {
             [key: string]: string;
@@ -606,8 +608,7 @@ export interface components {
             id: components["schemas"]["Ulid"];
             /** @description Client-assigned identifier (contracts/api-1.md#client-assignable-external_id). */
             external_id?: string | null;
-            /** @description The relay whose LAN this device sits on, and through whose connection its entities' commands travel. */
-            relay_id: components["schemas"]["Ulid"];
+            relay_id: components["schemas"]["RelayId"];
             /** @description The device class whose state, attribute, and command vocabulary governs this device (`device-class-registry/1`). */
             device_class: string;
             name: string;
@@ -625,8 +626,7 @@ export interface components {
             external_id?: string | null;
             /** @description The physical device this entity belongs to. A device fans out to many entities, which is why a relay serializes commands per device rather than per entity (`relay/1` REL-115). */
             device_id: components["schemas"]["Ulid"];
-            /** @description The relay a command to this entity is dispatched through. */
-            relay_id: components["schemas"]["Ulid"];
+            relay_id: components["schemas"]["RelayId"];
             /** @description The device class whose command vocabulary a command to this entity must resolve against (`device-class-registry/1` REG-052). */
             device_class: string;
             name: string;

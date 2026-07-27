@@ -1424,6 +1424,17 @@ components:
     # devices + entities — the device plane's read surface and the
     # command operation (relay/1 Device plane, REL-112/113).
     # -----------------------------------------------------------------
+    RelayId:
+      type: string
+      minLength: 1
+      description: >-
+        A relay's permanent identity, assigned to it by enrollment and
+        unchanged across every later certificate renewal or re-enrollment
+        (`relay/1` REL-012/014). Deliberately NOT typed as a ULID: unlike a
+        resource this API mints, a relay id is issued by the enrollment path
+        and is opaque here — this API reads it, routes a command by it, and
+        never constructs or parses one.
+
     LabelMap:
       type: object
       description: >-
@@ -1456,9 +1467,7 @@ components:
           description: Client-assigned identifier (contracts/api-1.md#client-assignable-external_id).
           x-go-type: "*string"
         relay_id:
-          allOf:
-            - $ref: "#/components/schemas/Ulid"
-          description: The relay whose LAN this device sits on, and through whose connection its entities' commands travel.
+          $ref: "#/components/schemas/RelayId"
         device_class:
           type: string
           description: The device class whose state, attribute, and command vocabulary governs this device (`device-class-registry/1`).
@@ -1505,9 +1514,7 @@ components:
             many entities, which is why a relay serializes commands per
             device rather than per entity (`relay/1` REL-115).
         relay_id:
-          allOf:
-            - $ref: "#/components/schemas/Ulid"
-          description: The relay a command to this entity is dispatched through.
+          $ref: "#/components/schemas/RelayId"
         device_class:
           type: string
           description: The device class whose command vocabulary a command to this entity must resolve against (`device-class-registry/1` REG-052).

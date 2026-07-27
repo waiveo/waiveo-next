@@ -413,8 +413,8 @@ type Device struct {
 	Labels LabelMap `json:"labels"`
 	Name   string   `json:"name"`
 
-	// RelayId The relay whose LAN this device sits on, and through whose connection its entities' commands travel.
-	RelayId Ulid `json:"relay_id"`
+	// RelayId A relay's permanent identity, assigned to it by enrollment and unchanged across every later certificate renewal or re-enrollment (`relay/1` REL-012/014). Deliberately NOT typed as a ULID: unlike a resource this API mints, a relay id is issued by the enrollment path and is opaque here — this API reads it, routes a command by it, and never constructs or parses one.
+	RelayId RelayId `json:"relay_id"`
 
 	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
 	ScopeNode Ulid `json:"scope_node"`
@@ -445,8 +445,8 @@ type Entity struct {
 	Labels LabelMap `json:"labels"`
 	Name   string   `json:"name"`
 
-	// RelayId The relay a command to this entity is dispatched through.
-	RelayId Ulid `json:"relay_id"`
+	// RelayId A relay's permanent identity, assigned to it by enrollment and unchanged across every later certificate renewal or re-enrollment (`relay/1` REL-012/014). Deliberately NOT typed as a ULID: unlike a resource this API mints, a relay id is issued by the enrollment path and is opaque here — this API reads it, routes a command by it, and never constructs or parses one.
+	RelayId RelayId `json:"relay_id"`
 
 	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
 	ScopeNode Ulid `json:"scope_node"`
@@ -558,6 +558,9 @@ type Problem struct {
 	// Type Always "about:blank" in this version; `code` is the sole machine-readable discriminant api/v1 defines.
 	Type string `json:"type"`
 }
+
+// RelayId A relay's permanent identity, assigned to it by enrollment and unchanged across every later certificate renewal or re-enrollment (`relay/1` REL-012/014). Deliberately NOT typed as a ULID: unlike a resource this API mints, a relay id is issued by the enrollment path and is opaque here — this API reads it, routes a command by it, and never constructs or parses one.
+type RelayId = string
 
 // ScopeNode A node in the org → site → group → screen tree.
 type ScopeNode struct {

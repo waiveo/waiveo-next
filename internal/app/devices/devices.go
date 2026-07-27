@@ -38,6 +38,10 @@ import (
 // carried in every representation unchanged, and is a pointer so an unset one
 // serializes as JSON null rather than an empty string that a round trip would
 // silently turn into a set-but-blank value.
+//
+// RelayID is the relay's enrollment-assigned identity (relay/1 REL-012/014),
+// NOT a ULID: the enrollment path mints it, this registry only reads and routes
+// by it (openapi RelayId).
 type Device struct {
 	ID          string            `json:"id"`
 	ExternalID  *string           `json:"external_id"`
@@ -90,18 +94,22 @@ func New() *Registry {
 
 // PutDevice inserts or replaces a device by its id.
 //
-// Both ids are required to be canonical ULIDs (data-model/1 DAT-005a): the id is
-// the keyset-pagination sort key api/1's cursor convention pages by (API-034), so
-// a non-ULID id would page out of order, and relay_id is what selects the
-// connection a command travels down. A rejected row is not stored — a registry
-// that quietly accepted a malformed id would surface it later as an
-// unroutable command or a corrupt page boundary.
+// The row's own id MUST be a canonical ULID (data-model/1 DAT-005a): it is the
+// keyset-pagination sort key api/1's cursor convention pages by (API-034), so a
+// non-ULID id would page out of order and could sit either side of a cursor
+// boundary depending on the comparison. RelayID is only required to be present:
+// it is minted by the enrollment path, not by this platform's row-id rule, and
+// is deliberately not a ULID in the running system.
+//
+// A rejected row is not stored — a registry that quietly accepted a malformed
+// id would surface it later as a corrupt page boundary or an unroutable
+// command.
 func (r *Registry) PutDevice(d Device) error {
 	if !ulid.Valid(d.ID) {
 		return fmt.Errorf("devices: device id %q is not a canonical ULID", d.ID)
 	}
-	if !ulid.Valid(d.RelayID) {
-		return fmt.Errorf("devices: device %s relay_id %q is not a canonical ULID", d.ID, d.RelayID)
+	if d.RelayID == "" {
+		return fmt.Errorf("devices: device %s carries no relay_id — there would be no connection to command it through", d.ID)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -109,8 +117,8 @@ func (r *Registry) PutDevice(d Device) error {
 	return nil
 }
 
-// PutEntity inserts or replaces an entity by its id, under the same id rules
-// PutDevice applies, plus its owning device's.
+// PutEntity inserts or replaces an entity by its id, under the same rules
+// PutDevice applies, plus its owning device's id.
 func (r *Registry) PutEntity(e Entity) error {
 	if !ulid.Valid(e.ID) {
 		return fmt.Errorf("devices: entity id %q is not a canonical ULID", e.ID)
@@ -118,8 +126,8 @@ func (r *Registry) PutEntity(e Entity) error {
 	if !ulid.Valid(e.DeviceID) {
 		return fmt.Errorf("devices: entity %s device_id %q is not a canonical ULID", e.ID, e.DeviceID)
 	}
-	if !ulid.Valid(e.RelayID) {
-		return fmt.Errorf("devices: entity %s relay_id %q is not a canonical ULID", e.ID, e.RelayID)
+	if e.RelayID == "" {
+		return fmt.Errorf("devices: entity %s carries no relay_id — there would be no connection to command it through", e.ID)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
