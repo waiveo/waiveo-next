@@ -13,9 +13,12 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
+	"flag"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -200,8 +203,55 @@ func envOr(env func(string) string, key, def string) string {
 	return def
 }
 
+// reportStoreIDs backs -store-check: it opens the store, reports every row id
+// the next boot would rewrite, and writes nothing. It is what an operator runs
+// against a box BEFORE restarting it onto a build that requires a canonical ULID
+// for every row id, so the restart holds no surprises — an empty report means the
+// store is already conforming, a listed one is exactly what the boot will change,
+// and a refusal means the boot would decline to start and the store needs a look
+// first.
+//
+// The return value is the process exit code: 0 when the store is fine or merely
+// needs a rewrite the boot can perform, 1 when it cannot be opened or the
+// rewrite would be refused.
+func reportStoreIDs(storePath string, out io.Writer) int {
+	st, err := store.Open(storePath)
+	if err != nil {
+		fmt.Fprintf(out, "cannot open %s: %v\n", storePath, err)
+		return 1
+	}
+	defer st.Close()
+
+	m, err := st.PlanRowIDMigration(context.Background())
+	if err != nil {
+		fmt.Fprintf(out, "%s CANNOT be canonicalized: %v\n", storePath, err)
+		fmt.Fprintf(out, "the feeder will refuse to start against this store; nothing has been changed.\n")
+		return 1
+	}
+	if len(m.Rewrites) == 0 {
+		fmt.Fprintf(out, "%s: every row id is already a canonical ULID; the next boot will not touch it.\n", storePath)
+		return 0
+	}
+	fmt.Fprintf(out, "%s: %d row id(s) will be canonicalized at the next boot:\n", storePath, len(m.Rewrites))
+	for _, rw := range m.Rewrites {
+		fmt.Fprintf(out, "  %-16s %s -> %s\n", rw.Kind, rw.From, rw.To)
+	}
+	fmt.Fprintf(out, "references to them are rewritten in the same transaction; nothing has been changed by this check.\n")
+	return 0
+}
+
 func main() {
+	// The one flag the feeder takes, checked before any state is opened, the
+	// same shape the relay's -version uses. Everything else stays env-only.
+	storeCheck := flag.Bool("store-check", false,
+		"report any stored row id that is not a canonical ULID (and would be rewritten at the next boot), then exit without writing")
+	flag.Parse()
+
 	cfg := loadConfig(os.Getenv)
+
+	if *storeCheck {
+		os.Exit(reportStoreIDs(cfg.storePath, os.Stdout))
+	}
 
 	id, err := signing.LoadOrCreate(signing.DefaultDir)
 	if err != nil {
@@ -260,6 +310,31 @@ func main() {
 		log.Fatalf("waiveo-feeder: open store: %v", err)
 	}
 	defer st.Close()
+
+	// A store written before a row's id had to be a canonical ULID is READABLE
+	// but write-dead: every write validates the resulting full row set, so one
+	// stale id fails every later create and update for rows the caller never
+	// touched. That is invisible until an operator tries to author something, so
+	// it is repaired here, at boot, rather than left for a command someone has to
+	// know to run — a box that skipped it would look healthy and quietly refuse
+	// every edit.
+	//
+	// It earns that position by being inert: a conforming store is not written to
+	// at all, nothing is ever deleted, and the whole rewrite is one transaction
+	// that re-runs the write path's own validators before it commits. If it
+	// cannot proceed it declines to start, in the same spirit as the
+	// desired-state check below — a feeder that cannot accept a write is not
+	// something to discover later. `waiveo-feeder -store-check` reports what this
+	// would do, without writing, before the restart.
+	if m, err := st.MigrateRowIDs(ctx); err != nil {
+		log.Fatalf("waiveo-feeder: canonicalize store row ids: %v\n"+
+			"    run `waiveo-feeder -store-check` to inspect %s; nothing was changed", err, cfg.storePath)
+	} else if len(m.Rewrites) > 0 {
+		for _, rw := range m.Rewrites {
+			log.Printf("waiveo-feeder: canonicalized %s id %q -> %q", rw.Kind, rw.From, rw.To)
+		}
+		log.Printf("waiveo-feeder: canonicalized %d store row id(s) in %s", len(m.Rewrites), cfg.storePath)
+	}
 
 	assetRef := signhash.ContentID(img)
 	if gen, err := st.Generation(ctx); err != nil {
