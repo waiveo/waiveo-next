@@ -151,7 +151,7 @@ test("a covered row naming a case with no matching corpus file fails", () => {
   );
 });
 
-test("a covered row whose case is not in any driver's driven set fails, naming the fix", () => {
+test("a covered row whose case is not in its own contract's driven set fails, naming the fix", () => {
   withFixture(
     (write) => {
       writeGoodTree(write);
@@ -164,9 +164,63 @@ test("a covered row whose case is not in any driver's driven set fails, naming t
       const out = res.stdout + res.stderr;
       assert.match(out, /XXX-001/);
       assert.match(out, /XXX-001-basic/);
-      assert.match(out, /none of \[.*\] appears in any driver's driven set/);
+      assert.match(out, /none of \[.*\] appears in example\/1's own driven set/);
       assert.match(out, /conformance\/driven-manifest\.json/);
       assert.match(out, /downgrade the row/);
+      assert.match(res.stdout, /SUMMARY: validate-coverage: FAILED/);
+    }
+  );
+});
+
+test("a covered row's case must be in ITS OWN contract's driven set — another contract's driven list vouching for it still fails (closes the cross-contract poisoning exploit)", () => {
+  withFixture(
+    (write) => {
+      // Two independent contracts. other/1's own driver has driven nothing,
+      // but example/1's manifest entry (a completely different contract)
+      // happens to list other/1's case id — a flattened cross-contract union
+      // would wrongly let that vouch for other/1's covered row.
+      writeGoodTree(write);
+      write(
+        "contracts/other-1.md",
+        "# Other Contract\n\n**Contract:** other/1\n**Version:** 1.0\n**Status:** draft\n\n**[YYY-001]** placeholder.\n"
+      );
+      write(
+        "conformance/corpora/other-1/YYY-001-basic.json",
+        JSON.stringify({
+          case_id: "YYY-001-basic",
+          contract: "other/1",
+          req_ids: ["YYY-001"],
+          description: "d",
+          input: {},
+          expected: {},
+        })
+      );
+      write(
+        "conformance/traceability/other-1.md",
+        "| req-id | contract §anchor | case-id(s) | status |\n|---|---|---|---|\n| YYY-001 | `contracts/other-1.md#normative-requirements` | `YYY-001-basic` | covered |\n"
+      );
+      write(
+        "conformance/driven-manifest.json",
+        JSON.stringify({
+          "example/1": { driver: "test", driven: ["XXX-001-basic", "YYY-001-basic"], pending: [] },
+          "other/1": { driver: "test", driven: [], pending: [] },
+        })
+      );
+      write(
+        "conformance/traceability/INDEX.md",
+        GOOD_INDEX.replace(
+          "| example/1 | 2 | 1 | 1 | 1 | 0 |\n",
+          "| example/1 | 2 | 1 | 1 | 1 | 0 |\n| other/1 | 1 | 1 | 1 | 0 | 0 |\n"
+        ).replace("| **Total** | **2** | **1** | **1** | **1** | **0** |", "| **Total** | **3** | **2** | **2** | **1** | **0** |")
+      );
+    },
+    (root) => {
+      const res = runValidator(root);
+      assert.notEqual(res.status, 0);
+      const out = res.stdout + res.stderr;
+      assert.match(out, /YYY-001/);
+      assert.match(out, /YYY-001-basic/);
+      assert.match(out, /none of \[.*\] appears in other\/1's own driven set/);
       assert.match(res.stdout, /SUMMARY: validate-coverage: FAILED/);
     }
   );
@@ -478,6 +532,34 @@ test("INDEX.md resolves a row spelled as the bare corpus-dir name (no /1), match
       const res = runValidator(root);
       assert.equal(res.status, 0, `expected exit 0, got ${res.status}\n${res.stdout}${res.stderr}`);
       assert.match(res.stdout, /SUMMARY: validate-coverage: OK/);
+    }
+  );
+});
+
+test("INDEX.md missing a row for a contract that exists fails, even though the Total still balances against the reduced set", () => {
+  withFixture(
+    (write) => {
+      writeGoodTree(write);
+      // A second real contract with a row deliberately omitted from INDEX.md;
+      // the Total is kept internally consistent with the ONE remaining row,
+      // proving the sum check alone cannot catch a dropped row.
+      write(
+        "contracts/other-1.md",
+        "# Other Contract\n\n**Contract:** other/1\n**Version:** 1.0\n**Status:** draft\n\n**[YYY-001]** placeholder.\n"
+      );
+      write(
+        "conformance/traceability/other-1.md",
+        "| req-id | contract §anchor | case-id(s) | status |\n|---|---|---|---|\n| YYY-001 | `contracts/other-1.md#normative-requirements` | - | TBD-wave1 |\n"
+      );
+      // INDEX.md is untouched — still only the example/1 row + a Total that
+      // balances against just that row, as if other/1 never existed.
+    },
+    (root) => {
+      const res = runValidator(root);
+      assert.notEqual(res.status, 0);
+      const out = res.stdout + res.stderr;
+      assert.match(out, /no row for contract "other\/1" \(contracts\/other-1\.md\)/);
+      assert.match(res.stdout, /SUMMARY: validate-coverage: FAILED/);
     }
   );
 });

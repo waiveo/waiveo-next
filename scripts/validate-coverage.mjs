@@ -42,14 +42,23 @@
 //      row's status, so a TBD-wave1 row citing a future case is still
 //      typo-checked.
 //   8. Traceability row: a "covered" row's named cases must include >=1 ID
-//      that appears in SOME driver's driven set (driven-manifest.json) — a
-//      "covered" row whose cases are all unexecuted must downgrade.
+//      that appears in driven-manifest.json's entry for THIS ROW'S OWN
+//      contract (never any other contract's entry) — a "covered" row whose
+//      cases are all unexecuted by its own contract's driver must downgrade.
+//      This is deliberately scoped per-contract, not unioned across the
+//      manifest: a flattened union would let any hand-maintained entry (e.g.
+//      ui-schema/1's, which conformance/cmd/driven-manifest cannot regenerate
+//      or verify) vouch for a completely unrelated contract's rows just by
+//      naming its case IDs.
 //   9. driven-manifest.json: every driven/pending case ID it lists must exist
 //      in the corpus (catches the manifest itself drifting from reality on
 //      the "phantom case" side; the runtime-vs-manifest drift on the driver
 //      side is caught by Go tests, not this script).
 //  10. INDEX.md: per contract, covered/TBD-wave1/Requirements/Seed-cases
-//      match the actual counts; the Total row matches the column sums.
+//      match the actual counts; the Total row matches the column sums; and
+//      every contract defined under contracts/ has exactly one row (a
+//      deleted row is caught, not just a wrong sum over whatever rows
+//      remain).
 import { readdirSync, readFileSync, statSync, existsSync } from "node:fs";
 import { join, basename, dirname } from "node:path";
 
@@ -139,15 +148,6 @@ if (!existsSync(MANIFEST_PATH)) {
   }
 }
 
-// unionDriven is every case ID any contract's driver entry actually drove —
-// flattened across the whole manifest, since a case ID's contract prefix
-// already makes cross-contract collision practically impossible, and the
-// check is phrased as "any driver's driven set" (driven-manifest.json is a
-// single artifact, not looked up per contract for this particular check).
-const unionDriven = new Set();
-for (const entry of Object.values(manifest)) {
-  for (const id of entry.driven ?? []) unionDriven.add(id);
-}
 
 // ---------------------------------------------------------------------------
 // Step 3: load every corpus file, running the per-envelope checks (#1-#5) as
@@ -270,6 +270,11 @@ function checkTraceabilityFile(path) {
   const stem = basename(path).replace(/\.md$/, "");
   const lines = readFileSync(path, "utf8").split("\n");
   const existingIds = caseIdsByStem.get(stem) ?? new Set();
+  // #8 is scoped to THIS contract's own manifest entry — never the whole
+  // manifest — so one contract's hand-maintained driven list can never vouch
+  // for another contract's coverage claim (see check #8's doc comment above).
+  const contractValue = contractsByStem.get(stem)?.contractValue;
+  const ownDriven = new Set(manifest[contractValue]?.driven ?? []);
   let covered = 0;
   let tbd = 0;
 
@@ -301,13 +306,14 @@ function checkTraceabilityFile(path) {
       }
     }
 
-    // #8 a "covered" row needs >=1 of its named cases in the driven union.
+    // #8 a "covered" row needs >=1 of its named cases in ITS OWN contract's
+    // driven set — never some other contract's entry (see doc comment #8).
     if (status === "covered") {
-      const anyDriven = ids.some((id) => unionDriven.has(id));
+      const anyDriven = ids.some((id) => ownDriven.has(id));
       if (!anyDriven) {
         failures.push(
-          `${loc}: ${reqId} is covered but none of [${ids.join(", ")}] appears in any driver's driven set ` +
-            `(${MANIFEST_PATH}) — wire a case into a driver and rerun "go run ./conformance/cmd/driven-manifest -write", ` +
+          `${loc}: ${reqId} is covered but none of [${ids.join(", ")}] appears in ${contractValue ?? stem}'s own ` +
+            `driven set (${MANIFEST_PATH}) — wire a case into a driver and rerun "go run ./conformance/cmd/driven-manifest -write", ` +
             `or downgrade the row to "- | TBD-wave1"`
         );
       }
@@ -342,6 +348,7 @@ function checkIndex() {
   let sumCovered = 0;
   let sumTbd = 0;
   let totalRow = null;
+  const seenStems = new Set();
 
   for (const raw of lines) {
     const line = raw.trim();
@@ -375,6 +382,8 @@ function checkIndex() {
       continue;
     }
 
+    seenStems.add(stem);
+
     const req = Number(cells[2]);
     const seed = Number(cells[3]);
     const covered = Number(cells[4]);
@@ -393,6 +402,19 @@ function checkIndex() {
       failures.push(
         `${indexPath}: ${contractCell} row says covered=${covered}/TBD=${tbd}/req=${req}/seed=${seed}; ` +
           `actual ${counts.covered}/${counts.tbd}/${actualReq}/${actualSeed} — regenerate the row`
+      );
+    }
+  }
+
+  // #10 completeness: every contract defined under contracts/ must have
+  // exactly one row here — otherwise "Total matches the column sums" is
+  // vacuous for whatever got dropped (a deleted row's counts simply never
+  // enter the sums, so the Total still balances against the reduced set).
+  for (const stem of contractsByStem.keys()) {
+    if (!seenStems.has(stem)) {
+      const contractValue = contractsByStem.get(stem)?.contractValue ?? stem;
+      failures.push(
+        `${indexPath}: no row for contract "${contractValue}" (contracts/${stem}.md) — every contract must roll up here`
       );
     }
   }
