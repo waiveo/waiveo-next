@@ -210,6 +210,75 @@ func TestBulkEnableIsPartialWhenOneTargetFails(t *testing.T) {
 	}
 }
 
+// TestBulkEnableFailedTargetReportsWhyOnTheWire is API-115 made OBSERVABLE: a
+// client that polls a Job and finds one of its targets `failed` can read, from
+// that same body, the api/1 registry code the failure was typed with — without
+// which "this target failed" is the whole of what the surface will ever say.
+//
+// The failure is the same genuine one the partial case produces (a matched
+// automation deleted between acceptance and execution), so the code asserted
+// here is one the executor really derived from a real store outcome, not a
+// value written into the record by the test. NOT_FOUND is the registry's own
+// value for "no resource exists at the identifier named" (API-014's taxonomy),
+// which is exactly what the deleted row is — and it is the SAME code a
+// synchronous DELETE-then-GET of that id would answer with, which is the
+// "diagnosable the same way any other api/1 error is" half of API-115.
+//
+// The surviving sibling is asserted to carry NO error, because "always attach
+// an error" would satisfy the failed half while making the member meaningless.
+func TestBulkEnableFailedTargetReportsWhyOnTheWire(t *testing.T) {
+	e := newEnv(t)
+	root := e.auth.Credential()
+	survivor := e.createAutomation(t, root, autoScopeNode, map[string]string{"env": "prod"})
+	doomed := e.createAutomation(t, root, autoScopeNode, map[string]string{"env": "prod"})
+
+	jobID, _ := e.bulkEnable(t, root, "env=prod", false)
+
+	// Deleted while the runner is still stopped, so the executor provably reaches
+	// this target after the row is gone.
+	resp, raw := e.as(t, root, http.MethodDelete, "/api/v1/automations/"+doomed, nil,
+		map[string]string{"If-Match": `"1"`})
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete %s = %d, want 204 (body %s)", doomed, resp.StatusCode, raw)
+	}
+
+	e.runJobs()
+
+	final := assertJobShape(t, mustPoll(t, e, root, jobID), root.PrincipalID)
+	byID := map[string]jobTarget{}
+	for _, tg := range final.Targets {
+		byID[tg.TargetID] = tg
+	}
+
+	failed, ok := byID[doomed]
+	if !ok {
+		t.Fatalf("the deleted target %s is missing from the polled Job entirely: %+v", doomed, final.Targets)
+	}
+	if failed.State != "failed" {
+		t.Fatalf("target %s state = %q, want failed — the fixture no longer produces a genuine failure", doomed, failed.State)
+	}
+	if failed.Error == nil {
+		t.Fatalf("target %s is `failed` and carries no `error`: a client polling GET /jobs/{job_id} can never learn why (API-115)", doomed)
+	}
+	if failed.Error.Code != "NOT_FOUND" {
+		t.Fatalf("target %s error.code = %q, want NOT_FOUND — the row was deleted out from under the accepted job", doomed, failed.Error.Code)
+	}
+	if failed.Error.Detail == "" {
+		t.Fatalf("target %s error carries no `detail`; the executor produced one and it MUST reach the client", doomed)
+	}
+
+	survived, ok := byID[survivor]
+	if !ok {
+		t.Fatalf("the surviving target %s is missing from the polled Job: %+v", survivor, final.Targets)
+	}
+	if survived.State != "succeeded" {
+		t.Fatalf("target %s state = %q, want succeeded", survivor, survived.State)
+	}
+	if survived.Error != nil {
+		t.Fatalf("target %s succeeded and still carries an error %+v: `error` is present if and ONLY if the target failed", survivor, *survived.Error)
+	}
+}
+
 // TestBulkEnableProgressDoesNotAdvanceGeneration pins the OTHER half of the
 // two-writes rule. A target's progress through a Job is not desired state, and
 // committing it MUST NOT advance the store generation — otherwise a job over N

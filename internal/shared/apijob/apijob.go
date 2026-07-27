@@ -293,14 +293,40 @@ func (j *Job) Cancel() apiv1.JobState {
 }
 
 // Resource renders the Job to the generated apiv1.Job wire model (API-112): the
-// exact id / targets[{target_id, state}] / created_by / state / created_at
-// shape a client polls, with the job-level state freshly derived. Because it
-// returns the generated type, the JSON member names are the contract's, not a
-// hand-rolled parallel.
+// exact id / targets[{target_id, state, error?}] / created_by / state /
+// created_at shape a client polls, with the job-level state freshly derived.
+// Because it returns the generated type, the JSON member names are the
+// contract's, not a hand-rolled parallel.
+//
+// A FAILED target renders its error; every other target renders none. That
+// asymmetry is the whole point of the member: API-115 requires a per-target
+// failure to be typed from api/1's own registry, and API-112 makes polling this
+// resource the only way a client learns anything about the work at all — so a
+// code the executor produced, persisted and never rendered would satisfy
+// API-115 internally while leaving a client staring at `failed` with no way to
+// ask why. The presence of `error` IS the failure report; a non-failed target
+// carries no empty husk to be distinguished from a real one.
+//
+// The state test, not the field, decides. A non-failed Target cannot hold an
+// error (SucceedTarget clears both fields, Restore refuses a persisted record
+// where one does), so keying off ErrCode would render the same thing today —
+// but it would also quietly publish an error for a state the contract says has
+// none the moment either invariant slipped, which is precisely the drift the
+// wire shape should not absorb.
 func (j *Job) Resource() apiv1.Job {
 	targets := make([]apiv1.JobTarget, len(j.targets))
 	for i, t := range j.targets {
 		targets[i] = apiv1.JobTarget{TargetId: t.ID, State: t.State}
+		if t.State == apiv1.JobTargetStateFailed {
+			targets[i].Error = &apiv1.JobTargetError{Code: apiv1.ErrorCode(t.ErrCode)}
+			// `detail` is optional (openapi JobTargetError): it is omitted rather
+			// than serialized empty when the failure carried none, so a client
+			// never has to read "" as "no explanation was given".
+			if t.ErrDetail != "" {
+				detail := t.ErrDetail
+				targets[i].Error.Detail = &detail
+			}
+		}
 	}
 	return apiv1.Job{
 		Id:        j.ID,

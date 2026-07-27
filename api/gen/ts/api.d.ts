@@ -1079,12 +1079,22 @@ export interface components {
              */
             created_at: string;
         };
-        /** @description One resource this Job acts on, and that resource's own per-target progress. */
+        /** @description One resource this Job acts on, that resource's own per-target progress, and — once it has failed — why. */
         JobTarget: {
             /** @description The acted-on resource's `id` or `external_id`, exactly as the fleet-mutating request identified it. */
             target_id: string;
             /** @enum {string} */
             state: "pending" | "running" | "succeeded" | "failed";
+            error?: components["schemas"]["JobTargetError"];
+        };
+        /**
+         * @description Why one target failed, typed from api/1's OWN error-code registry (API-115/API-014) rather than a parallel vocabulary — so a `failed` entry in a Job's `targets` is diagnosable exactly the way a synchronous refusal's Problem is, by asserting on `code`.
+         *     Present if and only if the target's `state` is `failed`. A pending, running or succeeded target carries no error at all, so a client reads the member's PRESENCE as the failure and never has to distinguish "no error" from a sentinel value. API-112 fixes a target's floor as `{target_id, state}` ("at least"); this is the member that makes API-115's registry rule observable to the client polling `GET /jobs/{job_id}`, which is the only completion signal the contract offers.
+         */
+        JobTargetError: {
+            code: components["schemas"]["ErrorCode"];
+            /** @description A human-readable explanation specific to this occurrence, carrying exactly the weight `Problem.detail` carries: `code` is the discriminant a client asserts on, `detail` is for the human reading the job report. Optional, because `code` alone is a complete machine-readable diagnosis — one code can cover several occurrences (`INTERNAL` for an unreadable row and for an interrupted run) and `detail` is what tells them apart in an operator's eyes. */
+            detail?: string;
         };
     };
     responses: {

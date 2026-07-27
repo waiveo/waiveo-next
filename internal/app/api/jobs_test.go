@@ -96,14 +96,23 @@ func (e *testEnv) getJob(t *testing.T, who authtest.Credential, jobID string) (*
 // type the handler encoded from would let a member the contract requires go
 // missing without any case noticing.
 type jobBody struct {
-	ID      string `json:"id"`
-	Targets []struct {
-		TargetID string `json:"target_id"`
-		State    string `json:"state"`
-	} `json:"targets"`
-	CreatedBy string `json:"created_by"`
-	State     string `json:"state"`
-	CreatedAt string `json:"created_at"`
+	ID        string      `json:"id"`
+	Targets   []jobTarget `json:"targets"`
+	CreatedBy string      `json:"created_by"`
+	State     string      `json:"state"`
+	CreatedAt string      `json:"created_at"`
+}
+
+// jobTarget is one entry of API-112's `targets` array as it comes back off the
+// wire, including the per-target failure report API-115 requires a `failed`
+// entry to be diagnosable from.
+type jobTarget struct {
+	TargetID string `json:"target_id"`
+	State    string `json:"state"`
+	Error    *struct {
+		Code   string `json:"code"`
+		Detail string `json:"detail"`
+	} `json:"error"`
 }
 
 func decodeJob(t *testing.T, raw []byte) jobBody {
@@ -116,10 +125,17 @@ func decodeJob(t *testing.T, raw []byte) jobBody {
 }
 
 // assertJobShape checks the polled body against API-112 field for field: `id` a
-// ULID, `targets` an array of {target_id, state} and NOTHING else per entry,
-// `created_by` the submitting principal, `state` a member of API-113's closed
-// job-state set, `created_at` an RFC3339 instant — and no member outside that
-// set, so the poll cannot quietly grow a field the contract does not define.
+// ULID, `targets` an array of {target_id, state} — plus `error` on a FAILED
+// entry and NOTHING else — `created_by` the submitting principal, `state` a
+// member of API-113's closed job-state set, `created_at` an RFC3339 instant —
+// and no member outside that set, so the poll cannot quietly grow a field the
+// contract does not define.
+//
+// The per-target `error` is asserted as a BICONDITIONAL, not as an allowance: a
+// failed target MUST carry one and a non-failed target MUST NOT. An "error is
+// optional everywhere" check would pass just as happily against the defect this
+// member was added to close — a `failed` target rendered with no way to learn
+// why — which is the one outcome it must catch.
 func assertJobShape(t *testing.T, raw []byte, wantCreatedBy string) jobBody {
 	t.Helper()
 	var members map[string]json.RawMessage
@@ -160,11 +176,26 @@ func assertJobShape(t *testing.T, raw []byte, wantCreatedBy string) jobBody {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
-		if !reflect.DeepEqual(keys, []string{"state", "target_id"}) {
-			t.Fatalf("targets[%d] members = %v, want exactly [state target_id] (API-112)", i, keys)
-		}
-		if st := j.Targets[i].State; !validTargetState(st) {
+		st := j.Targets[i].State
+		if !validTargetState(st) {
 			t.Fatalf("targets[%d].state = %q; `partial` is job-level only and nothing else is a target state (API-113)", i, st)
+		}
+		wantKeys := []string{"state", "target_id"}
+		if st == string(apiv1.JobTargetStateFailed) {
+			wantKeys = []string{"error", "state", "target_id"}
+		}
+		if !reflect.DeepEqual(keys, wantKeys) {
+			t.Fatalf("targets[%d] (%s) members = %v, want exactly %v (API-112/115)", i, st, keys, wantKeys)
+		}
+		if st != string(apiv1.JobTargetStateFailed) {
+			continue
+		}
+		// The failure is typed from api/1's OWN registry (API-115), which is what
+		// makes it diagnosable the same way any other api/1 error is. Membership
+		// is checked against the shared closed set rather than against whatever
+		// this particular target happened to report.
+		if !apijob.CodeInRegistry(j.Targets[i].Error.Code) {
+			t.Fatalf("targets[%d].error.code = %q, outside api/1's error-code registry (API-115/API-014)", i, j.Targets[i].Error.Code)
 		}
 	}
 	return j
