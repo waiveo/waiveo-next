@@ -1,0 +1,22 @@
+{
+  "case_id": "REL-057-valid-state-changed-nudge-triggers-pull",
+  "contract": "relay/1",
+  "req_ids": ["REL-050", "REL-057"],
+  "description": "The relay holds applied generation 42 on an established connection. The app peer's desired-state generation advances to 43 and it sends the server-initiated state.changed nudge carrying only the new generation. The relay responds with its own state.pull — desired state itself still moves exclusively as a pull response (the app peer never sends an unsolicited snapshot, REL-050) — verifies and applies the answered snapshot at generation 43, and acknowledges with state.ack. The nudge is best-effort and coalescible; it carries no payload beyond generation.",
+  "input": {
+    "relay_last_applied": { "generation": 42, "hash": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" },
+    "app_peer_generation_advances_to": 43,
+    "state_changed": {
+      "type": "state.changed",
+      "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1",
+      "body": { "generation": 43 }
+    }
+  },
+  "expected": {
+    "nudge_generation_delivered": 43,
+    "relay_responds_with_state_pull": true,
+    "unsolicited_snapshot_sent": false,
+    "applied_generation": 43,
+    "state_ack": { "type": "state.ack", "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1", "body": { "applied_generation": 43 } }
+  }
+}

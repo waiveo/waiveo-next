@@ -18,7 +18,8 @@
 // Applicability triage (§10 "no silent caps"): Run DRIVES every case in the
 // frozen relay-1 corpus (REL-010 fresh enroll, REL-020/022/027
 // Expired-certificate re-enrollment, REL-030 hello/negotiate, REL-056
-// durable atomic generation-apply swap, REL-061 offline screen-program serve
+// durable atomic generation-apply swap, REL-057 server-initiated
+// state.changed nudge → relay-issued pull, REL-061 offline screen-program serve
 // against internal/relay/desiredstate.ServedProgram, REL-070 idempotent
 // reapply, REL-071 wrong-peer-key rejection, REL-090/094 telemetry buffer
 // overflow / latest-only heartbeat supersession against
@@ -112,6 +113,10 @@ type Feeder interface {
 	// the driver's window onto the WIRE acknowledgment a pull's apply
 	// outcome produced.
 	LastStateAck(relayID string) (wire.Frame, bool)
+	// NotifyGenerationAdvance pushes REL-057's state.changed nudge, carrying
+	// the currently-staged generation, to every live authenticated
+	// connection — the server-initiated push driveREL057 stages.
+	NotifyGenerationAdvance()
 	// AppPeerLeafSPKI returns the DER-encoded SubjectPublicKeyInfo of the app
 	// peer's own TLS leaf certificate — the enrollment-anchored `trust_pin`
 	// (REL-011) a relay pins the connection against under REL-136/137. The
@@ -139,6 +144,7 @@ func Run(client RelayClient, feeder Feeder) report.Report {
 	driveREL027(&rep, client, feeder, cases)
 	driveREL030(&rep, client, feeder, cases)
 	driveREL056(&rep, cases)
+	driveREL057(&rep, client, feeder, cases)
 	driveREL061(&rep, cases)
 	driveREL070(&rep, client, feeder, cases)
 	driveREL071(&rep, client, feeder, cases)
@@ -398,13 +404,26 @@ func driveREL070(rep *report.Report, client RelayClient, feeder Feeder, cases ma
 	}
 	gen2, hash2, _, _ := store.LastAppliedGeneration()
 
-	// state_ack.body.applied_generation == 43. The corpus case declares this
-	// field, so its absence is itself a failure — not a silently-skipped
-	// assertion.
+	// state_ack.body.applied_generation == 43, asserted against the WIRE
+	// state.ack the app peer recorded (REL-054) — the pull's acknowledgment
+	// as it actually crossed the connection, not a local field read. The
+	// corpus case declares this field, so its absence is itself a failure —
+	// not a silently-skipped assertion.
+	relayIdent, identOK, identErr := store.Identity()
+	if identErr != nil || !identOK {
+		diffs = append(diffs, report.Diff{Field: "enrolled identity for wire-ack lookup", Expected: "present", Actual: fmt.Sprintf("ok=%v err=%v", identOK, identErr)})
+	}
 	if wantGen, present := expectInt(c, "state_ack.body.applied_generation"); !present {
 		diffs = append(diffs, report.Diff{Field: "state_ack.body.applied_generation", Expected: "<declared in corpus expected block>", Actual: "absent from corpus fixture"})
-	} else if gen2 != wantGen {
-		diffs = append(diffs, report.Diff{Field: "state_ack.body.applied_generation", Expected: wantGen, Actual: gen2})
+	} else {
+		if gen2 != wantGen {
+			diffs = append(diffs, report.Diff{Field: "persisted last_applied generation", Expected: wantGen, Actual: gen2})
+		}
+		if observed, ok := awaitWireAck(feeder, relayIdent.RelayID, func(body wire.StateAckBody) bool {
+			return body.AppliedGeneration == wantGen && body.Error == nil
+		}); !ok {
+			diffs = append(diffs, report.Diff{Field: "state_ack.body.applied_generation (wire, REL-054)", Expected: wantGen, Actual: observed})
+		}
 	}
 	// persisted_last_applied_hash_unchanged: the hash must not have moved even
 	// though the generation number advanced.
@@ -417,8 +436,7 @@ func driveREL070(rep *report.Report, client RelayClient, feeder Feeder, cases ma
 		return
 	}
 	rep.Pass(c.CaseID, contract,
-		"apply_time_side_effects_rerun=false / in_flight_run_canceled=false: first-photon applies desired state declaratively with no apply-time side effects or rule runs, so these are vacuously satisfied — the observable no-op property asserted is the unchanged persisted hash across the advanced generation.",
-		"state_ack: desiredstate.Pull returns an Applied value, not a wire state.ack envelope (the REST subset carries no state.ack) — applied_generation is read from the persisted last-applied generation.")
+		"apply_time_side_effects_rerun=false / in_flight_run_canceled=false: first-photon applies desired state declaratively with no apply-time side effects or rule runs, so these are vacuously satisfied — the observable no-op property asserted is the unchanged persisted hash across the advanced generation.")
 }
 
 // driveREL071 drives the wrong-peer-key security gate: a snapshot at
@@ -464,6 +482,23 @@ func driveREL071(rep *report.Report, client RelayClient, feeder Feeder, cases ma
 	if pullErr == nil {
 		diffs = append(diffs, report.Diff{Field: "signature_verifies (must reject)", Expected: false, Actual: "accepted"})
 	}
+
+	// state_ack.body: the WIRE acknowledgment for the rejected snapshot
+	// (REL-054/072) — error carrying the taxonomy code, applied_generation
+	// the UNADVANCED prior generation, as the app peer recorded it.
+	if relayIdent, identOK, identErr := store.Identity(); identErr != nil || !identOK {
+		diffs = append(diffs, report.Diff{Field: "enrolled identity for wire-ack lookup", Expected: "present", Actual: fmt.Sprintf("ok=%v err=%v", identOK, identErr)})
+	} else {
+		wantCode := c.ExpectString("state_ack.body.error.code")
+		wantAckGen, genPresent := expectInt(c, "state_ack.body.applied_generation")
+		if wantCode == "" || !genPresent {
+			diffs = append(diffs, report.Diff{Field: "state_ack.body (error.code + applied_generation)", Expected: "<declared in corpus expected block>", Actual: "absent from corpus fixture"})
+		} else if observed, ok := awaitWireAck(feeder, relayIdent.RelayID, func(body wire.StateAckBody) bool {
+			return body.Error != nil && body.Error.Code == wantCode && body.AppliedGeneration == wantAckGen
+		}); !ok {
+			diffs = append(diffs, report.Diff{Field: "state_ack.body (wire, REL-054/072)", Expected: fmt.Sprintf("error.code=%s applied_generation=%d", wantCode, wantAckGen), Actual: observed})
+		}
+	}
 	// sections_applied=false + persisted_last_applied_unchanged: last-applied
 	// must still be exactly {42, hashBefore}.
 	genAfter, hashAfter, _, _ := store.LastAppliedGeneration()
@@ -484,7 +519,7 @@ func driveREL071(rep *report.Report, client RelayClient, feeder Feeder, cases ma
 		return
 	}
 	rep.Pass(c.CaseID, contract,
-		fmt.Sprintf("state_ack.body.error.code: corpus expects %q; a real relay client returns ErrSnapshotSignatureInvalid (errors.Is-matched: %v) rather than emitting a wire state.ack envelope — semantically equivalent SNAPSHOT_SIGNATURE_INVALID.", c.ExpectString("state_ack.body.error.code"), errors.Is(pullErr, desiredstate.ErrSnapshotSignatureInvalid)))
+		fmt.Sprintf("the rejection is typed both locally (ErrSnapshotSignatureInvalid, errors.Is-matched: %v) and on the wire (the state.ack error envelope diffed above).", errors.Is(pullErr, desiredstate.ErrSnapshotSignatureInvalid)))
 }
 
 // enrolledStore opens a fresh in-memory identity store and enrolls it against

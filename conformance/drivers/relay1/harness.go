@@ -231,6 +231,13 @@ func (f *InProcessFeeder) LastStateAck(relayID string) (wire.Frame, bool) {
 	return f.connSrv.LastStateAck(relayID)
 }
 
+// NotifyGenerationAdvance implements Feeder: push REL-057's state.changed
+// nudge, carrying the currently-staged generation, to every live
+// authenticated connection.
+func (f *InProcessFeeder) NotifyGenerationAdvance() {
+	f.connSrv.NotifyGenerationAdvance()
+}
+
 // AppPeerLeafSPKI implements Feeder: the DER SubjectPublicKeyInfo of the
 // feeder's own TLS leaf — the exact certificate serve() presents — so a
 // relay dialing EnrollBaseURL under REL-136/137 pins the real presented key.

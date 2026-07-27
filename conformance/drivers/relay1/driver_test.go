@@ -23,6 +23,7 @@ var expectedDriven = []string{
 	"REL-027-invalid-re-enroll-pop-signature-invalid",
 	"REL-030-valid-hello-negotiate-channel-binding",
 	"REL-056-valid-generation-apply-atomic-swap",
+	"REL-057-valid-state-changed-nudge-triggers-pull",
 	"REL-061-valid-preempt-priority-screen-program-offline",
 	"REL-070-valid-generation-reapply-idempotent-noop",
 	"REL-071-invalid-wrong-peer-key-snapshot-rejected",
