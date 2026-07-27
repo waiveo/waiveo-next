@@ -110,6 +110,67 @@ func New(id, createdBy string, createdAt time.Time, targetIDs []string) *Job {
 	return j
 }
 
+// Restore rebuilds a Job from a PERSISTED execution record (API-116): the same
+// identity and submitter metadata New takes, plus each target's already-reached
+// state — and, for a failed target, the registry-typed error attributed to it —
+// exactly as they were last committed. It is the read half of a Job's
+// durability: a restart able only to rebuild a Job as all-pending would roll a
+// target's terminal state back silently, which is precisely the loss API-116
+// forbids.
+//
+// The restored record is validated against the SAME closed vocabulary the live
+// transitions enforce, so persistence cannot become a back door into a state the
+// state machine itself would never produce: a target state outside
+// pending/running/succeeded/failed is refused (API-113 — and `partial` is
+// job-level only, so it is refused here too), a failed target MUST carry a code
+// from api/1's own error-code registry (API-115), a non-failed target MUST carry
+// no error at all (SucceedTarget clears both fields), and a duplicate target id
+// is refused because New collapses duplicates on the way in — a record holding
+// two is corrupt, not merely redundant.
+//
+// The job-level state is NOT an input: it is derived from the restored targets
+// by State(), exactly as it is for a live Job, so a restored Job cannot disagree
+// with its own targets.
+func Restore(id, createdBy string, createdAt time.Time, targets []Target) (*Job, error) {
+	j := &Job{
+		ID:        id,
+		CreatedBy: createdBy,
+		CreatedAt: createdAt,
+		index:     make(map[string]*Target, len(targets)),
+	}
+	for _, t := range targets {
+		if !validTargetState(t.State) {
+			return nil, fmt.Errorf("apijob: restore target %q: %q is not a target state (API-113)", t.ID, t.State)
+		}
+		if t.State == apiv1.JobTargetStateFailed {
+			if !CodeInRegistry(t.ErrCode) {
+				return nil, fmt.Errorf("apijob: restore target %q: failure code %q is not in the api/1 error-code registry (API-115)", t.ID, t.ErrCode)
+			}
+		} else if t.ErrCode != "" || t.ErrDetail != "" {
+			return nil, fmt.Errorf("apijob: restore target %q: a %s target carries no error", t.ID, t.State)
+		}
+		if _, seen := j.index[t.ID]; seen {
+			return nil, fmt.Errorf("apijob: restore target %q: duplicate target id", t.ID)
+		}
+		restored := t
+		j.targets = append(j.targets, &restored)
+		j.index[t.ID] = &restored
+	}
+	return j, nil
+}
+
+// validTargetState reports whether s is one of the four states a TARGET may hold
+// (API-113). `partial` is deliberately absent: it is a job-level-only outcome.
+func validTargetState(s apiv1.JobTargetState) bool {
+	switch s {
+	case apiv1.JobTargetStatePending, apiv1.JobTargetStateRunning,
+		apiv1.JobTargetStateSucceeded, apiv1.JobTargetStateFailed:
+		return true
+	default:
+		return false
+	}
+}
+
 // Targets returns a snapshot copy of the job's targets in order, so a caller
 // cannot mutate the job's internal state through the returned slice.
 func (j *Job) Targets() []Target {

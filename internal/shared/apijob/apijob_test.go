@@ -285,3 +285,65 @@ func mustSucceed(t *testing.T, j *Job, ids ...string) {
 		}
 	}
 }
+
+// TestRestoreRoundTripsAPersistedJob: a Job rebuilt from a persisted record
+// (API-116) is the same Job — same identity, same target order, same per-target
+// states and per-target error — and its job-level state is re-derived from those
+// targets rather than restored from a separately-stored field, so a restored Job
+// can never disagree with its own targets.
+func TestRestoreRoundTripsAPersistedJob(t *testing.T) {
+	createdAt := time.Unix(1_752_537_600, 0).UTC()
+	live := New("j", "usr_A", createdAt, []string{"t1", "t2"})
+	mustStart(t, live, "t1", "t2")
+	mustSucceed(t, live, "t1")
+	if err := live.FailTarget("t2", "UNAVAILABLE", "unreachable."); err != nil {
+		t.Fatalf("FailTarget: %v", err)
+	}
+
+	restored, err := Restore(live.ID, live.CreatedBy, live.CreatedAt, live.Targets())
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if !reflect.DeepEqual(restored.Resource(), live.Resource()) {
+		t.Fatalf("restored resource = %+v, want %+v", restored.Resource(), live.Resource())
+	}
+	if restored.State() != apiv1.JobStatePartial {
+		t.Fatalf("restored job state = %q, want the partial its mixed targets derive", restored.State())
+	}
+	if !reflect.DeepEqual(restored.Targets(), live.Targets()) {
+		t.Fatalf("restored targets = %+v, want %+v (per-target error included)", restored.Targets(), live.Targets())
+	}
+}
+
+// TestRestoreRejectsRecordsTheStateMachineCouldNotProduce: persistence is not a
+// back door. Each record below is one the live transitions could never have
+// written, and admitting it would let a Job hold a state API-113/115 forbid.
+func TestRestoreRejectsRecordsTheStateMachineCouldNotProduce(t *testing.T) {
+	createdAt := time.Unix(0, 0).UTC()
+	cases := map[string][]Target{
+		"a job-level-only state on a target (API-113)": {
+			{ID: "t1", State: apiv1.JobTargetState(apiv1.JobStatePartial)},
+		},
+		"a state outside the closed set (API-113)": {
+			{ID: "t1", State: apiv1.JobTargetState("canceled")},
+		},
+		"a failure code outside the registry (API-115)": {
+			{ID: "t1", State: apiv1.JobTargetStateFailed, ErrCode: "TARGET_EXPLODED", ErrDetail: "no."},
+		},
+		"a failed target with no code at all (API-115)": {
+			{ID: "t1", State: apiv1.JobTargetStateFailed},
+		},
+		"an error on a target that did not fail": {
+			{ID: "t1", State: apiv1.JobTargetStateSucceeded, ErrCode: "UNAVAILABLE"},
+		},
+		"a duplicate target id (New collapses these on the way in)": {
+			{ID: "t1", State: apiv1.JobTargetStatePending},
+			{ID: "t1", State: apiv1.JobTargetStateRunning},
+		},
+	}
+	for name, targets := range cases {
+		if _, err := Restore("j", "usr_A", createdAt, targets); err == nil {
+			t.Errorf("Restore accepted %s", name)
+		}
+	}
+}
