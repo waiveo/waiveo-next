@@ -398,8 +398,16 @@ func main() {
 		log.Printf("waiveo-feeder: WORKSPACE UNCLAIMED — claim it with this one-time setup code (also at %s):\n\n    %s\n", claim.CodePath, claim.Code)
 	}
 
+	// The runner that executes the work an async api/1 operation accepts with
+	// 202 (a fleet enable/disable's Job, api/1 API-111). It is wired
+	// explicitly — rather than left to api.New's own default — so this process
+	// owns its lifecycle: it starts once the handler is built, and the
+	// shutdown path below drains it, so a SIGTERM does not abandon a job
+	// halfway through its target list without waiting to see if it can finish.
+	jobRunner := api.NewJobRunner()
 	apiHandler := api.New(st, idem, nowMs, ulid.New, contentStore, contentBaseURL, authn,
-		api.WithDevicePlane(deviceRegistry, relayConnSrv))
+		api.WithDevicePlane(deviceRegistry, relayConnSrv), api.WithJobRunner(jobRunner))
+	jobRunner.Start()
 
 	// The embedded console SPA, served at "/" for every non-API path. The API,
 	// event-stream, content-origin, telemetry and enrollment/handshake routes are
@@ -490,6 +498,13 @@ func main() {
 		defer cancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			log.Printf("waiveo-feeder: shutdown: %v", err)
+		}
+		// Accepted-but-unfinished Job execution drains after the listener stops,
+		// so no new job is accepted while it does. A target left `running` by an
+		// expired drain window is exactly the state API-116's resume is defined
+		// over — the record is committed either way, never lost.
+		if err := jobRunner.Shutdown(shutdownCtx); err != nil {
+			log.Printf("waiveo-feeder: job runner shutdown: %v", err)
 		}
 	}
 }

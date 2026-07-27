@@ -76,6 +76,20 @@ type testEnv struct {
 	// than a bypass — which is what keeps them exercising the handler that
 	// actually ships.
 	auth *authtest.Fixture
+	// jobs is the runner accepted async work executes on, wired STOPPED. Nothing
+	// this package accepts with 202 runs until a case asks for it (runJobs), so
+	// a case about acceptance observes acceptance and a case about execution
+	// observes execution — neither races the other, and no case waits on a
+	// clock to find out which it got.
+	jobs *api.JobRunner
+}
+
+// runJobs releases the env's job runner and blocks until every job accepted so
+// far has finished executing. It is the deterministic completion signal the
+// runner exposes for exactly this: no polling loop, no sleep, no timeout.
+func (e *testEnv) runJobs() {
+	e.jobs.Start()
+	e.jobs.Wait()
 }
 
 // newAuthFixture seeds one owner principal with a live session, or fails the
@@ -119,9 +133,11 @@ func newEnvWithContent(t *testing.T, content *origin.Store) *testEnv {
 	// the same millisecond, preserving the "creation order == id order" invariant
 	// several list/pagination tests depend on.
 	fixture := newAuthFixture(t)
-	ts := httptest.NewServer(api.New(st, idem, clock, ulid.Monotonic(), content, testContentBase, fixture.Auth))
+	jobs := api.NewJobRunner()
+	ts := httptest.NewServer(api.New(st, idem, clock, ulid.Monotonic(), content, testContentBase, fixture.Auth,
+		api.WithJobRunner(jobs)))
 	t.Cleanup(ts.Close)
-	return &testEnv{ts: ts, store: st, content: content, contentBase: testContentBase, auth: fixture}
+	return &testEnv{ts: ts, store: st, content: content, contentBase: testContentBase, auth: fixture, jobs: jobs}
 }
 
 func (e *testEnv) do(t *testing.T, method, path string, body []byte, headers map[string]string) (*http.Response, []byte) {

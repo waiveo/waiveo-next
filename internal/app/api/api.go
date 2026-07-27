@@ -81,6 +81,10 @@ type server struct {
 	// — the routes mount either way, see devices.go.
 	devices  *devices.Registry
 	dispatch CommandDispatcher
+	// jobs executes the work an async operation accepts with 202 (jobrun.go).
+	// Always non-nil: New builds and starts one when the caller wires none, so
+	// an accepted Job is never a promise nothing is working on.
+	jobs *JobRunner
 }
 
 // authExemptPaths are the api/1 operations that declare their own
@@ -133,6 +137,16 @@ func New(st *store.Store, idem *apihttp.IdempotencyStore, nowMs func() int64, ne
 	}
 	for _, opt := range opts {
 		opt(srv)
+	}
+	// A handler built without WithJobRunner still EXECUTES the work its async
+	// operations accept — it just does not hand anyone the lifecycle. The
+	// default is started here rather than left stopped so that forgetting the
+	// option degrades to "no graceful shutdown", never to "202 Accepted and
+	// nothing ever happens", which is the failure this whole path exists to
+	// remove.
+	if srv.jobs == nil {
+		srv.jobs = NewJobRunner()
+		srv.jobs.Start()
 	}
 	mux := http.NewServeMux()
 	srv.mount(mux, scopeNodesConfig())

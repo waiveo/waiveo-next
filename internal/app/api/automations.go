@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -274,13 +275,13 @@ type bulkEnableRequest struct {
 // restart (API-116) — a Job that lived only in this handler's memory made
 // API-112's "read the Job resource again" unsatisfiable.
 //
-// Deferred (documented): the per-target toggle-and-regenerate — this increment
-// accepts and records the Job and its target set; actually flipping each row's
-// `enabled` and bumping the store generation is a fast-follow that advances the
-// Job's targets through the apijob state machine, committing each transition
-// through store.AdvanceJob. Until it lands, an accepted Job's targets stay
-// `pending`, and a poll reports that honestly rather than a state nothing
-// produced.
+// The work itself runs OFF this request, on the server's JobRunner (jobrun.go):
+// API-111 requires the 202 "rather than blocking the request until every target
+// finishes", so the handler hands the accepted target set to the runner and
+// returns. Each target is then flipped through the ordinary resource update path
+// — advancing the store generation like any other authored change — and its
+// progress committed through the apijob state machine, which a client observes
+// by polling GET /jobs/{job_id} (API-112).
 func (srv *server) bulkEnableAutomations(w http.ResponseWriter, r *http.Request) {
 	body, ok := readBody(w, r)
 	if !ok {
@@ -393,7 +394,24 @@ func (srv *server) bulkEnableExec(w http.ResponseWriter, r *http.Request, body [
 		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
 		return
 	}
+
+	// The 202 body is rendered BEFORE the work is handed off, and that ordering
+	// is load-bearing rather than incidental: API-111's Job represents "accepted,
+	// not-yet-complete work", so the resource this request returns is the job as
+	// ACCEPTED — every target pending — not a race against however far the
+	// executor happened to get before the bytes were marshaled. A client learns
+	// what changed by polling (API-112), which is the only completion signal the
+	// contract offers.
 	writeJSONValue(w, http.StatusAccepted, job.Resource())
+
+	// The execution runs on the server's runner, under ITS context — never
+	// r.Context(), which is canceled the moment this handler returns, i.e.
+	// before the accepted work would have started.
+	targets := targetIDs
+	wanted := *req.Enabled
+	srv.jobs.submit(func(ctx context.Context) {
+		srv.runBulkEnable(ctx, job.ID, targets, wanted)
+	})
 }
 
 // idempotent runs a mutating server-level operation (runAutomation,

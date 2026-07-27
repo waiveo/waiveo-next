@@ -29,12 +29,14 @@ import (
 // before it is observable, so a restart reloads the exact target states last
 // committed (apijob.Restore), never an all-pending reset.
 //
-// The resume half of API-116 has no producer yet, and this file does not pretend
-// otherwise: the one async endpoint that mints a Job today (bulk-enable) accepts
-// its target set and leaves every target `pending`, so no target can be left
-// `running` by a crash. AdvanceJob is the seam the executor that changes that
-// will drive, and RunningTargets below is the inventory it will resume FROM —
-// what is missing is the executor, not the record.
+// AdvanceJob is the seam the executor drives (the api layer's JobRunner, which
+// walks an accepted job's targets and commits each transition here). The resume
+// half of API-116 still has no producer, and this file does not pretend
+// otherwise: RunningTargets below is the inventory a resume reads, but the
+// record holds WHICH rows a job acts on and not WHAT it was doing to them, so
+// nothing durable tells a restarted process what to re-apply. Persisting the
+// accepted operation alongside the Job is the missing piece — not the scan, and
+// no longer the executor.
 //
 // Two deliberate departures from the resource-table CRUD above:
 //

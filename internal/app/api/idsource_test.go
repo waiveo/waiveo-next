@@ -42,9 +42,11 @@ func TestInjectedIDSourceMintsBothCreateAndJobIDs(t *testing.T) {
 	}
 
 	fixture := newAuthFixture(t)
-	ts := httptest.NewServer(api.New(st, idem, clock, newID, content, testContentBase, fixture.Auth))
+	jobs := api.NewJobRunner()
+	ts := httptest.NewServer(api.New(st, idem, clock, newID, content, testContentBase, fixture.Auth,
+		api.WithJobRunner(jobs)))
 	t.Cleanup(ts.Close)
-	e := &testEnv{ts: ts, store: st, content: content, contentBase: testContentBase, auth: fixture}
+	e := &testEnv{ts: ts, store: st, content: content, contentBase: testContentBase, auth: fixture, jobs: jobs}
 
 	// A create body with NO id: ensureID must mint from the injected source,
 	// never a package-level generator of its own.

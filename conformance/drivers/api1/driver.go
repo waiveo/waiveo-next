@@ -294,7 +294,15 @@ func newHarnessAs(nowMs int64, newID func() string, principalID string) (*harnes
 		return nil, fmt.Errorf("authtest.New: %w", err)
 	}
 	idem := apihttp.NewIdempotencyStore(clock, 0)
-	h := api.New(st, idem, clock, newID, origin.New(), "https://origin.example", fixture.Auth)
+	// The Job runner is wired STOPPED and never started. Every corpus case this
+	// driver runs is an assertion about a RESPONSE — for the async ones, about
+	// the 202 that ACCEPTS work (API-111's "accepted, not-yet-complete work",
+	// which is why its frozen expectation shows every target pending). Letting
+	// execution run would change nothing the case reads, while writing to the
+	// store on a background goroutine this harness is about to close: a source
+	// of noise, never of signal.
+	h := api.New(st, idem, clock, newID, origin.New(), "https://origin.example", fixture.Auth,
+		api.WithJobRunner(api.NewJobRunner()))
 	return &harness{store: st, h: h, auth: fixture}, nil
 }
 

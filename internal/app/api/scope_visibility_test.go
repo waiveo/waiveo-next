@@ -623,12 +623,13 @@ func newScopedDevicePlaneEnv(t *testing.T) (*devicePlaneEnv, scopedTree) {
 	clock := func() int64 { return fixedNowMs }
 	content := origin.New()
 	fixture := newAuthFixture(t)
+	jobs := api.NewJobRunner()
 	ts := httptest.NewServer(api.New(st, apihttp.NewIdempotencyStore(clock, 0), clock, ulid.Monotonic(),
-		content, testContentBase, fixture.Auth, api.WithDevicePlane(registry, dispatcher)))
+		content, testContentBase, fixture.Auth, api.WithDevicePlane(registry, dispatcher), api.WithJobRunner(jobs)))
 	t.Cleanup(ts.Close)
 
 	env := &devicePlaneEnv{
-		testEnv:    &testEnv{ts: ts, store: st, content: content, contentBase: testContentBase, auth: fixture},
+		testEnv:    &testEnv{ts: ts, store: st, content: content, contentBase: testContentBase, auth: fixture, jobs: jobs},
 		registry:   registry,
 		dispatcher: dispatcher,
 	}

@@ -41,9 +41,11 @@ func envOverStore(t *testing.T, st *store.Store, fixture *authtest.Fixture) *tes
 	clock := func() int64 { return fixedNowMs }
 	idem := apihttp.NewIdempotencyStore(clock, 0)
 	content := origin.New()
-	ts := httptest.NewServer(api.New(st, idem, clock, ulid.Monotonic(), content, testContentBase, fixture.Auth))
+	jobs := api.NewJobRunner()
+	ts := httptest.NewServer(api.New(st, idem, clock, ulid.Monotonic(), content, testContentBase, fixture.Auth,
+		api.WithJobRunner(jobs)))
 	t.Cleanup(ts.Close)
-	return &testEnv{ts: ts, store: st, content: content, contentBase: testContentBase, auth: fixture}
+	return &testEnv{ts: ts, store: st, content: content, contentBase: testContentBase, auth: fixture, jobs: jobs}
 }
 
 // newFileEnv is newEnv over a FILE-backed store under the test's own temp dir,
@@ -218,9 +220,11 @@ func TestJobFromAsyncEndpointIsPollable(t *testing.T) {
 		t.Fatalf("polled job id = %q, want %q", polled.ID, jobID)
 	}
 
-	// The target set is the selector-matched one, still pending: bulk-enable
-	// records the accepted work; nothing has executed it yet, and the poll says
-	// so rather than reporting a state nothing produced.
+	// The target set is the selector-matched one, still pending. This env's job
+	// runner has not been released (runJobs), so what the poll reports here is
+	// the ACCEPTED job — API-111's "accepted, not-yet-complete work" — which is
+	// exactly what makes it comparable to the 202 body above. Execution's own
+	// effect on the poll is asserted by the bulk-enable execution cases.
 	gotTargets := map[string]string{}
 	for _, tg := range polled.Targets {
 		gotTargets[tg.TargetID] = tg.State
@@ -239,10 +243,13 @@ func TestJobFromAsyncEndpointIsPollable(t *testing.T) {
 // it then stands. It is what separates a real read from a stub that always
 // answers with whatever the accepting handler happened to build.
 //
-// The transitions are applied through the persisted seam the executor will use
-// (store.AdvanceJob), because no endpoint advances a bulk-enable Job yet — the
-// per-target toggle is the documented fast-follow. The poll is still driven
-// through the real mux, so what is asserted is the HTTP surface's answer.
+// The transitions are applied through the persisted seam the real executor
+// drives (store.AdvanceJob) rather than by releasing the runner, because this
+// case is about the POLL: it needs to stop the job at an intermediate `running`
+// value and read it there, which a released executor would run straight past.
+// The env's runner is left stopped so nothing else is moving the record
+// underneath these assertions. The poll is driven through the real mux, so what
+// is asserted is the HTTP surface's answer.
 func TestJobPollReportsCurrentState(t *testing.T) {
 	e := newEnv(t)
 	root := e.auth.Credential()
