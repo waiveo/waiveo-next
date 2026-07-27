@@ -27,6 +27,20 @@ const (
 	ActionGrantRedeemed   = "grant.redeemed"
 	ActionSetupClaimed    = "setup.claimed"
 	ActionPrincipalCreate = "principal.created"
+
+	// The second-factor actions (SEC-004). They are their own action strings
+	// rather than a `login.success`/`login.failure` with the factor buried in
+	// `target`, following the same discipline SEC-064 states for `recover`'s two
+	// modes: an operator reading the trail must be able to separate "the password
+	// was wrong" from "the authenticator was wrong" without parsing a target.
+	//
+	// ActionTOTPEnrolled is a CREDENTIAL CHANGE, which SEC-150 puts on the
+	// mandatory-emission list by name ("any trust-bundle or credential change this
+	// contract triggers"); its `result: failure` form records a confirmation that
+	// did not arm anything, per EVT-083.
+	ActionTOTPEnrolled        = "totp.enrolled"
+	ActionSecondFactorSuccess = "login.second_factor.success"
+	ActionSecondFactorFailure = "login.second_factor.failure"
 )
 
 // Clock-accuracy assessments (SEC-068). The app maintains `untrusted` "while it
@@ -133,7 +147,13 @@ func (a *Auditor) Emit(r Record) {
 		return
 	}
 	clock := ""
-	if r.Action == ActionLoginFailure || r.Action == ActionLoginLockout {
+	// SEC-091 requires the clock assessment on every login-failure record. A
+	// second-factor failure carries it too, and needs it more than any other:
+	// a TOTP code is time-windowed, so a burst of second-factor failures
+	// coinciding with a clock-trust transition is the exact signature SEC-062
+	// says an operator must be able to recognize before assuming a lost secret.
+	switch r.Action {
+	case ActionLoginFailure, ActionLoginLockout, ActionSecondFactorFailure:
 		clock = a.clockAssessment()
 	}
 	scopeNode := r.ScopeNode

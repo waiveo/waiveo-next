@@ -63,10 +63,30 @@ type harness struct {
 
 const testProtectedPath = "/api/v1/scope-nodes"
 
+// newHTTPHarness builds the harness with a REAL secret sealer — not a stub: the
+// second-factor cases assert that a stored TOTP secret is not recoverable from
+// its row, and a no-op sealer would make that assertion pass against an
+// implementation storing it in the clear.
 func newHTTPHarness(t *testing.T) *harness {
 	t.Helper()
+	return newHarness(t, testSealer(t))
+}
+
+// newHTTPHarnessWithoutSealer is the deployment that holds no workspace key, for
+// the cases that pin what happens when a recoverable secret cannot be protected.
+func newHTTPHarnessWithoutSealer(t *testing.T) *harness {
+	t.Helper()
+	return newHarness(t, nil)
+}
+
+func newHarness(t *testing.T, sealer SecretSealer) *harness {
+	t.Helper()
 	clock := newTestClock()
-	st, err := Open(":memory:", clock.now, ulid.New)
+	var opts []StoreOption
+	if sealer != nil {
+		opts = append(opts, WithSecretSealer(sealer))
+	}
+	st, err := Open(":memory:", clock.now, ulid.New, opts...)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -104,6 +124,8 @@ func newHTTPHarness(t *testing.T) *harness {
 	})
 	protected.HandleFunc("POST /api/v1/auth/logout", handlers.Logout)
 	protected.HandleFunc("GET /api/v1/auth/session", handlers.Session)
+	protected.HandleFunc("POST /api/v1/auth/totp/enroll", handlers.EnrollTOTP)
+	protected.HandleFunc("POST /api/v1/auth/totp/confirm", handlers.ConfirmTOTP)
 
 	root := http.NewServeMux()
 	root.HandleFunc("POST /api/v1/auth/login", handlers.Login)
@@ -125,7 +147,13 @@ func (h *harness) do(req *http.Request) *httptest.ResponseRecorder {
 
 func (h *harness) login(t *testing.T, identifier, password string) *httptest.ResponseRecorder {
 	t.Helper()
-	body, _ := json.Marshal(loginRequest{Identifier: identifier, Password: password})
+	return h.loginWithCode(t, identifier, password, "")
+}
+
+// loginWithCode drives the login exchange carrying a second factor (SEC-004).
+func (h *harness) loginWithCode(t *testing.T, identifier, password, code string) *httptest.ResponseRecorder {
+	t.Helper()
+	body, _ := json.Marshal(loginRequest{Identifier: identifier, Password: password, TOTPCode: code})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(string(body)))
 	req.RemoteAddr = "192.168.50.9:41234"
 	return h.do(req)

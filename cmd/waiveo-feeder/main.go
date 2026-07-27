@@ -554,12 +554,46 @@ func main() {
 			return !enrollSrv.IsRevoked(relayID, serial)
 		})
 
+	// The workspace signing key (SEC-046) and the destination the data-subject
+	// export writes its archive/1 container to (API-120/121). Establishing the
+	// key here, at boot, rather than lazily inside the export means a deployment
+	// that cannot hold key material fails loudly at startup instead of at the
+	// moment an owner asks for their data.
+	//
+	// It is established BEFORE the auth store because the auth store now depends
+	// on it: a TOTP shared secret (SEC-004) is the one credential secret that
+	// must be recoverable rather than hashed, and it is held sealed under a
+	// sub-key of this key's data key (SEC-040). Ordering the two this way is what
+	// makes "no key, no second-factor enrollment" a startup fact rather than a
+	// surprise at the moment an owner tries to enroll.
+	//
+	// Two directories, never one: cfg.keyDir holds custody, cfg.archiveDir holds
+	// output an operator is expected to copy away (see defaultWorkspaceKeyDir).
+	wsKey, err := workspacekey.LoadOrCreate(cfg.keyDir, ulid.New)
+	if err != nil {
+		log.Fatalf("waiveo-feeder: load workspace signing key: %v", err)
+	}
+	// A deployment that ran a build where the two shared a directory still has
+	// the old key material sitting among its exports. Nothing here can safely
+	// delete it — it may be the key that signed archives an operator still holds
+	// — so this says so, loudly, every boot until someone moves or destroys it.
+	if stray := workspacekey.StrayKeyFiles(cfg.archiveDir); len(stray) > 0 {
+		log.Printf("waiveo-feeder: WARNING — workspace key material is sitting in the archive directory %s: %v. "+
+			"Anyone who copies that directory copies the private signing key and the cleartext data key. "+
+			"Move it to %s or destroy it.", cfg.archiveDir, stray, cfg.keyDir)
+	}
+	secretSealer, err := wsKey.SecretSealer()
+	if err != nil {
+		log.Fatalf("waiveo-feeder: derive the workspace secret sealer: %v\n"+
+			"    a recoverable credential secret (SEC-004's TOTP shared secret) cannot be stored without it", err)
+	}
+
 	// The security-model/1 auth plane. It is built AFTER the event hub because
 	// its auditor publishes through it: every flow security-model/1 defines
 	// emits an ordinary events/1 audit.event (SEC-150), never a second audit
 	// schema of its own, so a login lands in the same stream an operator is
 	// already watching.
-	authStore, err := auth.OpenDefault(filepath.Join(cfg.authDir, authStoreFile))
+	authStore, err := auth.OpenDefault(filepath.Join(cfg.authDir, authStoreFile), auth.WithSecretSealer(secretSealer))
 	if err != nil {
 		log.Fatalf("waiveo-feeder: open auth store: %v", err)
 	}
@@ -625,27 +659,6 @@ func main() {
 	// halfway through its target list without waiting to see if it can finish.
 	jobRunner := api.NewJobRunner()
 
-	// The workspace signing key (SEC-046) and the destination the data-subject
-	// export writes its archive/1 container to (API-120/121). Establishing the
-	// key here, at boot, rather than lazily inside the export means a deployment
-	// that cannot hold key material fails loudly at startup instead of at the
-	// moment an owner asks for their data.
-	//
-	// Two directories, never one: cfg.keyDir holds custody, cfg.archiveDir holds
-	// output an operator is expected to copy away (see defaultWorkspaceKeyDir).
-	wsKey, err := workspacekey.LoadOrCreate(cfg.keyDir, ulid.New)
-	if err != nil {
-		log.Fatalf("waiveo-feeder: load workspace signing key: %v", err)
-	}
-	// A deployment that ran a build where the two shared a directory still has
-	// the old key material sitting among its exports. Nothing here can safely
-	// delete it — it may be the key that signed archives an operator still holds
-	// — so this says so, loudly, every boot until someone moves or destroys it.
-	if stray := workspacekey.StrayKeyFiles(cfg.archiveDir); len(stray) > 0 {
-		log.Printf("waiveo-feeder: WARNING — workspace key material is sitting in the archive directory %s: %v. "+
-			"Anyone who copies that directory copies the private signing key and the cleartext data key. "+
-			"Move it to %s or destroy it.", cfg.archiveDir, stray, cfg.keyDir)
-	}
 	apiHandler := api.New(st, idem, nowMs, ulid.New, contentStore, contentBaseURL, authn,
 		api.WithDevicePlane(deviceRegistry, relayConnSrv), api.WithJobRunner(jobRunner),
 		api.WithWorkspaceArchive(&api.WorkspaceArchive{Dir: cfg.archiveDir, Key: wsKey}))

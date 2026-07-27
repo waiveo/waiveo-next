@@ -63,19 +63,69 @@ type sessionResponse struct {
 // operation "MUST authenticate the request from credentials carried in the
 // request body; it MUST NOT require a pre-existing session or API key as a
 // precondition of its own success."
+//
+// TOTPCode is the second factor (SEC-004), optional in the SHAPE and mandatory
+// in EFFECT for any principal holding a `totp` credential — a login that omits
+// it for such a principal is refused, so the optionality here is only the
+// two-call shape the flow below describes, never a way to skip the factor.
 type loginRequest struct {
 	Identifier string `json:"identifier"`
 	Password   string `json:"password"`
+	TOTPCode   string `json:"totp_code,omitempty"`
 }
 
-// Login exchanges an identifier and password for a session (API-090/091).
+// secondFactorProblemMember is the Problem extension member a login refusal
+// carries when — and only when — the presented password was accepted and the
+// principal holds a second-factor credential the request did not satisfy. The
+// value names the factor to collect.
 //
-// Every failure path — unknown identifier, wrong password, locked credential —
-// returns the SAME generic detail, so the response cannot be used to enumerate
-// which identifiers exist. Only the machine-readable `code` differs, and only
+// It is an extension member on the existing UNAUTHENTICATED refusal rather than
+// a new error code, deliberately: api/1's `code` registry is closed and shared,
+// and this condition is not a new KIND of refusal — the caller is still simply
+// not authenticated. It sits beside `errors` (VALIDATION_FAILED) and
+// `current_revision` (REVISION_CONFLICT) as a per-code member, which is the
+// pattern the Problem schema already establishes.
+const secondFactorProblemMember = "second_factor"
+
+// secondFactorTOTP is the only value secondFactorProblemMember takes today.
+const secondFactorTOTP = "totp"
+
+// Login exchanges an identifier, a password, and — for a principal holding a
+// `totp` credential — a second-factor code, for a session (API-090/091, SEC-004).
+//
+// Every failure path — unknown identifier, wrong password, wrong code, replayed
+// code, locked credential — returns the SAME generic detail, so the response
+// cannot be used to enumerate which identifiers exist or to tell a wrong
+// password from a wrong code. Only the machine-readable `code` differs, and only
 // where the contract requires it to (CREDENTIAL_LOCKED, SEC-090), because a
 // caller that is locked out needs to know to back off rather than to keep
-// retrying a password it may well have right.
+// retrying a credential it may well have right.
+//
+// # The shape of the second factor, and why there is no intermediate state
+//
+// The flow is ONE operation the client may call twice, not two operations. A
+// login that satisfies both factors carries both in one body; a login whose
+// principal needs a factor the body did not carry is REFUSED, with the Problem
+// naming the factor to collect, and the client calls again with everything.
+//
+// The alternative — mint something after the password and exchange it for a
+// session after the code — was rejected on the requirement it would violate.
+// Whatever that intermediate thing is, it is a bearer credential issued on one
+// factor: a value that exists, that the client holds, and that is one server bug
+// (a missing AAL check, a route that forgot to look) away from being a session.
+// Here nothing is minted until both factors are satisfied, so there is no state
+// in which partial authentication has been persisted at all — the property is
+// structural rather than enforced.
+//
+// The cost is that a two-step client verifies the password twice, paying
+// Argon2id twice. On an appliance-class box verifying one interactive login,
+// that is affordable; a credential the server has to keep valid between the two
+// calls is not.
+//
+// Refusing for a missing factor deliberately does NOT count against the
+// credential's lockout budget (SEC-090). Nothing failed — the request was
+// incomplete — and counting it would burn a real user's budget on the ordinary
+// path every single time they sign in.
 func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 	traceID := apihttp.TraceID(r)
 	if r.Method != http.MethodPost {
@@ -143,6 +193,13 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 		})
 		apihttp.WriteProblemExt(w, r, traceID, http.StatusUnauthorized,
 			"UNAUTHENTICATED", "Unauthorized", "The identifier or password is incorrect.", nil)
+		return
+	}
+
+	// SEC-004's floor. The password has verified; if this principal holds a
+	// `totp` credential, the login is not complete until that credential is
+	// satisfied too, and no session exists until it is.
+	if !h.secondFactorSatisfied(w, r, traceID, cred.PrincipalID, req.TOTPCode, ipClass) {
 		return
 	}
 

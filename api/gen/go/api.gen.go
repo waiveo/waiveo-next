@@ -256,6 +256,21 @@ func (e JobTargetState) Valid() bool {
 	}
 }
 
+// Defines values for ProblemSecondFactor.
+const (
+	ProblemSecondFactorTotp ProblemSecondFactor = "totp"
+)
+
+// Valid indicates whether the value is a known member of the ProblemSecondFactor enum.
+func (e ProblemSecondFactor) Valid() bool {
+	switch e {
+	case ProblemSecondFactorTotp:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ScopeNodeKind.
 const (
 	ScopeNodeKindGroup  ScopeNodeKind = "group"
@@ -370,6 +385,21 @@ func (e SessionSummaryRole) Valid() bool {
 	case Owner:
 		return true
 	case Viewer:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TotpCredentialKind.
+const (
+	TotpCredentialKindTotp TotpCredentialKind = "totp"
+)
+
+// Valid indicates whether the value is a known member of the TotpCredentialKind enum.
+func (e TotpCredentialKind) Valid() bool {
+	switch e {
+	case TotpCredentialKindTotp:
 		return true
 	default:
 		return false
@@ -636,6 +666,9 @@ type LoginRequest struct {
 	// Identifier The login handle the `password` credential is registered under.
 	Identifier string `json:"identifier"`
 	Password   string `json:"password"`
+
+	// TotpCode The second-factor code (`security-model.md` SEC-004). Optional in SHAPE and mandatory in EFFECT for any principal holding a `totp` credential: such a login is refused without it, with the Problem's `second_factor` member naming the factor to collect, and the client re-calls this same operation carrying everything. There is no intermediate credential between the two calls — nothing is minted until both factors are satisfied.
+	TotpCode *string `json:"totp_code,omitempty"`
 }
 
 // Problem RFC 9457 problem+json, extended with `code` (this contract's machine-readable error registry) and `trace_id`. `code` is the discriminant a client asserts on; `title`/`detail` are for humans.
@@ -655,6 +688,9 @@ type Problem struct {
 	// Instance The request's own path, unmodified.
 	Instance *string `json:"instance,omitempty"`
 
+	// SecondFactor Present only on a 401 UNAUTHENTICATED from `login` where the presented password was accepted but the principal holds a second-factor credential the request did not satisfy (`security-model.md` SEC-004). It names the factor to collect and re-submit on the same operation. Deliberately ABSENT from every other refusal — including a wrong password, a wrong code, and a replayed code — so its absence discloses nothing about which of them occurred.
+	SecondFactor *ProblemSecondFactor `json:"second_factor,omitempty"`
+
 	// Status The HTTP status code, repeated here per RFC 9457.
 	Status int `json:"status"`
 
@@ -667,6 +703,9 @@ type Problem struct {
 	// Type Always "about:blank" in this version; `code` is the sole machine-readable discriminant api/v1 defines.
 	Type string `json:"type"`
 }
+
+// ProblemSecondFactor Present only on a 401 UNAUTHENTICATED from `login` where the presented password was accepted but the principal holds a second-factor credential the request did not satisfy (`security-model.md` SEC-004). It names the factor to collect and re-submit on the same operation. Deliberately ABSENT from every other refusal — including a wrong password, a wrong code, and a replayed code — so its absence discloses nothing about which of them occurred.
+type ProblemSecondFactor string
 
 // RelayId A relay's permanent identity, assigned to it by enrollment and unchanged across every later certificate renewal or re-enrollment (`relay/1` REL-012/014). Deliberately NOT typed as a ULID: unlike a resource this API mints, a relay id is issued by the enrollment path and is opaque here — this API reads it, routes a command by it, and never constructs or parses one.
 type RelayId = string
@@ -778,6 +817,39 @@ type SessionSummaryRole string
 // The `Job` resource is the one exception on this API and says so at its own `created_at`: a Job's timestamp is minted in Go as a `time.Time` and serialized RFC 3339, because a Job is not a stored row of this baseline.
 type Timestamp = int64
 
+// TotpConfirmRequest A code computed from the pending enrollment's secret, proving it reached an authenticator.
+type TotpConfirmRequest struct {
+	Code string `json:"code"`
+}
+
+// TotpCredential The armed `totp` credential, in `security-model.md`'s own Credential wire shape — metadata only, never a raw secret value.
+type TotpCredential struct {
+	// CreatedAt Milliseconds since the Unix epoch, from the server's own clock.
+	CreatedAt int64 `json:"created_at"`
+
+	// CredentialId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	CredentialId Ulid               `json:"credential_id"`
+	Kind         TotpCredentialKind `json:"kind"`
+
+	// PrincipalId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	PrincipalId Ulid `json:"principal_id"`
+
+	// RevokedSessions How many OTHER sessions and API keys of this principal arming the credential revoked. The calling session is never among them — it has just proven the new factor.
+	RevokedSessions int `json:"revoked_sessions"`
+}
+
+// TotpCredentialKind defines model for TotpCredential.Kind.
+type TotpCredentialKind string
+
+// TotpEnrollment A pending TOTP enrollment's shared secret, returned exactly once by `enrollTotp`. Nothing here authenticates until `confirmTotp` arms it.
+type TotpEnrollment struct {
+	// OtpauthUri The same secret as the `otpauth://totp/...` URI an authenticator app imports, usually by scanning it as a QR code.
+	OtpauthUri string `json:"otpauth_uri"`
+
+	// Secret The shared secret, RFC 4648 base32, uppercase and unpadded — the form an operator types into an authenticator app by hand.
+	Secret string `json:"secret"`
+}
+
 // TraceId A ULID- or UUID-class trace identifier, 20-36 characters, restricted charset.
 type TraceId = string
 
@@ -888,6 +960,18 @@ type GetSessionParams struct {
 
 // ClaimWorkspaceParams defines parameters for ClaimWorkspace.
 type ClaimWorkspaceParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// ConfirmTotpParams defines parameters for ConfirmTotp.
+type ConfirmTotpParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// EnrollTotpParams defines parameters for EnrollTotp.
+type EnrollTotpParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
@@ -1318,6 +1402,9 @@ type LoginJSONRequestBody = LoginRequest
 // ClaimWorkspaceJSONRequestBody defines body for ClaimWorkspace for application/json ContentType.
 type ClaimWorkspaceJSONRequestBody = ClaimRequest
 
+// ConfirmTotpJSONRequestBody defines body for ConfirmTotp for application/json ContentType.
+type ConfirmTotpJSONRequestBody = TotpConfirmRequest
+
 // CreateAutomationJSONRequestBody defines body for CreateAutomation for application/json ContentType.
 type CreateAutomationJSONRequestBody = AutomationCreate
 
@@ -1433,6 +1520,14 @@ type ClientInterface interface {
 	ClaimWorkspaceWithBody(ctx context.Context, params *ClaimWorkspaceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	ClaimWorkspace(ctx context.Context, params *ClaimWorkspaceParams, body ClaimWorkspaceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ConfirmTotpWithBody request with any body
+	ConfirmTotpWithBody(ctx context.Context, params *ConfirmTotpParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	ConfirmTotp(ctx context.Context, params *ConfirmTotpParams, body ConfirmTotpJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// EnrollTotp request
+	EnrollTotp(ctx context.Context, params *EnrollTotpParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListAutomations request
 	ListAutomations(ctx context.Context, params *ListAutomationsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -1650,6 +1745,42 @@ func (c *Client) ClaimWorkspaceWithBody(ctx context.Context, params *ClaimWorksp
 
 func (c *Client) ClaimWorkspace(ctx context.Context, params *ClaimWorkspaceParams, body ClaimWorkspaceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewClaimWorkspaceRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ConfirmTotpWithBody(ctx context.Context, params *ConfirmTotpParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewConfirmTotpRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ConfirmTotp(ctx context.Context, params *ConfirmTotpParams, body ConfirmTotpJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewConfirmTotpRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) EnrollTotp(ctx context.Context, params *EnrollTotpParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewEnrollTotpRequest(c.Server, params)
 	if err != nil {
 		return nil, err
 	}
@@ -2483,6 +2614,103 @@ func NewClaimWorkspaceRequestWithBody(server string, params *ClaimWorkspaceParam
 	}
 
 	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewConfirmTotpRequest calls the generic ConfirmTotp builder with application/json body
+func NewConfirmTotpRequest(server string, params *ConfirmTotpParams, body ConfirmTotpJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewConfirmTotpRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewConfirmTotpRequestWithBody generates requests for ConfirmTotp with any type of body
+func NewConfirmTotpRequestWithBody(server string, params *ConfirmTotpParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/auth/totp/confirm")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewEnrollTotpRequest generates requests for EnrollTotp
+func NewEnrollTotpRequest(server string, params *EnrollTotpParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/auth/totp/enroll")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
 
 	if params != nil {
 
@@ -5578,6 +5806,14 @@ type ClientWithResponsesInterface interface {
 
 	ClaimWorkspaceWithResponse(ctx context.Context, params *ClaimWorkspaceParams, body ClaimWorkspaceJSONRequestBody, reqEditors ...RequestEditorFn) (*ClaimWorkspaceResponse, error)
 
+	// ConfirmTotpWithBodyWithResponse request with any body
+	ConfirmTotpWithBodyWithResponse(ctx context.Context, params *ConfirmTotpParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ConfirmTotpResponse, error)
+
+	ConfirmTotpWithResponse(ctx context.Context, params *ConfirmTotpParams, body ConfirmTotpJSONRequestBody, reqEditors ...RequestEditorFn) (*ConfirmTotpResponse, error)
+
+	// EnrollTotpWithResponse request
+	EnrollTotpWithResponse(ctx context.Context, params *EnrollTotpParams, reqEditors ...RequestEditorFn) (*EnrollTotpResponse, error)
+
 	// ListAutomationsWithResponse request
 	ListAutomationsWithResponse(ctx context.Context, params *ListAutomationsParams, reqEditors ...RequestEditorFn) (*ListAutomationsResponse, error)
 
@@ -5856,6 +6092,74 @@ func (r ClaimWorkspaceResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r ClaimWorkspaceResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ConfirmTotpResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *TotpCredential
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *Problem
+	ApplicationproblemJSON422 *UnprocessableContent
+	ApplicationproblemJSON503 *ServiceUnavailable
+}
+
+// Status returns HTTPResponse.Status
+func (r ConfirmTotpResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ConfirmTotpResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ConfirmTotpResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type EnrollTotpResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *TotpEnrollment
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Problem
+	ApplicationproblemJSON503 *ServiceUnavailable
+}
+
+// Status returns HTTPResponse.Status
+func (r EnrollTotpResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r EnrollTotpResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r EnrollTotpResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -7419,6 +7723,32 @@ func (c *ClientWithResponses) ClaimWorkspaceWithResponse(ctx context.Context, pa
 	return ParseClaimWorkspaceResponse(rsp)
 }
 
+// ConfirmTotpWithBodyWithResponse request with arbitrary body returning *ConfirmTotpResponse
+func (c *ClientWithResponses) ConfirmTotpWithBodyWithResponse(ctx context.Context, params *ConfirmTotpParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ConfirmTotpResponse, error) {
+	rsp, err := c.ConfirmTotpWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseConfirmTotpResponse(rsp)
+}
+
+func (c *ClientWithResponses) ConfirmTotpWithResponse(ctx context.Context, params *ConfirmTotpParams, body ConfirmTotpJSONRequestBody, reqEditors ...RequestEditorFn) (*ConfirmTotpResponse, error) {
+	rsp, err := c.ConfirmTotp(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseConfirmTotpResponse(rsp)
+}
+
+// EnrollTotpWithResponse request returning *EnrollTotpResponse
+func (c *ClientWithResponses) EnrollTotpWithResponse(ctx context.Context, params *EnrollTotpParams, reqEditors ...RequestEditorFn) (*EnrollTotpResponse, error) {
+	rsp, err := c.EnrollTotp(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseEnrollTotpResponse(rsp)
+}
+
 // ListAutomationsWithResponse request returning *ListAutomationsResponse
 func (c *ClientWithResponses) ListAutomationsWithResponse(ctx context.Context, params *ListAutomationsParams, reqEditors ...RequestEditorFn) (*ListAutomationsResponse, error) {
 	rsp, err := c.ListAutomations(ctx, params, reqEditors...)
@@ -8064,6 +8394,114 @@ func ParseClaimWorkspaceResponse(rsp *http.Response) (*ClaimWorkspaceResponse, e
 			return nil, err
 		}
 		response.ApplicationproblemJSON429 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseConfirmTotpResponse parses an HTTP response from a ConfirmTotpWithResponse call
+func ParseConfirmTotpResponse(rsp *http.Response) (*ConfirmTotpResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ConfirmTotpResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest TotpCredential
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Problem
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest ServiceUnavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseEnrollTotpResponse parses an HTTP response from a EnrollTotpWithResponse call
+func ParseEnrollTotpResponse(rsp *http.Response) (*EnrollTotpResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &EnrollTotpResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest TotpEnrollment
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Problem
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest ServiceUnavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
 
 	}
 

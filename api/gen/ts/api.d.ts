@@ -350,6 +350,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/totp/enroll": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Begin a TOTP second-factor enrollment for the calling principal
+         * @description Mints a fresh TOTP shared secret for the CALLING principal and returns it once, as an `otpauth://` URI and as a typeable base32 key. The enrollment is not armed by this call — nothing authenticates until `confirmTotp` returns a code computed from the secret, which is the only evidence the secret reached an authenticator. `security-model.md` SEC-004 makes `totp` the guaranteed second-factor floor, "available without a secure-context precondition": unlike `passkey` (SEC-102), this operation stays available on the self-signed TLS fallback (SEC-110). A principal may enroll only for ITSELF — clearing or re-enrolling another principal's TOTP is the owner-explicit or console-binding path SEC-052 defines, not this one.
+         */
+        post: operations["enrollTotp"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/totp/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Arm the pending TOTP enrollment by returning a code from it
+         * @description Verifies a code against the calling principal's pending enrollment and, on success, writes the `totp` credential row (`security-model.md` SEC-003). The confirming code's own time step is spent at arming, so it cannot also complete a sign-in. Every OTHER live session and API key of this principal is revoked — a session minted on one factor does not outlive the moment the principal decided one factor was not enough — while the calling session survives, having just proven the new factor.
+         */
+        post: operations["confirmTotp"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/schedules": {
         parameters: {
             query?: never;
@@ -716,6 +756,11 @@ export interface components {
             errors?: components["schemas"]["ValidationFieldError"][];
             /** @description Present only when `code` is REVISION_CONFLICT — the resource's current revision, so the client can re-read and retry. */
             current_revision?: number;
+            /**
+             * @description Present only on a 401 UNAUTHENTICATED from `login` where the presented password was accepted but the principal holds a second-factor credential the request did not satisfy (`security-model.md` SEC-004). It names the factor to collect and re-submit on the same operation. Deliberately ABSENT from every other refusal — including a wrong password, a wrong code, and a replayed code — so its absence discloses nothing about which of them occurred.
+             * @enum {string}
+             */
+            second_factor?: "totp";
         };
         /**
          * @description The stable, additive-only machine-readable error registry (`contracts/api-1.md#error-taxonomy`), plus the codes a sibling contract owns for operations that ride this same `/api/v1` binding. api/1's own registry governs API-011 for api/1's own rules; a sibling contract's Problem carries a `code` from ITS registry, by name — the same reuse-by-name discipline `player/1` PLY-007 applies. The four trailing values below belong to `security-model.md`'s Error taxonomy and appear only on the `auth` operations.
@@ -728,6 +773,37 @@ export interface components {
             identifier: string;
             /** Format: password */
             password: string;
+            /** @description The second-factor code (`security-model.md` SEC-004). Optional in SHAPE and mandatory in EFFECT for any principal holding a `totp` credential: such a login is refused without it, with the Problem's `second_factor` member naming the factor to collect, and the client re-calls this same operation carrying everything. There is no intermediate credential between the two calls — nothing is minted until both factors are satisfied. */
+            totp_code?: string;
+        };
+        /** @description A pending TOTP enrollment's shared secret, returned exactly once by `enrollTotp`. Nothing here authenticates until `confirmTotp` arms it. */
+        TotpEnrollment: {
+            /**
+             * Format: password
+             * @description The shared secret, RFC 4648 base32, uppercase and unpadded — the form an operator types into an authenticator app by hand.
+             */
+            secret: string;
+            /** @description The same secret as the `otpauth://totp/...` URI an authenticator app imports, usually by scanning it as a QR code. */
+            otpauth_uri: string;
+        };
+        /** @description A code computed from the pending enrollment's secret, proving it reached an authenticator. */
+        TotpConfirmRequest: {
+            /** Format: password */
+            code: string;
+        };
+        /** @description The armed `totp` credential, in `security-model.md`'s own Credential wire shape — metadata only, never a raw secret value. */
+        TotpCredential: {
+            credential_id: components["schemas"]["Ulid"];
+            principal_id: components["schemas"]["Ulid"];
+            /** @enum {string} */
+            kind: "totp";
+            /**
+             * Format: int64
+             * @description Milliseconds since the Unix epoch, from the server's own clock.
+             */
+            created_at: number;
+            /** @description How many OTHER sessions and API keys of this principal arming the credential revoked. The calling session is never among them — it has just proven the new factor. */
+            revoked_sessions: number;
         };
         /** @description A first-boot claim (SEC-120): the one-time setup code, plus the credential the first owner is choosing. */
         ClaimRequest: {
@@ -1874,6 +1950,82 @@ export interface operations {
             };
             422: components["responses"]["UnprocessableContent"];
             429: components["responses"]["TooManyRequests"];
+        };
+    };
+    enrollTotp: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The pending enrollment's shared secret, returned exactly once. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TotpEnrollment"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description This principal already holds a TOTP credential; replacing it is a credential-reset or recovery operation (`security-model.md` SEC-052), not a self-service one. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    confirmTotp: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TotpConfirmRequest"];
+            };
+        };
+        responses: {
+            /** @description The armed credential's metadata (never its secret). */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TotpCredential"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description No enrollment is in progress for this principal; start one first. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            422: components["responses"]["UnprocessableContent"];
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     listSchedules: {

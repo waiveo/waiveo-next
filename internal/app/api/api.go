@@ -276,6 +276,14 @@ func (srv *server) mountAll(rt, rootRT *router, authHandlers *auth.Handlers) {
 	// anything to do without one.
 	rt.HandleFunc("POST "+apiPrefix+"/auth/logout", authHandlers.Logout)
 	rt.HandleFunc("GET "+apiPrefix+"/auth/session", authHandlers.Session)
+	// Second-factor enrollment (security-model/1 SEC-004). Both operations act on
+	// the CALLER'S OWN principal and mint no session, so they belong behind the
+	// middleware with the rest of the authenticated surface — a caller with no
+	// session has nothing to add a second factor to. They deliberately carry no
+	// secure-context precondition: SEC-004 makes `totp` the floor that stays
+	// available on the self-signed fallback, unlike `passkey` (SEC-102).
+	rt.HandleFunc("POST "+apiPrefix+"/auth/totp/enroll", authHandlers.EnrollTOTP)
+	rt.HandleFunc("POST "+apiPrefix+"/auth/totp/confirm", authHandlers.ConfirmTOTP)
 
 	// The credential-exchange half (API-090/091) mounts on the ROOT mux, ahead
 	// of the middleware. Go's ServeMux prefers the more specific method+path
