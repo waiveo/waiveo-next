@@ -88,7 +88,7 @@ ever placed by that path.
 | EVT-091 | `contracts/events-1.md#ws-binding` | `EVT-091-valid-hello-fresh-subscribe` | covered |
 | EVT-092 | `contracts/events-1.md#ws-binding` | `EVT-091-valid-hello-fresh-subscribe`, `EVT-140-valid-resume-with-gap` | covered |
 | EVT-093 | `contracts/events-1.md#ws-binding` | - | TBD-wave1 |
-| EVT-094 | `contracts/events-1.md#ws-binding` | - | TBD-wave1 |
+| EVT-094 | `contracts/events-1.md#ws-binding` | `EVT-140-valid-resume-with-gap` | covered |
 | EVT-095 | `contracts/events-1.md#ws-binding` | - | TBD-wave1 |
 | EVT-096 | `contracts/events-1.md#ws-binding` | - | TBD-wave1 |
 | EVT-100 | `contracts/events-1.md#sse-binding` | `EVT-091-valid-hello-fresh-subscribe`, `EVT-140-valid-resume-with-gap` | covered |
