@@ -32,6 +32,7 @@ One row per requirement ID `contracts/ui-schema-1.md` defines. Format: `conforma
 | UIS-071 | `contracts/ui-schema-1.md#widget-catalog` | - | TBD-wave1 |
 | UIS-072 | `contracts/ui-schema-1.md#widget-catalog` | - | TBD-wave1 |
 | UIS-073 | `contracts/ui-schema-1.md#widget-catalog` | - | TBD-wave1 |
+| UIS-073a | `contracts/ui-schema-1.md#widget-catalog` | - | TBD-wave1 |
 | UIS-074 | `contracts/ui-schema-1.md#widget-catalog` | - | TBD-wave1 |
 | UIS-075 | `contracts/ui-schema-1.md#widget-catalog` | - | TBD-wave1 |
 | UIS-100 | `contracts/ui-schema-1.md#binding-grammar-data-paths` | `UIS-100-invalid-malformed-binding-rejected` | covered |
