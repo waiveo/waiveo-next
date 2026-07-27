@@ -198,6 +198,22 @@ type resourceConfig struct {
 	selLabels   func(resourceFields) map[string]string
 	placement   func(resourceFields) string
 	extScope    func(resourceFields) string
+	// writeScope is the scope node a WRITE of this kind is authorized at: the
+	// node the row is placed UNDER, which is where SEC-010 authority over the
+	// placement has to come from. For every kind whose own scope_node is its
+	// placement the two coincide; for a scope node they do not — its placement
+	// is ITSELF (a subtree selector must select it), but on a create that id
+	// does not exist in the tree yet and on a patch it is the PARENT that
+	// decides where the node hangs, so the write is authorized at parent_id.
+	//
+	// This is deliberately its own projection rather than a reuse of extScope,
+	// which today returns the same node for all five kinds. The coincidence is
+	// not accidental — API-101 groups external_id by the node a row is placed
+	// under, which is the same node authority over that placement is anchored at
+	// — but "which rows may collide with mine" and "may I write here at all" are
+	// different questions, and a kind that answered them differently would
+	// silently authorize against the wrong node if one field served both.
+	writeScope func(resourceFields) string
 	// validate, when non-nil, is a per-kind pre-write body validation run over the
 	// EFFECTIVE request body — the create body, or a patch shallow-merged onto the
 	// current row — BEFORE the store write; a non-empty result is rendered
@@ -358,6 +374,30 @@ func (rs *resource) createExec(w http.ResponseWriter, r *http.Request, raw []byt
 	body, id := rs.ensureID(raw)
 	fields := parseFields(body)
 
+	// SEC-005 authorizes "before executing", and on a create the placement is
+	// the whole of what there is to authorize: the caller named the scope node
+	// this row will live under, and a row written under a node the caller has no
+	// authority at is invisible to its own author the moment it lands.
+	//
+	// The check sits AHEAD of every stage that consults stored state — the
+	// per-kind body validation, and above all the external_id uniqueness guard
+	// inside the store write. That ordering is the point rather than an
+	// optimization: the uniqueness guard necessarily scans rows under the target
+	// node whether the caller can see them or not (API-101 scopes uniqueness by
+	// placement, not by principal), so reaching it with an unauthorized
+	// placement is what turns a 400 EXTERNAL_ID_CONFLICT into an existence
+	// oracle for a hidden row. Refusing the PLACEMENT first means the guard is
+	// never reached by a caller who was not already entitled to enumerate what
+	// it scans (scopeview.go).
+	view, ok := rs.requestView(w, r)
+	if !ok {
+		return
+	}
+	if !view.canWrite(rs.cfg.writeScope(fields)) {
+		rs.refuseWrite(w, r)
+		return
+	}
+
 	if rs.writeValidationFailed(w, r, body) {
 		return
 	}
@@ -462,6 +502,45 @@ func (rs *resource) readable(r *http.Request, body []byte) (bool, error) {
 	return view.canRead(rs.cfg.placement(parseFields(body))), nil
 }
 
+// requestView builds this request's scope view ONCE, writing the 500 Problem
+// itself and reporting ok=false when the tree read fails, so a caller has a
+// single thing to check.
+//
+// Every handler needing more than one answer out of it builds it through here
+// rather than calling srv.scopeView per question: a patch that tested
+// visibility against one read of the tree and placement authority against a
+// later one could be told the row is addressable and the destination
+// authorized by two different worlds, which is precisely the disagreement
+// scopeview.go exists to make impossible.
+func (rs *resource) requestView(w http.ResponseWriter, r *http.Request) (scopeView, bool) {
+	view, err := rs.srv.scopeView(r)
+	if err != nil {
+		rs.internal(w, r, err)
+		return scopeView{}, false
+	}
+	return view, true
+}
+
+// refuseWrite writes the 403 / FORBIDDEN Problem an api/1 write draws when the
+// caller holds no write authority at the scope node the write acts on
+// (SEC-005: an authorization that cannot be resolved refuses, never
+// default-permits). See scopeview.go for why this refusal is 403 where the read
+// side's is 404, and why that distinction discloses nothing.
+func (rs *resource) refuseWrite(w http.ResponseWriter, r *http.Request) {
+	rs.problem(w, r, http.StatusForbidden, "FORBIDDEN", "Forbidden", unauthorizedWriteDetail)
+}
+
+// unauthorizedWriteDetail is the ONE `detail` string every refusal of an
+// unauthorized write carries, on every resource family and every mutating
+// operation on this surface.
+//
+// It names no scope node, no resource kind and no id, and that is the whole of
+// its design. A detail echoing the node back — or worded one way for "this node
+// is not yours" and another for "this node does not exist" — would re-open in
+// prose exactly the existence oracle the ordering of the check closes, and a
+// Problem body is compared member for member by anyone looking for one.
+const unauthorizedWriteDetail = "This principal holds no write authority at the scope node this request writes at."
+
 // ---- list -----------------------------------------------------------------
 
 func (rs *resource) list(w http.ResponseWriter, r *http.Request) {
@@ -561,16 +640,31 @@ func (rs *resource) patch(w http.ResponseWriter, r *http.Request) {
 		rs.notFound(w, r)
 		return
 	}
+	// One view answers both halves of this request's authorization, from one
+	// read of the tree: whether the row is addressable at all, and whether it
+	// may be written where it is and where it is going.
+	view, ok := rs.requestView(w, r)
+	if !ok {
+		return
+	}
 	// A row outside the caller's visible set is unaddressable, not merely
 	// unwritable: the check sits AHEAD of the If-Match precondition so an
 	// out-of-reach id draws the same 404 whatever ETag was (or was not)
 	// presented. A 428 IF_MATCH_REQUIRED here would confirm the row exists just
 	// as surely as a 403 would (scopeview.go).
-	if visible, err := rs.readable(r, current.Body); err != nil {
-		rs.internal(w, r, err)
-		return
-	} else if !visible {
+	curFields := parseFields(current.Body)
+	if !view.canRead(rs.cfg.placement(curFields)) {
 		rs.notFound(w, r)
+		return
+	}
+	// Addressable, but not necessarily writable: `viewer` clears the visible-set
+	// floor and nothing above it (auth.CanWrite). This refusal is 403 rather
+	// than 404 because the caller can demonstrably already READ this row — it
+	// discloses nothing beyond the caller's own authority — and it too precedes
+	// If-Match, since inviting a viewer to retry with an ETag would be an
+	// invitation to an operation they can never complete.
+	if !view.canWrite(rs.cfg.writeScope(curFields)) {
+		rs.refuseWrite(w, r)
 		return
 	}
 
@@ -589,10 +683,32 @@ func (rs *resource) patch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	merged := mergedBody(current.Body, patchBody)
+
+	// A patch may MOVE the row. Authority over where it currently sits says
+	// nothing about where it is going, so the destination is authorized on its
+	// own — before the per-kind validation and before the external_id guard, for
+	// the same reason the create path orders it there: the guard evaluates
+	// uniqueness under the DESTINATION node (parseFields(merged) feeds
+	// externalIDGuards below), so an unauthorized destination must be refused
+	// before it can be used to probe one.
+	//
+	// A destination equal to the row's current one is not re-checked: it is not
+	// a placement this request is deciding, and authority over it was just
+	// established above. Everything else is checked, including the case the
+	// visible-set filter cannot catch — moving a row OUT of the caller's reach,
+	// where the row would vanish from its own author's view on success.
+	eff := parseFields(merged)
+	if dest := rs.cfg.writeScope(eff); dest != rs.cfg.writeScope(curFields) {
+		if !view.canWrite(dest) {
+			rs.refuseWrite(w, r)
+			return
+		}
+	}
+
 	// A per-kind pre-write validation (playlist asset_refs) runs over the EFFECTIVE
 	// post-merge body, so a patch that introduces an un-uploaded asset_ref is
 	// rejected exactly as a create would be — never stored.
-	merged := mergedBody(current.Body, patchBody)
 	if rs.writeValidationFailed(w, r, merged) {
 		return
 	}
@@ -601,7 +717,6 @@ func (rs *resource) patch(w http.ResponseWriter, r *http.Request) {
 	// enforced atomically inside the store write by a WriteGuard — closing the
 	// check-then-write race a pre-write snapshot in a separate critical section left
 	// open. selfID excludes this row, so an unchanged external_id never self-collides.
-	eff := parseFields(merged)
 	res, err := rs.srv.store.Update(r.Context(), rs.cfg.kind, id, current.Revision, patchBody,
 		rs.externalIDGuards(eff.ExternalID, rs.cfg.extScope(eff), id)...)
 	if err != nil {
@@ -626,13 +741,22 @@ func (rs *resource) delete(w http.ResponseWriter, r *http.Request) {
 		rs.notFound(w, r)
 		return
 	}
-	// Same ordering as patch: unaddressable before unwritable, so an
-	// out-of-reach id is a 404 regardless of the presented ETag.
-	if visible, err := rs.readable(r, current.Body); err != nil {
-		rs.internal(w, r, err)
+	// Same ordering as patch: unaddressable before unwritable before the
+	// precondition, so an out-of-reach id is a 404 regardless of the presented
+	// ETag and a reader who may not mutate is refused before being invited to
+	// supply one. A delete moves the row nowhere, so the row's current placement
+	// is the whole of what there is to authorize.
+	view, ok := rs.requestView(w, r)
+	if !ok {
 		return
-	} else if !visible {
+	}
+	curFields := parseFields(current.Body)
+	if !view.canRead(rs.cfg.placement(curFields)) {
 		rs.notFound(w, r)
+		return
+	}
+	if !view.canWrite(rs.cfg.writeScope(curFields)) {
+		rs.refuseWrite(w, r)
 		return
 	}
 

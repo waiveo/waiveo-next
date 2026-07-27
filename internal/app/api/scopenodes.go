@@ -29,5 +29,10 @@ func scopeNodesConfig() resourceConfig {
 		},
 		placement: func(f resourceFields) string { return f.ID },
 		extScope:  func(f resourceFields) string { return f.ParentID },
+		// A node is placed under its PARENT, so that is where authority over
+		// placing it (or re-parenting it) comes from — never its own id, which on
+		// a create is a ULID the tree has never seen and which would therefore
+		// resolve only through the workspace-root fallback.
+		writeScope: func(f resourceFields) string { return f.ParentID },
 	}
 }

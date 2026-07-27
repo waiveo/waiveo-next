@@ -241,6 +241,14 @@ func (srv *server) sendEntityCommandExec(w http.ResponseWriter, r *http.Request,
 		writeProblem(w, r, http.StatusNotFound, "NOT_FOUND", "Not Found", "No entity exists with this identifier.")
 		return
 	}
+	// Resolving it is a read; DISPATCHING to it changes the state of a physical
+	// device, so the command itself is authorized as a write at the entity's own
+	// scope node (SEC-005). 403 rather than 404 — the caller has just been shown
+	// they may see this entity, so the refusal reports only their own authority.
+	if !view.canWrite(entity.ScopeNode) {
+		writeProblem(w, r, http.StatusForbidden, "FORBIDDEN", "Forbidden", unauthorizedWriteDetail)
+		return
+	}
 
 	req, verr := decodeEntityCommand(raw)
 	if verr != "" {

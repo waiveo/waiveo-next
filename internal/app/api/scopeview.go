@@ -52,6 +52,38 @@ import (
 // missing CSRF token (auth's middleware). Those describe the caller. A 404 here
 // describes a row, so it must describe every unreachable row identically.
 //
+// # Why an unauthorized PLACEMENT is 403, and why that leaks nothing
+//
+// A write names its own scope node: a create supplies the node it places the
+// row under, a patch supplies the node it moves the row to. So the refusal is
+// answering a question the caller ASKED about a node the caller NAMED, and
+// FORBIDDEN's own definition fits it exactly — "the principal is authenticated
+// but not authorized for this operation." Pretending the node does not exist
+// would additionally be a claim api/1 has no id to attach it to: the 404 the
+// read side returns is scoped to "no resource exists at the identifier named by
+// the request", and on a create there is no such identifier yet.
+//
+// The anti-probing property the read side buys with 404 is preserved here by
+// ORDERING rather than by status code, and it is stronger for it. canWrite
+// consults only the caller's own bindings and the named node's ancestor chain;
+// datamodel.ScopeTree.AncestorChain returns nil for any node the tree does not
+// contain, and auth.Resolve resolves a nil chain solely through the
+// workspace-root fallback. A caller not bound at the root therefore receives the
+// SAME 403, with the same body, whether the node they named is real-but-out-of-
+// reach or was never minted at all — and because the check runs before anything
+// that consults stored state, no later stage gets the chance to tell them apart.
+//
+// That ordering is what closes the external_id oracle specifically. API-101
+// scopes uniqueness by (resource type, scope node), so the guard MUST scan every
+// row under the target node, including rows the caller cannot see; narrowing it
+// to the visible subset would break the rule the guard exists to enforce. It
+// does not need narrowing. auth.CanWrite's floor (`operator`) outranks
+// auth.CanRead's (`viewer`) in one total order, so write authority at a node
+// implies read authority at it: once the placement is authorized, every row the
+// guard scans under that placement is a row the same caller could have
+// enumerated with a list. The guard only ever runs for a caller already entitled
+// to the answer it could give.
+//
 // # Selectors narrow, never widen
 //
 // events/1 EVT-121 states the rule for its own binding: a selector "MUST only
@@ -75,6 +107,13 @@ type scopeView struct {
 	// at node. It is the visible-set membership test every read on this surface
 	// funnels through.
 	canRead func(node string) bool
+	// canWrite reports whether the request's principal may WRITE at node —
+	// create a resource placed there, move one there, or mutate one already
+	// there. It is the membership test every write on this surface funnels
+	// through, and it is answered from the SAME tree read and the SAME binding
+	// set canRead is, so a single request cannot decide "may I see this row?"
+	// and "may I write it here?" against two differently-timed snapshots.
+	canWrite func(node string) bool
 }
 
 // scopeView builds r's view of the scope-node tree. The tree is read fresh per
@@ -105,8 +144,12 @@ func (srv *server) scopeView(r *http.Request) (scopeView, error) {
 	// One list can ask about the same placement node hundreds of times (every
 	// row under one screen). The chain walk and role resolution are pure over a
 	// fixed tree and a fixed binding set, so the answer is memoized for the
-	// request's lifetime. The map is confined to this request's goroutine.
+	// request's lifetime. The maps are confined to this request's goroutine, and
+	// are kept separate per question rather than caching a resolved Role: the
+	// two answers have different floors (auth.CanRead / auth.CanWrite) and a
+	// shared cache keyed only by node would invite one to be read for the other.
 	seen := make(map[string]bool)
+	seenWrite := make(map[string]bool)
 
 	return scopeView{
 		inSubtree: func(ancestor, node string) bool {
@@ -126,6 +169,14 @@ func (srv *server) scopeView(r *http.Request) (scopeView, error) {
 			}
 			v := auth.CanRead(bindings, tree.AncestorChain(node))
 			seen[node] = v
+			return v
+		},
+		canWrite: func(node string) bool {
+			if v, ok := seenWrite[node]; ok {
+				return v
+			}
+			v := auth.CanWrite(bindings, tree.AncestorChain(node))
+			seenWrite[node] = v
 			return v
 		},
 	}, nil

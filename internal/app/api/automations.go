@@ -38,6 +38,7 @@ func automationsConfig() resourceConfig {
 		selLabels:    func(f resourceFields) map[string]string { return f.Labels },
 		placement:    func(f resourceFields) string { return f.ScopeNode },
 		extScope:     func(f resourceFields) string { return f.ScopeNode },
+		writeScope:   func(f resourceFields) string { return f.ScopeNode },
 	}
 }
 
@@ -120,8 +121,18 @@ func (srv *server) runAutomationExec(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
 		return
 	}
-	if !view.canRead(parseFields(res.Body).ScopeNode) {
+	node := parseFields(res.Body).ScopeNode
+	if !view.canRead(node) {
 		writeProblem(w, r, http.StatusNotFound, "NOT_FOUND", "Not Found", "No automation exists with this identifier.")
+		return
+	}
+	// Reading it is where a run BEGINS, not where it ends: a run dispatches the
+	// automation's actions, so it is a write at the automation's own scope node
+	// and is authorized as one (SEC-005). 403 rather than 404 here, exactly as
+	// on the resource families — the caller has just been shown they may read
+	// this row, so the refusal discloses nothing but their own authority.
+	if !view.canWrite(node) {
+		writeProblem(w, r, http.StatusForbidden, "FORBIDDEN", "Forbidden", unauthorizedWriteDetail)
 		return
 	}
 
@@ -322,10 +333,20 @@ func (srv *server) bulkEnableExec(w http.ResponseWriter, r *http.Request, body [
 	// targets[] named automations the submitter may not read would enumerate
 	// them by id in its own response body (API-112), which is the list leak in
 	// another shape.
+	//
+	// The membership test is canWrite, not canRead, because this operation
+	// MUTATES every row it targets. Substituting the stronger floor is a pure
+	// narrowing (auth.CanWrite implies auth.CanRead), so the API-112 reasoning
+	// above still holds and a row the caller may read but not mutate is simply
+	// not targeted. It is silently omitted rather than refusing the whole
+	// request: a selector designates a target SET, and one that reaches past the
+	// caller's authority has to narrow — the same rule EVT-121 fixes for the
+	// grammar generally — while a 403 keyed to which rows a selector happened to
+	// match would report on rows rather than on the caller.
 	var targetIDs []string
 	for _, res := range rows {
 		f := parseFields(res.Body)
-		if !view.canRead(f.ScopeNode) {
+		if !view.canWrite(f.ScopeNode) {
 			continue
 		}
 		if sel.Matches(f.Labels, f.ScopeNode, view.inSubtree) {

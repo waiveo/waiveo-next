@@ -18,8 +18,9 @@ import (
 // Every scheduling-core row's OWN scope_node is both its placement (what a
 // selector's `scope_node`/`scope_node subtree` term evaluates against) and its
 // external_id uniqueness grouping (API-101: two rows may share an external_id
-// only under different scope nodes) — unlike a scope node, whose placement is
-// itself but whose external_id groups by its PARENT (scopenodes.go).
+// only under different scope nodes) AND the node a write of it is authorized at
+// — unlike a scope node, whose placement is itself but whose external_id groups
+// by, and whose writes authorize at, its PARENT (scopenodes.go).
 //
 // A daypart row carries neither external_id nor labels (data-model/1 DAT-070);
 // selLabels/extScope simply read the zero value for it through the SAME generic
@@ -43,6 +44,7 @@ func schedulesConfig() resourceConfig {
 		selLabels:    func(f resourceFields) map[string]string { return f.Labels },
 		placement:    func(f resourceFields) string { return f.ScopeNode },
 		extScope:     func(f resourceFields) string { return f.ScopeNode },
+		writeScope:   func(f resourceFields) string { return f.ScopeNode },
 	}
 }
 
@@ -55,6 +57,7 @@ func daypartsConfig() resourceConfig {
 		selLabels:    func(f resourceFields) map[string]string { return f.Labels },
 		placement:    func(f resourceFields) string { return f.ScopeNode },
 		extScope:     func(f resourceFields) string { return f.ScopeNode },
+		writeScope:   func(f resourceFields) string { return f.ScopeNode },
 	}
 }
 
@@ -67,6 +70,7 @@ func playlistsConfig() resourceConfig {
 		selLabels:    func(f resourceFields) map[string]string { return f.Labels },
 		placement:    func(f resourceFields) string { return f.ScopeNode },
 		extScope:     func(f resourceFields) string { return f.ScopeNode },
+		writeScope:   func(f resourceFields) string { return f.ScopeNode },
 		validate:     validatePlaylistAssets,
 	}
 }

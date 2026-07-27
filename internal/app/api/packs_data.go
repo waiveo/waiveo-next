@@ -192,6 +192,16 @@ func (srv *server) createPackRowExec(w http.ResponseWriter, r *http.Request, raw
 		srv.writeRowValidation(w, r, verrs)
 		return
 	}
+	// A pack row carries the universal envelope's own scope_node (MAN-052) and
+	// is placed by it exactly as a first-party resource is, so its create is
+	// authorized exactly as one: at the node the row will live under, and BEFORE
+	// the external_id guard the store write carries — the guard scopes
+	// uniqueness by (pack, collection, scope_node) and so must scan rows this
+	// caller may not see, which is an existence oracle for anyone whose
+	// placement was not refused first (api.go, scopeview.go).
+	if !srv.packRowWritable(w, r, vr.ScopeNode) {
+		return
+	}
 	created, err := srv.store.CreatePackRow(r.Context(), packID, collection, storeRowFrom(vr),
 		srv.packRowExternalIDGuards(vr.ExternalID, vr.ScopeNode, "")...)
 	if err != nil {
@@ -258,6 +268,30 @@ func (srv *server) packRowVisible(w http.ResponseWriter, r *http.Request, row st
 	return true
 }
 
+// packRowWritable reports whether the request's principal holds write authority
+// at node, WRITING the 403 / FORBIDDEN refusal itself — byte for byte the one
+// every other api/1 write emits (unauthorizedWriteDetail) — when it does not.
+// It also writes the 500 on a failed tree read, so a caller has one thing to
+// check.
+//
+// A pack's rows are scoped by their own scope_node (MAN-052) exactly as a
+// first-party resource is, so there is deliberately no pack-specific
+// authorization rule here: the same auth.CanWrite, over the same tree, with the
+// same refusal.
+func (srv *server) packRowWritable(w http.ResponseWriter, r *http.Request, node string) bool {
+	view, err := srv.scopeView(r)
+	if err != nil {
+		srv.packProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error",
+			"An unexpected server error occurred.")
+		return false
+	}
+	if !view.canWrite(node) {
+		srv.packProblem(w, r, http.StatusForbidden, "FORBIDDEN", "Forbidden", unauthorizedWriteDetail)
+		return false
+	}
+	return true
+}
+
 // ---- patch ----------------------------------------------------------------
 
 func (srv *server) patchPackRow(w http.ResponseWriter, r *http.Request) {
@@ -279,8 +313,12 @@ func (srv *server) patchPackRow(w http.ResponseWriter, r *http.Request) {
 	}
 	// Ahead of the If-Match precondition, so an out-of-reach row draws the same
 	// 404 whatever ETag was presented (api.go's patch applies the same ordering
-	// for the same reason).
+	// for the same reason), and a caller who may read this row but not mutate it
+	// is refused before being invited to supply an ETag they can do nothing with.
 	if !srv.packRowVisible(w, r, current) {
+		return
+	}
+	if !srv.packRowWritable(w, r, current.ScopeNode) {
 		return
 	}
 
@@ -315,6 +353,16 @@ func (srv *server) patchPackRow(w http.ResponseWriter, r *http.Request) {
 	vr, verrs := packs.ValidateRowWrite(decl, merged)
 	if len(verrs) > 0 {
 		srv.writeRowValidation(w, r, verrs)
+		return
+	}
+
+	// A patch may MOVE the row: MAN-052's scope_node is a writable envelope
+	// field, so the DESTINATION is authorized on its own, before the external_id
+	// guard that would otherwise evaluate uniqueness under a node this caller
+	// was never entitled to write at. An unchanged destination is not
+	// re-checked — it is not a placement this request decides, and authority
+	// over it was established above.
+	if vr.ScopeNode != current.ScopeNode && !srv.packRowWritable(w, r, vr.ScopeNode) {
 		return
 	}
 
@@ -353,8 +401,13 @@ func (srv *server) deletePackRow(w http.ResponseWriter, r *http.Request) {
 		srv.packRowNotFound(w, r)
 		return
 	}
-	// Same ordering as patchPackRow: unaddressable before unwritable.
+	// Same ordering as patchPackRow: unaddressable before unwritable, both ahead
+	// of the precondition. A delete moves the row nowhere, so its current
+	// placement is the whole of what there is to authorize.
 	if !srv.packRowVisible(w, r, current) {
+		return
+	}
+	if !srv.packRowWritable(w, r, current.ScopeNode) {
 		return
 	}
 
