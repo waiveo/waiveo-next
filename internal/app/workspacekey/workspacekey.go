@@ -46,9 +46,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"golang.org/x/crypto/chacha20poly1305"
 
+	"github.com/maaxton/waiveo-next/internal/shared/secretfile"
 	"github.com/maaxton/waiveo-next/internal/shared/signhash"
 	"github.com/maaxton/waiveo-next/internal/shared/ulid"
 )
@@ -64,13 +66,32 @@ const (
 // sub-key is derived at (ARC-011).
 const dataKeySize = 32
 
+// ErrDestroyed is what every operation on a destroyed key returns. It is a
+// sentinel so a caller can tell "this workspace's key material was destroyed"
+// (SEC-121 ran) from "this key cannot wrap right now" — the first is a permanent
+// state no retry changes, the second might not be.
+var ErrDestroyed = errors.New("workspacekey: the workspace signing key has been destroyed (SEC-121)")
+
 // Key is a workspace signing key loaded from (or freshly established in) a
 // directory: the ed25519 private half an export signs with, and the stable
 // identifier an archive's `signer_key_id` field records so a reader knows which
 // public half to resolve the signature against (ARC-002/021, SEC-046).
+//
+// A Key is safe for concurrent use. That is not decoration: the export operation
+// and the delete operation are separate api/1 Jobs on separate goroutines, and
+// the delete's whole purpose is to destroy the key material the export is
+// reading. Without the lock below, "the export signs while the delete zeroes"
+// is a data race on the key's own bytes.
 type Key struct {
-	priv  ed25519.PrivateKey
-	keyID string
+	mu sync.RWMutex
+	// destroyed records that Destroy has run. It is the state EVERY accessor
+	// consults, because the alternative — inferring destruction from the key
+	// material's shape — is exactly the bug this field exists to kill: zeroed
+	// key material has the same LENGTH as live key material, so a length test
+	// reports a destroyed key as present and usable.
+	destroyed bool
+	priv      ed25519.PrivateKey
+	keyID     string
 	// data is the per-workspace DATA key (SEC-040): the key that wraps every
 	// secret stub a workspace holds. SEC-046 requires the signing key be
 	// "established at the same time as the workspace's data key", so the two are
@@ -88,14 +109,49 @@ type Key struct {
 }
 
 // Private returns the private half — the only key material ARC-021's signature
-// is produced from.
-func (k *Key) Private() ed25519.PrivateKey { return k.priv }
+// is produced from — or NIL once the key has been destroyed.
+//
+// nil rather than zeroed bytes is the whole point. Every writer of a signature
+// in this tree checks its signer's length (archive.Create refuses a signer that
+// is not ed25519.PrivateKeySize), so a destroyed key that returned 64 zero bytes
+// would sail through that check and sign; one that returns nothing cannot.
+//
+// The returned slice is a COPY. Destroy zeroes the key's own storage, and a
+// caller holding an alias of it would watch its key material turn to zeros
+// underneath a signature already in progress.
+func (k *Key) Private() ed25519.PrivateKey {
+	k.mu.RLock()
+	defer k.mu.RUnlock()
+	if k.destroyed || len(k.priv) != ed25519.PrivateKeySize {
+		return nil
+	}
+	out := make(ed25519.PrivateKey, len(k.priv))
+	copy(out, k.priv)
+	return out
+}
 
 // Public returns the public half, the value `signer_key_id` resolves against
-// (SEC-046) and the one a reader verifies an archive's header signature with.
+// (SEC-046) and the one a reader verifies an archive's header signature with —
+// or nil once the key has been destroyed.
 func (k *Key) Public() ed25519.PublicKey {
-	pub, _ := k.priv.Public().(ed25519.PublicKey)
+	priv := k.Private()
+	if priv == nil {
+		return nil
+	}
+	pub, _ := priv.Public().(ed25519.PublicKey)
 	return pub
+}
+
+// Destroyed reports whether this key's material has been destroyed (SEC-121).
+//
+// It is exported so a consumer can ASK, rather than discover the answer by
+// attempting an operation and reading the failure. Destruction is a state of the
+// workspace, and a state nothing can observe is a state nothing can be honest
+// about.
+func (k *Key) Destroyed() bool {
+	k.mu.RLock()
+	defer k.mu.RUnlock()
+	return k.destroyed
 }
 
 // KeyID returns the archive header's `signer_key_id` value: a ULID minted once,
@@ -107,7 +163,19 @@ func (k *Key) Public() ed25519.PublicKey {
 // while every already-written archive keeps naming the id it was actually signed
 // under, which a content-derived fingerprint would also give but which a
 // fingerprint would additionally couple to the key's encoding.
-func (k *Key) KeyID() string { return k.keyID }
+//
+// A destroyed key returns the empty string: the id file is gone, no public half
+// exists for it to resolve to, and archive.Create refuses an empty
+// `signer_key_id` (ARC-002) — a second boundary at which a destroyed key cannot
+// produce a container.
+func (k *Key) KeyID() string {
+	k.mu.RLock()
+	defer k.mu.RUnlock()
+	if k.destroyed {
+		return ""
+	}
+	return k.keyID
+}
 
 // LoadOrCreate loads the workspace signing key from dir, establishing and
 // persisting a fresh one if dir holds none. A second call against the same dir
@@ -122,8 +190,8 @@ func LoadOrCreate(dir string, newID func() string) (*Key, error) {
 	if dir == "" {
 		return nil, errors.New("workspacekey: empty key directory")
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("workspacekey: create dir %s: %w", dir, err)
+	if err := secretfile.EnsureDir(dir); err != nil {
+		return nil, fmt.Errorf("workspacekey: prepare key directory: %w", err)
 	}
 	keyPath := filepath.Join(dir, privateKeyFile)
 	idPath := filepath.Join(dir, keyIDFile)
@@ -159,6 +227,16 @@ func LoadOrCreate(dir string, newID func() string) (*Key, error) {
 // sub-key, so there is no counter to derive from and no sequence to collide
 // within.
 func (k *Key) WrapDataKey(wrapKey []byte) (string, error) {
+	k.mu.RLock()
+	defer k.mu.RUnlock()
+	if k.destroyed {
+		// Loudly, and before any wrapping happens. The alternative this replaced
+		// was silent and catastrophic: a destroyed key's zeroed data key is still
+		// dataKeySize bytes long, so a length test passed and the wrap SUCCEEDED,
+		// putting 32 zero bytes into a manifest's `data_key_wrap` and letting the
+		// export report success.
+		return "", ErrDestroyed
+	}
 	if len(k.data) != dataKeySize {
 		return "", fmt.Errorf("workspacekey: data key is %d bytes, want %d — this workspace has no data key to wrap (SEC-040)", len(k.data), dataKeySize)
 	}
@@ -175,7 +253,40 @@ func (k *Key) WrapDataKey(wrapKey []byte) (string, error) {
 }
 
 // DataKeyPresent reports whether this workspace holds a data key at all.
-func (k *Key) DataKeyPresent() bool { return len(k.data) == dataKeySize }
+//
+// A destroyed key holds none, whatever the length of the bytes still sitting in
+// its field — which is precisely what the length test alone got wrong.
+func (k *Key) DataKeyPresent() bool {
+	k.mu.RLock()
+	defer k.mu.RUnlock()
+	return !k.destroyed && len(k.data) == dataKeySize
+}
+
+// StrayKeyFiles reports which of this package's files exist in dir, for a dir
+// that is NOT supposed to be a key directory.
+//
+// It exists for one specific hazard: key material and export output once shared
+// a directory, and a deployment that ran such a build still has a private
+// signing key and a cleartext data key sitting among files an operator is
+// encouraged to copy off the box. Moving the key on a new boot does not move the
+// old copy, and deleting it automatically is not this code's call — those bytes
+// may be the only remaining way to verify archives an operator already holds. So
+// the honest action is to detect and say so.
+//
+// An unreadable or absent dir yields nothing: this is a warning path, and it has
+// no business turning a missing directory into a failure.
+func StrayKeyFiles(dir string) []string {
+	if dir == "" {
+		return nil
+	}
+	var found []string
+	for _, name := range []string{privateKeyFile, keyIDFile, dataKeyFile} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			found = append(found, name)
+		}
+	}
+	return found
+}
 
 func create(dir, keyPath, idPath string, newID func() string) (*Key, error) {
 	if newID == nil {
@@ -191,10 +302,14 @@ func create(dir, keyPath, idPath string, newID func() string) (*Key, error) {
 		return nil, fmt.Errorf("workspacekey: marshal private key: %w", err)
 	}
 	block := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
-	if err := os.WriteFile(keyPath, block, 0o600); err != nil {
+	// All three files go through the shared secret discipline
+	// (internal/shared/secretfile): 0600 from the instant they exist, installed
+	// by rename, so a crash between two of these writes cannot leave a key
+	// directory holding a private half with no id or an id with no key.
+	if err := secretfile.Write(keyPath, block); err != nil {
 		return nil, fmt.Errorf("workspacekey: write %s: %w", keyPath, err)
 	}
-	if err := os.WriteFile(idPath, []byte(keyID), 0o600); err != nil {
+	if err := secretfile.Write(idPath, []byte(keyID)); err != nil {
 		return nil, fmt.Errorf("workspacekey: write %s: %w", idPath, err)
 	}
 	// SEC-046: the signing key is "established at the same time as the
@@ -204,7 +319,7 @@ func create(dir, keyPath, idPath string, newID func() string) (*Key, error) {
 	if _, err := io.ReadFull(rand.Reader, data); err != nil {
 		return nil, fmt.Errorf("workspacekey: generate data key: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, dataKeyFile), data, 0o600); err != nil {
+	if err := secretfile.Write(filepath.Join(dir, dataKeyFile), data); err != nil {
 		return nil, fmt.Errorf("workspacekey: write %s: %w", dataKeyFile, err)
 	}
 	return &Key{priv: priv, keyID: keyID, data: data, dir: dir}, nil
@@ -249,18 +364,38 @@ func load(dir, keyPath, idPath string) (*Key, error) {
 // of SEC-121's factory-reset destruction ("the workspace signing key,
 // SEC-046–047").
 //
-// It removes the FILES, and it also zeroes the in-memory private half so a
-// caller holding this value cannot keep signing with a key the deployment has
-// declared destroyed. Removing a file that is already absent is not an error:
-// destruction is idempotent by nature, and a second delete request must not fail
-// merely because the first one succeeded.
+// It removes the FILES, and it does three things in memory, all three of which
+// are needed and none of which substitutes for the others:
+//
+//   - It MARKS the key destroyed. This is the observable part: Destroyed,
+//     DataKeyPresent, KeyID, Private and WrapDataKey all consult the flag, so
+//     every consumer sees the destruction rather than only the one that happens
+//     to call the operation that would have failed. Marking is what a length
+//     test could never do — zeroed key material is exactly as long as live key
+//     material, so "is it there" and "is it usable" had silently become
+//     different questions with the same answer.
+//   - It ZEROES the key material, so the bytes do not linger in the process's
+//     heap after the deployment has declared them destroyed.
+//   - It DROPS the references, so nothing can reach the zeroed bytes at all —
+//     the flag makes an attempt fail loudly, and the nil makes there be nothing
+//     to fail with.
+//
+// Removing a file that is already absent is not an error: destruction is
+// idempotent by nature, and a second delete request must not fail merely because
+// the first one succeeded.
 func (k *Key) Destroy() error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.destroyed = true
 	for i := range k.priv {
 		k.priv[i] = 0
 	}
 	for i := range k.data {
 		k.data[i] = 0
 	}
+	k.priv = nil
+	k.data = nil
+	k.keyID = ""
 	for _, name := range []string{privateKeyFile, keyIDFile, dataKeyFile} {
 		if err := os.Remove(filepath.Join(k.dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("workspacekey: destroy %s: %w", name, err)
