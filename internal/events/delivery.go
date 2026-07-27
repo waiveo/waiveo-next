@@ -5,11 +5,11 @@ package events
 // that distinguishes a WS upgrade from an SSE request at the shared /events/v1
 // path (EVT-001/100), the SSE line framing (EVT-103/104), and the
 // server-initiated close reason taxonomy (EVT-096). It is pure frame logic —
-// the live WS/SSE socket transport is a deferred thin net/http wrapper; the
+// both live sockets that carry these frames are internal/app/eventsse (the WS
+// binding and the SSE binding, one handler, selected by SelectBinding); the
 // resume/gap RESOLUTION (fresh|resumed|gap against the durable event log) lands
-// in resume.go, and binding authentication (EVT-110–114) + the roles-based
-// default visible set (EVT-120) are a documented seam pending security-model.
-// The selector MECHANICS (EVT-121) reuse internal/shared/apiselector.
+// in resume.go, and the per-subscriber delivery predicate (EVT-120–124) in
+// filter.go. The selector MECHANICS (EVT-121) reuse internal/shared/apiselector.
 
 import (
 	"encoding/json"
@@ -54,14 +54,34 @@ const (
 // invalid resume cursor. AUTH_REQUIRED appears here for a mid-connection
 // credential revocation (EVT-114); a pre-upgrade auth failure is an HTTP
 // Problem, never a frame (EVT-113).
+//
+// Every member is a code the events/1 Error taxonomy publishes — that is the
+// whole constraint EVT-096 imposes, and CloseReason is what enforces it on the
+// wire. The set is wider than it once was because a LIVE WS server reaches
+// conditions a frame library could not: a `hello` whose selector does not parse
+// can only be refused by closing (the upgrade has already happened, so there is
+// no HTTP response left to carry a Problem), and a graceful server shutdown
+// ends every open connection at once. Folding either into INTERNAL would tell a
+// client "server bug, retry with backoff" where the taxonomy has a precise,
+// actionable answer — retry with a corrected selector, retry with backoff at a
+// different time.
 const (
 	CloseIdleTimeout       = "IDLE_TIMEOUT"
 	CloseAuthRequired      = "AUTH_REQUIRED"
 	CloseSlowConsumer      = "SLOW_CONSUMER_DISCONNECTED"
 	CloseResumeFromInvalid = "RESUME_FROM_INVALID"
-	// closeInternal is the unclassified fallback (Error taxonomy) CloseReason
-	// returns for a code outside the server-initiated-close set.
-	closeInternal = "INTERNAL"
+	CloseSelectorInvalid   = "SELECTOR_INVALID"
+	CloseUnavailable       = "UNAVAILABLE"
+	// CloseInternal is the taxonomy's unclassified entry, and the fallback
+	// CloseReason returns for any code outside the server-initiated-close set.
+	// It is also what a server names when it closes for a condition the
+	// taxonomy has no entry for at all — a first frame that is not a `hello`
+	// (EVT-091), or a `hello` that is not decodable JSON. Those are client
+	// protocol violations rather than server faults, but EVT-096 closes the
+	// vocabulary to this table, so the unclassified entry is the only honest
+	// choice available; inventing a PROTOCOL_VIOLATION code would put a value
+	// on the wire that no client's error handling can be written against.
+	CloseInternal = "INTERNAL"
 )
 
 // ErrHelloRequired is returned by ValidateHelloFirst when the first WS frame on
@@ -121,6 +141,14 @@ type PongFrame struct {
 // Ping / Pong build the keepalive frames (EVT-095).
 func Ping() PingFrame { return PingFrame{Type: FrameTypePing} }
 func Pong() PongFrame { return PongFrame{Type: FrameTypePong} }
+
+// Event builds the WS frame one delivered durable event rides in (EVT-093):
+// {type:"event", event:<the envelope>}. It exists so the WS binding names the
+// frame's own discriminator exactly once, in the same file the discriminator is
+// defined — the SSE binding's equivalent (SSEEventLine) already does.
+func Event(env Envelope) EventFrame {
+	return EventFrame{Type: FrameTypeEvent, Event: env}
+}
 
 // Gap builds a WS gap frame (EVT-094/140) with the {from_id,to_id,reason} loss
 // marker. fromID is nil when the subscriber has no prior known point (rendered
@@ -221,12 +249,17 @@ func SSEGapLine(g GapFrame) string {
 }
 
 // serverCloseCodes is the closed set of error-taxonomy codes a server-initiated
-// WS close MAY name (EVT-096).
+// WS close MAY name (EVT-096). Every member is verified against the contract's
+// own Error taxonomy table by TestServerCloseCodesAreContractTaxonomyCodes, so
+// this set cannot drift into naming a code the contract does not publish.
 var serverCloseCodes = map[string]struct{}{
 	CloseIdleTimeout:       {},
 	CloseAuthRequired:      {},
 	CloseSlowConsumer:      {},
 	CloseResumeFromInvalid: {},
+	CloseSelectorInvalid:   {},
+	CloseUnavailable:       {},
+	CloseInternal:          {},
 }
 
 // CloseReason returns the WS close reason for a server-initiated close (EVT-096).
@@ -238,5 +271,5 @@ func CloseReason(code string) string {
 	if _, ok := serverCloseCodes[code]; ok {
 		return code
 	}
-	return closeInternal
+	return CloseInternal
 }

@@ -232,6 +232,11 @@ func TestEventFrame_JSON(t *testing.T) {
 	if back.Type != "event" || back.Event.ID != env.ID {
 		t.Fatalf("event frame must wrap the envelope under event (EVT-093); got %s", b)
 	}
+	// Event() is what the live WS binding builds, so it must produce that same
+	// frame rather than a second spelling of the discriminator.
+	if got := Event(env); got.Type != FrameTypeEvent || got.Event.ID != env.ID {
+		t.Fatalf("Event() must build the {type:event, event:<envelope>} frame (EVT-093); got %+v", got)
+	}
 }
 
 // TestPingPong_JSON (EVT-095): the ping/pong keepalive frames.
@@ -249,15 +254,85 @@ func TestPingPong_JSON(t *testing.T) {
 // TestCloseReason (EVT-096): a server-initiated close names one of this
 // contract's error-taxonomy codes; an unrecognized code falls back to INTERNAL.
 func TestCloseReason(t *testing.T) {
-	for _, code := range []string{"IDLE_TIMEOUT", "AUTH_REQUIRED", "SLOW_CONSUMER_DISCONNECTED", "RESUME_FROM_INVALID"} {
+	for _, code := range []string{
+		CloseIdleTimeout, CloseAuthRequired, CloseSlowConsumer,
+		CloseResumeFromInvalid, CloseSelectorInvalid, CloseUnavailable, CloseInternal,
+	} {
 		if got := CloseReason(code); got != code {
 			t.Fatalf("CloseReason(%q) must name the code (EVT-096); got %q", code, got)
 		}
 	}
-	if got := CloseReason("SELECTOR_INVALID"); got != "INTERNAL" {
-		t.Fatalf("a non-server-close code must fall back to INTERNAL; got %q", got)
+	// A code from NO registry — the class of value EVT-096 exists to keep off
+	// the wire — is folded to the taxonomy's unclassified entry rather than
+	// echoed.
+	for _, code := range []string{"PROTOCOL_VIOLATION", "WS_BINDING_DEFERRED", "nonsense", ""} {
+		if got := CloseReason(code); got != CloseInternal {
+			t.Fatalf("CloseReason(%q) must fall back to %s (EVT-096); got %q", code, CloseInternal, got)
+		}
 	}
-	if got := CloseReason("nonsense"); got != "INTERNAL" {
-		t.Fatalf("an unknown code must fall back to INTERNAL; got %q", got)
+}
+
+// TestServerCloseCodesAreContractTaxonomyCodes is EVT-096's real oracle: "A
+// server-initiated close MUST carry a WS close reason naming one of this
+// contract's error-taxonomy codes". The set of names this package can put on the
+// wire is therefore checked against the CONTRACT'S OWN table, parsed out of
+// contracts/events-1.md, rather than against a second copy of the table written
+// down in this test — a copy would agree with the code by construction and prove
+// nothing about the contract.
+//
+// It is the enforcement point for the whole property, because CloseReason is the
+// only way a reason reaches the wire: whatever a caller asks for, the value
+// emitted is a member of serverCloseCodes or the unclassified fallback, and this
+// test pins every member of that set to a published code.
+func TestServerCloseCodesAreContractTaxonomyCodes(t *testing.T) {
+	taxonomy := contractErrorTaxonomy(t)
+	// Both directions, so the parser cannot pass this check by returning
+	// everything (or nothing): a code the table really publishes is present, and
+	// the code this binding's refusal used to invent is not.
+	if !taxonomy["SLOW_CONSUMER_DISCONNECTED"] {
+		t.Fatal("the Error taxonomy parser did not find SLOW_CONSUMER_DISCONNECTED in contracts/events-1.md; it is reading the wrong thing")
 	}
+	if taxonomy["WS_BINDING_DEFERRED"] {
+		t.Fatal("the Error taxonomy parser reported an unpublished code as published; it is matching too much")
+	}
+	for code := range serverCloseCodes {
+		if !taxonomy[code] {
+			t.Errorf("a server-initiated WS close may name %q, which contracts/events-1.md's Error taxonomy does not publish — "+
+				"EVT-096 closes the vocabulary to that table", code)
+		}
+	}
+	// And the fallback itself, which is emitted for every unrecognized code.
+	if !taxonomy[CloseInternal] {
+		t.Errorf("CloseReason's fallback %q is not a published error-taxonomy code", CloseInternal)
+	}
+}
+
+// contractErrorTaxonomy reads the `code` column of contracts/events-1.md's
+// "Error taxonomy" table. The table's rows are `| ` + "`CODE`" + ` | meaning |
+// retryable |`, so the first backticked cell of each row inside that section is
+// the published code.
+func contractErrorTaxonomy(t *testing.T) map[string]bool {
+	t.Helper()
+	_, self, _, _ := runtime.Caller(0)
+	path := filepath.Join(filepath.Dir(self), "..", "..", "contracts", "events-1.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the contract: %v", err)
+	}
+	codes := map[string]bool{}
+	inSection := false
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "## ") {
+			inSection = line == "## Error taxonomy"
+			continue
+		}
+		if !inSection || !strings.HasPrefix(line, "| `") {
+			continue
+		}
+		cell := strings.TrimPrefix(line, "| `")
+		if i := strings.Index(cell, "`"); i > 0 {
+			codes[cell[:i]] = true
+		}
+	}
+	return codes
 }

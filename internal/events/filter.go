@@ -7,10 +7,12 @@ package events
 //
 // It is binding-agnostic on purpose. EVT-123 requires scope-node filtering to be
 // enforced "server-side, per event, at delivery time" on EVERY binding, so the
-// SSE server (internal/app/eventsse) and the still-deferred WS server must reach
-// the same verdict for the same envelope. Making the verdict a value here, rather
+// WS binding and the SSE binding (both internal/app/eventsse) must reach the
+// same verdict for the same envelope. Making the verdict a value here, rather
 // than a loop inside one transport, is what keeps the two bindings from drifting
-// into two different notions of what a subscriber may see.
+// into two different notions of what a subscriber may see — and both of them
+// build it through the same eventsse.server.filterFor, so there is one
+// construction as well as one predicate.
 //
 // Three deliberate properties:
 //
