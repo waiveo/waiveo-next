@@ -1,18 +1,25 @@
-// Command waiveo-relay is the Wave-1 skeleton for the relay component: a Go
-// process that will speak the relay/1 protocol (contracts/relay-1.md) to an
-// app peer and the player over its own future channels. On start, it opens
-// its persistent operational identity store (internal/relay/identity),
-// enrolls against the co-located feeder (internal/relay/enroll, relay/1
-// REL-010–014) if it hasn't already — persisting the feeder's own
-// desired-state signing key as its enrollment-anchored trust anchor
-// (REL-071, `#28`) — and pulls + verifies the feeder's signed desired-state
-// snapshot (internal/relay/desiredstate, REL-051/052/055/071/072),
-// persisting last-applied and holding the resulting applied screen-program
-// in memory. If the app peer is unreachable at boot but a prior pull already
-// persisted a last-applied generation, the handshake/pull failure is NOT fatal:
-// the relay proceeds and serves that durable copy offline (REL-055/061 offline
-// continuity), so a restart during a disconnection still serves screens. It
-// then serves player/1's pairing surface
+// Command waiveo-relay is the Wave-1 relay component: a Go process speaking
+// the relay/1 protocol (contracts/relay-1.md) to an app peer and the player
+// over its own channels. On start, it opens its persistent operational
+// identity store (internal/relay/identity), enrolls against the co-located
+// feeder (internal/relay/enroll, relay/1 REL-010–014) if it hasn't already —
+// persisting the feeder's own desired-state signing key as its
+// enrollment-anchored trust anchor (REL-071, `#28`) — then opens ONE
+// mutually authenticated persistent connection to the app peer's /relay/v1
+// (internal/relay/relayconn: challenge → hello → hello-ack inside Dial,
+// REL-030–041) and pulls + verifies the feeder's signed desired-state
+// snapshot over it (state.pull → desiredstate.VerifyAndApply,
+// REL-050–056/071/072), persisting last-applied and holding the resulting
+// applied screen-program in memory. The connection then stays up for the
+// life of the process: server-initiated state.changed nudges (REL-057)
+// trigger an immediate pull-and-apply, and a reconnect supervisor re-dials
+// a dropped connection with backoff, pulling once on every reconnect so a
+// relay offline through N generations converges without waiting for a
+// nudge. If the app peer is unreachable at boot but a prior pull already
+// persisted a last-applied generation, the connect/pull failure is NOT
+// fatal: the relay proceeds and serves that durable copy offline
+// (REL-055/061 offline continuity), so a restart during a disconnection
+// still serves screens. It then serves player/1's pairing surface
 // (internal/relay/playerserver, PLY-030–037) over its own HTTPS listener,
 // using the exact same certificate — the enrollment identity persisted in
 // its identity store — that FormPairingCode's commitment (REL-126) is
@@ -39,6 +46,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/datamodel"
@@ -57,6 +65,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/keepalive"
 	"github.com/maaxton/waiveo-next/internal/relay/mdns"
 	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
+	"github.com/maaxton/waiveo-next/internal/relay/relayconn"
 	"github.com/maaxton/waiveo-next/internal/relay/schedulehost"
 	"github.com/maaxton/waiveo-next/internal/relay/ssdpresponder"
 	"github.com/maaxton/waiveo-next/internal/relay/telemetry"
@@ -283,57 +292,76 @@ func main() {
 		log.Fatalf("waiveo-relay: read last-applied generation: %v", err)
 	}
 
-	// Perform the relay/1 connection handshake immediately after enrollment and
-	// before the desired-state pull (REL-030): the app peer challenges, this
-	// relay signs the nonce with its enrollment key (channel binding, REL-032),
-	// declares its version/features/site/subnet/clock, and adopts the app peer's
-	// authoritative site_binding from hello-ack (REL-036). The adopted site
-	// drives the edge engine's schedule/sun evaluation once the automation stack
-	// boots below. A refusal or transport failure here is fatal ONLY when there
-	// is no persisted snapshot to fall back on; otherwise the relay proceeds in
-	// offline-serve mode (REL-055/061) with no live site adopted.
-	site, err := helloWithRetry(cfg, relayIdent)
+	// Open the relay/1 persistent connection immediately after enrollment and
+	// before the desired-state pull: relayconn.Dial runs the whole handshake on
+	// ONE mutually authenticated connection — the app peer challenges with a
+	// nonce derived from THIS TLS session's exporter keying material (REL-040),
+	// this relay signs it with its enrollment key (channel binding, REL-032),
+	// declares its version/features/site/subnet/clock (REL-031), and adopts the
+	// app peer's authoritative site_binding from hello-ack (REL-036). The
+	// adopted site drives the edge engine's schedule/sun evaluation once the
+	// automation stack boots below. Dial reads the persisted identity and the
+	// enrollment-captured app-peer trust pin from the store on EVERY dial
+	// (REL-011/137), so identity persistence carries across every reconnect. A
+	// refusal or transport failure here is fatal ONLY when there is no
+	// persisted snapshot to fall back on; otherwise the relay proceeds in
+	// offline-serve mode (REL-055/061) with no live site adopted — and the
+	// reconnect supervisor below keeps redialing in the background when the
+	// failure is one the Error taxonomy marks recoverable.
+	//
+	// nudges decouples the connection's state.changed dispatcher (wired into
+	// every Dial, including redials) from the live apply path installed further
+	// down — see nudgeSink's own doc.
+	nudges := &nudgeSink{}
+	dialConn := func() (*relayconn.Client, error) {
+		return relayconn.Dial(relayconn.Config{
+			URL:                 cfg.feederURL,
+			Store:               store,
+			Declaration:         relayHelloDeclaration(cfg),
+			OnGenerationAdvance: nudges.deliver,
+		})
+	}
+	client, err := dialWithRetry(dialConn)
 	helloOK := err == nil
-	// helloErr is captured under its own name (rather than read back from err
+	// connErr is captured under its own name (rather than read back from err
 	// later) because err itself is reused by several unrelated `:=` statements
-	// further down this function — by the time the live-loop gate below wants
-	// to know WHY hello failed (to decide whether background recovery is
-	// worth attempting, helloRefusalIsRecoverable), the shared err variable no
-	// longer holds this value.
-	helloErr := err
-	if err != nil {
+	// further down this function — by the time the supervisor gate below wants
+	// to know WHY the connection failed (to decide whether background redial is
+	// worth attempting, relayconn.RefusalIsRecoverable), the shared err variable
+	// no longer holds this value.
+	connErr := err
+	var site hello.SiteBinding
+	liveConn := &connHolder{}
+	if helloOK {
+		liveConn.set(client)
+		site = client.HelloAck().SiteBinding
+		log.Printf("waiveo-relay hello negotiated version %s; site %s", client.HelloAck().NegotiatedVersion, site.TZ)
+	} else {
 		if fatal := offlineServeFallback(err, hasPersisted); fatal != nil {
-			log.Fatalf("waiveo-relay: hello: %v", fatal)
+			log.Fatalf("waiveo-relay: connect to app peer: %v", fatal)
 		}
-		log.Printf("waiveo-relay: hello failed (%v); serving persisted last-applied offline (REL-055/061)", err)
-		site = hello.SiteBinding{}
+		log.Printf("waiveo-relay: connect to app peer failed (%v); serving persisted last-applied offline (REL-055/061)", err)
 	}
 
-	// Pull + verify the feeder's signed desired-state snapshot against the
-	// trust anchor enrollment just persisted. A failure here (app peer
-	// unreachable, bad signature, tampered sections, or a regressed generation)
-	// is fatal ONLY when there is no persisted snapshot to fall back on. When a
-	// prior pull already persisted a last-applied generation, a failed pull is
-	// non-fatal: the relay keeps that durable copy and serves it offline
-	// (REL-055/061), rather than exiting and leaving every screen unable to
-	// pull /player/v1/program.
+	// Pull + verify the feeder's signed desired-state snapshot over the
+	// authenticated connection, against the trust anchor enrollment just
+	// persisted. A failure here (bad signature, tampered sections, or a
+	// regressed generation) is fatal ONLY when there is no persisted snapshot
+	// to fall back on. When a prior pull already persisted a last-applied
+	// generation, a failed pull is non-fatal: the relay keeps that durable copy
+	// and serves it offline (REL-055/061), rather than exiting and leaving
+	// every screen unable to pull /player/v1/program.
 	//
-	// This pull is gated on helloOK: a Pull the app peer would sign is a
-	// SEPARATE authorization decision from the hello handshake's own channel-
-	// binding proof (REL-030/032), and a hello the peer just REFUSED (a
-	// CHANNEL_BINDING_INVALID 403, or any other hello rejection) means this
-	// relay does not hold a live, authorized session with that peer right
-	// now. Pulling anyway would honor the peer's content signature (integrity
-	// survives) while silently overriding the peer's own authorization
-	// refusal — exactly the offline-continuity path this function just logged
-	// it was taking. So a failed hello skips the live pull entirely and falls
-	// straight to serving the persisted last-applied snapshot, instead of
-	// reaching the feeder a second time on a session the peer just rejected.
+	// A relay whose handshake the app peer REFUSED structurally cannot pull at
+	// all on this transport: state.pull only exists on the authenticated
+	// connection the refusal just denied, so the HTTP era's separate
+	// "hello-refused relay must not pull anyway" gate is now enforced by
+	// construction — an unaccepted relay serves its persisted last-applied
+	// snapshot offline and nothing more, until the supervisor's redial is
+	// accepted or an operator re-enrolls it.
 	var applied desiredstate.Applied
-	if !helloOK {
-		log.Printf("waiveo-relay: skipping desired-state pull — hello was not accepted by the app peer; serving persisted last-applied offline (REL-055/061)")
-	} else {
-		applied, err = desiredstate.Pull(cfg.feederURL, store)
+	if helloOK {
+		applied, err = pullOverFrames(client, store, 0)
 		if err != nil {
 			if fatal := offlineServeFallback(err, hasPersisted); fatal != nil {
 				log.Fatalf("waiveo-relay: pull desired state: %v", fatal)
@@ -681,89 +709,75 @@ func main() {
 	}
 	driver.apply(rootCtx, applied, time.Now().UnixMilli())
 
-	// The relay's live loop (relay/1 REL-052/055/056): after the boot pull, it
-	// re-pulls desired-state on a bounded interval (POC: a few seconds — relay/1
-	// defines no push, so polling is the POC mechanism). A higher generation is
-	// applied atomically — the schedule resolvers are re-driven and the automation
-	// engine's edge rules reloaded — while a same/lower generation is a no-op and a
-	// mid-run pull failure is non-fatal (the last-applied stays served offline).
-	// The live loop is gated on the SAME hello outcome the boot pull is gated on.
-	// Without this it defeats that gate within one tick: desiredstate.Pull's own
-	// verification is a signature check over the snapshot, which succeeds whether
-	// or not the app peer accepted this relay's identity, so a relay whose hello
-	// was REFUSED would skip the boot pull and then perform the identical pull
-	// seconds later — applying live desired state the peer just declined to
-	// authorize it for, while the journal reported the opposite. A relay that was
-	// not accepted serves its persisted last-applied snapshot offline and nothing
-	// more, until an operator re-enrolls it.
-	if helloOK {
-		puller := &rePuller{
-			pull:    func() (desiredstate.Applied, error) { return desiredstate.Pull(cfg.feederURL, store) },
-			driver:  driver,
-			host:    host,
-			nowFn:   func() int64 { return time.Now().UnixMilli() },
-			lastGen: applied.Generation,
+	// The relay's live path (relay/1 REL-050/052/055/056/057): the persistent
+	// connection replaces the HTTP era's 3s poll ticker AND its separate hello
+	// recovery loop with one mechanism. A server-initiated state.changed nudge
+	// triggers an immediate pull-and-apply (puller.tick — a strictly higher
+	// generation re-drives the schedule resolvers and reloads the edge rules; a
+	// same/lower one is a no-op; a mid-run failure is non-fatal, the
+	// last-applied stays served offline). The reconnect supervisor keeps the
+	// connection alive for the life of the process: when it dies, it re-dials
+	// under exponential backoff for every failure the Error taxonomy marks
+	// recoverable (transport failures, CHANNEL_BINDING_INVALID,
+	// RELAY_IDENTITY_MISMATCH — exactly the classification the HTTP era's hello
+	// recovery applied), adopts each fresh hello-ack's authoritative site
+	// (REL-036), and pulls once immediately so a relay offline through N
+	// generations converges without waiting for a nudge (a lost nudge's
+	// recovery path, REL-057).
+	//
+	// A relay whose handshake was refused cannot pull by construction — the
+	// pull only exists on the authenticated connection — so the HTTP era's
+	// "live loop gated on hello acceptance" invariant needs no separate gate
+	// here: an unaccepted relay serves its persisted last-applied snapshot
+	// offline and nothing more, until a redial is accepted.
+	puller := &rePuller{
+		nowFn:   func() int64 { return time.Now().UnixMilli() },
+		driver:  driver,
+		host:    host,
+		lastGen: applied.Generation,
+	}
+	puller.pull = func(since int64) (desiredstate.Applied, error) {
+		c := liveConn.get()
+		if c == nil {
+			return desiredstate.Applied{}, errors.New("no live app-peer connection")
 		}
-		rePullTicker := time.NewTicker(rePullInterval)
-		go rePullLoop(rootCtx, rePullTicker.C, puller)
+		return pullOverFrames(c, store, since)
+	}
+	nudges.set(func(int64) { puller.tick(rootCtx) })
+
+	if helloOK || relayconn.RefusalIsRecoverable(connErr) {
+		// Seed the supervisor with the boot connection when one is up, so its
+		// first "connect" adopts the live connection instead of dialing a
+		// second one; every later connect is a fresh dial.
+		var seedMu sync.Mutex
+		seed := client // nil when the boot dial failed
+		relayconn.StartSupervisor(relayconn.SupervisorConfig{
+			Connect: func() (*relayconn.Client, error) {
+				seedMu.Lock()
+				c := seed
+				seed = nil
+				seedMu.Unlock()
+				if c != nil {
+					return c, nil
+				}
+				return dialConn()
+			},
+			OnConnected: func(c *relayconn.Client) {
+				liveConn.set(c)
+				puller.adoptSite(c.HelloAck().SiteBinding)
+				// Pull-on-reconnect immediacy (and, for the seeded boot
+				// connection, a catch-up for anything authored between the
+				// boot pull and this point): a same-generation answer is a
+				// no-op state.unchanged.
+				puller.tick(rootCtx)
+			},
+			OnPermanentRefusal: func(r *relayconn.Refusal) {
+				log.Printf("waiveo-relay: app peer refused the connection permanently (%v) — supervision ended; an operator must intervene (relay/1 Error taxonomy)", r)
+			},
+		})
+		log.Printf("waiveo-relay: persistent-connection supervisor started — state.changed nudges drive live desired-state applies (REL-057)")
 	} else {
-		log.Printf("waiveo-relay: live desired-state loop NOT started — hello was not accepted by the app peer; serving persisted last-applied offline (REL-055/061)")
-
-		// relay/1's own Error taxonomy does NOT treat every hello refusal as
-		// permanent: CHANNEL_BINDING_INVALID and RELAY_IDENTITY_MISMATCH are
-		// both annotated "reconnect and retry the handshake"
-		// (contracts/relay-1.md, Error taxonomy) — exactly the outcome a
-		// feeder restart's enrollment-registry amnesia produced before
-		// internal/feeder/enroll.Server.EnablePersistence's own fix, and
-		// exactly the outcome a transient network hiccup produces too.
-		// Without this, a relay that hit either refusal (or any transport
-		// failure) at boot stays offline-only for the rest of the process's
-		// life — "until re-enrolled" meant, in practice, an operator had to
-		// notice, stop the relay, wipe its identity dir, and restart it, even
-		// though nothing about the relay's own credential was actually wrong.
-		// Retry the handshake in the background instead, so this relay
-		// self-heals the moment the app peer starts accepting it again. A
-		// refusal the taxonomy gives no such guidance for
-		// (PROTOCOL_VERSION_UNSUPPORTED) is left exactly as permanent as it
-		// is today — see helloRefusalIsRecoverable's own doc.
-		if helloRefusalIsRecoverable(helloErr) {
-			recoverer := &helloRecoverer{
-				hello: func() (hello.SiteBinding, error) {
-					ack, err := hello.PerformHello(cfg.feederURL, relayID.PrivateKey, relayID.RelayID, relayHelloDeclaration(cfg))
-					if err != nil {
-						return hello.SiteBinding{}, err
-					}
-					return ack.Body.SiteBinding, nil
-				},
-				onAccepted: func(recoveredSite hello.SiteBinding) {
-					// Adopt the newly-negotiated site for every FUTURE
-					// schedule-resolver apply (REL-036); driver is untouched
-					// by any other goroutine while helloOK is false, since
-					// the live loop this recovery is about to start is the
-					// only other writer, and it does not exist yet.
-					driver.site = recoveredSite
-
-					puller := &rePuller{
-						pull:    func() (desiredstate.Applied, error) { return desiredstate.Pull(cfg.feederURL, store) },
-						driver:  driver,
-						host:    host,
-						nowFn:   func() int64 { return time.Now().UnixMilli() },
-						lastGen: applied.Generation,
-					}
-					// Apply immediately if a generation is available now,
-					// rather than waiting a full rePullInterval for the
-					// first tick — the same immediacy the boot-accepted path
-					// gets from its own boot-time Pull.
-					puller.tick(rootCtx)
-					rePullTicker := time.NewTicker(rePullInterval)
-					go rePullLoop(rootCtx, rePullTicker.C, puller)
-					log.Printf("waiveo-relay: hello recovered — live desired-state loop started (REL-055/061)")
-				},
-			}
-			recoveryTicker := time.NewTicker(helloRecoveryInterval)
-			go helloRecoveryLoop(rootCtx, recoveryTicker.C, recoverer)
-			log.Printf("waiveo-relay: hello recovery loop started — retrying the handshake every %s until the app peer accepts this relay", helloRecoveryInterval)
-		}
+		log.Printf("waiveo-relay: connection supervisor NOT started — %v is not a recoverable refusal (relay/1 Error taxonomy); serving persisted last-applied offline until an operator intervenes", connErr)
 	}
 
 	// Wire the relay's telemetry upstream channel (relay/1 REL-090/092/097): the
@@ -1112,39 +1126,6 @@ func relayHelloDeclaration(cfg config) hello.Declaration {
 		SiteBinding:     hello.SiteBinding{}, // no cached site pre-pull; the relay adopts the app peer's authoritative copy
 		SubnetMetadata:  hello.SubnetMetadata{AdvertisedAddress: cfg.listen},
 		ClockState:      hello.ClockState{State: "untrusted", Source: "cold_boot"},
-	}
-}
-
-// helloWithRetry performs the relay/1 connection handshake against the
-// co-located app peer, retrying a transport failure (e.g. the feeder's
-// listener not up yet, or its handshake routes mid-registration) until
-// enrollRetryBudget elapses — mirroring enrollWithRetry's tolerance of the
-// dev harness starting both binaries with no ordering. A typed *hello.RefusedError
-// (a channel-binding or protocol-version refusal) is decisive and returned
-// immediately, never retried within this bounded budget: the app peer
-// answered and declined. (The live-loop gate in main, above, separately
-// decides whether that decisive refusal is worth retrying indefinitely in
-// the background — helloRefusalIsRecoverable, hellorecovery.go.)
-func helloWithRetry(cfg config, relayIdent identity.RelayIdentity) (hello.SiteBinding, error) {
-	decl := relayHelloDeclaration(cfg)
-
-	deadline := time.Now().Add(enrollRetryBudget)
-	var lastErr error
-	for {
-		ack, err := hello.PerformHello(cfg.feederURL, relayIdent.PrivateKey, relayIdent.RelayID, decl)
-		if err == nil {
-			log.Printf("waiveo-relay hello negotiated version %s; site %s", ack.Body.NegotiatedVersion, ack.Body.SiteBinding.TZ)
-			return ack.Body.SiteBinding, nil
-		}
-		var refused *hello.RefusedError
-		if errors.As(err, &refused) {
-			return hello.SiteBinding{}, err // decisive refusal, not a transport hiccup
-		}
-		lastErr = err
-		if time.Now().After(deadline) {
-			return hello.SiteBinding{}, lastErr
-		}
-		time.Sleep(enrollRetryInterval)
 	}
 }
 

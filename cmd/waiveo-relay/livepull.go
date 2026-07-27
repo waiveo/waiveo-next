@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/relay/automation"
@@ -15,22 +16,17 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/schedulehost"
 )
 
-// rePullInterval is the POC cadence the running relay re-pulls the feeder's
-// desired-state at (relay/1 REL-051): a few seconds, bounded so a newly-authored
-// generation is picked up live within one interval without a restart. relay/1
-// defines no server push, so polling is the deliberate POC mechanism (documented
-// in the Wave-2 authoring-loop plan). The live binary drives the loop from a
-// time.Ticker at this cadence; tests inject a manual channel, so nothing here
-// sleeps on the wall clock.
-const rePullInterval = 3 * time.Second
-
-// pullFunc pulls one verified desired-state generation. The running binary wraps
-// desiredstate.Pull against the co-located feeder (which itself verifies the
-// snapshot's hash + signature against the enrollment-anchored trust anchor and
-// enforces generation monotonicity, REL-052/071); a test injects a fake returning
-// a scripted generation sequence. A pull failure is returned as an error the
-// re-pull loop treats as non-fatal (REL-055).
-type pullFunc func() (desiredstate.Applied, error)
+// pullFunc pulls one verified desired-state generation, given the caller's
+// last-applied generation as the REL-050 since_generation claim. The running
+// binary wraps a state.pull over the persistent connection (pullOverFrames —
+// which verifies the snapshot's hash + signature against the enrollment-
+// anchored trust anchor and enforces generation monotonicity, REL-052/071);
+// a test injects a fake returning a scripted generation sequence. A pull
+// failure is returned as an error the live-apply path treats as non-fatal
+// (REL-055). A same-generation state.unchanged answer surfaces as an Applied
+// whose Generation equals the claim — the caller's own monotonic guard then
+// makes it a no-op.
+type pullFunc func(sinceGeneration int64) (desiredstate.Applied, error)
 
 // scheduleDriver owns the schedule-resolver lifecycle across desired-state
 // generations for one relay. apply installs a generation's resolvers + background
@@ -42,8 +38,9 @@ type pullFunc func() (desiredstate.Applied, error)
 // that hazard is fenced at the write point instead — every resolver stamps its
 // generation onto playerserver.Server.SetProgram, which drops a strictly-older
 // generation's write (REL-052/056), so a stale in-flight resolver can never
-// revert the new serve. apply is driven only from the boot path (once) and the
-// single-threaded re-pull loop, so the cancel handoff needs no lock.
+// revert the new serve. apply is driven from the boot path (once) and from
+// rePuller.tick, which serializes every live apply under its own lock, so the
+// cancel handoff needs no lock of its own.
 type scheduleDriver struct {
 	srv        *playerserver.Server
 	sink       *automation.CommandSink
@@ -76,32 +73,57 @@ func (d *scheduleDriver) apply(ctx context.Context, applied desiredstate.Applied
 // the schedule resolvers are re-driven (scheduleDriver.apply) and the automation
 // engine's edge rules reloaded (automationhost.Host.ApplyEdgeRules). A pull error
 // is non-fatal — the last-applied program keeps being served (REL-055).
+//
+// tick is driven from two places in the running binary — the state.changed
+// nudge dispatcher (REL-057, one goroutine per connection) and the reconnect
+// supervisor's pull-on-reconnect (its own goroutine) — so every live apply
+// serializes under mu. There is no periodic ticker: the persistent
+// connection's nudges replace the legacy 3s poll, a lost nudge is recovered
+// by the pull-on-reconnect (REL-057 best-effort delivery), and a nudge that
+// arrives mid-tick coalesces in the connection's own latest-wins cell.
 type rePuller struct {
-	pull    pullFunc
+	pull  pullFunc
+	nowFn func() int64
+
+	mu      sync.Mutex
 	driver  *scheduleDriver
 	host    *automationhost.Host
-	nowFn   func() int64
 	lastGen int64
 }
 
-// tick performs one re-pull and returns whether it applied a new generation.
+// adoptSite adopts the app peer's authoritative site_binding (REL-036) for
+// every FUTURE schedule-resolver apply — the reconnect supervisor calls this
+// with each fresh connection's hello-ack site before its pull-on-reconnect,
+// so a site rebound while the relay was offline takes effect on the very
+// next apply. Serialized under the same lock every tick applies under.
+func (p *rePuller) adoptSite(site hello.SiteBinding) {
+	p.mu.Lock()
+	p.driver.site = site
+	p.mu.Unlock()
+}
+
+// tick performs one live pull and returns whether it applied a new generation.
 //
-//   - A pull error (transport failure, or the pull rejecting a regressed
-//     generation as desiredstate.ErrGenerationRegressed) is logged and ignored:
-//     the last-applied generation stays served (REL-055 / REL-052).
+//   - A pull error (transport failure, no live connection, or the pull
+//     rejecting a regressed generation as desiredstate.ErrGenerationRegressed)
+//     is logged and ignored: the last-applied generation stays served
+//     (REL-055 / REL-052).
 //   - A pulled generation not strictly greater than the last-applied one is a
-//     no-op — no re-resolve churn (REL-070; and the loop's own monotonic guard
-//     mirroring REL-052 for a lower one).
-//   - A strictly higher generation is applied: desiredstate.Pull has already
-//     persisted it atomically (REL-056); tick re-drives the live serving state to
+//     no-op — no re-resolve churn (REL-070; and this guard mirroring REL-052
+//     for a lower one). A state.unchanged answer lands here by construction.
+//   - A strictly higher generation is applied: the pull has already persisted
+//     it atomically (REL-056); tick re-drives the live serving state to
 //     match — re-resolving the schedule and reloading the edge rules.
 func (p *rePuller) tick(ctx context.Context) bool {
-	applied, err := p.pull()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	applied, err := p.pull(p.lastGen)
 	if err != nil {
 		if errors.Is(err, desiredstate.ErrGenerationRegressed) {
-			log.Printf("waiveo-relay re-pull: rejected regressed generation (REL-052); keeping last-applied generation %d", p.lastGen)
+			log.Printf("waiveo-relay live pull: rejected regressed generation (REL-052); keeping last-applied generation %d", p.lastGen)
 		} else {
-			log.Printf("waiveo-relay re-pull: pull failed (%v); keeping last-applied generation %d (REL-055)", err, p.lastGen)
+			log.Printf("waiveo-relay live pull: pull failed (%v); keeping last-applied generation %d (REL-055)", err, p.lastGen)
 		}
 		return false
 	}
@@ -109,43 +131,24 @@ func (p *rePuller) tick(ctx context.Context) bool {
 		return false // same/lower generation — no re-resolve churn (REL-052/070)
 	}
 
-	// Strictly higher generation — apply it live. Pull already persisted the new
-	// generation atomically (REL-056); re-drive the serving side to match.
+	// Strictly higher generation — apply it live. The pull already persisted the
+	// new generation atomically (REL-056); re-drive the serving side to match.
 	p.driver.apply(ctx, applied, p.nowFn())
 
 	// Refresh the redeemable pairing-grant set from this SAME verified
 	// generation (relay/1 REL-122: a pairing grant remains redeemable "until a
 	// newer generation supersedes it"). Without this, playerserver.Server's
 	// grant set stays exactly what NewServer built at boot for the rest of the
-	// process's life — a screen needing a grant this live re-pull just carried
+	// process's life — a screen needing a grant this live pull just carried
 	// would never see it become redeemable.
 	p.driver.srv.SetPairingGrants(applied.Generation, applied.PairingGrants)
 
 	if err := p.host.ApplyEdgeRules(applied.EdgeRules, int(applied.Generation)); err != nil {
 		// ApplyEdgeRules is fail-closed per rule (a bad rule is skipped, not fatal);
 		// a returned error is unexpected, so log and keep serving rather than crash.
-		log.Printf("waiveo-relay re-pull: reload edge rules for generation %d: %v", applied.Generation, err)
+		log.Printf("waiveo-relay live pull: reload edge rules for generation %d: %v", applied.Generation, err)
 	}
-	log.Printf("waiveo-relay re-pull: applied generation %d live (schedule re-resolved, %d edge rule(s) loaded)", applied.Generation, p.host.EdgeRuleCount())
+	log.Printf("waiveo-relay live pull: applied generation %d live (schedule re-resolved, %d edge rule(s) loaded)", applied.Generation, p.host.EdgeRuleCount())
 	p.lastGen = applied.Generation
 	return true
-}
-
-// rePullLoop drives rePuller.tick once per tick delivered on ticks — a
-// time.Ticker's channel in the binary, a manual channel in tests, so nothing here
-// sleeps on the wall clock. It returns when ctx is cancelled or ticks is closed.
-// This is the relay's live loop: a generation authored between ticks is picked up
-// and applied within one interval, without a restart.
-func rePullLoop(ctx context.Context, ticks <-chan time.Time, p *rePuller) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case _, ok := <-ticks:
-			if !ok {
-				return
-			}
-			p.tick(ctx)
-		}
-	}
 }

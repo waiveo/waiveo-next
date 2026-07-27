@@ -781,8 +781,15 @@ func TestRePullAppliesHigherGenerationLive(t *testing.T) {
 	// program observed IS the post-tick program — proving the transition A->B.
 	driver.apply(ctx, appliedA, nowMs)
 
+	// The tick must claim the caller's last-applied generation as REL-050's
+	// since_generation, so an unchanged app peer can answer state.unchanged
+	// instead of a full snapshot.
+	var claimedSince int64 = -1
 	puller := &rePuller{
-		pull:    func() (desiredstate.Applied, error) { return appliedB, nil },
+		pull: func(since int64) (desiredstate.Applied, error) {
+			claimedSince = since
+			return appliedB, nil
+		},
 		driver:  driver,
 		host:    host,
 		nowFn:   func() int64 { return nowMs },
@@ -791,6 +798,9 @@ func TestRePullAppliesHigherGenerationLive(t *testing.T) {
 
 	if applied := puller.tick(ctx); !applied {
 		t.Fatal("re-pull tick of a higher generation returned applied=false, want true (REL-056 apply)")
+	}
+	if claimedSince != appliedA.Generation {
+		t.Errorf("tick claimed since_generation %d, want the last-applied %d (REL-050)", claimedSince, appliedA.Generation)
 	}
 	if puller.lastGen != appliedB.Generation {
 		t.Errorf("after applying gen 8, lastGen = %d, want 8", puller.lastGen)
@@ -863,7 +873,7 @@ func TestRePullSupersedesPairingGrantsWithNewerGeneration(t *testing.T) {
 	}}
 
 	puller := &rePuller{
-		pull:    func() (desiredstate.Applied, error) { return appliedB, nil },
+		pull:    func(int64) (desiredstate.Applied, error) { return appliedB, nil },
 		driver:  driver,
 		host:    host,
 		nowFn:   func() int64 { return nowMs },
@@ -901,7 +911,7 @@ func TestRePullSameGenerationIsNoOp(t *testing.T) {
 	driver.apply(ctx, appliedB, nowMs) // boot apply of gen N+1 (schedule B)
 
 	puller := &rePuller{
-		pull:    func() (desiredstate.Applied, error) { return appliedB, nil }, // same generation returned again
+		pull:    func(int64) (desiredstate.Applied, error) { return appliedB, nil }, // same generation returned again
 		driver:  driver,
 		host:    host,
 		nowFn:   func() int64 { return nowMs },
@@ -932,10 +942,10 @@ func TestRePullRejectsRegressedGeneration(t *testing.T) {
 		name string
 		pull pullFunc
 	}{
-		{"pull rejects as ErrGenerationRegressed", func() (desiredstate.Applied, error) {
+		{"pull rejects as ErrGenerationRegressed", func(int64) (desiredstate.Applied, error) {
 			return desiredstate.Applied{}, desiredstate.ErrGenerationRegressed
 		}},
-		{"pull returns a lower generation", func() (desiredstate.Applied, error) {
+		{"pull returns a lower generation", func(int64) (desiredstate.Applied, error) {
 			return appliedRegressed, nil
 		}},
 	}
@@ -974,7 +984,7 @@ func TestRePullFailureIsNonFatal(t *testing.T) {
 	driver.apply(ctx, appliedB, nowMs)
 
 	puller := &rePuller{
-		pull: func() (desiredstate.Applied, error) {
+		pull: func(int64) (desiredstate.Applied, error) {
 			return desiredstate.Applied{}, errors.New("app peer unreachable")
 		},
 		driver:  driver,
@@ -992,13 +1002,13 @@ func TestRePullFailureIsNonFatal(t *testing.T) {
 	}
 }
 
-// TestRePullLoopDeliversTicks proves the loop wiring: rePullLoop drives
-// rePuller.tick once per tick delivered on its channel (a manual channel here,
-// a time.Ticker in the binary), so a generation authored between ticks is picked
-// up live; and it returns cleanly when its context is cancelled. Two sends on the
-// unbuffered channel act as a barrier — the second returns only once the loop has
-// finished processing the first — so the assertion is race-free.
-func TestRePullLoopDeliversTicks(t *testing.T) {
+// TestNudgeSinkDeliversToInstalledHandlerAndTickApplies proves the nudge
+// wiring that replaced the legacy poll loop: a state.changed delivery through
+// the nudgeSink drives rePuller.tick (applying a strictly higher generation
+// live), and a nudge arriving BEFORE any handler is installed is dropped
+// harmlessly (REL-057 best-effort — the supervisor's pull-on-reconnect
+// recovers it), never a nil-handler panic.
+func TestNudgeSinkDeliversToInstalledHandlerAndTickApplies(t *testing.T) {
 	driver, host, srv, grantID, nowMs := newRePullFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1008,33 +1018,22 @@ func TestRePullLoopDeliversTicks(t *testing.T) {
 	driver.apply(ctx, appliedA, nowMs)
 
 	puller := &rePuller{
-		pull:    func() (desiredstate.Applied, error) { return appliedB, nil },
+		pull:    func(int64) (desiredstate.Applied, error) { return appliedB, nil },
 		driver:  driver,
 		host:    host,
 		nowFn:   func() int64 { return nowMs },
 		lastGen: appliedA.Generation,
 	}
 
-	ticks := make(chan time.Time)
-	done := make(chan struct{})
-	go func() {
-		rePullLoop(ctx, ticks, puller)
-		close(done)
-	}()
+	nudges := &nudgeSink{}
+	nudges.deliver(8) // no handler installed yet: dropped, no panic (REL-057 best-effort)
 
-	ticks <- time.Now() // tick 1: pulls + applies gen 8
-	ticks <- time.Now() // barrier: returns only after tick 1 fully processed
+	nudges.set(func(int64) { puller.tick(ctx) })
+	nudges.deliver(8) // handler installed: pulls + applies gen 8 synchronously
 
 	lease := pairAndPull(t, srv, grantID)
 	if len(lease.Content) != 1 || lease.Content[0].AssetRef != rePullAssetB {
-		t.Fatalf("after a delivered re-pull tick, served content = %+v, want asset %s", lease.Content, rePullAssetB)
-	}
-
-	cancel() // the loop must return on context cancellation
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("rePullLoop did not return after context cancellation")
+		t.Fatalf("after a delivered nudge, served content = %+v, want asset %s", lease.Content, rePullAssetB)
 	}
 }
 
@@ -1095,32 +1094,31 @@ func TestTelemetryFlushLoopPushesBufferedTelemetryOnTick(t *testing.T) {
 	}
 }
 
-// TestLiveLoopGatedOnHelloAcceptance pins the authorization property that the
-// boot-pull gate alone does not provide: a relay whose hello the app peer
-// REFUSED must not acquire live desired state by any path.
-//
-// desiredstate.Pull verifies a snapshot's signature, not this relay's standing
-// with the peer, so it succeeds regardless of whether hello was accepted. That
-// makes the recurring live loop an independent route to exactly the state the
-// boot gate withholds — one tick later. This test asserts the two gates are the
-// same decision, so a future change cannot re-open the bypass silently.
-func TestLiveLoopGatedOnHelloAcceptance(t *testing.T) {
-	// The gate is a single boolean read in main; assert the source states it
-	// once and uses it for BOTH the boot pull and the live loop, which is the
-	// invariant that was violated when only the boot pull was gated.
-	src, err := os.ReadFile("main.go")
-	if err != nil {
-		t.Fatalf("read main.go: %v", err)
+// TestLivePullRidesTheAuthenticatedConnectionOnly pins the authorization
+// property the HTTP era enforced with a helloOK gate: a relay whose hello the
+// app peer refused must not acquire live desired state by any path. On the
+// persistent transport this is structural — state.pull exists ONLY as a frame
+// on the mutually authenticated connection relayconn.Dial returns, and this
+// binary's one pull implementation reads the supervisor's current connection
+// holder, erroring (non-fatally) while disconnected. This test guards against
+// the bypass being reintroduced: main.go must contain no HTTP-era pull path
+// (desiredstate.Pull is deleted from the codebase) and the pull closure must
+// go through the connection holder.
+func TestLivePullRidesTheAuthenticatedConnectionOnly(t *testing.T) {
+	for _, file := range []string{"main.go", "conn.go", "livepull.go"} {
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		if strings.Contains(string(src), "desiredstate.Pull(") {
+			t.Errorf("%s reintroduces an HTTP-era desiredstate.Pull call — live desired state must ride the authenticated connection only", file)
+		}
 	}
-	text := string(src)
 
-	if !strings.Contains(text, "if helloOK {") {
-		t.Error("the live desired-state loop is not gated on helloOK — a refused relay would re-pull anyway")
-	}
-	// The gate must sit above the re-pull loop's construction, not merely exist.
-	gateIdx := strings.Index(text, "if helloOK {")
-	loopIdx := strings.Index(text, "go rePullLoop(")
-	if gateIdx < 0 || loopIdx < 0 || gateIdx > loopIdx {
-		t.Errorf("helloOK gate (idx %d) does not precede the rePullLoop start (idx %d)", gateIdx, loopIdx)
+	// While disconnected (no live connection in the holder), a pull errors
+	// non-fatally instead of reaching the app peer by another route.
+	holder := &connHolder{}
+	if c := holder.get(); c != nil {
+		t.Fatalf("fresh connHolder holds %v, want nil while disconnected", c)
 	}
 }
