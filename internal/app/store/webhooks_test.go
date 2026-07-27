@@ -43,7 +43,7 @@ func TestRotateWebhookSecretKeepsExactlyOnePriorGeneration(t *testing.T) {
 	s := openWebhookStore(t)
 	ctx := t.Context()
 
-	if err := s.RotateWebhookSecret(ctx, webhookEndpointA, "sealed-one", 1_000); err != nil {
+	if err := s.RotateWebhookSecret(ctx, webhookEndpointA, "sealed-one", "", 1_000); err != nil {
 		t.Fatalf("first RotateWebhookSecret: %v", err)
 	}
 	st, err := s.WebhookDeliveryStateFor(ctx, webhookEndpointA)
@@ -63,28 +63,28 @@ func TestRotateWebhookSecretKeepsExactlyOnePriorGeneration(t *testing.T) {
 		t.Fatalf("status = %q on a freshly created row; want active", st.Status)
 	}
 
-	if err := s.RotateWebhookSecret(ctx, webhookEndpointA, "sealed-two", 2_000); err != nil {
+	if err := s.RotateWebhookSecret(ctx, webhookEndpointA, "sealed-two", "prior-one", 2_000); err != nil {
 		t.Fatalf("second RotateWebhookSecret: %v", err)
 	}
 	st, err = s.WebhookDeliveryStateFor(ctx, webhookEndpointA)
 	if err != nil {
 		t.Fatalf("WebhookDeliveryStateFor: %v", err)
 	}
-	if st.SealedSecret != "sealed-two" || st.SealedPriorSecret != "sealed-one" {
-		t.Fatalf("after one rotation: secret=%q prior=%q; want sealed-two / sealed-one", st.SealedSecret, st.SealedPriorSecret)
+	if st.SealedSecret != "sealed-two" || st.SealedPriorSecret != "prior-one" {
+		t.Fatalf("after one rotation: secret=%q prior=%q; want sealed-two / prior-one", st.SealedSecret, st.SealedPriorSecret)
 	}
 
-	if err := s.RotateWebhookSecret(ctx, webhookEndpointA, "sealed-three", 3_000); err != nil {
+	if err := s.RotateWebhookSecret(ctx, webhookEndpointA, "sealed-three", "prior-two", 3_000); err != nil {
 		t.Fatalf("third RotateWebhookSecret: %v", err)
 	}
 	st, err = s.WebhookDeliveryStateFor(ctx, webhookEndpointA)
 	if err != nil {
 		t.Fatalf("WebhookDeliveryStateFor: %v", err)
 	}
-	if st.SealedSecret != "sealed-three" || st.SealedPriorSecret != "sealed-two" {
-		t.Fatalf("after two rotations: secret=%q prior=%q; want sealed-three / sealed-two — only the IMMEDIATELY prior secret is kept (EVT-158)", st.SealedSecret, st.SealedPriorSecret)
+	if st.SealedSecret != "sealed-three" || st.SealedPriorSecret != "prior-two" {
+		t.Fatalf("after two rotations: secret=%q prior=%q; want sealed-three / prior-two — only the IMMEDIATELY prior secret is kept (EVT-158)", st.SealedSecret, st.SealedPriorSecret)
 	}
-	if st.SealedPriorSecret == "sealed-one" {
+	if st.SealedPriorSecret == "prior-one" {
 		t.Fatal("two generations back is still accepted; EVT-158 keeps exactly one")
 	}
 }
@@ -97,7 +97,7 @@ func TestProgressAndSecretWritesDoNotClobberEachOther(t *testing.T) {
 	s := openWebhookStore(t)
 	ctx := t.Context()
 
-	if err := s.RotateWebhookSecret(ctx, webhookEndpointA, "sealed-one", 1_000); err != nil {
+	if err := s.RotateWebhookSecret(ctx, webhookEndpointA, "sealed-one", "", 1_000); err != nil {
 		t.Fatalf("RotateWebhookSecret: %v", err)
 	}
 	if err := s.PutWebhookDeliveryProgress(ctx, store.WebhookDeliveryState{
@@ -109,7 +109,7 @@ func TestProgressAndSecretWritesDoNotClobberEachOther(t *testing.T) {
 	}
 
 	// The rotation lands while that delivery is still mid-retry.
-	if err := s.RotateWebhookSecret(ctx, webhookEndpointA, "sealed-two", 2_000); err != nil {
+	if err := s.RotateWebhookSecret(ctx, webhookEndpointA, "sealed-two", "prior-one", 2_000); err != nil {
 		t.Fatalf("RotateWebhookSecret: %v", err)
 	}
 	st, err := s.WebhookDeliveryStateFor(ctx, webhookEndpointA)
@@ -131,7 +131,7 @@ func TestProgressAndSecretWritesDoNotClobberEachOther(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WebhookDeliveryStateFor: %v", err)
 	}
-	if st.SealedSecret != "sealed-two" || st.SealedPriorSecret != "sealed-one" {
+	if st.SealedSecret != "sealed-two" || st.SealedPriorSecret != "prior-one" {
 		t.Fatalf("a progress write restored a superseded secret: secret=%q prior=%q", st.SealedSecret, st.SealedPriorSecret)
 	}
 	if st.RotatedAtMs != 2_000 {
@@ -154,7 +154,7 @@ func TestPurgeWorkspaceDestroysWebhookSigningSecrets(t *testing.T) {
 		t.Fatalf("create org node: %v", err)
 	}
 
-	if err := st.RotateWebhookSecret(ctx, webhookEndpointA, "sealed-one", 1_000); err != nil {
+	if err := st.RotateWebhookSecret(ctx, webhookEndpointA, "sealed-one", "", 1_000); err != nil {
 		t.Fatalf("RotateWebhookSecret: %v", err)
 	}
 	if _, err := st.WebhookDeliveryStateFor(ctx, webhookEndpointA); err != nil {
@@ -176,10 +176,10 @@ func TestWebhookDeliveryStatesAreListedInEndpointIDOrder(t *testing.T) {
 	s := openWebhookStore(t)
 	ctx := t.Context()
 
-	if err := s.RotateWebhookSecret(ctx, webhookEndpointB, "sealed-b", 1_000); err != nil {
+	if err := s.RotateWebhookSecret(ctx, webhookEndpointB, "sealed-b", "", 1_000); err != nil {
 		t.Fatalf("RotateWebhookSecret(B): %v", err)
 	}
-	if err := s.RotateWebhookSecret(ctx, webhookEndpointA, "sealed-a", 1_000); err != nil {
+	if err := s.RotateWebhookSecret(ctx, webhookEndpointA, "sealed-a", "", 1_000); err != nil {
 		t.Fatalf("RotateWebhookSecret(A): %v", err)
 	}
 

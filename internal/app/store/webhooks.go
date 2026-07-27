@@ -195,14 +195,22 @@ func (s *Store) PutWebhookDeliveryProgress(ctx context.Context, st WebhookDelive
 }
 
 // RotateWebhookSecret installs sealedSecret as the endpoint's current signing
-// secret at atMs, demoting whatever was current to the prior slot (EVT-158).
+// secret at atMs, with sealedPrior as the secret a receiver may still be
+// holding for the length of the overlap window (EVT-158).
+//
+// BOTH blobs are supplied by the caller rather than the prior one being demoted
+// here in SQL. The demotion looks like the store's job and is not: each blob is
+// sealed under an AAD that names which SLOT it occupies, so a blob moved
+// between columns by a statement that holds no key would never open again. The
+// caller holds the key, re-seals under the destination context, and passes the
+// result — which is also what keeps this file storing opaque bytes.
 //
 // Only the immediately prior secret is ever kept: a second rotation inside the
 // first's overlap window replaces it, which is exactly EVT-158's "the current or
-// the immediately prior secret" and never two generations back. The FIRST call
-// for an endpoint leaves the prior slot empty — there is no earlier secret a
-// receiver could still be holding, so there is no overlap to open.
-func (s *Store) RotateWebhookSecret(ctx context.Context, endpointID, sealedSecret string, atMs int64) error {
+// the immediately prior secret" and never two generations back. An empty
+// sealedPrior — the first install — opens no overlap, because there is no
+// earlier secret any receiver could still be holding.
+func (s *Store) RotateWebhookSecret(ctx context.Context, endpointID, sealedSecret, sealedPrior string, atMs int64) error {
 	if endpointID == "" {
 		return errors.New("store: rotating a webhook secret needs an endpoint id")
 	}
@@ -213,13 +221,13 @@ func (s *Store) RotateWebhookSecret(ctx context.Context, endpointID, sealedSecre
 	return s.runWriteTx(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx,
 			`INSERT INTO webhook_delivery_state (endpoint_id, sealed_secret, sealed_prior_secret, rotated_at_ms, updated_at)
-			 VALUES (?, ?, '', ?, ?)
+			 VALUES (?, ?, ?, ?, ?)
 			 ON CONFLICT(endpoint_id) DO UPDATE SET
-			   sealed_prior_secret = webhook_delivery_state.sealed_secret,
+			   sealed_prior_secret = excluded.sealed_prior_secret,
 			   sealed_secret       = excluded.sealed_secret,
 			   rotated_at_ms       = excluded.rotated_at_ms,
 			   updated_at          = excluded.updated_at`,
-			endpointID, sealedSecret, atMs, now)
+			endpointID, sealedSecret, sealedPrior, atMs, now)
 		if err != nil {
 			return fmt.Errorf("store: rotate webhook signing secret: %w", err)
 		}
