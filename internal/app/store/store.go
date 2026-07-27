@@ -380,8 +380,18 @@ func (s *Store) runWriteTx(ctx context.Context, fn func(tx *sql.Tx) error) error
 // columns. The generation is bumped and the resulting full row-set validated
 // (BuildScopeTree for scope nodes, ValidateRows for scheduling kinds) before
 // commit — a validation failure rolls the whole thing back.
+//
+// The baseline it owns is the whole api/1 representation, not only the three
+// timestamps/revision: every member the openapi schema declares REQUIRED is
+// materialized here when the write left it absent (declaredmembers.go), so the
+// bytes this row is later served as carry what every generated client was told
+// they would.
 func (s *Store) Create(ctx context.Context, kind Kind, body json.RawMessage, guards ...WriteGuard) (Resource, error) {
 	table, err := tableFor(kind)
+	if err != nil {
+		return Resource{}, err
+	}
+	body, err = injectDeclaredMembers(kind, body)
 	if err != nil {
 		return Resource{}, err
 	}
@@ -550,6 +560,15 @@ func (s *Store) Update(ctx context.Context, kind Kind, id string, rev int64, pat
 		}
 
 		merged, err := mergeBody(json.RawMessage(curBody), patch)
+		if err != nil {
+			return err
+		}
+		// The same representation completion a create runs, over the EFFECTIVE
+		// post-merge body: a patch that nulls a required member whose declared type
+		// does not admit null (`{"labels": null}`) is normalized back to the stated
+		// default rather than persisted as a present-but-unusable member
+		// (declaredmembers.go).
+		merged, err = injectDeclaredMembers(kind, merged)
 		if err != nil {
 			return err
 		}

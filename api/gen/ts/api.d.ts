@@ -917,7 +917,10 @@ export interface components {
             name: string;
             scope_node: components["schemas"]["Ulid"];
             labels?: components["schemas"]["LabelMap"];
-            /** @default true */
+            /**
+             * @description Omit it and the automation is created DISABLED. Enabling is a deliberate act — an automation acts on real screens, and a half-finished create should not start doing so — which is why `bulk-enable` exists as its own operation. The cost is that creating a live automation is two calls.
+             * @default false
+             */
             enabled: boolean;
             /** @enum {string} */
             mode: "single" | "restart" | "queued" | "parallel";

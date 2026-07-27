@@ -273,9 +273,11 @@ const (
 
 // secondEdgeAutomationBody is a second, well-formed edge rule (a state trigger
 // on the same demo entity firing a device_command on it, RUL-002 edge) — an
-// authored rule distinct from the seeded demo one.
+// authored rule distinct from the seeded demo one. It states `enabled` because
+// an automation authored without it is created DISABLED and would never reach
+// edge_rules, which is the very carry this case asserts.
 func secondEdgeAutomationBody() json.RawMessage {
-	return json.RawMessage(`{"id":"` + secondEdgeAutomationID + `","mode":"single",` +
+	return json.RawMessage(`{"id":"` + secondEdgeAutomationID + `","enabled":true,"mode":"single",` +
 		`"triggers":[{"type":"state","entity_id":"` + demoRuleEntityID + `","to":["off"]}],` +
 		`"conditions":[],` +
 		`"actions":[{"type":"device_command","entity_id":"` + demoRuleEntityID + `","command":"launch","params":{"channel":"second"}}]}`)

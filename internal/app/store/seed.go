@@ -52,14 +52,29 @@ const (
 // hold every day.
 var seedAllWeek = []int{0, 1, 2, 3, 4, 5, 6}
 
+// seedDemoAutomationName is the demo automation's resource-envelope name. The
+// openapi Automation schema declares `name` and `scope_node` REQUIRED, and
+// neither is defaultable — a name and a placement are authored facts, not
+// something a server can invent — so the seed states both rather than shipping a
+// demo row that no generated client could read.
+const seedDemoAutomationName = "Demo Screen-On Launch"
+
 // seedDemoAutomationJSON is the demo edge rule as an authored automation body: a
 // state trigger on seedRuleEntityID rising to "on" firing a device_command
 // launch on that same entity (RUL-002 edge, the same shape a fixture-registry
-// media-player resolves). It is byte-for-byte the rule the pre-store feeder
-// hardcoded as demoEdgeRuleJSON, so seeding it here as a compile-gated store row
-// changes nothing a fresh make dev shows — only where the rule now lives
-// (authored + editable, not a wire-level constant, REL-062).
-var seedDemoAutomationJSON = json.RawMessage(`{"id":"` + seedDemoAutomationID + `","mode":"single",` +
+// media-player resolves). Its rules/1 vocabulary is byte-for-byte the rule the
+// pre-store feeder hardcoded as demoEdgeRuleJSON, so seeding it here as a
+// compile-gated store row changes nothing a fresh make dev shows — only where
+// the rule now lives (authored + editable, not a wire-level constant, REL-062).
+//
+// `enabled` is stated EXPLICITLY, and true. An automation created without it
+// comes back disabled (declaredmembers.go), which is the right default for a
+// half-finished authoring call and the wrong one for a fixture whose entire
+// purpose is to fire: the demo is meant to be live, so the seed says so rather
+// than leaning on a default.
+var seedDemoAutomationJSON = json.RawMessage(`{"id":"` + seedDemoAutomationID + `",` +
+	`"name":"` + seedDemoAutomationName + `","scope_node":"` + seedScreenScopeNodeID + `","enabled":true,` +
+	`"mode":"single",` +
 	`"triggers":[{"type":"state","entity_id":"` + seedRuleEntityID + `","to":["on"]}],` +
 	`"conditions":[],` +
 	`"actions":[{"type":"device_command","entity_id":"` + seedRuleEntityID + `","command":"launch","params":{"channel":"dev"}}]}`)

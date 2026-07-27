@@ -461,8 +461,10 @@ type AutomationBulkEnableRequest struct {
 type AutomationCreate struct {
 	Actions    []map[string]interface{}  `json:"actions"`
 	Conditions *[]map[string]interface{} `json:"conditions,omitempty"`
-	Enabled    *bool                     `json:"enabled,omitempty"`
-	ExternalId **string                  `json:"external_id,omitempty"`
+
+	// Enabled Omit it and the automation is created DISABLED. Enabling is a deliberate act — an automation acts on real screens, and a half-finished create should not start doing so — which is why `bulk-enable` exists as its own operation. The cost is that creating a live automation is two calls.
+	Enabled    *bool    `json:"enabled,omitempty"`
+	ExternalId **string `json:"external_id,omitempty"`
 
 	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
 	Labels *LabelMap `json:"labels,omitempty"`

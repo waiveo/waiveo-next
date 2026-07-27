@@ -2316,7 +2316,13 @@ components:
           $ref: "#/components/schemas/LabelMap"
         enabled:
           type: boolean
-          default: true
+          default: false
+          description: >-
+            Omit it and the automation is created DISABLED. Enabling is a
+            deliberate act — an automation acts on real screens, and a
+            half-finished create should not start doing so — which is why
+            `bulk-enable` exists as its own operation. The cost is that
+            creating a live automation is two calls.
         mode:
           type: string
           enum: [single, restart, queued, parallel]

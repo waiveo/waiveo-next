@@ -34,13 +34,14 @@ func edgeAutomationEnabled(id string, enabled bool) json.RawMessage {
 		`"actions":[{"type":"device_command","entity_id":"` + autoRuleEntityID + `","command":"launch","params":{"channel":"dev"}}]}`)
 }
 
-// edgeAutomation is a well-formed edge rule: a state trigger on autoRuleEntityID
-// rising to "on" firing a device_command on that same entity (RUL-002 edge).
+// edgeAutomation is a well-formed, ACTIVE edge rule: a state trigger on
+// autoRuleEntityID rising to "on" firing a device_command on that same entity
+// (RUL-002 edge). It states `enabled` explicitly because a write that leaves it
+// absent creates a DISABLED automation, so a fixture whose point is to ride
+// edge_rules has to say it is on — the flag is not incidental to what these
+// cases are asserting, it is a precondition of it.
 func edgeAutomation(id string) json.RawMessage {
-	return json.RawMessage(`{"id":"` + id + `","mode":"single",` +
-		`"triggers":[{"type":"state","entity_id":"` + autoRuleEntityID + `","to":["on"]}],` +
-		`"conditions":[],` +
-		`"actions":[{"type":"device_command","entity_id":"` + autoRuleEntityID + `","command":"launch","params":{"channel":"dev"}}]}`)
+	return edgeAutomationEnabled(id, true)
 }
 
 // appAutomation is a well-formed rule that compiles but classifies APP: the
