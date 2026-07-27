@@ -1,11 +1,21 @@
-// Package eventsse is the app-side live /events/v1 SSE server (events/1
-// EVT-100–105, 130–144): the GET handler a subscriber connects to to WATCH the
-// platform in real time. It reads the shared events.Log the telemetry ingest
-// (internal/app/eventingest) and the auth plane's auditor write into, resolves
-// the connection's resume point via events.Resolve (fresh | resumed | gap |
-// RESUME_FROM_INVALID), streams the resolved backlog using the built SSE framing
-// (events.SSEEventLine / events.SSEGapLine), and then pushes every NEW event
-// live as it is appended — flushing the ResponseWriter after each frame.
+// Package eventsse is the app-side live /events/v1 server (events/1 EVT-090–105,
+// 130–144): the GET handler a subscriber connects to to WATCH the platform in
+// real time, over EITHER of the contract's two bindings. It reads the shared
+// events.Log the telemetry ingest (internal/app/eventingest) and the auth plane's
+// auditor write into, resolves the connection's resume point via events.Resolve
+// (fresh | resumed | gap | RESUME_FROM_INVALID), streams the resolved backlog,
+// and then pushes every NEW event live as it is appended.
+//
+// EVT-001 puts BOTH bindings on the one path and distinguishes them by the
+// request's own shape: a WS `Upgrade` header selects the WebSocket binding
+// (ws.go), an `Accept: text/event-stream` header with no Upgrade selects SSE
+// (this file). They are two framings of one stream, not two implementations: the
+// subscription (`open`), the delivery predicate (`filterFor` → events.Filter),
+// the backlog/live delivery order and the gap marking (`deliverBacklog`,
+// `drainOnce`) are shared code both bindings run, and the only thing either one
+// owns privately is how it puts a frame on its own wire (`sink`). That is what
+// makes "a WS subscriber and an SSE subscriber over the same log see the same
+// envelopes" a structural property rather than a claim maintained by hand.
 //
 // The substrate is the events.Log INTERFACE, not one storage choice: a
 // deployment passes the persistent SQLite implementation
@@ -17,32 +27,38 @@
 // concurrent use: "the live transport owns the synchronization boundary." This
 // package is that live transport. The boundary is Hub: the single object the
 // ingest writes through (Hub.Append) and every subscriber reads through, so a
-// POST /telemetry/v1/push appending on one goroutine never races an SSE read on
-// another (they share Hub.mu). Hub is also the fan-out — an Append wakes EVERY
+// POST /telemetry/v1/push appending on one goroutine never races a subscriber's
+// read on another (they share Hub.mu). Hub is also the fan-out — an Append wakes EVERY
 // connected subscriber, not just whichever one happens to win a shared receive,
 // so a new event pushes live to all of them (EVT-100).
 //
 // It re-implements none of the log machinery: the ordering/retention log
 // (events.Log), the four-outcome resume resolution (events.Resolve), the
-// EVT-103/104 line framing (events.SSEEventLine / events.SSEGapLine), and the
-// api/1 Problem shape (apihttp.WriteProblem) are all called, not rebuilt.
+// EVT-093/094 WS frames and EVT-103/104 SSE lines (events.Event / events.Gap /
+// events.HelloAck / events.SSEEventLine / events.SSEGapLine), the EVT-096 close
+// vocabulary (events.CloseReason), and the api/1 Problem shape
+// (apihttp.WriteProblem) are all called, not rebuilt.
 //
 // Binding authentication (EVT-110–114) is enforced by internal/app/auth's
 // middleware, mounted here rather than by the caller so the stream cannot be
 // served without it: a connection is authenticated by the session cookie or an
 // `Authorization: Bearer` API key and REFUSED BEFORE any upgrade or stream
 // begins (EVT-113), and a revocation tears the live stream down rather than
-// merely blocking the next connect (EVT-114 — see the revocation select in the
-// live loop below).
+// merely blocking the next connect (EVT-114 — see the revocation select in each
+// binding's live loop). Both bindings authenticate through the one
+// Authenticate call in ServeHTTP, ahead of binding selection, so the WS binding
+// cannot answer an unauthenticated upgrade and cannot be made to differ from
+// SSE on which credentials it accepts or where they may ride.
 //
 // Scope-node filtering (EVT-120–124) is enforced here too, per event at delivery
 // time (EVT-123), over BOTH the resolved backlog and the live tail. A connection
 // carries one events.Filter built from three inputs: the principal's readable
 // scope-node set (auth.CanRead over the scope tree — the SAME primitive api/1's
 // own read scoping uses, never a second implementation of SEC-010's inheritance),
-// the optional `selector` query parameter parsed under api/1's grammar, and the
-// optional `schemas` query parameter (EVT-101 — SSE has no later client-to-server
-// frame to carry either, so both must arrive on the initial request). The filter
+// the optional `selector` parsed under api/1's grammar, and the optional
+// `schemas` restriction — carried as query parameters on SSE (EVT-101: it has no
+// later client-to-server frame, so both must arrive on the initial request) and
+// as `hello` fields on WS (EVT-091), resolved by the same `open`. The filter
 // ANDs the three, so a selector can only ever intersect the visible set: naming an
 // out-of-reach scope node yields an empty stream, never an error (EVT-121/122).
 //
@@ -54,10 +70,6 @@
 // teardown, but a scope node RE-PARENTED out of the principal's subtree mid-stream
 // is not re-read until the client reconnects. That bound is stated here rather
 // than left to be discovered.
-//
-// Deferred, documented seams: the WebSocket binding (Go stdlib has no websocket;
-// the WS frame logic in internal/events/delivery.go is already conformance-driven
-// but a live WS server is a dependency decision).
 package eventsse
 
 import (
@@ -66,6 +78,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/maaxton/waiveo-next/internal/app/auth"
 	"github.com/maaxton/waiveo-next/internal/datamodel"
@@ -75,8 +88,8 @@ import (
 )
 
 // Hub is the app-side live-transport boundary over the shared events.EventLog:
-// the single object the telemetry ingest writes through and every SSE subscriber
-// reads through. It exists because events.EventLog is not safe for concurrent
+// the single object the telemetry ingest writes through and every subscriber on
+// either binding reads through. It exists because events.EventLog is not safe for concurrent
 // use and delegates its synchronization to "the live transport" — this is that
 // transport, so every log mutation (Append) and every log read (subscribe /
 // after) is serialized under mu. It is also the fan-out registry: each Append
@@ -159,6 +172,16 @@ func (h *Hub) Close() {
 	}
 }
 
+// subscriberCount reports how many subscribers are currently registered for the
+// fan-out — observability for tests and operators. A connection that
+// disconnected cleanly leaves this count where it found it; one that leaked its
+// registration would not.
+func (h *Hub) subscriberCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.subs)
+}
+
 // subscribe registers a wake mailbox and, atomically under the same lock,
 // resolves the resume outcome and snapshots the current head. Doing all three
 // under one lock hold is what makes the live push loss-free: from the instant
@@ -235,10 +258,10 @@ func (sub *Subscription) close() {
 	sub.hub.mu.Unlock()
 }
 
-// server is the GET /events/v1 SSE handler. It holds the Hub (the shared
-// read/write boundary over the event log) and streams each connection's resolved
-// backlog then every live Append, on the connection goroutine, woken by the
-// Hub's per-subscriber fan-out.
+// server is the GET /events/v1 handler serving BOTH events/1 bindings. It holds
+// the Hub (the shared read/write boundary over the event log) and streams each
+// connection's resolved backlog then every live Append, on the connection
+// goroutine, woken by the Hub's per-subscriber fan-out.
 type server struct {
 	hub *Hub
 	// authn authenticates every connection before any upgrade or stream begins
@@ -257,6 +280,34 @@ type server struct {
 	// serialize, EVT-103) — it defaults to the stdlib logger and is a field so a
 	// corrupt frame is logged and skipped, never emitted.
 	logf func(format string, args ...any)
+
+	// The WS binding's three time bounds (EVT-095/142). They are fields rather
+	// than constants so a test drives the behavior on an injected cadence
+	// instead of waiting out the production one — the same seam
+	// internal/feeder/relayconn exposes for the relay/1 connection, and the
+	// injectable clock the contract's own conformance notes call for in place
+	// of wall-clock sleeps. See ws.go for what each bounds.
+	writeTimeout time.Duration
+	pingInterval time.Duration
+	pongTimeout  time.Duration
+}
+
+// Option configures the handler New returns.
+type Option func(*server)
+
+// WithHeartbeat overrides the WS binding's keepalive cadence (EVT-095): a ping
+// on a connection otherwise idle for interval, whose pong must arrive within
+// timeout or the connection is closed IDLE_TIMEOUT. The defaults are the
+// contract's own 30s/10s.
+func WithHeartbeat(interval, timeout time.Duration) Option {
+	return func(s *server) { s.pingInterval, s.pongTimeout = interval, timeout }
+}
+
+// WithWriteTimeout overrides the WS binding's per-frame write deadline — the
+// bound EVT-142 draws the line at between gapping a slow subscriber and
+// disconnecting it SLOW_CONSUMER_DISCONNECTED.
+func WithWriteTimeout(d time.Duration) Option {
+	return func(s *server) { s.writeTimeout = d }
 }
 
 // ScopeNodesFunc returns the platform's current scope-node set — the tree
@@ -268,16 +319,26 @@ type server struct {
 // root fallback defines.
 type ScopeNodesFunc func(context.Context) ([]datamodel.ScopeNode, error)
 
-// New returns the GET /events/v1 SSE handler streaming hub's log to subscribers.
-// hub is the shared live-transport boundary the telemetry ingest
+// New returns the GET /events/v1 handler streaming hub's log to subscribers over
+// either binding (EVT-001: one path, the binding selected by the request's own
+// shape). hub is the shared live-transport boundary the telemetry ingest
 // (internal/app/eventingest) writes through: each ingest Append records the
 // event AND wakes every connected subscriber to drain the newly-appended tail,
 // so new events push live to all of them (EVT-100). The same hub instance is
 // passed to eventingest.New as its EventSink, which is what wires the writer's
 // Append to this reader's wake. scopeNodes supplies the scope tree each
 // connection's visible set is resolved against (EVT-120).
-func New(hub *Hub, authn *auth.Authenticator, scopeNodes ScopeNodesFunc) http.Handler {
-	return &server{hub: hub, authn: authn, scopeNodes: scopeNodes, logf: stdlog.Printf}
+func New(hub *Hub, authn *auth.Authenticator, scopeNodes ScopeNodesFunc, opts ...Option) http.Handler {
+	s := &server{
+		hub: hub, authn: authn, scopeNodes: scopeNodes, logf: stdlog.Printf,
+		writeTimeout: defaultWriteTimeout,
+		pingInterval: defaultPingInterval,
+		pongTimeout:  defaultPongTimeout,
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // filterFor builds this connection's delivery predicate (EVT-120–124) from the
@@ -537,11 +598,12 @@ func (s *server) drainOnce(sk sink, lastID string, filter events.Filter) (string
 	return lastID, sk.flush()
 }
 
-// ServeHTTP selects the binding at the shared /events/v1 path from the request's
-// own shape (EVT-001/100) and serves it. Authentication (EVT-110–113) and the
-// revocation watch (EVT-114) are resolved once, ahead of that selection, so no
-// binding can be reached without them. A WS upgrade is refused: the live WS
-// server is deferred (Go stdlib has no websocket).
+// ServeHTTP serves both events/1 bindings at the one path EVT-001 fixes,
+// selecting between them from the request's own shape: a WS `Upgrade` header
+// selects the WS binding, an `Accept: text/event-stream` header with no Upgrade
+// selects SSE. Authentication (EVT-110–113) and the revocation watch (EVT-114)
+// are resolved once, ahead of that selection, so neither binding can be reached
+// without them.
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	traceID := apihttp.TraceID(r)
 
@@ -563,7 +625,10 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer unwatch()
 
 	if r.Method != http.MethodGet {
-		apihttp.WriteProblem(w, r, traceID, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method Not Allowed")
+		// GET is the only method either binding uses: an SSE subscribe is a GET,
+		// and so is a WS upgrade.
+		apihttp.WriteProblemExt(w, r, traceID, http.StatusMethodNotAllowed, codeRequestInvalid, "Method Not Allowed",
+			"events/1 is a watch channel: both bindings connect with GET.", nil)
 		return
 	}
 
@@ -571,13 +636,32 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case events.BindingSSE:
 		s.serveSSE(w, r, traceID, principal, revoked)
 	case events.BindingWS:
-		apihttp.WriteProblem(w, r, traceID, http.StatusNotImplemented, "WS_BINDING_DEFERRED", "The events/1 WebSocket binding is not yet served; connect over SSE (Accept: text/event-stream)")
-		return
+		s.serveWS(w, r, traceID, principal, revoked)
 	default:
-		apihttp.WriteProblem(w, r, traceID, http.StatusNotAcceptable, "SSE_REQUIRED", "events/1 requires Accept: text/event-stream")
-		return
+		apihttp.WriteProblemExt(w, r, traceID, http.StatusNotAcceptable, codeRequestInvalid, "Not Acceptable",
+			"events/1 selects its binding from the request's own shape: send an Upgrade header for the WebSocket binding, "+
+				"or Accept: text/event-stream for the SSE binding.", nil)
 	}
 }
+
+// codeRequestInvalid is the code every "this request does not select an events/1
+// binding" refusal carries: a method other than GET, a shape that is neither a
+// WS upgrade nor an SSE subscribe, a WS upgrade offering no events/1 subprotocol.
+//
+// events/1's own Error taxonomy publishes no code for a malformed REQUEST — its
+// registry covers authentication, the two client-supplied fields that can be
+// wrong (selector, resume_from), the two disconnect classes, webhook delivery,
+// and the two generic server-side entries. So this one is drawn by NAME from
+// api/1's registry, which does publish it — the same reuse-by-name discipline
+// player/1's PLY-007 defines, api/1's own API-013 applies, and this binding
+// already relies on for FORBIDDEN (auth.EventsCodes).
+//
+// What matters is that it comes from a PUBLISHED registry at all. A code minted
+// here and published nowhere — which is what this surface used to answer a WS
+// upgrade with — is a value no client's error handling can be written against,
+// and it is exactly what API-011's "a server MUST NOT emit a code value outside
+// the registry" forbids.
+const codeRequestInvalid = "VALIDATION_FAILED"
 
 // serveSSE handles an SSE subscribe (EVT-100–105, 130–144): it resolves the
 // resume point (Last-Event-ID header over resume_from query, EVT-102) via the
@@ -589,11 +673,12 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *server) serveSSE(w http.ResponseWriter, r *http.Request, traceID string, principal auth.Principal, revoked <-chan struct{}) {
 	// The SSE stream needs an incrementally flushable writer; without one there is
 	// no live push, so refuse rather than buffer the whole (unbounded) stream.
-	// This is a wiring fault in the server it is served from, not anything the
+	// This is a fault in the server the handler was mounted in, not anything the
 	// client did — the taxonomy's unclassified server-side entry.
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		apihttp.WriteProblem(w, r, traceID, http.StatusInternalServerError, "STREAMING_UNSUPPORTED", "Streaming is not supported")
+		apihttp.WriteProblemExt(w, r, traceID, http.StatusInternalServerError, "INTERNAL", "Internal Server Error",
+			"This server cannot stream incrementally, so it cannot serve the SSE binding.", nil)
 		return
 	}
 
