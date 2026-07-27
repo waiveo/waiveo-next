@@ -44,7 +44,7 @@ relay/1 defines the protocol between an enrolled relay and its app peer: connect
 
 **[REL-004]** Within major version 1, evolution MUST be additive only: a new optional message field, a new capability flag, or a new desired-state snapshot section MAY be introduced in a minor. An existing message field's meaning, an existing snapshot section's already-published shape, or the connection path (REL-001) MUST NOT change within major version 1.
 
-**[REL-005]** Every relay/1 message exchanged after enrollment completes MUST carry `relay_id`. The sole exception is the enrollment exchange itself (Enrollment), where `relay_id` does not yet exist to carry.
+**[REL-005]** Every relay/1 message exchanged after enrollment completes MUST carry `relay_id`. The sole exception is the enrollment exchange itself (Enrollment), where `relay_id` does not yet exist to carry. A pre-authentication error frame refusing a connection whose relay identity was never established — a refusal sent before the mTLS identity or hello verification completed — MAY omit `relay_id`; every frame after identity is established MUST carry it.
 
 **[REL-006]** A request/response-shaped relay/1 message pair MUST share one correlation `id`. Where a request represents work traceable to a single originating operation elsewhere in the platform — a device command dispatched from an operator action, for instance — it MUST carry that operation's own `trace_id`, so one identifier correlates the operation across the app peer, the relay, and any durable record the operation eventually produces.
 
@@ -116,7 +116,7 @@ relay/1 defines the protocol between an enrolled relay and its app peer: connect
 
 **[REL-039]** The app peer's `hello-ack` MUST carry `{relay_id, negotiated_version, features, site_binding, deprecated}`, where `deprecated` is a map of message-type name to `{deprecated_in, removed_in, message}` for every message type in the negotiated version currently deprecated (possibly empty). Neither peer may send any message other than `challenge`/`hello`/`hello-ack` before this exchange completes; a peer that does MUST be treated as a protocol violation (`PROTOCOL_VIOLATION`, Error taxonomy) and the connection closed.
 
-**[REL-040]** The challenge nonce REL-030 requires MUST be derived from the TLS exporter keying material of that specific connection (RFC 5705; the TLS 1.3 exporter-derived channel-binding construction, RFC 9266) rather than an application-level value chosen independently of the TLS session. A plain per-connection random value not derived this way MUST NOT be used to satisfy REL-030: deriving the nonce from the exporter is what lets `channel_binding_signature` (REL-032) cryptographically bind to the exact TLS channel `hello` arrives on, rather than to a value that merely rode over it, which a TLS-terminating intermediary could otherwise relay unchanged.
+**[REL-040]** The challenge nonce REL-030 requires MUST be derived from the TLS exporter keying material of that specific connection (RFC 5705; the TLS 1.3 exporter-derived channel-binding construction, RFC 9266) rather than an application-level value chosen independently of the TLS session. A plain per-connection random value not derived this way MUST NOT be used to satisfy REL-030: deriving the nonce from the exporter is what lets `channel_binding_signature` (REL-032) cryptographically bind to the exact TLS channel `hello` arrives on, rather than to a value that merely rode over it, which a TLS-terminating intermediary could otherwise relay unchanged. The exporter derivation is pinned: label `EXPORTER-waiveo-relay1-challenge`, an empty (absent) context, 32 output bytes, lowercase-hex encoded into `challenge.body.nonce`. The TLS session MUST support exporters (TLS 1.3, or 1.2 with the extended master secret); a peer whose session cannot produce the exporter derivation MUST refuse the connection rather than fall back to a random nonce.
 
 **[REL-041]** The app peer MUST look up the enrollment-learned public key it verifies `channel_binding_signature` against (REL-032) by the connection's own mTLS-authenticated client-certificate identity (REL-003) — never by the self-asserted `hello.relay_id` (REL-031). If the connection's mTLS-authenticated identity and `hello.relay_id` do not name the same relay, the app peer MUST refuse the connection with a typed error (`RELAY_IDENTITY_MISMATCH`, Error taxonomy) rather than proceed using either identity alone.
 
@@ -124,17 +124,19 @@ relay/1 defines the protocol between an enrolled relay and its app peer: connect
 
 **[REL-050]** Desired state moves downstream by pull only: the relay requests it with a `state.pull` message; the app peer never sends an unsolicited snapshot. `state.pull` MAY carry `since_generation` — the relay's own last-applied generation number — letting the app peer answer efficiently when nothing has changed.
 
-**[REL-051]** The app peer's response to `state.pull` MUST be exactly one of: `state.unchanged {generation}`, when `since_generation` already names the current generation; or `state.snapshot {generation, hash, signature, sections}` (Desired-state snapshot sections; `signature`'s signed scope is REL-075), otherwise. `state.snapshot` MAY additionally carry `signed_with_key`, identifying which key the signature was computed with, for diagnostic purposes only (REL-075).
+**[REL-051]** The app peer's response to `state.pull` MUST be exactly one of: `state.unchanged {generation}`, when `since_generation` already names the current generation; or `state.snapshot {generation, hash, signature, sections}` (Desired-state snapshot sections; `signature`'s signed scope is REL-075), otherwise. `state.snapshot` MAY additionally carry `signed_with_key`, identifying which key the signature was computed with, for diagnostic purposes only (REL-075). `state.unchanged` is correct ONLY when `since_generation` equals the current generation: a `since_generation` naming a generation GREATER than the app peer's current one MUST draw the full `state.snapshot` — the app peer stays stateless about relay history, and the relay's own REL-052 gate then refuses the regressed generation, so the divergence surfaces at the relay (a `state.ack` error, resolved by operator re-anchoring, REL-017) instead of being masked by a `state.unchanged` asserting agreement that does not exist.
 
 **[REL-052]** `generation` MUST be a per-relay monotonically increasing integer, assigned by the app peer. A relay MUST NOT accept a `state.snapshot` whose `generation` is lower than its own last-applied generation. A `generation` equal to its own last-applied generation — a redelivery of an already-applied snapshot, for instance after a lost acknowledgment — MUST be accepted and handled under REL-070's no-op rule, exactly as a higher `generation` carrying identical `sections` content is.
 
 **[REL-053]** `hash` MUST be computed over the complete, canonicalized content of `sections` (Desired-state snapshot sections), such that two snapshots with byte-identical `sections` content produce the same `hash` regardless of `generation` number, and any difference in `sections` content produces a different `hash`.
 
-**[REL-054]** After applying a snapshot, the relay MUST acknowledge with `state.ack {applied_generation, error, divergence_reason}`, where `error` and `divergence_reason` are present only when the apply did not fully succeed (Error taxonomy for `error`; `divergence_reason` is an implementation-defined short string describing a partial or inconsistent apply outside this contract's own error vocabulary).
+**[REL-054]** After applying a snapshot, the relay MUST acknowledge with `state.ack {applied_generation, error, divergence_reason}`, where `error` and `divergence_reason` are present only when the apply did not fully succeed (Error taxonomy for `error`; `divergence_reason` is an implementation-defined short string describing a partial or inconsistent apply outside this contract's own error vocabulary). `state.ack` MUST carry the correlation `id` of the `state.pull` exchange that delivered the acknowledged snapshot.
 
 **[REL-055]** The relay MUST persist `{generation, hash}` for its last successfully applied snapshot to durable local storage, so that on restart it resumes evaluating its last-known desired state without first contacting its app peer (Idempotent apply & enrollment-anchored trust).
 
 **[REL-056]** A generation swap MUST be applied atomically from the perspective of anything evaluating against it: an evaluation in progress at the moment of a swap completes entirely against either the prior generation or the new one, never a mix of fields from each.
+
+**[REL-057]** The app peer MAY send a server-initiated `state.changed {generation}` when its current desired-state generation advances. `state.changed` is a nudge only: it carries no payload beyond `generation`, and desired state itself still moves exclusively as a `state.pull` response — REL-050's "the app peer never sends an unsolicited snapshot" holds unchanged. A relay receiving `state.changed` responds with its own `state.pull`, or with nothing when it is already at that generation. Delivery is best-effort and coalescible: successive nudges MAY collapse into one carrying the latest generation, and a lost nudge is recovered by the relay's next pull — no delivery guarantee attaches to the nudge itself. A relay that does not recognize `state.changed` (an older minor) tolerates it under REL-004's additive rule.
 
 ### Desired-state snapshot sections
 
@@ -449,6 +451,11 @@ relay/1 defines the protocol between an enrolled relay and its app peer: connect
 ```json
 // StateUnchanged (app peer -> relay, when since_generation already names the current generation)
 { "type": "state.unchanged", "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1", "body": { "generation": 42 } }
+```
+
+```json
+// StateChanged (app peer -> relay, server-initiated nudge on a generation advance — REL-057; no payload beyond generation, best-effort and coalescible; the relay answers with its own state.pull, or nothing when already at that generation)
+{ "type": "state.changed", "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1", "body": { "generation": 43 } }
 ```
 
 ```json

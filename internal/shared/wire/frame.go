@@ -33,16 +33,16 @@ import (
 const Subprotocol = "relay.v1+json"
 
 // Frame type discriminators — the `type` field of every relay/1 connection
-// frame this spike exchanges. The state.* verbs are contracts/relay-1.md's
-// own wire shapes (REL-050/051); challenge/hello/hello-ack are the
-// handshake's (REL-030/031/039); "error" is REL-007's top-level error frame.
+// frame. The state.* verbs are contracts/relay-1.md's own wire shapes
+// (REL-050/051, REL-057); challenge/hello/hello-ack are the handshake's
+// (REL-030/031/039); "error" is REL-007's top-level error frame.
 //
-// FrameTypeStateChanged is a SPIKE-PROPOSED additive verb (allowed in shape
-// by REL-004's additive-only rule, but NOT yet in the contract): a
-// server-initiated nudge announcing a new desired-state generation, to which
-// a relay responds with its own state.pull — keeping REL-050's "the app peer
-// never sends an unsolicited snapshot" intact while killing the poll loop.
-// Adopting it (vs. relaxing REL-050) is an open contract decision.
+// FrameTypeStateChanged is REL-057's server-initiated nudge announcing a new
+// desired-state generation, to which a relay responds with its own
+// state.pull (or nothing, when already at that generation) — keeping
+// REL-050's "the app peer never sends an unsolicited snapshot" intact while
+// killing the poll loop. Delivery is best-effort and coalescible; a lost
+// nudge is recovered by the relay's next pull.
 const (
 	FrameTypeChallenge      = "challenge"
 	FrameTypeHello          = "hello"
@@ -130,9 +130,9 @@ type StateUnchangedBody struct {
 	Generation int64 `json:"generation"`
 }
 
-// StateChangedBody is the spike-proposed `state.changed` nudge's body (see
-// FrameTypeStateChanged): the generation the app peer now holds, so a relay
-// already at that generation can skip the pull entirely.
+// StateChangedBody is `state.changed`'s body (REL-057, FrameTypeStateChanged):
+// the generation the app peer now holds, so a relay already at that
+// generation can skip the pull entirely.
 type StateChangedBody struct {
 	Generation int64 `json:"generation"`
 }
