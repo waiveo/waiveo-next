@@ -166,6 +166,36 @@ func (s *Store) Has(hexDigest string) bool {
 	return ok
 }
 
+// Purge destroys every stored asset — the content-addressed half of the
+// workspace a data-subject delete erases (`api/1` API-120/122, routed to
+// `security-model.md` SEC-121's destruction path).
+//
+// It is here rather than in the api layer because only this type knows the
+// asset store has two representations that must be destroyed together: the
+// in-memory map every Serve/Has answers from, and the dir-backed files Open
+// reloads from on the next boot. Clearing one and not the other would leave a
+// deployment that reports the content gone until it restarts and finds it all
+// again — which for a data-subject erasure is the failure mode that matters.
+//
+// The on-disk half is removed FIRST, so a failure part-way leaves files whose
+// bytes are still advertised, rather than advertised content whose files are
+// gone. An asset the filesystem refuses to remove aborts with that error rather
+// than being reported as destroyed: an erasure that could not complete must not
+// answer as though it had. A dir-less (in-memory) Store simply clears the map.
+func (s *Store) Purge() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dir != "" {
+		for hexDigest := range s.items {
+			if err := os.Remove(filepath.Join(s.dir, hexDigest)); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("origin: purge %s: %w", hexDigest, err)
+			}
+		}
+	}
+	s.items = map[string][]byte{}
+	return nil
+}
+
 // contentPathPrefix is the route content is served under: /content/<hex>.
 const contentPathPrefix = "/content/"
 
