@@ -88,18 +88,24 @@ func setExecutionClass(ctx context.Context, tx *sql.Tx, kind Kind, id, execution
 // section marshals as `[]`, not `null`, per REL-060).
 //
 // The `enabled` predicate honors the Automation resource envelope's first-class
-// active gate (openapi Automation.enabled, REQUIRED; AutomationCreate defaults it
-// true): the rule compiler ignores `enabled` (it is not rule vocabulary, so it
-// never affects compile/classify), so it is enforced HERE on the carry path — a
-// disabled automation stays stored and edge-classified but is NOT sent to the
-// relay's edge_rules (REL-062) and therefore never fires. `enabled` lives in the
-// JSON body, not a column, so it is read with json_extract; COALESCE treats an
-// ABSENT flag as enabled (the create default is true), so only an explicit
-// `enabled:false` excludes the row.
+// active gate (openapi Automation.enabled, REQUIRED): the rule compiler ignores
+// `enabled` (it is not rule vocabulary, so it never affects compile/classify),
+// so it is enforced HERE on the carry path — a disabled automation stays stored
+// and edge-classified but is NOT sent to the relay's edge_rules (REL-062) and
+// therefore never fires.
+//
+// `enabled` lives in the JSON body, not a column, so it is read with
+// json_extract. There is no COALESCE default: every stored automation carries an
+// explicit flag, because Create materializes one when the write left it absent
+// (declaredmembers.go), and json_extract over a missing member yields NULL —
+// which `<> 0` does not satisfy, so a row that somehow lacks the flag is NOT
+// carried. That is deliberately the same direction the create default takes: an
+// automation nobody said was on does not act on real screens, and "absent" means
+// "off" in exactly one direction everywhere it is read.
 func readEdgeRuleBodies(ctx context.Context, q queryer) ([]json.RawMessage, error) {
 	rows, err := q.QueryContext(ctx,
 		`SELECT body FROM automations
-		 WHERE execution_class = ? AND COALESCE(json_extract(body, '$.enabled'), 1) <> 0
+		 WHERE execution_class = ? AND json_extract(body, '$.enabled') <> 0
 		 ORDER BY id ASC`, executionClassEdge)
 	if err != nil {
 		return nil, fmt.Errorf("store: read edge rule bodies: %w", err)
