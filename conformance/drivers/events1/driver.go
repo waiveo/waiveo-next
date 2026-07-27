@@ -60,6 +60,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/app/auth/authtest"
 	"github.com/maaxton/waiveo-next/internal/app/eventingest"
 	"github.com/maaxton/waiveo-next/internal/app/eventsse"
+	"github.com/maaxton/waiveo-next/internal/datamodel"
 	"github.com/maaxton/waiveo-next/internal/events"
 	"github.com/maaxton/waiveo-next/internal/relay/telemetry"
 	"github.com/maaxton/waiveo-next/internal/shared/apiselector"
@@ -829,7 +830,7 @@ func driveHelloFreshSubscribe(rep *report.Report, cases map[string]corpus.Case) 
 	log := events.NewEventLog(0)
 	log.Append(fixtureAutomationRunEnvelope("01J8Z3K4N5P6Q7R8S9T0V1W2ZC"))
 	hub := eventsse.NewHub(log)
-	srv := httptest.NewServer(newSSEHandler(hub))
+	srv := httptest.NewServer(newSSEHandler(hub, nil))
 	defer srv.Close()
 
 	br, cancel := dialSSE(srv, "", nil)
@@ -888,7 +889,7 @@ func driveMalformedResumeFrom(rep *report.Report, cases map[string]corpus.Case) 
 	req.Header.Set("Accept", "text/event-stream")
 	sseAuth().Authorize(req)
 	rec := httptest.NewRecorder()
-	newSSEHandler(hub).ServeHTTP(rec, req)
+	newSSEHandler(hub, nil).ServeHTTP(rec, req)
 
 	var diffs []report.Diff
 	if rec.Code != http.StatusBadRequest {
@@ -966,7 +967,7 @@ func driveResumeWithGap(rep *report.Report, cases map[string]corpus.Case) {
 	log.Append(fixtureAutomationRunEnvelope(input.Frame.ResumeFrom))
 	log.Append(fixtureAutomationRunEnvelope(input.OldestRetainedID))
 	hub := eventsse.NewHub(log)
-	srv := httptest.NewServer(newSSEHandler(hub))
+	srv := httptest.NewServer(newSSEHandler(hub, nil))
 	defer srv.Close()
 
 	br, cancel := dialSSE(srv, "resume_from="+input.Frame.ResumeFrom, nil)
@@ -1132,9 +1133,12 @@ var sseAuth = sync.OnceValue(func() *authtest.Fixture {
 })
 
 // newSSEHandler mounts the live /events/v1 handler over hub, authenticated as
-// the shared fixture.
-func newSSEHandler(hub *eventsse.Hub) http.Handler {
-	return eventsse.New(hub, sseAuth().Auth)
+// the shared fixture, with the scope tree the fixture's own visible set
+// (EVT-120) resolves against.
+func newSSEHandler(hub *eventsse.Hub, nodes []datamodel.ScopeNode) http.Handler {
+	return eventsse.New(hub, sseAuth().Auth, func(context.Context) ([]datamodel.ScopeNode, error) {
+		return nodes, nil
+	})
 }
 
 func dialSSE(srv *httptest.Server, query string, header http.Header) (*bufio.Reader, func()) {

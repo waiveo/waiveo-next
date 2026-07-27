@@ -144,7 +144,7 @@ func TestSSE_RevocationTearsDownAnOpenStream(t *testing.T) {
 	defer fixture.Close()
 
 	hub := NewHub(events.NewEventLog(0))
-	srv := httptest.NewServer(New(hub, fixture.Auth))
+	srv := httptest.NewServer(New(hub, fixture.Auth, emptyScopeTree))
 	defer srv.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -219,7 +219,7 @@ func TestSSE_StreamDeregistersOnDisconnect(t *testing.T) {
 	defer fixture.Close()
 
 	hub := NewHub(events.NewEventLog(0))
-	srv := httptest.NewServer(New(hub, fixture.Auth))
+	srv := httptest.NewServer(New(hub, fixture.Auth, emptyScopeTree))
 	defer srv.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())

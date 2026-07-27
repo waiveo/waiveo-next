@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/app/auth/authtest"
+	"github.com/maaxton/waiveo-next/internal/datamodel"
 	"github.com/maaxton/waiveo-next/internal/events"
 )
 
@@ -92,8 +93,21 @@ var testAuth = sync.OnceValue(func() *authtest.Fixture {
 })
 
 // newTestServer mounts the live SSE handler over hub, authenticated as the
-// shared fixture.
-func newTestServer(hub *Hub) http.Handler { return New(hub, testAuth().Auth) }
+// shared fixture, over an EMPTY scope-node tree. The shared fixture is bound at
+// the workspace root, and auth.Resolve's documented root fallback makes a
+// root-bound principal read every placement — including one whose node the tree
+// does not carry — so these stream-semantics tests see an unfiltered stream
+// without any test-only bypass. Scope filtering itself is driven, with a real
+// tree and two differently-bound principals, by scope_filter_test.go.
+func newTestServer(hub *Hub) http.Handler {
+	return New(hub, testAuth().Auth, emptyScopeTree)
+}
+
+// emptyScopeTree is the ScopeNodesFunc for a harness that authors no scope-node
+// tree. See newTestServer: it is not a filtering bypass — the root-bound fixture
+// principal still resolves through auth.CanRead, which answers "readable" for
+// every placement precisely because the binding is at the workspace root.
+func emptyScopeTree(context.Context) ([]datamodel.ScopeNode, error) { return nil, nil }
 
 func dialSSE(t *testing.T, srv *httptest.Server, query string, header http.Header) (*bufio.Reader, context.CancelFunc) {
 	t.Helper()

@@ -405,7 +405,11 @@ func main() {
 	mux.Handle("/content/", contentStore.Handler())
 	mux.Handle("/api/v1/", apiHandler)
 	mux.Handle("/telemetry/v1/push", telemetryIngest)
-	mux.Handle("/events/v1", eventsse.New(eventHub, authn))
+	// The subscriber's visible set (events/1 EVT-120) is resolved per connection
+	// against the SAME scope-node tree api/1's read scoping uses, through the
+	// same auth.CanRead primitive — the store's tree read is the only input the
+	// SSE binding needs to answer it.
+	mux.Handle("/events/v1", eventsse.New(eventHub, authn, st.ScopeNodes))
 	mux.Handle("/", webUI)
 	enrollSrv.Register(mux)
 

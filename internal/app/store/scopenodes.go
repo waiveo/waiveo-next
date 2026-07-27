@@ -73,6 +73,21 @@ func (s *Store) DesiredStateRows(ctx context.Context) (scopeNodes []datamodel.Sc
 	return scopeNodes, rows, siteEffective, generation, nil
 }
 
+// ScopeNodes returns just the scope-node rows, read under the store's read lock
+// so they form one consistent snapshot of the tree.
+//
+// It exists beside DesiredStateRows because two callers want the TREE and
+// nothing else: SEC-010's binding inheritance (which node inherits from which)
+// and events/1's per-subscriber visible set (EVT-120). Both would otherwise pull
+// the six scheduling-core row kinds and the generation on every read purely to
+// discard them — on a long-lived /events/v1 connection that is a whole
+// desired-state read to answer a question about a handful of nodes.
+func (s *Store) ScopeNodes(ctx context.Context) ([]datamodel.ScopeNode, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return readScopeNodes(ctx, s.db)
+}
+
 // DesiredStateResult bundles a single consistent DesiredStateRows read into one
 // value — the input the feeder's snapshot.BuildFromStore consumes to derive a
 // signed desired-state generation. Its fields are exactly the DesiredStateRows

@@ -29,21 +29,43 @@
 // merely blocking the next connect (EVT-114 — see the revocation select in the
 // live loop below).
 //
+// Scope-node filtering (EVT-120–124) is enforced here too, per event at delivery
+// time (EVT-123), over BOTH the resolved backlog and the live tail. A connection
+// carries one events.Filter built from three inputs: the principal's readable
+// scope-node set (auth.CanRead over the scope tree — the SAME primitive api/1's
+// own read scoping uses, never a second implementation of SEC-010's inheritance),
+// the optional `selector` query parameter parsed under api/1's grammar, and the
+// optional `schemas` query parameter (EVT-101 — SSE has no later client-to-server
+// frame to carry either, so both must arrive on the initial request). The filter
+// ANDs the three, so a selector can only ever intersect the visible set: naming an
+// out-of-reach scope node yields an empty stream, never an error (EVT-121/122).
+//
+// The scope TREE is read once per connection, at connect. That is the same
+// snapshot discipline api/1 applies per request — and the same one the principal's
+// own role bindings already have, since they are resolved by the authenticator at
+// connect. A stream is one request, so both snapshots share its lifetime; a
+// binding revoked mid-stream is covered by EVT-114's credential-revocation
+// teardown, but a scope node RE-PARENTED out of the principal's subtree mid-stream
+// is not re-read until the client reconnects. That bound is stated here rather
+// than left to be discovered.
+//
 // Deferred, documented seams: the WebSocket binding (Go stdlib has no websocket;
 // the WS frame logic in internal/events/delivery.go is already conformance-driven
-// but a live WS server is a dependency decision), and the roles-based visible set
-// (EVT-120), which narrows WHICH events a subscriber sees rather than whether it
-// may subscribe at all.
+// but a live WS server is a dependency decision).
 package eventsse
 
 import (
+	"context"
 	stdlog "log"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/maaxton/waiveo-next/internal/app/auth"
+	"github.com/maaxton/waiveo-next/internal/datamodel"
 	"github.com/maaxton/waiveo-next/internal/events"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
+	"github.com/maaxton/waiveo-next/internal/shared/apiselector"
 )
 
 // Hub is the app-side live-transport boundary over the shared events.EventLog:
@@ -215,11 +237,26 @@ type server struct {
 	// be constructed without an authenticator is a binding that will eventually
 	// be constructed without one.
 	authn *auth.Authenticator
+	// scopeNodes supplies the scope-node tree each connection's visible set
+	// (EVT-120) is resolved against. Like authn it is a required constructor
+	// argument: a subscriber's visible set is a security boundary, and a binding
+	// that could be constructed without the tree that defines it is a binding
+	// that will eventually be constructed without it.
+	scopeNodes ScopeNodesFunc
 	// logf records a non-fatal streaming hiccup (an envelope that fails to
 	// serialize, EVT-103) — it defaults to the stdlib logger and is a field so a
 	// corrupt frame is logged and skipped, never emitted.
 	logf func(format string, args ...any)
 }
+
+// ScopeNodesFunc returns the platform's current scope-node set — the tree
+// SEC-010's binding inheritance is resolved over, and therefore the tree a
+// subscriber's visible set (EVT-120) is computed against. The app store's own
+// ScopeNodes read satisfies it; a caller with no tree at all (a fixture) may
+// return an empty slice, which leaves a workspace-root-bound principal reading
+// everything and a narrower principal reading nothing, exactly as auth.Resolve's
+// root fallback defines.
+type ScopeNodesFunc func(context.Context) ([]datamodel.ScopeNode, error)
 
 // New returns the GET /events/v1 SSE handler streaming hub's log to subscribers.
 // hub is the shared live-transport boundary the telemetry ingest
@@ -227,9 +264,105 @@ type server struct {
 // event AND wakes every connected subscriber to drain the newly-appended tail,
 // so new events push live to all of them (EVT-100). The same hub instance is
 // passed to eventingest.New as its EventSink, which is what wires the writer's
-// Append to this reader's wake.
-func New(hub *Hub, authn *auth.Authenticator) http.Handler {
-	return &server{hub: hub, authn: authn, logf: stdlog.Printf}
+// Append to this reader's wake. scopeNodes supplies the scope tree each
+// connection's visible set is resolved against (EVT-120).
+func New(hub *Hub, authn *auth.Authenticator, scopeNodes ScopeNodesFunc) http.Handler {
+	return &server{hub: hub, authn: authn, scopeNodes: scopeNodes, logf: stdlog.Printf}
+}
+
+// filterFor builds this connection's delivery predicate (EVT-120–124) from the
+// authenticated principal's own bindings, the scope tree, and the request's
+// `selector` / `schemas` query parameters (EVT-101).
+//
+// The visible set is auth.CanRead over datamodel.ScopeTree.AncestorChain —
+// literally the primitive api/1's read scoping calls, so "which nodes may this
+// principal see?" has exactly one answer on both surfaces (EVT-120's "computed
+// the same way any other api/1-governed read is scoped"). The per-node answer is
+// memoized for the connection's lifetime: one stream can ask about the same
+// placement node for every event it ever delivers, and the walk is pure over a
+// fixed tree and a fixed binding set. The map is confined to the connection's own
+// goroutine.
+//
+// A nil scopeNodes provider, or a failing read, returns an error rather than a
+// permissive filter — an unresolvable visible set is answered with a refusal, not
+// with the whole world (SEC-005).
+func (s *server) filterFor(ctx context.Context, principal auth.Principal, selector apiselector.Selector, schemas []string) (events.Filter, error) {
+	if s.scopeNodes == nil {
+		return events.Filter{}, errNoScopeTree
+	}
+	nodes, err := s.scopeNodes(ctx)
+	if err != nil {
+		return events.Filter{}, err
+	}
+	tree, _ := datamodel.BuildScopeTree(nodes)
+
+	bindings := principal.Bindings
+	seen := make(map[string]bool)
+	canRead := func(node string) bool {
+		if v, ok := seen[node]; ok {
+			return v
+		}
+		v := auth.CanRead(bindings, tree.AncestorChain(node))
+		seen[node] = v
+		return v
+	}
+	inSubtree := func(ancestor, node string) bool {
+		if ancestor == node {
+			return false
+		}
+		for _, id := range tree.AncestorChain(node) {
+			if id == ancestor {
+				return true
+			}
+		}
+		return false
+	}
+	return events.NewFilter(canRead, selector, inSubtree, schemas), nil
+}
+
+// errNoScopeTree is the refusal for a handler constructed with no scope-node
+// provider — a wiring bug, answered as an internal error rather than by falling
+// back to an unfiltered stream.
+var errNoScopeTree = errNoScopeTreeType{}
+
+type errNoScopeTreeType struct{}
+
+func (errNoScopeTreeType) Error() string {
+	return "eventsse: no scope-node provider configured; a subscriber's visible set cannot be resolved (EVT-120)"
+}
+
+// parseSchemas reads the `schemas` query parameter into the EVT-124 restriction
+// list (EVT-101 — on SSE it can only arrive on the initial request).
+//
+// Two spellings are accepted and unioned, because the contract fixes the FIELD
+// (a list of registered schema names) and not a query encoding: a repeated
+// parameter (`schemas=a&schemas=b`) and a comma-separated value (`schemas=a,b`).
+// A comma cannot appear inside a schema name — EVT-021 fixes the value to a
+// `<domain>.<name>` or `<publisher>/<name>.<local-name>` string — so splitting on
+// it is unambiguous.
+//
+// Empty entries are dropped, and a parameter that yields NO names (absent,
+// `schemas=`, `schemas=,,`) imposes no restriction at all rather than restricting
+// delivery to the empty set. An unrecognized name is not an error: it is simply a
+// member no event matches, which the filter answers as an empty stream — the same
+// posture EVT-122 fixes for an out-of-reach scope node, and for the same reason.
+func parseSchemas(values []string) []string {
+	var out []string
+	seen := make(map[string]struct{})
+	for _, v := range values {
+		for _, part := range strings.Split(v, ",") {
+			name := strings.TrimSpace(part)
+			if name == "" {
+				continue
+			}
+			if _, dup := seen[name]; dup {
+				continue
+			}
+			seen[name] = struct{}{}
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // ServeHTTP handles an SSE subscribe (EVT-100–105, 130–144). It selects the SSE
@@ -286,11 +419,35 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// EVT-101: `selector` and `schemas` arrive as query parameters on the initial
+	// request, since SSE offers no later client-to-server frame to carry them.
+	// Both are read BEFORE the subscriber is registered, so a rejected selector
+	// costs no registration and writes its Problem before any stream begins.
+	query := r.URL.Query()
+	selector, perr := apiselector.Parse(query.Get("selector"))
+	if perr != nil {
+		// API-045: a selector that does not PARSE is a statement about the
+		// REQUEST's syntax — 400 / SELECTOR_INVALID, naming the offending term.
+		// It reveals nothing about which scope nodes exist, which is exactly why
+		// it may be an error where an out-of-reach node may not (EVT-122).
+		apihttp.WriteProblemExt(w, r, traceID, perr.Status, perr.Code, perr.Title, perr.Detail, nil)
+		return
+	}
+
+	// The connection's delivery predicate (EVT-120–124), resolved from the
+	// authenticated principal's own bindings before any event is written.
+	filter, err := s.filterFor(r.Context(), principal, selector, parseSchemas(query["schemas"]))
+	if err != nil {
+		s.logf("eventsse: resolving the subscriber's visible set: %v (EVT-120)", err)
+		apihttp.WriteProblem(w, r, traceID, http.StatusInternalServerError, "INTERNAL", "The subscriber's visible scope-node set could not be resolved")
+		return
+	}
+
 	// Resolve the resume point: a Last-Event-ID header (a browser-native reconnect)
 	// takes precedence over a resume_from query parameter (EVT-102).
 	resumeFrom := r.Header.Get("Last-Event-ID")
 	if resumeFrom == "" {
-		resumeFrom = r.URL.Query().Get("resume_from")
+		resumeFrom = query.Get("resume_from")
 	}
 
 	// Register as a live subscriber AND snapshot the resume outcome + fresh
@@ -334,10 +491,18 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Stream the resolved backlog in id order (After(resume_from) for a clean
-	// resume; the from-oldest inclusive slice for a gap; empty for fresh).
+	// resume; the from-oldest inclusive slice for a gap; empty for fresh),
+	// scope-filtered exactly as the live tail is: a REPLAYED event outside the
+	// subscriber's visible set is no more deliverable than a live one (EVT-120/123
+	// say "an event", not "a live event"). lastID advances over every CONSIDERED
+	// envelope, not only every delivered one, so a suppressed event is never
+	// re-offered by the live loop's After(lastID) tail read.
 	for _, env := range outcome.Events {
-		s.writeEvent(w, env)
 		lastID = env.ID
+		if !filter.Allows(env) {
+			continue
+		}
+		s.writeEvent(w, env)
 	}
 	flusher.Flush()
 
@@ -368,8 +533,15 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				lastID = gap.ToID
 			}
 			for _, env := range tail {
-				s.writeEvent(w, env)
+				// EVT-123: the boundary is applied per event, here at delivery
+				// time — never delegated to whatever the subscriber's own
+				// selector claimed. lastID advances over every considered
+				// envelope so the next drain's tail is still gap-free.
 				lastID = env.ID
+				if !filter.Allows(env) {
+					continue
+				}
+				s.writeEvent(w, env)
 			}
 			flusher.Flush()
 		}
