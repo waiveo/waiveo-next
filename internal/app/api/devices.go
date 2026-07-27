@@ -77,10 +77,10 @@ func WithDevicePlane(registry *devices.Registry, dispatcher CommandDispatcher) O
 // literal `commands` segment is unambiguous against the entities list — the
 // generic list registers only `GET /entities`, and this pattern is a POST on a
 // distinct three-segment shape.
-func (srv *server) mountDevicePlane(mux *http.ServeMux) {
-	mux.HandleFunc("GET "+apiPrefix+"/devices", srv.listDevices)
-	mux.HandleFunc("GET "+apiPrefix+"/entities", srv.listEntities)
-	mux.HandleFunc("POST "+apiPrefix+"/entities/{id}/commands", srv.sendEntityCommand)
+func (srv *server) mountDevicePlane(rt *router) {
+	rt.HandleFunc("GET "+apiPrefix+"/devices", srv.listDevices)
+	rt.HandleFunc("GET "+apiPrefix+"/entities", srv.listEntities)
+	rt.HandleFunc("POST "+apiPrefix+"/entities/{id}/commands", srv.sendEntityCommand)
 }
 
 // ---- list -----------------------------------------------------------------

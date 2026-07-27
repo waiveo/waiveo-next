@@ -134,6 +134,37 @@ var authExemptPaths = map[string]bool{
 // authExempt reports whether r names one of the `security: []` operations.
 func authExempt(r *http.Request) bool { return authExemptPaths[r.URL.Path] }
 
+// router registers a handler on an http.ServeMux and, in the SAME call,
+// records the method+path pattern it was registered under.
+//
+// It exists so the surface this package actually SERVES is enumerable from the
+// very statements that serve it. api/openapi.yaml is the declared surface every
+// generated client is produced from, and nothing but a reader's memory used to
+// hold the two together: an operation could be declared with no handler behind
+// it (a generated client method that 404s), or a handler mounted with no
+// declaration (a route no client can discover and no schema constrains).
+// surface_test.go closes that by diffing these recorded patterns against the
+// document's operations, in both directions.
+//
+// Recording inside the registration call is the whole point. A hand-kept list
+// of patterns beside the mounts would itself be a third thing to drift — the
+// exact failure mode the check exists to remove — whereas a pattern that was
+// never registered here was never served, and one that was cannot be omitted.
+type router struct {
+	mux      *http.ServeMux
+	patterns []string
+}
+
+// newRouter builds a router over a fresh mux.
+func newRouter() *router { return &router{mux: http.NewServeMux()} }
+
+// HandleFunc registers h under pattern (Go 1.22+ "METHOD /path" form) and
+// records the pattern as part of the served surface.
+func (rt *router) HandleFunc(pattern string, h func(http.ResponseWriter, *http.Request)) {
+	rt.patterns = append(rt.patterns, pattern)
+	rt.mux.HandleFunc(pattern, h)
+}
+
 // New builds the api/1 HTTP handler: a /api/v1-prefixed mux exposing the
 // scope-nodes and scheduling-core (schedules/dayparts/playlists) CRUD
 // operations over st, plus the content-addressed asset upload (POST
@@ -177,61 +208,81 @@ func New(st *store.Store, idem *apihttp.IdempotencyStore, nowMs func() int64, ne
 		srv.jobs = NewJobRunner()
 		srv.jobs.Start()
 	}
-	mux := http.NewServeMux()
-	srv.mount(mux, scopeNodesConfig())
-	srv.mount(mux, schedulesConfig())
-	srv.mount(mux, daypartsConfig())
-	srv.mount(mux, playlistsConfig())
-	srv.mount(mux, automationsConfig())
-	srv.mountPacks(mux)
-	// The automations family adds two operations beyond plain resource CRUD: a
-	// synchronous per-automation run (openapi runAutomation) and a selector-targeted
-	// fleet-mutating bulk enable/disable returning an api/1 Job (bulkEnableAutomations).
-	// The literal `bulk-enable` segment is unambiguous — the generic mount registers
-	// no POST on `automations/{id}` — and `{id}/run` has its own two-segment shape.
-	mux.HandleFunc("POST "+apiPrefix+"/automations/{id}/run", srv.runAutomation)
-	mux.HandleFunc("POST "+apiPrefix+"/automations/bulk-enable", srv.bulkEnableAutomations)
-	mux.HandleFunc("POST "+apiPrefix+"/content", srv.uploadContent)
-	// The read half of the async convention: a Job returned by 202 is polled
-	// here until its state is terminal (API-112, openapi getJob). It is not a
-	// resourceConfig mount — a Job carries no revision to condition a write on,
-	// and has no write operations at all (jobs.go).
-	mux.HandleFunc("GET "+apiPrefix+"/jobs/{job_id}", srv.getJob)
-	// The two data-subject operations (API-120-124, openapi exportWorkspace /
-	// deleteWorkspace). They are not a resourceConfig mount and never could be:
-	// their subject is the workspace as a whole, which has no id in the path, no
-	// revision to condition a write on, and no collection to list (workspace.go).
-	mux.HandleFunc("POST "+apiPrefix+"/workspace/export", srv.exportWorkspace)
-	mux.HandleFunc("POST "+apiPrefix+"/workspace/delete", srv.deleteWorkspace)
-	// The device plane's two read families and its one mutating operation. They
-	// are not resourceConfig mounts: a device is a read-only projection of the
-	// relay's own discovery and adoption plane, with no revision to condition a
-	// write on (devices.go).
-	srv.mountDevicePlane(mux)
-
-	// The session-management half of the auth family rides the AUTHENTICATED
-	// mux: both operations act on the caller's own live session, so neither has
-	// anything to do without one.
-	authHandlers := auth.NewHandlers(authn, nil, auth.RootScopeNode)
-	mux.HandleFunc("POST "+apiPrefix+"/auth/logout", authHandlers.Logout)
-	mux.HandleFunc("GET "+apiPrefix+"/auth/session", authHandlers.Session)
-
-	// The credential-exchange half (API-090/091) mounts on the ROOT mux, ahead
-	// of the middleware. Go's ServeMux prefers the more specific method+path
-	// pattern over the "/" catch-all, so these two reach their handlers directly
-	// while every other path falls through to the authenticated mux.
-	root := http.NewServeMux()
-	root.HandleFunc("POST "+apiPrefix+"/auth/login", authHandlers.Login)
-	root.HandleFunc("POST "+apiPrefix+"/auth/setup", authHandlers.Claim)
+	rt, rootRT := newRouter(), newRouter()
+	srv.mountAll(rt, rootRT, auth.NewHandlers(authn, nil, auth.RootScopeNode))
 	// The audit seam sits INSIDE the auth middleware and OUTSIDE the resource
 	// mux: inside, because a record needs the resolved principal EVT-080 requires
 	// (a request refused for bad credentials has no identity to attribute and is
 	// the auth package's own record anyway); outside, because wrapping the mux
 	// rather than each handler is what makes the next route mounted here audited
 	// without anyone remembering to audit it (audit.go).
-	root.Handle("/", authn.Middleware(auth.APICodes, authExempt)(srv.auditMutations(mux)))
+	//
+	// The catch-all is registered on the root MUX directly rather than through
+	// the router: it is the fall-through into the authenticated mux, not an
+	// api/1 operation, and recording it would put a path no operation declares
+	// into the served surface.
+	rootRT.mux.Handle("/", authn.Middleware(auth.APICodes, authExempt)(srv.auditMutations(rt.mux)))
 
-	return apihttp.WithTraceID(root)
+	return apihttp.WithTraceID(rootRT.mux)
+}
+
+// mountAll registers every api/1 operation this package serves. rt is the
+// AUTHENTICATED mux; rootRT carries the two credential-exchange operations that
+// ride ahead of the auth middleware (API-090/091).
+//
+// It is deliberately the ONE place the served surface is defined. New calls it
+// to build the handler and surface_test.go calls it to enumerate what was
+// registered, so "what this server serves" has a single answer that both the
+// running process and the drift check read from the same statements. A route
+// added to the running server and not to the enumeration is not possible,
+// because there is only one enumeration and it IS the registration.
+//
+// authHandlers is used only for the method values the four auth routes are
+// registered with; nothing here calls them, so the surface test may pass nil.
+func (srv *server) mountAll(rt, rootRT *router, authHandlers *auth.Handlers) {
+	srv.mount(rt, scopeNodesConfig())
+	srv.mount(rt, schedulesConfig())
+	srv.mount(rt, daypartsConfig())
+	srv.mount(rt, playlistsConfig())
+	srv.mount(rt, automationsConfig())
+	srv.mountPacks(rt)
+	// The automations family adds two operations beyond plain resource CRUD: a
+	// synchronous per-automation run (openapi runAutomation) and a selector-targeted
+	// fleet-mutating bulk enable/disable returning an api/1 Job (bulkEnableAutomations).
+	// The literal `bulk-enable` segment is unambiguous — the generic mount registers
+	// no POST on `automations/{id}` — and `{id}/run` has its own two-segment shape.
+	rt.HandleFunc("POST "+apiPrefix+"/automations/{id}/run", srv.runAutomation)
+	rt.HandleFunc("POST "+apiPrefix+"/automations/bulk-enable", srv.bulkEnableAutomations)
+	rt.HandleFunc("POST "+apiPrefix+"/content", srv.uploadContent)
+	// The read half of the async convention: a Job returned by 202 is polled
+	// here until its state is terminal (API-112, openapi getJob). It is not a
+	// resourceConfig mount — a Job carries no revision to condition a write on,
+	// and has no write operations at all (jobs.go).
+	rt.HandleFunc("GET "+apiPrefix+"/jobs/{job_id}", srv.getJob)
+	// The two data-subject operations (API-120-124, openapi exportWorkspace /
+	// deleteWorkspace). They are not a resourceConfig mount and never could be:
+	// their subject is the workspace as a whole, which has no id in the path, no
+	// revision to condition a write on, and no collection to list (workspace.go).
+	rt.HandleFunc("POST "+apiPrefix+"/workspace/export", srv.exportWorkspace)
+	rt.HandleFunc("POST "+apiPrefix+"/workspace/delete", srv.deleteWorkspace)
+	// The device plane's two read families and its one mutating operation. They
+	// are not resourceConfig mounts: a device is a read-only projection of the
+	// relay's own discovery and adoption plane, with no revision to condition a
+	// write on (devices.go).
+	srv.mountDevicePlane(rt)
+
+	// The session-management half of the auth family rides the AUTHENTICATED
+	// mux: both operations act on the caller's own live session, so neither has
+	// anything to do without one.
+	rt.HandleFunc("POST "+apiPrefix+"/auth/logout", authHandlers.Logout)
+	rt.HandleFunc("GET "+apiPrefix+"/auth/session", authHandlers.Session)
+
+	// The credential-exchange half (API-090/091) mounts on the ROOT mux, ahead
+	// of the middleware. Go's ServeMux prefers the more specific method+path
+	// pattern over the "/" catch-all, so these two reach their handlers directly
+	// while every other path falls through to the authenticated mux.
+	rootRT.HandleFunc("POST "+apiPrefix+"/auth/login", authHandlers.Login)
+	rootRT.HandleFunc("POST "+apiPrefix+"/auth/setup", authHandlers.Claim)
 }
 
 // resourceConfig parameterizes the generic resource handler for one resource
@@ -293,7 +344,7 @@ type resource struct {
 
 // mount registers the five CRUD routes for cfg under /api/v1/<path>. Go 1.22+
 // method+path patterns dispatch by method, and {id} captures the resource id.
-func (srv *server) mount(mux *http.ServeMux, cfg resourceConfig) {
+func (srv *server) mount(rt *router, cfg resourceConfig) {
 	rs := &resource{srv: srv, cfg: cfg}
 	// Registering the family here, in the same call that registers its routes,
 	// is what keeps the audit middleware's view of this surface honest: a family
@@ -301,11 +352,11 @@ func (srv *server) mount(mux *http.ServeMux, cfg resourceConfig) {
 	// at its own placement without anyone remembering to say so twice (audit.go).
 	srv.families[cfg.path] = cfg
 	base := apiPrefix + "/" + cfg.path
-	mux.HandleFunc("GET "+base, rs.list)
-	mux.HandleFunc("POST "+base, rs.create)
-	mux.HandleFunc("GET "+base+"/{id}", rs.get)
-	mux.HandleFunc("PATCH "+base+"/{id}", rs.patch)
-	mux.HandleFunc("DELETE "+base+"/{id}", rs.delete)
+	rt.HandleFunc("GET "+base, rs.list)
+	rt.HandleFunc("POST "+base, rs.create)
+	rt.HandleFunc("GET "+base+"/{id}", rs.get)
+	rt.HandleFunc("PATCH "+base+"/{id}", rs.patch)
+	rt.HandleFunc("DELETE "+base+"/{id}", rs.delete)
 }
 
 // resourceFields is the api/1 resource baseline the api layer reads out of a

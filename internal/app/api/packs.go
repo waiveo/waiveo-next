@@ -71,24 +71,24 @@ func packCursorInvalid(cursor string) *apihttp.PageParamError {
 // capture {publisher} and {name} separately and rejoin them — the id never rides
 // as a single opaque segment. A page path (UIS-001) MAY itself be nested, so the
 // page route takes a trailing {path...} wildcard.
-func (srv *server) mountPacks(mux *http.ServeMux) {
+func (srv *server) mountPacks(rt *router) {
 	base := apiPrefix + "/packs"
-	mux.HandleFunc("POST "+base, srv.installPack)
-	mux.HandleFunc("GET "+base, srv.listPacks)
-	mux.HandleFunc("GET "+base+"/{publisher}/{name}", srv.getPack)
-	mux.HandleFunc("DELETE "+base+"/{publisher}/{name}", srv.deletePack)
-	mux.HandleFunc("GET "+base+"/{publisher}/{name}/pages/{path...}", srv.getPackPage)
-	mux.HandleFunc("GET "+base+"/{publisher}/{name}/messages/{locale}", srv.getPackMessages)
+	rt.HandleFunc("POST "+base, srv.installPack)
+	rt.HandleFunc("GET "+base, srv.listPacks)
+	rt.HandleFunc("GET "+base+"/{publisher}/{name}", srv.getPack)
+	rt.HandleFunc("DELETE "+base+"/{publisher}/{name}", srv.deletePack)
+	rt.HandleFunc("GET "+base+"/{publisher}/{name}/pages/{path...}", srv.getPackPage)
+	rt.HandleFunc("GET "+base+"/{publisher}/{name}/messages/{locale}", srv.getPackMessages)
 
 	// The pack-data surface: CRUD over a declared collection's universal-envelope
 	// rows (MAN-051/052), with the full api/1 conventions. The literal `data`
 	// segment is unambiguous against the sibling `pages`/`messages` routes.
 	data := base + "/{publisher}/{name}/data/{collection}"
-	mux.HandleFunc("GET "+data, srv.listPackRows)
-	mux.HandleFunc("POST "+data, srv.createPackRow)
-	mux.HandleFunc("GET "+data+"/{entity_id}", srv.getPackRow)
-	mux.HandleFunc("PATCH "+data+"/{entity_id}", srv.patchPackRow)
-	mux.HandleFunc("DELETE "+data+"/{entity_id}", srv.deletePackRow)
+	rt.HandleFunc("GET "+data, srv.listPackRows)
+	rt.HandleFunc("POST "+data, srv.createPackRow)
+	rt.HandleFunc("GET "+data+"/{entity_id}", srv.getPackRow)
+	rt.HandleFunc("PATCH "+data+"/{entity_id}", srv.patchPackRow)
+	rt.HandleFunc("DELETE "+data+"/{entity_id}", srv.deletePackRow)
 }
 
 // packIDFromPath rejoins the {publisher}/{name} path segments into the pack id.
