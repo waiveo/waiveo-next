@@ -131,3 +131,51 @@ func storeGenerationForCheck(t *testing.T, dsn string) int64 {
 	}
 	return g
 }
+
+// TestStoreCheckReportsTheDurableEventLog: the same store now carries the
+// events/1 durable event log, and the canonicalization pass reaches into it (a
+// stored event's scope_node follows a renamed scope node). An operator deciding
+// whether to restart should be able to see how much history that covers, per
+// retention class — the audit tier especially, since security-model/1 SEC-150
+// makes those records the platform's only audit trail.
+func TestStoreCheckReportsTheDurableEventLog(t *testing.T) {
+	dsn := seedStoreFileForCheck(t)
+
+	var empty bytes.Buffer
+	if code := reportStoreIDs(dsn, &empty); code != 0 {
+		t.Fatalf("reportStoreIDs exit code = %d, want 0\n%s", code, empty.String())
+	}
+	if !strings.Contains(empty.String(), "durable event log: empty") {
+		t.Fatalf("a store holding no events must say so:\n%s", empty.String())
+	}
+
+	db, err := sql.Open("sqlite", "file:"+dsn)
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	for i, row := range []struct{ id, schema, class string }{
+		{"01J9F00000000000000000000A", "audit.event", "audit-long"},
+		{"01J9F00000000000000000000B", "audit.event", "audit-long"},
+		{"01J9F00000000000000000000C", "box.vitals", "telemetry-standard"},
+	} {
+		if _, err := db.Exec(
+			`INSERT INTO events (id, schema, ts, scope_node, trace_id, cost_class, retention_class, origin, origin_principal, payload)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			row.id, row.schema, int64(i), "", "", "", row.class, "internal", "", `{}`); err != nil {
+			db.Close()
+			t.Fatalf("insert event %d: %v", i, err)
+		}
+	}
+	db.Close()
+
+	var out bytes.Buffer
+	if code := reportStoreIDs(dsn, &out); code != 0 {
+		t.Fatalf("reportStoreIDs exit code = %d, want 0\n%s", code, out.String())
+	}
+	got := out.String()
+	for _, want := range []string{"3 event(s) retained", "audit-long=2", "telemetry-standard=1"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("report does not carry %q:\n%s", want, got)
+		}
+	}
+}

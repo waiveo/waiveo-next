@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"sync"
 	"syscall"
 	"time"
@@ -50,13 +51,17 @@ import (
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
-// feederEventLogRetention bounds the app-side live-event log (events/1): the most
-// recent telemetry-derived events retained for a resuming/backlog-reading
-// /events/v1 subscriber. It is generous for the low automation.run rate a
-// first-photon dev stack produces; the specific horizon is a platform-config
-// concern events/1 leaves open (EVT-153/154), so it is a named constant here, not
-// a contract value.
-const feederEventLogRetention = 4096
+// eventRetentionSweepInterval is how often the feeder applies the events/1
+// retention policy to the persisted event log (deleting rows past their class's
+// window, trimming a class past its row cap).
+//
+// It is a SWEEP cadence, not the retention guarantee. The guarantee is the
+// policy's per-class window, and a window is a floor — "retained for a bounded
+// window" (EVT-010) — so a row that outlives its window by up to one sweep is
+// still inside the guarantee, while one deleted early would not be. Hourly is
+// therefore free to be coarse: the shortest window the policy configures is
+// measured in days.
+const eventRetentionSweepInterval = time.Hour
 
 // firstPhotonSite is the app peer's authoritative site_binding for Wave-1
 // first-photon (relay/1 REL-036): the site a relay is bound to, and that
@@ -211,6 +216,11 @@ func envOr(env func(string) string, key, def string) string {
 // and a refusal means the boot would decline to start and the store needs a look
 // first.
 //
+// It also reports what the durable event log is holding, because the same store
+// now carries it and the canonicalization pass reaches into it: a stored event's
+// scope_node follows a renamed scope node, so an operator deciding whether to
+// restart should be able to see how much audit history is in scope for that.
+//
 // The return value is the process exit code: 0 when the store is fine or merely
 // needs a rewrite the boot can perform, 1 when it cannot be opened or the
 // rewrite would be refused.
@@ -230,14 +240,51 @@ func reportStoreIDs(storePath string, out io.Writer) int {
 	}
 	if len(m.Rewrites) == 0 {
 		fmt.Fprintf(out, "%s: every row id is already a canonical ULID; the next boot will not touch it.\n", storePath)
-		return 0
+	} else {
+		fmt.Fprintf(out, "%s: %d row id(s) will be canonicalized at the next boot:\n", storePath, len(m.Rewrites))
+		for _, rw := range m.Rewrites {
+			fmt.Fprintf(out, "  %-16s %s -> %s\n", rw.Kind, rw.From, rw.To)
+		}
+		fmt.Fprintf(out, "references to them are rewritten in the same transaction; nothing has been changed by this check.\n")
 	}
-	fmt.Fprintf(out, "%s: %d row id(s) will be canonicalized at the next boot:\n", storePath, len(m.Rewrites))
-	for _, rw := range m.Rewrites {
-		fmt.Fprintf(out, "  %-16s %s -> %s\n", rw.Kind, rw.From, rw.To)
-	}
-	fmt.Fprintf(out, "references to them are rewritten in the same transaction; nothing has been changed by this check.\n")
+	reportEventLog(st, out)
 	return 0
+}
+
+// reportEventLog prints what the durable event log holds, by retention class. A
+// failure to read it is reported and not fatal: this check exists to tell an
+// operator what a restart will do to the ROW IDS, and it should still answer
+// that question if the event tables cannot be read.
+func reportEventLog(st *store.Store, out io.Writer) {
+	log, err := st.EventLog(events.DefaultRetentionPolicy(), nil, func(error) {})
+	if err != nil {
+		fmt.Fprintf(out, "the durable event log could not be opened: %v\n", err)
+		return
+	}
+	total, byClass, err := log.Count()
+	if err != nil {
+		fmt.Fprintf(out, "the durable event log could not be counted: %v\n", err)
+		return
+	}
+	if total == 0 {
+		fmt.Fprintf(out, "durable event log: empty.\n")
+		return
+	}
+	fmt.Fprintf(out, "durable event log: %d event(s) retained", total)
+	for _, class := range sortedClasses(byClass) {
+		fmt.Fprintf(out, ", %s=%d", class, byClass[class])
+	}
+	fmt.Fprintf(out, "\n")
+}
+
+// sortedClasses orders a per-class count map so the report is stable run to run.
+func sortedClasses(byClass map[string]int) []string {
+	out := make([]string, 0, len(byClass))
+	for c := range byClass {
+		out = append(out, c)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func main() {
@@ -429,25 +476,42 @@ func main() {
 	idem := apihttp.NewIdempotencyStore(nowMs, 0)
 
 	// The live observability plane (events/1 EVT-010/013/100/130-144): ONE shared
-	// event log the relay-telemetry ingest writes into and the /events/v1 SSE
-	// server streams from, bridged by an eventsse.Hub — the concurrent-safe
-	// live-transport boundary the EventLog delegates its synchronization to. The
-	// relay pushes each fired rule's automation.run to /telemetry/v1/push;
-	// eventingest reconstructs a full events/1 envelope (origin: relay, the site
-	// scope_node, a recording-order id, the schema's cost/retention class),
-	// events.Validates it (EVT-013), and appends it THROUGH the Hub, whose Append
-	// wakes every connected /events/v1 subscriber so a telemetry-derived event
-	// pushes live (REL-090/092 -> EVT-010/100). firstPhotonSite.ScopeNode is the
-	// authoritative site node stamped onto every ingested event (the REL-090 wire
-	// record carries no per-record scope); a ulid.Monotonic() factory mints each
-	// event's recording-order id (EVT-011). It is monotonic — NOT plain ulid.New —
-	// because ingest reconstructs a whole PushBatch in a tight loop and two rule
-	// firings inside one relay flush tick easily share a wall-clock millisecond;
-	// plain New's independent random tail could then sort the second-recorded event
-	// below the first, delivering them out of recording order and, in a narrow
-	// interleaving with a live drain, permanently dropping one from a lagging
-	// subscriber's stream (EVT-011, REL-094/097, EVT-135/143). The monotonic factory
-	// makes same-millisecond ids sort in mint (recording) order.
+	// event log the relay-telemetry ingest and the auth plane's auditor write
+	// into and the /events/v1 SSE server streams from, bridged by an eventsse.Hub
+	// — the concurrent-safe live-transport boundary the log delegates its
+	// synchronization to. The relay pushes each fired rule's automation.run to
+	// /telemetry/v1/push; eventingest reconstructs a full events/1 envelope
+	// (origin: relay, the site scope_node, a recording-order id, the schema's
+	// cost/retention class), events.Validates it (EVT-013), and appends it THROUGH
+	// the Hub, whose Append wakes every connected /events/v1 subscriber so a
+	// telemetry-derived event pushes live (REL-090/092 -> EVT-010/100).
+	// firstPhotonSite.ScopeNode is the authoritative site node stamped onto every
+	// ingested event (the REL-090 wire record carries no per-record scope).
+	//
+	// The log is the PERSISTENT one, in the app store beside the rows it
+	// describes. EVT-010 defines a durable event as "retained for a bounded window
+	// regardless of whether any subscriber is connected", and EVT-141 makes a
+	// resume from a point past that window a marked gap rather than a silent hole
+	// — neither is satisfiable by a log whose window is a process lifetime. It
+	// matters most for the audit trail: security-model/1 SEC-150 makes audit.event
+	// the platform's SOLE audit mechanism, so every login, session and API-key
+	// issuance and revocation, and every mutating api/1 request files its only
+	// permanent record here.
+	//
+	// A boot-time sweep applies the retention policy before anything reads the
+	// log, so a box that was off past a window does not serve expired records
+	// until the first tick, and a failing sweep is reported rather than assumed.
+	//
+	// eventIDs is the ONE recording-order id source (EVT-011) both producers mint
+	// from — the relay ingest below and the auditor further down. One source
+	// because the ordering guarantee is over the LOG, not over a producer: two
+	// independent generators can invert against each other inside a millisecond
+	// just as easily as one non-monotonic generator can invert against itself, and
+	// an inverted id is appended behind a connected subscriber's cursor and so
+	// never delivered to it at all (REL-094/097, EVT-135/143). It is seeded from
+	// the stored head, so a restart — including one where the box's clock came
+	// back low, which is exactly what SEC-066-068 exists for — cannot mint an id
+	// sorting under an event already in the log.
 	//
 	// Both routes are authenticated, by the credential each caller actually
 	// holds. /events/v1 takes a platform session or API key (EVT-110-114, wired
@@ -460,9 +524,29 @@ func main() {
 	// the relay/1 channel's own peer authentication applied to the HTTP transport
 	// that stands in for a telemetry.push frame, not a second, weaker credential
 	// minted for the same peer.
-	eventLog := events.NewEventLog(feederEventLogRetention)
+	eventLog, err := st.EventLog(events.DefaultRetentionPolicy(), nowMs, func(err error) {
+		// A storage failure the events.Log surface cannot return. On the append
+		// path it means a durable record was NOT written, which on the audit
+		// path is the platform failing to record something SEC-150 says it must
+		// — so it is logged at the loudest thing a log line has.
+		log.Printf("waiveo-feeder: EVENT LOG FAILURE: %v", err)
+	})
+	if err != nil {
+		log.Fatalf("waiveo-feeder: open the durable event log: %v", err)
+	}
+	if pruned, err := eventLog.Prune(); err != nil {
+		log.Printf("waiveo-feeder: WARNING — the event-log retention sweep failed at boot: %v", err)
+	} else if pruned.Rows > 0 {
+		log.Printf("waiveo-feeder: retired %d event(s) past their retention window %v", pruned.Rows, pruned.ByClass)
+	}
+	eventHead, err := eventLog.Head()
+	if err != nil {
+		log.Fatalf("waiveo-feeder: read the durable event log's head: %v\n"+
+			"    every event id must sort above it (EVT-011); starting without knowing it could append behind a live subscriber", err)
+	}
+	eventIDs := ulid.MonotonicFrom(eventHead)
 	eventHub := eventsse.NewHub(eventLog)
-	telemetryIngest := eventingest.New(eventHub, firstPhotonSite.ScopeNode, ulid.Monotonic(),
+	telemetryIngest := eventingest.New(eventHub, firstPhotonSite.ScopeNode, eventIDs,
 		func(relayID, serial string) bool {
 			if _, enrolled := enrollSrv.RelayEnrollmentKey(relayID); !enrolled {
 				return false
@@ -507,7 +591,13 @@ func main() {
 	// `trusted` in the meantime would put a claim in the audit trail that nothing
 	// backs.
 	clockAssessment := func() string { return auth.ClockUntrusted }
-	auditor := auth.NewAuditor(eventHub, firstPhotonSite.ScopeNode, nowMs, ulid.New, clockAssessment)
+	// eventIDs, not a generator of the auditor's own: an audit record and a
+	// telemetry record land in the SAME log, and the ordering guarantee EVT-011
+	// states is over that log. Two independent id sources would invert against
+	// each other inside a shared millisecond, and an audit record that sorted
+	// under an already-delivered telemetry record would be appended behind every
+	// connected subscriber's cursor — recorded, and never seen.
+	auditor := auth.NewAuditor(eventHub, firstPhotonSite.ScopeNode, nowMs, eventIDs, clockAssessment)
 	authn := auth.NewAuthenticator(authStore, auditor, auth.NewDefaultLockout(), revocations)
 
 	// The first-boot claim window (SEC-120). On an unclaimed box this mints a
@@ -633,6 +723,24 @@ func main() {
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.ListenAndServeTLS("", "") }()
 
+	// Keep applying the event-log retention policy while the process runs. The
+	// boot sweep above covers everything that expired while the box was off;
+	// this covers a box that stays up for months. Stopped on shutdown so the
+	// sweep never races the drain below.
+	retentionSweep := time.NewTicker(eventRetentionSweepInterval)
+	go func() {
+		for range retentionSweep.C {
+			pruned, err := eventLog.Prune()
+			if err != nil {
+				log.Printf("waiveo-feeder: WARNING — the event-log retention sweep failed: %v", err)
+				continue
+			}
+			if pruned.Rows > 0 {
+				log.Printf("waiveo-feeder: retired %d event(s) past their retention window %v", pruned.Rows, pruned.ByClass)
+			}
+		}
+	}()
+
 	// Graceful shutdown. http.Server.Shutdown does NOT touch hijacked
 	// connections — every live /relay/v1 WebSocket is invisible to it — so
 	// the relay-connection server's own registry (CloseAll) is what
@@ -645,6 +753,7 @@ func main() {
 		log.Fatal(err)
 	case sig := <-sigCh:
 		log.Printf("waiveo-feeder: %s — shutting down", sig)
+		retentionSweep.Stop()
 		relayConnSrv.CloseAll()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
