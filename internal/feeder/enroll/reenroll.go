@@ -24,7 +24,7 @@ import (
 // later wave, mirroring internal/relay/hello's AppPeerServer).
 func (s *Server) handleReEnrollChallenge(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		s.methodNotAllowed(w, r)
 		return
 	}
 
@@ -54,7 +54,7 @@ func (s *Server) handleReEnrollChallenge(w http.ResponseWriter, r *http.Request)
 // in place of a renew-ack.
 func (s *Server) handleReEnrollRenew(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		s.methodNotAllowed(w, r)
 		return
 	}
 

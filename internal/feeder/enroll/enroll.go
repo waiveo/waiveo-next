@@ -159,7 +159,7 @@ type claimTokenResponse struct {
 // the feeder.
 func (s *Server) handleClaimToken(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		s.methodNotAllowed(w, r)
 		return
 	}
 
@@ -204,7 +204,7 @@ type enrollResponse struct {
 // — never a silent second enrollment.
 func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		s.methodNotAllowed(w, r)
 		return
 	}
 
@@ -517,6 +517,20 @@ func randomHex(n int) string {
 // example is `"ed25519:<hex>"`, so that is this codec's grammar.
 func encodeVerificationKey(pub ed25519.PublicKey) string {
 	return "ed25519:" + hex.EncodeToString(pub)
+}
+
+// methodNotAllowed answers a bootstrap-endpoint request whose HTTP method is
+// not the exchange's own with the relay/1 typed error frame over the REL-010
+// bootstrap transport — MALFORMED_MESSAGE, the taxonomy's "did not satisfy its
+// type's minimum shape" row (REL-002/003) — never a bare plain-text body
+// (REL-007). No id: the refused request never presented a correlatable frame.
+func (s *Server) methodNotAllowed(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusMethodNotAllowed, reenroll.ErrorFrame{
+		Type:    "error",
+		TraceID: apihttp.TraceID(r),
+		Code:    "MALFORMED_MESSAGE",
+		Message: "this exchange does not accept " + r.Method + " requests.",
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -53,6 +53,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/maaxton/waiveo-next/internal/relay/hello"
+	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/heartbeat"
 	"github.com/maaxton/waiveo-next/internal/shared/ulid"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
@@ -196,7 +197,16 @@ func (s *Server) ConnCount() int {
 func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !offersSubprotocol(r) {
-			http.Error(w, fmt.Sprintf("subprotocol %q required", wire.Subprotocol), http.StatusBadRequest)
+			// Pre-upgrade refusal: no frame exists yet, so the typed error
+			// rides the HTTP response body (REL-007's frame shape; no
+			// relay_id — the pre-auth exception REL-005 carves out). The
+			// subprotocol carries the protocol major, so offering none is a
+			// version-negotiation failure, not a malformed frame.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(wire.NewErrorFrame("", apihttp.TraceID(r), "",
+				"PROTOCOL_VERSION_UNSUPPORTED",
+				fmt.Sprintf("the %q subprotocol is required; no supported protocol major was offered.", wire.Subprotocol)))
 			return
 		}
 		ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
