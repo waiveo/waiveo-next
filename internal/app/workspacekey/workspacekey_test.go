@@ -216,3 +216,69 @@ func TestPrivateIsNotAliasedIntoTheCaller(t *testing.T) {
 		t.Error("the private half a caller already held was zeroed by Destroy — Private() handed out an alias of the key's own storage")
 	}
 }
+
+// TestSecretSealerSurvivesAReload is the property a TOTP credential depends on:
+// a secret sealed by one process must open in the next one. The sub-key is
+// derived from the persisted data key, so a reload of the same directory must
+// produce a sealer that opens what the first one sealed — if it did not, every
+// second factor on the box would stop working at the next restart.
+func TestSecretSealerSurvivesAReload(t *testing.T) {
+	dir := t.TempDir()
+	first := loadKey(t, dir)
+	sealer, err := first.SecretSealer()
+	if err != nil {
+		t.Fatalf("SecretSealer: %v", err)
+	}
+	sealed, err := sealer.Seal([]byte("shared secret"), []byte("credential:01J8"))
+	if err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+
+	reloaded, err := loadKey(t, dir).SecretSealer()
+	if err != nil {
+		t.Fatalf("SecretSealer after reload: %v", err)
+	}
+	got, err := reloaded.Open(sealed, []byte("credential:01J8"))
+	if err != nil {
+		t.Fatalf("a reloaded sealer could not open what the first one sealed: %v", err)
+	}
+	if string(got) != "shared secret" {
+		t.Fatalf("Open returned %q, want %q", got, "shared secret")
+	}
+}
+
+// TestSecretSealerIsNotAConstantAcrossWorkspaces pins that the sealing key is
+// derived from THIS workspace's own data key rather than from a build-time
+// constant: two workspaces must not be able to open each other's sealed
+// secrets. A sealer keyed on anything shared — a hardcoded label, a zeroed data
+// key — would pass every round-trip test above and fail this one.
+func TestSecretSealerIsNotAConstantAcrossWorkspaces(t *testing.T) {
+	a, err := loadKey(t, t.TempDir()).SecretSealer()
+	if err != nil {
+		t.Fatalf("SecretSealer: %v", err)
+	}
+	b, err := loadKey(t, t.TempDir()).SecretSealer()
+	if err != nil {
+		t.Fatalf("SecretSealer: %v", err)
+	}
+	sealed, err := a.Seal([]byte("secret"), []byte("ctx"))
+	if err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	if _, err := b.Open(sealed, []byte("ctx")); err == nil {
+		t.Fatal("a second workspace's sealer opened the first workspace's secret — the sub-key is not workspace-scoped")
+	}
+}
+
+// TestDestroyedKeyHasNoSecretSealer is the factory-reset half (SEC-121): once
+// the data key is destroyed there is nothing to seal under, and the refusal must
+// be explicit rather than a working sealer keyed on zeroed bytes.
+func TestDestroyedKeyHasNoSecretSealer(t *testing.T) {
+	k := loadKey(t, t.TempDir())
+	if err := k.Destroy(); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+	if _, err := k.SecretSealer(); !errors.Is(err, workspacekey.ErrDestroyed) {
+		t.Fatalf("SecretSealer on a destroyed key = %v; want ErrDestroyed", err)
+	}
+}

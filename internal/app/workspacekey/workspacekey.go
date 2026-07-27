@@ -37,7 +37,9 @@ package workspacekey
 
 import (
 	"crypto/ed25519"
+	"crypto/hkdf"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
@@ -51,6 +53,7 @@ import (
 	"golang.org/x/crypto/chacha20poly1305"
 
 	"github.com/maaxton/waiveo-next/internal/shared/secretfile"
+	"github.com/maaxton/waiveo-next/internal/shared/secretseal"
 	"github.com/maaxton/waiveo-next/internal/shared/signhash"
 	"github.com/maaxton/waiveo-next/internal/shared/ulid"
 )
@@ -250,6 +253,52 @@ func (k *Key) WrapDataKey(wrapKey []byte) (string, error) {
 	}
 	sealed := aead.Seal(nonce, nonce, k.data, nil)
 	return base64.StdEncoding.EncodeToString(sealed), nil
+}
+
+// labelSecretSeal is the fixed context label the secret-sealing sub-key is
+// derived from the data key under. It is the same per-purpose separation
+// technique SEC-047 names and `archive/1` ARC-011 uses for its own two export
+// sub-keys: the data key itself is never used as an encryption key directly, so
+// a weakness in one construction cannot reach another purpose's material.
+//
+// This string is effectively frozen. Change it and every already-sealed secret
+// stub in a deployment becomes unopenable — the wrapped value carries no label
+// of its own to negotiate with.
+const labelSecretSeal = "waiveo-security-model/1 secret-stub-seal"
+
+// SecretSealer returns the sealer every recoverable secret stub this workspace
+// holds is protected under (SEC-040: the data key is "the per-workspace
+// symmetric key that wraps every secret stub").
+//
+// It answers the question a TOTP shared secret forces: a second-factor secret
+// cannot be hashed the way a password is, because verifying a code means
+// recomputing HMAC over the secret itself. So it must be recoverable, and
+// "recoverable" without a key is just "stored in the clear beside the password
+// hash" — one database read from being an attacker's second factor too. Sealing
+// it under a sub-key of the data key puts the material behind a file
+// (`workspace_data_key`, 0600 under a 0700 directory) that lives outside the
+// database, so a stolen or leaked auth database alone yields nothing usable.
+//
+// A DESTROYED key returns ErrDestroyed rather than a sealer over zeroed bytes.
+// That is the same trap WrapDataKey documents: zeroed key material is exactly as
+// long as live key material, so a length check would hand back a perfectly
+// functional sealer keyed on 32 zero bytes and every secret sealed after a
+// factory reset would be protected by a constant every reader of this source
+// knows.
+func (k *Key) SecretSealer() (*secretseal.Sealer, error) {
+	k.mu.RLock()
+	defer k.mu.RUnlock()
+	if k.destroyed {
+		return nil, ErrDestroyed
+	}
+	if len(k.data) != dataKeySize {
+		return nil, fmt.Errorf("workspacekey: data key is %d bytes, want %d — this workspace has no data key to seal under (SEC-040)", len(k.data), dataKeySize)
+	}
+	sub, err := hkdf.Expand(sha256.New, k.data, labelSecretSeal, secretseal.KeySize)
+	if err != nil {
+		return nil, fmt.Errorf("workspacekey: derive secret-seal sub-key: %w", err)
+	}
+	return secretseal.New(sub)
 }
 
 // DataKeyPresent reports whether this workspace holds a data key at all.
