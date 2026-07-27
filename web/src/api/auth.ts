@@ -9,7 +9,7 @@
 // deliberately script-readable cookie and echoed by ApiClient on every mutating
 // request (SEC-024) — see client.ts.
 
-import { ApiClient } from "./client";
+import { ApiClient, ApiError } from "./client";
 
 /** The principal kinds `security-model.md` SEC-001 defines. */
 export type PrincipalKind = "user" | "screen" | "relay" | "pack-service" | "ingest-token" | "system-console";
@@ -37,6 +37,46 @@ export interface SessionSummary {
 export interface LoginRequest {
   identifier: string;
   password: string;
+  /** The second-factor code (`security-model.md` SEC-004). Optional in SHAPE and
+   * mandatory in EFFECT for any principal holding a `totp` credential: such a
+   * login is REFUSED without it, and the refusal names the factor to collect
+   * (see `secondFactorRequired`). There is no intermediate credential between
+   * the two calls — the client simply calls this same operation again carrying
+   * everything, and nothing is minted until both factors are satisfied. */
+  totp_code?: string;
+}
+
+/** A pending TOTP enrollment, returned exactly once by `enrollTotp`. Nothing
+ * here authenticates until `confirmTotp` arms it. */
+export interface TotpEnrollment {
+  /** The shared secret as base32, for an operator typing it by hand. */
+  secret: string;
+  /** The same secret as an `otpauth://` URI, for a QR code. */
+  otpauth_uri: string;
+}
+
+/** The armed `totp` credential — metadata only, never a raw secret value. */
+export interface TotpCredential {
+  credential_id: string;
+  principal_id: string;
+  kind: "totp";
+  created_at: number;
+  /** How many OTHER sessions and API keys arming the credential revoked. The
+   * calling session is never among them — it just proved the new factor. */
+  revoked_sessions: number;
+}
+
+/** Reports whether a failed login was refused for a MISSING second factor, as
+ * opposed to a wrong credential.
+ *
+ * The distinction is carried by a Problem extension member rather than by a
+ * distinct error code, because it is not a distinct KIND of refusal — the caller
+ * is still simply not authenticated. It is present only where the presented
+ * password was accepted, and is deliberately absent from a wrong password, a
+ * wrong code and a replayed code alike, so a client cannot use its absence to
+ * learn which of those happened. */
+export function secondFactorRequired(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 401 && err.problem?.second_factor === "totp";
 }
 
 /** A first-boot claim (SEC-120): the one-time setup code the installer
@@ -62,6 +102,15 @@ export interface AuthModule {
   session(): Promise<SessionSummary | null>;
   /** Claim an unclaimed workspace by redeeming the one-time setup code. */
   claim(body: ClaimRequest): Promise<SessionSummary>;
+  /** Begin a second-factor enrollment for the CALLING principal, returning the
+   * shared secret once. Throws ApiError 403 when this principal already holds
+   * one — replacing an existing second factor is a credential-reset or recovery
+   * operation (SEC-052), not a self-service one. */
+  enrollTotp(): Promise<TotpEnrollment>;
+  /** Arm the pending enrollment by returning a code computed from it. On
+   * success every OTHER session of this principal is revoked; the calling
+   * session survives, having just proven the new factor. */
+  confirmTotp(code: string): Promise<TotpCredential>;
 }
 
 export function createAuthModule(client: ApiClient): AuthModule {
@@ -77,6 +126,12 @@ export function createAuthModule(client: ApiClient): AuthModule {
     },
     async claim(body) {
       return client.post<SessionSummary>("/auth/setup", body);
+    },
+    async enrollTotp() {
+      return client.post<TotpEnrollment>("/auth/totp/enroll", {});
+    },
+    async confirmTotp(code) {
+      return client.post<TotpCredential>("/auth/totp/confirm", { code });
     },
   };
 }

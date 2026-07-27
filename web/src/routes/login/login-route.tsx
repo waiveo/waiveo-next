@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { Button, FormField } from "@/components/kit";
-import { ApiError, createApi, type WaiveoApi } from "@/api";
+import { ApiError, createApi, secondFactorRequired, type WaiveoApi } from "@/api";
 
 /**
  * The sign-in route ("/login") — the console's one credential-exchange page.
@@ -22,6 +22,18 @@ import { ApiError, createApi, type WaiveoApi } from "@/api";
  *     distinctly, because it is the one failure where the operator's next action
  *     differs: retrying immediately cannot work, and a person who knows their
  *     password is right otherwise has no way to tell why it stopped working.
+ *
+ * The second factor (SEC-004) is collected by this same form, revealed only once
+ * the server has said it is due. There is deliberately no second page and no
+ * intermediate credential to carry between two of them: the server refuses the
+ * password-only login, names the factor, and this form re-submits the SAME
+ * operation with everything. Nothing is minted until both factors are satisfied,
+ * so there is no half-signed-in state for this page to hold.
+ *
+ * A wrong code is reported with the same message as a wrong password, matching
+ * the server's own byte-identical refusal — telling the operator "the code was
+ * wrong" would confirm to anyone working through a password list that the
+ * password was right.
  *
  * On success the browser holds a host-only session cookie (SEC-023) and its
  * companion CSRF cookie (SEC-024); the client picks both up automatically, so
@@ -45,6 +57,11 @@ export default function LoginRoute({ api }: LoginRouteProps = {}) {
   const [params] = useSearchParams();
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
+  const [totpCode, setTotpCode] = useState("");
+  // Set once the server has said a second factor is due for these credentials.
+  // It never un-sets: a code field that vanished on a wrong code would take the
+  // operator back to a form that cannot succeed.
+  const [needsCode, setNeedsCode] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [traceId, setTraceId] = useState<string | null>(null);
@@ -63,18 +80,40 @@ export default function LoginRoute({ api }: LoginRouteProps = {}) {
     setTraceId(null);
     const client = api ?? createApi();
     try {
-      await client.auth.login({ identifier, password });
+      await client.auth.login({
+        identifier,
+        password,
+        ...(totpCode ? { totp_code: totpCode } : {}),
+      });
       navigate(next, { replace: true });
     } catch (err) {
-      if (err instanceof ApiError) {
+      if (secondFactorRequired(err)) {
+        // The password was accepted and a second factor is due. Reveal the code
+        // field and let the operator complete the SAME operation; nothing has
+        // been minted, so there is nothing here to hold on to between the two
+        // submissions beyond what the form already has.
+        setNeedsCode(true);
+        setTotpCode("");
+        setError(null);
+        setTraceId(null);
+      } else if (err instanceof ApiError) {
         setTraceId(err.traceId);
         setError(
           err.code === "CREDENTIAL_LOCKED"
             ? "Too many failed attempts from this network. Wait for the lockout to lift, then try again."
             : err.code === "VALIDATION_FAILED"
               ? "Enter both an identifier and a password."
-              : "That identifier and password did not match.",
+              : needsCode
+                ? // Same wording the server's own identical refusal implies: a
+                  // message naming the code specifically would confirm the
+                  // password was right.
+                  "That sign-in was not accepted. Check your details and the current code, then try again."
+                : "That identifier and password did not match.",
         );
+        // A wrong code must not silently retry as password-only on the next
+        // submit; the field stays, and stays empty, so the next attempt carries
+        // a fresh code rather than the one just refused.
+        if (needsCode) setTotpCode("");
       } else {
         setError("Could not reach the server.");
       }
@@ -120,6 +159,29 @@ export default function LoginRoute({ api }: LoginRouteProps = {}) {
               />
             )}
           </FormField>
+
+          {needsCode ? (
+            <FormField
+              label="Authentication code"
+              required
+              help="The 6-digit code from your authenticator app."
+            >
+              {(control) => (
+                <input
+                  {...control}
+                  className={fieldClass}
+                  name="totp_code"
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  maxLength={6}
+                  autoFocus
+                  value={totpCode}
+                  onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, ""))}
+                />
+              )}
+            </FormField>
+          ) : null}
 
           {error ? (
             <p role="alert" className="text-sm text-destructive">

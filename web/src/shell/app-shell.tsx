@@ -20,6 +20,7 @@ import {
 import { Button, KitIcon, NavDrawer } from "@/components/kit";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
 import { SignOutButton } from "@/auth/sign-out-button";
+import { SecurityLink } from "@/auth/security-link";
 import { useMediaQuery } from "@/lib/use-media-query";
 import { cn } from "@/lib/utils";
 import type { WaiveoApi } from "@/api";
@@ -265,6 +266,7 @@ export function AppShell({ children, api }: { children?: ReactNode; api?: Waiveo
           <Brand className="wv-shell__mobile-brand" />
           <div className="ml-auto flex items-center gap-2">
             <ThemeToggle />
+            <SecurityLink />
             <SignOutButton />
           </div>
         </header>

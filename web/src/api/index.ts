@@ -6,6 +6,7 @@
 
 export {
   createAuthModule,
+  secondFactorRequired,
   type AuthModule,
   type SessionSummary,
   type LoginRequest,
@@ -13,6 +14,8 @@ export {
   type PrincipalKind,
   type Role,
   type AAL,
+  type TotpEnrollment,
+  type TotpCredential,
 } from "./auth";
 
 export {
