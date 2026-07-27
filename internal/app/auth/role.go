@@ -104,6 +104,37 @@ func Resolve(bindings []Binding, ancestors []string) (Role, bool) {
 	return "", false
 }
 
+// CanRead reports whether a principal holding bindings may READ a resource
+// placed at the scope node whose ancestor chain is ancestors — nearest first,
+// self included, exactly datamodel.ScopeTree.AncestorChain's output order and
+// exactly what Resolve consumes.
+//
+// It is deliberately a thin composition of Resolve rather than a second walk.
+// SEC-010's inheritance rule — a role bound at a scope node applies to that
+// node and, absent a more specific binding, to its descendants — is implemented
+// ONCE, in Resolve; every "can this principal see this node?" question in the
+// platform resolves through that one implementation. A second walk is how two
+// answers to the same question start disagreeing, and a visibility rule that
+// disagrees with the authorization rule is a leak by construction.
+//
+// `viewer` is the floor because it is the weakest of SEC-010's four roles and
+// the one RequiredRole already names for a safe method: every valid role is at
+// least a viewer. A binding carrying a role name outside the four carries no
+// authority at all (Role.AtLeast returns false for an unrecognized role), so a
+// malformed binding fails CLOSED — it grants sight of nothing — rather than
+// being treated as an unknown that might be permissive (SEC-005).
+//
+// An EMPTY ancestors chain — what AncestorChain returns for a node absent from
+// the tree it was built over — still resolves through Resolve's RootScopeNode
+// fallback: a platform-wide binding can read a row placed at a node the tree
+// does not (yet) carry, while a principal bound only somewhere inside the tree
+// cannot. That is the fail-closed direction on an unknown placement, and it is
+// what keeps a row whose scope_node dangles from becoming universally visible.
+func CanRead(bindings []Binding, ancestors []string) bool {
+	role, bound := Resolve(bindings, ancestors)
+	return bound && role.AtLeast(RoleViewer)
+}
+
 // Effective returns the strongest role a principal holds ANYWHERE in the tree,
 // and whether they hold any binding at all.
 //
@@ -119,11 +150,15 @@ func Resolve(bindings []Binding, ancestors []string) (Role, bool) {
 // contract does fix: the scope-node inheritance rule (SEC-010, Resolve above)
 // and the refuse-never-default-permit rule (SEC-005 — a principal with no
 // binding gets no authority from this function). The middleware uses Effective
-// rather than Resolve because no api/1 route in this increment is addressed BY a
-// scope node — a request names a resource, and the mapping from resource to
-// governing scope node is part of the same deferred per-operation configuration.
-// When that mapping lands, the middleware switches from Effective to Resolve and
-// this function's callers shrink to zero; Resolve is already the real rule.
+// rather than Resolve because a REQUEST is not addressed by a scope node — it
+// names a resource, and which role level each individual operation demands is
+// the deferred per-operation configuration.
+//
+// What is no longer deferred is the other half: which ROWS a request may see.
+// That question IS addressed by a scope node — every resource carries the node
+// it is placed under — so it is answered by CanRead/Resolve per row, not by
+// this function. Effective is now strictly an admission floor ("may this
+// caller reach this method at all"), and the visible set does the rest.
 func Effective(bindings []Binding) (Role, bool) {
 	best := Role("")
 	found := false

@@ -204,6 +204,10 @@ func (a *Authenticator) Authenticate(w http.ResponseWriter, r *http.Request, cod
 		AAL:       session.AAL,
 		SessionID: session.SessionID,
 		TokenKind: session.TokenKind,
+		// The very bindings this admission decision was made on, carried forward
+		// so a handler's per-row visibility check (auth.CanRead) resolves against
+		// the same set rather than re-reading one that may since have changed.
+		Bindings: bindings,
 	}, true
 }
 

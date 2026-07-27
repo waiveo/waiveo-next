@@ -119,6 +119,18 @@ type Principal struct {
 	// authority a cross-site form post can ride, a bearer header is not
 	// (SEC-024, middleware.go).
 	TokenKind string
+	// Bindings is this principal's COMPLETE role-binding set (SEC-010), carried
+	// on the resolved identity rather than re-read per handler. The middleware
+	// already loads it to make its own admission decision, so passing it forward
+	// costs nothing and buys the property that a request's visible scope-node
+	// set is computed from the same bindings the request was admitted on — a
+	// second read could observe a concurrent re-binding and answer "may reach
+	// this method" and "may see this row" from two different worlds.
+	//
+	// A zero Principal therefore carries NO bindings, which CanRead reads as "no
+	// authority anywhere". That is the intended fail-closed default: a handler
+	// reached without authentication sees nothing rather than everything.
+	Bindings []Binding
 }
 
 // principalContextKey is the unexported context key the middleware stores a
