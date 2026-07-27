@@ -39,6 +39,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -1073,4 +1074,112 @@ func TestMalformedHelloBodyDrawsMalformedMessage(t *testing.T) {
 	if refusal.Type != wire.FrameTypeError || refusal.Code != "MALFORMED_MESSAGE" || refusal.ID != "bad-body-1" {
 		t.Fatalf("refusal = %+v, want type=error code=MALFORMED_MESSAGE id=bad-body-1 (REL-002)", refusal)
 	}
+}
+
+// TestSupervisorChaosReconnect is the reconnect supervisor's end-to-end
+// chaos proof: the app peer is killed MID-FLIGHT (live connection torn
+// down, listener gone), a generation is authored while the relay is
+// offline, the app peer comes back (same enrollment registry, same
+// serving leaf, new listener) — and the supervisor re-establishes, its
+// pull-on-reconnect converges on the missed generation, and stopping it
+// leaks no goroutines (before/after counts).
+func TestSupervisorChaosReconnect(t *testing.T) {
+	h := newHarness(t)
+	store := enrolledRelay(t, h)
+
+	// The app peer's URL moves across the restart (a fresh httptest
+	// listener binds a fresh port); Connect reads it under the lock the
+	// test's restart also takes.
+	var urlMu sync.Mutex
+	currentURL := func() string {
+		urlMu.Lock()
+		defer urlMu.Unlock()
+		return h.ts.URL
+	}
+
+	baseline := runtime.NumGoroutine()
+
+	applied := make(chan int64, 16)
+	sup := relayclient.StartSupervisor(relayclient.SupervisorConfig{
+		Connect: func() (*relayclient.Client, error) {
+			return relayclient.Dial(relayclient.Config{
+				URL: currentURL(), Store: store, Declaration: testDeclaration,
+			})
+		},
+		OnConnected: func(c *relayclient.Client) {
+			// Pull-on-reconnect: claim the persisted last-applied
+			// generation, apply whatever is newer, ack it (REL-054).
+			var since *int64
+			if gen, _, ok, err := store.LastAppliedGeneration(); err == nil && ok {
+				since = &gen
+			}
+			reply, err := c.Pull("trace-supervisor", since)
+			if err != nil || reply.Type != wire.FrameTypeStateSnapshot {
+				return // unchanged (already converged) or a dead conn: nothing to apply
+			}
+			body, raw, err := relayclient.SnapshotFromFrame(reply)
+			if err != nil {
+				return
+			}
+			a, err := desiredstate.VerifyAndApply(store, body, raw)
+			if err != nil {
+				return
+			}
+			_ = c.SendStateAck(reply.ID, reply.TraceID, wire.StateAckBody{AppliedGeneration: a.Generation})
+			applied <- a.Generation
+		},
+		InitialBackoff: 20 * time.Millisecond,
+		MaxBackoff:     200 * time.Millisecond,
+	})
+
+	waitApplied := func(want int64) {
+		t.Helper()
+		deadline := time.After(15 * time.Second)
+		for {
+			select {
+			case gen := <-applied:
+				if gen == want {
+					return
+				}
+			case <-deadline:
+				t.Fatalf("generation %d was never applied through the supervisor", want)
+			}
+		}
+	}
+
+	// First connection converges on generation 1.
+	waitApplied(1)
+
+	// CHAOS: kill the app peer mid-flight — live conns torn down, listener
+	// closed — and author generation 2 while the relay is down.
+	h.connSrv.CloseAll()
+	h.ts.Close()
+	h.advanceGeneration(t, 2)
+	time.Sleep(100 * time.Millisecond) // let the supervisor eat a few failed re-dials
+
+	// Restart: same mux, same enrollment registry, same serving leaf
+	// (httptest reuses one fixed leaf, so the SPKI pin still matches).
+	urlMu.Lock()
+	h.ts = h.listen(t)
+	urlMu.Unlock()
+
+	// The supervisor re-establishes on its own and converges on the
+	// generation authored while it was offline.
+	waitApplied(2)
+	if gen, _, ok, err := store.LastAppliedGeneration(); err != nil || !ok || gen != 2 {
+		t.Fatalf("after chaos reconnect, persisted last-applied = (%d,%v,%v), want (2,true,nil)", gen, ok, err)
+	}
+
+	// Orderly end + goroutine hygiene: everything the supervisor and its
+	// connections spawned (read loops, heartbeats, dispatchers) winds down.
+	sup.Stop()
+	select {
+	case <-sup.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("supervisor never stopped")
+	}
+	waitFor(t, 10*time.Second, func() bool {
+		runtime.GC()
+		return runtime.NumGoroutine() <= baseline+5
+	}, fmt.Sprintf("goroutine leak after supervisor stop: baseline %d, now %d", baseline, runtime.NumGoroutine()))
 }
