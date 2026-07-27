@@ -107,9 +107,13 @@ export function runAction(
     }
     case "repeat-remove": {
       // The array + index come from the item's own iteration context (UIS-162);
-      // no array path or index is supplied by the author.
-      if (scope.item) {
-        store.removeItem({ tree: scope.item.arrayTree, loc: scope.item.arrayPath }, scope.item.index);
+      // no array path or index is supplied by the author. An item scope
+      // established by a `fragment` `bind` rather than a `repeat`/`table` row
+      // (UIS-183) carries no iteration position, so there is no array to splice
+      // — no-op rather than removing at a fabricated location.
+      const item = scope.item;
+      if (item?.arrayPath !== undefined && item.index !== undefined) {
+        store.removeItem({ tree: item.tree, loc: item.arrayPath }, item.index);
       }
       break;
     }

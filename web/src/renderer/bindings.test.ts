@@ -78,7 +78,14 @@ describe("bindings — data paths (UIS-100/103–107)", () => {
     const scope: RenderScope = {
       ...scopeOver(data),
       current: data.rows[1],
-      item: { name: "item", value: data.rows[1], index: 1, arrayPath: ["rows"], arrayTree: "resource" },
+      item: {
+        name: "item",
+        value: data.rows[1],
+        loc: ["rows", 1],
+        tree: "resource",
+        index: 1,
+        arrayPath: ["rows"],
+      },
     };
     expect(resolvePath("item.name", scope)).toBe("Beta");
     expect(resolvePath("item.$index", scope)).toBe(1);

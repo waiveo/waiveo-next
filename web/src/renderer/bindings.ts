@@ -21,15 +21,31 @@ import { ISO_4217_PATTERN, VOCAB_TABLE } from "./schema";
 /** An absolute location inside one of the store's two trees (resource | ui). */
 export type PathLoc = (string | number)[];
 
-/** The active `repeat`/`table` item scope (UIS-107). `name` is the itemScope name
- * (default `item`); `arrayPath` locates the containing array so `repeat-remove`
- * (UIS-162) can splice it without the array being addressable by path. */
+/** The active item scope: the reserved name (default `item`) that addresses the
+ * innermost narrowed value. Established by a `repeat`/`table` row (UIS-107) and,
+ * because UIS-183 makes a `fragment` `bind` "an ordinary Scope narrowing, the
+ * same mechanism `repeat` uses", by a bound `fragment` too — that is what lets a
+ * self-referential fragment addressed through `bind` (e.g. a `not` condition
+ * group's `item.not`) descend into the nested value instead of re-reading the
+ * outer one and recursing until the UIS-182 ceiling.
+ *
+ * `index`/`arrayPath` are the ITERATION facts — a `$index` position (UIS-107) and
+ * the containing array's location so `repeat-remove` can splice it without the
+ * array being addressable by path (UIS-162). A `fragment` `bind` narrows to a
+ * value that is not an array element, so it establishes neither; `loc`/`tree`
+ * (the value's own write location) are always present. */
 export interface ItemScope {
   name: string;
   value: unknown;
-  index: number;
-  arrayPath: PathLoc;
-  arrayTree: "resource" | "ui";
+  /** Absolute location of `value` — the write location a `<name>.<field>` bind
+   * resolves to. */
+  loc: PathLoc;
+  /** Which store tree `loc` lives in. */
+  tree: "resource" | "ui";
+  /** Zero-based iteration position; absent outside a `repeat`/`table` row. */
+  index?: number;
+  /** The iterated array's own location; absent outside a `repeat`/`table` row. */
+  arrayPath?: PathLoc;
 }
 
 export interface RenderScope {
@@ -148,7 +164,7 @@ function stepSegment(cursor: unknown, seg: Segment, scope: RenderScope): unknown
   // A bare array with a named segment has no field to read; only bracketed
   // access (index/$index) reaches into it — but the grammar always names first.
   if (seg.index !== undefined) {
-    const idx = seg.index === "$index" ? (scope.item ? scope.item.index : NaN) : seg.index;
+    const idx = seg.index === "$index" ? (scope.item?.index ?? NaN) : seg.index;
     v = Array.isArray(v) ? (v as unknown[])[idx as number] : undefined;
   }
   if (seg.predicate) v = selectPredicate(v, seg.predicate, scope);
@@ -221,8 +237,8 @@ export function resolvePathWithLoc(
     return { value: resolvePath(path, scope), loc: null, tree };
   } else if (scope.item && head === scope.item.name) {
     base = scope.item.value;
-    loc = [...scope.item.arrayPath, scope.item.index];
-    tree = scope.item.arrayTree;
+    loc = [...scope.item.loc];
+    tree = scope.item.tree;
     from = 1;
   } else {
     base = scope.current;
@@ -238,7 +254,7 @@ export function resolvePathWithLoc(
     cursor = rec ? rec[seg.name] : undefined;
     if (loc) loc.push(seg.name);
     if (seg.index !== undefined) {
-      const idx = seg.index === "$index" ? (scope.item ? scope.item.index : NaN) : seg.index;
+      const idx = seg.index === "$index" ? (scope.item?.index ?? NaN) : seg.index;
       cursor = Array.isArray(cursor) ? (cursor as unknown[])[idx as number] : undefined;
       if (loc) loc.push(idx as number);
     }

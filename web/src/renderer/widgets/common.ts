@@ -54,19 +54,45 @@ export function narrowToItem(
     current: element,
     currentPath,
     currentTree: arrayTree,
-    item: { name: itemScopeName, value: element, index, arrayPath: arrayLoc ?? [], arrayTree },
+    item: {
+      name: itemScopeName,
+      value: element,
+      loc: currentPath,
+      tree: arrayTree,
+      index,
+      arrayPath: arrayLoc ?? [],
+    },
   };
 }
 
 /** Narrow a scope for a `fragment` node's `bind` (UIS-183) — a fresh enclosing
- * Scope for the referenced subtree; `root` is unchanged (bind narrows `current`). */
+ * Scope for the referenced subtree; `root` is unchanged (bind narrows `current`).
+ *
+ * UIS-183 calls this "an ordinary Scope narrowing, the same mechanism `repeat`
+ * uses, UIS-107", and UIS-107's mechanism is BOTH halves: an unprefixed segment
+ * resolves against the narrowed value AND the reserved itemScope name addresses
+ * it. Narrowing only `current` leaves the itemScope name pointing at the OUTER
+ * value, which is why a self-referential fragment reached through a `bind` — the
+ * `not` arm of a nested condition group, `{"type":"fragment","bind":"item.not"}`,
+ * the shape this contract's own wire example uses — re-read the same node forever
+ * and terminated only at the UIS-182 recursion ceiling instead of descending to
+ * the negated leaf. Rebinding the name here is what makes `bind` narrow at all.
+ *
+ * The name carries over from the enclosing scope (a `repeat` MAY rename it via
+ * `itemScope`, UIS-107) so a fragment written against the caller's name keeps
+ * working; absent an enclosing item scope it is the contract's default, `item`.
+ * The narrowed value is not an array element, so no `index`/`arrayPath` is
+ * established — `<name>.$index` and `repeat-remove` belong to iteration, which a
+ * `bind` rescope is not. */
 export function narrowToFragmentBind(scope: RenderScope, bind: string): RenderScope {
   const { value, loc, tree } = resolvePathWithLoc(bind, scope);
+  const currentPath = loc ?? scope.currentPath;
   return {
     ...scope,
     current: value,
-    currentPath: loc ?? scope.currentPath,
+    currentPath,
     currentTree: tree,
+    item: { name: scope.item?.name ?? "item", value, loc: currentPath, tree },
   };
 }
 
