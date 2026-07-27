@@ -85,6 +85,17 @@ type server struct {
 	// Always non-nil: New builds and starts one when the caller wires none, so
 	// an accepted Job is never a promise nothing is working on.
 	jobs *JobRunner
+	// auditor emits this surface's events/1 `audit.event` records (audit.go). It
+	// is taken from the REQUIRED authenticator rather than wired separately, so
+	// the api layer and the auth flows record through one sink (SEC-150: no
+	// second audit trail) and there is no additional wiring step a deployment
+	// can omit. May be nil — an Auditor is nil-safe and silent.
+	auditor *auth.Auditor
+	// families is the CRUD resource registry the audit middleware reads a
+	// request's subject metadata out of, keyed by URL path segment. It is
+	// populated by mount() itself, so a family's audit identity and its routes
+	// are registered by one call and cannot drift apart.
+	families map[string]resourceConfig
 }
 
 // authExemptPaths are the api/1 operations that declare their own
@@ -134,6 +145,8 @@ func New(st *store.Store, idem *apihttp.IdempotencyStore, nowMs func() int64, ne
 	srv := &server{
 		store: st, idem: idem, nowMs: nowMs, newID: newID, content: content, contentBase: contentBase,
 		installer: packs.NewInstaller(st),
+		auditor:   authn.Auditor(),
+		families:  map[string]resourceConfig{},
 	}
 	for _, opt := range opts {
 		opt(srv)
@@ -188,7 +201,13 @@ func New(st *store.Store, idem *apihttp.IdempotencyStore, nowMs func() int64, ne
 	root := http.NewServeMux()
 	root.HandleFunc("POST "+apiPrefix+"/auth/login", authHandlers.Login)
 	root.HandleFunc("POST "+apiPrefix+"/auth/setup", authHandlers.Claim)
-	root.Handle("/", authn.Middleware(auth.APICodes, authExempt)(mux))
+	// The audit seam sits INSIDE the auth middleware and OUTSIDE the resource
+	// mux: inside, because a record needs the resolved principal EVT-080 requires
+	// (a request refused for bad credentials has no identity to attribute and is
+	// the auth package's own record anyway); outside, because wrapping the mux
+	// rather than each handler is what makes the next route mounted here audited
+	// without anyone remembering to audit it (audit.go).
+	root.Handle("/", authn.Middleware(auth.APICodes, authExempt)(srv.auditMutations(mux)))
 
 	return apihttp.WithTraceID(root)
 }
@@ -254,6 +273,11 @@ type resource struct {
 // method+path patterns dispatch by method, and {id} captures the resource id.
 func (srv *server) mount(mux *http.ServeMux, cfg resourceConfig) {
 	rs := &resource{srv: srv, cfg: cfg}
+	// Registering the family here, in the same call that registers its routes,
+	// is what keeps the audit middleware's view of this surface honest: a family
+	// added later is audited under its own resource type and files its records
+	// at its own placement without anyone remembering to say so twice (audit.go).
+	srv.families[cfg.path] = cfg
 	base := apiPrefix + "/" + cfg.path
 	mux.HandleFunc("GET "+base, rs.list)
 	mux.HandleFunc("POST "+base, rs.create)
