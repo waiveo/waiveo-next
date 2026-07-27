@@ -746,6 +746,13 @@ func main() {
 	// the relay-connection server's own registry (CloseAll) is what
 	// actually ends those connections; without it the process would stop
 	// listening while every relay connection stayed open.
+	//
+	// The event hub is the same story for the other direction: a /events/v1
+	// subscriber is an endless stream by design, so an SSE connection never
+	// goes idle for Shutdown to reclaim and a WS one is hijacked and invisible
+	// to it. Hub.Close is what ends both — the WS binding closes naming
+	// UNAVAILABLE, so a client reconnects with backoff rather than treating a
+	// restart as a protocol failure.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	select {
@@ -755,6 +762,7 @@ func main() {
 		log.Printf("waiveo-feeder: %s — shutting down", sig)
 		retentionSweep.Stop()
 		relayConnSrv.CloseAll()
+		eventHub.Close()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {
