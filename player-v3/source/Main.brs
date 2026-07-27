@@ -41,7 +41,13 @@ sub Main(args as Dynamic)
     while true
         msg = wait(0, port)
         if type(msg) = "roSGScreenEvent"
-            if msg.isScreenClosed() then return
+            if msg.isScreenClosed()
+                ' Tell the scene to stop its Task threads before we leave. A
+                ' Task thread survives the node that owns it, so leaving
+                ' without this is the shape that leaks threads.
+                scene.callFunc("shutdown")
+                return
+            end if
         end if
     end while
 end sub

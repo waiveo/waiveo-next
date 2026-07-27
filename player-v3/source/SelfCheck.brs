@@ -160,11 +160,9 @@ sub wvRunSelfCheck()
 
     ' --- PLY-158 idle-defeat gate: engaged ONLY while non-blank content is
     ' actually assigned. The gate is the one part of the idle-defeat path that
-    ' is a pure decision; the refresh itself is a platform call driven by a
-    ' render-thread Timer and is verifiable only on real hardware (see this
-    ' change's own verification steps). Asserting the gate here at least
-    ' proves on-device that a player with nothing assigned does not hold the
-    ' platform awake — the half of PLY-158 that is easy to get backwards.
+    ' is a pure decision. Asserting it here proves on-device that a player with
+    ' nothing assigned does not hold the platform awake — the half of PLY-158
+    ' that is easy to get backwards.
     idleItems = [{ contentType: "image", contentUri: "tmp:/selfcheck.jpg" }]
     wvResult("idle-defeat engages for an assigned 1-item cast", wvIdleDefeatShouldEngage("cast", idleItems), "")
     wvResult("idle-defeat stays off for a cast with no items", not wvIdleDefeatShouldEngage("cast", []), "")
@@ -172,6 +170,26 @@ sub wvRunSelfCheck()
     wvResult("idle-defeat stays off for a non-cast program (e.g. blank)", not wvIdleDefeatShouldEngage("blank", idleItems), "")
     idleInterval = wvIdleDefeatIntervalSeconds()
     wvResult("idle-defeat refresh cadence beats the shortest selectable idle delay", idleInterval > 0 and idleInterval <= 30, "interval=" + idleInterval.toStr() + "s (must stay well under 60s)")
+
+    ' The idle-defeat Task's own timings have to hold together for it to be
+    ' both responsive and impossible to strand: it must wake at least once per
+    ' refresh cadence (or it could neither honor a stop nor keep the cadence),
+    ' and it must tolerate several missed owner heartbeats before deciding it
+    ' has been orphaned (or a momentarily busy render thread would kill it).
+    idleChunkMs = wvIdleDefeatPollChunkMs()
+    wvResult("idle-defeat task wakes at least once per refresh cadence", idleChunkMs > 0 and idleChunkMs <= idleInterval * 1000, "chunk=" + idleChunkMs.toStr() + "ms, interval=" + (idleInterval * 1000).toStr() + "ms")
+    idleBeatMs = wvIdleDefeatOwnerHeartbeatSeconds() * 1000
+    wvResult("idle-defeat orphan threshold outlives several owner heartbeats", wvIdleDefeatOrphanMs() >= idleBeatMs * 3, "orphan=" + wvIdleDefeatOrphanMs().toStr() + "ms, heartbeat=" + idleBeatMs.toStr() + "ms")
+
+    ' The refresh itself is a platform call, and this self-check runs on the
+    ' MAIN thread — one of the two threads where roAppManager is legal, and
+    ' where the idle-defeat Task's own thread also sits. A render-thread build
+    ' of this mechanism was completely inert on hardware while reporting
+    ' nothing, so this assertion exists to make the platform call's
+    ' availability something the device STATES rather than something the code
+    ' assumes: a failure here names the reason.
+    idleRefreshReason = wvIdleDefeatRefresh()
+    wvResult("idle-defeat last-input-time refresh works on this firmware", idleRefreshReason = "", "reason=[" + idleRefreshReason + "]")
 
     if savedToken = ""
         reg.Delete("channel_token")

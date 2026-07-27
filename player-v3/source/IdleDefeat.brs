@@ -36,6 +36,24 @@
 ' be (the defect was observed at roughly an hour; the shortest selectable
 ' delay is a minute, and this cadence covers that case too).
 '
+' WHY THE REFRESH RUNS ON A TASK THREAD — a hardware finding, not a preference.
+' The first implementation of this mechanism drove the refresh from a
+' SceneGraph Timer declared in PhotonScene's XML, so the refresh ran on the
+' RENDER thread. On real hardware that mechanism was completely inert, and the
+' device said why:
+'
+'   roAppManager: creating MAIN|TASK-only component failed on RENDER thread
+'
+' roAppManager simply cannot be constructed on the render thread. Worse, the
+' failure is reported by the runtime at construction rather than raised as a
+' catchable error, so the try/catch below never fired and CreateObject just
+' returned invalid — the mechanism did nothing, every 30s, while its own logs
+' said nothing at all. Two consequences are baked into this file now:
+' the refresh runs on a Task thread (MAIN|TASK — legal there), and
+' wvIdleDefeatRefresh REPORTS an unusable roAppManager instead of quietly
+' skipping it, so a future silent failure is a console line rather than a
+' screensaver nobody can explain.
+'
 ' WHY NOT THE HIDDEN-VIDEO TRICK. A hidden, permanently-looping Video node
 ' carrying disableScreenSaver=true also defeats the screensaver, and is what
 ' this fleet's earlier player did. It is rejected here as the primary
@@ -47,12 +65,19 @@
 ' (PhotonScene), where it costs nothing and covers a video item for free; it
 ' is simply not a mechanism for a static image cast.
 '
-' BOUNDED BY CONSTRUCTION. The refresh rides a single repeating SceneGraph
-' Timer declared in PhotonScene's own XML, on the render thread: no Task node,
-' no thread, and nothing created per rendered item — this fleet has already
-' been bitten by per-render spawned Tasks leaking until the firmware thread
-' cap. The timer is started only while content is assigned and stopped when it
-' is not, so a player showing nothing never holds the platform awake.
+' BOUNDED BY CONSTRUCTION. Moving to a Task thread runs straight at a hazard
+' this fleet has already been bitten by: Task threads survive removal of the
+' node that owns them, so per-render/per-cast/per-poll Tasks leak until the
+' firmware's thread cap halts the whole channel. The rule here is therefore
+' EXACTLY ONE IdleDefeatTask for the lifetime of the app — created once in
+' PhotonScene's init, never re-created (not even when the PlayerTask is
+' re-created for operator re-provisioning) — carrying the same three exits the
+' fleet's earlier thread-leak fix established: a cooperative `stopFlag`, a
+' `shutdown()` path the owner calls, and an orphan self-check so a Task whose
+' owner is gone exits by itself. The refresh itself is still gated on assigned
+' content: the Task is always alive, but it only touches the platform's idle
+' clock while `engaged` is true, so a player showing nothing never holds the
+' platform awake.
 
 ' wvIdleDefeatShouldEngage decides, from a program result alone, whether
 ' PLY-158's obligation is currently in force. A player is "actively assigned
@@ -74,31 +99,74 @@ end function
 ' device can be configured with (a minute) so the platform's idle clock is
 ' reset at least once inside even that window; 30s leaves 2x margin at that
 ' extreme and is nothing at all against the observed hour-long delay. The cost
-' per refresh is one object creation and one call on the render thread.
+' per refresh is one object creation and one call on the idle-defeat Task.
 function wvIdleDefeatIntervalSeconds() as Integer
     return 30
 end function
 
-' wvIdleDefeatHeartbeatTicks is how many refreshes pass between console
-' heartbeat lines (onIdleDefeatTick) — one line per refresh would be 120 an
-' hour and would bury everything else, while no line at all would leave
-' on-device verification unable to tell "still refreshing an hour in" from
-' "silently stopped". Every 10th refresh is a line every five minutes.
+' wvIdleDefeatPollChunkMs is how long the idle-defeat Task sleeps between
+' wake-ups. It is NOT the refresh cadence (that is the interval above, counted
+' across chunks) — it is the granularity of everything the Task can only learn
+' by looking: a shutdown request, a stale owner, and the moment content
+' becomes assigned. A shorter chunk means a stop is honored sooner and the
+' first refresh after content appears lands sooner; it must stay at or below
+' the refresh interval or the cadence could not be observed at all.
+function wvIdleDefeatPollChunkMs() as Integer
+    return 5000
+end function
+
+' wvIdleDefeatOwnerHeartbeatSeconds is how often the scene that owns the
+' idle-defeat Task bumps the Task's `ownerTick`. This is the Task's liveness
+' signal for its owner, and it runs whether or not content is assigned —
+' precisely so that "nothing to do right now" (disengaged) stays
+' distinguishable from "my owner is gone" (orphaned). Its only cost is one
+' integer field write per beat.
+function wvIdleDefeatOwnerHeartbeatSeconds() as Integer
+    return 10
+end function
+
+' wvIdleDefeatOrphanMs is how long the idle-defeat Task tolerates a silent
+' owner before self-exiting. Several missed beats rather than one: a busy
+' render thread can be late, and a Task that exits on a hiccup would leave
+' PLY-158 unmet with nothing to restart it. Five beats is far longer than any
+' plausible stall and still bounds a stranded thread's life to under a minute.
+function wvIdleDefeatOrphanMs() as Integer
+    return wvIdleDefeatOwnerHeartbeatSeconds() * 1000 * 5
+end function
+
+' wvIdleDefeatHeartbeatTicks is how many refreshes (or consecutive failures)
+' pass between console lines — one line per refresh would be 120 an hour and
+' would bury everything else, while no line at all would leave on-device
+' verification unable to tell "still refreshing an hour in" from "silently
+' stopped". Every 10th refresh is a line every five minutes.
 function wvIdleDefeatHeartbeatTicks() as Integer
     return 10
 end function
 
-' wvIdleDefeatPing performs one refresh of the platform's last-input time.
-' Wrapped in try/catch on purpose: this is the single platform-specific call
-' in the whole mechanism, and a firmware that did not expose it must degrade
-' to "the screensaver may appear" — never to a render-thread exception that
-' takes the cast down with it, which would be strictly worse than the defect
-' this fixes.
-sub wvIdleDefeatPing()
+' wvIdleDefeatRefresh performs one refresh of the platform's last-input time
+' and REPORTS what happened: "" means the platform's idle clock was actually
+' reset, any other string is a human-readable reason it was not.
+'
+' It returns a reason rather than printing one so the caller can rate-limit
+' (this runs every 30s forever) — but it must never return "" for a refresh
+' that did not happen. That is the whole lesson of the render-thread failure
+' documented at the top of this file: the previous version guarded the call
+' with `if appManager <> invalid then ...`, which turned a total failure into
+' a no-op with no output whatsoever. An unusable roAppManager is now a
+' reported failure, not a silent skip.
+'
+' The try/catch stays for the other half of the risk — a firmware that raises
+' on the call itself must degrade to "the screensaver may appear", never to an
+' exception that takes the cast down with it, which would be strictly worse
+' than the defect this fixes.
+function wvIdleDefeatRefresh() as String
+    appManager = invalid
     try
         appManager = CreateObject("roAppManager")
-        if appManager <> invalid then appManager.UpdateLastKeyPressTime()
+        if appManager = invalid then return "roAppManager could not be created (it is a MAIN|TASK-only component — is this the render thread?)"
+        appManager.UpdateLastKeyPressTime()
     catch e
-        print "[player-v3] idle-defeat: last-input-time refresh unavailable on this firmware (" + e.message + ")"
+        return "last-input-time refresh threw on this firmware (" + e.message + ")"
     end try
-end sub
+    return ""
+end function

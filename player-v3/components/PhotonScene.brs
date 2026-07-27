@@ -32,17 +32,25 @@ sub init()
     m.castTimer = m.top.findNode("castTimer")
     m.castTimer.observeField("fire", "onCastTimerFire")
 
-    ' idleDefeatTimer holds this platform's own idle/inactivity surface off
-    ' assigned content (PLY-158). It is XML-declared and wired exactly once
-    ' here — never per cast, per item, or per render — and only RUNS while
-    ' content is actually assigned (setIdleDefeat). See IdleDefeat.brs for
-    ' why the manifest's screensaver_private flag does not cover this and why
-    ' a permanently-playing hidden video was rejected.
-    m.idleDefeatTimer = m.top.findNode("idleDefeatTimer")
-    m.idleDefeatTimer.duration = wvIdleDefeatIntervalSeconds()
-    m.idleDefeatTimer.observeField("fire", "onIdleDefeatTick")
+    ' PLY-158: hold this platform's own idle/inactivity surface off assigned
+    ' content. The refresh that does it CANNOT run here — roAppManager is a
+    ' MAIN|TASK-only component and hardware refuses to create it on the render
+    ' thread — so it runs on IdleDefeatTask, created exactly once here and
+    ' never again (not per cast, per item, per render, or when the PlayerTask
+    ' below is re-created), because Task threads outlive the nodes that own
+    ' them. This scene only ever steers it by writing its fields: `engaged`
+    ' says whether content is assigned (setIdleDefeat), and idleDefeatHeartbeat
+    ' beats `ownerTick` for as long as this scene lives so the Task can
+    ' self-exit if this scene ever stops. See IdleDefeat.brs for why the
+    ' manifest's screensaver_private flag does not cover this and why a
+    ' permanently-playing hidden video was rejected.
+    m.idleDefeatTask = CreateObject("roSGNode", "IdleDefeatTask")
     m.idleDefeatEngaged = false
-    m.idleDefeatTicks = 0
+    m.idleDefeatHeartbeat = m.top.findNode("idleDefeatHeartbeat")
+    m.idleDefeatHeartbeat.duration = wvIdleDefeatOwnerHeartbeatSeconds()
+    m.idleDefeatHeartbeat.observeField("fire", "onIdleDefeatHeartbeat")
+    m.idleDefeatHeartbeat.control = "start"
+    m.idleDefeatTask.control = "RUN"
 
     m.castItems = []
     m.castIndex = 0
@@ -286,41 +294,53 @@ sub onCastTimerFire()
 end sub
 
 ' setIdleDefeat engages or disengages PLY-158's defeat of this platform's own
-' idle/inactivity surface. Called on every program result, so it acts only on
-' an actual transition — which is also exactly what makes the two console
-' lines below readable: one when the mechanism starts holding the platform's
-' idle clock off assigned content, one when it stops, and nothing in between
-' (onIdleDefeatTick's own heartbeat aside). On engage the clock is refreshed
-' immediately as well as on the timer: it has been running untouched for as
-' long as this player had nothing assigned, so waiting a full interval could
-' let it expire between the first item appearing and the first tick.
+' idle/inactivity surface by telling the always-running IdleDefeatTask whether
+' content is assigned. Called on every program result, so it acts only on an
+' actual transition — which is also exactly what makes the two console lines
+' below readable: one when the mechanism starts holding the platform's idle
+' clock off assigned content, one when it stops, and nothing in between (the
+' Task's own refresh lines aside). Nothing is created or destroyed here: the
+' Task is engaged, not spawned, and the first refresh follows within one of
+' its wake-ups.
 sub setIdleDefeat(engage as Boolean)
     if engage = m.idleDefeatEngaged then return
     m.idleDefeatEngaged = engage
+    m.idleDefeatTask.engaged = engage
 
     if engage
-        m.idleDefeatTicks = 0
-        wvIdleDefeatPing()
-        m.idleDefeatTimer.control = "start"
-        print "[player-v3] idle-defeat ENGAGED (PLY-158) — content assigned; refreshing this platform's idle clock every " + wvIdleDefeatIntervalSeconds().toStr() + "s"
+        print "[player-v3] idle-defeat ENGAGED (PLY-158) — content assigned; the idle-defeat task refreshes this platform's idle clock every " + wvIdleDefeatIntervalSeconds().toStr() + "s"
     else
-        m.idleDefeatTimer.control = "stop"
         print "[player-v3] idle-defeat DISENGAGED (PLY-158) — no content assigned; this platform's idle surface is free to engage"
     end if
 end sub
 
-' onIdleDefeatTick is idleDefeatTimer's own "fire" handler: one refresh of the
-' platform's last-input time per tick (wvIdleDefeatPing), plus a periodic
-' heartbeat line so on-device verification can READ that the mechanism is
-' still running deep into a device's idle delay rather than infer it from the
-' absence of a screensaver. See wvIdleDefeatHeartbeatTicks for the ratio.
-sub onIdleDefeatTick()
-    wvIdleDefeatPing()
-    m.idleDefeatTicks = m.idleDefeatTicks + 1
-    if m.idleDefeatTicks mod wvIdleDefeatHeartbeatTicks() = 0
-        print "[player-v3] idle-defeat alive (PLY-158) — " + m.idleDefeatTicks.toStr() + " refreshes, " + (m.idleDefeatTicks * wvIdleDefeatIntervalSeconds()).toStr() + "s engaged"
-    end if
+' onIdleDefeatHeartbeat is idleDefeatHeartbeat's own "fire" handler, and does
+' one thing: prove to IdleDefeatTask that this scene still exists. It beats
+' whether or not the mechanism is engaged, which is what lets the Task treat
+' silence as "my owner is gone" and self-exit instead of lingering as a
+' stranded thread. Deliberately silent on the console — it says nothing about
+' whether the platform's idle clock is actually being refreshed, and the Task
+' already reports that.
+sub onIdleDefeatHeartbeat()
+    m.idleDefeatTask.ownerTick = m.idleDefeatTask.ownerTick + 1
 end sub
+
+' shutdown is called (callFunc) by Main when the screen closes. Removing or
+' dropping a node does NOT stop the Task thread it owns — that is precisely
+' how this fleet once leaked threads until a device hit its firmware thread cap
+' — so both of this scene's Tasks are told to stop cooperatively (stopFlag,
+' honored at the Task's next wake-up) and then stopped at the firmware level.
+function shutdown() as Boolean
+    if m.idleDefeatTask <> invalid
+        m.idleDefeatTask.stopFlag = true
+        m.idleDefeatTask.control = "STOP"
+    end if
+    if m.idleDefeatHeartbeat <> invalid then m.idleDefeatHeartbeat.control = "stop"
+    if m.task <> invalid then m.task.control = "STOP"
+    if m.castTimer <> invalid then m.castTimer.control = "stop"
+    print "[player-v3] scene shutdown — idle-defeat and player tasks stopped"
+    return true
+end function
 
 ' stopCastTimer halts castTimer so a superseded cast (a fresh photonResult
 ' arriving, or a switch to a composed item) never fires a stale advance

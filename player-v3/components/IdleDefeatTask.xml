@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!-- IdleDefeatTask: the one thread on which this player is allowed to refresh
+     the platform's last-input time (PLY-158). roAppManager is a MAIN|TASK-only
+     component — real hardware refuses to create it on the render thread — so
+     the refresh cannot live on a SceneGraph Timer's callback and has to live
+     here. See source/IdleDefeat.brs for the full finding.
+
+     EXACTLY ONE of these exists, created once by PhotonScene and never
+     re-created: Task threads survive the removal of the node that owns them,
+     and per-render/per-cast/per-poll Tasks have previously leaked until the
+     firmware's thread cap halted a channel. Every field below exists to make
+     this single Task cheap to steer and impossible to strand:
+
+       engaged   — the scene's answer to "is non-blank content assigned right
+                   now?" (PLY-158's gate). The Task is alive whether or not it
+                   is engaged; it only touches the platform's idle clock while
+                   this is true, so a player showing nothing never holds the
+                   platform awake.
+       ownerTick — bumped by the owning scene on its own heartbeat, whatever
+                   `engaged` says. A Task whose owner has stopped beating
+                   self-exits (wvIdleDefeatOrphanMs) rather than lingering as
+                   a stranded thread.
+       stopFlag  — cooperative shutdown: PhotonScene.shutdown() sets it and the
+                   run loop returns at its next wake-up.
+
+     IdleDefeat.brs is included explicitly because SceneGraph component scopes
+     do not inherit pkg:/source globals. -->
+<component name="IdleDefeatTask" extends="Task">
+  <interface>
+    <field id="engaged" type="boolean" value="false" />
+    <field id="ownerTick" type="integer" value="0" />
+    <field id="stopFlag" type="boolean" value="false" />
+  </interface>
+  <script type="text/brightscript" uri="pkg:/components/IdleDefeatTask.brs" />
+  <script type="text/brightscript" uri="pkg:/source/IdleDefeat.brs" />
+</component>
