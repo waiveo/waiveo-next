@@ -106,7 +106,7 @@ var drivenCaseIDs = []string{
 // pendingCaseIDs are api/1 cases frozen under conformance/corpora/api-1 that
 // no mounted route exists to drive yet.
 var pendingCaseIDs = map[string]string{
-	"API-121": "api.New's mux (internal/app/api/api.go) mounts no /api/v1/workspace/export route — the 2026-07-26 reconciliation audit confirms it is one of several openapi-declared paths (/jobs/{job_id}, /workspace/export, /workspace/delete, /auth/login, /principals, /devices, /entities, /casts, /system/health, /packs/{pack}/actions/{name}) with no handler in the tree. Deferred until that route is built (plan G8).",
+	"API-121": "api.New's mux (internal/app/api/api.go) mounts no /api/v1/workspace/export route — the 2026-07-26 reconciliation audit confirms it is one of several openapi-declared paths (/workspace/export, /workspace/delete, /principals, /casts, /system/health, /packs/{pack}/actions/{name}) with no handler in the tree. Deferred until that route is built (plan G8). Note that GET /jobs/{job_id} — which this case's own 202 Job would be polled at — IS now mounted; the missing piece is the export operation that mints the Job, not the poll.",
 }
 
 func driveCases(rep *report.Report, cases map[string]corpus.Case) {

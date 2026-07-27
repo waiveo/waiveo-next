@@ -192,11 +192,11 @@ export function etagForRevision(revision: number): string {
 // ── Automations: CRUD + run ──────────────────────────────────────────────────
 //
 // Bulk-enable (POST /automations/bulk-enable) and the Job-polling it returns
-// (GET /jobs/{id}) are DEFERRED — the plan's self-review lists "bulk-enable/jobs
-// UI" under Deferred (deliberate), Task 4 scopes only per-automation enable/
-// disable via If-Match PATCH, and `GET /jobs/{id}` has no server handler yet
-// (it's a contract stub, not a live route). Neither ships on the typed client
-// until it has a live route + tests; resources.type-test.ts locks that out.
+// (GET /jobs/{job_id}) are DEFERRED on the TYPED CLIENT — this module scopes
+// per-automation enable/disable via If-Match PATCH, and no screen drives a
+// fleet operation or polls a Job yet. Both routes are live on the server; what
+// is deferred here is the client surface and the UI that would use it, so
+// neither ships until it has one; resources.type-test.ts locks that out.
 
 export interface AutomationsModule extends ResourceModule<Automation, AutomationCreate, AutomationUpdate> {
   /** Run one automation now; returns its mode-evaluation disposition. */
