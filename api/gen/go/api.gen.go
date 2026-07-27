@@ -22,6 +22,24 @@ const (
 	SessionCookieScopes sessionCookieContextKey = "SessionCookie.Scopes"
 )
 
+// Defines values for AdoptedDeviceEntityCategory.
+const (
+	Diagnostic AdoptedDeviceEntityCategory = "diagnostic"
+	Primary    AdoptedDeviceEntityCategory = "primary"
+)
+
+// Valid indicates whether the value is a known member of the AdoptedDeviceEntityCategory enum.
+func (e AdoptedDeviceEntityCategory) Valid() bool {
+	switch e {
+	case Diagnostic:
+		return true
+	case Primary:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AutomationMode.
 const (
 	AutomationModeParallel AutomationMode = "parallel"
@@ -339,28 +357,28 @@ func (e SessionSummaryAal) Valid() bool {
 
 // Defines values for SessionSummaryKind.
 const (
-	IngestToken   SessionSummaryKind = "ingest-token"
-	PackService   SessionSummaryKind = "pack-service"
-	Relay         SessionSummaryKind = "relay"
-	Screen        SessionSummaryKind = "screen"
-	SystemConsole SessionSummaryKind = "system-console"
-	User          SessionSummaryKind = "user"
+	SessionSummaryKindIngestToken   SessionSummaryKind = "ingest-token"
+	SessionSummaryKindPackService   SessionSummaryKind = "pack-service"
+	SessionSummaryKindRelay         SessionSummaryKind = "relay"
+	SessionSummaryKindScreen        SessionSummaryKind = "screen"
+	SessionSummaryKindSystemConsole SessionSummaryKind = "system-console"
+	SessionSummaryKindUser          SessionSummaryKind = "user"
 )
 
 // Valid indicates whether the value is a known member of the SessionSummaryKind enum.
 func (e SessionSummaryKind) Valid() bool {
 	switch e {
-	case IngestToken:
+	case SessionSummaryKindIngestToken:
 		return true
-	case PackService:
+	case SessionSummaryKindPackService:
 		return true
-	case Relay:
+	case SessionSummaryKindRelay:
 		return true
-	case Screen:
+	case SessionSummaryKindScreen:
 		return true
-	case SystemConsole:
+	case SessionSummaryKindSystemConsole:
 		return true
-	case User:
+	case SessionSummaryKindUser:
 		return true
 	default:
 		return false
@@ -422,6 +440,97 @@ func (e WebhookDeliveryStateStatus) Valid() bool {
 	default:
 		return false
 	}
+}
+
+// AdoptedDevice One adopted device — the row a `device_id` names (`data-model/1` DAT-004a) and the row a relay's desired-state `device_inventory` entry is compiled from (`relay/1` REL-063). It is an ADOPTION RECORD: the relay is authoritative for what exists on its LAN and reports discovered-but-unadopted candidates upward (REL-110/111), while the adoption decision and the policy over it are authored here. Its identity is `(site, driver, native_id)`, never the relay that happens to report it (REL-153) — which is why no `relay_id` appears on this resource, and why two rows may not share a `(driver, native_id)`.
+type AdoptedDevice struct {
+	// CreatedAt A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC 3339 string. The store stamps `created_at`/`updated_at` on every row it writes as an integer millisecond count and returns that value unchanged, so this is what a client reads and what an export/apply round trip carries back. Deliberately not `format: date-time`: the two are not interchangeable, and a client that parsed one as the other would silently read 1970 for every resource on this surface.
+	// The `Job` resource is the one exception on this API and says so at its own `created_at`: a Job's timestamp is minted in Go as a `time.Time` and serialized RFC 3339, because a Job is not a stored row of this baseline.
+	CreatedAt Timestamp `json:"created_at"`
+
+	// Driver Half of the `(site, driver, native_id)` tuple this device's identity is scoped to (`relay/1` REL-063).
+	Driver   string                `json:"driver"`
+	Entities []AdoptedDeviceEntity `json:"entities"`
+
+	// ExternalId Client-assigned identifier (contracts/api-1.md#client-assignable-external_id).
+	ExternalId **string `json:"external_id,omitempty"`
+
+	// Id A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	Id Ulid `json:"id"`
+
+	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
+	Labels LabelMap `json:"labels"`
+	Name   string   `json:"name"`
+
+	// NativeId The device's own identifier on its LAN — the other half of its identity tuple (`relay/1` REL-063).
+	NativeId string `json:"native_id"`
+
+	// PollCadenceSeconds How often the relay should poll this device. `null` when this deployment has stated no cadence — REL-063 fixes no default, and a number here would be a polling policy nobody authored.
+	PollCadenceSeconds *int `json:"poll_cadence_seconds"`
+	Revision           int  `json:"revision"`
+
+	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScopeNode Ulid `json:"scope_node"`
+
+	// UpdatedAt A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC 3339 string. The store stamps `created_at`/`updated_at` on every row it writes as an integer millisecond count and returns that value unchanged, so this is what a client reads and what an export/apply round trip carries back. Deliberately not `format: date-time`: the two are not interchangeable, and a client that parsed one as the other would silently read 1970 for every resource on this surface.
+	// The `Job` resource is the one exception on this API and says so at its own `created_at`: a Job's timestamp is minted in Go as a `time.Time` and serialized RFC 3339, because a Job is not a stored row of this baseline.
+	UpdatedAt Timestamp `json:"updated_at"`
+}
+
+// AdoptedDeviceCreate defines model for AdoptedDeviceCreate.
+type AdoptedDeviceCreate struct {
+	Driver     string                 `json:"driver"`
+	Entities   *[]AdoptedDeviceEntity `json:"entities,omitempty"`
+	ExternalId **string               `json:"external_id,omitempty"`
+
+	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
+	Labels             *LabelMap `json:"labels,omitempty"`
+	Name               string    `json:"name"`
+	NativeId           string    `json:"native_id"`
+	PollCadenceSeconds **int     `json:"poll_cadence_seconds,omitempty"`
+
+	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScopeNode Ulid `json:"scope_node"`
+}
+
+// AdoptedDeviceEntity One entity a device exposes, with the policy authored over it — exactly `relay/1` REL-063's `{entity_id, device_class, enabled, hidden, display_name, category}`. Every member is a DECISION rather than a discovered fact, which is why these live on an authored row and not in the relay's own report.
+type AdoptedDeviceEntity struct {
+	Category AdoptedDeviceEntityCategory `json:"category"`
+
+	// DeviceClass The device class whose command vocabulary a command to this entity resolves against (`device-class-registry/1` REG-052).
+	DeviceClass string `json:"device_class"`
+	DisplayName string `json:"display_name"`
+	Enabled     bool   `json:"enabled"`
+
+	// EntityId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	EntityId Ulid `json:"entity_id"`
+	Hidden   bool `json:"hidden"`
+}
+
+// AdoptedDeviceEntityCategory defines model for AdoptedDeviceEntity.Category.
+type AdoptedDeviceEntityCategory string
+
+// AdoptedDeviceListResponse defines model for AdoptedDeviceListResponse.
+type AdoptedDeviceListResponse struct {
+	// Cursor An opaque, URL-safe continuation token. `null` signals no further rows. Never constructed, parsed, or compared for meaning by a client.
+	Cursor Cursor          `json:"cursor"`
+	Items  []AdoptedDevice `json:"items"`
+}
+
+// AdoptedDeviceUpdate Partial update — every field optional, at least one required.
+type AdoptedDeviceUpdate struct {
+	Driver     *string                `json:"driver,omitempty"`
+	Entities   *[]AdoptedDeviceEntity `json:"entities,omitempty"`
+	ExternalId **string               `json:"external_id,omitempty"`
+
+	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
+	Labels             *LabelMap `json:"labels,omitempty"`
+	Name               *string   `json:"name,omitempty"`
+	NativeId           *string   `json:"native_id,omitempty"`
+	PollCadenceSeconds **int     `json:"poll_cadence_seconds,omitempty"`
+
+	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScopeNode *Ulid `json:"scope_node,omitempty"`
 }
 
 // Automation The management-API resource envelope around a rules/1 Rule. `mode`, `max`, `triggers`, `conditions`, and `actions` are exactly rules/1's own vocabulary (rules/1 Wire shapes); the remaining fields are this API's own resource envelope (identity, placement, labels, revision).
@@ -816,6 +925,67 @@ type ScopeNodeUpdate struct {
 	Tz     *string   `json:"tz,omitempty"`
 }
 
+// Screen A screen's own identity row — the row a `screen_id` names (`data-model/1` DAT-004a). It is NOT the `screen`-kind scope node it is placed under: DAT-004 lets a screen row hang off a node of ANY kind, so two screens may share one `group` node and a screen may sit directly under a `site`. The `screen_id` a `relay/1` `screen_programs` entry carries (REL-061), a player learns at pairing redemption (`player/1` PLY-035), and a `content.played` event records (`events/1` EVT-050) all name this row's `id`.
+type Screen struct {
+	// CreatedAt A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC 3339 string. The store stamps `created_at`/`updated_at` on every row it writes as an integer millisecond count and returns that value unchanged, so this is what a client reads and what an export/apply round trip carries back. Deliberately not `format: date-time`: the two are not interchangeable, and a client that parsed one as the other would silently read 1970 for every resource on this surface.
+	// The `Job` resource is the one exception on this API and says so at its own `created_at`: a Job's timestamp is minted in Go as a `time.Time` and serialized RFC 3339, because a Job is not a stored row of this baseline.
+	CreatedAt Timestamp `json:"created_at"`
+
+	// DeviceId The `device_id` of an adopted device representing the same physical display (`player/1` PLY-124). Optional — a screen and an adopted device remain distinct rows — but a stated value MUST name an existing adopted device.
+	DeviceId *string `json:"device_id"`
+
+	// ExternalId Client-assigned identifier (contracts/api-1.md#client-assignable-external_id).
+	ExternalId **string `json:"external_id,omitempty"`
+
+	// Id A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	Id Ulid `json:"id"`
+
+	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
+	Labels   LabelMap `json:"labels"`
+	Name     string   `json:"name"`
+	Revision int      `json:"revision"`
+
+	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScopeNode Ulid `json:"scope_node"`
+
+	// UpdatedAt A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC 3339 string. The store stamps `created_at`/`updated_at` on every row it writes as an integer millisecond count and returns that value unchanged, so this is what a client reads and what an export/apply round trip carries back. Deliberately not `format: date-time`: the two are not interchangeable, and a client that parsed one as the other would silently read 1970 for every resource on this surface.
+	// The `Job` resource is the one exception on this API and says so at its own `created_at`: a Job's timestamp is minted in Go as a `time.Time` and serialized RFC 3339, because a Job is not a stored row of this baseline.
+	UpdatedAt Timestamp `json:"updated_at"`
+}
+
+// ScreenCreate defines model for ScreenCreate.
+type ScreenCreate struct {
+	DeviceId   **string `json:"device_id,omitempty"`
+	ExternalId **string `json:"external_id,omitempty"`
+
+	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
+	Labels *LabelMap `json:"labels,omitempty"`
+	Name   string    `json:"name"`
+
+	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScopeNode Ulid `json:"scope_node"`
+}
+
+// ScreenListResponse defines model for ScreenListResponse.
+type ScreenListResponse struct {
+	// Cursor An opaque, URL-safe continuation token. `null` signals no further rows. Never constructed, parsed, or compared for meaning by a client.
+	Cursor Cursor   `json:"cursor"`
+	Items  []Screen `json:"items"`
+}
+
+// ScreenUpdate Partial update — every field optional, at least one required.
+type ScreenUpdate struct {
+	DeviceId   **string `json:"device_id,omitempty"`
+	ExternalId **string `json:"external_id,omitempty"`
+
+	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
+	Labels *LabelMap `json:"labels,omitempty"`
+	Name   *string   `json:"name,omitempty"`
+
+	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScopeNode *Ulid `json:"scope_node,omitempty"`
+}
+
 // SessionSummary The caller's own session. It deliberately carries NO session token: that value rides the HttpOnly cookie and is never readable by the page. `csrf_token` is present only on the responses that MINT a session (login, claim), since it is the double-submit value the client must then echo (SEC-024).
 type SessionSummary struct {
 	// Aal Authenticator Assurance Level (SEC-021/022). A `recovery` session is minted by redeeming a recovery-purpose grant and is restricted until the target principal completes TOTP re-enrolment.
@@ -1073,6 +1243,54 @@ type apiKeyContextKey string
 
 // sessionCookieContextKey is the context key for SessionCookie security scheme
 type sessionCookieContextKey string
+
+// ListAdoptedDevicesParams defines parameters for ListAdoptedDevices.
+type ListAdoptedDevicesParams struct {
+	// Cursor Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client.
+	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Limit Maximum rows to return in this page.
+	Limit *LimitParam `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Selector A label-selector string: comma-separated, ANDed terms (equality, inequality, set-membership, set-exclusion, existence, non-existence, or a `scope_node subtree <ulid>` term). See `contracts/api-1.md#label-selector-grammar` for the full grammar.
+	Selector *SelectorParam `form:"selector,omitempty" json:"selector,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// CreateAdoptedDeviceParams defines parameters for CreateAdoptedDevice.
+type CreateAdoptedDeviceParams struct {
+	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
+	IdempotencyKey *IdempotencyKeyParam `json:"Idempotency-Key,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// DeleteAdoptedDeviceParams defines parameters for DeleteAdoptedDevice.
+type DeleteAdoptedDeviceParams struct {
+	// IfMatch The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists.
+	IfMatch IfMatchParam `json:"If-Match"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// GetAdoptedDeviceParams defines parameters for GetAdoptedDevice.
+type GetAdoptedDeviceParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// UpdateAdoptedDeviceParams defines parameters for UpdateAdoptedDevice.
+type UpdateAdoptedDeviceParams struct {
+	// IfMatch The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists.
+	IfMatch IfMatchParam `json:"If-Match"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
 
 // LoginParams defines parameters for Login.
 type LoginParams struct {
@@ -1512,6 +1730,54 @@ type UpdateScopeNodeParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// ListScreensParams defines parameters for ListScreens.
+type ListScreensParams struct {
+	// Cursor Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client.
+	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Limit Maximum rows to return in this page.
+	Limit *LimitParam `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Selector A label-selector string: comma-separated, ANDed terms (equality, inequality, set-membership, set-exclusion, existence, non-existence, or a `scope_node subtree <ulid>` term). See `contracts/api-1.md#label-selector-grammar` for the full grammar.
+	Selector *SelectorParam `form:"selector,omitempty" json:"selector,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// CreateScreenParams defines parameters for CreateScreen.
+type CreateScreenParams struct {
+	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
+	IdempotencyKey *IdempotencyKeyParam `json:"Idempotency-Key,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// DeleteScreenParams defines parameters for DeleteScreen.
+type DeleteScreenParams struct {
+	// IfMatch The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists.
+	IfMatch IfMatchParam `json:"If-Match"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// GetScreenParams defines parameters for GetScreen.
+type GetScreenParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// UpdateScreenParams defines parameters for UpdateScreen.
+type UpdateScreenParams struct {
+	// IfMatch The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists.
+	IfMatch IfMatchParam `json:"If-Match"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // ListWebhookEndpointsParams defines parameters for ListWebhookEndpoints.
 type ListWebhookEndpointsParams struct {
 	// Cursor Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client.
@@ -1602,6 +1868,12 @@ type ExportWorkspaceParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// CreateAdoptedDeviceJSONRequestBody defines body for CreateAdoptedDevice for application/json ContentType.
+type CreateAdoptedDeviceJSONRequestBody = AdoptedDeviceCreate
+
+// UpdateAdoptedDeviceJSONRequestBody defines body for UpdateAdoptedDevice for application/json ContentType.
+type UpdateAdoptedDeviceJSONRequestBody = AdoptedDeviceUpdate
+
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest
 
@@ -1631,6 +1903,12 @@ type CreateScopeNodeJSONRequestBody = ScopeNodeCreate
 
 // UpdateScopeNodeJSONRequestBody defines body for UpdateScopeNode for application/json ContentType.
 type UpdateScopeNodeJSONRequestBody = ScopeNodeUpdate
+
+// CreateScreenJSONRequestBody defines body for CreateScreen for application/json ContentType.
+type CreateScreenJSONRequestBody = ScreenCreate
+
+// UpdateScreenJSONRequestBody defines body for UpdateScreen for application/json ContentType.
+type UpdateScreenJSONRequestBody = ScreenUpdate
 
 // CreateWebhookEndpointJSONRequestBody defines body for CreateWebhookEndpoint for application/json ContentType.
 type CreateWebhookEndpointJSONRequestBody = WebhookEndpointCreate
@@ -1720,6 +1998,25 @@ func WithRequestEditorFn(fn RequestEditorFn) ClientOption {
 
 // The interface specification for the client above.
 type ClientInterface interface {
+	// ListAdoptedDevices request
+	ListAdoptedDevices(ctx context.Context, params *ListAdoptedDevicesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CreateAdoptedDeviceWithBody request with any body
+	CreateAdoptedDeviceWithBody(ctx context.Context, params *CreateAdoptedDeviceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	CreateAdoptedDevice(ctx context.Context, params *CreateAdoptedDeviceParams, body CreateAdoptedDeviceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteAdoptedDevice request
+	DeleteAdoptedDevice(ctx context.Context, adoptedDeviceId Ulid, params *DeleteAdoptedDeviceParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetAdoptedDevice request
+	GetAdoptedDevice(ctx context.Context, adoptedDeviceId Ulid, params *GetAdoptedDeviceParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// UpdateAdoptedDeviceWithBody request with any body
+	UpdateAdoptedDeviceWithBody(ctx context.Context, adoptedDeviceId Ulid, params *UpdateAdoptedDeviceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	UpdateAdoptedDevice(ctx context.Context, adoptedDeviceId Ulid, params *UpdateAdoptedDeviceParams, body UpdateAdoptedDeviceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// LoginWithBody request with any body
 	LoginWithBody(ctx context.Context, params *LoginParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -1887,6 +2184,25 @@ type ClientInterface interface {
 
 	UpdateScopeNode(ctx context.Context, scopeNodeId Ulid, params *UpdateScopeNodeParams, body UpdateScopeNodeJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// ListScreens request
+	ListScreens(ctx context.Context, params *ListScreensParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CreateScreenWithBody request with any body
+	CreateScreenWithBody(ctx context.Context, params *CreateScreenParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	CreateScreen(ctx context.Context, params *CreateScreenParams, body CreateScreenJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteScreen request
+	DeleteScreen(ctx context.Context, screenId Ulid, params *DeleteScreenParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetScreen request
+	GetScreen(ctx context.Context, screenId Ulid, params *GetScreenParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// UpdateScreenWithBody request with any body
+	UpdateScreenWithBody(ctx context.Context, screenId Ulid, params *UpdateScreenParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	UpdateScreen(ctx context.Context, screenId Ulid, params *UpdateScreenParams, body UpdateScreenJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ListWebhookEndpoints request
 	ListWebhookEndpoints(ctx context.Context, params *ListWebhookEndpointsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -1926,6 +2242,90 @@ type ClientInterface interface {
 	ExportWorkspaceWithBody(ctx context.Context, params *ExportWorkspaceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	ExportWorkspace(ctx context.Context, params *ExportWorkspaceParams, body ExportWorkspaceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+}
+
+func (c *Client) ListAdoptedDevices(ctx context.Context, params *ListAdoptedDevicesParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListAdoptedDevicesRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateAdoptedDeviceWithBody(ctx context.Context, params *CreateAdoptedDeviceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateAdoptedDeviceRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateAdoptedDevice(ctx context.Context, params *CreateAdoptedDeviceParams, body CreateAdoptedDeviceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateAdoptedDeviceRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) DeleteAdoptedDevice(ctx context.Context, adoptedDeviceId Ulid, params *DeleteAdoptedDeviceParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteAdoptedDeviceRequest(c.Server, adoptedDeviceId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetAdoptedDevice(ctx context.Context, adoptedDeviceId Ulid, params *GetAdoptedDeviceParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetAdoptedDeviceRequest(c.Server, adoptedDeviceId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) UpdateAdoptedDeviceWithBody(ctx context.Context, adoptedDeviceId Ulid, params *UpdateAdoptedDeviceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUpdateAdoptedDeviceRequestWithBody(c.Server, adoptedDeviceId, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) UpdateAdoptedDevice(ctx context.Context, adoptedDeviceId Ulid, params *UpdateAdoptedDeviceParams, body UpdateAdoptedDeviceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUpdateAdoptedDeviceRequest(c.Server, adoptedDeviceId, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
 }
 
 func (c *Client) LoginWithBody(ctx context.Context, params *LoginParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -2636,6 +3036,90 @@ func (c *Client) UpdateScopeNode(ctx context.Context, scopeNodeId Ulid, params *
 	return c.Client.Do(req)
 }
 
+func (c *Client) ListScreens(ctx context.Context, params *ListScreensParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListScreensRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateScreenWithBody(ctx context.Context, params *CreateScreenParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateScreenRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateScreen(ctx context.Context, params *CreateScreenParams, body CreateScreenJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateScreenRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) DeleteScreen(ctx context.Context, screenId Ulid, params *DeleteScreenParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteScreenRequest(c.Server, screenId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetScreen(ctx context.Context, screenId Ulid, params *GetScreenParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetScreenRequest(c.Server, screenId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) UpdateScreenWithBody(ctx context.Context, screenId Ulid, params *UpdateScreenParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUpdateScreenRequestWithBody(c.Server, screenId, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) UpdateScreen(ctx context.Context, screenId Ulid, params *UpdateScreenParams, body UpdateScreenJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUpdateScreenRequest(c.Server, screenId, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) ListWebhookEndpoints(ctx context.Context, params *ListWebhookEndpointsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListWebhookEndpointsRequest(c.Server, params)
 	if err != nil {
@@ -2814,6 +3298,343 @@ func (c *Client) ExportWorkspace(ctx context.Context, params *ExportWorkspacePar
 		return nil, err
 	}
 	return c.Client.Do(req)
+}
+
+// NewListAdoptedDevicesRequest generates requests for ListAdoptedDevices
+func NewListAdoptedDevicesRequest(server string, params *ListAdoptedDevicesParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/adopted-devices")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.Cursor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "cursor", *params.Cursor, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "limit", *params.Limit, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Selector != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "selector", *params.Selector, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewCreateAdoptedDeviceRequest calls the generic CreateAdoptedDevice builder with application/json body
+func NewCreateAdoptedDeviceRequest(server string, params *CreateAdoptedDeviceParams, body CreateAdoptedDeviceJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewCreateAdoptedDeviceRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewCreateAdoptedDeviceRequestWithBody generates requests for CreateAdoptedDevice with any type of body
+func NewCreateAdoptedDeviceRequestWithBody(server string, params *CreateAdoptedDeviceParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/adopted-devices")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.IdempotencyKey != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Idempotency-Key", *params.IdempotencyKey, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Idempotency-Key", headerParam0)
+		}
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewDeleteAdoptedDeviceRequest generates requests for DeleteAdoptedDevice
+func NewDeleteAdoptedDeviceRequest(server string, adoptedDeviceId Ulid, params *DeleteAdoptedDeviceParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "adopted_device_id", adoptedDeviceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/adopted-devices/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("If-Match", headerParam0)
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewGetAdoptedDeviceRequest generates requests for GetAdoptedDevice
+func NewGetAdoptedDeviceRequest(server string, adoptedDeviceId Ulid, params *GetAdoptedDeviceParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "adopted_device_id", adoptedDeviceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/adopted-devices/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewUpdateAdoptedDeviceRequest calls the generic UpdateAdoptedDevice builder with application/json body
+func NewUpdateAdoptedDeviceRequest(server string, adoptedDeviceId Ulid, params *UpdateAdoptedDeviceParams, body UpdateAdoptedDeviceJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewUpdateAdoptedDeviceRequestWithBody(server, adoptedDeviceId, params, "application/json", bodyReader)
+}
+
+// NewUpdateAdoptedDeviceRequestWithBody generates requests for UpdateAdoptedDevice with any type of body
+func NewUpdateAdoptedDeviceRequestWithBody(server string, adoptedDeviceId Ulid, params *UpdateAdoptedDeviceParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "adopted_device_id", adoptedDeviceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/adopted-devices/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("If-Match", headerParam0)
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
 }
 
 // NewLoginRequest calls the generic Login builder with application/json body
@@ -5992,6 +6813,343 @@ func NewUpdateScopeNodeRequestWithBody(server string, scopeNodeId Ulid, params *
 	return req, nil
 }
 
+// NewListScreensRequest generates requests for ListScreens
+func NewListScreensRequest(server string, params *ListScreensParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/screens")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.Cursor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "cursor", *params.Cursor, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "limit", *params.Limit, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Selector != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "selector", *params.Selector, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewCreateScreenRequest calls the generic CreateScreen builder with application/json body
+func NewCreateScreenRequest(server string, params *CreateScreenParams, body CreateScreenJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewCreateScreenRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewCreateScreenRequestWithBody generates requests for CreateScreen with any type of body
+func NewCreateScreenRequestWithBody(server string, params *CreateScreenParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/screens")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.IdempotencyKey != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Idempotency-Key", *params.IdempotencyKey, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Idempotency-Key", headerParam0)
+		}
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewDeleteScreenRequest generates requests for DeleteScreen
+func NewDeleteScreenRequest(server string, screenId Ulid, params *DeleteScreenParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "screen_id", screenId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/screens/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("If-Match", headerParam0)
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewGetScreenRequest generates requests for GetScreen
+func NewGetScreenRequest(server string, screenId Ulid, params *GetScreenParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "screen_id", screenId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/screens/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewUpdateScreenRequest calls the generic UpdateScreen builder with application/json body
+func NewUpdateScreenRequest(server string, screenId Ulid, params *UpdateScreenParams, body UpdateScreenJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewUpdateScreenRequestWithBody(server, screenId, params, "application/json", bodyReader)
+}
+
+// NewUpdateScreenRequestWithBody generates requests for UpdateScreen with any type of body
+func NewUpdateScreenRequestWithBody(server string, screenId Ulid, params *UpdateScreenParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "screen_id", screenId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/screens/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("If-Match", headerParam0)
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
 // NewListWebhookEndpointsRequest generates requests for ListWebhookEndpoints
 func NewListWebhookEndpointsRequest(server string, params *ListWebhookEndpointsParams) (*http.Request, error) {
 	var err error
@@ -6686,6 +7844,25 @@ func WithBaseURL(baseURL string) ClientOption {
 
 // ClientWithResponsesInterface is the interface specification for the client with responses above.
 type ClientWithResponsesInterface interface {
+	// ListAdoptedDevicesWithResponse request
+	ListAdoptedDevicesWithResponse(ctx context.Context, params *ListAdoptedDevicesParams, reqEditors ...RequestEditorFn) (*ListAdoptedDevicesResponse, error)
+
+	// CreateAdoptedDeviceWithBodyWithResponse request with any body
+	CreateAdoptedDeviceWithBodyWithResponse(ctx context.Context, params *CreateAdoptedDeviceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateAdoptedDeviceResponse, error)
+
+	CreateAdoptedDeviceWithResponse(ctx context.Context, params *CreateAdoptedDeviceParams, body CreateAdoptedDeviceJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateAdoptedDeviceResponse, error)
+
+	// DeleteAdoptedDeviceWithResponse request
+	DeleteAdoptedDeviceWithResponse(ctx context.Context, adoptedDeviceId Ulid, params *DeleteAdoptedDeviceParams, reqEditors ...RequestEditorFn) (*DeleteAdoptedDeviceResponse, error)
+
+	// GetAdoptedDeviceWithResponse request
+	GetAdoptedDeviceWithResponse(ctx context.Context, adoptedDeviceId Ulid, params *GetAdoptedDeviceParams, reqEditors ...RequestEditorFn) (*GetAdoptedDeviceResponse, error)
+
+	// UpdateAdoptedDeviceWithBodyWithResponse request with any body
+	UpdateAdoptedDeviceWithBodyWithResponse(ctx context.Context, adoptedDeviceId Ulid, params *UpdateAdoptedDeviceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateAdoptedDeviceResponse, error)
+
+	UpdateAdoptedDeviceWithResponse(ctx context.Context, adoptedDeviceId Ulid, params *UpdateAdoptedDeviceParams, body UpdateAdoptedDeviceJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateAdoptedDeviceResponse, error)
+
 	// LoginWithBodyWithResponse request with any body
 	LoginWithBodyWithResponse(ctx context.Context, params *LoginParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*LoginResponse, error)
 
@@ -6853,6 +8030,25 @@ type ClientWithResponsesInterface interface {
 
 	UpdateScopeNodeWithResponse(ctx context.Context, scopeNodeId Ulid, params *UpdateScopeNodeParams, body UpdateScopeNodeJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateScopeNodeResponse, error)
 
+	// ListScreensWithResponse request
+	ListScreensWithResponse(ctx context.Context, params *ListScreensParams, reqEditors ...RequestEditorFn) (*ListScreensResponse, error)
+
+	// CreateScreenWithBodyWithResponse request with any body
+	CreateScreenWithBodyWithResponse(ctx context.Context, params *CreateScreenParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateScreenResponse, error)
+
+	CreateScreenWithResponse(ctx context.Context, params *CreateScreenParams, body CreateScreenJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateScreenResponse, error)
+
+	// DeleteScreenWithResponse request
+	DeleteScreenWithResponse(ctx context.Context, screenId Ulid, params *DeleteScreenParams, reqEditors ...RequestEditorFn) (*DeleteScreenResponse, error)
+
+	// GetScreenWithResponse request
+	GetScreenWithResponse(ctx context.Context, screenId Ulid, params *GetScreenParams, reqEditors ...RequestEditorFn) (*GetScreenResponse, error)
+
+	// UpdateScreenWithBodyWithResponse request with any body
+	UpdateScreenWithBodyWithResponse(ctx context.Context, screenId Ulid, params *UpdateScreenParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateScreenResponse, error)
+
+	UpdateScreenWithResponse(ctx context.Context, screenId Ulid, params *UpdateScreenParams, body UpdateScreenJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateScreenResponse, error)
+
 	// ListWebhookEndpointsWithResponse request
 	ListWebhookEndpointsWithResponse(ctx context.Context, params *ListWebhookEndpointsParams, reqEditors ...RequestEditorFn) (*ListWebhookEndpointsResponse, error)
 
@@ -6892,6 +8088,177 @@ type ClientWithResponsesInterface interface {
 	ExportWorkspaceWithBodyWithResponse(ctx context.Context, params *ExportWorkspaceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ExportWorkspaceResponse, error)
 
 	ExportWorkspaceWithResponse(ctx context.Context, params *ExportWorkspaceParams, body ExportWorkspaceJSONRequestBody, reqEditors ...RequestEditorFn) (*ExportWorkspaceResponse, error)
+}
+
+type ListAdoptedDevicesResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *AdoptedDeviceListResponse
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON429 *TooManyRequests
+}
+
+// Status returns HTTPResponse.Status
+func (r ListAdoptedDevicesResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListAdoptedDevicesResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ListAdoptedDevicesResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type CreateAdoptedDeviceResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON201                   *AdoptedDevice
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON409 *Conflict
+	ApplicationproblemJSON422 *UnprocessableContent
+}
+
+// Status returns HTTPResponse.Status
+func (r CreateAdoptedDeviceResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r CreateAdoptedDeviceResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r CreateAdoptedDeviceResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type DeleteAdoptedDeviceResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON412 *PreconditionFailed
+	ApplicationproblemJSON428 *PreconditionRequired
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteAdoptedDeviceResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteAdoptedDeviceResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r DeleteAdoptedDeviceResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetAdoptedDeviceResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *AdoptedDevice
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON404 *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r GetAdoptedDeviceResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetAdoptedDeviceResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetAdoptedDeviceResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type UpdateAdoptedDeviceResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *AdoptedDevice
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON412 *PreconditionFailed
+	ApplicationproblemJSON422 *UnprocessableContent
+	ApplicationproblemJSON428 *PreconditionRequired
+}
+
+// Status returns HTTPResponse.Status
+func (r UpdateAdoptedDeviceResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r UpdateAdoptedDeviceResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r UpdateAdoptedDeviceResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
 }
 
 type LoginResponse struct {
@@ -8527,6 +9894,177 @@ func (r UpdateScopeNodeResponse) ContentType() string {
 	return ""
 }
 
+type ListScreensResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *ScreenListResponse
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON429 *TooManyRequests
+}
+
+// Status returns HTTPResponse.Status
+func (r ListScreensResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListScreensResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ListScreensResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type CreateScreenResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON201                   *Screen
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON409 *Conflict
+	ApplicationproblemJSON422 *UnprocessableContent
+}
+
+// Status returns HTTPResponse.Status
+func (r CreateScreenResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r CreateScreenResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r CreateScreenResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type DeleteScreenResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON412 *PreconditionFailed
+	ApplicationproblemJSON428 *PreconditionRequired
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteScreenResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteScreenResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r DeleteScreenResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetScreenResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *Screen
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON404 *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r GetScreenResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetScreenResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetScreenResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type UpdateScreenResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *Screen
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON412 *PreconditionFailed
+	ApplicationproblemJSON422 *UnprocessableContent
+	ApplicationproblemJSON428 *PreconditionRequired
+}
+
+// Status returns HTTPResponse.Status
+func (r UpdateScreenResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r UpdateScreenResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r UpdateScreenResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type ListWebhookEndpointsResponse struct {
 	Body                      []byte
 	HTTPResponse              *http.Response
@@ -8868,6 +10406,67 @@ func (r ExportWorkspaceResponse) ContentType() string {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
+}
+
+// ListAdoptedDevicesWithResponse request returning *ListAdoptedDevicesResponse
+func (c *ClientWithResponses) ListAdoptedDevicesWithResponse(ctx context.Context, params *ListAdoptedDevicesParams, reqEditors ...RequestEditorFn) (*ListAdoptedDevicesResponse, error) {
+	rsp, err := c.ListAdoptedDevices(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListAdoptedDevicesResponse(rsp)
+}
+
+// CreateAdoptedDeviceWithBodyWithResponse request with arbitrary body returning *CreateAdoptedDeviceResponse
+func (c *ClientWithResponses) CreateAdoptedDeviceWithBodyWithResponse(ctx context.Context, params *CreateAdoptedDeviceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateAdoptedDeviceResponse, error) {
+	rsp, err := c.CreateAdoptedDeviceWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateAdoptedDeviceResponse(rsp)
+}
+
+func (c *ClientWithResponses) CreateAdoptedDeviceWithResponse(ctx context.Context, params *CreateAdoptedDeviceParams, body CreateAdoptedDeviceJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateAdoptedDeviceResponse, error) {
+	rsp, err := c.CreateAdoptedDevice(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateAdoptedDeviceResponse(rsp)
+}
+
+// DeleteAdoptedDeviceWithResponse request returning *DeleteAdoptedDeviceResponse
+func (c *ClientWithResponses) DeleteAdoptedDeviceWithResponse(ctx context.Context, adoptedDeviceId Ulid, params *DeleteAdoptedDeviceParams, reqEditors ...RequestEditorFn) (*DeleteAdoptedDeviceResponse, error) {
+	rsp, err := c.DeleteAdoptedDevice(ctx, adoptedDeviceId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteAdoptedDeviceResponse(rsp)
+}
+
+// GetAdoptedDeviceWithResponse request returning *GetAdoptedDeviceResponse
+func (c *ClientWithResponses) GetAdoptedDeviceWithResponse(ctx context.Context, adoptedDeviceId Ulid, params *GetAdoptedDeviceParams, reqEditors ...RequestEditorFn) (*GetAdoptedDeviceResponse, error) {
+	rsp, err := c.GetAdoptedDevice(ctx, adoptedDeviceId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetAdoptedDeviceResponse(rsp)
+}
+
+// UpdateAdoptedDeviceWithBodyWithResponse request with arbitrary body returning *UpdateAdoptedDeviceResponse
+func (c *ClientWithResponses) UpdateAdoptedDeviceWithBodyWithResponse(ctx context.Context, adoptedDeviceId Ulid, params *UpdateAdoptedDeviceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateAdoptedDeviceResponse, error) {
+	rsp, err := c.UpdateAdoptedDeviceWithBody(ctx, adoptedDeviceId, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUpdateAdoptedDeviceResponse(rsp)
+}
+
+func (c *ClientWithResponses) UpdateAdoptedDeviceWithResponse(ctx context.Context, adoptedDeviceId Ulid, params *UpdateAdoptedDeviceParams, body UpdateAdoptedDeviceJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateAdoptedDeviceResponse, error) {
+	rsp, err := c.UpdateAdoptedDevice(ctx, adoptedDeviceId, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUpdateAdoptedDeviceResponse(rsp)
 }
 
 // LoginWithBodyWithResponse request with arbitrary body returning *LoginResponse
@@ -9391,6 +10990,67 @@ func (c *ClientWithResponses) UpdateScopeNodeWithResponse(ctx context.Context, s
 	return ParseUpdateScopeNodeResponse(rsp)
 }
 
+// ListScreensWithResponse request returning *ListScreensResponse
+func (c *ClientWithResponses) ListScreensWithResponse(ctx context.Context, params *ListScreensParams, reqEditors ...RequestEditorFn) (*ListScreensResponse, error) {
+	rsp, err := c.ListScreens(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListScreensResponse(rsp)
+}
+
+// CreateScreenWithBodyWithResponse request with arbitrary body returning *CreateScreenResponse
+func (c *ClientWithResponses) CreateScreenWithBodyWithResponse(ctx context.Context, params *CreateScreenParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateScreenResponse, error) {
+	rsp, err := c.CreateScreenWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateScreenResponse(rsp)
+}
+
+func (c *ClientWithResponses) CreateScreenWithResponse(ctx context.Context, params *CreateScreenParams, body CreateScreenJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateScreenResponse, error) {
+	rsp, err := c.CreateScreen(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateScreenResponse(rsp)
+}
+
+// DeleteScreenWithResponse request returning *DeleteScreenResponse
+func (c *ClientWithResponses) DeleteScreenWithResponse(ctx context.Context, screenId Ulid, params *DeleteScreenParams, reqEditors ...RequestEditorFn) (*DeleteScreenResponse, error) {
+	rsp, err := c.DeleteScreen(ctx, screenId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteScreenResponse(rsp)
+}
+
+// GetScreenWithResponse request returning *GetScreenResponse
+func (c *ClientWithResponses) GetScreenWithResponse(ctx context.Context, screenId Ulid, params *GetScreenParams, reqEditors ...RequestEditorFn) (*GetScreenResponse, error) {
+	rsp, err := c.GetScreen(ctx, screenId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetScreenResponse(rsp)
+}
+
+// UpdateScreenWithBodyWithResponse request with arbitrary body returning *UpdateScreenResponse
+func (c *ClientWithResponses) UpdateScreenWithBodyWithResponse(ctx context.Context, screenId Ulid, params *UpdateScreenParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateScreenResponse, error) {
+	rsp, err := c.UpdateScreenWithBody(ctx, screenId, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUpdateScreenResponse(rsp)
+}
+
+func (c *ClientWithResponses) UpdateScreenWithResponse(ctx context.Context, screenId Ulid, params *UpdateScreenParams, body UpdateScreenJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateScreenResponse, error) {
+	rsp, err := c.UpdateScreen(ctx, screenId, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUpdateScreenResponse(rsp)
+}
+
 // ListWebhookEndpointsWithResponse request returning *ListWebhookEndpointsResponse
 func (c *ClientWithResponses) ListWebhookEndpointsWithResponse(ctx context.Context, params *ListWebhookEndpointsParams, reqEditors ...RequestEditorFn) (*ListWebhookEndpointsResponse, error) {
 	rsp, err := c.ListWebhookEndpoints(ctx, params, reqEditors...)
@@ -9519,6 +11179,283 @@ func (c *ClientWithResponses) ExportWorkspaceWithResponse(ctx context.Context, p
 		return nil, err
 	}
 	return ParseExportWorkspaceResponse(rsp)
+}
+
+// ParseListAdoptedDevicesResponse parses an HTTP response from a ListAdoptedDevicesWithResponse call
+func ParseListAdoptedDevicesResponse(rsp *http.Response) (*ListAdoptedDevicesResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListAdoptedDevicesResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest AdoptedDeviceListResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseCreateAdoptedDeviceResponse parses an HTTP response from a CreateAdoptedDeviceWithResponse call
+func ParseCreateAdoptedDeviceResponse(rsp *http.Response) (*CreateAdoptedDeviceResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &CreateAdoptedDeviceResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest AdoptedDevice
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseDeleteAdoptedDeviceResponse parses an HTTP response from a DeleteAdoptedDeviceWithResponse call
+func ParseDeleteAdoptedDeviceResponse(rsp *http.Response) (*DeleteAdoptedDeviceResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteAdoptedDeviceResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 412:
+		var dest PreconditionFailed
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON412 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 428:
+		var dest PreconditionRequired
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON428 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetAdoptedDeviceResponse parses an HTTP response from a GetAdoptedDeviceWithResponse call
+func ParseGetAdoptedDeviceResponse(rsp *http.Response) (*GetAdoptedDeviceResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetAdoptedDeviceResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest AdoptedDevice
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseUpdateAdoptedDeviceResponse parses an HTTP response from a UpdateAdoptedDeviceWithResponse call
+func ParseUpdateAdoptedDeviceResponse(rsp *http.Response) (*UpdateAdoptedDeviceResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &UpdateAdoptedDeviceResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest AdoptedDevice
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 412:
+		var dest PreconditionFailed
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON412 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 428:
+		var dest PreconditionRequired
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON428 = &dest
+
+	}
+
+	return response, nil
 }
 
 // ParseLoginResponse parses an HTTP response from a LoginWithResponse call
@@ -11877,6 +13814,283 @@ func ParseUpdateScopeNodeResponse(rsp *http.Response) (*UpdateScopeNodeResponse,
 	switch {
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
 		var dest ScopeNode
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 412:
+		var dest PreconditionFailed
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON412 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 428:
+		var dest PreconditionRequired
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON428 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListScreensResponse parses an HTTP response from a ListScreensWithResponse call
+func ParseListScreensResponse(rsp *http.Response) (*ListScreensResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListScreensResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ScreenListResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseCreateScreenResponse parses an HTTP response from a CreateScreenWithResponse call
+func ParseCreateScreenResponse(rsp *http.Response) (*CreateScreenResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &CreateScreenResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest Screen
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseDeleteScreenResponse parses an HTTP response from a DeleteScreenWithResponse call
+func ParseDeleteScreenResponse(rsp *http.Response) (*DeleteScreenResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteScreenResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 412:
+		var dest PreconditionFailed
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON412 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 428:
+		var dest PreconditionRequired
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON428 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetScreenResponse parses an HTTP response from a GetScreenWithResponse call
+func ParseGetScreenResponse(rsp *http.Response) (*GetScreenResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetScreenResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest Screen
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseUpdateScreenResponse parses an HTTP response from a UpdateScreenWithResponse call
+func ParseUpdateScreenResponse(rsp *http.Response) (*UpdateScreenResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &UpdateScreenResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest Screen
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}

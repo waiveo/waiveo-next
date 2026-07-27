@@ -265,6 +265,12 @@ func (srv *server) mountAll(rt, rootRT *router, authHandlers *auth.Handlers) {
 	srv.mount(rt, daypartsConfig())
 	srv.mount(rt, playlistsConfig())
 	srv.mount(rt, automationsConfig())
+	// The two data-model/1 identity kinds (identityrows.go). They are ordinary
+	// resourceConfig mounts on purpose: a screen and an adopted device are
+	// authored rows with a revision to condition a write on, unlike the relay's
+	// live device/entity read model below.
+	srv.mount(rt, screensConfig())
+	srv.mount(rt, adoptedDevicesConfig())
 	// The outbound-webhook registration family plus the three operations a
 	// registered endpoint needs that plain CRUD does not express — installing or
 	// rotating its signing secret, re-enabling it after an auto-disable, and

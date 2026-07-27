@@ -519,6 +519,102 @@ export interface paths {
         patch: operations["updatePlaylist"];
         trace?: never;
     };
+    "/screens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List screens
+         * @description Returns a keyset-paginated, selector-filterable page of screen rows.
+         */
+        get: operations["listScreens"];
+        put?: never;
+        /** Create a screen */
+        post: operations["createScreen"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/screens/{screen_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                screen_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        /** Read a screen */
+        get: operations["getScreen"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete a screen
+         * @description Requires If-Match against the screen's current ETag/revision.
+         */
+        delete: operations["deleteScreen"];
+        options?: never;
+        head?: never;
+        /**
+         * Update a screen
+         * @description Partial update. Requires If-Match against the screen's current ETag/revision.
+         */
+        patch: operations["updateScreen"];
+        trace?: never;
+    };
+    "/adopted-devices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List adopted devices
+         * @description Returns a keyset-paginated, selector-filterable page of adopted device rows.
+         */
+        get: operations["listAdoptedDevices"];
+        put?: never;
+        /** Create a adopted device */
+        post: operations["createAdoptedDevice"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/adopted-devices/{adopted_device_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                adopted_device_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        /** Read a adopted device */
+        get: operations["getAdoptedDevice"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete a adopted device
+         * @description Requires If-Match against the adopted device's current ETag/revision.
+         */
+        delete: operations["deleteAdoptedDevice"];
+        options?: never;
+        head?: never;
+        /**
+         * Update a adopted device
+         * @description Partial update. Requires If-Match against the adopted device's current ETag/revision.
+         */
+        patch: operations["updateAdoptedDevice"];
+        trace?: never;
+    };
     "/content": {
         parameters: {
             query?: never;
@@ -998,6 +1094,94 @@ export interface components {
         };
         ScopeNodeListResponse: {
             items: components["schemas"]["ScopeNode"][];
+            cursor: components["schemas"]["Cursor"];
+        };
+        /** @description A screen's own identity row — the row a `screen_id` names (`data-model/1` DAT-004a). It is NOT the `screen`-kind scope node it is placed under: DAT-004 lets a screen row hang off a node of ANY kind, so two screens may share one `group` node and a screen may sit directly under a `site`. The `screen_id` a `relay/1` `screen_programs` entry carries (REL-061), a player learns at pairing redemption (`player/1` PLY-035), and a `content.played` event records (`events/1` EVT-050) all name this row's `id`. */
+        Screen: {
+            id: components["schemas"]["Ulid"];
+            /** @description Client-assigned identifier (contracts/api-1.md#client-assignable-external_id). */
+            external_id?: string | null;
+            name: string;
+            scope_node: components["schemas"]["Ulid"];
+            /** @description The `device_id` of an adopted device representing the same physical display (`player/1` PLY-124). Optional — a screen and an adopted device remain distinct rows — but a stated value MUST name an existing adopted device. */
+            device_id: string | null;
+            labels: components["schemas"]["LabelMap"];
+            revision: number;
+            created_at: components["schemas"]["Timestamp"];
+            updated_at: components["schemas"]["Timestamp"];
+        };
+        ScreenCreate: {
+            external_id?: string | null;
+            name: string;
+            scope_node: components["schemas"]["Ulid"];
+            device_id?: string | null;
+            labels?: components["schemas"]["LabelMap"];
+        };
+        /** @description Partial update — every field optional, at least one required. */
+        ScreenUpdate: {
+            external_id?: string | null;
+            name?: string;
+            scope_node?: components["schemas"]["Ulid"];
+            device_id?: string | null;
+            labels?: components["schemas"]["LabelMap"];
+        };
+        ScreenListResponse: {
+            items: components["schemas"]["Screen"][];
+            cursor: components["schemas"]["Cursor"];
+        };
+        /** @description One entity a device exposes, with the policy authored over it — exactly `relay/1` REL-063's `{entity_id, device_class, enabled, hidden, display_name, category}`. Every member is a DECISION rather than a discovered fact, which is why these live on an authored row and not in the relay's own report. */
+        AdoptedDeviceEntity: {
+            entity_id: components["schemas"]["Ulid"];
+            /** @description The device class whose command vocabulary a command to this entity resolves against (`device-class-registry/1` REG-052). */
+            device_class: string;
+            enabled: boolean;
+            hidden: boolean;
+            display_name: string;
+            /** @enum {string} */
+            category: "primary" | "diagnostic";
+        };
+        /** @description One adopted device — the row a `device_id` names (`data-model/1` DAT-004a) and the row a relay's desired-state `device_inventory` entry is compiled from (`relay/1` REL-063). It is an ADOPTION RECORD: the relay is authoritative for what exists on its LAN and reports discovered-but-unadopted candidates upward (REL-110/111), while the adoption decision and the policy over it are authored here. Its identity is `(site, driver, native_id)`, never the relay that happens to report it (REL-153) — which is why no `relay_id` appears on this resource, and why two rows may not share a `(driver, native_id)`. */
+        AdoptedDevice: {
+            id: components["schemas"]["Ulid"];
+            /** @description Client-assigned identifier (contracts/api-1.md#client-assignable-external_id). */
+            external_id?: string | null;
+            name: string;
+            scope_node: components["schemas"]["Ulid"];
+            /** @description Half of the `(site, driver, native_id)` tuple this device's identity is scoped to (`relay/1` REL-063). */
+            driver: string;
+            /** @description The device's own identifier on its LAN — the other half of its identity tuple (`relay/1` REL-063). */
+            native_id: string;
+            /** @description How often the relay should poll this device. `null` when this deployment has stated no cadence — REL-063 fixes no default, and a number here would be a polling policy nobody authored. */
+            poll_cadence_seconds: number | null;
+            entities: components["schemas"]["AdoptedDeviceEntity"][];
+            labels: components["schemas"]["LabelMap"];
+            revision: number;
+            created_at: components["schemas"]["Timestamp"];
+            updated_at: components["schemas"]["Timestamp"];
+        };
+        AdoptedDeviceCreate: {
+            external_id?: string | null;
+            name: string;
+            scope_node: components["schemas"]["Ulid"];
+            driver: string;
+            native_id: string;
+            poll_cadence_seconds?: number | null;
+            entities?: components["schemas"]["AdoptedDeviceEntity"][];
+            labels?: components["schemas"]["LabelMap"];
+        };
+        /** @description Partial update — every field optional, at least one required. */
+        AdoptedDeviceUpdate: {
+            external_id?: string | null;
+            name?: string;
+            scope_node?: components["schemas"]["Ulid"];
+            driver?: string;
+            native_id?: string;
+            poll_cadence_seconds?: number | null;
+            entities?: components["schemas"]["AdoptedDeviceEntity"][];
+            labels?: components["schemas"]["LabelMap"];
+        };
+        AdoptedDeviceListResponse: {
+            items: components["schemas"]["AdoptedDevice"][];
             cursor: components["schemas"]["Cursor"];
         };
         /** @description The management-API resource envelope around a rules/1 Rule. `mode`, `max`, `triggers`, `conditions`, and `actions` are exactly rules/1's own vocabulary (rules/1 Wire shapes); the remaining fields are this API's own resource envelope (identity, placement, labels, revision). */
@@ -2653,6 +2837,346 @@ export interface operations {
                 };
                 content?: never;
             };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            412: components["responses"]["PreconditionFailed"];
+            422: components["responses"]["UnprocessableContent"];
+            428: components["responses"]["PreconditionRequired"];
+        };
+    };
+    listScreens: {
+        parameters: {
+            query?: {
+                /** @description Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client. */
+                cursor?: components["parameters"]["CursorParam"];
+                /** @description Maximum rows to return in this page. */
+                limit?: components["parameters"]["LimitParam"];
+                /** @description A label-selector string: comma-separated, ANDed terms (equality, inequality, set-membership, set-exclusion, existence, non-existence, or a `scope_node subtree <ulid>` term). See `contracts/api-1.md#label-selector-grammar` for the full grammar. */
+                selector?: components["parameters"]["SelectorParam"];
+            };
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of screens. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScreenListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    createScreen: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScreenCreate"];
+            };
+        };
+        responses: {
+            /** @description The created screen. */
+            201: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Screen"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableContent"];
+        };
+    };
+    getScreen: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                screen_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The screen. */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Screen"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    deleteScreen: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists. */
+                "If-Match": components["parameters"]["IfMatchParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                screen_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted. No content. */
+            204: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            412: components["responses"]["PreconditionFailed"];
+            428: components["responses"]["PreconditionRequired"];
+        };
+    };
+    updateScreen: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists. */
+                "If-Match": components["parameters"]["IfMatchParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                screen_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScreenUpdate"];
+            };
+        };
+        responses: {
+            /** @description The updated screen. */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Screen"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            412: components["responses"]["PreconditionFailed"];
+            422: components["responses"]["UnprocessableContent"];
+            428: components["responses"]["PreconditionRequired"];
+        };
+    };
+    listAdoptedDevices: {
+        parameters: {
+            query?: {
+                /** @description Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client. */
+                cursor?: components["parameters"]["CursorParam"];
+                /** @description Maximum rows to return in this page. */
+                limit?: components["parameters"]["LimitParam"];
+                /** @description A label-selector string: comma-separated, ANDed terms (equality, inequality, set-membership, set-exclusion, existence, non-existence, or a `scope_node subtree <ulid>` term). See `contracts/api-1.md#label-selector-grammar` for the full grammar. */
+                selector?: components["parameters"]["SelectorParam"];
+            };
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of adopted devices. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdoptedDeviceListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    createAdoptedDevice: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdoptedDeviceCreate"];
+            };
+        };
+        responses: {
+            /** @description The created adopted device. */
+            201: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdoptedDevice"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableContent"];
+        };
+    };
+    getAdoptedDevice: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                adopted_device_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The adopted device. */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdoptedDevice"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    deleteAdoptedDevice: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists. */
+                "If-Match": components["parameters"]["IfMatchParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                adopted_device_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted. No content. */
+            204: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            412: components["responses"]["PreconditionFailed"];
+            428: components["responses"]["PreconditionRequired"];
+        };
+    };
+    updateAdoptedDevice: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists. */
+                "If-Match": components["parameters"]["IfMatchParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                adopted_device_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdoptedDeviceUpdate"];
+            };
+        };
+        responses: {
+            /** @description The updated adopted device. */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdoptedDevice"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];

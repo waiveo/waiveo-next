@@ -451,6 +451,60 @@ func (e *schemaProbeEnv) mintAutomation(t *testing.T, scopeNode string) string {
 	return decodeID(t, raw)
 }
 
+// rsAdoptedEntityID is the fixture entity a probed adopted device exposes. It is
+// a canonical ULID because that is what the AdoptedDeviceEntity schema declares
+// and what the row validator enforces.
+const rsAdoptedEntityID = "01J8Z9ENTTYMEDAPAYERAAAAA1"
+
+// adoptedDeviceBody is the fixture create body for an adopted device. It states
+// an entity deliberately: the AdoptedDeviceEntity item schema declares required
+// members, and this check refuses to validate an EMPTY array against an item
+// schema — an empty `entities` would pass while proving nothing about the shape
+// of the policy entries that are the whole reason the row exists.
+func adoptedDeviceBody(t *testing.T, scopeNode, driver, nativeID string) []byte {
+	t.Helper()
+	return mustJSON(t, map[string]any{
+		"name":       "Fixture Adopted Device",
+		"scope_node": scopeNode,
+		"driver":     driver,
+		"native_id":  nativeID,
+		"entities": []any{map[string]any{
+			"entity_id":    rsAdoptedEntityID,
+			"device_class": "media-player",
+			"enabled":      true,
+			"hidden":       false,
+			"display_name": "Fixture Media Player",
+			"category":     "primary",
+		}},
+	})
+}
+
+// mintScreen creates a screen identity row under scopeNode and returns its id.
+func (e *schemaProbeEnv) mintScreen(t *testing.T, scopeNode string) string {
+	t.Helper()
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/screens", mustJSON(t, map[string]any{
+		"name":       "Fixture Screen",
+		"scope_node": scopeNode,
+		"labels":     map[string]string{"env": "prod"},
+	}), nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("mint screen: %d %s", resp.StatusCode, raw)
+	}
+	return decodeID(t, raw)
+}
+
+// mintAdoptedDevice creates an adopted-device row under scopeNode and returns its
+// id. driver/nativeID are parameters because REL-153 makes that pair the row's
+// identity: a probe that minted two rows from one literal pair would collide.
+func (e *schemaProbeEnv) mintAdoptedDevice(t *testing.T, scopeNode, driver, nativeID string) string {
+	t.Helper()
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/adopted-devices", adoptedDeviceBody(t, scopeNode, driver, nativeID), nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("mint adopted device: %d %s", resp.StatusCode, raw)
+	}
+	return decodeID(t, raw)
+}
+
 // etagOf reads a resource's current ETag, the token an api/1 conditional write
 // is made under.
 func (e *schemaProbeEnv) etagOf(t *testing.T, path string) string {
@@ -548,6 +602,51 @@ var probes = map[string]probe{
 		e.mintAutomation(t, e.mintOrg(t))
 		return e.do(t, http.MethodPost, "/api/v1/automations/bulk-enable",
 			mustJSON(t, map[string]any{"selector": "env=prod", "enabled": true}), nil)
+	},
+
+	// --- screens ----------------------------------------------------------
+	"createScreen": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		// The MINIMAL create: exactly ScreenCreate's own required members and
+		// nothing more. `labels` and `device_id` are declared required on the
+		// RESPONSE and named by neither — the drift class this check exists for.
+		return e.do(t, http.MethodPost, "/api/v1/screens", mustJSON(t, map[string]any{
+			"name":       "Minimal Screen",
+			"scope_node": e.mintOrg(t),
+		}), nil)
+	},
+	"getScreen": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		id := e.mintScreen(t, e.mintOrg(t))
+		return e.do(t, http.MethodGet, "/api/v1/screens/"+id, nil, nil)
+	},
+	"updateScreen": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		id := e.mintScreen(t, e.mintOrg(t))
+		return e.do(t, http.MethodPatch, "/api/v1/screens/"+id,
+			mustJSON(t, map[string]any{"name": "Renamed Screen"}),
+			map[string]string{"If-Match": e.etagOf(t, "/api/v1/screens/"+id)})
+	},
+	"listScreens": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		e.mintScreen(t, e.mintOrg(t))
+		return e.do(t, http.MethodGet, "/api/v1/screens", nil, nil)
+	},
+
+	// --- adopted-devices --------------------------------------------------
+	"createAdoptedDevice": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		return e.do(t, http.MethodPost, "/api/v1/adopted-devices",
+			adoptedDeviceBody(t, e.mintOrg(t), "roku-ecp", "10.0.0.41"), nil)
+	},
+	"getAdoptedDevice": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		id := e.mintAdoptedDevice(t, e.mintOrg(t), "roku-ecp", "10.0.0.41")
+		return e.do(t, http.MethodGet, "/api/v1/adopted-devices/"+id, nil, nil)
+	},
+	"updateAdoptedDevice": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		id := e.mintAdoptedDevice(t, e.mintOrg(t), "roku-ecp", "10.0.0.41")
+		return e.do(t, http.MethodPatch, "/api/v1/adopted-devices/"+id,
+			mustJSON(t, map[string]any{"name": "Renamed Adopted Device"}),
+			map[string]string{"If-Match": e.etagOf(t, "/api/v1/adopted-devices/"+id)})
+	},
+	"listAdoptedDevices": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		e.mintAdoptedDevice(t, e.mintOrg(t), "roku-ecp", "10.0.0.41")
+		return e.do(t, http.MethodGet, "/api/v1/adopted-devices", nil, nil)
 	},
 
 	// --- jobs -------------------------------------------------------------

@@ -37,6 +37,22 @@ tags:
       authenticated operations.
   - name: scope-nodes
     description: The org → site → group → screen tree every resource and durable event attaches to. Worked fully.
+  - name: screens
+    description: >-
+      A screen's own identity row (`data-model/1` DAT-004/DAT-004a) — the row a
+      `screen_id` names. Deliberately NOT the `screen`-kind scope node it is
+      placed under: DAT-004 lets a screen row hang off a node of any kind, so
+      two screens may share one node and a screen may sit directly under a
+      site. Worked fully.
+  - name: adopted-devices
+    description: >-
+      The adopted-device rows the app peer compiles into a relay's desired-state
+      `device_inventory` section (`relay/1` REL-063) — a device's driver, native
+      identity, poll cadence, and the per-entity enabled/hidden/display-name/
+      category policy. Authored here, unlike the `devices` family below: the
+      relay is authoritative for what its LAN CONTAINS and reports candidates
+      upward (REL-110/111), while adoption and the policy over it are decisions
+      no discovery sweep can report. Worked fully.
   - name: devices
     description: >-
       The device registry — the adopted physical devices behind each site's
@@ -1359,6 +1375,322 @@ paths:
   # by their own sha256, so re-posting identical bytes yields the identical
   # `asset_ref` with no duplicate to collapse.
   # ---------------------------------------------------------------------
+  # ---------------------------------------------------------------------
+  # screens — the row a screen_id names (data-model/1 DAT-004a).
+  # ---------------------------------------------------------------------
+  /screens:
+    get:
+      operationId: listScreens
+      summary: List screens
+      description: Returns a keyset-paginated, selector-filterable page of screen rows.
+      tags: [screens, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/CursorParam"
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/SelectorParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: A page of screens.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScreenListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+    post:
+      operationId: createScreen
+      summary: Create a screen
+      tags: [screens, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScreenCreate"
+      responses:
+        "201":
+          description: The created screen.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Screen"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+  /screens/{screen_id}:
+    parameters:
+      - name: screen_id
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/Ulid"
+    get:
+      operationId: getScreen
+      summary: Read a screen
+      tags: [screens, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The screen.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Screen"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateScreen
+      summary: Update a screen
+      description: Partial update. Requires If-Match against the screen's current ETag/revision.
+      tags: [screens, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IfMatchParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScreenUpdate"
+      responses:
+        "200":
+          description: The updated screen.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Screen"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
+    delete:
+      operationId: deleteScreen
+      summary: Delete a screen
+      description: Requires If-Match against the screen's current ETag/revision.
+      tags: [screens, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IfMatchParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "204":
+          description: Deleted. No content.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
+  # ---------------------------------------------------------------------
+  # adopted-devices — the rows relay/1 REL-063's device_inventory is compiled from.
+  # ---------------------------------------------------------------------
+  /adopted-devices:
+    get:
+      operationId: listAdoptedDevices
+      summary: List adopted devices
+      description: Returns a keyset-paginated, selector-filterable page of adopted device rows.
+      tags: [adopted-devices, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/CursorParam"
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/SelectorParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: A page of adopted devices.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdoptedDeviceListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+    post:
+      operationId: createAdoptedDevice
+      summary: Create a adopted device
+      tags: [adopted-devices, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdoptedDeviceCreate"
+      responses:
+        "201":
+          description: The created adopted device.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdoptedDevice"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+  /adopted-devices/{adopted_device_id}:
+    parameters:
+      - name: adopted_device_id
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/Ulid"
+    get:
+      operationId: getAdoptedDevice
+      summary: Read a adopted device
+      tags: [adopted-devices, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The adopted device.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdoptedDevice"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateAdoptedDevice
+      summary: Update a adopted device
+      description: Partial update. Requires If-Match against the adopted device's current ETag/revision.
+      tags: [adopted-devices, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IfMatchParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdoptedDeviceUpdate"
+      responses:
+        "200":
+          description: The updated adopted device.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdoptedDevice"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
+    delete:
+      operationId: deleteAdoptedDevice
+      summary: Delete a adopted device
+      description: Requires If-Match against the adopted device's current ETag/revision.
+      tags: [adopted-devices, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IfMatchParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "204":
+          description: Deleted. No content.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
   /content:
     post:
       operationId: uploadContent
@@ -2538,6 +2870,265 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ScopeNode"
+        cursor:
+          $ref: "#/components/schemas/Cursor"
+
+    Screen:
+      type: object
+      description: >-
+        A screen's own identity row — the row a `screen_id` names
+        (`data-model/1` DAT-004a). It is NOT the `screen`-kind scope node it is
+        placed under: DAT-004 lets a screen row hang off a node of ANY kind, so
+        two screens may share one `group` node and a screen may sit directly
+        under a `site`. The `screen_id` a `relay/1` `screen_programs` entry
+        carries (REL-061), a player learns at pairing redemption (`player/1`
+        PLY-035), and a `content.played` event records (`events/1` EVT-050) all
+        name this row's `id`.
+      required: [id, name, scope_node, device_id, labels, revision, created_at, updated_at]
+      additionalProperties: false
+      properties:
+        id:
+          $ref: "#/components/schemas/Ulid"
+        external_id:
+          type: ["string", "null"]
+          description: Client-assigned identifier (contracts/api-1.md#client-assignable-external_id).
+          x-go-type: "*string"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        scope_node:
+          $ref: "#/components/schemas/Ulid"
+        device_id:
+          type: ["string", "null"]
+          description: >-
+            The `device_id` of an adopted device representing the same physical
+            display (`player/1` PLY-124). Optional — a screen and an adopted
+            device remain distinct rows — but a stated value MUST name an
+            existing adopted device.
+          pattern: "^[0-9A-HJKMNP-TV-Z]{26}$"
+          x-go-type: "*string"
+        labels:
+          $ref: "#/components/schemas/LabelMap"
+        revision:
+          type: integer
+          minimum: 1
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        updated_at:
+          $ref: "#/components/schemas/Timestamp"
+
+    ScreenCreate:
+      type: object
+      required: [name, scope_node]
+      additionalProperties: false
+      properties:
+        external_id:
+          type: ["string", "null"]
+          x-go-type: "*string"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        scope_node:
+          $ref: "#/components/schemas/Ulid"
+        device_id:
+          type: ["string", "null"]
+          pattern: "^[0-9A-HJKMNP-TV-Z]{26}$"
+          x-go-type: "*string"
+        labels:
+          $ref: "#/components/schemas/LabelMap"
+
+    ScreenUpdate:
+      type: object
+      description: Partial update — every field optional, at least one required.
+      minProperties: 1
+      additionalProperties: false
+      properties:
+        external_id:
+          type: ["string", "null"]
+          x-go-type: "*string"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        scope_node:
+          $ref: "#/components/schemas/Ulid"
+        device_id:
+          type: ["string", "null"]
+          pattern: "^[0-9A-HJKMNP-TV-Z]{26}$"
+          x-go-type: "*string"
+        labels:
+          $ref: "#/components/schemas/LabelMap"
+
+    ScreenListResponse:
+      type: object
+      required: [items, cursor]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Screen"
+        cursor:
+          $ref: "#/components/schemas/Cursor"
+
+    AdoptedDeviceEntity:
+      type: object
+      description: >-
+        One entity a device exposes, with the policy authored over it — exactly
+        `relay/1` REL-063's `{entity_id, device_class, enabled, hidden,
+        display_name, category}`. Every member is a DECISION rather than a
+        discovered fact, which is why these live on an authored row and not in
+        the relay's own report.
+      required: [entity_id, device_class, enabled, hidden, display_name, category]
+      additionalProperties: false
+      properties:
+        entity_id:
+          $ref: "#/components/schemas/Ulid"
+        device_class:
+          type: string
+          minLength: 1
+          description: The device class whose command vocabulary a command to this entity resolves against (`device-class-registry/1` REG-052).
+        enabled:
+          type: boolean
+        hidden:
+          type: boolean
+        display_name:
+          type: string
+        category:
+          type: string
+          enum: [primary, diagnostic]
+
+    AdoptedDevice:
+      type: object
+      description: >-
+        One adopted device — the row a `device_id` names (`data-model/1`
+        DAT-004a) and the row a relay's desired-state `device_inventory` entry
+        is compiled from (`relay/1` REL-063). It is an ADOPTION RECORD: the
+        relay is authoritative for what exists on its LAN and reports
+        discovered-but-unadopted candidates upward (REL-110/111), while the
+        adoption decision and the policy over it are authored here. Its identity
+        is `(site, driver, native_id)`, never the relay that happens to report
+        it (REL-153) — which is why no `relay_id` appears on this resource, and
+        why two rows may not share a `(driver, native_id)`.
+      required: [id, name, scope_node, driver, native_id, poll_cadence_seconds, entities, labels, revision, created_at, updated_at]
+      additionalProperties: false
+      properties:
+        id:
+          $ref: "#/components/schemas/Ulid"
+        external_id:
+          type: ["string", "null"]
+          description: Client-assigned identifier (contracts/api-1.md#client-assignable-external_id).
+          x-go-type: "*string"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        scope_node:
+          $ref: "#/components/schemas/Ulid"
+        driver:
+          type: string
+          minLength: 1
+          description: Half of the `(site, driver, native_id)` tuple this device's identity is scoped to (`relay/1` REL-063).
+        native_id:
+          type: string
+          minLength: 1
+          description: The device's own identifier on its LAN — the other half of its identity tuple (`relay/1` REL-063).
+        poll_cadence_seconds:
+          type: ["integer", "null"]
+          minimum: 1
+          description: >-
+            How often the relay should poll this device. `null` when this
+            deployment has stated no cadence — REL-063 fixes no default, and a
+            number here would be a polling policy nobody authored.
+          x-go-type: "*int"
+        entities:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdoptedDeviceEntity"
+        labels:
+          $ref: "#/components/schemas/LabelMap"
+        revision:
+          type: integer
+          minimum: 1
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        updated_at:
+          $ref: "#/components/schemas/Timestamp"
+
+    AdoptedDeviceCreate:
+      type: object
+      required: [name, scope_node, driver, native_id]
+      additionalProperties: false
+      properties:
+        external_id:
+          type: ["string", "null"]
+          x-go-type: "*string"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        scope_node:
+          $ref: "#/components/schemas/Ulid"
+        driver:
+          type: string
+          minLength: 1
+        native_id:
+          type: string
+          minLength: 1
+        poll_cadence_seconds:
+          type: ["integer", "null"]
+          minimum: 1
+          x-go-type: "*int"
+        entities:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdoptedDeviceEntity"
+        labels:
+          $ref: "#/components/schemas/LabelMap"
+
+    AdoptedDeviceUpdate:
+      type: object
+      description: Partial update — every field optional, at least one required.
+      minProperties: 1
+      additionalProperties: false
+      properties:
+        external_id:
+          type: ["string", "null"]
+          x-go-type: "*string"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        scope_node:
+          $ref: "#/components/schemas/Ulid"
+        driver:
+          type: string
+          minLength: 1
+        native_id:
+          type: string
+          minLength: 1
+        poll_cadence_seconds:
+          type: ["integer", "null"]
+          minimum: 1
+          x-go-type: "*int"
+        entities:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdoptedDeviceEntity"
+        labels:
+          $ref: "#/components/schemas/LabelMap"
+
+    AdoptedDeviceListResponse:
+      type: object
+      required: [items, cursor]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdoptedDevice"
         cursor:
           $ref: "#/components/schemas/Cursor"
 
