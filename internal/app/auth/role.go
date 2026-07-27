@@ -135,6 +135,52 @@ func CanRead(bindings []Binding, ancestors []string) bool {
 	return bound && role.AtLeast(RoleViewer)
 }
 
+// CanWrite reports whether a principal holding bindings may WRITE at the scope
+// node whose ancestor chain is ancestors — create a resource placed there, move
+// one there, or mutate one already placed there. ancestors is nearest first,
+// self included: exactly datamodel.ScopeTree.AncestorChain's output order and
+// exactly what Resolve consumes.
+//
+// It is CanRead's twin in every structural respect, and for the same reason:
+// SEC-010's inheritance rule is implemented ONCE, in Resolve, so "may I see
+// this node?" and "may I write at this node?" can never answer from two
+// different walks of the same tree. The only difference is the floor.
+//
+// The floor is `operator`, and it is deliberately COARSE. The contract's own
+// draft-note beneath SEC-012 leaves "the complete permission matrix for
+// admin/operator/viewer against every individual api/1 operation ... as
+// per-operation api/1 configuration, not a security-model requirement" — so
+// this package does not invent one. What it does implement is the split
+// RequiredRole already fixes at the method level: a safe method needs `viewer`,
+// anything that can change platform state needs `operator`. This function is
+// that same split asked of a PLACE rather than of a method, which is the half
+// RequiredRole structurally cannot answer — a request is addressed by a
+// resource, not by a scope node, so a principal who is `admin` at one site and
+// `viewer` at another clears RequiredRole on either and must still be refused a
+// write at the second.
+//
+// One consequence is load-bearing well beyond this function, so it is stated
+// here where the floors are chosen: because `operator` outranks `viewer` in
+// roleRank's TOTAL order, CanWrite at a node IMPLIES CanRead at that node.
+// Every row a write-time uniqueness or cross-reference check scans within the
+// node it was just authorized at is therefore a row the same caller could have
+// enumerated by listing it. A guard that must scan its whole placement to be
+// correct (api/1 API-101's external_id uniqueness) consequently discloses
+// nothing, provided the placement was authorized FIRST — which is why the
+// placement check is ordered ahead of it rather than the guard being narrowed.
+//
+// A binding carrying a role name outside the four carries no authority at all
+// (Role.AtLeast refuses an unrecognized role), and an EMPTY ancestors chain —
+// what AncestorChain returns for a node the tree does not contain, including
+// the empty node id — resolves only through Resolve's RootScopeNode fallback.
+// Both are the fail-closed direction (SEC-005): a write aimed at a node that
+// does not exist is refused for exactly the same reason, and with exactly the
+// same answer, as one aimed at a node the caller has no authority over.
+func CanWrite(bindings []Binding, ancestors []string) bool {
+	role, bound := Resolve(bindings, ancestors)
+	return bound && role.AtLeast(RoleOperator)
+}
+
 // Effective returns the strongest role a principal holds ANYWHERE in the tree,
 // and whether they hold any binding at all.
 //
