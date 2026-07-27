@@ -17,7 +17,10 @@
 //
 // Applicability triage (§10 "no silent caps"): Run DRIVES every case in the
 // frozen relay-1 corpus (REL-010 fresh enroll, REL-020/022/027
-// Expired-certificate re-enrollment, REL-030 hello/negotiate, REL-056
+// Expired-certificate re-enrollment, REL-030 hello/negotiate, REL-051
+// ahead-of-current since_generation drawing the full snapshot — refused at
+// the relay's REL-052 gate, acked with the pull exchange's correlation id
+// (REL-054), REL-056
 // durable atomic generation-apply swap, REL-057 server-initiated
 // state.changed nudge → relay-issued pull, REL-061 offline screen-program serve
 // against internal/relay/desiredstate.ServedProgram, REL-070 idempotent
@@ -143,6 +146,7 @@ func Run(client RelayClient, feeder Feeder) report.Report {
 	driveREL022(&rep, client, feeder, cases)
 	driveREL027(&rep, client, feeder, cases)
 	driveREL030(&rep, client, feeder, cases)
+	driveREL051(&rep, client, feeder, cases)
 	driveREL056(&rep, cases)
 	driveREL057(&rep, client, feeder, cases)
 	driveREL061(&rep, cases)

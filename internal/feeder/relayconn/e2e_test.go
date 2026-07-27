@@ -12,7 +12,9 @@
 //	(ii)  state.pull → state.snapshot with shared correlation id + trace_id
 //	      (REL-006); desiredstate.VerifyAndApply accepts and persists.
 //	(iii) state.pull with since_generation=current → state.unchanged whose
-//	      body carries the generation and NO sections key (byte-asserted).
+//	      body carries the generation and NO sections key (byte-asserted);
+//	      since_generation GREATER than current → the FULL state.snapshot,
+//	      never a lying unchanged (REL-051's ahead-of-current clause).
 //	(iv)  server-initiated push over the SAME connection: the REL-057
 //	      state.changed nudge (relay reacts with an immediate pull, applied
 //	      well under the legacy 3s ticker).
@@ -475,6 +477,35 @@ func TestPersistentConnectionEndToEnd(t *testing.T) {
 	}
 	if unchanged.Generation != 1 {
 		t.Fatalf("state.unchanged generation = %d, want 1", unchanged.Generation)
+	}
+
+	// REL-051's ahead-of-current clause: since_generation naming a
+	// generation GREATER than the app peer's current one draws the FULL
+	// state.snapshot — never a state.unchanged asserting agreement that
+	// does not exist. (Current generation here is 1; claim 6.) This is the
+	// executing pin on the >-vs-== distinction at handleStatePull's guard:
+	// only exact equality may answer unchanged.
+	ahead := applied.Generation + 5
+	replyAhead, err := client.Pull("trace-op-ahead", &ahead)
+	if err != nil {
+		t.Fatalf("Pull(since=%d, ahead of current): %v", ahead, err)
+	}
+	if replyAhead.Type != wire.FrameTypeStateSnapshot {
+		t.Fatalf("ahead-of-current pull reply = %q, want state.snapshot (REL-051: a since_generation GREATER than current MUST draw the full snapshot)", replyAhead.Type)
+	}
+	var aheadKeys map[string]json.RawMessage
+	if err := json.Unmarshal(replyAhead.Body, &aheadKeys); err != nil {
+		t.Fatalf("decode ahead-of-current snapshot body: %v", err)
+	}
+	if _, hasSections := aheadKeys["sections"]; !hasSections {
+		t.Fatalf("ahead-of-current snapshot carries no sections key — not the FULL snapshot REL-051 requires: %s", replyAhead.Body)
+	}
+	aheadBody, _, err := relayclient.SnapshotFromFrame(replyAhead)
+	if err != nil {
+		t.Fatalf("SnapshotFromFrame(ahead-of-current): %v", err)
+	}
+	if aheadBody.Generation != applied.Generation {
+		t.Fatalf("ahead-of-current snapshot generation = %d, want the app peer's own current %d (the app peer stays stateless about relay history)", aheadBody.Generation, applied.Generation)
 	}
 
 	// (iv, conformant half) generation advances server-side; the app peer

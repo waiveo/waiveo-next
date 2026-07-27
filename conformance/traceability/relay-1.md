@@ -43,11 +43,11 @@ One row per requirement ID `contracts/relay-1.md` defines. Format: `conformance/
 | REL-039 | `contracts/relay-1.md#hello--negotiate` | `REL-030-valid-hello-negotiate-channel-binding` | covered |
 | REL-040 | `contracts/relay-1.md#hello--negotiate` | - | TBD-wave1 |
 | REL-041 | `contracts/relay-1.md#hello--negotiate` | - | TBD-wave1 |
-| REL-050 | `contracts/relay-1.md#desired-state-pull` | `REL-056-valid-generation-apply-atomic-swap` | covered |
-| REL-051 | `contracts/relay-1.md#desired-state-pull` | `REL-056-valid-generation-apply-atomic-swap` | covered |
-| REL-052 | `contracts/relay-1.md#desired-state-pull` | `REL-056-valid-generation-apply-atomic-swap`, `REL-070-valid-generation-reapply-idempotent-noop` | covered |
+| REL-050 | `contracts/relay-1.md#desired-state-pull` | `REL-056-valid-generation-apply-atomic-swap`, `REL-051-valid-ahead-generation-full-snapshot` | covered |
+| REL-051 | `contracts/relay-1.md#desired-state-pull` | `REL-056-valid-generation-apply-atomic-swap`, `REL-051-valid-ahead-generation-full-snapshot` | covered |
+| REL-052 | `contracts/relay-1.md#desired-state-pull` | `REL-056-valid-generation-apply-atomic-swap`, `REL-070-valid-generation-reapply-idempotent-noop`, `REL-051-valid-ahead-generation-full-snapshot` | covered |
 | REL-053 | `contracts/relay-1.md#desired-state-pull` | `REL-056-valid-generation-apply-atomic-swap` | covered |
-| REL-054 | `contracts/relay-1.md#desired-state-pull` | `REL-056-valid-generation-apply-atomic-swap`, `REL-071-invalid-wrong-peer-key-snapshot-rejected` | covered |
+| REL-054 | `contracts/relay-1.md#desired-state-pull` | `REL-056-valid-generation-apply-atomic-swap`, `REL-071-invalid-wrong-peer-key-snapshot-rejected`, `REL-051-valid-ahead-generation-full-snapshot` | covered |
 | REL-055 | `contracts/relay-1.md#desired-state-pull` | `REL-056-valid-generation-apply-atomic-swap`, `REL-061-valid-preempt-priority-screen-program-offline` | covered |
 | REL-056 | `contracts/relay-1.md#desired-state-pull` | `REL-056-valid-generation-apply-atomic-swap` | covered |
 | REL-057 | `contracts/relay-1.md#desired-state-pull` | `REL-057-valid-state-changed-nudge-triggers-pull` | covered |

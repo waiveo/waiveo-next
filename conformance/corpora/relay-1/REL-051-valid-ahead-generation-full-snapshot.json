@@ -1,0 +1,23 @@
+{
+  "case_id": "REL-051-valid-ahead-generation-full-snapshot",
+  "contract": "relay/1",
+  "req_ids": ["REL-050", "REL-051", "REL-052", "REL-054"],
+  "description": "A relay last applied generation 44, but its app peer's current generation is 42 (the app peer stays stateless about relay history — e.g. it was restored from an older backup). The relay pulls with since_generation 44 — a generation GREATER than the app peer's current one. REL-051: this MUST draw the full state.snapshot (sections included), never a state.unchanged asserting agreement that does not exist. The divergence then surfaces at the relay's own REL-052 gate, which refuses the regressed generation 42 outright — last-applied stays {44} — and the relay acknowledges with a state.ack that reports error rather than an advanced applied_generation, carrying the correlation id of the state.pull exchange that delivered the refused snapshot (REL-054).",
+  "input": {
+    "relay_last_applied": { "generation": 44 },
+    "app_peer_current_generation": 42,
+    "state_pull": { "type": "state.pull", "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1", "body": { "since_generation": 44 } }
+  },
+  "expected": {
+    "response_type": "state.snapshot",
+    "state_unchanged_sent": false,
+    "snapshot_carries_sections": true,
+    "snapshot_generation": 42,
+    "relay_refuses_regressed_generation": true,
+    "persisted_last_applied_unchanged": { "generation": 44 },
+    "state_ack": {
+      "correlates_to_pull_id": true,
+      "body": { "applied_generation": 44, "error_present": true }
+    }
+  }
+}
