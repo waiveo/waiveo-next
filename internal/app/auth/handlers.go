@@ -95,8 +95,13 @@ const secondFactorTOTP = "totp"
 //
 // Every failure path — unknown identifier, wrong password, wrong code, replayed
 // code, locked credential — returns the SAME generic detail, so the response
-// cannot be used to enumerate which identifiers exist or to tell a wrong
-// password from a wrong code. Only the machine-readable `code` differs, and only
+// BODY cannot be used to enumerate which identifiers exist or to tell a wrong
+// password from a wrong code. This is a statement about the response, not about
+// the request as a whole: an unknown identifier short-circuits before Argon2id
+// and so returns far sooner than a known one (measured at roughly 480µs against
+// 360ms), which is a timing oracle this shape does not close. Closing it means
+// verifying against a dummy hash on the unknown-identifier path.
+// Only the machine-readable `code` differs, and only
 // where the contract requires it to (CREDENTIAL_LOCKED, SEC-090), because a
 // caller that is locked out needs to know to back off rather than to keep
 // retrying a credential it may well have right.

@@ -40,8 +40,10 @@ const argonAlgorithm = "argon2id"
 // ErrPasswordMismatch is returned by VerifyPassword when the presented password
 // does not match the stored hash. It is deliberately indistinguishable, to a
 // caller, from "no such credential" at the login handler level — the handler
-// maps both onto one generic failure so the response cannot be used to
-// enumerate which identifiers exist.
+// maps both onto one generic failure so the response BODY cannot be used to
+// enumerate which identifiers exist. The elapsed time still can: an unknown
+// identifier never reaches this comparison, so it answers far sooner than a
+// wrong password does. See the login handler's own doc for the measurement.
 var ErrPasswordMismatch = errors.New("auth: password does not match")
 
 // HashPassword derives an Argon2id hash of password and returns it in the
