@@ -73,6 +73,13 @@ func autoEnv(id string) events.Envelope {
 	}
 }
 
+// everythingVisible is the visible-set predicate (EVT-120) the white-box Hub
+// tests below pass to subscribe. They are about registration/watermark
+// mechanics rather than about visibility, and their fixture principal reads the
+// whole log — the scope-node boundary itself is driven end to end, through the
+// real handler and a real scope tree, in scope_filter_test.go.
+func everythingVisible(events.Envelope) bool { return true }
+
 // dialSSE opens a streaming GET /events/v1 against srv with the given query and
 // headers, asserts a 200 text/event-stream response, and returns a buffered
 // reader over the live body plus a cancel that tears the connection down (firing
@@ -459,7 +466,7 @@ func TestHub_SubscribeCapturesWatermarkAtomicallyWithRegistration(t *testing.T) 
 	log.Append(autoEnv(idA))
 	hub := NewHub(log)
 
-	sub, outcome, rerr := hub.subscribe("")
+	sub, outcome, rerr := hub.subscribe("", everythingVisible)
 	if rerr != nil {
 		t.Fatalf("a fresh subscribe must not error; got %v", rerr)
 	}
@@ -530,7 +537,7 @@ func TestHub_LiveDrainMarksBufferExceededGapOnRetentionDrop(t *testing.T) {
 
 	// A pre-existing event, then a fresh subscribe: the live watermark is idA.
 	hub.Append(autoEnv(idA))
-	sub, outcome, rerr := hub.subscribe("")
+	sub, outcome, rerr := hub.subscribe("", everythingVisible)
 	if rerr != nil {
 		t.Fatalf("fresh subscribe must not error; got %v", rerr)
 	}

@@ -107,11 +107,12 @@ ever placed by that path.
 | EVT-122 | `contracts/events-1.md#scope-node-filtering` | `EVT-101-valid-sse-selector-and-schemas` | covered |
 | EVT-123 | `contracts/events-1.md#scope-node-filtering` | `EVT-120-valid-scope-filtered-subscription` | covered |
 | EVT-124 | `contracts/events-1.md#scope-node-filtering` | `EVT-101-valid-sse-selector-and-schemas` | covered |
-| EVT-130 | `contracts/events-1.md#resume-cursor` | - | TBD-wave1 |
+| EVT-130 | `contracts/events-1.md#resume-cursor` | `EVT-134-invalid-resume-from-out-of-scope` | covered |
 | EVT-131 | `contracts/events-1.md#resume-cursor` | `EVT-134-invalid-resume-from-malformed` | covered |
 | EVT-132 | `contracts/events-1.md#resume-cursor` | `EVT-091-valid-hello-fresh-subscribe` | covered |
 | EVT-133 | `contracts/events-1.md#resume-cursor` | - | TBD-wave1 |
-| EVT-134 | `contracts/events-1.md#resume-cursor` | `EVT-134-invalid-resume-from-malformed` | covered |
+| EVT-134 | `contracts/events-1.md#resume-cursor` | `EVT-134-invalid-resume-from-malformed`, `EVT-134-invalid-resume-from-out-of-scope` | covered |
+| EVT-134a | `contracts/events-1.md#resume-cursor` | `EVT-134-invalid-resume-from-out-of-scope` | covered |
 | EVT-135 | `contracts/events-1.md#resume-cursor` | - | TBD-wave1 |
 | EVT-140 | `contracts/events-1.md#loss-markers` | `EVT-140-valid-resume-with-gap` | covered |
 | EVT-141 | `contracts/events-1.md#loss-markers` | `EVT-140-valid-resume-with-gap` | covered |

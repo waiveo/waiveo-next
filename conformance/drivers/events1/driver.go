@@ -117,6 +117,7 @@ func driveCases(rep *report.Report, cases map[string]corpus.Case) {
 	driveResumeWithGap(rep, cases)
 	driveWebhookDeliverySigned(rep, cases)
 	driveScopeFilteredSubscription(rep, cases)
+	driveOutOfScopeResumeFrom(rep, cases)
 	driveSelectorAndSchemasParameters(rep, cases)
 }
 
@@ -1604,6 +1605,35 @@ func (h *scopeHarness) get(resumeFrom, query string) (int, []string, string) {
 	return rec.Code, ids, body.Code
 }
 
+// probe drives one GET /events/v1 carrying resume_from and returns everything a
+// caller could observe about the answer: the status, the Problem document member
+// by member, and how many events the response actually carried.
+//
+// trace_id is dropped from the Problem for the reason api/1's own anti-probing
+// assertions drop it: it is per-request by construction (API-010), so it differs
+// between ANY two requests and says nothing about the resource. Every other
+// member is part of what "indistinguishable" has to mean.
+func (h *scopeHarness) probe(resumeFrom string) (int, map[string]any, int) {
+	req := httptest.NewRequest(http.MethodGet, "/events/v1?resume_from="+resumeFrom, nil)
+	req.Header.Set("Accept", "text/event-stream")
+	h.cred.Authorize(req)
+	rec := httptest.NewRecorder()
+	h.handler.ServeHTTP(rec, req)
+
+	delivered := 0
+	for _, line := range strings.Split(rec.Body.String(), "\n") {
+		if strings.HasPrefix(line, "id: ") {
+			delivered++
+		}
+	}
+	var problem map[string]any
+	if rec.Code != http.StatusOK {
+		_ = json.Unmarshal(rec.Body.Bytes(), &problem)
+		delete(problem, "trace_id")
+	}
+	return rec.Code, problem, delivered
+}
+
 // scopedFixtureEnvelope builds a valid envelope placed at scopeNode. schema
 // defaults to automation.run; content.played carries its own corpus-shaped
 // payload so the envelope is genuinely that schema rather than an automation.run
@@ -1732,5 +1762,82 @@ func driveSelectorAndSchemasParameters(rep *report.Report, cases map[string]corp
 			diffs = append(diffs, report.Diff{Field: req.Name + ".delivered_ids", Expected: exp.DeliveredIDs, Actual: ids})
 		}
 	}
+	finishCase(rep, c, diffs)
+}
+
+// --- EVT-134a: an out-of-scope resume_from reads as a never-recorded one ------
+
+// driveOutOfScopeResumeFrom drives EVT-134a through the live GET /events/v1
+// handler with a real scope tree and a really-bound principal: a resume_from
+// naming a recorded event outside the subscriber's visible set is refused
+// exactly as a never-recorded id is, and the subscriber's own recorded id still
+// resumes. The two refusals are compared member for member — a 400 whose detail
+// differed would be the same existence oracle in a politer wrapper.
+func driveOutOfScopeResumeFrom(rep *report.Report, cases map[string]corpus.Case) {
+	const id = "EVT-134-invalid-resume-from-out-of-scope"
+	c, ok := corpus.ByID(cases, id)
+	if !ok {
+		rep.Fail(id, contract, "case not found in frozen corpus")
+		return
+	}
+
+	var in struct {
+		scopeCase
+		NeverRecordedResumeFrom string `json:"never_recorded_resume_from"`
+		VisibleResumeFrom       string `json:"visible_resume_from"`
+	}
+	if err := decodeInto(c.Input, &in); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode input: %v", err))
+		return
+	}
+	var want struct {
+		Status int `json:"status"`
+		Error  struct {
+			Code string `json:"code"`
+		} `json:"error"`
+		EventsDelivered                    int  `json:"events_delivered"`
+		IndistinguishableFromNeverRecorded bool `json:"indistinguishable_from_never_recorded"`
+		VisibleResumeStatus                int  `json:"visible_resume_status"`
+	}
+	if err := decodeInto(c.Expected, &want); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode expected: %v", err))
+		return
+	}
+
+	h, err := newScopeHarness(in.scopeCase)
+	if err != nil {
+		rep.Fail(c.CaseID, contract, err.Error())
+		return
+	}
+	defer h.close()
+
+	outStatus, outProblem, outDelivered := h.probe(in.ResumeFrom)
+	nrStatus, nrProblem, _ := h.probe(in.NeverRecordedResumeFrom)
+	visibleStatus, _, _ := h.probe(in.VisibleResumeFrom)
+
+	var diffs []report.Diff
+	if outStatus != want.Status {
+		diffs = append(diffs, report.Diff{Field: "status", Expected: want.Status, Actual: outStatus})
+	}
+	if code, _ := outProblem["code"].(string); code != want.Error.Code {
+		diffs = append(diffs, report.Diff{Field: "error.code", Expected: want.Error.Code, Actual: code})
+	}
+	if outDelivered != want.EventsDelivered {
+		diffs = append(diffs, report.Diff{Field: "events_delivered", Expected: want.EventsDelivered, Actual: outDelivered})
+	}
+	indistinguishable := outStatus == nrStatus && reflect.DeepEqual(outProblem, nrProblem)
+	if indistinguishable != want.IndistinguishableFromNeverRecorded {
+		diffs = append(diffs, report.Diff{
+			Field:    "indistinguishable_from_never_recorded",
+			Expected: want.IndistinguishableFromNeverRecorded,
+			Actual:   fmt.Sprintf("out-of-scope %d %v vs never-recorded %d %v", outStatus, outProblem, nrStatus, nrProblem),
+		})
+	}
+	// The control: without it, a handler that refused every resume_from would
+	// satisfy every assertion above.
+	if visibleStatus != want.VisibleResumeStatus {
+		diffs = append(diffs, report.Diff{Field: "visible_resume_status", Expected: want.VisibleResumeStatus, Actual: visibleStatus})
+	}
+
 	finishCase(rep, c, diffs)
 }

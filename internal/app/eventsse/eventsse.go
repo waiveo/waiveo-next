@@ -2,8 +2,9 @@
 // 130–144): the GET handler a subscriber connects to to WATCH the platform in
 // real time, over EITHER of the contract's two bindings. It reads the shared
 // events.Log the telemetry ingest (internal/app/eventingest) and the auth plane's
-// auditor write into, resolves the connection's resume point via events.Resolve
-// (fresh | resumed | gap | RESUME_FROM_INVALID), streams the resolved backlog,
+// auditor write into, resolves the connection's resume point against that
+// principal's own visible set via events.ResolveVisible (fresh | resumed | gap
+// | RESUME_FROM_INVALID), streams the resolved backlog,
 // and then pushes every NEW event live as it is appended.
 //
 // EVT-001 puts BOTH bindings on the one path and distinguishes them by the
@@ -33,7 +34,7 @@
 // so a new event pushes live to all of them (EVT-100).
 //
 // It re-implements none of the log machinery: the ordering/retention log
-// (events.Log), the four-outcome resume resolution (events.Resolve), the
+// (events.Log), the four-outcome resume resolution (events.ResolveVisible), the
 // EVT-093/094 WS frames and EVT-103/104 SSE lines (events.Event / events.Gap /
 // events.HelloAck / events.SSEEventLine / events.SSEGapLine), the EVT-096 close
 // vocabulary (events.CloseReason), and the api/1 Problem shape
@@ -192,10 +193,17 @@ func (h *Hub) subscriberCount() int {
 // at/below the head watermark, i.e. pre-existing) or after it (wakes the
 // registered subscriber and is delivered live) (EVT-132). A rejected resume_from
 // registers nothing and returns a nil Subscription.
-func (h *Hub) subscribe(resumeFrom string) (*Subscription, events.ResumeOutcome, *events.ResumeError) {
+//
+// visible is the connecting principal's own visible set (EVT-120), and the
+// resume point is resolved against it rather than against the whole log: a
+// resume_from naming an event outside that set is refused exactly as one naming
+// an event that was never recorded is, so a subscriber cannot use the difference
+// between the two answers to discover whether an arbitrary event id exists
+// (EVT-134a).
+func (h *Hub) subscribe(resumeFrom string, visible func(events.Envelope) bool) (*Subscription, events.ResumeOutcome, *events.ResumeError) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	outcome, rerr := events.Resolve(h.log, resumeFrom)
+	outcome, rerr := events.ResolveVisible(h.log, resumeFrom, visible)
 	if rerr != nil {
 		return nil, outcome, rerr
 	}
@@ -497,13 +505,25 @@ func (s *server) open(ctx context.Context, principal auth.Principal, req subscri
 	// hello-ack), so an event the ingest appends concurrently with the handshake
 	// is never lost to the window between announcing the connection live and
 	// capturing the watermark (EVT-132/143).
-	sub, outcome, rerr := s.hub.subscribe(req.resumeFrom)
+	//
+	// The resume point is resolved against THIS principal's visible set — the
+	// filter's scope-node half, not the whole filter, since a client's own
+	// selector and schemas restrictions narrow what it is sent, never what it is
+	// entitled to resume from (EVT-120/121/124).
+	sub, outcome, rerr := s.hub.subscribe(req.resumeFrom, filter.Visible)
 	if rerr != nil {
-		// A malformed or never-recorded resume_from is refused before any event is
-		// delivered — never silently treated as a fresh subscribe (EVT-134).
+		// A resume_from that is malformed, names an event the platform never
+		// recorded, or names one outside this subscriber's visible set is refused
+		// before any event is delivered — never silently treated as a fresh
+		// subscribe (EVT-134/134a). The three are ONE refusal, deliberately: a
+		// distinguishable answer for the third would tell a caller that an id it
+		// may not read nevertheless exists, which is the probe EVT-122 forbids
+		// against scope nodes and EVT-134a forbids against event ids. The detail
+		// below therefore describes the outcome, not which of the three produced
+		// it.
 		return nil, events.ResumeOutcome{}, events.Filter{}, &openError{
 			http.StatusBadRequest, rerr.Code, "Bad Request",
-			"The resume_from was malformed or names an event the platform never recorded.",
+			"The resume_from was malformed or does not name an event this subscriber can resume from.",
 		}
 	}
 	return sub, outcome, filter, nil
@@ -668,8 +688,10 @@ const codeRequestInvalid = "VALIDATION_FAILED"
 // Hub, streams the resolved backlog (a leading event: gap for a
 // retention_expired resume, EVT-104/140), then blocks streaming each
 // newly-appended event live until the client disconnects (request context) or
-// the server shuts down (Hub.Close) — a malformed or unrecorded resume_from is a
-// RESUME_FROM_INVALID Problem written before any event (EVT-134).
+// the server shuts down (Hub.Close) — a resume_from that is malformed, or that
+// this subscriber cannot resolve (never recorded, or recorded outside its
+// visible set — one indistinguishable refusal for both), is a
+// RESUME_FROM_INVALID Problem written before any event (EVT-134/134a).
 func (s *server) serveSSE(w http.ResponseWriter, r *http.Request, traceID string, principal auth.Principal, revoked <-chan struct{}) {
 	// The SSE stream needs an incrementally flushable writer; without one there is
 	// no live push, so refuse rather than buffer the whole (unbounded) stream.

@@ -12,7 +12,7 @@ Roll-up of the contract corpus: every contract, its requirement-ID count, its se
 | device-class-registry | 29 | 7 | 23 | 6 | 0 |
 | data-model/1 | 66 | 20 | 49 | 17 | 0 |
 | api/1 | 72 | 14 | 37 | 35 | 1 |
-| events/1 | 73 | 17 | 43 | 30 | 10 |
+| events/1 | 74 | 18 | 45 | 29 | 10 |
 | archive/1 | 66 | 9 | 0 | 66 | 4 |
 | relay/1 | 106 | 17 | 68 | 38 | 3 |
 | player/1 | 126 | 7 | 46 | 80 | 9 |
@@ -21,7 +21,7 @@ Roll-up of the contract corpus: every contract, its requirement-ID count, its se
 | marketplace/1 | 49 | 14 | 0 | 49 | 4 |
 | ui-schema/1 | 74 | 9 | 22 | 52 | 3 |
 | security-model | 83 | 8 | 0 | 83 | 7 |
-| **Total** | **1042** | **181** | **366** | **676** | **52** |
+| **Total** | **1043** | **182** | **368** | **675** | **52** |
 
 **Companion artifacts:**
 - `../fixtures/automation-builder/` — the ui-schema/1 go/no-go fixture (a complete declarative automation-builder document + render-walkthrough), gated two ways, both wired into the pr/merge CI tiers: `../fixtures/fixture-lint.mjs` asserts every widget/binding/vocabRef the fixture uses is defined in ui-schema/1, and `../../web/src/renderer/fixture-automation-builder.test.tsx` renders it against its own `sample-data.json` through the real renderer and asserts the structure it declares actually paints.

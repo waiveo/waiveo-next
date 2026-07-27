@@ -331,7 +331,12 @@ func TestBindingParity_ScopeFilteringAndSelectorAreIdentical(t *testing.T) {
 				{"the site-A principal", e.alice, c.alice},
 				{"the site-B principal", e.bob, c.bob},
 			} {
-				hello := events.HelloFrame{ResumeFrom: seedID, Selector: c.selector}
+				// Each principal resumes from its OWN anchor: a resume_from is
+				// resolved against the resuming principal's visible set, so the
+				// other side's anchor is not a cursor this one ever held
+				// (EVT-130/134a). Both bindings answer that the same way, which
+				// this loop asserts along with everything else.
+				hello := events.HelloFrame{ResumeFrom: e.resumeAnchor(who.cred), Selector: c.selector}
 				sse := sseBacklogFrames(t, e, who.cred, sseQueryFor(hello))
 				ws := wsBacklogFrames(t, e.srv, who.cred, hello)
 

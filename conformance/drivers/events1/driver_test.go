@@ -32,6 +32,7 @@ var expectedDriven = []string{
 	"EVT-101-valid-sse-selector-and-schemas",
 	"EVT-120-valid-scope-filtered-subscription",
 	"EVT-134-invalid-resume-from-malformed",
+	"EVT-134-invalid-resume-from-out-of-scope",
 	"EVT-140-valid-resume-with-gap",
 	"EVT-151-valid-webhook-delivery-signed",
 }

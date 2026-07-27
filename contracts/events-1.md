@@ -1,7 +1,7 @@
 # Client Push / Watch Channel
 
 **Contract:** events/1
-**Version:** 1.0
+**Version:** 1.1
 **Status:** review
 
 ## Scope
@@ -265,6 +265,8 @@ events/1 defines the platform's client push channel: the durable-event envelope,
 **[EVT-133]** A `resume_from` value still within the platform's retention window MUST resume delivery with every eligible event recorded after it, in `id` order, with neither a gap nor a duplicate, and MUST report `resume_result: resumed`.
 
 **[EVT-134]** A `resume_from` value that is syntactically malformed (EVT-131), or that names an `id` the platform never recorded, MUST be rejected with `RESUME_FROM_INVALID` (Error taxonomy) before any event is delivered — it MUST NOT be treated as equivalent to an omitted `resume_from`.
+
+**[EVT-134a]** EVT-134's "never recorded" MUST be evaluated against the subscriber's own visible set (EVT-120), not against the whole durable log: a `resume_from` naming an `id` the platform recorded but placed outside that set MUST be rejected identically to one it never recorded — same status, same code, same body, same close reason — so that the two are indistinguishable to the caller. This extends EVT-122's anti-probing rule from scope nodes to event IDs, and reconciles it with EVT-134 rather than trading one for the other: EVT-122's own remedy ("match nothing, never error") cannot apply to a `resume_from`, which is a position rather than a predicate and whose only "matches nothing" readings — start fresh, or resume from nothing — EVT-134 forbids outright. What EVT-122 protects is that a client cannot distinguish a real-but-unreachable thing from a nonexistent one, and here that is preserved by making the unreachable case answer exactly as the nonexistent one does. EVT-130 independently confines a legitimate `resume_from` to an `id` "this same principal received", so no conforming client is refused by this rule. A gap marker's `to_id` (EVT-140/141) MUST likewise name an `id` inside the subscriber's visible set — it is an ID the server hands the client, and it is the point delivery resumes at, which an event the subscriber may not receive cannot be.
 
 **[EVT-135]** Delivery over this contract is at-least-once: a subscriber MAY observe the same `id` more than once across a reconnect boundary and MUST treat `id` as its deduplication key — this contract does not guarantee exactly-once delivery, only gap-free-or-marked delivery (Loss markers) and a stable, comparable ordering key.
 

@@ -1,0 +1,29 @@
+{
+  "case_id": "EVT-134-invalid-resume-from-out-of-scope",
+  "contract": "events/1",
+  "req_ids": ["EVT-130", "EVT-134", "EVT-134a"],
+  "description": "A subscriber bound at site A supplies a resume_from naming an event the platform really did record, but placed under the sibling site B — an id this principal never received. It is refused with RESUME_FROM_INVALID before any event is delivered, and the refusal is indistinguishable, member for member, from the one a well-formed id the platform never recorded draws. Resolving the cursor against the whole durable log instead would answer 'this id exists but is not yours' for the first and 'this id never existed' for the second, which is an existence oracle for arbitrary event ids. The control resume_from — the subscriber's own recorded event — still resumes 200, so the rule refuses what a principal never received rather than refusing everything.",
+  "input": {
+    "scope_nodes": [
+      { "id": "01J8Z7A0B1C2D3E4F5G6H7Z0RG", "kind": "org", "name": "org" },
+      { "id": "01J8Z7A0B1C2D3E4F5G6H7Z5A0", "kind": "site", "parent_id": "01J8Z7A0B1C2D3E4F5G6H7Z0RG", "name": "site A", "tz": "UTC", "lat": 1, "long": 2 },
+      { "id": "01J8Z7A0B1C2D3E4F5G6H7Z5B0", "kind": "site", "parent_id": "01J8Z7A0B1C2D3E4F5G6H7Z0RG", "name": "site B", "tz": "UTC", "lat": 3, "long": 4 }
+    ],
+    "subscriber_binding": { "scope_node": "01J8Z7A0B1C2D3E4F5G6H7Z5A0", "role": "viewer" },
+    "recorded_events": [
+      { "id": "01J8Z3K4N5P6Q7R8S9T0V1W2X0", "scope_node": "01J8Z7A0B1C2D3E4F5G6H7Z5A0" },
+      { "id": "01J8Z3K4N5P6Q7R8S9T0V1W2X2", "scope_node": "01J8Z7A0B1C2D3E4F5G6H7Z5B0" },
+      { "id": "01J8Z3K4N5P6Q7R8S9T0V1W2X4", "scope_node": "01J8Z7A0B1C2D3E4F5G6H7Z5A0" }
+    ],
+    "resume_from": "01J8Z3K4N5P6Q7R8S9T0V1W2X2",
+    "never_recorded_resume_from": "01J8Z3K4N5P6Q7R8S9T0V1W2X3",
+    "visible_resume_from": "01J8Z3K4N5P6Q7R8S9T0V1W2X0"
+  },
+  "expected": {
+    "status": 400,
+    "error": { "code": "RESUME_FROM_INVALID" },
+    "events_delivered": 0,
+    "indistinguishable_from_never_recorded": true,
+    "visible_resume_status": 200
+  }
+}

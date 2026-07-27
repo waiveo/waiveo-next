@@ -61,12 +61,29 @@ const (
 	absentNode = "01J8Z5A0B1C2D3E4F5G6H7ZAB0"
 )
 
-// Envelope ids used across this file. seedID sorts below every other id, so it
-// is a usable resume_from anchor whose own backlog is "everything else".
+// Envelope ids used across this file. The two seed ids sort below every other
+// id, so each is a usable resume_from anchor whose own backlog is "everything
+// else".
+//
+// There are TWO of them, one per subtree, because a resume_from is resolved
+// against the resuming principal's own visible set (EVT-134a). EVT-130 defines
+// the value as "the exact value of some earlier event.id this same principal
+// received", so an anchor placed in the OTHER principal's subtree is not a
+// cursor that principal ever held, and naming it is refused exactly as a
+// fabricated id is — which is the point of the rule, not an obstacle to it.
 var (
-	seedID     = idPrefix + "Y1"
+	seedID     = idPrefix + "Y1" // in site A: alice's anchor
+	seedBID    = idPrefix + "Y2" // in site B: bob's anchor
 	sentinelID = idPrefix + "Z9"
 )
+
+// resumeAnchor is the seed id cred's own principal may legitimately resume from.
+func (e *scopeEnv) resumeAnchor(cred authtest.Credential) string {
+	if cred.PrincipalID == e.bob.PrincipalID {
+		return seedBID
+	}
+	return seedID
+}
 
 func scopeFixtureNodes() []datamodel.ScopeNode {
 	str := func(s string) *string { return &s }
@@ -184,7 +201,7 @@ func (e *scopeEnv) backlogIDs(t *testing.T, cred authtest.Credential, query stri
 	t.Helper()
 	e.hub.Close()
 
-	q := "resume_from=" + seedID
+	q := "resume_from=" + e.resumeAnchor(cred)
 	if query != "" {
 		q += "&" + query
 	}
@@ -212,11 +229,13 @@ func (e *scopeEnv) backlogIDs(t *testing.T, cred authtest.Credential, query stri
 	return ids
 }
 
-// appendWorld records the shared interleaved A/B world: a resume anchor alice can
-// read, then four events alternating between the two subtrees, then a sentinel in
-// alice's own subtree.
+// appendWorld records the shared interleaved A/B world: one resume anchor per
+// subtree (each readable by exactly the principal that resumes from it), then
+// four events alternating between the two subtrees, then a sentinel in alice's
+// own subtree.
 func (e *scopeEnv) appendWorld() {
 	e.hub.Append(scopedEnv(seedID, screenANode))
+	e.hub.Append(scopedEnv(seedBID, screenBNode))
 	e.hub.Append(scopedEnv(idA, screenANode)) // alice
 	e.hub.Append(scopedEnv(idB, screenBNode)) // bob
 	e.hub.Append(scopedEnv(idC, siteANode))   // alice

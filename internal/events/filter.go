@@ -117,3 +117,20 @@ func (f Filter) Allows(env Envelope) bool {
 	// admitted, so it is incapable of widening delivery.
 	return f.selector.Matches(nil, env.ScopeNode, f.inSubtree)
 }
+
+// Visible reports whether env is inside the connection's VISIBLE SET (EVT-120) —
+// Allows's first, unconditional test alone, without the client's own narrowing
+// selector or schemas restriction.
+//
+// The two are deliberately separable because they answer different kinds of
+// question. Allows decides DELIVERY, where every narrowing the client asked for
+// applies. Visible decides what the client is ENTITLED TO KNOW EXISTS, which is
+// what a resume_from must be resolved against (EVT-130/134a): an id outside this
+// set was never a legitimate cursor and must read as though it were never
+// recorded, while an id merely excluded by the client's own selector is one the
+// client itself received and may legitimately resume from.
+//
+// Like Allows, a nil canRead denies everything (SEC-005).
+func (f Filter) Visible(env Envelope) bool {
+	return f.canRead != nil && f.canRead(env.ScopeNode)
+}
