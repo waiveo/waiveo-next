@@ -147,6 +147,7 @@ const (
 	ErrorCodeGRANTPURPOSEMISMATCH     ErrorCode = "GRANT_PURPOSE_MISMATCH"
 	ErrorCodeIDEMPOTENCYKEYINPROGRESS ErrorCode = "IDEMPOTENCY_KEY_IN_PROGRESS"
 	ErrorCodeIDEMPOTENCYKEYREUSED     ErrorCode = "IDEMPOTENCY_KEY_REUSED"
+	ErrorCodeIDSERVERASSIGNED         ErrorCode = "ID_SERVER_ASSIGNED"
 	ErrorCodeIFMATCHREQUIRED          ErrorCode = "IF_MATCH_REQUIRED"
 	ErrorCodeINTERNAL                 ErrorCode = "INTERNAL"
 	ErrorCodeNOTFOUND                 ErrorCode = "NOT_FOUND"
@@ -178,6 +179,8 @@ func (e ErrorCode) Valid() bool {
 	case ErrorCodeIDEMPOTENCYKEYINPROGRESS:
 		return true
 	case ErrorCodeIDEMPOTENCYKEYREUSED:
+		return true
+	case ErrorCodeIDSERVERASSIGNED:
 		return true
 	case ErrorCodeIFMATCHREQUIRED:
 		return true

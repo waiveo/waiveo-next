@@ -1255,6 +1255,7 @@ components:
         - IDEMPOTENCY_KEY_REUSED
         - IDEMPOTENCY_KEY_IN_PROGRESS
         - EXTERNAL_ID_CONFLICT
+        - ID_SERVER_ASSIGNED
         - RATE_LIMITED
         - INTERNAL
         - UNAVAILABLE

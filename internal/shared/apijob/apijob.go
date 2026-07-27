@@ -42,6 +42,7 @@ var registryCodes = map[string]bool{
 	"IDEMPOTENCY_KEY_REUSED":      true,
 	"IDEMPOTENCY_KEY_IN_PROGRESS": true,
 	"EXTERNAL_ID_CONFLICT":        true,
+	"ID_SERVER_ASSIGNED":          true,
 	"RATE_LIMITED":                true,
 	"INTERNAL":                    true,
 	"UNAVAILABLE":                 true,
