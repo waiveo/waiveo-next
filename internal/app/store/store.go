@@ -251,6 +251,15 @@ func Open(dsn string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: migrate packs: %w", err)
 	}
+	// The api/1 Job tables (jobs + job_targets) are likewise their own
+	// subsystem with their own CRUD (jobs.go): a Job is an execution record
+	// over other rows, not a resource Kind, so it carries no revision,
+	// external_id or scope_node of its own and never joins the desired-state
+	// projection.
+	if _, err := db.Exec(jobsSchema); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("store: migrate jobs: %w", err)
+	}
 	for _, k := range allKinds {
 		if _, err := db.Exec(fmt.Sprintf(resourceTableDDL, string(k))); err != nil {
 			_ = db.Close()
