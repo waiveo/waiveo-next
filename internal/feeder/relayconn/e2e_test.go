@@ -13,11 +13,9 @@
 //	      (REL-006); desiredstate.VerifyAndApply accepts and persists.
 //	(iii) state.pull with since_generation=current → state.unchanged whose
 //	      body carries the generation and NO sections key (byte-asserted).
-//	(iv)  server-initiated push over the SAME connection: the conformant
+//	(iv)  server-initiated push over the SAME connection: the REL-057
 //	      state.changed nudge (relay reacts with an immediate pull, applied
-//	      well under the legacy 3s ticker) AND the REL-050-violating direct
-//	      snapshot push (relay sends ZERO frames between snapshot N and
-//	      N+1, byte-asserted from the client's sent-frame log).
+//	      well under the legacy 3s ticker).
 //	(v)   typed refusals: a hello signed with the wrong key draws
 //	      {type:"error", id, code:CHANNEL_BINDING_INVALID} then close; a
 //	      state.pull before hello draws PROTOCOL_VIOLATION then close.
@@ -214,19 +212,52 @@ func enrolledRelay(t *testing.T, h *harness) *identity.Store {
 	return store
 }
 
-func dialClient(t *testing.T, h *harness, store *identity.Store, onServerFrame func(wire.Frame)) *relayclient.Client {
+// frameLog is the test's own record of the wire exchange, fed by the
+// client's test-only ObserveFrame hook — the production client retains no
+// frame history (the spike's unbounded SentFrames/ReceivedFrames
+// instrumentation is gone).
+type frameLog struct {
+	mu       sync.Mutex
+	sent     []wire.Frame
+	received []wire.Frame
+}
+
+func (l *frameLog) observe(sent bool, f wire.Frame) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if sent {
+		l.sent = append(l.sent, f)
+	} else {
+		l.received = append(l.received, f)
+	}
+}
+
+func (l *frameLog) Sent() []wire.Frame     { return l.snapshot(&l.sent) }
+func (l *frameLog) Received() []wire.Frame { return l.snapshot(&l.received) }
+
+func (l *frameLog) snapshot(log *[]wire.Frame) []wire.Frame {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]wire.Frame, len(*log))
+	copy(out, *log)
+	return out
+}
+
+func dialClient(t *testing.T, h *harness, store *identity.Store, onServerFrame func(wire.Frame)) (*relayclient.Client, *frameLog) {
 	t.Helper()
+	log := &frameLog{}
 	client, err := relayclient.Dial(relayclient.Config{
 		URL:           h.ts.URL,
 		Store:         store,
 		Declaration:   testDeclaration,
 		OnServerFrame: onServerFrame,
+		ObserveFrame:  log.observe,
 	})
 	if err != nil {
 		t.Fatalf("relayconn.Dial: %v", err)
 	}
 	t.Cleanup(func() { _ = client.Close() })
-	return client
+	return client, log
 }
 
 // TestPersistentConnectionEndToEnd is behaviors (i)-(iii) plus the
@@ -273,7 +304,7 @@ func TestPersistentConnectionEndToEnd(t *testing.T) {
 		pushCh <- pushResult{applied: applied, at: time.Now(), err: err}
 	}
 
-	client := dialClient(t, h, store, onServer)
+	client, frames := dialClient(t, h, store, onServer)
 	clientMu.Lock()
 	clientRef = client
 	clientMu.Unlock()
@@ -309,7 +340,7 @@ func TestPersistentConnectionEndToEnd(t *testing.T) {
 	if reply.TraceID != "trace-op-1" {
 		t.Fatalf("snapshot trace_id = %q, want the pull's own trace-op-1 (REL-006)", reply.TraceID)
 	}
-	sent := client.SentFrames()
+	sent := frames.Sent()
 	pullReq := sent[len(sent)-1]
 	if pullReq.Type != wire.FrameTypeStatePull || pullReq.ID != reply.ID {
 		t.Fatalf("correlation broken: request %q id %q vs reply id %q (REL-006)", pullReq.Type, pullReq.ID, reply.ID)
@@ -332,7 +363,7 @@ func TestPersistentConnectionEndToEnd(t *testing.T) {
 
 	// REL-005: every post-enrollment frame received so far — challenge,
 	// hello-ack, state.snapshot — carries relay_id.
-	for _, f := range client.ReceivedFrames() {
+	for _, f := range frames.Received() {
 		if f.RelayID != relayID {
 			t.Fatalf("received %s frame carries relay_id %q, want %q (REL-005)", f.Type, f.RelayID, relayID)
 		}
@@ -394,64 +425,6 @@ func TestPersistentConnectionEndToEnd(t *testing.T) {
 	}
 	if gen, _, ok, err := store.LastAppliedGeneration(); err != nil || !ok || gen != 2 {
 		t.Fatalf("after nudge, persisted last-applied = (%d,%v,%v), want (2,true,nil)", gen, ok, err)
-	}
-}
-
-// TestDirectSnapshotPushZeroClientFrames is the strict half of (iv): with
-// the REL-050-VIOLATING direct-push option, a new generation arrives with
-// ZERO frames sent by the relay between snapshot N and snapshot N+1 —
-// asserted from the client's complete sent-frame log.
-func TestDirectSnapshotPushZeroClientFrames(t *testing.T) {
-	h := newHarness(t, feederrelayconn.WithDirectSnapshotPush())
-	store := enrolledRelay(t, h)
-
-	pushed := make(chan wire.Frame, 1)
-	client := dialClient(t, h, store, func(f wire.Frame) {
-		if f.Type == wire.FrameTypeStateSnapshot {
-			pushed <- f
-		}
-	})
-
-	// Snapshot N via an ordinary pull.
-	reply, err := client.Pull("trace-direct-1", nil)
-	if err != nil {
-		t.Fatalf("Pull: %v", err)
-	}
-	body, raw, err := relayclient.SnapshotFromFrame(reply)
-	if err != nil {
-		t.Fatalf("SnapshotFromFrame: %v", err)
-	}
-	if _, err := desiredstate.VerifyAndApply(store, body, raw); err != nil {
-		t.Fatalf("VerifyAndApply(gen 1): %v", err)
-	}
-	sentBefore := len(client.SentFrames())
-
-	// Snapshot N+1 arrives with no solicitation whatsoever.
-	h.advanceGeneration(t, 2)
-	h.connSrv.NotifyGenerationAdvance()
-
-	var pushedFrame wire.Frame
-	select {
-	case pushedFrame = <-pushed:
-	case <-time.After(5 * time.Second):
-		t.Fatal("no pushed state.snapshot within 5s")
-	}
-
-	if sentAfter := len(client.SentFrames()); sentAfter != sentBefore {
-		t.Fatalf("relay sent %d frame(s) between snapshot N and N+1, want 0: %+v",
-			sentAfter-sentBefore, client.SentFrames()[sentBefore:])
-	}
-
-	pushedBody, pushedRaw, err := relayclient.SnapshotFromFrame(pushedFrame)
-	if err != nil {
-		t.Fatalf("SnapshotFromFrame(pushed): %v", err)
-	}
-	applied, err := desiredstate.VerifyAndApply(store, pushedBody, pushedRaw)
-	if err != nil {
-		t.Fatalf("VerifyAndApply(pushed gen 2): %v", err)
-	}
-	if applied.Generation != 2 {
-		t.Fatalf("pushed generation = %d, want 2", applied.Generation)
 	}
 }
 
@@ -648,7 +621,7 @@ func TestPullBeforeHelloIsProtocolViolation(t *testing.T) {
 func TestReconnectAfterAppPeerRestart(t *testing.T) {
 	h := newHarness(t)
 	store := enrolledRelay(t, h)
-	client := dialClient(t, h, store, nil)
+	client, _ := dialClient(t, h, store, nil)
 
 	if _, err := client.Pull("trace-pre-restart", nil); err != nil {
 		t.Fatalf("pre-restart Pull: %v", err)
@@ -680,7 +653,7 @@ func TestReconnectAfterAppPeerRestart(t *testing.T) {
 
 	h.ts = h.listen(t)
 
-	client2 := dialClient(t, h, store, nil)
+	client2, _ := dialClient(t, h, store, nil)
 	reply, err := client2.Pull("trace-post-restart", nil)
 	if err != nil {
 		t.Fatalf("post-restart Pull: %v", err)

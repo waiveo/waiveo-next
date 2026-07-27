@@ -75,26 +75,12 @@ type Server struct {
 	implementedMinors  []string
 	recognizedFeatures []string
 
-	// pushSnapshots switches NotifyGenerationAdvance from the REL-050-
-	// conformant `state.changed` nudge to pushing the full `state.snapshot`
-	// unsolicited — which VIOLATES REL-050 as written ("the app peer never
-	// sends an unsolicited snapshot"). Spike-only, to measure the
-	// zero-round-trip variant; adopting it requires relaxing REL-050.
-	pushSnapshots bool
-
 	mu    sync.Mutex
 	conns map[*serverConn]struct{}
 }
 
 // Option configures a Server.
 type Option func(*Server)
-
-// WithDirectSnapshotPush makes NotifyGenerationAdvance push the full
-// state.snapshot frame instead of a state.changed nudge. NOT REL-050
-// conformant — see Server.pushSnapshots.
-func WithDirectSnapshotPush() Option {
-	return func(s *Server) { s.pushSnapshots = true }
-}
 
 // New builds the app peer's /relay/v1 server. provider serves state.pull;
 // lookup resolves a relay's enrollment public key by its mTLS-authenticated
@@ -375,11 +361,10 @@ func (s *Server) CloseAll() {
 }
 
 // NotifyGenerationAdvance tells every authenticated connection the feeder's
-// desired-state generation advanced. Default (REL-050-conformant) form: a
-// `state.changed` nudge carrying the new generation (REL-057), to which a
-// relay responds with its own state.pull. With WithDirectSnapshotPush, the
-// full state.snapshot is pushed instead (REL-050-violating spike variant).
-// A per-connection send failure is that connection's problem (its read loop
+// desired-state generation advanced, as REL-057's `state.changed` nudge
+// carrying the new generation — to which a relay responds with its own
+// state.pull, keeping REL-050's pull-only snapshot movement intact. A
+// per-connection send failure is that connection's problem (its read loop
 // will reap it); Notify keeps going.
 func (s *Server) NotifyGenerationAdvance() {
 	snap, err := s.provider()
@@ -395,14 +380,8 @@ func (s *Server) NotifyGenerationAdvance() {
 	s.mu.Unlock()
 
 	for _, c := range conns {
-		var f wire.Frame
-		var err error
-		if s.pushSnapshots {
-			f, err = wire.NewFrame(wire.FrameTypeStateSnapshot, ulid.New(), c.relayID, snap)
-		} else {
-			f, err = wire.NewFrame(wire.FrameTypeStateChanged, ulid.New(), c.relayID,
-				wire.StateChangedBody{Generation: snap.Generation})
-		}
+		f, err := wire.NewFrame(wire.FrameTypeStateChanged, ulid.New(), c.relayID,
+			wire.StateChangedBody{Generation: snap.Generation})
 		if err != nil {
 			continue
 		}

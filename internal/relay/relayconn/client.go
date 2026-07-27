@@ -94,6 +94,15 @@ type Config struct {
 	// Frames are delivered IN ORDER on one dedicated goroutine; the
 	// callback may itself call Pull.
 	OnServerFrame func(wire.Frame)
+
+	// ObserveFrame, when non-nil, is invoked synchronously with every frame
+	// this client sends (sent=true) and receives (sent=false), challenge
+	// included, in wire order per direction. It is a TEST-ONLY observation
+	// seam — the e2e proof's wire assertions record into their own bounded
+	// buffers through it. Production configs leave it nil: the client
+	// itself retains no frame history. The hook runs on the sending
+	// goroutine / the read loop, so it must be fast and concurrent-safe.
+	ObserveFrame func(sent bool, f wire.Frame)
 }
 
 // Refusal is a typed refusal frame received in place of an expected reply —
@@ -113,15 +122,12 @@ type Client struct {
 	ws       *websocket.Conn
 	relayID  string
 	ackBody  hello.HelloAckBody
+	observe  func(sent bool, f wire.Frame)
 	mu       sync.Mutex
 	pending  map[string]chan wire.Frame
 	done     chan struct{}
 	readErr  error
 	serverCh chan wire.Frame
-
-	instMu   sync.Mutex
-	sent     []wire.Frame
-	received []wire.Frame
 }
 
 // Dial opens, authenticates, and hands over one connection. On a typed
@@ -208,6 +214,7 @@ func Dial(cfg Config) (*Client, error) {
 	c := &Client{
 		ws:       ws,
 		relayID:  id.RelayID,
+		observe:  cfg.ObserveFrame,
 		pending:  map[string]chan wire.Frame{},
 		done:     make(chan struct{}),
 		serverCh: make(chan wire.Frame, 16),
@@ -342,7 +349,7 @@ func (c *Client) readLoop() {
 			close(c.serverCh)
 			return
 		}
-		c.record(&c.received, f)
+		c.record(false, f)
 
 		c.mu.Lock()
 		ch, isReply := c.pending[f.ID]
@@ -452,23 +459,12 @@ func (c *Client) Close() error {
 	return nil
 }
 
-// SentFrames / ReceivedFrames return copies of every frame this client sent
-// or received (challenge included), in order — e2e-proof instrumentation.
-func (c *Client) SentFrames() []wire.Frame     { return c.snapshotLog(&c.sent) }
-func (c *Client) ReceivedFrames() []wire.Frame { return c.snapshotLog(&c.received) }
-
-func (c *Client) snapshotLog(log *[]wire.Frame) []wire.Frame {
-	c.instMu.Lock()
-	defer c.instMu.Unlock()
-	out := make([]wire.Frame, len(*log))
-	copy(out, *log)
-	return out
-}
-
-func (c *Client) record(log *[]wire.Frame, f wire.Frame) {
-	c.instMu.Lock()
-	*log = append(*log, f)
-	c.instMu.Unlock()
+// record feeds the test-only observation hook (Config.ObserveFrame); a nil
+// hook is the production path — nothing is retained.
+func (c *Client) record(sent bool, f wire.Frame) {
+	if c.observe != nil {
+		c.observe(sent, f)
+	}
 }
 
 // send writes one frame under the standard per-write deadline. Writes are
@@ -488,17 +484,17 @@ func (c *Client) sendCtx(ctx context.Context, f wire.Frame) error {
 	if err := c.ws.Write(ctx, websocket.MessageText, data); err != nil {
 		return err
 	}
-	c.record(&c.sent, f)
+	c.record(true, f)
 	return nil
 }
 
 // receive reads one frame during the handshake (before readLoop starts),
-// recording it in the instrumentation log.
+// feeding the observation hook.
 func (c *Client) receive(ctx context.Context, f *wire.Frame) error {
 	if err := c.readFrame(ctx, f); err != nil {
 		return err
 	}
-	c.record(&c.received, *f)
+	c.record(false, *f)
 	return nil
 }
 
