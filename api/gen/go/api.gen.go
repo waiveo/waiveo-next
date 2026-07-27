@@ -380,15 +380,20 @@ type Automation struct {
 
 	// Conditions rules/1's Condition vocabulary — full shape defined there, not restated here.
 	Conditions []map[string]interface{} `json:"conditions"`
-	CreatedAt  time.Time                `json:"created_at"`
-	Enabled    bool                     `json:"enabled"`
+
+	// CreatedAt A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC 3339 string. The store stamps `created_at`/`updated_at` on every row it writes as an integer millisecond count and returns that value unchanged, so this is what a client reads and what an export/apply round trip carries back. Deliberately not `format: date-time`: the two are not interchangeable, and a client that parsed one as the other would silently read 1970 for every resource on this surface.
+	// The `Job` resource is the one exception on this API and says so at its own `created_at`: a Job's timestamp is minted in Go as a `time.Time` and serialized RFC 3339, because a Job is not a stored row of this baseline.
+	CreatedAt Timestamp `json:"created_at"`
+	Enabled   bool      `json:"enabled"`
 
 	// ExternalId Client-assigned identifier (contracts/api-1.md#client-assignable-external_id). Optional; unique within this resource's scope node among resources of the same type; MAY be used in place of `id` in a cross-reference; preserved unchanged through an export/apply round trip.
 	ExternalId **string `json:"external_id,omitempty"`
 
 	// Id A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
-	Id     Ulid    `json:"id"`
-	Labels []Label `json:"labels"`
+	Id Ulid `json:"id"`
+
+	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
+	Labels LabelMap `json:"labels"`
 
 	// Max Concurrency cap; meaningful only under `parallel` mode.
 	Max      *int           `json:"max"`
@@ -400,8 +405,11 @@ type Automation struct {
 	ScopeNode Ulid `json:"scope_node"`
 
 	// Triggers rules/1's Trigger vocabulary — full shape defined there, not restated here.
-	Triggers  []map[string]interface{} `json:"triggers"`
-	UpdatedAt time.Time                `json:"updated_at"`
+	Triggers []map[string]interface{} `json:"triggers"`
+
+	// UpdatedAt A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC 3339 string. The store stamps `created_at`/`updated_at` on every row it writes as an integer millisecond count and returns that value unchanged, so this is what a client reads and what an export/apply round trip carries back. Deliberately not `format: date-time`: the two are not interchangeable, and a client that parsed one as the other would silently read 1970 for every resource on this surface.
+	// The `Job` resource is the one exception on this API and says so at its own `created_at`: a Job's timestamp is minted in Go as a `time.Time` and serialized RFC 3339, because a Job is not a stored row of this baseline.
+	UpdatedAt Timestamp `json:"updated_at"`
 }
 
 // AutomationMode defines model for Automation.Mode.
@@ -422,7 +430,9 @@ type AutomationCreate struct {
 	Conditions *[]map[string]interface{} `json:"conditions,omitempty"`
 	Enabled    *bool                     `json:"enabled,omitempty"`
 	ExternalId **string                  `json:"external_id,omitempty"`
-	Labels     *[]Label                  `json:"labels,omitempty"`
+
+	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
+	Labels *LabelMap `json:"labels,omitempty"`
 
 	// Max Concurrency cap; meaningful only under `parallel` mode.
 	Max  **int                `json:"max,omitempty"`
@@ -467,7 +477,9 @@ type AutomationUpdate struct {
 	Conditions *[]map[string]interface{} `json:"conditions,omitempty"`
 	Enabled    *bool                     `json:"enabled,omitempty"`
 	ExternalId **string                  `json:"external_id,omitempty"`
-	Labels     *[]Label                  `json:"labels,omitempty"`
+
+	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
+	Labels *LabelMap `json:"labels,omitempty"`
 
 	// Max Concurrency cap; meaningful only under `parallel` mode.
 	Max      **int                     `json:"max,omitempty"`
@@ -585,6 +597,7 @@ type ErrorCode string
 
 // Job The accepted-work resource returned by 202 Accepted. A client polls this resource (`GET /jobs/{job_id}`) until `state` reaches a terminal value (`succeeded`, `failed`, or `partial`).
 type Job struct {
+	// CreatedAt RFC 3339, and deliberately NOT the epoch-millisecond `Timestamp` every stored resource on this API carries. A Job is not a row of that baseline — it is minted by the accepting handler and serialized from a Go `time.Time` — so the two shapes differ because the two things differ, not by oversight.
 	CreatedAt time.Time `json:"created_at"`
 
 	// CreatedBy The submitting principal (opaque identifier; the principal/role model itself is out of this contract's scope).
@@ -611,12 +624,6 @@ type JobTarget struct {
 
 // JobTargetState defines model for JobTarget.State.
 type JobTargetState string
-
-// Label One label term, as accepted by the label-selector grammar (`contracts/api-1.md#label-selector-grammar`).
-type Label struct {
-	Key   string `json:"key"`
-	Value string `json:"value"`
-}
 
 // LabelMap A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
 type LabelMap map[string]string
@@ -664,27 +671,35 @@ type RelayId = string
 // ScopeNode A node in the org → site → group → screen tree.
 type ScopeNode struct {
 	// AccountState Present only on the org node.
-	AccountState **string  `json:"account_state,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
+	AccountState **string `json:"account_state,omitempty"`
+
+	// CreatedAt A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC 3339 string. The store stamps `created_at`/`updated_at` on every row it writes as an integer millisecond count and returns that value unchanged, so this is what a client reads and what an export/apply round trip carries back. Deliberately not `format: date-time`: the two are not interchangeable, and a client that parsed one as the other would silently read 1970 for every resource on this surface.
+	// The `Job` resource is the one exception on this API and says so at its own `created_at`: a Job's timestamp is minted in Go as a `time.Time` and serialized RFC 3339, because a Job is not a stored row of this baseline.
+	CreatedAt Timestamp `json:"created_at"`
 
 	// ExternalId Client-assigned identifier (contracts/api-1.md#client-assignable-external_id). Optional; unique within this resource's scope node among resources of the same type; MAY be used in place of `id` in a cross-reference; preserved unchanged through an export/apply round trip. Every resource in this API carries this same convention, not only scope-nodes and automations.
 	ExternalId **string `json:"external_id,omitempty"`
 
 	// Id A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
-	Id     Ulid          `json:"id"`
-	Kind   ScopeNodeKind `json:"kind"`
-	Labels []Label       `json:"labels"`
-	Lat    *float32      `json:"lat,omitempty"`
-	Long   *float32      `json:"long,omitempty"`
-	Name   string        `json:"name"`
+	Id   Ulid          `json:"id"`
+	Kind ScopeNodeKind `json:"kind"`
+
+	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
+	Labels LabelMap `json:"labels"`
+	Lat    *float32 `json:"lat,omitempty"`
+	Long   *float32 `json:"long,omitempty"`
+	Name   string   `json:"name"`
 
 	// ParentId The parent scope node's ULID. `null` only for the single root org node.
 	ParentId *string `json:"parent_id"`
 	Revision int     `json:"revision"`
 
 	// Tz IANA time zone name. Meaningful at site level and below; a screen-level value overrides its site.
-	Tz        *string   `json:"tz,omitempty"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Tz *string `json:"tz,omitempty"`
+
+	// UpdatedAt A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC 3339 string. The store stamps `created_at`/`updated_at` on every row it writes as an integer millisecond count and returns that value unchanged, so this is what a client reads and what an export/apply round trip carries back. Deliberately not `format: date-time`: the two are not interchangeable, and a client that parsed one as the other would silently read 1970 for every resource on this surface.
+	// The `Job` resource is the one exception on this API and says so at its own `created_at`: a Job's timestamp is minted in Go as a `time.Time` and serialized RFC 3339, because a Job is not a stored row of this baseline.
+	UpdatedAt Timestamp `json:"updated_at"`
 }
 
 // ScopeNodeKind defines model for ScopeNode.Kind.
@@ -694,12 +709,14 @@ type ScopeNodeKind string
 type ScopeNodeCreate struct {
 	ExternalId **string            `json:"external_id,omitempty"`
 	Kind       ScopeNodeCreateKind `json:"kind"`
-	Labels     *[]Label            `json:"labels,omitempty"`
-	Lat        *float32            `json:"lat,omitempty"`
-	Long       *float32            `json:"long,omitempty"`
-	Name       string              `json:"name"`
-	ParentId   **string            `json:"parent_id,omitempty"`
-	Tz         *string             `json:"tz,omitempty"`
+
+	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
+	Labels   *LabelMap `json:"labels,omitempty"`
+	Lat      *float32  `json:"lat,omitempty"`
+	Long     *float32  `json:"long,omitempty"`
+	Name     string    `json:"name"`
+	ParentId **string  `json:"parent_id,omitempty"`
+	Tz       *string   `json:"tz,omitempty"`
 }
 
 // ScopeNodeCreateKind defines model for ScopeNodeCreate.Kind.
@@ -715,11 +732,13 @@ type ScopeNodeListResponse struct {
 // ScopeNodeUpdate Partial update — every field optional, at least one required.
 type ScopeNodeUpdate struct {
 	ExternalId **string `json:"external_id,omitempty"`
-	Labels     *[]Label `json:"labels,omitempty"`
-	Lat        *float32 `json:"lat,omitempty"`
-	Long       *float32 `json:"long,omitempty"`
-	Name       *string  `json:"name,omitempty"`
-	Tz         *string  `json:"tz,omitempty"`
+
+	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
+	Labels *LabelMap `json:"labels,omitempty"`
+	Lat    *float32  `json:"lat,omitempty"`
+	Long   *float32  `json:"long,omitempty"`
+	Name   *string   `json:"name,omitempty"`
+	Tz     *string   `json:"tz,omitempty"`
 }
 
 // SessionSummary The caller's own session. It deliberately carries NO session token: that value rides the HttpOnly cookie and is never readable by the page. `csrf_token` is present only on the responses that MINT a session (login, claim), since it is the double-submit value the client must then echo (SEC-024).
@@ -751,6 +770,10 @@ type SessionSummaryKind string
 
 // SessionSummaryRole The effective role this principal holds (`security-model.md` SEC-010).
 type SessionSummaryRole string
+
+// Timestamp A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC 3339 string. The store stamps `created_at`/`updated_at` on every row it writes as an integer millisecond count and returns that value unchanged, so this is what a client reads and what an export/apply round trip carries back. Deliberately not `format: date-time`: the two are not interchangeable, and a client that parsed one as the other would silently read 1970 for every resource on this surface.
+// The `Job` resource is the one exception on this API and says so at its own `created_at`: a Job's timestamp is minted in Go as a `time.Time` and serialized RFC 3339, because a Job is not a stored row of this baseline.
+type Timestamp = int64
 
 // TraceId A ULID- or UUID-class trace identifier, 20-36 characters, restricted charset.
 type TraceId = string

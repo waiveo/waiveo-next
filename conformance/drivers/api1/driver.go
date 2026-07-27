@@ -1264,10 +1264,12 @@ type jobDriverInput struct {
 	CollectionState []struct {
 		ID        string `json:"id"`
 		ScopeNode string `json:"scope_node"`
-		Labels    []struct {
-			Key   string `json:"key"`
-			Value string `json:"value"`
-		} `json:"labels"`
+		// Labels is a key->value MAP, the one label shape api/1 has
+		// (openapi LabelMap) and the shape the server both accepts and
+		// returns. A driver that converted some other spelling into this
+		// one here would be quietly translating the corpus into a wire
+		// format the case does not actually describe.
+		Labels map[string]string `json:"labels"`
 	} `json:"collection_state"`
 }
 
@@ -1360,11 +1362,7 @@ func driveJob(rep *report.Report, c corpus.Case) {
 		}
 	}
 	for _, row := range in.CollectionState {
-		labels := make(map[string]string, len(row.Labels))
-		for _, l := range row.Labels {
-			labels[l.Key] = l.Value
-		}
-		if err := h.seedAutomation(row.ID, row.ScopeNode, labels); err != nil {
+		if err := h.seedAutomation(row.ID, row.ScopeNode, row.Labels); err != nil {
 			rep.Fail(c.CaseID, contract, fmt.Sprintf("seed automation %s: %v", row.ID, err))
 			return
 		}

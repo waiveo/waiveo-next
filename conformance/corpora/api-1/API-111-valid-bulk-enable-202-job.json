@@ -24,22 +24,16 @@
       {
         "id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z1",
         "scope_node": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z6",
-        "labels": [
-          {
-            "key": "env",
-            "value": "prod"
-          }
-        ]
+        "labels": {
+          "env": "prod"
+        }
       },
       {
         "id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z2",
         "scope_node": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z6",
-        "labels": [
-          {
-            "key": "env",
-            "value": "prod"
-          }
-        ]
+        "labels": {
+          "env": "prod"
+        }
       }
     ]
   },

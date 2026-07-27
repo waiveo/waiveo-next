@@ -57,17 +57,24 @@ export function problem(
   });
 }
 
-/** A fixture scope-node record (the fully-worked resource in the OpenAPI). */
+/** A fixture scope-node record (the fully-worked resource in the OpenAPI).
+ *
+ * `labels` is a key→value MAP and `created_at`/`updated_at` are epoch
+ * MILLISECONDS, because that is what the server returns — the same shapes the
+ * hand-written client types in `./resources` already declare for every other
+ * family. A fixture that claimed the array-of-{key,value} / RFC-3339 shapes
+ * would let a component pass its tests against a wire format the server has
+ * never produced. */
 export function scopeNode(over: Record<string, unknown> = {}) {
   return {
     id: ULID_A,
     kind: "screen",
     parent_id: ULID_ROOT,
     name: "Lobby display",
-    labels: [],
+    labels: {},
     revision: 1,
-    created_at: "2026-07-22T00:00:00Z",
-    updated_at: "2026-07-22T00:00:00Z",
+    created_at: 1_753_142_400_000,
+    updated_at: 1_753_142_400_000,
     ...over,
   };
 }
@@ -170,7 +177,7 @@ export function automation(over: Record<string, unknown> = {}) {
     id: ULID_A,
     name: "Open the doors",
     scope_node: ULID_ROOT,
-    labels: [],
+    labels: {},
     enabled: true,
     mode: "single",
     max: null,
@@ -178,8 +185,8 @@ export function automation(over: Record<string, unknown> = {}) {
     conditions: [],
     actions: [{ type: "device_command", entity_id: ULID_B, command: "launch", params: { channel: "dev" } }],
     revision: 1,
-    created_at: "2026-07-22T00:00:00Z",
-    updated_at: "2026-07-22T00:00:00Z",
+    created_at: 1_753_142_400_000,
+    updated_at: 1_753_142_400_000,
     ...over,
   };
 }

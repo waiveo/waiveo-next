@@ -454,11 +454,12 @@ export interface components {
         TraceId: string;
         /** @description An opaque, URL-safe continuation token. `null` signals no further rows. Never constructed, parsed, or compared for meaning by a client. */
         Cursor: string | null;
-        /** @description One label term, as accepted by the label-selector grammar (`contracts/api-1.md#label-selector-grammar`). */
-        Label: {
-            key: string;
-            value: string;
-        };
+        /**
+         * Format: int64
+         * @description A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC 3339 string. The store stamps `created_at`/`updated_at` on every row it writes as an integer millisecond count and returns that value unchanged, so this is what a client reads and what an export/apply round trip carries back. Deliberately not `format: date-time`: the two are not interchangeable, and a client that parsed one as the other would silently read 1970 for every resource on this surface.
+         *     The `Job` resource is the one exception on this API and says so at its own `created_at`: a Job's timestamp is minted in Go as a `time.Time` and serialized RFC 3339, because a Job is not a stored row of this baseline.
+         */
+        Timestamp: number;
         /** @description One field-level failure inside a VALIDATION_FAILED Problem's `errors` array. */
         ValidationFieldError: {
             /** @description Dot-path to the offending field in the request body, or the query-parameter name. */
@@ -554,7 +555,7 @@ export interface components {
             /** @description The parent scope node's ULID. `null` only for the single root org node. */
             parent_id: string | null;
             name: string;
-            labels: components["schemas"]["Label"][];
+            labels: components["schemas"]["LabelMap"];
             /** @description IANA time zone name. Meaningful at site level and below; a screen-level value overrides its site. */
             tz?: string;
             lat?: number;
@@ -565,10 +566,8 @@ export interface components {
              */
             account_state?: "trial" | "active" | "suspended" | "closed" | "purged" | null;
             revision: number;
-            /** Format: date-time */
-            created_at: string;
-            /** Format: date-time */
-            updated_at: string;
+            created_at: components["schemas"]["Timestamp"];
+            updated_at: components["schemas"]["Timestamp"];
         };
         ScopeNodeCreate: {
             external_id?: string | null;
@@ -576,7 +575,7 @@ export interface components {
             kind: "org" | "site" | "group" | "screen";
             parent_id?: string | null;
             name: string;
-            labels?: components["schemas"]["Label"][];
+            labels?: components["schemas"]["LabelMap"];
             tz?: string;
             lat?: number;
             long?: number;
@@ -585,7 +584,7 @@ export interface components {
         ScopeNodeUpdate: {
             external_id?: string | null;
             name?: string;
-            labels?: components["schemas"]["Label"][];
+            labels?: components["schemas"]["LabelMap"];
             tz?: string;
             lat?: number;
             long?: number;
@@ -601,7 +600,7 @@ export interface components {
             external_id?: string | null;
             name: string;
             scope_node: components["schemas"]["Ulid"];
-            labels: components["schemas"]["Label"][];
+            labels: components["schemas"]["LabelMap"];
             enabled: boolean;
             /** @enum {string} */
             mode: "single" | "restart" | "queued" | "parallel";
@@ -620,16 +619,14 @@ export interface components {
                 [key: string]: unknown;
             }[];
             revision: number;
-            /** Format: date-time */
-            created_at: string;
-            /** Format: date-time */
-            updated_at: string;
+            created_at: components["schemas"]["Timestamp"];
+            updated_at: components["schemas"]["Timestamp"];
         };
         AutomationCreate: {
             external_id?: string | null;
             name: string;
             scope_node: components["schemas"]["Ulid"];
-            labels?: components["schemas"]["Label"][];
+            labels?: components["schemas"]["LabelMap"];
             /** @default true */
             enabled: boolean;
             /** @enum {string} */
@@ -650,7 +647,7 @@ export interface components {
         AutomationUpdate: {
             external_id?: string | null;
             name?: string;
-            labels?: components["schemas"]["Label"][];
+            labels?: components["schemas"]["LabelMap"];
             enabled?: boolean;
             /** @enum {string} */
             mode?: "single" | "restart" | "queued" | "parallel";
@@ -783,7 +780,10 @@ export interface components {
              * @enum {string}
              */
             state: "pending" | "running" | "succeeded" | "failed" | "partial";
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @description RFC 3339, and deliberately NOT the epoch-millisecond `Timestamp` every stored resource on this API carries. A Job is not a row of that baseline — it is minted by the accepting handler and serialized from a Go `time.Time` — so the two shapes differ because the two things differ, not by oversight.
+             */
             created_at: string;
         };
         /** @description One resource this Job acts on, and that resource's own per-target progress. */

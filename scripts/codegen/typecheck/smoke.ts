@@ -17,17 +17,17 @@ const scopeNode: components["schemas"]["ScopeNode"] = {
   kind: "site",
   parent_id: "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5",
   name: "Example Site",
-  labels: [{ key: "env", value: "prod" }],
+  labels: { env: "prod" },
   revision: 1,
-  created_at: "2026-07-15T00:00:00Z",
-  updated_at: "2026-07-15T00:00:00Z",
+  created_at: 1_752_537_600_000,
+  updated_at: 1_752_537_600_000,
 };
 
 const automation: components["schemas"]["Automation"] = {
   id: "01J8Z3K4N5P6Q7R8S9T0V1W2Z1",
   name: "Lobby screens on at open",
   scope_node: scopeNode.id,
-  labels: [],
+  labels: {},
   enabled: true,
   mode: "single",
   max: null,
@@ -35,8 +35,8 @@ const automation: components["schemas"]["Automation"] = {
   conditions: [],
   actions: [{ type: "device_command", entity_id: "01J8Z3K4N5P6Q7R8S9T0V1W2Z2", command: "launch" }],
   revision: 1,
-  created_at: "2026-07-15T00:00:00Z",
-  updated_at: "2026-07-15T00:00:00Z",
+  created_at: 1_752_537_600_000,
+  updated_at: 1_752_537_600_000,
 };
 
 // --- components.schemas: the shared conventions ---

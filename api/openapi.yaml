@@ -1152,18 +1152,24 @@ components:
       pattern: "^[A-Za-z0-9_-]+$"
       x-go-type: "*string"
 
-    Label:
-      type: object
-      description: One label term, as accepted by the label-selector grammar (`contracts/api-1.md#label-selector-grammar`).
-      required: [key, value]
-      additionalProperties: false
-      properties:
-        key:
-          type: string
-          pattern: "^([a-z0-9A-Z][a-z0-9A-Z.-]{0,251}/)?[a-z0-9A-Z][a-z0-9A-Z_.-]{0,62}$"
-        value:
-          type: string
-          pattern: "^([a-z0-9A-Z][a-z0-9A-Z_.-]{0,62})?$"
+    Timestamp:
+      type: integer
+      format: int64
+      minimum: 0
+      description: >-
+        A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC
+        3339 string. The store stamps `created_at`/`updated_at` on every row it
+        writes as an integer millisecond count and returns that value
+        unchanged, so this is what a client reads and what an export/apply
+        round trip carries back. Deliberately not `format: date-time`: the two
+        are not interchangeable, and a client that parsed one as the other
+        would silently read 1970 for every resource on this surface.
+
+        The `Job` resource is the one exception on this API and says so at its
+        own `created_at`: a Job's timestamp is minted in Go as a `time.Time`
+        and serialized RFC 3339, because a Job is not a stored row of this
+        baseline.
+
 
     ValidationFieldError:
       type: object
@@ -1364,9 +1370,7 @@ components:
           minLength: 1
           maxLength: 200
         labels:
-          type: array
-          items:
-            $ref: "#/components/schemas/Label"
+          $ref: "#/components/schemas/LabelMap"
         tz:
           type: string
           description: IANA time zone name. Meaningful at site level and below; a screen-level value overrides its site.
@@ -1387,11 +1391,9 @@ components:
           type: integer
           minimum: 1
         created_at:
-          type: string
-          format: date-time
+          $ref: "#/components/schemas/Timestamp"
         updated_at:
-          type: string
-          format: date-time
+          $ref: "#/components/schemas/Timestamp"
 
     ScopeNodeCreate:
       type: object
@@ -1413,9 +1415,7 @@ components:
           minLength: 1
           maxLength: 200
         labels:
-          type: array
-          items:
-            $ref: "#/components/schemas/Label"
+          $ref: "#/components/schemas/LabelMap"
         tz:
           type: string
         lat:
@@ -1441,9 +1441,7 @@ components:
           minLength: 1
           maxLength: 200
         labels:
-          type: array
-          items:
-            $ref: "#/components/schemas/Label"
+          $ref: "#/components/schemas/LabelMap"
         tz:
           type: string
         lat:
@@ -1495,9 +1493,7 @@ components:
         scope_node:
           $ref: "#/components/schemas/Ulid"
         labels:
-          type: array
-          items:
-            $ref: "#/components/schemas/Label"
+          $ref: "#/components/schemas/LabelMap"
         enabled:
           type: boolean
         mode:
@@ -1531,11 +1527,9 @@ components:
           type: integer
           minimum: 1
         created_at:
-          type: string
-          format: date-time
+          $ref: "#/components/schemas/Timestamp"
         updated_at:
-          type: string
-          format: date-time
+          $ref: "#/components/schemas/Timestamp"
 
     AutomationCreate:
       type: object
@@ -1552,9 +1546,7 @@ components:
         scope_node:
           $ref: "#/components/schemas/Ulid"
         labels:
-          type: array
-          items:
-            $ref: "#/components/schemas/Label"
+          $ref: "#/components/schemas/LabelMap"
         enabled:
           type: boolean
           default: true
@@ -1597,9 +1589,7 @@ components:
           minLength: 1
           maxLength: 200
         labels:
-          type: array
-          items:
-            $ref: "#/components/schemas/Label"
+          $ref: "#/components/schemas/LabelMap"
         enabled:
           type: boolean
         mode:
@@ -1932,6 +1922,13 @@ components:
         created_at:
           type: string
           format: date-time
+          description: >-
+            RFC 3339, and deliberately NOT the epoch-millisecond `Timestamp`
+            every stored resource on this API carries. A Job is not a row of
+            that baseline — it is minted by the accepting handler and
+            serialized from a Go `time.Time` — so the two shapes differ
+            because the two things differ, not by oversight.
+
 
     JobTarget:
       type: object
