@@ -6,6 +6,14 @@
 // installs end to end on the live stack; NOTHING in the pack executes — a pack is
 // data (a manifest, page documents, a locale catalog).
 //
+// AUTHENTICATION, stated here rather than left to a confusing 401 at run time:
+// every /api/v1 route is now authenticated (security-model/1 SEC-005 — an
+// unresolvable principal is refused, never default-permitted), and this probe
+// presents no credential, so it is refused 401 against a live feeder until a
+// dev-script credential bridge exists. That bridge is deliberately separate
+// work: doing it properly means minting a scoped API key at dev-up and handing
+// it to the probes, not weakening the surface they exist to probe.
+//
 // Like the other dev probes it is written in Go on purpose: the feeder serves an
 // ed25519/ECDSA self-signed leaf a Go client handshakes cleanly (a curl upload
 // could spuriously fail against a healthy server). The artifact it uploads is

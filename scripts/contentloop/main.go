@@ -6,6 +6,14 @@
 // asset, and a screen fetches those exact bytes direct from the content origin —
 // the relay is never in this data path (REL-140).
 //
+// AUTHENTICATION, stated here rather than left to a confusing 401 at run time:
+// every /api/v1 route is now authenticated (security-model/1 SEC-005 — an
+// unresolvable principal is refused, never default-permitted), and this probe
+// presents no credential, so it is refused 401 against a live feeder until a
+// dev-script credential bridge exists. That bridge is deliberately separate
+// work: doing it properly means minting a scoped API key at dev-up and handing
+// it to the probes, not weakening the surface they exist to probe.
+//
 // It is written in Go on purpose, like scripts/devsmoke: the feeder serves an
 // ed25519-leaf TLS cert some system curl builds (macOS LibreSSL) cannot
 // handshake, so a curl probe would spuriously fail against a healthy server.
