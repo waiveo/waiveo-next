@@ -20,9 +20,12 @@
 //
 //   - Credentials are their OWN relation (SEC-001/003), never columns on a
 //     users-shaped table: one principal holds N credentials, including more than
-//     one of the same kind. Only `password` and `api-key` are implemented here;
-//     the `passkey`/`totp`/`oidc-subject`/`cert` kinds are accepted by the schema's
-//     enum but have no verification path yet.
+//     one of the same kind. `password`, `api-key` and `totp` are implemented
+//     here — the last being SEC-004's guaranteed second-factor floor, whose
+//     shared secret is the one credential value that is SEALED rather than
+//     hashed (totp.go, totpstore.go), because verifying a code means recomputing
+//     an HMAC over it. The `passkey`/`oidc-subject`/`cert` kinds are accepted by
+//     the schema's enum but have no verification path yet.
 //
 //   - Authorization NEVER default-permits (SEC-005). A request whose principal
 //     cannot be resolved is refused 401; a resolved principal holding no role
@@ -65,10 +68,17 @@ func ValidPrincipalKind(kind string) bool {
 }
 
 // Credential kinds (SEC-003). The closed set a credential row's `kind` column
-// accepts. This package implements verification for CredentialPassword and
-// CredentialAPIKey only; the other four are schema-legal so a later increment
-// adds a verifier without a migration, never so an unverifiable row can
-// authenticate today (verifyCredential refuses any kind it has no path for).
+// accepts. This package implements verification for CredentialPassword,
+// CredentialAPIKey and CredentialTOTP; the remaining three are schema-legal so a
+// later increment adds a verifier without a migration, never so an unverifiable
+// row can authenticate today — no lookup path resolves a kind this package has
+// no verifier for.
+//
+// CredentialTOTP is SEC-004's guaranteed second-factor floor, and the only kind
+// whose stored secret must be RECOVERABLE (sealed, not hashed): verifying a code
+// means recomputing an HMAC over the secret itself. CredentialPasskey is
+// deliberately still absent — SEC-102 admits it only where a secure context
+// exists, which is exactly the precondition SEC-004 forbids attaching to TOTP.
 const (
 	CredentialPassword    = "password"
 	CredentialPasskey     = "passkey"
