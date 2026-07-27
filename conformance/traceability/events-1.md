@@ -24,7 +24,7 @@ subscribe` and `EVT-140-valid-resume-with-gap` now drive a real
 **Scope-node filtering note:** `EVT-120-valid-scope-filtered-subscription` and
 `EVT-101-valid-sse-selector-and-schemas` drive the live `GET /events/v1` handler
 with a REAL scope-node tree and a REAL principal bound at one site (a seeded
-`authtest` fixture), so EVT-012/101/120–124 are answered by the shipping
+`authtest` fixture), so EVT-101/120–124 are answered by the shipping
 visible-set computation rather than by a driver-side model of it. Both close the
 Hub before driving, which makes the delivered set observable synchronously: the
 handler writes and flushes its whole resolved backlog before reaching the live
@@ -33,6 +33,14 @@ decides when a stream has finished. EVT-123's live-tail half is additionally
 driven by `internal/app/eventsse`'s own tests, which watch two differently-bound
 principals across one interleaved append sequence.
 
+EVT-012 stays `TBD-wave1` on purpose. These cases FILTER on the envelope's
+`scope_node`; neither proves a PRODUCER sets it to the subject resource's own
+placement, and today's only envelope-constructing producer
+(`internal/app/eventingest`) stamps the site node on every ingested record — a
+per-record, subject-derived scope is a deferred concern its own doc comment
+names. Marking the row covered off a case that supplies `scope_node` as input
+would claim the requirement is met when it is not.
+
 | req-id | contract §anchor | case-id(s) | status |
 |---|---|---|---|
 | EVT-001 | `contracts/events-1.md#versioning--transport-surface` | - | TBD-wave1 |
@@ -40,7 +48,7 @@ principals across one interleaved append sequence.
 | EVT-003 | `contracts/events-1.md#versioning--transport-surface` | - | TBD-wave1 |
 | EVT-010 | `contracts/events-1.md#durable-event-envelope` | `EVT-010-valid-entity-state-changed` | covered |
 | EVT-011 | `contracts/events-1.md#durable-event-envelope` | - | TBD-wave1 |
-| EVT-012 | `contracts/events-1.md#durable-event-envelope` | `EVT-120-valid-scope-filtered-subscription` | covered |
+| EVT-012 | `contracts/events-1.md#durable-event-envelope` | - | TBD-wave1 |
 | EVT-013 | `contracts/events-1.md#durable-event-envelope` | `EVT-010-valid-entity-state-changed`, `EVT-013-invalid-unregistered-schema-payload`, `EVT-013-invalid-registered-schema-malformed-payload` | covered |
 | EVT-020 | `contracts/events-1.md#registered-schema-catalog--general` | - | TBD-wave1 |
 | EVT-021 | `contracts/events-1.md#registered-schema-catalog--general` | `EVT-013-invalid-unregistered-schema-payload` | covered |

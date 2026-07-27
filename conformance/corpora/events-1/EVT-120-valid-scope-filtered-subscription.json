@@ -1,7 +1,7 @@
 {
   "case_id": "EVT-120-valid-scope-filtered-subscription",
   "contract": "events/1",
-  "req_ids": ["EVT-012", "EVT-120", "EVT-123"],
+  "req_ids": ["EVT-120", "EVT-123"],
   "description": "A subscriber whose principal is bound at site A receives exactly the events whose subject placement (the envelope's scope_node) falls in its own subtree. An event placed under the sibling site B is not delivered, and neither is one placed at the org node ABOVE the binding — a role bound at a scope node inherits downward, never upward. The filtering is per event at delivery time, so it applies to a replayed backlog exactly as it does to a live tail.",
   "input": {
     "scope_nodes": [

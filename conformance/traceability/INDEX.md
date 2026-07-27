@@ -12,7 +12,7 @@ Roll-up of the contract corpus: every contract, its requirement-ID count, its se
 | device-class-registry | 29 | 7 | 23 | 6 | 0 |
 | data-model/1 | 66 | 20 | 49 | 17 | 0 |
 | api/1 | 72 | 14 | 34 | 38 | 1 |
-| events/1 | 73 | 17 | 43 | 30 | 10 |
+| events/1 | 73 | 17 | 42 | 31 | 10 |
 | archive/1 | 66 | 9 | 0 | 66 | 4 |
 | relay/1 | 106 | 17 | 68 | 38 | 3 |
 | player/1 | 126 | 7 | 46 | 80 | 9 |
@@ -21,7 +21,7 @@ Roll-up of the contract corpus: every contract, its requirement-ID count, its se
 | marketplace/1 | 49 | 14 | 0 | 49 | 4 |
 | ui-schema/1 | 73 | 9 | 22 | 51 | 3 |
 | security-model | 83 | 8 | 0 | 83 | 7 |
-| **Total** | **1041** | **181** | **363** | **678** | **52** |
+| **Total** | **1041** | **181** | **362** | **679** | **52** |
 
 **Companion artifacts:**
 - `../fixtures/automation-builder/` — the ui-schema/1 go/no-go fixture (a complete declarative automation-builder document + render-walkthrough), gated by `../fixtures/fixture-lint.mjs` (wired into the pr/merge CI tiers; asserts every widget/binding/vocabRef the fixture uses is defined in ui-schema/1).
