@@ -9,6 +9,17 @@
     "headers": {
       "Trace-Id": "01J8Z3K4N5P6Q7R8S9T0V1W2Y4",
       "Idempotency-Key": "export-workspace-01J8Z2Q1M8H8N4T0V1W2X3Y4Z0-1"
+    },
+    "principal": "01J8Z3K4N5P6Q7R8S9T0V1W2X1",
+    "principal_role": "owner",
+    "workspace_state": {
+      "id": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z0",
+      "kind": "org",
+      "name": "Fixture Workspace",
+      "account_state": "active"
+    },
+    "body": {
+      "passphrase": "conformance-export-passphrase"
     }
   },
   "expected": {
@@ -25,6 +36,7 @@
       "created_by": "01J8Z3K4N5P6Q7R8S9T0V1W2X1",
       "state": "pending",
       "created_at": "2026-07-15T00:00:00Z"
-    }
+    },
+    "reason": "The Job's single target is the workspace itself — API-123: 'each operation's target is the workspace itself, implicit in the request path; API-110's selector convention does not apply' — identified by the deployment's own org-kind scope node, the row data-model/1 DAT-012 names as the one that reaches `purged` once the sibling delete operation has run. Every target is pending because a 202 represents work as ACCEPTED, not as begun (API-111)."
   }
 }

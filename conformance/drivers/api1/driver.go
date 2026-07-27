@@ -11,6 +11,8 @@
 //     (API-050-056) and the 202 + Job resource (API-110-117, API-120-123);
 //   - the Problem error shape itself (API-010-016).
 //
+// Every frozen case is driven; none is pending.
+//
 // It replays every conformance/corpora/api-1 case against the LIVE,
 // HTTP-mounted internal/app/api handler (api.New, over a real
 // internal/app/store.Store and internal/shared/apihttp.IdempotencyStore) and
@@ -42,6 +44,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -53,8 +56,10 @@ import (
 	"github.com/maaxton/waiveo-next/conformance/drivers/corpus"
 	"github.com/maaxton/waiveo-next/conformance/drivers/report"
 	"github.com/maaxton/waiveo-next/internal/app/api"
+	"github.com/maaxton/waiveo-next/internal/app/auth"
 	"github.com/maaxton/waiveo-next/internal/app/auth/authtest"
 	"github.com/maaxton/waiveo-next/internal/app/store"
+	"github.com/maaxton/waiveo-next/internal/app/workspacekey"
 	"github.com/maaxton/waiveo-next/internal/datamodel"
 	"github.com/maaxton/waiveo-next/internal/feeder/origin"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
@@ -95,19 +100,25 @@ func RunCases(cases map[string]corpus.Case) report.Report {
 }
 
 // drivenCaseIDs are every api-1 corpus case this driver drives against the
-// live HTTP handler — every case in the frozen corpus except API-121, which
-// has no mounted route to drive (see pendingCaseIDs).
+// live HTTP handler — which, since POST /api/v1/workspace/export was mounted,
+// is every case in the frozen corpus with none left pending.
 var drivenCaseIDs = []string{
 	"API-010", "API-013",
 	"API-022", "API-023", "API-032", "API-035", "API-044", "API-045", "API-101", "API-102",
-	"API-052", "API-053", "API-111",
+	"API-052", "API-053", "API-111", "API-121",
 }
 
 // pendingCaseIDs are api/1 cases frozen under conformance/corpora/api-1 that
 // no mounted route exists to drive yet.
-var pendingCaseIDs = map[string]string{
-	"API-121": "api.New's mux (internal/app/api/api.go) mounts no /api/v1/workspace/export route — the 2026-07-26 reconciliation audit confirms it is one of several openapi-declared paths (/workspace/export, /workspace/delete, /principals, /casts, /system/health, /packs/{pack}/actions/{name}) with no handler in the tree. Deferred until that route is built (plan G8). Note that GET /jobs/{job_id} — which this case's own 202 Job would be polled at — IS now mounted; the missing piece is the export operation that mints the Job, not the poll.",
-}
+//
+// It is EMPTY, and the map stays rather than being deleted: §10's "no silent
+// caps" rule needs somewhere for the next undrivable case to be recorded WITH
+// a reason, and a driver that has to grow the mechanism back before it can
+// record one is a driver that will record none. Its last entry was API-121,
+// pending solely because api.New's mux mounted no /api/v1/workspace/export
+// route; that route now exists (internal/app/api/workspace.go) and the case is
+// driven below.
+var pendingCaseIDs = map[string]string{}
 
 func driveCases(rep *report.Report, cases map[string]corpus.Case) {
 	for _, short := range drivenCaseIDs {
@@ -159,6 +170,8 @@ func driveByShape(rep *report.Report, cases map[string]corpus.Case, short string
 		driveIdempotency(rep, c)
 	case shapeJob:
 		driveJob(rep, c)
+	case shapeWorkspaceJob:
+		driveWorkspaceJob(rep, c)
 	default:
 		rep.Fail(c.CaseID, contract, "input block did not match any known api/1 convention shape")
 	}
@@ -178,6 +191,7 @@ const (
 	shapeExternalID
 	shapeIdempotency
 	shapeJob
+	shapeWorkspaceJob
 )
 
 // classifyShape inspects a case's own id and `input` block and reports which
@@ -219,6 +233,13 @@ func classifyShape(caseID string, input map[string]any) shape {
 				return shapeExternalID
 			}
 		}
+	}
+	// A case seeding the workspace's own org node is a data-subject operation
+	// (API-120-123): its target is the workspace itself rather than a
+	// selector-chosen set, which is exactly the structural difference
+	// `workspace_state` records.
+	if _, ok := input["workspace_state"]; ok {
+		return shapeWorkspaceJob
 	}
 	if _, ok := input["method"].(string); ok {
 		if _, ok := input["path"].(string); ok {
@@ -265,6 +286,9 @@ type harness struct {
 	// Conformance notes already anticipate this: "cases that need a principal
 	// treat one as a given, opaque input."
 	auth *authtest.Fixture
+	// archiveDir is the scratch workspace-archive destination the export
+	// operation is wired with, removed on close.
+	archiveDir string
 }
 
 // newHarness opens a fresh in-memory store and mounts api.New over it. nowMs
@@ -283,15 +307,44 @@ func newHarness(nowMs int64, newID func() string) (*harness, error) {
 // created_by), which is then driven FROM the fixture exactly as that case's
 // clock and id source already are.
 func newHarnessAs(nowMs int64, newID func() string, principalID string) (*harness, error) {
+	return newHarnessAsRole(nowMs, newID, principalID, "")
+}
+
+// newHarnessAsRole is newHarnessAs with the driving principal's ROLE pinned too
+// — for a case whose validity depends on the caller's authority rather than
+// only on their identity (the data-subject operations are owner-only). An empty
+// role leaves the fixture's own default (authtest binds `owner` at the
+// workspace root), so every existing call site is unchanged.
+func newHarnessAsRole(nowMs int64, newID func() string, principalID, role string) (*harness, error) {
 	st, err := store.Open(":memory:")
 	if err != nil {
 		return nil, fmt.Errorf("store.Open: %w", err)
 	}
 	clock := func() int64 { return nowMs }
-	fixture, err := authtest.New(authtest.Config{NowMs: clock, PrincipalID: principalID})
+	fixture, err := authtest.New(authtest.Config{NowMs: clock, PrincipalID: principalID, Role: auth.Role(role)})
 	if err != nil {
 		_ = st.Close()
 		return nil, fmt.Errorf("authtest.New: %w", err)
+	}
+	// The data-subject export writes an archive/1 container, so the handler
+	// needs a destination and a workspace signing key to accept one at all
+	// (api.WithWorkspaceArchive; without it the operation answers UNAVAILABLE
+	// rather than 202). Both are scratch, per harness, and removed on close:
+	// the corpus case asserts the ACCEPTANCE, and this harness's job runner is
+	// never started, so nothing is ever written into the directory — wiring it
+	// is what makes the acceptance reachable, not what makes it pass.
+	archiveDir, err := os.MkdirTemp("", "api1-workspace-archive-")
+	if err != nil {
+		_ = st.Close()
+		fixture.Close()
+		return nil, fmt.Errorf("archive dir: %w", err)
+	}
+	wsKey, err := workspacekey.LoadOrCreate(archiveDir, func() string { return harnessSignerKeyID })
+	if err != nil {
+		_ = st.Close()
+		fixture.Close()
+		_ = os.RemoveAll(archiveDir)
+		return nil, fmt.Errorf("workspacekey.LoadOrCreate: %w", err)
 	}
 	idem := apihttp.NewIdempotencyStore(clock, 0)
 	// The Job runner is wired STOPPED and never started. Every corpus case this
@@ -302,13 +355,22 @@ func newHarnessAs(nowMs int64, newID func() string, principalID string) (*harnes
 	// store on a background goroutine this harness is about to close: a source
 	// of noise, never of signal.
 	h := api.New(st, idem, clock, newID, origin.New(), "https://origin.example", fixture.Auth,
-		api.WithJobRunner(api.NewJobRunner()))
-	return &harness{store: st, h: h, auth: fixture}, nil
+		api.WithJobRunner(api.NewJobRunner()),
+		api.WithWorkspaceArchive(&api.WorkspaceArchive{Dir: archiveDir, Key: wsKey}))
+	return &harness{store: st, h: h, auth: fixture, archiveDir: archiveDir}, nil
 }
+
+// harnessSignerKeyID is the fixed `signer_key_id` this harness's workspace
+// signing key is minted under — a valid ULID (DAT-005a) from a pinned closure,
+// never a package-level generator, exactly as every other id in this driver is.
+const harnessSignerKeyID = "01J8Z9DRVWSPACEKEY00000001"
 
 func (h *harness) close() {
 	_ = h.store.Close()
 	h.auth.Close()
+	if h.archiveDir != "" {
+		_ = os.RemoveAll(h.archiveDir)
+	}
 }
 
 // deterministicIDs mints deterministic, ascending, valid 26-char ULIDs — the
@@ -1312,6 +1374,139 @@ func driveJob(rep *report.Report, c corpus.Case) {
 	if err != nil {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("marshal input.body: %v", err))
 		return
+	}
+	res := h.do(in.Method, in.Path, bodyBytes, in.Headers)
+
+	var diffs []report.Diff
+	if want, ok := expectInt(c, "status"); ok && res.status != want {
+		diffs = append(diffs, report.Diff{Field: "status", Expected: want, Actual: res.status})
+	}
+	if want, ok := expectString(c, "content_type"); ok && want != "" {
+		if got := res.header.Get("Content-Type"); got != want {
+			diffs = append(diffs, report.Diff{Field: "content_type", Expected: want, Actual: got})
+		}
+	}
+	if want, ok := expectString(c, "headers.Trace-Id"); ok && want != "" {
+		if got := res.header.Get("Trace-Id"); got != want {
+			diffs = append(diffs, report.Diff{Field: "headers.Trace-Id", Expected: want, Actual: got})
+		}
+	}
+	diffs = append(diffs, bodyDiffs(c, res.body)...)
+
+	if len(diffs) > 0 {
+		rep.Fail(c.CaseID, contract, "202 Job response diverged from the corpus expectation", diffs...)
+		return
+	}
+	rep.Pass(c.CaseID, contract)
+}
+
+// --- data-subject export / delete (API-120-124) -------------------------
+
+type workspaceJobDriverInput struct {
+	Method         string            `json:"method"`
+	Path           string            `json:"path"`
+	Headers        map[string]string `json:"headers"`
+	Principal      string            `json:"principal"`
+	PrincipalRole  string            `json:"principal_role"`
+	WorkspaceState struct {
+		ID           string `json:"id"`
+		Kind         string `json:"kind"`
+		Name         string `json:"name"`
+		AccountState string `json:"account_state"`
+	} `json:"workspace_state"`
+	Body map[string]any `json:"body"`
+}
+
+// driveWorkspaceJob drives the data-subject export corpus case (API-121)
+// against the live POST /api/v1/workspace/export handler.
+//
+// Everything the assertion turns on comes from the case's own `input`, never
+// from its `expected` — the one exception being the two server-derived outputs
+// api/1's Conformance notes sanction seaming (the Job's own id and created_at,
+// which are the harness's pinned id source and pinned clock, exactly as
+// driveJob seams them):
+//
+//   - `input.principal` is the authenticated caller the handler stamps
+//     created_by from, so the expectation's created_by is CHECKED against an
+//     input rather than seeded from itself.
+//   - `input.principal_role` is the role that principal is bound at. It is an
+//     input because the operation is owner-only (internal/app/api/workspace.go
+//     argues why from SEC-010/011), so the role is part of what makes this a
+//     VALID request — a case that let the fixture's default role stand would be
+//     asserting a 202 without ever stating that an owner is what produces one.
+//   - `input.workspace_state` is the deployment's own org-kind scope node,
+//     seeded into a REAL store through the same write path the authoring
+//     surface uses. The Job's single target is that node's id (API-123: "each
+//     operation's target is the workspace itself, implicit in the request
+//     path"), so the expectation's target_id is likewise checked against a
+//     seeded input rather than fed from the expectation.
+//   - `input.body` is the request body. archive/1 derives a container's
+//     encryption key from an export passphrase supplied at export time
+//     (ARC-010), so the export operation requires one; the case declares it as
+//     the input it is.
+func driveWorkspaceJob(rep *report.Report, c corpus.Case) {
+	var in workspaceJobDriverInput
+	if err := decodeField(c.Input, &in); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode input: %v", err))
+		return
+	}
+	var expBody struct {
+		ID        string `json:"id"`
+		CreatedAt string `json:"created_at"`
+	}
+	if raw, ok := c.Expected["body"].(map[string]any); ok {
+		if err := decodeField(raw, &expBody); err != nil {
+			rep.Fail(c.CaseID, contract, fmt.Sprintf("decode expected body: %v", err))
+			return
+		}
+	}
+	createdAt, err := time.Parse(time.RFC3339, expBody.CreatedAt)
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("parse created_at %q: %v", expBody.CreatedAt, err))
+		return
+	}
+	if in.Principal == "" {
+		rep.Fail(c.CaseID, contract, "case declares no input.principal: a Job's created_by is the authenticated caller, "+
+			"which this driver must be TOLD (contracts/api-1.md's Conformance notes: a case that needs a principal treats "+
+			"one as a given, opaque input) — deriving it from the case's own expectation would let the assertion pass by construction")
+		return
+	}
+	if in.WorkspaceState.ID == "" {
+		rep.Fail(c.CaseID, contract, "case declares no input.workspace_state.id: the Job's single target IS the workspace "+
+			"(API-123), so the target id must be seeded from an input, never read out of the expectation it is checked against")
+		return
+	}
+
+	pinnedID := func() string { return expBody.ID }
+	h, err := newHarnessAsRole(createdAt.UnixMilli(), pinnedID, in.Principal, in.PrincipalRole)
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("newHarness: %v", err))
+		return
+	}
+	defer h.close()
+
+	// The workspace's own org node, seeded through the real store write path —
+	// the same fixture-setup pattern every other case here uses, and the same
+	// one internal/app/api's own e2e tests use.
+	orgBody := map[string]any{
+		"id":            in.WorkspaceState.ID,
+		"kind":          in.WorkspaceState.Kind,
+		"name":          in.WorkspaceState.Name,
+		"parent_id":     nil,
+		"account_state": in.WorkspaceState.AccountState,
+	}
+	if err := h.seedScopeNode(orgBody); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("seed workspace org scope node: %v", err))
+		return
+	}
+
+	var bodyBytes []byte
+	if in.Body != nil {
+		bodyBytes, err = json.Marshal(in.Body)
+		if err != nil {
+			rep.Fail(c.CaseID, contract, fmt.Sprintf("marshal input.body: %v", err))
+			return
+		}
 	}
 	res := h.do(in.Method, in.Path, bodyBytes, in.Headers)
 

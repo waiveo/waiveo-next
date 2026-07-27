@@ -14,11 +14,10 @@
       "API-053-invalid-idempotency-key-reused-different-body",
       "API-101-invalid-external-id-cross-kind-conflict",
       "API-102-invalid-external-id-conflict",
-      "API-111-valid-bulk-enable-202-job"
-    ],
-    "pending": [
+      "API-111-valid-bulk-enable-202-job",
       "API-121-valid-export-workspace-job"
-    ]
+    ],
+    "pending": []
   },
   "data-model/1": {
     "driver": "internal/datamodel/corpus_test.go corpusHandlers (hand-maintained: lives in a _test.go compilation unit, not importable by conformance/cmd/driven-manifest; kept fresh by TestDataModel1DrivenManifestMatchesRuntime in internal/datamodel/driven_manifest_test.go)",

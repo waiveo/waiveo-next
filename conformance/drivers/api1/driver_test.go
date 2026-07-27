@@ -9,9 +9,9 @@ import (
 )
 
 // expectedDriven is every api-1 corpus case this driver drives against the
-// LIVE, HTTP-mounted api.New handler — every case in the frozen corpus except
-// API-121 (see expectedPending). A case's presence here says nothing about
-// whether it currently PASSes: see expectedFailing.
+// LIVE, HTTP-mounted api.New handler — which is now every case in the frozen
+// corpus, none excepted. A case's presence here says nothing about whether it
+// currently PASSes: see expectedFailing.
 var expectedDriven = []string{
 	"API-010-valid-simple-problem",
 	"API-013-valid-multi-field-validation-problem",
@@ -26,14 +26,20 @@ var expectedDriven = []string{
 	"API-101-invalid-external-id-cross-kind-conflict",
 	"API-102-invalid-external-id-conflict",
 	"API-111-valid-bulk-enable-202-job",
-}
-
-// expectedPending is the one api-1 corpus case with no mounted route to
-// drive: api.New's mux has no /api/v1/workspace/export handler (§10 "no
-// silent caps" — recorded PENDING with a reason, never silently absent).
-var expectedPending = []string{
 	"API-121-valid-export-workspace-job",
 }
+
+// expectedPending is EMPTY: every api-1 corpus case now has a mounted route to
+// drive. Its one entry was API-121, pending only because api.New's mux had no
+// /api/v1/workspace/export handler; that route exists now
+// (internal/app/api/workspace.go) and the case is driven above.
+//
+// The variable stays rather than being deleted, for the same reason the
+// driver's own pendingCaseIDs map does: §10's "no silent caps" rule needs a
+// place to record the next undrivable case WITH a reason, and TestAPI1DriverGreen
+// asserts the driver's pending set is exactly this one — an empty declaration
+// is what makes a newly-pending case fail by name instead of passing quietly.
+var expectedPending = []string{}
 
 // expectedFailing maps every corpus case this driver drives that genuinely
 // diverges from its own frozen expectation, to why. These are NOT driver

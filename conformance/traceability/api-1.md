@@ -13,14 +13,33 @@ re-drive originally surfaced seven genuine, confirmed divergences between
 frozen expectations and the live handler's actual behavior (wording/
 status-code mismatches, two fixtures that violated a datamodel rule built
 after they were frozen, and two Job-resource fields with no determinism
-seam). After this change series, of the thirteen driven cases exactly ONE
-still diverges: `API-111-valid-bulk-enable-202-job`'s `created_by` field,
-which the live handler stamps from a fixed principal because auth is
-deferred — see `conformance/drivers/api1/driver_test.go`'s `expectedFailing`
-map for the full reason. `API-120/121/123` moved back to `TBD-wave1`:
-`API-121-valid-export-workspace-job` is the one corpus case with no mounted
-route to drive at all (`/api/v1/workspace/export` does not exist in
-`api.New`'s mux).
+seam). Every one of those is closed and no driven case diverges today — see
+`conformance/drivers/api1/driver_test.go`'s `expectedFailing` map, which is
+empty and stays in place to make a NEW divergence loud.
+
+**Data-subject export/delete update:** `POST /api/v1/workspace/export` and
+`POST /api/v1/workspace/delete` are now mounted
+(`internal/app/api/workspace.go`), so `API-121-valid-export-workspace-job` —
+previously the one corpus case with no route to drive at all — is DRIVEN, and
+the driver's pending set is empty. That case's `input` block gained the three
+things the live handler needs and the frozen block never carried: the
+authenticated `principal` whose id the Job's `created_by` is checked against,
+that principal's `principal_role` (the operation is owner-only, so the role is
+part of what makes the request valid), and the `workspace_state` org node whose
+id is the Job's single target (API-123). The `expected` block is untouched. This
+is the same class of input amendment two earlier commits already made to this
+corpus so its cases could be driven against the real handler rather than
+against the convention libraries.
+
+`API-122` and `API-124` remain `TBD-wave1` deliberately. API-122's delete
+operation IS implemented — it runs `security-model.md` SEC-121's destruction
+path — and IS exercised end to end through the live mux: its owner-only
+authorization, its `confirm_workspace_id` safety gate, and the destruction
+itself. That exercise lives in `internal/app/api`'s own Go tests, and no case in
+the FROZEN corpus drives it. `covered` here means "a listed case exercises this
+requirement today", so claiming it without a corpus case would be exactly the
+overclaim this column exists to prevent. API-124 is the section's own explicit
+deferral of a fuller data-subject-request workflow and has nothing to cover.
 
 | req-id | contract §anchor | case-id(s) | status |
 |---|---|---|---|
@@ -91,8 +110,8 @@ route to drive at all (`/api/v1/workspace/export` does not exist in
 | API-115 | `contracts/api-1.md#fleet-mutating-operations--the-job-resource` | - | TBD-wave1 |
 | API-116 | `contracts/api-1.md#fleet-mutating-operations--the-job-resource` | - | TBD-wave1 |
 | API-117 | `contracts/api-1.md#fleet-mutating-operations--the-job-resource` | - | TBD-wave1 |
-| API-120 | `contracts/api-1.md#data-subject-export--delete` | - | TBD-wave1 |
-| API-121 | `contracts/api-1.md#data-subject-export--delete` | - | TBD-wave1 |
+| API-120 | `contracts/api-1.md#data-subject-export--delete` | `API-121-valid-export-workspace-job` | covered |
+| API-121 | `contracts/api-1.md#data-subject-export--delete` | `API-121-valid-export-workspace-job` | covered |
 | API-122 | `contracts/api-1.md#data-subject-export--delete` | - | TBD-wave1 |
-| API-123 | `contracts/api-1.md#data-subject-export--delete` | - | TBD-wave1 |
+| API-123 | `contracts/api-1.md#data-subject-export--delete` | `API-121-valid-export-workspace-job` | covered |
 | API-124 | `contracts/api-1.md#data-subject-export--delete` | - | TBD-wave1 |
