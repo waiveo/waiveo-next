@@ -8,12 +8,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/app/workspacekey"
 	"github.com/maaxton/waiveo-next/internal/archive"
 	"github.com/maaxton/waiveo-next/internal/datamodel"
 	"github.com/maaxton/waiveo-next/internal/shared/apijob"
+	"github.com/maaxton/waiveo-next/internal/shared/secretfile"
 )
 
 // workspacerun.go is the EXECUTION half of the two data-subject operations
@@ -55,6 +57,18 @@ type WorkspaceArchive struct {
 	// substitute lighter ones so a suite does not spend a second per export
 	// stretching a passphrase it does not care about.
 	KDF archive.KDFParams
+
+	// exporting serializes the export executions this deployment runs at once.
+	//
+	// Each export stretches its passphrase with argon2id at production cost —
+	// 256 MiB of memory, by design (ARC-010) — and the Job runner imposes no
+	// concurrency limit of its own, so N accepted exports would otherwise be N
+	// simultaneous quarter-gigabyte allocations plus N zstd windows. Serializing
+	// them costs an owner nothing observable: the operation is asynchronous
+	// already, every request still gets its 202 and its own Job, and a queued
+	// export reaches `succeeded` a little later rather than not at all. What it
+	// buys is a memory ceiling that does not scale with request count.
+	exporting sync.Mutex
 }
 
 // WithWorkspaceArchive wires the export operation's archive destination and
@@ -119,7 +133,18 @@ func (srv *server) writeWorkspaceArchive(ctx context.Context, jobID, workspaceID
 	if cfg == nil || cfg.Key == nil {
 		return "UNAVAILABLE", "This deployment is not configured with a workspace archive destination."
 	}
-	if err := os.MkdirAll(cfg.Dir, 0o700); err != nil {
+	// The workspace signing key is gone (SEC-121's destruction has run), so
+	// ARC-021's signature cannot be produced. Refusing HERE, before any work, is
+	// what keeps the answer honest: archive.Create would refuse too, but only
+	// after a full snapshot had been taken and a container half written, and the
+	// operator would be told "the archive could not be written" rather than why.
+	if cfg.Key.Destroyed() {
+		return "UNAVAILABLE", "This workspace's signing key has been destroyed; no further export can be produced."
+	}
+	// Serialized: see WorkspaceArchive.exporting.
+	cfg.exporting.Lock()
+	defer cfg.exporting.Unlock()
+	if err := secretfile.EnsureDir(cfg.Dir); err != nil {
 		return "INTERNAL", "The archive destination could not be prepared."
 	}
 
@@ -127,6 +152,15 @@ func (srv *server) writeWorkspaceArchive(ctx context.Context, jobID, workspaceID
 	// snapshot path (ARC-083) into a scratch file beside the destination, then
 	// streamed into the container and removed. It is scratch, not a second
 	// artifact: it exists only because a tar entry needs its size up front.
+	//
+	// It is also, for as long as it exists, a CLEARTEXT copy of the entire
+	// workspace sitting next to the encrypted container the whole exercise exists
+	// to produce. store.SnapshotInto lands it 0600; the Source.Snapshot callback
+	// below unlinks it the instant it is opened for streaming, so its lifetime as
+	// a reachable filesystem object is microseconds rather than the minutes a
+	// large archive takes to write. The deferred remove stays as the path for
+	// every case where the callback never runs (Create failing before it reaches
+	// the snapshot entry) and is a harmless no-op otherwise.
 	snapPath := filepath.Join(cfg.Dir, "."+jobID+".snapshot")
 	_ = os.Remove(snapPath)
 	if err := srv.store.SnapshotInto(ctx, snapPath); err != nil {
@@ -169,7 +203,7 @@ func (srv *server) writeWorkspaceArchive(ctx context.Context, jobID, workspaceID
 		// the archive package — archive/1's Scope puts the wrap/unwrap algorithm
 		// explicitly outside it.
 		WrapDataKey: cfg.Key.WrapDataKey,
-		Snapshot:    func() (io.ReadCloser, int64, error) { return openSized(snapPath) },
+		Snapshot:    func() (io.ReadCloser, int64, error) { return openTransient(snapPath) },
 		Asset:       srv.openWorkspaceAsset,
 	}
 	writeErr := archive.Create(out, src, archive.Options{
@@ -189,9 +223,20 @@ func (srv *server) writeWorkspaceArchive(ctx context.Context, jobID, workspaceID
 	return "", ""
 }
 
-// openSized opens path for reading and reports its size — the two things a tar
-// entry needs before its bytes can be streamed.
-func openSized(path string) (io.ReadCloser, int64, error) {
+// openTransient opens path for reading, reports its size — the two things a tar
+// entry needs before its bytes can be streamed — and UNLINKS it immediately.
+//
+// The unlink is the point. The open file description keeps every byte readable
+// through the returned handle for as long as the caller streams it, while the
+// name is gone from the directory the moment this returns: nothing can open the
+// scratch snapshot afterward, and the kernel reclaims its blocks when the last
+// handle closes even if this process dies mid-export. A file the exporter alone
+// can read, for exactly as long as it is reading it, is a stronger statement
+// than any mode bit.
+//
+// A failed unlink is not fatal — the file is still 0600, and the caller's
+// deferred remove still runs — so it is deliberately not reported.
+func openTransient(path string) (io.ReadCloser, int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, 0, err
@@ -201,6 +246,7 @@ func openSized(path string) (io.ReadCloser, int64, error) {
 		_ = f.Close()
 		return nil, 0, err
 	}
+	_ = os.Remove(path)
 	return f, info.Size(), nil
 }
 

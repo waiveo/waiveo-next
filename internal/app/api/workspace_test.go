@@ -60,14 +60,19 @@ func lightKDF() archive.KDFParams {
 	return archive.KDFParams{MemoryKiB: 8, Iterations: 1, Parallelism: 1}
 }
 
-// workspaceEnv is a testEnv plus the archive destination the export writes into.
+// workspaceEnv is a testEnv plus the archive destination the export writes into
+// and the workspace signing key it signs with — in SEPARATE directories, exactly
+// as the feeder wires them (security-model.md SEC-047). A test that shared one
+// directory could not notice key material leaking into the export output.
 type workspaceEnv struct {
 	*testEnv
 	archiveDir string
+	keyDir     string
+	key        *workspacekey.Key
 }
 
 // newWorkspaceEnv builds an env whose export operation is fully wired: a scratch
-// archive directory and a real workspace signing key in it.
+// archive directory, and a real workspace signing key in a directory of its own.
 func newWorkspaceEnv(t *testing.T) *workspaceEnv {
 	t.Helper()
 	st, err := store.Open(":memory:")
@@ -77,7 +82,8 @@ func newWorkspaceEnv(t *testing.T) *workspaceEnv {
 	t.Cleanup(func() { _ = st.Close() })
 
 	dir := t.TempDir()
-	key, err := workspacekey.LoadOrCreate(dir, func() string { return workspaceKeyID })
+	keyDir := t.TempDir()
+	key, err := workspacekey.LoadOrCreate(keyDir, func() string { return workspaceKeyID })
 	if err != nil {
 		t.Fatalf("workspacekey.LoadOrCreate: %v", err)
 	}
@@ -95,6 +101,8 @@ func newWorkspaceEnv(t *testing.T) *workspaceEnv {
 	return &workspaceEnv{
 		testEnv:    &testEnv{ts: ts, store: st, content: content, contentBase: testContentBase, auth: fixture, jobs: jobs},
 		archiveDir: dir,
+		keyDir:     keyDir,
+		key:        key,
 	}
 }
 
@@ -152,7 +160,7 @@ func (e *workspaceEnv) openArchive(t *testing.T, jobID string) (archive.Manifest
 		t.Fatalf("the export reported success but wrote no container at %s: %v", path, err)
 	}
 	t.Cleanup(func() { _ = f.Close() })
-	key, err := workspacekey.LoadOrCreate(e.archiveDir, func() string { return workspaceKeyID })
+	key, err := workspacekey.LoadOrCreate(e.keyDir, func() string { return workspaceKeyID })
 	if err != nil {
 		t.Fatalf("reload workspace signing key: %v", err)
 	}
@@ -262,7 +270,7 @@ func TestExportWorkspaceWritesReadableArchiveContainer(t *testing.T) {
 		t.Fatal("the export wrote an EMPTY container; API-121 requires exactly the container archive/1 defines")
 	}
 
-	key, err := workspacekey.LoadOrCreate(e.archiveDir, func() string { return workspaceKeyID })
+	key, err := workspacekey.LoadOrCreate(e.keyDir, func() string { return workspaceKeyID })
 	if err != nil {
 		t.Fatalf("reload workspace signing key: %v", err)
 	}
@@ -384,6 +392,98 @@ func TestExportWorkspaceRejectsMissingPassphrase(t *testing.T) {
 			}
 			assertProblem(t, resp, raw, "VALIDATION_FAILED")
 		})
+	}
+}
+
+// TestExportWithADestroyedKeyFailsRatherThanReportingSuccess is the regression
+// for the worst outcome this operation can produce: a lie the operator acts on.
+//
+// SEC-121's destruction used to zero the workspace signing key IN PLACE while
+// leaving it wired into the running process. Every consumer tested the key's
+// LENGTH — which zeroing does not change — so the export signed with 64 zero
+// bytes, wrapped a data key of 32 zero bytes, wrote a complete container, and
+// reported the Job `succeeded`. The operator believes they hold a backup. No
+// restorer can ever open it. The window is every export between a workspace
+// delete and a process restart, because the key is loaded once at boot.
+//
+// A failed export is recoverable. A successful one that produced an unreadable
+// artifact is not, because nobody goes looking.
+func TestExportWithADestroyedKeyFailsRatherThanReportingSuccess(t *testing.T) {
+	e := newWorkspaceEnv(t)
+	e.seedWorkspace(t)
+	who := e.auth.Credential()
+
+	// Exactly what the delete operation does to the key, in a process that keeps
+	// running and keeps holding this same value.
+	if err := e.key.Destroy(); err != nil {
+		t.Fatalf("Destroy the workspace signing key: %v", err)
+	}
+
+	resp, raw := e.postWorkspace(t, who, "export", map[string]any{"passphrase": testExportPassphrase})
+	job := acceptedJob(t, resp, raw)
+	e.runJobs()
+
+	done := e.polledJob(t, who, job.ID)
+	if done.State == "succeeded" {
+		t.Fatalf("export job reported %q with a destroyed signing key — the operator is being told they have a backup they do not have", done.State)
+	}
+	if len(done.Targets) != 1 {
+		t.Fatalf("targets = %d, want exactly 1", len(done.Targets))
+	}
+	if done.Targets[0].State != "failed" {
+		t.Errorf("target state = %q, want failed", done.Targets[0].State)
+	}
+
+	path := filepath.Join(e.archiveDir, "workspace-"+job.ID+".waiveo-archive")
+	if _, err := os.Stat(path); err == nil {
+		t.Errorf("a container was written at %s despite the signing key being destroyed; an artifact nobody can open must not be left where it can be mistaken for a backup", path)
+	}
+}
+
+// TestExportLeavesOnlyTheContainerInTheArchiveDirectory covers two things an
+// operator does with this directory: copies it, and backs it up.
+//
+//   - No KEY MATERIAL. The signing key's private half and the workspace data key
+//     live in their own directory (SEC-047). They once shared this one, which
+//     meant copying "the exports" copied the private key that signs them and the
+//     cleartext data key that wraps the workspace's secrets — against precisely
+//     the attacker the container's encryption assumes cannot have them.
+//   - No SCRATCH SNAPSHOT. The relational snapshot an export streams is a
+//     cleartext copy of the entire store. It must not outlive the export that
+//     needed it.
+func TestExportLeavesOnlyTheContainerInTheArchiveDirectory(t *testing.T) {
+	e := newWorkspaceEnv(t)
+	e.seedWorkspace(t)
+	who := e.auth.Credential()
+
+	resp, raw := e.postWorkspace(t, who, "export", map[string]any{"passphrase": testExportPassphrase})
+	job := acceptedJob(t, resp, raw)
+	e.runJobs()
+	if got := e.polledJob(t, who, job.ID); got.State != "succeeded" {
+		t.Fatalf("export job state = %q, want succeeded (targets %+v)", got.State, got.Targets)
+	}
+
+	entries, err := os.ReadDir(e.archiveDir)
+	if err != nil {
+		t.Fatalf("read archive dir: %v", err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, en := range entries {
+		names = append(names, en.Name())
+	}
+	want := "workspace-" + job.ID + ".waiveo-archive"
+	if len(names) != 1 || names[0] != want {
+		t.Errorf("archive directory holds %v, want exactly [%s]", names, want)
+	}
+
+	// Stated positively as well, so this case fails loudly rather than by
+	// arithmetic if the naming above ever changes: the key material is where the
+	// key directory is, and nowhere else.
+	if stray := workspacekey.StrayKeyFiles(e.archiveDir); len(stray) != 0 {
+		t.Errorf("workspace key material %v is sitting in the archive directory", stray)
+	}
+	if stray := workspacekey.StrayKeyFiles(e.keyDir); len(stray) == 0 {
+		t.Error("the key directory holds no key material at all; the assertion above would pass vacuously")
 	}
 }
 
