@@ -112,6 +112,18 @@ func (srv *server) runAutomationExec(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusNotFound, "NOT_FOUND", "Not Found", "No automation exists with this identifier.")
 		return
 	}
+	// Running an automation begins by reading it, so it is scoped as a read: an
+	// automation outside the caller's visible set is answered exactly as an id
+	// that names nothing (scopeview.go).
+	view, verr := srv.scopeView(r)
+	if verr != nil {
+		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
+		return
+	}
+	if !view.canRead(parseFields(res.Body).ScopeNode) {
+		writeProblem(w, r, http.StatusNotFound, "NOT_FOUND", "Not Found", "No automation exists with this identifier.")
+		return
+	}
 
 	// The stored body was compile-gated on write, so Compile/ParseRule are expected
 	// to succeed here; a failure is an internal inconsistency, not a client error.
@@ -297,16 +309,26 @@ func (srv *server) bulkEnableExec(w http.ResponseWriter, r *http.Request, body [
 		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
 		return
 	}
-	inSubtree, err := srv.inSubtreeFn(r)
+	view, err := srv.scopeView(r)
 	if err != nil {
 		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
 		return
 	}
 
+	// API-110 extends the SAME selector convention a list read uses to a
+	// fleet-mutating operation's target predicate — so it inherits the same
+	// scoping. The target set is drawn from the rows this caller can see, and
+	// the selector narrows that set rather than reaching past it: a Job whose
+	// targets[] named automations the submitter may not read would enumerate
+	// them by id in its own response body (API-112), which is the list leak in
+	// another shape.
 	var targetIDs []string
 	for _, res := range rows {
 		f := parseFields(res.Body)
-		if sel.Matches(f.Labels, f.ScopeNode, inSubtree) {
+		if !view.canRead(f.ScopeNode) {
+			continue
+		}
+		if sel.Matches(f.Labels, f.ScopeNode, view.inSubtree) {
 			targetIDs = append(targetIDs, res.ID)
 		}
 	}

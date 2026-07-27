@@ -141,11 +141,25 @@ func (srv *server) listPackRows(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	view, err := srv.scopeView(r)
+	if err != nil {
+		srv.packProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error",
+			"An unexpected server error occurred.")
+		return
+	}
+
 	// ListPackRows is already entity_id-ascending; advance past the cursor position.
-	// entity_id is a ULID, so a byte comparison is the keyset order.
+	// entity_id is a ULID, so a byte comparison is the keyset order. The
+	// visible-set filter runs here, before apihttp.Page cuts the page, so a page
+	// of `limit` rows is genuinely `limit` rows — a pack's rows carry the
+	// universal envelope's own scope_node (MAN-052) and are scoped by it exactly
+	// as a first-party resource is.
 	window := make([]packRowWire, 0, len(rows))
 	for _, row := range rows {
 		if afterID != "" && row.EntityID <= afterID {
+			continue
+		}
+		if !view.canRead(row.ScopeNode) {
 			continue
 		}
 		window = append(window, packRowWire{row: row})
@@ -212,6 +226,9 @@ func (srv *server) getPackRow(w http.ResponseWriter, r *http.Request) {
 		srv.packRowNotFound(w, r)
 		return
 	}
+	if !srv.packRowVisible(w, r, row) {
+		return
+	}
 	body, err := packRowJSON(row)
 	if err != nil {
 		srv.packProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error",
@@ -220,6 +237,25 @@ func (srv *server) getPackRow(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("ETag", apihttp.ETag(row.Revision))
 	writeJSON(w, http.StatusOK, body)
+}
+
+// packRowVisible reports whether the request's principal may read row, WRITING
+// the refusal itself when it may not — the 404 an entity_id naming no row draws
+// (packRowNotFound), byte for byte, so a row outside the visible set is
+// indistinguishable from one that was never created (scopeview.go). It also
+// writes the 500 on a failed tree read, so a caller has only one thing to check.
+func (srv *server) packRowVisible(w http.ResponseWriter, r *http.Request, row store.PackRow) bool {
+	view, err := srv.scopeView(r)
+	if err != nil {
+		srv.packProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error",
+			"An unexpected server error occurred.")
+		return false
+	}
+	if !view.canRead(row.ScopeNode) {
+		srv.packRowNotFound(w, r)
+		return false
+	}
+	return true
 }
 
 // ---- patch ----------------------------------------------------------------
@@ -239,6 +275,12 @@ func (srv *server) patchPackRow(w http.ResponseWriter, r *http.Request) {
 	}
 	if !found {
 		srv.packRowNotFound(w, r)
+		return
+	}
+	// Ahead of the If-Match precondition, so an out-of-reach row draws the same
+	// 404 whatever ETag was presented (api.go's patch applies the same ordering
+	// for the same reason).
+	if !srv.packRowVisible(w, r, current) {
 		return
 	}
 
@@ -309,6 +351,10 @@ func (srv *server) deletePackRow(w http.ResponseWriter, r *http.Request) {
 	}
 	if !found {
 		srv.packRowNotFound(w, r)
+		return
+	}
+	// Same ordering as patchPackRow: unaddressable before unwritable.
+	if !srv.packRowVisible(w, r, current) {
 		return
 	}
 

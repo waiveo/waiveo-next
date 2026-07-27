@@ -149,18 +149,26 @@ func listRegistryPage[T any](
 		afterID = lastID
 	}
 
-	inSubtree, err := srv.inSubtreeFn(r)
+	view, err := srv.scopeView(r)
 	if err != nil {
 		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
 		return
 	}
 
+	// The visible-set filter, then the selector, both BEFORE apihttp.Page cuts
+	// the page — the same ordering (and for the same two reasons: honest page
+	// sizes, and a selector that can only narrow) the generic resource list
+	// applies. A device is a projection of what a relay adopted, but it is
+	// placed at a scope node like any other resource, so it is scoped like one.
 	window := make([]T, 0, len(rows))
 	for _, row := range rows {
 		if afterID != "" && idOf(row) <= afterID {
 			continue
 		}
-		if !sel.Matches(labelsOf(row), placementOf(row), inSubtree) {
+		if !view.canRead(placementOf(row)) {
+			continue
+		}
+		if !sel.Matches(labelsOf(row), placementOf(row), view.inSubtree) {
 			continue
 		}
 		window = append(window, row)
@@ -216,6 +224,20 @@ func (srv *server) sendEntityCommandExec(w http.ResponseWriter, r *http.Request,
 		entity, found = srv.devices.Entity(id)
 	}
 	if !found {
+		writeProblem(w, r, http.StatusNotFound, "NOT_FOUND", "Not Found", "No entity exists with this identifier.")
+		return
+	}
+	// Resolving an entity is a READ, so it is scoped like one: an entity placed
+	// outside the caller's visible set is answered exactly as an entity nobody
+	// adopted — the same 404, the same detail. Commanding a device you are not
+	// entitled to see would otherwise be reachable by id alone, and the refusal
+	// itself would confirm the entity exists (scopeview.go).
+	view, viewErr := srv.scopeView(r)
+	if viewErr != nil {
+		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
+		return
+	}
+	if !view.canRead(entity.ScopeNode) {
 		writeProblem(w, r, http.StatusNotFound, "NOT_FOUND", "Not Found", "No entity exists with this identifier.")
 		return
 	}

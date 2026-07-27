@@ -438,8 +438,28 @@ func (rs *resource) get(w http.ResponseWriter, r *http.Request) {
 		rs.notFound(w, r)
 		return
 	}
+	if visible, err := rs.readable(r, res.Body); err != nil {
+		rs.internal(w, r, err)
+		return
+	} else if !visible {
+		rs.notFound(w, r)
+		return
+	}
 	w.Header().Set("ETag", apihttp.ETag(res.Revision))
 	writeJSON(w, http.StatusOK, res.Body)
+}
+
+// readable reports whether the request's principal may read a row of this kind
+// with the given stored body — i.e. whether the row's scope-node placement is
+// in the caller's visible set (scopeview.go). A false answer means the caller
+// MUST be answered exactly as if the row did not exist (rs.notFound), never
+// with a 403 that would confirm it does.
+func (rs *resource) readable(r *http.Request, body []byte) (bool, error) {
+	view, err := rs.srv.scopeView(r)
+	if err != nil {
+		return false, err
+	}
+	return view.canRead(rs.cfg.placement(parseFields(body))), nil
 }
 
 // ---- list -----------------------------------------------------------------
@@ -479,21 +499,40 @@ func (rs *resource) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	inSubtree, err := rs.srv.inSubtreeFn(r)
+	view, err := rs.srv.scopeView(r)
 	if err != nil {
 		rs.internal(w, r, err)
 		return
 	}
 
-	// Keyset advance past the cursor position, then selector filter. ULIDs sort
-	// lexicographically in id order, so a byte comparison is the keyset order.
+	// Keyset advance past the cursor position, then the visible-set filter, then
+	// the selector. ULIDs sort lexicographically in id order, so a byte
+	// comparison is the keyset order.
+	//
+	// BOTH filters run here, BEFORE apihttp.Page cuts the page — never after.
+	// That ordering is what keeps a page of `limit` rows actually `limit` rows:
+	// filtering a page after the keyset window was chosen would silently return
+	// fewer than asked for whenever an out-of-reach or unselected row happened
+	// to fall inside it, and would leak the count of the rows removed. Filtering
+	// first means the window Page cuts from already contains only rows this
+	// caller may see, so a short page means the collection is genuinely
+	// exhausted (API-032/034).
+	//
+	// The visible-set test precedes the selector, which is what makes the
+	// selector a pure NARROWING of the visible set (events/1 EVT-121's rule for
+	// the same grammar): the two are ANDed, and an intersection can never widen.
+	// A selector naming an out-of-reach node simply matches no visible row and
+	// yields an empty page rather than an error (EVT-122).
 	window := make([]json.RawMessage, 0, len(rows))
 	for _, res := range rows {
 		if afterID != "" && res.ID <= afterID {
 			continue
 		}
 		f := parseFields(res.Body)
-		if !sel.Matches(rs.cfg.selLabels(f), rs.cfg.placement(f), inSubtree) {
+		if !view.canRead(rs.cfg.placement(f)) {
+			continue
+		}
+		if !sel.Matches(rs.cfg.selLabels(f), rs.cfg.placement(f), view.inSubtree) {
 			continue
 		}
 		window = append(window, res.Body)
@@ -519,6 +558,18 @@ func (rs *resource) patch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !found {
+		rs.notFound(w, r)
+		return
+	}
+	// A row outside the caller's visible set is unaddressable, not merely
+	// unwritable: the check sits AHEAD of the If-Match precondition so an
+	// out-of-reach id draws the same 404 whatever ETag was (or was not)
+	// presented. A 428 IF_MATCH_REQUIRED here would confirm the row exists just
+	// as surely as a 403 would (scopeview.go).
+	if visible, err := rs.readable(r, current.Body); err != nil {
+		rs.internal(w, r, err)
+		return
+	} else if !visible {
 		rs.notFound(w, r)
 		return
 	}
@@ -572,6 +623,15 @@ func (rs *resource) delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !found {
+		rs.notFound(w, r)
+		return
+	}
+	// Same ordering as patch: unaddressable before unwritable, so an
+	// out-of-reach id is a 404 regardless of the presented ETag.
+	if visible, err := rs.readable(r, current.Body); err != nil {
+		rs.internal(w, r, err)
+		return
+	} else if !visible {
 		rs.notFound(w, r)
 		return
 	}
@@ -631,28 +691,6 @@ func (rs *resource) refsFrom(rows []store.Resource) []apihttp.ExternalRef {
 		})
 	}
 	return refs
-}
-
-// inSubtreeFn builds the scope-subtree predicate a selector's `scope_node
-// subtree` term consults: whether node lies strictly below ancestor in the
-// current scope-node tree. The tree is read fresh per list (POC).
-func (srv *server) inSubtreeFn(r *http.Request) (func(ancestor, node string) bool, error) {
-	nodes, _, _, _, err := srv.store.DesiredStateRows(r.Context())
-	if err != nil {
-		return nil, err
-	}
-	tree, _ := datamodel.BuildScopeTree(nodes)
-	return func(ancestor, node string) bool {
-		if ancestor == node {
-			return false
-		}
-		for _, id := range tree.AncestorChain(node) {
-			if id == ancestor {
-				return true
-			}
-		}
-		return false
-	}, nil
 }
 
 // mergedBody shallow-merges a patch over the current body — the EFFECTIVE

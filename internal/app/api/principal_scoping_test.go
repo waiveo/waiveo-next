@@ -63,8 +63,12 @@ func newTwoPrincipalEnv(t *testing.T) *twoPrincipalEnv {
 	}
 }
 
-// as drives one request as the named principal.
-func (e *twoPrincipalEnv) as(t *testing.T, who authtest.Credential, method, path string, body []byte, headers map[string]string) (*http.Response, []byte) {
+// as drives one request as the named principal, rather than as the env's own
+// seeding identity (testEnv.do). It hangs off testEnv so every multi-principal
+// fixture in this package — this file's two root-bound callers and
+// scope_visibility_test.go's scope-bound ones — drives requests through one
+// helper and no test hand-rolls credential attachment.
+func (e *testEnv) as(t *testing.T, who authtest.Credential, method, path string, body []byte, headers map[string]string) (*http.Response, []byte) {
 	t.Helper()
 	var rdr io.Reader
 	if body != nil {

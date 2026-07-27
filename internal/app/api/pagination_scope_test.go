@@ -10,27 +10,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/maaxton/waiveo-next/internal/app/auth/authtest"
 	"github.com/maaxton/waiveo-next/internal/app/store"
+	"github.com/maaxton/waiveo-next/internal/feeder/origin"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 )
-
-// playlistsScopeTestConfig is a SECOND resource kind mounted through the very
-// same generic mount()/list() plumbing scope-nodes uses — the shape a follow-up
-// task adds for the scheduling-core resources. It exists only so this test can
-// drive two resource kinds through the one shared list() handler and prove a
-// cursor minted by one is rejected by the other (nothing else in the api
-// package's tests mounts a second kind, which is why the cross-resource cursor
-// leak went uncaught).
-func playlistsScopeTestConfig() resourceConfig {
-	return resourceConfig{
-		kind:         store.KindPlaylist,
-		path:         "playlists",
-		resourceType: "playlists",
-		selLabels:    func(f resourceFields) map[string]string { return f.Labels },
-		placement:    func(f resourceFields) string { return f.ScopeNode },
-		extScope:     func(f resourceFields) string { return f.ScopeNode },
-	}
-}
 
 // TestListCursorScopedPerResource pins API-033/035 across the generic list()
 // handler: a keyset cursor a list mints is bound to the resource type that
@@ -40,6 +24,16 @@ func playlistsScopeTestConfig() resourceConfig {
 // collection. Before the fix, list() hardcoded the cursor scope to "" for every
 // kind, so a scope-nodes cursor was silently accepted as a valid position by
 // the playlists list.
+//
+// It drives the REAL mux (New), not a hand-mounted subset: two resource
+// families going through one shared list() handler is the whole point of the
+// case, and New already mounts both. Driving the real mux also means driving it
+// AUTHENTICATED — every list is now filtered to the caller's visible scope-node
+// set, so a list mounted without the auth middleware would return an empty page
+// (no principal, no bindings, nothing visible) and this case could not observe a
+// cursor at all. The fixture principal is bound at the workspace root, which
+// inherits to every node, so nothing here is filtered and the case still isolates
+// exactly one variable: which resource type minted the cursor.
 func TestListCursorScopedPerResource(t *testing.T) {
 	st, err := store.Open(":memory:")
 	if err != nil {
@@ -49,6 +43,12 @@ func TestListCursorScopedPerResource(t *testing.T) {
 
 	clock := func() int64 { return int64(1_700_000_000_000) }
 	idem := apihttp.NewIdempotencyStore(clock, 0)
+
+	fixture, err := authtest.New(authtest.Config{NowMs: clock})
+	if err != nil {
+		t.Fatalf("authtest.New: %v", err)
+	}
+	t.Cleanup(fixture.Close)
 
 	// A resource's id is exclusively server-assigned (rejectClientSuppliedID) —
 	// so the ...B/...C keyset ordering this test depends on is pinned through
@@ -64,11 +64,7 @@ func TestListCursorScopedPerResource(t *testing.T) {
 		next++
 		return id
 	}
-	srv := &server{store: st, idem: idem, nowMs: clock, newID: newID}
-	mux := http.NewServeMux()
-	srv.mount(mux, scopeNodesConfig())
-	srv.mount(mux, playlistsScopeTestConfig())
-	ts := httptest.NewServer(apihttp.WithTraceID(mux))
+	ts := httptest.NewServer(New(st, idem, clock, newID, origin.New(), "https://content.example", fixture.Auth))
 	t.Cleanup(ts.Close)
 
 	do := func(method, path string) (*http.Response, []byte) {
@@ -77,6 +73,7 @@ func TestListCursorScopedPerResource(t *testing.T) {
 		if err != nil {
 			t.Fatalf("new request: %v", err)
 		}
+		fixture.Authorize(req)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("do %s %s: %v", method, path, err)
@@ -95,6 +92,7 @@ func TestListCursorScopedPerResource(t *testing.T) {
 		if err != nil {
 			t.Fatalf("new request: %v", err)
 		}
+		fixture.Authorize(req)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("post %s: %v", path, err)
