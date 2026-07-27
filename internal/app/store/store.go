@@ -260,6 +260,17 @@ func Open(dsn string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: migrate jobs: %w", err)
 	}
+	// The events/1 durable event log (events + event_log_meta) is likewise its
+	// own subsystem with its own reader/writer (eventlog.go): an event is an
+	// immutable record, never updated after it is written, carrying no revision
+	// and no place in the desired-state projection. It rides this store — rather
+	// than a database of its own — so a box has ONE file to back up and one to
+	// restore, and so the audit trail cannot be separated from the authored rows
+	// it describes.
+	if _, err := db.Exec(eventsSchema); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("store: migrate events: %w", err)
+	}
 	for _, k := range allKinds {
 		if _, err := db.Exec(fmt.Sprintf(resourceTableDDL, string(k))); err != nil {
 			_ = db.Close()

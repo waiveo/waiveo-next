@@ -125,6 +125,20 @@ func DefaultRetentionPolicy() RetentionPolicy {
 	}
 }
 
+// NewRetentionPolicy builds a policy from an explicit class table plus the
+// answer for a class it does not name. DefaultRetentionPolicy is the shipping
+// configuration; this is the constructor a deployment tuning the numbers uses,
+// and the one a test uses to reach a boundary (a row cap, say) without writing
+// thousands of rows to get there. The table is copied, so a later mutation of
+// the caller's map cannot change a policy already in use.
+func NewRetentionPolicy(classes map[string]ClassRetention, unknown ClassRetention) RetentionPolicy {
+	own := make(map[string]ClassRetention, len(classes))
+	for k, v := range classes {
+		own[k] = v
+	}
+	return RetentionPolicy{classes: own, unknown: unknown}
+}
+
 // For returns the retention configured for class, falling back to the
 // unrecognized-class answer (see DefaultRetentionPolicy) for a class the policy
 // does not name.
@@ -142,10 +156,11 @@ func (p RetentionPolicy) Known(class string) bool {
 	return ok
 }
 
-// Classes returns every explicitly configured retention class, sorted — the set
-// a persisted log iterates when it enforces windows and row caps, so the sweep
-// is over the policy's own vocabulary rather than over whatever class strings
-// happen to be sitting in storage.
+// Classes returns every explicitly configured retention class, sorted — the
+// policy's declared vocabulary. A persisted log's own sweep runs over the
+// classes actually present in storage instead, so a record carrying a class this
+// build does not recognize is still swept (under the unrecognized-class answer)
+// rather than retained forever because nothing thought to look for it.
 func (p RetentionPolicy) Classes() []string {
 	out := make([]string, 0, len(p.classes))
 	for c := range p.classes {

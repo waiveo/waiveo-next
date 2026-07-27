@@ -347,6 +347,18 @@ func TestMigrateRowIDsUnsticksAPreRuleStore(t *testing.T) {
 			preRuleSeedIDs["01J8Z4DEM0SCREENF1RSTPH0TN"], 1, 1, `{}`); err != nil {
 			t.Fatalf("insert pack row: %v", err)
 		}
+		// A durable audit record filed at the legacy screen node. Its scope_node
+		// is the ONLY input to a subscriber's visible set (events/1 EVT-120), so
+		// one left pointing at a node the migration renamed would still be stored
+		// and would match nobody — a permanent audit record (SEC-150) no operator
+		// could ever read again.
+		if _, err := db.Exec(
+			`INSERT INTO events (id, schema, ts, scope_node, trace_id, cost_class, retention_class, origin, origin_principal, payload)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			"01J9DDDDDDDDDDDDDDDDDDDDDD", "audit.event", 1, preRuleSeedIDs["01J8Z4DEM0SCREENF1RSTPH0TN"],
+			"01J9EEEEEEEEEEEEEEEEEEEEEE", "audit", "audit-long", "internal", "", `{}`); err != nil {
+			t.Fatalf("insert event: %v", err)
+		}
 	})
 
 	s := openStoreAt(t, dsn)
@@ -443,7 +455,7 @@ func TestMigrateRowIDsUnsticksAPreRuleStore(t *testing.T) {
 		t.Fatalf("generation after migration + one create = %d, want %d", generation, wantGeneration+2)
 	}
 
-	// The Job target and the pack row followed their rows.
+	// The Job target, the pack row and the durable event followed their rows.
 	withRawDB(t, dsn, func(db *sql.DB) {
 		var targetID, targetScope, packScope string
 		if err := db.QueryRow(`SELECT target_id, scope_node FROM job_targets`).Scan(&targetID, &targetScope); err != nil {
@@ -460,6 +472,19 @@ func TestMigrateRowIDsUnsticksAPreRuleStore(t *testing.T) {
 		}
 		if packScope != "01J8Z4DEM0SCREENF1RSTPH0TN" {
 			t.Errorf("pack row scope_node = %q, want the migrated screen node id", packScope)
+		}
+		var eventID, eventScope, eventPayload string
+		if err := db.QueryRow(`SELECT id, scope_node, payload FROM events`).Scan(&eventID, &eventScope, &eventPayload); err != nil {
+			t.Fatalf("read event: %v", err)
+		}
+		if eventID != "01J9DDDDDDDDDDDDDDDDDDDDDD" {
+			t.Errorf("the audit record's own id must not be rewritten; got %q", eventID)
+		}
+		if eventScope != "01J8Z4DEM0SCREENF1RSTPH0TN" {
+			t.Errorf("audit record scope_node = %q, want the migrated screen node id — otherwise it matches no visible set (EVT-120)", eventScope)
+		}
+		if eventPayload != `{}` {
+			t.Errorf("the migration repairs identifiers, it does not edit a recorded fact; payload = %q", eventPayload)
 		}
 	})
 }

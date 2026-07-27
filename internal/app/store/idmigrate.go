@@ -332,11 +332,20 @@ func applyIDRewrites(ctx context.Context, tx *sql.Tx, plan []IDRewrite) error {
 	// rewritten here or a completed Job would report targets that no longer
 	// exist. pack_rows carries the scope node a pack's row is placed at. Neither
 	// stores an identifier anywhere but these columns.
+	//
+	// events carries the scope node its subject resource sat under (events/1
+	// EVT-012), which is the SOLE input to a subscriber's scope filtering
+	// (EVT-120). A record left pointing at a renamed node would still be stored
+	// but would match no principal's visible set — a durable audit record
+	// (SEC-150) that no operator can ever see again. Only the placement column is
+	// rewritten: the envelope's payload is the recorded fact itself, and this
+	// migration exists to repair identifiers, not to edit history.
 	for from, to := range mapping {
 		for _, stmt := range []string{
 			`UPDATE job_targets SET target_id = ? WHERE target_id = ?`,
 			`UPDATE job_targets SET scope_node = ? WHERE scope_node = ?`,
 			`UPDATE pack_rows SET scope_node = ? WHERE scope_node = ?`,
+			`UPDATE events SET scope_node = ? WHERE scope_node = ?`,
 		} {
 			if _, err := tx.ExecContext(ctx, stmt, to, from); err != nil {
 				return fmt.Errorf("store: canonicalize reference %q: %w", from, err)
