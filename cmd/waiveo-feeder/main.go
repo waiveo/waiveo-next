@@ -343,6 +343,18 @@ func main() {
 	)
 	mux.Handle("/relay/v1", relayConnSrv.Handler())
 
+	// Nudge every live relay connection when the desired-state generation
+	// advances (relay/1 REL-057): ALL generation advances — /api/v1 resource
+	// CRUD and declarative-pack install/uninstall/row-CRUD alike — commit
+	// through the store's one write-transaction choke point, so its
+	// post-commit hook is the single seam that catches every writer, not just
+	// the HTTP ones. NotifyGenerationAdvance is safe to over-call (it re-reads
+	// src.current and the nudge carries the generation, so a relay already at
+	// that generation skips the pull) and sends each nudge on its own
+	// goroutine, so an api write's latency is never coupled to the slowest
+	// relay connection.
+	st.OnCommit(relayConnSrv.NotifyGenerationAdvance)
+
 	cert, err := tls.X509KeyPair(id.TLSCertPEM(), id.TLSKeyPEM())
 	if err != nil {
 		log.Fatalf("waiveo-feeder: load TLS cert: %v", err)

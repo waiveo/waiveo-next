@@ -159,6 +159,16 @@ type Store struct {
 	db    *sql.DB
 	mu    sync.RWMutex
 	nowMs func() int64
+
+	// onCommit (OnCommit) runs after every COMMITTED write transaction —
+	// the single post-commit seam every generation advance rides, since
+	// every bumpGeneration call site (resource CRUD and pack
+	// install/uninstall/row-CRUD alike) commits through writeTx. Guarded by
+	// hookMu, and invoked AFTER writeTx releases the write lock, so a hook
+	// that re-reads the store (e.g. a snapshot provider taking the read
+	// lock) can never deadlock against the write path.
+	hookMu   sync.Mutex
+	onCommit func()
 }
 
 // schema creates the scope-node table, one table per scheduling-core kind, and
@@ -293,10 +303,41 @@ func bumpGeneration(ctx context.Context, tx *sql.Tx) error {
 	return nil
 }
 
+// OnCommit registers fn to run after every committed write transaction — the
+// feeder's one seam for nudging live relay connections when a generation
+// advances (relay/1 REL-057: the hook is safe to over-call; a nudge for an
+// unchanged generation is a no-op at the relay). fn runs on the writing
+// goroutine AFTER the write lock is released, so it may re-read the store;
+// anything slow (or coupled to a peer's socket) must be made async by the
+// hook itself. Passing nil clears the hook. Intended to be set once at
+// startup, before the listener accepts writes; guarded so a concurrent write
+// observes either the old or the new hook, never a torn value.
+func (s *Store) OnCommit(fn func()) {
+	s.hookMu.Lock()
+	s.onCommit = fn
+	s.hookMu.Unlock()
+}
+
 // writeTx runs fn inside a serialized, immediate transaction. On any error from
 // fn the transaction rolls back (nothing persisted, generation unchanged); only
-// a clean fn commits.
+// a clean fn commits — and only a commit fires the OnCommit hook, after the
+// write lock is released (a rolled-back write nudges nobody).
 func (s *Store) writeTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
+	if err := s.runWriteTx(ctx, fn); err != nil {
+		return err
+	}
+	s.hookMu.Lock()
+	hook := s.onCommit
+	s.hookMu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return nil
+}
+
+// runWriteTx is writeTx's locked transactional body, split out so the
+// post-commit hook above runs outside the write lock.
+func (s *Store) runWriteTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)

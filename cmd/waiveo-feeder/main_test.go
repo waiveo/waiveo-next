@@ -3,17 +3,28 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/maaxton/waiveo-next/internal/app/api"
 	"github.com/maaxton/waiveo-next/internal/app/store"
+	"github.com/maaxton/waiveo-next/internal/feeder/enroll"
 	"github.com/maaxton/waiveo-next/internal/feeder/grant"
 	"github.com/maaxton/waiveo-next/internal/feeder/origin"
+	"github.com/maaxton/waiveo-next/internal/feeder/relayconn"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
+	"github.com/maaxton/waiveo-next/internal/relay/desiredstate"
+	relayenroll "github.com/maaxton/waiveo-next/internal/relay/enroll"
+	"github.com/maaxton/waiveo-next/internal/relay/hello"
+	"github.com/maaxton/waiveo-next/internal/relay/identity"
+	relayclient "github.com/maaxton/waiveo-next/internal/relay/relayconn"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/signhash"
 	"github.com/maaxton/waiveo-next/internal/shared/ulid"
@@ -239,6 +250,179 @@ func doFeederReq(t *testing.T, ts *httptest.Server, method, path string, body []
 		t.Fatalf("read body: %v", err)
 	}
 	return resp, raw
+}
+
+// TestAPIWriteNudgesConnectedRelayEndToEnd is the authoring loop's live half
+// on the persistent transport, all in-process and with both sides real: an
+// api/1 write commits through the store, the store's post-commit hook (main
+// wires st.OnCommit(relayConnSrv.NotifyGenerationAdvance)) nudges the live
+// /relay/v1 connection with state.changed (REL-057), the relay's nudge
+// handler answers with its own state.pull, and the pulled snapshot verifies
+// + applies + persists at the advanced generation — write → nudge → pull →
+// applied, no poll ticker anywhere.
+func TestAPIWriteNudgesConnectedRelayEndToEnd(t *testing.T) {
+	ctx := context.Background()
+
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	img := placeholderImage()
+	if err := st.SeedDemo(ctx, signhash.ContentID(img)); err != nil {
+		t.Fatalf("SeedDemo: %v", err)
+	}
+
+	id, err := signing.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("signing.LoadOrCreate: %v", err)
+	}
+
+	// The desired-state source + enrollment + /relay/v1 servers, wired exactly
+	// as main wires them (one mux, one mTLS listener, the store's post-commit
+	// hook nudging the connection server).
+	src := &desiredStateSource{
+		store: st, items: []snapshot.CastItem{{Bytes: img}},
+		contentBaseURL: "https://192.0.2.12:7420", id: id,
+		grants: []wire.PairingGrant{grant.Mint()},
+	}
+	initialSnap, err := src.current()
+	if err != nil {
+		t.Fatalf("src.current: %v", err)
+	}
+	enrollSrv, err := enroll.NewServer(id, initialSnap)
+	if err != nil {
+		t.Fatalf("enroll.NewServer: %v", err)
+	}
+	connSrv := relayconn.New(
+		src.current,
+		enrollSrv.RelayEnrollmentKey,
+		enrollSrv.IsRevoked,
+		firstPhotonSite,
+		hello.AppPeerImplementedMinors(1, 1),
+		firstPhotonRecognizedFeatures,
+	)
+	mux := http.NewServeMux()
+	enrollSrv.Register(mux)
+	mux.Handle("/relay/v1", connSrv.Handler())
+	ts := httptest.NewUnstartedServer(mux)
+	ts.TLS = &tls.Config{
+		ClientAuth: tls.VerifyClientCertIfGiven,
+		ClientCAs:  enrollSrv.ClientCAPool(),
+		MinVersion: tls.VersionTLS13,
+	}
+	ts.StartTLS()
+	t.Cleanup(ts.Close)
+
+	// The seam under test: every committed write nudges every live connection.
+	st.OnCommit(connSrv.NotifyGenerationAdvance)
+
+	// A real enrolled relay on one persistent connection, whose nudge handler
+	// pulls + verifies + applies (the relay binary's own shape).
+	relayStore, err := identity.Open(filepath.Join(t.TempDir(), "relay.db"))
+	if err != nil {
+		t.Fatalf("identity.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = relayStore.Close() })
+	if err := relayenroll.Run(ts.URL, relayStore); err != nil {
+		t.Fatalf("relayenroll.Run: %v", err)
+	}
+
+	appliedCh := make(chan desiredstate.Applied, 4)
+	errCh := make(chan error, 4)
+	var clientMu sync.Mutex
+	var clientRef *relayclient.Client
+	onGeneration := func(int64) {
+		clientMu.Lock()
+		c := clientRef
+		clientMu.Unlock()
+		since, _, ok, _ := relayStore.LastAppliedGeneration()
+		var sincePtr *int64
+		if ok {
+			sincePtr = &since
+		}
+		reply, err := c.Pull("trace-nudge-e2e", sincePtr)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		if reply.Type != wire.FrameTypeStateSnapshot {
+			return // already converged (state.unchanged) — nothing to apply
+		}
+		body, raw, err := relayclient.SnapshotFromFrame(reply)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		applied, err := desiredstate.VerifyAndApply(relayStore, body, raw)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		appliedCh <- applied
+	}
+	client, err := relayclient.Dial(relayclient.Config{
+		URL: ts.URL, Store: relayStore,
+		Declaration: hello.Declaration{
+			ProtocolVersion: "1.0",
+			Features:        firstPhotonRecognizedFeatures,
+			ClockState:      hello.ClockState{State: "untrusted", Source: "cold_boot"},
+		},
+		OnGenerationAdvance: onGeneration,
+	})
+	if err != nil {
+		t.Fatalf("relayclient.Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	clientMu.Lock()
+	clientRef = client
+	clientMu.Unlock()
+
+	// Boot pull, so the relay holds the pre-write generation.
+	reply, err := client.Pull("trace-boot-e2e", nil)
+	if err != nil {
+		t.Fatalf("boot Pull: %v", err)
+	}
+	body, raw, err := relayclient.SnapshotFromFrame(reply)
+	if err != nil {
+		t.Fatalf("SnapshotFromFrame: %v", err)
+	}
+	booted, err := desiredstate.VerifyAndApply(relayStore, body, raw)
+	if err != nil {
+		t.Fatalf("boot VerifyAndApply: %v", err)
+	}
+
+	// The authoring write, over the REAL api handler (the same surface main
+	// mounts): PATCH the seeded content daypart under If-Match.
+	clock := func() int64 { return int64(1_700_000_000_000) }
+	apiTS := httptest.NewServer(api.New(st, apihttp.NewIdempotencyStore(clock, 0), clock, ulid.New, origin.New(), "https://192.0.2.12:7420"))
+	t.Cleanup(apiTS.Close)
+	getResp, _ := doFeederReq(t, apiTS, http.MethodGet, "/api/v1/dayparts/"+feederE2EContentDaypartID, nil, nil)
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET content daypart: status %d", getResp.StatusCode)
+	}
+	patchResp, rawBody := doFeederReq(t, apiTS, http.MethodPatch, "/api/v1/dayparts/"+feederE2EContentDaypartID,
+		[]byte(`{"display_power":"blank"}`), map[string]string{"If-Match": getResp.Header.Get("ETag")})
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH daypart: status %d, body %s", patchResp.StatusCode, rawBody)
+	}
+
+	// write → nudge → pull → applied: the relay converges on the advanced
+	// generation without any poll loop.
+	select {
+	case applied := <-appliedCh:
+		if applied.Generation <= booted.Generation {
+			t.Fatalf("nudge applied generation %d, want > the booted %d", applied.Generation, booted.Generation)
+		}
+		if gen, _, ok, err := relayStore.LastAppliedGeneration(); err != nil || !ok || gen != applied.Generation {
+			t.Fatalf("persisted last-applied = (%d,%v,%v), want (%d,true,nil)", gen, ok, err, applied.Generation)
+		}
+	case err := <-errCh:
+		t.Fatalf("nudge-triggered pull/apply failed: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("no state.changed nudge reached the relay within 5s of the api write (OnCommit seam broken)")
+	}
 }
 
 // TestLoadConfigDemoCastDefaultAndOverride asserts WAIVEO_FEEDER_DEMO_CAST

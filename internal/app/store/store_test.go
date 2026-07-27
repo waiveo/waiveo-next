@@ -645,3 +645,50 @@ func padID(i int) string {
 	}
 	return string(buf)
 }
+
+// TestOnCommitHookFiresOnCommittedWritesOnly pins the post-commit seam the
+// feeder hangs its live-connection nudge on (relay/1 REL-057): the hook runs
+// exactly once per COMMITTED write, never for a rejected/rolled-back one, and
+// it runs OUTSIDE the store's write lock — a hook that re-reads the store
+// (exactly what the feeder's snapshot provider does) must not deadlock.
+func TestOnCommitHookFiresOnCommittedWritesOnly(t *testing.T) {
+	s := openMem(t)
+	ctx := context.Background()
+
+	var mu sync.Mutex
+	fired := 0
+	var genInHook int64
+	s.OnCommit(func() {
+		// Re-read the store from inside the hook: proves the hook runs after
+		// the write lock is released (a hook under the lock deadlocks here).
+		g, err := s.Generation(ctx)
+		if err != nil {
+			t.Errorf("Generation inside OnCommit hook: %v", err)
+		}
+		mu.Lock()
+		fired++
+		genInHook = g
+		mu.Unlock()
+	})
+
+	seedSiteScreen(t, s) // two committed writes
+	mu.Lock()
+	if fired != 2 {
+		t.Fatalf("hook fired %d time(s) after two committed writes, want 2", fired)
+	}
+	if genInHook != 2 {
+		t.Fatalf("generation observed inside the hook = %d, want the committed 2", genInHook)
+	}
+	mu.Unlock()
+
+	// A rejected write (a duplicate-id Create rolls the tx back, see
+	// TestCreateDuplicateIDIsValidationError) fires nothing.
+	if _, err := s.Create(ctx, store.KindScopeNode, mustJSON(t, siteNode())); err == nil {
+		t.Fatal("duplicate-id create was accepted, want validation failure")
+	}
+	mu.Lock()
+	if fired != 2 {
+		t.Fatalf("hook fired %d time(s) after a rolled-back write, want still 2 (no nudge for nothing)", fired)
+	}
+	mu.Unlock()
+}
