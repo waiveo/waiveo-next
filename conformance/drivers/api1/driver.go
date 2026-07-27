@@ -77,7 +77,7 @@ const conformanceEntity = "01J8Z3K4N5P6Q7R8S9T0V1SCRN"
 // Run loads the frozen api-1 corpus from disk and drives every convention
 // case against the live, HTTP-mounted api.New handler.
 func Run() report.Report {
-	rep := report.Report{Driver: "api1", Target: "internal/app/api (api.New), internal/app/store"}
+	rep := report.Report{Driver: "api1", Target: "internal/app/api (api.New), internal/app/store, internal/app/eventingest + internal/relay/telemetry (API-063's cross-component seam)"}
 
 	cases, err := LoadCorpus()
 	if err != nil {
@@ -94,7 +94,7 @@ func Run() report.Report {
 // comparison logic (never a re-implementation of it) reports FAIL against the
 // corrupted expectation.
 func RunCases(cases map[string]corpus.Case) report.Report {
-	rep := report.Report{Driver: "api1", Target: "internal/app/api (api.New), internal/app/store"}
+	rep := report.Report{Driver: "api1", Target: "internal/app/api (api.New), internal/app/store, internal/app/eventingest + internal/relay/telemetry (API-063's cross-component seam)"}
 	driveCases(&rep, cases)
 	return rep
 }
@@ -106,6 +106,7 @@ var drivenCaseIDs = []string{
 	"API-010", "API-013",
 	"API-022", "API-023", "API-032", "API-035", "API-044", "API-045", "API-101", "API-102",
 	"API-052", "API-053", "API-111", "API-121",
+	"API-063",
 }
 
 // pendingCaseIDs are api/1 cases frozen under conformance/corpora/api-1 that
@@ -172,6 +173,8 @@ func driveByShape(rep *report.Report, cases map[string]corpus.Case, short string
 		driveJob(rep, c)
 	case shapeWorkspaceJob:
 		driveWorkspaceJob(rep, c)
+	case shapeTracePropagation:
+		driveTracePropagation(rep, c)
 	default:
 		rep.Fail(c.CaseID, contract, "input block did not match any known api/1 convention shape")
 	}
@@ -192,6 +195,7 @@ const (
 	shapeIdempotency
 	shapeJob
 	shapeWorkspaceJob
+	shapeTracePropagation
 )
 
 // classifyShape inspects a case's own id and `input` block and reports which
@@ -206,6 +210,9 @@ func classifyShape(caseID string, input map[string]any) shape {
 		return shapeProblemNotFound
 	case "API-013-valid-multi-field-validation-problem":
 		return shapeProblemValidation
+	}
+	if _, ok := input["trace_propagation"]; ok {
+		return shapeTracePropagation
 	}
 	if _, ok := input["current_resource_state"]; ok {
 		return shapeConcurrency

@@ -84,7 +84,7 @@ deferral of a fuller data-subject-request workflow and has nothing to cover.
 | API-060 | `contracts/api-1.md#trace-id-propagation` | - | TBD-wave1 |
 | API-061 | `contracts/api-1.md#trace-id-propagation` | - | TBD-wave1 |
 | API-062 | `contracts/api-1.md#trace-id-propagation` | `API-010-valid-simple-problem` | covered |
-| API-063 | `contracts/api-1.md#trace-id-propagation` | - | TBD-wave1 |
+| API-063 | `contracts/api-1.md#trace-id-propagation` | `API-063-valid-trace-id-propagated-into-durable-event` | covered |
 | API-070 | `contracts/api-1.md#mcp-operation-tag-curation` | - | TBD-wave1 |
 | API-071 | `contracts/api-1.md#mcp-operation-tag-curation` | - | TBD-wave1 |
 | API-072 | `contracts/api-1.md#mcp-operation-tag-curation` | - | TBD-wave1 |

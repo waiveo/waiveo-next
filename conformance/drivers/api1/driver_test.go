@@ -8,10 +8,14 @@ import (
 	"github.com/maaxton/waiveo-next/conformance/drivers/report"
 )
 
-// expectedDriven is every api-1 corpus case this driver drives against the
-// LIVE, HTTP-mounted api.New handler — which is now every case in the frozen
-// corpus, none excepted. A case's presence here says nothing about whether it
-// currently PASSes: see expectedFailing.
+// expectedDriven is every api-1 corpus case this driver drives against live,
+// HTTP-mounted handlers — which is now every case in the frozen corpus, none
+// excepted. Almost all are driven against api.New; API-063 alone is driven
+// across the relay/app SEAM (a real telemetry.Buffer record pushed through the
+// live POST /telemetry/v1/push ingest), because that requirement's subject is
+// what survives BETWEEN components rather than what one handler returns. A
+// case's presence here says nothing about whether it currently PASSes: see
+// expectedFailing.
 var expectedDriven = []string{
 	"API-010-valid-simple-problem",
 	"API-013-valid-multi-field-validation-problem",
@@ -23,6 +27,7 @@ var expectedDriven = []string{
 	"API-045-invalid-selector-malformed",
 	"API-052-valid-idempotency-replay",
 	"API-053-invalid-idempotency-key-reused-different-body",
+	"API-063-valid-trace-id-propagated-into-durable-event",
 	"API-101-invalid-external-id-cross-kind-conflict",
 	"API-102-invalid-external-id-conflict",
 	"API-111-valid-bulk-enable-202-job",

@@ -1,0 +1,47 @@
+{
+  "case_id": "API-063-valid-trace-id-propagated-into-durable-event",
+  "contract": "api/1",
+  "req_ids": ["API-063"],
+  "description": "A request whose work reaches the relay produces a durable event carrying the SAME Trace-Id: the operation's trace rides the relay's telemetry record and reaches the delivered events/1 envelope unchanged, an entry the relay recorded on its own behalf reaches the envelope carrying the relay's own record-time trace, and a trace the app peer cannot use (malformed, or absent from an older relay) is replaced with a fresh ULID rather than either poisoning the envelope's type or costing the event its delivery.",
+  "input": {
+    "trace_propagation": {
+      "originating_operation": {
+        "description": "An operator action dispatched from the management door, carrying the Trace-Id api/1 API-060 assigned it.",
+        "trace_id": "01J8Z4K4N5P6Q7R8S9T0V1W3T0"
+      },
+      "relay_recorded_entry": {
+        "seq": 1,
+        "schema": "automation.run",
+        "payload": {
+          "rule_id": "01J8Z3K4N5P6Q7R8S9T0V1W2YC",
+          "rule_revision": 4,
+          "trigger_snapshot": { "kind": "state" },
+          "condition_results": [{ "passed": true }],
+          "action_outcomes": [{ "status": "ok" }],
+          "mode_disposition": "ran",
+          "misfire_caught": false
+        }
+      },
+      "unusable_incoming_trace_ids": {
+        "malformed": "7f3c1a9d4e2b6c8a0f5d3e1b7a9c2d4e",
+        "absent": ""
+      }
+    }
+  },
+  "expected": {
+    "originating_trace": {
+      "durable_event_delivered": true,
+      "durable_event_trace_id_equals_originating": true
+    },
+    "relay_originated_entry": {
+      "durable_event_delivered": true,
+      "durable_event_trace_id_equals_relay_record": true,
+      "durable_event_trace_id_freshly_minted_by_app": false
+    },
+    "unusable_incoming_trace": {
+      "durable_event_delivered": true,
+      "durable_event_trace_id_equals_incoming": false,
+      "durable_event_trace_id_is_ulid": true
+    }
+  }
+}

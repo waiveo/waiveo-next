@@ -12,6 +12,7 @@
       "API-045-invalid-selector-malformed",
       "API-052-valid-idempotency-replay",
       "API-053-invalid-idempotency-key-reused-different-body",
+      "API-063-valid-trace-id-propagated-into-durable-event",
       "API-101-invalid-external-id-cross-kind-conflict",
       "API-102-invalid-external-id-conflict",
       "API-111-valid-bulk-enable-202-job",
