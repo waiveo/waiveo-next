@@ -375,22 +375,182 @@ func parseSchemas(values []string) []string {
 	return out
 }
 
-// ServeHTTP handles an SSE subscribe (EVT-100–105, 130–144). It selects the SSE
-// binding from the request shape (EVT-001/100 — a WS upgrade is refused, the live
-// WS server is deferred), resolves the resume point (Last-Event-ID header over
-// resume_from query, EVT-102) via the Hub, streams the resolved backlog (a
-// leading event: gap for a retention_expired resume, EVT-104/140), then blocks
-// streaming each newly-appended event live until the client disconnects (request
-// context) or the server shuts down (Hub.Close) — a malformed or unrecorded
-// resume_from is a RESUME_FROM_INVALID Problem written before any event
-// (EVT-134).
+// subscribeRequest is one connection's subscribe parameters, however its own
+// binding carried them: SSE reads all three off the initial request (query
+// parameters plus the Last-Event-ID header, EVT-101/102), WS reads all three off
+// the `hello` frame (EVT-091). Naming them as one value is what lets the two
+// bindings share `open` below rather than each resolving a subscription its own
+// way.
+type subscribeRequest struct {
+	// selector is the raw, unparsed api/1 label selector (EVT-121).
+	selector string
+	// schemas is the optional registered-schema restriction (EVT-124), in
+	// whatever spelling the binding carried it — parseSchemas normalizes both.
+	schemas []string
+	// resumeFrom is the resume cursor (EVT-130–134); empty means a fresh
+	// subscribe.
+	resumeFrom string
+}
+
+// openError is a refusal raised before any event is delivered. It carries an
+// api/1 Problem's fields for the SSE binding, which answers with an HTTP
+// response, AND the events/1 taxonomy code the WS binding names in its close
+// reason (EVT-096) — one refusal, two renderings, so the two bindings cannot
+// disagree about WHICH conditions refuse a subscription.
+type openError struct {
+	status int
+	code   string
+	title  string
+	detail string
+}
+
+// open resolves one connection's subscription: the parsed selector, the delivery
+// filter, and the live registration plus its resume outcome — in that order, so
+// a refusal costs no registration and lands before any event is delivered
+// (EVT-134). Both bindings call it, which is what keeps "what may this
+// subscriber see, and where does its delivery start?" a single answer.
+func (s *server) open(ctx context.Context, principal auth.Principal, req subscribeRequest) (*Subscription, events.ResumeOutcome, events.Filter, *openError) {
+	selector, perr := apiselector.Parse(req.selector)
+	if perr != nil {
+		// API-045: a selector that does not PARSE is a statement about the
+		// REQUEST's syntax — 400 / SELECTOR_INVALID, naming the offending term.
+		// It reveals nothing about which scope nodes exist, which is exactly why
+		// it may be an error where an out-of-reach node may not (EVT-122).
+		return nil, events.ResumeOutcome{}, events.Filter{}, &openError{perr.Status, perr.Code, perr.Title, perr.Detail}
+	}
+
+	// The connection's delivery predicate (EVT-120–124), resolved from the
+	// authenticated principal's own bindings before any event is written.
+	filter, err := s.filterFor(ctx, principal, selector, parseSchemas(req.schemas))
+	if err != nil {
+		s.logf("eventsse: resolving the subscriber's visible set: %v (EVT-120)", err)
+		return nil, events.ResumeOutcome{}, events.Filter{}, &openError{
+			http.StatusInternalServerError, "INTERNAL", "Internal Server Error",
+			"The subscriber's visible scope-node set could not be resolved.",
+		}
+	}
+
+	// Register as a live subscriber AND snapshot the resume outcome + fresh
+	// watermark atomically (Hub.subscribe holds one lock across all three). This
+	// happens BEFORE the binding announces the stream (the SSE 200, the WS
+	// hello-ack), so an event the ingest appends concurrently with the handshake
+	// is never lost to the window between announcing the connection live and
+	// capturing the watermark (EVT-132/143).
+	sub, outcome, rerr := s.hub.subscribe(req.resumeFrom)
+	if rerr != nil {
+		// A malformed or never-recorded resume_from is refused before any event is
+		// delivered — never silently treated as a fresh subscribe (EVT-134).
+		return nil, events.ResumeOutcome{}, events.Filter{}, &openError{
+			http.StatusBadRequest, rerr.Code, "Bad Request",
+			"The resume_from was malformed or names an event the platform never recorded.",
+		}
+	}
+	return sub, outcome, filter, nil
+}
+
+// sink is one binding's frame writer — the ONLY thing that differs between WS
+// and SSE delivery. Everything above it (which events a subscriber may see, in
+// what order, and where a gap is marked) is shared, so the two bindings cannot
+// drift into two different streams over the same log.
+//
+// An implementation reports a write failure so the caller can classify it; a
+// sink that cannot fail (SSE, whose writes are best-effort into an already-
+// disconnecting response) returns nil.
+type sink interface {
+	// event writes one delivered envelope (EVT-093 / EVT-103).
+	event(env events.Envelope) error
+	// gap writes one loss marker (EVT-094 / EVT-104).
+	gap(g events.GapFrame) error
+	// flush pushes everything written so far to the client.
+	flush() error
+}
+
+// deliverBacklog writes the resolved backlog to sk and returns the subscriber's
+// resulting watermark — the highest id it has now CONSIDERED, which is what the
+// live loop's tail read starts strictly after.
+//
+// The backlog is scope-filtered exactly as the live tail is: a REPLAYED event
+// outside the subscriber's visible set is no more deliverable than a live one
+// (EVT-120/123 say "an event", not "a live event"). lastID advances over every
+// considered envelope, not only every delivered one, so a suppressed event is
+// never re-offered by the live loop's After(lastID) read.
+func (s *server) deliverBacklog(sk sink, sub *Subscription, outcome events.ResumeOutcome, resumeFrom string, filter events.Filter) (string, error) {
+	var lastID string
+	switch outcome.Result {
+	case events.ResumeResultFresh:
+		// Fresh: deliver only events from connection time forward (EVT-132), so
+		// watermark at the head snapshotted with registration — the live loop
+		// streams strictly after it.
+		lastID = sub.head
+	case events.ResumeResultResumed:
+		// Resume strictly after the requested id; if its backlog is empty (the id
+		// is the head), the watermark is that id itself.
+		lastID = resumeFrom
+	case events.ResumeResultGap:
+		// A retention_expired discontinuity: mark it before any event
+		// (EVT-094/104/140), then delivery resumes AT to_id inclusive via
+		// outcome.Events below.
+		if err := sk.gap(*outcome.Gap); err != nil {
+			return lastID, err
+		}
+		lastID = outcome.ResumeAtID
+	}
+
+	for _, env := range outcome.Events {
+		lastID = env.ID
+		if !filter.Allows(env) {
+			continue
+		}
+		if err := sk.event(env); err != nil {
+			return lastID, err
+		}
+	}
+	return lastID, sk.flush()
+}
+
+// drainOnce is one wake's worth of live delivery for a subscriber last at
+// lastID, returning its new watermark. If the subscriber lagged far enough
+// behind on a bounded log that undelivered events aged out before this wake,
+// Hub.drain returns a buffer_exceeded gap first — the mid-stream analogue of the
+// connect-time retention_expired gap, so a discontinuity is marked, never a
+// silent id jump (EVT-142/143).
+//
+// EVT-123's boundary is applied per event here, at delivery time — never
+// delegated to whatever the subscriber's own selector claimed.
+func (s *server) drainOnce(sk sink, lastID string, filter events.Filter) (string, error) {
+	gap, tail := s.hub.drain(lastID)
+	if gap != nil {
+		if err := sk.gap(*gap); err != nil {
+			return lastID, err
+		}
+		lastID = gap.ToID
+	}
+	for _, env := range tail {
+		lastID = env.ID
+		if !filter.Allows(env) {
+			continue
+		}
+		if err := sk.event(env); err != nil {
+			return lastID, err
+		}
+	}
+	return lastID, sk.flush()
+}
+
+// ServeHTTP selects the binding at the shared /events/v1 path from the request's
+// own shape (EVT-001/100) and serves it. Authentication (EVT-110–113) and the
+// revocation watch (EVT-114) are resolved once, ahead of that selection, so no
+// binding can be reached without them. A WS upgrade is refused: the live WS
+// server is deferred (Go stdlib has no websocket).
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	traceID := apihttp.TraceID(r)
 
 	// EVT-113: authentication is resolved BEFORE the binding is selected and
 	// before any header is written, "never with a WS/SSE-level frame, since no
 	// session has been established yet to frame one over". A refusal here is an
-	// ordinary api/1 Problem with events/1's AUTH_REQUIRED code.
+	// ordinary api/1 Problem with events/1's AUTH_REQUIRED code — and for the WS
+	// binding it lands before the upgrade, so there is no socket to frame over
+	// either.
 	principal, ok := s.authn.Authenticate(w, r, auth.EventsCodes)
 	if !ok {
 		return
@@ -407,12 +567,9 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Binding selection at the shared path (EVT-001/100): a WS upgrade selects the
-	// WS binding, which is deferred (Go stdlib has no websocket); only an
-	// Accept: text/event-stream request is served here.
 	switch events.SelectBinding(r.Header.Get("Upgrade") != "", r.Header.Get("Accept")) {
 	case events.BindingSSE:
-		// proceed
+		s.serveSSE(w, r, traceID, principal, revoked)
 	case events.BindingWS:
 		apihttp.WriteProblem(w, r, traceID, http.StatusNotImplemented, "WS_BINDING_DEFERRED", "The events/1 WebSocket binding is not yet served; connect over SSE (Accept: text/event-stream)")
 		return
@@ -420,9 +577,20 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		apihttp.WriteProblem(w, r, traceID, http.StatusNotAcceptable, "SSE_REQUIRED", "events/1 requires Accept: text/event-stream")
 		return
 	}
+}
 
+// serveSSE handles an SSE subscribe (EVT-100–105, 130–144): it resolves the
+// resume point (Last-Event-ID header over resume_from query, EVT-102) via the
+// Hub, streams the resolved backlog (a leading event: gap for a
+// retention_expired resume, EVT-104/140), then blocks streaming each
+// newly-appended event live until the client disconnects (request context) or
+// the server shuts down (Hub.Close) — a malformed or unrecorded resume_from is a
+// RESUME_FROM_INVALID Problem written before any event (EVT-134).
+func (s *server) serveSSE(w http.ResponseWriter, r *http.Request, traceID string, principal auth.Principal, revoked <-chan struct{}) {
 	// The SSE stream needs an incrementally flushable writer; without one there is
 	// no live push, so refuse rather than buffer the whole (unbounded) stream.
+	// This is a wiring fault in the server it is served from, not anything the
+	// client did — the taxonomy's unclassified server-side entry.
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		apihttp.WriteProblem(w, r, traceID, http.StatusInternalServerError, "STREAMING_UNSUPPORTED", "Streaming is not supported")
@@ -431,45 +599,21 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// EVT-101: `selector` and `schemas` arrive as query parameters on the initial
 	// request, since SSE offers no later client-to-server frame to carry them.
-	// Both are read BEFORE the subscriber is registered, so a rejected selector
-	// costs no registration and writes its Problem before any stream begins.
+	// EVT-102: a Last-Event-ID header (a browser-native reconnect) takes
+	// precedence over a resume_from query parameter.
 	query := r.URL.Query()
-	selector, perr := apiselector.Parse(query.Get("selector"))
-	if perr != nil {
-		// API-045: a selector that does not PARSE is a statement about the
-		// REQUEST's syntax — 400 / SELECTOR_INVALID, naming the offending term.
-		// It reveals nothing about which scope nodes exist, which is exactly why
-		// it may be an error where an out-of-reach node may not (EVT-122).
-		apihttp.WriteProblemExt(w, r, traceID, perr.Status, perr.Code, perr.Title, perr.Detail, nil)
-		return
-	}
-
-	// The connection's delivery predicate (EVT-120–124), resolved from the
-	// authenticated principal's own bindings before any event is written.
-	filter, err := s.filterFor(r.Context(), principal, selector, parseSchemas(query["schemas"]))
-	if err != nil {
-		s.logf("eventsse: resolving the subscriber's visible set: %v (EVT-120)", err)
-		apihttp.WriteProblem(w, r, traceID, http.StatusInternalServerError, "INTERNAL", "The subscriber's visible scope-node set could not be resolved")
-		return
-	}
-
-	// Resolve the resume point: a Last-Event-ID header (a browser-native reconnect)
-	// takes precedence over a resume_from query parameter (EVT-102).
 	resumeFrom := r.Header.Get("Last-Event-ID")
 	if resumeFrom == "" {
 		resumeFrom = query.Get("resume_from")
 	}
 
-	// Register as a live subscriber AND snapshot the resume outcome + fresh
-	// watermark atomically (Hub.subscribe holds one lock across all three). This
-	// happens BEFORE the 200/headers are written, so an event the ingest appends
-	// concurrently with the handshake is never lost to the window between
-	// announcing the connection live and capturing the watermark (EVT-132/143).
-	sub, outcome, rerr := s.hub.subscribe(resumeFrom)
-	if rerr != nil {
-		// A malformed or never-recorded resume_from is refused before any event is
-		// delivered — never silently treated as a fresh subscribe (EVT-134).
-		apihttp.WriteProblem(w, r, traceID, http.StatusBadRequest, rerr.Code, "The resume_from was malformed or names an event the platform never recorded")
+	sub, outcome, filter, oerr := s.open(r.Context(), principal, subscribeRequest{
+		selector:   query.Get("selector"),
+		schemas:    query["schemas"],
+		resumeFrom: resumeFrom,
+	})
+	if oerr != nil {
+		apihttp.WriteProblemExt(w, r, traceID, oerr.status, oerr.code, oerr.title, oerr.detail, nil)
 		return
 	}
 	defer sub.close()
@@ -479,42 +623,11 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 
-	// lastID tracks the highest id already delivered to this subscriber, so the
-	// live loop's after(lastID) yields exactly the not-yet-seen tail (gap-free,
+	// lastID tracks the highest id already considered for this subscriber, so the
+	// live loop's After(lastID) yields exactly the not-yet-seen tail (gap-free,
 	// duplicate-free, EVT-133/143).
-	var lastID string
-	switch outcome.Result {
-	case events.ResumeResultFresh:
-		// Fresh: deliver only events from connection time forward (EVT-132), so
-		// watermark at the head snapshotted with registration — the live loop
-		// streams strictly after it.
-		lastID = sub.head
-	case events.ResumeResultResumed:
-		// Resume strictly after the requested id; if its backlog is empty (the id
-		// is the head), the watermark is that id itself.
-		lastID = resumeFrom
-	case events.ResumeResultGap:
-		// A retention_expired discontinuity: mark it before any event (EVT-104/140),
-		// then delivery resumes AT to_id inclusive via outcome.Events below.
-		s.writeString(w, events.SSEGapLine(*outcome.Gap))
-		lastID = outcome.ResumeAtID
-	}
-
-	// Stream the resolved backlog in id order (After(resume_from) for a clean
-	// resume; the from-oldest inclusive slice for a gap; empty for fresh),
-	// scope-filtered exactly as the live tail is: a REPLAYED event outside the
-	// subscriber's visible set is no more deliverable than a live one (EVT-120/123
-	// say "an event", not "a live event"). lastID advances over every CONSIDERED
-	// envelope, not only every delivered one, so a suppressed event is never
-	// re-offered by the live loop's After(lastID) tail read.
-	for _, env := range outcome.Events {
-		lastID = env.ID
-		if !filter.Allows(env) {
-			continue
-		}
-		s.writeEvent(w, env)
-	}
-	flusher.Flush()
+	sk := &sseSink{w: w, flusher: flusher, logf: s.logf}
+	lastID, _ := s.deliverBacklog(sk, sub, outcome, resumeFrom, filter)
 
 	// Live: drain the newly-appended tail on every wake until the client goes away
 	// (request context) or the server shuts down (Hub.Close closes done).
@@ -532,48 +645,41 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// platform state to a revoked credential indefinitely.
 			return
 		case <-sub.wake():
-			// Drain the not-yet-delivered tail. If the subscriber lagged far enough
-			// behind on a bounded log that undelivered events aged out before this
-			// wake, drain returns a buffer_exceeded gap first — the mid-stream
-			// analogue of the connect-time retention_expired gap, so a discontinuity
-			// is marked, never a silent id jump (EVT-142/143).
-			gap, tail := s.hub.drain(lastID)
-			if gap != nil {
-				s.writeString(w, events.SSEGapLine(*gap))
-				lastID = gap.ToID
-			}
-			for _, env := range tail {
-				// EVT-123: the boundary is applied per event, here at delivery
-				// time — never delegated to whatever the subscriber's own
-				// selector claimed. lastID advances over every considered
-				// envelope so the next drain's tail is still gap-free.
-				lastID = env.ID
-				if !filter.Allows(env) {
-					continue
-				}
-				s.writeEvent(w, env)
-			}
-			flusher.Flush()
+			lastID, _ = s.drainOnce(sk, lastID, filter)
 		}
 	}
 }
 
-// writeEvent frames env as an SSE event line (EVT-103) and writes it. An
-// envelope that fails to serialize is logged and skipped — never emitted as a
-// corrupt line (SSEEventLine's own contract) — so one bad record can't poison the
-// stream.
-func (s *server) writeEvent(w http.ResponseWriter, env events.Envelope) {
+// sseSink is the SSE binding's frame writer (EVT-103/104).
+//
+// Its writes are best-effort: a mid-stream write failure is a dropped subscriber
+// connection, which the request-context select already observes and closes on,
+// so there is nothing to recover and nothing to classify — every method returns
+// nil. An envelope that fails to serialize is logged and SKIPPED rather than
+// emitted as a corrupt line (SSEEventLine's own contract), so one bad record
+// cannot poison the stream.
+type sseSink struct {
+	w       http.ResponseWriter
+	flusher http.Flusher
+	logf    func(format string, args ...any)
+}
+
+func (s *sseSink) event(env events.Envelope) error {
 	line, err := events.SSEEventLine(env)
 	if err != nil {
 		s.logf("eventsse: dropping unserializable event id %q: %v (EVT-103)", env.ID, err)
-		return
+		return nil
 	}
-	s.writeString(w, line)
+	_, _ = s.w.Write([]byte(line))
+	return nil
 }
 
-// writeString writes str to w, ignoring the error: a mid-stream write failure is
-// a dropped subscriber connection, which the request-context select already
-// observes and closes on — there is nothing to recover here.
-func (s *server) writeString(w http.ResponseWriter, str string) {
-	_, _ = w.Write([]byte(str))
+func (s *sseSink) gap(g events.GapFrame) error {
+	_, _ = s.w.Write([]byte(events.SSEGapLine(g)))
+	return nil
+}
+
+func (s *sseSink) flush() error {
+	s.flusher.Flush()
+	return nil
 }
