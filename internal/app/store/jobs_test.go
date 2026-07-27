@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -39,6 +40,14 @@ func newFixtureJob() *apijob.Job {
 
 func fixtureScopes() map[string]string {
 	return map[string]string{jobTargetAID: jobScopeNodeA, jobTargetBID: jobScopeNodeB}
+}
+
+// fixtureOp is the accepted operation every fixture Job below carries. Its kind
+// and payload are DELIBERATELY not the api layer's real vocabulary: the store
+// persists an operation opaquely and parses neither field, so a fixture using
+// the real names would let a store that quietly interpreted them pass.
+func fixtureOp() store.JobOperation {
+	return store.JobOperation{Kind: "fixture.operation", Payload: []byte(`{"wanted":true}`)}
 }
 
 // openFile opens a FILE-backed store under the test's own temp dir and returns
@@ -83,7 +92,7 @@ func targetStates(rec store.JobRecord) map[string]apiv1.JobTargetState {
 // scope-node placements a later read is scoped by (API-112's shape, recorded).
 func TestCreateJobRoundTrips(t *testing.T) {
 	s := openMem(t)
-	if err := s.CreateJob(context.Background(), newFixtureJob(), fixtureScopes()); err != nil {
+	if err := s.CreateJob(context.Background(), newFixtureJob(), fixtureScopes(), fixtureOp()); err != nil {
 		t.Fatalf("CreateJob: %v", err)
 	}
 
@@ -137,14 +146,14 @@ func TestGetJobUnknownID(t *testing.T) {
 func TestCreateJobRejectsNonULIDAndDuplicate(t *testing.T) {
 	s := openMem(t)
 	bad := apijob.New("not-a-ulid", jobPrincipalID, jobCreatedAt, []string{jobTargetAID})
-	if err := s.CreateJob(context.Background(), bad, nil); err == nil {
+	if err := s.CreateJob(context.Background(), bad, nil, fixtureOp()); err == nil {
 		t.Fatal("CreateJob accepted a non-ULID job id (DAT-005a)")
 	}
 
-	if err := s.CreateJob(context.Background(), newFixtureJob(), fixtureScopes()); err != nil {
+	if err := s.CreateJob(context.Background(), newFixtureJob(), fixtureScopes(), fixtureOp()); err != nil {
 		t.Fatalf("CreateJob: %v", err)
 	}
-	err := s.CreateJob(context.Background(), newFixtureJob(), fixtureScopes())
+	err := s.CreateJob(context.Background(), newFixtureJob(), fixtureScopes(), fixtureOp())
 	if !errors.Is(err, store.ErrJobExists) {
 		t.Fatalf("second CreateJob under the same id = %v, want ErrJobExists", err)
 	}
@@ -161,7 +170,7 @@ func TestCreateJobRejectsNonULIDAndDuplicate(t *testing.T) {
 func TestAdvanceJobPersistsTransitionsToTerminal(t *testing.T) {
 	s := openMem(t)
 	ctx := context.Background()
-	if err := s.CreateJob(ctx, newFixtureJob(), fixtureScopes()); err != nil {
+	if err := s.CreateJob(ctx, newFixtureJob(), fixtureScopes(), fixtureOp()); err != nil {
 		t.Fatalf("CreateJob: %v", err)
 	}
 
@@ -215,7 +224,7 @@ func TestAdvanceJobPersistsTransitionsToTerminal(t *testing.T) {
 func TestAdvanceJobRefusesIllegalTransition(t *testing.T) {
 	s := openMem(t)
 	ctx := context.Background()
-	if err := s.CreateJob(ctx, newFixtureJob(), fixtureScopes()); err != nil {
+	if err := s.CreateJob(ctx, newFixtureJob(), fixtureScopes(), fixtureOp()); err != nil {
 		t.Fatalf("CreateJob: %v", err)
 	}
 
@@ -265,7 +274,7 @@ func TestAdvanceJobUnknownID(t *testing.T) {
 func TestJobSurvivesStoreRestart(t *testing.T) {
 	ctx := context.Background()
 	s, dsn := openFile(t)
-	if err := s.CreateJob(ctx, newFixtureJob(), fixtureScopes()); err != nil {
+	if err := s.CreateJob(ctx, newFixtureJob(), fixtureScopes(), fixtureOp()); err != nil {
 		t.Fatalf("CreateJob: %v", err)
 	}
 	// A terminal target and a still-running one: the two states API-116 names.
@@ -302,13 +311,26 @@ func TestJobSurvivesStoreRestart(t *testing.T) {
 			rec.Job.CreatedBy, rec.Job.CreatedAt, jobPrincipalID, jobCreatedAt)
 	}
 
-	running, err := reopened.RunningTargets(ctx)
+	// The inventory a resume reads back carries BOTH halves it needs: the target
+	// left running, and the operation that was being applied to it. A restart
+	// that recovered only the target list would have nothing to re-apply, which
+	// is the state that made "resume" impossible rather than merely unwritten.
+	runs, err := reopened.InterruptedRuns(ctx)
 	if err != nil {
-		t.Fatalf("RunningTargets: %v", err)
+		t.Fatalf("InterruptedRuns: %v", err)
 	}
-	want := []store.JobTargetRef{{JobID: jobID, TargetID: jobTargetBID}}
-	if len(running) != len(want) || running[0] != want[0] {
-		t.Fatalf("RunningTargets after restart = %v, want %v (the target left running is resumable, not dropped)", running, want)
+	want := []store.InterruptedRun{{JobID: jobID, Op: fixtureOp(), TargetIDs: []string{jobTargetBID}}}
+	if !reflect.DeepEqual(runs, want) {
+		t.Fatalf("InterruptedRuns after restart = %+v, want %+v (the target left running is resumable, not dropped, and the operation came back with it)", runs, want)
+	}
+	// The succeeded target is NOT in the inventory: a resume that re-applied an
+	// already-terminal target would double-apply it.
+	for _, run := range runs {
+		for _, tid := range run.TargetIDs {
+			if tid == jobTargetAID {
+				t.Fatalf("the already-succeeded target %s is listed as interrupted work", jobTargetAID)
+			}
+		}
 	}
 
 	// The advance seam still works on the reopened database: a resumed target
@@ -329,7 +351,7 @@ func TestJobSurvivesStoreRestart(t *testing.T) {
 func TestCancelPersistsCancellationAttributedFailures(t *testing.T) {
 	s := openMem(t)
 	ctx := context.Background()
-	if err := s.CreateJob(ctx, newFixtureJob(), fixtureScopes()); err != nil {
+	if err := s.CreateJob(ctx, newFixtureJob(), fixtureScopes(), fixtureOp()); err != nil {
 		t.Fatalf("CreateJob: %v", err)
 	}
 	if _, err := s.AdvanceJob(ctx, jobID, func(j *apijob.Job) error { return j.StartTarget(jobTargetAID) }); err != nil {

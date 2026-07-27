@@ -30,13 +30,21 @@ import (
 // committed (apijob.Restore), never an all-pending reset.
 //
 // AdvanceJob is the seam the executor drives (the api layer's JobRunner, which
-// walks an accepted job's targets and commits each transition here). The resume
-// half of API-116 still has no producer, and this file does not pretend
-// otherwise: RunningTargets below is the inventory a resume reads, but the
-// record holds WHICH rows a job acts on and not WHAT it was doing to them, so
-// nothing durable tells a restarted process what to re-apply. Persisting the
-// accepted operation alongside the Job is the missing piece — not the scan, and
-// no longer the executor.
+// walks an accepted job's targets and commits each transition here).
+//
+// The record holds both halves a resume needs: WHICH rows the job acts on
+// (job_targets) and WHAT was being applied to them (the JobOperation persisted
+// on the job row). InterruptedRuns below joins the two into the inventory a
+// restarted process resumes from — one entry per job still holding a target
+// left `running`, carrying the accepted operation so the executor has something
+// to re-apply rather than a bare target list it can only stare at.
+//
+// The store persists the operation OPAQUELY: a kind string and a JSON payload,
+// neither of which it interprets. The vocabulary belongs to the layer that
+// accepted the operation and will re-apply it (the api layer), and a store that
+// knew "automations.bulk-enable" would have to be edited every time a new async
+// operation is added — which is exactly how a durable record and its executor
+// drift apart.
 //
 // Two deliberate departures from the resource-table CRUD above:
 //
@@ -55,8 +63,8 @@ import (
 // jobsSchema creates the two Job tables. The target set is a child table rather
 // than a JSON blob on the job row so a single target's transition is a
 // single-row UPDATE, and so `state` is queryable — which is what makes the
-// running-target inventory (RunningTargets) a query rather than a full scan and
-// decode of every job that ever ran.
+// interrupted-run inventory (InterruptedRuns) a query rather than a full scan
+// and decode of every job that ever ran.
 //
 // seq preserves the target ORDER the accepting handler resolved (API-112's
 // `targets` is an array, and the 202 body's order is the order a later poll must
@@ -64,12 +72,20 @@ import (
 // enforced by its own index — apijob.New collapses duplicate ids on the way in,
 // so two rows sharing one target_id would be a corrupt record, and the index
 // makes the store refuse to hold one.
+//
+// op_kind/op_payload carry the accepted operation (JobOperation) on the JOB row
+// rather than per target: one job is one operation applied to many rows, so
+// storing it per target would be N copies of one fact and N places for them to
+// disagree. Both default to empty, which is the record's honest way of saying
+// "this job persisted no re-appliable operation" — see JobOperation.
 const jobsSchema = `
 CREATE TABLE IF NOT EXISTS jobs (
 	id         TEXT PRIMARY KEY,
 	created_by TEXT NOT NULL,
 	created_at INTEGER NOT NULL,
-	updated_at INTEGER NOT NULL
+	updated_at INTEGER NOT NULL,
+	op_kind    TEXT NOT NULL DEFAULT '',
+	op_payload TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS job_targets (
 	job_id     TEXT NOT NULL,
@@ -89,6 +105,29 @@ CREATE UNIQUE INDEX IF NOT EXISTS job_targets_unique_target ON job_targets (job_
 // error — the api layer surfaces it as INTERNAL, never as a validation problem
 // the caller could act on.
 var ErrJobExists = errors.New("store: job already exists")
+
+// JobOperation is WHAT an accepted Job was applying to its targets, persisted
+// alongside WHICH rows it applies to — the durable intent a restarted process
+// re-applies to a target an interrupted run left `running` (API-116's "MUST
+// resume any target left `running` rather than silently drop it").
+//
+// It is opaque to the store: Kind names the operation in the accepting layer's
+// own vocabulary and Payload is that operation's arguments as JSON, and this
+// package parses neither. It only guarantees they come back byte-for-byte as
+// they went in.
+//
+// The ZERO value is meaningful and is not a defect: it records that the job
+// carries NO re-appliable operation, which is the truthful entry for work whose
+// arguments must not be persisted (a client passphrase) or whose execution
+// cannot be safely repeated. Such a job's stranded targets are reconciled by
+// the executor rather than resumed — the record's job is to make the difference
+// legible, not to pretend every operation can be replayed.
+type JobOperation struct {
+	// Kind names the operation. Empty means the job persisted none.
+	Kind string
+	// Payload is the operation's arguments as JSON, or nil when it takes none.
+	Payload []byte
+}
 
 // JobRecord is one persisted Job as read back: the shared api/1 state machine
 // (apijob.Job — the same type the accepting handler built and the same one that
@@ -122,11 +161,19 @@ type JobRecord struct {
 // which is readable only by a principal whose authority reaches the workspace
 // root.
 //
+// op is the operation being applied (JobOperation), committed in that SAME
+// transaction as the targets it applies to. That is the point of putting it
+// here rather than in a follow-up write: a job durable enough to be polled but
+// not durable enough to say what it was doing is exactly the record that
+// stranded a restarted process with a target list and nothing to do to it. The
+// zero JobOperation is accepted and means the job persists no re-appliable
+// operation.
+//
 // The Job's id MUST be a valid ULID (DAT-005a): every id the store persists is
 // one, and the api layer draws this one from the same injected id source every
 // other server-minted id comes from, so a malformed id here is a wiring fault
 // worth refusing at the boundary rather than storing.
-func (s *Store) CreateJob(ctx context.Context, j *apijob.Job, scopeNodes map[string]string) error {
+func (s *Store) CreateJob(ctx context.Context, j *apijob.Job, scopeNodes map[string]string, op JobOperation) error {
 	if j == nil {
 		return errors.New("store: create job: nil job")
 	}
@@ -147,8 +194,9 @@ func (s *Store) CreateJob(ctx context.Context, j *apijob.Job, scopeNodes map[str
 			return fmt.Errorf("store: create job read %s: %w", j.ID, err)
 		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO jobs (id, created_by, created_at, updated_at) VALUES (?, ?, ?, ?)`,
-			j.ID, j.CreatedBy, j.CreatedAt.UnixMilli(), now,
+			`INSERT INTO jobs (id, created_by, created_at, updated_at, op_kind, op_payload)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+			j.ID, j.CreatedBy, j.CreatedAt.UnixMilli(), now, op.Kind, string(op.Payload),
 		); err != nil {
 			return fmt.Errorf("store: insert job %s: %w", j.ID, err)
 		}
@@ -212,41 +260,68 @@ func (s *Store) AdvanceJob(ctx context.Context, id string, apply func(*apijob.Jo
 	return out, nil
 }
 
-// RunningTargets returns the {job id, target id} pairs left in the `running`
-// state, in job then target order — the inventory API-116's "MUST resume any
-// target left `running` rather than silently drop it" is resumed FROM after a
-// restart.
+// InterruptedRuns returns one entry per Job still holding at least one target in
+// the `running` state — each carrying the operation that job accepted and the
+// ids of its stranded targets, in the job's own target order. It is the
+// inventory API-116's "MUST resume any target left `running` rather than
+// silently drop it" is resumed FROM after a restart.
 //
-// It deliberately reports rather than repairs: a restart does not know whether a
-// running target's underlying work completed before the crash, and rewriting
-// those rows to pending (or failing them) would be the store deciding an
-// execution question it cannot answer. The executor owns that decision; the
-// store's job is to still be holding the target when it asks.
-func (s *Store) RunningTargets(ctx context.Context) ([]JobTargetRef, error) {
+// A target is `running` only because the executor committed that transition
+// BEFORE attempting its write, so every entry here names work whose outcome this
+// process cannot observe: it may have completed, half-completed, or never
+// started. That is precisely why the operation rides along — a resume needs
+// something to re-apply, and re-applying is the only way to reach a state the
+// record can honestly report.
+//
+// It deliberately reports rather than repairs. Rewriting these rows to pending,
+// or failing them, would be the store answering an execution question it cannot
+// answer: whether re-applying THIS operation is safe is a property of the
+// operation, and only the layer that accepted it knows. The store's job is to
+// still be holding the target, and the operation, when that layer asks.
+//
+// Jobs are returned in id order (which for ULIDs is acceptance order), so a
+// resume replays the oldest interrupted work first.
+func (s *Store) InterruptedRuns(ctx context.Context) ([]InterruptedRun, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT job_id, target_id FROM job_targets WHERE state = ? ORDER BY job_id ASC, seq ASC`,
+		`SELECT t.job_id, j.op_kind, j.op_payload, t.target_id
+		 FROM job_targets t JOIN jobs j ON j.id = t.job_id
+		 WHERE t.state = ? ORDER BY t.job_id ASC, t.seq ASC`,
 		string(apiv1.JobTargetStateRunning))
 	if err != nil {
-		return nil, fmt.Errorf("store: list running job targets: %w", err)
+		return nil, fmt.Errorf("store: list interrupted job runs: %w", err)
 	}
 	defer rows.Close()
-	out := []JobTargetRef{}
+	out := []InterruptedRun{}
 	for rows.Next() {
-		var ref JobTargetRef
-		if err := rows.Scan(&ref.JobID, &ref.TargetID); err != nil {
-			return nil, fmt.Errorf("store: scan running job target: %w", err)
+		var jobID, opKind, opPayload, targetID string
+		if err := rows.Scan(&jobID, &opKind, &opPayload, &targetID); err != nil {
+			return nil, fmt.Errorf("store: scan interrupted job run: %w", err)
 		}
-		out = append(out, ref)
+		// The rows arrive grouped by job (job_id is the leading ORDER BY term), so
+		// one entry accumulates until the id changes — no map, and target order is
+		// the job's own seq order rather than whatever a map iteration produced.
+		if n := len(out); n > 0 && out[n-1].JobID == jobID {
+			out[n-1].TargetIDs = append(out[n-1].TargetIDs, targetID)
+			continue
+		}
+		op := JobOperation{Kind: opKind}
+		if opPayload != "" {
+			op.Payload = []byte(opPayload)
+		}
+		out = append(out, InterruptedRun{JobID: jobID, Op: op, TargetIDs: []string{targetID}})
 	}
 	return out, rows.Err()
 }
 
-// JobTargetRef names one target within one job.
-type JobTargetRef struct {
-	JobID    string
-	TargetID string
+// InterruptedRun is one Job an earlier process left mid-flight: the operation it
+// accepted, and the targets that process committed as `running` and never
+// carried to a terminal state.
+type InterruptedRun struct {
+	JobID     string
+	Op        JobOperation
+	TargetIDs []string
 }
 
 // insertJobTargets writes a job's full target set in job order.

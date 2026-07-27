@@ -208,6 +208,13 @@ func New(st *store.Store, idem *apihttp.IdempotencyStore, nowMs func() int64, ne
 		srv.jobs = NewJobRunner()
 		srv.jobs.Start()
 	}
+	// API-116's resume, scheduled as the FIRST work this handler's runner will
+	// do: every target an earlier process committed as `running` and never
+	// carried to a terminal value is re-applied or reconciled (jobrun.go). It
+	// takes its inventory HERE, before any request has been served, which is what
+	// keeps it pointed at an earlier process's abandoned work rather than at this
+	// one's live executions.
+	srv.scheduleResume()
 	rt, rootRT := newRouter(), newRouter()
 	srv.mountAll(rt, rootRT, auth.NewHandlers(authn, nil, auth.RootScopeNode))
 	// The audit seam sits INSIDE the auth middleware and OUTSIDE the resource

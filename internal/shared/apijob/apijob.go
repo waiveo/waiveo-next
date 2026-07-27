@@ -234,6 +234,34 @@ func (j *Job) StartTarget(id string) error {
 	return nil
 }
 
+// ResumeTarget re-claims a target an interrupted run left `running`, so a
+// restarted process may carry it to a terminal value (API-116). It is the
+// cross-restart counterpart of StartTarget: StartTarget is the only legal entry
+// into execution for a PENDING target, and this is the only legal re-entry for
+// one already committed as running.
+//
+// It changes NO state, and that is deliberate rather than an omission. `running`
+// is already the correct state for a target being applied, and API-113's
+// progression is one-way — there is no transition back into it to make. What
+// this method contributes is the GUARD: driven through the store's AdvanceJob it
+// is evaluated inside the write transaction, against the record as committed, so
+// a target some other path already carried to a terminal value is refused before
+// the resume repeats its side effect rather than after.
+//
+// An unknown target, or one not currently running, is an error — a pending
+// target was never started and must go through StartTarget, and a terminal one
+// has already been reported.
+func (j *Job) ResumeTarget(id string) error {
+	t, ok := j.index[id]
+	if !ok {
+		return fmt.Errorf("apijob: no such target %q", id)
+	}
+	if t.State != apiv1.JobTargetStateRunning {
+		return fmt.Errorf("apijob: target %q is %s, not running — cannot resume", id, t.State)
+	}
+	return nil
+}
+
 // SucceedTarget advances a running target to its terminal succeeded state
 // (API-113). A target must be running first — a pending target has to be
 // started before it can reach a terminal value.

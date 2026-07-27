@@ -390,7 +390,24 @@ func (srv *server) bulkEnableExec(w http.ResponseWriter, r *http.Request, body [
 	// request the client can retry (a 5xx also Aborts the Idempotency-Key
 	// marker, leaving the key retryable, API-054) than to hand back an
 	// unpollable id.
-	if err := srv.store.CreateJob(r.Context(), job, targetScopes); err != nil {
+	//
+	// The accepted OPERATION is persisted with it, in the same transaction as the
+	// targets it applies to (API-116): a Job durable enough to poll but not
+	// durable enough to say what it was doing leaves a restarted process holding
+	// a target list and nothing to re-apply, which is how a target left `running`
+	// by a crash stays that way. `enabled` is the whole of this operation's
+	// arguments, and re-applying it is safe (jobrun.go), so a bulk-enable
+	// interrupted mid-flight is resumable rather than merely reportable.
+	wanted := *req.Enabled
+	opPayload, err := json.Marshal(bulkEnableOperation{Enabled: wanted})
+	if err != nil {
+		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
+		return
+	}
+	if err := srv.store.CreateJob(r.Context(), job, targetScopes, store.JobOperation{
+		Kind:    jobOpBulkEnableAutomations,
+		Payload: opPayload,
+	}); err != nil {
 		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
 		return
 	}
@@ -408,7 +425,6 @@ func (srv *server) bulkEnableExec(w http.ResponseWriter, r *http.Request, body [
 	// r.Context(), which is canceled the moment this handler returns, i.e.
 	// before the accepted work would have started.
 	targets := targetIDs
-	wanted := *req.Enabled
 	srv.jobs.submit(func(ctx context.Context) {
 		srv.runBulkEnable(ctx, job.ID, targets, wanted)
 	})

@@ -311,12 +311,32 @@ const unauthorizedWorkspaceDetail = "This principal is not an owner of this work
 // submitted it can always read it, and so can any principal whose authority
 // reaches the org node — which, for a job whose single target IS the workspace,
 // is exactly the set that could have invoked it.
+//
+// # Neither operation persists a re-appliable operation, and both refuse to
+//
+// A bulk-enable records what it was applying so a restart can re-apply it
+// (API-116, automations.go). These two record the ZERO store.JobOperation, and
+// that is a decision rather than an omission — each for its own reason:
+//
+//   - The EXPORT's only argument is the client's passphrase. Persisting it would
+//     put a user-supplied secret at rest in the jobs table, readable by anything
+//     that can read the database, to buy the ability to finish an archive the
+//     client can simply request again. No archive is worth that trade.
+//   - The DELETE's execution is a destructive ordered sequence (assets, rows,
+//     signing key, credentials) whose partial completion is invisible from the
+//     outside. Re-running it after an interrupted attempt would purge a workspace
+//     that is already gone and report the target `failed` NOT_FOUND — describing
+//     a successful erasure as a failure, which is worse than declining to guess.
+//
+// A target either operation strands `running` is therefore reconciled to a
+// terminal `failed` by the resume rather than resumed (jobrun.go), so the poll
+// API-123 gives the submitter still terminates.
 func (srv *server) acceptWorkspaceJob(w http.ResponseWriter, r *http.Request, workspaceID string) (*apijob.Job, bool) {
 	// .UTC() so created_at serializes as RFC3339 "Z" (API-112); the id comes from
 	// the same injected srv.newID seam every other server-minted id draws from,
 	// and created_by from the REAL authenticated caller the middleware resolved.
 	job := apijob.New(srv.newID(), auth.PrincipalID(r), time.UnixMilli(srv.nowMs()).UTC(), []string{workspaceID})
-	if err := srv.store.CreateJob(r.Context(), job, map[string]string{workspaceID: workspaceID}); err != nil {
+	if err := srv.store.CreateJob(r.Context(), job, map[string]string{workspaceID: workspaceID}, store.JobOperation{}); err != nil {
 		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
 		return nil, false
 	}
