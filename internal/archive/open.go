@@ -24,12 +24,13 @@ type Entry struct {
 	Body []byte
 }
 
-// Open reads a container back and verifies it, in the order Container framing,
-// Encryption, Signing, and Manifest — general fix (see the package doc's "Order
-// of checks on read"): `format`, then the major version, then the header
-// signature, then per-frame authentication, then frame-sequence completeness,
-// then the recomputed body digest, then the manifest's shape, then every
-// embedded asset's own hash against its asset_ref.
+// Open reads a container back and verifies it, in the order the contract's
+// Container framing, Encryption, Signing, and Manifest — general sections fix
+// between them (see the package doc's "Order of checks on read"): `format`,
+// then the major version, then the header signature, then per-frame
+// authentication, then frame-sequence completeness, then the recomputed body
+// digest, then the manifest's shape, then every embedded asset's own hash
+// against its asset_ref.
 //
 // It returns the manifest and every tar entry the body carried, manifest.json
 // included, in stream order.

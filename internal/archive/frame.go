@@ -360,6 +360,3 @@ func (r *frameReader) Finish() error {
 	}
 	return nil
 }
-
-// Err returns the sticky refusal, if the body has already failed one.
-func (r *frameReader) Err() error { return r.err }
