@@ -269,10 +269,18 @@ type bulkEnableRequest struct {
 // Job. The key handling reuses the same idem store + response capture the generic
 // create() path uses (srv.idempotent), never a second mechanism.
 //
+// The Job it returns is PERSISTED (store.CreateJob) before the 202 is written,
+// so the client can poll it at GET /jobs/{job_id} (API-112) and so it survives a
+// restart (API-116) — a Job that lived only in this handler's memory made
+// API-112's "read the Job resource again" unsatisfiable.
+//
 // Deferred (documented): the per-target toggle-and-regenerate — this increment
-// returns the accepted Job and its target set; actually flipping each row's
+// accepts and records the Job and its target set; actually flipping each row's
 // `enabled` and bumping the store generation is a fast-follow that advances the
-// Job's targets through the apijob state machine.
+// Job's targets through the apijob state machine, committing each transition
+// through store.AdvanceJob. Until it lands, an accepted Job's targets stay
+// `pending`, and a poll reports that honestly rather than a state nothing
+// produced.
 func (srv *server) bulkEnableAutomations(w http.ResponseWriter, r *http.Request) {
 	body, ok := readBody(w, r)
 	if !ok {
@@ -343,7 +351,14 @@ func (srv *server) bulkEnableExec(w http.ResponseWriter, r *http.Request, body [
 	// caller's authority has to narrow — the same rule EVT-121 fixes for the
 	// grammar generally — while a 403 keyed to which rows a selector happened to
 	// match would report on rows rather than on the caller.
+	//
+	// Each match's scope-node placement is captured alongside its id: it is what
+	// a later poll of this Job scopes the read by (jobs.go), recorded here — at
+	// acceptance — rather than re-derived at poll time, so the Job's readability
+	// is fixed by the world the job was accepted in and cannot be widened later
+	// by moving a target row.
 	var targetIDs []string
+	targetScopes := map[string]string{}
 	for _, res := range rows {
 		f := parseFields(res.Body)
 		if !view.canWrite(f.ScopeNode) {
@@ -351,6 +366,7 @@ func (srv *server) bulkEnableExec(w http.ResponseWriter, r *http.Request, body [
 		}
 		if sel.Matches(f.Labels, f.ScopeNode, view.inSubtree) {
 			targetIDs = append(targetIDs, res.ID)
+			targetScopes[res.ID] = f.ScopeNode
 		}
 	}
 
@@ -365,6 +381,18 @@ func (srv *server) bulkEnableExec(w http.ResponseWriter, r *http.Request, body [
 	// constant, and not something this handler can invent, since a request that
 	// reaches here always carries a principal (SEC-005).
 	job := apijob.New(srv.newID(), auth.PrincipalID(r), time.UnixMilli(srv.nowMs()).UTC(), targetIDs)
+
+	// The Job is PERSISTED before it is returned, and a failure to persist it
+	// refuses the whole operation. API-112 makes a poll the only way a client
+	// learns this work finished, so a 202 naming a Job no later read could
+	// resolve would be a promise the surface cannot keep — better to fail the
+	// request the client can retry (a 5xx also Aborts the Idempotency-Key
+	// marker, leaving the key retryable, API-054) than to hand back an
+	// unpollable id.
+	if err := srv.store.CreateJob(r.Context(), job, targetScopes); err != nil {
+		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
+		return
+	}
 	writeJSONValue(w, http.StatusAccepted, job.Resource())
 }
 

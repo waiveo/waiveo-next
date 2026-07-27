@@ -149,6 +149,11 @@ func New(st *store.Store, idem *apihttp.IdempotencyStore, nowMs func() int64, ne
 	mux.HandleFunc("POST "+apiPrefix+"/automations/{id}/run", srv.runAutomation)
 	mux.HandleFunc("POST "+apiPrefix+"/automations/bulk-enable", srv.bulkEnableAutomations)
 	mux.HandleFunc("POST "+apiPrefix+"/content", srv.uploadContent)
+	// The read half of the async convention: a Job returned by 202 is polled
+	// here until its state is terminal (API-112, openapi getJob). It is not a
+	// resourceConfig mount — a Job carries no revision to condition a write on,
+	// and has no write operations at all (jobs.go).
+	mux.HandleFunc("GET "+apiPrefix+"/jobs/{job_id}", srv.getJob)
 	// The device plane's two read families and its one mutating operation. They
 	// are not resourceConfig mounts: a device is a read-only projection of the
 	// relay's own discovery and adoption plane, with no revision to condition a
