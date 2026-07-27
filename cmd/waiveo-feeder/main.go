@@ -19,7 +19,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/app/api"
@@ -365,7 +367,28 @@ func main() {
 	}
 
 	log.Printf("waiveo-feeder listening (HTTPS) on %s (content base %s)", cfg.listen, cfg.contentBaseURL)
-	log.Fatal(server.ListenAndServeTLS("", ""))
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- server.ListenAndServeTLS("", "") }()
+
+	// Graceful shutdown. http.Server.Shutdown does NOT touch hijacked
+	// connections — every live /relay/v1 WebSocket is invisible to it — so
+	// the relay-connection server's own registry (CloseAll) is what
+	// actually ends those connections; without it the process would stop
+	// listening while every relay connection stayed open.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	select {
+	case err := <-serveErr:
+		log.Fatal(err)
+	case sig := <-sigCh:
+		log.Printf("waiveo-feeder: %s — shutting down", sig)
+		relayConnSrv.CloseAll()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			log.Printf("waiveo-feeder: shutdown: %v", err)
+		}
+	}
 }
 
 // desiredStateSource rebuilds the feeder's signed desired-state snapshot from the

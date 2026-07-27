@@ -48,6 +48,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/clocktrust"
 	"github.com/maaxton/waiveo-next/internal/relay/hello"
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
+	"github.com/maaxton/waiveo-next/internal/shared/heartbeat"
 	"github.com/maaxton/waiveo-next/internal/shared/ulid"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
@@ -61,6 +62,15 @@ const (
 	dialTimeout    = 10 * time.Second
 	requestTimeout = 10 * time.Second
 	writeTimeout   = 10 * time.Second
+)
+
+// defaultPingInterval/-Timeout are the heartbeat cadence (Config.PingInterval/
+// PingTimeout override): a ping every 20s whose pong must arrive within 10s,
+// so a dead peer is detected within ~30s — the loop that reaps half-open
+// NAT-dropped connections instead of leaking them.
+const (
+	defaultPingInterval = 20 * time.Second
+	defaultPingTimeout  = 10 * time.Second
 )
 
 // maxInboundFrameBytes bounds one inbound frame on this side: the client
@@ -89,11 +99,25 @@ type Config struct {
 	ClockTrusted bool
 	Now          func() time.Time
 
-	// OnServerFrame, when non-nil, receives every server-initiated frame
-	// (one whose id matches no in-flight request) — state.changed nudges.
-	// Frames are delivered IN ORDER on one dedicated goroutine; the
-	// callback may itself call Pull.
-	OnServerFrame func(wire.Frame)
+	// OnGenerationAdvance, when non-nil, is invoked with the generation a
+	// state.changed nudge (REL-057) announced, on one dedicated dispatcher
+	// goroutine; the callback may itself call Pull. Delivery is a
+	// single-slot latest-wins cell, exactly REL-057's coalescible
+	// best-effort semantics: while a callback runs, newer nudges REPLACE
+	// the one waiting slot (the highest generation wins) rather than queue
+	// behind it or drop silently — the latest announced generation is
+	// never lost, and a stale intermediate one is subsumed by design, not
+	// by backpressure accident. Any other server-initiated frame type is
+	// ignored as REL-004 additive tolerance.
+	OnGenerationAdvance func(generation int64)
+
+	// PingInterval / PingTimeout govern the protocol-level heartbeat: a
+	// ping every PingInterval, its pong bounded by PingTimeout; a failed
+	// round-trip closes the connection (dead-peer detection for half-open
+	// sockets — Done closes and the owner re-dials). Zero values take the
+	// defaults (defaultPingInterval / defaultPingTimeout).
+	PingInterval time.Duration
+	PingTimeout  time.Duration
 
 	// ObserveFrame, when non-nil, is invoked synchronously with every frame
 	// this client sends (sent=true) and receives (sent=false), challenge
@@ -119,15 +143,23 @@ func (r *Refusal) Error() string {
 
 // Client is one live connection. Methods are safe for concurrent use.
 type Client struct {
-	ws       *websocket.Conn
-	relayID  string
-	ackBody  hello.HelloAckBody
-	observe  func(sent bool, f wire.Frame)
-	mu       sync.Mutex
-	pending  map[string]chan wire.Frame
-	done     chan struct{}
-	readErr  error
-	serverCh chan wire.Frame
+	ws      *websocket.Conn
+	relayID string
+	ackBody hello.HelloAckBody
+	observe func(sent bool, f wire.Frame)
+	mu      sync.Mutex
+	pending map[string]chan wire.Frame
+	done    chan struct{}
+	readErr error
+
+	// The single-slot latest-wins nudge cell (Config.OnGenerationAdvance's
+	// doc): nudgeGen holds the highest generation announced and not yet
+	// dispatched; nudgeSet says the slot is occupied; nudgeCh (buffer 1)
+	// wakes the dispatcher.
+	nudgeMu  sync.Mutex
+	nudgeGen int64
+	nudgeSet bool
+	nudgeCh  chan struct{}
 }
 
 // Dial opens, authenticates, and hands over one connection. On a typed
@@ -212,12 +244,12 @@ func Dial(cfg Config) (*Client, error) {
 	ws.SetReadLimit(maxInboundFrameBytes)
 
 	c := &Client{
-		ws:       ws,
-		relayID:  id.RelayID,
-		observe:  cfg.ObserveFrame,
-		pending:  map[string]chan wire.Frame{},
-		done:     make(chan struct{}),
-		serverCh: make(chan wire.Frame, 16),
+		ws:      ws,
+		relayID: id.RelayID,
+		observe: cfg.ObserveFrame,
+		pending: map[string]chan wire.Frame{},
+		done:    make(chan struct{}),
+		nudgeCh: make(chan struct{}, 1),
 	}
 
 	if err := c.handshake(hsCtx, tlsConn, id, cfg.Declaration); err != nil {
@@ -226,14 +258,65 @@ func Dial(cfg Config) (*Client, error) {
 	}
 
 	go c.readLoop()
-	if cfg.OnServerFrame != nil {
-		go func() {
-			for f := range c.serverCh {
-				cfg.OnServerFrame(f)
-			}
-		}()
+	if cfg.OnGenerationAdvance != nil {
+		go c.dispatchGenerations(cfg.OnGenerationAdvance)
 	}
+
+	// Heartbeat: dead-peer detection for half-open connections. A failed
+	// ping round-trip hard-closes the connection; the read loop then
+	// surfaces the death via Done/Err and the owner re-dials.
+	pingInterval, pingTimeout := cfg.PingInterval, cfg.PingTimeout
+	if pingInterval == 0 {
+		pingInterval = defaultPingInterval
+	}
+	if pingTimeout == 0 {
+		pingTimeout = defaultPingTimeout
+	}
+	go func() {
+		hbCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() { <-c.done; cancel() }()
+		if err := heartbeat.Run(hbCtx, c.ws, pingInterval, pingTimeout); err != nil {
+			_ = c.ws.CloseNow()
+		}
+	}()
 	return c, nil
+}
+
+// noteGeneration folds one state.changed announcement into the nudge cell:
+// latest-wins (the highest generation replaces an undispatched older one —
+// REL-057's coalescible delivery), then wakes the dispatcher.
+func (c *Client) noteGeneration(gen int64) {
+	c.nudgeMu.Lock()
+	if !c.nudgeSet || gen > c.nudgeGen {
+		c.nudgeGen = gen
+	}
+	c.nudgeSet = true
+	c.nudgeMu.Unlock()
+	select {
+	case c.nudgeCh <- struct{}{}:
+	default: // dispatcher already has a wakeup pending
+	}
+}
+
+// dispatchGenerations delivers coalesced nudges to cb, one at a time, until
+// the connection dies. The cell is drained atomically per delivery, so a
+// nudge arriving DURING a callback is delivered next, never lost.
+func (c *Client) dispatchGenerations(cb func(int64)) {
+	for {
+		select {
+		case <-c.done:
+			return
+		case <-c.nudgeCh:
+			c.nudgeMu.Lock()
+			gen, set := c.nudgeGen, c.nudgeSet
+			c.nudgeSet = false
+			c.nudgeMu.Unlock()
+			if set {
+				cb(gen)
+			}
+		}
+	}
 }
 
 // singleUseClient wraps an already-established TLS connection in an
@@ -330,9 +413,10 @@ func (c *Client) handshake(ctx context.Context, tlsConn *tls.Conn, id identity.R
 }
 
 // readLoop dispatches every incoming frame: a frame whose id matches an
-// in-flight request completes it; everything else is server-initiated and
-// goes to the OnServerFrame dispatcher (in order, never on this goroutine —
-// the callback may Pull, which needs this loop alive to complete).
+// in-flight request completes it; a state.changed nudge folds into the
+// coalescing cell (never on this goroutine — the callback may Pull, which
+// needs this loop alive to complete); any other server-initiated frame
+// type is REL-004 additive tolerance, ignored.
 func (c *Client) readLoop() {
 	for {
 		var f wire.Frame
@@ -346,7 +430,6 @@ func (c *Client) readLoop() {
 				close(ch)
 			}
 			close(c.done)
-			close(c.serverCh)
 			return
 		}
 		c.record(false, f)
@@ -362,12 +445,16 @@ func (c *Client) readLoop() {
 			ch <- f
 			continue
 		}
-		select {
-		case c.serverCh <- f:
-		default:
-			// Dispatcher backlogged beyond the buffer: drop (spike corner —
-			// production wants flow control, not silent loss).
+		if f.Type == wire.FrameTypeStateChanged {
+			var body wire.StateChangedBody
+			if err := f.DecodeBody(&body); err != nil {
+				continue // a malformed best-effort nudge; the next pull recovers
+			}
+			c.noteGeneration(body.Generation)
+			continue
 		}
+		// Unknown server-initiated frame type: REL-004 additive tolerance —
+		// a newer app peer's new verb is ignored, never a failure.
 	}
 }
 

@@ -32,6 +32,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -70,21 +71,35 @@ var testDeclaration = hello.Declaration{
 
 // snapshotHolder is the mutable SnapshotProvider the test advances
 // generations through — standing in for cmd/waiveo-feeder's
-// generation-cached desiredStateSource.current.
+// generation-cached desiredStateSource.current. setStall installs a channel
+// every subsequent get blocks on — simulating an app peer wedged off its
+// read loop, for the heartbeat dead-peer tests.
 type snapshotHolder struct {
-	mu   sync.Mutex
-	snap wire.StateSnapshotBody
+	mu    sync.Mutex
+	snap  wire.StateSnapshotBody
+	stall chan struct{}
 }
 
 func (h *snapshotHolder) get() (wire.StateSnapshotBody, error) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.snap, nil
+	stall := h.stall
+	snap := h.snap
+	h.mu.Unlock()
+	if stall != nil {
+		<-stall
+	}
+	return snap, nil
 }
 
 func (h *snapshotHolder) set(s wire.StateSnapshotBody) {
 	h.mu.Lock()
 	h.snap = s
+	h.mu.Unlock()
+}
+
+func (h *snapshotHolder) setStall(stall chan struct{}) {
+	h.mu.Lock()
+	h.stall = stall
 	h.mu.Unlock()
 }
 
@@ -168,6 +183,14 @@ func (h *harness) listen(t *testing.T) *httptest.Server {
 // production builder uses.
 func (h *harness) advanceGeneration(t *testing.T, gen int64) wire.StateSnapshotBody {
 	t.Helper()
+	return h.advanceGenerationRevision(t, gen, "rev-e2e-gen-"+strconv.FormatInt(gen, 10))
+}
+
+// advanceGenerationRevision is advanceGeneration with a caller-chosen
+// program revision — the slow-consumer test uses a large one so each
+// snapshot reply is big enough to fill socket buffers deterministically.
+func (h *harness) advanceGenerationRevision(t *testing.T, gen int64, revision string) wire.StateSnapshotBody {
+	t.Helper()
 	h.holder.mu.Lock()
 	next := h.holder.snap
 	h.holder.mu.Unlock()
@@ -177,7 +200,7 @@ func (h *harness) advanceGeneration(t *testing.T, gen int64) wire.StateSnapshotB
 	if len(programs) == 0 {
 		t.Fatal("harness snapshot carries no screen_programs")
 	}
-	programs[0].ProgramRevision = "rev-e2e-gen-" + strconv.FormatInt(gen, 10)
+	programs[0].ProgramRevision = revision
 	next.Sections.ScreenPrograms = programs
 
 	hash, err := wire.HashSections(next.Sections)
@@ -243,15 +266,15 @@ func (l *frameLog) snapshot(log *[]wire.Frame) []wire.Frame {
 	return out
 }
 
-func dialClient(t *testing.T, h *harness, store *identity.Store, onServerFrame func(wire.Frame)) (*relayclient.Client, *frameLog) {
+func dialClient(t *testing.T, h *harness, store *identity.Store, onGenerationAdvance func(int64)) (*relayclient.Client, *frameLog) {
 	t.Helper()
 	log := &frameLog{}
 	client, err := relayclient.Dial(relayclient.Config{
-		URL:           h.ts.URL,
-		Store:         store,
-		Declaration:   testDeclaration,
-		OnServerFrame: onServerFrame,
-		ObserveFrame:  log.observe,
+		URL:                 h.ts.URL,
+		Store:               store,
+		Declaration:         testDeclaration,
+		OnGenerationAdvance: onGenerationAdvance,
+		ObserveFrame:        log.observe,
 	})
 	if err != nil {
 		t.Fatalf("relayconn.Dial: %v", err)
@@ -266,9 +289,9 @@ func TestPersistentConnectionEndToEnd(t *testing.T) {
 	h := newHarness(t)
 	store := enrolledRelay(t, h)
 
-	// The nudge handler: on state.changed, immediately pull + verify +
-	// apply on a fresh goroutine-free path (the client delivers server
-	// frames on a dedicated dispatcher goroutine, so Pull from here is safe).
+	// The nudge handler: on a state.changed generation advance, immediately
+	// pull + verify + apply (the client delivers nudges on a dedicated
+	// dispatcher goroutine, so Pull from here is safe).
 	type pushResult struct {
 		applied desiredstate.Applied
 		at      time.Time
@@ -278,18 +301,10 @@ func TestPersistentConnectionEndToEnd(t *testing.T) {
 	var clientRef *relayclient.Client
 	var clientMu sync.Mutex
 
-	onServer := func(f wire.Frame) {
-		if f.Type != wire.FrameTypeStateChanged {
-			return
-		}
+	onGeneration := func(int64) {
 		clientMu.Lock()
 		c := clientRef
 		clientMu.Unlock()
-		var body wire.StateChangedBody
-		if err := f.DecodeBody(&body); err != nil {
-			pushCh <- pushResult{err: err}
-			return
-		}
 		reply, err := c.Pull("trace-nudge-1", nil)
 		if err != nil {
 			pushCh <- pushResult{err: err}
@@ -304,7 +319,7 @@ func TestPersistentConnectionEndToEnd(t *testing.T) {
 		pushCh <- pushResult{applied: applied, at: time.Now(), err: err}
 	}
 
-	client, frames := dialClient(t, h, store, onServer)
+	client, frames := dialClient(t, h, store, onGeneration)
 	clientMu.Lock()
 	clientRef = client
 	clientMu.Unlock()
@@ -681,5 +696,148 @@ func TestSubprotocolRequired(t *testing.T) {
 	if ws, err := rawDial(t, h, store, id.CertPEM, nil); err == nil {
 		ws.CloseNow()
 		t.Fatal("upgrade without the relay.v1+json subprotocol succeeded; want refusal")
+	}
+}
+
+// rawHandshake completes a VALID challenge → hello → hello-ack on a raw
+// test connection, signing the challenge nonce with the store's enrollment
+// key — the test acting as a well-behaved relay up to steady state, without
+// the production client's read loop.
+func rawHandshake(t *testing.T, ws *websocket.Conn, store *identity.Store) {
+	t.Helper()
+	id, ok, err := store.Identity()
+	if err != nil || !ok {
+		t.Fatalf("store.Identity: ok=%v err=%v", ok, err)
+	}
+
+	var challenge wire.Frame
+	if err := wsRecv(t, ws, &challenge); err != nil {
+		t.Fatalf("read challenge: %v", err)
+	}
+	var cb hello.ChallengeBody
+	if err := challenge.DecodeBody(&cb); err != nil {
+		t.Fatalf("decode challenge: %v", err)
+	}
+	sig, err := hello.SignChannelBinding(id.PrivateKey, cb.Nonce)
+	if err != nil {
+		t.Fatalf("SignChannelBinding: %v", err)
+	}
+	helloFrame, err := wire.NewFrame(wire.FrameTypeHello, "raw-hello-1", id.RelayID, hello.HelloBody{
+		ProtocolVersion:         testDeclaration.ProtocolVersion,
+		Features:                testDeclaration.Features,
+		SubnetMetadata:          testDeclaration.SubnetMetadata,
+		ClockState:              testDeclaration.ClockState,
+		ChannelBindingSignature: sig,
+	})
+	if err != nil {
+		t.Fatalf("NewFrame(hello): %v", err)
+	}
+	if err := wsSend(t, ws, helloFrame); err != nil {
+		t.Fatalf("send hello: %v", err)
+	}
+	var ack wire.Frame
+	if err := wsRecv(t, ws, &ack); err != nil {
+		t.Fatalf("read hello-ack: %v", err)
+	}
+	if ack.Type != wire.FrameTypeHelloAck {
+		t.Fatalf("handshake reply = %+v, want hello-ack", ack)
+	}
+}
+
+// waitFor polls cond until it holds or the deadline passes.
+func waitFor(t *testing.T, d time.Duration, cond func() bool, msg string) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal(msg)
+}
+
+// TestSlowConsumerIsDisconnected is the slow-consumer policy's proof: a
+// relay that authenticates and then stops draining its socket (a stalled
+// reader) is torn down by the per-write deadline — the feeder's conns set
+// drops it rather than wedging behind its buffer. Heartbeats are pushed out
+// of the test window so the WRITE deadline is provably the reaper.
+func TestSlowConsumerIsDisconnected(t *testing.T) {
+	h := newHarness(t,
+		feederrelayconn.WithWriteTimeout(200*time.Millisecond),
+		feederrelayconn.WithHeartbeat(time.Hour, time.Second),
+	)
+	store := enrolledRelay(t, h)
+
+	// Stage a large current snapshot (~256 KiB) so a handful of pull
+	// replies deterministically outgrow the socket buffers between the
+	// peers.
+	h.advanceGenerationRevision(t, 2, strings.Repeat("x", 256<<10))
+
+	ws := rawWS(t, h, store)
+	rawHandshake(t, ws, store)
+	waitFor(t, 5*time.Second, func() bool { return h.connSrv.ConnCount() == 1 },
+		"authenticated connection never registered")
+
+	// The stall: send pulls, never read a reply. Each reply is ~256 KiB;
+	// once the buffers fill, the server's next reply write cannot complete
+	// within its 200ms bound and the connection is torn down.
+	id, _, err := store.Identity()
+	if err != nil {
+		t.Fatalf("store.Identity: %v", err)
+	}
+	for i := 0; i < 40; i++ {
+		pull, err := wire.NewFrame(wire.FrameTypeStatePull, fmt.Sprintf("stall-pull-%d", i), id.RelayID, wire.StatePullBody{})
+		if err != nil {
+			t.Fatalf("NewFrame: %v", err)
+		}
+		if wsSend(t, ws, pull) != nil {
+			break // the server already tore the connection down mid-loop
+		}
+	}
+
+	waitFor(t, 15*time.Second, func() bool { return h.connSrv.ConnCount() == 0 },
+		"stalled consumer was never disconnected (write deadline did not reap it)")
+}
+
+// TestClientHeartbeatReapsUnresponsiveServer is the relay-side dead-peer
+// proof: when the app peer stops servicing the connection entirely (wedged
+// off its read loop — here, a snapshot provider that never returns), the
+// client's ping round-trip fails and the client tears the connection down,
+// surfacing the death via Done instead of hanging forever on a half-open
+// socket.
+func TestClientHeartbeatReapsUnresponsiveServer(t *testing.T) {
+	h := newHarness(t, feederrelayconn.WithHeartbeat(time.Hour, time.Second))
+	store := enrolledRelay(t, h)
+
+	client, err := relayclient.Dial(relayclient.Config{
+		URL:          h.ts.URL,
+		Store:        store,
+		Declaration:  testDeclaration,
+		PingInterval: 100 * time.Millisecond,
+		PingTimeout:  300 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("relayconn.Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	// Healthy first: a pull round-trips while the server services reads.
+	if _, err := client.Pull("trace-healthy", nil); err != nil {
+		t.Fatalf("healthy Pull: %v", err)
+	}
+
+	// Wedge the server: its next provider call blocks forever, so its read
+	// loop stops servicing the connection — pings included.
+	stall := make(chan struct{})
+	t.Cleanup(func() { close(stall) })
+	h.holder.setStall(stall)
+	go func() { _, _ = client.Pull("trace-wedged", nil) }() // parks the server in the provider
+
+	select {
+	case <-client.Done():
+		// the heartbeat detected the dead peer and tore the connection down
+	case <-time.After(10 * time.Second):
+		t.Fatal("client never detected the unresponsive app peer (heartbeat did not reap)")
 	}
 }

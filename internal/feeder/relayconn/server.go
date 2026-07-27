@@ -45,15 +45,27 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/maaxton/waiveo-next/internal/relay/hello"
+	"github.com/maaxton/waiveo-next/internal/shared/heartbeat"
 	"github.com/maaxton/waiveo-next/internal/shared/ulid"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
-// writeTimeout bounds any single frame write to a relay: a peer that cannot
-// take a frame within it has its connection torn down (the transport closes
-// the connection when a write's context expires) — the slow-consumer
-// posture that keeps one stalled relay from wedging the feeder.
-const writeTimeout = 10 * time.Second
+// defaultWriteTimeout bounds any single frame write to a relay: a peer that
+// cannot take a frame within it has its connection torn down (the transport
+// closes the connection when a write's context expires) — the
+// slow-consumer posture that keeps one stalled relay from wedging the
+// feeder. WithWriteTimeout overrides it (tests).
+const defaultWriteTimeout = 10 * time.Second
+
+// defaultPingInterval/-Timeout are the heartbeat cadence (WithHeartbeat
+// overrides): a ping every 20s whose pong must arrive within 10s. This is
+// the loop that reaps a half-open connection (NAT drop, power-cut relay) —
+// without it the connection's goroutine and conns entry leak forever,
+// since a dead peer that never sends again never errors a plain read.
+const (
+	defaultPingInterval = 20 * time.Second
+	defaultPingTimeout  = 10 * time.Second
+)
 
 // maxInboundFrameBytes bounds one inbound frame on this side: a relay sends
 // small control frames (hello, state.pull, state.ack) — nothing remotely
@@ -75,12 +87,30 @@ type Server struct {
 	implementedMinors  []string
 	recognizedFeatures []string
 
+	writeTimeout time.Duration
+	pingInterval time.Duration
+	pingTimeout  time.Duration
+
 	mu    sync.Mutex
 	conns map[*serverConn]struct{}
 }
 
 // Option configures a Server.
 type Option func(*Server)
+
+// WithWriteTimeout overrides the per-frame write deadline (the
+// slow-consumer disconnect bound). Tests use a small value to prove the
+// stalled-reader teardown without waiting out the production bound.
+func WithWriteTimeout(d time.Duration) Option {
+	return func(s *Server) { s.writeTimeout = d }
+}
+
+// WithHeartbeat overrides the heartbeat cadence: a ping every interval
+// whose pong must arrive within timeout; a failed round-trip closes the
+// connection.
+func WithHeartbeat(interval, timeout time.Duration) Option {
+	return func(s *Server) { s.pingInterval, s.pingTimeout = interval, timeout }
+}
 
 // New builds the app peer's /relay/v1 server. provider serves state.pull;
 // lookup resolves a relay's enrollment public key by its mTLS-authenticated
@@ -100,12 +130,24 @@ func New(
 		site:               site,
 		implementedMinors:  implementedMinors,
 		recognizedFeatures: recognizedFeatures,
+		writeTimeout:       defaultWriteTimeout,
+		pingInterval:       defaultPingInterval,
+		pingTimeout:        defaultPingTimeout,
 		conns:              map[*serverConn]struct{}{},
 	}
 	for _, opt := range opts {
 		opt(s)
 	}
 	return s
+}
+
+// ConnCount reports the number of live authenticated connections —
+// observability for tests and operators (a reaped connection leaves this
+// count; a leaked one would not).
+func (s *Server) ConnCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.conns)
 }
 
 // Handler returns the http.Handler to mount at /relay/v1. A client that
@@ -145,14 +187,18 @@ func offersSubprotocol(r *http.Request) bool {
 
 // serverConn is one live, authenticated relay connection. Writes are
 // concurrent-safe (the transport serializes them) and individually bounded
-// by writeTimeout.
+// by the server's write timeout: a write that cannot complete within it
+// closes the connection — the slow-consumer disconnect policy (a relay
+// that stops draining its socket is torn down, never allowed to wedge the
+// feeder behind its buffer).
 type serverConn struct {
-	ws      *websocket.Conn
-	relayID string
+	ws           *websocket.Conn
+	relayID      string
+	writeTimeout time.Duration
 }
 
 func (c *serverConn) send(f wire.Frame) error {
-	ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), c.writeTimeout)
 	defer cancel()
 	return sendFrame(ctx, c.ws, f)
 }
@@ -221,7 +267,7 @@ func (s *Server) serve(req *http.Request, ws *websocket.Conn) {
 	if err != nil {
 		return
 	}
-	conn := &serverConn{ws: ws, relayID: relayID}
+	conn := &serverConn{ws: ws, relayID: relayID, writeTimeout: s.writeTimeout}
 	if err := conn.send(challenge); err != nil {
 		return
 	}
@@ -286,6 +332,18 @@ func (s *Server) serve(req *http.Request, ws *websocket.Conn) {
 		s.mu.Unlock()
 	}()
 
+	// Heartbeat: a half-open connection (NAT drop, power-cut relay) never
+	// errors a plain read, so without this the read loop below — and this
+	// conns entry — would leak forever. A failed ping round-trip
+	// hard-closes the connection, which errors the read loop out.
+	hbCtx, hbCancel := context.WithCancel(ctx)
+	defer hbCancel()
+	go func() {
+		if err := heartbeat.Run(hbCtx, ws, s.pingInterval, s.pingTimeout); err != nil {
+			_ = ws.CloseNow()
+		}
+	}()
+
 	for {
 		var f wire.Frame
 		if err := readFrame(ctx, ws, &f); err != nil {
@@ -297,9 +355,9 @@ func (s *Server) serve(req *http.Request, ws *websocket.Conn) {
 				return
 			}
 		default:
-			// Unknown/unhandled verb: tolerated silently (REL-004 forward
-			// tolerance) — a spike corner; production wants the contract's
-			// story for unrecognized types.
+			// Unknown verb: REL-004 additive tolerance — a newer relay's
+			// new message type is ignored, never a refusal, exactly as
+			// REL-057 prescribes for its own nudge at an older peer.
 		}
 	}
 }
@@ -363,9 +421,15 @@ func (s *Server) CloseAll() {
 // NotifyGenerationAdvance tells every authenticated connection the feeder's
 // desired-state generation advanced, as REL-057's `state.changed` nudge
 // carrying the new generation — to which a relay responds with its own
-// state.pull, keeping REL-050's pull-only snapshot movement intact. A
-// per-connection send failure is that connection's problem (its read loop
-// will reap it); Notify keeps going.
+// state.pull, keeping REL-050's pull-only snapshot movement intact.
+//
+// Each nudge is sent on its own goroutine: Notify returns immediately, so a
+// caller hanging it off a store's post-commit hook never couples an api/1
+// write's latency to the slowest (or deadest) relay connection. Each send
+// is still individually bounded by the write timeout, and a failed send is
+// that connection's problem (the write-timeout teardown errors its read
+// loop out); nudges are best-effort by contract (REL-057) — the relay's
+// next pull recovers a lost one.
 func (s *Server) NotifyGenerationAdvance() {
 	snap, err := s.provider()
 	if err != nil {
@@ -385,6 +449,6 @@ func (s *Server) NotifyGenerationAdvance() {
 		if err != nil {
 			continue
 		}
-		_ = c.send(f)
+		go func(c *serverConn) { _ = c.send(f) }(c)
 	}
 }
