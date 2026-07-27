@@ -1,23 +1,29 @@
 // Package eventsse is the app-side live /events/v1 SSE server (events/1
 // EVT-100–105, 130–144): the GET handler a subscriber connects to to WATCH the
-// platform in real time. It reads the shared events.EventLog the telemetry
-// ingest (internal/app/eventingest) writes into, resolves the connection's
-// resume point via events.Resolve (fresh | resumed | gap | RESUME_FROM_INVALID),
-// streams the resolved backlog using the built SSE framing
+// platform in real time. It reads the shared events.Log the telemetry ingest
+// (internal/app/eventingest) and the auth plane's auditor write into, resolves
+// the connection's resume point via events.Resolve (fresh | resumed | gap |
+// RESUME_FROM_INVALID), streams the resolved backlog using the built SSE framing
 // (events.SSEEventLine / events.SSEGapLine), and then pushes every NEW event
-// live as the ingest appends it — flushing the ResponseWriter after each frame.
+// live as it is appended — flushing the ResponseWriter after each frame.
 //
-// events.EventLog is documented as NOT safe for concurrent use: "the live
-// transport (deferred) owns the synchronization boundary." This package is that
-// live transport. The boundary is Hub: the single object the ingest writes
-// through (Hub.Append) and every subscriber reads through, so a POST
-// /telemetry/v1/push appending on one goroutine never races an SSE read on
+// The substrate is the events.Log INTERFACE, not one storage choice: a
+// deployment passes the persistent SQLite implementation
+// (internal/app/store.(*Store).EventLog), so a restart takes neither the audit
+// trail nor any subscriber's resumable cursor with it; a fixture passes the
+// in-memory events.EventLog.
+//
+// events.Log's contract says an implementation is NOT required to be safe for
+// concurrent use: "the live transport owns the synchronization boundary." This
+// package is that live transport. The boundary is Hub: the single object the
+// ingest writes through (Hub.Append) and every subscriber reads through, so a
+// POST /telemetry/v1/push appending on one goroutine never races an SSE read on
 // another (they share Hub.mu). Hub is also the fan-out — an Append wakes EVERY
 // connected subscriber, not just whichever one happens to win a shared receive,
 // so a new event pushes live to all of them (EVT-100).
 //
 // It re-implements none of the log machinery: the ordering/retention log
-// (events.EventLog), the four-outcome resume resolution (events.Resolve), the
+// (events.Log), the four-outcome resume resolution (events.Resolve), the
 // EVT-103/104 line framing (events.SSEEventLine / events.SSEGapLine), and the
 // api/1 Problem shape (apihttp.WriteProblem) are all called, not rebuilt.
 //

@@ -85,10 +85,11 @@ import (
 type RelayAuthorizer func(relayID, serial string) bool
 
 // EventSink is the append target the ingest writes reconstructed envelopes to.
-// It is the write half of the shared event log: *events.EventLog satisfies it
-// directly, and in production the eventsse.Hub satisfies it too — the Hub's
-// Append serializes the write against concurrent SSE reads and wakes every
-// subscriber, which is what makes a telemetry-derived event push live (EVT-100).
+// It is the write half of the shared event log: any events.Log satisfies it
+// directly (the in-memory events.EventLog, the persistent store one), and in
+// production the eventsse.Hub satisfies it too — the Hub's Append serializes the
+// write against concurrent SSE reads and wakes every subscriber, which is what
+// makes a telemetry-derived event push live (EVT-100).
 type EventSink interface {
 	Append(events.Envelope)
 }

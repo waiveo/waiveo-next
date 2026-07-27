@@ -105,17 +105,21 @@ func Resolve(log Log, resumeFrom string) (ResumeOutcome, *ResumeError) {
 		return ResumeOutcome{}, &ResumeError{Code: ResumeFromInvalidCode}
 	}
 
-	if to := log.OldestRetainedAfter(resumeFrom); to != "" && log.AgedOut(resumeFrom) {
+	if log.AgedOut(resumeFrom) {
 		// older than the retention horizon: the requested point is no longer
 		// reconstructible, so mark a retention_expired gap and resume at the
 		// oldest recoverable id above it — never a silent loss (EVT-140/141/143).
-		from := resumeFrom
-		return ResumeOutcome{
-			Result:     ResumeResultGap,
-			Gap:        &GapFrame{Type: FrameTypeGap, FromID: &from, ToID: to, Reason: ReasonRetentionExpired},
-			ResumeAtID: to,
-			Events:     log.From(to),
-		}, nil
+		// With nothing retained above it there is no such id, so the rejection
+		// below applies instead (see this function's own doc).
+		if to := log.OldestRetainedAfter(resumeFrom); to != "" {
+			from := resumeFrom
+			return ResumeOutcome{
+				Result:     ResumeResultGap,
+				Gap:        &GapFrame{Type: FrameTypeGap, FromID: &from, ToID: to, Reason: ReasonRetentionExpired},
+				ResumeAtID: to,
+				Events:     log.From(to),
+			}, nil
+		}
 	}
 
 	if !log.Has(resumeFrom) {
