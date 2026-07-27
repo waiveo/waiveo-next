@@ -142,6 +142,72 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/devices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List devices
+         * @description Returns a keyset-paginated, selector-filterable page of the adopted physical devices behind this deployment's relays.
+         */
+        get: operations["listDevices"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/entities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List entities and their current state
+         * @description Returns a keyset-paginated, selector-filterable page of entities — the addressable device-plane objects a device exposes, and the targets `rules/1` entity references and this API's command operation resolve to.
+         */
+        get: operations["listEntities"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/entities/{entity_id}/commands": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entity_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Send a command to an entity
+         * @description Dispatches one device command to the entity's owning relay over that relay's existing persistent connection and returns the relay's own correlated result (`relay/1` REL-112). The command is addressed to a single already-resolved entity: `relay/1` accepts no selector or device-class filter, so fanning a command across a set is a client's (or `rules/1`'s) concern, not this operation's.
+         *
+         *     The exchange completes within this request/response cycle — the relay answers on the same connection — so this operation returns its result synchronously rather than the `202 Accepted` plus Job that `contracts/api-1.md#fleet-mutating-operations--the-job-resource` requires of work that cannot complete in-cycle.
+         *
+         *     A mutating POST tagged `mcp:act`, so it accepts `Idempotency-Key`: a client's retry-on-timeout replays the retained result rather than firing the command at the physical device a second time.
+         */
+        post: operations["sendEntityCommand"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/jobs/{job_id}": {
         parameters: {
             query?: never;
@@ -233,40 +299,6 @@ export interface paths {
         };
         /** List principals (users, API-key clients, internal service principals) */
         get: operations["listPrincipals"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/devices": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List devices */
-        get: operations["listDevices"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/entities": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List entities and their current state */
-        get: operations["listEntities"];
         put?: never;
         post?: never;
         delete?: never;
@@ -565,6 +597,71 @@ export interface components {
             /** @description The `enabled` value to apply to every automation the selector matches. */
             enabled: boolean;
         };
+        /** @description A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping. */
+        LabelMap: {
+            [key: string]: string;
+        };
+        /** @description One adopted physical device behind a relay. Read-only on this API: a device is discovered and adopted by its own relay's device plane (`relay/1` Device plane), so this resource carries no `revision` and no optimistic-concurrency envelope — there is no write here to condition on. A device exposes one or more entities; commands are addressed to those entities, never to the device. */
+        Device: {
+            id: components["schemas"]["Ulid"];
+            /** @description Client-assigned identifier (contracts/api-1.md#client-assignable-external_id). */
+            external_id?: string | null;
+            /** @description The relay whose LAN this device sits on, and through whose connection its entities' commands travel. */
+            relay_id: components["schemas"]["Ulid"];
+            /** @description The device class whose state, attribute, and command vocabulary governs this device (`device-class-registry/1`). */
+            device_class: string;
+            name: string;
+            scope_node: components["schemas"]["Ulid"];
+            labels: components["schemas"]["LabelMap"];
+        };
+        DeviceListResponse: {
+            items: components["schemas"]["Device"][];
+            cursor: components["schemas"]["Cursor"];
+        };
+        /** @description One addressable object a device exposes — the unit `rules/1` entity references resolve to and the unit a device command is addressed to (`relay/1` REL-112). Read-only on this API for the same reason a Device is, and carries no `revision` for the same reason. */
+        Entity: {
+            id: components["schemas"]["Ulid"];
+            /** @description Client-assigned identifier (contracts/api-1.md#client-assignable-external_id). */
+            external_id?: string | null;
+            /** @description The physical device this entity belongs to. A device fans out to many entities, which is why a relay serializes commands per device rather than per entity (`relay/1` REL-115). */
+            device_id: components["schemas"]["Ulid"];
+            /** @description The relay a command to this entity is dispatched through. */
+            relay_id: components["schemas"]["Ulid"];
+            /** @description The device class whose command vocabulary a command to this entity must resolve against (`device-class-registry/1` REG-052). */
+            device_class: string;
+            name: string;
+            scope_node: components["schemas"]["Ulid"];
+            labels: components["schemas"]["LabelMap"];
+            /** @description The entity's last reported state, a value from its device class's own state vocabulary. Absent until the relay has reported one. */
+            state?: string;
+        };
+        EntityListResponse: {
+            items: components["schemas"]["Entity"][];
+            cursor: components["schemas"]["Cursor"];
+        };
+        /** @description One device command to execute against the addressed entity. */
+        EntityCommandRequest: {
+            /** @description The command name, which MUST resolve against the target entity's device class's own command vocabulary (`device-class-registry/1` REG-052); one that does not is refused by the relay without being attempted against the physical device (`relay/1` REL-113). */
+            command: string;
+            /** @description The command's parameters, as its device class declares them. These MAY carry credential material scoped to this single dispatch, which is never written to a durable store and never logged on either side (`relay/1` REL-114). */
+            params?: {
+                [key: string]: unknown;
+            };
+        };
+        /** @description The relay's own answer to a dispatched command (`relay/1` REL-112's `device.command_result`). A `200` with `ok: false` is a completed exchange whose command did not succeed — not a failed request; the request itself failing is a Problem with an api/1 `code`. */
+        EntityCommandResult: {
+            ok: boolean;
+            error?: components["schemas"]["EntityCommandError"];
+        };
+        /** @description Present if and only if `ok` is false. `code` is drawn from `relay/1`'s own Error taxonomy — the same reuse-by-name discipline api/1 applies to a validation failure's per-field codes (API-013): the contract that owns the rule owns the code. */
+        EntityCommandError: {
+            /**
+             * @description A `relay/1` Error-taxonomy value — `COMMAND_UNRESOLVED` when the command is not one the target's device class declares (REL-113), `COMMAND_TARGET_UNREACHABLE` when the relay could not reach the device, `INTERNAL` for an unclassified relay-side failure.
+             * @enum {string}
+             */
+            code: "COMMAND_UNRESOLVED" | "COMMAND_TARGET_UNREACHABLE" | "INTERNAL";
+            message: string;
+        };
         /** @description The accepted-work resource returned by 202 Accepted. A client polls this resource (`GET /jobs/{job_id}`) until `state` reaches a terminal value (`succeeded`, `failed`, or `partial`). */
         Job: {
             id: components["schemas"]["Ulid"];
@@ -662,6 +759,15 @@ export interface components {
         };
         /** @description The principal exceeded its rate limit. */
         TooManyRequests: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
+        /** @description The server or a dependency it needs is temporarily unable to serve the request (`code: UNAVAILABLE`) — for a device command, the target entity's relay has no live connection to carry it. Retryable. */
+        ServiceUnavailable: {
             headers: {
                 [name: string]: unknown;
             };
@@ -1109,6 +1215,114 @@ export interface operations {
             429: components["responses"]["TooManyRequests"];
         };
     };
+    listDevices: {
+        parameters: {
+            query?: {
+                /** @description Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client. */
+                cursor?: components["parameters"]["CursorParam"];
+                /** @description Maximum rows to return in this page. */
+                limit?: components["parameters"]["LimitParam"];
+                /** @description A label-selector string: comma-separated, ANDed terms (equality, inequality, set-membership, set-exclusion, existence, non-existence, or a `scope_node subtree <ulid>` term). See `contracts/api-1.md#label-selector-grammar` for the full grammar. */
+                selector?: components["parameters"]["SelectorParam"];
+            };
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of devices. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeviceListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    listEntities: {
+        parameters: {
+            query?: {
+                /** @description Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client. */
+                cursor?: components["parameters"]["CursorParam"];
+                /** @description Maximum rows to return in this page. */
+                limit?: components["parameters"]["LimitParam"];
+                /** @description A label-selector string: comma-separated, ANDed terms (equality, inequality, set-membership, set-exclusion, existence, non-existence, or a `scope_node subtree <ulid>` term). See `contracts/api-1.md#label-selector-grammar` for the full grammar. */
+                selector?: components["parameters"]["SelectorParam"];
+            };
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of entities. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntityListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    sendEntityCommand: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                entity_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EntityCommandRequest"];
+            };
+        };
+        responses: {
+            /** @description The relay answered. `ok` reports whether the command succeeded against the physical device; a refusal the relay typed itself (an undeclared command, an unreachable device) rides `error`. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntityCommandResult"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
     getJob: {
         parameters: {
             query?: never;
@@ -1215,44 +1429,6 @@ export interface operations {
         };
     };
     listPrincipals: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Stub — resource detail intentionally deferred. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            401: components["responses"]["Unauthorized"];
-        };
-    };
-    listDevices: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Stub — resource detail intentionally deferred. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            401: components["responses"]["Unauthorized"];
-        };
-    };
-    listEntities: {
         parameters: {
             query?: never;
             header?: never;

@@ -115,54 +115,75 @@ func (e AutomationUpdateMode) Valid() bool {
 	}
 }
 
+// Defines values for EntityCommandErrorCode.
+const (
+	EntityCommandErrorCodeCOMMANDTARGETUNREACHABLE EntityCommandErrorCode = "COMMAND_TARGET_UNREACHABLE"
+	EntityCommandErrorCodeCOMMANDUNRESOLVED        EntityCommandErrorCode = "COMMAND_UNRESOLVED"
+	EntityCommandErrorCodeINTERNAL                 EntityCommandErrorCode = "INTERNAL"
+)
+
+// Valid indicates whether the value is a known member of the EntityCommandErrorCode enum.
+func (e EntityCommandErrorCode) Valid() bool {
+	switch e {
+	case EntityCommandErrorCodeCOMMANDTARGETUNREACHABLE:
+		return true
+	case EntityCommandErrorCodeCOMMANDUNRESOLVED:
+		return true
+	case EntityCommandErrorCodeINTERNAL:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ErrorCode.
 const (
-	CURSORINVALID            ErrorCode = "CURSOR_INVALID"
-	EXTERNALIDCONFLICT       ErrorCode = "EXTERNAL_ID_CONFLICT"
-	FORBIDDEN                ErrorCode = "FORBIDDEN"
-	IDEMPOTENCYKEYINPROGRESS ErrorCode = "IDEMPOTENCY_KEY_IN_PROGRESS"
-	IDEMPOTENCYKEYREUSED     ErrorCode = "IDEMPOTENCY_KEY_REUSED"
-	IFMATCHREQUIRED          ErrorCode = "IF_MATCH_REQUIRED"
-	INTERNAL                 ErrorCode = "INTERNAL"
-	NOTFOUND                 ErrorCode = "NOT_FOUND"
-	RATELIMITED              ErrorCode = "RATE_LIMITED"
-	REVISIONCONFLICT         ErrorCode = "REVISION_CONFLICT"
-	SELECTORINVALID          ErrorCode = "SELECTOR_INVALID"
-	UNAUTHENTICATED          ErrorCode = "UNAUTHENTICATED"
-	UNAVAILABLE              ErrorCode = "UNAVAILABLE"
-	VALIDATIONFAILED         ErrorCode = "VALIDATION_FAILED"
+	ErrorCodeCURSORINVALID            ErrorCode = "CURSOR_INVALID"
+	ErrorCodeEXTERNALIDCONFLICT       ErrorCode = "EXTERNAL_ID_CONFLICT"
+	ErrorCodeFORBIDDEN                ErrorCode = "FORBIDDEN"
+	ErrorCodeIDEMPOTENCYKEYINPROGRESS ErrorCode = "IDEMPOTENCY_KEY_IN_PROGRESS"
+	ErrorCodeIDEMPOTENCYKEYREUSED     ErrorCode = "IDEMPOTENCY_KEY_REUSED"
+	ErrorCodeIFMATCHREQUIRED          ErrorCode = "IF_MATCH_REQUIRED"
+	ErrorCodeINTERNAL                 ErrorCode = "INTERNAL"
+	ErrorCodeNOTFOUND                 ErrorCode = "NOT_FOUND"
+	ErrorCodeRATELIMITED              ErrorCode = "RATE_LIMITED"
+	ErrorCodeREVISIONCONFLICT         ErrorCode = "REVISION_CONFLICT"
+	ErrorCodeSELECTORINVALID          ErrorCode = "SELECTOR_INVALID"
+	ErrorCodeUNAUTHENTICATED          ErrorCode = "UNAUTHENTICATED"
+	ErrorCodeUNAVAILABLE              ErrorCode = "UNAVAILABLE"
+	ErrorCodeVALIDATIONFAILED         ErrorCode = "VALIDATION_FAILED"
 )
 
 // Valid indicates whether the value is a known member of the ErrorCode enum.
 func (e ErrorCode) Valid() bool {
 	switch e {
-	case CURSORINVALID:
+	case ErrorCodeCURSORINVALID:
 		return true
-	case EXTERNALIDCONFLICT:
+	case ErrorCodeEXTERNALIDCONFLICT:
 		return true
-	case FORBIDDEN:
+	case ErrorCodeFORBIDDEN:
 		return true
-	case IDEMPOTENCYKEYINPROGRESS:
+	case ErrorCodeIDEMPOTENCYKEYINPROGRESS:
 		return true
-	case IDEMPOTENCYKEYREUSED:
+	case ErrorCodeIDEMPOTENCYKEYREUSED:
 		return true
-	case IFMATCHREQUIRED:
+	case ErrorCodeIFMATCHREQUIRED:
 		return true
-	case INTERNAL:
+	case ErrorCodeINTERNAL:
 		return true
-	case NOTFOUND:
+	case ErrorCodeNOTFOUND:
 		return true
-	case RATELIMITED:
+	case ErrorCodeRATELIMITED:
 		return true
-	case REVISIONCONFLICT:
+	case ErrorCodeREVISIONCONFLICT:
 		return true
-	case SELECTORINVALID:
+	case ErrorCodeSELECTORINVALID:
 		return true
-	case UNAUTHENTICATED:
+	case ErrorCodeUNAUTHENTICATED:
 		return true
-	case UNAVAILABLE:
+	case ErrorCodeUNAVAILABLE:
 		return true
-	case VALIDATIONFAILED:
+	case ErrorCodeVALIDATIONFAILED:
 		return true
 	default:
 		return false
@@ -377,6 +398,96 @@ type AutomationUpdateMode string
 // Cursor An opaque, URL-safe continuation token. `null` signals no further rows. Never constructed, parsed, or compared for meaning by a client.
 type Cursor = *string
 
+// Device One adopted physical device behind a relay. Read-only on this API: a device is discovered and adopted by its own relay's device plane (`relay/1` Device plane), so this resource carries no `revision` and no optimistic-concurrency envelope — there is no write here to condition on. A device exposes one or more entities; commands are addressed to those entities, never to the device.
+type Device struct {
+	// DeviceClass The device class whose state, attribute, and command vocabulary governs this device (`device-class-registry/1`).
+	DeviceClass string `json:"device_class"`
+
+	// ExternalId Client-assigned identifier (contracts/api-1.md#client-assignable-external_id).
+	ExternalId **string `json:"external_id,omitempty"`
+
+	// Id A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	Id Ulid `json:"id"`
+
+	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
+	Labels LabelMap `json:"labels"`
+	Name   string   `json:"name"`
+
+	// RelayId The relay whose LAN this device sits on, and through whose connection its entities' commands travel.
+	RelayId Ulid `json:"relay_id"`
+
+	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScopeNode Ulid `json:"scope_node"`
+}
+
+// DeviceListResponse defines model for DeviceListResponse.
+type DeviceListResponse struct {
+	// Cursor An opaque, URL-safe continuation token. `null` signals no further rows. Never constructed, parsed, or compared for meaning by a client.
+	Cursor Cursor   `json:"cursor"`
+	Items  []Device `json:"items"`
+}
+
+// Entity One addressable object a device exposes — the unit `rules/1` entity references resolve to and the unit a device command is addressed to (`relay/1` REL-112). Read-only on this API for the same reason a Device is, and carries no `revision` for the same reason.
+type Entity struct {
+	// DeviceClass The device class whose command vocabulary a command to this entity must resolve against (`device-class-registry/1` REG-052).
+	DeviceClass string `json:"device_class"`
+
+	// DeviceId The physical device this entity belongs to. A device fans out to many entities, which is why a relay serializes commands per device rather than per entity (`relay/1` REL-115).
+	DeviceId Ulid `json:"device_id"`
+
+	// ExternalId Client-assigned identifier (contracts/api-1.md#client-assignable-external_id).
+	ExternalId **string `json:"external_id,omitempty"`
+
+	// Id A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	Id Ulid `json:"id"`
+
+	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
+	Labels LabelMap `json:"labels"`
+	Name   string   `json:"name"`
+
+	// RelayId The relay a command to this entity is dispatched through.
+	RelayId Ulid `json:"relay_id"`
+
+	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScopeNode Ulid `json:"scope_node"`
+
+	// State The entity's last reported state, a value from its device class's own state vocabulary. Absent until the relay has reported one.
+	State *string `json:"state,omitempty"`
+}
+
+// EntityCommandError Present if and only if `ok` is false. `code` is drawn from `relay/1`'s own Error taxonomy — the same reuse-by-name discipline api/1 applies to a validation failure's per-field codes (API-013): the contract that owns the rule owns the code.
+type EntityCommandError struct {
+	// Code A `relay/1` Error-taxonomy value — `COMMAND_UNRESOLVED` when the command is not one the target's device class declares (REL-113), `COMMAND_TARGET_UNREACHABLE` when the relay could not reach the device, `INTERNAL` for an unclassified relay-side failure.
+	Code    EntityCommandErrorCode `json:"code"`
+	Message string                 `json:"message"`
+}
+
+// EntityCommandErrorCode A `relay/1` Error-taxonomy value — `COMMAND_UNRESOLVED` when the command is not one the target's device class declares (REL-113), `COMMAND_TARGET_UNREACHABLE` when the relay could not reach the device, `INTERNAL` for an unclassified relay-side failure.
+type EntityCommandErrorCode string
+
+// EntityCommandRequest One device command to execute against the addressed entity.
+type EntityCommandRequest struct {
+	// Command The command name, which MUST resolve against the target entity's device class's own command vocabulary (`device-class-registry/1` REG-052); one that does not is refused by the relay without being attempted against the physical device (`relay/1` REL-113).
+	Command string `json:"command"`
+
+	// Params The command's parameters, as its device class declares them. These MAY carry credential material scoped to this single dispatch, which is never written to a durable store and never logged on either side (`relay/1` REL-114).
+	Params *map[string]interface{} `json:"params,omitempty"`
+}
+
+// EntityCommandResult The relay's own answer to a dispatched command (`relay/1` REL-112's `device.command_result`). A `200` with `ok: false` is a completed exchange whose command did not succeed — not a failed request; the request itself failing is a Problem with an api/1 `code`.
+type EntityCommandResult struct {
+	// Error Present if and only if `ok` is false. `code` is drawn from `relay/1`'s own Error taxonomy — the same reuse-by-name discipline api/1 applies to a validation failure's per-field codes (API-013): the contract that owns the rule owns the code.
+	Error *EntityCommandError `json:"error,omitempty"`
+	Ok    bool                `json:"ok"`
+}
+
+// EntityListResponse defines model for EntityListResponse.
+type EntityListResponse struct {
+	// Cursor An opaque, URL-safe continuation token. `null` signals no further rows. Never constructed, parsed, or compared for meaning by a client.
+	Cursor Cursor   `json:"cursor"`
+	Items  []Entity `json:"items"`
+}
+
 // ErrorCode The stable, additive-only machine-readable error registry (`contracts/api-1.md#error-taxonomy`).
 type ErrorCode string
 
@@ -414,6 +525,9 @@ type Label struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
 }
+
+// LabelMap A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
+type LabelMap map[string]string
 
 // Problem RFC 9457 problem+json, extended with `code` (this contract's machine-readable error registry) and `trace_id`. `code` is the discriminant a client asserts on; `title`/`detail` are for humans.
 type Problem struct {
@@ -557,6 +671,9 @@ type PreconditionFailed = Problem
 // PreconditionRequired RFC 9457 problem+json, extended with `code` (this contract's machine-readable error registry) and `trace_id`. `code` is the discriminant a client asserts on; `title`/`detail` are for humans.
 type PreconditionRequired = Problem
 
+// ServiceUnavailable RFC 9457 problem+json, extended with `code` (this contract's machine-readable error registry) and `trace_id`. `code` is the discriminant a client asserts on; `title`/`detail` are for humans.
+type ServiceUnavailable = Problem
+
 // TooManyRequests RFC 9457 problem+json, extended with `code` (this contract's machine-readable error registry) and `trace_id`. `code` is the discriminant a client asserts on; `title`/`detail` are for humans.
 type TooManyRequests = Problem
 
@@ -631,6 +748,45 @@ type UpdateAutomationParams struct {
 
 // RunAutomationParams defines parameters for RunAutomation.
 type RunAutomationParams struct {
+	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
+	IdempotencyKey *IdempotencyKeyParam `json:"Idempotency-Key,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// ListDevicesParams defines parameters for ListDevices.
+type ListDevicesParams struct {
+	// Cursor Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client.
+	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Limit Maximum rows to return in this page.
+	Limit *LimitParam `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Selector A label-selector string: comma-separated, ANDed terms (equality, inequality, set-membership, set-exclusion, existence, non-existence, or a `scope_node subtree <ulid>` term). See `contracts/api-1.md#label-selector-grammar` for the full grammar.
+	Selector *SelectorParam `form:"selector,omitempty" json:"selector,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// ListEntitiesParams defines parameters for ListEntities.
+type ListEntitiesParams struct {
+	// Cursor Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client.
+	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Limit Maximum rows to return in this page.
+	Limit *LimitParam `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Selector A label-selector string: comma-separated, ANDed terms (equality, inequality, set-membership, set-exclusion, existence, non-existence, or a `scope_node subtree <ulid>` term). See `contracts/api-1.md#label-selector-grammar` for the full grammar.
+	Selector *SelectorParam `form:"selector,omitempty" json:"selector,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// SendEntityCommandParams defines parameters for SendEntityCommand.
+type SendEntityCommandParams struct {
 	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
 	IdempotencyKey *IdempotencyKeyParam `json:"Idempotency-Key,omitempty"`
 
@@ -727,6 +883,9 @@ type UpdateAutomationJSONRequestBody = AutomationUpdate
 
 // RunAutomationJSONRequestBody defines body for RunAutomation for application/json ContentType.
 type RunAutomationJSONRequestBody = AutomationRunRequest
+
+// SendEntityCommandJSONRequestBody defines body for SendEntityCommand for application/json ContentType.
+type SendEntityCommandJSONRequestBody = EntityCommandRequest
 
 // CreateScopeNodeJSONRequestBody defines body for CreateScopeNode for application/json ContentType.
 type CreateScopeNodeJSONRequestBody = ScopeNodeCreate
@@ -843,10 +1002,15 @@ type ClientInterface interface {
 	ListCasts(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListDevices request
-	ListDevices(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+	ListDevices(ctx context.Context, params *ListDevicesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListEntities request
-	ListEntities(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+	ListEntities(ctx context.Context, params *ListEntitiesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// SendEntityCommandWithBody request with any body
+	SendEntityCommandWithBody(ctx context.Context, entityId Ulid, params *SendEntityCommandParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	SendEntityCommand(ctx context.Context, entityId Ulid, params *SendEntityCommandParams, body SendEntityCommandJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetJob request
 	GetJob(ctx context.Context, jobId Ulid, params *GetJobParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -1045,8 +1209,8 @@ func (c *Client) ListCasts(ctx context.Context, reqEditors ...RequestEditorFn) (
 	return c.Client.Do(req)
 }
 
-func (c *Client) ListDevices(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewListDevicesRequest(c.Server)
+func (c *Client) ListDevices(ctx context.Context, params *ListDevicesParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListDevicesRequest(c.Server, params)
 	if err != nil {
 		return nil, err
 	}
@@ -1057,8 +1221,32 @@ func (c *Client) ListDevices(ctx context.Context, reqEditors ...RequestEditorFn)
 	return c.Client.Do(req)
 }
 
-func (c *Client) ListEntities(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewListEntitiesRequest(c.Server)
+func (c *Client) ListEntities(ctx context.Context, params *ListEntitiesParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListEntitiesRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) SendEntityCommandWithBody(ctx context.Context, entityId Ulid, params *SendEntityCommandParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSendEntityCommandRequestWithBody(c.Server, entityId, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) SendEntityCommand(ctx context.Context, entityId Ulid, params *SendEntityCommandParams, body SendEntityCommandJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSendEntityCommandRequest(c.Server, entityId, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -1768,7 +1956,7 @@ func NewListCastsRequest(server string) (*http.Request, error) {
 }
 
 // NewListDevicesRequest generates requests for ListDevices
-func NewListDevicesRequest(server string) (*http.Request, error) {
+func NewListDevicesRequest(server string, params *ListDevicesParams) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -1786,16 +1974,82 @@ func NewListDevicesRequest(server string) (*http.Request, error) {
 		return nil, err
 	}
 
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.Cursor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "cursor", *params.Cursor, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "limit", *params.Limit, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Selector != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "selector", *params.Selector, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
 	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
 	if err != nil {
 		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
 	}
 
 	return req, nil
 }
 
 // NewListEntitiesRequest generates requests for ListEntities
-func NewListEntitiesRequest(server string) (*http.Request, error) {
+func NewListEntitiesRequest(server string, params *ListEntitiesParams) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -1813,9 +2067,148 @@ func NewListEntitiesRequest(server string) (*http.Request, error) {
 		return nil, err
 	}
 
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.Cursor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "cursor", *params.Cursor, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "limit", *params.Limit, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Selector != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "selector", *params.Selector, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
 	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
 	if err != nil {
 		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewSendEntityCommandRequest calls the generic SendEntityCommand builder with application/json body
+func NewSendEntityCommandRequest(server string, entityId Ulid, params *SendEntityCommandParams, body SendEntityCommandJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewSendEntityCommandRequestWithBody(server, entityId, params, "application/json", bodyReader)
+}
+
+// NewSendEntityCommandRequestWithBody generates requests for SendEntityCommand with any type of body
+func NewSendEntityCommandRequestWithBody(server string, entityId Ulid, params *SendEntityCommandParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "entity_id", entityId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/entities/%s/commands", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.IdempotencyKey != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Idempotency-Key", *params.IdempotencyKey, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Idempotency-Key", headerParam0)
+		}
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
+		}
+
 	}
 
 	return req, nil
@@ -2529,10 +2922,15 @@ type ClientWithResponsesInterface interface {
 	ListCastsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListCastsResponse, error)
 
 	// ListDevicesWithResponse request
-	ListDevicesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListDevicesResponse, error)
+	ListDevicesWithResponse(ctx context.Context, params *ListDevicesParams, reqEditors ...RequestEditorFn) (*ListDevicesResponse, error)
 
 	// ListEntitiesWithResponse request
-	ListEntitiesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListEntitiesResponse, error)
+	ListEntitiesWithResponse(ctx context.Context, params *ListEntitiesParams, reqEditors ...RequestEditorFn) (*ListEntitiesResponse, error)
+
+	// SendEntityCommandWithBodyWithResponse request with any body
+	SendEntityCommandWithBodyWithResponse(ctx context.Context, entityId Ulid, params *SendEntityCommandParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SendEntityCommandResponse, error)
+
+	SendEntityCommandWithResponse(ctx context.Context, entityId Ulid, params *SendEntityCommandParams, body SendEntityCommandJSONRequestBody, reqEditors ...RequestEditorFn) (*SendEntityCommandResponse, error)
 
 	// GetJobWithResponse request
 	GetJobWithResponse(ctx context.Context, jobId Ulid, params *GetJobParams, reqEditors ...RequestEditorFn) (*GetJobResponse, error)
@@ -2881,7 +3279,10 @@ func (r ListCastsResponse) ContentType() string {
 type ListDevicesResponse struct {
 	Body                      []byte
 	HTTPResponse              *http.Response
+	JSON200                   *DeviceListResponse
+	ApplicationproblemJSON400 *BadRequest
 	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON429 *TooManyRequests
 }
 
 // Status returns HTTPResponse.Status
@@ -2911,7 +3312,10 @@ func (r ListDevicesResponse) ContentType() string {
 type ListEntitiesResponse struct {
 	Body                      []byte
 	HTTPResponse              *http.Response
+	JSON200                   *EntityListResponse
+	ApplicationproblemJSON400 *BadRequest
 	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON429 *TooManyRequests
 }
 
 // Status returns HTTPResponse.Status
@@ -2932,6 +3336,44 @@ func (r ListEntitiesResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r ListEntitiesResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type SendEntityCommandResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *EntityCommandResult
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON409 *Conflict
+	ApplicationproblemJSON422 *UnprocessableContent
+	ApplicationproblemJSON429 *TooManyRequests
+	ApplicationproblemJSON503 *ServiceUnavailable
+}
+
+// Status returns HTTPResponse.Status
+func (r SendEntityCommandResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r SendEntityCommandResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r SendEntityCommandResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -3442,8 +3884,8 @@ func (c *ClientWithResponses) ListCastsWithResponse(ctx context.Context, reqEdit
 }
 
 // ListDevicesWithResponse request returning *ListDevicesResponse
-func (c *ClientWithResponses) ListDevicesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListDevicesResponse, error) {
-	rsp, err := c.ListDevices(ctx, reqEditors...)
+func (c *ClientWithResponses) ListDevicesWithResponse(ctx context.Context, params *ListDevicesParams, reqEditors ...RequestEditorFn) (*ListDevicesResponse, error) {
+	rsp, err := c.ListDevices(ctx, params, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -3451,12 +3893,29 @@ func (c *ClientWithResponses) ListDevicesWithResponse(ctx context.Context, reqEd
 }
 
 // ListEntitiesWithResponse request returning *ListEntitiesResponse
-func (c *ClientWithResponses) ListEntitiesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListEntitiesResponse, error) {
-	rsp, err := c.ListEntities(ctx, reqEditors...)
+func (c *ClientWithResponses) ListEntitiesWithResponse(ctx context.Context, params *ListEntitiesParams, reqEditors ...RequestEditorFn) (*ListEntitiesResponse, error) {
+	rsp, err := c.ListEntities(ctx, params, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
 	return ParseListEntitiesResponse(rsp)
+}
+
+// SendEntityCommandWithBodyWithResponse request with arbitrary body returning *SendEntityCommandResponse
+func (c *ClientWithResponses) SendEntityCommandWithBodyWithResponse(ctx context.Context, entityId Ulid, params *SendEntityCommandParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SendEntityCommandResponse, error) {
+	rsp, err := c.SendEntityCommandWithBody(ctx, entityId, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSendEntityCommandResponse(rsp)
+}
+
+func (c *ClientWithResponses) SendEntityCommandWithResponse(ctx context.Context, entityId Ulid, params *SendEntityCommandParams, body SendEntityCommandJSONRequestBody, reqEditors ...RequestEditorFn) (*SendEntityCommandResponse, error) {
+	rsp, err := c.SendEntityCommand(ctx, entityId, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSendEntityCommandResponse(rsp)
 }
 
 // GetJobWithResponse request returning *GetJobResponse
@@ -4062,12 +4521,33 @@ func ParseListDevicesResponse(rsp *http.Response) (*ListDevicesResponse, error) 
 	}
 
 	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest DeviceListResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
 		var dest Unauthorized
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}
 		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
 
 	}
 
@@ -4088,12 +4568,115 @@ func ParseListEntitiesResponse(rsp *http.Response) (*ListEntitiesResponse, error
 	}
 
 	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest EntityListResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
 		var dest Unauthorized
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}
 		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseSendEntityCommandResponse parses an HTTP response from a SendEntityCommandWithResponse call
+func ParseSendEntityCommandResponse(rsp *http.Response) (*SendEntityCommandResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &SendEntityCommandResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest EntityCommandResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest ServiceUnavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
 
 	}
 

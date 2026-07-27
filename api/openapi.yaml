@@ -30,9 +30,19 @@ tags:
   - name: scope-nodes
     description: The org → site → group → screen tree every resource and durable event attaches to. Worked fully.
   - name: devices
-    description: The device registry (discovery, adoption, commands). Path stub.
+    description: >-
+      The device registry — the adopted physical devices behind each site's
+      relay. Read-only in this minor: a device enters the registry through the
+      relay's own discovery and adoption plane (`relay/1` Device plane), not
+      through an authoring write here. Discovery and adoption operations are a
+      later minor.
   - name: entities
-    description: The entity registry and state (device-plane objects; see rules/1 for automation semantics over entities). Path stub.
+    description: >-
+      The entity registry and state (device-plane objects; see rules/1 for
+      automation semantics over entities). Read-only in this minor, plus the
+      command operation — `relay/1` REL-112 addresses a device operation by a
+      single already-resolved `entity_id`, so an entity, not a device, is what a
+      command is sent to.
   - name: automations
     description: Rules — triggers, conditions, actions, and modes (rules/1 defines the vocabulary; this API manages the resource envelope around it). Worked fully.
   - name: casts
@@ -469,6 +479,146 @@ paths:
           $ref: "#/components/responses/TooManyRequests"
 
   # ---------------------------------------------------------------------
+  # devices + entities — the device plane's read surface and its one
+  # mutating operation, the command a relay executes against a physical
+  # device (relay/1 Device plane, REL-112/113).
+  #
+  # Both families are read-only here: a device and its entities enter the
+  # registry through the relay's own discovery and adoption plane, never
+  # through an authoring write on this API, so neither declares a create,
+  # update, or delete. Adoption operations are a later minor, additive to
+  # these paths.
+  # ---------------------------------------------------------------------
+  /devices:
+    get:
+      operationId: listDevices
+      summary: List devices
+      description: >-
+        Returns a keyset-paginated, selector-filterable page of the adopted
+        physical devices behind this deployment's relays.
+      tags: [devices, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/CursorParam"
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/SelectorParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: A page of devices.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+  /entities:
+    get:
+      operationId: listEntities
+      summary: List entities and their current state
+      description: >-
+        Returns a keyset-paginated, selector-filterable page of entities —
+        the addressable device-plane objects a device exposes, and the
+        targets `rules/1` entity references and this API's command
+        operation resolve to.
+      tags: [entities, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/CursorParam"
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/SelectorParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: A page of entities.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EntityListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+  /entities/{entity_id}/commands:
+    parameters:
+      - name: entity_id
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/Ulid"
+    post:
+      operationId: sendEntityCommand
+      summary: Send a command to an entity
+      description: >-
+        Dispatches one device command to the entity's owning relay over that
+        relay's existing persistent connection and returns the relay's own
+        correlated result (`relay/1` REL-112). The command is addressed to a
+        single already-resolved entity: `relay/1` accepts no selector or
+        device-class filter, so fanning a command across a set is a client's
+        (or `rules/1`'s) concern, not this operation's.
+
+
+        The exchange completes within this request/response cycle — the
+        relay answers on the same connection — so this operation returns its
+        result synchronously rather than the `202 Accepted` plus Job that
+        `contracts/api-1.md#fleet-mutating-operations--the-job-resource`
+        requires of work that cannot complete in-cycle.
+
+
+        A mutating POST tagged `mcp:act`, so it accepts `Idempotency-Key`: a
+        client's retry-on-timeout replays the retained result rather than
+        firing the command at the physical device a second time.
+      tags: [entities, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EntityCommandRequest"
+      responses:
+        "200":
+          description: >-
+            The relay answered. `ok` reports whether the command succeeded
+            against the physical device; a refusal the relay typed itself
+            (an undeclared command, an unreachable device) rides `error`.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EntityCommandResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  # ---------------------------------------------------------------------
   # jobs — the async Job resource a fleet-mutating or otherwise
   # not-synchronously-completable operation returns via 202 Accepted
   # (contracts/api-1.md#fleet-mutating-operations--the-job-resource).
@@ -594,26 +744,6 @@ paths:
       operationId: listPrincipals
       summary: List principals (users, API-key clients, internal service principals)
       tags: [principals, "mcp:read"]
-      responses:
-        "200":
-          description: Stub — resource detail intentionally deferred.
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-  /devices:
-    get:
-      operationId: listDevices
-      summary: List devices
-      tags: [devices, "mcp:read"]
-      responses:
-        "200":
-          description: Stub — resource detail intentionally deferred.
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-  /entities:
-    get:
-      operationId: listEntities
-      summary: List entities and their current state
-      tags: [entities, "mcp:read"]
       responses:
         "200":
           description: Stub — resource detail intentionally deferred.
@@ -820,6 +950,15 @@ components:
             $ref: "#/components/schemas/Problem"
     TooManyRequests:
       description: The principal exceeded its rate limit.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    ServiceUnavailable:
+      description: >-
+        The server or a dependency it needs is temporarily unable to serve
+        the request (`code: UNAVAILABLE`) — for a device command, the target
+        entity's relay has no live connection to carry it. Retryable.
       content:
         application/problem+json:
           schema:
@@ -1280,6 +1419,182 @@ components:
         enabled:
           type: boolean
           description: The `enabled` value to apply to every automation the selector matches.
+
+    # -----------------------------------------------------------------
+    # devices + entities — the device plane's read surface and the
+    # command operation (relay/1 Device plane, REL-112/113).
+    # -----------------------------------------------------------------
+    LabelMap:
+      type: object
+      description: >-
+        A resource's labels as the key→value map the label-selector grammar
+        evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and
+        values are constrained by API-042's charsets, which is what makes
+        every label expressible in a selector term without escaping.
+      additionalProperties:
+        type: string
+        pattern: "^([a-z0-9A-Z][a-z0-9A-Z_.-]{0,62})?$"
+      propertyNames:
+        pattern: "^([a-z0-9A-Z][a-z0-9A-Z.-]{0,251}/)?[a-z0-9A-Z][a-z0-9A-Z_.-]{0,62}$"
+
+    Device:
+      type: object
+      description: >-
+        One adopted physical device behind a relay. Read-only on this API:
+        a device is discovered and adopted by its own relay's device plane
+        (`relay/1` Device plane), so this resource carries no `revision`
+        and no optimistic-concurrency envelope — there is no write here to
+        condition on. A device exposes one or more entities; commands are
+        addressed to those entities, never to the device.
+      required: [id, relay_id, device_class, name, scope_node, labels]
+      additionalProperties: false
+      properties:
+        id:
+          $ref: "#/components/schemas/Ulid"
+        external_id:
+          type: ["string", "null"]
+          description: Client-assigned identifier (contracts/api-1.md#client-assignable-external_id).
+          x-go-type: "*string"
+        relay_id:
+          allOf:
+            - $ref: "#/components/schemas/Ulid"
+          description: The relay whose LAN this device sits on, and through whose connection its entities' commands travel.
+        device_class:
+          type: string
+          description: The device class whose state, attribute, and command vocabulary governs this device (`device-class-registry/1`).
+        name:
+          type: string
+        scope_node:
+          $ref: "#/components/schemas/Ulid"
+        labels:
+          $ref: "#/components/schemas/LabelMap"
+
+    DeviceListResponse:
+      type: object
+      required: [items, cursor]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Device"
+        cursor:
+          $ref: "#/components/schemas/Cursor"
+
+    Entity:
+      type: object
+      description: >-
+        One addressable object a device exposes — the unit `rules/1` entity
+        references resolve to and the unit a device command is addressed to
+        (`relay/1` REL-112). Read-only on this API for the same reason a
+        Device is, and carries no `revision` for the same reason.
+      required: [id, device_id, relay_id, device_class, name, scope_node, labels]
+      additionalProperties: false
+      properties:
+        id:
+          $ref: "#/components/schemas/Ulid"
+        external_id:
+          type: ["string", "null"]
+          description: Client-assigned identifier (contracts/api-1.md#client-assignable-external_id).
+          x-go-type: "*string"
+        device_id:
+          allOf:
+            - $ref: "#/components/schemas/Ulid"
+          description: >-
+            The physical device this entity belongs to. A device fans out to
+            many entities, which is why a relay serializes commands per
+            device rather than per entity (`relay/1` REL-115).
+        relay_id:
+          allOf:
+            - $ref: "#/components/schemas/Ulid"
+          description: The relay a command to this entity is dispatched through.
+        device_class:
+          type: string
+          description: The device class whose command vocabulary a command to this entity must resolve against (`device-class-registry/1` REG-052).
+        name:
+          type: string
+        scope_node:
+          $ref: "#/components/schemas/Ulid"
+        labels:
+          $ref: "#/components/schemas/LabelMap"
+        state:
+          type: string
+          description: >-
+            The entity's last reported state, a value from its device
+            class's own state vocabulary. Absent until the relay has
+            reported one.
+
+    EntityListResponse:
+      type: object
+      required: [items, cursor]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Entity"
+        cursor:
+          $ref: "#/components/schemas/Cursor"
+
+    EntityCommandRequest:
+      type: object
+      description: One device command to execute against the addressed entity.
+      required: [command]
+      additionalProperties: false
+      properties:
+        command:
+          type: string
+          minLength: 1
+          description: >-
+            The command name, which MUST resolve against the target
+            entity's device class's own command vocabulary
+            (`device-class-registry/1` REG-052); one that does not is
+            refused by the relay without being attempted against the
+            physical device (`relay/1` REL-113).
+        params:
+          type: object
+          additionalProperties: true
+          description: >-
+            The command's parameters, as its device class declares them.
+            These MAY carry credential material scoped to this single
+            dispatch, which is never written to a durable store and never
+            logged on either side (`relay/1` REL-114).
+
+    EntityCommandResult:
+      type: object
+      description: >-
+        The relay's own answer to a dispatched command (`relay/1` REL-112's
+        `device.command_result`). A `200` with `ok: false` is a completed
+        exchange whose command did not succeed — not a failed request; the
+        request itself failing is a Problem with an api/1 `code`.
+      required: [ok]
+      additionalProperties: false
+      properties:
+        ok:
+          type: boolean
+        error:
+          $ref: "#/components/schemas/EntityCommandError"
+
+    EntityCommandError:
+      type: object
+      description: >-
+        Present if and only if `ok` is false. `code` is drawn from
+        `relay/1`'s own Error taxonomy — the same reuse-by-name discipline
+        api/1 applies to a validation failure's per-field codes (API-013):
+        the contract that owns the rule owns the code.
+      required: [code, message]
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+          description: >-
+            A `relay/1` Error-taxonomy value — `COMMAND_UNRESOLVED` when the
+            command is not one the target's device class declares (REL-113),
+            `COMMAND_TARGET_UNREACHABLE` when the relay could not reach the
+            device, `INTERNAL` for an unclassified relay-side failure.
+          enum: [COMMAND_UNRESOLVED, COMMAND_TARGET_UNREACHABLE, INTERNAL]
+        message:
+          type: string
 
     # -----------------------------------------------------------------
     # Job — the async resource a fleet-mutating or otherwise
