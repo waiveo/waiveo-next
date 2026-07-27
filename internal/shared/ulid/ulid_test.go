@@ -274,3 +274,109 @@ func decodeMillisForTest(t *testing.T, u string) int64 {
 		uint64(out[3])<<16 | uint64(out[4])<<8 | uint64(out[5])
 	return int64(ms)
 }
+
+// TestMonotonicFromNeverMintsBelowItsFloor is the restart property EVT-011
+// depends on. A generator's monotonicity is per-process; the event log it mints
+// into is not. Seeded with a floor whose timestamp is well AHEAD of the wall
+// clock — which is what a box whose clock came back low looks like from the
+// stored log's point of view — every id it produces must still sort above that
+// floor, so a restarted process cannot append behind a connected subscriber's
+// cursor.
+func TestMonotonicFromNeverMintsBelowItsFloor(t *testing.T) {
+	// A floor ~10 years ahead of now, so no plausible wall-clock read reaches it.
+	floor := encodeForTest(t, uint64(time.Now().UnixMilli())+10*365*24*60*60*1000, 0x00)
+	next := MonotonicFrom(floor)
+
+	prev := floor
+	for i := 0; i < 8; i++ {
+		got := next()
+		if !Valid(got) {
+			t.Fatalf("id %d = %q is not a canonical ULID", i, got)
+		}
+		if got <= floor {
+			t.Fatalf("id %d = %q must sort strictly above the floor %q", i, got, floor)
+		}
+		if got <= prev {
+			t.Fatalf("id %d = %q must sort strictly above the previous id %q", i, got, prev)
+		}
+		prev = got
+	}
+}
+
+// TestMonotonicFromDoesNotPinTheClockForward: a floor in the PAST is a floor,
+// not a starting point. Once the wall clock is above it the generator tracks the
+// clock again, so a long-lived process does not keep minting ids stamped with
+// whatever instant it was seeded from.
+func TestMonotonicFromDoesNotPinTheClockForward(t *testing.T) {
+	before := time.Now().UnixMilli()
+	floor := encodeForTest(t, uint64(before)-60*60*1000, 0xFF) // an hour ago
+	got := MonotonicFrom(floor)()
+
+	ms := decodeMillisForTest(t, got)
+	if ms < before {
+		t.Fatalf("id %q carries timestamp %d, below the wall clock reading %d it was minted at", got, ms, before)
+	}
+	if got <= floor {
+		t.Fatalf("id %q must still sort above the floor %q", got, floor)
+	}
+}
+
+// TestMonotonicFromIgnoresAnUnusableFloor: an empty floor (no stored head — a
+// first boot) and a floor that is not a canonical ULID both degrade to plain
+// Monotonic rather than to a refusal or a zero seed, so a fresh box and a box
+// whose head could not be read both still mint ascending ids at the current
+// time.
+func TestMonotonicFromIgnoresAnUnusableFloor(t *testing.T) {
+	for _, floor := range []string{"", "not-a-ulid", "01J8Z3K4N5P6Q7R8S9T0V1W2Z"} {
+		before := time.Now().UnixMilli()
+		next := MonotonicFrom(floor)
+		a, b := next(), next()
+		if !Valid(a) || !Valid(b) {
+			t.Fatalf("floor %q: minted non-canonical ids %q, %q", floor, a, b)
+		}
+		if a >= b {
+			t.Fatalf("floor %q: ids must be strictly ascending; got %q then %q", floor, a, b)
+		}
+		if ms := decodeMillisForTest(t, a); ms < before {
+			t.Fatalf("floor %q: id %q carries timestamp %d, below the clock reading %d", floor, a, ms, before)
+		}
+	}
+}
+
+// encodeForTest builds a canonical ULID with an exact timestamp and a constant
+// random tail, so a test can name a specific point in ULID space. It is an
+// independent encoder rather than a call to the package's own, so a test that
+// asserts something about a floor is not asserting it against the same code
+// that produced it.
+func encodeForTest(t *testing.T, ms uint64, tail byte) string {
+	t.Helper()
+	var data [16]byte
+	data[0] = byte(ms >> 40)
+	data[1] = byte(ms >> 32)
+	data[2] = byte(ms >> 24)
+	data[3] = byte(ms >> 16)
+	data[4] = byte(ms >> 8)
+	data[5] = byte(ms)
+	for i := 6; i < 16; i++ {
+		data[i] = tail
+	}
+
+	var out [26]byte
+	var bitBuf uint32
+	bitCount := 2
+	outIdx := 0
+	for _, b := range data {
+		bitBuf = (bitBuf << 8) | uint32(b)
+		bitCount += 8
+		for bitCount >= 5 {
+			bitCount -= 5
+			out[outIdx] = crockfordAlphabet[(bitBuf>>uint(bitCount))&0x1F]
+			outIdx++
+		}
+	}
+	s := string(out[:])
+	if !Valid(s) {
+		t.Fatalf("encodeForTest produced %q, which is not a canonical ULID", s)
+	}
+	return s
+}

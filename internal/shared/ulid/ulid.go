@@ -71,13 +71,47 @@ func New() string {
 // silently and permanently drop one from a lagging subscriber's stream
 // (REL-094/097, EVT-135/143). A monotonic id closes that: same-ms ids sort in
 // mint (recording) order.
-func Monotonic() func() string {
+func Monotonic() func() string { return monotonic("") }
+
+// MonotonicFrom is Monotonic seeded with a FLOOR: every id it mints strictly
+// exceeds floor, in addition to strictly exceeding every id it minted before.
+// An empty or non-canonical floor is ignored, making it exactly Monotonic.
+//
+// It exists because a generator's monotonicity is per-process, and the events/1
+// log the ids are minted into is not. EVT-011 requires ids to be "assigned in
+// the platform's own recording order, so that comparing two IDs
+// lexicographically also orders them by recording time" — a property the log
+// itself depends on for delivery ordering and gap accounting, and one a
+// restarted process breaks the moment its clock reads at or below the last id
+// already stored. That is not hypothetical on a box: security-model/1
+// SEC-066-068 exists precisely because an appliance can boot with a clock
+// behind where it left off, and a fresh Monotonic() would then mint ids sorting
+// UNDER events already in the log — appended behind a connected subscriber's
+// cursor, and so never delivered to it at all.
+//
+// Seeding from the stored head closes that: the floor's own timestamp and
+// 80-bit tail become the generator's starting point, so a low clock reuses the
+// stored (higher) timestamp and increments the tail rather than regressing.
+func MonotonicFrom(floor string) func() string { return monotonic(floor) }
+
+// monotonic is the shared factory behind Monotonic and MonotonicFrom.
+func monotonic(floor string) func() string {
 	var (
 		mu       sync.Mutex
 		lastMS   uint64
 		lastRand [10]byte // the 80-bit random tail of the last id minted
 		seeded   bool
 	)
+	if data, ok := decode(floor); ok {
+		// Adopt the floor's exact 128 bits as "the last id minted". Every
+		// branch below then produces something strictly above it: a higher
+		// wall-clock millisecond outranks it on the timestamp, and an equal or
+		// lower one reuses this timestamp and increments this tail.
+		lastMS = uint64(data[0])<<40 | uint64(data[1])<<32 | uint64(data[2])<<24 |
+			uint64(data[3])<<16 | uint64(data[4])<<8 | uint64(data[5])
+		copy(lastRand[:], data[6:])
+		seeded = true
+	}
 	return func() string {
 		mu.Lock()
 		defer mu.Unlock()
@@ -156,6 +190,32 @@ func Valid(s string) bool {
 		}
 	}
 	return true
+}
+
+// decode is encode's inverse: it reads a canonical 26-character ULID back into
+// the 128 bits it encodes, reporting ok=false for anything Valid rejects. Only
+// the leading symbol is special — 26*5 = 130 bits carry a 128-bit value behind
+// two zero pad bits, so the first character contributes just 3 significant bits
+// and every other one a full 5 (Valid already bounds that first symbol to 0..7,
+// which is what guarantees the two pad bits really are zero).
+func decode(s string) ([16]byte, bool) {
+	var out [16]byte
+	if !Valid(s) {
+		return out, false
+	}
+	bitBuf := uint32(strings.IndexByte(crockfordAlphabet, s[0])) & 0x07
+	bitCount := 3
+	outIdx := 0
+	for i := 1; i < len(s); i++ {
+		bitBuf = (bitBuf << 5) | uint32(strings.IndexByte(crockfordAlphabet, s[i]))
+		bitCount += 5
+		for bitCount >= 8 {
+			bitCount -= 8
+			out[outIdx] = byte(bitBuf >> uint(bitCount))
+			outIdx++
+		}
+	}
+	return out, true
 }
 
 // encode Crockford-base32-encodes data's 128 bits into the canonical
