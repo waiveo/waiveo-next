@@ -14,6 +14,7 @@ import {
   type WaiveoApi,
 } from "@/api";
 import screensPageDoc from "./page.uis.json";
+import { PairingPanel } from "./pairing-panel";
 
 /**
  * The Screens route — the fleet's scope-nodes of kind `screen`, as a DOGFOODED
@@ -309,6 +310,17 @@ export default function ScreensRoute({ api }: { api?: WaiveoApi }) {
             review them, then save again to apply your change.
           </p>
         ) : null}
+        {/* The operator pairing flow: the screen IDENTITY rows (/api/v1/screens —
+            the row a screen_id names, distinct from the screen-kind scope nodes
+            the section below manages) and their one-time pairing codes. */}
+        <PairingPanel
+          api={client}
+          parents={parents}
+          nodeNames={
+            new Map([...parents, ...(screens ?? [])].map((n) => [n.id, n.name] as [string, string]))
+          }
+        />
+        <h2 className="text-lg font-semibold">Screen placements</h2>
         <main className="min-w-0">
           {screens === null ? (
             <p className="text-sm text-muted-foreground">Loading screens…</p>

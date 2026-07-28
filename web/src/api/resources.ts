@@ -36,6 +36,11 @@ export type AutomationCreate = components["schemas"]["AutomationCreate"];
 export type AutomationUpdate = components["schemas"]["AutomationUpdate"];
 export type AutomationRunResult = components["schemas"]["AutomationRunResult"];
 
+export type Screen = components["schemas"]["Screen"];
+export type ScreenCreate = components["schemas"]["ScreenCreate"];
+export type ScreenUpdate = components["schemas"]["ScreenUpdate"];
+export type PairingCodeResult = components["schemas"]["PairingCodeResult"];
+
 // ── Scheduling-core Wire shapes (data-model/1; not yet in the OpenAPI) ───────
 
 /** A playlist item (DAT-041): `asset` (asset_ref present) or `playable` (pack). */
@@ -216,6 +221,28 @@ function automationsModule(client: ApiClient): AutomationsModule {
   };
 }
 
+// ── Screens: CRUD + pairing-code issuance ────────────────────────────────────
+
+export interface ScreensModule extends ResourceModule<Screen, ScreenCreate, ScreenUpdate> {
+  /** Mint a one-time pairing grant bound to this screen row and return the
+   * human-enterable pairing code (or an explanatory
+   * `code_unavailable_reason` when no relay is connected). The grant rides
+   * the site's desired state to the relay either way; redemption happens at
+   * the relay, so this reports issuance, never a "paired" state the app has
+   * no evidence for. */
+  issuePairingCode(id: string): Promise<PairingCodeResult>;
+}
+
+function screensModule(client: ApiClient): ScreensModule {
+  const base = crud<Screen, ScreenCreate, ScreenUpdate>(client, "/screens");
+  return {
+    ...base,
+    issuePairingCode(id) {
+      return client.action<PairingCodeResult>(`/screens/${encodeURIComponent(id)}/pairing-code`);
+    },
+  };
+}
+
 // ── Content upload ───────────────────────────────────────────────────────────
 
 export interface ContentModule {
@@ -240,6 +267,9 @@ export interface WaiveoApi {
    * (`security-model.md`). No token handling — see api/auth.ts. */
   auth: AuthModule;
   scopeNodes: ResourceModule<ScopeNode, ScopeNodeCreate, ScopeNodeUpdate>;
+  /** Screen identity rows (the row a `screen_id` names) — CRUD plus the
+   * pairing-code issuance the operator pairing flow drives. */
+  screens: ScreensModule;
   schedules: ResourceModule<Schedule, ScheduleCreate, ScheduleUpdate>;
   dayparts: ResourceModule<Daypart, DaypartCreate, DaypartUpdate>;
   playlists: ResourceModule<Playlist, PlaylistCreate, PlaylistUpdate>;
@@ -262,6 +292,7 @@ export function createApi(opts?: ApiClientOptions): WaiveoApi {
     client,
     auth: createAuthModule(client),
     scopeNodes: crud<ScopeNode, ScopeNodeCreate, ScopeNodeUpdate>(client, "/scope-nodes"),
+    screens: screensModule(client),
     schedules: crud<Schedule, ScheduleCreate, ScheduleUpdate>(client, "/schedules"),
     dayparts: crud<Daypart, DaypartCreate, DaypartUpdate>(client, "/dayparts"),
     playlists: crud<Playlist, PlaylistCreate, PlaylistUpdate>(client, "/playlists"),

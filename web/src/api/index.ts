@@ -70,6 +70,11 @@ export {
   type PlaylistUpdate,
   type PlaylistItem,
   type ContentUploadResult,
+  type Screen,
+  type ScreenCreate,
+  type ScreenUpdate,
+  type PairingCodeResult,
+  type ScreensModule,
 } from "./resources";
 
 export {
