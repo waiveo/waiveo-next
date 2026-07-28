@@ -52,6 +52,9 @@ package api_test
 // vacuous check the guards above exist to prevent.
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -391,12 +394,37 @@ func newSchemaProbeEnv(t *testing.T) *schemaProbeEnv {
 		// probes seal under — a stub would let the rotate probe pass against an
 		// implementation that never sealed the signing secret it was handed.
 		api.WithWebhookSecrets(webhookdeliver.NewSecrets(sealer), 0),
-		api.WithWorkspaceArchive(&api.WorkspaceArchive{Dir: t.TempDir(), Key: key, KDF: lightKDF()})))
+		api.WithWorkspaceArchive(&api.WorkspaceArchive{Dir: t.TempDir(), Key: key, KDF: lightKDF()}),
+		// A one-relay pairing directory, so the pairing-code probe validates
+		// the response's FULLER shape (pairing_code + relay_id present) rather
+		// than only the no-relay degrade.
+		api.WithPairing(rsPairingDirectory(t))))
 	t.Cleanup(ts.Close)
 
 	return &schemaProbeEnv{
 		testEnv:   &testEnv{ts: ts, store: st, content: content, contentBase: testContentBase, auth: fixture, jobs: jobs},
 		authStore: fixture.Store,
+	}
+}
+
+// rsPairingDirectory is the pairing-code probe's one-relay fixture directory:
+// a connected relay with a dialable advertised address and a real SPKI, so the
+// probed response carries pairing_code and relay_id.
+func rsPairingDirectory(t *testing.T) api.PairingRelayDirectory {
+	t.Helper()
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("ed25519.GenerateKey: %v", err)
+	}
+	spki, err := x509.MarshalPKIXPublicKey(pub)
+	if err != nil {
+		t.Fatalf("MarshalPKIXPublicKey: %v", err)
+	}
+	return api.PairingRelayDirectory{
+		ConnectedRelays: func() []api.PairingRelay {
+			return []api.PairingRelay{{RelayID: rsRelayID, AdvertisedAddress: "192.0.2.40:7443"}}
+		},
+		RelaySPKI: func(string) ([]byte, bool) { return spki, true },
 	}
 }
 
@@ -627,6 +655,10 @@ var probes = map[string]probe{
 	"listScreens": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
 		e.mintScreen(t, e.mintOrg(t))
 		return e.do(t, http.MethodGet, "/api/v1/screens", nil, nil)
+	},
+	"issueScreenPairingCode": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		id := e.mintScreen(t, e.mintOrg(t))
+		return e.do(t, http.MethodPost, "/api/v1/screens/"+id+"/pairing-code", nil, nil)
 	},
 
 	// --- adopted-devices --------------------------------------------------

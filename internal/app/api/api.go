@@ -124,6 +124,11 @@ type server struct {
 	// populated by mount() itself, so a family's audit identity and its routes
 	// are registered by one call and cannot drift apart.
 	families map[string]resourceConfig
+	// pairingRelays is the relay directory the pairing-code issuance forms
+	// codes from (pairingcode.go). Optional (WithPairing): the route mounts,
+	// mints and delivers the grant either way, and answers with an honest
+	// code_unavailable_reason when unwired.
+	pairingRelays PairingRelayDirectory
 }
 
 // authExemptPaths are the api/1 operations that declare their own
@@ -284,6 +289,11 @@ func (srv *server) mountAll(rt, rootRT *router, authHandlers *auth.Handlers) {
 	// no POST on `automations/{id}` — and `{id}/run` has its own two-segment shape.
 	rt.HandleFunc("POST "+apiPrefix+"/automations/{id}/run", srv.runAutomation)
 	rt.HandleFunc("POST "+apiPrefix+"/automations/bulk-enable", srv.bulkEnableAutomations)
+	// The screens family adds one operation beyond plain resource CRUD: minting
+	// a screen-bound pairing grant and forming its human-enterable pairing
+	// code (pairingcode.go). `{screen_id}/pairing-code` has the same
+	// two-segment per-row action shape `{id}/run` has.
+	rt.HandleFunc("POST "+apiPrefix+"/screens/{screen_id}/pairing-code", srv.issuePairingCode)
 	rt.HandleFunc("POST "+apiPrefix+"/content", srv.uploadContent)
 	// The read half of the async convention: a Job returned by 202 is polled
 	// here until its state is terminal (API-112, openapi getJob). It is not a

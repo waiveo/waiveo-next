@@ -1222,8 +1222,15 @@ func relayHelloDeclaration(cfg config) hello.Declaration {
 		ProtocolVersion: "1.0",
 		Features:        []string{"telemetry.latest_only_v1"},
 		SiteBinding:     hello.SiteBinding{}, // no cached site pre-pull; the relay adopts the app peer's authoritative copy
-		SubnetMetadata:  hello.SubnetMetadata{AdvertisedAddress: cfg.listen},
-		ClockState:      hello.ClockState{State: "untrusted", Source: "cold_boot"},
+		// REL-037: the canonical advertised address is "the same address it
+		// advertises in its own discovery/pairing responses" — the pairing
+		// dial address (cfg.pairHost/cfg.pairPort, exactly what
+		// FormPairingCode encodes, REL-126), NOT the bind address, which on
+		// a multi-homed or 0.0.0.0-bound relay is not dialable at all. The
+		// app peer forms pairing codes from this value (relayconn
+		// ConnectedRelays), so drift here would mint codes that dial nowhere.
+		SubnetMetadata: hello.SubnetMetadata{AdvertisedAddress: net.JoinHostPort(cfg.pairHost, strconv.Itoa(cfg.pairPort))},
+		ClockState:     hello.ClockState{State: "untrusted", Source: "cold_boot"},
 	}
 }
 

@@ -48,6 +48,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -335,6 +336,33 @@ func (s *Server) ConnCount() int {
 	return len(s.conns)
 }
 
+// ConnectedRelay is one live authenticated relay connection's identity and
+// the canonical advertised address its hello's subnet_metadata carried
+// (REL-037) — per that requirement, the same {host, port} the relay itself
+// encodes into a pairing code it displays (REL-126).
+type ConnectedRelay struct {
+	RelayID           string
+	AdvertisedAddress string
+}
+
+// ConnectedRelays reports every live authenticated relay connection, in
+// stable relay_id order. It is what the app's pairing-code issuance reads to
+// learn WHERE a freshly minted grant's code should dial: the app holds the
+// grant_selector (it minted the grant) and the relay's trust-anchor key (it
+// issued the relay's certificate at enrollment); the dial address is the one
+// REL-126 component only the relay knows, and its hello (REL-037) is exactly
+// where the relay states it.
+func (s *Server) ConnectedRelays() []ConnectedRelay {
+	s.mu.Lock()
+	out := make([]ConnectedRelay, 0, len(s.conns))
+	for c := range s.conns {
+		out = append(out, ConnectedRelay{RelayID: c.relayID, AdvertisedAddress: c.advertisedAddress})
+	}
+	s.mu.Unlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].RelayID < out[j].RelayID })
+	return out
+}
+
 // Handler returns the http.Handler to mount at /relay/v1. A client that
 // does not offer the relay/1 subprotocol (wire.Subprotocol) is refused at
 // the HTTP upgrade, before any frame is exchanged.
@@ -396,10 +424,17 @@ func offersSubprotocol(r *http.Request) bool {
 // that never answers, or dies mid-exchange, leaks no entry and blocks no
 // caller.
 type serverConn struct {
-	ws           *websocket.Conn
-	relayID      string
-	serial       string // presented client-cert serial, for REL-016 re-checks
-	writeTimeout time.Duration
+	ws      *websocket.Conn
+	relayID string
+	serial  string // presented client-cert serial, for REL-016 re-checks
+	// advertisedAddress is this relay's own canonical advertised address from
+	// its hello's subnet_metadata (REL-037) — by that requirement's own text,
+	// "the same address it advertises in its own discovery/pairing
+	// responses", i.e. the {host, port} a pairing code for this relay dials.
+	// Captured at handshake so the app peer can form a pairing code for a
+	// grant it mints (REL-126's three components) without asking the relay.
+	advertisedAddress string
+	writeTimeout      time.Duration
 
 	pendingMu sync.Mutex
 	pending   map[string]chan wire.Frame
@@ -616,6 +651,13 @@ func (s *Server) serve(req *http.Request, ws *websocket.Conn) {
 	if err := conn.send(ackFrame); err != nil {
 		return
 	}
+
+	// The hello verified: keep its subnet_metadata's canonical advertised
+	// address (REL-037) for ConnectedRelays — the pairing-code dial address
+	// this relay itself would encode (REL-126). Recorded only after
+	// BuildHelloAck's channel-binding verification succeeded, never off an
+	// unauthenticated frame.
+	conn.advertisedAddress = hb.SubnetMetadata.AdvertisedAddress
 
 	// Authenticated steady state: register for server-initiated pushes,
 	// serve pulls until the connection drops.

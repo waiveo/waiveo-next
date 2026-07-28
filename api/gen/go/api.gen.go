@@ -274,6 +274,21 @@ func (e JobTargetState) Valid() bool {
 	}
 }
 
+// Defines values for PairingCodeResultRedemptionMode.
+const (
+	OneTime PairingCodeResultRedemptionMode = "one-time"
+)
+
+// Valid indicates whether the value is a known member of the PairingCodeResultRedemptionMode enum.
+func (e PairingCodeResultRedemptionMode) Valid() bool {
+	switch e {
+	case OneTime:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ProblemSecondFactor.
 const (
 	ProblemSecondFactorTotp ProblemSecondFactor = "totp"
@@ -812,6 +827,39 @@ type LoginRequest struct {
 	// TotpCode The second-factor code (`security-model.md` SEC-004). Optional in SHAPE and mandatory in EFFECT for any principal holding a `totp` credential: such a login is refused without it, with the Problem's `second_factor` member naming the factor to collect, and the client re-calls this same operation carrying everything. There is no intermediate credential between the two calls — nothing is minted until both factors are satisfied.
 	TotpCode *string `json:"totp_code,omitempty"`
 }
+
+// PairingCodeResult A freshly minted screen-bound pairing grant (`relay/1` REL-121a) and, when a relay is connected, the human-enterable pairing code (`player/1` PLY-024) an operator reads onto the screen. Exactly one of `pairing_code` and `code_unavailable_reason` is present — the grant is minted and delivered to the relay either way.
+type PairingCodeResult struct {
+	// CodeUnavailableReason Why no code could be formed (for instance, no relay is connected). Present exactly when `pairing_code` is not.
+	CodeUnavailableReason *string `json:"code_unavailable_reason,omitempty"`
+
+	// ExpiresAt A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC 3339 string. The store stamps `created_at`/`updated_at` on every row it writes as an integer millisecond count and returns that value unchanged, so this is what a client reads and what an export/apply round trip carries back. Deliberately not `format: date-time`: the two are not interchangeable, and a client that parsed one as the other would silently read 1970 for every resource on this surface.
+	// The `Job` resource is the one exception on this API and says so at its own `created_at`: a Job's timestamp is minted in Go as a `time.Time` and serialized RFC 3339, because a Job is not a stored row of this baseline.
+	ExpiresAt Timestamp `json:"expires_at"`
+
+	// GrantId The minted grant's identifier — also the `grant_selector` the pairing code encodes.
+	GrantId string `json:"grant_id"`
+
+	// IssuedAt A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC 3339 string. The store stamps `created_at`/`updated_at` on every row it writes as an integer millisecond count and returns that value unchanged, so this is what a client reads and what an export/apply round trip carries back. Deliberately not `format: date-time`: the two are not interchangeable, and a client that parsed one as the other would silently read 1970 for every resource on this surface.
+	// The `Job` resource is the one exception on this API and says so at its own `created_at`: a Job's timestamp is minted in Go as a `time.Time` and serialized RFC 3339, because a Job is not a stored row of this baseline.
+	IssuedAt Timestamp `json:"issued_at"`
+
+	// PairingCode The hyphen-grouped code the screen's pairing UI accepts — encoding the relay's dial address, this grant's selector, and the relay's trust-anchor fingerprint commitment (`relay/1` REL-126).
+	PairingCode    *string                         `json:"pairing_code,omitempty"`
+	RedemptionMode PairingCodeResultRedemptionMode `json:"redemption_mode"`
+
+	// RelayId The connected relay the code dials. Present exactly when `pairing_code` is.
+	RelayId *string `json:"relay_id,omitempty"`
+
+	// ScreenId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScreenId Ulid `json:"screen_id"`
+
+	// TtlSeconds How long the grant stays redeemable after `issued_at` (`relay/1` REL-121).
+	TtlSeconds int `json:"ttl_seconds"`
+}
+
+// PairingCodeResultRedemptionMode defines model for PairingCodeResult.RedemptionMode.
+type PairingCodeResultRedemptionMode string
 
 // Problem RFC 9457 problem+json, extended with `code` (this contract's machine-readable error registry) and `trace_id`. `code` is the discriminant a client asserts on; `title`/`detail` are for humans.
 type Problem struct {
@@ -1778,6 +1826,15 @@ type UpdateScreenParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// IssueScreenPairingCodeParams defines parameters for IssueScreenPairingCode.
+type IssueScreenPairingCodeParams struct {
+	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
+	IdempotencyKey *IdempotencyKeyParam `json:"Idempotency-Key,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // ListWebhookEndpointsParams defines parameters for ListWebhookEndpoints.
 type ListWebhookEndpointsParams struct {
 	// Cursor Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client.
@@ -2202,6 +2259,9 @@ type ClientInterface interface {
 	UpdateScreenWithBody(ctx context.Context, screenId Ulid, params *UpdateScreenParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	UpdateScreen(ctx context.Context, screenId Ulid, params *UpdateScreenParams, body UpdateScreenJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// IssueScreenPairingCode request
+	IssueScreenPairingCode(ctx context.Context, screenId Ulid, params *IssueScreenPairingCodeParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListWebhookEndpoints request
 	ListWebhookEndpoints(ctx context.Context, params *ListWebhookEndpointsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -3110,6 +3170,18 @@ func (c *Client) UpdateScreenWithBody(ctx context.Context, screenId Ulid, params
 
 func (c *Client) UpdateScreen(ctx context.Context, screenId Ulid, params *UpdateScreenParams, body UpdateScreenJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewUpdateScreenRequest(c.Server, screenId, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) IssueScreenPairingCode(ctx context.Context, screenId Ulid, params *IssueScreenPairingCodeParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewIssueScreenPairingCodeRequest(c.Server, screenId, params)
 	if err != nil {
 		return nil, err
 	}
@@ -7150,6 +7222,66 @@ func NewUpdateScreenRequestWithBody(server string, screenId Ulid, params *Update
 	return req, nil
 }
 
+// NewIssueScreenPairingCodeRequest generates requests for IssueScreenPairingCode
+func NewIssueScreenPairingCodeRequest(server string, screenId Ulid, params *IssueScreenPairingCodeParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "screen_id", screenId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/screens/%s/pairing-code", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.IdempotencyKey != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Idempotency-Key", *params.IdempotencyKey, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Idempotency-Key", headerParam0)
+		}
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
 // NewListWebhookEndpointsRequest generates requests for ListWebhookEndpoints
 func NewListWebhookEndpointsRequest(server string, params *ListWebhookEndpointsParams) (*http.Request, error) {
 	var err error
@@ -8048,6 +8180,9 @@ type ClientWithResponsesInterface interface {
 	UpdateScreenWithBodyWithResponse(ctx context.Context, screenId Ulid, params *UpdateScreenParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateScreenResponse, error)
 
 	UpdateScreenWithResponse(ctx context.Context, screenId Ulid, params *UpdateScreenParams, body UpdateScreenJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateScreenResponse, error)
+
+	// IssueScreenPairingCodeWithResponse request
+	IssueScreenPairingCodeWithResponse(ctx context.Context, screenId Ulid, params *IssueScreenPairingCodeParams, reqEditors ...RequestEditorFn) (*IssueScreenPairingCodeResponse, error)
 
 	// ListWebhookEndpointsWithResponse request
 	ListWebhookEndpointsWithResponse(ctx context.Context, params *ListWebhookEndpointsParams, reqEditors ...RequestEditorFn) (*ListWebhookEndpointsResponse, error)
@@ -10065,6 +10200,40 @@ func (r UpdateScreenResponse) ContentType() string {
 	return ""
 }
 
+type IssueScreenPairingCodeResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON201                   *PairingCodeResult
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON409 *Conflict
+}
+
+// Status returns HTTPResponse.Status
+func (r IssueScreenPairingCodeResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r IssueScreenPairingCodeResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r IssueScreenPairingCodeResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type ListWebhookEndpointsResponse struct {
 	Body                      []byte
 	HTTPResponse              *http.Response
@@ -11049,6 +11218,15 @@ func (c *ClientWithResponses) UpdateScreenWithResponse(ctx context.Context, scre
 		return nil, err
 	}
 	return ParseUpdateScreenResponse(rsp)
+}
+
+// IssueScreenPairingCodeWithResponse request returning *IssueScreenPairingCodeResponse
+func (c *ClientWithResponses) IssueScreenPairingCodeWithResponse(ctx context.Context, screenId Ulid, params *IssueScreenPairingCodeParams, reqEditors ...RequestEditorFn) (*IssueScreenPairingCodeResponse, error) {
+	rsp, err := c.IssueScreenPairingCode(ctx, screenId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseIssueScreenPairingCodeResponse(rsp)
 }
 
 // ListWebhookEndpointsWithResponse request returning *ListWebhookEndpointsResponse
@@ -14144,6 +14322,60 @@ func ParseUpdateScreenResponse(rsp *http.Response) (*UpdateScreenResponse, error
 			return nil, err
 		}
 		response.ApplicationproblemJSON428 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseIssueScreenPairingCodeResponse parses an HTTP response from a IssueScreenPairingCodeWithResponse call
+func ParseIssueScreenPairingCodeResponse(rsp *http.Response) (*IssueScreenPairingCodeResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &IssueScreenPairingCodeResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest PairingCodeResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
 
 	}
 

@@ -1533,6 +1533,49 @@ paths:
           $ref: "#/components/responses/PreconditionFailed"
         "428":
           $ref: "#/components/responses/PreconditionRequired"
+  /screens/{screen_id}/pairing-code:
+    parameters:
+      - name: screen_id
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/Ulid"
+    post:
+      operationId: issueScreenPairingCode
+      summary: Issue a pairing code for a screen
+      description: >-
+        Mints a one-time pairing grant bound to this screen row (`relay/1`
+        REL-121a) and persists it as desired state, so it rides the next
+        signed snapshot's `pairing_grants` section to the site's relay
+        (REL-067). The response carries the human-enterable pairing code
+        (`player/1` PLY-024) formed against the connected relay's advertised
+        dial address and trust-anchor commitment — or, when no code can be
+        formed (no relay connected), the minted grant with an explanatory
+        `code_unavailable_reason`. Redemption happens at the relay
+        (`player/1` Pairing redemption); this operation reports issuance,
+        never a redemption state it has no evidence for.
+      tags: [screens, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "201":
+          description: The minted pairing grant and, when formable, its pairing code.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PairingCodeResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
   # ---------------------------------------------------------------------
   # adopted-devices — the rows relay/1 REL-063's device_inventory is compiled from.
   # ---------------------------------------------------------------------
@@ -2960,6 +3003,46 @@ components:
           x-go-type: "*string"
         labels:
           $ref: "#/components/schemas/LabelMap"
+
+    PairingCodeResult:
+      type: object
+      description: >-
+        A freshly minted screen-bound pairing grant (`relay/1` REL-121a) and,
+        when a relay is connected, the human-enterable pairing code
+        (`player/1` PLY-024) an operator reads onto the screen. Exactly one of
+        `pairing_code` and `code_unavailable_reason` is present — the grant is
+        minted and delivered to the relay either way.
+      required: [grant_id, screen_id, ttl_seconds, redemption_mode, issued_at, expires_at]
+      additionalProperties: false
+      properties:
+        grant_id:
+          type: string
+          description: The minted grant's identifier — also the `grant_selector` the pairing code encodes.
+        screen_id:
+          $ref: "#/components/schemas/Ulid"
+        ttl_seconds:
+          type: integer
+          minimum: 1
+          description: How long the grant stays redeemable after `issued_at` (`relay/1` REL-121).
+        redemption_mode:
+          type: string
+          enum: [one-time]
+        issued_at:
+          $ref: "#/components/schemas/Timestamp"
+        expires_at:
+          $ref: "#/components/schemas/Timestamp"
+        pairing_code:
+          type: string
+          description: >-
+            The hyphen-grouped code the screen's pairing UI accepts — encoding
+            the relay's dial address, this grant's selector, and the relay's
+            trust-anchor fingerprint commitment (`relay/1` REL-126).
+        relay_id:
+          type: string
+          description: The connected relay the code dials. Present exactly when `pairing_code` is.
+        code_unavailable_reason:
+          type: string
+          description: Why no code could be formed (for instance, no relay is connected). Present exactly when `pairing_code` is not.
 
     ScreenListResponse:
       type: object

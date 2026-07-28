@@ -567,6 +567,28 @@ export interface paths {
         patch: operations["updateScreen"];
         trace?: never;
     };
+    "/screens/{screen_id}/pairing-code": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                screen_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Issue a pairing code for a screen
+         * @description Mints a one-time pairing grant bound to this screen row (`relay/1` REL-121a) and persists it as desired state, so it rides the next signed snapshot's `pairing_grants` section to the site's relay (REL-067). The response carries the human-enterable pairing code (`player/1` PLY-024) formed against the connected relay's advertised dial address and trust-anchor commitment — or, when no code can be formed (no relay connected), the minted grant with an explanatory `code_unavailable_reason`. Redemption happens at the relay (`player/1` Pairing redemption); this operation reports issuance, never a redemption state it has no evidence for.
+         */
+        post: operations["issueScreenPairingCode"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/adopted-devices": {
         parameters: {
             query?: never;
@@ -1124,6 +1146,24 @@ export interface components {
             scope_node?: components["schemas"]["Ulid"];
             device_id?: string | null;
             labels?: components["schemas"]["LabelMap"];
+        };
+        /** @description A freshly minted screen-bound pairing grant (`relay/1` REL-121a) and, when a relay is connected, the human-enterable pairing code (`player/1` PLY-024) an operator reads onto the screen. Exactly one of `pairing_code` and `code_unavailable_reason` is present — the grant is minted and delivered to the relay either way. */
+        PairingCodeResult: {
+            /** @description The minted grant's identifier — also the `grant_selector` the pairing code encodes. */
+            grant_id: string;
+            screen_id: components["schemas"]["Ulid"];
+            /** @description How long the grant stays redeemable after `issued_at` (`relay/1` REL-121). */
+            ttl_seconds: number;
+            /** @enum {string} */
+            redemption_mode: "one-time";
+            issued_at: components["schemas"]["Timestamp"];
+            expires_at: components["schemas"]["Timestamp"];
+            /** @description The hyphen-grouped code the screen's pairing UI accepts — encoding the relay's dial address, this grant's selector, and the relay's trust-anchor fingerprint commitment (`relay/1` REL-126). */
+            pairing_code?: string;
+            /** @description The connected relay the code dials. Present exactly when `pairing_code` is. */
+            relay_id?: string;
+            /** @description Why no code could be formed (for instance, no relay is connected). Present exactly when `pairing_code` is not. */
+            code_unavailable_reason?: string;
         };
         ScreenListResponse: {
             items: components["schemas"]["Screen"][];
@@ -3013,6 +3053,38 @@ export interface operations {
             412: components["responses"]["PreconditionFailed"];
             422: components["responses"]["UnprocessableContent"];
             428: components["responses"]["PreconditionRequired"];
+        };
+    };
+    issueScreenPairingCode: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                screen_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The minted pairing grant and, when formable, its pairing code. */
+            201: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PairingCodeResult"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
         };
     };
     listAdoptedDevices: {

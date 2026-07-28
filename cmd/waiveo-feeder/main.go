@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -689,7 +690,34 @@ func main() {
 	apiHandler := api.New(st, idem, nowMs, ulid.New, contentStore, contentBaseURL, authn,
 		api.WithDevicePlane(deviceRegistry, relayConnSrv), api.WithJobRunner(jobRunner),
 		api.WithWebhookSecrets(webhookSecrets, webhookRotationOverlapMs),
-		api.WithWorkspaceArchive(&api.WorkspaceArchive{Dir: cfg.archiveDir, Key: wsKey}))
+		api.WithWorkspaceArchive(&api.WorkspaceArchive{Dir: cfg.archiveDir, Key: wsKey}),
+		// The pairing-code operation's relay directory: live connections (and
+		// the canonical advertised address each declared at hello, REL-037)
+		// from the relay-connection server, and each relay's trust-anchor
+		// SPKI from the SAME enrollment registry that issued its certificate
+		// — so the commitment an app-formed pairing code carries is computed
+		// over the very key the relay's player/1 listener presents (PLY-052).
+		api.WithPairing(api.PairingRelayDirectory{
+			ConnectedRelays: func() []api.PairingRelay {
+				conns := relayConnSrv.ConnectedRelays()
+				out := make([]api.PairingRelay, 0, len(conns))
+				for _, c := range conns {
+					out = append(out, api.PairingRelay{RelayID: c.RelayID, AdvertisedAddress: c.AdvertisedAddress})
+				}
+				return out
+			},
+			RelaySPKI: func(relayID string) ([]byte, bool) {
+				pub, ok := enrollSrv.RelayEnrollmentKey(relayID)
+				if !ok {
+					return nil, false
+				}
+				spki, err := x509.MarshalPKIXPublicKey(pub)
+				if err != nil {
+					return nil, false
+				}
+				return spki, true
+			},
+		}))
 	jobRunner.Start()
 
 	// The outbound-webhook delivery loop (events/1 EVT-150-158). It is started
