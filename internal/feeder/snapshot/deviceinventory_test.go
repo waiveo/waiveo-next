@@ -113,7 +113,7 @@ func TestBuildFromStoreCarriesAdoptedDeviceInventory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DesiredState: %v", err)
 	}
-	snap, _, err := BuildFromStore(ds, "https://origin.example", id, nil, contentInstant(t))
+	snap, _, err := BuildFromStore(ds, "https://origin.example", id, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestPackMatchPatternsTrackTheInstalledPacks(t *testing.T) {
 		if err != nil {
 			t.Fatalf("DesiredState (%s): %v", what, err)
 		}
-		snap, _, err := BuildFromStore(ds, "https://origin.example", id, nil, contentInstant(t))
+		snap, _, err := BuildFromStore(ds, "https://origin.example", id, contentInstant(t))
 		if err != nil {
 			t.Fatalf("BuildFromStore (%s): %v", what, err)
 		}
@@ -281,7 +281,7 @@ func TestUnchangedAdoptedSetDoesNotChurnTheGeneration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("DesiredState (%s): %v", what, err)
 		}
-		snap, _, err := BuildFromStore(ds, "https://origin.example", id, nil, contentInstant(t))
+		snap, _, err := BuildFromStore(ds, "https://origin.example", id, contentInstant(t))
 		if err != nil {
 			t.Fatalf("BuildFromStore (%s): %v", what, err)
 		}

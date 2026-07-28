@@ -325,6 +325,13 @@ func BuildCast(items []CastItem, contentBaseURL string, id *signing.Identity, gr
 //   - `revocation_and_site` (REL-066) carries the site node's own tz/lat/long
 //     (rows.SiteEffective, per DAT-033 — never the feeder's OS locale) and
 //     contentBaseURL as the content origin.
+//   - `pairing_grants` (REL-067) carries the store's pending pairing-grant
+//     records (rows.PairingGrants, store.AddPairingGrant), filtered to those
+//     still inside their ttl at nowMs and — for a screen-bound grant
+//     (REL-121a) — to those whose screen row still exists in rows.Screens: a
+//     grant for a since-deleted screen, or one already past its ttl, stops
+//     riding new generations here, while the relay's own ttl enforcement
+//     (REL-121/122) remains the authority for grants it already holds.
 //
 // nowMs is the instant the generation's programs are resolved at, injected rather
 // than read from a clock here: scheduling is per-instant by construction
@@ -353,14 +360,12 @@ func BuildCast(items []CastItem, contentBaseURL string, id *signing.Identity, gr
 // are preserved: this reuses the exact same wire helpers Build does
 // (hashSections / signGenerationHash), so signing here and verifying on the relay
 // (internal/relay/desiredstate) cannot drift.
-func BuildFromStore(rows store.DesiredStateResult, contentBaseURL string, id *signing.Identity, grants []wire.PairingGrant, nowMs int64) (SignedSnapshot, []datamodel.Error, error) {
+func BuildFromStore(rows store.DesiredStateResult, contentBaseURL string, id *signing.Identity, nowMs int64) (SignedSnapshot, []datamodel.Error, error) {
 	if id == nil {
 		return SignedSnapshot{}, nil, fmt.Errorf("snapshot: BuildFromStore: id must not be nil")
 	}
 
-	if grants == nil {
-		grants = []wire.PairingGrant{}
-	}
+	grants := deliverablePairingGrants(rows, nowMs)
 
 	screenPrograms, degrades := DeriveScreenPrograms(rows, contentBaseURL, nowMs)
 
@@ -422,6 +427,35 @@ func BuildFromStore(rows store.DesiredStateResult, contentBaseURL string, id *si
 		Signature:  signature,
 		Sections:   sections,
 	}, degrades, nil
+}
+
+// deliverablePairingGrants filters the store's pending pairing-grant records
+// down to the ones a snapshot built at nowMs should still deliver (REL-067):
+// a grant past its own ttl at nowMs is dropped (there is nothing left for a
+// relay to redeem, and REL-121/122 make the relay enforce ttl on whatever it
+// already holds), and a screen-bound grant (REL-121a) whose screen row no
+// longer exists in rows.Screens is dropped too — its redemption would mint a
+// credential for a row nothing resolves anymore. The result is always
+// non-nil, so the section marshals `[]`, never `null` (REL-060), and — since
+// rows.PairingGrants arrives in stored (issued_at, grant_id) order and this
+// filter preserves order — a deterministic function of (rows, nowMs), which
+// the snapshot hash (REL-053) requires.
+func deliverablePairingGrants(rows store.DesiredStateResult, nowMs int64) []wire.PairingGrant {
+	screens := make(map[string]bool, len(rows.Screens))
+	for _, sc := range rows.Screens {
+		screens[sc.ID] = true
+	}
+	out := []wire.PairingGrant{}
+	for _, g := range rows.PairingGrants {
+		if g.IssuedAt+g.TTL*1000 <= nowMs {
+			continue
+		}
+		if g.ScreenID != "" && !screens[g.ScreenID] {
+			continue
+		}
+		out = append(out, g)
+	}
+	return out
 }
 
 // scheduleSectionFromStore assembles the REL-065 `schedule` section from a store

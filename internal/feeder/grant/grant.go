@@ -1,8 +1,10 @@
-// Package grant mints relay/1 pairing-grant records (REL-121) for the
-// feeder's Wave-1 first-photon path: one grant, minted once, that rides
-// the signed desired-state snapshot's `pairing_grants` section (REL-067)
-// to the relay, for the relay to later resolve and redeem on a screen's
-// behalf.
+// Package grant mints relay/1 pairing-grant records (REL-121/REL-121a): the
+// records that ride the signed desired-state snapshot's `pairing_grants`
+// section (REL-067) to the relay, for the relay to later resolve and redeem
+// on a screen's behalf. The running app mints one per operator "pair this
+// screen" request (MintForScreen, persisted by store.AddPairingGrant so it
+// rides the next generation); Mint remains the unbound baseline for
+// harnesses exercising REL-121's minimal shape.
 //
 // Shape note: REL-121 defines the grant record itself as `{grant_id,
 // purpose, resulting_principal_kind, ttl, redemption_mode, issued_at}` —
@@ -25,30 +27,49 @@ import (
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
-// Wave 1 first-photon placeholders: one grant, minted once, always for a
-// screen-pairing purpose. A later Player-credential-authority task may
-// widen Mint to accept these as parameters once more than one
-// purpose/principal-kind is ever minted.
+// Every grant this package mints is for the screen-pairing purpose — the one
+// purpose/principal-kind pairing has.
 const (
-	firstPhotonPurpose                = "pairing"
-	firstPhotonResultingPrincipalKind = "screen"
-	firstPhotonTTLSeconds             = 900 // matches the relay/1 REL-121 worked example
+	pairingPurpose                = "pairing"
+	pairingResultingPrincipalKind = "screen"
+
+	// TTLSeconds is how long a minted pairing grant stays redeemable —
+	// matching the relay/1 REL-121 worked example, and exported so the api
+	// layer's issuance response can state the same window it actually minted.
+	TTLSeconds = 900
 )
 
-// Mint mints one relay/1 REL-121 pairing-grant record: a fresh, unique
-// `grant_id`, `redemption_mode: "one-time"`, and `issued_at` set to now
-// (epoch milliseconds, relay/1's Timestamp grammar). The returned record
-// carries exactly REL-121's 6 fields — no REL-126 pairing-code fields (see
-// package doc).
+// Mint mints one relay/1 REL-121 baseline pairing-grant record: a fresh,
+// unique `grant_id`, `redemption_mode: "one-time"`, and `issued_at` set to
+// now (epoch milliseconds, relay/1's Timestamp grammar). The returned record
+// carries exactly REL-121's 6 fields — no screen binding (REL-121a) and no
+// REL-126 pairing-code fields (see package doc). It remains for harnesses
+// that exercise the baseline wire shape; the running app mints screen-bound
+// grants (MintForScreen).
 func Mint() wire.PairingGrant {
 	return wire.PairingGrant{
 		GrantID:                newGrantID(),
-		Purpose:                firstPhotonPurpose,
-		ResultingPrincipalKind: firstPhotonResultingPrincipalKind,
-		TTL:                    firstPhotonTTLSeconds,
+		Purpose:                pairingPurpose,
+		ResultingPrincipalKind: pairingResultingPrincipalKind,
+		TTL:                    TTLSeconds,
 		RedemptionMode:         "one-time",
 		IssuedAt:               time.Now().UnixMilli(),
 	}
+}
+
+// MintForScreen mints a screen-bound pairing-grant record (REL-121a): Mint's
+// exact record plus `screen_id` — the screen identity row (data-model/1
+// DAT-004a) whose id the relay hands back as the paired screen's identity at
+// redemption. screenID's existence is the CALLER's concern (the store checks
+// it against its own screen rows at persist time); this constructor only
+// refuses the empty string, which could never name a row.
+func MintForScreen(screenID string) (wire.PairingGrant, error) {
+	if screenID == "" {
+		return wire.PairingGrant{}, fmt.Errorf("grant: MintForScreen: screenID must not be empty (REL-121a)")
+	}
+	g := Mint()
+	g.ScreenID = screenID
+	return g, nil
 }
 
 // newGrantID returns a fresh, crypto-random unique grant identifier.

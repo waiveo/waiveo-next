@@ -18,7 +18,6 @@ import (
 	"github.com/maaxton/waiveo-next/internal/app/auth/authtest"
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/feeder/enroll"
-	"github.com/maaxton/waiveo-next/internal/feeder/grant"
 	"github.com/maaxton/waiveo-next/internal/feeder/origin"
 	"github.com/maaxton/waiveo-next/internal/feeder/relayconn"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
@@ -201,7 +200,6 @@ func TestDesiredStateSourceCurrentRebuildsOnAPIWriteGenerationBump(t *testing.T)
 		store:          st,
 		contentBaseURL: "https://192.0.2.12:7420",
 		id:             id,
-		grants:         []wire.PairingGrant{grant.Mint()},
 		nowMs:          feederContentInstant(t),
 	}
 
@@ -338,8 +336,7 @@ func TestAPIWriteNudgesConnectedRelayEndToEnd(t *testing.T) {
 	src := &desiredStateSource{
 		store:          st,
 		contentBaseURL: "https://192.0.2.12:7420", id: id,
-		grants: []wire.PairingGrant{grant.Mint()},
-		nowMs:  feederContentInstant(t),
+		nowMs: feederContentInstant(t),
 	}
 	if _, err := src.current(); err != nil {
 		t.Fatalf("src.current: %v", err)
@@ -555,7 +552,6 @@ func TestDesiredStateSourceMultiItemCastOrderedAndVerifiable(t *testing.T) {
 		store:          st,
 		contentBaseURL: "https://192.0.2.12:7420",
 		id:             id,
-		grants:         []wire.PairingGrant{grant.Mint()},
 		nowMs:          feederContentInstant(t),
 	}
 

@@ -143,6 +143,13 @@ type DesiredStateResult struct {
 	// the screens without losing (or duplicating) one.
 	Screens []datamodel.Screen
 
+	// PairingGrants is every stored pending pairing-grant record
+	// (pairinggrants.go), wire-shaped for the snapshot's `pairing_grants`
+	// section (relay/1 REL-067/REL-121a). Expiry and screen-row existence
+	// are applied at derivation time (snapshot.BuildFromStore) — per-instant
+	// concerns that do not belong in a plain read.
+	PairingGrants []wire.PairingGrant
+
 	Generation int64
 }
 
@@ -157,8 +164,8 @@ type DesiredStateResult struct {
 // AND the screen identity rows (readScreens) the screen_programs section is
 // resolved one entry per (REL-061).
 //
-// All six reads (scope nodes, scheduling rows, edge rule bodies, device
-// inventory, screens, generation) happen inside ONE s.mu.RLock() section — not composed
+// All seven reads (scope nodes, scheduling rows, edge rule bodies, device
+// inventory, screens, pairing grants, generation) happen inside ONE s.mu.RLock() section — not composed
 // from DesiredStateRows, EdgeRuleBodies and DeviceInventory's own separate lock
 // sections. Composing those public, independently-locked methods would let a
 // write commit (and bump the shared generation) in the gap between one RUnlock
@@ -187,6 +194,10 @@ func (s *Store) DesiredState(ctx context.Context) (DesiredStateResult, error) {
 	if err != nil {
 		return DesiredStateResult{}, err
 	}
+	grants, err := readPairingGrants(ctx, s.db)
+	if err != nil {
+		return DesiredStateResult{}, err
+	}
 	generation, err := readGeneration(ctx, s.db)
 	if err != nil {
 		return DesiredStateResult{}, err
@@ -198,6 +209,7 @@ func (s *Store) DesiredState(ctx context.Context) (DesiredStateResult, error) {
 		EdgeRules:       wire.EdgeRules{RulesMinorVersion: rulesMinorVersion, Rules: bodies},
 		DeviceInventory: inv,
 		Screens:         screens,
+		PairingGrants:   grants,
 		Generation:      generation,
 	}, nil
 }

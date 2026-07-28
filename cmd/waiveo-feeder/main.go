@@ -40,7 +40,6 @@ import (
 	"github.com/maaxton/waiveo-next/internal/app/workspacekey"
 	"github.com/maaxton/waiveo-next/internal/events"
 	"github.com/maaxton/waiveo-next/internal/feeder/enroll"
-	"github.com/maaxton/waiveo-next/internal/feeder/grant"
 	"github.com/maaxton/waiveo-next/internal/feeder/origin"
 	"github.com/maaxton/waiveo-next/internal/feeder/relayconn"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
@@ -346,7 +345,6 @@ func main() {
 	}
 
 	contentBaseURL := cfg.contentBaseURL
-	g := grant.Mint()
 
 	// The app-side store (scope-nodes + scheduling-core rows) the api authors into
 	// and the desired-state is derived from. Seeded with the make-dev demo only
@@ -415,7 +413,7 @@ func main() {
 	// pull serves the current generation (the authoring loop's serving half).
 	src := &desiredStateSource{
 		store: st, contentBaseURL: contentBaseURL, id: id,
-		grants: []wire.PairingGrant{g}, nowMs: func() int64 { return time.Now().UnixMilli() },
+		nowMs: func() int64 { return time.Now().UnixMilli() },
 	}
 	// Fail fast if the seeded/persisted store cannot derive a signed snapshot
 	// at all — better a boot-time exit than every relay pull failing later.
@@ -927,7 +925,6 @@ type desiredStateSource struct {
 	store          *store.Store
 	contentBaseURL string
 	id             *signing.Identity
-	grants         []wire.PairingGrant
 
 	// nowMs is the instant each rebuild resolves every screen's program at
 	// (snapshot.BuildFromStore). It is injected rather than read inline because
@@ -961,7 +958,7 @@ func (d *desiredStateSource) current() (wire.StateSnapshotBody, error) {
 	if err != nil {
 		return wire.StateSnapshotBody{}, err
 	}
-	snap, degrades, err := snapshot.BuildFromStore(ds, d.contentBaseURL, d.id, d.grants, d.nowMs())
+	snap, degrades, err := snapshot.BuildFromStore(ds, d.contentBaseURL, d.id, d.nowMs())
 	if err != nil {
 		return wire.StateSnapshotBody{}, err
 	}

@@ -307,6 +307,14 @@ func Open(dsn string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: migrate webhook delivery state: %w", err)
 	}
+	// The pending pairing-grant records (pairing_grants) are their own
+	// subsystem too: a grant is minted and consumed, never PATCHed, and its
+	// rows join the desired-state projection as relay/1's `pairing_grants`
+	// section rather than as an api/1 resource family (pairinggrants.go).
+	if _, err := db.Exec(pairingGrantsSchema); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("store: migrate pairing grants: %w", err)
+	}
 	for _, k := range allKinds {
 		if _, err := db.Exec(fmt.Sprintf(resourceTableDDL, string(k))); err != nil {
 			_ = db.Close()

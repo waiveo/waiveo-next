@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/datamodel"
@@ -55,7 +56,7 @@ func TestBuildFromStoreOverSeededStore(t *testing.T) {
 		t.Fatalf("DesiredState: %v", err)
 	}
 
-	snap, _, err := BuildFromStore(ds, "https://origin.example", id, nil, contentInstant(t))
+	snap, _, err := BuildFromStore(ds, "https://origin.example", id, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -159,7 +160,7 @@ func TestBuildFromStoreGenerationAdvances(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DesiredState #1: %v", err)
 	}
-	snap1, _, err := BuildFromStore(ds1, "https://origin.example", id, nil, contentInstant(t))
+	snap1, _, err := BuildFromStore(ds1, "https://origin.example", id, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore #1: %v", err)
 	}
@@ -179,7 +180,7 @@ func TestBuildFromStoreGenerationAdvances(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DesiredState #2: %v", err)
 	}
-	snap2, _, err := BuildFromStore(ds2, "https://origin.example", id, nil, contentInstant(t))
+	snap2, _, err := BuildFromStore(ds2, "https://origin.example", id, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore #2: %v", err)
 	}
@@ -224,7 +225,7 @@ func TestBuildFromStoreEmitsContentOrigin(t *testing.T) {
 		t.Fatalf("DesiredState: %v", err)
 	}
 
-	snap, _, err := BuildFromStore(ds, "https://origin.example", id, nil, contentInstant(t))
+	snap, _, err := BuildFromStore(ds, "https://origin.example", id, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -260,7 +261,7 @@ func TestBuildFromStoreRejectsNilIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DesiredState: %v", err)
 	}
-	if _, _, err := BuildFromStore(ds, "https://origin.example", nil, nil, contentInstant(t)); err == nil {
+	if _, _, err := BuildFromStore(ds, "https://origin.example", nil, contentInstant(t)); err == nil {
 		t.Error("BuildFromStore(nil identity) succeeded, want an error")
 	}
 }
@@ -328,7 +329,7 @@ func TestBuildFromStoreCarriesSeededDemoAsEdgeRule(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DesiredState: %v", err)
 	}
-	snap, _, err := BuildFromStore(ds, "https://origin.example", id, nil, contentInstant(t))
+	snap, _, err := BuildFromStore(ds, "https://origin.example", id, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -358,7 +359,7 @@ func TestBuildFromStoreEdgeRulesAdvanceWithAuthoredRule(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DesiredState #1: %v", err)
 	}
-	snap1, _, err := BuildFromStore(ds1, "https://origin.example", id, nil, contentInstant(t))
+	snap1, _, err := BuildFromStore(ds1, "https://origin.example", id, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore #1: %v", err)
 	}
@@ -374,7 +375,7 @@ func TestBuildFromStoreEdgeRulesAdvanceWithAuthoredRule(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DesiredState #2: %v", err)
 	}
-	snap2, _, err := BuildFromStore(ds2, "https://origin.example", id, nil, contentInstant(t))
+	snap2, _, err := BuildFromStore(ds2, "https://origin.example", id, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore #2: %v", err)
 	}
@@ -417,7 +418,7 @@ func TestBuildFromStoreEdgeRulesExcludeAppClassifiedRule(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DesiredState: %v", err)
 	}
-	snap, _, err := BuildFromStore(ds, "https://origin.example", id, nil, contentInstant(t))
+	snap, _, err := BuildFromStore(ds, "https://origin.example", id, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -438,5 +439,61 @@ func TestBuildFromStoreEdgeRulesExcludeAppClassifiedRule(t *testing.T) {
 	}
 	if recomputed != snap.Hash {
 		t.Errorf("recomputed hash %q != snapshot hash %q (REL-053)", recomputed, snap.Hash)
+	}
+}
+
+// TestBuildFromStoreCarriesStoredPairingGrants: a pairing grant minted into
+// the store (store.AddPairingGrant) rides the very next built snapshot's
+// `pairing_grants` section (REL-067) with its REL-121a screen binding intact,
+// while a grant already past its ttl at the build instant, and a grant whose
+// bound screen row no longer exists, are both dropped from the section.
+func TestBuildFromStoreCarriesStoredPairingGrants(t *testing.T) {
+	img := loadTestImage(t)
+	id := testIdentity(t)
+	s := seededStore(t, signhash.ContentID(img))
+	ctx := context.Background()
+	// The REAL clock, not the fixed daypart instant: AddPairingGrant's own
+	// expired-row sweep runs at the store's wall clock, so a fixture issued
+	// around a canned past instant would be swept by the very next mint. The
+	// screen-program section's resolution is not asserted here, so the
+	// instant's daypart position is immaterial.
+	now := time.Now().UnixMilli()
+
+	live := wire.PairingGrant{
+		GrantID: "grant-11111111111111111111111111111111", Purpose: "pairing",
+		ResultingPrincipalKind: "screen", ScreenID: store.SeedScreenID,
+		TTL: 900, RedemptionMode: "one-time", IssuedAt: now - 1_000,
+	}
+	expired := wire.PairingGrant{
+		GrantID: "grant-22222222222222222222222222222222", Purpose: "pairing",
+		ResultingPrincipalKind: "screen", ScreenID: store.SeedScreenID,
+		TTL: 900, RedemptionMode: "one-time", IssuedAt: now - 901_000,
+	}
+	for _, g := range []wire.PairingGrant{live, expired} {
+		if err := s.AddPairingGrant(ctx, g, "", "api"); err != nil {
+			t.Fatalf("AddPairingGrant(%s): %v", g.GrantID, err)
+		}
+	}
+	// A grant whose screen row is gone by build time: fabricate it directly in
+	// the desired-state read rather than deleting a row, so this stays a pure
+	// derivation test.
+	ds := desiredState(t, s)
+	ds.PairingGrants = append(ds.PairingGrants, wire.PairingGrant{
+		GrantID: "grant-33333333333333333333333333333333", Purpose: "pairing",
+		ResultingPrincipalKind: "screen", ScreenID: "01J8Z9G0NESCREENR0WXXXXXXX",
+		TTL: 900, RedemptionMode: "one-time", IssuedAt: now - 1_000,
+	})
+
+	snap, _, err := BuildFromStore(ds, "https://origin.example", id, now)
+	if err != nil {
+		t.Fatalf("BuildFromStore: %v", err)
+	}
+
+	got := snap.Sections.PairingGrants
+	if len(got) != 1 {
+		t.Fatalf("pairing_grants carries %d grant(s) %v, want exactly the live bound grant", len(got), got)
+	}
+	if got[0] != live {
+		t.Fatalf("pairing_grants[0] = %+v, want %+v (screen binding carried unmodified, REL-121a)", got[0], live)
 	}
 }
