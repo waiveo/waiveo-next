@@ -383,3 +383,100 @@ func assertReason(t *testing.T, err error, want packsig.Reason) {
 		t.Fatalf("refusal reason = %q (%s), want %q", verr.Reason, verr.Message, want)
 	}
 }
+
+// TestVerifyEnvelopeWithUnknownMember: the envelope is the ONE entry the
+// content digest cannot cover, so anything tolerated inside it is a byte region
+// no signature vouches for. A mirror that rewrites only signature.json —
+// leaving every defined member byte-identical and appending its own — is
+// refused, not ignored.
+func TestVerifyEnvelopeWithUnknownMember(t *testing.T) {
+	signed, anchors := signedTestArtifact(t)
+	files := extract(t, signed)
+
+	var env map[string]json.RawMessage
+	if err := json.Unmarshal(files[packsig.EnvelopeName], &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	env["smuggled"] = json.RawMessage(`"` + string(bytes.Repeat([]byte("A"), 4096)) + `"`)
+	raw, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+	files[packsig.EnvelopeName] = raw
+
+	_, err = packsig.VerifyBundle(files, anchors)
+	assertReason(t, err, packsig.ReasonInvalid)
+}
+
+// TestVerifyEnvelopeWithDuplicateMember: a duplicate member is refused because
+// JSON parsers disagree on which one wins — an envelope that means one identity
+// to this verifier and another to some later registry tool is exactly the
+// relabelling confusion the signed statement exists to prevent.
+func TestVerifyEnvelopeWithDuplicateMember(t *testing.T) {
+	signed, anchors := signedTestArtifact(t)
+	files := extract(t, signed)
+
+	raw := files[packsig.EnvelopeName]
+	dup := append([]byte(`{"artifact_id":"evil/relabelled",`), bytes.TrimPrefix(bytes.TrimSpace(raw), []byte("{"))...)
+	files[packsig.EnvelopeName] = dup
+
+	_, err := packsig.VerifyBundle(files, anchors)
+	assertReason(t, err, packsig.ReasonInvalid)
+}
+
+// TestVerifyTriesEveryAnchoredKeyWithTheSameID: key_id is a truncated,
+// publisher-supplied label, so two anchors may carry the same id. A shadow
+// entry listed FIRST must not be able to refuse the genuine publisher's
+// artifact — the signature is the gate, key_id only narrows the search.
+func TestVerifyTriesEveryAnchoredKeyWithTheSameID(t *testing.T) {
+	pub, priv := signhash.GenerateKey()
+	keyID := packsig.KeyIDFor(pub)
+	signed, err := packsig.Sign(testArtifact(t), "acme/menu-board", "1.0.0", keyID, priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+
+	// A shadow anchor sharing the genuine key's id, listed ahead of it.
+	shadowPub, _ := signhash.GenerateKey()
+	anchors := packsig.StaticAnchors{"acme": {
+		{KeyID: keyID, PublicKey: shadowPub},
+		{KeyID: keyID, PublicKey: pub},
+	}}
+
+	if _, err := packsig.VerifyBundle(extract(t, signed), anchors); err != nil {
+		t.Fatalf("a shadow anchor with a colliding key_id refused the genuine publisher's artifact: %v", err)
+	}
+}
+
+// TestFileAnchorsRefuseWorldWritable: the anchors document IS the pack trust
+// root — anyone who can write it can name themselves a trusted publisher. A
+// file the group or world can write is refused outright rather than read, so a
+// host that is not protecting its trust root fails closed instead of trusting
+// whatever the file currently says.
+func TestFileAnchorsRefuseWorldWritable(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "anchors.json")
+	pub, _ := signhash.GenerateKey()
+	doc := `{"format":"pack-trust-anchors/1","anchors":[{"namespace":"acme","key_id":"` +
+		packsig.KeyIDFor(pub) + `","public_key":"` + base64.StdEncoding.EncodeToString(pub) + `"}]}`
+	if err := os.WriteFile(path, []byte(doc), 0o644); err != nil {
+		t.Fatalf("write anchors: %v", err)
+	}
+	// Explicitly, after creation: the process umask would otherwise strip the
+	// very bits this test is about.
+	if err := os.Chmod(path, 0o666); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+
+	if _, err := (packsig.FileAnchors{Path: path}).KeysFor("acme"); err == nil {
+		t.Fatal("a world-writable anchors file was accepted as a trust root")
+	}
+
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	keys, err := (packsig.FileAnchors{Path: path}).KeysFor("acme")
+	if err != nil || len(keys) != 1 {
+		t.Fatalf("a 0644 anchors file resolved to (%d keys, %v), want (1, nil)", len(keys), err)
+	}
+}

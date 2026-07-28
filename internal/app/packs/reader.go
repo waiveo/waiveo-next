@@ -60,6 +60,16 @@ type Bundle struct {
 // Has reports whether the bundle carries an entry at name.
 func (b *Bundle) Has(name string) bool { _, ok := b.files[name]; return ok }
 
+// drop removes an entry from the bundle. Install uses it for exactly one entry:
+// the signature envelope, once verification is done with it. The envelope is
+// the only entry the content digest cannot cover — it carries that digest — so
+// leaving it in the bundle would leave one signature-exempt byte region inside
+// an artifact the rest of the pipeline treats as verified, and MAN-063 would
+// let a manifest legally point a surface at it. Dropping it makes "every entry
+// this pipeline still holds is covered by the signature" true by construction
+// rather than by every future consumer remembering the exception.
+func (b *Bundle) drop(name string) { delete(b.files, name) }
+
 // File returns the bytes of the entry at name, and whether it exists.
 func (b *Bundle) File(name string) ([]byte, bool) { v, ok := b.files[name]; return v, ok }
 

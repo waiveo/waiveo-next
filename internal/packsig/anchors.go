@@ -50,6 +50,22 @@ type FileAnchors struct {
 }
 
 func (f FileAnchors) KeysFor(namespace string) ([]TrustedKey, error) {
+	// The anchors document IS the pack-provenance trust root: anyone who can
+	// write it can name themselves a trusted publisher. A file the world or
+	// the group can write is therefore refused outright rather than read —
+	// fail closed on a trust root whose integrity the host is not enforcing,
+	// instead of silently trusting whatever it currently says.
+	info, err := os.Stat(f.Path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("packsig: stat trust anchors %s: %w", f.Path, err)
+	}
+	if mode := info.Mode().Perm(); mode&0o022 != 0 {
+		return nil, fmt.Errorf("packsig: trust anchors %s are group- or world-writable (mode %04o) — refusing to treat them as a trust root", f.Path, mode)
+	}
+
 	raw, err := os.ReadFile(f.Path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -170,8 +186,18 @@ func ensureAnchor(path, namespace, keyID string, pub ed25519.PublicKey) error {
 	if err != nil {
 		return fmt.Errorf("packsig: marshal trust anchors: %w", err)
 	}
-	if err := os.WriteFile(path, append(out, '\n'), 0o644); err != nil {
-		return fmt.Errorf("packsig: write trust anchors %s: %w", path, err)
+	// Written temp-then-rename: a truncate-in-place write that dies midway
+	// leaves a partial document, and a partial trust root refuses every
+	// install until a human deletes it by hand (this function will not
+	// overwrite what it cannot parse, on purpose). The rename is atomic, so a
+	// concurrent reader sees either the old document or the new one.
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, append(out, '\n'), 0o644); err != nil {
+		return fmt.Errorf("packsig: write trust anchors %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("packsig: install trust anchors %s: %w", path, err)
 	}
 	return nil
 }

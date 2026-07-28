@@ -20,7 +20,10 @@
 //
 // Provenance is part of the gate (marketplace/1 MKT-009a/MKT-009b): every
 // artifact MUST carry a valid signature envelope (internal/packsig) whose
-// content digest covers the exact entry set this pipeline extracted and whose
+// content digest covers the exact entry set this pipeline extracted — every
+// entry but the envelope itself, which is dropped from the bundle as soon as
+// it has been verified, so nothing downstream ever reads an entry the digest
+// did not cover — and whose
 // signing key a trust anchor authorizes for the pack's publisher namespace —
 // verified BEFORE the manifest engine runs and before anything persists. An
 // unsigned, tampered, or wrong-key artifact refuses with a typed ArtifactError
@@ -193,6 +196,10 @@ func (in *Installer) Install(ctx context.Context, artifact []byte) (Result, erro
 	if err != nil {
 		return Result{}, err
 	}
+	// The envelope has done its job. Drop it so nothing downstream — the
+	// MAN-063 file-set registry, page/locale collection, or anything added
+	// later — can ever read the one entry the digest does not cover.
+	bundle.drop(packsig.EnvelopeName)
 
 	manifestBytes, ok := bundle.File("manifest.json")
 	if !ok {

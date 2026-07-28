@@ -202,6 +202,25 @@ const defaultWorkspaceKeyDir = ".dev/feeder-keys"
 // refuses every install rather than admitting unsigned packs (fail closed).
 const defaultPackTrustPath = ".dev/pack-trust/anchors.json"
 
+// absPackTrustPath pins the trust-anchor path to an absolute one, ONCE, at
+// config load.
+//
+// The anchors file is read per verification so that provisioning and
+// revocation take effect without a restart. Resolved per read, a relative path
+// would mean the trust root follows the process's working directory — so the
+// same deployment launched from a different cwd would silently consult a
+// different (possibly attacker-planted) trust root, and "fail closed when
+// absent" would not save it, because a substituted file is present. Resolving
+// once at boot makes the trust root a fixed location for the process's life
+// while keeping the re-read behavior.
+func absPackTrustPath(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return p
+	}
+	return abs
+}
+
 // loadConfig reads the feeder config from env (via `env`, os.Getenv in main),
 // falling back to the loopback defaults. contentBaseURL defaults to the listen
 // address so an unconfigured feeder behaves exactly as before.
@@ -216,7 +235,7 @@ func loadConfig(env func(string) string) config {
 		archiveDir:     envOr(env, "WAIVEO_FEEDER_ARCHIVE_DIR", defaultArchiveDir),
 		keyDir:         envOr(env, "WAIVEO_FEEDER_KEY_DIR", defaultWorkspaceKeyDir),
 		demoCast:       envOr(env, "WAIVEO_FEEDER_DEMO_CAST", ""),
-		packTrustPath:  envOr(env, "WAIVEO_FEEDER_PACK_TRUST", defaultPackTrustPath),
+		packTrustPath:  absPackTrustPath(envOr(env, "WAIVEO_FEEDER_PACK_TRUST", defaultPackTrustPath)),
 	}
 }
 

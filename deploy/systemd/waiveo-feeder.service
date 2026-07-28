@@ -18,6 +18,13 @@ WorkingDirectory=/opt/waiveo-next
 ExecStart=/opt/waiveo-next/bin/waiveo-feeder
 Environment=WAIVEO_FEEDER_LISTEN=0.0.0.0:7420
 Environment=WAIVEO_FEEDER_CONTENT_URL=https://192.0.2.10:7420
+# Pack-provenance trust root. Deliberately OUTSIDE ReadWritePaths: with
+# ProtectSystem=strict this path is read-only to the service, so the process
+# that verifies pack signatures cannot add a publisher to the set it verifies
+# against, and neither can anything running as its user. Provision it as root
+# (0644, root-owned); the feeder refuses a group- or world-writable anchors
+# file. Absent ⇒ every pack install refuses (fail closed).
+Environment=WAIVEO_FEEDER_PACK_TRUST=/etc/waiveo/pack-trust/anchors.json
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=true

@@ -8,6 +8,7 @@ import (
 
 	"github.com/maaxton/waiveo-next/internal/app/packs"
 	"github.com/maaxton/waiveo-next/internal/app/store"
+	"github.com/maaxton/waiveo-next/internal/packsig"
 )
 
 func openStore(t *testing.T) *store.Store {
@@ -544,4 +545,39 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestInstallRefusesSurfacePointedAtTheSignatureEnvelope: the signature
+// envelope is the one entry the content digest cannot cover, so an artifact
+// that reaches install carrying attacker-chosen envelope bytes must not be able
+// to expose them. The envelope is dropped from the bundle the moment
+// verification returns, so a manifest naming it as a UI surface entry no longer
+// resolves — MAN-063 refuses it exactly as it would refuse a surface pointed at
+// any file the bundle does not contain.
+//
+// Without the drop, this manifest installs: a validly signed artifact whose
+// signature.json a mirror rewrote after signing would then be serving
+// attacker-controlled bytes from inside a "verified" pack.
+func TestInstallRefusesSurfacePointedAtTheSignatureEnvelope(t *testing.T) {
+	st := openStore(t)
+	in, signer := newInstaller(t, st)
+
+	m := baseManifest()
+	ui, _ := m["ui"].(map[string]any)
+	ui["surfaces"] = []any{
+		map[string]any{"name": "smuggled", "entry": packsig.EnvelopeName},
+	}
+
+	before := gen(t, st)
+	_, err := in.Install(context.Background(), signedPackZip(t, signer, m))
+	if err == nil {
+		t.Fatal("a surface entry pointing at the signature envelope installed — the envelope is still visible to MAN-063")
+	}
+	var merr *packs.ManifestError
+	if !errors.As(err, &merr) {
+		t.Fatalf("Install error = %v (%T), want a ManifestError refusing the surface entry", err, err)
+	}
+	if after := gen(t, st); after != before {
+		t.Fatalf("generation advanced (%d -> %d) on a refused install", before, after)
+	}
 }

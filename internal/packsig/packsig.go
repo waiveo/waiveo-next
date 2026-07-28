@@ -10,22 +10,38 @@
 //
 //   - The content digest covers the artifact's extracted entries — the exact
 //     name→bytes map the install pipeline consumes — excluding only the envelope
-//     entry itself. What is verified is exactly what installs: a zip whose
-//     container-level encoding could present an entry differently than an
-//     extractor yields it cannot carry content the signature did not cover,
-//     because the verifier digests what IT extracted, not what some other
-//     parser might have seen.
+//     entry itself, which cannot cover itself because it carries the digest. A
+//     zip whose container-level encoding could present an entry differently
+//     than an extractor yields cannot carry content the signature did not
+//     cover, because the verifier digests what IT extracted, not what some
+//     other parser might have seen.
+//
+//     The envelope exclusion is the one hole in "what is verified is what
+//     installs", and it is closed on the far side rather than here: the
+//     envelope is decoded STRICTLY (decodeEnvelope — no unknown members, no
+//     duplicates), and the install pipeline DROPS it from the bundle the
+//     moment verification returns (packs.Install), so no entry the digest did
+//     not cover survives into anything downstream. Left in, it would be an
+//     attacker-editable byte region inside a "verified" artifact that a
+//     manifest could legally point a UI surface at (MAN-063).
+//
 //   - The signed statement binds the artifact identity (artifact_id, kind,
 //     subtype, version), not the content alone — the same signed set
 //     marketplace/1 MKT-009 puts inside an index entry's publisher_signature —
 //     so a valid signature for one (artifact_id, kind, version) can never vouch
 //     for byte-identical content re-labelled as a different pack, kind, or
 //     version.
+//
 //   - The statement carries a domain-separation prefix, so a signature the same
 //     ed25519 key produced for any OTHER construction in this platform (a
 //     relay/1 desired-state snapshot, an archive/1 export header, a
 //     channel-index/1 role document) can never verify as a pack-artifact
-//     signature, and vice versa.
+//     signature. This package can only enforce that direction; whether a
+//     pack-artifact signature could verify under some other construction is
+//     that construction's business, and not every one of them is
+//     domain-separated (internal/relay/hello signs a bare nonce). The
+//     directions are kept separate here rather than claiming both, and in
+//     practice the key roots are separate too (security-model/1 SEC-044).
 //
 // The crypto primitives are internal/shared/signhash's (ed25519 + sha256) — no
 // new dependency, per security-model SEC-044's trust-root separation this key
@@ -117,6 +133,64 @@ func ContentDigest(files map[string][]byte) string {
 	return digestPrefix + hex.EncodeToString(h.Sum(nil))
 }
 
+// decodeEnvelope parses the signature envelope STRICTLY: exactly the members
+// MKT-009a defines, each at most once.
+//
+// The envelope is the one entry the content digest cannot cover (it carries
+// the digest), so anything this decoder tolerates is a byte region inside a
+// "verified" artifact that no signature vouches for. An unknown member is
+// therefore a refusal rather than something to ignore, and a duplicate member
+// is a refusal because JSON parsers disagree on which one wins — a document
+// that means different things to this verifier and to some later registry tool
+// is exactly the identity-confusion MKT-009a exists to close. Together with
+// Install dropping the envelope from the bundle after verification, an
+// artifact cannot carry attacker-chosen bytes past this point at all.
+func decodeEnvelope(raw []byte) (Envelope, error) {
+	var seen map[string]bool
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	tok, err := dec.Token()
+	if err != nil {
+		return Envelope{}, verifyErr(ReasonInvalid, "the signature envelope is not valid JSON: %v", err)
+	}
+	if delim, ok := tok.(json.Delim); !ok || delim != '{' {
+		return Envelope{}, verifyErr(ReasonInvalid, "the signature envelope is not a JSON object")
+	}
+	seen = map[string]bool{}
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return Envelope{}, verifyErr(ReasonInvalid, "the signature envelope is not valid JSON: %v", err)
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return Envelope{}, verifyErr(ReasonInvalid, "the signature envelope is not valid JSON")
+		}
+		if seen[key] {
+			return Envelope{}, verifyErr(ReasonInvalid,
+				"the signature envelope declares member %q more than once", key)
+		}
+		seen[key] = true
+		var discard json.RawMessage
+		if err := dec.Decode(&discard); err != nil {
+			return Envelope{}, verifyErr(ReasonInvalid, "the signature envelope is not valid JSON: %v", err)
+		}
+	}
+	if _, err := dec.Token(); err != nil { // closing brace
+		return Envelope{}, verifyErr(ReasonInvalid, "the signature envelope is not valid JSON: %v", err)
+	}
+	if dec.More() {
+		return Envelope{}, verifyErr(ReasonInvalid, "the signature envelope carries trailing content")
+	}
+
+	var env Envelope
+	strict := json.NewDecoder(bytes.NewReader(raw))
+	strict.DisallowUnknownFields()
+	if err := strict.Decode(&env); err != nil {
+		return Envelope{}, verifyErr(ReasonInvalid, "the signature envelope is malformed: %v", err)
+	}
+	return env, nil
+}
+
 // statement renders the domain-separated signing statement (MKT-009a):
 // context LF artifact_id LF kind LF subtype LF version LF content_digest LF.
 // No field may contain a LF — fieldsSane enforces that before any sign or
@@ -197,9 +271,22 @@ const (
 type VerifyError struct {
 	Reason  Reason
 	Message string
+	// Err is OPERATOR detail — a host path, an OS error, a parse failure —
+	// that must NEVER reach a client. The api layer renders Message only; a
+	// caller logging server-side may unwrap this for the real cause.
+	Err error
 }
 
-func (e *VerifyError) Error() string { return string(e.Reason) + ": " + e.Message }
+func (e *VerifyError) Error() string {
+	if e.Err != nil {
+		return string(e.Reason) + ": " + e.Message + ": " + e.Err.Error()
+	}
+	return string(e.Reason) + ": " + e.Message
+}
+
+// Unwrap exposes the operator-detail cause to errors.Is/As without ever
+// putting it in the client-visible Message.
+func (e *VerifyError) Unwrap() error { return e.Err }
 
 func verifyErr(reason Reason, format string, args ...any) *VerifyError {
 	return &VerifyError{Reason: reason, Message: fmt.Sprintf(format, args...)}
@@ -247,9 +334,9 @@ func VerifyBundle(files map[string][]byte, anchors TrustAnchors) (Envelope, erro
 			"the artifact carries no %s signature envelope (marketplace/1 MKT-009a)", EnvelopeName)
 	}
 
-	var env Envelope
-	if err := json.Unmarshal(raw, &env); err != nil {
-		return Envelope{}, verifyErr(ReasonInvalid, "the signature envelope is not valid JSON: %v", err)
+	env, err := decodeEnvelope(raw)
+	if err != nil {
+		return Envelope{}, err
 	}
 	if env.Format != Format {
 		return Envelope{}, verifyErr(ReasonInvalid,
@@ -276,21 +363,33 @@ func VerifyBundle(files map[string][]byte, anchors TrustAnchors) (Envelope, erro
 	if err != nil {
 		return Envelope{}, verifyErr(ReasonInvalid, "the signature envelope is malformed: %v", err)
 	}
-	var pub ed25519.PublicKey
+	var candidates []ed25519.PublicKey
 	if anchors != nil {
 		keys, err := anchors.KeysFor(ns)
 		if err != nil {
-			return Envelope{}, verifyErr(ReasonUntrusted,
-				"the trust-anchor set could not be resolved for publisher namespace %q: %v", ns, err)
+			// The underlying error names a host path and an OS/parse failure —
+			// operator detail that must not cross the trust boundary into a
+			// client-visible refusal. It rides Err (which the api layer does
+			// not render) while the client sees only that trust could not be
+			// resolved.
+			e := verifyErr(ReasonUntrusted,
+				"the trust-anchor set for publisher namespace %q could not be resolved; check the host's pack trust configuration", ns)
+			e.Err = err
+			return Envelope{}, e
 		}
+		// EVERY anchored key whose id matches is a candidate, not just the
+		// first: key_id is a truncated, publisher-supplied label, so two
+		// anchors can carry the same id. Letting the first shadow the rest
+		// would let a colliding entry both admit artifacts the real publisher
+		// never signed and refuse the ones it did. The signature is the gate;
+		// key_id only narrows the search.
 		for _, k := range keys {
 			if k.KeyID == env.KeyID {
-				pub = k.PublicKey
-				break
+				candidates = append(candidates, k.PublicKey)
 			}
 		}
 	}
-	if pub == nil {
+	if len(candidates) == 0 {
 		return Envelope{}, verifyErr(ReasonUntrusted,
 			"no trust anchor authorizes signing key %q for publisher namespace %q", env.KeyID, ns)
 	}
@@ -300,11 +399,13 @@ func VerifyBundle(files map[string][]byte, anchors TrustAnchors) (Envelope, erro
 		return Envelope{}, verifyErr(ReasonInvalid, "the signature is not valid base64: %v", err)
 	}
 	msg := statement(env.ArtifactID, env.Kind, env.Subtype, env.Version, env.ContentDigest)
-	if !signhash.Verify(pub, msg, sig) {
-		return Envelope{}, verifyErr(ReasonInvalid,
-			"the signature does not verify under key %q for the signed statement", env.KeyID)
+	for _, pub := range candidates {
+		if signhash.Verify(pub, msg, sig) {
+			return env, nil
+		}
 	}
-	return env, nil
+	return Envelope{}, verifyErr(ReasonInvalid,
+		"the signature does not verify under key %q for the signed statement", env.KeyID)
 }
 
 // ---- signing (publisher tooling) -------------------------------------------
