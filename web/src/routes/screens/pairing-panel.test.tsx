@@ -57,8 +57,8 @@ function page(items: unknown[]) {
   return HttpResponse.json({ items, cursor: null }, { headers: { "Trace-Id": TRACE_ID } });
 }
 
-const site: ScopeNode = scopeNode({ id: ULID_A, name: "Demo Site", kind: "site" });
-const group: ScopeNode = scopeNode({ id: ULID_B, name: "West Wing", kind: "group" });
+const site = scopeNode({ id: ULID_A, name: "Demo Site", kind: "site" }) as ScopeNode;
+const group = scopeNode({ id: ULID_B, name: "West Wing", kind: "group" }) as ScopeNode;
 
 function renderPanel(parents: ScopeNode[] = [site, group]) {
   const api = createApi({ baseUrl: TEST_BASE });
