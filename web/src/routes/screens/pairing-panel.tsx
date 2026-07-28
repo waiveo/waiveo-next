@@ -134,16 +134,22 @@ export function PairingPanel({ api, parents, nodeNames }: PairingPanelProps) {
     }
   }, [api, activeParent, busy, load, name]);
 
+  // Guarded by the same busy flag as createAndPair: each click mints a live
+  // one-time code, so an accidental double-click must not mint two.
   const issueFor = useCallback(
     async (row: Screen) => {
+      if (busy) return;
+      setBusy(true);
       try {
         const result = await api.screens.issuePairingCode(row.id);
         setDialog({ kind: "code", screenName: row.name, result });
       } catch (err) {
         toast.error(`Couldn't issue a pairing code: ${problemMessage(err)}`);
+      } finally {
+        setBusy(false);
       }
     },
-    [api],
+    [api, busy],
   );
 
   const removeRow = useCallback(async () => {
@@ -203,7 +209,7 @@ export function PairingPanel({ api, parents, nodeNames }: PairingPanelProps) {
         }
         rowActions={(row) => (
           <div className="flex justify-end gap-2">
-            <Button size="sm" variant="outline" onClick={() => void issueFor(row)}>
+            <Button size="sm" variant="outline" onClick={() => void issueFor(row)} disabled={busy}>
               Pairing code
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setRemoving(row)}>

@@ -470,7 +470,9 @@ func TestBuildFromStoreCarriesStoredPairingGrants(t *testing.T) {
 		TTL: 900, RedemptionMode: "one-time", IssuedAt: now - 901_000,
 	}
 	for _, g := range []wire.PairingGrant{live, expired} {
-		if err := s.AddPairingGrant(ctx, g, "", "api"); err != nil {
+		// The scope node is the seeded screen row's own placement — the mint
+		// re-checks it in-transaction against the row and refuses any other.
+		if err := s.AddPairingGrant(ctx, g, "01J8Z4DEM0SCREENF1RSTPH0TN", "api"); err != nil {
 			t.Fatalf("AddPairingGrant(%s): %v", g.GrantID, err)
 		}
 	}

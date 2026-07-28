@@ -36,7 +36,10 @@ func TestAddPairingGrantRidesDesiredStateAndBumpsGeneration(t *testing.T) {
 
 	before := gen(t, s)
 	g := boundGrant("grant-0123456789abcdef0123456789abcdef", store.SeedScreenID, 1752537000000)
-	if err := s.AddPairingGrant(ctx, g, "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5", "api"); err != nil {
+	// The scope node is the seeded screen ROW's own placement (seed.go), which
+	// the mint re-checks in-transaction against the row — a caller-supplied
+	// node the row does not sit at is refused (see the moved-screen test).
+	if err := s.AddPairingGrant(ctx, g, "01J8Z4DEM0SCREENF1RSTPH0TN", "api"); err != nil {
 		t.Fatalf("AddPairingGrant: %v", err)
 	}
 	if after := gen(t, s); after != before+1 {
@@ -84,6 +87,39 @@ func TestAddPairingGrantRefusesUnknownScreen(t *testing.T) {
 	}
 }
 
+// TestAddPairingGrantRefusesMovedScreen: the mint re-reads the screen row's
+// placement inside its own transaction and refuses when it no longer matches
+// the node the caller AUTHORIZED against — the authorize-then-mint race a
+// concurrent screen move opens. Nothing is persisted on refusal: no grant, no
+// generation bump, so no audit record can be filed under a node the row has
+// left on authority the caller may not hold at the row's new placement.
+func TestAddPairingGrantRefusesMovedScreen(t *testing.T) {
+	s := openMem(t)
+	ctx := context.Background()
+	if err := s.SeedDemo(ctx, seedAssetRef); err != nil {
+		t.Fatalf("SeedDemo: %v", err)
+	}
+
+	before := gen(t, s)
+	g := boundGrant("grant-0123456789abcdef0123456789abcdef", store.SeedScreenID, 1752537000000)
+	// The site node — a real node, but NOT the placement the seeded screen row
+	// sits at, exactly what a caller holds after the row moved under it.
+	err := s.AddPairingGrant(ctx, g, "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5", "api")
+	if !errors.Is(err, store.ErrPairingGrantScreenMoved) {
+		t.Fatalf("AddPairingGrant(stale scope node) = %v, want ErrPairingGrantScreenMoved", err)
+	}
+	if after := gen(t, s); after != before {
+		t.Fatalf("generation advanced (%d -> %d) on a REFUSED mint", before, after)
+	}
+	ds, err := s.DesiredState(ctx)
+	if err != nil {
+		t.Fatalf("DesiredState: %v", err)
+	}
+	if len(ds.PairingGrants) != 0 {
+		t.Fatalf("a refused mint persisted %d grant(s)", len(ds.PairingGrants))
+	}
+}
+
 // TestAddPairingGrantRefusesUnboundGrant: a store-minted grant is ALWAYS
 // screen-bound (REL-121a) — the unbound REL-121 baseline shape is wire-legal
 // for a peer but never something this app authors.
@@ -112,11 +148,11 @@ func TestAddPairingGrantRetiresExpiredRows(t *testing.T) {
 	// An old grant, expired long before "now" (the store's clock is the real
 	// wall clock here; issued_at 0 with a 900s ttl expired in 1970).
 	old := boundGrant("grant-00000000000000000000000000000000", store.SeedScreenID, 0)
-	if err := s.AddPairingGrant(ctx, old, "", "api"); err != nil {
+	if err := s.AddPairingGrant(ctx, old, "01J8Z4DEM0SCREENF1RSTPH0TN", "api"); err != nil {
 		t.Fatalf("AddPairingGrant(old): %v", err)
 	}
 	fresh := boundGrant("grant-11111111111111111111111111111111", store.SeedScreenID, 1752537000000)
-	if err := s.AddPairingGrant(ctx, fresh, "", "api"); err != nil {
+	if err := s.AddPairingGrant(ctx, fresh, "01J8Z4DEM0SCREENF1RSTPH0TN", "api"); err != nil {
 		t.Fatalf("AddPairingGrant(fresh): %v", err)
 	}
 

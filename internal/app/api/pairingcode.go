@@ -27,8 +27,10 @@ import (
 //
 // REL-126 fixes what a pairing code encodes — the relay's dial address, a
 // grant_selector, and a fingerprint_commitment over the relay's own current
-// trust-anchor public key — and the relay logs exactly such a code for every
-// grant it applies at boot. But an operator pairing a screen is standing at
+// trust-anchor public key — and the relay logs such codes for the grants it
+// holds at boot (boot only: a grant applied over a live re-pull is never
+// logged, so for a mid-run mint this surface is the code's ONLY display).
+// An operator pairing a screen is standing at
 // the console, not at the relay's log, and player/1 explicitly contemplates
 // the app's own display surface as the code's delivery channel (its Residual
 // risk section names "the relay's or app's own display surface", and PLY-051's
@@ -157,6 +159,14 @@ func (srv *server) issuePairingCodeExec(w http.ResponseWriter, r *http.Request) 
 		// existence check.
 		if err == store.ErrPairingGrantScreenUnknown {
 			writeProblem(w, r, http.StatusNotFound, "NOT_FOUND", "Not Found", "No screen exists with this identifier.")
+			return
+		}
+		// The move race: the screen still exists but was re-placed between
+		// the authorization read above and the mint's in-tx re-check, so the
+		// authority just established no longer describes the row. A retry
+		// re-runs authorization against the current placement.
+		if err == store.ErrPairingGrantScreenMoved {
+			writeProblem(w, r, http.StatusConflict, "PLACEMENT_CHANGED", "Conflict", "The screen's placement changed while the pairing code was being issued. Retry the request.")
 			return
 		}
 		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")

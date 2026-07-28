@@ -48,6 +48,15 @@ CREATE TABLE IF NOT EXISTS pairing_grants (
 // that does not exist (REL-121a's binding would join nothing).
 var ErrPairingGrantScreenUnknown = errors.New("store: pairing grant names an unknown screen row")
 
+// ErrPairingGrantScreenMoved reports an AddPairingGrant whose screen row still
+// exists but no longer sits at the scope node the caller authorized against —
+// the row was moved between the caller's authorization read and this mint.
+// Refused rather than persisted: the caller's write authority was established
+// at the OLD placement, and a grant recorded (and audited, SEC-034) under a
+// node the row has left would be authorized by nothing. The caller retries,
+// which re-runs authorization against the row's current placement.
+var ErrPairingGrantScreenMoved = errors.New("store: pairing grant's screen row moved after authorization")
+
 // AddPairingGrant persists one screen-bound pairing-grant record and bumps the
 // desired-state generation, so the very next snapshot build carries it to the
 // relay (REL-067) and the post-commit hook nudges every live relay connection
@@ -76,15 +85,24 @@ func (s *Store) AddPairingGrant(ctx context.Context, g wire.PairingGrant, scopeN
 	return s.writeTx(ctx, func(tx *sql.Tx) error {
 		// The binding must join a real row at mint time, checked inside the
 		// same transaction that persists the grant so a concurrent screen
-		// delete cannot slip between check and insert.
-		var one int
+		// delete cannot slip between check and insert — and the row must still
+		// sit at the scope node the caller AUTHORIZED against, re-read in the
+		// same transaction so a concurrent move cannot slip between the
+		// caller's authorization and this mint either. Without the second
+		// check, a grant (and its SEC-034 audit record) would be filed under a
+		// placement the row has left, on authority the caller may not hold at
+		// the row's new node.
+		var rowNode string
 		err := tx.QueryRowContext(ctx,
-			`SELECT 1 FROM `+string(KindScreen)+` WHERE id = ?`, g.ScreenID).Scan(&one)
+			`SELECT scope_node FROM `+string(KindScreen)+` WHERE id = ?`, g.ScreenID).Scan(&rowNode)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrPairingGrantScreenUnknown
 		}
 		if err != nil {
 			return fmt.Errorf("store: AddPairingGrant: resolve screen row: %w", err)
+		}
+		if rowNode != scopeNode {
+			return ErrPairingGrantScreenMoved
 		}
 
 		// Retire rows already past their ttl. Snapshot derivation filters
