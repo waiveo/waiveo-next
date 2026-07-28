@@ -45,6 +45,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/feeder/relayconn"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
+	"github.com/maaxton/waiveo-next/internal/packsig"
 	"github.com/maaxton/waiveo-next/internal/relay/hello"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/signhash"
@@ -102,6 +103,7 @@ type config struct {
 	archiveDir     string // directory the data-subject export writes archive/1 containers into
 	keyDir         string // directory the workspace signing key + data key persist in — NEVER the archive dir
 	demoCast       string // "" (default, single first-photon image) or "multi" (the real 3-item demo cast)
+	packTrustPath  string // trust-anchors document pack-artifact signatures verify against (marketplace/1 MKT-009b)
 }
 
 // demoCastModeMulti is loadConfig's WAIVEO_FEEDER_DEMO_CAST value that swaps
@@ -188,6 +190,18 @@ const defaultArchiveDir = ".dev/feeder-archive"
 // with.
 const defaultWorkspaceKeyDir = ".dev/feeder-keys"
 
+// defaultPackTrustPath is the make-dev-local trust-anchors document the pack
+// install pipeline verifies artifact signature envelopes against — the
+// host-provisioned local anchor set the contract requires while the external,
+// root-signed software-artifact trust root is still a pending owner ceremony
+// (marketplace/1 MKT-009b; the root-signed publisher-namespace delegation
+// replaces this file behind the same packsig.TrustAnchors seam when it lands).
+// The dev publisher tooling (scripts/examplepack, scripts/packsmoke) provisions
+// it; it carries PUBLIC key material only. The file is read per verification,
+// so provisioning after boot takes effect with no restart — and an ABSENT file
+// refuses every install rather than admitting unsigned packs (fail closed).
+const defaultPackTrustPath = ".dev/pack-trust/anchors.json"
+
 // loadConfig reads the feeder config from env (via `env`, os.Getenv in main),
 // falling back to the loopback defaults. contentBaseURL defaults to the listen
 // address so an unconfigured feeder behaves exactly as before.
@@ -202,6 +216,7 @@ func loadConfig(env func(string) string) config {
 		archiveDir:     envOr(env, "WAIVEO_FEEDER_ARCHIVE_DIR", defaultArchiveDir),
 		keyDir:         envOr(env, "WAIVEO_FEEDER_KEY_DIR", defaultWorkspaceKeyDir),
 		demoCast:       envOr(env, "WAIVEO_FEEDER_DEMO_CAST", ""),
+		packTrustPath:  envOr(env, "WAIVEO_FEEDER_PACK_TRUST", defaultPackTrustPath),
 	}
 }
 
@@ -687,8 +702,16 @@ func main() {
 	// halfway through its target list without waiting to see if it can finish.
 	jobRunner := api.NewJobRunner()
 
+	// The pack install pipeline's trust anchors (marketplace/1 MKT-009b): the
+	// file-backed, host-provisioned local anchor set standing in for the
+	// root-signed publisher-namespace delegation until the external trust root's
+	// owner ceremony happens — same seam, swappable without touching the
+	// pipeline. Absent/empty ⇒ every pack install refuses (fail closed).
+	log.Printf("waiveo-feeder: pack install trust anchors: %s", cfg.packTrustPath)
+
 	apiHandler := api.New(st, idem, nowMs, ulid.New, contentStore, contentBaseURL, authn,
 		api.WithDevicePlane(deviceRegistry, relayConnSrv), api.WithJobRunner(jobRunner),
+		api.WithPackTrust(packsig.FileAnchors{Path: cfg.packTrustPath}),
 		api.WithWebhookSecrets(webhookSecrets, webhookRotationOverlapMs),
 		api.WithWorkspaceArchive(&api.WorkspaceArchive{Dir: cfg.archiveDir, Key: wsKey}),
 		// The pairing-code operation's relay directory: live connections (and

@@ -39,9 +39,19 @@ import (
 	"time"
 
 	examplepacks "github.com/maaxton/waiveo-next/examples/packs"
+	"github.com/maaxton/waiveo-next/internal/packsig"
 )
 
 const packsEndpoint = "https://127.0.0.1:7420/api/v1/packs"
+
+// The make-dev publisher key dir and the feeder's trust-anchors document —
+// the same paths `make example-pack` provisions and the feeder's default
+// config reads (the feeder re-reads the anchors file per verification, so
+// provisioning here takes effect on an already-running feeder).
+const (
+	devKeyDir      = ".dev/pack-publisher"
+	devAnchorsPath = ".dev/pack-trust/anchors.json"
+)
 
 // installSummary is the subset of the install response (packs.Result) this probe
 // asserts on and renders into the PACK OK line.
@@ -56,6 +66,29 @@ func main() {
 	art, err := examplepacks.MenuBoardZip()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "PACK FAIL: build example pack zip: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Sign the artifact with the make-dev publisher key (provisioned into the
+	// feeder's trust anchors on first use) — the install pipeline verifies every
+	// artifact's signature envelope, so an unsigned upload is refused by design.
+	id, version, err := packsig.ArtifactIdentity(art)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "PACK FAIL: read pack identity: %v\n", err)
+		os.Exit(1)
+	}
+	ns, err := packsig.Namespace(id)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "PACK FAIL: %v\n", err)
+		os.Exit(1)
+	}
+	keyID, priv, err := packsig.DevProvision(devKeyDir, devAnchorsPath, ns)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "PACK FAIL: provision publisher key: %v\n", err)
+		os.Exit(1)
+	}
+	if art, err = packsig.Sign(art, id, version, keyID, priv); err != nil {
+		fmt.Fprintf(os.Stderr, "PACK FAIL: sign artifact: %v\n", err)
 		os.Exit(1)
 	}
 
