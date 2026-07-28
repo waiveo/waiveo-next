@@ -1,0 +1,47 @@
+{
+  "case_id": "MKT-009b-unsigned-artifact-install-rejected",
+  "contract": "marketplace/1",
+  "req_ids": ["MKT-009b", "MKT-009a"],
+  "description": "Three refusal classes at the install pipeline, each before anything persists: an artifact with no signature.json envelope (or one stripped from a previously-signed artifact) refuses PACK_UNSIGNED — never a warning or a legacy path; an artifact whose content was tampered after signing (the recomputed extracted-entry digest no longer matches the signed content_digest) refuses PACK_SIGNATURE_INVALID; an artifact validly signed by a key the trust-anchor set does not authorize for its publisher namespace refuses PACK_SIGNER_UNTRUSTED. No refusal writes a row or advances a generation.",
+  "input": {
+    "trust_anchors": { "acme": ["ed25519:acme-2026-07"] },
+    "attempts": [
+      {
+        "artifact_entries": ["manifest.json", "ui/main.json", "messages/en.json"],
+        "envelope": null
+      },
+      {
+        "artifact_entries": ["manifest.json", "ui/main.json", "messages/en.json", "signature.json"],
+        "envelope": {
+          "format": "pack-signature/1",
+          "artifact_id": "acme/weather-widget",
+          "kind": "pack",
+          "version": "1.2.0",
+          "content_digest": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+          "key_id": "ed25519:acme-2026-07",
+          "signature": "TUVVQ0lRRHg3ZjJhLi4ud2VhdGhlci13aWRnZXQtMS4yLjAtYXJ0aWZhY3Qtc2ln"
+        },
+        "content_digest_recomputed_over_extracted_entries": "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+      },
+      {
+        "artifact_entries": ["manifest.json", "ui/main.json", "messages/en.json", "signature.json"],
+        "envelope": {
+          "format": "pack-signature/1",
+          "artifact_id": "acme/weather-widget",
+          "kind": "pack",
+          "version": "1.2.0",
+          "content_digest": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+          "key_id": "ed25519:mallory-2026-07",
+          "signature": "TUVRQ0lHOWsuLi5tYWxsb3J5LWtleS1zaWctb3Zlci1zYW1lLXN0YXRlbWVudA"
+        },
+        "content_digest_recomputed_over_extracted_entries": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+        "signature_verifies_under_named_key": true
+      }
+    ]
+  },
+  "expected": {
+    "outcomes": ["PACK_UNSIGNED", "PACK_SIGNATURE_INVALID", "PACK_SIGNER_UNTRUSTED"],
+    "persisted_rows": 0,
+    "generation_advanced": false
+  }
+}

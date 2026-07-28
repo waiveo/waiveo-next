@@ -13,6 +13,8 @@ One row per requirement ID `contracts/marketplace-1.md` defines. Format: `confor
 | MKT-007 | `contracts/marketplace-1.md#publisher-identity-and-namespace` | - | TBD-wave1 |
 | MKT-008 | `contracts/marketplace-1.md#publisher-identity-and-namespace` | - | TBD-wave1 |
 | MKT-009 | `contracts/marketplace-1.md#publisher-identity-and-namespace` | `MKT-009-forged-namespace-undelegated-source-rejected` | TBD-wave1 |
+| MKT-009a | `contracts/marketplace-1.md#publisher-identity-and-namespace` | `MKT-009a-signed-artifact-envelope-accepted`, `MKT-009b-unsigned-artifact-install-rejected` | TBD-wave1 |
+| MKT-009b | `contracts/marketplace-1.md#publisher-identity-and-namespace` | `MKT-009b-unsigned-artifact-install-rejected`, `MKT-009a-signed-artifact-envelope-accepted` | TBD-wave1 |
 | MKT-010 | `contracts/marketplace-1.md#publisher-identity-and-namespace` | - | TBD-wave1 |
 | MKT-020 | `contracts/marketplace-1.md#trust-channels-and-production-install` | - | TBD-wave1 |
 | MKT-021 | `contracts/marketplace-1.md#trust-channels-and-production-install` | - | TBD-wave1 |

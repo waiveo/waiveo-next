@@ -1,0 +1,28 @@
+{
+  "case_id": "MKT-009a-signed-artifact-envelope-accepted",
+  "contract": "marketplace/1",
+  "req_ids": ["MKT-009a", "MKT-009b"],
+  "description": "A sealed pack artifact carries its reserved signature.json envelope: the content_digest matches the canonical digest over the artifact's extracted entry set (manifest.json, page documents, locale catalog — everything but the envelope entry itself), the ed25519 signature verifies over the domain-separated statement binding artifact_id/kind/subtype/version/content_digest under a key the trust-anchor set authorizes for the acme namespace, and the bundled manifest's id/version equal the signed artifact_id/version — so the install pipeline accepts it and only then proceeds to the manifest gate.",
+  "input": {
+    "artifact_entries": ["manifest.json", "ui/main.json", "messages/en.json", "signature.json"],
+    "envelope": {
+      "format": "pack-signature/1",
+      "artifact_id": "acme/weather-widget",
+      "kind": "pack",
+      "version": "1.2.0",
+      "content_digest": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+      "key_id": "ed25519:acme-2026-07",
+      "signature": "TUVVQ0lRRHg3ZjJhLi4ud2VhdGhlci13aWRnZXQtMS4yLjAtYXJ0aWZhY3Qtc2ln"
+    },
+    "manifest_identity": { "id": "acme/weather-widget", "version": "1.2.0" },
+    "trust_anchors": { "acme": ["ed25519:acme-2026-07"] },
+    "content_digest_recomputed_over_extracted_entries": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+    "signature_verifies": true
+  },
+  "expected": {
+    "artifact_accepted": true,
+    "verified_before_any_persistence": true,
+    "digest_scope": "every extracted entry except signature.json itself",
+    "identity_binding": "manifest id/version MUST equal the signed artifact_id/version"
+  }
+}
