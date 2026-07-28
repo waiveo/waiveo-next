@@ -17,6 +17,17 @@
 // per-field errors (→ 422, errors[]). Only a clean pack reaches the store, and
 // InstallPack writes it atomically (one transaction, one generation bump) — so
 // an install is all-or-nothing, never partial.
+//
+// Provenance is part of the gate (marketplace/1 MKT-009a/MKT-009b): every
+// artifact MUST carry a valid signature envelope (internal/packsig) whose
+// content digest covers the exact entry set this pipeline extracted and whose
+// signing key a trust anchor authorizes for the pack's publisher namespace —
+// verified BEFORE the manifest engine runs and before anything persists. An
+// unsigned, tampered, or wrong-key artifact refuses with a typed ArtifactError
+// (PACK_UNSIGNED / PACK_SIGNATURE_INVALID / PACK_SIGNER_UNTRUSTED) and leaves
+// no residue: no row, no file, no generation bump. There is no legacy or
+// grandfather path — a pack installed before verification existed re-verifies
+// like any other artifact on its next install.
 package packs
 
 import (
@@ -29,6 +40,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/deviceclass"
 	"github.com/maaxton/waiveo-next/internal/manifest"
+	"github.com/maaxton/waiveo-next/internal/packsig"
 )
 
 // devMemoryFloorMiB is the host-configured minimum resources.memory (MAN-042) a
@@ -101,16 +113,26 @@ type Result struct {
 }
 
 // Installer runs the manifest-gated install pipeline over a store. It holds the
-// store and the artifact-safety Limits; the host registries are rebuilt per
-// install (their BundleFiles and InstalledDataModelVersion are per-artifact).
+// store, the artifact-safety Limits, and the trust-anchor source artifact
+// signatures verify against (marketplace/1 MKT-009b); the host registries are
+// rebuilt per install (their BundleFiles and InstalledDataModelVersion are
+// per-artifact).
 type Installer struct {
-	store  *store.Store
-	limits Limits
+	store   *store.Store
+	limits  Limits
+	anchors packsig.TrustAnchors
 }
 
-// NewInstaller builds an Installer over st with the default artifact limits.
-func NewInstaller(st *store.Store) *Installer {
-	return &Installer{store: st, limits: DefaultLimits}
+// NewInstaller builds an Installer over st with the default artifact limits,
+// verifying every artifact's signature envelope against anchors. anchors is the
+// MKT-009b trust-anchor seam: a host-provisioned set today, the root-signed
+// publisher-namespace delegation once the external trust root exists — the
+// pipeline never knows the difference. A NIL anchors source fails closed: every
+// signed artifact refuses PACK_SIGNER_UNTRUSTED (and an unsigned one
+// PACK_UNSIGNED), so an unwired deployment can never install a pack, signed or
+// not — refusal, never default-permit.
+func NewInstaller(st *store.Store, anchors packsig.TrustAnchors) *Installer {
+	return &Installer{store: st, limits: DefaultLimits, anchors: anchors}
 }
 
 // hostRegistries builds the install-time HostRegistries the manifest engine
@@ -151,11 +173,23 @@ func hostRegistries(bundleFiles map[string]bool, installedDataModelVersion int) 
 var PageTypes = []string{"list-detail", "settings-form", "dashboard", "wizard"}
 
 // Install validates a raw pack artifact and, only if it is clean, installs it —
-// atomically, gated by the real manifest engine. It returns a Result on success,
-// an *ArtifactError for an unsafe/malformed artifact, or a *ManifestError for a
+// atomically, gated by signature verification and then the real manifest
+// engine. It returns a Result on success, an *ArtifactError for an
+// unsafe/malformed/unsigned/tampered artifact, or a *ManifestError for a
 // manifest the engine refused. It executes NOTHING from the artifact.
 func (in *Installer) Install(ctx context.Context, artifact []byte) (Result, error) {
 	bundle, err := ReadBundle(artifact, in.limits)
+	if err != nil {
+		return Result{}, err
+	}
+
+	// MKT-009a/b: verify the artifact's signature envelope over the EXACT entry
+	// set ReadBundle extracted — the map this pipeline consumes from here on —
+	// before the manifest engine ever runs and before anything can persist. The
+	// digest-over-extracted-set is what makes "verified == installed" true: a
+	// zip whose container encoding would present an entry differently to some
+	// other parser cannot matter, because what is digested is what installs.
+	env, err := verifyArtifactSignature(bundle, in.anchors)
 	if err != nil {
 		return Result{}, err
 	}
@@ -169,6 +203,20 @@ func (in *Installer) Install(ctx context.Context, artifact []byte) (Result, erro
 	if err := json.Unmarshal(manifestBytes, &m); err != nil {
 		return Result{}, artifactErr("PACK_MANIFEST_INVALID",
 			"manifest.json is not valid JSON: %v", err)
+	}
+
+	// The bundled manifest MUST be the identity that was signed (MKT-009a): the
+	// content digest already covers manifest.json byte-for-byte, so this only
+	// fires when the SIGNER produced an envelope naming a different id/version
+	// than its own manifest — a mislabeled artifact is refused, never installed
+	// under either identity. This is also the version-binding seam the coming
+	// update/rollback machinery leans on: the store row's (id, version) is
+	// exactly the signed (artifact_id, version), so a signature for v1 can never
+	// vouch for a row claiming v2.
+	if m.ID != env.ArtifactID || m.Version != env.Version {
+		return Result{}, artifactErr("PACK_SIGNATURE_INVALID",
+			"the bundled manifest's identity (%s@%s) differs from the signed identity (%s@%s)",
+			m.ID, m.Version, env.ArtifactID, env.Version)
 	}
 
 	// The currently-installed dataModel.version, if this pack is already
@@ -349,6 +397,42 @@ func versionRegressionGuard(incomingVersion int) store.InstallGuard {
 			}}}
 		}
 		return nil
+	}
+}
+
+// verifyArtifactSignature runs packsig.VerifyBundle over the bundle's extracted
+// entry set and maps its typed refusal onto this pipeline's stable
+// ArtifactError codes (marketplace/1 Error taxonomy, rendered by the api layer
+// as a 422 errors[] discriminant like every other PACK_* code):
+//
+//   - no envelope        → PACK_UNSIGNED (a stripped signature is refused
+//     outright, never treated as a legacy or pre-verification artifact);
+//   - malformed envelope, content/digest mismatch (a tampered payload or
+//     manifest), or a signature that does not verify → PACK_SIGNATURE_INVALID;
+//   - a key no trust anchor authorizes for the artifact's publisher namespace
+//     → PACK_SIGNER_UNTRUSTED.
+func verifyArtifactSignature(bundle *Bundle, anchors packsig.TrustAnchors) (packsig.Envelope, error) {
+	files := make(map[string][]byte, len(bundle.Names()))
+	for _, name := range bundle.Names() {
+		body, _ := bundle.File(name)
+		files[name] = body
+	}
+	env, err := packsig.VerifyBundle(files, anchors)
+	if err == nil {
+		return env, nil
+	}
+	verr, ok := err.(*packsig.VerifyError)
+	if !ok {
+		return packsig.Envelope{}, artifactErr("PACK_SIGNATURE_INVALID",
+			"the artifact's signature could not be verified: %v", err)
+	}
+	switch verr.Reason {
+	case packsig.ReasonUnsigned:
+		return packsig.Envelope{}, artifactErr("PACK_UNSIGNED", "%s", verr.Message)
+	case packsig.ReasonUntrusted:
+		return packsig.Envelope{}, artifactErr("PACK_SIGNER_UNTRUSTED", "%s", verr.Message)
+	default:
+		return packsig.Envelope{}, artifactErr("PACK_SIGNATURE_INVALID", "%s", verr.Message)
 	}
 }
 

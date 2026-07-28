@@ -29,10 +29,14 @@ const exampleMenuRowsPath = "/api/v1/packs/waiveo/menu-board/data/menu_items"
 func TestExamplePackInstallsAndServesDataEndToEnd(t *testing.T) {
 	e := newEnv(t)
 
-	art, err := examplepacks.MenuBoardZip()
+	raw, err := examplepacks.MenuBoardZip()
 	if err != nil {
 		t.Fatalf("build example pack zip: %v", err)
 	}
+	// Sign the artifact exactly as the publisher tooling does (`make
+	// example-pack` signs with the make-dev publisher key); the env's trust
+	// anchors authorize the fixture signer for the waiveo namespace.
+	art := signPack(t, raw, examplePackID, "1.0.0")
 
 	// 1. Install the REAL example artifact over the REAL install endpoint.
 	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", art, nil)

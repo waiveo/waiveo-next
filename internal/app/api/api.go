@@ -39,6 +39,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/datamodel"
 	"github.com/maaxton/waiveo-next/internal/feeder/origin"
+	"github.com/maaxton/waiveo-next/internal/packsig"
 	"github.com/maaxton/waiveo-next/internal/rules/compile"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/apiselector"
@@ -71,10 +72,17 @@ type server struct {
 	newID       func() string
 	content     *origin.Store
 	contentBase string
-	// installer runs the manifest-gated declarative-pack install pipeline the
-	// POST /api/v1/packs handler drives (internal/app/packs). It shares the same
-	// store every other resource handler writes through.
+	// installer runs the signature-gated, manifest-gated declarative-pack
+	// install pipeline the POST /api/v1/packs handler drives
+	// (internal/app/packs). It shares the same store every other resource
+	// handler writes through, and verifies every artifact against packTrust.
 	installer *packs.Installer
+	// packTrust is the trust-anchor source pack-artifact signatures verify
+	// against (marketplace/1 MKT-009b), wired by WithPackTrust. Left nil, the
+	// install pipeline fails closed: every artifact refuses (unsigned as
+	// PACK_UNSIGNED, signed as PACK_SIGNER_UNTRUSTED) — an unwired deployment
+	// can never install a pack, which is refusal, never default-permit.
+	packTrust packsig.TrustAnchors
 	// devices is the device plane's read model (adopted devices and the entities
 	// they expose) the devices/entities list operations serve, and the resolver a
 	// command's target entity is looked up in; dispatch carries that command down
@@ -208,14 +216,16 @@ func (rt *router) HandleFunc(pattern string, h func(http.ResponseWriter, *http.R
 func New(st *store.Store, idem *apihttp.IdempotencyStore, nowMs func() int64, newID func() string, content *origin.Store, contentBase string, authn *auth.Authenticator, opts ...Option) http.Handler {
 	srv := &server{
 		store: st, idem: idem, nowMs: nowMs, newID: newID, content: content, contentBase: contentBase,
-		installer: packs.NewInstaller(st),
-		auditor:   authn.Auditor(),
-		authn:     authn,
-		families:  map[string]resourceConfig{},
+		auditor:  authn.Auditor(),
+		authn:    authn,
+		families: map[string]resourceConfig{},
 	}
 	for _, opt := range opts {
 		opt(srv)
 	}
+	// Built AFTER the options so WithPackTrust's anchors reach the pipeline. A
+	// caller that wired none gets a fail-closed installer (see packTrust).
+	srv.installer = packs.NewInstaller(st, srv.packTrust)
 	// A handler built without WithJobRunner still EXECUTES the work its async
 	// operations accept — it just does not hand anyone the lifecycle. The
 	// default is started here rather than left stopped so that forgetting the

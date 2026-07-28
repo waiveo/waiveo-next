@@ -12,8 +12,19 @@ import (
 	"github.com/maaxton/waiveo-next/internal/app/packs"
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/manifest"
+	"github.com/maaxton/waiveo-next/internal/packsig"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 )
+
+// WithPackTrust wires the trust-anchor source the pack install pipeline
+// verifies artifact signature envelopes against (marketplace/1 MKT-009b): the
+// namespace-to-keys seam a host-provisioned anchor set fills today and the
+// root-signed publisher-namespace delegation fills once the external trust
+// root exists. Without this option the install surface still mounts but fails
+// closed — every artifact is refused, signed or not.
+func WithPackTrust(anchors packsig.TrustAnchors) Option {
+	return func(s *server) { s.packTrust = anchors }
+}
 
 // packResourceType is the api/1 resource-type tag the packs list's keyset
 // cursor is bound to, so a cursor minted by another resource's list is refused

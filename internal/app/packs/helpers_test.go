@@ -3,9 +3,14 @@ package packs_test
 import (
 	"archive/zip"
 	"bytes"
+	"crypto/ed25519"
 	"encoding/json"
+	"io"
 	"io/fs"
 	"testing"
+
+	"github.com/maaxton/waiveo-next/internal/packsig"
+	"github.com/maaxton/waiveo-next/internal/shared/signhash"
 )
 
 // zentry is one zip entry a test builds by hand: its name, body, and mode (0 =
@@ -129,8 +134,139 @@ func basePackFiles(t *testing.T, m map[string]any) map[string]string {
 	}
 }
 
-// basePackZip packs the base bundle for manifest m into a zip.
+// basePackZip packs the base bundle for manifest m into a zip — UNSIGNED. Most
+// install tests sign it via a testSigner; the unsigned form is itself a fixture
+// (the PACK_UNSIGNED refusal path).
 func basePackZip(t *testing.T, m map[string]any) []byte {
 	t.Helper()
 	return filesZip(t, basePackFiles(t, m))
+}
+
+// ---- signing fixtures (marketplace/1 MKT-009a/b) ---------------------------
+
+// testSigner is the fixture publisher identity install tests sign artifacts
+// with: a fresh ed25519 keypair and its derived key id.
+type testSigner struct {
+	keyID string
+	pub   ed25519.PublicKey
+	priv  ed25519.PrivateKey
+}
+
+func newTestSigner(t *testing.T) *testSigner {
+	t.Helper()
+	pub, priv := signhash.GenerateKey()
+	return &testSigner{keyID: packsig.KeyIDFor(pub), pub: pub, priv: priv}
+}
+
+// anchorsFor returns a trust-anchor set authorizing this signer for exactly the
+// given publisher namespaces — namespace binding stays real in every test.
+func (s *testSigner) anchorsFor(namespaces ...string) packsig.StaticAnchors {
+	anchors := packsig.StaticAnchors{}
+	for _, ns := range namespaces {
+		anchors[ns] = []packsig.TrustedKey{{KeyID: s.keyID, PublicKey: s.pub}}
+	}
+	return anchors
+}
+
+// sign wraps an artifact zip with this signer's envelope for (id, version).
+func (s *testSigner) sign(t *testing.T, artifact []byte, id, version string) []byte {
+	t.Helper()
+	signed, err := packsig.Sign(artifact, id, version, s.keyID, s.priv)
+	if err != nil {
+		t.Fatalf("sign artifact: %v", err)
+	}
+	return signed
+}
+
+// signedPackZip builds the base bundle for manifest m and signs it as the
+// identity the manifest itself declares.
+func signedPackZip(t *testing.T, s *testSigner, m map[string]any) []byte {
+	t.Helper()
+	id, _ := m["id"].(string)
+	version, _ := m["version"].(string)
+	return s.sign(t, basePackZip(t, m), id, version)
+}
+
+// signedFilesZip signs an arbitrary file-map bundle as (id, version).
+func signedFilesZip(t *testing.T, s *testSigner, files map[string]string, id, version string) []byte {
+	t.Helper()
+	return s.sign(t, filesZip(t, files), id, version)
+}
+
+// fixtureNamespaces are the publisher namespaces the manifest fixtures in this
+// package use; granting them all to the fixture signer keeps every
+// manifest-engine test exercising ITS refusal rather than a namespace refusal.
+var fixtureNamespaces = []string{"acme", "Acme", "BAD", "waiveo"}
+
+// tamperEntry rewrites one entry's bytes inside a (signed) zip, keeping every
+// other entry — including the signature envelope — intact: the
+// altered-after-signing fixture.
+func tamperEntry(t *testing.T, artifact []byte, name, body string) []byte {
+	return rewriteZip(t, artifact, map[string]*string{name: &body})
+}
+
+// stripEntry removes one entry from a zip — the signature-stripping fixture.
+func stripEntry(t *testing.T, artifact []byte, name string) []byte {
+	return rewriteZip(t, artifact, map[string]*string{name: nil})
+}
+
+// rewriteZip copies a zip, applying per-entry edits: a non-nil value replaces
+// (or, for a name the zip does not carry, ADDS) the entry's bytes; a nil value
+// drops the entry.
+func rewriteZip(t *testing.T, artifact []byte, edits map[string]*string) []byte {
+	t.Helper()
+	zr, err := zip.NewReader(bytes.NewReader(artifact), int64(len(artifact)))
+	if err != nil {
+		t.Fatalf("rewrite: read zip: %v", err)
+	}
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	seen := map[string]bool{}
+	for _, f := range zr.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		seen[f.Name] = true
+		body, edited := edits[f.Name]
+		if edited && body == nil {
+			continue // dropped
+		}
+		var data []byte
+		if edited {
+			data = []byte(*body)
+		} else {
+			rc, err := f.Open()
+			if err != nil {
+				t.Fatalf("rewrite: open %q: %v", f.Name, err)
+			}
+			data, err = io.ReadAll(rc)
+			rc.Close()
+			if err != nil {
+				t.Fatalf("rewrite: read %q: %v", f.Name, err)
+			}
+		}
+		w, err := zw.Create(f.Name)
+		if err != nil {
+			t.Fatalf("rewrite: create %q: %v", f.Name, err)
+		}
+		if _, err := w.Write(data); err != nil {
+			t.Fatalf("rewrite: write %q: %v", f.Name, err)
+		}
+	}
+	for name, body := range edits {
+		if seen[name] || body == nil {
+			continue
+		}
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatalf("rewrite: add %q: %v", name, err)
+		}
+		if _, err := w.Write([]byte(*body)); err != nil {
+			t.Fatalf("rewrite: write added %q: %v", name, err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("rewrite: close: %v", err)
+	}
+	return buf.Bytes()
 }

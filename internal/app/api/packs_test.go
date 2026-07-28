@@ -3,10 +3,15 @@ package api_test
 import (
 	"archive/zip"
 	"bytes"
+	"crypto/ed25519"
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"sync"
 	"testing"
+
+	"github.com/maaxton/waiveo-next/internal/packsig"
+	"github.com/maaxton/waiveo-next/internal/shared/signhash"
 )
 
 // ---- zip + manifest fixtures ----------------------------------------------
@@ -28,6 +33,48 @@ func packZip(t *testing.T, files map[string]string) []byte {
 		t.Fatalf("zip close: %v", err)
 	}
 	return buf.Bytes()
+}
+
+// apiPackSigner is this test package's fixture publisher identity: the keypair
+// packBundle signs artifacts with, and the key every test env's trust anchors
+// authorize (for the fixture namespaces) — so the REAL signature gate runs in
+// every api-level install, and an unsigned or foreign-key artifact still
+// refuses like production.
+var (
+	apiPackSignerOnce  sync.Once
+	apiPackSignerKeyID string
+	apiPackSignerPub   ed25519.PublicKey
+	apiPackSignerPriv  ed25519.PrivateKey
+)
+
+func apiPackSigner() (keyID string, priv ed25519.PrivateKey) {
+	apiPackSignerOnce.Do(func() {
+		apiPackSignerPub, apiPackSignerPriv = signhash.GenerateKey()
+		apiPackSignerKeyID = packsig.KeyIDFor(apiPackSignerPub)
+	})
+	return apiPackSignerKeyID, apiPackSignerPriv
+}
+
+// apiPackAnchors is the trust-anchor set every test env installs with: the
+// fixture signer, authorized for the two namespaces the fixtures use.
+func apiPackAnchors() packsig.StaticAnchors {
+	keyID, _ := apiPackSigner()
+	anchors := packsig.StaticAnchors{}
+	for _, ns := range []string{"acme", "waiveo"} {
+		anchors[ns] = []packsig.TrustedKey{{KeyID: keyID, PublicKey: apiPackSignerPub}}
+	}
+	return anchors
+}
+
+// signPack signs an artifact zip as (id, version) with the fixture signer.
+func signPack(t *testing.T, artifact []byte, id, version string) []byte {
+	t.Helper()
+	keyID, priv := apiPackSigner()
+	signed, err := packsig.Sign(artifact, id, version, keyID, priv)
+	if err != nil {
+		t.Fatalf("sign pack artifact: %v", err)
+	}
+	return signed
 }
 
 func packManifest() map[string]any {
@@ -59,14 +106,20 @@ const (
 	apiEnCatalog   = `{"page.menuItems.title":"Menu Items"}`
 )
 
+// packBundle builds the base valid bundle for manifest m and SIGNS it as the
+// identity the manifest declares (the install pipeline verifies signatures on
+// every artifact; packZip stays raw for the unsigned/hostile fixtures).
 func packBundle(t *testing.T, m map[string]any) []byte {
 	t.Helper()
-	return packZip(t, map[string]string{
+	raw := packZip(t, map[string]string{
 		"manifest.json":      string(mustJSON(t, m)),
 		"ui/menu-items.json": apiMenuDoc,
 		"ui/settings.json":   apiSettingsDoc,
 		"messages/en.json":   apiEnCatalog,
 	})
+	id, _ := m["id"].(string)
+	version, _ := m["version"].(string)
+	return signPack(t, raw, id, version)
 }
 
 // installBase POSTs the base valid pack and asserts a 201, returning the decoded
@@ -205,6 +258,73 @@ func TestPackInstallZipSlip422(t *testing.T) {
 	}
 	p := assertProblem(t, resp, raw, "VALIDATION_FAILED")
 	errorsHasFieldCode(t, p, "artifact", "PACK_ARTIFACT_UNSAFE_ENTRY")
+}
+
+// TestPackInstallUnsigned422: an UNSIGNED artifact — well-formed zip, fully
+// valid manifest, no signature envelope — is refused 422 with PACK_UNSIGNED in
+// errors[] (marketplace/1 MKT-009b over HTTP), and nothing is installed.
+func TestPackInstallUnsigned422(t *testing.T) {
+	e := newEnv(t)
+	unsigned := packZip(t, map[string]string{
+		"manifest.json":      string(mustJSON(t, packManifest())),
+		"ui/menu-items.json": apiMenuDoc,
+		"ui/settings.json":   apiSettingsDoc,
+		"messages/en.json":   apiEnCatalog,
+	})
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", unsigned, nil)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422 (%s)", resp.StatusCode, raw)
+	}
+	p := assertProblem(t, resp, raw, "VALIDATION_FAILED")
+	errorsHasFieldCode(t, p, "artifact", "PACK_UNSIGNED")
+
+	resp, _ = e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board", nil, nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("get after unsigned install = %d, want 404 (nothing installed)", resp.StatusCode)
+	}
+}
+
+// TestPackInstallTampered422: a signed artifact whose page document was altered
+// AFTER signing is refused 422 with PACK_SIGNATURE_INVALID in errors[] — the
+// signature covers the bytes that install, not just the manifest.
+func TestPackInstallTampered422(t *testing.T) {
+	e := newEnv(t)
+	signed := packBundle(t, packManifest())
+	tampered := rewriteZipEntry(t, signed, "ui/menu-items.json", apiMenuDoc+" ")
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", tampered, nil)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422 (%s)", resp.StatusCode, raw)
+	}
+	p := assertProblem(t, resp, raw, "VALIDATION_FAILED")
+	errorsHasFieldCode(t, p, "artifact", "PACK_SIGNATURE_INVALID")
+}
+
+// rewriteZipEntry copies a zip with one entry's bytes replaced, everything else
+// (the signature envelope included) intact — the tampered-after-signing fixture.
+func rewriteZipEntry(t *testing.T, artifact []byte, name, body string) []byte {
+	t.Helper()
+	zr, err := zip.NewReader(bytes.NewReader(artifact), int64(len(artifact)))
+	if err != nil {
+		t.Fatalf("tamper: read zip: %v", err)
+	}
+	files := map[string]string{}
+	for _, f := range zr.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatalf("tamper: open %q: %v", f.Name, err)
+		}
+		var buf bytes.Buffer
+		if _, err := buf.ReadFrom(rc); err != nil {
+			t.Fatalf("tamper: read %q: %v", f.Name, err)
+		}
+		rc.Close()
+		files[f.Name] = buf.String()
+	}
+	files[name] = body
+	return packZip(t, files)
 }
 
 // TestPackGet: after install, GET the pack by its two-segment id returns 200, an

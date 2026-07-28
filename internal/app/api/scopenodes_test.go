@@ -146,8 +146,11 @@ func newEnvWith(t *testing.T, content *origin.Store, opts []api.Option) *testEnv
 	// several list/pagination tests depend on.
 	fixture := newAuthFixture(t)
 	jobs := api.NewJobRunner()
+	// Every env trusts the package's fixture pack signer (apiPackAnchors), so
+	// the REAL artifact-signature gate runs on every install fixture; a caller's
+	// own later WithPackTrust option overrides it.
 	ts := httptest.NewServer(api.New(st, idem, clock, ulid.Monotonic(), content, testContentBase, fixture.Auth,
-		append([]api.Option{api.WithJobRunner(jobs)}, opts...)...))
+		append([]api.Option{api.WithJobRunner(jobs), api.WithPackTrust(apiPackAnchors())}, opts...)...))
 	t.Cleanup(ts.Close)
 	return &testEnv{ts: ts, store: st, content: content, contentBase: testContentBase, auth: fixture, jobs: jobs}
 }
