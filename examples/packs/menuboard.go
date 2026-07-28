@@ -7,9 +7,11 @@
 // The only example pack today is menu-board (examples/packs/menu-board/): a
 // tasteful, entirely declarative pack — a manifest, two ui-schema/1 page
 // documents, and a locale catalog. It is DATA: nothing here (or anywhere in the
-// pack) is ever executed. MenuBoardZip assembles those files into an in-memory
-// zip artifact byte-for-byte identical to what a publisher would upload to
-// POST /api/v1/packs.
+// pack) is ever executed. MenuBoardZip assembles those files into the UNSIGNED
+// source artifact; the install pipeline requires a signature envelope
+// (internal/packsig, marketplace/1 MKT-009a/b), so every consumer signs it
+// before upload — `make example-pack`/the pack smoke with the make-dev
+// publisher key, the end-to-end test with its fixture signer.
 package examplepacks
 
 import (

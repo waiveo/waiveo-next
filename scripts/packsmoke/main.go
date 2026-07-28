@@ -18,7 +18,8 @@
 // ed25519/ECDSA self-signed leaf a Go client handshakes cleanly (a curl upload
 // could spuriously fail against a healthy server). The artifact it uploads is
 // byte-identical to what `make example-pack` writes (one source of truth,
-// examples/packs).
+// examples/packs; one make-dev publisher key, so even the signature envelope
+// matches — ed25519 signing and the zip rewrite are both deterministic).
 //
 // Endpoint (the real api/1 surface): POST https://127.0.0.1:7420/api/v1/packs.
 // A fresh `make dev` seeds an empty store, so the first install is a 201; a

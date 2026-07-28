@@ -17,8 +17,10 @@ import (
 // the console renders is served back byte-for-byte. NO pack code runs anywhere: a
 // manifest, two page docs, a catalog, and a menu-item row are all data.
 //
-// The zip installed here is byte-identical to what `make example-pack` writes and
-// what `make dev`'s pack smoke installs (one source of truth: examplepacks).
+// The pack content installed here is identical to what `make example-pack`
+// writes and what `make dev`'s pack smoke installs (one source of truth:
+// examplepacks); only the signature envelope differs — this test signs with its
+// fixture publisher key where the dev loop signs with the make-dev key.
 
 const examplePackID = "waiveo/menu-board"
 
