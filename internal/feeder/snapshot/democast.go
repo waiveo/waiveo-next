@@ -24,8 +24,9 @@ var demoCastAssets embed.FS
 const demoCastItemDurationMS = 8000
 
 // demoCastAssetPaths is DemoCastItems' fixed, ordered source list — the
-// exact play order the returned []CastItem carries (BuildCast/
-// BuildFromStoreCast preserve caller order into `content`, REL-061).
+// exact play order the returned []CastItem carries (BuildCast preserves
+// caller order into `content`, REL-061, and store.SeedDemo seeds one
+// playlist item per asset ref in the same order).
 var demoCastAssetPaths = []string{
 	"testdata/demo/demo-1.png",
 	"testdata/demo/demo-2.png",
@@ -33,7 +34,8 @@ var demoCastAssetPaths = []string{
 }
 
 // DemoCastItems returns this package's real, committed 3-image multi-item
-// demo cast, ready to pass to BuildCast/BuildFromStoreCast — each item
+// demo cast, ready to pass to BuildCast (or, on the store-driven path, to
+// have its asset refs seeded as the demo playlist via store.SeedDemo) — each item
 // content_type "image", duration_ms demoCastItemDurationMS. A caller MUST
 // still Add each item's Bytes to a content origin (internal/feeder/origin)
 // before building a snapshot from these items, exactly as it must for any

@@ -111,8 +111,8 @@ var firstPhotonSiteEffective = wire.SiteEffective{
 var demoEdgeRuleJSON = json.RawMessage(`{"id":"` + demoRuleID + `","mode":"single","triggers":[{"type":"state","entity_id":"` + demoRuleEntityID + `","to":["on"]}],"conditions":[],"actions":[{"type":"device_command","entity_id":"` + demoRuleEntityID + `","command":"launch","params":{"channel":"dev"}}]}`)
 
 // CastItem is one ordered item of a feeder-built screen-program's `content`
-// array (REL-061/061a) — the feeder-side input BuildCast/BuildFromStoreCast
-// turn into a wire.ContentRef. Bytes MUST already be (or be about to be)
+// array (REL-061/061a) — the feeder-side input BuildCast
+// turns into a wire.ContentRef. Bytes MUST already be (or be about to be)
 // added to the content origin (internal/feeder/origin.Store.Add) under the
 // SAME bytes, so the asset_ref this package computes (signhash.ContentID(
 // Bytes)) names content the origin can actually Serve — BuildCast itself
@@ -260,7 +260,7 @@ func BuildCast(items []CastItem, contentBaseURL string, id *signing.Identity, gr
 		// both arrays are derived from authored state (the adopted-device
 		// rows and the installed packs), and this builder has no store to
 		// derive them from. Normalized() keeps both arrays `[]` rather than
-		// `null` (REL-060). The store-derived path (BuildFromStoreCast)
+		// `null` (REL-060). The store-derived path (BuildFromStore)
 		// carries the real inventory.
 		DeviceInventory: wire.DeviceInventory{}.Normalized(),
 		// The schedule section (REL-065) carries the Wave-2 demo schedule

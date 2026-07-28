@@ -919,7 +919,7 @@ func startWebhookDelivery(
 // desiredStateSource rebuilds the feeder's signed desired-state snapshot from the
 // app store on demand, caching it by the store's generation: a pull for an
 // unchanged generation returns the cached snapshot, and it is rebuilt (via
-// snapshot.BuildFromStoreCast) only when an api write has advanced the generation.
+// snapshot.BuildFromStore) only when an api write has advanced the generation.
 // This is the seam that makes an authored edit change what the relay pulls, while
 // keeping desired-state derivation entirely store-driven (site_effective comes
 // from the site node, never box-local state).
