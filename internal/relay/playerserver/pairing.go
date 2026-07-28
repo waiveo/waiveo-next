@@ -480,9 +480,20 @@ func (s *Server) redeem(selector string) (redemption, error) {
 		}
 	}
 
+	// REL-121a: a screen-bound grant's redemption results in exactly the
+	// screen identity row the grant names — the screen_id a player learns
+	// (PLY-035) IS the app's own screen row id (data-model/1 DAT-004a), so
+	// the paired credential and the screen_programs entry that drives this
+	// screen resolve to the SAME row. Only a grant that carries no binding
+	// (the REL-121 baseline shape) still mints an opaque placeholder id.
+	screenID := grant.ScreenID
+	if screenID == "" {
+		screenID = newOpaqueToken("screen")
+	}
+
 	rec := redemption{
 		ChannelToken: newOpaqueToken("ct"),
-		ScreenID:     newOpaqueToken("screen"),
+		ScreenID:     screenID,
 		IssuedAt:     now.UnixMilli(),
 		ExpiresAt:    now.Add(channelTokenTTL).UnixMilli(),
 	}

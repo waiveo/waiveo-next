@@ -230,6 +230,8 @@ relay/1 defines the protocol between an enrolled relay and its app peer: connect
 
 **[REL-121]** A pairing-grant record (`pairing_grants`, REL-067) MUST carry at least `{grant_id, purpose, resulting_principal_kind, ttl, redemption_mode, issued_at}` — `redemption_mode` one of `one-time` or `multi`. This record is a specialization of `security-model/1`'s own canonical grant shape (`security-model/1` SEC-030), carrying only the subset of fields a relay itself must enforce, never a competing grant shape of its own.
 
+**[REL-121a]** A pairing-grant record whose `purpose` is `pairing` and whose `resulting_principal_kind` is `screen` MUST additionally carry `screen_id` — the id of the screen identity row (`data-model/1` DAT-004/DAT-004a) this grant's redemption results in — and the relay's redeemed pairing result (`player/1` PLY-033) MUST carry exactly this `screen_id` as the paired screen's identity, never a relay-invented value. This field is the sole join between the two id spaces pairing otherwise leaves disjoint: without it, nothing tells the relay which screen identity row a redemption is for, and the `screen_id` a player learns at redemption (`player/1` PLY-035) could not be the row id `data-model/1` DAT-004a requires it to be — the same row a `screen_programs` entry (REL-061) names. Like the rest of the record it is minted by platform mechanisms outside this contract's own scope (REL-067); the relay's own obligation is to resolve it at redemption and hand it back unmodified.
+
 **[REL-122]** A pairing grant delivered via `pairing_grants` MUST remain redeemable by the relay for the whole of its `ttl` even while the relay is disconnected from its app peer: the relay's own last-applied snapshot (Idempotent apply & enrollment-anchored trust) is authoritative for redemption eligibility until a newer generation supersedes it.
 
 **[REL-123]** The relay MUST enforce `revocation_and_site.revoked` (REL-066) against every player-certificate issuance, every channel-token issuance, and every per-connection credential verification it performs, using its own last-synced copy while disconnected — a revocation the relay has not yet pulled is not yet enforceable, but a synced one MUST be enforced regardless of connectivity.
@@ -442,7 +444,7 @@ relay/1 defines the protocol between an enrolled relay and its app peer: connect
       "schedule": { "scope_nodes": [], "playlists": [], "schedules": [], "validity_windows": [], "dayparts": [], "fallbacks": [], "preset_batches": [] },
       "revocation_and_site": { "revoked": [], "site_effective": { "tz": "America/Chicago", "lat": 41.8781, "long": -87.6298 }, "content_origin": "https://app.example" },
       "pairing_grants": [
-        { "grant_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZB", "purpose": "pairing", "resulting_principal_kind": "screen", "ttl": 900, "redemption_mode": "one-time", "issued_at": 1752537000000 }
+        { "grant_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZB", "purpose": "pairing", "resulting_principal_kind": "screen", "screen_id": "01J8Z3K4N5P6Q7R8S9T0V1W2X6", "ttl": 900, "redemption_mode": "one-time", "issued_at": 1752537000000 }
       ],
       "workflow_generation": null
     }

@@ -89,6 +89,7 @@ One row per requirement ID `contracts/relay-1.md` defines. Format: `conformance/
 | REL-115 | `contracts/relay-1.md#device-plane` | - | TBD-wave1 |
 | REL-120 | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
 | REL-121 | `contracts/relay-1.md#player-credential-authority` | `REL-056-valid-generation-apply-atomic-swap` | covered |
+| REL-121a | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
 | REL-122 | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
 | REL-123 | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
 | REL-124 | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |

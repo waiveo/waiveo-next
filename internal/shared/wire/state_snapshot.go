@@ -307,10 +307,19 @@ type SiteEffective struct {
 // PairingGrant is one relay/1 `pairing_grants` entry (REL-067,
 // Player-credential authority): a pending pairing-grant record minted
 // against this site.
+//
+// ScreenID is REL-121a's screen binding: for a `purpose: pairing` grant whose
+// `resulting_principal_kind` is `screen` it names the screen identity row
+// (data-model/1 DAT-004a) redemption results in, and the relay's redeemed
+// pairing result carries exactly this value as the paired screen's id — the
+// one join between the app's screen row and the credential the relay mints.
+// `omitempty` keeps a baseline REL-121 record (no binding) byte-identical to
+// before the field existed.
 type PairingGrant struct {
 	GrantID                string `json:"grant_id"`
 	Purpose                string `json:"purpose"`
 	ResultingPrincipalKind string `json:"resulting_principal_kind"`
+	ScreenID               string `json:"screen_id,omitempty"`
 	TTL                    int64  `json:"ttl"`
 	RedemptionMode         string `json:"redemption_mode"`
 	IssuedAt               int64  `json:"issued_at"`

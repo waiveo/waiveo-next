@@ -136,6 +136,37 @@ func TestPairingRedeemsValidGrantSelector(t *testing.T) {
 	}
 }
 
+// TestPairingScreenBoundGrantRedeemsToItsScreenRowID is REL-121a's relay-side
+// obligation made concrete: a grant carrying a screen binding redeems to
+// EXACTLY that screen identity row's id (data-model/1 DAT-004a) — never a
+// relay-invented opaque id — and the minted channel token resolves to the
+// same id, so every later authorized pull is for the app's own screen row.
+func TestPairingScreenBoundGrantRedeemsToItsScreenRowID(t *testing.T) {
+	const screenRowID = "01J8Z9DEM0SCREENR0WF1RSTPH"
+	grant := testGrant()
+	grant.ScreenID = screenRowID
+	srv, _, _ := newTestServer(t, grant)
+
+	resp, raw := doPair(t, srv, PairingRequest{
+		HardwareID:    "hw-0001",
+		GrantSelector: grant.GrantID,
+		Capabilities:  Capabilities{ContentTypes: []string{"image"}, PlayerVersion: "1.0.0"},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %v", resp.StatusCode, raw)
+	}
+
+	var out PairingResponse
+	remarshal(t, raw, &out)
+	if out.ScreenID != screenRowID {
+		t.Fatalf("screen_id = %q, want the grant's bound screen row id %q (REL-121a)", out.ScreenID, screenRowID)
+	}
+	gotScreen, _, ok := srv.LookupChannelToken(out.ChannelToken)
+	if !ok || gotScreen != screenRowID {
+		t.Fatalf("channel token resolves to (%q, %v), want (%q, true)", gotScreen, ok, screenRowID)
+	}
+}
+
 // TestPairingResponseCarriesNoAuthenticatorField is the PLY-032/PLY-056
 // property made concrete: a redeemed PairingResponse's JSON keys must be
 // EXACTLY the allowed set the contract's own worked example shows — no
