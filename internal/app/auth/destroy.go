@@ -73,6 +73,15 @@ import (
 // Removing the floor is idempotent and costs no administrability; destroying the
 // credentials is the step there is no coming back from, so it stays last.
 //
+// That ordering has one honest cost, stated rather than buried: if the row
+// destruction below fails, the box keeps every credential AND has lost its
+// floor, so a check the floor was holding shut becomes reachable again by
+// turning the host clock back. The alternative ordering trades that for a worse
+// one — a box whose credentials are gone but whose floor survives, unresettable
+// by anyone, since resetting it now requires an owner who no longer exists. The
+// exposure is bounded today because nothing advances the floor, so "losing" it
+// loses a floor of zero. Revisit this the moment a time source is wired.
+//
 // A Store opened without WithClockFloor has no floor to destroy and skips the
 // step — never silently, since a deployment that wired one gets it reset and a
 // test that did not never had one on disk to begin with.

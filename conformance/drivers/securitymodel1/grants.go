@@ -298,7 +298,20 @@ func driveUnclaimedBoxWithoutCode(rep *report.Report, c corpus.Case) {
 	// The marker table every `$`-prefixed presented_code in this case resolves
 	// through. A code the driver could not resolve is a driver failure, never a
 	// literal that gets sent as-is.
-	markers := map[string]string{"$setup_grant.code": boot.Code}
+	//
+	// `$setup_grant.code_one_nibble_flipped` is the SHAPE-VALID wrong code, and
+	// it is derived from the real one rather than written into the case as a
+	// literal. That is the difference between testing "does the handler reject
+	// obvious garbage" and "does the handler require THE code": a literal like
+	// "NOT-THE-GENERATED-SETUP-CODE" is not well-formed by any definition this
+	// system uses, so an implementation that admits any correctly-SHAPED code it
+	// cannot resolve would sail past it and claim the box. Flipping one nibble
+	// of the minted code yields a string identical in length, alphabet and case
+	// that no grant can resolve to.
+	markers := map[string]string{
+		"$setup_grant.code":                    boot.Code,
+		"$setup_grant.code_one_nibble_flipped": flipOneNibble(boot.Code),
+	}
 
 	for i := range attemptList {
 		base := fmt.Sprintf("claim_attempts.%d", i)
@@ -425,6 +438,13 @@ func driveGrantRefusalsOnTheWire(rep *report.Report, c corpus.Case) {
 			k.fail(rep, "scratch dir: %v", err)
 			return
 		}
+		// effect is what the refusal actually DID, measured on the live store —
+		// not what it said. A handler that types the refusal correctly on the wire
+		// and claims the box anyway satisfies every code assertion below while
+		// handing an attacker an owner principal, a role binding and a session.
+		// SEC-035 says "MUST be refused", which is two clauses: the label AND the
+		// effect. Only asserting the label leaves exactly that seam.
+		var effect struct{ ownersDelta, principalsDelta int }
 		outcome, drvErr := func() (httpResult, error) {
 			defer os.RemoveAll(dir)
 			// The harness starts at the grant's own issued_at, so the grant row is
@@ -461,7 +481,27 @@ func driveGrantRefusalsOnTheWire(rep *report.Report, c corpus.Case) {
 			// The clock moves to the instant of the attempt. No sleep: the whole
 			// harness reads one injected variable.
 			h.setNow(attemptAt)
-			return h.claim(resolved, "attempting@example.invalid", "attempting-passphrase"), nil
+
+			ownersBefore, err := h.authStore.CountOwnerBindings(ctx)
+			if err != nil {
+				return httpResult{}, fmt.Errorf("count owner bindings before the attempt: %w", err)
+			}
+			principalsBefore, err := h.authStore.CountPrincipals(ctx)
+			if err != nil {
+				return httpResult{}, fmt.Errorf("count principals before the attempt: %w", err)
+			}
+			res := h.claim(resolved, "attempting@example.invalid", "attempting-passphrase")
+			ownersAfter, err := h.authStore.CountOwnerBindings(ctx)
+			if err != nil {
+				return httpResult{}, fmt.Errorf("count owner bindings after the attempt: %w", err)
+			}
+			principalsAfter, err := h.authStore.CountPrincipals(ctx)
+			if err != nil {
+				return httpResult{}, fmt.Errorf("count principals after the attempt: %w", err)
+			}
+			effect.ownersDelta = ownersAfter - ownersBefore
+			effect.principalsDelta = principalsAfter - principalsBefore
+			return res, nil
 		}()
 		if drvErr != nil {
 			k.fail(rep, "%s: %v", base, drvErr)
@@ -469,7 +509,11 @@ func driveGrantRefusalsOnTheWire(rep *report.Report, c corpus.Case) {
 		}
 
 		want := fmt.Sprintf("attempts.%d", i)
-		k.boolAt(want+".redeemed", outcome.status == http.StatusCreated)
+		// `redeemed` is now the OR of what the route said and what it did: a 201,
+		// or any owner binding / principal the refusal created behind a refusal
+		// status. A correctly-labelled refusal that still claimed the box reads as
+		// redeemed here, and the case's expected `false` fails it.
+		k.boolAt(want+".redeemed", outcome.status == http.StatusCreated || effect.ownersDelta > 0 || effect.principalsDelta > 0)
 		k.intAt(want+".http_status", int64(outcome.status))
 		k.stringAt(want+".error.code", problemCode(outcome))
 	}
@@ -574,4 +618,40 @@ func problemCode(r httpResult) string {
 	}
 	code, _ := r.body["code"].(string)
 	return code
+}
+
+// flipOneNibble returns code with its LAST hex digit changed to a different
+// one, preserving length, alphabet and case exactly.
+//
+// It exists so a case can present a wrong code that is indistinguishable in
+// SHAPE from a real one. A wrong code that looks wrong only proves the handler
+// rejects malformed input; a wrong code that looks right is what proves the
+// handler resolves it against an actual grant. The distinction is not
+// theoretical: an implementation that admits any shape-valid code it fails to
+// resolve — on an unclaimed box, first caller wins — is exactly the
+// first-come-first-served takeover SEC-120 forbids, and it passes a case whose
+// wrong code is obvious garbage.
+//
+// A non-hex or empty code is returned unchanged: the caller is then presenting
+// something whose shape this helper cannot preserve, and silently substituting
+// a different shape would be the very confusion this exists to avoid.
+func flipOneNibble(code string) string {
+	if code == "" {
+		return code
+	}
+	b := []byte(code)
+	last := b[len(b)-1]
+	switch {
+	case last >= '0' && last <= '8':
+		b[len(b)-1] = last + 1
+	case last == '9':
+		b[len(b)-1] = 'a'
+	case last >= 'a' && last <= 'e':
+		b[len(b)-1] = last + 1
+	case last == 'f':
+		b[len(b)-1] = '0'
+	default:
+		return code // not lowercase hex — shape cannot be preserved
+	}
+	return string(b)
 }

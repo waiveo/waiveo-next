@@ -2,7 +2,7 @@
   "case_id": "SEC-120a-invalid-unclaimed-box-claimed-without-the-setup-code",
   "contract": "security-model/1",
   "req_ids": ["SEC-120"],
-  "description": "An installed-but-UNCLAIMED box, whose one-time setup grant is still live and unredeemed, is reached at its setup endpoint by two callers who do not hold the code the installer generated: the first presents no code at all, the second presents a wrong but well-formed one. Neither claims the box and neither creates an owner — arrival order on a shared network confers nothing — the box is still unclaimed afterwards, and the setup grant they failed against is still redeemable by the caller who does hold the generated code, so the refusals cost the legitimate owner nothing. The literal `$setup_grant.code` is a marker, not a code: it names the code the live installer step actually minted, which the driver resolves before presenting it.",
+  "description": "An installed-but-UNCLAIMED box, whose one-time setup grant is still live and unredeemed, is reached at its setup endpoint by two callers who do not hold the code the installer generated: the first presents no code at all, the second presents a wrong code that is SHAPE-VALID — identical in length, alphabet and case to a real one, differing by a single nibble — so a handler that admits any correctly-shaped code it cannot resolve is caught rather than flattered. Neither claims the box and neither creates an owner — arrival order on a shared network confers nothing — the box is still unclaimed afterwards, and the setup grant they failed against is still redeemable by the caller who does hold the generated code, so the refusals cost the legitimate owner nothing. The literal `$setup_grant.code` is a marker, not a code: it names the code the live installer step actually minted, which the driver resolves before presenting it.",
   "input": {
     "box_claim_state": "unclaimed",
     "endpoint": "/api/v1/auth/setup",
@@ -20,7 +20,7 @@
       },
       {
         "attempt": "second-arrival presents a wrong code",
-        "presented_code": "NOT-THE-GENERATED-SETUP-CODE",
+        "presented_code": "$setup_grant.code_one_nibble_flipped",
         "identifier": "second-arrival@example.invalid",
         "password": "second-arrival-passphrase"
       }
