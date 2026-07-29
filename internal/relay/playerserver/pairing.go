@@ -684,6 +684,37 @@ func (s *Server) redeem(selector string) (redemption, error) {
 	if grant.RelayID != "" && grant.RelayID != s.relayID {
 		return redemption{}, errPairingCodeInvalid
 	}
+	// REL-123: `revoked` is enforced against EVERY channel-token issuance, not
+	// only against a token later presented. Without this, a revoked screen
+	// pairs successfully, is handed a fresh credential, and is refused only at
+	// its first program pull — the relay minting a credential it has already
+	// been told is void. The screen a redemption credentials is the grant's own
+	// (REL-121a), so the revocation check has a screen_id to run against before
+	// anything is minted. PLY-075's "never issue a token for an unrecognized
+	// screen_id" lands here too, in the one form a relay can actually evaluate:
+	// the app peer's own statement that this screen is no longer to be
+	// credentialed. (Absence from `screen_programs` is NOT that statement — the
+	// feeder legitimately omits an entry for a screen whose effective timezone
+	// will not resolve, data-model/1 DAT-034, so a relay inferring revocation
+	// from absence would terminally revoke a live screen over a placement
+	// mistake.)
+	//
+	// Placed with the REL-121b binding check and BEFORE both the ttl and the
+	// consumption check, for that check's own reasons:
+	//
+	//   - it draws the IDENTICAL error an unresolvable selector draws, so the
+	//     refusal tells a holder of the code nothing about whether the grant
+	//     exists, has expired, or names a revoked screen. A distinguishable
+	//     code would make the pairing endpoint an oracle for which of a site's
+	//     screens have been revoked.
+	//   - nothing below this line runs, so a one-time grant is NOT consumed.
+	//     Consuming it would make the revocation destructive: an app peer that
+	//     removes the screen from `revoked` again (SetRevokedScreens' own
+	//     both-directions rule) would find the grant already spent by an
+	//     attempt that was refused and minted nothing.
+	if grant.ScreenID != "" && s.isScreenRevokedLocked(grant.ScreenID) {
+		return redemption{}, errPairingCodeInvalid
+	}
 	if grant.RedemptionMode == "one-time" && s.grantAlreadyRedeemedLocked(grant.GrantID) {
 		return redemption{}, errPairingCodeInvalid
 	}
