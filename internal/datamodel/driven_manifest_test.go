@@ -20,19 +20,27 @@ type drivenManifestEntry struct {
 }
 
 // TestDataModel1DrivenManifestMatchesRuntime proves conformance/driven-manifest.json's
-// data-model/1 entry has not drifted from what corpusHandlers actually runs.
-// This driver lives inside a _test.go compilation unit the
-// conformance/cmd/driven-manifest generator cannot import, so its manifest
-// entry is hand-maintained — this test is what keeps it honest: a case added
-// to (or removed from) corpusHandlers without updating the checked-in
-// manifest entry fails here, in either direction. data-model/1 drives its
-// full frozen corpus (TestDataModel1Corpus already asserts corpusHandlers'
-// keys == the corpus directory 1:1), so pending is always empty.
+// data-model/1 entry has not drifted from what the contract's two drivers
+// actually run: this package's reference-engine oracle (corpusHandlers) and the
+// HTTP oracle in internal/app/api/datamodel_corpus_test.go, whose case set is
+// the request-shaped half of the frozen corpus. Both live inside _test.go
+// compilation units the conformance/cmd/driven-manifest generator cannot
+// import, so the entry is hand-maintained — this test is what keeps it honest: a
+// case added to (or removed from) either side without updating the checked-in
+// manifest fails here, in both directions.
+//
+// The HTTP half is counted from the CORPUS rather than from that driver (this
+// package cannot import it — it imports this one), which is sound because the
+// driver derives its own case set from exactly the same property; its own
+// TestDataModel1HTTPCorpusIsInTheDrivenManifest closes the loop from the other
+// side. data-model/1 drives its full frozen corpus between the two, so pending
+// is always empty.
 func TestDataModel1DrivenManifestMatchesRuntime(t *testing.T) {
 	driven := make([]string, 0, len(corpusHandlers))
 	for id := range corpusHandlers {
 		driven = append(driven, id)
 	}
+	driven = append(driven, requestShapedCaseIDs(t)...)
 	sort.Strings(driven)
 
 	path := filepath.Join("..", "..", "conformance", "driven-manifest.json")

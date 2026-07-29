@@ -21,9 +21,9 @@ One row per requirement ID `contracts/data-model-1.md` defines. Format: `conform
 | DAT-012 | `contracts/data-model-1.md#org-node-account-state-and-entitlements` | - | TBD-wave1 |
 | DAT-013 | `contracts/data-model-1.md#org-node-account-state-and-entitlements` | `DAT-010-valid-org-account-states` | covered |
 | DAT-014 | `contracts/data-model-1.md#org-node-account-state-and-entitlements` | - | TBD-wave1 |
-| DAT-020 | `contracts/data-model-1.md#referential-integrity-attachment-and-deletion` | - | TBD-wave1 |
-| DAT-021 | `contracts/data-model-1.md#referential-integrity-attachment-and-deletion` | - | TBD-wave1 |
-| DAT-022 | `contracts/data-model-1.md#referential-integrity-attachment-and-deletion` | - | TBD-wave1 |
+| DAT-020 | `contracts/data-model-1.md#referential-integrity-attachment-and-deletion` | `DAT-020-invalid-delete-scope-node-carrying-a-child` | covered |
+| DAT-021 | `contracts/data-model-1.md#referential-integrity-attachment-and-deletion` | `DAT-021-invalid-delete-scope-node-a-row-is-placed-at` | covered |
+| DAT-022 | `contracts/data-model-1.md#referential-integrity-attachment-and-deletion` | `DAT-022-invalid-delete-org-scope-node` | covered |
 | DAT-030 | `contracts/data-model-1.md#time-as-data` | `DAT-033-valid-screen-tz-override` | covered |
 | DAT-031 | `contracts/data-model-1.md#time-as-data` | `DAT-033-valid-screen-tz-override` | covered |
 | DAT-032 | `contracts/data-model-1.md#time-as-data` | `DAT-033-valid-screen-tz-override` | covered |

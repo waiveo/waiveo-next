@@ -1,0 +1,66 @@
+{
+  "case_id": "DAT-021-invalid-delete-scope-node-a-row-is-placed-at",
+  "contract": "data-model/1",
+  "req_ids": ["DAT-021"],
+  "description": "Deleting a childless screen scope node that a screen identity row still names as its scope_node is refused 409 Conflict / SCOPE_NODE_IN_USE, with the removal never executed. The node carries no child at all, so DAT-020 has nothing to say about it and the reference is the whole of the refusal.",
+  "input": {
+    "seed": {
+      "scope_nodes": [
+        {
+          "id": "01J8ZDAT0RGN0DE00000000000",
+          "kind": "org",
+          "parent_id": null,
+          "name": "Demo Org",
+          "account_state": "active",
+          "entitlements": {}
+        },
+        {
+          "id": "01J8ZDATS1TEN0DE0000000000",
+          "kind": "site",
+          "parent_id": "01J8ZDAT0RGN0DE00000000000",
+          "name": "Demo Site",
+          "tz": "America/Chicago",
+          "lat": 41.8781,
+          "long": -87.6298
+        },
+        {
+          "id": "01J8ZDATSCREENN0DE00000000",
+          "kind": "screen",
+          "parent_id": "01J8ZDATS1TEN0DE0000000000",
+          "name": "Lobby Screen"
+        }
+      ],
+      "rows": [
+        {
+          "kind": "screens",
+          "body": {
+            "id": "01J8ZDATSCREENR0W000000000",
+            "scope_node": "01J8ZDATSCREENN0DE00000000",
+            "name": "Lobby Screen"
+          }
+        }
+      ]
+    },
+    "request": {
+      "method": "DELETE",
+      "path": "/api/v1/scope-nodes/01J8ZDATSCREENN0DE00000000",
+      "headers": {
+        "If-Match": "\"1\"",
+        "Trace-Id": "01J8ZDATTRACE2100000000000"
+      }
+    }
+  },
+  "expected": {
+    "status": 409,
+    "content_type": "application/problem+json",
+    "delete_executed": false,
+    "body": {
+      "type": "about:blank",
+      "title": "Conflict",
+      "status": 409,
+      "detail": "This scope node is still named as the scope_node of at least one other row (a screen). Delete or re-place every such row first.",
+      "code": "SCOPE_NODE_IN_USE",
+      "trace_id": "01J8ZDATTRACE2100000000000"
+    }
+  }
+}

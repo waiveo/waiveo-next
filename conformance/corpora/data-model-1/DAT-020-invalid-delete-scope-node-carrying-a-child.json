@@ -1,0 +1,56 @@
+{
+  "case_id": "DAT-020-invalid-delete-scope-node-carrying-a-child",
+  "contract": "data-model/1",
+  "req_ids": ["DAT-020"],
+  "description": "Deleting a site scope node that still carries a screen node whose parent_id references it is refused 409 Conflict / SCOPE_NODE_NOT_EMPTY, with the removal never executed — the child must be deleted or re-parented first, or it would be left naming a parent that no longer exists.",
+  "input": {
+    "seed": {
+      "scope_nodes": [
+        {
+          "id": "01J8ZDAT0RGN0DE00000000000",
+          "kind": "org",
+          "parent_id": null,
+          "name": "Demo Org",
+          "account_state": "active",
+          "entitlements": {}
+        },
+        {
+          "id": "01J8ZDATS1TEN0DE0000000000",
+          "kind": "site",
+          "parent_id": "01J8ZDAT0RGN0DE00000000000",
+          "name": "Demo Site",
+          "tz": "America/Chicago",
+          "lat": 41.8781,
+          "long": -87.6298
+        },
+        {
+          "id": "01J8ZDATSCREENN0DE00000000",
+          "kind": "screen",
+          "parent_id": "01J8ZDATS1TEN0DE0000000000",
+          "name": "Lobby Screen"
+        }
+      ]
+    },
+    "request": {
+      "method": "DELETE",
+      "path": "/api/v1/scope-nodes/01J8ZDATS1TEN0DE0000000000",
+      "headers": {
+        "If-Match": "\"1\"",
+        "Trace-Id": "01J8ZDATTRACE2000000000000"
+      }
+    }
+  },
+  "expected": {
+    "status": 409,
+    "content_type": "application/problem+json",
+    "delete_executed": false,
+    "body": {
+      "type": "about:blank",
+      "title": "Conflict",
+      "status": 409,
+      "detail": "This scope node still carries at least one child scope node. Delete or re-parent every child first.",
+      "code": "SCOPE_NODE_NOT_EMPTY",
+      "trace_id": "01J8ZDATTRACE2000000000000"
+    }
+  }
+}

@@ -22,12 +22,15 @@
     "pending": []
   },
   "data-model/1": {
-    "driver": "internal/datamodel/corpus_test.go corpusHandlers (hand-maintained: lives in a _test.go compilation unit, not importable by conformance/cmd/driven-manifest; kept fresh by TestDataModel1DrivenManifestMatchesRuntime in internal/datamodel/driven_manifest_test.go)",
+    "driver": "internal/datamodel/corpus_test.go corpusHandlers (the reference-engine cases) + internal/app/api/datamodel_corpus_test.go (the request-shaped cases, driven against the mounted handler) (hand-maintained: both live in _test.go compilation units, not importable by conformance/cmd/driven-manifest; kept fresh by TestDataModel1DrivenManifestMatchesRuntime in internal/datamodel/driven_manifest_test.go and TestDataModel1HTTPCorpusIsInTheDrivenManifest in internal/app/api/datamodel_corpus_test.go)",
     "driven": [
       "DAT-001-valid-scope-node-tree",
       "DAT-004a-valid-screen-and-device-identity-rows",
       "DAT-005b-invalid-identity-rows-missing-baseline",
       "DAT-010-valid-org-account-states",
+      "DAT-020-invalid-delete-scope-node-carrying-a-child",
+      "DAT-021-invalid-delete-scope-node-a-row-is-placed-at",
+      "DAT-022-invalid-delete-org-scope-node",
       "DAT-033-valid-screen-tz-override",
       "DAT-051-valid-site-schedule-cascades-to-screen",
       "DAT-053-valid-equal-priority-same-node-lowest-id-wins",

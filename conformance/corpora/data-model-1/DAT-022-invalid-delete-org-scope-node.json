@@ -1,0 +1,41 @@
+{
+  "case_id": "DAT-022-invalid-delete-org-scope-node",
+  "contract": "data-model/1",
+  "req_ids": ["DAT-022"],
+  "description": "Deleting the tree's single org-kind node is refused 409 Conflict / SCOPE_NODE_ORG_UNDELETABLE, with the removal never executed. The seeded tree is the org node ALONE — no child, nothing placed at it — so DAT-020's child-emptiness test and DAT-021's reference test are both satisfied and the org rule is the only one that can be answering, which is exactly the independence DAT-022 states.",
+  "input": {
+    "seed": {
+      "scope_nodes": [
+        {
+          "id": "01J8ZDATR00T0N1Y0000000000",
+          "kind": "org",
+          "parent_id": null,
+          "name": "Demo Org",
+          "account_state": "active",
+          "entitlements": {}
+        }
+      ]
+    },
+    "request": {
+      "method": "DELETE",
+      "path": "/api/v1/scope-nodes/01J8ZDATR00T0N1Y0000000000",
+      "headers": {
+        "If-Match": "\"1\"",
+        "Trace-Id": "01J8ZDATTRACE2200000000000"
+      }
+    }
+  },
+  "expected": {
+    "status": 409,
+    "content_type": "application/problem+json",
+    "delete_executed": false,
+    "body": {
+      "type": "about:blank",
+      "title": "Conflict",
+      "status": 409,
+      "detail": "The tree's org-kind scope node cannot be deleted: it is the root every other node and row is placed under, not one node among them.",
+      "code": "SCOPE_NODE_ORG_UNDELETABLE",
+      "trace_id": "01J8ZDATTRACE2200000000000"
+    }
+  }
+}

@@ -10,14 +10,26 @@ import (
 	"github.com/maaxton/waiveo-next/internal/rules/schedule"
 )
 
-// This file is the data-model/1 conformance driver: it replays EVERY case under
-// conformance/corpora/data-model-1/*.json against the reference engine in this
-// package and asserts each case's own exact expected shape. The scheduling-core
-// cases (cascade, precedence, layering, holding, fallback, terminal, preset
-// rising-edge, misfire) exercise Resolve/PresetTransition/BatchOutcome; the
-// tree/tz/ownership/overlap cases exercise BuildScopeTree/EffectiveGeo/
-// ValidateRows/ValidateNoOverlap. A case with no handler fails the run, so the
-// corpus and the engine cannot drift apart silently.
+// This file is the data-model/1 conformance driver for every requirement this
+// package's reference ENGINE can answer: it replays those cases under
+// conformance/corpora/data-model-1/*.json and asserts each case's own exact
+// expected shape. The scheduling-core cases (cascade, precedence, layering,
+// holding, fallback, terminal, preset rising-edge, misfire) exercise
+// Resolve/PresetTransition/BatchOutcome; the tree/tz/ownership/overlap cases
+// exercise BuildScopeTree/EffectiveGeo/ValidateRows/ValidateNoOverlap. A case
+// with no handler fails the run, so the corpus and the engine cannot drift
+// apart silently.
+//
+// # The cases this driver does NOT own
+//
+// A case whose `input` carries a `request` block is a REQUEST being refused, not
+// a row set being evaluated: this engine has no delete operation, no HTTP status
+// and no Problem body, so there is nothing here for such a case to run against.
+// Those are driven against the mounted handler by
+// internal/app/api/datamodel_corpus_test.go — a package this file cannot import
+// (it imports this one) and which cannot import this file's handlers either, so
+// the split is decided by BOTH sides reading the same property off the same
+// frozen data rather than by either holding a list of the other's case ids.
 
 const corpusDir = "../../conformance/corpora/data-model-1"
 
@@ -55,8 +67,10 @@ var corpusHandlers = map[string]func(*testing.T, json.RawMessage, json.RawMessag
 	"DAT-121-valid-misfire-catchup-vs-skip-by-kind":                     checkMisfire121,
 }
 
-// TestDataModel1Corpus replays all 20 data-model/1 cases and fails on any case
-// without a handler, so a newly added corpus case cannot pass unexercised.
+// TestDataModel1Corpus replays every engine-shaped data-model/1 case and fails on
+// any of them without a handler, so a newly added corpus case cannot pass
+// unexercised. Request-shaped cases are skipped here and counted separately —
+// see requestShapedCaseIDs and this file's header.
 func TestDataModel1Corpus(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join(corpusDir, "*.json"))
 	if err != nil {
@@ -66,8 +80,16 @@ func TestDataModel1Corpus(t *testing.T) {
 		t.Fatalf("no corpus files found under %s", corpusDir)
 	}
 	seen := map[string]bool{}
+	engineCases := 0
 	for _, f := range files {
 		c := loadCase(t, f)
+		if isRequestShaped(t, c) {
+			if _, ok := corpusHandlers[c.CaseID]; ok {
+				t.Errorf("corpus case %q is request-shaped AND has an engine handler — exactly one driver owns a case", c.CaseID)
+			}
+			continue
+		}
+		engineCases++
 		seen[c.CaseID] = true
 		h, ok := corpusHandlers[c.CaseID]
 		if !ok {
@@ -81,9 +103,41 @@ func TestDataModel1Corpus(t *testing.T) {
 			t.Errorf("handler registered for %q but no corpus file present", id)
 		}
 	}
-	if len(files) != len(corpusHandlers) {
-		t.Fatalf("corpus files = %d, handlers = %d — every case must map 1:1", len(files), len(corpusHandlers))
+	if engineCases != len(corpusHandlers) {
+		t.Fatalf("engine-shaped corpus files = %d, handlers = %d — every case must map 1:1", engineCases, len(corpusHandlers))
 	}
+}
+
+// isRequestShaped reports whether a case's `input` carries a `request` block —
+// the single property that decides which driver owns a data-model/1 case. The
+// HTTP driver reads the SAME property off the same files (see the header), so
+// neither side can claim a case the other is also driving, or neither is.
+func isRequestShaped(t *testing.T, c corpusCase) bool {
+	t.Helper()
+	var input map[string]json.RawMessage
+	if err := json.Unmarshal(c.Input, &input); err != nil {
+		t.Fatalf("decode input of %s: %v", c.CaseID, err)
+	}
+	_, ok := input["request"]
+	return ok
+}
+
+// requestShapedCaseIDs are the case ids the HTTP driver owns, read off the frozen
+// corpus rather than listed — the input to the driven-manifest union in
+// driven_manifest_test.go.
+func requestShapedCaseIDs(t *testing.T) []string {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(corpusDir, "*.json"))
+	if err != nil {
+		t.Fatalf("glob corpus: %v", err)
+	}
+	var out []string
+	for _, f := range files {
+		if c := loadCase(t, f); isRequestShaped(t, c) {
+			out = append(out, c.CaseID)
+		}
+	}
+	return out
 }
 
 func loadCase(t *testing.T, path string) corpusCase {
