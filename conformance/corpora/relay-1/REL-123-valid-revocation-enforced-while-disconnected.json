@@ -1,0 +1,59 @@
+{
+  "case_id": "REL-123-valid-revocation-enforced-while-disconnected",
+  "contract": "relay/1",
+  "req_ids": ["REL-066", "REL-123"],
+  "description": "A relay enrolled to a site applies a generation whose revocation_and_site.revoked is empty; a screen pairs against that generation's grant and pulls its program successfully. A later generation names that screen in revoked, and the relay applies it. The relay must thereafter refuse the screen's ALREADY-HELD, unexpired channel token with CHANNEL_TOKEN_REVOKED, and must refuse to issue a new channel token for that screen at all - the two decisions REL-123 names that this relay actually performs. A generation that drops the screen back out of revoked restores both, because revoked is a set the app peer restates in full rather than an append-only log. Finally, with the app peer torn down entirely and unreachable, a synced revocation is still enforced against both decisions: the relay answers from its own last-applied copy, which is REL-123's whole point.",
+  "input": {
+    "screen_id": "$fixture_screen",
+    "generations": [
+      {
+        "generation": 10,
+        "revoked": [],
+        "grants": ["g1"],
+        "app_peer": "connected"
+      },
+      {
+        "generation": 11,
+        "revoked": ["$fixture_screen"],
+        "grants": ["g2"],
+        "app_peer": "connected"
+      },
+      {
+        "generation": 12,
+        "revoked": [],
+        "grants": ["g2"],
+        "app_peer": "connected"
+      },
+      {
+        "generation": 13,
+        "revoked": ["$fixture_screen"],
+        "grants": ["g3"],
+        "app_peer": "torn_down_before_the_probes_below"
+      }
+    ],
+    "probes": [
+      { "after_generation": 10, "probe": "pair", "grant_selector": "g1" },
+      { "after_generation": 10, "probe": "program_pull", "token": "the token g1 minted" },
+      { "after_generation": 11, "probe": "program_pull", "token": "the token g1 minted" },
+      { "after_generation": 11, "probe": "pair", "grant_selector": "g2" },
+      { "after_generation": 12, "probe": "pair", "grant_selector": "g2" },
+      { "after_generation": 12, "probe": "program_pull", "token": "the token g2 minted" },
+      { "after_generation": 13, "probe": "program_pull", "token": "the token g2 minted" },
+      { "after_generation": 13, "probe": "pair", "grant_selector": "g3" }
+    ]
+  },
+  "expected": {
+    "probes": [
+      { "outcome": "redeemed", "channel_token_minted": true },
+      { "outcome": "lease", "http_status": 200 },
+      { "outcome": "refused", "http_status": 401, "code": "CHANNEL_TOKEN_REVOKED" },
+      { "outcome": "refused", "http_status": 400, "code": "PAIRING_CODE_INVALID", "channel_token_minted": false, "screen_id_disclosed": false },
+      { "outcome": "redeemed", "channel_token_minted": true },
+      { "outcome": "lease", "http_status": 200 },
+      { "outcome": "refused", "http_status": 401, "code": "CHANNEL_TOKEN_REVOKED" },
+      { "outcome": "refused", "http_status": 400, "code": "PAIRING_CODE_INVALID", "channel_token_minted": false, "screen_id_disclosed": false }
+    ],
+    "app_peer_reachable_during_final_two_probes": false,
+    "generations_applied": [10, 11, 12, 13]
+  }
+}

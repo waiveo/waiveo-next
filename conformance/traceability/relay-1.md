@@ -58,7 +58,7 @@ One row per requirement ID `contracts/relay-1.md` defines. Format: `conformance/
 | REL-063 | `contracts/relay-1.md#desired-state-snapshot-sections` | `REL-056-valid-generation-apply-atomic-swap` | covered |
 | REL-064 | `contracts/relay-1.md#desired-state-snapshot-sections` | `REL-056-valid-generation-apply-atomic-swap` | covered |
 | REL-065 | `contracts/relay-1.md#desired-state-snapshot-sections` | `REL-056-valid-generation-apply-atomic-swap` | covered |
-| REL-066 | `contracts/relay-1.md#desired-state-snapshot-sections` | `REL-056-valid-generation-apply-atomic-swap` | covered |
+| REL-066 | `contracts/relay-1.md#desired-state-snapshot-sections` | `REL-056-valid-generation-apply-atomic-swap`, `REL-123-valid-revocation-enforced-while-disconnected` | covered |
 | REL-067 | `contracts/relay-1.md#desired-state-snapshot-sections` | `REL-056-valid-generation-apply-atomic-swap` | covered |
 | REL-068 | `contracts/relay-1.md#desired-state-snapshot-sections` | `REL-056-valid-generation-apply-atomic-swap` | covered |
 | REL-070 | `contracts/relay-1.md#idempotent-apply--enrollment-anchored-trust` | `REL-070-valid-generation-reapply-idempotent-noop` | covered |
@@ -97,7 +97,7 @@ One row per requirement ID `contracts/relay-1.md` defines. Format: `conformance/
 | REL-121b | `contracts/relay-1.md#player-credential-authority` | `REL-121b-invalid-second-relay-redeems-bound-grant` | covered |
 | REL-121c | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
 | REL-122 | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
-| REL-123 | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
+| REL-123 | `contracts/relay-1.md#player-credential-authority` | `REL-123-valid-revocation-enforced-while-disconnected` | covered |
 | REL-124 | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
 | REL-124a | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
 | REL-124b | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |

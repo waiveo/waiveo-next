@@ -29,7 +29,9 @@
 // overflow / latest-only heartbeat supersession against
 // internal/relay/telemetry, REL-110/112/113 device-candidate report +
 // command resolve/dispatch against internal/relay/deviceplane, REL-121b's
-// two-relay pairing-grant binding against internal/relay/playerserver, REL-133
+// two-relay pairing-grant binding against internal/relay/playerserver, REL-123
+// revocation enforced at token issuance and verification with the app peer torn
+// down, REL-133
 // bounded clock.hint, REL-136/137 cold-boot skew-tolerant/deferred connect)
 // — the pending set is empty; every corpus case is driven.
 package relay1
@@ -121,6 +123,24 @@ type Feeder interface {
 	// byte-identical reapply). foreignKey=true signs it with a key that is
 	// NOT this feeder's own — REL-071's impostor snapshot.
 	StageSnapshot(generation int64, foreignKey bool) error
+	// StageRevokingSnapshot installs a validly-signed snapshot at generation
+	// carrying exactly this `revocation_and_site.revoked` list (REL-066) and
+	// this `pairing_grants` array (REL-067) over the same canonical base
+	// sections — re-hashed and re-signed, since both ride `hash`/`signature`
+	// (REL-053/075). It is what lets a case move a screen INTO and OUT OF the
+	// revoked set across generations, which no feeder in this codebase can do
+	// on its own: both snapshot builders emit an empty `revoked` unconditionally
+	// (internal/feeder/snapshot), so the app peer's authoring of a revocation is
+	// staged here rather than driven through a surface that does not yet exist.
+	StageRevokingSnapshot(generation int64, revoked []string, grants []wire.PairingGrant) error
+	// SetAppPeerReachable takes the app peer down (false) or brings it back
+	// (true). Down means down: an already-established persistent connection is
+	// dropped and a fresh dial fails, so a relay has nothing to consult. It is
+	// what turns "the relay enforces this while disconnected" (REL-122/REL-123)
+	// from a claim about code structure into an observation — the relay is
+	// probed with no counterparty in existence. Reversible, so a case that
+	// stages an outage leaves the feeder as it found it.
+	SetAppPeerReachable(reachable bool)
 	// LastStateAck returns the most recent wire state.ack the connection
 	// server received from relayID (REL-054), and whether one has arrived —
 	// the driver's window onto the WIRE acknowledgment a pull's apply
@@ -173,6 +193,7 @@ func Run(client RelayClient, feeder Feeder) report.Report {
 	driveREL110(&rep, cases)
 	driveREL110b(&rep, cases)
 	driveREL121b(&rep, client, feeder, cases)
+	driveREL123(&rep, client, feeder, cases)
 	driveREL133(&rep, cases)
 	driveREL136(&rep, client, feeder, cases)
 

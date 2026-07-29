@@ -63,8 +63,9 @@ type InProcessFeeder struct {
 	baseSections wire.Sections
 	baseHash     string
 
-	mu      sync.Mutex
-	current wire.StateSnapshotBody // what state.pull currently answers with
+	mu          sync.Mutex
+	current     wire.StateSnapshotBody // what state.pull currently answers with
+	unreachable bool                   // SetAppPeerReachable(false): the app peer is down and every request to it fails
 
 	closeFns  []func()
 	closeOnce sync.Once
@@ -133,13 +134,45 @@ func NewInProcessFeeder() (*InProcessFeeder, error) {
 		ClientCAs:  enrollSrv.ClientCAPool(),
 		MinVersion: tls.VersionTLS13,
 	}
-	if f.enrollBase, err = f.serve(apihttp.WithTraceID(mux), tlsCfg); err != nil {
+	if f.enrollBase, err = f.serve(f.gate(apihttp.WithTraceID(mux)), tlsCfg); err != nil {
 		f.Close()
 		return nil, fmt.Errorf("relay1: serve: %w", err)
 	}
 
 	f.closeFns = append(f.closeFns, f.connSrv.CloseAll)
 	return f, nil
+}
+
+// gate wraps h so that every request — enrollment bootstrap and the /relay/v1
+// persistent connection alike — fails while the app peer is marked unreachable
+// (SetAppPeerReachable). It sits OUTSIDE the trace middleware so an
+// unreachable feeder does not even produce a well-formed relay/1 response, which
+// is what a genuinely-down app peer looks like to a relay.
+func (f *InProcessFeeder) gate(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		down := f.unreachable
+		f.mu.Unlock()
+		if down {
+			http.Error(w, "app peer unreachable", http.StatusServiceUnavailable)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
+// SetAppPeerReachable implements Feeder: take the app peer down, or bring it
+// back. Taking it down also drops every live authenticated connection, so a
+// relay is left with no app peer to reach by either route — a dial fails and an
+// established connection is gone. Reversible on purpose: a case that left the
+// shared feeder dead would silently break whatever ran after it.
+func (f *InProcessFeeder) SetAppPeerReachable(reachable bool) {
+	f.mu.Lock()
+	f.unreachable = !reachable
+	f.mu.Unlock()
+	if !reachable {
+		f.connSrv.CloseAll()
+	}
 }
 
 // serve starts an HTTPS server (feeder TLS identity, plus the caller's
@@ -221,6 +254,49 @@ func (f *InProcessFeeder) StageSnapshot(generation int64, foreignKey bool) error
 
 	f.mu.Lock()
 	f.current = next
+	f.mu.Unlock()
+	return nil
+}
+
+// StageRevokingSnapshot implements Feeder: install a snapshot at generation
+// whose `revocation_and_site.revoked` (REL-066) is exactly revoked and whose
+// `pairing_grants` (REL-067) is exactly grants, over the SAME canonical base
+// sections as StageSnapshot, re-hashed and re-signed under the feeder's own
+// key so the whole thing verifies at the relay exactly as any other generation
+// does.
+//
+// Re-hashing rather than reusing baseHash is the point: `revoked` rides
+// `hash` and transitively `signature` like every other section member
+// (REL-053/075), so a driver that staged a revocation without recomputing the
+// hash would be staging a snapshot a correct relay REFUSES — and would "prove"
+// enforcement by never applying the generation at all.
+//
+// The base sections are copied by value and both fields replaced wholesale, so
+// no caller's slice and none of the shared base arrays are mutated.
+func (f *InProcessFeeder) StageRevokingSnapshot(generation int64, revoked []string, grants []wire.PairingGrant) error {
+	sections := f.baseSections
+	if revoked == nil {
+		revoked = []string{} // REL-060: the section carries an empty array, never null
+	}
+	sections.RevocationAndSite.Revoked = revoked
+	sections.PairingGrants = grants
+
+	hash, err := wire.HashSections(sections)
+	if err != nil {
+		return fmt.Errorf("relay1: wire.HashSections: %w", err)
+	}
+	sig, err := signScope(f.id.SigningPriv(), generation, hash)
+	if err != nil {
+		return err
+	}
+
+	f.mu.Lock()
+	f.current = wire.StateSnapshotBody{
+		Generation: generation,
+		Hash:       hash,
+		Signature:  sig,
+		Sections:   sections,
+	}
 	f.mu.Unlock()
 	return nil
 }
