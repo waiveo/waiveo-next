@@ -426,7 +426,14 @@ func TestBuildRejectsNilIdentity(t *testing.T) {
 // The one field the builder does set is `screen_id`: a fixture snapshot names
 // the screen its own program is for, and an unbound grant would redeem into a
 // different, invented screen than the program was installed under (REL-121a;
-// see BuildCast). Every other field rides verbatim.
+// see BuildCast). Every other field rides verbatim — `relay_id` above all,
+// which this builder MUST NOT invent. REL-121c's relay binding is the app
+// peer's to make from a caller-named relay (internal/app/store.AddPairingGrant
+// refuses a one-time grant without one); a fixture builder that has no
+// connected-relay set to choose from would be picking one on the caller's
+// behalf, which REL-121c itself says surfaces at redemption as an ordinary
+// invalid-code refusal — a grant that looks bound and cannot be redeemed is
+// worse than one honestly unbound.
 func TestBuildWithGrantsRidesAndVerifies(t *testing.T) {
 	img := loadTestImage(t)
 	id := testIdentity(t)
@@ -445,10 +452,16 @@ func TestBuildWithGrantsRidesAndVerifies(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 
+	if len(snap.Sections.PairingGrants) != 1 {
+		t.Fatalf("Sections.PairingGrants = %#v, want exactly one grant", snap.Sections.PairingGrants)
+	}
+	if got := snap.Sections.PairingGrants[0].RelayID; got != "" {
+		t.Errorf("Sections.PairingGrants[0].RelayID = %q, want \"\" — this builder invented a REL-121b relay binding it has no basis to choose, minting a code redeemable at no relay but the one it guessed", got)
+	}
 	want := g
 	want.ScreenID = FixtureScreenID
-	if len(snap.Sections.PairingGrants) != 1 || snap.Sections.PairingGrants[0] != want {
-		t.Fatalf("Sections.PairingGrants = %#v, want exactly [%#v]", snap.Sections.PairingGrants, want)
+	if snap.Sections.PairingGrants[0] != want {
+		t.Fatalf("Sections.PairingGrants[0] = %#v, want %#v", snap.Sections.PairingGrants[0], want)
 	}
 	if snap.Sections.ScreenPrograms[0].ScreenID != snap.Sections.PairingGrants[0].ScreenID {
 		t.Errorf("the fixture grant redeems into screen %q but the fixture program is for screen %q — a player pairing on this snapshot would be served the terminal default",

@@ -234,11 +234,23 @@ func BuildCast(items []CastItem, contentBaseURL string, id *signing.Identity, gr
 	// too: an unbound grant redeems into a freshly-invented opaque screen id
 	// (REL-121's baseline shape), and a relay serves a program PER SCREEN, so a
 	// player pairing on one would be served data-model/1's terminal default
-	// instead of the program this very snapshot carries. Binding here is also
-	// what REL-121a/REL-121c require of an app peer for a one-time grant, which
-	// is what these fixture grants are. A grant that already names a screen is
-	// left alone — only an unstated binding is filled in — and the caller's own
-	// slice is never mutated.
+	// instead of the program this very snapshot carries. That screen binding is
+	// REL-121a's requirement, and it is the only one this fills in.
+	//
+	// It is NOT REL-121c. That clause is about `relay_id` — an app peer MUST
+	// bind every one-time grant to exactly one relay, and MUST NOT deliver an
+	// unbound one — and these grants are still delivered unbound, so they remain
+	// exactly what REL-121c forbids. Nothing here can honestly fix that: this is
+	// the demo/fixture builder, which has no connected-relay set to choose from
+	// and no caller-named relay to carry, and REL-121c's own second consequence
+	// is that a binding chosen on the caller's behalf surfaces at redemption as
+	// an ordinary invalid-code refusal. The real issuing surface
+	// (internal/app/store's pairing grants, which takes the relay from the
+	// caller) is where REL-121c is satisfied; a fixture that stamped some relay
+	// id here would look conformant and mint codes nobody can redeem.
+	//
+	// A grant that already names a screen is left alone — only an unstated
+	// binding is filled in — and the caller's own slice is never mutated.
 	bound := make([]wire.PairingGrant, 0, len(grants))
 	for _, g := range grants {
 		if g.ScreenID == "" {
