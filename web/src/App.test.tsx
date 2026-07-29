@@ -63,13 +63,29 @@ describe("App", () => {
   });
 
   it("serves the first-boot setup form at /setup, outside the session gate", async () => {
+    // Serve the 401 the REAL visitor to this page draws. That is not a detail of
+    // the fixture: a box with no owner yet has nobody who could be signed in, so
+    // an unauthenticated caller is the only caller /setup ever has. Under the
+    // file's default handler — a valid session — the gate resolves to signed-in
+    // and renders its children, so a /setup mounted INSIDE the gate would paint
+    // the form too and this test would pass on the arrangement it exists to
+    // forbid. With the 401 the gate redirects to /login instead, which is the
+    // very absence this page exists to fix, and the assertions below fail.
+    let probes = 0;
+    server.use(
+      http.get("*/api/v1/auth/session", () => {
+        probes += 1;
+        return new HttpResponse(null, { status: 401 });
+      }),
+    );
     window.history.pushState({}, "", "/setup");
     render(<App />);
-    // Outside the gate, like /login: it runs before any session exists because
-    // it is what mints the first one. A /setup mounted INSIDE the gate would be
-    // redirected to /login by the very absence it exists to fix, and no session
-    // probe should even be issued here.
     expect(await screen.findByRole("button", { name: /set up this box/i })).toBeInTheDocument();
     expect(screen.getByLabelText(/setup code/i)).toBeInTheDocument();
+    // And the gate never ran at all: no session probe was issued. A route inside
+    // the gate probes before it renders anything, so this pins "outside" rather
+    // than merely "reachable while signed out" — which a gate that default-
+    // permitted on a failed probe would also satisfy.
+    expect(probes).toBe(0);
   });
 });
