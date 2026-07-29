@@ -618,22 +618,30 @@ func (rs *resource) createExec(w http.ResponseWriter, r *http.Request, raw []byt
 	writeJSON(w, http.StatusCreated, res.Body)
 }
 
-// rejectClientSuppliedID writes a 422 / VALIDATION_FAILED Problem, naming the
-// kind's own identity field (id, or a preset-batch's preset_id), when raw
-// carries a non-empty client-supplied identity, and reports whether it wrote a
-// response so the caller aborts before any store write. A resource's id is
-// exclusively server-assigned (API-105): api/1's Definitions name id as the
+// rejectClientSuppliedID writes a 422 / ID_SERVER_ASSIGNED Problem, naming the
+// kind's own identity field (id, or a preset-batch's preset_id) in `detail`,
+// when raw carries a non-empty client-supplied identity, and reports whether it
+// wrote a response so the caller aborts before any store write. A resource's id
+// is exclusively server-assigned (API-105): api/1's Definitions name id as the
 // server-minted identity, external_id (API-100–104) is the sanctioned
 // client-assigned identity slot, and every Create schema api/openapi.yaml
 // declares already omits id (additionalProperties: false) — this closes the gap
-// where the HTTP handlers did not yet enforce that schema at runtime. The
-// per-field `errors[]` code this writes, ID_SERVER_ASSIGNED, is api/1's own
-// (Error taxonomy) — id is an api/1-native field (API-013's "contract that owns
-// the failing field's rule"), not a data-model/1 one. Applying the same check
-// to a PATCH body (rs.patch) additionally prevents a client from overwriting a
-// resource's already-assigned id after creation, which store.Update's
-// merge-over-current-body would otherwise accept with no id-immutability check
-// of its own.
+// where the HTTP handlers did not yet enforce that schema at runtime.
+//
+// ID_SERVER_ASSIGNED is the TOP-LEVEL `code`, which is what API-105 fixes for
+// this rejection ("MUST be rejected with 422 Unprocessable Content / code:
+// ID_SERVER_ASSIGNED"). It is deliberately not a VALIDATION_FAILED carrying
+// ID_SERVER_ASSIGNED in an `errors[]` entry: API-013 reserves that shape for a
+// response carrying MORE THAN ONE independent field-level failure, `code` is the
+// sole machine-readable discriminant a client switches on (API-016), and
+// api/openapi.yaml's own Problem schema states `errors` is "Present only when
+// `code` is VALIDATION_FAILED". Nesting the code left the one value API-105
+// names unreachable from where every client reads it.
+//
+// Applying the same check to a PATCH body (rs.patch) additionally prevents a
+// client from overwriting a resource's already-assigned id after creation, which
+// store.Update's merge-over-current-body would otherwise accept with no
+// id-immutability check of its own.
 func (rs *resource) rejectClientSuppliedID(w http.ResponseWriter, r *http.Request, raw []byte) bool {
 	f := parseFields(raw)
 	if rs.cfg.identity(f) == "" {
@@ -641,13 +649,9 @@ func (rs *resource) rejectClientSuppliedID(w http.ResponseWriter, r *http.Reques
 	}
 	field := rs.cfg.identityField()
 	apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), http.StatusUnprocessableEntity,
-		"VALIDATION_FAILED", "Validation Failed",
-		"One or more fields failed validation.",
-		map[string]any{"errors": []map[string]string{{
-			"field":   field,
-			"code":    "ID_SERVER_ASSIGNED",
-			"message": "a resource's " + field + " is assigned by the server and MUST NOT be supplied by the client; use external_id for a client-assigned identity (api/1 API-100).",
-		}}})
+		"ID_SERVER_ASSIGNED", "Unprocessable Content",
+		"a resource's "+field+" is assigned by the server and MUST NOT be supplied by the client; use external_id for a client-assigned identity (api/1 API-100).",
+		nil)
 	return true
 }
 

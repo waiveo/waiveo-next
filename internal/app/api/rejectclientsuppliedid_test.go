@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/maaxton/waiveo-next/internal/app/store"
@@ -36,6 +37,7 @@ func TestRejectClientSuppliedIDPresetBatchIdentityField(t *testing.T) {
 	}
 	var p struct {
 		Code   string `json:"code"`
+		Detail string `json:"detail"`
 		Errors []struct {
 			Field string `json:"field"`
 			Code  string `json:"code"`
@@ -44,14 +46,20 @@ func TestRejectClientSuppliedIDPresetBatchIdentityField(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &p); err != nil {
 		t.Fatalf("decode problem: %v (body %s)", err, w.Body.Bytes())
 	}
-	if p.Code != "VALIDATION_FAILED" {
-		t.Fatalf("problem code = %q, want VALIDATION_FAILED", p.Code)
+	// API-105 fixes the TOP-LEVEL code for this rejection; `code` is the sole
+	// machine-readable discriminant (API-016), so a client switching on it must
+	// find ID_SERVER_ASSIGNED there and not inside an errors[] entry.
+	if p.Code != "ID_SERVER_ASSIGNED" {
+		t.Fatalf("problem code = %q, want ID_SERVER_ASSIGNED (API-105)", p.Code)
 	}
-	if len(p.Errors) != 1 || p.Errors[0].Field != "preset_id" {
-		t.Fatalf("errors = %+v, want exactly one entry naming field \"preset_id\"", p.Errors)
+	if len(p.Errors) != 0 {
+		t.Fatalf("errors = %+v, want none — api/openapi.yaml's Problem schema carries errors only for VALIDATION_FAILED", p.Errors)
 	}
-	if p.Errors[0].Code != "ID_SERVER_ASSIGNED" {
-		t.Fatalf("errors[0].code = %q, want ID_SERVER_ASSIGNED", p.Errors[0].Code)
+	// The offending field is still named, in the member that carries a
+	// per-occurrence explanation (API-016's `detail`): a preset batch's identity
+	// field is preset_id, not id, and a caller has to be told which one it sent.
+	if !strings.Contains(p.Detail, "preset_id") {
+		t.Fatalf("detail = %q, want it to name the offending field preset_id", p.Detail)
 	}
 
 	// A preset-batch body carrying no preset_id (the legitimate create shape) is

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 
@@ -494,10 +495,13 @@ func TestExternalIDConflict(t *testing.T) {
 
 // TestCreateClientSuppliedIDRejectedAsClientProblem: a create body naming a
 // non-empty "id" — whether or not it collides with an existing row — is a
-// well-defined client Problem (422 VALIDATION_FAILED with an id-field error,
-// ID_SERVER_ASSIGNED), never a masked 500 INTERNAL. A resource's id is
-// exclusively server-assigned (api/1 API-105); rejectClientSuppliedID rejects
-// it upfront, before the request ever reaches the store's own identity checks.
+// well-defined client Problem (422 / ID_SERVER_ASSIGNED), never a masked 500
+// INTERNAL. A resource's id is exclusively server-assigned (api/1 API-105);
+// rejectClientSuppliedID rejects it upfront, before the request ever reaches the
+// store's own identity checks. API-105 fixes the code at the TOP LEVEL of the
+// Problem — that is where a client's error handling switches (API-016) — so a
+// VALIDATION_FAILED whose errors[] carried ID_SERVER_ASSIGNED would leave the
+// one value this requirement names unreachable from where it is read.
 func TestCreateClientSuppliedIDRejectedAsClientProblem(t *testing.T) {
 	e := newEnv(t)
 	siteID := e.createNode(t, siteNode(""))
@@ -507,19 +511,14 @@ func TestCreateClientSuppliedIDRejectedAsClientProblem(t *testing.T) {
 		t.Fatalf("client-supplied id surfaced as 500 INTERNAL (body %s)", raw)
 	}
 	if resp.StatusCode != http.StatusUnprocessableEntity {
-		t.Fatalf("client-supplied-id status = %d, want 422 VALIDATION_FAILED, body %s", resp.StatusCode, raw)
+		t.Fatalf("client-supplied-id status = %d, want 422, body %s", resp.StatusCode, raw)
 	}
-	p := assertProblem(t, resp, raw, "VALIDATION_FAILED")
-	errsAny, _ := p["errors"].([]any)
-	if len(errsAny) == 0 {
-		t.Fatalf("VALIDATION_FAILED carried no per-field errors array (body %s)", raw)
+	p := assertProblem(t, resp, raw, "ID_SERVER_ASSIGNED")
+	if _, present := p["errors"]; present {
+		t.Fatalf("the Problem carries an errors[] member without VALIDATION_FAILED (body %s)", raw)
 	}
-	first, _ := errsAny[0].(map[string]any)
-	if first["field"] != "id" {
-		t.Fatalf("client-supplied-id error field = %v, want id (body %s)", first["field"], raw)
-	}
-	if first["code"] != "ID_SERVER_ASSIGNED" {
-		t.Fatalf("client-supplied-id error code = %v, want ID_SERVER_ASSIGNED (body %s)", first["code"], raw)
+	if detail, _ := p["detail"].(string); !strings.Contains(detail, "id") {
+		t.Fatalf("detail = %q, want it to name the offending field (body %s)", detail, raw)
 	}
 	// The original row is untouched — the rejected create wrote nothing.
 	resp, _ = e.do(t, http.MethodGet, "/api/v1/scope-nodes/"+siteID, nil, nil)
@@ -548,19 +547,14 @@ func TestPatchClientSuppliedIDRejectedAsClientProblem(t *testing.T) {
 		t.Fatalf("client-supplied id on PATCH surfaced as 500 INTERNAL (body %s)", raw)
 	}
 	if resp.StatusCode != http.StatusUnprocessableEntity {
-		t.Fatalf("client-supplied-id PATCH status = %d, want 422 VALIDATION_FAILED, body %s", resp.StatusCode, raw)
+		t.Fatalf("client-supplied-id PATCH status = %d, want 422, body %s", resp.StatusCode, raw)
 	}
-	p := assertProblem(t, resp, raw, "VALIDATION_FAILED")
-	errsAny, _ := p["errors"].([]any)
-	if len(errsAny) == 0 {
-		t.Fatalf("VALIDATION_FAILED carried no per-field errors array (body %s)", raw)
+	p := assertProblem(t, resp, raw, "ID_SERVER_ASSIGNED")
+	if _, present := p["errors"]; present {
+		t.Fatalf("the Problem carries an errors[] member without VALIDATION_FAILED (body %s)", raw)
 	}
-	first, _ := errsAny[0].(map[string]any)
-	if first["field"] != "id" {
-		t.Fatalf("client-supplied-id PATCH error field = %v, want id (body %s)", first["field"], raw)
-	}
-	if first["code"] != "ID_SERVER_ASSIGNED" {
-		t.Fatalf("client-supplied-id PATCH error code = %v, want ID_SERVER_ASSIGNED (body %s)", first["code"], raw)
+	if detail, _ := p["detail"].(string); !strings.Contains(detail, "id") {
+		t.Fatalf("detail = %q, want it to name the offending field (body %s)", detail, raw)
 	}
 
 	// The row is untouched: same id, same (never-renamed) name, same revision —

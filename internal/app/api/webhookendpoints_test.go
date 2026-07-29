@@ -324,7 +324,9 @@ func TestClientSuppliedIDIsRejected(t *testing.T) {
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want 422 for a client-supplied id (body %s)", resp.StatusCode, raw)
 	}
-	assertProblem(t, resp, raw, "VALIDATION_FAILED")
+	// API-105 names the code at the TOP LEVEL of the Problem, which is where a
+	// client switches on it (API-016) — not inside an errors[] entry.
+	assertProblem(t, resp, raw, "ID_SERVER_ASSIGNED")
 }
 
 func TestUnknownEndpointIsNotFoundOnEveryOperation(t *testing.T) {
