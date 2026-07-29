@@ -28,19 +28,19 @@ import (
 // makes it a no-op.
 type pullFunc func(sinceGeneration int64) (desiredstate.Applied, error)
 
-// scheduleDriver owns the schedule-resolver lifecycle across desired-state
-// generations for one relay. apply installs a generation's resolvers + background
-// re-resolve loops over the player server; a subsequent apply cancels the prior
-// generation's loops before installing the new ones (the REL-056 atomic-swap
-// discipline for the serving side of a generation apply). Cancellation stops the
-// loops but cannot interrupt a resolver goroutine already mid-resolve, so a
-// superseded generation's late write could otherwise land after the new serve;
-// that hazard is fenced at the write point instead — every resolver stamps its
-// generation onto playerserver.Server.SetProgram, which drops a strictly-older
-// generation's write (REL-052/056), so a stale in-flight resolver can never
-// revert the new serve. apply is driven from the boot path (once) and from
-// rePuller.tick, which serializes every live apply under its own lock, so the
-// cancel handoff needs no lock of its own.
+// scheduleDriver owns the serving side of a desired-state generation apply for
+// one relay: apply installs that generation's app-authored per-screen program
+// baseline (REL-061) and its schedule resolvers + background re-resolve loops
+// over the player server. A subsequent apply cancels the prior generation's
+// loops before installing the new ones (the REL-056 atomic-swap discipline).
+// Cancellation stops the loops but cannot interrupt a resolver goroutine already
+// mid-resolve, so a superseded generation's late write could otherwise land
+// after the new serve; that hazard is fenced at the write point instead — every
+// resolver stamps its generation onto playerserver.Server.SetProgram, which
+// drops a strictly-older generation's write (REL-052/056), so a stale in-flight
+// resolver can never revert the new serve. apply is driven from the boot path
+// (once) and from rePuller.tick, which serializes every live apply under its own
+// lock, so the cancel handoff needs no lock of its own.
 type scheduleDriver struct {
 	srv        *playerserver.Server
 	sink       *automation.CommandSink
@@ -53,15 +53,42 @@ type scheduleDriver struct {
 	cancel context.CancelFunc
 }
 
-// apply resolves + serves applied.Schedule at nowMs and installs its background
-// re-resolve loops, after cancelling any prior generation's loops. The new loops
-// run under a child of ctx, so cancelling ctx (process shutdown) stops them too.
-// It returns the resolvers built (empty when the schedule governs no carried
-// screen — the additive serving policy leaves the app-authored program in place).
+// apply installs applied's serving state: this generation's app-authored
+// per-screen `screen_programs` baseline first, then its schedule resolution over
+// the top of it (resolveAndServe at nowMs, plus the background re-resolve loops).
+// The new loops run under a child of ctx, so cancelling ctx (process shutdown)
+// stops them too. It returns the resolvers built (empty when the schedule governs
+// no carried screen — the additive serving policy leaves the app-authored program
+// in place).
+//
+// # Why the baseline is installed HERE and not only at boot
+//
+// It used to be installed only at boot (main's own serveAppAuthoredPrograms over
+// the persisted copy), and the live re-pull path re-drove the schedule alone.
+// That was survivable only while every schedule resolver unconditionally wrote
+// one shared program slot, because a new generation's resolution then reached
+// served state that way whatever the topology. It stopped being survivable the
+// moment a resolution is served only where the relay can attribute it to a
+// screen (soleServedScreenID): on any site that is not exactly-one-governed-node
+// -and-exactly-one-screen, resolveAndServe now writes NOTHING, so an operator
+// edit produced a new generation that the relay pulled, applied, logged — and
+// never served, every screen staying on the boot generation's program until the
+// process restarted. The generation's own baseline is what carries an edit to
+// those screens, so every apply re-installs it, not just the first one.
+//
+// # Ordering
+//
+// Baseline BEFORE resolution, matching the boot path exactly. Both write at
+// applied.Generation, and SetProgram's fence admits a same-generation write
+// (only a strictly OLDER one is dropped), so whichever runs last wins for a
+// screen the schedule attributes a resolution to — which must be the resolver.
+// Inverting these two would have a fresh resolution clobbered by the baseline it
+// is supposed to replace, on exactly the sites where the resolution is served.
 func (d *scheduleDriver) apply(ctx context.Context, applied desiredstate.Applied, nowMs int64) []*schedulehost.Resolver {
 	if d.cancel != nil {
 		d.cancel() // tear down the prior generation's resolve loops before the swap
 	}
+	serveAppAuthoredPrograms(d.srv, applied.Generation, applied.ScreenPrograms, d.signingKey)
 	loopCtx, cancel := context.WithCancel(ctx)
 	d.cancel = cancel
 	return resolveAndServe(loopCtx, applied, d.srv, d.sink, d.site, d.signingKey, d.tickEvery, nowMs)
@@ -113,7 +140,9 @@ func (p *rePuller) adoptSite(site hello.SiteBinding) {
 //     for a lower one). A state.unchanged answer lands here by construction.
 //   - A strictly higher generation is applied: the pull has already persisted
 //     it atomically (REL-056); tick re-drives the live serving state to
-//     match — re-resolving the schedule and reloading the edge rules.
+//     match — re-installing the app-authored per-screen baseline and
+//     re-resolving the schedule over it (scheduleDriver.apply), refreshing the
+//     redeemable pairing grants, and reloading the edge rules.
 func (p *rePuller) tick(ctx context.Context) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -132,7 +161,9 @@ func (p *rePuller) tick(ctx context.Context) bool {
 	}
 
 	// Strictly higher generation — apply it live. The pull already persisted the
-	// new generation atomically (REL-056); re-drive the serving side to match.
+	// new generation atomically (REL-056); re-drive the serving side to match —
+	// this generation's app-authored per-screen programs AND the schedule
+	// resolution over them, in that order (scheduleDriver.apply's own doc).
 	p.driver.apply(ctx, applied, p.nowFn())
 
 	// Refresh the redeemable pairing-grant set from this SAME verified
@@ -148,7 +179,8 @@ func (p *rePuller) tick(ctx context.Context) bool {
 		// a returned error is unexpected, so log and keep serving rather than crash.
 		log.Printf("waiveo-relay live pull: reload edge rules for generation %d: %v", applied.Generation, err)
 	}
-	log.Printf("waiveo-relay live pull: applied generation %d live (schedule re-resolved, %d edge rule(s) loaded)", applied.Generation, p.host.EdgeRuleCount())
+	log.Printf("waiveo-relay live pull: applied generation %d live (%d screen program(s) re-installed, schedule re-resolved, %d edge rule(s) loaded)",
+		applied.Generation, len(applied.ScreenPrograms), p.host.EdgeRuleCount())
 	p.lastGen = applied.Generation
 	return true
 }

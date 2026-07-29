@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/maaxton/waiveo-next/internal/shared/signhash"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
@@ -367,3 +368,90 @@ func (s *Server) programFor(screenID string) program {
 // compile-time assurance the fixtures above use a real ed25519 key type, so a
 // signature check in these cases is meaningful rather than vacuous.
 var _ ed25519.PrivateKey = ed25519.PrivateKey(nil)
+
+// TestTerminalDefaultIsServableWithNoProgramEverInstalled is the case a relay
+// reaches whenever it holds no `screen_programs` entry at all, and the case the
+// terminal default (DAT-118) exists for: a paired screen pulls, and MUST be
+// answered with the defined blank state rather than with a failure.
+//
+// It failed before the relay's signing identity was installable on its own.
+// The key was assigned only inside SetProgram — past that method's own
+// empty-screen_id return and generation fence — so a server nobody had ever
+// installed a program on had no key, and every pull on it answered 500 INTERNAL
+// forever. The screen's credential was valid, its request well-formed, and the
+// program it should have been served is the one this server can always produce.
+//
+// Reaching that state takes no fresh install: REL-060 admits an empty
+// `screen_programs` outright, and a site whose entries are all derived away —
+// a screen omitted because its effective tz will not resolve (DAT-033/034) —
+// keeps its screen-bound grant and channel token while carrying no entry at all.
+func TestTerminalDefaultIsServableWithNoProgramEverInstalled(t *testing.T) {
+	certPEM, _, priv, pub := testRelaySigningIdentity(t)
+	grant := testGrantForScreen(testScreenIDA)
+
+	srv, err := NewServer(certPEM, []wire.PairingGrant{grant}, WallClockMs)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	// The relay's own identity, and nothing else: no SetProgram, no
+	// SetServedProgram, not one entry anywhere on this server.
+	srv.SetSigningKey(priv)
+
+	lease := pullLease(t, srv, redeemToken(t, srv, grant.GrantID))
+
+	if lease.Display != DisplayBlank || len(lease.Content) != 0 {
+		t.Errorf("display/content = %q/%+v, want %q with no content (DAT-118's terminal default)", lease.Display, lease.Content, DisplayBlank)
+	}
+	if lease.ProgramRevision != TerminalProgramRevision {
+		t.Errorf("program_revision = %q, want the stable terminal sentinel %q", lease.ProgramRevision, TerminalProgramRevision)
+	}
+	if lease.ScreenID != testScreenIDA {
+		t.Errorf("screen_id = %q, want %q — the Lease is this screen's, it simply has no program", lease.ScreenID, testScreenIDA)
+	}
+
+	// Signed like any other Lease (PLY-090 admits no unsigned one), by the relay
+	// key — which is the whole point: the key belongs to the relay, so it is
+	// there to sign with whether or not any screen has a program.
+	sigBytes, err := wire.DecodeSignature(lease.Signature)
+	if err != nil {
+		t.Fatalf("wire.DecodeSignature: %v", err)
+	}
+	canon, err := wire.LeaseSignedBytes(lease.Lease)
+	if err != nil {
+		t.Fatalf("wire.LeaseSignedBytes: %v", err)
+	}
+	if !signhash.Verify(pub, canon, sigBytes) {
+		t.Error("terminal-default Lease signature does not verify against the relay's own cert public key (PLY-090)")
+	}
+}
+
+// TestSetProgramDoesNotClearTheRelaySigningKey pins the direction of the
+// relationship between a screen's program and the relay's identity: installing a
+// program cannot take the identity away.
+//
+// SetProgram takes a signing key only because a caller installing a program
+// necessarily holds one. If it assigned unconditionally, a single write carrying
+// no usable key would blank the key for the WHOLE server — every screen's next
+// pull, including screens that write never named, answered 500 — which is a
+// per-screen operation reaching across every other screen.
+func TestSetProgramDoesNotClearTheRelaySigningKey(t *testing.T) {
+	certPEM, _, priv, _ := testRelaySigningIdentity(t)
+	grant := testGrantForScreen(testScreenIDA)
+
+	srv, err := NewServer(certPEM, []wire.PairingGrant{grant}, WallClockMs)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	srv.SetSigningKey(priv)
+
+	// A program write for some OTHER screen, carrying no usable key.
+	srv.SetProgram(1, testScreenIDB, "rev-keyless", "scheduled", DisplayContent, testImageContent(), nil)
+
+	lease := pullLease(t, srv, redeemToken(t, srv, grant.GrantID))
+	if lease.Signature == "" {
+		t.Fatal("Lease carries no signature after a keyless program write for a different screen")
+	}
+	if got := srv.programFor(testScreenIDB).ProgramRevision; got != "rev-keyless" {
+		t.Errorf("screen B program_revision = %q, want rev-keyless — the write itself must still land; only the relay's key is protected", got)
+	}
+}

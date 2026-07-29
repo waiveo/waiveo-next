@@ -1376,3 +1376,30 @@ func TestDialAddressRefusesALoopbackCodeBehindALANListener(t *testing.T) {
 		})
 	}
 }
+
+// TestListeningLineAgreesWithPairingCodeFormation: the boot log must not assert
+// two contradictory things about the same configuration.
+//
+// The listening line used to print the raw pairHost/pairPort regardless of
+// whether a code could be formed from them, so a box that had overridden only
+// the listen address logged "pairing code dial 127.0.0.1:7421" and then "NOT
+// forming pairing codes" — the first line naming an address no code would ever
+// carry, and naming it first.
+func TestListeningLineAgreesWithPairingCodeFormation(t *testing.T) {
+	dialable := config{listen: "192.168.50.12:7421", pairHost: "192.168.50.12", pairPort: 7421}
+	line := listeningLine(dialable)
+	if !strings.Contains(line, "192.168.50.12:7421") {
+		t.Errorf("listeningLine(dialable) = %q, want it to name the dial address a formed code carries", line)
+	}
+
+	// The footgun: a LAN listener behind a loopback dial host. No code is formed
+	// for this configuration, so this line must not name a dial address either.
+	mismatched := config{listen: "192.168.50.12:7421", pairHost: "127.0.0.1", pairPort: 7421}
+	line = listeningLine(mismatched)
+	if strings.Contains(line, "127.0.0.1:7421") {
+		t.Errorf("listeningLine(mismatched) = %q — it advertises a dial address for a configuration that forms no pairing code at all", line)
+	}
+	if !strings.Contains(line, "no dialable pairing address") {
+		t.Errorf("listeningLine(mismatched) = %q, want it to say no code is formed, matching what logPairingCodes then reports", line)
+	}
+}

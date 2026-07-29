@@ -1027,3 +1027,64 @@ func TestTickBootDefaultMisfireStillFiresResumeEdge(t *testing.T) {
 		t.Fatalf("TickBoot with the default (catch_up_once) misfire dispatched %v, want exactly [%s/home] (DAT-121 default still fires the resume edge)", calls, resumeMisfireEntity)
 	}
 }
+
+// TestResolverServingNoScreenStillFiresItsNodesPresets is the property that
+// justifies the serve-nobody mode existing at all.
+//
+// A Resolver built with servedScreenID "" is what a caller uses when it cannot
+// say which screen a governed scope node's resolution belongs to (relay/1's
+// carried `schedule` section is keyed by scope node and carries no screen
+// identity rows, so the relay has no placement to join on). Serving nobody is
+// the point — but the preset batch is a SCOPE-NODE concern (DAT-075) that needs
+// no screen identity, and it must still fire. A resolver that returned early on
+// an empty servedScreenID would silently stop every device command a site's
+// dayparts drive — screens never powering on at open, never going dark at close
+// — on exactly the multi-screen sites this mode exists for, with the schedule
+// still logging that it resolved.
+//
+// The screen side is asserted too: no program may be installed for anyone.
+// "Fires presets" and "serves nobody" are one behaviour, and a test that checked
+// only the firing would pass on a resolver that had quietly started serving some
+// screen its resolution was never attributed to.
+func TestResolverServingNoScreenStillFiresItsNodesPresets(t *testing.T) {
+	store, errs := BuildStore(buildDemoSection(t))
+	if len(errs) != 0 {
+		t.Fatalf("BuildStore(demo section) errs = %+v, want none", errs)
+	}
+	srv, priv, grantID := newTestPlayerServer(t)
+	// The relay's own signing identity, so a pull is answerable even though this
+	// resolver installs no program at all — which is the state under test.
+	srv.SetSigningKey(priv)
+
+	r := NewResolver(store, demoScreenScopeNodeID, "", srv, priv, 1, "")
+	sink, ctrl := newFakeSink(t)
+
+	// Overnight: the blank daypart holds and binds no preset — nothing fires.
+	r.Tick(demoLocalInstant(t, 2, 0), sink)
+	if calls := ctrl.calls(); len(calls) != 0 {
+		t.Fatalf("overnight tick dispatched %v, want nothing (the blank daypart binds no preset)", calls)
+	}
+
+	// Crossing into the content daypart is a rising edge of effective-daypart
+	// identity, and it MUST fire even though this resolver serves no screen.
+	r.Tick(demoLocalInstant(t, 12, 0), sink)
+	if calls := ctrl.calls(); len(calls) != 1 || calls[0] != demoRuleEntityID+"/launch" {
+		t.Fatalf("crossing into the content daypart dispatched %v, want exactly [%s/launch] — a resolver that serves no screen still fires its node's preset batch (DAT-075)", calls, demoRuleEntityID)
+	}
+
+	// Still level-triggered: a second tick inside the same daypart does not
+	// re-fire, so the edge tracking is genuinely running, not merely firing
+	// on every tick because the previous state was never advanced.
+	r.Tick(demoLocalInstant(t, 15, 0), sink)
+	if calls := ctrl.calls(); len(calls) != 1 {
+		t.Fatalf("a second tick inside the same content daypart dispatched %v, want still exactly 1 (DAT-119)", calls)
+	}
+
+	// And nobody was served: the paired screen still pulls data-model/1's
+	// terminal default (DAT-118), not this node's resolution.
+	lease := pairAndPull(t, srv, grantID, []string{"image", "video"})
+	if lease.ProgramRevision != playerserver.TerminalProgramRevision || lease.Display != "blank" || len(lease.Content) != 0 {
+		t.Errorf("served program_revision/display/content = %q/%q/%+v, want the terminal default — a resolver with no screen to serve installed a program anyway",
+			lease.ProgramRevision, lease.Display, lease.Content)
+	}
+}

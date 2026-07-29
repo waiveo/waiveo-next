@@ -132,6 +132,14 @@ const TerminalProgramRevision = "terminal:blank"
 // is hand back some other screen's program, which is what a single
 // whole-server program value did for every screen but the last one written.
 //
+// Serving it takes a signing key like any other Lease (PLY-090 admits no
+// unsigned Lease), and that key is SetSigningKey's — the relay's own identity,
+// installed once at construction time by the deployment — precisely so a relay
+// holding NO program at all can still answer this. While the key was only ever
+// assigned inside SetProgram, a relay that had never installed one answered
+// every pull 500 INTERNAL instead, which is the one case this default exists
+// for.
+//
 // `priority` is `scheduled` because PLY-108's other value, `preempt`, is a
 // deliberately-invoked emergency takeover — the absence of any program for a
 // screen is the opposite of one, and a blank Lease claiming `preempt` would
@@ -179,6 +187,14 @@ func terminalDefault() program {
 // happened to be rewritten, and a player pinning the currently-presented cert
 // would reject them.
 //
+// It is a parameter here only because a caller installing a program necessarily
+// holds it; SetSigningKey is where the relay's identity is actually established,
+// and a program write is NOT what makes this server able to sign. A write
+// carrying no usable key therefore installs the program and leaves the existing
+// key alone rather than clearing it — a screen's program write must not be able
+// to take the whole relay's signing identity away, which would turn every
+// screen's next pull, including screens this write never named, into a 500.
+//
 // generation is the desired-state generation this program was resolved for
 // (relay/1 REL-052/056). The live re-pull loop drives SetProgram concurrently
 // across generations: when a higher generation is applied, the superseded
@@ -214,7 +230,42 @@ func (s *Server) SetProgram(generation int64, screenID, programRevision, priorit
 		Display:         display,
 		Content:         content,
 	}
-	s.signingKey = signingKey
+	if len(signingKey) == ed25519.PrivateKeySize {
+		s.signingKey = signingKey
+	}
+}
+
+// SetSigningKey installs key as the relay's own Lease-signing identity: the
+// private half of the keypair the certificate passed to NewServer (relayCertPEM)
+// certifies, which every Lease this server issues is signed with (PLY-090).
+//
+// It exists SEPARATELY from SetProgram because the key is a property of the
+// RELAY, not of any screen. Assigning it only inside SetProgram meant a relay
+// that had never installed a single program had no key either, and answered
+// every /player/v1/program pull 500 INTERNAL — including the pull it should have
+// answered with data-model/1's terminal default (DAT-118). That state is not
+// exotic: a site whose `screen_programs` is REL-060's empty placeholder reaches
+// it, and so does one whose entries were all derived away (a screen whose
+// resolution fails on an unresolvable effective tz is omitted from the derived
+// array, DAT-033/034) while its screen-bound grant and channel token stay
+// perfectly valid. A relay that can pair a screen must be able to answer that
+// screen.
+//
+// Callers install it once, at construction, BEFORE Register/serving traffic —
+// the same discipline EnablePersistence documents, and for the same reason:
+// an assignment racing an in-flight request is a request served without it.
+// A re-enrollment that rotates the relay's keypair (REL-027–029) calls it again,
+// and every screen's next Lease is signed with the new key at once.
+//
+// It is authoritative, unlike SetProgram's incidental parameter: what it is
+// passed is what this server signs with, including nothing at all. Expressing
+// "this relay currently has no signing identity" is a state a caller is allowed
+// to set deliberately, and while it holds, handleProgram refuses every pull
+// rather than issuing an unsigned Lease.
+func (s *Server) SetSigningKey(key ed25519.PrivateKey) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.signingKey = key
 }
 
 // SetServedProgram configures program delivery from a PERSISTED
@@ -436,18 +487,19 @@ func (s *Server) handleProgram(w http.ResponseWriter, r *http.Request) {
 	signingKey := s.signingKey
 	s.mu.Unlock()
 
-	// No signing key configured yet — nothing has called SetProgram on this
-	// server at all. Every Lease MUST carry a signature a player verifies
-	// against its pinned trust anchor (PLY-090), and there is no unsigned Lease
-	// in that contract, so this refuses rather than issuing one. It is a 500
-	// because the fault is entirely the relay's own configuration: the player's
-	// credential is valid and its request is well-formed.
+	// No signing key at all — the deployment never called SetSigningKey, so this
+	// server has no relay identity to sign with. Every Lease MUST carry a
+	// signature a player verifies against its pinned trust anchor (PLY-090), and
+	// there is no unsigned Lease in that contract, so this refuses rather than
+	// issuing one. It is a 500 because the fault is entirely the relay's own
+	// configuration: the player's credential is valid and its request is
+	// well-formed.
 	//
-	// Reachable whenever a screen pairs before any program has been installed —
-	// a site whose persisted screen_programs is empty (REL-060's empty
-	// placeholder) is exactly that, and signhash.Sign on a nil key panics
-	// rather than erroring, which on the serving goroutine takes the request's
-	// whole connection down.
+	// It is NOT the "this screen has no program" case — that one is served
+	// data-model/1's terminal default above (DAT-118, programForLocked), signed
+	// with this same key like any other Lease. The guard remains because
+	// signhash.Sign on a nil key panics rather than erroring, which on the
+	// serving goroutine takes the request's whole connection down.
 	if len(signingKey) != ed25519.PrivateKeySize {
 		apihttp.WriteProblem(w, r, traceID, http.StatusInternalServerError, "INTERNAL", "Internal Error")
 		return

@@ -373,6 +373,11 @@ func (r *InProcessRelay) bootRelay(feederBaseURL, bindHost, dialHost string) err
 	if err != nil {
 		return fmt.Errorf("playerserver.NewServer: %w", err)
 	}
+	// The relay's own Lease-signing identity (PLY-090), installed before any
+	// program: a driver relay whose fixture snapshot carried no screen_programs
+	// entry still has to answer a paired player with data-model/1's terminal
+	// default (DAT-118), and that Lease is signed like any other.
+	pairingSrv.SetSigningKey(relayID.PrivateKey)
 	// Served for the snapshot's OWN screen (applied.ScreenID): a relay serves a
 	// program per screen identity row (REL-061), so the id here has to be the
 	// one the fixture's pairing grants redeem into (snapshot.FixtureScreenID),

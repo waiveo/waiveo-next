@@ -643,6 +643,18 @@ func main() {
 	if err != nil {
 		log.Fatalf("waiveo-relay: build player/1 pairing server: %v", err)
 	}
+	// The relay's own Lease-signing identity (PLY-090), installed before any
+	// route is mounted. It is the private half of the keypair relayID.CertPEM
+	// certifies — the very certificate this listener presents — so a player's
+	// pinned-anchor signature check lines up with what it connected to.
+	//
+	// Installed here, once, rather than as a side effect of installing a program:
+	// a relay with no program at all still has to answer a paired screen's pull
+	// with data-model/1's terminal default (DAT-118), and that Lease needs this
+	// key like any other. A site whose screen_programs is empty (REL-060's
+	// placeholder), or whose entries were all derived away by an unresolvable
+	// effective tz, is exactly that relay.
+	pairingSrv.SetSigningKey(relayID.PrivateKey)
 	// Point the pairing/session surface at the SAME durable operational store
 	// enrollment identity and last-applied generation already persist into, so
 	// a minted channel token and a one-time pairing grant's redemption both
@@ -671,6 +683,13 @@ func main() {
 	served, err := desiredstate.ServedProgram(store)
 	if err != nil {
 		log.Fatalf("waiveo-relay: read persisted screen_programs for offline serve: %v", err)
+	}
+	if len(served) == 0 {
+		// REL-060's empty placeholder, not a fault — and now a fully served
+		// state: the signing key installed above is the relay's, not any
+		// screen's, so a screen that pairs here is answered with DAT-118's
+		// terminal default rather than a configuration error.
+		log.Printf("waiveo-relay: persisted last-applied snapshot carried no screen_programs; every screen serves the terminal default until one is authored")
 	}
 	serveAppAuthoredPrograms(pairingSrv, applied.Generation, served, relayID.PrivateKey)
 
@@ -1100,8 +1119,26 @@ func main() {
 		TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}},
 	}
 
-	log.Printf("waiveo-relay listening (HTTPS) on %s (pairing code dial %s:%d)", cfg.listen, cfg.pairHost, cfg.pairPort)
+	log.Print(listeningLine(cfg))
 	log.Fatal(server.ListenAndServeTLS("", ""))
+}
+
+// listeningLine is the line the relay logs once its player/1 listener is
+// configured: where it listens, and the address a pairing code formed here tells
+// a screen to dial.
+//
+// It reads cfg.dialAddress() rather than the raw pairHost/pairPort, because
+// those two disagree exactly when the deployment is misconfigured — and that is
+// the moment an operator is reading this line. Printing "pairing code dial
+// 127.0.0.1:7421" from the raw fields while logPairingCodes prints "NOT forming
+// pairing codes" from the same configuration left a boot log asserting both, and
+// the wrong one first.
+func listeningLine(cfg config) string {
+	if addr := cfg.dialAddress(); addr != "" {
+		return fmt.Sprintf("waiveo-relay listening (HTTPS) on %s (pairing code dial %s)", cfg.listen, addr)
+	}
+	return fmt.Sprintf("waiveo-relay listening (HTTPS) on %s (no dialable pairing address: pairing dial host is %q behind this listener, so no pairing code is formed — set WAIVEO_RELAY_PAIR_HOST)",
+		cfg.listen, cfg.pairHost)
 }
 
 // relayTLSCertificate builds a crypto/tls.Certificate (for serving player/1
@@ -1366,10 +1403,14 @@ func bootScheduleResolverAt(applied desiredstate.Applied, srv *playerserver.Serv
 // Otherwise every resolver is built with no served screen: it still resolves and
 // still fires its node's preset batches (DAT-075 is a scope-node concern needing
 // no screen identity), and every screen keeps the app-authored per-screen
-// `screen_programs` baseline — correct at the instant the generation was built,
-// just not re-resolved locally at a daypart boundary until the next re-pull.
-// Serving one screen's schedule resolution to another because the relay cannot
-// tell them apart is the failure this refuses.
+// `screen_programs` baseline that generation carried — correct at the instant
+// the generation was built, just not re-resolved locally at a daypart boundary.
+// What moves those screens is a NEW generation, whose own baseline the apply
+// path re-installs before calling this (scheduleDriver.apply); this function
+// leaves them untouched by design, and must not be read as promising that
+// anything else here will refresh them. Serving one screen's schedule resolution
+// to another because the relay cannot tell them apart is the failure this
+// refuses.
 //
 // site is the app peer's authoritative site_binding (REL-036, the same value
 // bootAutomationStack adopts into the edge engine) — carried through only for
@@ -1426,32 +1467,37 @@ func resolveAndServe(ctx context.Context, applied desiredstate.Applied, srv *pla
 	return resolvers
 }
 
-// serveAppAuthoredPrograms installs EVERY persisted `screen_programs` entry on
+// serveAppAuthoredPrograms installs EVERY `screen_programs` entry in served on
 // srv, each under its own `screen_id` (REL-061) — the app-authored per-screen
-// baseline the relay serves from its own durable store with no app peer
-// reachable (REL-055/061, Offline continuity).
+// baseline a relay serves with no app peer reachable (REL-055/061, Offline
+// continuity).
 //
 // Every entry, not entry [0]: the section is one entry per screen identity row
 // (data-model/1 DAT-004a) and a paired player presents a channel token naming
 // exactly which row it is, so installing one of them served whichever screen
 // sorted first to every paired player on the site.
 //
-// An empty `served` is REL-060's stated empty placeholder, not a fault: the app
-// peer derives one entry per authored screen row, so a site with no screens yet
-// has nothing to serve. Every screen then pulls data-model/1's terminal default
-// (DAT-118, display:blank) rather than a fabricated program, and boot continues
-// so pairing, the device plane and the schedule resolver all still come up.
+// It is called on EVERY generation apply, not once at boot — from the boot path
+// over the relay's own durable copy (desiredstate.ServedProgram) and from
+// scheduleDriver.apply over the applied generation's own array, whose doc owns
+// why. generation is that apply's own generation, carried into SetProgram's
+// fence: the baseline is what a same-generation schedule resolution then
+// replaces where the relay can attribute one to a screen, and what stands
+// unchallenged where it cannot.
+//
+// An empty served installs nothing and is not a fault: it is REL-060's stated
+// empty placeholder, and every screen is then served data-model/1's terminal
+// default (DAT-118, display:blank) rather than a fabricated program. Reporting
+// that belongs to the caller, which is the only one that knows whether an empty
+// array means "no screens authored yet" (boot, reading the durable copy) or
+// "this generation carried none" (a live apply).
 func serveAppAuthoredPrograms(srv *playerserver.Server, generation int64, served []wire.ScreenProgram, signingKey ed25519.PrivateKey) {
-	if len(served) == 0 {
-		log.Printf("waiveo-relay: persisted last-applied snapshot carried no screen_programs; every screen serves the terminal default until one is authored")
-		return
-	}
 	for _, sp := range served {
 		if sp.ScreenID == "" {
 			// An entry naming no screen cannot be served to any screen — no
 			// channel token resolves to an empty screen_id — so it is reported
 			// rather than installed where nothing could ever read it.
-			log.Printf("waiveo-relay: persisted screen_programs entry (program_revision %q) carries no screen_id; not served", sp.ProgramRevision)
+			log.Printf("waiveo-relay: screen_programs entry (program_revision %q) carries no screen_id; not served", sp.ProgramRevision)
 			continue
 		}
 		srv.SetServedProgram(generation, sp, signingKey)
@@ -1474,13 +1520,18 @@ func serveAppAuthoredPrograms(srv *playerserver.Server, generation int64, served
 //
 // A `screen_programs` entry with no screen_id is not a candidate: it names no
 // screen, so counting it would make a one-real-screen site look ambiguous.
+//
+// What is counted is DISTINCT screen ids, not entries: two entries naming the
+// same screen still describe one screen, and reading that as ambiguous would
+// cost a genuinely single-screen site its schedule attribution over a duplicate
+// in an array nothing here controls.
 func soleServedScreenID(governedNodeIDs []string, programs []wire.ScreenProgram) string {
 	if len(governedNodeIDs) != 1 {
 		return ""
 	}
 	screenID := ""
 	for _, sp := range programs {
-		if sp.ScreenID == "" {
+		if sp.ScreenID == "" || sp.ScreenID == screenID {
 			continue
 		}
 		if screenID != "" {
