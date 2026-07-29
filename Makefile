@@ -1,4 +1,4 @@
-.PHONY: dev dev-up dev-down smoke web-dev web-check web-build web-sse-check web-e2e example-pack
+.PHONY: dev dev-up dev-down dev-key smoke web-dev web-check web-build web-sse-check web-e2e example-pack
 # Repo-local run dir (git-ignored): pidfiles + the built binaries live here, so teardown
 # is exact (by PID, not `pkill -f`) and nothing lands in a shared /tmp.
 RUNDIR := $(CURDIR)/.dev
@@ -32,12 +32,26 @@ dev-up: dev-down
 	@rm -f $(RUNDIR)/feeder-store.db $(RUNDIR)/feeder-store.db-wal $(RUNDIR)/feeder-store.db-shm
 	@go build -o $(FEEDER_BIN) ./cmd/waiveo-feeder
 	@go build -o $(RELAY_BIN) ./cmd/waiveo-relay
+	@# The dev API key every HTTP probe presents. Run BEFORE the feeder starts, so
+	@# the two never write the auth database at once, and re-run every dev-up
+	@# because it is idempotent: a key that still names a live session is left
+	@# exactly as it is. See scripts/devcred's package doc.
+	@$(MAKE) --no-print-directory dev-key
 	@{ $(FEEDER_BIN) >$(RUNDIR)/feeder.log 2>&1 & echo $$! > $(RUNDIR)/feeder.pid; }
 	@# WAIVEO_RELAY_DEMO_OBSERVE drives one synthetic screen-on at boot so the demo
 	@# edge rule fires end to end (its automation.run rides the telemetry channel to
 	@# the app event log) — the live input the observability probe reads back. The
 	@# real device-state source is deferred hardware, so the dev stack synthesizes it.
 	@{ WAIVEO_RELAY_DEMO_OBSERVE=1 $(RELAY_BIN) >$(RUNDIR)/relay.log 2>&1 & echo $$! > $(RUNDIR)/relay.pid; }
+
+# Provision (or re-confirm) the local dev API key the HTTP probes present to the
+# running feeder. `dev-up` runs this for you; run it by hand when driving the
+# probes outside make, or after deleting the key file. It never prints the key —
+# only where it wrote and what that key is authorized to do. The whole story
+# (what authority, why, and where the file lives) is in ONE place:
+# scripts/devcred's package doc.
+dev-key:
+	@go run ./scripts/devkey
 
 smoke:
 	@bash scripts/dev-smoke.sh
