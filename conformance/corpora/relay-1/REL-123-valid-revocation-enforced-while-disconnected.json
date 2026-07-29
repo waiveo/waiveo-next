@@ -1,8 +1,8 @@
 {
   "case_id": "REL-123-valid-revocation-enforced-while-disconnected",
   "contract": "relay/1",
-  "req_ids": ["REL-066", "REL-123"],
-  "description": "A relay enrolled to a site applies a generation whose revocation_and_site.revoked is empty; a screen pairs against that generation's grant and pulls its program successfully. A later generation names that screen in revoked, and the relay applies it. The relay must thereafter refuse the screen's ALREADY-HELD, unexpired channel token with CHANNEL_TOKEN_REVOKED, and must refuse to issue a new channel token for that screen at all - the two decisions REL-123 names that this relay actually performs. A generation that drops the screen back out of revoked restores both, because revoked is a set the app peer restates in full rather than an append-only log. Finally, with the app peer torn down entirely and unreachable, a synced revocation is still enforced against both decisions: the relay answers from its own last-applied copy, which is REL-123's whole point.",
+  "req_ids": ["REL-055", "REL-066", "REL-123"],
+  "description": "A relay enrolled to a site applies a generation whose revocation_and_site.revoked is empty; a screen pairs against that generation's grant and pulls its program successfully. A later generation names that screen in revoked, and the relay applies it. The relay must thereafter refuse the screen's ALREADY-HELD, unexpired channel token with CHANNEL_TOKEN_REVOKED, and must refuse to issue a new channel token for that screen at all - the two decisions REL-123 names that this relay actually performs. A generation that drops the screen back out of revoked restores the ability to PAIR, because revoked is a set the app peer restates in full rather than an append-only log; it does not restore a credential minted before the revocation, which the relay dropped when it installed the set. Then, with the app peer torn down entirely and unreachable, a synced revocation is still enforced against both decisions from the relay's own last-applied copy. Finally the relay PROCESS RESTARTS while the app peer is still gone - its durable operational store closed and reopened, its player/1 server rebuilt with no in-memory state at all - and the same still-unexpired channel token must still be refused CHANNEL_TOKEN_REVOKED. That last step is the one that distinguishes a revocation the relay remembers from one it merely happened to be holding in RAM: a relay whose revoked set lives only in the running process comes back serving its persisted programs to its persisted channel tokens with nothing revoked, which is exactly what enforcement 'regardless of connectivity' forbids.",
   "input": {
     "screen_id": "$fixture_screen",
     "generations": [
@@ -40,7 +40,15 @@
       { "after_generation": 12, "probe": "program_pull", "token": "the token g2 minted" },
       { "after_generation": 13, "probe": "program_pull", "token": "the token g2 minted" },
       { "after_generation": 13, "probe": "pair", "grant_selector": "g3" }
-    ]
+    ],
+    "relay_restart": {
+      "after_generation": 13,
+      "app_peer": "still_torn_down",
+      "carried_across_the_restart": "the durable operational store alone - the same file, closed and reopened - plus the channel token the screen still holds. The player/1 server is rebuilt from nothing and never sees the generations above.",
+      "probes": [
+        { "probe": "program_pull", "token": "the token g2 minted, still held by the screen across the restart" }
+      ]
+    }
   },
   "expected": {
     "probes": [
@@ -54,6 +62,14 @@
       { "outcome": "refused", "http_status": 400, "code": "PAIRING_CODE_INVALID", "channel_token_minted": false, "screen_id_disclosed": false }
     ],
     "app_peer_reachable_during_final_two_probes": false,
-    "generations_applied": [10, 11, 12, 13]
+    "generations_applied": [10, 11, 12, 13],
+    "relay_restart": {
+      "probes": [
+        { "outcome": "refused", "http_status": 401, "code": "CHANNEL_TOKEN_REVOKED" }
+      ],
+      "revoked_read_back_from_durable_store": ["$fixture_screen"],
+      "screen_programs_read_back_from_durable_store": true,
+      "app_peer_reachable_after_restart": false
+    }
   }
 }

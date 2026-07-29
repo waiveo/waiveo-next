@@ -2,6 +2,23 @@
 
 One row per requirement ID `contracts/relay-1.md` defines. Format: `conformance/traceability/README.md`.
 
+**REL-123 scope note (read with the row below):** REL-123 names THREE
+enforcement points — player-certificate issuance, channel-token issuance, and
+per-connection credential verification. `REL-123-valid-revocation-enforced-while-disconnected`
+drives the two this relay performs: channel-token issuance
+(`internal/relay/playerserver`'s redemption path) and credential verification
+(the presented-token check on `GET /player/v1/program`), both from the relay's
+own last-synced copy — with the app peer torn down, and again across a process
+restart that carries nothing but the durable store. It asserts NOTHING about
+player-certificate issuance, because this codebase issues no player certificate:
+a redemption answers with trust anchors and a channel token, `player/1`'s own
+token-renewal route (PLY-074) is unimplemented, and there is no surface for a
+differential oracle to observe. `covered` here therefore means "the enforcement
+this relay performs is driven end to end", not "all three decisions are
+exercised". The third becomes exercisable only when player-certificate issuance
+exists; until then this row would read as a claim about behaviour with no
+implementation behind it, which is what this note exists to prevent.
+
 | req-id | contract §anchor | case-id(s) | status |
 |---|---|---|---|
 | REL-001 | `contracts/relay-1.md#versioning--transport-surface` | - | TBD-wave1 |
@@ -48,7 +65,7 @@ One row per requirement ID `contracts/relay-1.md` defines. Format: `conformance/
 | REL-052 | `contracts/relay-1.md#desired-state-pull` | `REL-056-valid-generation-apply-atomic-swap`, `REL-070-valid-generation-reapply-idempotent-noop`, `REL-051-valid-ahead-generation-full-snapshot` | covered |
 | REL-053 | `contracts/relay-1.md#desired-state-pull` | `REL-056-valid-generation-apply-atomic-swap` | covered |
 | REL-054 | `contracts/relay-1.md#desired-state-pull` | `REL-056-valid-generation-apply-atomic-swap`, `REL-071-invalid-wrong-peer-key-snapshot-rejected`, `REL-051-valid-ahead-generation-full-snapshot` | covered |
-| REL-055 | `contracts/relay-1.md#desired-state-pull` | `REL-056-valid-generation-apply-atomic-swap`, `REL-061-valid-preempt-priority-screen-program-offline` | covered |
+| REL-055 | `contracts/relay-1.md#desired-state-pull` | `REL-056-valid-generation-apply-atomic-swap`, `REL-061-valid-preempt-priority-screen-program-offline`, `REL-123-valid-revocation-enforced-while-disconnected` | covered |
 | REL-056 | `contracts/relay-1.md#desired-state-pull` | `REL-056-valid-generation-apply-atomic-swap` | covered |
 | REL-057 | `contracts/relay-1.md#desired-state-pull` | `REL-057-valid-state-changed-nudge-triggers-pull` | covered |
 | REL-060 | `contracts/relay-1.md#desired-state-snapshot-sections` | `REL-056-valid-generation-apply-atomic-swap` | covered |
@@ -97,7 +114,7 @@ One row per requirement ID `contracts/relay-1.md` defines. Format: `conformance/
 | REL-121b | `contracts/relay-1.md#player-credential-authority` | `REL-121b-invalid-second-relay-redeems-bound-grant` | covered |
 | REL-121c | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
 | REL-122 | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
-| REL-123 | `contracts/relay-1.md#player-credential-authority` | `REL-123-valid-revocation-enforced-while-disconnected` | covered |
+| REL-123 | `contracts/relay-1.md#player-credential-authority` (scope note above) | `REL-123-valid-revocation-enforced-while-disconnected` | covered |
 | REL-124 | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
 | REL-124a | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
 | REL-124b | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |

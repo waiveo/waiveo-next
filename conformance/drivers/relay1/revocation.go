@@ -1,15 +1,20 @@
 package relay1
 
 import (
+	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/maaxton/waiveo-next/conformance/drivers/corpus"
 	"github.com/maaxton/waiveo-next/conformance/drivers/report"
 	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
+	"github.com/maaxton/waiveo-next/internal/relay/desiredstate"
+	"github.com/maaxton/waiveo-next/internal/relay/identity"
 	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
@@ -46,9 +51,10 @@ import (
 
 // rel123Input decodes the corpus's generation script and probe list.
 type rel123Input struct {
-	ScreenID    string             `json:"screen_id"`
-	Generations []rel123Generation `json:"generations"`
-	Probes      []rel123Probe      `json:"probes"`
+	ScreenID     string             `json:"screen_id"`
+	Generations  []rel123Generation `json:"generations"`
+	Probes       []rel123Probe      `json:"probes"`
+	RelayRestart rel123Restart      `json:"relay_restart"`
 }
 
 // rel123Generation is one signed generation the feeder stages: its own
@@ -70,6 +76,29 @@ type rel123Probe struct {
 	GrantSelector   string `json:"grant_selector"`
 }
 
+// rel123Restart is the corpus's relay-restart stage: after the generation
+// script above, the relay PROCESS restarts with the app peer still gone, and
+// the listed probes are re-made against the rebuilt relay.
+type rel123Restart struct {
+	AfterGeneration int64         `json:"after_generation"`
+	AppPeer         string        `json:"app_peer"`
+	Probes          []rel123Probe `json:"probes"`
+}
+
+// rel123ExpectedRestart is the restart stage's oracle: the per-probe outcome,
+// what the relay read back out of durable storage to produce it, and that the
+// app peer really was still absent while it did.
+type rel123ExpectedRestart struct {
+	Probes []struct {
+		Outcome    string `json:"outcome"`
+		HTTPStatus int    `json:"http_status"`
+		Code       string `json:"code"`
+	} `json:"probes"`
+	RevokedReadBack        []string `json:"revoked_read_back_from_durable_store"`
+	ScreenProgramsReadBack bool     `json:"screen_programs_read_back_from_durable_store"`
+	AppPeerReachable       bool     `json:"app_peer_reachable_after_restart"`
+}
+
 // rel123Expected is the oracle: a per-probe outcome, plus the two whole-run
 // invariants — that the app peer really was gone for the final probes, and that
 // every staged generation actually applied (a case whose later generations were
@@ -82,8 +111,9 @@ type rel123Expected struct {
 		ChannelTokenMinted bool   `json:"channel_token_minted"`
 		ScreenIDDisclosed  bool   `json:"screen_id_disclosed"`
 	} `json:"probes"`
-	AppPeerReachableDuringFinal bool    `json:"app_peer_reachable_during_final_two_probes"`
-	GenerationsApplied          []int64 `json:"generations_applied"`
+	AppPeerReachableDuringFinal bool                  `json:"app_peer_reachable_during_final_two_probes"`
+	GenerationsApplied          []int64               `json:"generations_applied"`
+	RelayRestart                rel123ExpectedRestart `json:"relay_restart"`
 }
 
 // rel123GrantTTL is how long each staged pairing grant lives. Comfortably
@@ -130,29 +160,40 @@ func driveREL123(rep *report.Report, client RelayClient, feeder Feeder, cases ma
 	// the shared feeder down would break every stage that ran after it.
 	defer feeder.SetAppPeerReachable(true)
 
-	store, err := enrolledStore(client, feeder)
+	// A FILE-backed store, not the in-memory one every other stage opens: this
+	// case restarts the relay, and a restart whose durable state never reached a
+	// file is not a restart at all. The directory is this run's own and is
+	// removed with it.
+	dir, err := os.MkdirTemp("", "relay1-rel123-")
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("create store dir: %v", err))
+		return
+	}
+	defer os.RemoveAll(dir)
+	dbPath := filepath.Join(dir, "relay.db")
+
+	store, err := enrolledStoreAt(client, feeder, dbPath)
 	if err != nil {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("enroll relay: %v", err))
 		return
 	}
-	defer store.Close()
+	storeOpen := true
+	defer func() {
+		if storeOpen {
+			_ = store.Close()
+		}
+	}()
 	relayID, ok, err := store.Identity()
 	if err != nil || !ok {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("read relay identity: ok=%v err=%v", ok, err))
 		return
 	}
 
-	srv, err := playerserver.NewServer(relayID.CertPEM, nil, playerserver.WallClockMs)
+	srv, ts, err := rel123PlayerServer(relayID.CertPEM, relayID.PrivateKey, store)
 	if err != nil {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("build player/1 server: %v", err))
 		return
 	}
-	// The relay's own Lease-signing identity (PLY-090) — a program pull that
-	// succeeds has to produce a signed Lease, not a 500.
-	srv.SetSigningKey(relayID.PrivateKey)
-	mux := http.NewServeMux()
-	srv.Register(mux)
-	ts := httptest.NewServer(apihttp.WithTraceID(mux))
 	defer ts.Close()
 
 	var diffs []report.Diff
@@ -190,7 +231,10 @@ func driveREL123(rep *report.Report, client RelayClient, feeder Feeder, cases ma
 		// survived the signed wire and the verify chain. Reading the corpus
 		// value here instead would make the case pass against an implementation
 		// that dropped the field on the floor.
-		srv.SetRevokedScreens(got.Generation, got.Revoked)
+		if err := srv.SetRevokedScreens(got.Generation, got.Revoked); err != nil {
+			rep.Fail(c.CaseID, contract, fmt.Sprintf("install generation %d's revocation view: %v", got.Generation, err), diffs...)
+			return
+		}
 		srv.SetPairingGrants(got.Generation, got.PairingGrants)
 		for _, sp := range got.ScreenPrograms {
 			srv.SetServedProgram(got.Generation, sp)
@@ -281,6 +325,24 @@ func driveREL123(rep *report.Report, client RelayClient, feeder Feeder, cases ma
 		diffs = append(diffs, report.Diff{Field: "app_peer_reachable_during_final_two_probes", Expected: false, Actual: true})
 	}
 
+	// ---- the relay restarts, with the app peer still gone ----
+	//
+	// Everything above proves connection-down / process-UP. This stage is what
+	// separates a revocation the relay REMEMBERS from one it merely happened to
+	// be holding in RAM: a relay whose revoked set lives only in the running
+	// process comes back after a reboot serving its persisted programs to its
+	// persisted channel tokens with nothing revoked, and stays that way until a
+	// pull it cannot make restates the set.
+	// rel123Restarted takes ownership of the store — it closes it to restart —
+	// so the outer defer must stand down BEFORE the call, not after it: a
+	// failure inside would otherwise leave the handle to be closed twice or not
+	// at all, depending on where it stopped.
+	storeOpen = false
+	if reason := rel123Restarted(client, feeder, store, dbPath, relayID, token, applied, in.RelayRestart, exp.RelayRestart, &diffs); reason != "" {
+		rep.Fail(c.CaseID, contract, reason, diffs...)
+		return
+	}
+
 	if len(diffs) > 0 {
 		rep.Fail(c.CaseID, contract, "revocation enforcement diverged", diffs...)
 		return
@@ -290,7 +352,167 @@ func driveREL123(rep *report.Report, client RelayClient, feeder Feeder, cases ma
 		"relay_id / grant relay binding (REL-121c): runtime-issued by the live feeder's own enrollment, so each grant is bound to THIS run's relay identity rather than to a frozen value.",
 		"issued_at: the run's own clock; a frozen instant would make every grant's ttl depend on when the corpus was written.",
 		"channel_token: an opaque value player/1 gives no grammar; asserted present/absent and re-presented, never byte-equal.",
-		"player-certificate issuance, the third decision REL-123 names, is not asserted: this relay issues no player certificate, so there is no behavior to observe.")
+		"player-certificate issuance, the third decision REL-123 names, is not asserted: this relay issues no player certificate, so there is no behavior to observe.",
+		"the restart stage re-probes only the presented-token decision, not issuance: a relay booting with no app peer has no pairing_grants at all (`pairing_grants` is a live section, not durable state), so a refused pairing attempt there would be attributable to the absent grant rather than to the revocation — an assertion that would pass whatever the relay does about `revoked`.")
+}
+
+// rel123PlayerServer builds one player/1 server over store and mounts it on a
+// live HTTPS-free httptest listener — the same construction the driver uses for
+// the first relay process and for the restarted one, so the restarted relay is
+// assembled exactly like the original rather than like a convenient stub.
+//
+// The durable session tier is wired (EnablePersistence), because that is what
+// cmd/waiveo-relay's own boot does and what makes a channel token minted before
+// a restart resolvable after one. Without it the restart stage would find the
+// token simply unknown, and its refusal would say nothing about `revoked`.
+func rel123PlayerServer(certPEM []byte, priv ed25519.PrivateKey, store *identity.Store) (*playerserver.Server, *httptest.Server, error) {
+	srv, err := playerserver.NewServer(certPEM, nil, playerserver.WallClockMs)
+	if err != nil {
+		return nil, nil, err
+	}
+	// The relay's own Lease-signing identity (PLY-090) — a program pull that
+	// succeeds has to produce a signed Lease, not a 500.
+	srv.SetSigningKey(priv)
+	srv.EnablePersistence(store)
+	mux := http.NewServeMux()
+	srv.Register(mux)
+	return srv, httptest.NewServer(apihttp.WithTraceID(mux)), nil
+}
+
+// rel123Restarted drives the corpus's relay-restart stage: it closes the
+// durable store as a process exit would, reopens the SAME file, rebuilds the
+// player/1 server from nothing, and installs the serving state that boot reads
+// out of durable storage — the relay's persisted screen_programs
+// (desiredstate.ServedProgram) and the persisted revocation set
+// (desiredstate.ServedRevocation), which is precisely the pair
+// cmd/waiveo-relay's own offline boot installs. Then it re-probes.
+//
+// It returns a non-empty reason when the stage could not be driven at all;
+// probe divergences are appended to diffs instead. It takes ownership of store
+// (it closes it to restart), so the caller must not close it again.
+func rel123Restarted(
+	client RelayClient,
+	feeder Feeder,
+	store *identity.Store,
+	dbPath string,
+	relayID identity.RelayIdentity,
+	token string,
+	applied []int64,
+	in rel123Restart,
+	exp rel123ExpectedRestart,
+	diffs *[]report.Diff,
+) string {
+	// The corpus says WHEN the relay restarts. It has to be after the last
+	// generation the script applied, or the stage would be probing a relay whose
+	// durable row is not the one the probes above were written against.
+	if len(applied) == 0 || in.AfterGeneration != applied[len(applied)-1] {
+		return fmt.Sprintf("relay_restart.after_generation is %d but the script's last applied generation was %v", in.AfterGeneration, applied)
+	}
+	if in.AppPeer == "connected" {
+		return fmt.Sprintf("relay_restart.app_peer is %q — this stage exists to probe a relay with no app peer at all", in.AppPeer)
+	}
+
+	if err := store.Close(); err != nil {
+		return fmt.Sprintf("close the durable store to restart the relay: %v", err)
+	}
+	reopened, err := identity.Open(dbPath)
+	if err != nil {
+		return fmt.Sprintf("reopen the durable store after the restart: %v", err)
+	}
+	defer reopened.Close()
+
+	// Prove the outage still holds rather than assume it carried over from
+	// before the restart — the same discipline the generation loop applies. A
+	// reopened store dials with the same persisted identity, so if the app peer
+	// had come back up this pull would succeed and every probe below would be
+	// an ordinary connected one wearing an offline label.
+	if _, err := client.Pull(feeder.EnrollBaseURL(), reopened); err == nil {
+		*diffs = append(*diffs, report.Diff{Field: "relay_restart.app_peer_reachable_after_restart", Expected: false, Actual: "a pull still succeeded — the app peer was not actually down"})
+	}
+
+	// What the restarted relay knows, and the ONLY thing it knows: whatever the
+	// durable row holds. Read here rather than inferred from the wire answer
+	// below, because the two can diverge — a refusal could be right for the
+	// wrong reason (a token the relay simply lost), and this pins that the
+	// revocation itself came back.
+	revoked, err := desiredstate.ServedRevocation(reopened)
+	if err != nil {
+		return fmt.Sprintf("read the persisted revocation set after the restart: %v", err)
+	}
+	wantRevoked, err := rel123Revoked(exp.RevokedReadBack, snapshot.FixtureScreenID)
+	if err != nil {
+		return fmt.Sprintf("expected.relay_restart: %v", err)
+	}
+	if !equalStrings(revoked, wantRevoked) {
+		*diffs = append(*diffs, report.Diff{Field: "relay_restart.revoked_read_back_from_durable_store", Expected: wantRevoked, Actual: revoked})
+	}
+
+	served, err := desiredstate.ServedProgram(reopened)
+	if err != nil {
+		return fmt.Sprintf("read the persisted screen_programs after the restart: %v", err)
+	}
+	// The vacuity guard: a relay that came back with NOTHING would refuse every
+	// probe below for reasons having nothing to do with `revoked`.
+	if gotPrograms := len(served) > 0; gotPrograms != exp.ScreenProgramsReadBack {
+		*diffs = append(*diffs, report.Diff{Field: "relay_restart.screen_programs_read_back_from_durable_store", Expected: exp.ScreenProgramsReadBack, Actual: gotPrograms})
+	}
+
+	srv, ts, err := rel123PlayerServer(relayID.CertPEM, relayID.PrivateKey, reopened)
+	if err != nil {
+		return fmt.Sprintf("rebuild the player/1 server after the restart: %v", err)
+	}
+	defer ts.Close()
+
+	// The boot install, in the order cmd/waiveo-relay installs it: the
+	// revocation view first, so there is no instant at which a revoked screen
+	// could pull the program the same generation carries.
+	if err := srv.SetRevokedScreens(0, revoked); err != nil {
+		return fmt.Sprintf("install the persisted revocation view after the restart: %v", err)
+	}
+	for _, sp := range served {
+		srv.SetServedProgram(0, sp)
+	}
+
+	if len(in.Probes) != len(exp.Probes) {
+		return fmt.Sprintf("relay_restart: %d probes declared but %d expected outcomes", len(in.Probes), len(exp.Probes))
+	}
+	for i, p := range in.Probes {
+		want := exp.Probes[i]
+		if p.Probe != "program_pull" {
+			return fmt.Sprintf("relay_restart.probes[%d]: unsupported probe kind %q — a relay booting offline holds no pairing grant, so only the presented-token decision is observable here", i, p.Probe)
+		}
+		if token == "" {
+			return fmt.Sprintf("relay_restart.probes[%d]: no channel token held across the restart", i)
+		}
+		status, code, err := getProgram(ts.URL, token)
+		if err != nil {
+			return fmt.Sprintf("relay_restart.probes[%d]: GET /player/v1/program: %v", i, err)
+		}
+		if status != want.HTTPStatus {
+			*diffs = append(*diffs, report.Diff{Field: fmt.Sprintf("relay_restart.probes[%d] status", i), Expected: want.HTTPStatus, Actual: status})
+		}
+		if code != want.Code {
+			*diffs = append(*diffs, report.Diff{Field: fmt.Sprintf("relay_restart.probes[%d].code", i), Expected: want.Code, Actual: code})
+		}
+	}
+
+	if exp.AppPeerReachable {
+		*diffs = append(*diffs, report.Diff{Field: "relay_restart.app_peer_reachable_after_restart", Expected: false, Actual: true})
+	}
+	return ""
+}
+
+// equalStrings reports whether two string lists match element for element.
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // rel123Revoked resolves the corpus's `revoked` entries against this run's own

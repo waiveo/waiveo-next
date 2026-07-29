@@ -491,7 +491,7 @@ func drivePLY136(rep *report.Report, cases map[string]corpus.Case) {
 		return
 	}
 	rep.Pass(c.CaseID, contract,
-		"driven via virtualplayer.ReconnectDecision directly — the exact, committed, network-free credential-clearing decision (PLY-072/073/133/135/136); the live wire round-trip (a real relay-side revocation via RevokeScreen, surfaced through Session.PullProgram as CHANNEL_TOKEN_REVOKED) is exercised end to end in internal/virtualplayer/revocation_test.go's TestReconnectRevokedClearsTokenOnlyEndToEnd, reusing this same function.")
+		"driven via virtualplayer.ReconnectDecision directly — the exact, committed, network-free credential-clearing decision (PLY-072/073/133/135/136); the live wire round-trip (a real relay-side revocation via SetRevokedScreens, surfaced through Session.PullProgram as CHANNEL_TOKEN_REVOKED) is exercised end to end in internal/virtualplayer/revocation_test.go's TestReconnectRevokedClearsTokenOnlyEndToEnd, reusing this same function.")
 }
 
 // ply155Input mirrors conformance/corpora/player-1/

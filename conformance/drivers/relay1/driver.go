@@ -569,7 +569,14 @@ func driveREL071(rep *report.Report, client RelayClient, feeder Feeder, cases ma
 // the feeder — the precondition for any desired-state pull (the store must
 // hold the enrollment-anchored verification key).
 func enrolledStore(client RelayClient, feeder Feeder) (*identity.Store, error) {
-	store, err := identity.Open(":memory:")
+	return enrolledStoreAt(client, feeder, ":memory:")
+}
+
+// enrolledStoreAt is enrolledStore over a caller-chosen store path — what a
+// stage that RESTARTS the relay needs, since a restart carries nothing but the
+// on-disk file, and an in-memory store carries nothing across one at all.
+func enrolledStoreAt(client RelayClient, feeder Feeder, path string) (*identity.Store, error) {
+	store, err := identity.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open identity store: %w", err)
 	}
