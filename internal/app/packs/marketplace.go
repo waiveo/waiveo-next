@@ -458,7 +458,7 @@ func (in *Installer) InstallRef(ctx context.Context, ref Ref) (Result, error) {
 		return Result{}, err
 	}
 
-	res, err := in.market.resolve(ctx, ref, in.channelMarkReader(ctx))
+	res, err := in.market.resolve(ctx, ref, in.channelMarkReader(ctx), withArtifact)
 	if err != nil {
 		return Result{}, err
 	}
@@ -496,7 +496,20 @@ func (in *Installer) channelMarkReader(ctx context.Context) func(packID, channel
 // into "try the next source": silently falling through would let a second source
 // satisfy a request the first one refused for a security reason, which is the
 // source-order-as-trust behaviour MKT-061 forbids.
-func (m *Market) resolve(ctx context.Context, ref Ref, markOf func(packID, channel string) (string, bool, error)) (resolution, error) {
+// fetchMode says whether a resolution downloads the artifact bytes or stops at
+// the verified entry. entryOnly exists for the update state machine's own
+// question — "is the version currently applied still resolvable, or has its
+// entry been yanked?" — which is answered entirely by the entry and its
+// resolution-time checks. Downloading bytes to answer it would be pure waste on
+// the one path that runs on every update check.
+type fetchMode bool
+
+const (
+	withArtifact fetchMode = true
+	entryOnly    fetchMode = false
+)
+
+func (m *Market) resolve(ctx context.Context, ref Ref, markOf func(packID, channel string) (string, bool, error), mode fetchMode) (resolution, error) {
 	sources := m.sources
 	if ref.Source != "" {
 		var picked []Source
@@ -528,7 +541,7 @@ func (m *Market) resolve(ctx context.Context, ref Ref, markOf func(packID, chann
 				"registry source %q is not authorized to serve the reserved publisher namespace %q (marketplace/1 MKT-062)", src.ID, ns)
 			continue
 		}
-		res, err := m.resolveFrom(ctx, src, ref, markOf)
+		res, err := m.resolveFrom(ctx, src, ref, markOf, mode)
 		if err == nil {
 			return res, nil
 		}
@@ -559,7 +572,7 @@ func isSourceMiss(code string) bool { return sourceMissCodes[code] }
 // resolveFrom resolves ref against one source: fetch the index, select the
 // entry, apply every resolution-time check, then fetch and integrity-check the
 // artifact bytes.
-func (m *Market) resolveFrom(ctx context.Context, src Source, ref Ref, markOf func(packID, channel string) (string, bool, error)) (resolution, error) {
+func (m *Market) resolveFrom(ctx context.Context, src Source, ref Ref, markOf func(packID, channel string) (string, bool, error), mode fetchMode) (resolution, error) {
 	doc, err := m.fetchIndex(ctx, src)
 	if err != nil {
 		return resolution{}, err
@@ -604,6 +617,9 @@ func (m *Market) resolveFrom(ctx context.Context, src Source, ref Ref, markOf fu
 	entry, err := selectEntry(doc, ref.PackID, version, viaPointer, m.nowMs(), src.ID)
 	if err != nil {
 		return resolution{}, err
+	}
+	if mode == entryOnly {
+		return resolution{source: src, entry: entry, viaPointer: viaPointer}, nil
 	}
 
 	artifact, err := m.fetchArtifact(ctx, src, entry)

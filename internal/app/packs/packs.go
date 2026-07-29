@@ -237,6 +237,20 @@ type provenance struct {
 // install record. A resolution supplies extra expectations (prov); it never
 // supplies extra trust.
 func (in *Installer) install(ctx context.Context, artifact []byte, prov *provenance) (Result, error) {
+	return in.installWith(ctx, artifact, prov, "")
+}
+
+// installExpecting is install under a compare-and-swap on the version being
+// replaced: the pack row MUST still carry expectPriorVersion when the install
+// transaction commits. The revert path (update.go) is its only caller — its
+// premise ("the applied version has been yanked") is established from a read
+// taken outside the write lock, and this is what re-asserts that premise inside
+// the transaction instead of trusting it to still hold.
+func (in *Installer) installExpecting(ctx context.Context, artifact []byte, prov *provenance, expectPriorVersion string) (Result, error) {
+	return in.installWith(ctx, artifact, prov, expectPriorVersion)
+}
+
+func (in *Installer) installWith(ctx context.Context, artifact []byte, prov *provenance, expectPriorVersion string) (Result, error) {
 	bundle, err := ReadBundle(artifact, in.limits)
 	if err != nil {
 		return Result{}, err
@@ -325,12 +339,13 @@ func (in *Installer) install(ctx context.Context, artifact []byte, prov *provena
 	}
 
 	spec := store.PackInstall{
-		ID:               m.ID,
-		Version:          m.Version,
-		DataModelVersion: m.DataModel.Version,
-		Manifest:         append(json.RawMessage(nil), manifestBytes...),
-		Files:            files,
-		Record:           installRecord(m.Version, env, prov),
+		ID:                 m.ID,
+		Version:            m.Version,
+		DataModelVersion:   m.DataModel.Version,
+		Manifest:           append(json.RawMessage(nil), manifestBytes...),
+		Files:              files,
+		Record:             installRecord(m.Version, env, prov),
+		ExpectPriorVersion: expectPriorVersion,
 	}
 	// A registry-mediated install raises the (pack, trust channel) high-water
 	// mark MKT-050's anti-rollback reads — in the install transaction, so a
@@ -364,6 +379,17 @@ func (in *Installer) install(ctx context.Context, artifact []byte, prov *provena
 			return Result{}, artifactErr("POINTER_ROLLBACK_REJECTED",
 				"the %s channel pointer for %s names version %s, which is no longer above the resolved-version high-water mark for that pair (marketplace/1 MKT-050)",
 				prov.TrustChannel, m.ID, m.Version)
+		}
+		// MKT-093b: the required-pack floor, asserted in the same transaction and
+		// therefore reachable from EVERY install path — a pointer resolution, an
+		// explicit version pin, a direct upload, and a revert alike.
+		if ferr := requiredFloorRefusal(err); ferr != err {
+			return Result{}, ferr
+		}
+		// The revert's compare-and-swap: the row it meant to replace moved (or
+		// vanished) before this transaction committed.
+		if errors.Is(err, store.ErrPriorVersionChanged) {
+			return Result{}, priorVersionChangedRefusal(m.ID, expectPriorVersion)
 		}
 		return Result{}, err
 	}
