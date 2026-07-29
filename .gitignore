@@ -54,6 +54,13 @@ web/.last-run.json
 # PUBLIC material only but is machine-local provisioning, not source.
 .dev/pack-publisher/
 .dev/pack-trust/
+# The local dev API key the HTTP probes present (scripts/devkey writes it,
+# scripts/devcred reads it). Its home is .dev/feeder-auth/, already ignored
+# twice over above — this bare-filename rule additionally catches it wherever
+# WAIVEO_DEV_API_KEY_FILE points, including the repo root. It is a LIVE bearer
+# credential holding `admin`, so the rule is deliberately broader than the file's
+# default location.
+dev-api-key
 
 # graphify (local knowledge graph, on-demand dev tooling)
 graphify-out/
