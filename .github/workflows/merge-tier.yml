@@ -24,6 +24,8 @@ jobs:
       - run: node scripts/validate-coverage.mjs
       - name: api/1 — `mcp:` operation-tag curation (API-070/071/072)
         run: node scripts/validate-mcp-tags.mjs
+      - name: every published error code is implemented or explained
+        run: node scripts/validate-error-codes.mjs
       - run: node scripts/check-public-hygiene.mjs
       - name: ui-schema/1 — automation-builder fixture-lint
         run: node conformance/fixtures/fixture-lint.mjs
@@ -50,6 +52,8 @@ jobs:
           git diff --exit-code -- api/gen/go
           go build ./...
           go vet ./...
+      - name: no new unreachable Go code
+        run: node scripts/validate-deadcode.mjs
       - name: Go unit tests (incl. internal/virtualplayer's software first-photon)
         run: go test ./...
       # conformance suites append here as they exist

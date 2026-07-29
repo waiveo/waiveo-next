@@ -22,6 +22,10 @@ jobs:
           node scripts/check-public-hygiene.mjs 2>&1 | tee -a lane.log
           node scripts/validate-coverage.mjs 2>&1 | tee -a lane.log
           node scripts/validate-mcp-tags.mjs 2>&1 | tee -a lane.log
+          # Node-only, like the four above. The unreachable-code gate is not here:
+          # it needs the Go toolchain this lane does not set up, and it already
+          # runs on every PR and every merge.
+          node scripts/validate-error-codes.mjs 2>&1 | tee -a lane.log
       - if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
