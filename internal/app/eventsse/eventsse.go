@@ -265,42 +265,20 @@ func (h *Hub) after(id string) []events.Envelope {
 // not-yet-delivered tail, plus a buffer_exceeded gap frame when events past
 // lastID have aged out of retention before this drain (a mid-stream slow-consumer
 // drop, EVT-142/143). Both are computed under ONE lock hold so they are a
-// consistent snapshot. This is the live-loop analogue of Resolve's connect-time
+// consistent snapshot — the gap's to_id equals the first retained id the tail
+// then delivers. This is the live-loop analogue of Resolve's connect-time
 // retention_expired gap: a discontinuity is always marked, never silently a
 // truncated tail with a bare id jump. On an unbounded (or not-lagged) log there
 // is no eviction past lastID, so gap is nil and this is a plain tail read.
-//
-// visible is the subscriber's own visible set (EVT-120) — the SAME predicate the
-// connect-time resume was resolved against (filter.Visible), and for the same
-// reason. The gap's to_id is the id THIS subscriber's delivery resumes at, so it
-// is resolved over the visible tail (events.FirstVisibleID), never over the whole
-// log. The whole-log answer names the oldest retained id above lastID whoever is
-// asking, which on a shared log is routinely an event this subscriber may not
-// read — a marker reporting the existence, and (a ULID being time-ordered) the
-// approximate instant, of an event outside its visible set. That is the probe
-// EVT-122 forbids against scope nodes and EVT-134a forbids against ids, and
-// events.Resolve's own doc marks whole-log resolution as being for a caller that
-// IS the platform (the webhook delivery cursor — the platform's record of what IT
-// delivered, not a value any principal supplied). A subscriber-facing frame is
-// the opposite case.
-//
-// With eviction past lastID but NOTHING VISIBLE retained above it there is no id
-// this subscriber's delivery can resume at, so the marker is HELD rather than
-// dropped or emitted with an unreadable to_id: nothing is delivered and lastID
-// does not advance, so the next wake that has something visible to resume at
-// emits the gap ahead of it. A marker that lands before anything crosses the
-// discontinuity is not silent loss (EVT-143); a marker naming an unreadable id
-// would be a disclosure.
-func (h *Hub) drain(lastID string, visible func(events.Envelope) bool) (*events.GapFrame, []events.Envelope) {
+func (h *Hub) drain(lastID string) (*events.GapFrame, []events.Envelope) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	tail := h.log.After(lastID)
 	if h.log.EvictedAfter(lastID) {
-		to := events.FirstVisibleID(tail, visible)
-		if to == "" {
-			return nil, nil
-		}
-		g := events.BufferExceededGap(lastID, to)
+		// The subscriber's own last-delivered point (and undelivered events after
+		// it) aged out: mark the loss and resume AT the oldest retained id above
+		// that point, which is exactly where After(lastID) picks the tail up.
+		g := events.BufferExceededGap(lastID, h.log.OldestRetainedAfter(lastID))
 		return &g, tail
 	}
 	return nil, tail
@@ -661,11 +639,7 @@ func (s *server) deliverBacklog(sk sink, sub *Subscription, outcome events.Resum
 // EVT-123's boundary is applied per event here, at delivery time — never
 // delegated to whatever the subscriber's own selector claimed.
 func (s *server) drainOnce(sk sink, lastID string, filter events.Filter) (string, error) {
-	// filter.Visible, not the whole filter: the gap's resume point is bounded by
-	// what this subscriber may SEE (EVT-120), never narrowed by the selector or
-	// schemas restriction it chose for itself (EVT-121/124) — the same split
-	// open() applies when it resolves the connect-time resume.
-	gap, tail := s.hub.drain(lastID, filter.Visible)
+	gap, tail := s.hub.drain(lastID)
 	if gap != nil {
 		if err := sk.gap(*gap); err != nil {
 			return lastID, err

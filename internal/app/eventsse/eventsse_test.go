@@ -31,7 +31,6 @@ var (
 	idB = idPrefix + "Y6"
 	idC = idPrefix + "Y7"
 	idD = idPrefix + "Y8"
-	idE = idPrefix + "Y9"
 )
 
 // ulidSeq mints deterministic, ascending, valid 26-char ULIDs (the idPrefix plus
@@ -566,7 +565,7 @@ func TestHub_LiveDrainMarksBufferExceededGapOnRetentionDrop(t *testing.T) {
 	}
 
 	// drain is exactly what the live loop runs on that wake.
-	gap, tail := hub.drain(lastID, everythingVisible)
+	gap, tail := hub.drain(lastID)
 
 	if gap == nil {
 		t.Fatal("a mid-stream retention drop (idB appended then aged out before delivery) MUST emit a buffer_exceeded gap, never a silent truncation (EVT-142/143)")
@@ -599,7 +598,7 @@ func TestHub_LiveDrainNoGapWhenCaughtUp(t *testing.T) {
 	hub.Append(autoEnv(idB))
 	hub.Append(autoEnv(idC)) // retained [idB idC]; only idA aged out
 
-	gap, tail := hub.drain(idB, everythingVisible) // subscriber last saw idB, which is still retained
+	gap, tail := hub.drain(idB) // subscriber last saw idB, which is still retained
 	if gap != nil {
 		t.Fatalf("a subscriber caught up to a still-retained id must NOT get a spurious gap; got %+v", *gap)
 	}
@@ -652,107 +651,5 @@ func TestHub_CloseEndsLiveSubscribers(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatalf("Hub.Close must end a blocked subscriber's live loop; the stream hung")
-	}
-}
-
-// TestHub_LiveDrainGapResumesAtAVisibleID is the mid-stream half of EVT-134a's
-// rule, and the regression for a gap marker that named an id its own recipient
-// could not read.
-//
-// A mid-stream buffer_exceeded gap says "delivery resumes at to_id". Resolved
-// over the whole log, to_id is the oldest retained id above the subscriber's
-// point WHOEVER IS ASKING — on a shared log routinely an event placed outside
-// that subscriber's visible set. Handing it over discloses that the event exists
-// and (a ULID being time-ordered) roughly when it was recorded, which is exactly
-// what the connect-time path refuses to disclose: events.Resolve's own doc marks
-// whole-log resolution as being for a caller that IS the platform — the webhook
-// delivery cursor, the platform's record of what IT delivered — and requires a
-// subscriber-facing binding to resolve against the subscriber's visible set.
-//
-// Delivery already honoured the boundary; only the MARKER did not.
-func TestHub_LiveDrainGapResumesAtAVisibleID(t *testing.T) {
-	const otherScope = "01J8Z2Q1M8H8N4T0V1W2X3Y4Z9"
-
-	// A subscriber that may read siteScope alone — the ordinary case, not a
-	// contrived one: a scope-node binding below the root is what every non-owner
-	// principal holds.
-	visible := func(env events.Envelope) bool { return env.ScopeNode == siteScope }
-	otherEnv := func(id string) events.Envelope {
-		env := autoEnv(id)
-		env.ScopeNode = otherScope
-		return env
-	}
-
-	log := events.NewEventLog(2)
-	hub := NewHub(log)
-
-	hub.Append(autoEnv(idA)) // delivered; the subscriber's watermark
-	hub.Append(autoEnv(idB)) // appended then aged out before delivery — the real loss
-	hub.Append(otherEnv(idC))
-	hub.Append(autoEnv(idD)) // retained [idC idD]; idC is NOT this subscriber's to read
-
-	gap, tail := hub.drain(idA, visible)
-	if gap == nil {
-		t.Fatal("a mid-stream drop past the subscriber's point MUST be marked (EVT-142/143)")
-	}
-	if gap.ToID == idC {
-		t.Fatalf("the gap resumed at %s, an event placed outside this subscriber's visible set — "+
-			"the marker disclosed an event the subscriber may not read (EVT-120/122/134a)", idC)
-	}
-	if gap.ToID != idD {
-		t.Fatalf("gap to_id = %q, want the oldest retained id this subscriber may see (%s)", gap.ToID, idD)
-	}
-	// The tail is unchanged: delivery still walks every retained envelope and
-	// applies the boundary per event (EVT-123). Scoping the MARKER is not
-	// permission to pre-filter the stream, which would leave the watermark behind
-	// events the live loop had already considered.
-	if len(tail) != 2 || tail[0].ID != idC || tail[1].ID != idD {
-		t.Fatalf("drain must still return the whole retained tail for per-event filtering; got %v", ids(tail))
-	}
-}
-
-// TestHub_LiveDrainHoldsAGapItCannotNameAVisibleResumePointFor: eviction past the
-// subscriber's point, with nothing it may read retained above that point. There
-// is no id its delivery can resume at, so the marker is HELD — not emitted with
-// an id from outside its visible set, and not dropped. Nothing is delivered and
-// the watermark does not advance, so the gap still precedes the first thing that
-// crosses it once there is something visible to resume at (EVT-143).
-func TestHub_LiveDrainHoldsAGapItCannotNameAVisibleResumePointFor(t *testing.T) {
-	const otherScope = "01J8Z2Q1M8H8N4T0V1W2X3Y4Z9"
-	visible := func(env events.Envelope) bool { return env.ScopeNode == siteScope }
-	otherEnv := func(id string) events.Envelope {
-		env := autoEnv(id)
-		env.ScopeNode = otherScope
-		return env
-	}
-
-	log := events.NewEventLog(2)
-	hub := NewHub(log)
-
-	hub.Append(autoEnv(idA))
-	hub.Append(autoEnv(idB))  // aged out before delivery
-	hub.Append(otherEnv(idC)) // retained, unreadable by this subscriber
-	hub.Append(otherEnv(idD)) // retained, unreadable by this subscriber
-
-	gap, tail := hub.drain(idA, visible)
-	if gap != nil {
-		t.Fatalf("with nothing visible retained above the subscriber's point there is no id its delivery can resume at; got a marker naming %q", gap.ToID)
-	}
-	if len(tail) != 0 {
-		t.Fatalf("holding the marker must deliver nothing and leave the watermark put; got %v", ids(tail))
-	}
-
-	// A later event the subscriber MAY read gives the marker a resume point, and
-	// it is emitted then — ahead of that event, never after it.
-	hub.Append(autoEnv(idE))
-	gap, tail = hub.drain(idA, visible)
-	if gap == nil {
-		t.Fatal("once there is a visible resume point the held marker MUST be emitted (EVT-143)")
-	}
-	if gap.ToID != idE {
-		t.Fatalf("gap to_id = %q, want %s", gap.ToID, idE)
-	}
-	if len(tail) == 0 || tail[len(tail)-1].ID != idE {
-		t.Fatalf("the tail must carry the visible event the gap resumes at; got %v", ids(tail))
 	}
 }

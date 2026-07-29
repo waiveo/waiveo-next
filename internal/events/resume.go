@@ -227,28 +227,7 @@ func ResolveVisible(log Log, resumeFrom string, visible func(Envelope) bool) (Re
 // asking the substrate, because the substrate's own answer knows nothing about
 // which principal is asking.
 func oldestVisibleAfter(log Log, id string, visible func(Envelope) bool) string {
-	return FirstVisibleID(log.After(id), visible)
-}
-
-// FirstVisibleID is the id of the earliest envelope in batch (which is in id
-// order) that visible admits, "" when it admits none — the resume point a gap
-// marker may name for the subscriber visible describes.
-//
-// It is exported for the MID-STREAM gap, which is resolved by the live transport
-// against a tail it has already read rather than by a resume, and which needs the
-// identical answer: a marker naming an id outside the subscriber's visible set
-// reports the existence of an event that subscriber may not read, which is the
-// probe EVT-122 forbids against scope nodes and EVT-134a forbids against ids.
-// One definition serves both so the connect-time and mid-stream gaps cannot come
-// to different conclusions about what a subscriber may be told.
-//
-// A nil visible predicate admits nothing: an unresolvable visible set is the
-// empty one, never the universal one (SEC-005, matching ResolveVisible).
-func FirstVisibleID(batch []Envelope, visible func(Envelope) bool) string {
-	if visible == nil {
-		return ""
-	}
-	for _, env := range batch {
+	for _, env := range log.After(id) {
 		if visible(env) {
 			return env.ID
 		}
