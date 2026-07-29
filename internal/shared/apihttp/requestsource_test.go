@@ -1,10 +1,26 @@
 package apihttp
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
+
+// peerRemoteAddr renders a RemoteAddr the way net/http actually produces one:
+// from net.TCPAddr.String(), which is what the server assigns from the accepted
+// connection's peer address. It is used instead of a hand-written string
+// literal because the zone suffix on a link-local peer is EXACTLY the detail a
+// literal is likely to omit — and omitting it is what let the /64 reduction
+// silently not run for every link-local source.
+func peerRemoteAddr(ip, zone string, port int) string {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		panic("peerRemoteAddr: bad fixture ip " + ip)
+	}
+	return (&net.TCPAddr{IP: parsed, Zone: zone, Port: port}).String()
+}
 
 // requestFrom builds a request whose RemoteAddr is remoteAddr — the only input
 // RequestSource is allowed to read (a client-supplied X-Forwarded-For would let
@@ -43,6 +59,62 @@ func TestRequestSourceKeysIPv6OnItsPrefix(t *testing.T) {
 	// back into a shared one an unrelated caller can exhaust for everybody.
 	if got := RequestSource(requestFrom("[2001:db8:0:2::1]:40000")); got == want {
 		t.Errorf("RequestSource of a different /64 = %q, want != %q — separate allocations must not share a budget", got, want)
+	}
+}
+
+// TestRequestSourceKeysAZonedLinkLocalSourceOnItsPrefix is the same keying
+// property as above for the source form that actually reaches this function on
+// a dual-stack listener, and the one the property did NOT hold for.
+//
+// net/http fills RemoteAddr from net.TCPAddr.String(), which appends "%zone"
+// for every link-local IPv6 peer. net.ParseIP returns nil for a zoned address,
+// so a zoned source fell through to the raw-string branch, the /64 mask never
+// applied, and one on-link host minted an unbounded number of distinct budget
+// keys by choosing interface identifiers inside its own fe80::/64 — no router,
+// no RA, no DHCP lease, against a budget that read as enforced everywhere it
+// was described.
+//
+// The addresses here are driven through the REAL helper as whole RemoteAddr
+// values, not as bare hosts: the bug lived in the seam between the port split
+// and the parse, and a unit test on a bare address string is what missed it.
+func TestRequestSourceKeysAZonedLinkLocalSourceOnItsPrefix(t *testing.T) {
+	// Guard the fixture itself. If net.TCPAddr ever stopped rendering the zone,
+	// every assertion below would still pass while testing nothing — the test
+	// would have quietly stopped exercising zoned sources at all.
+	if addr := peerRemoteAddr("fe80::1", "en0", 40000); !strings.Contains(addr, "%en0") {
+		t.Fatalf("fixture RemoteAddr %q carries no zone; this test no longer exercises a zoned source", addr)
+	}
+
+	sameLink := []string{
+		peerRemoteAddr("fe80::1", "en0", 40000),
+		peerRemoteAddr("fe80::2", "en0", 40001),
+		peerRemoteAddr("fe80::dead:beef:cafe:1", "en0", 40002),
+		peerRemoteAddr("fe80::ffff:ffff:ffff:ffff", "en0", 40003),
+	}
+	want := RequestSource(requestFrom(sameLink[0]))
+	for _, addr := range sameLink[1:] {
+		if got := RequestSource(requestFrom(addr)); got != want {
+			t.Errorf("RequestSource(%s) = %q, want %q — a host mints these for free inside its own /64; they must share one budget", addr, got, want)
+		}
+	}
+
+	// The key must be the ALLOCATION, not the address that happened to arrive
+	// first. Asserting the literal prefix is what distinguishes "the mask ran"
+	// from "these four raw strings happen to be equal", which they are not.
+	if want != "fe80::/64" {
+		t.Errorf("zoned link-local key = %q, want %q — the /64 reduction did not run", want, "fe80::/64")
+	}
+
+	// The zone must not survive into the key either: keeping it would hand the
+	// same address a fresh bucket per interface it arrived on.
+	if got := RequestSource(requestFrom("[fe80::1]:40000")); got != want {
+		t.Errorf("zoned source keyed %q but the same address unzoned keyed %q — the zone leaked into the key", want, got)
+	}
+
+	// A zoned source must not be treated as unparseable and fall back to the raw
+	// string, which is the precise shape of the defect.
+	if strings.Contains(want, "%") || strings.Contains(want, "]") || strings.Contains(want, ":40000") {
+		t.Errorf("zoned source keyed %q — that is the raw RemoteAddr, so the parse failed and the budget is per-connection", want)
 	}
 }
 

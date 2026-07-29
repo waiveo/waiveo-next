@@ -3,6 +3,8 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -96,9 +98,17 @@ func (e *resetEnv) issue(t *testing.T, token string, body map[string]any) *httpt
 
 func (e *resetEnv) redeem(t *testing.T, code, password string) *httptest.ResponseRecorder {
 	t.Helper()
+	return e.redeemFrom(t, "192.168.50.9:41234", code, password)
+}
+
+// redeemFrom is redeem from a caller-chosen source address — the input the
+// SEC-033 attempt budget is keyed on, so it is the only way to observe at this
+// surface WHICH allocation an attempt was charged to.
+func (e *resetEnv) redeemFrom(t *testing.T, remoteAddr, code, password string) *httptest.ResponseRecorder {
+	t.Helper()
 	raw, _ := json.Marshal(map[string]string{"code": code, "password": password})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/credential-reset/redeem", strings.NewReader(string(raw)))
-	req.RemoteAddr = "192.168.50.9:41234"
+	req.RemoteAddr = remoteAddr
 	rec := httptest.NewRecorder()
 	e.mux.ServeHTTP(rec, req)
 	return rec
@@ -299,6 +309,69 @@ func TestCredentialResetRedemptionIsRateLimitedBeforeTheLookup(t *testing.T) {
 	}
 	if err := VerifyPassword(cred.Secret, resetOldPassword); err != nil {
 		t.Fatal("a rate-limited redemption still changed the credential")
+	}
+}
+
+// TestCredentialResetBudgetIsKeyedOnTheSourceAllocation drives SEC-033's keying
+// through this ROUTE, end to end, rather than through the budget object.
+//
+// It exists because of a coverage asymmetry that let a real defect through: the
+// keying rule lives in apihttp.RequestSource and is exercised there and at the
+// relay's pairing surface, but the app's own redemption endpoints — the ones
+// whose doc claims /64 keying, and whose setup-code sibling mints `owner` at
+// the root scope over an unauthenticated route — asserted only that ONE source
+// exhausts its own budget. A change making IPv6 key on the full address failed
+// those other two packages and passed this one, so nothing here could tell that
+// the endpoint's stated bound had stopped existing.
+//
+// Both phases below spend the budget from addresses a single host mints for
+// FREE. If the key were the address, each attempt would open a fresh bucket and
+// the endpoint would never rate-limit at all — a budget counting nothing while
+// reading as enforced.
+func TestCredentialResetBudgetIsKeyedOnTheSourceAllocation(t *testing.T) {
+	e := newResetEnv(t, RoleAdmin)
+	code := e.issueCode(t)
+	wrong := strings.Repeat("0", len(code))
+
+	// Phase 1: a routable /64, the standard SLAAC allocation. Every attempt
+	// arrives from a different address inside it, as RFC 8981 privacy
+	// extensions produce with no attacker involved at all.
+	limited := false
+	for i := 0; i < DefaultGrantAttemptLimit+1; i++ {
+		addr := fmt.Sprintf("[2001:db8:0:1::%x]:%d", i+1, 41000+i)
+		if rec := e.redeemFrom(t, addr, wrong, resetNewPassword); rec.Code == http.StatusTooManyRequests {
+			limited = true
+			break
+		}
+	}
+	if !limited {
+		t.Errorf("%d redemption attempts, each from a different address inside one /64, were never rate-limited — the budget is keyed on something the host mints for free (SEC-033)", DefaultGrantAttemptLimit+1)
+	}
+
+	// A DIFFERENT /64 is a different allocation and must still be served:
+	// widening past the allocation boundary turns a per-source budget back into
+	// the shared one an unrelated caller can exhaust for everybody.
+	if rec := e.redeemFrom(t, "[2001:db8:0:2::1]:41000", wrong, resetNewPassword); rec.Code == http.StatusTooManyRequests {
+		t.Error("a caller in a different /64 was refused because another allocation exhausted its budget — the bucket is shared across allocations")
+	}
+
+	// Phase 2: the zoned link-local form net/http actually hands this handler
+	// for an on-link peer (net.TCPAddr.String() appends %zone). net.ParseIP
+	// returns nil for it, so this form once bypassed the /64 reduction entirely
+	// and every attempt bought its own bucket.
+	limited = false
+	for i := 0; i < DefaultGrantAttemptLimit+1; i++ {
+		addr := (&net.TCPAddr{IP: net.ParseIP(fmt.Sprintf("fe80::%x", i+1)), Zone: "en0", Port: 41000 + i}).String()
+		if !strings.Contains(addr, "%en0") {
+			t.Fatalf("fixture RemoteAddr %q carries no zone; this phase no longer exercises a zoned source", addr)
+		}
+		if rec := e.redeemFrom(t, addr, wrong, resetNewPassword); rec.Code == http.StatusTooManyRequests {
+			limited = true
+			break
+		}
+	}
+	if !limited {
+		t.Errorf("%d redemption attempts, each from a different ZONED link-local address on one link, were never rate-limited — a zoned source bypasses the allocation key (SEC-033)", DefaultGrantAttemptLimit+1)
 	}
 }
 

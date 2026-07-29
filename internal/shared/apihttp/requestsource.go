@@ -3,6 +3,7 @@ package apihttp
 import (
 	"net"
 	"net/http"
+	"net/netip"
 )
 
 // RequestSource is the attempt-source key an attempt budget is spent from: the
@@ -36,6 +37,46 @@ import (
 // address therefore hands one host 2^64 fresh budgets it does not even have to
 // try for: ten attempts each, unbounded in aggregate, from a budget that reads
 // as enforced. The /64 is the allocation boundary, so it is the key.
+//
+// # The interface zone, and the link-local bucket it forces
+//
+// Every link-local IPv6 peer arrives here ZONED: net/http fills RemoteAddr from
+// net.TCPAddr.String(), which renders "[fe80::1%en0]:41000" for any peer on a
+// link-local address. That zone is not part of the textual address net.ParseIP
+// accepts — it returns nil for "fe80::1%en0" — so parsing with net.ParseIP sent
+// every zoned source down the raw-string branch below and the /64 reduction
+// never ran for it. One on-link host could then mint an unbounded number of
+// distinct budget keys just by picking fresh interface identifiers inside its
+// own fe80::/64: no router, no RA, no DHCP lease, and a budget that read as
+// enforced everywhere it was described. sourceKey therefore parses with
+// net/netip and strips the zone before doing anything else.
+//
+// Stripping it has a cost that is accepted here rather than overlooked, and it
+// is worth stating bluntly: link-local has NO per-host allocation below /64 —
+// the whole link shares fe80::/64 and each host picks its own interface
+// identifier — so masking collapses every on-link IPv6 peer, on every
+// interface, into ONE bucket. A single on-link host can therefore deny
+// link-local pairing and grant redemption to every other on-link host for up to
+// the budget's window (15 minutes at today's constants).
+//
+// That is the deliberate trade, not an oversight. The alternative — keying
+// link-local on the full address — hands anyone with layer-2 access an
+// unbounded, unenforced budget, which is the same decorative bound this
+// function exists to remove, differing only in being written down. A budget
+// that reads as enforced and is not is the worst of the available outcomes, so
+// the shared bucket is taken instead. Two things bound the damage in practice:
+// the refusal is UNAVAILABLE rather than PAIRING_CODE_INVALID (playerserver's
+// own handlePair doc), so an operator is never told to discard a good pairing
+// code; and link-local is not the provisioning dial path — a pairing code
+// encodes an operator-configured dial {host, port} (REL-126), and a link-local
+// target is only reachable with a zone attached.
+//
+// The limit is NOT raised for this bucket to compensate. It is the bucket an
+// attacker reaches most cheaply — no routing required — so relaxing it where
+// aggregation is highest inverts the trade; and a per-key limit would need the
+// same "is this key aggregated?" rule duplicated inside two independent budget
+// implementations, which is exactly the divergence this shared function exists
+// to prevent.
 //
 // IPv4 is keyed on the whole address (its /32), and the asymmetry is deliberate
 // rather than an oversight: an IPv4 host cannot mint sibling addresses the way
@@ -75,16 +116,27 @@ func RequestSource(r *http.Request) string {
 // /64 prefix for an IPv6 address, the address itself for IPv4 (including an
 // IPv4-mapped IPv6 address, which names an IPv4 host and must key like one), and
 // the raw string for anything that does not parse as an IP at all.
+//
+// It parses with net/netip rather than net.ParseIP for ONE reason: net.ParseIP
+// returns nil for a zoned address ("fe80::1%en0"), which is the form net/http
+// hands every link-local peer, so the /64 reduction below silently never ran for
+// them. See RequestSource's own doc for what that cost and why the zone is
+// stripped rather than kept.
 func sourceKey(host string) string {
-	ip := net.ParseIP(host)
-	if ip == nil {
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
 		return host
 	}
-	if v4 := ip.To4(); v4 != nil {
-		return v4.String()
+	// Zone first, then unmap: an IPv4-mapped IPv6 address names an IPv4 host and
+	// must key like one rather than collapsing every mapped address into a single
+	// ::ffff:0:0/64 bucket.
+	addr = addr.WithZone("").Unmap()
+	if addr.Is4() {
+		return addr.String()
 	}
-	// The /64 the address sits in — its first 8 bytes, the rest zeroed — rendered
-	// with the prefix length so it can never collide with a bare address key.
-	prefix := ip.Mask(net.CIDRMask(64, 128))
-	return prefix.String() + "/64"
+	// The /64 the address sits in, rendered with the prefix length so it can
+	// never collide with a bare address key. Prefix cannot fail here: addr is a
+	// 128-bit address and 64 is within its length.
+	prefix, _ := addr.Prefix(64)
+	return prefix.String()
 }
