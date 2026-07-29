@@ -249,6 +249,19 @@ func driveConsolePeerNotRoot(rep *report.Report, c corpus.Case) {
 		return
 	}
 	defer os.RemoveAll(dir)
+	// The scratch directory is LOOSENED before the listener is built, and this is
+	// load-bearing rather than tidy. os.MkdirTemp already creates 0700, so a
+	// listener that established no directory gate at all would still be observed
+	// at 0700 below and `socket_directory_mode` would pass having asserted
+	// nothing. Reproduced: with prepareConsoleDir's chmod and mode check both
+	// deleted, this case PASSED until this line existed. Handing the listener a
+	// world-traversable directory — which is what a real deployment's state
+	// directory may well be, since something else created it — makes the
+	// assertion mean "the listener tightened it".
+	if err := os.Chmod(dir, 0o755); err != nil {
+		k.fail(rep, "loosen the scratch dir: %v", err)
+		return
+	}
 
 	fixedNow := corpusInstantMs
 	sink := &recordingSink{}
