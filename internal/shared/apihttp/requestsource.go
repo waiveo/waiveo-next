@@ -56,8 +56,17 @@ import (
 // the whole link shares fe80::/64 and each host picks its own interface
 // identifier — so masking collapses every on-link IPv6 peer, on every
 // interface, into ONE bucket. A single on-link host can therefore deny
-// link-local pairing and grant redemption to every other on-link host for up to
-// the budget's window (15 minutes at today's constants).
+// link-local pairing and grant redemption to every other on-link host.
+//
+// Do not read that as bounded by the window (15 minutes at today's constants).
+// The window bounds ONE exhaustion: a refused attempt does not extend it — the
+// limiter returns false without touching the window's start or count, so
+// hammering continuously still releases at exactly windowMs. But the block
+// renews for the price of ten requests, so an attacker who is still on-link
+// when the window opens takes it again immediately. The real bound is how long
+// they hold layer-2 access, not fifteen minutes. That is equally true of the
+// routable-/64 aggregation this function already did, and is stated here
+// because this is where a reader forms the impression.
 //
 // That is the deliberate trade, not an oversight. The alternative — keying
 // link-local on the full address — hands anyone with layer-2 access an
@@ -70,6 +79,13 @@ import (
 // code; and link-local is not the provisioning dial path — a pairing code
 // encodes an operator-configured dial {host, port} (REL-126), and a link-local
 // target is only reachable with a zone attached.
+//
+// That second argument covers PAIRING. It is not made for the app's own
+// setup-code and credential-reset budgets, which key through this same function
+// and are named in the cost above — nothing here establishes that those cannot
+// be reached over link-local, and the honest position is that their reachability
+// is unargued rather than shown to be nil. The residual is therefore stated at
+// its widest and mitigated only where the mitigation is actually demonstrated.
 //
 // The limit is NOT raised for this bucket to compensate. It is the bucket an
 // attacker reaches most cheaply — no routing required — so relaxing it where

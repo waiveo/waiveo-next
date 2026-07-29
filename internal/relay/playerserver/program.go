@@ -243,9 +243,15 @@ func (s *Server) SetProgram(generation int64, screenID, programRevision, priorit
 // an assignment racing an in-flight request is a request served without it.
 //
 // It is the ONLY thing that establishes or changes this server's signing
-// identity: no program write can reach s.signingKey, by construction — neither
-// SetProgram nor SetServedProgram takes a key at all. That is asserted, not just
-// intended (TestOnlySetSigningKeyEstablishesTheRelayIdentity). The identity is
+// identity once the server is built: no program write can reach s.signingKey,
+// because neither SetProgram nor SetServedProgram takes a key at all. That is
+// asserted, not just intended (TestOnlySetSigningKeyEstablishesTheRelayIdentity).
+//
+// The precise scope of that assertion, since "by construction" would overstate
+// it: it rejects any ASSIGNMENT to s.signingKey outside this method. It does not
+// cover the field being seeded in NewServer's own composite literal, which is a
+// second establishment path with no guard on it — today NewServer sets no key
+// there, and it should stay that way, but nothing fails if someone changes that. The identity is
 // held once for the whole server rather than per screen ON PURPOSE: it is the
 // relay's own, identical for every screen, so if it is ever rotated, every
 // screen's Leases must move to the new key at once — a per-screen copy would

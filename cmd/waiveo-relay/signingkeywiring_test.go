@@ -64,15 +64,23 @@ func TestMainInstallsTheRelaysLeaseSigningIdentity(t *testing.T) {
 	assertKeyReachesNothingElse(t, mainFn, wantCallee)
 }
 
-// assertKeyReachesNothingElse is the completeness half: the enrollment private
-// key must reach the player server through that ONE call and no other.
+// assertKeyReachesNothingElse is the completeness half: no OTHER call in main
+// names the selector `relayID.PrivateKey`.
 //
 // It matters because the defect being guarded was not a missing call — it was
 // the key arriving as a side effect of something else (a program write), which
-// made its presence incidental and its absence invisible. A second path would
-// restore exactly that: main could keep passing the key somewhere else, the
-// explicit call could be deleted, and the relay would still sign until the day
-// that other path stopped running.
+// made its presence incidental and its absence invisible. A second call passing
+// the same selector would restore exactly that: the explicit call could be
+// deleted and the relay would still sign, until the day that other path stopped
+// running.
+//
+// READ THE LIMIT. This is a check on one SELECTOR EXPRESSION, not on key flow.
+// main hands the whole identity struct — private key included — to
+// relayTLSCertificate and to bootAutomationStack, and this says nothing about
+// either. Nor would it notice `k := relayID.PrivateKey` bound to a local and
+// passed on from there. What it does catch is the shape the defect actually
+// took: a second direct hand-off of the key at a call site, sitting beside the
+// explicit one and quietly making it redundant.
 func assertKeyReachesNothingElse(t *testing.T, mainFn *ast.FuncDecl, allowedCallee string) {
 	t.Helper()
 
@@ -88,10 +96,7 @@ func assertKeyReachesNothingElse(t *testing.T, mainFn *ast.FuncDecl, allowedCall
 				continue
 			}
 			uses++
-			// relayTLSCertificate builds the listener's own TLS certificate from
-			// the same keypair, which is the point — the cert a player pins and
-			// the key its Leases are signed with have to be one identity.
-			if callee != allowedCallee && callee != "relayTLSCertificate" {
+			if callee != allowedCallee {
 				t.Errorf("func main also hands relayID.PrivateKey to %s at %s. The relay's Lease-signing identity must reach the player server through %s alone; a second path makes that call deletable without anything failing, which is how the key became an incidental side effect the first time.",
 					callee, callee, allowedCallee)
 			}
