@@ -38,18 +38,28 @@
 //   - `viewer` cannot POST /api/v1/content or PATCH a daypart — auth.RequiredRole
 //     puts every mutating method at `operator`, and auth.CanWrite puts the
 //     placement check there too.
+//
 //   - `operator` cannot install a pack: the pack lifecycle routes (install,
 //     update, uninstall) require `admin` AT THE WORKSPACE ORG NODE, because a
 //     pack's capabilities are granted workspace-wide and there is no per-node
 //     answer to "may this caller write here" for one (internal/app/api/packs.go,
 //     packLifecycleWritable).
+//
 //   - `owner` is deliberately NOT taken. Owner is what SEC-011 reserves for the
 //     irreversible and the break-glass — workspace destruction, the last owner
-//     binding, `--new-owner` — and a key that can destroy the workspace is a file
-//     on a laptop that can destroy the workspace. Staying at `admin` also has a
-//     concrete second effect: auth.Store.CountOwnerBindings still reads 0, so
-//     provisioning a dev key does not CLAIM an unclaimed box and the real
-//     first-boot setup window (SEC-120) stays open and exercisable.
+//     binding, `--new-owner`. Provisioning also does not CLAIM an unclaimed box:
+//     it adds no owner binding, so a box that has never been claimed still has
+//     its first-boot window (SEC-120) open and exercisable.
+//
+//     READ THIS BEFORE TREATING `admin` AS SAFELY BELOW `owner`. It very nearly
+//     was not: the credential-reset flow gated issuance on the ISSUER holding
+//     admin and checked nothing about the TARGET, so an admin could mint a reset
+//     for the owner, redeem it over the unauthenticated redemption route, and log
+//     in as owner — three calls, no other credential. SEC-012a now refuses a
+//     target who outranks the issuer, which is what makes this bullet true rather
+//     than merely intended. A dev box that has run the web e2e suite also already
+//     holds a real `e2e-owner`, so "the box is unclaimed" is a property of a
+//     fresh checkout, not a standing guarantee — do not build anything on it.
 //
 // The scope node is the root sentinel (auth.RootScopeNode) rather than a real
 // org node because the make-dev seed authors no org node at all — the seeded
@@ -81,7 +91,7 @@
 // The RoundTripper attaches the credential ONLY to loopback hosts. A header
 // added by a transport is re-added on every hop a redirect takes, so a probe
 // that followed a redirect off the box would carry the key with it; scoping the
-// attachment to 127.0.0.1/::1 means it cannot.
+// attachment to 127.0.0.0/8, ::1 and ::ffff:127.0.0.0/8 means it cannot.
 package devcred
 
 import (
@@ -192,6 +202,28 @@ func Load() (string, error) {
 // path it wrote, so a caller can report WHERE without reporting WHAT.
 func Write(token string) (string, error) {
 	path := Path()
+	// secretfile.Write tightens the ENCLOSING DIRECTORY to 0700, which is right
+	// for the directory this package owns and wrong for one a caller pointed
+	// PathEnv at. `WAIVEO_DEV_API_KEY_FILE=$HOME/dev-api-key` would silently
+	// chmod a home directory; the repo root likewise, and .gitignore explicitly
+	// anticipates that placement. A tool does not get to re-permission a
+	// directory it did not create, so an overridden path must already be in a
+	// directory tight enough to hold a bearer credential — checked, and refused
+	// with the mode named, rather than fixed behind the caller's back.
+	if path != filepath.Join(DefaultDir, KeyFile) {
+		dir := filepath.Dir(path)
+		// An ABSENT directory is fine: secretfile.Write creates it at 0700 below,
+		// and creating a directory is not re-permissioning someone else's. Only
+		// an existing, too-permissive one is refused.
+		switch info, err := os.Stat(dir); {
+		case errors.Is(err, os.ErrNotExist):
+		case err != nil:
+			return "", fmt.Errorf("the directory for %s (%s): %w", PathEnv, dir, err)
+		case info.Mode().Perm()&0o077 != 0:
+			return "", fmt.Errorf("%s points into %s, which is mode %04o — a directory holding a bearer credential must be 0700, and this tool will not re-permission a directory it does not own; tighten it or unset %s",
+				PathEnv, dir, info.Mode().Perm(), PathEnv)
+		}
+	}
 	if err := secretfile.Write(path, []byte(token+"\n")); err != nil {
 		return "", fmt.Errorf("persist dev API key: %w", err)
 	}

@@ -18,7 +18,14 @@ dev: dev-up
 # Idempotent: tear down any prior instance first, then start fresh and record PIDs.
 # Wave 1: no app component yet (Wave 2) — dev is feeder + relay only.
 dev-up: dev-down
-	@mkdir -p $(RUNDIR)
+	@# 0700, not the umask default. The feeder PRINTS its one-time first-boot
+	@# setup code on every unclaimed boot (SEC-120's "present it"), and the
+	@# redirects below send that stdout to $(RUNDIR)/feeder.log. That code mints
+	@# `owner` at the root scope and is redeemable over an UNAUTHENTICATED route,
+	@# so a world-readable log inside a world-readable directory hands the box to
+	@# any local reader. The directory gate is what closes it — the shell's `>`
+	@# creates the log at the umask default and nothing here can change that.
+	@mkdir -p $(RUNDIR) && chmod 700 $(RUNDIR)
 	@# Fresh enrollment each run: the connection handshake (REL-030) verifies the
 	@# relay's channel binding against the enrollment key the (fresh-per-process,
 	@# in-memory-CA) feeder recorded at enroll, so a relay identity persisted
@@ -62,7 +69,7 @@ smoke:
 # pack smoke and the end-to-end test install over the real POST /api/v1/packs (one
 # source of truth: examples/packs). The output lands in the git-ignored run dir.
 example-pack:
-	@mkdir -p $(RUNDIR)
+	@mkdir -p $(RUNDIR) && chmod 700 $(RUNDIR)
 	@go run ./scripts/examplepack -out $(RUNDIR)/menu-board.pack.zip
 
 dev-down:
