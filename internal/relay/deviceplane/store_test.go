@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/maaxton/waiveo-next/internal/shared/deviceid"
 )
 
 // corpusReportFile decodes only the piece of the REL-110 corpus this task
@@ -37,9 +39,15 @@ func loadRel110Report(t *testing.T) json.RawMessage {
 	return f.Input.DeviceCandidatesReport
 }
 
+// mediaPlayerEntities is the single addressable handle every candidate in this
+// package's fixtures exposes, matching the corpus's own entity fan-out.
+var mediaPlayerEntities = []CandidateEntity{{Key: "main", DeviceClass: "media-player"}}
+
 // buildRel110Store builds the exact candidate set the REL-110 corpus reports:
-// one pending SSDP discovery and one mDNS discovery ignored forever, both
-// last re-observed at 1752537600000, via the Store's own mutators.
+// TWO pending SSDP discoveries answering the SAME declared search target — the
+// case that makes identity-keying (REL-111a) observable — and one mDNS
+// discovery ignored forever, all last re-observed at 1752537600000, via the
+// Store's own mutators.
 func buildRel110Store(t *testing.T) *Store {
 	t.Helper()
 	s := NewStore(rel110RelayID)
@@ -53,16 +61,37 @@ func buildRel110Store(t *testing.T) *Store {
 		t.Fatalf("parse mdns match: %v", err)
 	}
 
-	// First-observed order is the report order: ssdp then mdns.
-	s.Observe(ssdp, ProvenanceDiscovered, 1752537000000)
-	s.Observe(mdns, ProvenanceDiscovered, 1752530000000)
-	// Both re-observed later — bumps last_seen, leaves first_seen.
-	s.Observe(ssdp, ProvenanceDiscovered, 1752537600000)
-	s.Observe(mdns, ProvenanceDiscovered, 1752537600000)
+	roku1 := Observation{Match: ssdp, Provenance: ProvenanceDiscovered, Driver: "roku-ecp",
+		NativeID: "uuid:roku:ecp:X10001", DeviceClass: "media-player", Name: "Lobby Roku", Entities: mediaPlayerEntities}
+	roku2 := Observation{Match: ssdp, Provenance: ProvenanceDiscovered, Driver: "roku-ecp",
+		NativeID: "uuid:roku:ecp:X10002", DeviceClass: "media-player", Name: "Break Room Roku", Entities: mediaPlayerEntities}
+	cast := Observation{Match: mdns, Provenance: ProvenanceDiscovered, Driver: "cast",
+		NativeID: "Living Room._googlecast._tcp.local", DeviceClass: "media-player", Entities: mediaPlayerEntities}
+
+	// First-observed order is the report order.
+	s.Observe(roku1, 1752537000000)
+	s.Observe(roku2, 1752537100000)
+	s.Observe(cast, 1752530000000)
+	// All re-observed later — bumps last_seen, leaves first_seen.
+	s.Observe(roku1, 1752537600000)
+	s.Observe(roku2, 1752537600000)
+	s.Observe(cast, 1752537600000)
 
 	forever := IgnoredForever
-	s.Ignore(mdns.Key(), &forever)
+	s.Ignore(Key(cast.Driver, cast.NativeID), &forever)
 	return s
+}
+
+// obs is a terse Observation for the shape tests below: one device of the given
+// identity, exposing the standard media-player handle.
+func obs(t *testing.T, matchJSON, driver, nativeID string) Observation {
+	t.Helper()
+	m, err := ParseMatch(json.RawMessage(matchJSON))
+	if err != nil {
+		t.Fatalf("parse match %s: %v", matchJSON, err)
+	}
+	return Observation{Match: m, Provenance: ProvenanceDiscovered, Driver: driver,
+		NativeID: nativeID, DeviceClass: "media-player", Entities: mediaPlayerEntities}
 }
 
 // TestReportMatchesREL110ByteShape asserts the Store's full-set report
@@ -96,10 +125,10 @@ func TestReportMatchesREL110ByteShape(t *testing.T) {
 // already-known match bumps last_seen but leaves first_seen (REL-110).
 func TestReObserveBumpsLastSeenNotFirstSeen(t *testing.T) {
 	s := NewStore(rel110RelayID)
-	m, _ := ParseMatch(json.RawMessage(`{"ssdp":"urn:roku-com:device:player:1"}`))
+	o := obs(t, `{"ssdp":"urn:roku-com:device:player:1"}`, "roku-ecp", "X1")
 
-	s.Observe(m, ProvenanceDiscovered, 1000)
-	s.Observe(m, ProvenanceDiscovered, 2000)
+	s.Observe(o, 1000)
+	s.Observe(o, 2000)
 
 	rep := s.Report()
 	if len(rep.Body.Candidates) != 1 {
@@ -118,10 +147,10 @@ func TestReObserveBumpsLastSeenNotFirstSeen(t *testing.T) {
 // (older) re-observation never moves last_seen backwards.
 func TestReObserveOlderTimestampDoesNotRegressLastSeen(t *testing.T) {
 	s := NewStore(rel110RelayID)
-	m, _ := ParseMatch(json.RawMessage(`{"mdns":"_googlecast._tcp"}`))
+	o := obs(t, `{"mdns":"_googlecast._tcp"}`, "cast", "Living Room")
 
-	s.Observe(m, ProvenanceDiscovered, 5000)
-	s.Observe(m, ProvenanceDiscovered, 3000) // older — must not regress
+	s.Observe(o, 5000)
+	s.Observe(o, 3000) // older — must not regress
 
 	c := s.Report().Body.Candidates[0]
 	if c.LastSeen != 5000 {
@@ -136,23 +165,23 @@ func TestReObserveOlderTimestampDoesNotRegressLastSeen(t *testing.T) {
 // every status: ignored_until is non-nil exactly when status is ignored.
 func TestIgnoredUntilPresentIffIgnored(t *testing.T) {
 	s := NewStore(rel110RelayID)
-	pending, _ := ParseMatch(json.RawMessage(`{"ssdp":"a"}`))
-	adopted, _ := ParseMatch(json.RawMessage(`{"ssdp":"b"}`))
-	ignored, _ := ParseMatch(json.RawMessage(`{"ssdp":"c"}`))
+	pending := obs(t, `{"ssdp":"a"}`, "d", "a")
+	adopted := obs(t, `{"ssdp":"b"}`, "d", "b")
+	ignored := obs(t, `{"ssdp":"c"}`, "d", "c")
 
-	s.Observe(pending, ProvenanceDiscovered, 1)
-	s.Observe(adopted, ProvenanceDiscovered, 1)
-	s.Observe(ignored, ProvenanceDiscovered, 1)
-	s.Adopt(adopted.Key())
+	s.Observe(pending, 1)
+	s.Observe(adopted, 1)
+	s.Observe(ignored, 1)
+	s.Adopt(Key("d", "b"))
 	forever := IgnoredForever
-	s.Ignore(ignored.Key(), &forever)
+	s.Ignore(Key("d", "c"), &forever)
 
 	for _, c := range s.Report().Body.Candidates {
 		wantIgnored := c.Status == StatusIgnored
 		gotHasUntil := c.IgnoredUntil != nil
 		if wantIgnored != gotHasUntil {
 			t.Errorf("candidate %s: status=%q ignored_until-present=%v, want present iff ignored",
-				c.Match.Key(), c.Status, gotHasUntil)
+				Key(c.Driver, c.NativeID), c.Status, gotHasUntil)
 		}
 	}
 }
@@ -162,11 +191,11 @@ func TestIgnoredUntilPresentIffIgnored(t *testing.T) {
 // pointer had lingered — Report enforces the iff invariant on emit.
 func TestIgnoredUntilClearedOnAdopt(t *testing.T) {
 	s := NewStore(rel110RelayID)
-	m, _ := ParseMatch(json.RawMessage(`{"ssdp":"x"}`))
-	s.Observe(m, ProvenanceDiscovered, 1)
+	o := obs(t, `{"ssdp":"x"}`, "d", "x")
+	s.Observe(o, 1)
 	forever := IgnoredForever
-	s.Ignore(m.Key(), &forever)
-	s.Adopt(m.Key()) // adopting an ignored candidate must clear ignored_until
+	s.Ignore(Key("d", "x"), &forever)
+	s.Adopt(Key("d", "x")) // adopting an ignored candidate must clear ignored_until
 
 	c := s.Report().Body.Candidates[0]
 	if c.Status != StatusAdopted {
@@ -182,24 +211,24 @@ func TestIgnoredUntilClearedOnAdopt(t *testing.T) {
 // Report appears in the next Report alongside all earlier ones (REL-111).
 func TestReportIsFullSetReplace(t *testing.T) {
 	s := NewStore(rel110RelayID)
-	a, _ := ParseMatch(json.RawMessage(`{"ssdp":"a"}`))
-	b, _ := ParseMatch(json.RawMessage(`{"mdns":"_b._tcp"}`))
+	a := obs(t, `{"ssdp":"a"}`, "d", "a")
+	b := obs(t, `{"mdns":"_b._tcp"}`, "d", "b")
 
-	s.Observe(a, ProvenanceDiscovered, 1)
+	s.Observe(a, 1)
 	if got := len(s.Report().Body.Candidates); got != 1 {
 		t.Fatalf("first report: %d candidates, want 1", got)
 	}
 
-	s.Observe(b, ProvenanceDiscovered, 2)
+	s.Observe(b, 2)
 	rep := s.Report()
 	if len(rep.Body.Candidates) != 2 {
 		t.Fatalf("second report: %d candidates, want the full set of 2", len(rep.Body.Candidates))
 	}
 	keys := map[string]bool{}
 	for _, c := range rep.Body.Candidates {
-		keys[c.Match.Key()] = true
+		keys[Key(c.Driver, c.NativeID)] = true
 	}
-	if !keys[a.Key()] || !keys[b.Key()] {
+	if !keys[Key("d", "a")] || !keys[Key("d", "b")] {
 		t.Errorf("full-set report missing a member: keys=%v", keys)
 	}
 }
@@ -218,5 +247,113 @@ func TestReportEnvelope(t *testing.T) {
 	if rep.Body.Candidates == nil {
 		// An empty store still reports an empty (non-null) candidates array.
 		t.Error("body.candidates is nil, want an empty (or populated) array")
+	}
+}
+
+// TestTwoDevicesSharingOneMatchPatternAreTwoCandidates is REL-111a: the store
+// is keyed by REL-153 device identity, not by the `match` that found it.
+//
+// This is the case a match-keyed store gets wrong and no fixture with one device
+// per pattern can catch: two Rokus on one LAN both answer the single declared
+// search target. Key by `match` and the second sighting is folded into the
+// first, so the app peer is told about one device, and the other can never be
+// listed, commanded, or adopted.
+//
+// Change identityKey to return o.Match.Key() and this test fails.
+func TestTwoDevicesSharingOneMatchPatternAreTwoCandidates(t *testing.T) {
+	s := NewStore(rel110RelayID)
+	first := obs(t, `{"ssdp":"urn:roku-com:device:player:1"}`, "roku-ecp", "uuid:roku:X1")
+	second := obs(t, `{"ssdp":"urn:roku-com:device:player:1"}`, "roku-ecp", "uuid:roku:X2")
+
+	s.Observe(first, 1000)
+	s.Observe(second, 1001)
+
+	cands := s.Report().Body.Candidates
+	if len(cands) != 2 {
+		t.Fatalf("two devices answering one search target reported as %d candidate(s), want 2 (REL-111a)", len(cands))
+	}
+	if cands[0].NativeID == cands[1].NativeID {
+		t.Fatalf("both candidates carry native_id %q — the two devices collapsed into one", cands[0].NativeID)
+	}
+}
+
+// TestObservationWithoutIdentityIsDropped proves the store refuses a sighting
+// that names no device (REL-110a): without (driver, native_id) the app peer has
+// nothing to key, derive an id from, or address it as, so reporting it would
+// only produce a candidate the far side must throw away.
+func TestObservationWithoutIdentityIsDropped(t *testing.T) {
+	s := NewStore(rel110RelayID)
+	m, err := ParseMatch(json.RawMessage(`{"ssdp":"urn:roku-com:device:player:1"}`))
+	if err != nil {
+		t.Fatalf("parse match: %v", err)
+	}
+	s.Observe(Observation{Match: m, Provenance: ProvenanceDiscovered, NativeID: "X1"}, 1) // no driver
+	s.Observe(Observation{Match: m, Provenance: ProvenanceDiscovered, Driver: "roku-ecp"}, 2)
+	if n := len(s.Report().Body.Candidates); n != 0 {
+		t.Fatalf("report carries %d candidate(s) with no identity, want 0", n)
+	}
+}
+
+// TestReObserveRefreshesFactsButNotLifecycle asserts the split between what a
+// later sighting may correct (the match that found it this time, its name, its
+// class, its entities) and what belongs to the store (status, ignored_until) —
+// so a device re-appearing on the LAN cannot un-ignore itself.
+func TestReObserveRefreshesFactsButNotLifecycle(t *testing.T) {
+	s := NewStore(rel110RelayID)
+	o := obs(t, `{"ssdp":"a"}`, "roku-ecp", "X1")
+	s.Observe(o, 1000)
+	forever := IgnoredForever
+	s.Ignore(Key("roku-ecp", "X1"), &forever)
+
+	renamed := o
+	renamed.Name = "Lobby Roku"
+	s.Observe(renamed, 2000)
+
+	c := s.Report().Body.Candidates[0]
+	if c.Name != "Lobby Roku" {
+		t.Errorf("name = %q, want the re-observed %q — a later sighting may correct a discovered fact", c.Name, "Lobby Roku")
+	}
+	if c.Status != StatusIgnored || c.IgnoredUntil == nil {
+		t.Errorf("status/ignored_until = %q/%v after re-observe, want ignored/forever — re-appearing must not un-ignore a device", c.Status, c.IgnoredUntil)
+	}
+}
+
+// TestResolveEntityDerivesRatherThanTrusting is REL-110b at the relay end: the
+// relay resolves an entity id the app peer addressed by DERIVING every id its
+// own candidates could be known by and comparing, so a discovered-but-unadopted
+// device is commandable without either peer sending the other an identifier.
+//
+// It also pins the three refusals: no site adopted yet, an id no candidate
+// derives to, and an ignored candidate (suppressing a device must stop commands
+// reaching it, not merely hide it from a list).
+func TestResolveEntityDerivesRatherThanTrusting(t *testing.T) {
+	const site = "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5"
+	s := NewStore(rel110RelayID)
+	s.Observe(obs(t, `{"ssdp":"a"}`, "roku-ecp", "X1"), 1000)
+
+	wantEntity := deviceid.Entity(site, "roku-ecp", "X1", "main")
+	if _, _, ok := s.ResolveEntity(wantEntity); ok {
+		t.Fatal("resolved an entity before any site was adopted — nothing could have been derived against")
+	}
+
+	s.SetSite(site)
+	deviceID, class, ok := s.ResolveEntity(wantEntity)
+	if !ok {
+		t.Fatalf("ResolveEntity(%q) did not resolve after the site was adopted", wantEntity)
+	}
+	if want := deviceid.Device(site, "roku-ecp", "X1"); deviceID != want {
+		t.Errorf("resolved device_id = %q, want the derived %q", deviceID, want)
+	}
+	if class != "media-player" {
+		t.Errorf("resolved device_class = %q, want media-player", class)
+	}
+	if _, _, ok := s.ResolveEntity("01J8Z3K4N5P6Q7R8S9T0V1W2ZZ"); ok {
+		t.Error("resolved an entity id no candidate derives to")
+	}
+
+	forever := IgnoredForever
+	s.Ignore(Key("roku-ecp", "X1"), &forever)
+	if _, _, ok := s.ResolveEntity(wantEntity); ok {
+		t.Error("an ignored candidate still resolves — suppression would be cosmetic if commands still reached it")
 	}
 }

@@ -33,6 +33,7 @@ type rel110Case struct {
 	} `json:"input"`
 	Expected struct {
 		CandidateViewReplacesPriorView          bool              `json:"candidate_view_replaces_prior_view"`
+		CandidateCount                          int               `json:"candidate_count"`
 		Results                                 []json.RawMessage `json:"results"`
 		UnresolvedCommandAttemptedAgainstDevice bool              `json:"unresolved_command_attempted_against_device"`
 	} `json:"expected"`
@@ -66,12 +67,17 @@ func buildStoreFromCorpusReport(t *testing.T, report json.RawMessage) *Store {
 		RelayID string `json:"relay_id"`
 		Body    struct {
 			Candidates []struct {
-				Match        json.RawMessage `json:"match"`
-				Provenance   Provenance      `json:"provenance"`
-				Status       Status          `json:"status"`
-				IgnoredUntil *string         `json:"ignored_until"`
-				FirstSeen    int64           `json:"first_seen"`
-				LastSeen     int64           `json:"last_seen"`
+				Match        json.RawMessage   `json:"match"`
+				Provenance   Provenance        `json:"provenance"`
+				Status       Status            `json:"status"`
+				IgnoredUntil *string           `json:"ignored_until"`
+				FirstSeen    int64             `json:"first_seen"`
+				LastSeen     int64             `json:"last_seen"`
+				Driver       string            `json:"driver"`
+				NativeID     string            `json:"native_id"`
+				DeviceClass  string            `json:"device_class"`
+				Name         string            `json:"name"`
+				Entities     []CandidateEntity `json:"entities"`
 			} `json:"candidates"`
 		} `json:"body"`
 	}
@@ -85,15 +91,25 @@ func buildStoreFromCorpusReport(t *testing.T, report json.RawMessage) *Store {
 		if err != nil {
 			t.Fatalf("parsing corpus candidate match %s: %v", c.Match, err)
 		}
-		s.Observe(m, c.Provenance, c.FirstSeen)
-		if c.LastSeen != c.FirstSeen {
-			s.Observe(m, c.Provenance, c.LastSeen)
+		o := Observation{
+			Match:       m,
+			Provenance:  c.Provenance,
+			Driver:      c.Driver,
+			NativeID:    c.NativeID,
+			DeviceClass: c.DeviceClass,
+			Name:        c.Name,
+			Entities:    c.Entities,
 		}
+		s.Observe(o, c.FirstSeen)
+		if c.LastSeen != c.FirstSeen {
+			s.Observe(o, c.LastSeen)
+		}
+		key := Key(c.Driver, c.NativeID)
 		switch c.Status {
 		case StatusAdopted:
-			s.Adopt(m.Key())
+			s.Adopt(key)
 		case StatusIgnored:
-			s.Ignore(m.Key(), c.IgnoredUntil)
+			s.Ignore(key, c.IgnoredUntil)
 		}
 	}
 	return s
@@ -157,7 +173,8 @@ func TestREL110CorpusEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parsing probe match: %v", err)
 	}
-	store.Observe(extra, ProvenanceDiscovered, 1)
+	store.Observe(Observation{Match: extra, Provenance: ProvenanceDiscovered,
+		Driver: "probe-driver", NativeID: "probe-native-id", DeviceClass: "media-player"}, 1)
 	grown := store.Report()
 	if len(grown.Body.Candidates) != len(firstReport.Body.Candidates)+1 {
 		t.Fatalf("after observing one new candidate, report has %d candidates, want %d (full-set replace, REL-111)",
@@ -166,14 +183,20 @@ func TestREL110CorpusEndToEnd(t *testing.T) {
 	for _, want := range firstReport.Body.Candidates {
 		found := false
 		for _, got := range grown.Body.Candidates {
-			if got.Match.Key() == want.Match.Key() {
+			if Key(got.Driver, got.NativeID) == Key(want.Driver, want.NativeID) {
 				found = true
 				break
 			}
 		}
 		if !found {
-			t.Errorf("grown report lost prior candidate %s — REL-111 requires the full prior view", want.Match.Key())
+			t.Errorf("grown report lost prior candidate %s — REL-111 requires the full prior view", Key(want.Driver, want.NativeID))
 		}
+	}
+
+	// REL-111a: the corpus deliberately reports two devices answering ONE
+	// declared search target, so the identity-keyed store must report both.
+	if got, want := len(firstReport.Body.Candidates), c.Expected.CandidateCount; want > 0 && got != want {
+		t.Errorf("candidate_count = %d, want %d (identity-keyed, REL-111a)", got, want)
 	}
 
 	// --- device.command / device.command_result (REL-112/113/006) ---

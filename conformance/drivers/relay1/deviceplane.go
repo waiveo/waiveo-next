@@ -32,6 +32,8 @@ type rel110Input struct {
 // diffs the live Store/CommandSurface behavior against.
 type rel110Expected struct {
 	CandidateViewReplacesPriorView          bool              `json:"candidate_view_replaces_prior_view"`
+	CandidateCount                          int               `json:"candidate_count"`
+	CandidatesSharingOneMatchPattern        int               `json:"candidates_sharing_one_match_pattern"`
 	Results                                 []json.RawMessage `json:"results"`
 	UnresolvedCommandAttemptedAgainstDevice bool              `json:"unresolved_command_attempted_against_device"`
 }
@@ -68,12 +70,17 @@ type rel110CandidateWire struct {
 	RelayID string `json:"relay_id"`
 	Body    struct {
 		Candidates []struct {
-			Match        json.RawMessage        `json:"match"`
-			Provenance   deviceplane.Provenance `json:"provenance"`
-			Status       deviceplane.Status     `json:"status"`
-			IgnoredUntil *string                `json:"ignored_until"`
-			FirstSeen    int64                  `json:"first_seen"`
-			LastSeen     int64                  `json:"last_seen"`
+			Match        json.RawMessage               `json:"match"`
+			Provenance   deviceplane.Provenance        `json:"provenance"`
+			Status       deviceplane.Status            `json:"status"`
+			IgnoredUntil *string                       `json:"ignored_until"`
+			FirstSeen    int64                         `json:"first_seen"`
+			LastSeen     int64                         `json:"last_seen"`
+			Driver       string                        `json:"driver"`
+			NativeID     string                        `json:"native_id"`
+			DeviceClass  string                        `json:"device_class"`
+			Name         string                        `json:"name"`
+			Entities     []deviceplane.CandidateEntity `json:"entities"`
 		} `json:"candidates"`
 	} `json:"body"`
 }
@@ -161,21 +168,52 @@ func driveREL110(rep *report.Report, cases map[string]corpus.Case) {
 			rep.Fail(c.CaseID, contract, fmt.Sprintf("parsing corpus candidate match %s: %v", cand.Match, err))
 			return
 		}
-		store.Observe(m, cand.Provenance, cand.FirstSeen)
-		if cand.LastSeen != cand.FirstSeen {
-			store.Observe(m, cand.Provenance, cand.LastSeen)
+		obs := deviceplane.Observation{
+			Match:       m,
+			Provenance:  cand.Provenance,
+			Driver:      cand.Driver,
+			NativeID:    cand.NativeID,
+			DeviceClass: cand.DeviceClass,
+			Name:        cand.Name,
+			Entities:    cand.Entities,
 		}
+		store.Observe(obs, cand.FirstSeen)
+		if cand.LastSeen != cand.FirstSeen {
+			store.Observe(obs, cand.LastSeen)
+		}
+		key := deviceplane.Key(cand.Driver, cand.NativeID)
 		switch cand.Status {
 		case deviceplane.StatusAdopted:
-			store.Adopt(m.Key())
+			store.Adopt(key)
 		case deviceplane.StatusIgnored:
-			store.Ignore(m.Key(), cand.IgnoredUntil)
+			store.Ignore(key, cand.IgnoredUntil)
 		}
 	}
 
 	firstReport := store.Report()
 	if d := shapeDiff("device_candidates_report", firstReport, in.DeviceCandidatesReport); d != nil {
 		diffs = append(diffs, *d)
+	}
+
+	// REL-111a: the set is keyed by REL-153 device identity, not by `match`.
+	// The corpus deliberately reports two devices answering ONE declared search
+	// target; a match-keyed store would report one candidate here, and neither
+	// device could then be listed or addressed individually.
+	if got := len(firstReport.Body.Candidates); got != exp.CandidateCount {
+		diffs = append(diffs, report.Diff{Field: "candidate_count (identity-keyed, REL-111a)", Expected: exp.CandidateCount, Actual: got})
+	}
+	byMatch := map[string]int{}
+	for _, cand := range firstReport.Body.Candidates {
+		byMatch[cand.Match.Key()]++
+	}
+	sharing := 0
+	for _, n := range byMatch {
+		if n > sharing {
+			sharing = n
+		}
+	}
+	if exp.CandidatesSharingOneMatchPattern > 0 && sharing != exp.CandidatesSharingOneMatchPattern {
+		diffs = append(diffs, report.Diff{Field: "candidates_sharing_one_match_pattern (REL-111a)", Expected: exp.CandidatesSharingOneMatchPattern, Actual: sharing})
 	}
 
 	if !exp.CandidateViewReplacesPriorView {
@@ -189,7 +227,13 @@ func driveREL110(rep *report.Report, cases map[string]corpus.Case) {
 			rep.Fail(c.CaseID, contract, fmt.Sprintf("parsing probe match: %v", err), diffs...)
 			return
 		}
-		store.Observe(probe, deviceplane.ProvenanceDiscovered, 1)
+		store.Observe(deviceplane.Observation{
+			Match:       probe,
+			Provenance:  deviceplane.ProvenanceDiscovered,
+			Driver:      "probe-driver",
+			NativeID:    "probe-native-id",
+			DeviceClass: "media-player",
+		}, 1)
 		grown := store.Report()
 		if len(grown.Body.Candidates) != len(firstReport.Body.Candidates)+1 {
 			diffs = append(diffs, report.Diff{Field: "candidate_view_replaces_prior_view (grown-by-one probe, REL-111)", Expected: len(firstReport.Body.Candidates) + 1, Actual: len(grown.Body.Candidates)})
@@ -197,13 +241,13 @@ func driveREL110(rep *report.Report, cases map[string]corpus.Case) {
 		for _, want := range firstReport.Body.Candidates {
 			found := false
 			for _, got := range grown.Body.Candidates {
-				if got.Match.Key() == want.Match.Key() {
+				if deviceplane.Key(got.Driver, got.NativeID) == deviceplane.Key(want.Driver, want.NativeID) {
 					found = true
 					break
 				}
 			}
 			if !found {
-				diffs = append(diffs, report.Diff{Field: "candidate_view_replaces_prior_view (prior candidate retained, REL-111)", Expected: want.Match.Key(), Actual: "missing from grown report"})
+				diffs = append(diffs, report.Diff{Field: "candidate_view_replaces_prior_view (prior candidate retained, REL-111)", Expected: deviceplane.Key(want.Driver, want.NativeID), Actual: "missing from grown report"})
 			}
 		}
 	}

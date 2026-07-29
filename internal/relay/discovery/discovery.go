@@ -4,10 +4,13 @@
 // search-target-string hit into the device plane's candidate Store as a
 // ProvenanceDiscovered candidate (contracts/relay-1.md REL-110/111).
 //
-// A candidate this package Observes is a MATCH-PATTERN hit — the pattern
-// that matched, not a resolved device identity (REL-110's frozen Candidate
-// shape carries only the Match, provenance, lifecycle status, and
-// first/last-seen marks).
+// A candidate this package Observes is one DEVICE (REL-110a): the responding
+// device's own SSDP USN is its `native_id`, and the Watch that matched supplies
+// the `driver`, device class, and entity fan-out that identity is completed by.
+// A response carrying no USN is DROPPED rather than observed under a synthetic
+// identity — two devices answering one search target would otherwise collapse
+// into a single candidate, and neither could then be listed or addressed
+// (REL-111a, REL-153).
 //
 // Discoverer plays the SSDP CONTROL-POINT role only: this box searching for
 // and listening to other devices on the LAN. The SSDP RESPONDER role — so
@@ -41,11 +44,14 @@ const (
 )
 
 // foundService is the minimal shape of an SSDP search response discovery
-// cares about: just the ST (search-target) it responded under, MAN-071's
-// "search-target string". Decoupled from go-ssdp's own ssdp.Service so unit
-// tests can inject fakes without touching multicast.
+// cares about: the ST (search-target) it responded under, MAN-071's
+// "search-target string", and the USN the responder identified itself by —
+// SSDP's own Unique Service Name, which is the stable per-device identifier
+// this lane reports as REL-110a's `native_id`. Decoupled from go-ssdp's own
+// ssdp.Service so unit tests can inject fakes without touching multicast.
 type foundService struct {
-	ST string
+	ST  string
+	USN string
 }
 
 // searchFn performs one SSDP M-SEARCH round for searchType, waiting waitSec
@@ -63,7 +69,7 @@ func defaultSearch(searchType string, waitSec int) ([]foundService, error) {
 	}
 	found := make([]foundService, 0, len(services))
 	for _, svc := range services {
-		found = append(found, foundService{ST: svc.Type})
+		found = append(found, foundService{ST: svc.Type, USN: svc.USN})
 	}
 	return found, nil
 }
@@ -78,30 +84,63 @@ type ssdpMonitor interface {
 }
 
 // monitorFactory builds an ssdpMonitor that reports every alive NOTIFY's NT
-// (notification-type, MAN-071's search-target string) to onAlive as it
-// arrives. The default (defaultMonitorFactory) is real go-ssdp; tests
-// inject a fake factory.
-type monitorFactory func(onAlive func(nt string)) ssdpMonitor
+// (notification-type, MAN-071's search-target string) and USN (the announcing
+// device's own identity, REL-110a's `native_id`) to onAlive as it arrives. The
+// default (defaultMonitorFactory) is real go-ssdp; tests inject a fake factory.
+type monitorFactory func(onAlive func(nt, usn string)) ssdpMonitor
 
 // defaultMonitorFactory is the real go-ssdp-backed monitorFactory
 // (REL-110/111): an *ssdp.Monitor whose Alive handler reports the NOTIFY's
-// NT to onAlive.
-func defaultMonitorFactory(onAlive func(nt string)) ssdpMonitor {
+// NT and USN to onAlive.
+func defaultMonitorFactory(onAlive func(nt, usn string)) ssdpMonitor {
 	return &ssdp.Monitor{
 		Alive: func(m *ssdp.AliveMessage) {
-			onAlive(m.Type)
+			onAlive(m.Type, m.USN)
 		},
+	}
+}
+
+// Watch is one declared discovery watch: a manifest/1 MAN-071 match pattern
+// plus the facts a device found by it is reported under (REL-110a).
+//
+// Driver names the adapter that speaks to such a device and is half of
+// REL-153's identity tuple; DeviceClass names the vocabulary its commands
+// resolve against (device-class-registry/1 REG-052); Entities are the
+// addressable handles the driver exposes for one device of that class.
+//
+// None of these is discoverable from an SSDP response — they come from the
+// declaration that asked for the search (a pack's device contribution,
+// manifest/1 MAN-070), which is exactly what a match pattern already is. The
+// response supplies only the USN that identifies WHICH device answered.
+type Watch struct {
+	Match       deviceplane.Match
+	Driver      string
+	DeviceClass string
+	Entities    []deviceplane.CandidateEntity
+}
+
+// observation builds the Observation one responder with this USN is reported
+// as: the watch's declared facts plus the responder's own identity.
+func (w Watch) observation(usn string) deviceplane.Observation {
+	return deviceplane.Observation{
+		Match:       w.Match,
+		Provenance:  deviceplane.ProvenanceDiscovered,
+		Driver:      w.Driver,
+		NativeID:    usn,
+		DeviceClass: w.DeviceClass,
+		Entities:    w.Entities,
 	}
 }
 
 // Config configures a Discoverer (REL-110/111).
 type Config struct {
-	// Patterns is the manifest/1 MAN-071 match set to watch for. Only
-	// entries with SSDP set are used; MDNS/MacOui entries are ignored here
-	// — mDNS discovery is a separate, later lane, and MacOui has no SSDP
-	// analogue. Multiple patterns sharing the same SSDP string collapse to
-	// one sweep target.
-	Patterns []deviceplane.Match
+	// Watches is the set of declared discovery watches this lane sweeps for:
+	// each pairs a manifest/1 MAN-071 match with the driver, device class and
+	// entity fan-out a device matching it is reported under (REL-110a). Only
+	// watches whose Match sets SSDP are used; MDNS/MacOui entries are ignored
+	// here — mDNS discovery is its own lane, and MacOui has no SSDP analogue.
+	// Multiple watches sharing one SSDP string collapse to one sweep target.
+	Watches []Watch
 
 	// Store is the candidate store every matched pattern is Observe'd into
 	// (REL-110/111). Required.
@@ -125,7 +164,7 @@ type Config struct {
 // deviceplane.Store as a ProvenanceDiscovered candidate (REL-110/111). See
 // the package doc for the CONTROL-POINT/RESPONDER split.
 type Discoverer struct {
-	byST       map[string]deviceplane.Match
+	byST       map[string]Watch
 	store      *deviceplane.Store
 	nowMillis  func() int64
 	interval   time.Duration
@@ -145,15 +184,15 @@ func New(cfg Config) (*Discoverer, error) {
 		return nil, errors.New("discovery: Config.NowMillis must not be nil")
 	}
 
-	byST := make(map[string]deviceplane.Match)
-	for _, p := range cfg.Patterns {
-		if p.SSDP == "" {
+	byST := make(map[string]Watch)
+	for _, w := range cfg.Watches {
+		if w.Match.SSDP == "" {
 			continue
 		}
-		byST[p.SSDP] = p
+		byST[w.Match.SSDP] = w
 	}
 	if len(byST) == 0 {
-		return nil, errors.New("discovery: Config.Patterns has no usable SSDP pattern")
+		return nil, errors.New("discovery: Config.Watches has no usable SSDP watch")
 	}
 
 	interval := cfg.Interval
@@ -200,7 +239,7 @@ func New(cfg Config) (*Discoverer, error) {
 // goroutines can briefly outlive Monitor.Close(), and a blocked Search
 // goroutine can outlive Run itself).
 func (d *Discoverer) Run(ctx context.Context) error {
-	mon := d.newMonitor(func(nt string) {
+	mon := d.newMonitor(func(nt, usn string) {
 		if ctx.Err() != nil {
 			// Run has already been asked to stop (or has returned): a NOTIFY
 			// from go-ssdp's own detached per-packet goroutine — which can
@@ -208,7 +247,7 @@ func (d *Discoverer) Run(ctx context.Context) error {
 			// late.
 			return
 		}
-		d.observeAlive(nt)
+		d.observeAlive(nt, usn)
 	})
 	if err := mon.Start(); err != nil {
 		return fmt.Errorf("discovery: starting alive monitor: %w", err)
@@ -242,13 +281,13 @@ func (d *Discoverer) Run(ctx context.Context) error {
 // returns immediately rather than searching every remaining pattern in this
 // round, each at the already-doomed full SearchWait cost.
 func (d *Discoverer) sweep(ctx context.Context) {
-	for st, m := range d.byST {
+	for st, w := range d.byST {
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
-		d.searchPattern(ctx, st, m)
+		d.searchPattern(ctx, st, w)
 	}
 }
 
@@ -265,7 +304,7 @@ func (d *Discoverer) sweep(ctx context.Context) {
 // immediately before every Store.Observe call, so a late result is
 // discarded rather than landing on the Store after Run has already returned
 // to its caller.
-func (d *Discoverer) searchPattern(ctx context.Context, st string, m deviceplane.Match) {
+func (d *Discoverer) searchPattern(ctx context.Context, st string, w Watch) {
 	waitSec := int(d.searchWait / time.Second)
 	done := make(chan struct{})
 	go func() {
@@ -284,7 +323,12 @@ func (d *Discoverer) searchPattern(ctx context.Context, st string, m deviceplane
 			if ctx.Err() != nil {
 				return
 			}
-			d.store.Observe(m, deviceplane.ProvenanceDiscovered, d.nowMillis())
+			// A response with no USN identifies no device: Observe would drop
+			// it anyway (REL-110a), and skipping here says so at the source.
+			if f.USN == "" {
+				continue
+			}
+			d.store.Observe(w.observation(f.USN), d.nowMillis())
 		}
 	}()
 	select {
@@ -299,10 +343,10 @@ func (d *Discoverer) searchPattern(ctx context.Context, st string, m deviceplane
 // logic only — Run wraps this in a ctx.Err() guard (see Run's doc) before
 // wiring it to the real monitor, so this method itself stays directly
 // testable without a context.
-func (d *Discoverer) observeAlive(nt string) {
-	m, ok := d.byST[nt]
-	if !ok {
+func (d *Discoverer) observeAlive(nt, usn string) {
+	w, ok := d.byST[nt]
+	if !ok || usn == "" {
 		return
 	}
-	d.store.Observe(m, deviceplane.ProvenanceDiscovered, d.nowMillis())
+	d.store.Observe(w.observation(usn), d.nowMillis())
 }

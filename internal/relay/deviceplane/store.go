@@ -1,11 +1,25 @@
 package deviceplane
 
-import "sync"
+import (
+	"sync"
 
-// This file (Task 2) carries the candidate Store: the relay's view of the
-// devices its own discovery has observed but that are not (or no longer)
-// adopted, and the full-set device.candidates report the app peer replaces
-// its prior view with (contracts/relay-1.md REL-110/111).
+	"github.com/maaxton/waiveo-next/internal/shared/deviceid"
+)
+
+// This file carries the candidate Store: the relay's view of the devices its
+// own discovery has observed but that are not (or no longer) adopted, and the
+// full-set device.candidates report the app peer replaces its prior view with
+// (contracts/relay-1.md REL-110/110a/110b/111/111a).
+//
+// A candidate is one DEVICE, not one pattern hit. REL-110 says the relay
+// reports "devices its own discovery has observed", and REL-110a gives each
+// candidate the `(driver, native_id)` half of the identity tuple REL-153 scopes
+// a device_id to. That is why this store keys by identity (REL-111a) rather
+// than by `match`: a LAN with two Rokus answers ONE declared search target, so
+// a match-keyed store would collapse both devices into a single candidate and
+// the app peer could never list, address, or adopt either of them
+// individually. `match` is retained on each candidate as the provenance of the
+// sighting — which declared pattern found it — never as its identity.
 
 // Provenance records how a candidate came to the relay's attention (REL-110):
 // discovered by the relay's own listeners, or manually asserted by an operator.
@@ -39,18 +53,63 @@ const IgnoredForever = "forever"
 // candidatesMessageType is the device.candidates envelope type (REL-110).
 const candidatesMessageType = "device.candidates"
 
-// Candidate is one entry in a device.candidates report (REL-110): a discovery
-// Match, how it was learned (Provenance), its lifecycle Status, an
-// IgnoredUntil that is present if and only if Status is ignored (a
-// Timestamp-ms string or the literal "forever"), and first/last-seen
-// Timestamp-ms marks. Serialized to the corpus's field order/shape.
+// CandidateEntity is one addressable object a candidate device exposes
+// (REL-110a): the device-native Key the relay addresses it by, the DeviceClass
+// governing its command vocabulary, and its last observed State when known.
+//
+// Key is the relay's own addressing handle. It is NOT an entity_id: the app
+// peer derives that from the key and the device's identity (REL-110b), and this
+// relay derives the identical value to resolve an inbound command
+// (Store.ResolveEntity).
+type CandidateEntity struct {
+	Key         string `json:"key"`
+	DeviceClass string `json:"device_class"`
+	State       string `json:"state,omitempty"`
+}
+
+// Observation is one sighting of a physical device, as a discovery lane reports
+// it into the Store. It is the input side of a Candidate: everything the relay
+// LEARNED, with none of the lifecycle state the Store itself maintains.
+//
+// Driver and NativeID are the two site-scoped halves of REL-153's identity
+// tuple and together key the store (REL-111a). Match is the declared pattern
+// that produced the sighting (MAN-071). Entities are the addressable handles
+// the driver exposes for a device of this class.
+type Observation struct {
+	Match       Match
+	Provenance  Provenance
+	Driver      string
+	NativeID    string
+	DeviceClass string
+	Name        string
+	Entities    []CandidateEntity
+}
+
+// identityKey is the store's key: REL-153's `(driver, native_id)` pair under
+// the same NUL-separated spelling the app-side device row's own duplicate check
+// uses (internal/datamodel.checkDeviceEntry), so the two planes agree on when
+// two records name one device. The site is not part of the key because a relay
+// serves exactly one site.
+func (o Observation) identityKey() string { return o.Driver + "\x00" + o.NativeID }
+
+// Candidate is one entry in a device.candidates report (REL-110/110a): a
+// discovery Match, how it was learned (Provenance), its lifecycle Status, an
+// IgnoredUntil that is present if and only if Status is ignored (a Timestamp-ms
+// string or the literal "forever"), first/last-seen Timestamp-ms marks, and the
+// device identity and entity fan-out REL-110a adds. Serialized to the corpus's
+// field order/shape.
 type Candidate struct {
-	Match        Match      `json:"match"`
-	Provenance   Provenance `json:"provenance"`
-	Status       Status     `json:"status"`
-	IgnoredUntil *string    `json:"ignored_until"`
-	FirstSeen    int64      `json:"first_seen"`
-	LastSeen     int64      `json:"last_seen"`
+	Match        Match             `json:"match"`
+	Provenance   Provenance        `json:"provenance"`
+	Status       Status            `json:"status"`
+	IgnoredUntil *string           `json:"ignored_until"`
+	FirstSeen    int64             `json:"first_seen"`
+	LastSeen     int64             `json:"last_seen"`
+	Driver       string            `json:"driver"`
+	NativeID     string            `json:"native_id"`
+	DeviceClass  string            `json:"device_class"`
+	Name         string            `json:"name,omitempty"`
+	Entities     []CandidateEntity `json:"entities"`
 }
 
 // CandidatesBody is the device.candidates message body (REL-110): the full
@@ -68,15 +127,22 @@ type CandidatesReport struct {
 	Body    CandidatesBody `json:"body"`
 }
 
-// Store is the relay's candidate set, keyed by Match.Key() so re-observations
-// of the same discovery Match dedup rather than accumulate (REL-111). It
-// tracks first-observed order so a full-set Report is deterministic, and is
+// Store is the relay's candidate set, keyed by REL-153 device identity so
+// re-observations of the same device dedup rather than accumulate (REL-111a).
+// It tracks first-observed order so a full-set Report is deterministic, and is
 // safe for concurrent Observe/mutate/Report.
+//
+// site is the app peer's authoritative site scope node, adopted from hello-ack
+// (REL-036) and required only for ResolveEntity — the derivation both peers
+// must agree on (REL-110b). Until a site is adopted the store still observes
+// and reports; it simply cannot resolve an inbound command yet, which is the
+// truthful answer for a relay that has not completed a handshake.
 type Store struct {
 	mu      sync.Mutex
 	relayID string
-	order   []string              // Match.Key()s in first-observed order
-	byKey   map[string]*Candidate // Match.Key() -> candidate
+	site    string
+	order   []string              // identity keys in first-observed order
+	byKey   map[string]*Candidate // identity key -> candidate
 }
 
 // NewStore returns an empty candidate Store that stamps its device.candidates
@@ -85,31 +151,66 @@ func NewStore(relayID string) *Store {
 	return &Store{relayID: relayID, byKey: make(map[string]*Candidate)}
 }
 
-// Observe records that discovery saw m at atMs (a Timestamp-ms). On first
-// sight it inserts a pending candidate with first_seen == last_seen == atMs;
-// a re-observation of the same Match (by Key) bumps last_seen forward (never
-// backward) and never moves first_seen (REL-110/111 dedup-by-match).
-func (s *Store) Observe(m Match, provenance Provenance, atMs int64) {
-	key := m.Key()
+// SetSite adopts the app peer's authoritative site scope node (REL-036), the
+// third member of REL-153's identity tuple. It is what lets ResolveEntity
+// derive the same entity ids the app peer derives (REL-110b). Called on every
+// hello-ack, including a redial's.
+func (s *Store) SetSite(scopeNode string) {
+	s.mu.Lock()
+	s.site = scopeNode
+	s.mu.Unlock()
+}
+
+// Observe records that discovery saw the device o describes at atMs (a
+// Timestamp-ms). On first sight it inserts a pending candidate with
+// first_seen == last_seen == atMs; a re-observation of the same DEVICE (by
+// REL-153 identity) bumps last_seen forward (never backward), never moves
+// first_seen, and refreshes the mutable facts a later sighting can legitimately
+// correct — the match that found it this time, its self-reported name, its
+// class, and its entity fan-out. Lifecycle state (status, ignored_until) is the
+// store's own and is never reset by a re-observation.
+//
+// An observation carrying no identity is DROPPED rather than stored: without
+// `(driver, native_id)` there is nothing the app peer could key, list, or
+// address it as (REL-110a/153), and a candidate the app peer must discard is
+// not one worth reporting.
+func (s *Store) Observe(o Observation, atMs int64) {
+	if o.Driver == "" || o.NativeID == "" {
+		return
+	}
+	key := o.identityKey()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if c, ok := s.byKey[key]; ok {
 		if atMs > c.LastSeen {
 			c.LastSeen = atMs
 		}
+		c.Match = o.Match
+		c.DeviceClass = o.DeviceClass
+		c.Name = o.Name
+		c.Entities = append([]CandidateEntity(nil), o.Entities...)
 		return
 	}
 	s.byKey[key] = &Candidate{
-		Match:      m,
-		Provenance: provenance,
-		Status:     StatusPending,
-		FirstSeen:  atMs,
-		LastSeen:   atMs,
+		Match:       o.Match,
+		Provenance:  o.Provenance,
+		Status:      StatusPending,
+		FirstSeen:   atMs,
+		LastSeen:    atMs,
+		Driver:      o.Driver,
+		NativeID:    o.NativeID,
+		DeviceClass: o.DeviceClass,
+		Name:        o.Name,
+		Entities:    append([]CandidateEntity(nil), o.Entities...),
 	}
 	s.order = append(s.order, key)
 }
 
-// Adopt marks the candidate with the given Match.Key() adopted and clears any
+// Key returns the store key for one REL-153 identity — what Adopt and Ignore
+// name a candidate by.
+func Key(driver, nativeID string) string { return driver + "\x00" + nativeID }
+
+// Adopt marks the candidate with the given identity Key adopted and clears any
 // ignored_until (REL-110: ignored_until is present only while ignored). A
 // key naming no known candidate is a no-op.
 func (s *Store) Adopt(key string) {
@@ -121,7 +222,7 @@ func (s *Store) Adopt(key string) {
 	}
 }
 
-// Ignore marks the candidate with the given Match.Key() ignored until `until`
+// Ignore marks the candidate with the given identity Key ignored until `until`
 // — a Timestamp-ms string or IgnoredForever. Passing nil is treated as
 // IgnoredForever so the REL-110 iff invariant (ignored_until present while
 // ignored) always holds. A key naming no known candidate is a no-op.
@@ -151,6 +252,7 @@ func (s *Store) Report() CandidatesReport {
 	cands := make([]Candidate, 0, len(s.order))
 	for _, key := range s.order {
 		c := *s.byKey[key] // copy — never expose internal pointers
+		c.Entities = append([]CandidateEntity(nil), c.Entities...)
 		if c.Status != StatusIgnored {
 			c.IgnoredUntil = nil
 		}
@@ -161,4 +263,43 @@ func (s *Store) Report() CandidatesReport {
 		RelayID: s.relayID,
 		Body:    CandidatesBody{Candidates: cands},
 	}
+}
+
+// ResolveEntity is an EntityResolver over the relay's own candidate set: it
+// maps an entity_id the app peer addressed back to the candidate device that
+// exposes it and that entity's device class (REL-112/113).
+//
+// It exists because a DISCOVERED device has no adopted record yet, so nothing
+// has ever told this relay what id the app peer knows its entities by. REL-110b
+// closes that: both peers derive the id from the same identity tuple, so the
+// relay can recompute every id it could possibly have been addressed at and
+// match on it — an equality check against values this relay derived itself,
+// never an identifier it accepted from the wire.
+//
+// It reports ok=false while no site has been adopted (nothing to derive
+// against) and for any id no candidate of this relay derives to — in which case
+// the command is refused COMMAND_UNRESOLVED without touching a device, exactly
+// as an unknown entity id always is.
+//
+// An IGNORED candidate resolves to nothing: suppressing a device is an
+// instruction not to act on it, and honouring it for listing while still
+// executing commands against it would make the suppression cosmetic.
+func (s *Store) ResolveEntity(entityID string) (deviceID, deviceClass string, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.site == "" || entityID == "" {
+		return "", "", false
+	}
+	for _, key := range s.order {
+		c := s.byKey[key]
+		if c.Status == StatusIgnored {
+			continue
+		}
+		for _, e := range c.Entities {
+			if deviceid.Entity(s.site, c.Driver, c.NativeID, e.Key) == entityID {
+				return deviceid.Device(s.site, c.Driver, c.NativeID), e.DeviceClass, true
+			}
+		}
+	}
+	return "", "", false
 }

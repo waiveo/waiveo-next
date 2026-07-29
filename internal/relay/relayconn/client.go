@@ -603,6 +603,39 @@ func (c *Client) SendStateAck(correlationID, traceID string, body wire.StateAckB
 	return nil
 }
 
+// SendDeviceCandidates sends one `device.candidates` report: the relay's FULL
+// current candidate set, which the app peer takes as replacing its prior view of
+// this relay (REL-110/111).
+//
+// It is one-way and uncorrelated — the contract defines no reply — so it carries
+// a fresh id purely as this frame's own identifier (REL-006's correlation id has
+// nothing to pair with here) and no trace id, since a candidate set traces to no
+// single originating operation.
+//
+// The body is passed as the already-built full-set report the relay's own
+// candidate store produced (internal/relay/deviceplane.Store.Report), so what
+// travels is exactly what that store reports and this method invents nothing.
+// The envelope's relay_id is THIS connection's authenticated identity, not
+// whatever the report was stamped with: the app peer authenticates the reporter
+// by the connection anyway (REL-041/150), and a mismatch between the two would
+// be a defect on this side, not a claim worth transmitting.
+func (c *Client) SendDeviceCandidates(body wire.DeviceCandidatesBody) error {
+	if body.Candidates == nil {
+		// REL-110's array is always present: a relay that has found nothing
+		// reports an empty set, which is a meaningful statement (it replaces
+		// whatever the app peer held), not an absent one.
+		body.Candidates = []wire.DeviceCandidate{}
+	}
+	f, err := wire.NewFrame(wire.FrameTypeDeviceCandidates, ulid.New(), c.relayID, body)
+	if err != nil {
+		return fmt.Errorf("relayconn: SendDeviceCandidates: %w", err)
+	}
+	if err := c.send(f); err != nil {
+		return fmt.Errorf("relayconn: SendDeviceCandidates: send: %w", err)
+	}
+	return nil
+}
+
 // RelayID returns the enrolled relay identity this connection authenticated as.
 func (c *Client) RelayID() string { return c.relayID }
 

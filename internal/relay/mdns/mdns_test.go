@@ -27,8 +27,9 @@ func mustMatch(t *testing.T, raw string) deviceplane.Match {
 }
 
 // buildPTRPacket hand-builds a raw mDNS response datagram carrying one PTR
-// answer whose owner name is ownerName and whose RDATA (the specific service
-// instance, never consulted by matching) is target.
+// answer whose owner name is ownerName (the service type matching keys on) and
+// whose RDATA is target — the specific service INSTANCE, which is the device's
+// native_id (REL-110a).
 func buildPTRPacket(t *testing.T, ownerName, target string) []byte {
 	t.Helper()
 	msg := dnsmessage.Message{
@@ -77,8 +78,21 @@ func buildAPacket(t *testing.T, ownerName string) []byte {
 	return data
 }
 
+// watchFor wraps a bare match in the declaration-side facts a Watch carries
+// (REL-110a) — the driver, class and entity handle a device found by this
+// pattern is reported under. Constant across this file's cases; what varies is
+// the PTR instance name a packet supplies as the device's native_id.
+func watchFor(m deviceplane.Match) Watch {
+	return Watch{
+		Match:       m,
+		Driver:      "mdns",
+		DeviceClass: "media-player",
+		Entities:    []deviceplane.CandidateEntity{{Key: "main", DeviceClass: "media-player"}},
+	}
+}
+
 func TestNewValidation(t *testing.T) {
-	waiveoPattern := []deviceplane.Match{mustMatch(t, `{"mdns":"_waiveo._tcp"}`)}
+	waiveoWatch := []Watch{watchFor(mustMatch(t, `{"mdns":"_waiveo._tcp"}`))}
 	store := deviceplane.NewStore("relay-1")
 	now := func() int64 { return 1000 }
 
@@ -88,20 +102,20 @@ func TestNewValidation(t *testing.T) {
 	}{
 		{
 			name: "nil Store",
-			cfg:  Config{Patterns: waiveoPattern, Store: nil, NowMillis: now},
+			cfg:  Config{Watches: waiveoWatch, Store: nil, NowMillis: now},
 		},
 		{
 			name: "nil NowMillis",
-			cfg:  Config{Patterns: waiveoPattern, Store: store, NowMillis: nil},
+			cfg:  Config{Watches: waiveoWatch, Store: store, NowMillis: nil},
 		},
 		{
 			name: "no patterns at all",
-			cfg:  Config{Patterns: nil, Store: store, NowMillis: now},
+			cfg:  Config{Watches: nil, Store: store, NowMillis: now},
 		},
 		{
 			name: "only non-MDNS patterns",
 			cfg: Config{
-				Patterns:  []deviceplane.Match{mustMatch(t, `{"ssdp":"urn:roku-com:device:player:1"}`)},
+				Watches:   []Watch{watchFor(mustMatch(t, `{"ssdp":"urn:roku-com:device:player:1"}`))},
 				Store:     store,
 				NowMillis: now,
 			},
@@ -119,9 +133,9 @@ func TestNewValidation(t *testing.T) {
 func TestNewOK(t *testing.T) {
 	store := deviceplane.NewStore("relay-1")
 	now := func() int64 { return 1000 }
-	pat := []deviceplane.Match{mustMatch(t, `{"mdns":"_waiveo._tcp"}`)}
+	pat := []Watch{watchFor(mustMatch(t, `{"mdns":"_waiveo._tcp"}`))}
 
-	l, err := New(Config{Patterns: pat, Store: store, NowMillis: now})
+	l, err := New(Config{Watches: pat, Store: store, NowMillis: now})
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -141,7 +155,7 @@ func TestHandlePacketObservesMatchingPTR(t *testing.T) {
 	now := func() int64 { return 1000 }
 	pattern := mustMatch(t, `{"mdns":"_waiveo._tcp"}`)
 
-	l, err := New(Config{Patterns: []deviceplane.Match{pattern}, Store: store, NowMillis: now})
+	l, err := New(Config{Watches: []Watch{watchFor(pattern)}, Store: store, NowMillis: now})
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -175,7 +189,7 @@ func TestHandlePacketObservesMatchingPTRCaseInsensitive(t *testing.T) {
 	now := func() int64 { return 1000 }
 	pattern := mustMatch(t, `{"mdns":"_waiveo._tcp"}`)
 
-	l, err := New(Config{Patterns: []deviceplane.Match{pattern}, Store: store, NowMillis: now})
+	l, err := New(Config{Watches: []Watch{watchFor(pattern)}, Store: store, NowMillis: now})
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -201,7 +215,7 @@ func TestHandlePacketObservesMatchingPTRCaseInsensitivePattern(t *testing.T) {
 	now := func() int64 { return 1000 }
 	pattern := mustMatch(t, `{"mdns":"_Waiveo._TCP"}`)
 
-	l, err := New(Config{Patterns: []deviceplane.Match{pattern}, Store: store, NowMillis: now})
+	l, err := New(Config{Watches: []Watch{watchFor(pattern)}, Store: store, NowMillis: now})
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -225,7 +239,7 @@ func TestHandlePacketIgnoresNonMatchingPTR(t *testing.T) {
 	now := func() int64 { return 1000 }
 	pattern := mustMatch(t, `{"mdns":"_waiveo._tcp"}`)
 
-	l, err := New(Config{Patterns: []deviceplane.Match{pattern}, Store: store, NowMillis: now})
+	l, err := New(Config{Watches: []Watch{watchFor(pattern)}, Store: store, NowMillis: now})
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -246,7 +260,7 @@ func TestHandlePacketIgnoresNonPTRRecord(t *testing.T) {
 	now := func() int64 { return 1000 }
 	pattern := mustMatch(t, `{"mdns":"_waiveo._tcp"}`)
 
-	l, err := New(Config{Patterns: []deviceplane.Match{pattern}, Store: store, NowMillis: now})
+	l, err := New(Config{Watches: []Watch{watchFor(pattern)}, Store: store, NowMillis: now})
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -267,7 +281,7 @@ func TestHandlePacketMalformedIsSkippedWithoutPanic(t *testing.T) {
 	now := func() int64 { return 1000 }
 	pattern := mustMatch(t, `{"mdns":"_waiveo._tcp"}`)
 
-	l, err := New(Config{Patterns: []deviceplane.Match{pattern}, Store: store, NowMillis: now})
+	l, err := New(Config{Watches: []Watch{watchFor(pattern)}, Store: store, NowMillis: now})
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -303,14 +317,14 @@ func TestHandlePacketMalformedIsSkippedWithoutPanic(t *testing.T) {
 // TestHandlePacketRepeatedHitsBumpLastSeenNotDuplicate asserts two packets
 // for the same pattern — within one call and across two — dedup to a single
 // candidate with last_seen bumped and first_seen left alone (Store.Observe's
-// own Match.Key() dedup, REL-110/111).
+// own device-identity dedup, REL-110/111a).
 func TestHandlePacketRepeatedHitsBumpLastSeenNotDuplicate(t *testing.T) {
 	store := deviceplane.NewStore("relay-1")
 	nowVal := int64(1000)
 	now := func() int64 { return nowVal }
 	pattern := mustMatch(t, `{"mdns":"_waiveo._tcp"}`)
 
-	l, err := New(Config{Patterns: []deviceplane.Match{pattern}, Store: store, NowMillis: now})
+	l, err := New(Config{Watches: []Watch{watchFor(pattern)}, Store: store, NowMillis: now})
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -322,7 +336,7 @@ func TestHandlePacketRepeatedHitsBumpLastSeenNotDuplicate(t *testing.T) {
 
 	cands := store.Report().Body.Candidates
 	if len(cands) != 1 {
-		t.Fatalf("got %d candidates, want 1 (dedup by Match.Key()): %+v", len(cands), cands)
+		t.Fatalf("got %d candidates, want 1 (dedup by device identity): %+v", len(cands), cands)
 	}
 	if cands[0].FirstSeen != 1000 {
 		t.Errorf("first_seen = %d, want 1000 (must not move)", cands[0].FirstSeen)
@@ -400,7 +414,7 @@ func TestRunObservesDeliveredPacketsThenStopsPromptlyOnContextCancel(t *testing.
 	now := func() int64 { return 1000 }
 	pattern := mustMatch(t, `{"mdns":"_waiveo._tcp"}`)
 
-	l, err := New(Config{Patterns: []deviceplane.Match{pattern}, Store: store, NowMillis: now})
+	l, err := New(Config{Watches: []Watch{watchFor(pattern)}, Store: store, NowMillis: now})
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -452,7 +466,7 @@ func TestRunStopsPromptlyOnContextCancelWithNoTraffic(t *testing.T) {
 	now := func() int64 { return 1000 }
 	pattern := mustMatch(t, `{"mdns":"_waiveo._tcp"}`)
 
-	l, err := New(Config{Patterns: []deviceplane.Match{pattern}, Store: store, NowMillis: now})
+	l, err := New(Config{Watches: []Watch{watchFor(pattern)}, Store: store, NowMillis: now})
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -486,7 +500,7 @@ func TestRunReturnsListenError(t *testing.T) {
 	now := func() int64 { return 1000 }
 	pattern := mustMatch(t, `{"mdns":"_waiveo._tcp"}`)
 
-	l, err := New(Config{Patterns: []deviceplane.Match{pattern}, Store: store, NowMillis: now})
+	l, err := New(Config{Watches: []Watch{watchFor(pattern)}, Store: store, NowMillis: now})
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -516,7 +530,7 @@ func TestLiveMulticastListenSmoke(t *testing.T) {
 	now := func() int64 { return time.Now().UnixMilli() }
 	pattern := mustMatch(t, `{"mdns":"_waiveo._tcp"}`)
 
-	l, err := New(Config{Patterns: []deviceplane.Match{pattern}, Store: store, NowMillis: now})
+	l, err := New(Config{Watches: []Watch{watchFor(pattern)}, Store: store, NowMillis: now})
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -526,5 +540,39 @@ func TestLiveMulticastListenSmoke(t *testing.T) {
 
 	if err := l.Run(ctx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Run() against the real multicast socket: %v", err)
+	}
+}
+
+// TestHandlePacketReportsInstanceIdentity is REL-110a at the mDNS lane: the
+// PTR record's RDATA — the service INSTANCE the owner name enumerates
+// (RFC 6763 §4.1) — is the device's native_id. Two instances of one service
+// type must produce two candidates: matching on the owner name alone would
+// report both boxes as one, and neither could then be listed or addressed.
+func TestHandlePacketReportsInstanceIdentity(t *testing.T) {
+	store := deviceplane.NewStore("relay-1")
+	pattern := mustMatch(t, `{"mdns":"_waiveo._tcp"}`)
+	l, err := New(Config{Watches: []Watch{watchFor(pattern)}, Store: store, NowMillis: func() int64 { return 1000 }})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	l.handlePacket(buildPTRPacket(t, "_waiveo._tcp.local.", "TheHanger._waiveo._tcp.local."))
+	l.handlePacket(buildPTRPacket(t, "_waiveo._tcp.local.", "BackOffice._waiveo._tcp.local."))
+
+	cands := store.Report().Body.Candidates
+	if len(cands) != 2 {
+		t.Fatalf("got %d candidate(s), want 2 — two instances of one service type are two devices: %+v", len(cands), cands)
+	}
+	got := map[string]bool{}
+	for _, c := range cands {
+		got[c.NativeID] = true
+		if c.Driver != "mdns" || c.DeviceClass != "media-player" {
+			t.Errorf("candidate %q = driver %q class %q, want the watch's declared mdns/media-player", c.NativeID, c.Driver, c.DeviceClass)
+		}
+	}
+	for _, want := range []string{"TheHanger._waiveo._tcp", "BackOffice._waiveo._tcp"} {
+		if !got[want+".local"] {
+			t.Errorf("no candidate carries native_id %q.local; got %v", want, got)
+		}
 	}
 }

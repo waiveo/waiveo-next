@@ -446,6 +446,16 @@ func main() {
 	// paths agree on exactly the same command vocabulary (REG-052/REL-113).
 	deviceRegistry := deviceclass.Builtin()
 
+	// The candidate store the discovery lanes below Observe into and the
+	// device.candidates report rides from (REL-110/111). It is built HERE,
+	// ahead of the resolver selection, because it is also an EntityResolver: a
+	// device this relay discovered but nobody has adopted yet still has to
+	// resolve when the app peer addresses a command to one of its entities, and
+	// only the store knows what it discovered. Both peers derive those entity
+	// ids from the same identity tuple (REL-110b), so the resolution below is a
+	// comparison against values this relay derived itself.
+	candStore := deviceplane.NewStore(relayID.RelayID)
+
 	// Select the device plane's controller + resolver pair ONCE and use it for
 	// BOTH dispatch paths (edge rules via bootAutomationStack, preset batches
 	// via scheduleSink below), so a fired command resolves and dispatches
@@ -469,6 +479,21 @@ func main() {
 				return entityID, "media-player", true
 			}
 			return "", "", false
+		}
+	}
+	// Discovered-but-unadopted entities resolve too, and are tried FIRST: a
+	// configured ECP target is a deployment-time assertion about one entity id,
+	// while the candidate store is what this relay actually observed, so a
+	// discovered device never has its own command silently answered by an
+	// unrelated bridge entry. Falling through keeps the bridge working for the
+	// ids it does name.
+	{
+		bridge := devResolver
+		devResolver = func(entityID string) (string, string, bool) {
+			if deviceID, deviceClass, ok := candStore.ResolveEntity(entityID); ok {
+				return deviceID, deviceClass, true
+			}
+			return bridge(entityID)
 		}
 		log.Printf("waiveo-relay device plane: ECP controller live (%d target(s))", len(cfg.ecpTargets))
 	}
@@ -665,22 +690,28 @@ func main() {
 	}
 
 	// Discovery (REL-110/111): SSDP client sweep + mDNS listener each mint
-	// pattern-hit candidates into ONE SHARED candidate store when both lanes
+	// per-DEVICE candidates into ONE SHARED candidate store when both lanes
 	// are on — REL-110's device.candidates report is a full-set report per
 	// relay, not per discovery lane, so a candidate either lane observes must
-	// land in the same Store regardless of which one matched it. When only
-	// one lane is configured, candStore is still built here (there is no
-	// third lane yet to share it with). The store's device.candidates report
-	// rides to the app peer in Wave 2; for now a low-rate log line makes a
-	// live sweep's/listener's effect observable on-box. Timestamps are
+	// land in the same Store regardless of which one matched it. Timestamps are
 	// wall-clock Timestamp-ms — the store is in-memory relay state, not
 	// persisted evidence, so clock-trust gating does not apply to it.
+	//
+	// Each lane is configured with WATCHES rather than bare match patterns: a
+	// response identifies WHICH device answered (its USN, or the mDNS instance
+	// name), and the watch supplies the driver, device class and entity fan-out
+	// that identity is reported under (REL-110a). Those are declaration-side
+	// facts — a pack's device contribution, manifest/1 MAN-070 — not something
+	// a discovery response could state.
 	if cfg.discoveryOn || len(cfg.mdnsPatterns) > 0 {
-		candStore := deviceplane.NewStore(relayID.RelayID)
-
 		if cfg.discoveryOn {
 			disc, err := discovery.New(discovery.Config{
-				Patterns:  []deviceplane.Match{{SSDP: "roku:ecp"}},
+				Watches: []discovery.Watch{{
+					Match:       deviceplane.Match{SSDP: rokuSearchTarget},
+					Driver:      rokuDriver,
+					DeviceClass: mediaPlayerClass,
+					Entities:    []deviceplane.CandidateEntity{{Key: mainEntityKey, DeviceClass: mediaPlayerClass}},
+				}},
 				Store:     candStore,
 				NowMillis: func() int64 { return time.Now().UnixMilli() },
 			})
@@ -692,16 +723,21 @@ func main() {
 					log.Printf("waiveo-relay: discovery ended: %v", err)
 				}
 			}()
-			log.Printf("waiveo-relay SSDP discovery live (pattern roku:ecp)")
+			log.Printf("waiveo-relay SSDP discovery live (pattern %s)", rokuSearchTarget)
 		}
 
 		if len(cfg.mdnsPatterns) > 0 {
-			mdnsMatches := make([]deviceplane.Match, len(cfg.mdnsPatterns))
+			mdnsWatches := make([]mdns.Watch, len(cfg.mdnsPatterns))
 			for i, svcType := range cfg.mdnsPatterns {
-				mdnsMatches[i] = deviceplane.Match{MDNS: svcType}
+				mdnsWatches[i] = mdns.Watch{
+					Match:       deviceplane.Match{MDNS: svcType},
+					Driver:      mdnsDriver,
+					DeviceClass: mediaPlayerClass,
+					Entities:    []deviceplane.CandidateEntity{{Key: mainEntityKey, DeviceClass: mediaPlayerClass}},
+				}
 			}
 			mdnsListener, err := mdns.New(mdns.Config{
-				Patterns:  mdnsMatches,
+				Watches:   mdnsWatches,
 				Store:     candStore,
 				NowMillis: func() int64 { return time.Now().UnixMilli() },
 			})
@@ -716,17 +752,19 @@ func main() {
 			log.Printf("waiveo-relay mDNS discovery live (patterns %s)", strings.Join(cfg.mdnsPatterns, ", "))
 		}
 
+		// The full-set report rides upward on the discovery cadence (REL-110/111
+		// make every report a complete replace, so a periodic one is idempotent
+		// and a lost one is recovered by the next). Reconnects report
+		// immediately from OnConnected below rather than waiting for this tick.
 		go func() {
-			tick := time.NewTicker(time.Minute)
+			tick := time.NewTicker(candidateReportInterval)
 			defer tick.Stop()
 			for {
 				select {
 				case <-rootCtx.Done():
 					return
 				case <-tick.C:
-					if n := len(candStore.Report().Body.Candidates); n > 0 {
-						log.Printf("waiveo-relay discovery: %d candidate pattern(s) observed", n)
-					}
+					reportCandidates(liveConn.get(), candStore)
 				}
 			}
 		}()
@@ -843,6 +881,15 @@ func main() {
 			OnConnected: func(c *relayconn.Client) {
 				liveConn.set(c)
 				puller.adoptSite(c.HelloAck().SiteBinding)
+				// Adopt the app peer's authoritative site (REL-036) into the
+				// candidate store: it is the third member of the identity tuple
+				// both peers derive device/entity ids from (REL-153/110b), so
+				// until it is adopted this relay cannot resolve a command
+				// addressed to a device it discovered. Then report the full
+				// current set immediately — a reconnecting relay's app peer has
+				// no view of it until it does (REL-110/111).
+				candStore.SetSite(c.HelloAck().SiteBinding.ScopeNode)
+				reportCandidates(c, candStore)
 				// Pull-on-reconnect immediacy (and, for the seeded boot
 				// connection, a catch-up for anything authored between the
 				// boot pull and this point): a same-generation answer is a
@@ -1276,6 +1323,84 @@ func (c loggingController) Dispatch(entityID, command string, params map[string]
 	}
 	log.Printf("waiveo-relay dispatch [%s]: %s %s params=%v ok", c.source, entityID, command, keys)
 	return nil
+}
+
+// Discovery-watch facts for the deployment's own declared device lanes. A
+// discovery response says WHICH device answered; these say what a device found
+// that way is (REL-110a) — the driver that speaks to it, the class whose
+// vocabulary its commands resolve against, and the entity handle it exposes.
+// They stand in for a pack's own device contribution (manifest/1 MAN-070) until
+// installed packs drive the watch set.
+const (
+	rokuSearchTarget = "roku:ecp"
+	rokuDriver       = "roku-ecp"
+	mdnsDriver       = "mdns"
+	mediaPlayerClass = "media-player"
+	mainEntityKey    = "main"
+)
+
+// candidateReportInterval is how often the relay re-reports its full candidate
+// set while connected. Every report is a complete replace (REL-111), so this is
+// idempotent and a lost report costs at most one interval; a reconnect reports
+// immediately rather than waiting for the tick.
+const candidateReportInterval = time.Minute
+
+// reportCandidates sends the store's full current candidate set upward
+// (REL-110/111). A nil client is the ordinary offline case — the relay keeps
+// discovering while disconnected and the next connection reports what it found,
+// which is exactly what a full-set report makes safe. A send failure is logged
+// and dropped: the connection is already dying, its supervisor will redial, and
+// OnConnected reports again.
+func reportCandidates(c *relayconn.Client, store *deviceplane.Store) {
+	if c == nil {
+		return
+	}
+	report := store.Report()
+	if err := c.SendDeviceCandidates(wire.DeviceCandidatesBody{
+		Candidates: toWireCandidates(report.Body.Candidates),
+	}); err != nil {
+		log.Printf("waiveo-relay: reporting %d device candidate(s) failed (retried on the next report): %v",
+			len(report.Body.Candidates), err)
+		return
+	}
+	if n := len(report.Body.Candidates); n > 0 {
+		log.Printf("waiveo-relay discovery: reported %d device candidate(s) to the app peer", n)
+	}
+}
+
+// toWireCandidates projects the store's own candidates onto the relay/1 wire
+// shape. The two are separate types on purpose (internal/shared/wire's own
+// note): the app peer decodes into its own definition, and this projection is
+// where the producing side states, field by field, what it is claiming.
+func toWireCandidates(cands []deviceplane.Candidate) []wire.DeviceCandidate {
+	out := make([]wire.DeviceCandidate, 0, len(cands))
+	for _, c := range cands {
+		match, err := json.Marshal(c.Match)
+		if err != nil {
+			// A candidate whose match cannot be encoded has no MAN-071 form to
+			// report; dropping it is better than reporting a candidate whose
+			// provenance is unstatable.
+			continue
+		}
+		ents := make([]wire.CandidateEntity, 0, len(c.Entities))
+		for _, e := range c.Entities {
+			ents = append(ents, wire.CandidateEntity{Key: e.Key, DeviceClass: e.DeviceClass, State: e.State})
+		}
+		out = append(out, wire.DeviceCandidate{
+			Match:        match,
+			Provenance:   string(c.Provenance),
+			Status:       string(c.Status),
+			IgnoredUntil: c.IgnoredUntil,
+			FirstSeen:    c.FirstSeen,
+			LastSeen:     c.LastSeen,
+			Driver:       c.Driver,
+			NativeID:     c.NativeID,
+			DeviceClass:  c.DeviceClass,
+			Name:         c.Name,
+			Entities:     ents,
+		})
+	}
+	return out
 }
 
 // loopbackResolver is the Wave-1 stand-in entity resolver: it maps every

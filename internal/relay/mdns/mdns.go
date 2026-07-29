@@ -54,13 +54,15 @@ const maxDatagramSize = 65535
 
 // Config configures a Listener (REL-110/111).
 type Config struct {
-	// Patterns is the manifest/1 MAN-071 match set to watch for. Only
-	// entries with MDNS set are used; SSDP/MacOui entries are ignored here
-	// — SSDP discovery is internal/relay/discovery's own separate lane, and
-	// MacOui has no mDNS analogue. Multiple patterns sharing the same
+	// Watches is the set of declared discovery watches this lane listens for:
+	// each pairs a manifest/1 MAN-071 match with the driver, device class and
+	// entity fan-out a device found by it is reported under (REL-110a). Only
+	// watches whose Match sets MDNS are used; SSDP/MacOui entries are ignored
+	// here — SSDP discovery is internal/relay/discovery's own separate lane,
+	// and MacOui has no mDNS analogue. Multiple watches sharing the same
 	// service-type string collapse to one watched type, case-insensitively
 	// (RFC 1035 §2.3.3 — see byServiceType's own doc).
-	Patterns []deviceplane.Match
+	Watches []Watch
 
 	// Store is the candidate store every matched pattern is Observe'd into
 	// (REL-110/111). Required.
@@ -69,6 +71,20 @@ type Config struct {
 	// NowMillis is the Timestamp-ms clock Observe calls are stamped with.
 	// Required — inject a fake in tests rather than reading the wall clock.
 	NowMillis func() int64
+}
+
+// Watch is one declared discovery watch: a manifest/1 MAN-071 match pattern
+// plus the facts a device found by it is reported under (REL-110a). Driver
+// names the adapter that speaks to such a device (half of REL-153's identity
+// tuple), DeviceClass the vocabulary its commands resolve against, and
+// Entities the addressable handles that driver exposes. None is discoverable
+// from a PTR record — they come from the declaration that asked for the
+// listen; the record supplies only which instance announced.
+type Watch struct {
+	Match       deviceplane.Match
+	Driver      string
+	DeviceClass string
+	Entities    []deviceplane.CandidateEntity
 }
 
 // Listener listens for mDNS announcements and Observes every PTR-record
@@ -82,7 +98,7 @@ type Listener struct {
 	// case at construction and every lookup folds its own name the same
 	// way — matching must not depend on whatever case a manifest author or
 	// a particular device on the wire happened to use.
-	byServiceType map[string]deviceplane.Match
+	byServiceType map[string]Watch
 	store         *deviceplane.Store
 	nowMillis     func() int64
 
@@ -90,7 +106,7 @@ type Listener struct {
 }
 
 // New returns a Listener for cfg. It errors if cfg.Store or cfg.NowMillis is
-// nil, or if cfg.Patterns contains no usable (MDNS-set) pattern.
+// nil, or if cfg.Watches contains no usable (MDNS-set) watch.
 func New(cfg Config) (*Listener, error) {
 	if cfg.Store == nil {
 		return nil, errors.New("mdns: Config.Store must not be nil")
@@ -99,15 +115,15 @@ func New(cfg Config) (*Listener, error) {
 		return nil, errors.New("mdns: Config.NowMillis must not be nil")
 	}
 
-	byServiceType := make(map[string]deviceplane.Match)
-	for _, p := range cfg.Patterns {
-		if p.MDNS == "" {
+	byServiceType := make(map[string]Watch)
+	for _, w := range cfg.Watches {
+		if w.Match.MDNS == "" {
 			continue
 		}
-		byServiceType[strings.ToLower(p.MDNS)] = p
+		byServiceType[strings.ToLower(w.Match.MDNS)] = w
 	}
 	if len(byServiceType) == 0 {
-		return nil, errors.New("mdns: Config.Patterns has no usable MDNS pattern")
+		return nil, errors.New("mdns: Config.Watches has no usable MDNS watch")
 	}
 
 	return &Listener{
@@ -211,25 +227,44 @@ func (l *Listener) handlePacket(data []byte) {
 }
 
 // observePTRRecords Observes every PTR resource in resources whose owner
-// name, normalized, matches a configured pattern (REL-110/111) — the
+// name, normalized, matches a configured watch (REL-110/111) — the
 // comparison folds case (byServiceType's own doc): DNS names are
 // case-insensitive (RFC 1035 §2.3.3), so a device announcing
 // "_Waiveo._TCP.local." must still hit a configured "_waiveo._tcp" pattern.
-// A PTR record's RDATA (the specific service instance it names) is never
-// consulted — only its owner name, the service type being enumerated
-// (RFC 6763 §4.1) — and a non-PTR resource or a non-matching name is
-// ignored.
+// A non-PTR resource or a non-matching owner name is ignored.
+//
+// The record's RDATA — the specific service INSTANCE the owner name enumerates
+// (RFC 6763 §4.1) — is this lane's `native_id` (REL-110a). It is what
+// distinguishes two devices of one service type on one LAN, and without it both
+// would collapse into a single candidate that neither could be listed or
+// addressed as (REL-111a, REL-153). A PTR carrying no instance name identifies
+// no device and is skipped.
 func (l *Listener) observePTRRecords(resources []dnsmessage.Resource, atMs int64) {
 	for _, r := range resources {
 		if r.Header.Type != dnsmessage.TypePTR {
 			continue
 		}
 		serviceType := normalizeServiceType(r.Header.Name.String())
-		m, ok := l.byServiceType[strings.ToLower(serviceType)]
+		w, ok := l.byServiceType[strings.ToLower(serviceType)]
 		if !ok {
 			continue
 		}
-		l.store.Observe(m, deviceplane.ProvenanceDiscovered, atMs)
+		ptr, ok := r.Body.(*dnsmessage.PTRResource)
+		if !ok {
+			continue
+		}
+		instance := strings.TrimSuffix(ptr.PTR.String(), ".")
+		if instance == "" {
+			continue
+		}
+		l.store.Observe(deviceplane.Observation{
+			Match:       w.Match,
+			Provenance:  deviceplane.ProvenanceDiscovered,
+			Driver:      w.Driver,
+			NativeID:    instance,
+			DeviceClass: w.DeviceClass,
+			Entities:    w.Entities,
+		}, atMs)
 	}
 }
 

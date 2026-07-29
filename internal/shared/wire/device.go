@@ -14,11 +14,90 @@
 // `trace_id`).
 package wire
 
-// Frame type discriminators for the device plane's command surface (REL-112).
+import "encoding/json"
+
+// Frame type discriminators for the device plane's command surface (REL-112)
+// and its upward candidate report (REL-110).
 const (
 	FrameTypeDeviceCommand       = "device.command"
 	FrameTypeDeviceCommandResult = "device.command_result"
+	FrameTypeDeviceCandidates    = "device.candidates"
 )
+
+// DeviceCandidatesBody is `device.candidates`'s body (REL-110/111): the relay's
+// FULL current candidate set, which the app peer takes as replacing its prior
+// view of that relay rather than as a delta to fold in.
+type DeviceCandidatesBody struct {
+	Candidates []DeviceCandidate `json:"candidates"`
+}
+
+// DeviceCandidate is one entry of that report: REL-110's original six members
+// plus the device identity and entity fan-out REL-110a adds.
+//
+// This is the APP PEER's decode shape, deliberately kept separate from the
+// relay's own producing type (internal/relay/deviceplane.Candidate) even though
+// the two describe one wire object. A relay is untrusted input; sharing one
+// struct would mean a change on the producing side silently changed what the
+// consuming side parses, and would let the producer's field set define the
+// consumer's. The two are held in agreement by driving a real report from a
+// real relay through a real connection, not by sharing a definition.
+//
+// What this shape deliberately has NO field for is a platform row identifier.
+// `device_id` and `entity_id` are derived by the app peer from REL-153's
+// identity tuple (REL-110b, internal/shared/deviceid), so a relay that puts an
+// `id` on the wire is not refused — it is structurally unable to be heard,
+// because nothing decodes it.
+//
+// Match is carried as raw JSON and is not consumed by the read model: it
+// records WHICH declared discovery pattern caused the observation (manifest/1
+// MAN-071), which is the relay's own provenance for the sighting, not a member
+// of the device the app peer lists.
+type DeviceCandidate struct {
+	Match        json.RawMessage   `json:"match"`
+	Provenance   string            `json:"provenance"`
+	Status       string            `json:"status"`
+	IgnoredUntil *string           `json:"ignored_until"`
+	FirstSeen    int64             `json:"first_seen"`
+	LastSeen     int64             `json:"last_seen"`
+	Driver       string            `json:"driver"`
+	NativeID     string            `json:"native_id"`
+	DeviceClass  string            `json:"device_class"`
+	Name         string            `json:"name,omitempty"`
+	Entities     []CandidateEntity `json:"entities"`
+}
+
+// CandidateEntity is one addressable object a candidate device exposes
+// (REL-110a): the device-native Key the relay addresses it by, the DeviceClass
+// whose vocabulary governs commands to it (device-class-registry/1 REG-052),
+// and its last observed State when the relay has one.
+//
+// Key is a relay-side addressing handle, not a platform id: the app peer
+// derives the entity_id from it (REL-110b) and never carries the key itself
+// into a resource representation.
+type CandidateEntity struct {
+	Key         string `json:"key"`
+	DeviceClass string `json:"device_class"`
+	State       string `json:"state,omitempty"`
+}
+
+// Candidate status values (REL-110). A candidate is `pending` until something
+// acts on it; `adopted` once it has been promoted; `ignored` while suppressed.
+const (
+	CandidateStatusPending = "pending"
+	CandidateStatusAdopted = "adopted"
+	CandidateStatusIgnored = "ignored"
+)
+
+// Candidate provenance values (REL-110): observed by the relay's own discovery,
+// or asserted by an operator.
+const (
+	CandidateProvenanceDiscovered = "discovered"
+	CandidateProvenanceManual     = "manual"
+)
+
+// CandidateIgnoredForever is REL-110's literal `ignored_until` value meaning a
+// candidate is suppressed with no expiry, as opposed to a Timestamp-ms expiry.
+const CandidateIgnoredForever = "forever"
 
 // DeviceCommandBody is `device.command`'s body (REL-112):
 // `{entity_id, command, params}`. `entity_id` is ALREADY resolved to one

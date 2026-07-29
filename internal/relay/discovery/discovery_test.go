@@ -33,8 +33,22 @@ type fakeMonitor struct {
 func (f *fakeMonitor) Start() error { f.started = true; return nil }
 func (f *fakeMonitor) Close() error { f.closed = true; return nil }
 
+// watchFor wraps a bare match in the declaration-side facts a Watch carries
+// (REL-110a) — the driver, class and entity handle a device found by this
+// pattern is reported under. Every case in this file uses one media-player
+// watch, so the facts are constant and the identity a response supplies (its
+// USN) is the only thing that varies.
+func watchFor(m deviceplane.Match) Watch {
+	return Watch{
+		Match:       m,
+		Driver:      "roku-ecp",
+		DeviceClass: "media-player",
+		Entities:    []deviceplane.CandidateEntity{{Key: "main", DeviceClass: "media-player"}},
+	}
+}
+
 func TestNewValidation(t *testing.T) {
-	rokuPattern := []deviceplane.Match{mustMatch(t, `{"ssdp":"urn:roku-com:device:player:1"}`)}
+	rokuWatch := []Watch{watchFor(mustMatch(t, `{"ssdp":"urn:roku-com:device:player:1"}`))}
 	store := deviceplane.NewStore("relay-1")
 	now := func() int64 { return 1000 }
 
@@ -44,20 +58,20 @@ func TestNewValidation(t *testing.T) {
 	}{
 		{
 			name: "nil Store",
-			cfg:  Config{Patterns: rokuPattern, Store: nil, NowMillis: now},
+			cfg:  Config{Watches: rokuWatch, Store: nil, NowMillis: now},
 		},
 		{
 			name: "nil NowMillis",
-			cfg:  Config{Patterns: rokuPattern, Store: store, NowMillis: nil},
+			cfg:  Config{Watches: rokuWatch, Store: store, NowMillis: nil},
 		},
 		{
 			name: "no patterns at all",
-			cfg:  Config{Patterns: nil, Store: store, NowMillis: now},
+			cfg:  Config{Watches: nil, Store: store, NowMillis: now},
 		},
 		{
 			name: "only non-SSDP patterns",
 			cfg: Config{
-				Patterns:  []deviceplane.Match{mustMatch(t, `{"mdns":"_googlecast._tcp"}`)},
+				Watches:   []Watch{watchFor(mustMatch(t, `{"mdns":"_googlecast._tcp"}`))},
 				Store:     store,
 				NowMillis: now,
 			},
@@ -75,9 +89,9 @@ func TestNewValidation(t *testing.T) {
 func TestNewDefaultsAndOverrides(t *testing.T) {
 	store := deviceplane.NewStore("relay-1")
 	now := func() int64 { return 1000 }
-	pat := []deviceplane.Match{mustMatch(t, `{"ssdp":"urn:roku-com:device:player:1"}`)}
+	pat := []Watch{watchFor(mustMatch(t, `{"ssdp":"urn:roku-com:device:player:1"}`))}
 
-	d, err := New(Config{Patterns: pat, Store: store, NowMillis: now})
+	d, err := New(Config{Watches: pat, Store: store, NowMillis: now})
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -89,7 +103,7 @@ func TestNewDefaultsAndOverrides(t *testing.T) {
 	}
 
 	d2, err := New(Config{
-		Patterns:   pat,
+		Watches:    pat,
 		Store:      store,
 		NowMillis:  now,
 		Interval:   5 * time.Second,
@@ -114,12 +128,12 @@ func TestSweepObservesMatchingST(t *testing.T) {
 	now := func() int64 { return 1000 }
 	pattern := mustMatch(t, `{"ssdp":"urn:roku-com:device:player:1"}`)
 
-	d, err := New(Config{Patterns: []deviceplane.Match{pattern}, Store: store, NowMillis: now})
+	d, err := New(Config{Watches: []Watch{watchFor(pattern)}, Store: store, NowMillis: now})
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
 	d.search = func(st string, wait int) ([]foundService, error) {
-		return []foundService{{ST: st}}, nil
+		return []foundService{{ST: st, USN: "uuid:device:1"}}, nil
 	}
 
 	d.sweep(context.Background())
@@ -146,12 +160,12 @@ func TestSweepIgnoresNonMatchingST(t *testing.T) {
 	now := func() int64 { return 1000 }
 	pattern := mustMatch(t, `{"ssdp":"urn:roku-com:device:player:1"}`)
 
-	d, err := New(Config{Patterns: []deviceplane.Match{pattern}, Store: store, NowMillis: now})
+	d, err := New(Config{Watches: []Watch{watchFor(pattern)}, Store: store, NowMillis: now})
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
 	d.search = func(st string, wait int) ([]foundService, error) {
-		return []foundService{{ST: "urn:some-other:device:1"}}, nil
+		return []foundService{{ST: "urn:some-other:device:1", USN: "uuid:device:1"}}, nil
 	}
 
 	d.sweep(context.Background())
@@ -171,13 +185,13 @@ func TestSweepRepeatedHitsBumpLastSeenNotDuplicate(t *testing.T) {
 	now := func() int64 { return nowVal }
 	pattern := mustMatch(t, `{"ssdp":"urn:roku-com:device:player:1"}`)
 
-	d, err := New(Config{Patterns: []deviceplane.Match{pattern}, Store: store, NowMillis: now})
+	d, err := New(Config{Watches: []Watch{watchFor(pattern)}, Store: store, NowMillis: now})
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
 	d.search = func(st string, wait int) ([]foundService, error) {
 		// Two responses in the same sweep round.
-		return []foundService{{ST: st}, {ST: st}}, nil
+		return []foundService{{ST: st, USN: "uuid:device:1"}, {ST: st, USN: "uuid:device:1"}}, nil
 	}
 
 	d.sweep(context.Background())
@@ -186,7 +200,7 @@ func TestSweepRepeatedHitsBumpLastSeenNotDuplicate(t *testing.T) {
 
 	cands := store.Report().Body.Candidates
 	if len(cands) != 1 {
-		t.Fatalf("got %d candidates, want 1 (dedup by Match.Key()): %+v", len(cands), cands)
+		t.Fatalf("got %d candidates, want 1 (dedup by device identity): %+v", len(cands), cands)
 	}
 	if cands[0].FirstSeen != 1000 {
 		t.Errorf("first_seen = %d, want 1000 (must not move)", cands[0].FirstSeen)
@@ -205,7 +219,7 @@ func TestSweepSearchErrorDoesNotStopOtherPatterns(t *testing.T) {
 	bad := mustMatch(t, `{"ssdp":"urn:bad:device:1"}`)
 	good := mustMatch(t, `{"ssdp":"urn:good:device:1"}`)
 
-	d, err := New(Config{Patterns: []deviceplane.Match{bad, good}, Store: store, NowMillis: now})
+	d, err := New(Config{Watches: []Watch{watchFor(bad), watchFor(good)}, Store: store, NowMillis: now})
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -213,7 +227,7 @@ func TestSweepSearchErrorDoesNotStopOtherPatterns(t *testing.T) {
 		if st == "urn:bad:device:1" {
 			return nil, errors.New("boom")
 		}
-		return []foundService{{ST: st}}, nil
+		return []foundService{{ST: st, USN: "uuid:device:1"}}, nil
 	}
 
 	d.sweep(context.Background())
@@ -234,12 +248,12 @@ func TestObserveAliveMatchingNT(t *testing.T) {
 	now := func() int64 { return 5000 }
 	pattern := mustMatch(t, `{"ssdp":"urn:roku-com:device:player:1"}`)
 
-	d, err := New(Config{Patterns: []deviceplane.Match{pattern}, Store: store, NowMillis: now})
+	d, err := New(Config{Watches: []Watch{watchFor(pattern)}, Store: store, NowMillis: now})
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
 
-	d.observeAlive("urn:roku-com:device:player:1")
+	d.observeAlive("urn:roku-com:device:player:1", "uuid:device:1")
 
 	cands := store.Report().Body.Candidates
 	if len(cands) != 1 {
@@ -260,12 +274,12 @@ func TestObserveAliveNonMatchingNTIgnored(t *testing.T) {
 	now := func() int64 { return 5000 }
 	pattern := mustMatch(t, `{"ssdp":"urn:roku-com:device:player:1"}`)
 
-	d, err := New(Config{Patterns: []deviceplane.Match{pattern}, Store: store, NowMillis: now})
+	d, err := New(Config{Watches: []Watch{watchFor(pattern)}, Store: store, NowMillis: now})
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
 
-	d.observeAlive("urn:some-other:device:1")
+	d.observeAlive("urn:some-other:device:1", "uuid:device:1")
 
 	if cands := store.Report().Body.Candidates; len(cands) != 0 {
 		t.Fatalf("got %d candidates, want 0: %+v", len(cands), cands)
@@ -283,7 +297,7 @@ func TestRunStopsPromptlyOnContextCancel(t *testing.T) {
 	pattern := mustMatch(t, `{"ssdp":"urn:roku-com:device:player:1"}`)
 
 	d, err := New(Config{
-		Patterns:  []deviceplane.Match{pattern},
+		Watches:   []Watch{watchFor(pattern)},
 		Store:     store,
 		NowMillis: now,
 		Interval:  time.Hour,
@@ -293,7 +307,7 @@ func TestRunStopsPromptlyOnContextCancel(t *testing.T) {
 	}
 
 	mon := &fakeMonitor{}
-	d.newMonitor = func(onAlive func(string)) ssdpMonitor { return mon }
+	d.newMonitor = func(onAlive func(string, string)) ssdpMonitor { return mon }
 	d.search = func(st string, wait int) ([]foundService, error) { return nil, nil }
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -332,7 +346,7 @@ func TestRunStopsPromptlyDuringSlowSearch(t *testing.T) {
 	pattern := mustMatch(t, `{"ssdp":"urn:roku-com:device:player:1"}`)
 
 	d, err := New(Config{
-		Patterns:  []deviceplane.Match{pattern},
+		Watches:   []Watch{watchFor(pattern)},
 		Store:     store,
 		NowMillis: now,
 		Interval:  time.Hour,
@@ -342,7 +356,7 @@ func TestRunStopsPromptlyDuringSlowSearch(t *testing.T) {
 	}
 
 	mon := &fakeMonitor{}
-	d.newMonitor = func(onAlive func(string)) ssdpMonitor { return mon }
+	d.newMonitor = func(onAlive func(string, string)) ssdpMonitor { return mon }
 
 	searchStarted := make(chan struct{})
 	releaseSearch := make(chan struct{})
@@ -350,7 +364,7 @@ func TestRunStopsPromptlyDuringSlowSearch(t *testing.T) {
 	d.search = func(st string, wait int) ([]foundService, error) {
 		searchStartedOnce.Do(func() { close(searchStarted) })
 		<-releaseSearch // held open well past ctx cancellation and Run's return
-		return []foundService{{ST: st}}, nil
+		return []foundService{{ST: st, USN: "uuid:device:1"}}, nil
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -388,9 +402,9 @@ func TestRunStopsPromptlyDuringSlowSearch(t *testing.T) {
 func TestNewClampsSubSecondSearchWaitToOneSecond(t *testing.T) {
 	store := deviceplane.NewStore("relay-1")
 	now := func() int64 { return 1000 }
-	pat := []deviceplane.Match{mustMatch(t, `{"ssdp":"urn:roku-com:device:player:1"}`)}
+	pat := []Watch{watchFor(mustMatch(t, `{"ssdp":"urn:roku-com:device:player:1"}`))}
 
-	d, err := New(Config{Patterns: pat, Store: store, NowMillis: now, SearchWait: 500 * time.Millisecond})
+	d, err := New(Config{Watches: pat, Store: store, NowMillis: now, SearchWait: 500 * time.Millisecond})
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -415,5 +429,75 @@ func TestLiveLANSearch(t *testing.T) {
 	}
 	if len(found) == 0 {
 		t.Fatal("expected >= 1 roku:ecp response on the dev LAN, got 0")
+	}
+}
+
+// TestSweepReportsResponderIdentity is REL-110a at the SSDP lane: the candidate
+// a sweep produces names WHICH device answered, not merely that the pattern was
+// hit. Two responders under one search target must produce two candidates, each
+// carrying its own USN as its native_id — the case a lane that discarded the USN
+// gets wrong, and the reason a device discovered here can be listed and
+// addressed at all.
+func TestSweepReportsResponderIdentity(t *testing.T) {
+	store := deviceplane.NewStore("relay-1")
+	now := func() int64 { return 1000 }
+	pattern := mustMatch(t, `{"ssdp":"urn:roku-com:device:player:1"}`)
+
+	d, err := New(Config{Watches: []Watch{watchFor(pattern)}, Store: store, NowMillis: now})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	d.search = func(st string, wait int) ([]foundService, error) {
+		return []foundService{
+			{ST: st, USN: "uuid:roku:X1"},
+			{ST: st, USN: "uuid:roku:X2"},
+		}, nil
+	}
+
+	d.sweep(context.Background())
+
+	cands := store.Report().Body.Candidates
+	if len(cands) != 2 {
+		t.Fatalf("got %d candidate(s), want 2 — two responders under one search target are two devices", len(cands))
+	}
+	seen := map[string]deviceplane.Candidate{}
+	for _, c := range cands {
+		seen[c.NativeID] = c
+	}
+	for _, want := range []string{"uuid:roku:X1", "uuid:roku:X2"} {
+		c, ok := seen[want]
+		if !ok {
+			t.Fatalf("no candidate carries native_id %q; got %v", want, seen)
+		}
+		if c.Driver != "roku-ecp" || c.DeviceClass != "media-player" {
+			t.Errorf("candidate %q = driver %q class %q, want the watch's declared roku-ecp/media-player", want, c.Driver, c.DeviceClass)
+		}
+		if len(c.Entities) != 1 || c.Entities[0].Key != "main" {
+			t.Errorf("candidate %q entities = %+v, want the watch's declared single main handle", want, c.Entities)
+		}
+	}
+}
+
+// TestResponseWithoutUSNIsNotObserved: a response that identifies no device
+// cannot be reported as one (REL-110a). Observing it under a synthetic identity
+// would let two unidentifiable responders collapse into one candidate that
+// neither of them is.
+func TestResponseWithoutUSNIsNotObserved(t *testing.T) {
+	store := deviceplane.NewStore("relay-1")
+	pattern := mustMatch(t, `{"ssdp":"urn:roku-com:device:player:1"}`)
+	d, err := New(Config{Watches: []Watch{watchFor(pattern)}, Store: store, NowMillis: func() int64 { return 1 }})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	d.search = func(st string, wait int) ([]foundService, error) {
+		return []foundService{{ST: st}}, nil // no USN
+	}
+	d.sweep(context.Background())
+	if n := len(store.Report().Body.Candidates); n != 0 {
+		t.Fatalf("got %d candidate(s) from a response with no USN, want 0", n)
+	}
+	d.observeAlive("urn:roku-com:device:player:1", "")
+	if n := len(store.Report().Body.Candidates); n != 0 {
+		t.Fatalf("got %d candidate(s) from an alive NOTIFY with no USN, want 0", n)
 	}
 }
