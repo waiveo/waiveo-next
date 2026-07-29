@@ -10,7 +10,10 @@ import (
 	"testing"
 
 	"github.com/maaxton/waiveo-next/internal/app/api"
+	"github.com/maaxton/waiveo-next/internal/app/auth"
+	"github.com/maaxton/waiveo-next/internal/app/auth/authtest"
 	"github.com/maaxton/waiveo-next/internal/app/packs"
+	"github.com/maaxton/waiveo-next/internal/datamodel"
 )
 
 // This file drives the marketplace install over the REAL HTTP surface: nothing
@@ -562,5 +565,69 @@ func TestUninstallOfARequiredPackIsRefusedOverHTTP(t *testing.T) {
 	}
 	if page := packInstallHistory(t, e, "acme/menu-board"); len(page.Items) != 1 {
 		t.Fatalf("the refused uninstall removed the install records: %d left", len(page.Items))
+	}
+}
+
+// TestPackLifecycleRefusesBelowAdminAtTheOrgNode is the authorization claim for
+// the pack lifecycle, and the roles chosen are what make it mean something.
+//
+// `operator` clears auth.CanWrite's floor, which is what every OTHER mutating
+// route on this surface authorizes against — so before this gate existed, an
+// operator (indeed any authenticated principal at all) could install a pack, and
+// a pack install grants the capabilities its manifest requests, workspace-wide.
+// That is privilege acquisition, not an ordinary write.
+//
+// The site-scoped ADMIN is the sharper half: an admin binding at a leaf clears
+// the role floor but not at the workspace org node, so this pins that the gate
+// is asking at the right NODE rather than merely asking for the right role.
+func TestPackLifecycleRefusesBelowAdminAtTheOrgNode(t *testing.T) {
+	e := newEnv(t)
+	orgID := e.createNode(t, datamodel.ScopeNode{Kind: "org", Name: "Fixture Org", AccountState: "active"})
+	tz, lat, long := "America/Chicago", 41.8781, -87.6298
+	siteID := e.createNode(t, datamodel.ScopeNode{
+		Kind: "site", Name: "Fixture Site", ParentID: &orgID,
+		TZ: &tz, Lat: &lat, Long: &long,
+	})
+
+	cases := []struct {
+		name string
+		cfg  authtest.Config
+	}{
+		{"operator at the org node", authtest.Config{Role: auth.RoleOperator, ScopeNode: orgID}},
+		{"viewer at the org node", authtest.Config{Role: auth.RoleViewer, ScopeNode: orgID}},
+		{"admin at a SITE, not the org", authtest.Config{Role: auth.RoleAdmin, ScopeNode: siteID}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			who, err := e.auth.AddPrincipal(tc.cfg)
+			if err != nil {
+				t.Fatalf("AddPrincipal: %v", err)
+			}
+			for _, rt := range []struct{ method, path string }{
+				{http.MethodPost, "/api/v1/packs"},
+				{http.MethodDelete, "/api/v1/packs/acme/menu-board"},
+				{http.MethodPost, "/api/v1/packs/acme/menu-board/update"},
+			} {
+				resp, raw := e.doAsPrincipal(t, who, rt.method, rt.path, nil)
+				if resp.StatusCode != http.StatusForbidden {
+					t.Fatalf("%s %s as %s: status = %d, want 403; body %s", rt.method, rt.path, tc.name, resp.StatusCode, raw)
+				}
+				assertProblem(t, resp, raw, "FORBIDDEN")
+			}
+		})
+	}
+
+	// Positive control: an admin AT THE ORG NODE is admitted past the gate. It
+	// fails downstream on the empty body rather than on authorization, which is
+	// what proves the refusals above are the gate and not a route that refuses
+	// everyone.
+	admin, err := e.auth.AddPrincipal(authtest.Config{Role: auth.RoleAdmin, ScopeNode: orgID})
+	if err != nil {
+		t.Fatalf("AddPrincipal(admin at org): %v", err)
+	}
+	resp, raw := e.doAsPrincipal(t, admin, http.MethodPost, "/api/v1/packs", []byte("not-a-zip"))
+	if resp.StatusCode == http.StatusForbidden {
+		t.Fatalf("an admin at the org node was refused by the lifecycle gate; body %s", raw)
 	}
 }

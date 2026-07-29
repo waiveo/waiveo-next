@@ -736,3 +736,29 @@ func TestIdempotentCreateReplay(t *testing.T) {
 		t.Fatalf("stored screen id = %q, want the first-created %q", got, id1)
 	}
 }
+
+// doAsPrincipal is testEnv.do driven as a SPECIFIC principal rather than as the
+// fixture's own default credential — for the authorization cases, where who is
+// asking is the whole point of the test.
+func (e *testEnv) doAsPrincipal(t *testing.T, who authtest.Credential, method, path string, body []byte) (*http.Response, []byte) {
+	t.Helper()
+	var rdr io.Reader
+	if body != nil {
+		rdr = bytes.NewReader(body)
+	}
+	req, err := http.NewRequest(method, e.ts.URL+path, rdr)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	who.Authorize(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do %s %s: %v", method, path, err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	return resp, raw
+}

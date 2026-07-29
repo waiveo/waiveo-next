@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/maaxton/waiveo-next/internal/app/auth"
 	"github.com/maaxton/waiveo-next/internal/app/packs"
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/manifest"
@@ -174,6 +175,9 @@ func packEnvelopeOf(p store.Pack) packEnvelope {
 // in place, bumping its revision and returning 200); the same key with a
 // different artifact is a 409 reuse conflict.
 func (srv *server) installPack(w http.ResponseWriter, r *http.Request) {
+	if !srv.packLifecycleWritable(w, r) {
+		return
+	}
 	// Read the body under a hard cap (one beyond the artifact limit, so an
 	// over-limit upload is detected and refused as oversize rather than buffered
 	// whole). The pipeline's ReadBundle enforces the same limit authoritatively.
@@ -336,6 +340,9 @@ func (srv *server) getPack(w http.ResponseWriter, r *http.Request) {
 // ---- delete (uninstall) ---------------------------------------------------
 
 func (srv *server) deletePack(w http.ResponseWriter, r *http.Request) {
+	if !srv.packLifecycleWritable(w, r) {
+		return
+	}
 	id := packIDFromPath(r)
 	p, found, err := srv.store.GetPack(r.Context(), id)
 	if err != nil {
@@ -434,4 +441,63 @@ func (srv *server) packProblem(w http.ResponseWriter, r *http.Request, status in
 
 func (srv *server) packNotFound(w http.ResponseWriter, r *http.Request) {
 	srv.packProblem(w, r, http.StatusNotFound, "NOT_FOUND", "Not Found", "No pack exists at this identifier.")
+}
+
+// packLifecycleWritable gates the pack LIFECYCLE routes — install, update,
+// uninstall — and writes its own refusal, so a caller has one thing to check.
+//
+// Every other mutating surface on this api authorizes against the scope node the
+// row it touches sits at. A pack has no such node: it is workspace-global, its
+// declared collections and pages are reachable from every scope, and the
+// capabilities its manifest requests (MAN-021 — device.command, egress.http,
+// storage.write) are granted workspace-wide the moment it installs. So the
+// question "may this caller write HERE" has no per-node answer for a pack, and
+// answering it at some leaf would be authorizing a workspace-wide privilege
+// grant against a screen.
+//
+// The grain is therefore ADMIN AT THE WORKSPACE ORG NODE:
+//
+//   - not `operator`, which canWrite's floor would give: an operator runs the
+//     place day to day, and installing a pack is not an operation on the
+//     workspace's content but an addition to what the platform can do — a pack
+//     that requests egress.http is asking for a capability an operator is not
+//     otherwise able to grant themselves;
+//   - not `owner`, which the workspace DESTRUCTION path requires
+//     (authorizeWorkspaceOwner): removing the workspace is irreversible, and
+//     reserving owner for it keeps that refusal meaningful. Managing packs is
+//     administration, not destruction.
+//
+// security-model/1 defers the complete permission matrix (the draft-note beneath
+// SEC-012), so this is a HOST decision inside a deliberately open space rather
+// than a requirement being implemented. It is recorded here because the next
+// reader will otherwise have to infer it from a comparison.
+//
+// A root-bound principal passes without an org node existing: RootScopeNode is
+// the implicit outermost ancestor of every chain (auth.Resolve), which is what
+// the first-boot owner holds before any org node is authored.
+func (srv *server) packLifecycleWritable(w http.ResponseWriter, r *http.Request) bool {
+	view, err := srv.scopeView(r)
+	if err != nil {
+		srv.packProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error",
+			"An unexpected server error occurred.")
+		return false
+	}
+	node, _, err := srv.store.WorkspaceRoot(r.Context())
+	if err != nil {
+		// No org node authored yet: authorize against the root sentinel itself,
+		// which is where a first-boot owner's binding sits. Any other store error
+		// is a refusal, never a pass — an authorization question that cannot be
+		// resolved refuses (SEC-005).
+		if err != store.ErrNoWorkspace {
+			srv.packProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error",
+				"An unexpected server error occurred.")
+			return false
+		}
+		node = auth.RootScopeNode
+	}
+	if role, bound := view.roleAt(node); !bound || !role.AtLeast(auth.RoleAdmin) {
+		srv.packProblem(w, r, http.StatusForbidden, "FORBIDDEN", "Forbidden", unauthorizedWriteDetail)
+		return false
+	}
+	return true
 }

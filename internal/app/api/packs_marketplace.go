@@ -135,6 +135,9 @@ type packUpdateWire struct {
 // content hash, so a retry with the same key replays the original outcome rather
 // than running a second check.
 func (srv *server) updatePack(w http.ResponseWriter, r *http.Request) {
+	if !srv.packLifecycleWritable(w, r) {
+		return
+	}
 	// The operation takes no body and is fully determined by its path, so the
 	// Idempotency-Key replay-vs-reuse hash is over an EMPTY body rather than
 	// over whatever a client happened to send: two update checks under one key
