@@ -1,0 +1,158 @@
+{
+  "doc": [
+    "Every (contract, error code) pair a contract PUBLISHES in its Error taxonomy that no",
+    "implementation source can emit. scripts/validate-error-codes.mjs requires each published pair",
+    "to be either implemented or listed here with a reason; anything else fails the gate.",
+    "",
+    "This is an INVENTORY, not a suppression list. Implementing a code means DELETING its line —",
+    "the gate fails on an entry that has been overtaken, so the file only ever shrinks, and it can",
+    "never assert a gap that has been closed.",
+    "",
+    "Read the reasons before assuming a listed code is simply 'later work'. Three distinct states",
+    "hide in here, and they need different fixes:",
+    "  (a) the contract is not implemented at all — surface/1, most of ctx/1 and channel-index/1.",
+    "      Nothing is wrong; the code is published ahead of the subsystem, which is what a",
+    "      contract-first repo looks like.",
+    "  (b) the SURFACE EXISTS AND THE REFUSAL DOES NOT. A route accepts the request, a column",
+    "      holds the value, a handler runs — and the specific rejection the contract promises was",
+    "      never written. These are the dangerous ones: the feature reads as finished, and a",
+    "      traceability row can sit at `covered` because a driver observed the accept side.",
+    "      data-model/1's six, security-model's four, player/1's LEASE_UNKNOWN and relay/1's one.",
+    "  (c) the refusal EXISTS but is not spelled as the published code — free-text prose, a bare",
+    "      bool, a silent skip. A caller told to branch on `code` still cannot.",
+    "",
+    "Reasons cite file:line so a reader can check the claim rather than trust it."
+  ],
+  "groups": [
+    {
+      "contract": "surface-1.md",
+      "reason": "surface/1 is not implemented — there is no surface package, no bridge, no session or token type anywhere in Go. All six codes are published ahead of the subsystem, and the whole group goes away in one piece when the surface bridge is built. This is state (a): nothing here reads as finished.",
+      "codes": [
+        "SURFACE_TOKEN_EXPIRED",
+        "SURFACE_TOKEN_REVOKED",
+        "SURFACE_TOKEN_AUDIENCE_MISMATCH",
+        "SURFACE_SESSION_EXPIRED",
+        "VERB_NOT_ALLOWLISTED",
+        "BRIDGE_VERSION_INCOMPATIBLE"
+      ]
+    },
+    {
+      "contract": "channel-index.md",
+      "reason": "The signed-index half of channel-index/1 is unbuilt. What exists is the relay-release installer, scripts/install-from-channel-index.sh — POSIX shell on purpose, so it runs on an appliance image with no Go toolchain — which fetches the index, resolves eligible artifacts, and verifies digest and size. It does NOT verify the index signature, check namespace delegation, compare versions for rollback, judge index freshness, split parts, or consult a key-revocation feed, so none of these nine has anywhere to be raised. Note the scan limit that applies to this contract specifically: that script is not an implementation source (it spells its codes inside longer message strings), so a refusal implemented ONLY there would look unimplemented here — both codes it does raise, DIGEST_MISMATCH and SIZE_MISMATCH, are implemented in Go as well.",
+      "codes": [
+        "CHANNEL_INDEX_SIGNATURE_INVALID",
+        "NAMESPACE_NOT_DELEGATED",
+        "VERSION_ROLLBACK_REJECTED",
+        "TIMESTAMP_STALE",
+        "PART_INVALID",
+        "KEY_REVOKED",
+        "REVOCATION_FEED_UNAVAILABLE",
+        "REVOCATION_FEED_INVALID",
+        "CHANNEL_KIND_MISMATCH"
+      ]
+    },
+    {
+      "contract": "ctx-1.md",
+      "reason": "ctx/1 is the pack runtime's wire protocol, and there is no pack runtime: no host process, no verb dispatch, no egress broker. The three ctx/1 codes that ARE implemented (NOT_FOUND, REVISION_CONFLICT, PROTOCOL_VIOLATION) are spelled by the app-to-relay connection, which reuses them by name — not by a ctx/1 host. Nine remain with nothing to emit them: the two frame refusals, the negotiate range refusal, collection ownership, event declaration, payload schema, both egress refusals, and the removed-verb refusal. State (a).",
+      "codes": [
+        "FRAME_TOO_LARGE",
+        "MALFORMED_FRAME",
+        "INCOMPATIBLE_RANGE",
+        "COLLECTION_NOT_OWNED",
+        "EVENT_NOT_DECLARED",
+        "PAYLOAD_SCHEMA_INVALID",
+        "EGRESS_NOT_ALLOWLISTED",
+        "EGRESS_DENIED_IP_CLASS",
+        "VERB_REMOVED"
+      ]
+    },
+    {
+      "contract": "marketplace-1.md",
+      "reason": "Fifteen of marketplace/1's twenty-four codes are implemented, all of them on the INSTALL side (internal/app/packs — signature, signer trust, resolved identity, digest and size, channel namespace rules, pointer rollback). These nine are the PUBLISHER-REGISTRY side: reserved and confusable namespaces, resurrection of a retired name, unauthenticated rebinding, publisher-signature verification, the verified-publisher bar and its attestation revocation, rule-template binding classification, and installing from a stale source. There is no registry service in this repo to hold any of it. State (a), with a clean seam: the group closes when the registry lands, not piecemeal.",
+      "codes": [
+        "NAMESPACE_RESERVED",
+        "CONFUSABLE_COLLISION",
+        "RESURRECTION_ATTEMPT",
+        "REBIND_UNAUTHENTICATED",
+        "PUBLISHER_SIGNATURE_UNVERIFIED",
+        "VERIFIED_BAR_NOT_MET",
+        "RULE_TEMPLATE_BINDING_UNCLASSIFIABLE",
+        "VERIFIED_ATTESTATION_REVOKED",
+        "STALE_SOURCE_INSTALL"
+      ]
+    },
+    {
+      "contract": "archive-1.md",
+      "reason": "internal/archive implements the container READER, and the six codes a read can reach on its own bytes are all raised there. These five belong to a RESTORER, which decides them against a destination's schema epoch, asset store, base-archive chain, and live trust state. internal/archive/errors.go declares them anyway, under a comment that says exactly this: 'Declared, not raised here.' There is no restorer, and scripts/deadcode-baseline.json records the same gap from the other side — the entire reader is unreachable from every root.",
+      "codes": [
+        "EPOCH_TOO_NEW",
+        "BASE_ARCHIVE_UNAVAILABLE",
+        "ASSET_UNAVAILABLE",
+        "PACK_YANKED_BLOCKED",
+        "DEV_CHANNEL_REFUSED"
+      ]
+    },
+    {
+      "contract": "data-model-1.md",
+      "reason": "THE SURFACE EXISTS AND THE REFUSAL DOES NOT — state (b), and the sharpest case of it in the corpus. DELETE /scope-nodes/{id} is specified, routed (internal/app/api/api.go:472), handled (api.go:982) and returns 204 in a passing test (scopenodes_test.go:434); it enforces addressability, write authority and If-Match, and none of DAT-020/021/022. Worse than absent: BuildScopeTree is deliberately subtree-tolerant (internal/datamodel/scopetree.go:85-88,140), so orphaning children PASSES revalidation, and it bounds org nodes above only (:100-102), so a zero-org tree validates. Deleting a populated site, or the org itself, succeeds today. SCOPE_NODE_ACCOUNT_STATE_INVALID and SCOPE_NODE_ENTITLEMENTS_INVALID: the columns are on the struct (scopetree.go:25-26) and account_state is in the ScopeNode response schema, but BuildScopeTree's own contract list (:72-83) omits DAT-010/013, and internal/app/api/bodyschema.go:35-44 records that scope-node bodies are ungated on purpose. SCREEN_ID_UNRESOLVED: screen identity rows are real (internal/app/store/store.go:64) and a screen_id IS resolved at pairing (internal/app/store/pairinggrants.go:167), but the failure renders as a generic 404 NOT_FOUND, and content.played checks ULID syntax only (internal/events/content_played.go:52) — nothing anywhere detects a screen_id that names a scope node, which is the entire point of the code.",
+      "codes": [
+        "SCREEN_ID_UNRESOLVED",
+        "SCOPE_NODE_ACCOUNT_STATE_INVALID",
+        "SCOPE_NODE_ENTITLEMENTS_INVALID",
+        "SCOPE_NODE_NOT_EMPTY",
+        "SCOPE_NODE_IN_USE",
+        "SCOPE_NODE_ORG_UNDELETABLE"
+      ]
+    },
+    {
+      "contract": "security-model.md",
+      "reason": "Two whole features absent, two half-present. Break-glass recovery (SEC-060-065) has no CLI to run it — cmd/ holds only waiveo-feeder and waiveo-relay — and the one path that could mint a recovery grant refuses it as UNIMPLEMENTED for an unrelated reason (internal/app/auth/console.go:348). The vocabulary exists and is inert (PurposeRecovery, grant.go:23); claim state is queryable (bootstrap.go:50) but nothing joins it to grant issuance, so RECOVERY_GRANT_BEFORE_CLAIM has no site either. HOST_HELPER_VERB_UNKNOWN: no host-mutation helper exists at all — no socket, no verb enum, no caller. The console binding's own CONSOLE_VERB_NOT_ALLOWED (console.go:109) is SEC-075, the opposite privilege direction, and is not a substitute spelling. TLS_FALLBACK_ACTIVE: internal/shared/tlsboot is an unconditional self-signed generator with no validity check and no state machine (tlsboot.go:88), and the feeder always serves that one certificate (cmd/waiveo-feeder/main.go:1096) — there is no non-fallback state to fall back FROM, so the condition is untracked rather than false.",
+      "codes": [
+        "RECOVERY_NOT_AVAILABLE",
+        "RECOVERY_GRANT_BEFORE_CLAIM",
+        "HOST_HELPER_VERB_UNKNOWN",
+        "TLS_FALLBACK_ACTIVE"
+      ]
+    },
+    {
+      "contract": "player-1.md",
+      "reason": "TRUST_ANCHOR_AUTH_FAILED is state (c): the check is implemented TWICE and refuses correctly — player-v3/source/crypto/Commitment.brs:100 and internal/virtualplayer/virtualplayer.go:108 — but both report it as prose ('fingerprint commitment MISMATCH -- refusing to pair'), never as the published code, so a caller told to branch on `code` cannot. CONTENT_TYPE_UNSUPPORTED is a silent drop rather than a refusal: internal/relay/playerserver/program.go:709 filters unsupported items out of the program and returns no error, so the player receives a short program instead of a typed rejection. LEASE_UNKNOWN is state (b): the lease concept is thoroughly built, and the three handlers that would check it (program.go:570, :600, :628) validate non-emptiness only — handleLeaseAck stores the client's own lease_id as the map key, so any invented id is accepted, and handleRenderEnd does not inspect lease_id at all.",
+      "codes": ["TRUST_ANCHOR_AUTH_FAILED", "CONTENT_TYPE_UNSUPPORTED", "LEASE_UNKNOWN"]
+    },
+    {
+      "contract": "rules-1.md",
+      "reason": "One of the three features exists. `choose` is fully implemented (compile, classify, closure, eval), and the branch walk that would detect recursion is already there at internal/rules/compile/validate.go:97 — it just recurses with no visited set, so CHOOSE_BRANCH_RECURSION is state (b) and the smallest fix of the three. The other two are unbuilt: there is no static type checker (compile.Compile takes no registry, so it has no attribute types to check against, and internal/rules/registry/registry.go:20 says so outright — note the RUNTIME twin RUL-262 IS implemented, so the gap is precisely the compile-time half), and no rule-template parameter binder at all (`template` exists only as a vocabulary discriminant).",
+      "codes": ["CHOOSE_BRANCH_RECURSION", "TYPE_MISMATCH_STATIC", "TEMPLATE_PARAM_UNBOUND"]
+    },
+    {
+      "contract": "relay-1.md",
+      "reason": "State (b). The app peer produces the version — wire.StateSnapshot carries rules_minor_version, set at internal/feeder/snapshot/snapshot.go:100 — and the relay DISCARDS it: internal/relay/desiredstate/desiredstate.go:272 copies the rules through into a field that carries no version, and Host.ApplyEdgeRules takes none, so the major cannot reach the apply point. Per-rule failures then degrade to skip-and-log rather than refusing the generation. The version negotiation that does exist is protocol_version only (internal/relay/hello/negotiate.go:15).",
+      "codes": ["RULES_MAJOR_UNSUPPORTED"]
+    },
+    {
+      "contract": "events-1.md",
+      "reason": "State (c), and unreachable by construction. The disable state machine IS implemented — internal/events/webhook.go:71 defines the disabled status and RecordAttempt flips to it at the failure threshold — but the delivery loop returns early on a disabled endpoint (internal/app/webhookdeliver/webhookdeliver.go:296) and signals the operator through an optional Go callback, OnDisabled, rather than a taxonomy code. Because no delivery is ever ATTEMPTED against a disabled endpoint, the condition the taxonomy row describes cannot arise. scripts/deadcode-baseline.json holds the matching half: the endpoint lifecycle verbs (enable, rotate, accept-signature) have no caller either.",
+      "codes": ["WEBHOOK_ENDPOINT_DISABLED"]
+    },
+    {
+      "contract": "manifest-1.md",
+      "reason": "State (b), and confirmed independently by the other gate. internal/manifest/validate.go:85 parses compat.ctx as a range and throws the result away; the evaluator that would judge it, VersionRange.Allows, has no production caller and could not have one — HostRegistries (manifest.go:224) carries no map of host-implemented ctx/relay versions to compare against. So a pack declaring an unsatisfiable range installs. scripts/deadcode-baseline.json lists Allows, Comparator.allows and cmpPair as unreachable: the same defect seen as a call graph instead of as a taxonomy.",
+      "codes": ["COMPAT_RANGE_UNSATISFIED"]
+    },
+    {
+      "contract": "device-class-registry.md",
+      "reason": "State (c): the refusal is a bool, not a code. internal/deviceclass/registry.go answers an unknown class or command with `false` and says so in its own doc (:72-74, 'both degrade to the same bool'), and Classify returns the empty string for an unknown class (:106). One downstream caller does type the bool — cmd/waiveo-relay/main.go:1675 mints relay/1's COMMAND_UNRESOLVED — but never under this contract's own two codes.",
+      "codes": ["DEVICE_CLASS_UNKNOWN", "COMMAND_UNKNOWN"]
+    },
+    {
+      "contract": "device-class-registry.md",
+      "reason": "The refusal is computed by the CONFORMANCE DRIVER and by nothing else: conformance/drivers/deviceclass1/driver.go:192 and :270 decide both collisions against the raw Registry accessors, because the pack-to-host registration verb they belong to is ctx/1's and deferred. internal/deviceclass/validate.go disclaims them explicitly (:28-30) — its two name-collision checks are intra-class (ATTRIBUTE_NAME_COLLISION, COMMAND_NAME_COLLISION), never registration-time. So the conformance suite is green on a refusal no production path can produce, which is precisely why a driver does not count as an implementation source for this gate.",
+      "codes": ["CLASS_IDENTIFIER_COLLISION", "GROUP_NAME_COLLISION"]
+    },
+    {
+      "contract": "ui-schema-1.md",
+      "reason": "Seventeen of ui-schema/1's eighteen codes are implemented in TypeScript, in web/src/renderer/validate.ts, and driven by the web renderer corpus driver. This one is not: it is listed in ERROR_CODES (web/src/renderer/schema.ts) and never passed to fail(), because the validator resolves a fragmentRef against the declared fragment names (validate.ts:557) and validates each fragment's own shape, but never walks a reference chain — so there is no depth to exceed and no cycle to detect. State (b), inside an otherwise finished validator, which is exactly the shape that survives review.",
+      "codes": ["FRAGMENT_RECURSION_DEPTH_EXCEEDED"]
+    }
+  ]
+}

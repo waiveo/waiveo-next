@@ -1,0 +1,306 @@
+// scripts/validate-error-codes.test.mjs — exercises validate-error-codes.mjs
+// against disposable fixture trees built at test runtime. Fixtures are never
+// committed: a deliberately-unimplemented code living under the real contracts/
+// would itself trip the validator it is meant to test.
+//
+// These cases are the gate's own mutation evidence, kept executable. Two of them
+// (removeTheEmitSite, codeOnlyInAComment) are the exact mutations the gate was
+// verified against by hand; freezing them here means the gate cannot quietly
+// stop catching them.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { spawnSync } from "node:child_process";
+
+const VALIDATOR = join(import.meta.dirname, "validate-error-codes.mjs");
+
+const CONTRACT = `# Example Contract
+
+**Contract:** example/1
+**Version:** 1.0
+**Status:** draft
+
+## Normative requirements
+
+**[XXX-001]** The example MUST reject a bad thing (\`THING_INVALID\`, Error taxonomy).
+
+## Error taxonomy
+
+| code | meaning | retryable |
+|---|---|---|
+| \`THING_INVALID\` | The thing is not a thing. | no |
+| \`THING_MISSING\` | There is no thing. | no |
+
+## Conformance notes
+
+- nothing here.
+`;
+
+// THING_INVALID is emitted; THING_MISSING is not, so it must be allowlisted.
+const IMPL_GO = `package example
+
+func Reject(kind string) string {
+	if kind == "" {
+		return "THING_INVALID"
+	}
+	return ""
+}
+`;
+
+const ALLOWLIST = {
+  groups: [
+    {
+      contract: "example-1.md",
+      reason: "THING_MISSING has no emit site because the lookup path that would raise it is not built yet.",
+      codes: ["THING_MISSING"],
+    },
+  ],
+};
+
+function makeFixture(build) {
+  const root = mkdtempSync(join(tmpdir(), "validate-error-codes-"));
+  const write = (relPath, content) => {
+    const full = join(root, relPath);
+    mkdirSync(dirname(full), { recursive: true });
+    writeFileSync(full, typeof content === "string" ? content : JSON.stringify(content, null, 2));
+  };
+  build(write);
+  return root;
+}
+
+function writeGoodTree(write, overrides = {}) {
+  write("contracts/README.md", "# Contracts\n\nNo taxonomy here.\n");
+  write("contracts/example-1.md", overrides.contract ?? CONTRACT);
+  write("internal/example/example.go", overrides.impl ?? IMPL_GO);
+  write("conformance/unimplemented-error-codes.json", overrides.allowlist ?? ALLOWLIST);
+}
+
+function run(cwd) {
+  return spawnSync(process.execPath, [VALIDATOR], { cwd, encoding: "utf8" });
+}
+
+function withFixture(build, assertions) {
+  const root = makeFixture(build);
+  try {
+    assertions(run(root));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test("a clean tree passes and reports the pair count", () => {
+  withFixture(
+    (w) => writeGoodTree(w),
+    (r) => {
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, /SUMMARY: validate-error-codes: OK \(2 published pair\(s\), 1 allowlisted unimplemented\)/);
+    }
+  );
+});
+
+test("removing the emit site fails: an implemented code that leaves the implementation without entering the allowlist", () => {
+  withFixture(
+    (w) =>
+      writeGoodTree(w, {
+        impl: `package example
+
+func Reject(kind string) string {
+	if kind == "" {
+		return "SOMETHING_ELSE"
+	}
+	return ""
+}
+`,
+      }),
+    (r) => {
+      assert.equal(r.status, 1);
+      assert.match(r.stderr, /THING_INVALID is published in the Error taxonomy but no implementation source emits it/);
+      assert.match(r.stdout, /SUMMARY: validate-error-codes: FAILED — 1 issue/);
+    }
+  );
+});
+
+test("a code named only in a comment does not count as implemented", () => {
+  withFixture(
+    (w) =>
+      writeGoodTree(w, {
+        impl: `package example
+
+// Reject one day returns THING_INVALID here.
+func Reject(kind string) string { return "" }
+`,
+      }),
+    (r) => {
+      assert.equal(r.status, 1);
+      assert.match(r.stderr, /THING_INVALID is published .* but no implementation source emits it/);
+    }
+  );
+});
+
+test("a Go constant counts only when the identifier is referenced elsewhere", () => {
+  const declOnly = `package example
+
+const CodeThingInvalid = "THING_INVALID"
+`;
+  withFixture(
+    (w) => writeGoodTree(w, { impl: declOnly }),
+    (r) => {
+      assert.equal(r.status, 1, "a constant nothing reads is a declaration, not an implementation");
+      assert.match(r.stderr, /THING_INVALID is published/);
+    }
+  );
+  withFixture(
+    (w) =>
+      writeGoodTree(w, {
+        impl: `${declOnly}
+func Reject() string { return CodeThingInvalid }
+`,
+      }),
+    (r) => assert.equal(r.status, 0, r.stderr)
+  );
+});
+
+test("an array-literal element is a taxonomy mirror; a wrapped call argument is a use", () => {
+  // Both spell the code on a line of its own. Only the second is an emit site.
+  const mirror = `export const ERROR_CODES = [
+  "THING_INVALID",
+  "THING_MISSING",
+] as const;
+`;
+  const use = `${mirror}
+export function reject() {
+  return fail(
+    ctx,
+    "THING_INVALID",
+    "path",
+  );
+}
+`;
+  withFixture(
+    (w) => {
+      writeGoodTree(w);
+      w("internal/example/example.go", "package example\n");
+      w("web/src/renderer/schema.ts", mirror);
+    },
+    (r) => {
+      assert.equal(r.status, 1, "a code listed in a mirror of the taxonomy is not implemented by that listing");
+      assert.match(r.stderr, /THING_INVALID is published/);
+    }
+  );
+  withFixture(
+    (w) => {
+      writeGoodTree(w);
+      w("internal/example/example.go", "package example\n");
+      w("web/src/renderer/validate.ts", use);
+    },
+    (r) => assert.equal(r.status, 0, r.stderr)
+  );
+});
+
+test("test files, conformance drivers and generated files are not implementation sources", () => {
+  for (const [path, body] of [
+    ["internal/example/example_test.go", `package example\n\nvar want = "THING_INVALID"\n`],
+    ["conformance/drivers/x/driver.go", `package x\n\nfunc code() string { return "THING_INVALID" }\n`],
+    [
+      "api/gen/go/api.gen.go",
+      `// Code generated by oapi-codegen version v2.7.2 DO NOT EDIT.\npackage gen\n\nconst A = "THING_INVALID"\n\nvar B = A\n`,
+    ],
+  ]) {
+    withFixture(
+      (w) => {
+        writeGoodTree(w);
+        w("internal/example/example.go", "package example\n");
+        w(path, body);
+      },
+      (r) => {
+        assert.equal(r.status, 1, `${path} must not count as an implementation`);
+        assert.match(r.stderr, /THING_INVALID is published/);
+      }
+    );
+  }
+});
+
+test("an allowlist entry that has been overtaken by an implementation fails", () => {
+  withFixture(
+    (w) =>
+      writeGoodTree(w, {
+        impl: `package example
+
+func Reject(kind string) (string, string) { return "THING_INVALID", "THING_MISSING" }
+`,
+      }),
+    (r) => {
+      assert.equal(r.status, 1);
+      assert.match(r.stderr, /THING_MISSING IS implemented now .* delete it from/);
+    }
+  );
+});
+
+test("an allowlist entry for a code the contract no longer publishes fails", () => {
+  withFixture(
+    (w) =>
+      writeGoodTree(w, {
+        allowlist: {
+          groups: [
+            { contract: "example-1.md", reason: "A code that was renamed away and left behind here.", codes: ["THING_MISSING", "GONE_AWAY"] },
+          ],
+        },
+      }),
+    (r) => {
+      assert.equal(r.status, 1);
+      assert.match(r.stderr, /does not publish GONE_AWAY in its Error taxonomy/);
+    }
+  );
+});
+
+test("a placeholder reason fails, so the inventory cannot become 62 TODOs", () => {
+  for (const reason of ["TODO", "TBD", "n/a", "-", "too short"]) {
+    withFixture(
+      (w) => writeGoodTree(w, { allowlist: { groups: [{ contract: "example-1.md", reason, codes: ["THING_MISSING"] }] } }),
+      (r) => {
+        assert.equal(r.status, 1, `reason ${JSON.stringify(reason)} must be rejected`);
+        assert.match(r.stderr, /reason is a placeholder or too short/);
+      }
+    );
+  }
+});
+
+test("the same pair listed twice fails", () => {
+  withFixture(
+    (w) =>
+      writeGoodTree(w, {
+        allowlist: {
+          groups: [
+            { contract: "example-1.md", reason: "The first group carrying this unbuilt lookup path.", codes: ["THING_MISSING"] },
+            { contract: "example-1.md", reason: "A second group that duplicates the first one's entry.", codes: ["THING_MISSING"] },
+          ],
+        },
+      }),
+    (r) => {
+      assert.equal(r.status, 1);
+      assert.match(r.stderr, /lists THING_MISSING twice/);
+    }
+  );
+});
+
+test("a taxonomy row inside a fenced block is illustration, not publication", () => {
+  withFixture(
+    (w) =>
+      writeGoodTree(w, {
+        contract: `${CONTRACT}
+Example of the shape:
+
+\`\`\`
+| code | meaning | retryable |
+| \`NEVER_PUBLISHED\` | illustration only | no |
+\`\`\`
+`,
+      }),
+    (r) => {
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, /2 published pair\(s\)/);
+    }
+  );
+});
