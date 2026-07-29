@@ -1850,6 +1850,7 @@ paths:
         returned it (data-model/1 DAT-041).
       tags: [content]
       parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
         - $ref: "#/components/parameters/TraceIdParam"
       requestBody:
         required: true
@@ -1865,6 +1866,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
 
   # ---------------------------------------------------------------------
   # webhook-endpoints — outbound webhook registration (events/1 EVT-150).

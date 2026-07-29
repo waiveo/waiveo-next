@@ -2,6 +2,8 @@ package api_test
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -109,6 +111,44 @@ func TestContentUploadIdempotent(t *testing.T) {
 	}
 	if first.URL != second.URL {
 		t.Fatalf("re-upload url = %q, want %q", second.URL, first.URL)
+	}
+}
+
+// TestContentUploadHonorsIdempotencyKey pins API-050/052/053 on the upload,
+// which is a mutating POST like every other one on this surface.
+//
+// Content-addressing gives the replay half for free and the CONFLICT half not at
+// all: the second case below reuses one key with different bytes, which without
+// the guard is answered 201 with a second, unrelated asset_ref — the client's
+// retry silently uploaded something else and was handed a ref for it.
+func TestContentUploadHonorsIdempotencyKey(t *testing.T) {
+	e := newEnv(t)
+	key := map[string]string{"Idempotency-Key": "content-upload-retry-1"}
+
+	resp, first := e.do(t, http.MethodPost, "/api/v1/content", []byte("keyed asset bytes"), key)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("first keyed upload = %d, want 201 (body %s)", resp.StatusCode, first)
+	}
+
+	// Same key, same bytes: the retained response verbatim (API-052).
+	resp, replay := e.do(t, http.MethodPost, "/api/v1/content", []byte("keyed asset bytes"), key)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("keyed replay = %d, want 201 (body %s)", resp.StatusCode, replay)
+	}
+	if string(replay) != string(first) {
+		t.Fatalf("keyed replay body differs:\n%s\n%s", first, replay)
+	}
+
+	// Same key, DIFFERENT bytes: 409 IDEMPOTENCY_KEY_REUSED, and nothing stored
+	// for those bytes (API-053).
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/content", []byte("entirely different bytes"), key)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("keyed reuse with a different body = %d, want 409 (body %s)", resp.StatusCode, raw)
+	}
+	assertProblem(t, resp, raw, "IDEMPOTENCY_KEY_REUSED")
+	sum := sha256.Sum256([]byte("entirely different bytes"))
+	if e.content.Has(hex.EncodeToString(sum[:])) {
+		t.Fatal("the refused upload still wrote its bytes to the content origin")
 	}
 }
 

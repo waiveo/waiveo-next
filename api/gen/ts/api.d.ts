@@ -3485,6 +3485,8 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
+                /** @description Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyParam"];
                 /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
                 "Trace-Id"?: components["parameters"]["TraceIdParam"];
             };
@@ -3506,6 +3508,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            409: components["responses"]["Conflict"];
         };
     };
     listWebhookEndpoints: {
