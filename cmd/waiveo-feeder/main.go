@@ -35,6 +35,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/app/devices"
 	"github.com/maaxton/waiveo-next/internal/app/eventingest"
 	"github.com/maaxton/waiveo-next/internal/app/eventsse"
+	"github.com/maaxton/waiveo-next/internal/app/packs"
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/app/webhookdeliver"
 	"github.com/maaxton/waiveo-next/internal/app/webui"
@@ -104,6 +105,10 @@ type config struct {
 	keyDir         string // directory the workspace signing key + data key persist in — NEVER the archive dir
 	demoCast       string // "" (default, single first-photon image) or "multi" (the real 3-item demo cast)
 	packTrustPath  string // trust-anchors document pack-artifact signatures verify against (marketplace/1 MKT-009b)
+	// requiredPacksPath is the required-pack roster document this deployment
+	// declares its floors in (marketplace/1 MKT-093a). Absent ⇒ no pack is
+	// required; unreadable/malformed ⇒ the feeder refuses to start.
+	requiredPacksPath string
 }
 
 // demoCastModeMulti is loadConfig's WAIVEO_FEEDER_DEMO_CAST value that swaps
@@ -207,8 +212,28 @@ const defaultWorkspaceKeyDir = ".dev/feeder-keys"
 // refuses every install rather than admitting unsigned packs (fail closed).
 const defaultPackTrustPath = ".dev/pack-trust/anchors.json"
 
-// absPackTrustPath pins the trust-anchor path to an absolute one, ONCE, at
-// config load.
+// defaultRequiredPacksPath is the make-dev-local required-pack roster document
+// (marketplace/1 MKT-093a): the deployment's own declaration of which packs it
+// cannot run without, and the floor version each may not be uninstalled or
+// regressed below.
+//
+// It is git-ignored under .dev/ and, unlike every other .dev path here, it is
+// NOT created by anything. That is deliberate: MKT-093a's default is that an
+// absent roster makes no pack required, so a dev checkout, a CI run, and a box
+// nobody has provisioned a roster for all behave exactly as they did before this
+// file existed. A deployment opts IN by authoring the document.
+//
+// It is a SEPARATE file from the trust anchors, not another section of them. The
+// anchors are a trust root — who may sign a pack — and the roster is a policy —
+// which packs this deployment refuses to be without. They fail in opposite
+// directions (an empty anchor set refuses everything, an empty roster requires
+// nothing), they are provisioned by different parties, and folding them together
+// would mean an operator editing deployment policy inside the file that decides
+// who is trusted.
+const defaultRequiredPacksPath = ".dev/feeder-required-packs.json"
+
+// absHostFilePath pins a host-provisioned file's path to an absolute one, ONCE,
+// at config load. Used for both the trust anchors and the required-pack roster.
 //
 // The anchors file is read per verification so that provisioning and
 // revocation take effect without a restart. Resolved per read, a relative path
@@ -218,7 +243,13 @@ const defaultPackTrustPath = ".dev/pack-trust/anchors.json"
 // absent" would not save it, because a substituted file is present. Resolving
 // once at boot makes the trust root a fixed location for the process's life
 // while keeping the re-read behavior.
-func absPackTrustPath(p string) string {
+//
+// The roster is read once rather than per call, so the substitution window is
+// narrower — but the failure is worse, because a roster that resolves to
+// nothing lifts every floor instead of refusing every install. Pinning it costs
+// the same one call, and leaves no path on which "which file is the roster"
+// depends on where the process was launched from.
+func absHostFilePath(p string) string {
 	abs, err := filepath.Abs(p)
 	if err != nil {
 		return p
@@ -240,7 +271,9 @@ func loadConfig(env func(string) string) config {
 		archiveDir:     envOr(env, "WAIVEO_FEEDER_ARCHIVE_DIR", defaultArchiveDir),
 		keyDir:         envOr(env, "WAIVEO_FEEDER_KEY_DIR", defaultWorkspaceKeyDir),
 		demoCast:       envOr(env, "WAIVEO_FEEDER_DEMO_CAST", ""),
-		packTrustPath:  absPackTrustPath(envOr(env, "WAIVEO_FEEDER_PACK_TRUST", defaultPackTrustPath)),
+		packTrustPath:  absHostFilePath(envOr(env, "WAIVEO_FEEDER_PACK_TRUST", defaultPackTrustPath)),
+
+		requiredPacksPath: absHostFilePath(envOr(env, "WAIVEO_FEEDER_REQUIRED_PACKS", defaultRequiredPacksPath)),
 	}
 }
 
@@ -341,6 +374,60 @@ func main() {
 
 	if *storeCheck {
 		os.Exit(reportStoreIDs(cfg.storePath, os.Stdout))
+	}
+
+	// The deployment's required-pack roster (marketplace/1 MKT-093a): which packs
+	// this deployment declares it cannot run without, and the floor version each
+	// may not be uninstalled or regressed below. It is handed to api.New below,
+	// which installs it on the store, where MKT-093b's refusal runs inside the
+	// install and uninstall transactions.
+	//
+	// It is resolved HERE — first, before the signing identity, the content
+	// store, the app store or any other state is opened — for two reasons. It
+	// needs nothing else, so nothing else should have been created by the time
+	// this decides whether the process may run at all; and "refuses to start" is
+	// only honest if the refusal happens before the process has begun writing.
+	//
+	// READ ONCE, not per call, which is the opposite of the trust anchors beside
+	// it. The anchors are re-read so a revocation takes effect without a restart:
+	// their danger direction is a stale PERMISSION. The roster's danger direction
+	// is the reverse — deleting or emptying it lifts every floor — so re-reading
+	// would mean anyone who could touch the file could disarm the protection on a
+	// running box with no restart. Reading once makes the roster fixed for the
+	// process's life; changing it is a deliberate edit plus a restart, which is
+	// what changing a deployment's policy should cost.
+	//
+	// AN UNRESOLVABLE ROSTER IS FATAL, and that is a choice worth defending in a
+	// process that also serves relays, screens and content. MKT-093a permits
+	// either refusing to start or refusing every pack removal while running, and
+	// this takes the first:
+	//
+	//   - the second option only exists for a host that learns of unresolvability
+	//     after boot, which reading once makes impossible here;
+	//   - a box that runs on with its pack surface dead reports the failure as
+	//     REQUIRED_PACK_FLOOR on packs that are not required, which reads as a
+	//     policy refusal rather than as a broken file, so it can sit unnoticed
+	//     indefinitely;
+	//   - a deployment only reaches this branch if it AUTHORED a roster and
+	//     authored it wrong. It has declared that it cannot run without certain
+	//     packs; carrying on with those floors lifted runs the configuration the
+	//     operator explicitly forbade. An unprovisioned host does not reach it at
+	//     all — an absent roster resolves to "nothing required" and boots.
+	//
+	// It is the same posture the auth store, the workspace key, the clock floor
+	// and the console binding above/below already take: a deployment-state
+	// problem an operator must see does not get to be a warning.
+	requiredPacks, err := packs.LoadRoster(cfg.requiredPacksPath)
+	if err != nil {
+		log.Fatalf("waiveo-feeder: %v\n"+
+			"    an unresolvable roster is NOT an empty one: the deployment declared packs it cannot run without and this host could not learn them,\n"+
+			"    so it refuses to start rather than serve with every required-pack floor silently lifted (marketplace/1 MKT-093a).\n"+
+			"    Fix or remove %s. An ABSENT roster is valid and makes no pack required.", err, cfg.requiredPacksPath)
+	}
+	if declared := requiredPacks.Declared(); len(declared) == 0 {
+		log.Printf("waiveo-feeder: required-pack roster %s declares no required pack — no pack is protected from uninstall or downgrade (marketplace/1 MKT-093a)", cfg.requiredPacksPath)
+	} else {
+		log.Printf("waiveo-feeder: required-pack roster %s declares %d required pack(s): %v", cfg.requiredPacksPath, len(declared), declared)
 	}
 
 	id, err := signing.LoadOrCreate(signing.DefaultDir)
@@ -839,6 +926,12 @@ func main() {
 	apiHandler := api.New(st, idem, nowMs, ulid.New, contentStore, contentBaseURL, authn,
 		api.WithDevicePlane(deviceRegistry, relayConnSrv), api.WithJobRunner(jobRunner),
 		api.WithPackTrust(packsig.FileAnchors{Path: cfg.packTrustPath}),
+		// The required-pack floor's ONE wiring seam (MKT-093a/MKT-093b). Without
+		// this option the store's roster stays nil, the in-transaction floor check
+		// returns nil on every call, and the whole floor — implemented, tested,
+		// and reachable from a test — enforces nothing on a real box. That was the
+		// binary's actual state before this line.
+		api.WithRequiredPacks(requiredPacks),
 		api.WithWebhookSecrets(webhookSecrets, webhookRotationOverlapMs),
 		api.WithWorkspaceArchive(&api.WorkspaceArchive{Dir: cfg.archiveDir, Key: wsKey}),
 		// The pairing-code operation's relay directory: live connections (and

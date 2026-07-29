@@ -25,6 +25,28 @@ Environment=WAIVEO_FEEDER_CONTENT_URL=https://192.0.2.10:7420
 # (0644, root-owned); the feeder refuses a group- or world-writable anchors
 # file. Absent ⇒ every pack install refuses (fail closed).
 Environment=WAIVEO_FEEDER_PACK_TRUST=/etc/waiveo/pack-trust/anchors.json
+# Required-pack roster: which packs THIS deployment cannot run without, and the
+# floor version each may not be uninstalled or regressed below. Same posture and
+# the same reasons as the trust root above — outside ReadWritePaths, provisioned
+# as root 0644 — because writing a roster is not the null grant it looks like:
+# adding an entry makes a pack un-uninstallable (an attacker pins their own pack
+# in place) and removing one lifts the floor that forbids a downgrade to a
+# known-vulnerable version. The feeder refuses a group- or world-writable roster,
+# and a group- or world-writable directory holding it.
+#
+# ABSENT ⇒ no pack is required, and the feeder boots normally; this is the
+# default and needs no file. UNRESOLVABLE (unreadable, unparseable, wrong format,
+# bad permissions) is NOT the same thing: the feeder refuses to START rather than
+# serve with every floor silently lifted. Fix or remove the file.
+#
+# The document:
+#   {
+#     "format": "required-packs/1",
+#     "required": [
+#       { "pack_id": "waiveo/system", "floor_version": "1.4.0" }
+#     ]
+#   }
+Environment=WAIVEO_FEEDER_REQUIRED_PACKS=/etc/waiveo/required-packs.json
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=true
