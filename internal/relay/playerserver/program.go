@@ -157,7 +157,8 @@ func terminalDefault() program {
 // serves FOR ONE SCREEN: programRevision/priority/display/content carried
 // UNMODIFIED onto every Lease this server issues to the player holding a
 // channel token for screenID (PLY-108 priority, PLY-109 display — REL-061's
-// entry for that screen reflected exactly), signed with signingKey.
+// entry for that screen reflected exactly), signed with the relay identity
+// SetSigningKey installed.
 //
 // screenID is the screen identity row's id (data-model/1 DAT-004a) — the same
 // value a `screen_programs` entry names (REL-061), a screen-bound pairing
@@ -173,27 +174,16 @@ func terminalDefault() program {
 // channel token ever resolves to an empty screen_id (redeem always mints or
 // carries a non-empty one), so such an entry could only ever be dead state.
 //
-// signingKey MUST be the relay's own enrollment private key
-// (internal/relay/identity.RelayIdentity.PrivateKey) — the SAME keypair
-// the certificate passed to NewServer (relayCertPEM) certifies, so a
-// player's Steady-state-pinning verification of a Lease's signature
-// (PLY-090, "verifiable... against the same trust anchor its... connection
-// to this relay is itself pinned to") checks against the exact cert this
-// relay's player/1 listener presents. It is held once for the whole server
-// rather than per screen ON PURPOSE: it is the relay's own identity, identical
-// for every screen, and a re-enrollment that rotates it (REL-027–029) must take
-// effect for EVERY screen's Leases at once — a per-screen copy would keep
-// signing one screen's Leases with a retired key until that screen's program
-// happened to be rewritten, and a player pinning the currently-presented cert
-// would reject them.
-//
-// It is a parameter here only because a caller installing a program necessarily
-// holds it; SetSigningKey is where the relay's identity is actually established,
-// and a program write is NOT what makes this server able to sign. A write
-// carrying no usable key therefore installs the program and leaves the existing
-// key alone rather than clearing it — a screen's program write must not be able
-// to take the whole relay's signing identity away, which would turn every
-// screen's next pull, including screens this write never named, into a 500.
+// It takes NO signing key, and that is a security property rather than a
+// convenience. The key is the RELAY's identity — one value for the whole server,
+// the private half of the keypair NewServer's relayCertPEM certifies — while
+// this method is a PER-SCREEN write. Letting a per-screen write carry the key
+// gave one screen's program update authority over every other screen's Leases:
+// a well-formed but WRONG key installed for screen B made screen A's Leases
+// verify under the foreign key and not under the relay cert's, so every paired
+// player on the site rejected every Lease against its pinned anchor (PLY-090),
+// caused by a write that never named them. Establishing the identity is
+// SetSigningKey's job alone; see its doc.
 //
 // generation is the desired-state generation this program was resolved for
 // (relay/1 REL-052/056). The live re-pull loop drives SetProgram concurrently
@@ -214,7 +204,7 @@ func terminalDefault() program {
 // at a higher generation silently refuse every other screen's writes at the
 // generation they were legitimately resolved for. Screens do not supersede one
 // another; only a later generation of the SAME screen does.
-func (s *Server) SetProgram(generation int64, screenID, programRevision, priority, display string, content []wire.LeaseContent, signingKey ed25519.PrivateKey) {
+func (s *Server) SetProgram(generation int64, screenID, programRevision, priority, display string, content []wire.LeaseContent) {
 	if screenID == "" {
 		return
 	}
@@ -229,9 +219,6 @@ func (s *Server) SetProgram(generation int64, screenID, programRevision, priorit
 		Priority:        priority,
 		Display:         display,
 		Content:         content,
-	}
-	if len(signingKey) == ed25519.PrivateKeySize {
-		s.signingKey = signingKey
 	}
 }
 
@@ -254,14 +241,22 @@ func (s *Server) SetProgram(generation int64, screenID, programRevision, priorit
 // Callers install it once, at construction, BEFORE Register/serving traffic —
 // the same discipline EnablePersistence documents, and for the same reason:
 // an assignment racing an in-flight request is a request served without it.
-// A re-enrollment that rotates the relay's keypair (REL-027–029) calls it again,
-// and every screen's next Lease is signed with the new key at once.
 //
-// It is authoritative, unlike SetProgram's incidental parameter: what it is
-// passed is what this server signs with, including nothing at all. Expressing
-// "this relay currently has no signing identity" is a state a caller is allowed
-// to set deliberately, and while it holds, handleProgram refuses every pull
-// rather than issuing an unsigned Lease.
+// It is the ONLY thing that establishes or changes this server's signing
+// identity: no program write can reach s.signingKey, by construction — neither
+// SetProgram nor SetServedProgram takes a key at all. That is asserted, not just
+// intended (TestOnlySetSigningKeyEstablishesTheRelayIdentity). The identity is
+// held once for the whole server rather than per screen ON PURPOSE: it is the
+// relay's own, identical for every screen, so if it is ever rotated, every
+// screen's Leases must move to the new key at once — a per-screen copy would
+// keep signing one screen's Leases with a retired key until that screen's
+// program happened to be rewritten, and a player pinning the currently-presented
+// cert would reject them.
+//
+// What it is passed is what this server signs with, including nothing at all.
+// Expressing "this relay currently has no signing identity" is a state a caller
+// is allowed to set deliberately, and while it holds, handleProgram refuses
+// every pull rather than issuing an unsigned Lease.
 func (s *Server) SetSigningKey(key ed25519.PrivateKey) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -293,9 +288,9 @@ func (s *Server) SetSigningKey(key ed25519.PrivateKey) {
 // fetch target (never a relay-hosted one, REL-140) — this server never
 // touches the bytes.
 //
-// signingKey MUST be the relay's own enrollment private key, as SetProgram
-// documents — the same trust anchor a player pins its Lease-signature check
-// against (PLY-090).
+// It takes no signing key either, for the reason SetProgram's own doc gives:
+// the Lease-signing identity belongs to the relay, is established solely by
+// SetSigningKey, and a per-screen write has no business being able to change it.
 //
 // The entry is installed for sp.ScreenID alone (REL-061's own `screen_id`),
 // so a caller replays the whole persisted `screen_programs` array through this
@@ -307,7 +302,7 @@ func (s *Server) SetSigningKey(key ed25519.PrivateKey) {
 // belongs to (relay/1 REL-052/056), carried into SetProgram's own generation
 // fence: it is the boot-time baseline a same-generation schedule resolver then
 // replaces, and a strictly-older stale write can never revert.
-func (s *Server) SetServedProgram(generation int64, sp wire.ScreenProgram, signingKey ed25519.PrivateKey) {
+func (s *Server) SetServedProgram(generation int64, sp wire.ScreenProgram) {
 	content := make([]wire.LeaseContent, 0, len(sp.Content))
 	for _, c := range sp.Content {
 		contentType := c.ContentType
@@ -325,7 +320,7 @@ func (s *Server) SetServedProgram(generation int64, sp wire.ScreenProgram, signi
 			DurationMS: c.DurationMS,
 		})
 	}
-	s.SetProgram(generation, sp.ScreenID, sp.ProgramRevision, sp.Priority, sp.Display, content, signingKey)
+	s.SetProgram(generation, sp.ScreenID, sp.ProgramRevision, sp.Priority, sp.Display, content)
 }
 
 // programFor returns the program this server currently serves screenID —

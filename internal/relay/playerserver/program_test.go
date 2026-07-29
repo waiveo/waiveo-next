@@ -20,9 +20,10 @@ import (
 )
 
 // testRelaySigningIdentity builds a fresh self-signed relay cert (PEM+DER)
-// alongside the ed25519.PrivateKey of that same keypair — the key SetProgram
-// signs a Lease with, and the cert's own public key (returned to callers) is
-// what PLY-090 requires a Lease's signature to verify against.
+// alongside the ed25519.PrivateKey of that same keypair — the key a caller
+// installs via SetSigningKey and every issued Lease is signed with, and the
+// cert's own public key (returned to callers) is what PLY-090 requires a
+// Lease's signature to verify against.
 //
 // This mints an ed25519 identity directly rather than reusing
 // tlsboot.GenSelfSigned: GenSelfSigned now serves the browser-facing ECDSA
@@ -105,7 +106,8 @@ func programTestServer(t *testing.T) (srv *Server, pub ed25519.PublicKey, token 
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	srv.SetProgram(1, testScreenIDA, "rev-17", "scheduled", "content", testImageContent(), priv)
+	srv.SetSigningKey(priv)
+	srv.SetProgram(1, testScreenIDA, "rev-17", "scheduled", "content", testImageContent())
 
 	_, raw := doPair(t, srv, PairingRequest{
 		HardwareID:    "hw-0001",
@@ -409,12 +411,13 @@ func TestSetProgramFencesStaleGenerationWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
+	srv.SetSigningKey(priv)
 
 	// Generation 8 is applied and served (an admin's schedule edit, live).
-	srv.SetProgram(8, testScreenIDA, "gen-8", "scheduled", "content", testImageContent(), priv)
+	srv.SetProgram(8, testScreenIDA, "gen-8", "scheduled", "content", testImageContent())
 	// A superseded generation-7 resolver, still mid-resolve when 8 was applied,
 	// writes late — the concrete re-pull race this fence closes.
-	srv.SetProgram(7, testScreenIDA, "gen-7", "blank", "blank", nil, priv)
+	srv.SetProgram(7, testScreenIDA, "gen-7", "blank", "blank", nil)
 
 	srv.mu.Lock()
 	gotRev, gotDisplay, gotGen := srv.programs[testScreenIDA].ProgramRevision, srv.programs[testScreenIDA].Display, srv.programGens[testScreenIDA]
@@ -433,7 +436,7 @@ func TestSetProgramFencesStaleGenerationWrite(t *testing.T) {
 	// A same-generation write still wins: the fence must not freeze the program,
 	// so a same-generation schedule resolver replaces the boot baseline (the
 	// additive serving policy) exactly as before.
-	srv.SetProgram(8, testScreenIDA, "gen-8-schedule", "scheduled", "content", testImageContent(), priv)
+	srv.SetProgram(8, testScreenIDA, "gen-8-schedule", "scheduled", "content", testImageContent())
 	srv.mu.Lock()
 	gotRev = srv.programs[testScreenIDA].ProgramRevision
 	srv.mu.Unlock()

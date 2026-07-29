@@ -262,12 +262,13 @@ func bootRelocatableRelay(t *testing.T, feederBaseURL string) (primaryHost strin
 	if err != nil {
 		t.Fatalf("playerserver.NewServer: %v", err)
 	}
+	srv.SetSigningKey(relayID.PrivateKey)
 	srv.SetProgram(applied.Generation, applied.ScreenID, applied.ProgramRevision, applied.Priority, applied.Display, []wire.LeaseContent{{
 		Type:      "image",
 		AssetRef:  applied.Image.AssetRef,
 		URL:       applied.Image.URL,
 		ExpiresAt: applied.Image.ExpiresAt,
-	}}, relayID.PrivateKey)
+	}})
 
 	mux := http.NewServeMux()
 	srv.Register(mux)

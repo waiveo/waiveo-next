@@ -64,7 +64,7 @@ const (
 // relay's own ed25519 signing identity installed (SetSigningKey) exactly as the
 // boot path does — so a pull is answerable whether or not any program is ever
 // installed on it.
-func newPlayerServerWithGrants(t *testing.T, grants ...wire.PairingGrant) (*playerserver.Server, ed25519.PrivateKey) {
+func newPlayerServerWithGrants(t *testing.T, grants ...wire.PairingGrant) *playerserver.Server {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -94,7 +94,7 @@ func newPlayerServerWithGrants(t *testing.T, grants ...wire.PairingGrant) (*play
 		t.Fatalf("playerserver.NewServer: %v", err)
 	}
 	srv.SetSigningKey(priv)
-	return srv, priv
+	return srv
 }
 
 // newPlayerHTTP mounts srv's player/1 routes behind the same trace middleware
@@ -276,7 +276,7 @@ func newMultiScreenHost(t *testing.T) *automationhost.Host {
 // strictly higher generation, and observes through player/1's own pair -> program
 // surface with the SAME channel token a screen would keep across the apply.
 func TestRePullReinstallsTheAppAuthoredBaselineOnAMultiScreenSite(t *testing.T) {
-	srv, priv := newPlayerServerWithGrants(t, twoScreenGrant(msScreenRowA), twoScreenGrant(msScreenRowB))
+	srv := newPlayerServerWithGrants(t, twoScreenGrant(msScreenRowA), twoScreenGrant(msScreenRowB))
 	host := newMultiScreenHost(t)
 	nowMs := demoContentHourInstant(t)
 
@@ -284,17 +284,16 @@ func TestRePullReinstallsTheAppAuthoredBaselineOnAMultiScreenSite(t *testing.T) 
 	defer cancel()
 
 	driver := &scheduleDriver{
-		srv:        srv,
-		sink:       fakeScheduleSink(),
-		site:       hello.SiteBinding{TZ: "America/Chicago", Lat: 41.8781, Long: -87.6298},
-		signingKey: priv,
-		tickEvery:  scheduleResolverTickInterval,
+		srv:       srv,
+		sink:      fakeScheduleSink(),
+		site:      hello.SiteBinding{TZ: "America/Chicago", Lat: 41.8781, Long: -87.6298},
+		tickEvery: scheduleResolverTickInterval,
 	}
 
 	// Boot, exactly as main does it: the persisted per-screen baseline first,
 	// then the generation's schedule over the top.
 	gen7 := buildMultiScreenApplied(t, 7, "gen7")
-	serveAppAuthoredPrograms(srv, gen7.Generation, gen7.ScreenPrograms, priv)
+	serveAppAuthoredPrograms(srv, gen7.Generation, gen7.ScreenPrograms)
 	driver.apply(ctx, gen7, nowMs)
 
 	ts := newPlayerHTTP(t, srv)
@@ -414,12 +413,12 @@ func TestUnattributableResolutionLeavesEveryScreenOnItsAppAuthoredProgram(t *tes
 	nowMs := demoContentHourInstant(t)
 
 	t.Run("several governed nodes, one screen", func(t *testing.T) {
-		srv, priv := newPlayerServerWithGrants(t, twoScreenGrant(msScreenRowA))
+		srv := newPlayerServerWithGrants(t, twoScreenGrant(msScreenRowA))
 		applied := buildMultiScreenApplied(t, 3, "gen3")
 		applied.ScreenPrograms = []wire.ScreenProgram{msScreenProgram(msScreenRowA, "a", "gen3")}
 
-		serveAppAuthoredPrograms(srv, applied.Generation, applied.ScreenPrograms, priv)
-		resolvers := bootScheduleResolverAt(applied, srv, fakeScheduleSink(), site, priv, nowMs)
+		serveAppAuthoredPrograms(srv, applied.Generation, applied.ScreenPrograms)
+		resolvers := bootScheduleResolverAt(applied, srv, fakeScheduleSink(), site, nowMs)
 		if len(resolvers) != 2 {
 			t.Fatalf("fixture: built %d resolver(s), want 2 governed scope nodes", len(resolvers))
 		}
@@ -432,7 +431,7 @@ func TestUnattributableResolutionLeavesEveryScreenOnItsAppAuthoredProgram(t *tes
 	})
 
 	t.Run("one governed node, several screens", func(t *testing.T) {
-		srv, priv := newPlayerServerWithGrants(t, twoScreenGrant(msScreenRowA), twoScreenGrant(msScreenRowB))
+		srv := newPlayerServerWithGrants(t, twoScreenGrant(msScreenRowA), twoScreenGrant(msScreenRowB))
 		applied := buildMultiScreenApplied(t, 3, "gen3")
 		// One governed node: drop screen B's schedule rows, keep both screens.
 		schedA, dayA, listA := msScheduleRows(msScheduleAID, msDaypartAID, msPlaylistAID, msScopeNodeA)
@@ -443,8 +442,8 @@ func TestUnattributableResolutionLeavesEveryScreenOnItsAppAuthoredProgram(t *tes
 			Playlists:  marshalRows(t, listA),
 		}.Normalized()
 
-		serveAppAuthoredPrograms(srv, applied.Generation, applied.ScreenPrograms, priv)
-		resolvers := bootScheduleResolverAt(applied, srv, fakeScheduleSink(), site, priv, nowMs)
+		serveAppAuthoredPrograms(srv, applied.Generation, applied.ScreenPrograms)
+		resolvers := bootScheduleResolverAt(applied, srv, fakeScheduleSink(), site, nowMs)
 		if len(resolvers) != 1 {
 			t.Fatalf("fixture: built %d resolver(s), want exactly 1 governed scope node", len(resolvers))
 		}
@@ -484,8 +483,8 @@ func TestBootWithNoInstallableScreenProgramServesTheTerminalDefault(t *testing.T
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			srv, priv := newPlayerServerWithGrants(t, twoScreenGrant(msScreenRowA))
-			serveAppAuthoredPrograms(srv, 5, tc.served, priv)
+			srv := newPlayerServerWithGrants(t, twoScreenGrant(msScreenRowA))
+			serveAppAuthoredPrograms(srv, 5, tc.served)
 
 			ts := newPlayerHTTP(t, srv)
 			lease := pullProgram(t, ts, pairForToken(t, ts, "grant-offline-"+msScreenRowA))

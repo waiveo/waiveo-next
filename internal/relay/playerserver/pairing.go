@@ -143,7 +143,7 @@ type redemption struct {
 // token on a valid redemption. Safe for concurrent use.
 //
 // This same Server also holds Task 10's program-delivery state (program,
-// signingKey — configured by SetProgram) and lease/ack records: it is one
+// signingKey — installed by SetSigningKey) and lease/ack records: it is one
 // player/1 server surface (pairing + program delivery + lease
 // acknowledgement), not two, since PLY-070's channel token issued here is
 // exactly the credential program.go's handlers validate.

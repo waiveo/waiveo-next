@@ -214,12 +214,13 @@ func bootTestRelay(t *testing.T, feederBaseURL string) (host string, port int, c
 	if err != nil {
 		t.Fatalf("playerserver.NewServer: %v", err)
 	}
+	pairingSrv.SetSigningKey(relayID.PrivateKey)
 	pairingSrv.SetProgram(applied.Generation, applied.ScreenID, applied.ProgramRevision, applied.Priority, applied.Display, []wire.LeaseContent{{
 		Type:      "image",
 		AssetRef:  applied.Image.AssetRef,
 		URL:       applied.Image.URL,
 		ExpiresAt: applied.Image.ExpiresAt,
-	}}, relayID.PrivateKey)
+	}})
 
 	mux := http.NewServeMux()
 	pairingSrv.Register(mux)

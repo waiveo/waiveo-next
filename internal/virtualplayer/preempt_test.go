@@ -60,6 +60,7 @@ func bootPreemptRelay(t *testing.T, feederBaseURL string) (host string, port int
 	if err != nil {
 		t.Fatalf("playerserver.NewServer: %v", err)
 	}
+	srv.SetSigningKey(relayID.PrivateKey)
 	// The takeover: a preempt-priority program carrying the feeder's image
 	// (PLY-100/101/108 — priority mirrors the screen-program, unmodified).
 	srv.SetProgram(applied.Generation, applied.ScreenID, applied.ProgramRevision, "preempt", "content", []wire.LeaseContent{{
@@ -67,7 +68,7 @@ func bootPreemptRelay(t *testing.T, feederBaseURL string) (host string, port int
 		AssetRef:  applied.Image.AssetRef,
 		URL:       applied.Image.URL,
 		ExpiresAt: applied.Image.ExpiresAt,
-	}}, relayID.PrivateKey)
+	}})
 
 	mux := http.NewServeMux()
 	srv.Register(mux)

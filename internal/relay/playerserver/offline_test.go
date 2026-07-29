@@ -32,6 +32,7 @@ func TestSetServedProgramDeliversPersistedPreemptLease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
+	srv.SetSigningKey(priv)
 
 	// The persisted screen_programs entry, exactly the REL-061 offline-serve
 	// shape desiredstate.ServedProgram hands back from the durable store —
@@ -48,7 +49,7 @@ func TestSetServedProgramDeliversPersistedPreemptLease(t *testing.T) {
 			ExpiresAt: 1752545000000,
 		}},
 	}
-	srv.SetServedProgram(1, served, priv)
+	srv.SetServedProgram(1, served)
 
 	_, raw := doPair(t, srv, PairingRequest{
 		HardwareID:    "hw-0001",
@@ -106,6 +107,7 @@ func TestSetServedProgramCarriesPerItemContentType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
+	srv.SetSigningKey(priv)
 
 	served := wire.ScreenProgram{
 		ScreenID:        offlineScreenID,
@@ -126,7 +128,7 @@ func TestSetServedProgramCarriesPerItemContentType(t *testing.T) {
 			},
 		},
 	}
-	srv.SetServedProgram(1, served, priv)
+	srv.SetServedProgram(1, served)
 
 	_, raw := doPair(t, srv, PairingRequest{
 		HardwareID:    "hw-cast-0001",

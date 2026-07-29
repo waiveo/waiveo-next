@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/ed25519"
 	"errors"
 	"log"
 	"sync"
@@ -42,11 +41,10 @@ type pullFunc func(sinceGeneration int64) (desiredstate.Applied, error)
 // (once) and from rePuller.tick, which serializes every live apply under its own
 // lock, so the cancel handoff needs no lock of its own.
 type scheduleDriver struct {
-	srv        *playerserver.Server
-	sink       *automation.CommandSink
-	site       hello.SiteBinding
-	signingKey ed25519.PrivateKey
-	tickEvery  time.Duration
+	srv       *playerserver.Server
+	sink      *automation.CommandSink
+	site      hello.SiteBinding
+	tickEvery time.Duration
 
 	// cancel tears down the currently-installed generation's resolve loops; nil
 	// before the first apply.
@@ -88,10 +86,10 @@ func (d *scheduleDriver) apply(ctx context.Context, applied desiredstate.Applied
 	if d.cancel != nil {
 		d.cancel() // tear down the prior generation's resolve loops before the swap
 	}
-	serveAppAuthoredPrograms(d.srv, applied.Generation, applied.ScreenPrograms, d.signingKey)
+	serveAppAuthoredPrograms(d.srv, applied.Generation, applied.ScreenPrograms)
 	loopCtx, cancel := context.WithCancel(ctx)
 	d.cancel = cancel
-	return resolveAndServe(loopCtx, applied, d.srv, d.sink, d.site, d.signingKey, d.tickEvery, nowMs)
+	return resolveAndServe(loopCtx, applied, d.srv, d.sink, d.site, d.tickEvery, nowMs)
 }
 
 // rePuller applies a re-pulled desired-state generation to the relay's live

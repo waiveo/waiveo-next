@@ -29,7 +29,6 @@ package main
 
 import (
 	"context"
-	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
@@ -677,9 +676,9 @@ func main() {
 	// serve path selects by that. Installing only entry [0] served whatever
 	// screen happened to sort first to every paired player on the site.
 	//
-	// signingKey is the SAME enrollment private key relayID.CertPEM certifies,
-	// so a player's PLY-090 signature check against its pinned trust anchor
-	// lines up with the cert this listener actually presents.
+	// No signing key travels with these writes: the Lease-signing identity was
+	// established once by the SetSigningKey call above, and a program write has
+	// no authority over it (playerserver.SetProgram's own doc).
 	served, err := desiredstate.ServedProgram(store)
 	if err != nil {
 		log.Fatalf("waiveo-relay: read persisted screen_programs for offline serve: %v", err)
@@ -691,7 +690,7 @@ func main() {
 		// terminal default rather than a configuration error.
 		log.Printf("waiveo-relay: persisted last-applied snapshot carried no screen_programs; every screen serves the terminal default until one is authored")
 	}
-	serveAppAuthoredPrograms(pairingSrv, applied.Generation, served, relayID.PrivateKey)
+	serveAppAuthoredPrograms(pairingSrv, applied.Generation, served)
 
 	// commandSurface is the ONE relay/1 REL-112/113/115 device-command surface
 	// this binary's non-edge-rule dispatch paths share — the schedule-preset
@@ -928,11 +927,10 @@ func main() {
 	}
 
 	driver := &scheduleDriver{
-		srv:        pairingSrv,
-		sink:       scheduleSink,
-		site:       site,
-		signingKey: relayID.PrivateKey,
-		tickEvery:  scheduleResolverTickInterval,
+		srv:       pairingSrv,
+		sink:      scheduleSink,
+		site:      site,
+		tickEvery: scheduleResolverTickInterval,
 	}
 	driver.apply(rootCtx, applied, time.Now().UnixMilli())
 
@@ -1349,8 +1347,8 @@ const scheduleResolverTickInterval = 30 * time.Second
 // (scheduleDriver, livepull.go) can cancel a superseded generation's loops and
 // tests can drive a deterministic instant — preserving the boot-only signature
 // the existing boot tests exercise.
-func bootScheduleResolverAt(applied desiredstate.Applied, srv *playerserver.Server, sink *automation.CommandSink, site hello.SiteBinding, signingKey ed25519.PrivateKey, nowMs int64) []*schedulehost.Resolver {
-	return resolveAndServe(context.Background(), applied, srv, sink, site, signingKey, scheduleResolverTickInterval, nowMs)
+func bootScheduleResolverAt(applied desiredstate.Applied, srv *playerserver.Server, sink *automation.CommandSink, site hello.SiteBinding, nowMs int64) []*schedulehost.Resolver {
+	return resolveAndServe(context.Background(), applied, srv, sink, site, scheduleResolverTickInterval, nowMs)
 }
 
 // resolveAndServe parses applied.Schedule into a data-model/1 RowStore
@@ -1417,7 +1415,7 @@ func bootScheduleResolverAt(applied desiredstate.Applied, srv *playerserver.Serv
 // the boot log line's context; the resolved schedule's own effective tz comes
 // from the carried scope tree exclusively (datamodel.EffectiveTZ via
 // datamodel.Resolve), never from site or any box-local clock (DAT-034/118).
-func resolveAndServe(ctx context.Context, applied desiredstate.Applied, srv *playerserver.Server, sink *automation.CommandSink, site hello.SiteBinding, signingKey ed25519.PrivateKey, tickEvery time.Duration, nowMs int64) []*schedulehost.Resolver {
+func resolveAndServe(ctx context.Context, applied desiredstate.Applied, srv *playerserver.Server, sink *automation.CommandSink, site hello.SiteBinding, tickEvery time.Duration, nowMs int64) []*schedulehost.Resolver {
 	store, errs := schedulehost.BuildStore(applied.Schedule)
 	for _, e := range errs {
 		log.Printf("waiveo-relay: schedule section: %s: %s: %s", e.Field, e.Code, e.Message)
@@ -1441,7 +1439,7 @@ func resolveAndServe(ctx context.Context, applied desiredstate.Applied, srv *pla
 			continue
 		}
 
-		r := schedulehost.NewResolver(store, nodeID, servedScreenID, srv, signingKey, applied.Generation, applied.ContentOrigin)
+		r := schedulehost.NewResolver(store, nodeID, servedScreenID, srv, applied.Generation, applied.ContentOrigin)
 		r.TickBoot(nowMs, sink) // the level-triggered STATE projection + the misfire-governed boot resume-edge preset (DAT-075/076/094/119/121).
 		resolvers = append(resolvers, r)
 
@@ -1491,7 +1489,11 @@ func resolveAndServe(ctx context.Context, applied desiredstate.Applied, srv *pla
 // that belongs to the caller, which is the only one that knows whether an empty
 // array means "no screens authored yet" (boot, reading the durable copy) or
 // "this generation carried none" (a live apply).
-func serveAppAuthoredPrograms(srv *playerserver.Server, generation int64, served []wire.ScreenProgram, signingKey ed25519.PrivateKey) {
+//
+// It installs no signing key: the relay's Lease-signing identity is established
+// once, separately (playerserver.Server.SetSigningKey), and a per-screen program
+// write has no authority over it.
+func serveAppAuthoredPrograms(srv *playerserver.Server, generation int64, served []wire.ScreenProgram) {
 	for _, sp := range served {
 		if sp.ScreenID == "" {
 			// An entry naming no screen cannot be served to any screen — no
@@ -1500,7 +1502,7 @@ func serveAppAuthoredPrograms(srv *playerserver.Server, generation int64, served
 			log.Printf("waiveo-relay: screen_programs entry (program_revision %q) carries no screen_id; not served", sp.ProgramRevision)
 			continue
 		}
-		srv.SetServedProgram(generation, sp, signingKey)
+		srv.SetServedProgram(generation, sp)
 	}
 }
 

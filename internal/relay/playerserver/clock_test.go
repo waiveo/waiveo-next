@@ -138,7 +138,8 @@ func TestChannelTokenExpiryAndLeaseStampsReadTheInjectedClock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	srv.SetProgram(1, testScreenIDA, "rev-clock", "scheduled", "content", testImageContent(), priv)
+	srv.SetSigningKey(priv)
+	srv.SetProgram(1, testScreenIDA, "rev-clock", "scheduled", "content", testImageContent())
 
 	rec, err := srv.redeem(grant.GrantID)
 	if err != nil {

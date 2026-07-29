@@ -387,7 +387,7 @@ func (r *InProcessRelay) bootRelay(feederBaseURL, bindHost, dialHost string) err
 		AssetRef:  applied.Image.AssetRef,
 		URL:       applied.Image.URL,
 		ExpiresAt: applied.Image.ExpiresAt,
-	}}, relayID.PrivateKey)
+	}})
 
 	mux := http.NewServeMux()
 	pairingSrv.Register(mux)

@@ -36,17 +36,18 @@ func twoScreenServer(t *testing.T) (srv *Server, tokenA, tokenB string) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
+	srv.SetSigningKey(priv)
 
 	srv.SetProgram(1, testScreenIDA, "rev-lobby", "scheduled", "content", []wire.LeaseContent{{
 		Type:     "image",
 		AssetRef: "sha256:" + strings.Repeat("a1", 32),
 		URL:      "https://198.51.100.20/content/lobby",
-	}}, priv)
+	}})
 	srv.SetProgram(1, testScreenIDB, "rev-cafe", "preempt", "content", []wire.LeaseContent{{
 		Type:     "image",
 		AssetRef: "sha256:" + strings.Repeat("b2", 32),
 		URL:      "https://198.51.100.20/content/cafe",
-	}}, priv)
+	}})
 
 	return srv, redeemToken(t, srv, grantA.GrantID), redeemToken(t, srv, grantB.GrantID)
 }
@@ -148,8 +149,9 @@ func TestScreenWithNoEntryIsServedTheTerminalDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
+	srv.SetSigningKey(priv)
 	// Screen A has a program; screen B has none at all.
-	srv.SetProgram(1, testScreenIDA, "rev-lobby", "scheduled", "content", testImageContent(), priv)
+	srv.SetProgram(1, testScreenIDA, "rev-lobby", "scheduled", "content", testImageContent())
 
 	_ = redeemToken(t, srv, grantA.GrantID)
 	lease := pullLease(t, srv, redeemToken(t, srv, grantB.GrantID))
@@ -189,20 +191,21 @@ func TestGenerationFenceIsPerScreen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
+	srv.SetSigningKey(priv)
 
 	// Screen A races ahead to generation 9.
-	srv.SetProgram(9, testScreenIDA, "a-gen-9", "scheduled", "content", nil, priv)
+	srv.SetProgram(9, testScreenIDA, "a-gen-9", "scheduled", "content", nil)
 
 	// Screen B's own resolver writes at generation 4 — older than A's, but B has
 	// never been written at all, so nothing of B's is being reverted.
-	srv.SetProgram(4, testScreenIDB, "b-gen-4", "scheduled", "content", nil, priv)
+	srv.SetProgram(4, testScreenIDB, "b-gen-4", "scheduled", "content", nil)
 	if got := srv.programFor(testScreenIDB).ProgramRevision; got != "b-gen-4" {
 		t.Errorf("screen B program_revision = %q, want b-gen-4 — screen A's higher generation fenced a DIFFERENT screen's write; screens do not supersede one another, only later generations of the same screen do", got)
 	}
 
 	// The fence itself is intact per screen: a strictly-older write for B is
 	// refused, and A is untouched throughout.
-	srv.SetProgram(3, testScreenIDB, "b-gen-3-stale", "blank", "blank", nil, priv)
+	srv.SetProgram(3, testScreenIDB, "b-gen-3-stale", "blank", "blank", nil)
 	if got := srv.programFor(testScreenIDB).ProgramRevision; got != "b-gen-4" {
 		t.Errorf("screen B program_revision = %q, want b-gen-4 — a stale generation-3 write reverted screen B past generation 4 (REL-052/056)", got)
 	}
@@ -212,7 +215,7 @@ func TestGenerationFenceIsPerScreen(t *testing.T) {
 
 	// A same-generation write still wins within a screen, so a same-generation
 	// schedule resolver can replace that screen's boot baseline.
-	srv.SetProgram(4, testScreenIDB, "b-gen-4-schedule", "scheduled", "content", nil, priv)
+	srv.SetProgram(4, testScreenIDB, "b-gen-4-schedule", "scheduled", "content", nil)
 	if got := srv.programFor(testScreenIDB).ProgramRevision; got != "b-gen-4-schedule" {
 		t.Errorf("screen B program_revision = %q, want b-gen-4-schedule — a same-generation write must still win", got)
 	}
@@ -233,6 +236,7 @@ func TestConcurrentPerScreenWritesDoNotOverwriteEachOther(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
+	srv.SetSigningKey(priv)
 
 	const (
 		screens = 8
@@ -251,7 +255,7 @@ func TestConcurrentPerScreenWritesDoNotOverwriteEachOther(t *testing.T) {
 			defer wg.Done()
 			<-start
 			for tick := 0; tick < ticks; tick++ {
-				srv.SetProgram(1, id, revisionForIndex(i), "scheduled", "content", nil, priv)
+				srv.SetProgram(1, id, revisionForIndex(i), "scheduled", "content", nil)
 			}
 		}(i, id)
 	}
@@ -288,9 +292,10 @@ func TestCurrentDisplayReportsTheAskedScreen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
+	srv.SetSigningKey(priv)
 
-	srv.SetProgram(1, testScreenIDA, "rev-a", "scheduled", DisplayContent, testImageContent(), priv)
-	srv.SetProgram(1, testScreenIDB, "rev-b", "scheduled", DisplayBlank, nil, priv)
+	srv.SetProgram(1, testScreenIDA, "rev-a", "scheduled", DisplayContent, testImageContent())
+	srv.SetProgram(1, testScreenIDB, "rev-b", "scheduled", DisplayBlank, nil)
 
 	if got := srv.CurrentDisplay(testScreenIDA); got != DisplayContent {
 		t.Errorf("CurrentDisplay(A) = %q, want %q — recovery would be suppressed on a screen showing content (PLY-155)", got, DisplayContent)
@@ -317,18 +322,19 @@ func TestSoleServedScreenOnlyAnswersWhenThereIsNoAmbiguity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
+	srv.SetSigningKey(priv)
 
 	if _, ok := srv.SoleServedScreen(); ok {
 		t.Error("SoleServedScreen reported a screen with none configured")
 	}
 
-	srv.SetProgram(1, testScreenIDA, "rev-a", "scheduled", DisplayContent, nil, priv)
+	srv.SetProgram(1, testScreenIDA, "rev-a", "scheduled", DisplayContent, nil)
 	got, ok := srv.SoleServedScreen()
 	if !ok || got != testScreenIDA {
 		t.Errorf("SoleServedScreen() = (%q, %v), want (%q, true)", got, ok, testScreenIDA)
 	}
 
-	srv.SetProgram(1, testScreenIDB, "rev-b", "scheduled", DisplayBlank, nil, priv)
+	srv.SetProgram(1, testScreenIDB, "rev-b", "scheduled", DisplayBlank, nil)
 	if got, ok := srv.SoleServedScreen(); ok {
 		t.Errorf("SoleServedScreen() = (%q, true) with two screens configured, want false — answering here picks a screen arbitrarily", got)
 	}
@@ -346,8 +352,9 @@ func TestSetProgramIgnoresAnEmptyScreenID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
+	srv.SetSigningKey(priv)
 
-	srv.SetProgram(1, "", "rev-nowhere", "scheduled", "content", testImageContent(), priv)
+	srv.SetProgram(1, "", "rev-nowhere", "scheduled", "content", testImageContent())
 
 	if _, ok := srv.SoleServedScreen(); ok {
 		t.Error("a program installed under an empty screen_id became this server's sole served screen")
@@ -425,17 +432,19 @@ func TestTerminalDefaultIsServableWithNoProgramEverInstalled(t *testing.T) {
 	}
 }
 
-// TestSetProgramDoesNotClearTheRelaySigningKey pins the direction of the
-// relationship between a screen's program and the relay's identity: installing a
-// program cannot take the identity away.
+// TestAProgramWriteCannotChangeWhatOtherScreensLeasesAreSignedWith pins the
+// direction of the relationship between a screen's program and the relay's
+// identity: a per-screen write cannot reach the identity at all.
 //
-// SetProgram takes a signing key only because a caller installing a program
-// necessarily holds one. If it assigned unconditionally, a single write carrying
-// no usable key would blank the key for the WHOLE server — every screen's next
-// pull, including screens that write never named, answered 500 — which is a
-// per-screen operation reaching across every other screen.
-func TestSetProgramDoesNotClearTheRelaySigningKey(t *testing.T) {
-	certPEM, _, priv, _ := testRelaySigningIdentity(t)
+// SetProgram once took a signing key, and installed any well-formed one it was
+// handed for the WHOLE server. One write for screen B carrying a foreign-but-
+// valid key therefore made screen A's Lease verify under the foreign key and NOT
+// under the relay cert's — so every paired player on the site rejected every
+// Lease against its pinned trust anchor (PLY-090), caused by a write that never
+// named them. The key parameter is gone, so the write below has nothing to
+// install; what this asserts is the consequence that made it worth removing.
+func TestAProgramWriteCannotChangeWhatOtherScreensLeasesAreSignedWith(t *testing.T) {
+	certPEM, _, priv, pub := testRelaySigningIdentity(t)
 	grant := testGrantForScreen(testScreenIDA)
 
 	srv, err := NewServer(certPEM, []wire.PairingGrant{grant}, WallClockMs)
@@ -444,14 +453,27 @@ func TestSetProgramDoesNotClearTheRelaySigningKey(t *testing.T) {
 	}
 	srv.SetSigningKey(priv)
 
-	// A program write for some OTHER screen, carrying no usable key.
-	srv.SetProgram(1, testScreenIDB, "rev-keyless", "scheduled", DisplayContent, testImageContent(), nil)
+	// A program write for some OTHER screen — the write that used to be able to
+	// take the whole relay's signing identity with it.
+	srv.SetProgram(1, testScreenIDB, "rev-other-screen", "scheduled", DisplayContent, testImageContent())
 
+	// Screen A holds no program, so this is its terminal default (DAT-118) — the
+	// Lease a relay must always be able to produce, and the one that went
+	// unverifiable when a sibling screen's write moved the key.
 	lease := pullLease(t, srv, redeemToken(t, srv, grant.GrantID))
-	if lease.Signature == "" {
-		t.Fatal("Lease carries no signature after a keyless program write for a different screen")
+	sigBytes, err := wire.DecodeSignature(lease.Signature)
+	if err != nil {
+		t.Fatalf("wire.DecodeSignature: %v", err)
 	}
-	if got := srv.programFor(testScreenIDB).ProgramRevision; got != "rev-keyless" {
-		t.Errorf("screen B program_revision = %q, want rev-keyless — the write itself must still land; only the relay's key is protected", got)
+	canon, err := wire.LeaseSignedBytes(lease.Lease)
+	if err != nil {
+		t.Fatalf("wire.LeaseSignedBytes: %v", err)
+	}
+	if !signhash.Verify(pub, canon, sigBytes) {
+		t.Error("after a program write for a DIFFERENT screen, this screen's Lease no longer verifies against the relay's own cert public key — a per-screen write moved the relay's identity (PLY-090)")
+	}
+
+	if got := srv.programFor(testScreenIDB).ProgramRevision; got != "rev-other-screen" {
+		t.Errorf("screen B program_revision = %q, want rev-other-screen — the write itself must still land; only the relay's identity is out of its reach", got)
 	}
 }

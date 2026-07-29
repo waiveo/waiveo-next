@@ -280,8 +280,8 @@ func TestLoadConfigRejectsMalformedECPTargets(t *testing.T) {
 	}
 }
 
-// newTestPlayerServer builds a real playerserver.Server plus the ed25519
-// signing key its issued Leases are signed with and a redeemable pairing
+// newTestPlayerServer builds a real playerserver.Server with its own ed25519
+// Lease-signing identity already installed, plus a redeemable pairing
 // grant's selector — a byte-exact duplicate of
 // internal/relay/schedulehost's own test helper of the same name (this
 // codebase's established cross-package pattern for small test collaborators,
@@ -291,7 +291,7 @@ func TestLoadConfigRejectsMalformedECPTargets(t *testing.T) {
 // serves the browser-facing ECDSA P-256 leaf): the relay's lease-signing
 // identity — the cert whose public key a player verifies Leases against
 // (PLY-090) — is ed25519, a distinct key from the feeder's TLS serving leaf.
-func newTestPlayerServer(t *testing.T) (*playerserver.Server, ed25519.PrivateKey, string) {
+func newTestPlayerServer(t *testing.T) (*playerserver.Server, string) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -320,7 +320,12 @@ func newTestPlayerServer(t *testing.T) (*playerserver.Server, ed25519.PrivateKey
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	return srv, priv, testPlayerServerGrantID
+	// The relay's own Lease-signing identity, installed exactly as the boot path
+	// installs it (main's own pairingSrv.SetSigningKey) and independently of any
+	// program: a program write carries no key, so nothing else on this server can
+	// establish one and every pull would answer 500 without this.
+	srv.SetSigningKey(priv)
+	return srv, testPlayerServerGrantID
 }
 
 // testPlayerServerGrantID is newTestPlayerServer's own boot-time REL-121
@@ -477,14 +482,14 @@ func demoContentHourInstant(t *testing.T) int64 {
 func TestBootScheduleResolverServesResolvedProgramForGovernedScreen(t *testing.T) {
 	applied := buildDemoAppliedForTest(t)
 
-	srv, priv, grantID := newTestPlayerServer(t)
-	srv.SetServedProgram(applied.Generation, applied.ScreenPrograms[0], priv)
+	srv, grantID := newTestPlayerServer(t)
+	srv.SetServedProgram(applied.Generation, applied.ScreenPrograms[0])
 	appAuthoredRevision := applied.ScreenPrograms[0].ProgramRevision
 
 	sink := fakeScheduleSink()
 	site := hello.SiteBinding{TZ: "America/Chicago", Lat: 41.8781, Long: -87.6298}
 
-	resolvers := bootScheduleResolverAt(applied, srv, sink, site, priv, demoContentHourInstant(t))
+	resolvers := bootScheduleResolverAt(applied, srv, sink, site, demoContentHourInstant(t))
 	if len(resolvers) != 1 {
 		t.Fatalf("bootScheduleResolverAt returned %d resolver(s), want 1 (the demo schedule governs exactly one screen)", len(resolvers))
 	}
@@ -518,13 +523,13 @@ func TestBootScheduleResolverEmptyScheduleLeavesAppAuthoredProgramUnchanged(t *t
 		Display:         "content",
 		Content:         []wire.ContentRef{{AssetRef: "sha256:deadbeef", URL: "https://origin.example/content/deadbeef"}},
 	}
-	srv, priv, grantID := newTestPlayerServer(t)
-	srv.SetServedProgram(1, appAuthored, priv)
+	srv, grantID := newTestPlayerServer(t)
+	srv.SetServedProgram(1, appAuthored)
 
 	applied := desiredstate.Applied{} // never-carried schedule (today's first-photon state)
 	sink := fakeScheduleSink()
 
-	resolvers := bootScheduleResolverAt(applied, srv, sink, hello.SiteBinding{}, priv, time.Now().UnixMilli())
+	resolvers := bootScheduleResolverAt(applied, srv, sink, hello.SiteBinding{}, time.Now().UnixMilli())
 	if len(resolvers) != 0 {
 		t.Fatalf("bootScheduleResolverAt returned %d resolver(s) for an empty schedule, want 0", len(resolvers))
 	}
@@ -654,7 +659,7 @@ func buildSkipMisfireAppliedForTest(t *testing.T) desiredstate.Applied {
 // is suppressed.
 func TestBootScheduleResolverSkipMisfireDoesNotResumeFire(t *testing.T) {
 	applied := buildSkipMisfireAppliedForTest(t)
-	srv, priv, _ := newTestPlayerServer(t)
+	srv, _ := newTestPlayerServer(t)
 	ctrl := &recordingController{}
 	sink := recordingScheduleSink(ctrl)
 	site := hello.SiteBinding{TZ: "America/Chicago", Lat: 41.8781, Long: -87.6298}
@@ -665,7 +670,7 @@ func TestBootScheduleResolverSkipMisfireDoesNotResumeFire(t *testing.T) {
 	}
 	nowMs := time.Date(2026, time.January, 15, 12, 0, 0, 0, loc).UnixMilli() // inside the all-day daypart
 
-	resolvers := bootScheduleResolverAt(applied, srv, sink, site, priv, nowMs)
+	resolvers := bootScheduleResolverAt(applied, srv, sink, site, nowMs)
 	if len(resolvers) != 1 {
 		t.Fatalf("bootScheduleResolverAt returned %d resolver(s), want 1 (the fixture schedule governs exactly one screen)", len(resolvers))
 	}
@@ -767,7 +772,7 @@ func buildRePullContentApplied(t *testing.T, gen int64, assetRef string) desired
 // observe the served program through (pairAndPull).
 func newRePullFixture(t *testing.T) (*scheduleDriver, *automationhost.Host, *playerserver.Server, string, int64) {
 	t.Helper()
-	srv, priv, grantID := newTestPlayerServer(t)
+	srv, grantID := newTestPlayerServer(t)
 
 	store, err := identity.Open(":memory:")
 	if err != nil {
@@ -780,11 +785,10 @@ func newRePullFixture(t *testing.T) (*scheduleDriver, *automationhost.Host, *pla
 	}
 
 	driver := &scheduleDriver{
-		srv:        srv,
-		sink:       fakeScheduleSink(),
-		site:       hello.SiteBinding{TZ: "America/Chicago", Lat: 41.8781, Long: -87.6298},
-		signingKey: priv,
-		tickEvery:  scheduleResolverTickInterval,
+		srv:       srv,
+		sink:      fakeScheduleSink(),
+		site:      hello.SiteBinding{TZ: "America/Chicago", Lat: 41.8781, Long: -87.6298},
+		tickEvery: scheduleResolverTickInterval,
 	}
 	return driver, host, srv, grantID, demoContentHourInstant(t)
 }
@@ -1286,6 +1290,7 @@ func TestOfflineBootServesEveryPersistedScreenProgram(t *testing.T) {
 	if err != nil {
 		t.Fatalf("playerserver.NewServer: %v", err)
 	}
+	srv.SetSigningKey(priv)
 
 	// The persisted last-applied section, exactly as desiredstate.ServedProgram
 	// hands it back from the relay's own durable store: three screens, three
@@ -1298,7 +1303,7 @@ func TestOfflineBootServesEveryPersistedScreenProgram(t *testing.T) {
 		{ScreenID: darkScreen, ProgramRevision: "rev-dark", Priority: "scheduled", Display: "blank"},
 		{ScreenID: "", ProgramRevision: "rev-orphan", Priority: "scheduled", Display: "content"},
 	}
-	serveAppAuthoredPrograms(srv, 12, served, priv)
+	serveAppAuthoredPrograms(srv, 12, served)
 
 	lobby := pairAndPull(t, srv, "grant-offline-"+lobbyScreen)
 	cafe := pairAndPull(t, srv, "grant-offline-"+cafeScreen)

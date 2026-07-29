@@ -19,7 +19,6 @@ package schedulehost
 
 import (
 	"context"
-	"crypto/ed25519"
 	"encoding/json"
 	"strings"
 	"time"
@@ -337,8 +336,7 @@ type Resolver struct {
 	// serving any player — see the type doc.
 	servedScreenID string
 
-	srv        *playerserver.Server
-	signingKey ed25519.PrivateKey
+	srv *playerserver.Server
 
 	// contentOrigin is the desired-state content-origin base URL
 	// (desiredstate.Applied.ContentOrigin, from revocation_and_site.content_origin,
@@ -372,9 +370,10 @@ type Resolver struct {
 
 // NewResolver builds a Resolver resolving scope node screenNodeID from store
 // and writing each resolved Lease to srv as servedScreenID's program
-// (playerserver.Server.SetProgram) signed with signingKey — the relay's own
-// enrollment key, the SAME trust anchor a player pins its Lease-signature check
-// against (PLY-090), exactly as playerserver.SetProgram documents.
+// (playerserver.Server.SetProgram). It carries no signing key: the Lease-signing
+// identity is the relay's own, established once via
+// playerserver.Server.SetSigningKey, and a schedule resolution has no authority
+// over it (playerserver.SetProgram's own doc).
 //
 // screenNodeID and servedScreenID are two different id spaces (DAT-004a) and
 // the caller MUST NOT pass one for the other — see the Resolver type doc.
@@ -396,13 +395,12 @@ type Resolver struct {
 // form. An empty contentOrigin degrades resolved content to url-less refs
 // (REL-140) — the live re-pull path passes applied.ContentOrigin, so a feeder
 // that carried no content origin degrades rather than fabricating one.
-func NewResolver(store datamodel.RowStore, screenNodeID, servedScreenID string, srv *playerserver.Server, signingKey ed25519.PrivateKey, generation int64, contentOrigin string) *Resolver {
+func NewResolver(store datamodel.RowStore, screenNodeID, servedScreenID string, srv *playerserver.Server, generation int64, contentOrigin string) *Resolver {
 	return &Resolver{
 		store:          store,
 		screenNodeID:   screenNodeID,
 		servedScreenID: servedScreenID,
 		srv:            srv,
-		signingKey:     signingKey,
 		generation:     generation,
 		contentOrigin:  contentOrigin,
 	}
@@ -437,7 +435,7 @@ func (r *Resolver) ResolveNow(nowMs int64) (fired *datamodel.PresetFire, err err
 	// below — the preset batch is a scope-node concern (DAT-075) and needs no
 	// screen identity — it simply installs no program.
 	if r.srv != nil && r.servedScreenID != "" {
-		r.srv.SetProgram(r.generation, r.servedScreenID, programRevision, priority, display, content, r.signingKey)
+		r.srv.SetProgram(r.generation, r.servedScreenID, programRevision, priority, display, content)
 	}
 
 	fired = datamodel.PresetTransition(r.prev, &state)
