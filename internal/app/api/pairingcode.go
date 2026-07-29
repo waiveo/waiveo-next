@@ -1,10 +1,13 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"net"
 	"net/http"
+	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/maaxton/waiveo-next/internal/app/auth"
 	"github.com/maaxton/waiveo-next/internal/app/store"
@@ -126,12 +129,29 @@ func (srv *server) issuePairingCode(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	srv.idempotent(w, r, raw, func(w http.ResponseWriter) { srv.issuePairingCodeExec(w, r) })
+	srv.idempotent(w, r, raw, func(w http.ResponseWriter) { srv.issuePairingCodeExec(w, r, raw) })
 }
 
 // issuePairingCodeExec is the operation's actual work, run once per fresh
 // (non-replayed) request under the Idempotency-Key guard.
-func (srv *server) issuePairingCodeExec(w http.ResponseWriter, r *http.Request) {
+func (srv *server) issuePairingCodeExec(w http.ResponseWriter, r *http.Request, raw []byte) {
+	// The body is optional and, when present, names the relay this screen pairs
+	// against. Decoded strictly: an unknown member here would most likely be a
+	// misspelled `relay_id`, and silently ignoring it would bind the grant to
+	// whichever relay the server chose instead — the failure this field exists
+	// to prevent, arriving by a different route.
+	var req struct {
+		RelayID string `json:"relay_id"`
+	}
+	if len(bytes.TrimSpace(raw)) > 0 {
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			writeProblem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Validation Failed",
+				"The request body must be empty or a JSON object carrying only `relay_id`.")
+			return
+		}
+	}
 	id := r.PathValue("screen_id")
 	res, found, err := srv.store.Get(r.Context(), store.KindScreen, id)
 	if err != nil {
@@ -172,7 +192,7 @@ func (srv *server) issuePairingCodeExec(w http.ResponseWriter, r *http.Request) 
 	// to deliver. The refusal costs an operator nothing they had: with no relay
 	// connected, no pairing code could be formed for them to type either, and
 	// the screen has no relay to pair against.
-	relay, reason := srv.pairingRelay()
+	relay, reason := srv.pairingRelay(req.RelayID)
 	if reason != "" {
 		writeProblem(w, r, http.StatusServiceUnavailable, "UNAVAILABLE", "Service Unavailable", reason)
 		return
@@ -249,7 +269,7 @@ func (srv *server) issuePairingCodeExec(w http.ResponseWriter, r *http.Request) 
 // resolved once here: a code that dialed relay A while its grant named relay B
 // would be refused at redemption by construction (REL-121b), which is the one
 // way this pair of decisions can be wrong.
-func (srv *server) pairingRelay() (relay PairingRelay, reason string) {
+func (srv *server) pairingRelay(want string) (relay PairingRelay, reason string) {
 	dir := srv.pairingRelays
 	if dir.ConnectedRelays == nil || dir.RelaySPKI == nil {
 		return PairingRelay{}, "This deployment has no relay directory wired, so no relay can be named to redeem a pairing grant."
@@ -257,6 +277,38 @@ func (srv *server) pairingRelay() (relay PairingRelay, reason string) {
 	relays := dir.ConnectedRelays()
 	if len(relays) == 0 {
 		return PairingRelay{}, "No relay is connected, so no relay can be named to redeem a pairing grant. Retry once one is."
+	}
+	if want != "" {
+		for _, r := range relays {
+			if r.RelayID == want {
+				return r, ""
+			}
+		}
+		return PairingRelay{}, "No connected relay has the requested relay_id, so no code could be formed for it."
+	}
+	// Naming a relay is REQUIRED once more than one is connected, and this is
+	// the whole reason the field exists.
+	//
+	// A grant is bound to exactly one relay (REL-121b) and a code encodes that
+	// one relay's dial address (REL-126), so choosing for the caller means
+	// choosing which relay a screen pairs against — and the app holds no model
+	// of which relay a screen belongs to, so any choice it made would be
+	// arbitrary. Picking the first would silently bind every screen in a
+	// multi-relay site to one relay, and the failure would surface at redemption
+	// as PAIRING_CODE_INVALID, which is deliberately indistinguishable from a
+	// mistyped code — an operator would have no way to tell they had been given
+	// a code for the wrong relay.
+	//
+	// With exactly one relay there is nothing to choose, so the field stays
+	// optional for the single-relay deployment that is every deployment today.
+	if len(relays) > 1 {
+		ids := make([]string, 0, len(relays))
+		for _, r := range relays {
+			ids = append(ids, r.RelayID)
+		}
+		sort.Strings(ids)
+		return PairingRelay{}, "More than one relay is connected (" + strings.Join(ids, ", ") +
+			"), so this request must name the relay the screen pairs against in `relay_id`. A grant is redeemable only at the relay it names."
 	}
 	return relays[0], ""
 }

@@ -136,7 +136,19 @@ func (s *Store) AddPairingGrant(ctx context.Context, g wire.PairingGrant, scopeN
 	// screen row (REL-121a). Refused at the storage boundary, not only at the
 	// API handler, so no future caller can persist one by taking a different
 	// route to this method.
-	if g.RelayID == "" && g.RedemptionMode == "one-time" {
+	// Every grant this app peer mints must be one-time AND relay-bound.
+	//
+	// Guarding only `RedemptionMode == "one-time"` left the hole open by the
+	// mode field: nothing in this repo validates RedemptionMode, so a caller
+	// supplying anything else got an UNBOUND grant delivered to every relay —
+	// and a non-one-time mode also skips consumption marking on the relay side,
+	// making it redeemable repeatedly at every one of them. That is a worse
+	// version of the defect the binding closes, reachable by the very route this
+	// storage-boundary check exists to cover.
+	if g.RedemptionMode != "one-time" {
+		return fmt.Errorf("store: AddPairingGrant: redemption_mode must be %q, got %q — this app peer mints no other mode (REL-121c)", "one-time", g.RedemptionMode)
+	}
+	if g.RelayID == "" {
 		return fmt.Errorf("store: AddPairingGrant: a one-time pairing grant must be relay-bound (REL-121b/REL-121c)")
 	}
 	if g.TTL <= 0 {
@@ -260,10 +272,16 @@ func (s *Store) RetirePairingGrant(ctx context.Context, grantID, relayID string)
 		if qerr != nil {
 			return fmt.Errorf("store: RetirePairingGrant: resolve grant: %w", qerr)
 		}
-		if boundRelay != relayID {
+		// An UNBOUND row is a pre-binding grant this store migrated: its code was
+		// printed before relay_id existed, so it is redeemable at any relay by
+		// design (REL-121b's baseline shape). Refusing to retire it would make
+		// every legitimate post-upgrade redemption report an authorization
+		// failure the operator is told to investigate — crying wolf for the
+		// whole of its remaining ttl, on the one path that is working correctly.
+		if boundRelay != "" && boundRelay != relayID {
 			return ErrPairingGrantBoundElsewhere
 		}
-		if _, derr := tx.ExecContext(ctx, `DELETE FROM pairing_grants WHERE grant_id = ? AND relay_id = ?`, grantID, relayID); derr != nil {
+		if _, derr := tx.ExecContext(ctx, `DELETE FROM pairing_grants WHERE grant_id = ?`, grantID); derr != nil {
 			return fmt.Errorf("store: RetirePairingGrant: delete: %w", derr)
 		}
 		retired = true
