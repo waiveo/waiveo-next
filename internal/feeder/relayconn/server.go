@@ -90,6 +90,35 @@ const maxInboundFrameBytes = 1 << 20
 // generation-cached desiredStateSource.current).
 type SnapshotProvider func() (wire.StateSnapshotBody, error)
 
+// CandidateSink receives one relay's full `device.candidates` report
+// (REL-110/111) and replaces that relay's view with it.
+// internal/app/devices.Registry satisfies it directly via ApplyCandidates — the
+// identical method signature, no adapter — so this package depends on the
+// INTAKE capability rather than on the read model's concrete type, and a
+// deployment with no device read model simply wires none.
+//
+// relayID is the connection's AUTHENTICATED identity (the mTLS
+// client-certificate identity, REL-041/150), never the `relay_id` the frame
+// asserts. That is the whole point of the sink taking it as an argument: the
+// contract requires the app peer to disambiguate a relay by its enrolled
+// cryptographic identity, and a report is a full-set REPLACE — a relay able to
+// name another relay here could wipe that relay's entire device view with one
+// frame.
+//
+// An error means the report was refused; the connection layer answers the relay
+// with a typed refusal and the sink's prior view is expected to be intact.
+type CandidateSink interface {
+	ApplyCandidates(relayID string, candidates []wire.DeviceCandidate) error
+}
+
+// WithCandidateSink wires the intake a relay's `device.candidates` reports are
+// applied to. Optional: without it the report is accepted off the wire and
+// dropped — the honest behaviour for a deployment that runs no device read
+// model, and the same REL-004 additive tolerance an unknown verb gets.
+func WithCandidateSink(sink CandidateSink) Option {
+	return func(s *Server) { s.candidates = sink }
+}
+
 // RevocationCheck reports whether the certificate with this serial, issued
 // to relayID, has been revoked — enroll.Server.IsRevoked. REL-016: the
 // check runs at EVERY connection attempt, not only at issuance time; again
@@ -109,6 +138,7 @@ type Server struct {
 	provider           SnapshotProvider
 	lookup             hello.RelayKeyLookup
 	revoked            RevocationCheck
+	candidates         CandidateSink
 	site               hello.SiteBinding
 	implementedMinors  []string
 	recognizedFeatures []string
@@ -732,6 +762,10 @@ func (s *Server) serve(req *http.Request, ws *websocket.Conn) {
 			s.mu.Lock()
 			s.acks[relayID] = f
 			s.mu.Unlock()
+		case wire.FrameTypeDeviceCandidates:
+			if err := s.handleDeviceCandidates(conn, f, relayID); err != nil {
+				return
+			}
 		default:
 			// Unknown verb: REL-004 additive tolerance — a newer relay's
 			// new message type is ignored, never a refusal, exactly as
@@ -773,6 +807,41 @@ func (s *Server) closeRevoked(conn *serverConn) {
 	_ = conn.send(wire.NewErrorFrame("", "", conn.relayID,
 		"CERT_REVOKED", "the presented certificate has been revoked (REL-016)"))
 	_ = conn.ws.CloseNow()
+}
+
+// handleDeviceCandidates applies one `device.candidates` report to the wired
+// intake (REL-110/111). It returns a non-nil error only when the connection
+// itself must end (a failed write); a refused report is answered with a typed
+// error frame and the connection continues, since a bad report is not a
+// protocol-ordering violation.
+//
+// relayID is the connection's AUTHENTICATED identity, taken from the mTLS
+// client certificate at handshake — never f.RelayID. REL-150 requires an app
+// peer to disambiguate a relay by its enrolled cryptographic identity, and this
+// verb is the one where getting that wrong is catastrophic rather than merely
+// wrong: the report REPLACES the named relay's whole device view, so honouring
+// a self-asserted relay_id would let any enrolled relay delete every other
+// relay's devices, and re-point their entities' commands at itself.
+func (s *Server) handleDeviceCandidates(conn *serverConn, f wire.Frame, relayID string) error {
+	var body wire.DeviceCandidatesBody
+	if err := f.DecodeBody(&body); err != nil {
+		// An undecodable body fails the verb's minimum shape — the taxonomy's
+		// MALFORMED_MESSAGE (REL-002), as state.ack's own decode failure is.
+		return conn.send(wire.NewErrorFrame(f.ID, f.TraceID, relayID,
+			"MALFORMED_MESSAGE", "device.candidates body did not decode"))
+	}
+	if s.candidates == nil {
+		return nil // no read model wired: accepted and dropped (REL-004)
+	}
+	if err := s.candidates.ApplyCandidates(relayID, body.Candidates); err != nil {
+		// The report was refused whole (the intake applies all or nothing), so
+		// the app peer still holds this relay's PRIOR view. Telling the relay
+		// is what lets it correct itself rather than believing a view the app
+		// peer never took.
+		return conn.send(wire.NewErrorFrame(f.ID, f.TraceID, relayID,
+			"MALFORMED_MESSAGE", "device.candidates report refused: "+err.Error()))
+	}
+	return nil
 }
 
 // handleStatePull answers one state.pull (REL-050/051): state.unchanged

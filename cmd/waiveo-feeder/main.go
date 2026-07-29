@@ -550,6 +550,17 @@ func main() {
 	//
 	// It is built here, ahead of the api handler, because the api's device
 	// plane dispatches its commands down this server's live connections.
+	// The device plane's read model: the devices and entities the
+	// devices/entities list operations serve, and the resolver a command's
+	// target entity is looked up in to find the relay that owns it (REL-112).
+	// It starts empty and is populated by each relay's own `device.candidates`
+	// report over the connection below (REL-110/111) — no operator registration
+	// step stands between a relay seeing a device and this app peer listing it.
+	// Its rows are placed at this deployment's site node, the same site_binding
+	// every hello-ack hands the relay (REL-036), which is also the third member
+	// of the identity tuple both peers derive a device_id from (REL-153/110b).
+	deviceRegistry := devices.New(firstPhotonSite.ScopeNode)
+
 	relayConnSrv := relayconn.New(
 		src.current,
 		enrollSrv.RelayEnrollmentKey,
@@ -557,16 +568,10 @@ func main() {
 		firstPhotonSite,
 		hello.AppPeerImplementedMinors(1, 1),
 		firstPhotonRecognizedFeatures,
+		// The read model IS the candidate sink: no adapter, no shim — the
+		// connection layer's CandidateSink is exactly its ApplyCandidates.
+		relayconn.WithCandidateSink(deviceRegistry),
 	)
-
-	// The device plane's read model: the adopted devices and entities the
-	// devices/entities list operations serve, and the resolver a command's
-	// target entity is looked up in to find the relay that owns it (REL-112).
-	// It starts empty — a relay populates it from its own discovery and
-	// adoption reports (REL-110/111), which is a separate pipeline; until then
-	// the routes are live and answer truthfully rather than 404-ing as
-	// unmounted paths.
-	deviceRegistry := devices.New()
 
 	idem := apihttp.NewIdempotencyStore(nowMs, 0)
 

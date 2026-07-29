@@ -1,0 +1,228 @@
+package devices
+
+import (
+	"fmt"
+	"unicode/utf8"
+
+	"github.com/maaxton/waiveo-next/internal/shared/deviceid"
+	"github.com/maaxton/waiveo-next/internal/shared/wire"
+)
+
+// intake.go is the ONE path a relay's `device.candidates` report becomes rows
+// on (relay/1 REL-110/110a/110b/111/111a). Everything a relay sends is
+// untrusted input, so this file is written as a boundary, not a mapper.
+//
+// Three properties it holds, and how:
+//
+//  1. A relay cannot name a row. Nothing here reads an identifier off the wire
+//     — wire.DeviceCandidate has no field for one — and every id is DERIVED
+//     from REL-153's identity tuple on this side (internal/shared/deviceid).
+//     A hostile relay therefore cannot address a row into another relay's
+//     device, or into an id an adopted record already uses for something else:
+//     the only ids it can reach are the ones its own asserted identity derives
+//     to. That the derived value is a canonical ULID (DAT-005a) is structural,
+//     not checked — any 128 bits encode to one.
+//
+//  2. A rejected report changes nothing. The whole report is validated and
+//     converted BEFORE the registry is touched, and a single bad candidate
+//     rejects the report rather than being skipped. A report is a full-set
+//     replace (REL-111): applying the good half of one would install a view
+//     that is not the relay's actual view — silently deleting the devices whose
+//     candidates happened to be the malformed ones. Refusing outright leaves
+//     the prior view exactly as it was, which is both the safe answer and the
+//     honest one.
+//
+//  3. The work is bounded before it is done. Counts and lengths are checked
+//     against fixed caps first, so a report cannot make the app peer allocate
+//     or hash proportionally to whatever a relay felt like sending. The
+//     transport's own frame cap (internal/feeder/relayconn) is the outer bound;
+//     these are the inner ones, and they are what keep a single 1 MiB frame
+//     from turning into a million derivations.
+
+// Intake caps. Every one of these bounds work done on untrusted input, and each
+// is far above any real LAN: a site with more than 4096 discoverable devices, or
+// a device exposing more than 256 addressable entities, is not a deployment
+// this platform has — it is a relay misreporting or attacking.
+const (
+	maxCandidatesPerReport = 4096
+	maxEntitiesPerDevice   = 256
+	maxIdentityFieldBytes  = 256
+	maxNameBytes           = 1024
+	maxStateBytes          = 256
+)
+
+// ApplyCandidates replaces the app peer's whole view of relayID with the
+// candidate set in one `device.candidates` report (REL-110/111).
+//
+// relayID MUST be the connection's own AUTHENTICATED relay identity — the mTLS
+// client-certificate identity the connection layer established (REL-041/150) —
+// never the `relay_id` the frame asserts. A relay that could name another relay
+// in its own report would be able to replace that relay's entire device view,
+// which is why the caller passes this in rather than this function reading it
+// off the report.
+//
+// The report is applied whole or not at all; the returned error names the first
+// reason it was refused, and on error the registry is untouched.
+func (r *Registry) ApplyCandidates(relayID string, candidates []wire.DeviceCandidate) error {
+	if relayID == "" {
+		return fmt.Errorf("devices: a candidate report carries no authenticated relay identity")
+	}
+	if len(candidates) > maxCandidatesPerReport {
+		return fmt.Errorf("devices: relay %s reported %d candidates, over the %d cap", relayID, len(candidates), maxCandidatesPerReport)
+	}
+
+	view := newRelayView(0)
+	seenIdentity := map[string]bool{}
+
+	for i, c := range candidates {
+		if err := validateCandidate(c); err != nil {
+			return fmt.Errorf("devices: relay %s candidate[%d]: %w", relayID, i, err)
+		}
+		identity := c.Driver + "\x00" + c.NativeID
+		if seenIdentity[identity] {
+			// Two candidates for one (driver, native_id) is one device claimed
+			// twice: REL-153 makes that tuple the identity, so the report does
+			// not describe a set the app peer can hold, and guessing which one
+			// the relay meant would be inventing.
+			return fmt.Errorf("devices: relay %s candidate[%d]: (driver, native_id) %q/%q is reported twice — one device, two candidates (REL-153)",
+				relayID, i, c.Driver, c.NativeID)
+		}
+		seenIdentity[identity] = true
+
+		// An ignored candidate is a device an operator suppressed. Listing it
+		// as a live device would make the suppression cosmetic, so it is
+		// carried in the report (REL-110 requires that) and deliberately not
+		// materialized as a row.
+		if c.Status == wire.CandidateStatusIgnored {
+			continue
+		}
+
+		deviceRowID := deviceid.Device(r.site, c.Driver, c.NativeID)
+		view.devices[deviceRowID] = Device{
+			ID:          deviceRowID,
+			RelayID:     relayID,
+			DeviceClass: c.DeviceClass,
+			Name:        candidateName(c),
+			ScopeNode:   r.site,
+			// Labels are api/1 authored data (API-042) and the input to every
+			// label selector: a relay has no field to set them and gets an
+			// empty map, never a nil one — openapi requires the member present.
+			Labels: map[string]string{},
+		}
+		for _, e := range c.Entities {
+			entityRowID := deviceid.Entity(r.site, c.Driver, c.NativeID, e.Key)
+			view.entities[entityRowID] = Entity{
+				ID:          entityRowID,
+				DeviceID:    deviceRowID,
+				RelayID:     relayID,
+				DeviceClass: e.DeviceClass,
+				Name:        candidateName(c) + " " + e.Key,
+				ScopeNode:   r.site,
+				Labels:      map[string]string{},
+				State:       e.State,
+			}
+		}
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.seq++
+	view.seq = r.seq
+	r.views[relayID] = view
+	r.rematerialize()
+	return nil
+}
+
+// validateCandidate enforces REL-110/110a's own shape on one untrusted
+// candidate. Every check refuses the report rather than repairing the value:
+// a repaired identity is a different device than the one the relay reported.
+func validateCandidate(c wire.DeviceCandidate) error {
+	switch c.Provenance {
+	case wire.CandidateProvenanceDiscovered, wire.CandidateProvenanceManual:
+	default:
+		return fmt.Errorf("provenance %q is not one of %q/%q (REL-110)",
+			c.Provenance, wire.CandidateProvenanceDiscovered, wire.CandidateProvenanceManual)
+	}
+	switch c.Status {
+	case wire.CandidateStatusPending, wire.CandidateStatusAdopted, wire.CandidateStatusIgnored:
+	default:
+		return fmt.Errorf("status %q is not one of pending/adopted/ignored (REL-110)", c.Status)
+	}
+	// REL-110's iff: ignored_until is present exactly while ignored. A
+	// candidate claiming an expiry it is not entitled to, or an ignored one
+	// with no expiry, is a report this app peer cannot interpret.
+	if (c.IgnoredUntil != nil) != (c.Status == wire.CandidateStatusIgnored) {
+		return fmt.Errorf("ignored_until is present iff status is ignored (REL-110); status=%q present=%v",
+			c.Status, c.IgnoredUntil != nil)
+	}
+	if err := checkField("driver", c.Driver, maxIdentityFieldBytes, true); err != nil {
+		return err
+	}
+	if err := checkField("native_id", c.NativeID, maxIdentityFieldBytes, true); err != nil {
+		return err
+	}
+	if err := checkField("device_class", c.DeviceClass, maxIdentityFieldBytes, true); err != nil {
+		return err
+	}
+	if err := checkField("name", c.Name, maxNameBytes, false); err != nil {
+		return err
+	}
+	if len(c.Entities) > maxEntitiesPerDevice {
+		return fmt.Errorf("%d entities, over the %d cap", len(c.Entities), maxEntitiesPerDevice)
+	}
+	seenKey := map[string]bool{}
+	for j, e := range c.Entities {
+		if err := checkField(fmt.Sprintf("entities[%d].key", j), e.Key, maxIdentityFieldBytes, true); err != nil {
+			return err
+		}
+		if err := checkField(fmt.Sprintf("entities[%d].device_class", j), e.DeviceClass, maxIdentityFieldBytes, true); err != nil {
+			return err
+		}
+		if err := checkField(fmt.Sprintf("entities[%d].state", j), e.State, maxStateBytes, false); err != nil {
+			return err
+		}
+		if seenKey[e.Key] {
+			// Two entities under one key derive to one entity_id, so the second
+			// would silently overwrite the first and one of the device's
+			// addressable surfaces would vanish.
+			return fmt.Errorf("entities[%d].key %q is reported twice on one device", j, e.Key)
+		}
+		seenKey[e.Key] = true
+	}
+	return nil
+}
+
+// checkField applies the three checks every string off this wire gets: present
+// (when required), within its byte cap, and valid UTF-8.
+//
+// The UTF-8 check is not cosmetic. These strings are hashed into row ids,
+// compared for equality, and rendered into JSON responses; invalid UTF-8 would
+// be replaced by U+FFFD somewhere downstream, at which point two distinct
+// devices could render as one name while deriving two ids — or one device's
+// identity could be spelled two ways that hash differently but read
+// identically to an operator deciding whether to adopt it.
+func checkField(name, value string, maxBytes int, required bool) error {
+	if required && value == "" {
+		return fmt.Errorf("%s is required (REL-110a)", name)
+	}
+	if len(value) > maxBytes {
+		return fmt.Errorf("%s is %d bytes, over the %d cap", name, len(value), maxBytes)
+	}
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("%s is not valid UTF-8", name)
+	}
+	return nil
+}
+
+// candidateName is the row's `name`: the device's own self-reported name when
+// it has one, else its identity tuple spelled out.
+//
+// This is the device calling itself something, which IS a discovered fact — as
+// distinct from the display name an operator gives it, which is authored policy
+// on the adopted record (REL-063) and never comes from here.
+func candidateName(c wire.DeviceCandidate) string {
+	if c.Name != "" {
+		return c.Name
+	}
+	return c.Driver + " " + c.NativeID
+}

@@ -612,7 +612,7 @@ const (
 // about.
 func newScopedDevicePlaneEnv(t *testing.T) (*devicePlaneEnv, scopedTree) {
 	t.Helper()
-	registry := devices.New()
+	registry := devices.New(devScopeA)
 	dispatcher := &fakeDispatcher{result: wire.DeviceCommandResultBody{OK: true}}
 
 	st, err := store.Open(":memory:")

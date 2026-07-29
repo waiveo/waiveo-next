@@ -46,6 +46,11 @@ const apiFixedNowMs int64 = 1752537600000
 // The device plane never touches it; it is a required constructor argument.
 const apiContentBase = "https://origin.invalid"
 
+// apiSiteScopeNode is the deployment's site node: the placement every device
+// row this app peer holds is given, and the third member of the identity tuple
+// both peers derive device/entity ids from (REL-153/110b).
+const apiSiteScopeNode = "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5"
+
 // commandResponse is the openapi EntityCommandResult shape as the caller sees
 // it over HTTP.
 type commandResponse struct {
@@ -63,17 +68,17 @@ type commandResponse struct {
 func newAPIOverConnection(t *testing.T, h *harness, relayID string) *httptest.Server {
 	t.Helper()
 
-	registry := devices.New()
+	registry := devices.New(apiSiteScopeNode)
 	if err := registry.PutDevice(devices.Device{
 		ID: fixtureDevice1, RelayID: relayID, DeviceClass: fixtureDevClass,
-		Name: "Lobby TV", ScopeNode: "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5",
+		Name: "Lobby TV", ScopeNode: apiSiteScopeNode,
 	}); err != nil {
 		t.Fatalf("PutDevice: %v", err)
 	}
 	if err := registry.PutEntity(devices.Entity{
 		ID: fixtureEntityA, DeviceID: fixtureDevice1, RelayID: relayID,
 		DeviceClass: fixtureDevClass, Name: "Lobby TV player",
-		ScopeNode: "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5",
+		ScopeNode: apiSiteScopeNode,
 	}); err != nil {
 		t.Fatalf("PutEntity: %v", err)
 	}

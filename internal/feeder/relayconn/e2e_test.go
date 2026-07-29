@@ -68,7 +68,13 @@ import (
 
 const testImagePath = "../origin/testdata/photon.png"
 
-var testSite = hello.SiteBinding{ScopeNode: "site-e2e", TZ: "UTC", Lat: 51.5, Long: -0.1}
+// testSite is the app peer's authoritative site_binding for these tests
+// (REL-036). Its scope node is a real ULID because it is not only a placement:
+// it is the third member of the identity tuple BOTH peers derive device and
+// entity ids from (REL-153/110b), and it is the scope node the device rows an
+// intake produces are placed at, which the api layer reads as a resource
+// placement like any other.
+var testSite = hello.SiteBinding{ScopeNode: apiSiteScopeNode, TZ: "UTC", Lat: 51.5, Long: -0.1}
 
 var testDeclaration = hello.Declaration{
 	ProtocolVersion: "1.0",

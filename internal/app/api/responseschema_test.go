@@ -374,7 +374,7 @@ func newSchemaProbeEnv(t *testing.T) *schemaProbeEnv {
 	}
 	t.Cleanup(fixture.Close)
 
-	registry := devices.New()
+	registry := devices.New(devScopeA)
 	mustPutDevice(t, registry, devices.Device{
 		ID: rsDeviceID, RelayID: rsRelayID, DeviceClass: "media-player",
 		Name: "Lobby TV", ScopeNode: rsScopeNode, Labels: map[string]string{"env": "prod"},
