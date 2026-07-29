@@ -2,6 +2,7 @@ package identity
 
 import (
 	"bytes"
+	"database/sql"
 	"path/filepath"
 	"testing"
 )
@@ -161,5 +162,85 @@ func TestServedScreenProgramsSurviveReopen(t *testing.T) {
 	}
 	if !bytes.Equal(got, payload) {
 		t.Errorf("LastAppliedScreenPrograms() after reopen = %q, want %q (REL-055 offline continuity)", got, payload)
+	}
+}
+
+// TestOpenMigratesPreScreenProgramsLastAppliedRow asserts the OLDEST shape of
+// last_applied_generation — the original {id, generation, hash}, before either
+// column that has since been added to it — is migrated all the way forward.
+//
+// The row shape and the migration were added by the same commit, which is
+// exactly what leaves the gap: `CREATE TABLE IF NOT EXISTS` is a no-op against a
+// table an earlier build already created, so a store from before
+// `screen_programs` existed never gets the column from the schema, and — until
+// the migration named it — never got it from a migration either. Every
+// ApplyGeneration against such a store fails on `no such column:
+// screen_programs`, which is the same total apply outage the `revoked` migration
+// exists to prevent one column later.
+func TestOpenMigratesPreScreenProgramsLastAppliedRow(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "relay.db")
+
+	// The table exactly as the build before `screen_programs` created it, with a
+	// row in it, so the migration has to preserve real state rather than an
+	// empty one.
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE last_applied_generation (
+		id          INTEGER PRIMARY KEY CHECK (id = 1),
+		generation  INTEGER NOT NULL,
+		hash        TEXT NOT NULL
+	)`); err != nil {
+		t.Fatalf("create pre-screen_programs last_applied_generation: %v", err)
+	}
+	if _, err := raw.Exec(
+		`INSERT INTO last_applied_generation (id, generation, hash) VALUES (1, 4, 'sha256:ancient')`,
+	); err != nil {
+		t.Fatalf("seed pre-screen_programs row: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw handle: %v", err)
+	}
+
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open over a pre-screen_programs store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	// Both added columns read back as the REL-060 empty placeholder.
+	programs, err := store.LastAppliedScreenPrograms()
+	if err != nil {
+		t.Fatalf("LastAppliedScreenPrograms over a migrated store: %v", err)
+	}
+	if !bytes.Equal(programs, []byte("[]")) {
+		t.Errorf("migrated screen_programs = %q, want %q", programs, "[]")
+	}
+	revoked, err := store.LastAppliedRevokedScreens()
+	if err != nil {
+		t.Fatalf("LastAppliedRevokedScreens over a migrated store: %v", err)
+	}
+	if !bytes.Equal(revoked, []byte("[]")) {
+		t.Errorf("migrated revoked = %q, want %q", revoked, "[]")
+	}
+
+	// The pre-existing generation survived the migration.
+	gen, hash, ok, err := store.LastAppliedGeneration()
+	if err != nil || !ok || gen != 4 || hash != "sha256:ancient" {
+		t.Errorf("LastAppliedGeneration after migration = {%d, %q} ok=%v err=%v, want {4, \"sha256:ancient\"}", gen, hash, ok, err)
+	}
+
+	// And the migrated table accepts a full apply — the operation a store stuck
+	// on the old shape fails outright, taking every later generation with it.
+	if err := store.ApplyGeneration(5, "sha256:new", []byte(`[{"screen_id":"s1"}]`), []byte(`["s1"]`)); err != nil {
+		t.Fatalf("ApplyGeneration over a migrated store: %v", err)
+	}
+	programs, err = store.LastAppliedScreenPrograms()
+	if err != nil {
+		t.Fatalf("LastAppliedScreenPrograms after a post-migration apply: %v", err)
+	}
+	if !bytes.Equal(programs, []byte(`[{"screen_id":"s1"}]`)) {
+		t.Errorf("post-migration screen_programs = %q, want %q", programs, `[{"screen_id":"s1"}]`)
 	}
 }

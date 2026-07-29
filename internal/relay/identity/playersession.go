@@ -77,11 +77,17 @@ CREATE TABLE IF NOT EXISTS player_redemption_reports (
 //
 // The added column defaults to 0 — live — so every session a relay minted
 // before terminations existed keeps working across the upgrade. That is the
-// safe default in the only direction that matters here: an upgraded relay
-// re-installs its persisted revocation set at boot
-// (internal/relay/desiredstate.ServedRevocation), and that install terminates
-// the sessions of every screen the set names, so a screen revoked before the
-// upgrade has its sessions dropped on the first boot after it.
+// safe default UPGRADING: an upgraded relay re-installs its persisted revocation
+// set at boot (internal/relay/desiredstate.ServedRevocation), and that install
+// terminates the sessions of every screen the set names, so a screen revoked
+// before the upgrade has its sessions dropped on the first boot after it.
+//
+// Downgrading is a different matter and is not safe. An old PlayerSession
+// selects {screen_id, expires_at} and nothing else, so it reads a session THIS
+// build tombstoned as live and hands back a credential a revocation already
+// dropped. See migrateLastAppliedSchema's own doc for the same hazard on the
+// last-applied row and for why the platform's answer is that a store is never
+// handed back to an older binary rather than that the case is handled.
 func migratePlayerSessionSchema(db *sql.DB) error {
 	has, err := hasColumn(db, "player_channel_tokens", "terminated_at")
 	if err != nil {

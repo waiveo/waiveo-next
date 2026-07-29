@@ -211,26 +211,62 @@ func verifyWriteDiscipline(db *sql.DB) error {
 // earlier build up to the current column set, exactly as migrateTelemetrySchema
 // does for the telemetry queue and for the same reason: `CREATE TABLE IF NOT
 // EXISTS` is a no-op against an existing table, so a relay that has been
-// running since before `revoked` existed would keep a four-column row and fail
-// every ApplyGeneration — no generation applying at all, which is a harder
+// running since before a column existed would keep the old row shape and fail
+// every ApplyGeneration on it — no generation applying at all, which is a harder
 // outage than the one the column exists to fix.
 //
-// The added column defaults to the REL-060 empty placeholder, so a relay
-// upgraded mid-life comes up revoking nothing until its next pull restates the
-// set. That is the correct default and not a silent un-revocation: a relay on
-// the old build was not enforcing a persisted revocation at all (it had nowhere
-// to persist one), so there is no prior durable statement for the migration to
-// lose.
+// BOTH columns added since the table's original {id, generation, hash} shape are
+// migrated, in the order they were introduced. `screen_programs` is not a
+// hypothetical: the build that added it created the table with it, which makes
+// the CREATE a no-op for every store older than that build, and those stores
+// then fail `ApplyGeneration` on `no such column: screen_programs`. `revoked`
+// has exactly the same exposure one column later, and the two are indexed
+// independently — a store predating both needs both, a store predating only the
+// second needs only the second.
+//
+// Each added column defaults to the REL-060 empty placeholder, so a relay
+// upgraded mid-life comes up serving nothing and revoking nothing until its next
+// pull restates them. That is the correct default and not a silent
+// un-revocation: a relay on the old build was not enforcing a persisted
+// revocation at all (it had nowhere to persist one), so there is no prior
+// durable statement for the migration to lose.
+//
+// # The reverse direction is NOT safe
+//
+// That last argument is about the UPGRADE only, and does not run backwards. A
+// store migrated here and then opened by an OLD binary is a real hazard, and the
+// platform's answer is that it must not happen rather than that it is handled:
+//
+//   - An old ApplyGeneration names only the columns it knew. It SUCCEEDS against
+//     the migrated table — `revoked` simply is not in its statement — so
+//     {generation, hash, screen_programs} advance while `revoked` stays at the
+//     generation before. The row is then exactly the torn cross-generation state
+//     ApplyGeneration's own doc says can never exist: last-applied reports the
+//     new generation while the revocation set enforced against every credential
+//     decision is the previous one's.
+//   - An old PlayerSession selects only {screen_id, expires_at}, so a session
+//     this build tombstoned reads back LIVE, resurrecting every credential a
+//     revocation dropped.
+//
+// Neither is defended against here, and neither can be: a column an old binary
+// does not name is one no migration can make it read. Pre-launch, the relay
+// binary and its store move forward together, so the rule is simply that a store
+// is never handed back to an older binary.
 func migrateLastAppliedSchema(db *sql.DB) error {
-	has, err := hasColumn(db, "last_applied_generation", "revoked")
-	if err != nil {
-		return err
-	}
-	if has {
-		return nil
-	}
-	if _, err := db.Exec(`ALTER TABLE last_applied_generation ADD COLUMN revoked BLOB NOT NULL DEFAULT '[]'`); err != nil {
-		return fmt.Errorf("add last_applied_generation.revoked: %w", err)
+	for _, col := range []struct{ name, ddl string }{
+		{"screen_programs", `ALTER TABLE last_applied_generation ADD COLUMN screen_programs BLOB NOT NULL DEFAULT '[]'`},
+		{"revoked", `ALTER TABLE last_applied_generation ADD COLUMN revoked BLOB NOT NULL DEFAULT '[]'`},
+	} {
+		has, err := hasColumn(db, "last_applied_generation", col.name)
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		if _, err := db.Exec(col.ddl); err != nil {
+			return fmt.Errorf("add last_applied_generation.%s: %w", col.name, err)
+		}
 	}
 	return nil
 }
