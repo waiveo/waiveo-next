@@ -196,6 +196,13 @@ type Store struct {
 	// lock) can never deadlock against the write path.
 	hookMu   sync.Mutex
 	onCommit func()
+
+	// required is the deployment's required-pack roster (marketplace/1
+	// MKT-093a), wired by SetRequiredPacks. Nil — the default — makes no pack
+	// required. It is read under mu: the RequiredFloor accessor takes the read
+	// lock, and the enforcing check (packsfloor.go) runs inside a write
+	// transaction that already holds the write lock.
+	required RequiredPacks
 }
 
 // schema creates the scope-node table, one table per scheduling-core kind, and

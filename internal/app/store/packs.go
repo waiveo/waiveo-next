@@ -121,6 +121,17 @@ type PackInstall struct {
 	// transaction, so a refused install never advances it. A direct
 	// (non-registry) install pins no trust channel and leaves this nil.
 	ChannelMark *ChannelMarkAdvance
+
+	// ExpectPriorVersion, when non-empty, is a compare-and-swap precondition:
+	// the pack row this install replaces MUST still exist AND still carry
+	// exactly this version at commit time, else the transaction rolls back with
+	// ErrPriorVersionChanged. It exists for the revert path, whose whole premise
+	// ("the version currently applied has become non-resolvable") is established
+	// from a read taken outside this transaction. Unlike an InstallGuard — which
+	// by design runs only when a prior row exists, so MAN-053 never fires on a
+	// fresh install — this precondition also refuses when the row is GONE: a
+	// revert must not resurrect a pack a concurrent uninstall removed.
+	ExpectPriorVersion string
 }
 
 // InstallGuard is a caller-supplied precondition re-checked INSIDE the install
@@ -141,6 +152,15 @@ type PackInstall struct {
 // at a dataModel.version below one already installed. It mirrors the WriteGuard
 // pattern the generic Create/Update path uses for external_id uniqueness.
 type InstallGuard func(prior Pack) error
+
+// ErrPriorVersionChanged reports an install refused inside its own transaction
+// because PackInstall.ExpectPriorVersion no longer described the pack row: it
+// carries a different version, or the pack is no longer installed at all. The
+// packs layer maps it onto the same POINTER_ROLLBACK_REJECTED a sequential
+// downgrade refusal surfaces — from the caller's side the outcome is identical
+// (a lower version did not replace a higher one), and the only difference is
+// that the higher one arrived concurrently.
+var ErrPriorVersionChanged = errors.New("store: the pack row this install expected to replace has changed")
 
 // GetPack returns the installed pack with id, and whether it exists.
 func (s *Store) GetPack(ctx context.Context, id string) (Pack, bool, error) {
@@ -221,6 +241,27 @@ func (s *Store) InstallPack(ctx context.Context, spec PackInstall, guards ...Ins
 		prior, found, err := getPack(ctx, tx, spec.ID)
 		if err != nil {
 			return err
+		}
+
+		// MKT-093b: a required pack may not be left below its floor, on ANY path
+		// that reaches an install — pointer resolution, explicit version pin, or
+		// direct artifact upload. Checked here, in the committing transaction,
+		// because that is the only place every one of those paths passes through;
+		// a check in a resolver or a handler is one a caller can arrive beside.
+		// It runs whether or not a prior row exists: a FRESH install below the
+		// floor is as much a below-floor install as a downgrade is.
+		if err := s.checkRequiredFloor(spec.ID, spec.Version); err != nil {
+			return err
+		}
+		// A caller-stated compare-and-swap on the version this install replaces
+		// (an If-Match at version grain): the revert path decides its target from
+		// a pack row read OUTSIDE this transaction, and between that read and this
+		// commit another writer may have installed something else — or uninstalled
+		// the pack entirely. Re-asserting the premise here refuses rather than
+		// silently overwriting a version the revert never inspected. An empty
+		// value states no expectation, which is every other caller.
+		if spec.ExpectPriorVersion != "" && (!found || prior.Version != spec.ExpectPriorVersion) {
+			return ErrPriorVersionChanged
 		}
 
 		var revision, createdAt int64
@@ -324,6 +365,15 @@ func (s *Store) UninstallPack(ctx context.Context, id string, rev int64) error {
 		}
 		if err != nil {
 			return fmt.Errorf("store: uninstall read pack: %w", err)
+		}
+		// MKT-093b(i): a required pack cannot be uninstalled — removal is removal
+		// to no version, which is below every floor. Checked BEFORE the revision
+		// precondition on purpose: the refusal is a property of the pack, not of
+		// what revision the caller happens to hold, so a required pack answers
+		// identically whatever If-Match it is presented with, and a caller cannot
+		// learn the current revision by probing this endpoint with a wrong one.
+		if err := s.checkRequiredFloor(id, ""); err != nil {
+			return err
 		}
 		if curRev != rev {
 			return &RevisionMismatchError{Expected: rev, Current: curRev}
