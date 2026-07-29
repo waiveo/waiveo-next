@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -82,5 +83,81 @@ func TestCredentialResetRefusesANonAdminIssuer(t *testing.T) {
 	}
 	if _, err := st.IssueCredentialResetGrant(ctx, operator.PrincipalID, target.PrincipalID, CredentialResetOptions{}); err != ErrResetNotAdmin {
 		t.Errorf("an `operator` issued a credential-reset grant (err = %v); SEC-012 admits `admin` and above", err)
+	}
+}
+
+// TestCredentialResetRefusesATargetWhoOutranksTheIssuer pins SEC-012a, and the
+// escalation it closes is worth stating because it was reachable in three calls
+// with nothing but an `admin` binding.
+//
+// SEC-012 permits an admin to issue a reset for "any `user` principal", and an
+// owner IS a user principal holding a password. So: issue a reset for the owner
+// (the one-time code comes back to the issuing admin, which is SEC-050's own
+// design), redeem it (the redemption surface is necessarily reachable without an
+// existing credential, since its caller is by definition someone who cannot sign
+// in), then authenticate as the owner. Everything SEC-011 reserves to `owner` —
+// acknowledging a capability-widening pack update, minting a break-glass grant,
+// toggling developer mode, destroying the workspace — would be reachable by a
+// role the contract deliberately withheld them from.
+//
+// The rule is STRICTLY above: an admin resetting a peer admin is lateral and
+// grants no authority the issuer did not already hold, so it stays permitted.
+func TestCredentialResetRefusesATargetWhoOutranksTheIssuer(t *testing.T) {
+	ctx := context.Background()
+	st := newSecurityTestStore(t)
+
+	seed := func(name string, role Role) PrincipalRow {
+		t.Helper()
+		p, err := st.CreatePrincipal(ctx, KindUser, name)
+		if err != nil {
+			t.Fatalf("create %s: %v", name, err)
+		}
+		if _, err := st.PutPasswordCredential(ctx, p.PrincipalID, name, name+"-passphrase"); err != nil {
+			t.Fatalf("seed %s password: %v", name, err)
+		}
+		if role != "" {
+			if _, err := st.PutRoleBinding(ctx, p.PrincipalID, RootScopeNode, role); err != nil {
+				t.Fatalf("bind %s: %v", name, err)
+			}
+		}
+		return p
+	}
+
+	admin := seed("admin", RoleAdmin)
+	owner := seed("owner", RoleOwner)
+	peer := seed("peer-admin", RoleAdmin)
+	operator := seed("operator", RoleOperator)
+	unbound := seed("unbound", "")
+
+	// The escalation: refused, and nothing is minted.
+	if _, err := st.IssueCredentialResetGrant(ctx, admin.PrincipalID, owner.PrincipalID, CredentialResetOptions{}); !errors.Is(err, ErrResetTargetOutranksIssuer) {
+		t.Fatalf("an admin issued a reset for the OWNER: err = %v, want ErrResetTargetOutranksIssuer — this is a three-call path to owner", err)
+	}
+	// The owner's password must still be the one they set.
+	ownerCred, err := st.FindPasswordCredential(ctx, "owner")
+	if err != nil {
+		t.Fatalf("read the owner's credential: %v", err)
+	}
+	if err := VerifyPassword(ownerCred.Secret, "owner-passphrase"); err != nil {
+		t.Fatalf("the refused issuance disturbed the owner's credential: %v", err)
+	}
+
+	// Still permitted: peers and anyone below, so the flow stays useful.
+	for _, tc := range []struct {
+		name   string
+		target PrincipalRow
+	}{
+		{"a peer admin", peer},
+		{"an operator", operator},
+		{"an unbound principal", unbound},
+	} {
+		if _, err := st.IssueCredentialResetGrant(ctx, admin.PrincipalID, tc.target.PrincipalID, CredentialResetOptions{}); err != nil {
+			t.Errorf("an admin was refused a reset for %s: %v", tc.name, err)
+		}
+	}
+
+	// An owner may reset an admin (downward), which is the ordinary case.
+	if _, err := st.IssueCredentialResetGrant(ctx, owner.PrincipalID, admin.PrincipalID, CredentialResetOptions{}); err != nil {
+		t.Errorf("an owner was refused a reset for an admin: %v", err)
 	}
 }

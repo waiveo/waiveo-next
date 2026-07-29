@@ -538,6 +538,15 @@ func (h *Handlers) IssueCredentialReset(w http.ResponseWriter, r *http.Request) 
 		apihttp.WriteProblemExt(w, r, traceID, http.StatusNotFound,
 			"NOT_FOUND", "Not Found", "No such principal holds a password credential to reset.", nil)
 		return
+	case errors.Is(err, ErrResetTargetOutranksIssuer):
+		// SEC-012a. Audited like the non-admin refusal above and for the same
+		// reason, more sharply: an admin trying to mint a reset for someone who
+		// outranks them is an escalation attempt, and it is exactly the record an
+		// operator wants to find afterwards.
+		h.auth.auditor.Failure(traceID, p.ID, ActionGrantCreated, "principal:"+req.TargetPrincipalID)
+		apihttp.WriteProblemExt(w, r, traceID, http.StatusForbidden,
+			"FORBIDDEN", "Forbidden", "A credential-reset grant may not target a principal who outranks the issuer.", nil)
+		return
 	case errors.Is(err, ErrResetTargetNotUser):
 		writeValidationProblem(w, r, traceID, []fieldError{
 			{"target_principal_id", "invalid", "a credential-reset grant targets a `user` principal"}})

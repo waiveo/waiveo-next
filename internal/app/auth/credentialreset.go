@@ -100,6 +100,11 @@ var (
 	// reset, and minting a grant that could never be redeemed usefully would be a
 	// live code with no legitimate redemption.
 	ErrResetTargetNotUser = errors.New("auth: a credential-reset grant targets a `user` principal (SEC-012)")
+
+	// ErrResetTargetOutranksIssuer reports an issuance refused because the
+	// target holds a role above the issuer's own (SEC-012a) — the admin→owner
+	// escalation this flow would otherwise be a two-call path for.
+	ErrResetTargetOutranksIssuer = errors.New("auth: a credential-reset grant may not target a principal who outranks the issuer (SEC-012a)")
 	// ErrResetNotAdmin is SEC-012's issuer restriction.
 	ErrResetNotAdmin = errors.New("auth: issuing a credential-reset grant requires at least the `admin` role (SEC-012)")
 	// ErrResetIdentifierUnknown is returned when the target holds no password
@@ -131,7 +136,56 @@ func (s *Store) IssueCredentialResetGrant(ctx context.Context, issuingPrincipalI
 	if err := s.requireAdmin(ctx, issuingPrincipalID); err != nil {
 		return CredentialResetHandoff{}, err
 	}
+	if err := s.refuseResetAboveIssuer(ctx, issuingPrincipalID, targetPrincipalID); err != nil {
+		return CredentialResetHandoff{}, err
+	}
 	return s.issueCredentialResetGrant(ctx, issuingPrincipalID, targetPrincipalID, opt, IssuedViaAPI)
+}
+
+// refuseResetAboveIssuer enforces SEC-012a: an issuer may not reset a principal
+// who outranks them.
+//
+// Without it this flow is a two-call path from `admin` to `owner`, and the whole
+// role hierarchy with it. SEC-012 permits an admin to reset "any `user`
+// principal", and an owner IS a user principal holding a password — so the
+// issuance passes the kind check, the code comes back to the issuing admin in
+// the 201 body (SEC-050 hands it to them by design), and the redemption route is
+// unauthenticated because its caller is by definition someone who cannot sign
+// in. Three calls later the admin holds an owner session, and SEC-011's
+// owner-exclusive powers — acknowledging a capability-widening pack update,
+// minting a break-glass grant, toggling developer mode, destroying the workspace
+// — are all reachable by a role the contract deliberately withheld them from.
+//
+// The rule is STRICTLY above, not at-or-above. An admin resetting another admin
+// is lateral, is a plausible thing for colleagues to need, and grants no
+// authority the issuer did not already hold. An admin resetting an owner is
+// escalation. Refusing only the second keeps the flow useful.
+//
+// The console path (IssueCredentialResetGrantViaConsole) is deliberately NOT
+// gated by this: its caller proved uid-0, and SEC-076 admits that verb precisely
+// because root "could already perform an equivalent action through direct
+// filesystem access on the same host". A floor there would be theatre.
+func (s *Store) refuseResetAboveIssuer(ctx context.Context, issuingPrincipalID, targetPrincipalID string) error {
+	issuerBindings, err := s.RoleBindings(ctx, issuingPrincipalID)
+	if err != nil {
+		return err
+	}
+	issuerRole, ok := Effective(issuerBindings)
+	if !ok {
+		return ErrResetNotAdmin
+	}
+	targetBindings, err := s.RoleBindings(ctx, targetPrincipalID)
+	if err != nil {
+		return err
+	}
+	targetRole, bound := Effective(targetBindings)
+	if !bound {
+		return nil // an unbound target outranks nobody
+	}
+	if !issuerRole.AtLeast(targetRole) {
+		return ErrResetTargetOutranksIssuer
+	}
+	return nil
 }
 
 // IssueCredentialResetGrantViaConsole is the same issuance reached over the

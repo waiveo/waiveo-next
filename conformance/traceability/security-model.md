@@ -355,6 +355,7 @@ wins.
 | SEC-010 | `contracts/security-model.md#roles-and-scope-node-authorization` | - | TBD-wave1 |
 | SEC-011 | `contracts/security-model.md#roles-and-scope-node-authorization` | - | TBD-wave1 |
 | SEC-012 | `contracts/security-model.md#roles-and-scope-node-authorization` | - | TBD-wave1 |
+| SEC-012a | `contracts/security-model.md#roles-and-scope-node-authorization` | - | TBD-wave1 |
 | SEC-020 | `contracts/security-model.md#sessions` | - | TBD-wave1 |
 | SEC-021 | `contracts/security-model.md#sessions` | - | TBD-wave1 |
 | SEC-022 | `contracts/security-model.md#sessions` | - | TBD-wave1 |
