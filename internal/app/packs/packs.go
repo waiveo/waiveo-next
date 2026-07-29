@@ -36,6 +36,7 @@ package packs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -223,6 +224,11 @@ type provenance struct {
 	EntryDigest  string
 	// StaleSource marks a file://-resolved install (MKT-063/MKT-094).
 	StaleSource bool
+	// ViaPointer is true when the reference named no version and the entry was
+	// selected by following the channel pointer — the only resolution MKT-050's
+	// anti-rollback governs. An explicit version pin (MKT-044's archived
+	// reinstall) is the operator's own stated choice and is not governed.
+	ViaPointer bool
 }
 
 // install is the one install path. Every caller — the direct artifact upload and
@@ -335,6 +341,7 @@ func (in *Installer) install(ctx context.Context, artifact []byte, prov *provena
 			TrustChannel: prov.TrustChannel,
 			Version:      m.Version,
 			Higher:       VersionHigher,
+			ViaPointer:   prov.ViaPointer,
 		}
 	}
 	// Re-assert MAN-053 inside the install transaction, against the prior row read
@@ -344,8 +351,20 @@ func (in *Installer) install(ctx context.Context, artifact []byte, prov *provena
 	// LAST would otherwise overwrite the row unconditionally, silently downgrading
 	// the dataModel.version. This guard catches that in the committing transaction
 	// and refuses it with the SAME typed error the sequential path surfaces.
-	pack, created, err := in.store.InstallPack(ctx, spec, versionRegressionGuard(m.DataModel.Version))
+	guards := []store.InstallGuard{versionRegressionGuard(m.DataModel.Version)}
+	if prov != nil && prov.ViaPointer {
+		guards = append(guards, pointerDowngradeGuard(m.Version))
+	}
+	pack, created, err := in.store.InstallPack(ctx, spec, guards...)
 	if err != nil {
+		// The concurrent-install half of MKT-050: another install raised this
+		// pair's mark between the resolver's read and this transaction, so the
+		// mark refused inside the tx. Same refusal the sequential path gives.
+		if errors.Is(err, store.ErrChannelMarkRollback) {
+			return Result{}, artifactErr("POINTER_ROLLBACK_REJECTED",
+				"the %s channel pointer for %s names version %s, which is no longer above the resolved-version high-water mark for that pair (marketplace/1 MKT-050)",
+				prov.TrustChannel, m.ID, m.Version)
+		}
 		return Result{}, err
 	}
 
@@ -469,6 +488,30 @@ func localeName(entry string) (string, bool) {
 // only when a prior row exists and only on an actual regression — the store runs
 // it against the prior row read under its own write lock, closing the TOCTOU race
 // the pipeline's pre-transaction installedVersion snapshot leaves open.
+// pointerDowngradeGuard refuses a CHANNEL-POINTER resolution that would walk the
+// INSTALLED pack backward, whatever channel it came from.
+//
+// MKT-050's mark is keyed (pack, trust channel), which leaves a downgrade path
+// in which every individual step succeeds — exactly the shape MKT-094b's own
+// rationale rejects. Install 2.0.0 from `verified`, then follow the `community`
+// pointer at 1.0.0: that pair has no mark, so the per-channel check passes
+// vacuously and 1.0.0 replaces the running 2.0.0. There is ONE installed pack
+// row per id, so the floor that actually protects the box is the installed
+// version, and it is re-read here inside the write transaction.
+//
+// Only pointer resolution is governed. An explicit version pin is the
+// operator's own stated choice and is what MKT-044's archived reinstall needs.
+func pointerDowngradeGuard(incomingVersion string) store.InstallGuard {
+	return func(prior store.Pack) error {
+		if prior.Version == incomingVersion || !VersionHigher(prior.Version, incomingVersion) {
+			return nil
+		}
+		return artifactErr("POINTER_ROLLBACK_REJECTED",
+			"the channel pointer names version %s, below the %s currently installed for %s (marketplace/1 MKT-050)",
+			incomingVersion, prior.Version, prior.ID)
+	}
+}
+
 func versionRegressionGuard(incomingVersion int) store.InstallGuard {
 	return func(prior store.Pack) error {
 		if incomingVersion < prior.DataModelVersion {

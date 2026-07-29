@@ -37,9 +37,14 @@
 // UNTRUSTED transport: whoever can serve the index chooses which of the
 // artifacts a host would accept anyway it is offered, and can withhold ones it
 // would prefer the host not see. It cannot cause acceptance of anything the
-// packsig anchors do not vouch for, and it cannot cause a downgrade past the
-// persisted MKT-050 mark. Those two are what a stale-index replay reduces to
-// here: an old index can only ever offer an old version, which the mark refuses.
+// packsig anchors do not vouch for, and a channel pointer cannot walk the
+// INSTALLED pack backward: the per-(pack, channel) MKT-050 mark is re-asserted
+// inside the install transaction, and a pack-grain floor refuses a pointer
+// resolution below the running version whatever channel it arrives on
+// (pointerDowngradeGuard) — without that second floor the per-channel mark
+// leaves a downgrade path in which every individual step succeeds. Those are
+// what a stale-index replay reduces to here: an old index can only ever offer
+// an old version, which those floors refuse.
 //
 // CHI-060's monotonic index-version high-water mark is deliberately NOT
 // persisted. Without index signature verification it would defend nothing an
@@ -61,6 +66,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/packsig"
 )
 
@@ -323,8 +329,21 @@ type Market struct {
 // NewMarket builds a Market over an ordered source list. nowMs supplies
 // resolution time; nil is a programming error rather than a silent wall clock,
 // because every timing decision here must be reproducible under test.
+// A source may not take the store.SourceDirect sentinel as its id. That value is
+// what an install record carries when NO registry mediated it, so a configured
+// source wearing the same name would make a registry-mediated install
+// indistinguishable from a hand-uploaded one in the very record that exists to
+// tell them apart. Enforced here, at the only place a source enters the system,
+// rather than left as a comment asserting it cannot happen.
 func NewMarket(nowMs func() int64, sources ...Source) *Market {
-	return &Market{sources: sources, nowMs: nowMs}
+	kept := make([]Source, 0, len(sources))
+	for _, s := range sources {
+		if s.ID == store.SourceDirect {
+			continue
+		}
+		kept = append(kept, s)
+	}
+	return &Market{sources: kept, nowMs: nowMs}
 }
 
 // Sources returns the configured source list (introspection; the slice is
@@ -415,6 +434,10 @@ type resolution struct {
 	source   Source
 	entry    indexEntry
 	artifact []byte
+	// viaPointer records whether the entry was selected by following the
+	// channel pointer (the reference named no version). MKT-050's anti-rollback
+	// governs only that path, so it must reach the install transaction.
+	viaPointer bool
 }
 
 // InstallRef resolves a marketplace reference and installs what it resolves to,
@@ -449,6 +472,7 @@ func (in *Installer) InstallRef(ctx context.Context, ref Ref) (Result, error) {
 		EntryVersion: res.entry.Version,
 		EntryDigest:  res.entry.Digest,
 		StaleSource:  res.source.StaleSource,
+		ViaPointer:   res.viaPointer,
 	}
 	return in.install(ctx, res.artifact, &prov)
 }
@@ -586,7 +610,7 @@ func (m *Market) resolveFrom(ctx context.Context, src Source, ref Ref, markOf fu
 	if err != nil {
 		return resolution{}, err
 	}
-	return resolution{source: src, entry: entry, artifact: artifact}, nil
+	return resolution{source: src, entry: entry, artifact: artifact, viaPointer: viaPointer}, nil
 }
 
 // fetchIndex retrieves and structurally checks one source's index document.

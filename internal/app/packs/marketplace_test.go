@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/maaxton/waiveo-next/internal/app/packs"
@@ -749,4 +750,102 @@ func TestNoMarketplaceConfiguredRefusesTheReference(t *testing.T) {
 	in, _ := newInstaller(t, st) // no WithMarketplace
 	_, err := in.InstallRef(context.Background(), packs.Ref{PackID: "acme/menu-board", TrustChannel: "community"})
 	artifactCode(t, err, "MARKETPLACE_REF_UNRESOLVED")
+}
+
+// TestChannelSwitchCannotWalkTheInstalledPackBack: the MKT-050 mark is keyed
+// (pack, trust channel), but there is only ONE installed pack row per id — so a
+// per-channel-only check leaves a downgrade path in which every step succeeds.
+// Install 2.0.0 from one channel, then follow a DIFFERENT channel's pointer at
+// 1.0.0: that pair has no mark, so the per-channel check passes vacuously.
+// The installed version is the floor that actually protects the box.
+func TestChannelSwitchCannotWalkTheInstalledPackBack(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	signer := newTestSigner(t)
+
+	m2 := baseManifest()
+	m2["version"] = "2.0.0"
+	newer := signer.sign(t, basePackZip(t, m2), "acme/menu-board", "2.0.0")
+	older := signer.sign(t, basePackZip(t, baseManifest()), "acme/menu-board", "1.0.0")
+
+	reg := newRegistry(t, "local-fixture")
+	reg.publish("acme/menu-board", "2.0.0", newer, nil)
+	reg.publish("acme/menu-board", "1.0.0", older, nil)
+	reg.point("acme/menu-board", "verified", "2.0.0")
+	reg.point("acme/menu-board", "community", "1.0.0")
+
+	market := packs.NewMarket(func() int64 { return fixedNow }, reg.source())
+	in := packs.NewInstaller(st, signer.anchorsFor(fixtureNamespaces...), packs.WithMarketplace(market))
+
+	if _, err := in.InstallRef(ctx, packs.Ref{PackID: "acme/menu-board", TrustChannel: "verified"}); err != nil {
+		t.Fatalf("install 2.0.0 on verified: %v", err)
+	}
+
+	// The community pointer names a genuine, signed, non-yanked 1.0.0, and that
+	// pair carries no mark at all.
+	_, err := in.InstallRef(ctx, packs.Ref{PackID: "acme/menu-board", TrustChannel: "community"})
+	artifactCode(t, err, "POINTER_ROLLBACK_REJECTED")
+
+	pack, _, _ := st.GetPack(ctx, "acme/menu-board")
+	if pack.Version != "2.0.0" {
+		t.Fatalf("installed version = %q after a refused cross-channel pointer, want 2.0.0", pack.Version)
+	}
+}
+
+// TestConcurrentPointerInstallsCannotLandBelowTheMark: the resolver reads the
+// mark OUTSIDE the write lock, so two concurrent pointer resolutions can both
+// pass that check. Without an in-transaction re-assertion the later committer
+// leaves the box running a version BELOW the mark — and every subsequent
+// pointer resolution to that version is then refused against a floor the
+// running install is already under. Same race class the dataModel guard closes
+// one function away.
+func TestConcurrentPointerInstallsCannotLandBelowTheMark(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	signer := newTestSigner(t)
+
+	m2 := baseManifest()
+	m2["version"] = "2.0.0"
+	newer := signer.sign(t, basePackZip(t, m2), "acme/menu-board", "2.0.0")
+	older := signer.sign(t, basePackZip(t, baseManifest()), "acme/menu-board", "1.0.0")
+
+	regNew := newRegistry(t, "local-fixture")
+	regNew.publish("acme/menu-board", "2.0.0", newer, nil)
+	regNew.point("acme/menu-board", "community", "2.0.0")
+	regOld := newRegistry(t, "local-fixture")
+	regOld.publish("acme/menu-board", "1.0.0", older, nil)
+	regOld.point("acme/menu-board", "community", "1.0.0")
+
+	anchors := signer.anchorsFor(fixtureNamespaces...)
+	inNew := packs.NewInstaller(st, anchors, packs.WithMarketplace(packs.NewMarket(func() int64 { return fixedNow }, regNew.source())))
+	inOld := packs.NewInstaller(st, anchors, packs.WithMarketplace(packs.NewMarket(func() int64 { return fixedNow }, regOld.source())))
+
+	// Repeated: the interleaving that exposes the race (both resolutions read
+	// the mark before either commits) is timing-dependent, so a single pass can
+	// miss it even against an unguarded implementation. Each round starts from a
+	// clean pack row; the mark deliberately PERSISTS across rounds, exactly as it
+	// does across an uninstall.
+	ref := packs.Ref{PackID: "acme/menu-board", TrustChannel: "community"}
+	for round := 0; round < 25; round++ {
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); _, _ = inNew.InstallRef(ctx, ref) }()
+		go func() { defer wg.Done(); _, _ = inOld.InstallRef(ctx, ref) }()
+		wg.Wait()
+
+		pack, found, _ := st.GetPack(ctx, "acme/menu-board")
+		if !found {
+			t.Fatalf("round %d: neither concurrent install landed", round)
+		}
+		mark, _, _ := st.PackChannelMark(ctx, "acme/menu-board", "community")
+		// Whichever won, the invariant is the same: the running install is never
+		// below the mark the next resolution will be judged against.
+		if packs.VersionHigher(mark, pack.Version) {
+			t.Fatalf("round %d: installed %q is BELOW the mark %q — a later pointer resolution to the installed version would now be refused",
+				round, pack.Version, mark)
+		}
+		if err := st.UninstallPack(ctx, "acme/menu-board", pack.Revision); err != nil {
+			t.Fatalf("round %d: reset: %v", round, err)
+		}
+	}
 }

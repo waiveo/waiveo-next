@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -182,5 +183,61 @@ func TestInstallRecordsAreScopedToTheirPack(t *testing.T) {
 	}
 	if recs, _ := st.ListPackInstalls(ctx, "acme/three"); len(recs) != 0 {
 		t.Fatalf("a never-installed pack has %d records", len(recs))
+	}
+}
+
+// TestPointerMarkRefusesBelowTheMarkInsideTheTransaction: the resolver reads the
+// high-water mark OUTSIDE the write lock, so two concurrent pointer resolutions
+// can both pass that pre-check. The mark is therefore re-asserted inside the
+// install transaction, where a strictly-lower pointer install is REFUSED rather
+// than silently installed with the mark left above it — which would leave the
+// box running a version every later pointer resolution is refused against.
+//
+// An EQUAL version still installs: re-applying the version a channel currently
+// points at is the ordinary case, not a rollback.
+func TestPointerMarkRefusesBelowTheMarkInsideTheTransaction(t *testing.T) {
+	st := openMem(t)
+	ctx := context.Background()
+	higher := func(candidate, current string) bool {
+		rank := map[string]int{"1.0.0": 1, "2.0.0": 2}
+		return rank[candidate] > rank[current]
+	}
+	install := func(version string, viaPointer bool) error {
+		spec := packSpec("acme/menu-board", version, 1)
+		spec.Record.ResolvedVersion = version
+		spec.Record.TrustChannel = "community"
+		spec.ChannelMark = &store.ChannelMarkAdvance{
+			TrustChannel: "community", Version: version, Higher: higher, ViaPointer: viaPointer,
+		}
+		_, _, err := st.InstallPack(ctx, spec)
+		return err
+	}
+
+	if err := install("2.0.0", true); err != nil {
+		t.Fatalf("install 2.0.0: %v", err)
+	}
+	gen0 := gen(t, st)
+
+	// Strictly below the mark, via pointer: refused, and nothing moves.
+	if err := install("1.0.0", true); !errors.Is(err, store.ErrChannelMarkRollback) {
+		t.Fatalf("pointer install below the mark = %v, want ErrChannelMarkRollback", err)
+	}
+	if pack, _, _ := st.GetPack(ctx, "acme/menu-board"); pack.Version != "2.0.0" {
+		t.Fatalf("installed version = %q after a refused pointer install, want 2.0.0", pack.Version)
+	}
+	if after := gen(t, st); after != gen0 {
+		t.Fatalf("a refused pointer install bumped the generation %d -> %d", gen0, after)
+	}
+
+	// Equal to the mark, via pointer: installs (not a rollback).
+	if err := install("2.0.0", true); err != nil {
+		t.Fatalf("re-applying the version the pointer names was refused: %v", err)
+	}
+	// Strictly below, but an EXPLICIT pin: MKT-050 does not govern it.
+	if err := install("1.0.0", false); err != nil {
+		t.Fatalf("explicit-version pin below the mark was refused: %v", err)
+	}
+	if mark, _, _ := st.PackChannelMark(ctx, "acme/menu-board", "community"); mark != "2.0.0" {
+		t.Fatalf("mark = %q, want it held at 2.0.0", mark)
 	}
 }

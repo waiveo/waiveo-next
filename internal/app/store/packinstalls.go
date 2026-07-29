@@ -103,7 +103,23 @@ type ChannelMarkAdvance struct {
 	TrustChannel string
 	Version      string
 	Higher       func(candidate, current string) bool
+	// ViaPointer marks a CHANNEL-POINTER resolution — the only kind MKT-050's
+	// anti-rollback governs. For one of those the mark is a floor that must be
+	// re-asserted inside this transaction, not merely raised: the caller's
+	// pre-transaction check read the mark outside the write lock, so two
+	// concurrent pointer installs can both pass it and the later committer would
+	// otherwise leave the box running a version BELOW the mark. An explicit
+	// version pin (MKT-044's archived reinstall) sets this false: it is the
+	// operator's own stated choice and MKT-050 does not govern it.
+	ViaPointer bool
 }
+
+// ErrChannelMarkRollback reports a pointer-resolved install refused inside the
+// install transaction because the (pack, trust channel) high-water mark had
+// already reached this version or higher — the concurrent-install half of
+// MKT-050, which a pre-transaction read cannot close. The packs layer maps it
+// onto the same POINTER_ROLLBACK_REJECTED the sequential path surfaces.
+var ErrChannelMarkRollback = errors.New("store: pointer resolution is at or below the channel's resolved-version high-water mark")
 
 // validate refuses a record that could not answer the question the record exists
 // to answer. This is a hard precondition rather than a nil-tolerant write: a row
@@ -175,7 +191,20 @@ func advanceChannelMark(ctx context.Context, tx *sql.Tx, packID string, now int6
 		return err
 	}
 	if found && !adv.Higher(adv.Version, current) {
-		return nil // an equal or lower version never walks the mark back
+		// A pointer resolution STRICTLY BELOW the mark is REFUSED here, not
+		// silently ignored: between the caller's pre-transaction check and this
+		// transaction another install may have raised the mark, and letting this
+		// one commit would leave the installed pack below the floor MKT-050
+		// exists to hold.
+		//
+		// An EQUAL version is not a rollback and must still install — re-applying
+		// the version a channel currently points at is the ordinary case, and
+		// refusing it would make the mark a one-shot latch that bricks reinstalls.
+		// An explicit pin merely declines to move the mark, as before.
+		if adv.ViaPointer && adv.Higher(current, adv.Version) {
+			return ErrChannelMarkRollback
+		}
+		return nil // an equal or lower version never walks the mark forward
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO pack_channel_marks (pack_id, trust_channel, resolved_version, updated_at)
