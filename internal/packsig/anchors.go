@@ -65,6 +65,24 @@ func (f FileAnchors) KeysFor(namespace string) ([]TrustedKey, error) {
 	if mode := info.Mode().Perm(); mode&0o022 != 0 {
 		return nil, fmt.Errorf("packsig: trust anchors %s are group- or world-writable (mode %04o) — refusing to treat them as a trust root", f.Path, mode)
 	}
+	// The file's own mode is not sufficient. Anyone who can write the DIRECTORY
+	// can rename their own 0644 anchors document over this path, and the check
+	// above then passes on a file they authored — so the trust root becomes
+	// whatever they say it is, at the mode they chose. Checking the file alone
+	// protects a document an attacker simply replaces.
+	//
+	// The sticky bit is honoured: a sticky directory (1777, /tmp's mode) already
+	// forbids non-owners from renaming or unlinking files they do not own, which
+	// is precisely the attack this closes, so refusing there would be a false
+	// refusal.
+	dir := filepath.Dir(f.Path)
+	dirInfo, err := os.Stat(dir)
+	if err != nil {
+		return nil, fmt.Errorf("packsig: the directory holding trust anchors %s cannot be examined: %w", dir, err)
+	}
+	if perm := dirInfo.Mode().Perm(); perm&0o022 != 0 && dirInfo.Mode()&os.ModeSticky == 0 {
+		return nil, fmt.Errorf("packsig: the directory holding trust anchors, %s, is group- or world-writable (mode %04o) and not sticky — anyone who can write it can substitute the trust root, so it is refused rather than read", dir, perm)
+	}
 
 	raw, err := os.ReadFile(f.Path)
 	if errors.Is(err, os.ErrNotExist) {

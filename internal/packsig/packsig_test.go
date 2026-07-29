@@ -480,3 +480,60 @@ func TestFileAnchorsRefuseWorldWritable(t *testing.T) {
 		t.Fatalf("a 0644 anchors file resolved to (%d keys, %v), want (1, nil)", len(keys), err)
 	}
 }
+
+// TestFileAnchorsRefuseAWritableDirectory closes the half a file-mode check
+// alone cannot: the trust root is only as protected as the directory holding it.
+//
+// Anyone who can write that directory can rename their OWN well-moded anchors
+// document over the path, and the file's mode check then passes on a file they
+// authored — so the pack-provenance trust root becomes whatever they say it is.
+// Refusing a group- or world-writable directory is what makes the file check
+// mean something.
+//
+// The sticky bit is honoured, and that is not a loophole: a sticky directory
+// already forbids non-owners from renaming or unlinking files they do not own,
+// which is precisely the attack being closed, so refusing there would be a
+// false refusal.
+func TestFileAnchorsRefuseAWritableDirectory(t *testing.T) {
+	pub, _ := signhash.GenerateKey()
+	doc := `{"format":"pack-trust-anchors/1","anchors":[{"namespace":"acme","key_id":"` +
+		packsig.KeyIDFor(pub) + `","public_key":"` + base64.StdEncoding.EncodeToString(pub) + `"}]}`
+
+	write := func(t *testing.T, dir string, dirMode os.FileMode) string {
+		t.Helper()
+		path := filepath.Join(dir, "anchors.json")
+		if err := os.WriteFile(path, []byte(doc), 0o644); err != nil {
+			t.Fatalf("write anchors: %v", err)
+		}
+		if err := os.Chmod(path, 0o600); err != nil {
+			t.Fatalf("chmod anchors: %v", err)
+		}
+		if err := os.Chmod(dir, dirMode); err != nil {
+			t.Fatalf("chmod dir: %v", err)
+		}
+		return path
+	}
+
+	// A world-writable, non-sticky directory: refused even though the FILE is
+	// 0600, because the file is replaceable.
+	loose := t.TempDir()
+	path := write(t, loose, 0o777)
+	if _, err := (packsig.FileAnchors{Path: path}).KeysFor("acme"); err == nil {
+		t.Fatal("a trust root in a world-writable directory was accepted — an attacker can rename their own document over it")
+	}
+
+	// Sticky: accepted, because renaming another owner's file is already
+	// forbidden there.
+	sticky := t.TempDir()
+	path = write(t, sticky, os.ModeSticky|0o777)
+	if keys, err := (packsig.FileAnchors{Path: path}).KeysFor("acme"); err != nil || len(keys) != 1 {
+		t.Fatalf("a sticky directory was refused: (%d keys, %v) — that is a false refusal", len(keys), err)
+	}
+
+	// The ordinary case still works.
+	tight := t.TempDir()
+	path = write(t, tight, 0o700)
+	if keys, err := (packsig.FileAnchors{Path: path}).KeysFor("acme"); err != nil || len(keys) != 1 {
+		t.Fatalf("a 0700 directory resolved to (%d keys, %v), want (1, nil)", len(keys), err)
+	}
+}
