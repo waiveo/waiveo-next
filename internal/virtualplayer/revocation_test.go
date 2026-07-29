@@ -203,9 +203,9 @@ func TestReconnectRevokedClearsTokenOnlyEndToEnd(t *testing.T) {
 		t.Fatalf("pre-revoke pull carried error_code %q, want an ordinary success", okAttempt.RelayResponse.ErrorCode)
 	}
 
-	// The relay's own revocation surface (REL-066): the paired screen no longer
-	// validates.
-	relayServer.RevokeScreen(sess.ScreenID)
+	// The relay's own revocation surface (REL-066): a newer generation's
+	// `revoked` set names the paired screen, so it no longer validates.
+	relayServer.SetRevokedScreens(1, []string{sess.ScreenID})
 
 	attempt, err := sess.PullProgram()
 	if err != nil {

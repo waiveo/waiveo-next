@@ -215,11 +215,15 @@ type Server struct {
 
 	// revokedScreens is the relay's own last-synced view of the screen_ids in
 	// relay/1 REL-066's revocation_and_site.revoked (PLY-072): a channel token
-	// naming a screen_id present here is rejected CHANNEL_TOKEN_REVOKED, checked
-	// against this local copy even while disconnected from the app peer, exactly
-	// as REL-123 requires. A screen record the relay no longer recognizes at all
-	// (PLY-075) is modeled the same way — RevokeScreen marks it revoked.
+	// naming a screen_id present here is rejected CHANNEL_TOKEN_REVOKED, and no
+	// channel token is ever MINTED for one (redeem, REL-123). Both checks read
+	// this local copy even while disconnected from the app peer, exactly as
+	// REL-123 requires.
+	//
+	// revokedGen fences a strictly-older generation's late write
+	// (SetRevokedScreens), mirroring grantsGen and programGens above.
 	revokedScreens map[string]bool
+	revokedGen     int64
 
 	// pendingReports is the REL-124/REL-124a ledger of redemptions this relay
 	// performed and has not yet reported upstream, used ONLY when no durable
@@ -449,18 +453,60 @@ func (s *Server) SetPairingGrants(generation int64, grants []wire.PairingGrant) 
 	s.grants = grantIndex
 }
 
-// RevokeScreen marks screenID revoked in the relay's own last-synced view of
-// relay/1 REL-066's revocation_and_site.revoked (PLY-072): every channel token
-// naming this screen_id is thereafter rejected CHANNEL_TOKEN_REVOKED, and the
-// player it belongs to is driven to re-enter Pairing redemption (PLY-073),
-// never to a futile renewal. This is the relay-side revocation surface a
-// screen-record deletion or an explicit revocation entry drives; it also models
-// PLY-075's "screen_id the relay no longer recognizes at all". Safe for
-// concurrent use.
-func (s *Server) RevokeScreen(screenID string) {
+// SetRevokedScreens replaces s's revocation view wholesale with screenIDs —
+// relay/1 REL-066's revocation_and_site.revoked as the verified snapshot at
+// generation carried it (internal/relay/desiredstate.Applied.Revoked). Every
+// channel token naming a listed screen_id is thereafter rejected
+// CHANNEL_TOKEN_REVOKED, driving that player to re-enter Pairing redemption
+// (PLY-073) rather than to a futile renewal, and no channel token is minted for
+// one at all (redeem, REL-123). Safe for concurrent use.
+//
+// # Why a set-replace and not a one-at-a-time mark
+//
+// `revoked` is not an event stream of revocations; it is a SET the app peer
+// restates in full on every snapshot (REL-060: the section key is present on
+// every one, empty when the site revokes nothing). So the whole set, including
+// what it OMITS, is the message. A screen dropped from a newer generation's
+// list is thereby un-revoked, and a mutator that only ever added would leave
+// the relay enforcing a revocation its app peer had withdrawn — with no verb
+// able to withdraw it, since REL-066 defines no negative entry. Replacing is
+// the only shape that can express both directions of a set the relay does not
+// author.
+//
+// This is the deliberate OPPOSITE of the redeemedGrants rule SetPairingGrants
+// documents, and the contrast is the point: a consumed one-time grant is a
+// record of something the relay ITSELF irreversibly did (REL-121's count never
+// exceeds one), so no later generation may revive it. A revocation is a
+// statement the APP PEER owns and may restate differently, so the relay's copy
+// tracks it in both directions and holds no memory of its own.
+//
+// # The generation fence
+//
+// A strictly-older generation's write is dropped (REL-052/056), exactly as
+// SetPairingGrants and SetProgram fence theirs. It has to be, and MORE than for
+// those: a late write from a superseded generation would not merely serve a
+// stale program, it would silently REINSTATE a revocation the current
+// generation withdrew, or WITHDRAW one the current generation added — either
+// direction a credential decision, and the second one a security regression
+// that no subsequent snapshot would correct until the app peer happened to
+// change the set again. A same-generation write is admitted (only a strictly
+// older one is dropped), so re-applying the same generation is idempotent
+// (REL-070) rather than a no-op that could not repair a partial install.
+func (s *Server) SetRevokedScreens(generation int64, screenIDs []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.revokedScreens[screenID] = true
+	if generation < s.revokedGen {
+		return // stale generation's late write — never revert a newer generation's revocation view (REL-052/056)
+	}
+	s.revokedGen = generation
+	revoked := make(map[string]bool, len(screenIDs))
+	for _, id := range screenIDs {
+		if id == "" {
+			continue // an empty id names no screen; indexing it would revoke the "" a caller-side bug produces
+		}
+		revoked[id] = true
+	}
+	s.revokedScreens = revoked
 }
 
 // isScreenRevoked reports whether screenID is present in the relay's own
@@ -469,6 +515,13 @@ func (s *Server) RevokeScreen(screenID string) {
 func (s *Server) isScreenRevoked(screenID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.isScreenRevokedLocked(screenID)
+}
+
+// isScreenRevokedLocked is isScreenRevoked's body for a caller that already
+// holds s.mu — redeem, whose whole check-and-mint sequence runs under one
+// acquisition so a revocation cannot land between the check and the mint.
+func (s *Server) isScreenRevokedLocked(screenID string) bool {
 	return s.revokedScreens[screenID]
 }
 

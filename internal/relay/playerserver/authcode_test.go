@@ -46,7 +46,7 @@ func TestProgram401TaxonomyIsDiscriminableFromHeadersAlone(t *testing.T) {
 				if !ok {
 					t.Fatalf("freshly redeemed token %q is not known to the server", token)
 				}
-				srv.RevokeScreen(screenID)
+				srv.SetRevokedScreens(1, []string{screenID})
 				return token
 			},
 			wantCode: "CHANNEL_TOKEN_REVOKED",

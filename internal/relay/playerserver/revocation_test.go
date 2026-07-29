@@ -6,9 +6,9 @@ import (
 )
 
 // TestProgramRejectsRevokedScreenToken confirms a channel token whose screen_id
-// the relay has revoked (RevokeScreen — modeling relay/1 REL-066's
-// revocation_and_site.revoked, checked against the relay's own last-synced copy)
-// is refused with CHANNEL_TOKEN_REVOKED, a DISTINCT typed code from the
+// the relay's last-synced revocation view names (SetRevokedScreens — relay/1
+// REL-066's revocation_and_site.revoked as a verified snapshot carried it) is
+// refused with CHANNEL_TOKEN_REVOKED, a DISTINCT typed code from the
 // CHANNEL_TOKEN_EXPIRED an expired-but-unrevoked token draws (PLY-072/073). The
 // token itself is otherwise valid — unexpired and known — so only the
 // revocation is under test.
@@ -20,7 +20,7 @@ func TestProgramRejectsRevokedScreenToken(t *testing.T) {
 		t.Fatalf("freshly redeemed token %q is not known to the server", token)
 	}
 
-	srv.RevokeScreen(screenID)
+	srv.SetRevokedScreens(1, []string{screenID})
 
 	resp, raw := doProgram(t, srv, token, []string{"image", "video"})
 	assertTypedError(t, resp, raw, "CHANNEL_TOKEN_REVOKED")
@@ -45,7 +45,7 @@ func TestProgramRevokedTakesPrecedenceOverExpired(t *testing.T) {
 	srv.tokens[token] = rec
 	srv.mu.Unlock()
 
-	srv.RevokeScreen(screenID)
+	srv.SetRevokedScreens(1, []string{screenID})
 
 	resp, raw := doProgram(t, srv, token, []string{"image", "video"})
 	assertTypedError(t, resp, raw, "CHANNEL_TOKEN_REVOKED")
