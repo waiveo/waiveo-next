@@ -1,0 +1,17 @@
+{
+  "case_id": "MKT-050a-version-high-water-order-is-numeric",
+  "contract": "marketplace/1",
+  "req_ids": ["MKT-050a", "MKT-050"],
+  "description": "The resolved-version high-water mark for (acme/weather-widget, verified) is 1.10.0. A newly-signed index's channel pointer names 1.9.0. Under MKT-050a's component-wise NUMERIC order, 1.9.0 is lower than 1.10.0 and the pointer is refused POINTER_ROLLBACK_REJECTED; under a string comparison '1.9.0' sorts ABOVE '1.10.0' and the same pointer would be followed, walking the channel backwards onto the superseded version MKT-050 exists to prevent. The order is not an implementation detail of the anti-rollback rule — a lexicographic implementation performs the downgrade itself, with no attacker step. The second pointer in this case carries '1.11' (two components), which has no position in the order at all and is therefore not resolvable rather than compared under a fallback.",
+  "input": {
+    "high_water_mark": { "pack_id": "acme/weather-widget", "trust_channel": "verified", "resolved_version": "1.10.0" },
+    "channel_pointer_candidates": ["1.9.0", "1.11"],
+    "entries_are_active_non_yanked_and_hold_elapsed": true,
+    "publisher_signature_verifies": true
+  },
+  "expected": {
+    "order": "component-wise numeric over MAJOR.MINOR.PATCH (manifest/1 MAN-002), never lexicographic",
+    "1.9.0": { "resolved": false, "error_code": "POINTER_ROLLBACK_REJECTED" },
+    "1.11": { "resolved": false, "error_code": "MARKETPLACE_REF_UNRESOLVED", "rationale": "not a MAN-002 version: no position in the order, so no defined relation to the high-water mark" }
+  }
+}

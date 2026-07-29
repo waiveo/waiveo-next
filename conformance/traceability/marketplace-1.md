@@ -28,6 +28,7 @@ One row per requirement ID `contracts/marketplace-1.md` defines. Format: `confor
 | MKT-032 | `contracts/marketplace-1.md#the-verified-bar` | - | TBD-wave1 |
 | MKT-033 | `contracts/marketplace-1.md#the-verified-bar` | `MKT-041-valid-content-package-rule-template-entry`, `MKT-033-rule-template-unclassifiable-binding-rejected` | TBD-wave1 |
 | MKT-040 | `contracts/marketplace-1.md#marketplace-index-entry-and-pack-kinds` | `MKT-040-valid-pack-index-entry` | TBD-wave1 |
+| MKT-040a | `contracts/marketplace-1.md#marketplace-index-entry-and-pack-kinds` | `MKT-040a-resolved-identity-mismatch-rejected` | TBD-wave1 |
 | MKT-041 | `contracts/marketplace-1.md#marketplace-index-entry-and-pack-kinds` | `MKT-040-valid-pack-index-entry`, `MKT-041-valid-content-package-rule-template-entry` | TBD-wave1 |
 | MKT-042 | `contracts/marketplace-1.md#marketplace-index-entry-and-pack-kinds` | `MKT-043-hold-hours-zero-bare-flag-rejected` | TBD-wave1 |
 | MKT-043 | `contracts/marketplace-1.md#marketplace-index-entry-and-pack-kinds` | `MKT-043-hold-hours-zero-bare-flag-rejected` | TBD-wave1 |
@@ -38,7 +39,9 @@ One row per requirement ID `contracts/marketplace-1.md` defines. Format: `confor
 | MKT-048 | `contracts/marketplace-1.md#marketplace-index-entry-and-pack-kinds` | - | TBD-wave1 |
 | MKT-049 | `contracts/marketplace-1.md#marketplace-index-entry-and-pack-kinds` | `MKT-040-valid-pack-index-entry`, `MKT-041-valid-content-package-rule-template-entry` | TBD-wave1 |
 | MKT-050 | `contracts/marketplace-1.md#marketplace-index-entry-and-pack-kinds` | `MKT-050-channel-pointer-downgrade-rejected` | TBD-wave1 |
+| MKT-050a | `contracts/marketplace-1.md#marketplace-index-entry-and-pack-kinds` | `MKT-050a-version-high-water-order-is-numeric` | TBD-wave1 |
 | MKT-060 | `contracts/marketplace-1.md#registry-sources` | `MKT-061-source-order-not-trust-rejected` | TBD-wave1 |
+| MKT-060a | `contracts/marketplace-1.md#registry-sources` | `MKT-060a-marketplace-ref-trust-channel-required` | TBD-wave1 |
 | MKT-061 | `contracts/marketplace-1.md#registry-sources` | `MKT-061-source-order-not-trust-rejected` | TBD-wave1 |
 | MKT-062 | `contracts/marketplace-1.md#registry-sources` | `MKT-061-source-order-not-trust-rejected` | TBD-wave1 |
 | MKT-063 | `contracts/marketplace-1.md#registry-sources` | - | TBD-wave1 |
@@ -55,3 +58,5 @@ One row per requirement ID `contracts/marketplace-1.md` defines. Format: `confor
 | MKT-092 | `contracts/marketplace-1.md#update-default-and-install-records` | - | TBD-wave1 |
 | MKT-093 | `contracts/marketplace-1.md#update-default-and-install-records` | - | TBD-wave1 |
 | MKT-094 | `contracts/marketplace-1.md#update-default-and-install-records` | - | TBD-wave1 |
+| MKT-094a | `contracts/marketplace-1.md#update-default-and-install-records` | `MKT-094a-install-record-pins-verified-provenance` | TBD-wave1 |
+| MKT-094b | `contracts/marketplace-1.md#update-default-and-install-records` | `MKT-094b-uninstall-preserves-rollback-high-water` | TBD-wave1 |

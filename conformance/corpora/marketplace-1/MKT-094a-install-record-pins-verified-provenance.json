@@ -1,0 +1,41 @@
+{
+  "case_id": "MKT-094a-install-record-pins-verified-provenance",
+  "contract": "marketplace/1",
+  "req_ids": ["MKT-094a", "MKT-094"],
+  "description": "Two installs of the same pack land by different routes and both record their provenance. The registry-mediated install records MKT-094's pin plus the content_digest and key_id of the MKT-009a envelope that actually verified, plus the resolved entry's own CHI-021 digest. The direct, out-of-band artifact install records the same verified provenance, names the direct path as its source, and carries NO trust_channel — so it has no (pack_id, trust channel) pair to auto-track (MKT-090) and a host must not supply one. Without these members nothing on the box answers 'which key vouched for the bytes that are running': MKT-009a requires the envelope to be dropped at install and never persisted, so the answer is unreconstructable from the installed pack afterwards.",
+  "input": {
+    "registry_install": {
+      "ref": { "source": "acme-registry", "pack_id": "acme/weather-widget", "trust_channel": "verified" },
+      "resolved_entry": { "version": "1.2.0", "digest": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" },
+      "verifying_envelope": { "content_digest": "sha256:aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666000077778888", "key_id": "ed25519:acme-2026-07" },
+      "source_scheme": "https"
+    },
+    "direct_install": {
+      "artifact_version": "1.2.0",
+      "verifying_envelope": { "content_digest": "sha256:aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666000077778888", "key_id": "ed25519:acme-2026-07" }
+    }
+  },
+  "expected": {
+    "registry_record": {
+      "pack_id": "acme/weather-widget",
+      "trust_channel": "verified",
+      "resolved_version": "1.2.0",
+      "source": "acme-registry",
+      "stale_source": false,
+      "content_digest": "sha256:aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666000077778888",
+      "key_id": "ed25519:acme-2026-07",
+      "artifact_digest": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+    },
+    "direct_record": {
+      "pack_id": "acme/weather-widget",
+      "trust_channel": null,
+      "resolved_version": "1.2.0",
+      "source": "direct",
+      "content_digest": "sha256:aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666000077778888",
+      "key_id": "ed25519:acme-2026-07",
+      "artifact_digest": null
+    },
+    "direct_install_is_channel_auto_tracked": false,
+    "provenance_taken_from_the_verification_not_from_the_presented_artifact": true
+  }
+}

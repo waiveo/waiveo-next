@@ -1,0 +1,25 @@
+{
+  "case_id": "MKT-060a-marketplace-ref-trust-channel-required",
+  "contract": "marketplace/1",
+  "req_ids": ["MKT-060a"],
+  "description": "Four marketplace references are offered to a client whose configured sources publish acme/weather-widget on both the `verified` and `community` trust channels. (1) A reference omitting trust_channel is refused TRUST_CHANNEL_UNKNOWN rather than defaulted: the trust channel is the provenance tier the install is accepted under (MKT-022, MKT-090), so a host picking one would be picking how much review the installed code has had, in the direction of whatever the registry currently offers. (2) A reference whose pack_id is the bare name `weather-widget` is refused CROSS_PACK_REFERENCE_UNQUALIFIED (MKT-008). (3) A reference naming a source the client has not configured is refused MARKETPLACE_REF_INVALID — a source is a client-configuration entry, never a caller-supplied location. (4) A well-formed reference for a pack_id no consulted source publishes an eligible entry for is refused MARKETPLACE_REF_UNRESOLVED, a distinct outcome from the malformed cases.",
+  "input": {
+    "configured_sources": ["acme-registry", "local-mirror"],
+    "refs": [
+      { "pack_id": "acme/weather-widget" },
+      { "pack_id": "weather-widget", "trust_channel": "verified" },
+      { "pack_id": "acme/weather-widget", "trust_channel": "verified", "source": "not-configured" },
+      { "pack_id": "acme/nonexistent", "trust_channel": "verified" }
+    ]
+  },
+  "expected": {
+    "outcomes": [
+      { "accepted": false, "error_code": "TRUST_CHANNEL_UNKNOWN" },
+      { "accepted": false, "error_code": "CROSS_PACK_REFERENCE_UNQUALIFIED" },
+      { "accepted": false, "error_code": "MARKETPLACE_REF_INVALID" },
+      { "accepted": false, "error_code": "MARKETPLACE_REF_UNRESOLVED" }
+    ],
+    "no_default_trust_channel": true,
+    "source_order_is_preference_not_trust": true
+  }
+}

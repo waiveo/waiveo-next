@@ -1,0 +1,37 @@
+{
+  "case_id": "MKT-040a-resolved-identity-mismatch-rejected",
+  "contract": "marketplace/1",
+  "req_ids": ["MKT-040a"],
+  "description": "A registry source lists a validly-signed sealed artifact under an index entry that claims a DIFFERENT identity: the entry says acme/weather-widget@2.0.0, and the artifact it points at carries a genuine, correctly-anchored MKT-009a envelope signing acme/legacy-widget@1.0.0. Every check that exists without MKT-040a passes — the entry's CHI-021 digest matches the bytes served, the envelope's content digest matches the extracted entry set, and the signing key is anchored for the acme namespace — so the host would install a pack whose identity is not the one the reference, the install record (MKT-094), the channel pointer (MKT-046) and the resolved-version high-water mark (MKT-050) were all keyed on. MKT-040a refuses the resolution outright: the signed identity is authoritative, the entry's claim is what is being checked, and neither identity is installed.",
+  "input": {
+    "index_entry": {
+      "artifact_id": "acme/weather-widget",
+      "kind": "pack",
+      "version": "2.0.0",
+      "status": "active",
+      "digest": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+      "size": 1048576,
+      "download_url": "https://index.example/acme/blob-2.0.0.zip"
+    },
+    "downloaded_artifact_envelope": {
+      "format": "pack-signature/1",
+      "artifact_id": "acme/legacy-widget",
+      "kind": "pack",
+      "version": "1.0.0",
+      "content_digest": "sha256:aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666000077778888",
+      "key_id": "ed25519:acme-2026-07"
+    },
+    "entry_digest_matches_downloaded_bytes": true,
+    "envelope_content_digest_matches_extracted_entries": true,
+    "envelope_signature_verifies_under_anchored_key": true,
+    "trust_anchors": { "acme": ["ed25519:acme-2026-07"] }
+  },
+  "expected": {
+    "resolution_accepted": false,
+    "error_code": "RESOLVED_IDENTITY_MISMATCH",
+    "installed_pack_id": null,
+    "install_record_appended": false,
+    "high_water_mark_advanced": false,
+    "rationale": "the entry's claimed (artifact_id, kind, version) must equal the envelope's signed identity; a digest match binds bytes to an entry but never binds an identity to it"
+  }
+}

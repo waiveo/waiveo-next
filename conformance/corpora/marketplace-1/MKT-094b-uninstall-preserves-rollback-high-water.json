@@ -1,0 +1,21 @@
+{
+  "case_id": "MKT-094b-uninstall-preserves-rollback-high-water",
+  "contract": "marketplace/1",
+  "req_ids": ["MKT-094b", "MKT-050"],
+  "description": "acme/weather-widget 2.0.0 is installed from the `verified` channel, raising the resolved-version high-water mark for (acme/weather-widget, verified) to 2.0.0. The pack is then uninstalled, which removes its own pack-owned state including its install records, and a channel pointer naming 1.0.0 is resolved again for a fresh install. The high-water mark is NOT pack-owned state — it is the verifier's memory of what it has EVER resolved (MKT-050) — so it survives the uninstall exactly as it survives a restart (channel-index/1 CHI-062), and the downgrade is still refused POINTER_ROLLBACK_REJECTED. Clearing it with the pack would make uninstall-then-reinstall a sanctioned downgrade path in which every individual step succeeds.",
+  "input": {
+    "sequence": [
+      { "op": "install", "pack_id": "acme/weather-widget", "trust_channel": "verified", "resolved_version": "2.0.0" },
+      { "op": "uninstall", "pack_id": "acme/weather-widget" },
+      { "op": "resolve_channel_pointer", "pack_id": "acme/weather-widget", "trust_channel": "verified", "pointer_names_version": "1.0.0" }
+    ],
+    "entry_for_1.0.0_is_active_non_yanked_and_validly_signed": true
+  },
+  "expected": {
+    "install_records_removed_on_uninstall": true,
+    "high_water_mark_after_uninstall": { "pack_id": "acme/weather-widget", "trust_channel": "verified", "resolved_version": "2.0.0" },
+    "reinstall_at_1.0.0_accepted": false,
+    "error_code": "POINTER_ROLLBACK_REJECTED",
+    "append_only": "one record per successfully applied install; a refused install appends none"
+  }
+}
