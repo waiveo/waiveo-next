@@ -180,6 +180,37 @@ func (e *ValidationError) Error() string {
 // re-implementing the rule in the store.
 type WriteGuard func(existing []Resource) error
 
+// DeleteGuard is WriteGuard's counterpart for the one verb that carries no body:
+// a caller-supplied invariant check run INSIDE a Delete write transaction, before
+// the row is removed, under the SAME write lock the removal commits under.
+// Returning a non-nil error rolls the transaction back with nothing deleted and
+// is propagated to the caller VERBATIM, exactly as a WriteGuard's is, so the api
+// layer can supply a guard that returns its own typed refusal and recognize it on
+// the way out.
+//
+// It is handed a DeleteView rather than the deleted kind's own rows, which is the
+// whole reason it is a separate type: what a delete has to answer is not "is this
+// row well-formed" — there is no row being written — but "does anything else
+// still point at it", and the answer lives in OTHER tables. data-model/1's
+// scope-node deletion rules (DAT-020/021) are exactly that question.
+type DeleteGuard func(v DeleteView) error
+
+// DeleteView is the read surface a DeleteGuard sees: this store, mid-transaction,
+// under the write lock the delete holds. A guard MUST read through this view and
+// never through a Store method — every public read takes the read lock, which the
+// held write lock would deadlock against — and what it reads is the state the
+// delete is about to commit against, with no window for another writer to move it.
+type DeleteView interface {
+	// Rows returns every row of kind, ordered by id ascending — the same
+	// projection List serves, read inside the delete's transaction.
+	Rows(kind Kind) ([]Resource, error)
+	// PlacedAt returns one row whose own scope_node column names scopeNode, and
+	// whether any exists at all, across every table that carries a placement
+	// (placementTables). Which one it returns among several is the first match in
+	// placement-table order; the question it answers is existence.
+	PlacedAt(scopeNode string) (Placement, bool, error)
+}
+
 // Store is the app-side SQLite store. Safe for concurrent use: writes serialize
 // under mu (write lock) and reads take mu (read lock), so a revision/generation
 // bump is atomic against any concurrent read.
@@ -758,7 +789,16 @@ func (s *Store) Update(ctx context.Context, kind Kind, id string, rev int64, pat
 // and the remaining row-set re-validated before commit, so a delete that would
 // leave a dangling reference (e.g. removing a playlist a daypart still points at)
 // is rejected with a ValidationError and rolls back.
-func (s *Store) Delete(ctx context.Context, kind Kind, id string, rev int64) error {
+//
+// That post-write revalidation is deliberately NOT the whole of referential
+// integrity, and a caller must not read it as such. It re-runs the kind's own
+// validator over what remains, and one of those validators is subtree-tolerant on
+// purpose: datamodel.BuildScopeTree treats a node whose parent is absent as a
+// subtree boundary (relay/1 snapshots carry subtrees), so removing an INTERIOR
+// scope node revalidates clean while orphaning everything beneath it. Rules a
+// remaining-row-set check cannot see are the caller's to supply as guards, which
+// is what DeleteGuard is for.
+func (s *Store) Delete(ctx context.Context, kind Kind, id string, rev int64, guards ...DeleteGuard) error {
 	table, err := tableFor(kind)
 	if err != nil {
 		return err
@@ -775,6 +815,15 @@ func (s *Store) Delete(ctx context.Context, kind Kind, id string, rev int64) err
 		if curRev != rev {
 			return &RevisionMismatchError{Expected: rev, Current: curRev}
 		}
+		// The guards run against the store as it still stands — before the row is
+		// removed, inside the transaction that would remove it. A guard that
+		// refuses rolls the whole thing back with nothing written, and its error
+		// reaches the caller verbatim.
+		for _, g := range guards {
+			if err := g(txDeleteView{ctx: ctx, tx: tx}); err != nil {
+				return err
+			}
+		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE id = ?`, id); err != nil {
 			return fmt.Errorf("store: delete %s: %w", kind, err)
 		}
@@ -783,6 +832,27 @@ func (s *Store) Delete(ctx context.Context, kind Kind, id string, rev int64) err
 		}
 		return validateAfterWrite(ctx, tx, kind)
 	})
+}
+
+// txDeleteView is the DeleteView a Delete hands its guards: the live transaction,
+// nothing else. Every read a guard makes therefore goes through the same handle
+// the removal will, sees the store exactly as the removal will find it, and can
+// never reach for a Store method that would deadlock on the held write lock.
+type txDeleteView struct {
+	ctx context.Context
+	tx  *sql.Tx
+}
+
+func (v txDeleteView) Rows(kind Kind) ([]Resource, error) {
+	table, err := tableFor(kind)
+	if err != nil {
+		return nil, err
+	}
+	return readResources(v.ctx, v.tx, table)
+}
+
+func (v txDeleteView) PlacedAt(scopeNode string) (Placement, bool, error) {
+	return placedAt(v.ctx, v.tx, scopeNode)
 }
 
 // readResources reads every row of table (ordered by id ascending) into Resources
