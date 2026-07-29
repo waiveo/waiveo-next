@@ -17,7 +17,7 @@
     "      holds the value, a handler runs — and the specific rejection the contract promises was",
     "      never written. These are the dangerous ones: the feature reads as finished, and a",
     "      traceability row can sit at `covered` because a driver observed the accept side.",
-    "      data-model/1's six, security-model's four, player/1's LEASE_UNKNOWN and relay/1's one.",
+    "      data-model/1's three, security-model's four, player/1's LEASE_UNKNOWN and relay/1's one.",
     "  (c) the refusal EXISTS but is not spelled as the published code — free-text prose, a bare",
     "      bool, a silent skip. A caller told to branch on `code` still cannot.",
     "",
@@ -94,14 +94,11 @@
     },
     {
       "contract": "data-model-1.md",
-      "reason": "THE SURFACE EXISTS AND THE REFUSAL DOES NOT — state (b), and the sharpest case of it in the corpus. DELETE /scope-nodes/{id} is specified, routed (internal/app/api/api.go:472), handled (api.go:982) and returns 204 in a passing test (scopenodes_test.go:434); it enforces addressability, write authority and If-Match, and none of DAT-020/021/022. Worse than absent: BuildScopeTree is deliberately subtree-tolerant (internal/datamodel/scopetree.go:85-88,140), so orphaning children PASSES revalidation, and it bounds org nodes above only (:100-102), so a zero-org tree validates. Deleting a populated site, or the org itself, succeeds today. SCOPE_NODE_ACCOUNT_STATE_INVALID and SCOPE_NODE_ENTITLEMENTS_INVALID: the columns are on the struct (scopetree.go:25-26) and account_state is in the ScopeNode response schema, but BuildScopeTree's own contract list (:72-83) omits DAT-010/013, and internal/app/api/bodyschema.go:35-44 records that scope-node bodies are ungated on purpose. SCREEN_ID_UNRESOLVED: screen identity rows are real (internal/app/store/store.go:64) and a screen_id IS resolved at pairing (internal/app/store/pairinggrants.go:167), but the failure renders as a generic 404 NOT_FOUND, and content.played checks ULID syntax only (internal/events/content_played.go:52) — nothing anywhere detects a screen_id that names a scope node, which is the entire point of the code.",
+      "reason": "State (b) for two of the three, state (c) for the third. The deletion refusals that used to head this group — SCOPE_NODE_NOT_EMPTY, SCOPE_NODE_IN_USE, SCOPE_NODE_ORG_UNDELETABLE — left it when internal/app/api/scopenodes.go grew them: DELETE /scope-nodes/{id} now refuses a node that still carries a child, one still named as another row's scope_node, and the org root, each under its published code. SCOPE_NODE_ACCOUNT_STATE_INVALID and SCOPE_NODE_ENTITLEMENTS_INVALID: the columns are on the struct (internal/datamodel/scopetree.go:25-26) and account_state is in the ScopeNode response schema, but BuildScopeTree's own contract list (:70-83) omits DAT-010/013, and internal/app/api/bodyschema.go:35-44 records that scope-node bodies are ungated on purpose — the declared ScopeNodeCreate carries no account_state at all, so enforcing the schema as written would make the org node uncreatable, which is why this pair closes with that schema rather than ahead of it. SCREEN_ID_UNRESOLVED: screen identity rows are real (internal/app/store/store.go:64) and a screen_id IS resolved at pairing (internal/app/store/pairinggrants.go:167), but the failure renders as a generic 404 NOT_FOUND, and content.played checks ULID syntax only (internal/events/content_played.go:52) — nothing anywhere detects a screen_id that names a scope node, which is the entire point of the code.",
       "codes": [
         "SCREEN_ID_UNRESOLVED",
         "SCOPE_NODE_ACCOUNT_STATE_INVALID",
-        "SCOPE_NODE_ENTITLEMENTS_INVALID",
-        "SCOPE_NODE_NOT_EMPTY",
-        "SCOPE_NODE_IN_USE",
-        "SCOPE_NODE_ORG_UNDELETABLE"
+        "SCOPE_NODE_ENTITLEMENTS_INVALID"
       ]
     },
     {

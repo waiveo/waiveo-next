@@ -446,7 +446,48 @@ type resourceConfig struct {
 	// as well as pre-write, because the content retention sweep can reclaim an
 	// asset in between — see playlistAssetGuards (scheduling.go).
 	writeGuards func(srv *server, body []byte) []store.WriteGuard
+	// undeletable, when non-nil, refuses a DELETE of this row outright, from the
+	// row's own fields alone — no store read, and ahead of the If-Match
+	// precondition. Returning nil accepts.
+	//
+	// The ordering is the whole reason it is separate from deleteGuards below.
+	// This hook is for a refusal no retry can ever clear, and the handler already
+	// makes that argument once: an unwritable placement is refused before the
+	// precondition because "inviting a viewer to retry with an ETag would be an
+	// invitation to an operation they can never complete." A permanently
+	// undeletable row is the same claim about the row instead of the caller. Only
+	// the scope-node kind sets it — data-model/1 DAT-022's org node (scopenodes.go).
+	undeletable func(resourceFields) *deleteRefused
+	// deleteGuards, when non-nil, contributes per-kind store.DeleteGuards
+	// evaluated INSIDE the store's delete transaction, against the store as it
+	// stands under the same write lock the removal commits under.
+	//
+	// It is writeGuards' counterpart for the one verb with no body: a delete
+	// submits nothing to validate, so a per-kind delete rule asks about the REST
+	// of the store — what still points at the row about to disappear — and that is
+	// state another writer can move between a pre-read and the write, which is
+	// exactly why it belongs in the transaction rather than in the handler. Only
+	// the scope-node kind sets it: DAT-020's child nodes and DAT-021's placed rows
+	// (scopenodes.go).
+	deleteGuards func(srv *server, id string) []store.DeleteGuard
 }
+
+// deleteRefused is a per-kind delete rule's typed refusal: the HTTP Status, the
+// published Code the caller branches on, and the Title/Detail its Problem body
+// carries. It is modelled on apihttp.ExternalIDError and used the same way — a
+// guard returns it INSIDE the store transaction and writeStoreError renders it on
+// the way out — so a refusal raised in the transaction and one raised in the
+// handler produce the identical response through the identical path.
+type deleteRefused struct {
+	Status int
+	Code   string
+	Title  string
+	Detail string
+}
+
+// Error lets a *deleteRefused satisfy the error interface; the message is the
+// Problem Detail.
+func (e *deleteRefused) Error() string { return e.Detail }
 
 // resource binds a resourceConfig to the shared server so the handler methods
 // can be registered as http.HandlerFuncs.
@@ -1010,6 +1051,19 @@ func (rs *resource) delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A per-kind refusal no retry can clear (cfg.undeletable) sits here, between
+	// the authorization checks and the precondition. Behind the authorization, so
+	// it can never tell a caller who could not otherwise see this row that it
+	// exists; ahead of the precondition, for the reason the unwritable-placement
+	// refusal above is: a 428 or a 412 asks the caller to come back with a fresh
+	// revision, and there is no revision at which this delete would be allowed.
+	if rs.cfg.undeletable != nil {
+		if refusal := rs.cfg.undeletable(curFields); refusal != nil {
+			rs.problem(w, r, refusal.Status, refusal.Code, refusal.Title, refusal.Detail)
+			return
+		}
+	}
+
 	ifMatch, present := r.Header["If-Match"]
 	outcome := apihttp.CheckIfMatch(headerValue(ifMatch), present, current.Revision)
 	if !outcome.OK {
@@ -1017,11 +1071,28 @@ func (rs *resource) delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := rs.srv.store.Delete(r.Context(), rs.cfg.kind, id, current.Revision); err != nil {
+	// The per-kind rules a caller CAN clear (cfg.deleteGuards) run last, inside
+	// the store transaction — after the precondition, because clearing them is a
+	// write and a caller who is going to make one has to hold a current revision
+	// like any other writer.
+	if err := rs.srv.store.Delete(r.Context(), rs.cfg.kind, id, current.Revision, rs.deleteGuards(id)...); err != nil {
 		rs.writeStoreError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteGuards is the guard set one delete carries into the store transaction:
+// whatever the kind's own resourceConfig.deleteGuards contributes, and nothing
+// else. Unlike writeGuards there is no shared baseline guard every kind carries —
+// external_id uniqueness is a rule about a value being written, and a delete
+// writes none — so a kind that names no hook carries no guard and the store's
+// delete path is unchanged for it.
+func (rs *resource) deleteGuards(id string) []store.DeleteGuard {
+	if rs.cfg.deleteGuards == nil {
+		return nil
+	}
+	return rs.cfg.deleteGuards(rs.srv, id)
 }
 
 // ---- shared helpers -------------------------------------------------------
@@ -1131,6 +1202,15 @@ func (rs *resource) writeStoreError(w http.ResponseWriter, r *http.Request, err 
 	var xerr *apihttp.ExternalIDError
 	if errors.As(err, &xerr) {
 		rs.problem(w, r, xerr.Status, xerr.Code, xerr.Title, xerr.Detail)
+		return
+	}
+	// A per-kind delete rule a DeleteGuard raised inside the store's delete
+	// transaction (data-model/1 DAT-020/021): rendered through the same helper
+	// the handler's own pre-precondition refusal uses, so the two spell one
+	// refusal one way.
+	var dref *deleteRefused
+	if errors.As(err, &dref) {
+		rs.problem(w, r, dref.Status, dref.Code, dref.Title, dref.Detail)
 		return
 	}
 	// A rules/1 compile failure the store's compile-gate raised on an automation
