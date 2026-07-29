@@ -1493,7 +1493,12 @@ func resolveAndServe(ctx context.Context, applied desiredstate.Applied, srv *pla
 // It installs no signing key: the relay's Lease-signing identity is established
 // once, separately (playerserver.Server.SetSigningKey), and a per-screen program
 // write has no authority over it.
-func serveAppAuthoredPrograms(srv *playerserver.Server, generation int64, served []wire.ScreenProgram) {
+//
+// It returns how many entries were actually INSTALLED, which is not len(served)
+// — an entry naming no screen is skipped. A caller reporting the size of the
+// input instead would claim to have installed programs it discarded.
+func serveAppAuthoredPrograms(srv *playerserver.Server, generation int64, served []wire.ScreenProgram) int {
+	installed := 0
 	for _, sp := range served {
 		if sp.ScreenID == "" {
 			// An entry naming no screen cannot be served to any screen — no
@@ -1503,7 +1508,9 @@ func serveAppAuthoredPrograms(srv *playerserver.Server, generation int64, served
 			continue
 		}
 		srv.SetServedProgram(generation, sp)
+		installed++
 	}
+	return installed
 }
 
 // soleServedScreenID returns the screen identity row a governed scope node's

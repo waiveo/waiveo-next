@@ -55,9 +55,9 @@ type scheduleDriver struct {
 // per-screen `screen_programs` baseline first, then its schedule resolution over
 // the top of it (resolveAndServe at nowMs, plus the background re-resolve loops).
 // The new loops run under a child of ctx, so cancelling ctx (process shutdown)
-// stops them too. It returns the resolvers built (empty when the schedule governs
-// no carried screen — the additive serving policy leaves the app-authored program
-// in place).
+// stops them too. It returns how many baseline entries were installed, and the
+// resolvers built (empty when the schedule governs no carried screen — the
+// additive serving policy leaves the app-authored program in place).
 //
 // # Why the baseline is installed HERE and not only at boot
 //
@@ -74,6 +74,26 @@ type scheduleDriver struct {
 // process restarted. The generation's own baseline is what carries an edit to
 // those screens, so every apply re-installs it, not just the first one.
 //
+// # What the baseline does NOT carry: a removal
+//
+// This re-install is purely additive, and the claim above should be read no more
+// broadly than that: it carries an edit to every screen the new generation still
+// NAMES. A screen DROPPED from the new generation's `screen_programs` is not
+// named by any write here, so nothing clears the program it is already serving —
+// it keeps serving its last one, live, indefinitely. A restart would serve that
+// same screen data-model/1's terminal default (DAT-118), because the boot path
+// installs only what the persisted generation carries. So live state and
+// restart state disagree about the same persisted generation, and nothing logs
+// the divergence.
+//
+// That is a KNOWN gap, deliberately not closed here rather than an oversight. It
+// is not a regression — before this function re-installed the baseline at all, a
+// removed screen kept an even staler BOOT-generation program, and a restart was
+// the fix then exactly as it is now. Implementing removal means deciding what a
+// dropped entry means (deleted screen? unauthored? a generation built from a
+// partial view?) and what the relay should serve instead, which is a contract
+// question, not a wiring one.
+//
 // # Ordering
 //
 // Baseline BEFORE resolution, matching the boot path exactly. Both write at
@@ -82,14 +102,14 @@ type scheduleDriver struct {
 // screen the schedule attributes a resolution to — which must be the resolver.
 // Inverting these two would have a fresh resolution clobbered by the baseline it
 // is supposed to replace, on exactly the sites where the resolution is served.
-func (d *scheduleDriver) apply(ctx context.Context, applied desiredstate.Applied, nowMs int64) []*schedulehost.Resolver {
+func (d *scheduleDriver) apply(ctx context.Context, applied desiredstate.Applied, nowMs int64) (installed int, resolvers []*schedulehost.Resolver) {
 	if d.cancel != nil {
 		d.cancel() // tear down the prior generation's resolve loops before the swap
 	}
-	serveAppAuthoredPrograms(d.srv, applied.Generation, applied.ScreenPrograms)
+	installed = serveAppAuthoredPrograms(d.srv, applied.Generation, applied.ScreenPrograms)
 	loopCtx, cancel := context.WithCancel(ctx)
 	d.cancel = cancel
-	return resolveAndServe(loopCtx, applied, d.srv, d.sink, d.site, d.tickEvery, nowMs)
+	return installed, resolveAndServe(loopCtx, applied, d.srv, d.sink, d.site, d.tickEvery, nowMs)
 }
 
 // rePuller applies a re-pulled desired-state generation to the relay's live
@@ -162,7 +182,7 @@ func (p *rePuller) tick(ctx context.Context) bool {
 	// new generation atomically (REL-056); re-drive the serving side to match —
 	// this generation's app-authored per-screen programs AND the schedule
 	// resolution over them, in that order (scheduleDriver.apply's own doc).
-	p.driver.apply(ctx, applied, p.nowFn())
+	installed, _ := p.driver.apply(ctx, applied, p.nowFn())
 
 	// Refresh the redeemable pairing-grant set from this SAME verified
 	// generation (relay/1 REL-122: a pairing grant remains redeemable "until a
@@ -177,8 +197,11 @@ func (p *rePuller) tick(ctx context.Context) bool {
 		// a returned error is unexpected, so log and keep serving rather than crash.
 		log.Printf("waiveo-relay live pull: reload edge rules for generation %d: %v", applied.Generation, err)
 	}
+	// installed, not len(applied.ScreenPrograms): an entry carrying no screen_id
+	// is skipped by serveAppAuthoredPrograms, and counting the input would report
+	// programs re-installed that were discarded.
 	log.Printf("waiveo-relay live pull: applied generation %d live (%d screen program(s) re-installed, schedule re-resolved, %d edge rule(s) loaded)",
-		applied.Generation, len(applied.ScreenPrograms), p.host.EdgeRuleCount())
+		applied.Generation, installed, p.host.EdgeRuleCount())
 	p.lastGen = applied.Generation
 	return true
 }
