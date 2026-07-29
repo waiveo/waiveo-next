@@ -2,6 +2,7 @@ package playerserver
 
 import (
 	"bytes"
+	"database/sql"
 	"log"
 	"path/filepath"
 	"strings"
@@ -192,6 +193,133 @@ func TestDurableSessionForARevokedScreenIsNeverCachedAsLive(t *testing.T) {
 	assertTypedError(t, resp, raw, "CHANNEL_TOKEN_INVALID")
 }
 
+// TestAFailedDurableDropIsRepairedByTheNextInstall is the retry property, and
+// the reason the drop runs over the WHOLE revocation set on every install
+// rather than over the part of it each install newly adds.
+//
+// The two halves of a drop fail independently: the in-memory sweep cannot fail,
+// the durable UPDATE can. And a screen enters the revocation view the moment the
+// set is installed — BEFORE the durable half is attempted — so a diff computed
+// against that view reads a screen whose durable drop just failed as one already
+// handled. `revoked` is restated in full on every snapshot (REL-066), so under a
+// diff EVERY later generation computes nothing newly revoked and never retries
+// the write that failed: the screen is revoked in memory and durably LIVE, and
+// no snapshot can repair it.
+//
+// A restart then resolves that state the wrong way round. The process's memory
+// is gone, the un-terminated row is not, and if the app peer has by then
+// withdrawn the revocation the pre-revocation token resolves live and serves —
+// never re-issued, never re-paired. That is the chain this asserts end to end.
+//
+// The fault is injected against the REAL store rather than a substituted double:
+// the table the durable half writes is renamed out from under it and back again,
+// which is a transient storage fault the same wired store recovers from.
+func TestAFailedDurableDropIsRepairedByTheNextInstall(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "relay.db")
+	store, err := identity.Open(dbPath)
+	if err != nil {
+		t.Fatalf("identity.Open(%q): %v", dbPath, err)
+	}
+
+	certPEM, _, priv, _ := testRelaySigningIdentity(t)
+	grant := testGrantForScreen(testScreenIDA)
+	srv, err := NewServer(certPEM, []wire.PairingGrant{grant}, WallClockMs)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	srv.SetSigningKey(priv)
+	srv.SetProgram(7, testScreenIDA, "rev-17", "scheduled", "content", testImageContent())
+	srv.EnablePersistence(store)
+
+	_, raw := doPair(t, srv, PairingRequest{
+		HardwareID:    "hw-drop-retry",
+		GrantSelector: grant.GrantID,
+		Capabilities:  Capabilities{ContentTypes: []string{"image"}, PlayerVersion: "1.0.0"},
+	})
+	var pr PairingResponse
+	remarshal(t, raw, &pr)
+	if pr.ChannelToken == "" {
+		t.Fatalf("pairing minted no channel token: %v", raw)
+	}
+	tokenHash := identity.HashToken(pr.ChannelToken)
+
+	// Fault the durable half only. The revocation itself still installs.
+	renameSessionTable(t, dbPath, "player_channel_tokens", "player_channel_tokens_faulted")
+	if err := srv.SetRevokedScreens(8, []string{testScreenIDA}); err == nil {
+		t.Fatal("SetRevokedScreens reported success while its durable half could not run — the caller logs this error, and a silent failure here is the one it could not log")
+	}
+	renameSessionTable(t, dbPath, "player_channel_tokens_faulted", "player_channel_tokens")
+
+	// The precondition the rest of the case rests on: the fault really did
+	// leave the session durably LIVE, so there is something left to repair.
+	rec, ok, err := store.PlayerSession(tokenHash)
+	if err != nil || !ok {
+		t.Fatalf("PlayerSession after the faulted drop: ok=%v err=%v", ok, err)
+	}
+	if rec.Terminated() {
+		t.Fatal("the faulted drop terminated the session anyway — this case cannot test a repair with nothing broken")
+	}
+
+	// Generation 9 restates the SAME set. Under a newly-revoked diff this is a
+	// no-op; the drop has to be repeatable for it to repair anything.
+	if err := srv.SetRevokedScreens(9, []string{testScreenIDA}); err != nil {
+		t.Fatalf("SetRevokedScreens(9, same set): %v", err)
+	}
+	rec, ok, err = store.PlayerSession(tokenHash)
+	if err != nil || !ok {
+		t.Fatalf("PlayerSession after the repairing install: ok=%v err=%v", ok, err)
+	}
+	if !rec.Terminated() {
+		t.Fatal("re-installing the same revocation set did not retry the durable drop the earlier generation failed to perform — a set restated on every snapshot (REL-066) is the only thing that can repair it, so a drop skipped as 'already handled' is never repaired at all")
+	}
+
+	// And the harm the repair forecloses: restart, withdraw the revocation, and
+	// the pre-revocation token must still be worthless.
+	if err := store.Close(); err != nil {
+		t.Fatalf("store.Close(): %v", err)
+	}
+	reopened, err := identity.Open(dbPath)
+	if err != nil {
+		t.Fatalf("identity.Open (reopen): %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+
+	restarted, err := NewServer(certPEM, nil, WallClockMs)
+	if err != nil {
+		t.Fatalf("NewServer (restarted): %v", err)
+	}
+	restarted.SetSigningKey(priv)
+	restarted.SetProgram(10, testScreenIDA, "rev-17", "scheduled", "content", testImageContent())
+	restarted.EnablePersistence(reopened)
+	if err := restarted.SetRevokedScreens(10, nil); err != nil {
+		t.Fatalf("SetRevokedScreens(withdraw): %v", err)
+	}
+
+	resp, body := doProgram(t, restarted, pr.ChannelToken, []string{"image", "video"})
+	assertTypedError(t, resp, body, "CHANNEL_TOKEN_INVALID")
+}
+
+// renameSessionTable renames one of the store's tables through a SEPARATE
+// connection to the same database file, so the wired store keeps its own handle
+// and its own state throughout — the fault is in the storage, not in the wiring.
+// Renaming away makes every statement against it fail; renaming back restores
+// it, which is what makes the fault transient rather than terminal.
+func renameSessionTable(t *testing.T, dbPath, from, to string) {
+	t.Helper()
+	raw, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatalf("sql.Open(%q): %v", dbPath, err)
+	}
+	defer func() {
+		if err := raw.Close(); err != nil {
+			t.Fatalf("close raw handle: %v", err)
+		}
+	}()
+	if _, err := raw.Exec(`ALTER TABLE ` + from + ` RENAME TO ` + to); err != nil {
+		t.Fatalf("rename %s to %s: %v", from, to, err)
+	}
+}
+
 // TestReinstallingTheSameRevocationRunsNoSideEffect is REL-070's own rule
 // applied to this method: a relay applying a snapshot whose hash equals its
 // persisted last-applied hash "MUST NOT re-run any apply-time side effect", and
@@ -204,6 +332,14 @@ func TestDurableSessionForARevokedScreenIsNeverCachedAsLive(t *testing.T) {
 // one apply-time side effect installing a revocation has, and re-running it
 // would walk the stamp forward on every later snapshot that restated the set —
 // which REL-066 says is every snapshot.
+//
+// What holds the property is the STORE, not this caller: the drop deliberately
+// re-runs over the whole set on every install (see the retry case above), and
+// what makes that free of side effects is `WHERE terminated_at = 0` pinning the
+// stamp to the first drop. So this is the end-to-end assertion that the guard is
+// reached through the server on the path a repeated apply actually takes — the
+// store's own unit case pins the guard itself
+// (identity.TestTerminatePlayerSessionsForScreensKeepsTheFirstStamp).
 func TestReinstallingTheSameRevocationRunsNoSideEffect(t *testing.T) {
 	store, err := identity.Open(filepath.Join(t.TempDir(), "relay.db"))
 	if err != nil {

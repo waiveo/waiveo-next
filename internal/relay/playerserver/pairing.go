@@ -26,7 +26,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -515,8 +517,9 @@ func (s *Server) SetPairingGrants(generation int64, grants []wire.PairingGrant) 
 // anything else can fail — enforcement is never withheld on account of a
 // storage fault — so a caller that ignores the error still enforces the
 // revocation for this process's lifetime; what it loses is the guarantee that
-// the dropped sessions stay dropped across a restart. Callers log it
-// (cmd/waiveo-relay's own apply seam).
+// the dropped sessions stay dropped across a restart, and it loses that only
+// until the next snapshot restates the set (see the retry rule below). Callers
+// log it (cmd/waiveo-relay's own apply seam).
 //
 // # Dropping the sessions a revocation voids
 //
@@ -537,10 +540,30 @@ func (s *Server) SetPairingGrants(generation int64, grants []wire.PairingGrant) 
 // `CHANNEL_TOKEN_INVALID` — which PLY-136 makes a player clear its token and
 // re-pair on, the same terminal path.
 //
-// Only NEWLY-revoked screens are dropped. A screen the prior view already held
-// has already had its sessions dropped, so re-installing the same set drops
-// nothing a second time — which is what keeps a repeated install free of
-// apply-time side effects (see the generation fence below).
+// EVERY screen the set names is dropped on EVERY install, not only the ones the
+// prior view did not already hold. The difference is what happens after the
+// durable half fails. A drop is two halves — this process's token map and the
+// store — and only the second can fail; installing a screen into the view is
+// what a diff would then read as "already handled", so a set restated on every
+// later snapshot (REL-066) would compute nothing newly revoked and never retry
+// the write that failed. The screen would stay revoked in memory and durably
+// LIVE, which is precisely the state a restart resolves the wrong way: the
+// pre-revocation token resolves from the store, un-terminated, and serves. So
+// the drop is written to be REPEATABLE and cheap instead of conditional and
+// unrepairable — a failure is simply retried by the next apply.
+//
+// Nothing is re-run by that repetition. A repeated install is free of
+// apply-time side effects (REL-070, see the generation fence below) because
+// both halves of the drop skip what is already dropped — the sweep by
+// `rec.Terminated`, the durable half by `WHERE terminated_at = 0`, which also
+// pins the termination stamp to the FIRST drop. Idempotence lives at the row,
+// where it can be enforced regardless of what this process believes, rather
+// than in a caller-side diff that has to be right about history to be safe.
+//
+// The cost of repeating it is one SQL statement per apply — not one per revoked
+// screen — and in the steady state that statement matches no rows and commits
+// without an fsync (dropSessionsForLocked, and
+// identity.Store.TerminatePlayerSessionsForScreens' own doc).
 //
 // # Why a set-replace and not a one-at-a-time mark
 //
@@ -604,23 +627,18 @@ func (s *Server) SetRevokedScreens(generation int64, screenIDs []string) error {
 		revoked[id] = true
 	}
 
-	// Newly revoked = named now, not named by the view being replaced. Computed
-	// BEFORE the swap, and enforcement installed before any session work, so a
-	// failure below never leaves the screen un-revoked.
-	newlyRevoked := make([]string, 0, len(revoked))
-	for id := range revoked {
-		if !s.revokedScreens[id] {
-			newlyRevoked = append(newlyRevoked, id)
-		}
-	}
+	// Enforcement is installed before any session work, so a failure below never
+	// leaves the screen un-revoked. The drop then runs over the WHOLE set rather
+	// than the part of it this call newly added — see the doc above on why the
+	// diff that would compute here cannot be repaired if it fails.
 	s.revokedScreens = revoked
 
-	return s.dropSessionsForLocked(newlyRevoked)
+	return s.dropSessionsForLocked(revoked)
 }
 
 // dropSessionsForLocked terminates every live channel-token session issued to
-// any of screenIDs, in this process's own map and in the durable store when one
-// is wired. The caller holds s.mu.
+// any screen in screens, in this process's own map and in the durable store when
+// one is wired. The caller holds s.mu.
 //
 // The in-memory sweep marks rather than deletes, for channelTokenRecord's own
 // documented reason: a dropped session's token has to keep resolving to its
@@ -628,16 +646,27 @@ func (s *Server) SetRevokedScreens(generation int64, screenIDs []string) error {
 // it. It also keeps the cache honest against the durable row, so a later
 // lookup does not read a terminated row and then overwrite it with a live
 // cache entry.
-func (s *Server) dropSessionsForLocked(screenIDs []string) error {
-	if len(screenIDs) == 0 {
+//
+// Both halves skip what is already dropped — the sweep by `rec.Terminated`, the
+// durable half by the store's own `terminated_at = 0` — so this is safe to run
+// on every apply, which is exactly what its caller does with it.
+//
+// The durable half is ONE statement over the whole set
+// (identity.Store.TerminatePlayerSessionsForScreens), and that matters here
+// rather than only there: this runs under s.mu, which every pairing redemption
+// and every program request also take, so the length of the durable half is
+// how long the player-facing surface stalls. The per-screen loop this replaced
+// held that lock across one fsync'd write for every screen it dropped — a site
+// revoking fifty screens at once stalled every screen it did NOT revoke for the
+// duration of fifty serialized fsyncs. One statement makes that one fsync
+// regardless of the size of the set, and none at all on the repeats, where the
+// set is one the relay has already acted on and the statement matches no rows.
+func (s *Server) dropSessionsForLocked(screens map[string]bool) error {
+	if len(screens) == 0 {
 		return nil
 	}
-	drop := make(map[string]bool, len(screenIDs))
-	for _, id := range screenIDs {
-		drop[id] = true
-	}
 	for token, rec := range s.tokens {
-		if rec.Terminated || !drop[rec.ScreenID] {
+		if rec.Terminated || !screens[rec.ScreenID] {
 			continue
 		}
 		rec.Terminated = true
@@ -656,10 +685,13 @@ func (s *Server) dropSessionsForLocked(screenIDs []string) error {
 		// exactly the epoch would write tombstones that read back as live.
 		atMs = 1
 	}
-	for _, id := range screenIDs {
-		if _, err := s.sessionStore.TerminatePlayerSessionsForScreen(id, atMs); err != nil {
-			return fmt.Errorf("playerserver: drop durable sessions for revoked screen %s: %w", id, err)
-		}
+	// Sorted so two applies of the same set issue an identical statement rather
+	// than one differing only in map-iteration order — the drop now runs on
+	// every apply, and a non-deterministic statement makes what the store did
+	// (and what any failure of it reports) depend on a hash seed.
+	ids := slices.Sorted(maps.Keys(screens))
+	if _, err := s.sessionStore.TerminatePlayerSessionsForScreens(ids, atMs); err != nil {
+		return fmt.Errorf("playerserver: drop durable sessions for %d revoked screen(s): %w", len(ids), err)
 	}
 	return nil
 }

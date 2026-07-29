@@ -19,7 +19,9 @@ package identity
 import (
 	"crypto/sha256"
 	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
 )
 
 // playerSessionSchema creates the three tables this file's accessors read and
@@ -34,7 +36,7 @@ import (
 //
 // player_channel_tokens.terminated_at is a TOMBSTONE, not a delete: 0 means the
 // session is live, any other value is the instant the relay dropped it
-// (TerminatePlayerSessionsForScreen). The row survives its own termination on
+// (TerminatePlayerSessionsForScreens). The row survives its own termination on
 // purpose. A deleted row would make its token merely UNKNOWN, and player/1
 // PLY-072 requires a token naming a currently-revoked screen be refused
 // `CHANNEL_TOKEN_REVOKED` specifically — which the relay can only answer if it
@@ -141,7 +143,7 @@ func (s *Store) SetPlayerSession(tokenHash, screenID string, expiresAt int64) er
 
 // PlayerSessionRecord is one persisted channel-token session: the screen it
 // authorizes, when it expires, and — when non-zero — the instant the relay
-// terminated it (TerminatePlayerSessionsForScreen). A terminated session is
+// terminated it (TerminatePlayerSessionsForScreens). A terminated session is
 // still RESOLVABLE on purpose; it just no longer authorizes anything. See
 // playerSessionSchema's own doc for why the row outlives its termination.
 type PlayerSessionRecord struct {
@@ -173,13 +175,19 @@ func (s *Store) PlayerSession(tokenHash string) (PlayerSessionRecord, bool, erro
 	return rec, true, nil
 }
 
-// TerminatePlayerSessionsForScreen drops every still-live channel-token session
-// issued to screenID, stamping atMs as the moment it happened, and reports how
-// many it dropped. It is what a relay calls when it learns screenID has been
-// revoked (relay/1 REL-066/REL-123): a revocation that only refused FUTURE
-// issuance would leave every credential minted before it fully alive the moment
-// the app peer withdrew the revocation again — a token never re-issued and
-// never re-paired, resurrected by a set-replace.
+// terminateChunk bounds how many screen_ids ride one `IN (...)` list. screenIDs
+// arrives from the app peer's own snapshot, so its size is not something this
+// process chooses; an unbounded list would eventually exceed SQLite's
+// host-parameter limit and fail the WHOLE drop rather than a part of it.
+const terminateChunk = 500
+
+// TerminatePlayerSessionsForScreens drops every still-live channel-token session
+// issued to ANY of screenIDs, stamping atMs as the moment it happened, and
+// reports how many it dropped. It is what a relay calls when it installs a
+// revocation set (relay/1 REL-066/REL-123): a revocation that only refused
+// FUTURE issuance would leave every credential minted before it fully alive the
+// moment the app peer withdrew the revocation again — a token never re-issued
+// and never re-paired, resurrected by a set-replace.
 //
 // player/1 PLY-071's own rationale for bounding a channel token to 24 hours is
 // that this bounds "a revoked-but-still-cached token's natural lifetime", which
@@ -188,27 +196,73 @@ func (s *Store) PlayerSession(tokenHash string) (PlayerSessionRecord, bool, erro
 // revoke-then-withdraw the only party still holding the old credential is one
 // that kept a copy, and this is what makes that copy worthless.
 //
+// # Idempotent by the row, not by the caller
+//
 // Already-terminated rows are left exactly as they are (`WHERE terminated_at =
 // 0`), so the stamp records the FIRST termination rather than the most recent
-// re-statement of a revocation the relay already acted on.
-func (s *Store) TerminatePlayerSessionsForScreen(screenID string, atMs int64) (int64, error) {
+// re-statement of a revocation the relay already acted on. That guard — not any
+// diff the caller computes before calling — is what makes a repeated install
+// free of apply-time side effects (REL-070), which is what lets
+// internal/relay/playerserver.Server.SetRevokedScreens hand this method every
+// screen its set CURRENTLY names on every apply, rather than only the newly
+// added ones. Passing the whole set is what makes a drop whose durable half
+// failed REPAIRABLE: the next snapshot restating the same set retries it. A diff
+// cannot, because by then the caller already believes the screen is revoked.
+//
+// # Why the whole set is one statement
+//
+// Because it now runs on every apply and under the caller's own lock, cost is
+// part of the contract rather than an afterthought. One statement over the whole
+// set — not one per screen — keeps that cost flat in the size of the set, and
+// `terminated_at = 0` makes the steady-state form (a set the relay has already
+// acted on) match no rows at all, so SQLite dirties no page and commits without
+// an fsync however many screens are named.
+//
+// Every chunk is attempted even when an earlier one fails, and the failures are
+// joined: returning at the first would leave the remaining screens undropped for
+// no reason, since the statements are independent.
+//
+// An empty screenIDs drops nothing and reports no error — a snapshot revoking
+// nothing is REL-060's ordinary case, not a caller-side bug.
+func (s *Store) TerminatePlayerSessionsForScreens(screenIDs []string, atMs int64) (int64, error) {
 	if atMs == 0 {
 		// 0 is the live sentinel; a caller passing a zero clock would write
 		// tombstones that read as live rows.
-		return 0, fmt.Errorf("identity: TerminatePlayerSessionsForScreen: atMs must not be 0 — 0 is the not-terminated sentinel")
+		return 0, fmt.Errorf("identity: TerminatePlayerSessionsForScreens: atMs must not be 0 — 0 is the not-terminated sentinel")
 	}
-	res, err := s.db.Exec(
-		`UPDATE player_channel_tokens SET terminated_at = ? WHERE screen_id = ? AND terminated_at = 0`,
-		atMs, screenID,
+
+	var (
+		total int64
+		errs  []error
 	)
-	if err != nil {
-		return 0, fmt.Errorf("identity: TerminatePlayerSessionsForScreen: %w", err)
+	for start := 0; start < len(screenIDs); start += terminateChunk {
+		chunk := screenIDs[start:min(start+terminateChunk, len(screenIDs))]
+
+		args := make([]any, 0, len(chunk)+1)
+		args = append(args, atMs)
+		placeholders := make([]string, len(chunk))
+		for i, id := range chunk {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+
+		res, err := s.db.Exec(
+			`UPDATE player_channel_tokens SET terminated_at = ? WHERE terminated_at = 0 AND screen_id IN (`+
+				strings.Join(placeholders, ", ")+`)`,
+			args...,
+		)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("identity: TerminatePlayerSessionsForScreens: %w", err))
+			continue
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("identity: TerminatePlayerSessionsForScreens: %w", err))
+			continue
+		}
+		total += n
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("identity: TerminatePlayerSessionsForScreen: %w", err)
-	}
-	return n, nil
+	return total, errors.Join(errs...)
 }
 
 // MarkPairingGrantRedeemed durably records that grantID's one-time pairing
