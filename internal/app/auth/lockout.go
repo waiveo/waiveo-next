@@ -193,13 +193,16 @@ func RequestIPClass(r *http.Request) string {
 }
 
 // RequestSource is the attempt-source key the grant attempt budget is spent
-// from: the request's source ADDRESS with any port stripped.
+// from: the smallest network allocation the request's source can be attributed
+// to, with any port stripped.
 //
 // It is deliberately not IPClass — see apihttp.RequestSource, which owns the
-// keying and its rationale. This is a one-line delegation rather than a second
-// copy because the relay's own pairing-grant redemption bounds guesses against
-// the same kind of secret, and two independently-maintained keying rules for
-// one policy is how the coarse-keyed version comes back.
+// keying and its rationale (including why an IPv6 source keys on its /64 rather
+// than on the address a host rotates within it for free). This is a one-line
+// delegation rather than a second copy because the relay's own pairing-grant
+// redemption bounds guesses against the same kind of secret, and two
+// independently-maintained keying rules for one policy is how the coarse-keyed
+// version comes back.
 func RequestSource(r *http.Request) string {
 	return apihttp.RequestSource(r)
 }

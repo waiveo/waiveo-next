@@ -83,3 +83,87 @@ func TestRateLimiterErrorMapping(t *testing.T) {
 		t.Fatalf("CodeRateLimited = %q, want %q", CodeRateLimited, "RE_ENROLL_RATE_LIMITED")
 	}
 }
+
+// TestRateLimiterBoundsItsKeyMap: the tracked-key map MUST NOT grow without
+// limit. The keys are whatever the calling surface attributes an attempt to, and
+// on the surfaces this limiter now backs — pairing-grant redemption on the
+// relay, grant redemption on the app — an attempt is unauthenticated, so the key
+// is chosen by whoever is making it. An unbounded map is then a memory-growth
+// primitive that needs no correct guess and no credential: one retained window
+// per distinct source, forever, from anyone who can reach the endpoint.
+func TestRateLimiterBoundsItsKeyMap(t *testing.T) {
+	rl := NewRateLimiter(10, 15*60_000)
+
+	// Every attempt inside ONE window, so nothing lapses on its own: this is the
+	// hostile shape, not the benign one.
+	const nowMs int64 = 1_000_000
+	for i := 0; i < maxKeys*2; i++ {
+		rl.Allow("2001:db8:"+itoa(i)+"::/64", nowMs)
+	}
+
+	if got := rl.trackedKeys(); got > maxKeys {
+		t.Errorf("tracked keys = %d after %d distinct keys in one window, want <= %d — the key map is unbounded", got, maxKeys*2, maxKeys)
+	}
+}
+
+// TestRateLimiterAdmitsANewKeyAtCapacity: a key the limiter is not already
+// tracking MUST still be admitted when the map is full. The bound is a memory
+// bound, never an admission decision — refusing at capacity would hand anyone
+// able to fill the map a denial of the whole operation for everybody, which is
+// precisely what per-key budgets exist to prevent, and strictly worse than the
+// unbounded memory it would be trading away.
+func TestRateLimiterAdmitsANewKeyAtCapacity(t *testing.T) {
+	rl := NewRateLimiter(10, 15*60_000)
+
+	const nowMs int64 = 1_000_000
+	for i := 0; i < maxKeys; i++ {
+		rl.Allow("filler-"+itoa(i), nowMs)
+	}
+
+	if !rl.Allow("a-real-screen-pairing", nowMs) {
+		t.Error("Allow() for a fresh key at capacity = false, want true — a full key map denied an operation to a caller who had spent nothing")
+	}
+}
+
+// TestRateLimiterEvictionPrefersLapsedWindows: making room MUST first drop keys
+// whose window has already elapsed. Those carry no live count — the next Allow
+// for them resets the window anyway — so dropping them changes no decision this
+// limiter would make, while dropping a live one hands that key a fresh budget.
+func TestRateLimiterEvictionPrefersLapsedWindows(t *testing.T) {
+	const windowMs int64 = 60_000
+	rl := NewRateLimiter(2, windowMs)
+
+	// A full map of keys whose windows have all lapsed by the time the newcomer
+	// arrives, plus ONE live key that has already spent its budget.
+	for i := 0; i < maxKeys-1; i++ {
+		rl.Allow("stale-"+itoa(i), 0)
+	}
+	const live = "live-key"
+	nowMs := windowMs * 2
+	rl.Allow(live, nowMs)
+	rl.Allow(live, nowMs)
+	if rl.Allow(live, nowMs) {
+		t.Fatal("fixture: the live key's budget was not spent")
+	}
+
+	// The newcomer forces an eviction; the lapsed keys are what must go.
+	if !rl.Allow("newcomer", nowMs) {
+		t.Fatal("Allow() for a fresh key at capacity = false, want true")
+	}
+	if rl.Allow(live, nowMs) {
+		t.Error("the spent key's budget came back — eviction dropped a LIVE window while lapsed ones were available to drop")
+	}
+}
+
+// itoa is strconv.Itoa without the import churn in this file.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var b []byte
+	for n > 0 {
+		b = append([]byte{byte('0' + n%10)}, b...)
+		n /= 10
+	}
+	return string(b)
+}

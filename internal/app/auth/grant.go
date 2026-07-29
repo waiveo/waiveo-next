@@ -405,8 +405,13 @@ func (s *Store) RedeemGrant(ctx context.Context, code, wantPurpose string, consu
 // type is already a per-key counting window driven by an injected clock, which
 // is exactly the shape this needs.
 //
-// The key is `(purpose, SOURCE ADDRESS)`, and the address rather than its class
-// is load-bearing. `IPClass` has three values, so keying on it puts every host
+// The key is `(purpose, SOURCE ALLOCATION)` — RequestSource's own reduction of
+// the request's source: the address for IPv4, its /64 for IPv6, since a single
+// IPv6 host mints addresses within its own /64 for free and a budget keyed on
+// something free to mint bounds nothing.
+//
+// Keying on the source rather than on its class is load-bearing.
+// `IPClass` has three values, so keying on it puts every host
 // on the LAN into ONE bucket: ten guesses per window from any single machine —
 // drivable cross-origin from a victim's own browser, since the redeem route
 // takes a simple POST — would exhaust the bucket and deny credential reset to

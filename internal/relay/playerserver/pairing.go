@@ -210,7 +210,7 @@ type Server struct {
 	// to refuse another screen's legitimate write.
 	programs    map[string]program         // screen_id -> SetProgram's own configured state for that screen
 	programGens map[string]int64           // screen_id -> desired-state generation that screen's served program was applied for (REL-052/056)
-	signingKey  ed25519.PrivateKey         // relay's own key, signs every issued Lease (PLY-090) — one per relay, never per screen; see SetProgram
+	signingKey  ed25519.PrivateKey         // relay's own key, signs every issued Lease (PLY-090) — one per relay, never per screen, installed by SetSigningKey independently of any program
 	leaseAcks   map[string]LeaseAckRequest // lease_id -> most recent LeaseAck (PLY-091)
 
 	// revokedScreens is the relay's own last-synced view of the screen_ids in
@@ -498,10 +498,11 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 	// budget spent only on lookups that reached the grant index would be
 	// counting the attacker's successes rather than their attempts.
 	//
-	// The key is the attempt's SOURCE ADDRESS (apihttp.RequestSource, which
-	// owns why an address and not a coarser class). A `pairing` purpose is the
-	// only purpose this endpoint redeems, so unlike the app's budget there is
-	// no purpose component to separate one sweep from another here.
+	// The key is the attempt's SOURCE ALLOCATION (apihttp.RequestSource, which
+	// owns why the address for IPv4, its /64 for IPv6, and not a coarser class).
+	// A `pairing` purpose is the only purpose this endpoint redeems, so unlike
+	// the app's budget there is no purpose component to separate one sweep from
+	// another here.
 	//
 	// The refusal is UNAVAILABLE: player/1's error taxonomy has no rate-limit
 	// code of its own, and PLY-007 forbids reaching into api/1's registry for

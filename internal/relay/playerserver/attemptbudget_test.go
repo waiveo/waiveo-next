@@ -170,3 +170,43 @@ func itoa(n int) string {
 	}
 	return string(b)
 }
+
+// TestPairBudgetIsNotBypassedByRotatingWithinAnIPv6Prefix is the keying failure
+// that mattered most on this endpoint, driven end to end through the handler.
+//
+// The budget bounds guesses per source, and a source that can be minted for free
+// bounds nothing. A single IPv6 host holds a /64 and rotates addresses within it
+// as ordinary behaviour (RFC 8981), so keyed on the full address one machine
+// gets a fresh ten attempts per address and the budget on this unauthenticated
+// endpoint is decorative. The attempts below all come from ONE /64 and must be
+// refused exactly as though they came from one address.
+func TestPairBudgetIsNotBypassedByRotatingWithinAnIPv6Prefix(t *testing.T) {
+	srv, _ := budgetTestServer(t)
+
+	// One host, a different address in its own /64 every time.
+	for i := 0; i < pairAttemptLimit; i++ {
+		addr := "[2001:db8:0:1::" + itoa(i+1) + "]:40000"
+		if got := pairFrom(t, srv, addr, "grant-wrong-guess"); got != http.StatusBadRequest {
+			t.Fatalf("attempt %d from %s status = %d, want 400 (a wrong selector, within budget)", i+1, addr, got)
+		}
+	}
+	if got := pairFrom(t, srv, "[2001:db8:0:1::ff]:40000", "grant-wrong-guess"); got != http.StatusTooManyRequests {
+		t.Errorf("status = %d, want 429 — rotating the address within one /64 bought a fresh budget every time, so this endpoint's SEC-033 budget is unenforced against any IPv6 host", got)
+	}
+}
+
+// TestPairBudgetSeparatesDistinctIPv6Prefixes is the other side of that keying,
+// and the reason it stops at the /64 rather than widening further: a real screen
+// on its own allocation must still pair while an unrelated host is being
+// refused. Widening the key is how a per-source budget becomes the shared bucket
+// an unauthenticated caller can exhaust for the whole site.
+func TestPairBudgetSeparatesDistinctIPv6Prefixes(t *testing.T) {
+	srv, grant := budgetTestServer(t)
+
+	for i := 0; i < pairAttemptLimit+5; i++ {
+		pairFrom(t, srv, "[2001:db8:0:1::9]:5000", "grant-wrong-guess")
+	}
+	if got := pairFrom(t, srv, "[2001:db8:0:2::7]:60001", grant.GrantID); got != http.StatusOK {
+		t.Errorf("a legitimate screen on a different /64 = %d, want 200 — an unrelated allocation's exhausted budget denied pairing (SEC-033 keying)", got)
+	}
+}
