@@ -475,12 +475,39 @@ func main() {
 	// only ever be visible on the day the host clock was wrong, which is the
 	// day it matters.
 	//
-	// TWO clocks in this process are NOT yet the floor's, stated rather than
-	// implied: internal/app/store hardcodes time.Now with no injection point
-	// (and is opened above this line), and internal/app/eventingest stamps an
-	// ingested envelope's ts from time.Now. Both predate this wiring. So the
-	// "one notion of time" property holds for the credential and desired-state
-	// paths and does not yet hold for the whole binary.
+	// EVERY APP-TIER COMPONENT THIS PROCESS STAMPS A RECORD WITH NOW READS THIS
+	// ONE CLOCK. The two that did not — internal/app/store, which hardcoded
+	// time.Now with no injection point, and internal/app/eventingest, which
+	// stamped an ingested envelope's ts the same way — now take it as a required
+	// argument, so a store row's created_at, a durable event's ts, a grant's
+	// expiry, an idempotency record's window and an audit event's timestamp all
+	// come from the reading taken below. The old note said those two agreed with
+	// the floor anyway; that was true only because the floor is 0, which is
+	// precisely the condition wiring a time source removes.
+	//
+	// WHAT STILL READS THE HOST CLOCK DIRECTLY, named rather than left to be
+	// discovered, because "one notion of time" is a claim that has to survive a
+	// grep:
+	//
+	//   - internal/shared/ulid. Every id this process mints — a row id, an event
+	//     id, a grant id — carries a 48-bit host-clock millisecond in its prefix.
+	//     It is a SORT KEY, not a timestamp anything is evaluated against: no
+	//     window, expiry or retention decision reads it. It is the one worth
+	//     revisiting, since a floor established above the host clock would make
+	//     a new id sort BELOW ids already stored, and EVT-011's recording order
+	//     is an id ordering.
+	//   - internal/feeder/enroll and internal/shared/tlsboot stamp X.509
+	//     NotBefore/NotAfter. Those are verified by PEERS against THEIR clocks,
+	//     so issuing them from a floor this box alone believes would mint
+	//     certificates its own relays reject. The host clock is correct there.
+	//   - internal/app/auth's console socket sets a net.Conn deadline, which is
+	//     host monotonic time by construction and not an app timestamp at all.
+	//   - internal/feeder/grant stamps an enrollment grant's issued_at, and
+	//     internal/feeder/enroll's re-enrollment rate limiter measures its window
+	//     from the host clock. Both are relay-tier, both are short-lived, and
+	//     neither is left unexamined on purpose — they are simply not this
+	//     wiring, which is app-tier (SEC-066 is explicit that the app-side floor
+	//     is "distinct from relay/1's relay-side floor").
 	//
 	// READ THE LIMIT BEFORE RELYING ON THIS. SEC-066 exists so a time-windowed
 	// check — a TOTP step, a grant ttl — cannot be defeated by turning the host
@@ -499,14 +526,24 @@ func main() {
 	// THE RISK THIS WIRING TAKES ON, named where it is taken: TOTP steps are
 	// derived from this clock, and the skew tolerance is one step. A floor
 	// established meaningfully above the host clock therefore makes every
-	// authenticator code fail — and there is no way down inside this tree. The
-	// console verb that resets a floor has no transport (nothing constructs
-	// auth.NewConsole), workspace delete requires an authenticated owner (the
-	// person now locked out), and break-glass recovery is unimplemented. The
-	// exposure is zero while nothing calls Advance, which is why this is a note
-	// rather than a blocker — but wiring a time source MUST land together with
-	// a reachable way to reset the floor, or the first bad reading bricks
-	// second-factor login for everyone.
+	// authenticator code fail, for everyone, at once.
+	//
+	// The escape hatch that risk demanded NOW EXISTS, and it did not when this
+	// note was first written. startConsoleBinding below constructs
+	// auth.NewConsole over this same floor and serves it on the console socket,
+	// and the console's clock_floor.reset verb (SEC-075) calls ClockFloor.Reset —
+	// the one sanctioned way a one-way ratchet ever moves down. So a box driven
+	// into the future by a bad reading is recoverable by an operator with console
+	// access, which is the shape of recovery SEC-075 chose deliberately (uid-0
+	// can already edit the file; the verb adds an audit record, not new reach).
+	// The other two doors named here are still shut and still worth knowing
+	// about: workspace delete needs an authenticated owner — the person now
+	// locked out — and break-glass recovery is unimplemented.
+	//
+	// That was the precondition on wiring a time source, and it is now met. It is
+	// not permission to wire one: the remaining question is which sources to
+	// TRUST, and inventing that answer here would be inventing the deployment's
+	// trust decision with it.
 	clockFloor, err := auth.OpenClockFloor(cfg.authDir, func() int64 { return time.Now().UnixMilli() })
 	if err != nil {
 		log.Fatalf("waiveo-feeder: open the app clock floor: %v", err)
