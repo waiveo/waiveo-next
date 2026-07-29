@@ -165,6 +165,23 @@ func incr80(b *[10]byte) bool {
 	return true
 }
 
+// FromBytes encodes an arbitrary 128-bit value as a canonical ULID string.
+//
+// Every possible input satisfies Valid: encode gives the first output symbol
+// only the top 3 bits of data[0] (26*5 = 130 bits carry 128 behind two zero pad
+// bits), so the leading character is always in 0..7, and every symbol it emits
+// comes from crockfordAlphabet by construction. That is what lets a DERIVED id
+// — one whose 128 bits are a hash of an identity rather than a timestamp plus
+// randomness — still satisfy a contract that requires a syntactically valid
+// canonical ULID (data-model/1 DAT-005a).
+//
+// What such an id does NOT carry is New's creation-time ordering: its leading
+// 48 bits are hash output, not a millisecond clock, so comparing two derived
+// ids orders them stably but arbitrarily. Callers that need creation order MUST
+// use New or Monotonic; callers that need a STABLE TOTAL ORDER (a keyset
+// cursor, api/1 API-034) get exactly that from either.
+func FromBytes(data [16]byte) string { return encode(data) }
+
 // Valid reports whether s is a syntactically valid canonical ULID — the
 // inverse check to New/encode. A canonical ULID is exactly 26 characters, each
 // one of the 32 uppercase Crockford base32 symbols crockfordAlphabet lists
