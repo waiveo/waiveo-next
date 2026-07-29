@@ -34,6 +34,7 @@ var expectedDriven = []string{
 	"EVT-134-invalid-resume-from-malformed",
 	"EVT-134-invalid-resume-from-out-of-scope",
 	"EVT-140-valid-resume-with-gap",
+	"EVT-142-valid-mid-stream-buffer-exceeded-gap",
 	"EVT-151-valid-webhook-delivery-signed",
 }
 

@@ -95,14 +95,15 @@ ever placed by that path.
 | EVT-101 | `contracts/events-1.md#sse-binding` | `EVT-101-valid-sse-selector-and-schemas` | covered |
 | EVT-102 | `contracts/events-1.md#sse-binding` | `EVT-134-invalid-resume-from-malformed`, `EVT-140-valid-resume-with-gap` | covered |
 | EVT-103 | `contracts/events-1.md#sse-binding` | `EVT-140-valid-resume-with-gap` | covered |
-| EVT-104 | `contracts/events-1.md#sse-binding` | `EVT-140-valid-resume-with-gap` | covered |
+| EVT-104 | `contracts/events-1.md#sse-binding` | `EVT-140-valid-resume-with-gap`, `EVT-142-valid-mid-stream-buffer-exceeded-gap` | covered |
 | EVT-105 | `contracts/events-1.md#sse-binding` | - | TBD-wave1 |
+| EVT-105a | `contracts/events-1.md#sse-binding` | - | TBD-wave1 |
 | EVT-110 | `contracts/events-1.md#authentication` | - | TBD-wave1 |
 | EVT-111 | `contracts/events-1.md#authentication` | - | TBD-wave1 |
 | EVT-112 | `contracts/events-1.md#authentication` | - | TBD-wave1 |
 | EVT-113 | `contracts/events-1.md#authentication` | - | TBD-wave1 |
 | EVT-114 | `contracts/events-1.md#authentication` | - | TBD-wave1 |
-| EVT-120 | `contracts/events-1.md#scope-node-filtering` | `EVT-120-valid-scope-filtered-subscription`, `EVT-101-valid-sse-selector-and-schemas` | covered |
+| EVT-120 | `contracts/events-1.md#scope-node-filtering` | `EVT-120-valid-scope-filtered-subscription`, `EVT-101-valid-sse-selector-and-schemas`, `EVT-142-valid-mid-stream-buffer-exceeded-gap` | covered |
 | EVT-121 | `contracts/events-1.md#scope-node-filtering` | `EVT-091-valid-hello-fresh-subscribe`, `EVT-101-valid-sse-selector-and-schemas` | covered |
 | EVT-122 | `contracts/events-1.md#scope-node-filtering` | `EVT-101-valid-sse-selector-and-schemas` | covered |
 | EVT-123 | `contracts/events-1.md#scope-node-filtering` | `EVT-120-valid-scope-filtered-subscription` | covered |
@@ -112,12 +113,13 @@ ever placed by that path.
 | EVT-132 | `contracts/events-1.md#resume-cursor` | `EVT-091-valid-hello-fresh-subscribe` | covered |
 | EVT-133 | `contracts/events-1.md#resume-cursor` | - | TBD-wave1 |
 | EVT-134 | `contracts/events-1.md#resume-cursor` | `EVT-134-invalid-resume-from-malformed`, `EVT-134-invalid-resume-from-out-of-scope` | covered |
-| EVT-134a | `contracts/events-1.md#resume-cursor` | `EVT-134-invalid-resume-from-out-of-scope` | covered |
+| EVT-134a | `contracts/events-1.md#resume-cursor` | `EVT-134-invalid-resume-from-out-of-scope`, `EVT-142-valid-mid-stream-buffer-exceeded-gap` | covered |
 | EVT-135 | `contracts/events-1.md#resume-cursor` | - | TBD-wave1 |
-| EVT-140 | `contracts/events-1.md#loss-markers` | `EVT-140-valid-resume-with-gap` | covered |
+| EVT-140 | `contracts/events-1.md#loss-markers` | `EVT-140-valid-resume-with-gap`, `EVT-142-valid-mid-stream-buffer-exceeded-gap` | covered |
 | EVT-141 | `contracts/events-1.md#loss-markers` | `EVT-140-valid-resume-with-gap` | covered |
-| EVT-142 | `contracts/events-1.md#loss-markers` | - | TBD-wave1 |
-| EVT-143 | `contracts/events-1.md#loss-markers` | `EVT-140-valid-resume-with-gap` | covered |
+| EVT-142 | `contracts/events-1.md#loss-markers` | `EVT-142-valid-mid-stream-buffer-exceeded-gap` | covered |
+| EVT-142a | `contracts/events-1.md#loss-markers` | - | TBD-wave1 |
+| EVT-143 | `contracts/events-1.md#loss-markers` | `EVT-140-valid-resume-with-gap`, `EVT-142-valid-mid-stream-buffer-exceeded-gap` | covered |
 | EVT-144 | `contracts/events-1.md#loss-markers` | - | TBD-wave1 |
 | EVT-150 | `contracts/events-1.md#webhook-delivery` | - | TBD-wave1 |
 | EVT-151 | `contracts/events-1.md#webhook-delivery` | `EVT-151-valid-webhook-delivery-signed` | covered |

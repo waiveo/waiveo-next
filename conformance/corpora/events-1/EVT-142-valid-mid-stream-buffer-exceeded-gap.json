@@ -1,0 +1,63 @@
+{
+  "case_id": "EVT-142-valid-mid-stream-buffer-exceeded-gap",
+  "contract": "events/1",
+  "req_ids": [
+    "EVT-104",
+    "EVT-120",
+    "EVT-134a",
+    "EVT-140",
+    "EVT-142",
+    "EVT-143"
+  ],
+  "description": "A connected subscriber bound at one site falls behind live delivery on a bounded log: one of its OWN events is appended and aged out before it can be woken for it, while the rest of the retained tail sits in a sibling site it cannot read. The server must mark the discontinuity with a buffer_exceeded gap whose from_id is the last id it actually DELIVERED to that subscriber (not the highest id its stream merely considered and suppressed) and whose to_id is the first retained id that subscriber may READ — so the marker names no id outside its visible set at either end, and delivery then resumes at to_id with no further silent loss.",
+  "input": {
+    "retention": 4,
+    "scope_nodes": [
+      { "id": "01J8Z5A0B1C2D3E4F5G6H7Z0RG", "kind": "org", "name": "org" },
+      { "id": "01J8Z5A0B1C2D3E4F5G6H7Z5A0", "kind": "site", "parent_id": "01J8Z5A0B1C2D3E4F5G6H7Z0RG", "name": "site A", "tz": "UTC", "lat": 1, "long": 2 },
+      { "id": "01J8Z5A0B1C2D3E4F5G6H7Z5B0", "kind": "site", "parent_id": "01J8Z5A0B1C2D3E4F5G6H7Z0RG", "name": "site B", "tz": "UTC", "lat": 3, "long": 4 }
+    ],
+    "subscriber_binding": {
+      "scope_node": "01J8Z5A0B1C2D3E4F5G6H7Z5A0",
+      "role": "viewer"
+    },
+    "resume_from": "01J8Z3K4N5P6Q7R8S9T0V1W210",
+    "recorded_events": [
+      { "id": "01J8Z3K4N5P6Q7R8S9T0V1W210", "scope_node": "01J8Z5A0B1C2D3E4F5G6H7Z5A0", "phase": "before_connect" },
+      { "id": "01J8Z3K4N5P6Q7R8S9T0V1W211", "scope_node": "01J8Z5A0B1C2D3E4F5G6H7Z5A0", "phase": "before_connect" },
+      { "id": "01J8Z3K4N5P6Q7R8S9T0V1W212", "scope_node": "01J8Z5A0B1C2D3E4F5G6H7Z5B0", "phase": "live_before_loss" },
+      { "id": "01J8Z3K4N5P6Q7R8S9T0V1W213", "scope_node": "01J8Z5A0B1C2D3E4F5G6H7Z5A0", "phase": "undrained" },
+      { "id": "01J8Z3K4N5P6Q7R8S9T0V1W214", "scope_node": "01J8Z5A0B1C2D3E4F5G6H7Z5B0", "phase": "undrained" },
+      { "id": "01J8Z3K4N5P6Q7R8S9T0V1W215", "scope_node": "01J8Z5A0B1C2D3E4F5G6H7Z5B0", "phase": "undrained" },
+      { "id": "01J8Z3K4N5P6Q7R8S9T0V1W216", "scope_node": "01J8Z5A0B1C2D3E4F5G6H7Z5B0", "phase": "undrained" },
+      { "id": "01J8Z3K4N5P6Q7R8S9T0V1W217", "scope_node": "01J8Z5A0B1C2D3E4F5G6H7Z5B0", "phase": "undrained" },
+      { "id": "01J8Z3K4N5P6Q7R8S9T0V1W218", "scope_node": "01J8Z5A0B1C2D3E4F5G6H7Z5B0", "phase": "undrained" },
+      { "id": "01J8Z3K4N5P6Q7R8S9T0V1W219", "scope_node": "01J8Z5A0B1C2D3E4F5G6H7Z5A0", "phase": "live" }
+    ],
+    "phase_vocabulary": {
+      "before_connect": "recorded before the subscriber connects; resolved as its backlog",
+      "live_before_loss": "recorded through the ordinary write path while the subscriber is connected and draining. It is placed in the sibling site, so the subscriber CONSIDERS it and is not sent it — which is what moves its stream watermark off its last-delivered id, and therefore what makes from_id and the watermark two different values.",
+      "undrained": "recorded while the subscriber is parked mid-write and cannot drain — the burst it loses the race to. Retention 4 means 01J8Z3K4N5P6Q7R8S9T0V1W213, the subscriber's OWN event, is appended and aged out inside this burst: a genuinely lost eligible event, which is what the gap has to cover.",
+      "live": "recorded through the ordinary write path after the burst, in the subscriber's own site — the first id it may read above the discontinuity, and therefore where its delivery resumes."
+    }
+  },
+  "expected": {
+    "delivered_before_gap": ["01J8Z3K4N5P6Q7R8S9T0V1W211"],
+    "frames": [
+      {
+        "type": "gap",
+        "from_id": "01J8Z3K4N5P6Q7R8S9T0V1W211",
+        "to_id": "01J8Z3K4N5P6Q7R8S9T0V1W219",
+        "reason": "buffer_exceeded"
+      }
+    ],
+    "delivery_resumes_at": "01J8Z3K4N5P6Q7R8S9T0V1W219",
+    "silent_loss": false,
+    "marker_must_not_name": [
+      "01J8Z3K4N5P6Q7R8S9T0V1W212",
+      "01J8Z3K4N5P6Q7R8S9T0V1W216",
+      "01J8Z3K4N5P6Q7R8S9T0V1W217",
+      "01J8Z3K4N5P6Q7R8S9T0V1W218"
+    ]
+  }
+}

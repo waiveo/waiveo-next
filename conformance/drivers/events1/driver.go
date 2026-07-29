@@ -129,6 +129,7 @@ func driveCases(rep *report.Report, cases map[string]corpus.Case) {
 	driveScopeFilteredSubscription(rep, cases)
 	driveOutOfScopeResumeFrom(rep, cases)
 	driveSelectorAndSchemasParameters(rep, cases)
+	driveMidStreamBufferExceeded(rep, cases)
 }
 
 // --- the live ingest harness ------------------------------------------------
@@ -2001,4 +2002,297 @@ func driveOutOfScopeResumeFrom(rep *report.Report, cases map[string]corpus.Case)
 	}
 
 	finishCase(rep, c, diffs)
+}
+
+// --- EVT-142/142a mid-stream buffer_exceeded over a live SSE subscriber ------
+
+// midStreamCase is the corpus shape for the mid-stream loss case: the scope tree
+// and binding a real principal is seeded from, the bounded log's horizon, and
+// the recorded events tagged with WHEN each is appended relative to the
+// subscriber's own draining.
+type midStreamCase struct {
+	Retention         int                   `json:"retention"`
+	ScopeNodes        []datamodel.ScopeNode `json:"scope_nodes"`
+	SubscriberBinding struct {
+		ScopeNode string `json:"scope_node"`
+		Role      string `json:"role"`
+	} `json:"subscriber_binding"`
+	ResumeFrom     string `json:"resume_from"`
+	RecordedEvents []struct {
+		ID        string `json:"id"`
+		ScopeNode string `json:"scope_node"`
+		Phase     string `json:"phase"`
+	} `json:"recorded_events"`
+}
+
+// flushGate parks the handler inside its own Flush so a corpus case can say
+// "and THEN, before this subscriber drains, the log evicted".
+//
+// A mid-stream drop is by definition a race the subscriber loses, and racing it
+// by timing would make this case flaky in exactly the direction that hides the
+// bug (a subscriber that drains in time never gaps at all). The gate flushes
+// THROUGH to the real client first — so the response headers and everything
+// written so far genuinely reach the wire — and only then blocks, which leaves
+// the connection live and the handler parked at a known point.
+type flushGate struct {
+	reached chan struct{}
+	release chan struct{}
+	abandon chan struct{}
+}
+
+func newFlushGate() *flushGate {
+	return &flushGate{
+		reached: make(chan struct{}, 64),
+		release: make(chan struct{}, 64),
+		abandon: make(chan struct{}),
+	}
+}
+
+// wait blocks until the handler parks at its next flush.
+func (g *flushGate) wait(d time.Duration) error {
+	select {
+	case <-g.reached:
+		return nil
+	case <-time.After(d):
+		return fmt.Errorf("the SSE handler never reached its next flush within %s", d)
+	}
+}
+
+func (g *flushGate) let()      { g.release <- struct{}{} }
+func (g *flushGate) shutdown() { close(g.abandon) }
+
+type gatedResponseWriter struct {
+	http.ResponseWriter
+	gate *flushGate
+}
+
+func (w *gatedResponseWriter) Flush() {
+	w.ResponseWriter.(http.Flusher).Flush()
+	select {
+	case w.gate.reached <- struct{}{}:
+	case <-w.gate.abandon:
+		return
+	}
+	select {
+	case <-w.gate.release:
+	case <-w.gate.abandon:
+	}
+}
+
+func gatedHandler(h http.Handler, g *flushGate) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.ServeHTTP(&gatedResponseWriter{ResponseWriter: w, gate: g}, r)
+	})
+}
+
+// driveMidStreamBufferExceeded drives EVT-142's mid-stream loss marker end to
+// end: a REAL principal bound at one site, a REAL scope tree, a REAL bounded
+// events.EventLog that really evicts, and a REAL SSE connection over HTTP.
+//
+// Both ends of the marker are checked against the corpus, and both are
+// properties of the SUBSCRIBER rather than of the log: from_id is the last id
+// this connection actually DELIVERED (EVT-140), which is not the highest id its
+// stream considered — the watermark advances over events EVT-120/123 suppressed
+// too — and to_id is the first retained id this subscriber may READ (EVT-134a).
+// The case's own marker_must_not_name list carries the ids a whole-log
+// resolution would have produced instead, so the anti-disclosure property is
+// pinned by the corpus rather than by this driver's reading of it.
+func driveMidStreamBufferExceeded(rep *report.Report, cases map[string]corpus.Case) {
+	const id = "EVT-142-valid-mid-stream-buffer-exceeded-gap"
+	c, ok := corpus.ByID(cases, id)
+	if !ok {
+		rep.Fail(id, contract, "case not found in frozen corpus")
+		return
+	}
+
+	var in midStreamCase
+	if err := decodeInto(c.Input, &in); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode input: %v", err))
+		return
+	}
+	var want struct {
+		DeliveredBeforeGap []string `json:"delivered_before_gap"`
+		Frames             []struct {
+			Type   string  `json:"type"`
+			FromID *string `json:"from_id"`
+			ToID   string  `json:"to_id"`
+			Reason string  `json:"reason"`
+		} `json:"frames"`
+		DeliveryResumesAt string   `json:"delivery_resumes_at"`
+		SilentLoss        bool     `json:"silent_loss"`
+		MarkerMustNotName []string `json:"marker_must_not_name"`
+	}
+	if err := decodeInto(c.Expected, &want); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode expected: %v", err))
+		return
+	}
+	if len(want.Frames) != 1 {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("corpus expected.frames has %d entries; want 1 (the gap)", len(want.Frames)))
+		return
+	}
+	gapWant := want.Frames[0]
+
+	fixture, err := authtest.New(authtest.Config{
+		Role:      auth.Role(in.SubscriberBinding.Role),
+		ScopeNode: in.SubscriberBinding.ScopeNode,
+	})
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("seed the subscriber's principal: %v", err))
+		return
+	}
+	defer fixture.Close()
+
+	hub := eventsse.NewHub(events.NewEventLog(in.Retention))
+	appendPhase := func(phase string) {
+		for _, e := range in.RecordedEvents {
+			if e.Phase == phase {
+				hub.Append(scopedFixtureEnvelope(e.ID, e.ScopeNode, ""))
+			}
+		}
+	}
+	appendPhase("before_connect")
+
+	gate := newFlushGate()
+	defer gate.shutdown()
+	nodes := in.ScopeNodes
+	srv := httptest.NewServer(gatedHandler(eventsse.New(hub, fixture.Auth, func(context.Context) ([]datamodel.ScopeNode, error) {
+		return nodes, nil
+	}), gate))
+	defer srv.Close()
+
+	cred := fixture.Credential()
+	br, cancel := dialSSEAs(srv, cred, "resume_from="+in.ResumeFrom)
+	defer cancel()
+
+	var diffs []report.Diff
+	fail := func(field string, expected, actual any) {
+		diffs = append(diffs, report.Diff{Field: field, Expected: expected, Actual: actual})
+	}
+
+	// The backlog: everything this subscriber may read above its resume point.
+	for _, wantID := range want.DeliveredBeforeGap {
+		f, err := readFrame(br, 2*time.Second)
+		if err != nil {
+			fail("sse.backlog", wantID+" as an event frame", err.Error())
+			finishCase(rep, c, diffs)
+			return
+		}
+		if f.event != "event" || f.id != wantID {
+			fail("sse.backlog", wantID, fmt.Sprintf("event=%s id=%s", f.event, f.id))
+		}
+	}
+	if err := gate.wait(3 * time.Second); err != nil {
+		fail("sse.backlog_flush", "the handler parks after flushing its backlog", err.Error())
+		finishCase(rep, c, diffs)
+		return
+	}
+
+	// One live wake this subscriber CONSIDERS but may not be sent — what moves
+	// its watermark off its last-delivered id, which is the whole difference
+	// between EVT-140's from_id and the watermark.
+	appendPhase("live_before_loss")
+	gate.let()
+	if err := gate.wait(3 * time.Second); err != nil {
+		fail("sse.live_drain", "the handler parks after draining the out-of-scope wake", err.Error())
+		finishCase(rep, c, diffs)
+		return
+	}
+
+	// The burst the parked subscriber loses the race to, then one event it may
+	// read to wake it again.
+	appendPhase("undrained")
+	appendPhase("live")
+	gate.let()
+
+	f, err := readFrame(br, 3*time.Second)
+	if err != nil {
+		fail("sse.gap_frame", "an event: gap frame within 3s (EVT-142/143 — silent loss is forbidden)", err.Error())
+		finishCase(rep, c, diffs)
+		return
+	}
+	if f.event != gapWant.Type {
+		fail("sse.gap_frame.event", gapWant.Type, f.event)
+	}
+	if f.id != gapWant.ToID {
+		// EVT-104: the gap's SSE id: field is its to_id, so a native reconnect's
+		// Last-Event-ID lands exactly at the resumed point.
+		fail("sse.gap_frame.id", gapWant.ToID, f.id)
+	}
+	var marker struct {
+		FromID *string `json:"from_id"`
+		ToID   string  `json:"to_id"`
+		Reason string  `json:"reason"`
+	}
+	if err := json.Unmarshal([]byte(f.data), &marker); err != nil {
+		fail("sse.gap_frame.marker", "a {from_id,to_id,reason} loss marker", f.data)
+		finishCase(rep, c, diffs)
+		return
+	}
+	show := func(p *string) string {
+		if p == nil {
+			return "null"
+		}
+		return *p
+	}
+	if show(marker.FromID) != show(gapWant.FromID) {
+		fail("sse.gap_frame.from_id (EVT-140: the last id SUCCESSFULLY DELIVERED)", show(gapWant.FromID), show(marker.FromID))
+	}
+	if marker.ToID != gapWant.ToID {
+		fail("sse.gap_frame.to_id (EVT-134a: an id inside the subscriber's visible set)", gapWant.ToID, marker.ToID)
+	}
+	if marker.Reason != gapWant.Reason {
+		fail("sse.gap_frame.reason", gapWant.Reason, marker.Reason)
+	}
+	for _, forbidden := range want.MarkerMustNotName {
+		if marker.ToID == forbidden || show(marker.FromID) == forbidden {
+			fail("sse.gap_frame.marker_must_not_name",
+				"neither end of the marker names an id outside the subscriber's visible set (EVT-120/134a)", forbidden)
+		}
+	}
+
+	resumed, err := readFrame(br, 3*time.Second)
+	if err != nil {
+		fail("sse.delivery_resumes_at", want.DeliveryResumesAt+" as an event frame", err.Error())
+		finishCase(rep, c, diffs)
+		return
+	}
+	if resumed.event != "event" || resumed.id != want.DeliveryResumesAt {
+		fail("sse.delivery_resumes_at", want.DeliveryResumesAt, fmt.Sprintf("event=%s id=%s", resumed.event, resumed.id))
+	}
+	// No silent loss: the marker PRECEDES the event delivery resumes at, so the
+	// discontinuity is covered rather than shown as a bare id jump.
+	gotSilentLoss := resumed.id != want.DeliveryResumesAt
+	if gotSilentLoss != want.SilentLoss {
+		fail("silent_loss", want.SilentLoss, gotSilentLoss)
+	}
+
+	gate.let()
+	finishCase(rep, c, diffs,
+		"driven over a real SSE connection to the live handler with a real scope tree and a real bounded "+
+			"events.EventLog; the eviction is real, and the subscriber's loss of the race to it is made "+
+			"deterministic by parking the handler in its own flush rather than by timing")
+}
+
+// dialSSEAs is dialSSE authenticating as an explicit credential rather than as
+// the shared fixture — the scope-sensitive cases need their OWN principal, since
+// what the marker may name is a property of that principal's bindings.
+func dialSSEAs(srv *httptest.Server, cred authtest.Credential, query string) (*bufio.Reader, func()) {
+	ctx, cancel := context.WithCancel(context.Background())
+	url := srv.URL + "/events/v1"
+	if query != "" {
+		url += "?" + query
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		cancel()
+		return bufio.NewReader(strings.NewReader("")), func() {}
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	cred.Authorize(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		cancel()
+		return bufio.NewReader(strings.NewReader("")), func() {}
+	}
+	return bufio.NewReader(resp.Body), func() { cancel(); resp.Body.Close() }
 }
