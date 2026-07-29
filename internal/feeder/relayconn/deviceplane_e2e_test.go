@@ -282,17 +282,32 @@ func TestDeviceCommandTraceIDRoundTrips(t *testing.T) {
 		t.Fatalf("SendDeviceCommand: %v", err)
 	}
 
+	// SendDeviceCommand returning does NOT mean the relay's frame log has
+	// recorded the outbound result yet: the log is written by the relay-side
+	// goroutine, so there is a window between the call returning and the frame
+	// being observable here. Reading the log immediately made this test fail
+	// under full-suite load on a slow runner — twice — with an empty result id,
+	// because the assertion ran inside that window. Wait for the frame the way
+	// this test already waits for the connection, rather than assuming a send
+	// that has returned is a send that has been logged.
 	var request, result wire.Frame
-	for _, f := range log.Received() {
-		if f.Type == wire.FrameTypeDeviceCommand {
-			request = f
+	collect := func() {
+		request, result = wire.Frame{}, wire.Frame{}
+		for _, f := range log.Received() {
+			if f.Type == wire.FrameTypeDeviceCommand {
+				request = f
+			}
+		}
+		for _, f := range log.Sent() {
+			if f.Type == wire.FrameTypeDeviceCommandResult {
+				result = f
+			}
 		}
 	}
-	for _, f := range log.Sent() {
-		if f.Type == wire.FrameTypeDeviceCommandResult {
-			result = f
-		}
-	}
+	waitFor(t, 5*time.Second, func() bool {
+		collect()
+		return request.ID != "" && result.ID != ""
+	}, "the relay never logged both a device.command and its device.command_result")
 	if request.ID == "" {
 		t.Fatal("the relay never received a device.command frame")
 	}
