@@ -117,6 +117,36 @@ describe("SetupRoute", () => {
     await waitFor(() => expect(claimFn).toHaveBeenCalledWith(expect.objectContaining({ code: "0a1b2c3d" })));
   });
 
+  it("strips whitespace from INSIDE the code too, not merely from its ends", async () => {
+    const claimFn = vi.fn(async () => SESSION);
+    renderSetup(apiStub({ claim: claimFn }));
+
+    // The interior is where the realistic damage is. The code is long enough to
+    // wrap, and every browser turns the newline in a wrapped copy into an
+    // interior space (or drops it) when it lands in a single-line input — so a
+    // paste off a wrapped terminal line or a printout arrives split. Trimming
+    // the ends alone leaves that code refused, with the same invisible cause
+    // this normalization exists to remove.
+    await claim({ code: " 0a1b 2c3d " });
+
+    await waitFor(() => expect(claimFn).toHaveBeenCalledWith(expect.objectContaining({ code: "0a1b2c3d" })));
+  });
+
+  it("passes the code's case through untouched, since the box matches it exactly", async () => {
+    const claimFn = vi.fn(async () => SESSION);
+    renderSetup(apiStub({ claim: claimFn }));
+
+    await claim({ code: "  0A1B2C3D  " });
+
+    // Case is deliberately NOT folded. Stripping whitespace assumes only that
+    // the alphabet contains no spaces; folding case assumes what the alphabet
+    // IS, and today's codes being lowercase hex is a fact about today's mint,
+    // not a promise. A client that quietly rewrites a credential on that guess
+    // is how a claim starts failing for reasons nobody can see the day the
+    // format changes — so the guess is pinned out rather than left to the doc.
+    await waitFor(() => expect(claimFn).toHaveBeenCalledWith(expect.objectContaining({ code: "0A1B2C3D" })));
+  });
+
   it("catches mismatched passwords BEFORE anything is sent, since the code burns on success", async () => {
     const claimFn = vi.fn(async () => SESSION);
     renderSetup(apiStub({ claim: claimFn }));
