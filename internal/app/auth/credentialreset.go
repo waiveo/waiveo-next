@@ -254,13 +254,26 @@ func (s *Store) RedeemCredentialResetGrant(ctx context.Context, code, newPasswor
 		// the target principal's TOTP enrollment."
 		return nil
 	},
-		// SEC-034's redemption record is attributed to the TARGET — the principal
-		// whose credential this redemption set — not to the admin who issued the
-		// code, because the admin is not the party performing this act and the
-		// whole shape of SEC-050 is that they cannot be. The target's id is read
-		// out of the grant's labels inside the transaction, so it is resolved as a
-		// closure the store evaluates after commit.
-		RedeemedBy(func() string { return out.TargetPrincipalID }),
+		// SEC-034's redemption record carries NO actor, deliberately.
+		//
+		// This redemption is unauthenticated by construction — the caller is the
+		// person who cannot sign in — so the platform holds no evidence of who
+		// performed it. Naming the TARGET here would read as "the user reset
+		// their own password", which is a claim nothing verified: the admin who
+		// issued the code can redeem it themselves, in two calls over these two
+		// routes, and the record would still name the target. An investigator
+		// reading that would be reading a fabrication.
+		//
+		// EVT-080's actor is "the principal that PERFORMED the action". When that
+		// is unknown, the honest value is absent, not a plausible guess. What the
+		// record does carry is the grant id, its purpose and its issuance channel
+		// — which, joined to the `grant.created` record naming the admin who
+		// issued it, is the real chain of custody. The target is recoverable from
+		// the grant, and is not restated here as if it were an actor.
+		//
+		// (The console-issued path has the same shape for the same reason; a
+		// console operator is `system-console`, and it is the ISSUANCE record
+		// that names them.)
 		RedeemTraceID(traceID))
 	if err != nil {
 		return CredentialResetRedemption{}, err

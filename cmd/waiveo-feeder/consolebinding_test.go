@@ -147,6 +147,14 @@ func TestFeederConsoleBindingUnlinksItsSocketOnClose(t *testing.T) {
 // can say without building and booting the whole feeder on every run. The
 // behavioral proof at binary level is the first test's assertions applied to the
 // identical function main invokes.
+//
+// KNOW WHAT THIS DOES NOT CATCH, measured rather than assumed: it catches the
+// call being DELETED, not the call being made UNREACHABLE. Wrapping it in a
+// condition that is never true — `if os.Getenv("NEVER_SET") == "yes" { … }` —
+// keeps this test green while shipping a feeder with no console socket at all.
+// Closing that gap needs a test that builds and boots the binary and dials the
+// socket, which is a cost every run would pay; the trade is recorded here so the
+// next reader knows which half of the regression is guarded.
 func TestMainStartsTheConsoleBinding(t *testing.T) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "main.go", nil, 0)

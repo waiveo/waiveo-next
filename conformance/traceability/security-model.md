@@ -81,6 +81,18 @@ scratch copy of the tree (`git archive HEAD`), touching ONLY the implementation
 - SEC-051: the raw one-time code is written into the `grant.created` record's
   target — FAILS on `argv_capture_contains_secret` AND on SEC-034's
   `records_contain_secret`.
+
+  **A LIMIT OF THIS ROW, recorded rather than left to be discovered.** SEC-051's
+  own first clause forbids the code appearing "in a journald-logged line", and
+  no case can currently see that: adding `log.Printf("... code %s", code)` to
+  the issuing path leaves the whole corpus green and `internal/app/auth` green.
+  The `argv_capture` haystack the case searches is a static literal supplied by
+  the corpus, which the implementation cannot influence, so the clauses with
+  teeth here are the audit records and the at-rest grant row — both real, both
+  driven. The row is still earned (it dies to genuine violations), but a reader
+  must not take it as proof that a stray log line would be caught. Catching that
+  needs a harness that captures the process's own log output, which is a
+  different shape of test from anything in this driver today.
 - SEC-053: the redemption's revocation branch is disabled — FAILS on
   `on_redemption.target_sessions_revoked` and `target_api_keys_revoked`.
 - SEC-070: the socket inode is replaced with a regular file — SEC-072a FAILS on

@@ -381,7 +381,7 @@ func (h *Handlers) Claim(w http.ResponseWriter, r *http.Request) {
 
 	// SEC-033's attempt budget, enforced BEFORE the lookup: the control bounds
 	// guesses at a live code, so it must refuse without checking the guess.
-	if !h.budget.Allow(PurposeSetup, RequestIPClass(r), store.Now()) {
+	if !h.budget.Allow(PurposeSetup, RequestSource(r), store.Now()) {
 		apihttp.WriteProblemExt(w, r, traceID, http.StatusTooManyRequests,
 			"RATE_LIMITED", "Too Many Requests",
 			"Too many setup-code redemption attempts from this source; retry after a backoff.", nil)
@@ -619,7 +619,14 @@ func (h *Handlers) RedeemCredentialReset(w http.ResponseWriter, r *http.Request)
 	// a code that already exists, so the budget must refuse without checking the
 	// guess. Keyed on this purpose, so a sweep against reset codes cannot be
 	// masked by ordinary setup-code traffic and vice versa.
-	if !h.budget.Allow(PurposeCredentialReset, RequestIPClass(r), store.Now()) {
+	if !h.budget.Allow(PurposeCredentialReset, RequestSource(r), store.Now()) {
+		// A refused attempt is the only evidence a sweep against this route
+		// leaves. Without it a guesser — or a caller exhausting one source's
+		// budget — is invisible, which would make this route's own rate limit
+		// something nobody can observe working or failing. The record names the
+		// SOURCE and never the code: the code is the secret the attempt is
+		// guessing at, and an audit trail is a place secrets go to be read later.
+		h.auth.auditor.Failure(traceID, "", ActionGrantRedeemed, "source:"+RequestSource(r))
 		apihttp.WriteProblemExt(w, r, traceID, http.StatusTooManyRequests,
 			"RATE_LIMITED", "Too Many Requests",
 			"Too many reset-code redemption attempts from this source; retry after a backoff.", nil)
@@ -627,6 +634,7 @@ func (h *Handlers) RedeemCredentialReset(w http.ResponseWriter, r *http.Request)
 	}
 
 	if _, err := store.RedeemCredentialResetGrant(r.Context(), req.Code, req.Password, traceID); err != nil {
+		h.auth.auditor.Failure(traceID, "", ActionGrantRedeemed, "source:"+RequestSource(r))
 		h.writeGrantProblem(w, r, traceID, err, "The reset code is not valid.")
 		return
 	}
@@ -674,8 +682,20 @@ type fieldError struct {
 // decodeBody reads and decodes a JSON request body, writing the api/1 Problem
 // and reporting false on failure. A malformed body is a BODY validation failure,
 // so it is 422 per API-013a — not the 400 a query-parameter failure carries.
+// The body is read under a hard cap. Every route reaching here is
+// unauthenticated or credential-exchanging, so an unbounded ReadAll would let
+// any caller make the process buffer as much as it cared to send BEFORE any
+// rate limit or credential check had run — work an attacker gets for free.
+// maxAuthBodyBytes is far above any legitimate body on these routes (a code, an
+// identifier, a password) and far below anything worth buffering.
+const maxAuthBodyBytes = 64 << 10
+
 func decodeBody(w http.ResponseWriter, r *http.Request, traceID string, v any) bool {
-	raw, err := io.ReadAll(r.Body)
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxAuthBodyBytes+1))
+	if err == nil && len(raw) > maxAuthBodyBytes {
+		writeValidationProblem(w, r, traceID, []fieldError{{"body", "too_large", "the request body is larger than this endpoint accepts"}})
+		return false
+	}
 	if err != nil {
 		writeValidationProblem(w, r, traceID, []fieldError{{"body", "unreadable", "the request body could not be read"}})
 		return false

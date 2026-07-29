@@ -378,9 +378,11 @@ func (s *Store) RedeemGrant(ctx context.Context, code, wantPurpose string, consu
 	// the channel the redemption arrived on.
 	//
 	// Emitted only on success, and after the transaction committed. A refused
-	// redemption is not a grant redemption; it is recorded by the refusing
-	// surface, which is the only layer that knows which code the caller was
-	// refused with and must not put it in a record (SEC-051).
+	// redemption is not a grant redemption, and IS recorded separately by the
+	// refusing surface — which is the only layer that knows the attempt's source
+	// and must not put the presented code in a record (SEC-051). See
+	// Handlers.RedeemCredentialReset, which records both the rate-limited and
+	// the wrong-code refusal against the source address.
 	actor := ""
 	if ro.actor != nil {
 		actor = ro.actor()
@@ -401,14 +403,27 @@ func (s *Store) RedeemGrant(ctx context.Context, code, wantPurpose string, consu
 //
 // It is reenroll.RateLimiter, reused verbatim rather than reimplemented: that
 // type is already a per-key counting window driven by an injected clock, which
-// is exactly the shape this needs. The key is `(purpose, source-IP class)` — a
-// guesser holds no grant id to key on, so the endpoint being guessed at plus
-// where the guesses come from is the tightest key available.
+// is exactly the shape this needs.
+//
+// The key is `(purpose, SOURCE ADDRESS)`, and the address rather than its class
+// is load-bearing. `IPClass` has three values, so keying on it puts every host
+// on the LAN into ONE bucket: ten guesses per window from any single machine —
+// drivable cross-origin from a victim's own browser, since the redeem route
+// takes a simple POST — would exhaust the bucket and deny credential reset to
+// everyone else in that class until it drained. On an appliance whose only
+// other recovery path is a root-only console socket, that is account recovery
+// taken out by an unauthenticated caller who never has to guess correctly.
+//
+// A per-address bucket is not a complete answer either — an attacker with many
+// source addresses gets a bucket each — but the two failure modes are not
+// comparable: per-address, a guesser buys attempts only against themselves,
+// while per-class they buy a denial against everybody. The address is what the
+// platform can attribute an attempt to, so it is what the budget is spent from.
 type GrantAttemptBudget struct {
 	limiter *reenroll.RateLimiter
 }
 
-// Grant attempt-budget defaults: 10 redemption attempts per source class per
+// Grant attempt-budget defaults: 10 redemption attempts per source ADDRESS per
 // purpose per 15 minutes. Against a 256-bit code that is astronomically more
 // than an attacker needs to be hopeless, and far more than a human fumbling a
 // hand-typed setup code needs.
@@ -418,7 +433,7 @@ const (
 )
 
 // NewGrantAttemptBudget returns a budget permitting limit redemption attempts
-// per (purpose, source-IP class) within any windowMs-long window.
+// per (purpose, source address) within any windowMs-long window.
 func NewGrantAttemptBudget(limit int, windowMs int64) *GrantAttemptBudget {
 	return &GrantAttemptBudget{limiter: reenroll.NewRateLimiter(limit, windowMs)}
 }
@@ -428,9 +443,12 @@ func NewDefaultGrantAttemptBudget() *GrantAttemptBudget {
 	return NewGrantAttemptBudget(DefaultGrantAttemptLimit, DefaultGrantAttemptWindowMs)
 }
 
-// Allow records one redemption attempt and reports whether it may proceed. A
-// false return MUST refuse the request WITHOUT looking the code up — the budget
-// exists to stop the lookups, not to filter their results.
-func (b *GrantAttemptBudget) Allow(purpose, ipClass string, nowMs int64) bool {
-	return b.limiter.Allow(purpose+"|"+ipClass, nowMs)
+// Allow records one redemption attempt from source and reports whether it may
+// proceed. A false return MUST refuse the request WITHOUT looking the code up —
+// the budget exists to stop the lookups, not to filter their results.
+//
+// source is the attempt's source address (RequestSource): the host the attempt
+// is attributable to, so one host exhausting its budget spends only its own.
+func (b *GrantAttemptBudget) Allow(purpose, source string, nowMs int64) bool {
+	return b.limiter.Allow(purpose+"|"+source, nowMs)
 }

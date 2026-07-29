@@ -256,6 +256,11 @@ func chmodAndVerify(path string, perm os.FileMode) error {
 func (l *ConsoleListener) Path() string { return l.path }
 
 // Serve accepts connections until Close. It blocks; run it in a goroutine.
+// consoleAcceptBackoff is the pause after a failed accept. Short enough that a
+// human dialing the socket never notices it, long enough that a permanent
+// accept failure cannot spin a core.
+const consoleAcceptBackoff = 100 * time.Millisecond
+
 func (l *ConsoleListener) Serve() {
 	for {
 		conn, err := l.ln.AcceptUnix()
@@ -269,7 +274,20 @@ func (l *ConsoleListener) Serve() {
 			// of last resort (SEC-078). It is reported and the loop continues; a
 			// permanently broken listener will keep reporting, which is visible,
 			// whereas a returned goroutine is not.
+			//
+			// The backoff is what makes "keeps reporting" survivable. A permanent
+			// condition — EMFILE is the realistic one — fails accept immediately
+			// and forever, so a bare continue is a spin that burns a core and
+			// floods the log on a box whose whole job is elsewhere. Sleeping
+			// briefly costs a recovery attempt nothing (a human is dialing this
+			// socket by hand) and turns a permanent fault into something the box
+			// survives until someone reads the log.
 			l.logf("console binding: accept: %v", err)
+			select {
+			case <-l.closed:
+				return
+			case <-time.After(consoleAcceptBackoff):
+			}
 			continue
 		}
 		l.wg.Add(1)

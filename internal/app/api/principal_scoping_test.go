@@ -264,7 +264,7 @@ func TestJobCreatedByIsTheAuthenticatedPrincipal(t *testing.T) {
 
 // TestAPIV1RoutesRefuseAnUnauthenticatedCaller is the surface-level statement of
 // SEC-005 over the REAL mux: every family under /api/v1 is refused without a
-// credential, and only the two `security: []` credential-exchange operations
+// credential, and only the three `security: []` credential-exchange operations
 // (API-090/091) are reachable — which is what makes "the surface is
 // authenticated" a checked property rather than a claim about the routes anyone
 // happened to remember to protect.
@@ -285,6 +285,11 @@ func TestAPIV1RoutesRefuseAnUnauthenticatedCaller(t *testing.T) {
 		{http.MethodPost, "/api/v1/content"},
 		{http.MethodPost, "/api/v1/auth/logout"},
 		{http.MethodGet, "/api/v1/auth/session"},
+		// The credential-reset ISSUING route. Its sibling below is deliberately
+		// exempt; this one must not be, or anyone could mint a reset code for
+		// anyone. The pair is the point — an exemption that widened by one path
+		// segment would be caught here rather than by a reader.
+		{http.MethodPost, "/api/v1/auth/credential-reset"},
 	}
 	for _, r := range protected {
 		req, err := http.NewRequest(r.method, e.ts.URL+r.path, bytes.NewReader([]byte("{}")))
@@ -303,10 +308,17 @@ func TestAPIV1RoutesRefuseAnUnauthenticatedCaller(t *testing.T) {
 		}
 	}
 
-	// The two credential-exchange operations are reachable WITHOUT a credential
+	// The three credential-exchange operations are reachable WITHOUT a credential
 	// (API-090/091) — they are refused on their own merits (a bad body, a bad
 	// code), never for lacking the session they exist to mint.
-	for _, path := range []string{"/api/v1/auth/login", "/api/v1/auth/setup"} {
+	//
+	// credential-reset/redeem is the third and the newest: its caller is by
+	// definition the person who cannot sign in. Its authenticated SIBLING (the
+	// issuing route, /auth/credential-reset with no suffix) is asserted in the
+	// list ABOVE, so this pair pins that the exemption covers the redeem route
+	// and stops there — an exemption that widened to the issuing route would let
+	// anyone mint a reset code for anyone.
+	for _, path := range []string{"/api/v1/auth/login", "/api/v1/auth/setup", "/api/v1/auth/credential-reset/redeem"} {
 		req, err := http.NewRequest(http.MethodPost, e.ts.URL+path, bytes.NewReader([]byte("{}")))
 		if err != nil {
 			t.Fatalf("new request: %v", err)
