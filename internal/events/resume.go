@@ -227,7 +227,28 @@ func ResolveVisible(log Log, resumeFrom string, visible func(Envelope) bool) (Re
 // asking the substrate, because the substrate's own answer knows nothing about
 // which principal is asking.
 func oldestVisibleAfter(log Log, id string, visible func(Envelope) bool) string {
-	for _, env := range log.After(id) {
+	return FirstVisibleID(log.After(id), visible)
+}
+
+// FirstVisibleID is the id of the earliest envelope in batch (which is in id
+// order) that visible admits, "" when it admits none — the resume point a gap
+// marker may name for the subscriber visible describes.
+//
+// It is exported for the MID-STREAM gap, which the live transport resolves
+// against a tail it has already read rather than through a resume, and which
+// needs the identical answer: EVT-134a says a gap marker's to_id "MUST likewise
+// name an id inside the subscriber's visible set", because it is an id the
+// server hands the client and the point delivery resumes at. One definition
+// serves both so the connect-time and mid-stream gaps cannot come to different
+// conclusions about what a subscriber may be told.
+//
+// A nil visible predicate admits nothing: an unresolvable visible set is the
+// empty one, never the universal one (SEC-005, matching ResolveVisible).
+func FirstVisibleID(batch []Envelope, visible func(Envelope) bool) string {
+	if visible == nil {
+		return ""
+	}
+	for _, env := range batch {
 		if visible(env) {
 			return env.ID
 		}
@@ -237,10 +258,19 @@ func oldestVisibleAfter(log Log, id string, visible func(Envelope) bool) string 
 
 // BufferExceededGap builds the mid-stream slow-consumer loss marker (EVT-142):
 // the same {from_id,to_id,reason} gap shape a retention_expired resume uses,
-// with reason buffer_exceeded. fromID is the subscriber's last-delivered id
-// (always present here — a mid-stream drop always has a prior point); toID is
-// the id delivery resumes at after catching the subscriber up.
-func BufferExceededGap(fromID, toID string) GapFrame {
-	from := fromID
-	return GapFrame{Type: FrameTypeGap, FromID: &from, ToID: toID, Reason: ReasonBufferExceeded}
+// with reason buffer_exceeded.
+//
+// fromID is the subscriber's own last-known point (EVT-140) — the last id
+// successfully DELIVERED to it, or the resume_from it opened with — and is nil
+// when no such point exists, which is a reachable state rather than a defensive
+// branch: a connection that subscribed fresh to an empty log and then lagged
+// past the retention horizon has delivered nothing and resumed from nothing.
+// EVT-140 spells that case "null", so the pointer is passed through rather than
+// flattened to an empty string, which is neither an id nor null.
+//
+// toID is the id delivery resumes at, which EVT-134a requires to be inside the
+// subscriber's visible set — see FirstVisibleID, and eventsse's stream for what
+// happens when the retained tail holds no such id yet (EVT-142a).
+func BufferExceededGap(fromID *string, toID string) GapFrame {
+	return GapFrame{Type: FrameTypeGap, FromID: fromID, ToID: toID, Reason: ReasonBufferExceeded}
 }

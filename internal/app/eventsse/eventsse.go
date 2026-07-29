@@ -261,27 +261,24 @@ func (h *Hub) after(id string) []events.Envelope {
 	return h.log.After(id)
 }
 
-// drain is one wake's worth of live delivery for a subscriber last at lastID: the
-// not-yet-delivered tail, plus a buffer_exceeded gap frame when events past
-// lastID have aged out of retention before this drain (a mid-stream slow-consumer
-// drop, EVT-142/143). Both are computed under ONE lock hold so they are a
-// consistent snapshot — the gap's to_id equals the first retained id the tail
-// then delivers. This is the live-loop analogue of Resolve's connect-time
-// retention_expired gap: a discontinuity is always marked, never silently a
-// truncated tail with a bare id jump. On an unbounded (or not-lagged) log there
-// is no eviction past lastID, so gap is nil and this is a plain tail read.
-func (h *Hub) drain(lastID string) (*events.GapFrame, []events.Envelope) {
+// drain is one wake's worth of live delivery for a subscriber last at lastID:
+// the not-yet-considered tail, plus whether any event past lastID aged out of
+// retention before this drain (a mid-stream slow-consumer drop, EVT-142/143).
+// Both are read under ONE lock hold so they are a consistent snapshot of the
+// substrate at this wake. On an unbounded (or not-lagged) log nothing past
+// lastID is ever evicted, so evicted is false and this is a plain tail read.
+//
+// It reports the CONDITION, not the marker. Composing the marker needs two
+// things the Hub does not have and must not guess at: the subscriber's own
+// last-DELIVERED id, which is EVT-140's from_id and differs from the watermark
+// this is called with (the watermark advances over every event the connection
+// CONSIDERED, including ones it was not allowed to send), and the subscriber's
+// visible set, which EVT-134a makes the bound on to_id. Both belong to the
+// connection, so the marker is built there — see stream.
+func (h *Hub) drain(lastID string) (evicted bool, tail []events.Envelope) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	tail := h.log.After(lastID)
-	if h.log.EvictedAfter(lastID) {
-		// The subscriber's own last-delivered point (and undelivered events after
-		// it) aged out: mark the loss and resume AT the oldest retained id above
-		// that point, which is exactly where After(lastID) picks the tail up.
-		g := events.BufferExceededGap(lastID, h.log.OldestRetainedAfter(lastID))
-		return &g, tail
-	}
-	return nil, tail
+	return h.log.EvictedAfter(lastID), h.log.After(lastID)
 }
 
 // headLocked is the newest retained id — the fresh-subscribe watermark; the
@@ -329,26 +326,40 @@ type server struct {
 	// corrupt frame is logged and skipped, never emitted.
 	logf func(format string, args ...any)
 
-	// The WS binding's three time bounds (EVT-095/142). They are fields rather
+	// The stream's time bounds (EVT-095/105a/142/142a). They are fields rather
 	// than constants so a test drives the behavior on an injected cadence
 	// instead of waiting out the production one — the same seam
 	// internal/feeder/relayconn exposes for the relay/1 connection, and the
 	// injectable clock the contract's own conformance notes call for in place
-	// of wall-clock sleeps. See ws.go for what each bounds.
+	// of wall-clock sleeps. See ws.go for what the first three bound.
 	writeTimeout time.Duration
 	pingInterval time.Duration
 	pongTimeout  time.Duration
+	// gapDeferral bounds how long a mid-stream buffer_exceeded marker may wait
+	// for a resume point inside the subscriber's own visible set (EVT-142a).
+	gapDeferral time.Duration
 }
 
 // Option configures the handler New returns.
 type Option func(*server)
 
-// WithHeartbeat overrides the WS binding's keepalive cadence (EVT-095): a ping
-// on a connection otherwise idle for interval, whose pong must arrive within
-// timeout or the connection is closed IDLE_TIMEOUT. The defaults are the
-// contract's own 30s/10s.
+// WithHeartbeat overrides both bindings' keepalive cadence: on WS a ping on a
+// connection otherwise idle for interval, whose pong must arrive within timeout
+// or the connection is closed IDLE_TIMEOUT (EVT-095); on SSE a comment line on a
+// connection otherwise idle for the same interval (EVT-105a — SSE has no
+// client-to-server frame to answer with, so it has no timeout half). The
+// defaults are the contract's own 30s/10s.
 func WithHeartbeat(interval, timeout time.Duration) Option {
 	return func(s *server) { s.pingInterval, s.pongTimeout = interval, timeout }
+}
+
+// WithGapDeferral overrides how long a mid-stream buffer_exceeded marker may be
+// deferred while no id inside the subscriber's visible set is available to name
+// as its to_id (EVT-142a). A marker still unresolved at the bound ends the
+// connection SLOW_CONSUMER_DISCONNECTED rather than staying pending, so a
+// deferral cannot become permanent silent loss.
+func WithGapDeferral(d time.Duration) Option {
+	return func(s *server) { s.gapDeferral = d }
 }
 
 // WithWriteTimeout overrides the WS binding's per-frame write deadline — the
@@ -382,6 +393,7 @@ func New(hub *Hub, authn *auth.Authenticator, scopeNodes ScopeNodesFunc, opts ..
 		writeTimeout: defaultWriteTimeout,
 		pingInterval: defaultPingInterval,
 		pongTimeout:  defaultPongTimeout,
+		gapDeferral:  defaultGapDeferral,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -586,76 +598,206 @@ type sink interface {
 	flush() error
 }
 
-// deliverBacklog writes the resolved backlog to sk and returns the subscriber's
-// resulting watermark — the highest id it has now CONSIDERED, which is what the
-// live loop's tail read starts strictly after.
+// stream is ONE connection's delivery state, shared by both bindings. It exists
+// because a mid-stream loss marker (EVT-140/142) cannot be composed from the
+// substrate alone: every field of it is a property of the connection.
+//
+// considered and delivered are deliberately two values, not one. The watermark
+// the live loop reads the tail after must advance over every envelope the
+// connection took into account — including the ones EVT-120/123 forbade it to
+// send — or a suppressed event is re-offered on every later wake. from_id is the
+// opposite quantity: EVT-140 defines it as "the last id successfully delivered
+// before a mid-stream gap", and naming the watermark there would put an id from
+// outside the subscriber's visible set on the wire, which is the same disclosure
+// EVT-134a closes for to_id. One value cannot be both.
+type stream struct {
+	// considered is the highest id this connection has taken into account: the
+	// argument the next Hub.drain reads the tail strictly after.
+	considered string
+	// delivered is the last id this connection actually WROTE to its subscriber
+	// — EVT-140's from_id, and by construction an id inside the visible set,
+	// since nothing else is ever written.
+	delivered string
+	// anchor is the resume_from this connection opened with (empty for a fresh
+	// subscribe). It is the subscriber's own last-known point before anything
+	// has been delivered on this connection, which is the other reading EVT-140
+	// gives from_id, and it is inside the visible set because ResolveVisible
+	// refused it otherwise (EVT-134a).
+	anchor string
+	// pending records that events past this connection's point aged out before
+	// it could consider them, and no id inside its visible set was available to
+	// name as the marker's to_id yet (EVT-142a). pendingFrom is the from_id
+	// captured at the instant the loss was detected — nil when no last-known
+	// point exists, which EVT-140 spells null.
+	pending     bool
+	pendingFrom *string
+	// deferral bounds how long pending may stay true (EVT-142a). It is armed
+	// ONCE, when the marker becomes pending, and never re-armed while it stays
+	// pending: re-arming it per drain would let a stream with steady
+	// out-of-scope traffic defer the same marker forever, which is the silent
+	// loss the bound exists to prevent.
+	deferral *time.Timer
+	armed    bool
+	bound    time.Duration
+}
+
+// newStream is one connection's delivery state, with its deferral timer created
+// stopped — a connection that never lags never arms it. The immediate Stop is
+// safe even for a bound so short the timer has already fired: since Go 1.23 a
+// timer channel is unbuffered and Stop guarantees no stale value is delivered
+// afterwards, so expiry() cannot fire for a marker that was never pending.
+func newStream(anchor string, bound time.Duration) *stream {
+	t := time.NewTimer(bound)
+	t.Stop()
+	return &stream{anchor: anchor, deferral: t, bound: bound}
+}
+
+// lastKnownPoint is EVT-140's from_id: "the subscriber's own last-known point
+// (the requested resume_from, or the last id successfully delivered before a
+// mid-stream gap; null only when no such point exists)". The delivered id wins
+// where both exist, being the later of the two.
+func (st *stream) lastKnownPoint() *string {
+	switch {
+	case st.delivered != "":
+		v := st.delivered
+		return &v
+	case st.anchor != "":
+		v := st.anchor
+		return &v
+	default:
+		return nil
+	}
+}
+
+// markLoss records a mid-stream discontinuity. A second loss while a marker is
+// already pending is folded into it rather than queued: from_id has not moved
+// (nothing has been delivered since), and the eventual to_id covers both, so one
+// marker describes the whole range — which is exactly what EVT-140's
+// {from_id,to_id} shape says.
+func (st *stream) markLoss() {
+	if st.pending {
+		return
+	}
+	st.pending, st.pendingFrom = true, st.lastKnownPoint()
+}
+
+// resolveLoss consumes the pending marker, naming toID as the point delivery
+// resumes at. The caller has already established that toID is inside the
+// subscriber's visible set (EVT-134a).
+func (st *stream) resolveLoss(toID string) events.GapFrame {
+	g := events.BufferExceededGap(st.pendingFrom, toID)
+	st.pending, st.pendingFrom = false, nil
+	if st.armed {
+		st.deferral.Stop()
+		st.armed = false
+	}
+	return g
+}
+
+// arm starts the deferral bound the first time a marker is left pending.
+func (st *stream) arm() {
+	if st.pending && !st.armed {
+		st.armed = true
+		st.deferral.Reset(st.bound)
+	}
+}
+
+// expiry fires when a pending marker has gone undeliverable for the whole bound
+// (EVT-142a). Both bindings select on it; neither may ignore it.
+func (st *stream) expiry() <-chan time.Time { return st.deferral.C }
+
+// stop releases the deferral timer when the connection ends.
+func (st *stream) stop() { st.deferral.Stop() }
+
+// deliverBacklog writes the resolved backlog to sk, advancing st's watermark
+// over every envelope it considered and its delivered id over every envelope it
+// actually sent.
 //
 // The backlog is scope-filtered exactly as the live tail is: a REPLAYED event
 // outside the subscriber's visible set is no more deliverable than a live one
-// (EVT-120/123 say "an event", not "a live event"). lastID advances over every
-// considered envelope, not only every delivered one, so a suppressed event is
-// never re-offered by the live loop's After(lastID) read.
-func (s *server) deliverBacklog(sk sink, sub *Subscription, outcome events.ResumeOutcome, resumeFrom string, filter events.Filter) (string, error) {
-	var lastID string
+// (EVT-120/123 say "an event", not "a live event").
+func (s *server) deliverBacklog(sk sink, sub *Subscription, outcome events.ResumeOutcome, st *stream, filter events.Filter) error {
 	switch outcome.Result {
 	case events.ResumeResultFresh:
 		// Fresh: deliver only events from connection time forward (EVT-132), so
 		// watermark at the head snapshotted with registration — the live loop
 		// streams strictly after it.
-		lastID = sub.head
+		st.considered = sub.head
 	case events.ResumeResultResumed:
 		// Resume strictly after the requested id; if its backlog is empty (the id
 		// is the head), the watermark is that id itself.
-		lastID = resumeFrom
+		st.considered = st.anchor
 	case events.ResumeResultGap:
 		// A retention_expired discontinuity: mark it before any event
 		// (EVT-094/104/140), then delivery resumes AT to_id inclusive via
 		// outcome.Events below.
 		if err := sk.gap(*outcome.Gap); err != nil {
-			return lastID, err
+			return err
 		}
-		lastID = outcome.ResumeAtID
+		st.considered = outcome.ResumeAtID
 	}
 
 	for _, env := range outcome.Events {
-		lastID = env.ID
+		st.considered = env.ID
 		if !filter.Allows(env) {
 			continue
 		}
 		if err := sk.event(env); err != nil {
-			return lastID, err
+			return err
 		}
+		st.delivered = env.ID
 	}
-	return lastID, sk.flush()
+	return sk.flush()
 }
 
-// drainOnce is one wake's worth of live delivery for a subscriber last at
-// lastID, returning its new watermark. If the subscriber lagged far enough
-// behind on a bounded log that undelivered events aged out before this wake,
-// Hub.drain returns a buffer_exceeded gap first — the mid-stream analogue of the
-// connect-time retention_expired gap, so a discontinuity is marked, never a
-// silent id jump (EVT-142/143).
+// drainOnce is one wake's worth of live delivery, advancing st in place.
+//
+// If the subscriber lagged far enough behind on a bounded log that events aged
+// out past its watermark before this wake, the loss is marked — the mid-stream
+// analogue of the connect-time retention_expired gap, so a discontinuity is
+// never a silent id jump (EVT-142/143).
+//
+// The marker is emitted ahead of the first event in the tail that this
+// subscriber may SEE, and names that event's id as to_id. It is resolved against
+// filter.Visible rather than filter.Allows for the same reason the connect-time
+// resume is (open): the visible set is the security boundary EVT-120 draws,
+// while the selector and schemas restrictions are the client's own narrowing of
+// what it is sent, never of what it is entitled to be told about (EVT-121/124).
+// Resolving to_id over the WHOLE tail instead would name the oldest retained id
+// above the watermark whoever is asking, which on a shared log is routinely an
+// event this subscriber may not read — a marker reporting that the event exists
+// and, a ULID being time-ordered, roughly when. That is the probe EVT-122
+// forbids against scope nodes and EVT-134a forbids against ids.
+//
+// Where the tail holds nothing visible, the marker stays pending and the
+// watermark advances anyway (EVT-142a): holding the watermark would re-read the
+// whole retained tail on every subsequent wake, under the lock every Append
+// takes, for a subscriber that is by definition receiving nothing.
 //
 // EVT-123's boundary is applied per event here, at delivery time — never
 // delegated to whatever the subscriber's own selector claimed.
-func (s *server) drainOnce(sk sink, lastID string, filter events.Filter) (string, error) {
-	gap, tail := s.hub.drain(lastID)
-	if gap != nil {
-		if err := sk.gap(*gap); err != nil {
-			return lastID, err
-		}
-		lastID = gap.ToID
+func (s *server) drainOnce(sk sink, st *stream, filter events.Filter) error {
+	evicted, tail := s.hub.drain(st.considered)
+	if evicted {
+		st.markLoss()
 	}
 	for _, env := range tail {
-		lastID = env.ID
+		st.considered = env.ID
+		if st.pending && filter.Visible(env) {
+			if err := sk.gap(st.resolveLoss(env.ID)); err != nil {
+				return err
+			}
+		}
 		if !filter.Allows(env) {
 			continue
 		}
 		if err := sk.event(env); err != nil {
-			return lastID, err
+			return err
 		}
+		st.delivered = env.ID
 	}
-	return lastID, sk.flush()
+	st.arm()
+	return sk.flush()
 }
 
 // ServeHTTP serves both events/1 bindings at the one path EVT-001 fixes,
@@ -770,11 +912,22 @@ func (s *server) serveSSE(w http.ResponseWriter, r *http.Request, traceID string
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 
-	// lastID tracks the highest id already considered for this subscriber, so the
-	// live loop's After(lastID) yields exactly the not-yet-seen tail (gap-free,
-	// duplicate-free, EVT-133/143).
+	// st tracks the highest id already considered for this subscriber, so the
+	// live loop's After(considered) yields exactly the not-yet-seen tail
+	// (gap-free, duplicate-free, EVT-133/143), alongside the last id actually
+	// delivered and any deferred loss marker.
 	sk := &sseSink{w: w, flusher: flusher, logf: s.logf}
-	lastID, _ := s.deliverBacklog(sk, sub, outcome, resumeFrom, filter)
+	st := newStream(resumeFrom, s.gapDeferral)
+	defer st.stop()
+	_ = s.deliverBacklog(sk, sub, outcome, st, filter)
+
+	// EVT-105a: an SSE stream that has sent nothing for the keepalive interval
+	// emits a comment line. It is a Timer rather than a Ticker so "idle" means
+	// idle SINCE THE LAST FRAME, exactly as the WS binding's ping does — and
+	// without it an idle stream, a stream holding a deferred marker, and a
+	// connection that died in a middlebox are all the same zero bytes.
+	idle := time.NewTimer(s.pingInterval)
+	defer idle.Stop()
 
 	// Live: drain the newly-appended tail on every wake until the client goes away
 	// (request context) or the server shuts down (Hub.Close closes done).
@@ -791,8 +944,23 @@ func (s *server) serveSSE(w http.ResponseWriter, r *http.Request, traceID string
 			// the NEXT connect would leave this already-open pipe delivering
 			// platform state to a revoked credential indefinitely.
 			return
+		case <-st.expiry():
+			// EVT-142a: a mid-stream loss marker this subscriber's visible set
+			// never gave a resume point for. Ending the stream is the only
+			// remaining honest answer — the alternatives are naming an id it
+			// may not read, or leaving it connected to a stream that has
+			// already lost something and will never say so. SSE has no close
+			// frame to name a code in, so the stream simply ends and the
+			// client reconnects; its own cursor then draws whichever answer
+			// the connect-time resolution gives it (EVT-133/141/134).
+			s.logf("eventsse: ending an SSE stream whose buffer_exceeded marker found no visible resume point within %s (EVT-142a)", s.gapDeferral)
+			return
 		case <-sub.wake():
-			lastID, _ = s.drainOnce(sk, lastID, filter)
+			_ = s.drainOnce(sk, st, filter)
+			idle.Reset(s.pingInterval)
+		case <-idle.C:
+			sk.keepalive()
+			idle.Reset(s.pingInterval)
 		}
 	}
 }
@@ -829,4 +997,18 @@ func (s *sseSink) gap(g events.GapFrame) error {
 func (s *sseSink) flush() error {
 	s.flusher.Flush()
 	return nil
+}
+
+// keepalive writes an SSE comment line on an otherwise idle stream (EVT-105a).
+//
+// A line beginning ":" is a comment the EventSource specification requires a
+// client to ignore, so this is invisible to the subscriber's event handling and
+// still real bytes on the wire — which is the whole point: it is what makes a
+// stream that is merely quiet distinguishable from one that has stalled, been
+// dropped by a middlebox, or is holding a loss marker it cannot yet name
+// (EVT-142a). It is not part of the shared sink interface: the WS binding has
+// EVT-095's ping/pong for the same job, on a transport that can answer.
+func (s *sseSink) keepalive() {
+	_, _ = s.w.Write([]byte(": keepalive\n\n"))
+	s.flusher.Flush()
 }

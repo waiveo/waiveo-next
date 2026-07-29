@@ -86,6 +86,15 @@ const (
 	// that bound; 10s is chosen here to match the sibling relay/1 connection's
 	// per-frame write deadline, and is inside the proposal either way.
 	defaultWriteTimeout = 10 * time.Second
+	// defaultGapDeferral is EVT-142a's bound: how long a mid-stream
+	// buffer_exceeded marker may wait for a resume point inside the
+	// subscriber's own visible set before the connection is ended rather than
+	// left holding a marker it will never be able to name. It is EVT-142's own
+	// draft-note number, because it bounds the same condition that
+	// requirement's other branch does — a subscriber that has fallen behind
+	// live delivery — and one number for one condition is easier to reason
+	// about than two.
+	defaultGapDeferral = 30 * time.Second
 )
 
 // maxInboundFrameBytes bounds one inbound frame. A subscriber sends only
@@ -227,8 +236,9 @@ func (s *server) runWS(reqCtx context.Context, ws *websocket.Conn, principal aut
 	}
 
 	sk := &wsSink{conn: conn, ctx: ctx, logf: s.logf}
-	lastID, err := s.deliverBacklog(sk, sub, outcome, hello.ResumeFrom, filter)
-	if err != nil {
+	st := newStream(hello.ResumeFrom, s.gapDeferral)
+	defer st.stop()
+	if err := s.deliverBacklog(sk, sub, outcome, st, filter); err != nil {
 		s.endWS(conn, err)
 		return
 	}
@@ -292,9 +302,19 @@ func (s *server) runWS(reqCtx context.Context, ws *websocket.Conn, principal aut
 			}
 			idle.Reset(s.pingInterval)
 
+		case <-st.expiry():
+			// EVT-142a: a mid-stream loss marker whose to_id this subscriber's
+			// visible set never supplied. The condition is EVT-142's own — this
+			// subscriber fell behind live delivery and undelivered events were
+			// dropped — and so is the disposition: the server can no longer
+			// serve it conformingly, and the alternatives are naming an id it
+			// may not read or leaving it on a stream that has lost something
+			// and will never say so.
+			conn.closeWith(events.CloseSlowConsumer)
+			return
+
 		case <-sub.wake():
-			lastID, err = s.drainOnce(sk, lastID, filter)
-			if err != nil {
+			if err := s.drainOnce(sk, st, filter); err != nil {
 				s.endWS(conn, err)
 				return
 			}

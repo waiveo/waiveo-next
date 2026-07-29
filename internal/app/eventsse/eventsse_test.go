@@ -520,18 +520,24 @@ func TestSSE_FreshDeliversEveryAppendAfterConnect(t *testing.T) {
 	}
 }
 
-// TestHub_LiveDrainMarksBufferExceededGapOnRetentionDrop is the regression for
-// the mid-stream slow-consumer loss (EVT-142/143): a connected subscriber whose
-// live loop lags behind Append on a BOUNDED log has undelivered events aged out
-// before it drains them. drain — exactly what the live loop runs on each wake —
-// MUST mark that discontinuity with a buffer_exceeded gap and resume at the
-// oldest retained id, never silently return the truncated tail with no signal.
+// TestHub_LiveDrainReportsRetentionDropOnTheWake is the substrate half of the
+// mid-stream slow-consumer loss (EVT-142/143): a connected subscriber whose live
+// loop lags behind Append on a BOUNDED log has undelivered events aged out
+// before it drains them, and drain — exactly what the live loop runs on each
+// wake — MUST report that discontinuity alongside the surviving tail, never
+// return the truncated tail with no signal.
 //
 // Before the fix the live loop called hub.after(lastID) directly: once lastID
 // aged out, After just returned the surviving tail starting at the new oldest id,
-// with no gap frame and no way for the caller to know entries were skipped — the
+// with no signal and no way for the caller to know entries were skipped — the
 // silent loss EVT-143 forbids.
-func TestHub_LiveDrainMarksBufferExceededGapOnRetentionDrop(t *testing.T) {
+//
+// What drain reports is the CONDITION, not the marker. The marker's own two
+// ends — from_id, which is the last id DELIVERED rather than the last
+// considered, and to_id, which EVT-134a bounds to the subscriber's visible set —
+// are properties of the connection, so they are driven where they are composed:
+// through a real subscriber, end to end, in buffer_exceeded_test.go.
+func TestHub_LiveDrainReportsRetentionDropOnTheWake(t *testing.T) {
 	log := events.NewEventLog(2) // bounded: memory-protecting retention horizon
 	hub := NewHub(log)
 
@@ -565,23 +571,14 @@ func TestHub_LiveDrainMarksBufferExceededGapOnRetentionDrop(t *testing.T) {
 	}
 
 	// drain is exactly what the live loop runs on that wake.
-	gap, tail := hub.drain(lastID)
+	evicted, tail := hub.drain(lastID)
 
-	if gap == nil {
-		t.Fatal("a mid-stream retention drop (idB appended then aged out before delivery) MUST emit a buffer_exceeded gap, never a silent truncation (EVT-142/143)")
+	if !evicted {
+		t.Fatal("a mid-stream retention drop (idB appended then aged out before delivery) MUST be reported, never a silent truncation (EVT-142/143)")
 	}
-	if gap.Reason != events.ReasonBufferExceeded {
-		t.Fatalf("mid-stream drop gap reason must be buffer_exceeded (EVT-142); got %q", gap.Reason)
-	}
-	if gap.FromID == nil || *gap.FromID != idA {
-		t.Fatalf("gap from_id must be the subscriber's last-delivered id %s; got %v", idA, gap.FromID)
-	}
-	if gap.ToID != idC {
-		t.Fatalf("gap to_id must be the oldest retained id %s (delivery resumes there); got %q", idC, gap.ToID)
-	}
-	// Delivery then resumes AT the oldest retained id inclusive — no further loss.
+	// Delivery then resumes over the retained tail — no further loss.
 	if len(tail) != 2 || tail[0].ID != idC || tail[1].ID != idD {
-		t.Fatalf("after the gap, drain must deliver the retained tail [idC idD] inclusive; got %v", ids(tail))
+		t.Fatalf("drain must return the retained tail [idC idD]; got %v", ids(tail))
 	}
 }
 
@@ -598,9 +595,9 @@ func TestHub_LiveDrainNoGapWhenCaughtUp(t *testing.T) {
 	hub.Append(autoEnv(idB))
 	hub.Append(autoEnv(idC)) // retained [idB idC]; only idA aged out
 
-	gap, tail := hub.drain(idB) // subscriber last saw idB, which is still retained
-	if gap != nil {
-		t.Fatalf("a subscriber caught up to a still-retained id must NOT get a spurious gap; got %+v", *gap)
+	evicted, tail := hub.drain(idB) // subscriber last saw idB, which is still retained
+	if evicted {
+		t.Fatal("a subscriber caught up to a still-retained id must NOT be reported as having lost anything")
 	}
 	if len(tail) != 1 || tail[0].ID != idC {
 		t.Fatalf("drain must return the clean tail [idC]; got %v", ids(tail))

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -213,17 +214,64 @@ func TestResolve_AgedOutID_Gap(t *testing.T) {
 // with the same {from_id,to_id,reason} shape, reason buffer_exceeded, from_id
 // the subscriber's last-delivered point.
 func TestBufferExceededGap(t *testing.T) {
-	g := BufferExceededGap("01J8Z3K4N5P6Q7R8S9T0V1W2Y6", "01J8Z3K4N5P6Q7R8S9T0V1W2Y9")
+	from := "01J8Z3K4N5P6Q7R8S9T0V1W2Y6"
+	g := BufferExceededGap(&from, "01J8Z3K4N5P6Q7R8S9T0V1W2Y9")
 	if g.Type != FrameTypeGap {
 		t.Fatalf("gap type = %q; want gap", g.Type)
 	}
 	if g.Reason != ReasonBufferExceeded {
 		t.Fatalf("reason = %q; want buffer_exceeded (EVT-142)", g.Reason)
 	}
-	if g.FromID == nil || *g.FromID != "01J8Z3K4N5P6Q7R8S9T0V1W2Y6" {
+	if g.FromID == nil || *g.FromID != from {
 		t.Fatalf("from_id must name the subscriber's last-delivered point; got %v", g.FromID)
 	}
 	if g.ToID != "01J8Z3K4N5P6Q7R8S9T0V1W2Y9" {
 		t.Fatalf("to_id = %q; want the id delivery resumes at", g.ToID)
+	}
+}
+
+// TestBufferExceededGapWithNoKnownPointIsNull (EVT-140): "null only when no such
+// point exists" is a WIRE requirement, and the reachable case for it is a
+// connection that has delivered nothing and resumed from nothing — a fresh
+// subscribe to an empty log that then lags past the horizon. An empty string is
+// neither an id nor null, and a client testing `from_id === null` to decide
+// whether it has a prior point to reconcile against reads "" as a real id.
+func TestBufferExceededGapWithNoKnownPointIsNull(t *testing.T) {
+	g := BufferExceededGap(nil, "01J8Z3K4N5P6Q7R8S9T0V1W2Y9")
+	if g.FromID != nil {
+		t.Fatalf("from_id must be nil when the subscriber has no known point; got %q", *g.FromID)
+	}
+	data, err := json.Marshal(g)
+	if err != nil {
+		t.Fatalf("marshal gap: %v", err)
+	}
+	if !strings.Contains(string(data), `"from_id":null`) {
+		t.Fatalf("from_id must serialize as null, never omitted and never \"\" (EVT-140); got %s", data)
+	}
+}
+
+// TestFirstVisibleID pins the one definition both gap ends resolve through: the
+// earliest id in an id-ordered batch the subscriber may READ (EVT-134a), with a
+// nil predicate admitting nothing (SEC-005: an unresolvable visible set is the
+// empty one, never the universal one).
+func TestFirstVisibleID(t *testing.T) {
+	batch := []Envelope{
+		{ID: "01J8Z3K4N5P6Q7R8S9T0V1W2Y6", ScopeNode: "other"},
+		{ID: "01J8Z3K4N5P6Q7R8S9T0V1W2Y7", ScopeNode: "mine"},
+		{ID: "01J8Z3K4N5P6Q7R8S9T0V1W2Y8", ScopeNode: "mine"},
+	}
+	mine := func(e Envelope) bool { return e.ScopeNode == "mine" }
+
+	if got := FirstVisibleID(batch, mine); got != "01J8Z3K4N5P6Q7R8S9T0V1W2Y7" {
+		t.Fatalf("FirstVisibleID must skip the out-of-scope head and name the first readable id; got %q", got)
+	}
+	if got := FirstVisibleID(batch[:1], mine); got != "" {
+		t.Fatalf("a batch holding nothing readable has no resume point; got %q", got)
+	}
+	if got := FirstVisibleID(batch, nil); got != "" {
+		t.Fatalf("a nil visible predicate must admit nothing (SEC-005); got %q", got)
+	}
+	if got := FirstVisibleID(nil, mine); got != "" {
+		t.Fatalf("an empty batch has no resume point; got %q", got)
 	}
 }
