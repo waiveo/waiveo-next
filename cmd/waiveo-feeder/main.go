@@ -982,12 +982,26 @@ func main() {
 		log.Fatalf("waiveo-feeder: evaluate first-boot claim window: %v", err)
 	}
 	if claim.Claimed {
-		log.Printf("waiveo-feeder: workspace is claimed; sign in at /api/v1/auth/login")
+		log.Printf("waiveo-feeder: workspace is claimed; sign in on the console at /login")
 	} else {
 		// Printed, not merely persisted: SEC-120 requires the installer present
 		// the code "printed, as a QR code, or on-screen", and a headless box's
 		// screen is its startup log.
-		log.Printf("waiveo-feeder: WORKSPACE UNCLAIMED — claim it with this one-time setup code (also at %s):\n\n    %s\n", claim.CodePath, claim.Code)
+		//
+		// The presentation names WHERE to spend the code, because it is the only
+		// thing that can. The console deliberately cannot advertise that this box
+		// is unclaimed — an unauthenticated claim-state answer would tell anyone
+		// who can reach the box that it is sitting inside its claim window right
+		// now, which on a shared network is exactly the situation the printed code
+		// exists to defend. So its sign-in page offers the setup path to everybody
+		// and says nothing about THIS box; this line, read by whoever installed
+		// it, is what turns that generic offer into a destination.
+		//
+		// A path, not a URL: the only host this process could name is the one it
+		// was configured to listen on, which is not necessarily the address the
+		// operator's browser reaches it by (a NAT, a reverse proxy, a hostname).
+		// A confidently wrong URL beside a live one-time code is worse than none.
+		log.Printf("waiveo-feeder: WORKSPACE UNCLAIMED — open the console at /setup and claim it with this one-time setup code (also at %s):\n\n    %s\n", claim.CodePath, claim.Code)
 	}
 
 	// The runner that executes the work an async api/1 operation accepts with
