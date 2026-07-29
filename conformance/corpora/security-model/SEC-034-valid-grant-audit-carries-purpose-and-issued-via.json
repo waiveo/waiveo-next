@@ -1,0 +1,26 @@
+{
+  "case_id": "SEC-034-valid-grant-audit-carries-purpose-and-issued-via",
+  "contract": "security-model/1",
+  "req_ids": ["SEC-034"],
+  "description": "A grant creation and the redemption of that same grant each emit exactly one audit.event, and each record carries the grant's purpose and issued_via — so a recovery-purpose, console-issued redemption stays distinguishable in the trail from a routine invite redemption months later. Driven over the credential-reset flow's own mounted routes; neither record carries the one-time code or the credential value.",
+  "input": {
+    "flow": "credential-reset",
+    "grant": {
+      "purpose": "credential-reset",
+      "issued_via": "api"
+    }
+  },
+  "expected": {
+    "grant_created": {
+      "emitted": true,
+      "purpose": "credential-reset",
+      "issued_via": "api"
+    },
+    "grant_redeemed": {
+      "emitted": true,
+      "purpose": "credential-reset",
+      "issued_via": "api"
+    },
+    "records_contain_secret": false
+  }
+}

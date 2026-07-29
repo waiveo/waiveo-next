@@ -172,6 +172,7 @@
   "security-model/1": {
     "driver": "conformance/drivers/securitymodel1 (go run ./conformance/cmd/driven-manifest -write)",
     "driven": [
+      "SEC-034-valid-grant-audit-carries-purpose-and-issued-via",
       "SEC-035-invalid-grant-expired-rejected",
       "SEC-035a-invalid-grant-refusals-on-the-redemption-endpoint",
       "SEC-050-valid-credential-reset-grant-flow",
@@ -179,6 +180,7 @@
       "SEC-067-invalid-unauthenticated-time-claim-does-not-advance-floor",
       "SEC-067a-invalid-unauthenticated-claim-below-a-verifiable-value",
       "SEC-072-valid-console-admission-uid0",
+      "SEC-072a-invalid-console-peer-not-root",
       "SEC-075-invalid-console-verb-not-allowed",
       "SEC-120-invalid-first-boot-claim-outside-window",
       "SEC-120a-invalid-unclaimed-box-claimed-without-the-setup-code",

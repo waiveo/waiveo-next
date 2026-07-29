@@ -13,12 +13,19 @@
 //   - SEC-121 drives the real, HTTP-mounted data-subject delete operation
 //     (POST /api/v1/workspace/delete) to completion on a real JobRunner and
 //     then inspects the key material it was supposed to destroy;
-//   - SEC-050, SEC-066, SEC-067, SEC-072 and SEC-075 drive
-//     internal/app/auth components directly, because no HTTP or socket surface
-//     exists for them in this tree. That is a real gap, stated here rather than
-//     hidden: the credential-reset flow has no route and no CLI, and the
-//     console binding has no Unix-domain-socket listener (SEC-070/071) — only
-//     the admission rule and verb policy the corpus can exercise.
+//   - SEC-034 and SEC-050 drive the real, HTTP-mounted credential-reset routes
+//     (POST /api/v1/auth/credential-reset and .../redeem), reading the audit
+//     records off a real events sink the shipped store and authenticator emit
+//     through;
+//   - SEC-072a drives the REAL console-binding Unix domain socket
+//     (auth.ListenConsole) and the real per-OS peer-credential syscall, for the
+//     refusal direction a non-root conformance process can exercise;
+//   - SEC-066, SEC-067 and SEC-072/075 drive internal/app/auth components
+//     directly. For the clock floor that is because no deployment surface reads
+//     it; for the console admission rule it is what the contract's own
+//     Conformance notes call for (an injected `peer_uid`), and it is now the
+//     admitted-direction complement of SEC-072a's real socket rather than the
+//     only console evidence there is.
 //
 // # Two hard rules this driver holds to
 //
@@ -29,12 +36,20 @@
 // are timing-dependent and exercised against an injectable clock in a driver
 // harness, not wall-clock sleeps."
 //
-// NO REAL SOCKET. The console cases pass `peer_uid` in as an injected input,
-// which the same Conformance notes bless outright: "conformance cases model
-// them as a given input (`peer_uid: 0` or `peer_uid: 1000`) exactly as api/1's
-// own corpus treats an authenticated principal as a given — the driver harness
-// that actually opens a Unix socket and checks SO_PEERCRED is a
-// systemd-install-smoke-lane concern, not this static corpus's."
+// ONE REAL SOCKET, IN ONE DIRECTION. The console ADMISSION cases pass `peer_uid`
+// in as an injected input, which the Conformance notes bless outright:
+// "conformance cases model them as a given input (`peer_uid: 0` or
+// `peer_uid: 1000`) exactly as api/1's own corpus treats an authenticated
+// principal as a given — the driver harness that actually opens a Unix socket
+// and checks SO_PEERCRED is a systemd-install-smoke-lane concern, not this
+// static corpus's."
+//
+// SEC-072a nonetheless opens a real one, because the injected-uid cases cannot
+// tell an app that reads SO_PEERCRED from an app with no socket at all — which
+// was this tree's actual state until the listener landed. It drives only the
+// REFUSAL direction, which is the direction a process that is not uid 0 can
+// produce; a run that IS uid 0 reports that case PENDING with its reason rather
+// than asserting a refusal that would not have happened.
 package securitymodel1
 
 import (
@@ -53,7 +68,7 @@ import (
 const contract = "security-model/1"
 
 // target names the implementation-under-test this driver drove.
-const target = "internal/app/auth (grants, clock floor, console binding, credential reset) + internal/app/api (POST /api/v1/auth/setup, POST /api/v1/workspace/delete) + internal/app/workspacekey"
+const target = "internal/app/auth (grants, clock floor, console binding + its Unix-domain-socket transport, credential reset) + internal/app/api (POST /api/v1/auth/setup, /auth/credential-reset, /auth/credential-reset/redeem, /workspace/delete) + internal/app/workspacekey"
 
 // Run loads the frozen security-model corpus from disk and drives every case
 // against the live implementation.
@@ -93,6 +108,7 @@ func LoadCorpus() (map[string]corpus.Case, error) { return corpus.LoadDir(corpus
 // it. It is a map from SHORT id (never the descriptive full filename stem), so
 // renaming a case file's tail does not silently unwire it.
 var drivers = map[string]func(*report.Report, corpus.Case){
+	"SEC-034":  driveGrantAuditRecord,
 	"SEC-035":  driveGrantExpired,
 	"SEC-035a": driveGrantRefusalsOnTheWire,
 	"SEC-050":  driveCredentialReset,
@@ -100,6 +116,7 @@ var drivers = map[string]func(*report.Report, corpus.Case){
 	"SEC-067":  driveClockFloorAdvanceGate,
 	"SEC-067a": driveClockFloorProvenanceGate,
 	"SEC-072":  driveConsoleAdmission,
+	"SEC-072a": driveConsolePeerNotRoot,
 	"SEC-075":  driveConsoleVerbNotAllowed,
 	"SEC-120":  driveFirstBootClaimOutsideWindow,
 	"SEC-120a": driveUnclaimedBoxWithoutCode,

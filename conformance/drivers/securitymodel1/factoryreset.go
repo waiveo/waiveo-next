@@ -165,7 +165,7 @@ func driveFactoryReset(rep *report.Report, c corpus.Case) {
 	freshEnrollmentRequired := principals == 0 && stale.status == http.StatusUnauthorized
 
 	// The claim window, asked by RUNNING the real first-boot bootstrap.
-	boot, err := auth.EnsureClaimWindow(ctx, h.auth.Store, h.stateDir, auth.RootScopeNode, nil)
+	boot, err := auth.EnsureClaimWindow(ctx, h.auth.Store, h.stateDir, auth.RootScopeNode)
 	if err != nil {
 		k.fail(rep, "re-run the first-boot bootstrap after the reset: %v", err)
 		return

@@ -181,7 +181,7 @@ func driveFirstBootClaimOutsideWindow(rep *report.Report, c corpus.Case) {
 
 	// The installer's stand-in: mint the one-time setup grant and persist its
 	// code (SEC-120's "auto-generate ... and present it").
-	boot, err := auth.EnsureClaimWindow(ctx, h.authStore, dir, auth.RootScopeNode, nil)
+	boot, err := auth.EnsureClaimWindow(ctx, h.authStore, dir, auth.RootScopeNode)
 	if err != nil {
 		k.fail(rep, "EnsureClaimWindow: %v", err)
 		return
@@ -282,7 +282,7 @@ func driveUnclaimedBoxWithoutCode(rep *report.Report, c corpus.Case) {
 	// The installer's stand-in, run exactly as the shipped feeder runs it at
 	// boot: it mints the one-time setup grant and persists the code that is the
 	// only key to this endpoint.
-	boot, err := auth.EnsureClaimWindow(ctx, h.authStore, dir, auth.RootScopeNode, nil)
+	boot, err := auth.EnsureClaimWindow(ctx, h.authStore, dir, auth.RootScopeNode)
 	if err != nil {
 		k.fail(rep, "EnsureClaimWindow: %v", err)
 		return

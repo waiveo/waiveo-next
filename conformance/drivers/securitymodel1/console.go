@@ -2,6 +2,14 @@ package securitymodel1
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"strings"
+	"time"
 
 	"github.com/maaxton/waiveo-next/conformance/drivers/corpus"
 	"github.com/maaxton/waiveo-next/conformance/drivers/report"
@@ -47,7 +55,12 @@ func driveConsoleAdmission(rep *report.Report, c corpus.Case) {
 		return
 	}
 	if socketMode != "" {
-		k.note("socket_mode %q (SEC-071) is not asserted: this tree has no Unix-domain-socket listener for the console binding, only the admission rule and verb policy this dispatcher owns", socketMode)
+		// This case drives the ADMISSION RULE with the injected peer uid the
+		// contract's own Conformance notes call for, so it terminates no socket
+		// and has no inode to stat. SEC-071's mode is asserted off a real socket
+		// by SEC-072a, which drives the shipped listener; naming that here keeps a
+		// reader from concluding the mode is unasserted anywhere.
+		k.note("socket_mode %q (SEC-071) is not asserted by this case, which drives the admission rule with an injected peer_uid and terminates no socket; it is asserted off the real inode by SEC-072a-invalid-console-peer-not-root", socketMode)
 	}
 
 	// The session id the case names is minted for real: the id source hands the
@@ -167,4 +180,179 @@ func driveConsoleVerbNotAllowed(rep *report.Report, c corpus.Case) {
 	k.boolAt("executed", resp.Executed)
 	k.stringAt("error.code", resp.Code)
 	k.finish(rep)
+}
+
+// driveConsolePeerNotRoot drives SEC-072a-invalid-console-peer-not-root against
+// the REAL console-binding transport: auth.ListenConsole's own Unix domain
+// socket, the real per-OS peer-credential syscall, and the real refusal path.
+//
+// # Why this case exists beside the injected-uid one
+//
+// The contract's Conformance notes bless modelling `peer_uid` as an input, and
+// SEC-072's case above does exactly that — but that arrangement could not
+// distinguish a shipped app that reads SO_PEERCRED from one that has no socket
+// at all, which is precisely the state this tree was in: "there is no Unix
+// domain socket (SEC-070), no 0700 socket file (SEC-071), and nothing reads
+// SO_PEERCRED (SEC-072)". This case closes that by connecting to a socket the
+// shipped constructor bound and letting the shipped syscall read this test
+// process's own credential.
+//
+// # Why it is the REFUSAL half specifically
+//
+// Because it is the half a non-root process can drive. The admitted branch needs
+// the connecting process to be uid 0, which a conformance run is not (and must
+// not require, or CI would have to run as root to be conformant). So the socket
+// exercises the direction available to it, and the admitted direction stays on
+// the injected-uid case the contract sanctions. A run that IS root cannot drive
+// this case at all and says so as a PENDING rather than passing vacuously — a
+// root peer would be ADMITTED, and reporting that as a refusal would be a lie.
+//
+// # What is asserted, and why each one has teeth
+//
+//   - `response_body_bytes: 0` — the client reads to EOF and must get nothing.
+//     SEC-072's refusal "carries no response body"; a listener that answered
+//     with a Problem naming CONSOLE_PEER_NOT_ROOT would fail here, which is
+//     deliberate: that would tell an unprivileged prober that the binding exists
+//     and what it refuses on.
+//   - `audit_record_names_a_verb: false` — the refusal happened BEFORE the
+//     request was read. A listener that decoded the body first and refused after
+//     would record `console:service.status` and fail this, which is how "refused
+//     at accept time" is distinguished from "refused eventually".
+//   - `socket_file_mode` / `socket_directory_mode` — SEC-071's filesystem half,
+//     read off the real inode, plus the directory that closes the bind-to-chmod
+//     window.
+func driveConsolePeerNotRoot(rep *report.Report, c corpus.Case) {
+	k := newCheck(c)
+
+	casePeerUID, okUID := inputInt(c, "peer_uid")
+	verb, okVerb := inputString(c, "verb")
+	if !okUID || !okVerb {
+		k.fail(rep, "the frozen input block is missing a field this case is driven from (peer_uid=%v verb=%v)", okUID, okVerb)
+		return
+	}
+	if casePeerUID == 0 {
+		k.fail(rep, "this case's premise is a NON-root peer; its frozen input declares peer_uid 0")
+		return
+	}
+	if os.Geteuid() == 0 {
+		rep.Pending(c.CaseID, contract, fmt.Sprintf(
+			"this case models a peer whose effective uid is not 0 (%d) connecting to the real console socket; this conformance process runs as uid 0, so the only connection it can make would be ADMITTED — driving it would assert a refusal that did not happen. Re-run as a non-root user.", casePeerUID))
+		return
+	}
+	if verb != auth.ConsoleVerbServiceStatus {
+		k.note("the case names verb %q; it is sent verbatim and must never be read, which is the point of the assertion below", verb)
+	}
+
+	dir, err := os.MkdirTemp("", "secmodel1-consolesock-")
+	if err != nil {
+		k.fail(rep, "scratch dir: %v", err)
+		return
+	}
+	defer os.RemoveAll(dir)
+
+	fixedNow := corpusInstantMs
+	sink := &recordingSink{}
+	ids := deterministicIDs()
+	auditor := auth.NewAuditor(sink, "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5", func() int64 { return fixedNow }, ids, nil)
+	st, err := auth.Open(dir+"/auth.db", func() int64 { return fixedNow }, ids, auth.WithAuditor(auditor))
+	if err != nil {
+		k.fail(rep, "open auth store: %v", err)
+		return
+	}
+	defer st.Close()
+
+	// The SHIPPED constructor, with the SHIPPED peer-credential reader. Nothing
+	// about admission is injected here.
+	ln, err := auth.ListenConsole(dir, auth.NewConsole(st, nil, auditor), nil)
+	if err != nil {
+		k.fail(rep, "bind the console binding: %v", err)
+		return
+	}
+	go ln.Serve()
+	defer ln.Close()
+
+	// SEC-070/071, read off the real inode.
+	fi, err := os.Lstat(ln.Path())
+	if err != nil {
+		k.fail(rep, "stat the console socket: %v", err)
+		return
+	}
+	network := "not-a-socket"
+	if fi.Mode()&os.ModeSocket != 0 {
+		network = "unix"
+	}
+	dirInfo, err := os.Stat(dir)
+	if err != nil {
+		k.fail(rep, "stat the console socket's directory: %v", err)
+		return
+	}
+	k.stringAt("socket_network", network)
+	k.stringAt("socket_file_mode", fmt.Sprintf("%04o", fi.Mode().Perm()))
+	k.stringAt("socket_directory_mode", fmt.Sprintf("%04o", dirInfo.Mode().Perm()))
+
+	// The connection: this process's own uid, which is not 0 (checked above).
+	conn, err := net.Dial("unix", ln.Path())
+	if err != nil {
+		k.fail(rep, "dial the console socket: %v", err)
+		return
+	}
+	defer conn.Close()
+	req, err := json.Marshal(auth.ConsoleRequest{Verb: verb, TraceID: "01J8Z2Q1M8H8N4T0V1W2X3Y4Z6"})
+	if err != nil {
+		k.fail(rep, "encode the console request: %v", err)
+		return
+	}
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	// A write may fail outright once the peer has closed, which is itself a
+	// refusal; the assertion below is on what came BACK, so a write error is not
+	// a driver failure.
+	_, _ = conn.Write(req)
+	body, readErr := io.ReadAll(conn)
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		// A reset connection reads as an error on some platforms and as a clean
+		// EOF on others. Either way the peer got no body, which is what SEC-072
+		// requires; the byte count below is the assertion, and this only records
+		// how the close presented itself.
+		k.note("the refused connection closed with %v (no body either way)", readErr)
+	}
+
+	k.boolAt("admitted", len(body) > 0)
+	k.intAt("response_body_bytes", int64(len(body)))
+
+	// SEC-077's record, from the real auditor: the refusal is recorded, and the
+	// record names no verb because the request was never read.
+	verbNamed, result := consoleAuditVerbAndResult(sink, verb)
+	k.boolAt("audit_record_names_a_verb", verbNamed)
+	k.stringAt("audit_result", result)
+	k.finish(rep)
+}
+
+// consoleAuditVerbAndResult reports whether the console-verb audit record names
+// the verb the (refused) peer sent, and what result it carries.
+//
+// "Names a verb" is asked of the verb the CASE sent, not of any verb: a record
+// whose target is the placeholder the refusal path writes is not naming one, and
+// that difference is the whole assertion.
+func consoleAuditVerbAndResult(sink *recordingSink, verb string) (bool, string) {
+	for _, env := range sink.snapshot() {
+		raw, err := json.Marshal(env)
+		if err != nil {
+			continue
+		}
+		var decoded struct {
+			Payload struct {
+				Action string `json:"action"`
+				Target string `json:"target"`
+				Result string `json:"result"`
+			} `json:"payload"`
+		}
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			continue
+		}
+		if decoded.Payload.Action != auth.ActionConsoleVerb {
+			continue
+		}
+		return strings.Contains(decoded.Payload.Target, verb), decoded.Payload.Result
+	}
+	return false, "<no console.verb record emitted>"
 }

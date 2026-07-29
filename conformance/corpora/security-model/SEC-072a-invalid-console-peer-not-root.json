@@ -1,0 +1,22 @@
+{
+  "case_id": "SEC-072a-invalid-console-peer-not-root",
+  "contract": "security-model/1",
+  "req_ids": ["SEC-070", "SEC-071", "SEC-072"],
+  "description": "The refusal half of the console binding's admission rule, driven over a REAL Unix domain socket rather than an injected peer uid: a process whose effective uid is not 0 connects to the socket the app actually binds, sends a well-formed request for an allowed verb, and is refused at accept time — the connection closes with no response body at all, and the audit record names no verb because none was ever read. The socket file and its containing directory are mode 0700.",
+  "input": {
+    "channel": "console-binding",
+    "peer_uid": 1000,
+    "socket_mode": "0700",
+    "presented_credential": null,
+    "verb": "service.status"
+  },
+  "expected": {
+    "socket_network": "unix",
+    "socket_file_mode": "0700",
+    "socket_directory_mode": "0700",
+    "admitted": false,
+    "response_body_bytes": 0,
+    "audit_record_names_a_verb": false,
+    "audit_result": "failure"
+  }
+}

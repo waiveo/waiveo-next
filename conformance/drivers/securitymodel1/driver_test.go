@@ -13,6 +13,7 @@ import (
 // none excepted. A case's presence here says nothing about whether it PASSes:
 // see expectedFailing.
 var expectedDriven = []string{
+	"SEC-034-valid-grant-audit-carries-purpose-and-issued-via",
 	"SEC-035-invalid-grant-expired-rejected",
 	"SEC-035a-invalid-grant-refusals-on-the-redemption-endpoint",
 	"SEC-050-valid-credential-reset-grant-flow",
@@ -20,13 +21,19 @@ var expectedDriven = []string{
 	"SEC-067-invalid-unauthenticated-time-claim-does-not-advance-floor",
 	"SEC-067a-invalid-unauthenticated-claim-below-a-verifiable-value",
 	"SEC-072-valid-console-admission-uid0",
+	"SEC-072a-invalid-console-peer-not-root",
 	"SEC-075-invalid-console-verb-not-allowed",
 	"SEC-120-invalid-first-boot-claim-outside-window",
 	"SEC-120a-invalid-unclaimed-box-claimed-without-the-setup-code",
 	"SEC-121-valid-factory-reset-destroys-key-material",
 }
 
-// expectedPending is EMPTY: every frozen case has a live surface to drive.
+// expectedPending is EMPTY on any non-root runner, which is what this repo's
+// gates and CI are. SEC-072a is the one case that can become pending at runtime:
+// it models a peer whose effective uid is NOT 0 connecting to the real console
+// socket, so a conformance process running as uid 0 cannot produce the
+// connection the case describes and reports it pending with that reason rather
+// than asserting a refusal that did not occur.
 //
 // The declaration stays rather than being deleted, for the same reason the
 // driver's own pendingCaseIDs map does: §10's "no silent caps" rule needs a
