@@ -404,6 +404,38 @@ type Pruned struct {
 // without the watermark is precisely the silent loss EVT-143 forbids: the rows
 // would be gone with nothing left to tell a resuming subscriber they ever
 // existed.
+//
+// # Why this does not VACUUM, and why that is not an oversight
+//
+// Deleting rows leaves free pages behind: the database FILE does not shrink, so
+// an operator watching disk sees a sweep that appears to reclaim nothing. VACUUM
+// would shrink it. It is deliberately not run here, and deliberately not on this
+// sweep's cadence:
+//
+//   - It takes an EXCLUSIVE lock for the length of a whole-file rewrite. This
+//     database holds the desired state every relay pulls, the audit trail every
+//     mutating request files its only permanent record in, and the pack install
+//     records. Blocking every reader and writer of it, hourly, on a box serving
+//     screens, is a worse outcome than the free pages are.
+//   - It rewrites the file, so it needs free space of roughly the database's own
+//     size — precisely at the moment disk pressure is why somebody wanted it. A
+//     reclamation that needs the disk it is trying to free is not a remedy.
+//   - Free pages are REUSED. Every class this policy configures is bounded by a
+//     row cap (events.DefaultRetentionPolicy), so the event tables reach a
+//     steady-state size and freed pages are consumed by subsequent appends. The
+//     file plateaus rather than growing without bound, and unbounded growth is the
+//     condition that would justify the cost.
+//
+// PRAGMA incremental_vacuum is not the cheap alternative it looks like: it needs
+// auto_vacuum=INCREMENTAL set BEFORE the schema was created, which this store did
+// not do, so adopting it on an existing box requires a full VACUUM first. If a
+// deployment ever does need the file itself to shrink, the honest mechanism is an
+// explicit operator-run maintenance step at a moment of their choosing.
+//
+// None of this applies to the content origin, whose retention sweep
+// (internal/feeder/contentgc) unlinks files: those bytes are returned to the
+// filesystem the instant they are reclaimed, with no compaction step in between.
+// It is the content store, not this one, that was actually growing without bound.
 func (l *EventLog) Prune() (Pruned, error) {
 	ctx := context.Background()
 	now := l.nowMs()
