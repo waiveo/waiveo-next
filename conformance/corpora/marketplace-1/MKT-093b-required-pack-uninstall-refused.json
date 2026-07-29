@@ -1,0 +1,23 @@
+{
+  "case_id": "MKT-093b-required-pack-uninstall-refused",
+  "contract": "marketplace/1",
+  "req_ids": ["MKT-093b", "MKT-093a"],
+  "description": "waiveo/system is on the deployment's required-pack roster at floor 1.0.0 and is installed at 2.0.0. An ordinary operator uninstall of it is refused REQUIRED_PACK_FLOOR: removal is removal to no version, which is below every floor. The refusal is decided in the same transaction that would have committed the removal, against the pack row read under that transaction's own write lock -- not in the request handler -- so a caller reaching the removal by another route meets the identical refusal. acme/menu-board, absent from the roster, uninstalls normally: the floor restricts exactly the packs the deployment declared it cannot run without.",
+  "input": {
+    "required_pack_roster": [ { "pack_id": "waiveo/system", "floor_version": "1.0.0" } ],
+    "sequence": [
+      { "op": "uninstall", "pack_id": "waiveo/system", "installed_version": "2.0.0" },
+      { "op": "uninstall", "pack_id": "acme/menu-board", "installed_version": "1.0.0" }
+    ]
+  },
+  "expected": {
+    "waiveo/system": {
+      "uninstall_accepted": false,
+      "error": { "code": "REQUIRED_PACK_FLOOR" },
+      "pack_row_removed": false,
+      "install_records_removed": false,
+      "enforced_in_removal_transaction": true
+    },
+    "acme/menu-board": { "uninstall_accepted": true }
+  }
+}

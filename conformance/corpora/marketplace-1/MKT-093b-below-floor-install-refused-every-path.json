@@ -1,0 +1,26 @@
+{
+  "case_id": "MKT-093b-below-floor-install-refused-every-path",
+  "contract": "marketplace/1",
+  "req_ids": ["MKT-093b", "MKT-050", "MKT-060a"],
+  "description": "waiveo/system is required at floor 2.0.0. Three install paths each try to land 1.0.0 -- a channel-pointer resolution, an explicit version pin (MKT-060a(c)), and a direct out-of-band artifact upload (MKT-094a) -- and all three are refused REQUIRED_PACK_FLOOR. MKT-050's anti-rollback alone would refuse only the first: it governs channel-pointer resolution, and MKT-060a(c)'s own enumeration of the checks a pinned reference remains subject to omits it, which is what keeps MKT-044's archived-version reinstall reachable. A fourth path installs the archived 2.0.0 by explicit pin and is ACCEPTED: the floor forbids going below 2.0.0, not reinstalling at or above it, so the archived-reinstall path a general never-install-older rule would have closed stays open.",
+  "input": {
+    "required_pack_roster": [ { "pack_id": "waiveo/system", "floor_version": "2.0.0" } ],
+    "attempts": [
+      { "path": "channel-pointer", "ref": { "pack_id": "waiveo/system", "trust_channel": "first-party" }, "pointer_names_version": "1.0.0" },
+      { "path": "explicit-version-pin", "ref": { "pack_id": "waiveo/system", "trust_channel": "first-party", "version": "1.0.0" } },
+      { "path": "direct-artifact-upload", "artifact_signed_identity": { "artifact_id": "waiveo/system", "version": "1.0.0" } },
+      { "path": "explicit-version-pin", "ref": { "pack_id": "waiveo/system", "trust_channel": "first-party", "version": "2.0.0" }, "entry_status": "archived" }
+    ],
+    "every_attempt_is_validly_signed_and_otherwise_installable": true
+  },
+  "expected": {
+    "results": [
+      { "path": "channel-pointer", "accepted": false, "error": { "code": "REQUIRED_PACK_FLOOR" } },
+      { "path": "explicit-version-pin", "version": "1.0.0", "accepted": false, "error": { "code": "REQUIRED_PACK_FLOOR" } },
+      { "path": "direct-artifact-upload", "accepted": false, "error": { "code": "REQUIRED_PACK_FLOOR" } },
+      { "path": "explicit-version-pin", "version": "2.0.0", "accepted": true }
+    ],
+    "refusal_leaves_no_residue": "no pack row change, no install record, no channel-mark advance, no generation bump",
+    "enforced_in_install_transaction": true
+  }
+}

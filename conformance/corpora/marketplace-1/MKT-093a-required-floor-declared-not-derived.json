@@ -1,0 +1,32 @@
+{
+  "case_id": "MKT-093a-required-floor-declared-not-derived",
+  "contract": "marketplace/1",
+  "req_ids": ["MKT-093a"],
+  "description": "A deployment's required-pack roster names waiveo/system with floor_version 1.0.0. The pack has since been updated to 3.0.0, so its resolved-version high-water mark for (waiveo/system, first-party) is 3.0.0 and its newest install record pins 3.0.0. The floor is nonetheless still 1.0.0: it is deployment-declared and never derived from what is installed, from the high-water mark, or from the install-record history. A second pack, acme/menu-board, is absent from the roster and is therefore not required at all, whatever its own index entry or manifest claims -- required status is resolved only through the host-provisioned roster, exactly as MKT-009b resolves a signing key only through the host's trust-anchor set. Deriving the floor from the highest version ever applied would put 3.0.0 under the floor's own protection and so would forbid MKT-093's revert to the earlier successfully-applied 2.0.0, which is by construction below it.",
+  "input": {
+    "required_pack_roster": [
+      { "pack_id": "waiveo/system", "floor_version": "1.0.0" }
+    ],
+    "installed": [
+      { "pack_id": "waiveo/system", "version": "3.0.0" },
+      { "pack_id": "acme/menu-board", "version": "1.0.0" }
+    ],
+    "resolved_version_high_water_marks": [
+      { "pack_id": "waiveo/system", "trust_channel": "first-party", "resolved_version": "3.0.0" }
+    ],
+    "install_records": [
+      { "pack_id": "waiveo/system", "resolved_version": "1.0.0" },
+      { "pack_id": "waiveo/system", "resolved_version": "2.0.0" },
+      { "pack_id": "waiveo/system", "resolved_version": "3.0.0" }
+    ],
+    "index_entry_claims_required": { "pack_id": "acme/menu-board", "claimed_required": true }
+  },
+  "expected": {
+    "waiveo/system": { "required": true, "floor_version": "1.0.0" },
+    "acme/menu-board": { "required": false, "floor_version": null },
+    "floor_derived_from_installed_version": false,
+    "floor_derived_from_high_water_mark": false,
+    "floor_derived_from_install_records": false,
+    "revert_target_2.0.0_permitted_by_floor": true
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "case_id": "MKT-093-revert-to-last-known-good",
+  "contract": "marketplace/1",
+  "req_ids": ["MKT-093", "MKT-094b", "MKT-050"],
+  "description": "waiveo/system is required (floor 1.0.0) and running 3.0.0, applied over 1.0.0 and 2.0.0 before it, so its append-only install records name all three (MKT-094b). 3.0.0 is then yanked, making the currently-applied version non-resolvable -- the condition MKT-050's sole anti-rollback exception is stated for and MKT-093 mandates a revert on. The revert target is the most recent version of the same pack_id that was itself successfully applied and has not itself since been revoked: 2.0.0, taken from the records rather than from whatever the index still offers, and at or above the floor. 1.0.0, though also still resolvable, is not the target because 2.0.0 is more recent. The revert re-resolves 2.0.0 by explicit version and runs the full verification order (MKT-047, MKT-009, MKT-009b) -- a revert permits a lower target, it relaxes no check. The (pack, channel) resolved-version high-water mark stays at 3.0.0: it records the highest version ever RESOLVED, and MKT-050 does not walk it back on a revert.",
+  "input": {
+    "required_pack_roster": [ { "pack_id": "waiveo/system", "floor_version": "1.0.0" } ],
+    "installed": { "pack_id": "waiveo/system", "version": "3.0.0", "trust_channel": "first-party" },
+    "install_records_oldest_first": [
+      { "resolved_version": "1.0.0" },
+      { "resolved_version": "2.0.0" },
+      { "resolved_version": "3.0.0" }
+    ],
+    "index_entry_status": { "1.0.0": "active", "2.0.0": "active", "3.0.0": "yanked" },
+    "high_water_mark_before": { "pack_id": "waiveo/system", "trust_channel": "first-party", "resolved_version": "3.0.0" }
+  },
+  "expected": {
+    "current_version_resolvable": false,
+    "revert_required": true,
+    "revert_target_version": "2.0.0",
+    "target_taken_from": "install-record history, not the index's current offering",
+    "target_at_or_above_floor": true,
+    "verification_relaxed": false,
+    "high_water_mark_after": "3.0.0",
+    "install_record_appended_for_revert": true
+  }
+}
