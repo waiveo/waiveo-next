@@ -40,7 +40,7 @@ export interface paths {
         post?: never;
         /**
          * Delete a scope node
-         * @description Requires If-Match against the scope node's current ETag/revision.
+         * @description Requires If-Match against the scope node's current ETag/revision. Refused 409 when the node still carries a child node (`SCOPE_NODE_NOT_EMPTY`), is still named as another row's `scope_node` (`SCOPE_NODE_IN_USE`), or is the tree's org-kind root, which no ordinary write may remove (`SCOPE_NODE_ORG_UNDELETABLE`) — `contracts/data-model-1.md` DAT-020/021/022. The org refusal precedes the If-Match precondition: no revision makes it deletable.
          */
         delete: operations["deleteScopeNode"];
         options?: never;
@@ -1711,7 +1711,7 @@ export interface components {
                 "application/problem+json": components["schemas"]["Problem"];
             };
         };
-        /** @description An Idempotency-Key was reused with a different body, or is still in progress. */
+        /** @description The request cannot be applied against the resource's current state: an Idempotency-Key reused with a different body or still in progress, or a deletion refused because something still depends on the row. */
         Conflict: {
             headers: {
                 [name: string]: unknown;
@@ -1914,6 +1914,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
             412: components["responses"]["PreconditionFailed"];
             428: components["responses"]["PreconditionRequired"];
         };

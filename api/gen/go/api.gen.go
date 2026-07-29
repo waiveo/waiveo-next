@@ -10608,6 +10608,7 @@ type DeleteScopeNodeResponse struct {
 	ApplicationproblemJSON401 *Unauthorized
 	ApplicationproblemJSON403 *Forbidden
 	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON409 *Conflict
 	ApplicationproblemJSON412 *PreconditionFailed
 	ApplicationproblemJSON428 *PreconditionRequired
 }
@@ -14862,6 +14863,13 @@ func ParseDeleteScopeNodeResponse(rsp *http.Response) (*DeleteScopeNodeResponse,
 			return nil, err
 		}
 		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 412:
 		var dest PreconditionFailed
