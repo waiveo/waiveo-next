@@ -55,6 +55,7 @@ type rel090Input struct {
 // rel090Expected is the subset of REL-090's expected block this stage
 // diffs the live Buffer/Channel behavior against.
 type rel090Expected struct {
+	EntryTraceIDCarriedUnmodified       bool     `json:"entry_trace_id_carried_unmodified"`
 	LossMarkerFieldCount                int      `json:"loss_marker_field_count"`
 	LossMarkerFields                    []string `json:"loss_marker_fields"`
 	DroppedCountsSumMatchesDroppedRange bool     `json:"dropped_counts_sum_matches_dropped_range"`
@@ -147,7 +148,10 @@ func driveREL090(rep *report.Report, cases map[string]corpus.Case) {
 	// filler durable entries to reach capacity, so drop-oldest evicts
 	// exactly the victims recorded above.
 	for _, e := range in.TelemetryPush.Body.Entries {
-		buf.Record(e.Schema, e.Payload, "", 0)
+		// RecordTraced, not Record: the corpus's survivor entries carry the
+		// per-entry trace_id REL-090a puts on the wire, and this stage asserts
+		// below that the value rides the buffer and the push unmodified.
+		buf.RecordTraced(e.Schema, e.Payload, "", 0, e.TraceID)
 	}
 	fillerCount := in.BufferCapacity - len(in.TelemetryPush.Body.Entries)
 	for i := 0; i < fillerCount; i++ {
@@ -240,15 +244,24 @@ func driveREL090(rep *report.Report, cases map[string]corpus.Case) {
 			diffs = append(diffs, report.Diff{Field: "telemetry.push.loss_markers count", Expected: 1, Actual: len(up.pushed.LossMarkers)})
 		}
 		for _, want := range in.TelemetryPush.Body.Entries {
-			found := false
-			for _, got := range up.pushed.Entries {
+			var match *telemetry.Entry
+			for i, got := range up.pushed.Entries {
 				if got.Schema == want.Schema && string(got.Payload) == string(want.Payload) {
-					found = true
+					match = &up.pushed.Entries[i]
 					break
 				}
 			}
-			if !found {
+			if match == nil {
 				diffs = append(diffs, report.Diff{Field: fmt.Sprintf("telemetry.push.entries carries corpus survivor (schema=%s)", want.Schema), Expected: string(want.Payload), Actual: "not found in pushed entries"})
+				continue
+			}
+			// REL-090a: the entry's own trace_id reaches the app peer
+			// unmodified. It is asserted per ENTRY rather than per push: the two
+			// survivors carry DIFFERENT trace ids, so a batch-level value — or a
+			// value the buffer minted over the top of the recorded one — fails
+			// here rather than passing on a single-entry coincidence.
+			if exp.EntryTraceIDCarriedUnmodified && match.TraceID != want.TraceID {
+				diffs = append(diffs, report.Diff{Field: fmt.Sprintf("telemetry.push.entries[schema=%s].trace_id (REL-090a)", want.Schema), Expected: want.TraceID, Actual: match.TraceID})
 			}
 		}
 	}

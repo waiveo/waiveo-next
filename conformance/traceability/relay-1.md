@@ -68,6 +68,7 @@ One row per requirement ID `contracts/relay-1.md` defines. Format: `conformance/
 | REL-074 | `contracts/relay-1.md#idempotent-apply--enrollment-anchored-trust` | - | TBD-wave1 |
 | REL-075 | `contracts/relay-1.md#idempotent-apply--enrollment-anchored-trust` | - | TBD-wave1 |
 | REL-090 | `contracts/relay-1.md#telemetry-upstream` | `REL-090-valid-telemetry-overflow-loss-marker` | covered |
+| REL-090a | `contracts/relay-1.md#telemetry-upstream` | `REL-090-valid-telemetry-overflow-loss-marker` | covered |
 | REL-091 | `contracts/relay-1.md#telemetry-upstream` | `REL-090-valid-telemetry-overflow-loss-marker` | covered |
 | REL-092 | `contracts/relay-1.md#telemetry-upstream` | `REL-090-valid-telemetry-overflow-loss-marker` | covered |
 | REL-093 | `contracts/relay-1.md#telemetry-upstream` | `REL-090-valid-telemetry-overflow-loss-marker` | covered |

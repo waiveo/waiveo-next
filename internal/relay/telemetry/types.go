@@ -37,10 +37,11 @@ import "encoding/json"
 // at all, and the app-side ingest MUST still be able to deliver its events. See
 // internal/app/eventingest.resolveTraceID for what the app peer does with an
 // absent — or malformed — value, and why neither may poison the envelope.
-// REL-105's "exactly these fields, no more" clause is scoped to the loss-marker
-// object alone; REL-090's entry shape carries no such closure, and REL-006 is
-// the requirement that puts a correlation id on a relay/1 message in the first
-// place.
+// REL-090a is the requirement that publishes it: the entry MAY carry `trace_id`,
+// the app peer MUST propagate a valid one into the reconstructed envelope
+// unmodified, and an absent or malformed value MUST NOT cost the entry its
+// delivery. (REL-105's "exactly these fields, no more" clause is scoped to the
+// loss-marker object alone; REL-090's entry shape carries no such closure.)
 type Entry struct {
 	Seq     int64           `json:"seq"`
 	Schema  string          `json:"schema"`

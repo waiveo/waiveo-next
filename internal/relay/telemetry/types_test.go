@@ -74,8 +74,11 @@ func loadRel090Fixture(t *testing.T) rel090Fixture {
 // TestPushBatchMarshalsRel090Shape builds a PushBatch from Go values matching
 // REL-090's two entries (an automation.run and a content.played) and its one
 // loss marker, then confirms it marshals to exactly the corpus's
-// telemetry.push body — entries[].{seq,schema,payload}, loss_markers[].
-// {from_seq,to_seq,dropped_counts_by_schema,reason} (REL-090/100).
+// telemetry.push body — entries[].{seq,schema,payload,trace_id},
+// loss_markers[].{from_seq,to_seq,dropped_counts_by_schema,reason}
+// (REL-090/090a/100). The two entries carry DIFFERENT trace ids, so a shape
+// that hoisted the correlation id to the batch (REL-090a forbids it: a push
+// batches entries recorded independently) cannot satisfy this.
 func TestPushBatchMarshalsRel090Shape(t *testing.T) {
 	f := loadRel090Fixture(t)
 
@@ -85,11 +88,13 @@ func TestPushBatchMarshalsRel090Shape(t *testing.T) {
 				Seq:     1001,
 				Schema:  SchemaAutomationRun,
 				Payload: json.RawMessage(`{"rule_id":"01J8Z3K4N5P6Q7R8S9T0V1W2Z1","rule_revision":4,"mode_disposition":"ran"}`),
+				TraceID: "01J8Z4K4N5P6Q7R8S9T0V1W3T1",
 			},
 			{
 				Seq:     1002,
 				Schema:  SchemaContentPlayed,
 				Payload: json.RawMessage(`{"asset_ref":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85","screen_id":"01J8Z3K4N5P6Q7R8S9T0V1W2X6"}`),
+				TraceID: "01J8Z4K4N5P6Q7R8S9T0V1W3T2",
 			},
 		},
 		LossMarkers: []LossMarker{
