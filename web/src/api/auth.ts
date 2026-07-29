@@ -100,7 +100,25 @@ export interface AuthModule {
    * "am I signed in?" is exactly the question whose negative response is a 401,
    * so a null return is the honest result and not a failure to report. */
   session(): Promise<SessionSummary | null>;
-  /** Claim an unclaimed workspace by redeeming the one-time setup code. */
+  /** Claim an unclaimed workspace by redeeming the one-time setup code, minting
+   * the first `owner` principal and its session.
+   *
+   * The refusals, and what a caller may infer from each:
+   *   - 401 UNAUTHENTICATED — no live `setup` grant matches this code. That is
+   *     the answer for a WRONG code and, identically, for a box that is already
+   *     claimed: claiming shuts the window and the box drops every `setup` grant
+   *     it holds, so afterwards no code resolves at all. The two are deliberately
+   *     indistinguishable, and a caller must not present them as distinct.
+   *   - 403 GRANT_ALREADY_REDEEMED — the code is real and has been spent: either
+   *     it was used before, or this is the losing half of two concurrent claims
+   *     presenting one code (SEC-036 admits exactly one). Only a holder of the
+   *     genuine code can ever see this, which is why it may say more.
+   *   - 403 GRANT_EXPIRED — the code aged out of its ttl (SEC-035).
+   *   - 403 GRANT_PURPOSE_MISMATCH — a real code of some OTHER purpose (a pairing
+   *     code, say) was presented here.
+   *   - 429 RATE_LIMITED — the attempt budget guarding against code-guessing is
+   *     spent for this source (SEC-033).
+   *   - 422 VALIDATION_FAILED — a field is missing; `fieldErrors` names which. */
   claim(body: ClaimRequest): Promise<SessionSummary>;
   /** Begin a second-factor enrollment for the CALLING principal, returning the
    * shared secret once. Throws ApiError 403 when this principal already holds
@@ -116,7 +134,10 @@ export interface AuthModule {
 export function createAuthModule(client: ApiClient): AuthModule {
   return {
     async login(body) {
-      return client.post<SessionSummary>("/auth/login", body);
+      // `exchange`, not `post`: a 401 here is this request's credentials being
+      // refused, never a session going away, so it must not bounce the sign-in
+      // page to the sign-in page and discard the reason.
+      return client.exchange<SessionSummary>("/auth/login", body);
     },
     async logout() {
       await client.postNoContent("/auth/logout");
@@ -125,7 +146,9 @@ export function createAuthModule(client: ApiClient): AuthModule {
       return client.getOrNull<SessionSummary>("/auth/session");
     },
     async claim(body) {
-      return client.post<SessionSummary>("/auth/setup", body);
+      // Same exemption as `login`: an unredeemable setup code answers 401, and
+      // the setup page has to be able to say so.
+      return client.exchange<SessionSummary>("/auth/setup", body);
     },
     async enrollTotp() {
       return client.post<TotpEnrollment>("/auth/totp/enroll", {});

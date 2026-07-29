@@ -243,8 +243,10 @@ export class ApiClient {
   }
 
   /** Parse a non-2xx body into a Problem and throw the matching error. Reads the
-   * body exactly once (the callers only reach here on `!res.ok`). */
-  private async fail(res: Response): Promise<never> {
+   * body exactly once (the callers only reach here on `!res.ok`).
+   *
+   * `credentialExchange` suppresses the 401 hook — see `exchange`. */
+  private async fail(res: Response, credentialExchange = false): Promise<never> {
     const traceId = res.headers.get("Trace-Id");
     let problem: Problem | null = null;
     try {
@@ -258,7 +260,7 @@ export class ApiClient {
     // toast, an error card) runs as it would for any other failure, because a
     // redirect is not instantaneous and a page must not be left mid-render
     // pretending the read succeeded.
-    if (res.status === 401) {
+    if (res.status === 401 && !credentialExchange) {
       if (!this.unauthenticatedRaised) {
         this.unauthenticatedRaised = true;
         this.onUnauthenticated();
@@ -334,17 +336,44 @@ export class ApiClient {
 
   /** POST a JSON body and read a JSON response, with NO Idempotency-Key.
    *
-   * It is the credential-exchange verb (`/auth/login`, `/auth/setup`). Those
-   * operations deliberately carry no key: an Idempotency-Key is scoped to the
-   * AUTHENTICATED principal (API-051), and a caller that does not yet hold a
-   * session has no principal for a key to be scoped by — so a key here would be
-   * scoped to nothing, shared by every anonymous caller at once. */
+   * The `auth` family's verb. An Idempotency-Key is scoped to the AUTHENTICATED
+   * principal (API-051), so it is meaningless on an operation whose caller does
+   * not yet hold a session — a key there would be scoped to nothing, shared by
+   * every anonymous caller at once.
+   *
+   * A 401 here keeps its ordinary meaning (the session is gone) and raises the
+   * unauthenticated hook. The `security: []` operations for which it CANNOT mean
+   * that use `exchange` instead. */
   async post<T>(path: string, body: unknown): Promise<T> {
     const res = await this.send("POST", path, {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
     if (!res.ok) await this.fail(res);
+    return (await res.json()) as T;
+  }
+
+  /** POST a credential-exchange operation — an api/1 `security: []` route
+   * (API-090/091: `/auth/login`, `/auth/setup`) — and read its JSON response.
+   *
+   * Identical to `post` in every respect but one: a 401 does NOT raise the
+   * unauthenticated hook. That hook means "the session you were using is gone,
+   * go and sign in", and it cannot mean that here — these operations never had a
+   * session to lose, and their 401 is the refusal of the credentials presented
+   * in this very request. Raising it navigates the page that is collecting those
+   * credentials away from itself, which is worse than useless: a wrong password
+   * or a wrong setup code reloads the form and takes the message explaining what
+   * to fix with it, so the operator sees a blank form and no reason. The error is
+   * still THROWN, so the page reports it exactly as it reports any other refusal.
+   *
+   * Same exemption, and the same reasoning, as `getOrNull`'s for the session
+   * probe: a 401 that is an ANSWER is not a 401 that is a lost session. */
+  async exchange<T>(path: string, body: unknown): Promise<T> {
+    const res = await this.send("POST", path, {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) await this.fail(res, true);
     return (await res.json()) as T;
   }
 

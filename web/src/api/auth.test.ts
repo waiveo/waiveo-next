@@ -111,6 +111,27 @@ describe("401 handling", () => {
     // Firing here would send the sign-in page to the sign-in page, forever.
     expect(onUnauthenticated).not.toHaveBeenCalled();
   });
+
+  it("does NOT fire the hook for a credential-exchange refusal — the page collecting the credential must stay put", async () => {
+    const { fetchImpl } = stubFetch([
+      { status: 401, body: { code: "UNAUTHENTICATED", title: "Unauthorized", status: 401 } },
+    ]);
+    const onUnauthenticated = vi.fn();
+    const api = createApi({ baseUrl: BASE, fetch: fetchImpl, onUnauthenticated });
+
+    // A refused sign-in and a refused first-boot claim are the SAME kind of
+    // answer: the credentials just presented were not accepted. Neither is the
+    // loss of a session, because neither operation ever had one. Redirecting
+    // would reload the form that is mid-conversation with the operator and throw
+    // away the message explaining what to fix.
+    await expect(api.auth.login({ identifier: "a", password: "b" })).rejects.toBeInstanceOf(ApiError);
+    expect(onUnauthenticated).not.toHaveBeenCalled();
+
+    await expect(
+      api.auth.claim({ code: "wrong", identifier: "a", password: "b" }),
+    ).rejects.toBeInstanceOf(ApiError);
+    expect(onUnauthenticated).not.toHaveBeenCalled();
+  });
 });
 
 describe("auth module", () => {
