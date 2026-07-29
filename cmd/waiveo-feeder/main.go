@@ -793,14 +793,10 @@ func main() {
 	// recovery path, silently, is the exact class of "shipped non-conformant and
 	// nobody noticed" this binding exists to end. It is the same posture the auth
 	// store, the workspace key and the clock floor above already take.
-	console := auth.NewConsole(authStore, clockFloor, auditor)
-	consoleLn, err := auth.ListenConsole(cfg.authDir, console, func(format string, args ...any) {
-		log.Printf("waiveo-feeder: "+format, args...)
-	})
+	consoleLn, err := startConsoleBinding(cfg.authDir, authStore, clockFloor, auditor)
 	if err != nil {
 		log.Fatalf("waiveo-feeder: open the console binding: %v", err)
 	}
-	go consoleLn.Serve()
 	log.Printf("waiveo-feeder: console binding listening on %s (uid 0 only; verbs %v)", consoleLn.Path(), auth.ConsoleVerbs())
 
 	// The first-boot claim window (SEC-120). On an unclaimed box this mints a
@@ -1025,6 +1021,32 @@ func main() {
 			log.Printf("waiveo-feeder: webhook delivery shutdown: %v (an in-flight delivery was abandoned; it redelivers on the next boot)", err)
 		}
 	}
+}
+
+// startConsoleBinding builds and starts this deployment's console binding
+// (security-model/1 SEC-070-078) and returns the listener the shutdown path
+// closes.
+//
+// It is a function rather than inline in main for the same reason
+// startWebhookDelivery is: so a test can drive the IDENTICAL wiring. A test that
+// reassembled it — its own auth.NewConsole over its own listener — would pass
+// while main's copy of it was missing, and "the component exists but nothing a
+// deployment runs reaches it" is the exact state this binding was in before it
+// had a socket at all. The one thing worth guarding here is that a shipped
+// binary reaches it, so that is what the wiring is arranged to let a test say.
+//
+// clockFloor is passed rather than omitted because SEC-075's clock-floor reset
+// verb is otherwise UNIMPLEMENTED — and a box whose floor has been driven above
+// its wall clock has no other way down (SEC-066's wiring note above).
+func startConsoleBinding(authDir string, authStore *auth.Store, clockFloor *auth.ClockFloor, auditor *auth.Auditor) (*auth.ConsoleListener, error) {
+	ln, err := auth.ListenConsole(authDir, auth.NewConsole(authStore, clockFloor, auditor), func(format string, args ...any) {
+		log.Printf("waiveo-feeder: "+format, args...)
+	})
+	if err != nil {
+		return nil, err
+	}
+	go ln.Serve()
+	return ln, nil
 }
 
 // webhookRotationOverlapMs is how long a rotated-away signing secret stays
