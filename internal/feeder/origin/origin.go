@@ -8,10 +8,12 @@ package origin
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -34,15 +36,61 @@ import (
 // (New) is in-memory only, for tests.
 type Store struct {
 	mu    sync.RWMutex
-	items map[string][]byte // key: hex digest, no "sha256:" prefix
-	dir   string            // persistence dir; "" = in-memory only (no write-through)
+	items map[string]item // key: hex digest, no "sha256:" prefix
+	dir   string          // persistence dir; "" = in-memory only (no write-through)
+
+	// adding counts the in-flight Adds per hex digest. Add writes the file
+	// OUTSIDE the write lock deliberately — a multi-megabyte upload must not
+	// stall every concurrent Serve — which leaves a window in which a
+	// just-written file has not yet been published into items. Remove refuses
+	// a digest with a non-zero count so it cannot unlink the file an Add is
+	// about to publish, which would leave the asset advertised in memory with
+	// no bytes on disk: served until the next restart, then silently gone,
+	// with every playlist that referenced it dangling.
+	adding map[string]int
+
+	// nowMs stamps a newly added asset's StoredAtMs. Injectable so a retention
+	// sweep's age arithmetic (contentgc) is drivable from a test without
+	// waiting out a real window; production leaves it at the wall clock.
+	nowMs func() int64
+}
+
+// item is one stored asset: its bytes, and when this deployment first obtained
+// them. Content is immutable once stored (the key IS the hash), so StoredAt is
+// written once and never refreshed by a re-Add of the same bytes.
+type item struct {
+	bytes     []byte
+	storedAt  int64 // ms since epoch; the file's mtime for a reloaded asset
+	fromDisk  bool  // loaded by Open rather than added in this process
+	sizeBytes int
+}
+
+// Option configures a Store at construction.
+type Option func(*Store)
+
+// WithClock overrides the clock a newly added asset's StoredAtMs is stamped
+// from (default: the wall clock). Test-only by intent — the retention sweep
+// compares its own clock against these stamps, so a test that pins one must be
+// able to pin the other.
+func WithClock(nowMs func() int64) Option {
+	return func(s *Store) {
+		if nowMs != nil {
+			s.nowMs = nowMs
+		}
+	}
 }
 
 // New returns an empty in-memory Store with no persistence. Use Open to back a
 // Store with a directory so uploaded content survives a restart.
-func New() *Store {
-	return &Store{items: map[string][]byte{}}
+func New(opts ...Option) *Store {
+	s := &Store{items: map[string]item{}, adding: map[string]int{}, nowMs: wallClockMs}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
+
+func wallClockMs() int64 { return time.Now().UnixMilli() }
 
 // Open returns a Store persisted under dir: it creates dir (0700) if absent,
 // loads every already-stored asset from it (each file is named by its own hex
@@ -57,8 +105,11 @@ func New() *Store {
 // never serves content under a hash it does not match (the content-addressing
 // integrity invariant). An empty dir yields an in-memory-only Store, matching
 // New.
-func Open(dir string) (*Store, error) {
-	s := &Store{items: map[string][]byte{}, dir: dir}
+func Open(dir string, opts ...Option) (*Store, error) {
+	s := &Store{items: map[string]item{}, adding: map[string]int{}, dir: dir, nowMs: wallClockMs}
+	for _, o := range opts {
+		o(s)
+	}
 	if dir == "" {
 		return s, nil
 	}
@@ -84,7 +135,17 @@ func Open(dir string) (*Store, error) {
 		if strings.TrimPrefix(signhash.ContentID(b), "sha256:") != name {
 			continue
 		}
-		s.items[name] = b
+		// The file's mtime is when this deployment obtained the bytes, and it is
+		// the ONLY record of that which survives a restart — the retention sweep's
+		// "do not reclaim an asset nobody has had time to schedule yet" guard is
+		// measured from it. A file whose mtime cannot be read is treated as
+		// arriving NOW (the newest possible, therefore the most protected), never
+		// as the epoch, which would make it instantly reclaimable.
+		storedAt := s.nowMs()
+		if info, err := e.Info(); err == nil {
+			storedAt = info.ModTime().UnixMilli()
+		}
+		s.items[name] = item{bytes: b, storedAt: storedAt, fromDisk: true, sizeBytes: len(b)}
 	}
 	return s, nil
 }
@@ -105,9 +166,15 @@ func (s *Store) Add(b []byte) (string, error) {
 	hexDigest := strings.TrimPrefix(assetRef, "sha256:")
 
 	if s.dir != "" {
-		s.mu.RLock()
+		// Declare the add in-flight BEFORE dropping the lock to write the file,
+		// so a concurrent retention sweep cannot unlink what this is about to
+		// publish (see Store.adding).
+		s.mu.Lock()
 		_, present := s.items[hexDigest]
-		s.mu.RUnlock()
+		s.adding[hexDigest]++
+		s.mu.Unlock()
+		defer s.addDone(hexDigest)
+
 		if !present {
 			if err := writeAtomic(s.dir, hexDigest, b); err != nil {
 				return "", fmt.Errorf("origin: persist %s: %w", hexDigest, err)
@@ -116,10 +183,32 @@ func (s *Store) Add(b []byte) (string, error) {
 	}
 
 	s.mu.Lock()
-	s.items[hexDigest] = b
+	if prior, ok := s.items[hexDigest]; ok {
+		// Already stored: the bytes are identical (the key is their hash), so the
+		// only thing a re-Add could change is the stored-at stamp — and it must
+		// NOT. Re-seeding the placeholder image on every boot would otherwise keep
+		// resetting its age, and an asset re-uploaded by a retrying client would
+		// look freshly arrived forever. The stamp records when this deployment
+		// first obtained the bytes; that fact does not change.
+		prior.bytes = b
+		s.items[hexDigest] = prior
+	} else {
+		s.items[hexDigest] = item{bytes: b, storedAt: s.nowMs(), sizeBytes: len(b)}
+	}
 	s.mu.Unlock()
 
 	return assetRef, nil
+}
+
+// addDone clears one in-flight Add for hexDigest.
+func (s *Store) addDone(hexDigest string) {
+	s.mu.Lock()
+	if n := s.adding[hexDigest] - 1; n > 0 {
+		s.adding[hexDigest] = n
+	} else {
+		delete(s.adding, hexDigest)
+	}
+	s.mu.Unlock()
 }
 
 // writeAtomic writes b to <dir>/<name> atomically (temp file in the same dir +
@@ -152,7 +241,11 @@ func writeAtomic(dir, name string, b []byte) error {
 func (s *Store) Serve(hexDigest string) []byte {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.items[hexDigest]
+	it, ok := s.items[hexDigest]
+	if !ok {
+		return nil
+	}
+	return it.bytes
 }
 
 // Has reports whether content is stored under hexDigest (no "sha256:" prefix).
@@ -192,7 +285,86 @@ func (s *Store) Purge() error {
 			}
 		}
 	}
-	s.items = map[string][]byte{}
+	s.items = map[string]item{}
+	return nil
+}
+
+// Entry is one stored asset as a retention sweep sees it: its key, its size, and
+// when this deployment first obtained the bytes.
+//
+// StoredAtMs is the file's mtime for an asset Open reloaded and the add clock's
+// reading for one added in this process. It is deliberately NOT "when this asset
+// was last referenced" — nothing records that — so the only thing a sweep may
+// conclude from it is a lower bound on how long the asset has been sitting here,
+// which is exactly what the "do not reclaim an upload nobody has had time to
+// schedule yet" guard needs and nothing more.
+type Entry struct {
+	HexDigest  string
+	SizeBytes  int
+	StoredAtMs int64
+}
+
+// Entries lists every stored asset, in hex-digest order, as a point-in-time
+// snapshot — the enumeration a retention sweep decides over.
+//
+// The snapshot may go stale in exactly one direction: an Add concurrent with the
+// caller's decision-making appears in no snapshot taken before it, so a sweep can
+// never consider — and therefore never reclaim — an asset that arrived after it
+// looked. Removal is this package's own, and Remove re-checks under the same lock.
+func (s *Store) Entries() []Entry {
+	s.mu.RLock()
+	out := make([]Entry, 0, len(s.items))
+	for hexDigest, it := range s.items {
+		out = append(out, Entry{HexDigest: hexDigest, SizeBytes: it.sizeBytes, StoredAtMs: it.storedAt})
+	}
+	s.mu.RUnlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].HexDigest < out[j].HexDigest })
+	return out
+}
+
+// ErrAddInFlight is returned by Remove for a digest an Add is concurrently
+// publishing. It is not a failure to act on: the asset is present and wanted, and
+// a retention sweep that meets it must simply keep the asset.
+var ErrAddInFlight = errors.New("origin: an add of this content is in flight")
+
+// Remove reclaims ONE asset: it unlinks the file and stops advertising the bytes.
+// Unlike Purge (which destroys the whole store for a data-subject erasure), this
+// is the single-asset reclamation a retention sweep drives, and it exists ONLY to
+// serve that sweep — nothing in the api/1 surface deletes content.
+//
+// Everything here is arranged so a failed removal keeps the asset rather than
+// half-removes it:
+//
+//   - The file is unlinked FIRST, and the in-memory entry is dropped only if that
+//     succeeded. The opposite order would, on an unlink failure, leave bytes on
+//     disk that this process no longer advertises — an asset that resurrects at
+//     the next boot and has to be reclaimed all over again — whereas this order's
+//     failure leaves the asset fully intact, still served, still schedulable.
+//   - A file that is already gone is not an error: the in-memory entry is dropped
+//     and the reclamation is reported as done, because it is.
+//   - A digest with an Add in flight is refused with ErrAddInFlight rather than
+//     removed. See Store.adding: unlinking there would leave the asset advertised
+//     with no bytes behind it.
+//
+// Removing an asset a playlist still references would strand every screen the
+// playlist plays on. This type cannot see playlists, so it does not try to judge
+// that — the caller holds the app store's write lock across its reference read and
+// this call, which is what actually makes the decision safe (contentgc).
+func (s *Store) Remove(hexDigest string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.items[hexDigest]; !ok {
+		return nil
+	}
+	if s.adding[hexDigest] > 0 {
+		return ErrAddInFlight
+	}
+	if s.dir != "" {
+		if err := os.Remove(filepath.Join(s.dir, hexDigest)); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("origin: remove %s: %w", hexDigest, err)
+		}
+	}
+	delete(s.items, hexDigest)
 	return nil
 }
 
