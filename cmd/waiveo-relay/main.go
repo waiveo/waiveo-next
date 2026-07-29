@@ -562,7 +562,7 @@ func main() {
 	// role; see playerserver.Server.EnablePersistence's own doc). Must happen
 	// before pairingSrv.Register mounts routes onto mux below.
 	pairingSrv.EnablePersistence(store)
-	logPairingCodes(cfg, applied, certDER)
+	logPairingCodes(cfg, applied, certDER, relayID.RelayID)
 
 	// Configure program delivery (GET /player/v1/program) from the relay's
 	// OWN persisted last-applied screen_programs (REL-055/061), not directly
@@ -898,6 +898,11 @@ func main() {
 				// no view of it until it does (REL-110/111).
 				candStore.SetSite(c.HelloAck().SiteBinding.ScopeNode)
 				reportCandidates(c, candStore)
+				// REL-124's "next connection opportunity", taken literally:
+				// every pairing-grant redemption performed while this relay was
+				// disconnected (REL-122) — or before its last restart — is owed
+				// upstream, and this is the first moment it can be paid.
+				reportRedemptions(c, pairingSrv)
 				// Pull-on-reconnect immediacy (and, for the seeded boot
 				// connection, a catch-up for anything authored between the
 				// boot pull and this point): a same-generation answer is a
@@ -912,6 +917,25 @@ func main() {
 	} else {
 		log.Printf("waiveo-relay: connection supervisor NOT started — %v is not a recoverable refusal (relay/1 Error taxonomy); serving persisted last-applied offline until an operator intervenes", connErr)
 	}
+
+	// REL-124/REL-124d: a redemption performed WHILE connected is owed upstream
+	// too, and the redemption path itself never touches the connection — a
+	// player's POST /player/v1/pair must not block on the app peer, and REL-122
+	// makes redemption legal with no app peer at all. So the owed-report ledger
+	// is drained on this cadence as well as on connect, and a report stays owed
+	// until its own ack arrives.
+	go func() {
+		tick := time.NewTicker(redemptionReportInterval)
+		defer tick.Stop()
+		for {
+			select {
+			case <-rootCtx.Done():
+				return
+			case <-tick.C:
+				reportRedemptions(liveConn.get(), pairingSrv)
+			}
+		}
+	}()
 
 	// Wire the relay's telemetry upstream channel (relay/1 REL-090/092/097): the
 	// automation stack records a fired rule's automation.run into the durable
@@ -1029,10 +1053,18 @@ func registerClockHint(mux *http.ServeMux, certDER []byte, ctl *clocktrust.Contr
 
 // logPairingCodes forms and logs (dev-console-only stand-in for a real
 // display surface, out of player/1's own scope) a REL-126 pairing code for
-// every applied pairing grant, so a developer can read one off the relay's
-// own log and hand it to a later player/1 client task.
-func logPairingCodes(cfg config, applied desiredstate.Applied, relayCertDER []byte) {
+// every applied pairing grant THIS relay could actually redeem, so a developer
+// can read one off the relay's own log and hand it to a later player/1 client
+// task. A grant bound to a different relay (REL-121b) is skipped — see below.
+func logPairingCodes(cfg config, applied desiredstate.Applied, relayCertDER []byte, relayID string) {
 	for _, grant := range applied.PairingGrants {
+		// A grant bound to another relay (REL-121b) is not this relay's to
+		// display: the code would encode THIS relay's dial address for a
+		// selector only the bound relay can redeem, so anyone who typed it
+		// would be refused — a code that cannot work is worse than no code.
+		if grant.RelayID != "" && grant.RelayID != relayID {
+			continue
+		}
 		code, err := playerserver.FormPairingCode(cfg.pairHost, cfg.pairPort, grant, relayCertDER)
 		if err != nil {
 			log.Printf("waiveo-relay: form pairing code for grant %s: %v", grant.GrantID, err)
@@ -1391,6 +1423,59 @@ func reportCandidates(c *relayconn.Client, store *deviceplane.Store) {
 	}
 	if n := len(report.Body.Candidates); n > 0 {
 		log.Printf("waiveo-relay discovery: reported %d device candidate(s) to the app peer", n)
+	}
+}
+
+// redemptionReportInterval is how often a connected relay drains its owed
+// pairing-grant redemption reports upstream (REL-124). Short relative to a
+// grant's own 900s ttl: the report drives the app peer to retire a spent grant
+// from later generations, and a spent grant still riding snapshots is exactly
+// the thing this shrinks. It is deliberately NOT load-bearing — the site-wide
+// at-most-once property is the grant's own relay binding (REL-121b/REL-124c) —
+// so nothing breaks if a tick is missed or the app peer is down for hours.
+const redemptionReportInterval = 30 * time.Second
+
+// reportRedemptions drains the relay's owed redemption reports onto c, oldest
+// first, retiring each from the ledger only once its own ack has arrived
+// (REL-124a/REL-124d). A nil client (disconnected) is a no-op: the ledger is
+// durable, so everything owed is still owed at the next connection.
+//
+// Two failure shapes, deliberately different:
+//   - PAIRING_REPORT_UNAUTHORIZED (REL-124b) — the app peer says this grant is
+//     not this relay's to report, and the Error taxonomy marks that refusal
+//     non-retryable. The report is retired anyway and logged loudly: re-sending
+//     would draw the identical refusal forever and wedge every LATER report
+//     behind it. It also means something is wrong that an operator should see —
+//     this relay believes it redeemed a grant the app peer says belongs to
+//     someone else.
+//   - anything else (write failure, timeout, INTERNAL) — the batch STOPS and
+//     everything from this report on stays owed. Stopping rather than skipping
+//     ahead keeps the ledger in order and avoids hammering a peer that is
+//     already failing.
+func reportRedemptions(c *relayconn.Client, srv *playerserver.Server) {
+	if c == nil {
+		return
+	}
+	owed, err := srv.PendingRedemptionReports()
+	if err != nil {
+		log.Printf("waiveo-relay: reading owed pairing-redemption reports failed (retried on the next tick): %v", err)
+		return
+	}
+	for _, r := range owed {
+		err := c.SendPairingRedeemed(wire.PairingRedeemedBody{GrantID: r.GrantID, RedeemedAt: r.RedeemedAt})
+		var refusal *relayconn.Refusal
+		switch {
+		case err == nil:
+		case errors.As(err, &refusal) && refusal.Code == "PAIRING_REPORT_UNAUTHORIZED":
+			log.Printf("waiveo-relay: the app peer refused this relay's redemption report for grant %s as bound to a DIFFERENT relay (REL-124b) — dropping the report; an operator should investigate", r.GrantID)
+		default:
+			log.Printf("waiveo-relay: reporting redemption of grant %s upstream failed (%v); it stays owed for the next connection opportunity (REL-124d)", r.GrantID, err)
+			return
+		}
+		if err := srv.MarkRedemptionReported(r.Seq); err != nil {
+			log.Printf("waiveo-relay: clearing the reported redemption of grant %s from the ledger failed (%v); it will be re-sent, which the app peer takes as a no-op (REL-124b)", r.GrantID, err)
+			return
+		}
 	}
 }
 

@@ -678,6 +678,11 @@ func main() {
 		// The read model IS the candidate sink: no adapter, no shim — the
 		// connection layer's CandidateSink is exactly its ApplyCandidates.
 		relayconn.WithCandidateSink(deviceRegistry),
+		// REL-124's upstream redemption report, retiring the reported grant
+		// from later generations (redemptionsink.go). Retirement TRAILS the
+		// redemption and enforces nothing — the site-wide at-most-once
+		// property is the grant's own relay binding (REL-121b/REL-124c).
+		relayconn.WithRedemptionSink(storeRedemptionSink{st: st}),
 	)
 
 	idem := apihttp.NewIdempotencyStore(nowMs, 0)

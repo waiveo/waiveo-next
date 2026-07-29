@@ -636,6 +636,78 @@ func (c *Client) SendDeviceCandidates(body wire.DeviceCandidatesBody) error {
 	return nil
 }
 
+// SendPairingRedeemed reports one pairing-grant redemption this relay performed
+// upstream (REL-124), as REL-124a's `pairing.redeemed {grant_id, redeemed_at}`.
+//
+// It rides THIS connection rather than the telemetry channel because REL-095
+// closes that channel's schema set to exactly the five `events/1` registered
+// schemas REL-093–094 name and makes `events/1` their sole normative source:
+// there is no schema there that carries a redemption, and relay/1 may not mint
+// one into another contract's registry. REL-124's own "at the next telemetry or
+// connection opportunity" already admits this vehicle; REL-124a fixes it as the
+// vehicle.
+//
+// It BLOCKS until the app peer's `pairing.redeemed_ack` arrives, and returns
+// nil only then. That is REL-124d's own rule: a write that left the socket is
+// not a record the app peer kept, so the caller may retire its owed-report
+// record on a nil return and on nothing else. A *Refusal carrying
+// PAIRING_REPORT_UNAUTHORIZED (REL-124b) is the app peer stating this grant is
+// not this relay's to report — the taxonomy marks it non-retryable, so a caller
+// stops re-sending THAT report rather than wedging its ledger; any other error
+// leaves the redemption owed for the next connection opportunity.
+//
+// No trace id rides the frame: a redemption traces to a player's own pairing
+// request, not to an operation on this connection. The envelope's relay_id is
+// this connection's authenticated identity, and the body carries no reporter
+// field at all — the app peer attributes the report to the connection it
+// arrived on, never to anything the frame asserts (REL-124b).
+func (c *Client) SendPairingRedeemed(body wire.PairingRedeemedBody) error {
+	if body.GrantID == "" {
+		return fmt.Errorf("relayconn: SendPairingRedeemed: grant_id must not be empty")
+	}
+	reqID := ulid.New()
+	req, err := wire.NewFrame(wire.FrameTypePairingRedeemed, reqID, c.relayID, body)
+	if err != nil {
+		return fmt.Errorf("relayconn: SendPairingRedeemed: %w", err)
+	}
+
+	ch := make(chan wire.Frame, 1)
+	c.mu.Lock()
+	if c.readErr != nil {
+		err := c.readErr
+		c.mu.Unlock()
+		return fmt.Errorf("relayconn: SendPairingRedeemed: connection is down: %w", err)
+	}
+	c.pending[reqID] = ch
+	c.mu.Unlock()
+
+	if err := c.send(req); err != nil {
+		c.mu.Lock()
+		delete(c.pending, reqID)
+		c.mu.Unlock()
+		return fmt.Errorf("relayconn: SendPairingRedeemed: send: %w", err)
+	}
+
+	select {
+	case reply, ok := <-ch:
+		if !ok {
+			return fmt.Errorf("relayconn: SendPairingRedeemed: connection closed awaiting ack: %w", c.Err())
+		}
+		if reply.Type == wire.FrameTypeError {
+			return &Refusal{Code: reply.Code, Message: reply.Message}
+		}
+		if reply.Type != wire.FrameTypePairingRedeemedAck {
+			return fmt.Errorf("relayconn: SendPairingRedeemed: reply is %q, want %s", reply.Type, wire.FrameTypePairingRedeemedAck)
+		}
+		return nil
+	case <-time.After(requestTimeout):
+		c.mu.Lock()
+		delete(c.pending, reqID)
+		c.mu.Unlock()
+		return fmt.Errorf("relayconn: SendPairingRedeemed: timed out awaiting ack for grant %s", body.GrantID)
+	}
+}
+
 // RelayID returns the enrolled relay identity this connection authenticated as.
 func (c *Client) RelayID() string { return c.relayID }
 

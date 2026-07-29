@@ -123,6 +123,48 @@ type CandidateSink interface {
 	Forget(relayID string)
 }
 
+// ErrGrantBoundElsewhere is what a RedemptionSink returns for a report naming a
+// pairing grant bound (REL-121b) to a relay OTHER than the one reporting it —
+// the one refusal REL-124b names. The connection layer answers it with the
+// taxonomy's `PAIRING_REPORT_UNAUTHORIZED` and keeps the connection up: a relay
+// reaching for another relay's grant is refused, not disconnected, exactly as a
+// refused `device.candidates` report is.
+var ErrGrantBoundElsewhere = errors.New("relayconn: pairing grant is bound to a different relay")
+
+// RedemptionSink receives one relay's `pairing.redeemed` report (REL-124), the
+// upstream record that a pairing grant was consumed — including one consumed
+// while the relay was disconnected (REL-122/REL-124a). The deployment adapts
+// its own record to this interface (cmd/waiveo-feeder wires the authoring
+// store's RetirePairingGrant), so this package depends on the INTAKE capability
+// rather than on any store type.
+//
+// relayID is the connection's AUTHENTICATED identity (the mTLS
+// client-certificate identity, REL-041/150), never a value the frame asserts —
+// REL-124b requires exactly that, and the sink takes it as an argument so there
+// is no other value available to attribute the report to. The sink MUST refuse
+// (ErrGrantBoundElsewhere) a grant bound to a different relay, MUST treat a
+// grant it does not hold as an idempotent no-op rather than a refusal (a relay
+// re-sending an owed report, or reporting one already retired, is doing what
+// REL-124a requires of it), and MUST NOT create, revive, or un-consume anything.
+//
+// This report is an audit and retirement mechanism, never the enforcement of
+// one-time redemption: that is REL-121b/REL-121c's binding, which holds with no
+// report ever delivered (REL-124c). Nothing downstream of this sink may treat
+// the absence of a report as evidence a grant was not redeemed.
+type RedemptionSink interface {
+	ApplyRedemption(relayID string, body wire.PairingRedeemedBody) error
+}
+
+// WithRedemptionSink wires the intake a relay's `pairing.redeemed` reports are
+// applied to. Optional: without it the report is accepted off the wire and
+// dropped — REL-124's obligation is on the RELAY (to report), and the audit
+// record's own shape is explicitly out of relay/1's scope, so a deployment that
+// keeps no such record is conformant and gets the same REL-004 additive
+// tolerance an unknown verb gets.
+func WithRedemptionSink(sink RedemptionSink) Option {
+	return func(s *Server) { s.redemptions = sink }
+}
+
 // WithCandidateSink wires the intake a relay's `device.candidates` reports are
 // applied to. Optional: without it the report is accepted off the wire and
 // dropped — the honest behaviour for a deployment that runs no device read
@@ -151,6 +193,7 @@ type Server struct {
 	lookup             hello.RelayKeyLookup
 	revoked            RevocationCheck
 	candidates         CandidateSink
+	redemptions        RedemptionSink
 	site               hello.SiteBinding
 	implementedMinors  []string
 	recognizedFeatures []string
@@ -779,6 +822,10 @@ func (s *Server) serve(req *http.Request, ws *websocket.Conn) {
 			if err := s.handleDeviceCandidates(conn, f, relayID); err != nil {
 				return
 			}
+		case wire.FrameTypePairingRedeemed:
+			if err := s.handlePairingRedeemed(conn, f, relayID); err != nil {
+				return
+			}
 		default:
 			// Unknown verb: REL-004 additive tolerance — a newer relay's
 			// new message type is ignored, never a refusal, exactly as
@@ -866,6 +913,61 @@ func (s *Server) handleDeviceCandidates(conn *serverConn, f wire.Frame, relayID 
 			"MALFORMED_MESSAGE", "device.candidates report refused: "+err.Error()))
 	}
 	return nil
+}
+
+// handlePairingRedeemed applies one `pairing.redeemed` report to the wired
+// intake (REL-124/REL-124a). It returns a non-nil error only when the
+// connection itself must end (a failed write); a refused report is answered
+// with a typed error frame and the connection continues, since a bad report is
+// not a protocol-ordering violation — the same posture handleDeviceCandidates
+// takes.
+//
+// relayID is the connection's AUTHENTICATED identity, taken from the mTLS
+// client certificate at handshake — never f.RelayID. REL-124b requires exactly
+// that, and it is what keeps this verb from being a lever one enrolled relay
+// can pull against another: the report retires a grant, so honouring a
+// self-asserted relay_id would let any relay cancel a pairing in progress at a
+// sibling by naming its grant. The body carries no relay field at all
+// (wire.PairingRedeemedBody), so there is nothing here to be tempted by.
+func (s *Server) handlePairingRedeemed(conn *serverConn, f wire.Frame, relayID string) error {
+	var body wire.PairingRedeemedBody
+	if err := f.DecodeBody(&body); err != nil {
+		// An undecodable body fails the verb's minimum shape — the taxonomy's
+		// MALFORMED_MESSAGE (REL-002), as state.ack's own decode failure is.
+		return conn.send(wire.NewErrorFrame(f.ID, f.TraceID, relayID,
+			"MALFORMED_MESSAGE", "pairing.redeemed body did not decode"))
+	}
+	if body.GrantID == "" {
+		return conn.send(wire.NewErrorFrame(f.ID, f.TraceID, relayID,
+			"MALFORMED_MESSAGE", "pairing.redeemed carries no grant_id"))
+	}
+	if s.redemptions != nil {
+		if err := s.redemptions.ApplyRedemption(relayID, body); err != nil {
+			if errors.Is(err, ErrGrantBoundElsewhere) {
+				return conn.send(wire.NewErrorFrame(f.ID, f.TraceID, relayID,
+					"PAIRING_REPORT_UNAUTHORIZED", "the reported pairing grant is bound to a different relay (REL-124b)"))
+			}
+			// Anything else is this side's own failure to record the report,
+			// not the relay's fault. Answering an error rather than an ack is
+			// what makes REL-124d's re-send rule work: the relay keeps the
+			// redemption owed and tries again at its next connection
+			// opportunity, rather than retiring a report nothing recorded.
+			return conn.send(wire.NewErrorFrame(f.ID, f.TraceID, relayID,
+				"INTERNAL", "the redemption report could not be recorded"))
+		}
+	}
+	// Acknowledged (REL-124a): the report is recorded, or this deployment keeps
+	// no record to fail at keeping (WithRedemptionSink's doc — REL-124's
+	// obligation is the relay's, and the audit record's shape is out of
+	// relay/1's scope). Either way the relay may retire it, and MUST NOT keep
+	// re-sending a report the app peer has taken.
+	ack, err := wire.NewFrame(wire.FrameTypePairingRedeemedAck, f.ID, relayID,
+		wire.PairingRedeemedAckBody{GrantID: body.GrantID})
+	if err != nil {
+		return err
+	}
+	ack.TraceID = f.TraceID
+	return conn.send(ack)
 }
 
 // handleStatePull answers one state.pull (REL-050/051): state.unchanged
