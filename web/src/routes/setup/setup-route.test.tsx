@@ -83,7 +83,7 @@ describe("SetupRoute", () => {
     expect(await screen.findByTestId("where")).toHaveTextContent("/");
   });
 
-  it("works a second time on a box whose claim window re-opened, because it reads no state first (SEC-121)", async () => {
+  it("is ready to claim a second time, because the PAGE reads no state first (SEC-121)", async () => {
     const first = vi.fn(async () => SESSION);
     const session = vi.fn();
     const { unmount } = renderSetup(apiStub({ claim: first, session }));
@@ -91,11 +91,15 @@ describe("SetupRoute", () => {
     await waitFor(() => expect(first).toHaveBeenCalledTimes(1));
     unmount();
 
-    // A factory reset destroys the workspace and re-opens the claim window. The
-    // page must be usable again with no ceremony — which it is precisely because
-    // it never asked anything about the box before letting the operator submit.
-    // A precondition read is what would have made "already used once" a state
-    // something could get stuck on, so assert there is none.
+    // A factory reset destroys the workspace and re-opens the claim window. This
+    // is a claim about the PAGE only: it must be usable again with no ceremony,
+    // which it is precisely because it never asked anything about the box before
+    // letting the operator submit. A precondition read is what would have made
+    // "already used once" a state something could get stuck on, so assert there
+    // is none. Whether the BOX accepts the second claim is a separate question
+    // with a separate answer — it does not until it restarts
+    // (TestFactoryResetReopensClaimOnlyAtTheNextBoot), which is why the refusal
+    // test below insists the 401 message names a restart.
     const second = vi.fn(async () => SESSION);
     renderSetup(apiStub({ claim: second, session }));
     await claim({ code: "9f8e7d6c" });
@@ -168,13 +172,20 @@ describe("SetupRoute", () => {
 
     await claim({ code: "not-the-code" });
 
-    // 401 is the box's answer to BOTH: a wrong code, and any code at all once
-    // the box is claimed and has dropped its setup grants. The page must not
-    // pick one — it names both remedies, so whichever is true the operator's
-    // next move is on screen.
+    // 401 is the box's answer to THREE situations: a wrong code; any code at all
+    // once the box is claimed and has dropped its setup grants; and any code at
+    // all on a box that was factory-reset and has not rebooted, which holds no
+    // live grant yet (TestFactoryResetReopensClaimOnlyAtTheNextBoot). The page
+    // must not pick one — it names a remedy for each, so whichever is true the
+    // operator's next move is on screen.
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent(/check the code/i);
     expect(alert).toHaveTextContent(/sign in/i);
+    // The restart is the ONLY remedy for the reset case: "check the code" is
+    // useless (the code on disk is the dead one) and "sign in" is useless (the
+    // reset destroyed every credential). Leaving it out walks an operator who
+    // has just reset a box into a dead end with two wrong exits.
+    expect(alert).toHaveTextContent(/restart/i);
     expect(screen.getByRole("link", { name: /sign in/i })).toHaveAttribute("href", "/login");
   });
 

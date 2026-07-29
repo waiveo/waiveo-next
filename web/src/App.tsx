@@ -40,8 +40,11 @@ export default function App() {
               box as much as an unclaimed one, because nothing tells the console
               which it is and publishing that would be the disclosure, not the
               route. SEC-121 re-opens the claim window after a factory reset, and
-              this page works a second time because it holds no state that could
-              remember the first. */}
+              the PAGE is ready for that second claim because it holds no state
+              that could remember the first — but the BOX is not ready until it
+              restarts, since the reset destroys rows and the fresh setup grant
+              is minted by the next boot (internal/app/auth/destroy.go). The
+              route's 401 message names the restart for exactly that reason. */}
           <Route path="/setup" element={<SetupRoute />} />
           <Route
             element={

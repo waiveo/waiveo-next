@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -660,6 +661,98 @@ func TestSetupCodeIsPersisted0600(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Fatalf("the write must leave exactly the code file behind; got %d entries", len(entries))
+	}
+}
+
+// TestFactoryResetReopensClaimOnlyAtTheNextBoot pins the seam between SEC-121's
+// promise and the machinery that keeps it. The destruction re-opens the claim
+// window by removing the last `owner` binding, and that is genuinely all it does:
+// nothing in the reset path mints a `setup` grant, and nothing removes the code
+// file the PREVIOUS claim window left on disk. Both effects arrive at the next
+// boot, when EnsureClaimWindow runs again.
+//
+// Between the two the box is unclaimed and unclaimable, and the stale
+// `setup-code.txt` beside it reads exactly like a live one — so an operator who
+// resets a box and retries the code they still have is refused, with the same
+// 401 a wrong code draws, and the only remedy is a restart. The setup route's
+// 401 message names it because of this test.
+func TestFactoryResetReopensClaimOnlyAtTheNextBoot(t *testing.T) {
+	clock := newTestClock()
+	st, err := Open(":memory:", clock.now, ulid.New)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+
+	handlers := NewHandlers(NewAuthenticator(st, nil, nil, nil), nil, RootScopeNode)
+	mux := apihttp.WithTraceID(http.HandlerFunc(handlers.Claim))
+	claim := func(code, identifier string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(claimRequest{Code: code, Identifier: identifier, Password: "a long enough passphrase"})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/setup", strings.NewReader(string(body)))
+		req.RemoteAddr = "192.168.50.9:41234"
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec
+	}
+
+	dir := t.TempDir()
+	codePath := filepath.Join(dir, SetupGrantFile)
+	boot, err := EnsureClaimWindow(ctx, st, dir, RootScopeNode)
+	if err != nil {
+		t.Fatalf("EnsureClaimWindow: %v", err)
+	}
+	if rec := claim(boot.Code, "first@example.test"); rec.Code != http.StatusCreated {
+		t.Fatalf("the first claim must succeed; got %d %s", rec.Code, rec.Body.String())
+	}
+
+	// The claim itself leaves the code file exactly where the bootstrap wrote
+	// it — the handler never touches disk. Its presence is therefore "no boot
+	// since the claim", never "unclaimed", and anything reading it as claim
+	// state is reading the wrong thing.
+	if _, err := os.Stat(codePath); err != nil {
+		t.Fatalf("a successful claim must leave the code file for the next boot to clear; stat: %v", err)
+	}
+
+	if err := st.DestroyLocalAuthState(ctx); err != nil {
+		t.Fatalf("DestroyLocalAuthState: %v", err)
+	}
+	owners, err := st.CountOwnerBindings(ctx)
+	if err != nil {
+		t.Fatalf("CountOwnerBindings: %v", err)
+	}
+	if owners != 0 {
+		t.Fatalf("the reset must leave no owner binding, so the next boot reads the box as unclaimed; got %d", owners)
+	}
+
+	// ... and yet, in-process, the window is NOT open: the grant rows went with
+	// everything else, so the code still sitting on disk resolves to nothing.
+	raw, err := os.ReadFile(codePath)
+	if err != nil {
+		t.Fatalf("the reset must not remove the stale code file (nothing in the reset path touches it); read: %v", err)
+	}
+	stale := strings.TrimSpace(string(raw))
+	if stale != boot.Code {
+		t.Fatalf("the stale file must still hold the code that claimed the box; got %q", stale)
+	}
+	if rec := claim(stale, "second@example.test"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("a reset box that has not rebooted must refuse the stale code with the same 401 a wrong code draws; got %d %s", rec.Code, rec.Body.String())
+	}
+
+	// The restart is what re-opens it: a fresh grant, a fresh code, and the
+	// stale file overwritten with it.
+	boot2, err := EnsureClaimWindow(ctx, st, dir, RootScopeNode)
+	if err != nil {
+		t.Fatalf("EnsureClaimWindow (after reset): %v", err)
+	}
+	if boot2.Claimed || boot2.Code == "" {
+		t.Fatalf("the boot after a reset must mint a fresh setup grant (SEC-121); got %+v", boot2)
+	}
+	if boot2.Code == boot.Code {
+		t.Fatal("the boot after a reset must mint a DIFFERENT code, not re-present the redeemed one")
+	}
+	if rec := claim(boot2.Code, "second@example.test"); rec.Code != http.StatusCreated {
+		t.Fatalf("the freshly minted code must claim the box; got %d %s", rec.Code, rec.Body.String())
 	}
 }
 

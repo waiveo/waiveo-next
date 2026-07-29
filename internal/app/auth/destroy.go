@@ -27,6 +27,27 @@ import (
 //     live again (SEC-120) — no second mechanism, and nothing that could get out
 //     of step with the mechanism that already decides it.
 //
+// # The window re-opens AT THE NEXT BOOT, and the gap is observable
+//
+// "The next boot" above is load-bearing, not a turn of phrase. This function
+// destroys rows; it mints nothing. Until EnsureClaimWindow runs again the box
+// holds zero owner bindings AND zero live `setup` grants, so it is unclaimed and
+// unclaimable at once, and every code presented to the setup endpoint draws the
+// same 401 a wrong code draws.
+//
+// The stale artifact makes that worse rather than merely invisible: the previous
+// claim window's `setup-code.txt` (bootstrap.SetupGrantFile) is NOT removed here,
+// and nothing else removes it either — the claim handler never touched it, and
+// EnsureClaimWindow only clears it on the CLAIMED branch. So a reset box that has
+// not rebooted has a file on disk that looks exactly like a live setup code and
+// authenticates nothing. The next boot overwrites it with the real one.
+//
+// Two consequences worth carrying: the code file's presence means "no boot since
+// the claim", never "unclaimed", so nothing may read it as claim state; and the
+// only operator remedy in the gap is a restart, which is why the console's setup
+// route names a restart in its 401 message. Pinned by
+// TestFactoryResetReopensClaimOnlyAtTheNextBoot (http_test.go).
+//
 // SEC-011's "a deployment MUST always retain at least one `owner`-role principal
 // in a claimed state" is NOT violated by this, and the contract says so in the
 // same sentence: the last owner binding "MUST NOT be deletable through ordinary

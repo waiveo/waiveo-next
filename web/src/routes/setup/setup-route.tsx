@@ -26,6 +26,10 @@ import { ApiError, createApi, type WaiveoApi } from "@/api";
  * BREAK anything — it would just hand a scanner on a shared network a target
  * list, in exchange for saving the operator one click.
  *
+ * Being offered unconditionally is a property of the ROUTE, and it is the only
+ * "works on any box" claim this file makes. It is not a claim that any box will
+ * accept a code whenever this page is reached: see the reset case below.
+ *
  * So the routing signal stays with the artifact SEC-120 already requires to
  * exist: the printed/on-screen presentation, which names this page. The console
  * itself says the same thing to everybody — the sign-in page always offers this
@@ -39,6 +43,19 @@ import { ApiError, createApi, type WaiveoApi } from "@/api";
  * all and every attempt draws the same 401 a wrong code draws on an unclaimed
  * one. The one message covering that 401 therefore names both possibilities and
  * asserts neither.
+ *
+ * A third box answers the same 401, and it is the one worth naming here because
+ * neither of the other two remedies fixes it: a box that has been factory-reset
+ * but not restarted. SEC-121 re-opens the claim window by destroying the last
+ * `owner` binding, and destroying rows is all it does — the fresh `setup` grant
+ * is minted by the next BOOT's EnsureClaimWindow (internal/app/auth/destroy.go,
+ * bootstrap.go), not by the reset. In between, the box holds no live grant, so
+ * every code is refused; worse, the reset does not remove the previous window's
+ * `setup-code.txt`, so an operator can be holding a code that reads exactly like
+ * a live one and is dead. The only way out is a restart, so the 401 message says
+ * so — it is the same remedy the GRANT_EXPIRED branch names, for the same reason
+ * (only the person at the box can perform it), and it is the one an operator
+ * who reset the box five minutes ago would never guess.
  *
  * The 403s ARE reported distinctly, and that is not an inconsistency: a grant
  * that was expired, already redeemed, or of the wrong purpose can only be
@@ -256,10 +273,15 @@ function claimFailureMessage(err: ApiError): string {
     case "VALIDATION_FAILED":
       return "Fill in the setup code, an identifier and a password.";
     default:
-      // UNAUTHENTICATED, and anything unrecognized. Deliberately covers BOTH a
-      // wrong code and an already-claimed box without asserting either: the box
-      // itself cannot tell them apart, and a page that guessed would be handing
-      // out an answer the server withheld on purpose.
-      return "That setup code was not accepted. Check the code this box presented — and if the box has already been set up, sign in instead.";
+      // UNAUTHENTICATED, and anything unrecognized. Deliberately covers all
+      // THREE boxes that answer this way — a wrong code, an already-claimed box,
+      // and a box whose claim window re-opened but which has not rebooted since
+      // — without asserting which: the box itself cannot tell them apart, and a
+      // page that guessed would be handing out an answer the server withheld on
+      // purpose. Each clause is a remedy, so whichever is true the operator's
+      // next move is on screen; the restart clause is the ONLY remedy for the
+      // third, and it is the one an operator holding a code that worked
+      // yesterday will not think of.
+      return "That setup code was not accepted. Check the code this box presented. If the box was reset, restart it so it presents a fresh code. If it has already been set up, sign in instead.";
   }
 }
