@@ -46,42 +46,67 @@ func acks(frames map[string]wire.Frame) func(string) (wire.Frame, bool) {
 	}
 }
 
-// TestContentSweepFleetFloor pins every answer the fleet oracle gives, because
-// each one licenses or forbids a deletion that cannot be undone.
-func TestContentSweepFleetFloor(t *testing.T) {
+// TestContentSweepFleetConvergence pins every answer the fleet oracle gives,
+// because each one licenses or forbids a deletion that cannot be undone.
+//
+// It is asked "is the fleet at generation N", never "what is the lowest
+// generation" — a minimum cannot express a relay that has run AHEAD, and such a
+// relay is serving a program built from rows the caller never read.
+func TestContentSweepFleetConvergence(t *testing.T) {
 	const relayA, relayB = "01J8ZM000000000000000000A1", "01J8ZM000000000000000000B2"
 
-	t.Run("no relay is enrolled: vacuously converged", func(t *testing.T) {
+	t.Run("no relay is enrolled: converged for any target", func(t *testing.T) {
 		// Content reaches a screen only through a relay. With none entitled to
 		// connect, no program is in play and there is no older generation to
-		// protect — so reclamation is allowed rather than blocked forever.
-		floor, known := contentSweepFleetFloor(
-			func() []string { return nil }, connected(), acks(nil))()
-		if !known || floor != 0 {
-			t.Fatalf("floor = (%d, %v), want (0, true)", floor, known)
+		// protect. This MUST hold for a real generation, not just for zero: a
+		// relay-less box whose store has ever been written to would otherwise
+		// never reclaim, and would report the fleet as KNOWN while doing so, so
+		// nothing would ever say why.
+		for _, target := range []int64{0, 1, 42} {
+			converged, known := contentSweepFleetFloor(
+				func() []string { return nil }, connected(), acks(nil))(target)
+			if !converged || !known {
+				t.Fatalf("target %d: (converged=%v, known=%v), want (true, true)", target, converged, known)
+			}
 		}
 	})
 
-	t.Run("one relay, connected and acknowledged", func(t *testing.T) {
-		floor, known := contentSweepFleetFloor(
+	t.Run("one relay at the target", func(t *testing.T) {
+		converged, known := contentSweepFleetFloor(
 			func() []string { return []string{relayA} },
 			connected(relayA),
-			acks(map[string]wire.Frame{relayA: ackFrame(t, relayA, 42)}))()
-		if !known || floor != 42 {
-			t.Fatalf("floor = (%d, %v), want (42, true)", floor, known)
+			acks(map[string]wire.Frame{relayA: ackFrame(t, relayA, 42)}))(42)
+		if !converged || !known {
+			t.Fatalf("(converged=%v, known=%v), want (true, true)", converged, known)
 		}
 	})
 
-	t.Run("two relays: the floor is the lower", func(t *testing.T) {
-		floor, known := contentSweepFleetFloor(
+	t.Run("a relay BEHIND the target: not converged", func(t *testing.T) {
+		converged, known := contentSweepFleetFloor(
 			func() []string { return []string{relayA, relayB} },
 			connected(relayA, relayB),
 			acks(map[string]wire.Frame{
 				relayA: ackFrame(t, relayA, 42),
 				relayB: ackFrame(t, relayB, 39),
-			}))()
-		if !known || floor != 39 {
-			t.Fatalf("floor = (%d, %v), want (39, true) — the fleet is only as caught up as its slowest member", floor, known)
+			}))(42)
+		if converged || !known {
+			t.Fatalf("(converged=%v, known=%v), want (false, true) — relayB still serves an older program", converged, known)
+		}
+	})
+
+	t.Run("a relay AHEAD of the target: not converged", func(t *testing.T) {
+		// The case a floor cannot see. Under a minimum, relayA at the target
+		// reports the target and the sweep proceeds — while relayB serves a
+		// program built from rows this sweep never read.
+		converged, known := contentSweepFleetFloor(
+			func() []string { return []string{relayA, relayB} },
+			connected(relayA, relayB),
+			acks(map[string]wire.Frame{
+				relayA: ackFrame(t, relayA, 42),
+				relayB: ackFrame(t, relayB, 99),
+			}))(42)
+		if converged {
+			t.Fatalf("(converged=true, known=%v) with a relay ahead of the reference set — a minimum would have hidden it", known)
 		}
 	})
 
@@ -89,31 +114,31 @@ func TestContentSweepFleetFloor(t *testing.T) {
 		// The case the whole oracle exists for. relayB is offline; its screens
 		// keep fetching content from this origin using whatever program it applied
 		// before it went quiet, and nothing here can say what that was.
-		floor, known := contentSweepFleetFloor(
+		converged, known := contentSweepFleetFloor(
 			func() []string { return []string{relayA, relayB} },
 			connected(relayA),
-			acks(map[string]wire.Frame{relayA: ackFrame(t, relayA, 42)}))()
-		if known {
-			t.Fatalf("floor = (%d, true) with an enrolled relay offline; its screens would go blank", floor)
+			acks(map[string]wire.Frame{relayA: ackFrame(t, relayA, 42)}))(42)
+		if known || converged {
+			t.Fatalf("(converged=%v, known=%v) with an enrolled relay offline; its screens would go blank", converged, known)
 		}
 	})
 
 	t.Run("connected but never acknowledged: unknown", func(t *testing.T) {
-		floor, known := contentSweepFleetFloor(
-			func() []string { return []string{relayA} }, connected(relayA), acks(nil))()
-		if known {
-			t.Fatalf("floor = (%d, true) from a relay that has not said what it applied", floor)
+		converged, known := contentSweepFleetFloor(
+			func() []string { return []string{relayA} }, connected(relayA), acks(nil))(42)
+		if known || converged {
+			t.Fatalf("(converged=%v, known=%v) from a relay that has not said what it applied", converged, known)
 		}
 	})
 
 	t.Run("an ack whose body will not decode: unknown", func(t *testing.T) {
 		bad := ackFrame(t, relayA, 42)
 		bad.Body = json.RawMessage(`{"applied_generation": "not a number"}`)
-		floor, known := contentSweepFleetFloor(
+		converged, known := contentSweepFleetFloor(
 			func() []string { return []string{relayA} }, connected(relayA),
-			acks(map[string]wire.Frame{relayA: bad}))()
-		if known {
-			t.Fatalf("floor = (%d, true) from bytes that did not parse", floor)
+			acks(map[string]wire.Frame{relayA: bad}))(42)
+		if known || converged {
+			t.Fatalf("(converged=%v, known=%v) from bytes that did not parse", converged, known)
 		}
 	})
 }
@@ -136,7 +161,7 @@ func TestContentSweepFailureReclaimsNothing(t *testing.T) {
 	sweeper, err := contentgc.New(contentgc.Config{
 		Origin:     content,
 		References: unreadableRefs{},
-		Fleet:      func() (int64, bool) { return 0, true },
+		Fleet:      func(int64) (bool, bool) { return true, true },
 		NowMs:      func() int64 { return 0 },
 	})
 	if err != nil {
@@ -151,6 +176,8 @@ func TestContentSweepFailureReclaimsNothing(t *testing.T) {
 }
 
 type unreadableRefs struct{}
+
+func (unreadableRefs) Generation(context.Context) (int64, error) { return 1, nil }
 
 func (unreadableRefs) WithContentReferences(context.Context, func(store.ContentReferences) error) error {
 	return errUnreadable

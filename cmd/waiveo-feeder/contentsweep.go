@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"log"
-	"math"
 
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/feeder/contentgc"
@@ -27,7 +26,7 @@ import (
 // The windows are the package defaults. This deployment has no reason to be more
 // aggressive than the shipping policy, and every reason not to be: it is the
 // dev-lab box with real screens on it.
-func newContentSweeper(st *store.Store, contentStore *origin.Store, fleet contentgc.FleetFloor, nowMs func() int64) (*contentgc.Sweeper, error) {
+func newContentSweeper(st *store.Store, contentStore *origin.Store, fleet contentgc.FleetConverged, nowMs func() int64) (*contentgc.Sweeper, error) {
 	return contentgc.New(contentgc.Config{
 		Origin:     contentStore,
 		References: st,
@@ -105,24 +104,28 @@ func contentSweepFleetFloor(
 	activeRelays func() []string,
 	connectedRelays func() []relayconn.ConnectedRelay,
 	lastStateAck func(string) (wire.Frame, bool),
-) contentgc.FleetFloor {
-	return func() (int64, bool) {
+) contentgc.FleetConverged {
+	return func(target int64) (converged, known bool) {
 		active := activeRelays()
 		if len(active) == 0 {
-			return 0, true
+			// No relay is entitled to connect, so no screen is being served and
+			// no older program exists to break. Converged for ANY target — a
+			// relay-less box must still reclaim, and expressing this as a
+			// generation would make it fail the equality test forever while
+			// reporting the fleet as known, so nothing would ever say why.
+			return true, true
 		}
 		connected := map[string]bool{}
 		for _, c := range connectedRelays() {
 			connected[c.RelayID] = true
 		}
-		floor := int64(math.MaxInt64)
 		for _, relayID := range active {
 			if !connected[relayID] {
-				return 0, false
+				return false, false
 			}
 			frame, ok := lastStateAck(relayID)
 			if !ok {
-				return 0, false
+				return false, false
 			}
 			var ack wire.StateAckBody
 			if err := json.Unmarshal(frame.Body, &ack); err != nil {
@@ -130,12 +133,16 @@ func contentSweepFleetFloor(
 				// malformed body as generation 0 would report a floor of 0 and
 				// merely stall the sweep, but it would do so by ASSERTING a fact
 				// about the fleet from bytes that did not parse.
-				return 0, false
+				return false, false
 			}
-			if ack.AppliedGeneration < floor {
-				floor = ack.AppliedGeneration
+			// EXACT equality per relay, not a running minimum. A relay ahead of
+			// the target is serving a program built from rows the caller has not
+			// read; a minimum would hide it behind whichever relay is furthest
+			// behind.
+			if ack.AppliedGeneration != target {
+				return false, true
 			}
 		}
-		return floor, true
+		return true, true
 	}
 }

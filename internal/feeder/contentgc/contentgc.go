@@ -129,28 +129,40 @@ type ContentOrigin interface {
 // holding the write lock that makes acting on them safe (*store.Store).
 type ReferenceSource interface {
 	WithContentReferences(ctx context.Context, use func(store.ContentReferences) error) error
+	// Generation reads the current desired-state generation WITHOUT holding the
+	// write lock, so the fleet oracle can be asked about a specific generation
+	// before that lock is taken. See Sweep for why the ordering matters.
+	Generation(ctx context.Context) (int64, error)
 }
 
-// FleetFloor reports the lowest desired-state generation any relay that could
-// still be serving this workspace's content has applied, and whether that is
-// knowable at all right now.
+// FleetConverged answers ONE question: has every relay that could still be
+// serving this workspace's content applied exactly generation `target`?
 //
-// known=false is the answer whenever ANY relay that might be serving screens
-// cannot be accounted for — enrolled but not connected, connected but never
-// acknowledged a generation, reporting a generation this store never issued. It
-// is not an error and is not rare; it simply means this sweep reclaims nothing,
-// and the next one asks again.
+// It is asked that rather than "what is the lowest generation applied" because a
+// floor cannot express the answer. A floor is a minimum, so a fleet where one
+// relay sits at the target and another has run AHEAD of it reports the target
+// and reads as converged — while the relay in front is serving a program built
+// from rows this sweep never read. Asking about a specific generation makes the
+// out-of-range relay visible instead of averaged away.
 //
-// A deployment with no relay at all answers (anything, true): no relay means no
-// screen is being served, so no older program can exist to be broken.
-type FleetFloor func() (generation int64, known bool)
+// known=false whenever ANY relay that might be serving screens cannot be
+// accounted for — enrolled but not connected, connected but never acknowledged a
+// generation, or an acknowledgement this process cannot read. It is not an error
+// and is not rare; it means this sweep reclaims nothing and the next asks again.
+//
+// A deployment with NO relay answers (true, true) for every target: no relay
+// means no screen is being served, so no older program exists to be broken. That
+// case must not be expressed as a generation — answering with a floor of 0 makes
+// a relay-less box fail the equality test forever, so it never reclaims and
+// never reports why.
+type FleetConverged func(target int64) (converged, known bool)
 
 // Config wires a Sweeper. Origin, References and Fleet are required; the windows
 // default to the constants above when left zero.
 type Config struct {
 	Origin     ContentOrigin
 	References ReferenceSource
-	Fleet      FleetFloor
+	Fleet      FleetConverged
 	NowMs      func() int64
 
 	MinAssetAgeMs        int64
@@ -186,7 +198,7 @@ const (
 // Result is one sweep's accounting.
 type Result struct {
 	Generation     int64
-	FleetFloor     int64
+	FleetConverged bool
 	FleetKnown     bool
 	Scanned        int
 	Reclaimed      int
@@ -214,7 +226,10 @@ type Sweeper struct {
 	// the only thing standing between a fresh upload and deletion: MinAssetAgeMs
 	// is measured from the bytes' own on-disk age and survives any number of
 	// restarts.
-	marks map[string]int64
+	// marks records, per digest, WHEN it was first observed unreferenced and the
+	// store generation that observation was made at. Both halves are needed —
+	// see the mark handling in Sweep for why the timestamp alone is unsound.
+	marks map[string]mark
 }
 
 // New builds a Sweeper, defaulting the windows and rejecting a wiring that could
@@ -244,7 +259,7 @@ func New(cfg Config) (*Sweeper, error) {
 	if cfg.MaxReclaimPerSweep <= 0 {
 		cfg.MaxReclaimPerSweep = DefaultMaxReclaimPerSweep
 	}
-	return &Sweeper{cfg: cfg, marks: map[string]int64{}}, nil
+	return &Sweeper{cfg: cfg, marks: map[string]mark{}}, nil
 }
 
 // Sweep runs one reclamation pass and reports what it did.
@@ -255,20 +270,25 @@ func New(cfg Config) (*Sweeper, error) {
 func (s *Sweeper) Sweep(ctx context.Context) (Result, error) {
 	res := Result{Retained: map[Reason]int{}}
 
-	// The fleet floor is read BEFORE the store's write lock is taken, and that
-	// ordering is deliberate rather than incidental. The oracle is supplied by the
+	// The fleet is asked BEFORE the store's write lock is taken, and that ordering
+	// is deliberate rather than incidental. The oracle is supplied by the
 	// deployment and answers by consulting registries this package knows nothing
 	// about; one that happened to read the app store — which is a perfectly
 	// reasonable thing for an oracle to do — would deadlock against the very lock
 	// this sweep is about to hold, on a code path that only runs on a real box.
 	//
-	// Reading it early costs nothing in safety. It can only go stale in the
-	// direction of a generation that has since advanced, and an advanced
-	// generation makes the floor UNEQUAL to the one the references are read at,
-	// which stops the sweep. A stale floor can never make an unconverged fleet
-	// look converged: the value reports a generation a relay has already applied,
-	// and no later event lowers what it applied.
-	floor, floorKnown := s.cfg.Fleet()
+	// Which means the generation to ask about must also be read first, and then
+	// RE-CHECKED under the lock: the answer is only usable if the reference set
+	// turns out to have been read at the same generation the fleet was asked
+	// about. If the store advanced in between, this sweep reclaims nothing and
+	// the next one asks again. That re-check is what closes the window between
+	// learning the answer and acting on it, without holding the lock across a
+	// callback this package does not control.
+	askedGen, genErr := s.cfg.References.Generation(ctx)
+	if genErr != nil {
+		return res, fmt.Errorf("contentgc: read generation: %w", genErr)
+	}
+	convergedAtAsked, fleetKnown := s.cfg.Fleet(askedGen)
 
 	err := s.cfg.References.WithContentReferences(ctx, func(refs store.ContentReferences) error {
 		// Everything from here to the end of this callback runs under the app
@@ -277,20 +297,21 @@ func (s *Sweeper) Sweep(ctx context.Context) (Result, error) {
 		// call nothing that re-enters the store.
 		now := s.cfg.NowMs()
 
-		// The fleet is converged only when it has applied EXACTLY the generation
-		// this reference set was read at. Not ">=": a greater generation is one
-		// this callback has not read the references of — it would mean a relay is
-		// serving a program built from rows this sweep never saw, and an asset
-		// unreferenced in what it saw may be referenced in what it did not. A
-		// greater floor means either that something is wrong — a restored or
-		// swapped store, a relay bound to a different app peer — or merely that
-		// the generation advanced between the floor read and this lock. Both
-		// readings resolve the same way: delete nothing, ask again next sweep.
-		converged := floorKnown && floor == refs.Generation
+		// The fleet is converged only when EVERY relay has applied EXACTLY the
+		// generation this reference set was read at. Not ">=", and not a minimum:
+		// a relay on a greater generation is serving a program built from rows
+		// this callback never read, so an asset unreferenced in what it saw may
+		// be referenced in what it did not. Either direction — ahead or behind —
+		// resolves the same way: delete nothing, ask again next sweep.
+		//
+		// The answer above was about askedGen. It only describes THIS reference
+		// set if the generation has not moved since, which is checked here under
+		// the lock.
+		converged := fleetKnown && convergedAtAsked && askedGen == refs.Generation
 
 		res.Generation = refs.Generation
-		res.FleetFloor = floor
-		res.FleetKnown = floorKnown
+		res.FleetConverged = convergedAtAsked
+		res.FleetKnown = fleetKnown
 
 		entries := s.cfg.Origin.Entries()
 		res.Scanned = len(entries)
@@ -311,12 +332,29 @@ func (s *Sweeper) Sweep(ctx context.Context) (Result, error) {
 				continue
 			}
 
-			markedAt, marked := s.marks[e.HexDigest]
+			m, marked := s.marks[e.HexDigest]
+			// A mark is only evidence about the window it was taken in. Clearing
+			// it on OBSERVING a reference is not enough: a reference created and
+			// removed BETWEEN two sweeps is never observed, so the clock would
+			// keep running from an observation made before the asset was in use.
+			// An asset referenced sixty seconds ago would then be destroyed —
+			// while a player still holds a lease naming it, and permanently, so
+			// an operator who toggles an asset out of a playlist and back
+			// tomorrow finds it gone and must re-upload.
+			//
+			// Any write that removes a reference advances the generation, so a
+			// generation that has moved since the mark means the reference set
+			// may have changed in ways this sweeper never saw. The mark is only
+			// usable if the generation has not moved since it was taken.
+			if marked && m.generation != refs.Generation {
+				marked = false
+			}
 			if !marked {
-				s.marks[e.HexDigest] = now
+				s.marks[e.HexDigest] = mark{at: now, generation: refs.Generation}
 				res.Retained[ReasonFirstObservation]++
 				continue
 			}
+			markedAt := m.at
 
 			switch {
 			case now-e.StoredAtMs < s.cfg.MinAssetAgeMs:
@@ -354,4 +392,17 @@ func (s *Sweeper) Sweep(ctx context.Context) (Result, error) {
 		return Result{Retained: map[Reason]int{}}, err
 	}
 	return res, nil
+}
+
+// mark is one digest's unreferenced observation: when it was taken, and the
+// store generation it was taken at.
+//
+// The generation is what makes the window mean what it says. Without it the
+// mark records only that the asset was unreferenced at some past instant, and
+// a reference that appeared and vanished between two sweeps leaves no trace —
+// so the elapsed window would be measured from before the asset was last in
+// use rather than from when it stopped being used.
+type mark struct {
+	at         int64
+	generation int64
 }

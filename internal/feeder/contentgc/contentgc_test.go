@@ -66,7 +66,7 @@ func newHarness(t *testing.T, opts ...func(*contentgc.Config)) *harness {
 	cfg := contentgc.Config{
 		Origin:     h.origin,
 		References: h.store,
-		Fleet:      func() (int64, bool) { return h.floor, h.known },
+		Fleet:      func(target int64) (bool, bool) { return h.floor == target, h.known },
 		NowMs:      func() int64 { return h.now },
 	}
 	for _, o := range opts {
@@ -324,7 +324,7 @@ func TestARefusedRemovalKeepsTheAssetAndKeepsSweeping(t *testing.T) {
 	failing, err := contentgc.New(contentgc.Config{
 		Origin:     refusingOrigin{inner: h.origin, err: errors.New("read-only file system")},
 		References: h.store,
-		Fleet:      func() (int64, bool) { return h.floor, h.known },
+		Fleet:      func(target int64) (bool, bool) { return h.floor == target, h.known },
 		NowMs:      func() int64 { return h.now },
 	})
 	if err != nil {
@@ -374,6 +374,8 @@ func TestAnUnreadableReferenceSetReclaimsNothing(t *testing.T) {
 
 type brokenRefs struct{}
 
+func (brokenRefs) Generation(context.Context) (int64, error) { return 0, nil }
+
 func (brokenRefs) WithContentReferences(context.Context, func(store.ContentReferences) error) error {
 	return errors.New("the playlist table could not be read")
 }
@@ -387,7 +389,7 @@ func TestNewRefusesAWiringThatCannotBeSafe(t *testing.T) {
 		return contentgc.Config{
 			Origin:     origin.New(),
 			References: brokenRefs{},
-			Fleet:      func() (int64, bool) { return 0, true },
+			Fleet:      func(int64) (bool, bool) { return true, true },
 		}
 	}
 	for name, mutate := range map[string]func(*contentgc.Config){
@@ -400,5 +402,53 @@ func TestNewRefusesAWiringThatCannotBeSafe(t *testing.T) {
 		if _, err := contentgc.New(cfg); err == nil {
 			t.Errorf("contentgc.New accepted a config with %s", name)
 		}
+	}
+}
+
+// TestAReferenceTheSweeperNeverSawStillResetsTheClock is the case the
+// re-referencing test above cannot reach, and it is the one that destroys data.
+//
+// The mark was cleared only when a sweep OBSERVED the reference. A reference
+// created and removed entirely BETWEEN two sweeps is never observed — so the
+// clock kept running from an observation taken before the asset was in use, and
+// an asset referenced sixty seconds ago was reclaimed on the next sweep. A
+// player holding a lease naming it then fetched a 404, and the bytes were gone
+// for good: an operator who toggles an asset out of a playlist and back the next
+// day finds it unreferencable and has to re-upload.
+//
+// Every write that removes a reference advances the generation, so a mark taken
+// at a different generation is evidence about a reference set this sweeper never
+// saw, and must not be counted toward the window.
+func TestAReferenceTheSweeperNeverSawStillResetsTheClock(t *testing.T) {
+	h := newHarness(t)
+	digest := h.add("referenced and unreferenced between two sweeps")
+	h.age()
+
+	h.sweep() // marks it unreferenced
+
+	// Almost the whole window passes with no sweep running. Inside that gap the
+	// asset is referenced and then unreferenced again — the sweeper sees neither.
+	h.now += contentgc.DefaultMinUnreferencedAgeMs - 60_000
+	h.reference(testPlaylist, digest)
+	if err := h.store.Delete(context.Background(), store.KindPlaylist, testPlaylist, 1); err != nil {
+		t.Fatalf("delete playlist: %v", err)
+	}
+	h.now += 60_000
+
+	// The window has now elapsed against the ORIGINAL mark. It must not count:
+	// the asset stopped being referenced sixty seconds ago, not a day ago.
+	res := h.sweep()
+	if res.Reclaimed != 0 {
+		t.Fatalf("reclaimed %d asset(s) referenced 60s ago — the mark survived a reference the sweeper never observed", res.Reclaimed)
+	}
+	if res.Retained[contentgc.ReasonFirstObservation] != 1 {
+		t.Fatalf("retained = %v, want the asset re-marked as %q", res.Retained, contentgc.ReasonFirstObservation)
+	}
+
+	// And it is reclaimable once a full window really has elapsed with no
+	// intervening reference — the guard delays reclamation, it does not prevent it.
+	h.now += contentgc.DefaultMinUnreferencedAgeMs
+	if res := h.sweep(); res.Reclaimed != 1 {
+		t.Fatalf("reclaimed %d after a genuinely quiet full window, want 1 (retained=%v)", res.Reclaimed, res.Retained)
 	}
 }

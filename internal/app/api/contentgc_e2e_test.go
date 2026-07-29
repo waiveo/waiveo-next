@@ -72,14 +72,14 @@ func gcSweeper(t *testing.T, e *testEnv, content *origin.Store, now func() int64
 
 // convergedFleet reports the fleet as having applied exactly the store's current
 // generation — the steady state on a box whose relay is connected and caught up.
-func convergedFleet(t *testing.T, e *testEnv) contentgc.FleetFloor {
-	return func() (int64, bool) {
+func convergedFleet(t *testing.T, e *testEnv) contentgc.FleetConverged {
+	return func(target int64) (bool, bool) {
 		gen, err := e.store.Generation(context.Background())
 		if err != nil {
-			t.Errorf("read generation for the fleet floor: %v", err)
-			return 0, false
+			t.Errorf("read generation for the fleet oracle: %v", err)
+			return false, false
 		}
-		return gen, true
+		return gen == target, true
 	}
 }
 
@@ -241,7 +241,7 @@ func TestContentReferencedByALaggingRelayGenerationIsNotReclaimed(t *testing.T) 
 	fleetGen := laggingGen // the relay has not applied the drop yet
 	sw, err := contentgc.New(contentgc.Config{
 		Origin: content, References: e.store,
-		Fleet: func() (int64, bool) { return fleetGen, true },
+		Fleet: func(target int64) (bool, bool) { return fleetGen == target, true },
 		NowMs: func() int64 { return clock },
 	})
 	if err != nil {
@@ -294,7 +294,7 @@ func TestContentSweepHoldsWhenARelayIsUnreachable(t *testing.T) {
 	clock := gcTestNow + contentgc.DefaultMinAssetAgeMs
 	sw, err := contentgc.New(contentgc.Config{
 		Origin: content, References: e.store,
-		Fleet: func() (int64, bool) { return 0, false },
+		Fleet: func(int64) (bool, bool) { return false, false },
 		NowMs: func() int64 { return clock },
 	})
 	if err != nil {

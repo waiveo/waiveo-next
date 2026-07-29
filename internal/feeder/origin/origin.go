@@ -278,6 +278,20 @@ func (s *Store) Has(hexDigest string) bool {
 func (s *Store) Purge() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// An Add in flight is the same hazard here as it is in Remove, and for the
+	// same reason: Add writes its file OUTSIDE this lock and publishes after, so
+	// emptying the map underneath one leaves the re-publish pointing at a file
+	// this call already unlinked — an asset advertised in memory with no bytes on
+	// disk, served until the next restart and then silently gone. Remove refuses
+	// in that window; this must too, rather than being the one path that ignores
+	// the counter introduced to close it.
+	//
+	// Refusing is right for an erasure: the caller is destroying a workspace and
+	// needs to know it did not complete, not to be told it did while an upload
+	// raced past it.
+	if len(s.adding) > 0 {
+		return fmt.Errorf("origin: purge: %d add(s) in flight; retry once they complete", len(s.adding))
+	}
 	if s.dir != "" {
 		for hexDigest := range s.items {
 			if err := os.Remove(filepath.Join(s.dir, hexDigest)); err != nil && !os.IsNotExist(err) {
