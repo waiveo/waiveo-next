@@ -179,6 +179,15 @@ func escapeSQLiteLiteral(s string) string {
 // and collection rows. It is the relational half of the delete operation
 // api/1 API-122 routes to `security-model.md` SEC-121's destruction path.
 //
+// It is also the ONE pack-removal route that does not answer to the
+// required-pack floor, and that is deliberate rather than overlooked: a floor
+// says "this deployment cannot run without this pack", which is a statement
+// about a workspace that still exists. A factory reset is the operator
+// destroying the workspace itself, authorized as owner and confirmed by echoing
+// the workspace id; a floor that could veto it would make a required pack a
+// thing an owner cannot get rid of. The exemption is carved here, in the one
+// place it applies, and tested — not inherited by accident.
+//
 // Two things deliberately SURVIVE, and both are load-bearing:
 //
 //   - The org-kind scope node, whose `account_state` is set to `purged` instead
@@ -220,7 +229,17 @@ func (s *Store) PurgeWorkspace(ctx context.Context) error {
 		// secrets of every registered endpoint. Leaving it behind would survive a
 		// purge that just destroyed the endpoints those secrets belong to —
 		// credential material for rows that no longer exist.
-		for _, table := range []string{"pack_rows", "pack_files", "packs", "webhook_delivery_state"} {
+		// pack_installs and pack_channel_marks ride this list for a reason worth
+		// stating: they are the ONLY pack state that outlives an ordinary
+		// uninstall (MKT-094b keeps the resolved-version mark so uninstall +
+		// reinstall cannot launder a downgrade). Across a FACTORY RESET that
+		// rationale inverts. The records are the revert-to-known-good history, so
+		// leaving them would let the next owner's pack revert to a version only
+		// the erased workspace ever applied — the previous tenant steering the new
+		// one's rollback target, out of records naming digests and signing keys
+		// that were supposed to be destroyed. A reset means no owner has applied
+		// anything here yet, which is exactly a box with no history and no mark.
+		for _, table := range []string{"pack_rows", "pack_files", "pack_installs", "pack_channel_marks", "packs", "webhook_delivery_state"} {
 			if _, err := tx.ExecContext(ctx, `DELETE FROM `+table); err != nil {
 				return fmt.Errorf("store: purge %s: %w", table, err)
 			}

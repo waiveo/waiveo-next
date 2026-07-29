@@ -284,3 +284,65 @@ func TestExpectPriorVersionIsACompareAndSwap(t *testing.T) {
 		t.Fatalf("InstallPack with a matching ExpectPriorVersion: %v", err)
 	}
 }
+
+// TestPurgeWorkspaceIsTheOneExemptRemovalRoute pins BOTH halves of the factory
+// reset's relationship to the required-pack floor, because each half is a
+// defect if it silently flips.
+//
+// It is EXEMPT: a floor asserts what a live workspace cannot run without, and a
+// factory reset is the owner destroying the workspace itself. A floor that could
+// veto it would make a required pack something an owner can never be rid of. So
+// purge removes a required pack that UninstallPack refuses to touch.
+//
+// And it takes the pack's HISTORY with it. Install records and the channel mark
+// deliberately outlive an ordinary uninstall (MKT-094b, so uninstall+reinstall
+// cannot launder a downgrade) — but across a reset that rationale inverts: the
+// records are the revert-to-known-good history, so leaving them lets the NEXT
+// owner's pack revert to a version only the erased workspace ever applied, out
+// of records naming digests and signing keys the reset was supposed to destroy.
+func TestPurgeWorkspaceIsTheOneExemptRemovalRoute(t *testing.T) {
+	st := openMem(t)
+	ctx := context.Background()
+	// PurgeWorkspace tombstones the org node, so one must exist.
+	if _, err := st.Create(ctx, store.KindScopeNode,
+		[]byte(`{"id":"01J8Z2Q1M8H8N4T0V1W2X3Y4Z5","kind":"org","name":"Root Org"}`)); err != nil {
+		t.Fatalf("create org node: %v", err)
+	}
+
+	spec := packSpec("waiveo/system", "2.0.0", 1)
+	spec.Record.ResolvedVersion = "2.0.0"
+	spec.Record.TrustChannel = "first-party"
+	spec.ChannelMark = &store.ChannelMarkAdvance{
+		TrustChannel: "first-party", Version: "2.0.0", Higher: func(candidate, current string) bool {
+			return fixtureRoster{}.MeetsFloor(candidate, current) && candidate != current
+		}, ViaPointer: true,
+	}
+	if _, _, err := st.InstallPack(ctx, spec); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	st.SetRequiredPacks(fixtureRoster{"waiveo/system": "1.0.0"})
+
+	// The ordinary route refuses, which is what makes the exemption meaningful.
+	pack, _, _ := st.GetPack(ctx, "waiveo/system")
+	if err := st.UninstallPack(ctx, "waiveo/system", pack.Revision); err == nil {
+		t.Fatal("UninstallPack removed a required pack — the floor is not enforced")
+	}
+
+	if err := st.PurgeWorkspace(ctx); err != nil {
+		t.Fatalf("PurgeWorkspace: %v", err)
+	}
+	if _, found, _ := st.GetPack(ctx, "waiveo/system"); found {
+		t.Fatal("the factory reset left a required pack installed — the floor must not be able to veto a workspace destruction")
+	}
+
+	recs, err := st.ListPackInstalls(ctx, "waiveo/system")
+	if err != nil {
+		t.Fatalf("ListPackInstalls: %v", err)
+	}
+	if len(recs) != 0 {
+		t.Fatalf("the factory reset left %d install record(s) behind — the next owner's revert could target a version only the erased workspace applied", len(recs))
+	}
+	if mark, found, _ := st.PackChannelMark(ctx, "waiveo/system", "first-party"); found {
+		t.Fatalf("the factory reset left the channel mark at %q — erased-workspace state steering a new owner's resolution", mark)
+	}
+}

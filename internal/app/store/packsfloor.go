@@ -8,9 +8,19 @@ import "fmt"
 // The roster lives on the Store rather than arriving per call. That is the whole
 // point of MKT-093b's "enforced where a caller cannot step around it": an
 // InstallGuard-style precondition is only as good as every caller remembering to
-// pass it, and there is exactly one way to write a packs row (InstallPack) and
-// exactly one way to remove one (UninstallPack). Hanging the check off those two
-// transactions means a future caller inherits it by existing, not by remembering.
+// pass it. InstallPack is the one way to write a packs row and UninstallPack is
+// the one way to remove one for an ordinary caller, so hanging the check off
+// those transactions means a future caller inherits it by existing rather than
+// by remembering.
+//
+// ONE route removes packs without meeting this floor, and it is named here
+// rather than left for a reader to discover: PurgeWorkspace (workspace.go), the
+// factory reset behind api/1 API-122. That is a deliberate exemption with its
+// own argument — a floor asserts what a LIVE workspace cannot run without, and
+// a reset is the owner destroying the workspace itself — and it is tested as an
+// exemption. It is not evidence that the two-transaction rule is exhaustive;
+// any THIRD removal route would be a defect, and this comment is the place a
+// future author should notice they are about to create one.
 //
 // The store deliberately does NOT know a version grammar. MKT-050a fixes the
 // order (component-wise numeric over MAJOR.MINOR.PATCH), and a store-side string

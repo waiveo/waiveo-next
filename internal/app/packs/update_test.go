@@ -359,7 +359,7 @@ func TestUpdateFailureAtEveryStageLeavesThePriorVersion(t *testing.T) {
 			wantCode: "", // *ManifestError
 		},
 		{
-			name: "refused inside the install transaction (MAN-053 regression)",
+			name: "refused by the manifest engine on a dataModel regression (MAN-053)",
 			candidate: func(t *testing.T, s, _ *testSigner) []byte {
 				m := baseManifest()
 				m["version"] = "2.0.0"
@@ -368,7 +368,12 @@ func TestUpdateFailureAtEveryStageLeavesThePriorVersion(t *testing.T) {
 				return signedPackZip(t, s, m)
 			},
 			entryVer: "2.0.0",
-			wantCode: "", // *ManifestError, raised by the in-transaction guard
+			// *ManifestError. NOTE: this is raised by manifest.Validate, UPSTREAM
+			// of the transaction — not by the in-transaction guard, despite what
+			// the name used to say. Deleting versionRegressionGuard leaves this
+			// subtest green. The genuinely post-write refusal is exercised by
+			// TestRefusalAfterTheBundleDeleteLeavesThePriorBundleIntact below.
+			wantCode: "",
 		},
 	}
 
@@ -850,5 +855,89 @@ func TestNewRosterRefusesAMalformedEntry(t *testing.T) {
 	}
 	if _, ok := r.RequiredFloor("acme/other"); ok {
 		t.Fatal("a pack the roster does not name reported as required")
+	}
+}
+
+// TestRefusalAfterTheBundleDeleteLeavesThePriorBundleIntact is the stage the
+// seven-stage test does not reach: a refusal raised AFTER the install
+// transaction has already deleted the prior bundle's rows.
+//
+// "A refusal is the rollback" rests on the transaction upserting rather than
+// delete-then-insert — but InstallPack does delete pack_files before writing the
+// new bundle, so the window exists inside the transaction and only the rollback
+// closes it. Every other refusal in this package fires before the first write,
+// which means none of them exercise that window. The channel-mark re-assertion
+// is the one refusal that fires after it.
+//
+// The bundle deliberately SHRINKS: the candidate carries fewer pages and fewer
+// locales than the installed version, so a botched rollback would show up as
+// missing files rather than as stale ones.
+func TestRefusalAfterTheBundleDeleteLeavesThePriorBundleIntact(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	signer := newTestSigner(t)
+
+	// Installed: a three-page, two-locale bundle at 3.0.0, marked on the channel.
+	rich := baseManifest()
+	rich["version"] = "3.0.0"
+	ui, _ := rich["ui"].(map[string]any)
+	ui["pages"] = append(ui["pages"].([]any), map[string]any{
+		"path": "extra", "pageType": "list-detail", "titleMsg": "msg:page.menuItems.title",
+	})
+	richFiles := basePackFiles(t, rich)
+	richFiles["ui/extra.json"] = `{"pageType":"list-detail"}`
+	richFiles["messages/fr.json"] = `{"k":"v"}`
+
+	reg := newRegistry(t, "local-fixture")
+	reg.publish("acme/menu-board", "3.0.0", signer.sign(t, filesZip(t, richFiles), "acme/menu-board", "3.0.0"), nil)
+	reg.point("acme/menu-board", "community", "3.0.0")
+	in := packs.NewInstaller(st, signer.anchorsFor(fixtureNamespaces...),
+		packs.WithMarketplace(packs.NewMarket(func() int64 { return fixedNow }, reg.source())))
+	if _, err := in.InstallRef(ctx, packs.Ref{PackID: "acme/menu-board", TrustChannel: "community"}); err != nil {
+		t.Fatalf("install 3.0.0: %v", err)
+	}
+
+	pagesBefore, _ := st.PackFileNames(ctx, "acme/menu-board", store.PackFilePage)
+	localesBefore, _ := st.PackFileNames(ctx, "acme/menu-board", store.PackFileLocale)
+	extraBefore, okExtra, _ := st.GetPackFile(ctx, "acme/menu-board", store.PackFilePage, "extra")
+	if !okExtra {
+		t.Fatal("fixture did not install the extra page")
+	}
+	genBefore := gen(t, st)
+
+	// A LEANER bundle at 2.0.0, offered through the pointer: below the mark, so
+	// the in-transaction channel-mark re-assertion refuses it — after the bundle
+	// delete has already run inside that transaction.
+	lean := baseManifest()
+	lean["version"] = "2.0.0"
+	regOld := newRegistry(t, "local-fixture")
+	regOld.publish("acme/menu-board", "2.0.0", signer.sign(t, basePackZip(t, lean), "acme/menu-board", "2.0.0"), nil)
+	regOld.point("acme/menu-board", "community", "2.0.0")
+	inOld := packs.NewInstaller(st, signer.anchorsFor(fixtureNamespaces...),
+		packs.WithMarketplace(packs.NewMarket(func() int64 { return fixedNow }, regOld.source())))
+
+	_, err := inOld.InstallRef(ctx, packs.Ref{PackID: "acme/menu-board", TrustChannel: "community"})
+	if err == nil {
+		t.Fatal("a pointer install below the mark succeeded, so this test proves nothing about rollback")
+	}
+
+	pack, _, _ := st.GetPack(ctx, "acme/menu-board")
+	if pack.Version != "3.0.0" {
+		t.Fatalf("installed version = %q after the refusal, want 3.0.0", pack.Version)
+	}
+	pagesAfter, _ := st.PackFileNames(ctx, "acme/menu-board", store.PackFilePage)
+	localesAfter, _ := st.PackFileNames(ctx, "acme/menu-board", store.PackFileLocale)
+	if !equalStrings(pagesAfter, pagesBefore) {
+		t.Fatalf("pages after the refusal = %v, want the prior bundle's %v — the delete was not rolled back", pagesAfter, pagesBefore)
+	}
+	if !equalStrings(localesAfter, localesBefore) {
+		t.Fatalf("locales after the refusal = %v, want %v", localesAfter, localesBefore)
+	}
+	extraAfter, ok, _ := st.GetPackFile(ctx, "acme/menu-board", store.PackFilePage, "extra")
+	if !ok || string(extraAfter) != string(extraBefore) {
+		t.Fatalf("the page the leaner bundle would have dropped did not survive the refusal byte-intact")
+	}
+	if after := gen(t, st); after != genBefore {
+		t.Fatalf("a refused install bumped the generation %d -> %d", genBefore, after)
 	}
 }

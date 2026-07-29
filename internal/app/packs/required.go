@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/maaxton/waiveo-next/internal/packsig"
+	"github.com/maaxton/waiveo-next/internal/manifest"
 )
 
 // required.go is the host side of marketplace/1 MKT-093a: the required-pack
@@ -48,8 +48,13 @@ func NewRoster(entries map[string]string) (Roster, error) {
 	}
 	sort.Strings(ids) // deterministic first-offender reporting
 	for _, id := range ids {
-		if _, err := packsig.Namespace(id); err != nil {
-			return nil, fmt.Errorf("packs: required-pack roster entry %q is not a fully publisher-qualified pack id (marketplace/1 MKT-008)", id)
+		// MAN-001's own grammar, not packsig.Namespace's deliberately coarse
+		// split: a roster key that no installed pack id could ever equal protects
+		// nothing, and would do it silently. `Waiveo/System`, `waiveo/sys/tem` and
+		// a trailing space all pass a coarse check and match no pack, because
+		// every installed id is pinned to MAN-001 by manifest.Validate.
+		if !manifest.IsPublisherNameID(id) {
+			return nil, fmt.Errorf("packs: required-pack roster entry %q is not a manifest/1 MAN-001 pack id (<publisher>/<name>, each segment ^[a-z][a-z0-9-]{1,38}$) — a key no installed pack can equal would protect nothing", id)
 		}
 		floor := entries[id]
 		if !ValidVersion(floor) {
