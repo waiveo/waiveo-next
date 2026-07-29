@@ -2,8 +2,8 @@
 // conformance/driven-manifest.json — the machine-checkable record of which
 // corpus case IDs each of this repo's six executable conformance drivers
 // (conformance/drivers/api1, deviceclass1, events1, manifest1, player1,
-// relay1) actually drove against a LIVE implementation the last time this
-// tool ran, and which it deliberately left PENDING.
+// relay1, securitymodel1) actually drove against a LIVE implementation the
+// last time this tool ran, and which it deliberately left PENDING.
 //
 // scripts/validate-coverage.mjs (the traceability coverage checker) reads
 // this file to decide whether a traceability map's "covered"
@@ -43,6 +43,7 @@ import (
 	"github.com/maaxton/waiveo-next/conformance/drivers/player1"
 	"github.com/maaxton/waiveo-next/conformance/drivers/relay1"
 	"github.com/maaxton/waiveo-next/conformance/drivers/report"
+	"github.com/maaxton/waiveo-next/conformance/drivers/securitymodel1"
 )
 
 // manifestPath is the repo-relative spelling used in every message this tool
@@ -95,9 +96,10 @@ var generatedContracts = []string{
 	"manifest/1",
 	"player/1",
 	"relay/1",
+	"security-model/1",
 }
 
-// generate runs all six owned drivers in-process, pinning the same
+// generate runs all seven owned drivers in-process, pinning the same
 // deterministic, CI-safe targets their own *_test.go TestXDriverGreen tests
 // use (NewRealRelayClient/NewInProcessFeeder, NewVirtualPlayerTarget/
 // NewInProcessRelay — never the env-gated remote-Roku player target), and
@@ -130,6 +132,7 @@ func generate() (map[string]Entry, error) {
 	out["events/1"] = fromReport(events1.Run(), "conformance/drivers/events1 (go run ./conformance/cmd/driven-manifest -write)")
 	out["manifest/1"] = fromReport(manifest1.Run(), "conformance/drivers/manifest1 (go run ./conformance/cmd/driven-manifest -write)")
 	out["device-class-registry/1"] = fromReport(deviceclass1.Run(), "conformance/drivers/deviceclass1 (go run ./conformance/cmd/driven-manifest -write)")
+	out["security-model/1"] = fromReport(securitymodel1.Run(), "conformance/drivers/securitymodel1 (go run ./conformance/cmd/driven-manifest -write)")
 
 	return out, nil
 }
