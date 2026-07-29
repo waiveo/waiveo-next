@@ -54,6 +54,19 @@
 //   3. Every group carries a real reason: no "TODO"/"TBD" placeholders, minimum
 //      length enforced. 104 unexplained lines would teach nobody anything.
 //
+// ── What this gate cannot see ───────────────────────────────────────────────
+// RTA treats a type whose values reach the reflection machinery as having ALL
+// its exported methods potentially callable, so a new EXPORTED METHOD on such a
+// type is never reported. Measured by mutation, not assumed: adding
+// `func (h *Hub) PendingSubscriberIDs() []string` to internal/app/eventsse
+// passes this gate (`deadcode -whylive` answers "reachable only through
+// reflection"), and so does an exported method on internal/relay/identity.Store.
+// Three shapes ARE caught on the same types — an unexported method, a
+// package-level function, and an exported method on a type reflection does not
+// touch (internal/relay/playerserver.Server, internal/relay/clocktrust.Controller
+// were both reported when probed the same way). So this catches most new dead
+// code and not all of it; it is a ratchet, not a proof.
+//
 // Not caught here, on purpose: an unused package-level CONSTANT or struct field.
 // deadcode analyses the call graph, so a declared-but-never-constructed error
 // code is validate-error-codes.mjs's job, and a decoded-but-never-applied wire

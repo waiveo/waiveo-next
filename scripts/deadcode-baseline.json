@@ -16,7 +16,12 @@
     "",
     "Unit tests are deliberately NOT roots. If they were, this file would hold 7 entries instead",
     "of 104 and would not contain Hub.after — the one defect here a human review had already",
-    "found by hand. See the header of scripts/validate-deadcode.mjs for the full root argument."
+    "found by hand. See the header of scripts/validate-deadcode.mjs for the full root argument.",
+    "",
+    "Do not read a green gate as 'nothing is unwired'. RTA cannot report a new EXPORTED METHOD on",
+    "a type whose values reach the reflection machinery — eventsse.Hub and relay/identity.Store",
+    "are two, measured by mutation. Unexported methods, package-level functions, and exported",
+    "methods on other types are all caught. This is a ratchet, not a proof."
   ],
   "groups": [
     {
