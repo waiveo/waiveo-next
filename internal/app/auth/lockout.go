@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/http"
 	"sync"
+
+	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 )
 
 // Lockout implements SEC-090's failed-authentication policy: exponential backoff
@@ -193,27 +195,11 @@ func RequestIPClass(r *http.Request) string {
 // RequestSource is the attempt-source key the grant attempt budget is spent
 // from: the request's source ADDRESS with any port stripped.
 //
-// It is deliberately not IPClass. A class has three values, so a class-keyed
-// budget is one bucket for the whole LAN and exhausting it denies the operation
-// to every other host in it. An address-keyed budget confines a guesser's spend
-// to themselves. The port is stripped because a new connection gets a new
-// ephemeral port, which would otherwise hand every attempt its own bucket and
-// make the budget count nothing.
-//
-// A malformed or absent RemoteAddr falls back to the raw string rather than to
-// an empty key: an unparseable source must not collapse into one shared bucket
-// with every other unparseable source's attempts, and must never be treated as
-// "no source" and skipped.
+// It is deliberately not IPClass — see apihttp.RequestSource, which owns the
+// keying and its rationale. This is a one-line delegation rather than a second
+// copy because the relay's own pairing-grant redemption bounds guesses against
+// the same kind of secret, and two independently-maintained keying rules for
+// one policy is how the coarse-keyed version comes back.
 func RequestSource(r *http.Request) string {
-	if r == nil {
-		return "unknown"
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil || host == "" {
-		if r.RemoteAddr == "" {
-			return "unknown"
-		}
-		return r.RemoteAddr
-	}
-	return host
+	return apihttp.RequestSource(r)
 }
