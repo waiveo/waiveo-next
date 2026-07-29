@@ -515,7 +515,31 @@ func main() {
 	// unmounted paths.
 	deviceRegistry := devices.New()
 
-	nowMs := func() int64 { return time.Now().UnixMilli() }
+	// The app-tier persisted monotonic clock floor (security-model/1
+	// SEC-066-068). It is opened BEFORE anything that reads a clock, because it
+	// is not a component beside the clock — it IS this process's clock: nowMs
+	// below is the floor's own floor-aware reading, so every timestamp this
+	// process stamps, and every time-windowed check it makes (a TOTP step, a
+	// grant ttl), is evaluated against the later of the host wall clock and the
+	// last time the app independently verified.
+	//
+	// SEC-066 states the property this buys: "a rolled-back or reset host clock
+	// cannot walk the app's own notion of current time behind time it has
+	// already verified, so a time-windowed check ... cannot be silently defeated
+	// by turning the host clock back."
+	//
+	// Worth stating plainly rather than leaving a reader to infer it: this
+	// deployment wires no authenticated time SOURCE yet, so nothing calls
+	// Advance and the floor stays where it is. That is not a stub — the floor,
+	// its persistence, its restart clamp and its assessment are all live, and
+	// SEC-067 leaves "which authenticated-time sources a given deployment
+	// trusts" implementation-defined per tier. It means the honest assessment
+	// today is `untrusted`, which is exactly what it reports.
+	clockFloor, err := auth.OpenClockFloor(cfg.authDir, func() int64 { return time.Now().UnixMilli() })
+	if err != nil {
+		log.Fatalf("waiveo-feeder: open the app clock floor: %v", err)
+	}
+	nowMs := clockFloor.Now
 	idem := apihttp.NewIdempotencyStore(nowMs, 0)
 
 	// The live observability plane (events/1 EVT-010/013/100/130-144): ONE shared
@@ -680,13 +704,15 @@ func main() {
 	authStore.OnRevoke(revocations.Revoked)
 
 	// clockAssessment is reported on every login-failure audit record (SEC-091).
-	// It is hardcoded to `untrusted` because that is the honest reading: SEC-068
-	// defines `untrusted` as "while it holds no independently verified time above
-	// the floor", and this app maintains no persisted monotonic clock floor yet
-	// (SEC-066-068). It becomes a real reading when that floor lands; reporting
-	// `trusted` in the meantime would put a claim in the audit trail that nothing
-	// backs.
-	clockAssessment := func() string { return auth.ClockUntrusted }
+	// It is now READ from the app's own clock floor (SEC-066-068) rather than
+	// hardcoded: SEC-068 defines the assessment as `untrusted` "while it holds no
+	// independently verified time above the floor, `trusted` once it does", and
+	// that is precisely what ClockFloor.Assessment answers. It reports
+	// `untrusted` today for the reason the floor's own wiring note above gives —
+	// no authenticated time source is configured — but it now reports it because
+	// the app asked, not because a constant said so, and it will start telling
+	// the truth about `trusted` the moment a source is wired.
+	clockAssessment := clockFloor.Assessment
 	// eventIDs, not a generator of the auditor's own: an audit record and a
 	// telemetry record land in the SAME log, and the ordering guarantee EVT-011
 	// states is over that log. Two independent id sources would invert against
