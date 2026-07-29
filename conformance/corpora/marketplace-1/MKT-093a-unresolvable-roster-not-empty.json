@@ -1,0 +1,57 @@
+{
+  "case_id": "MKT-093a-unresolvable-roster-not-empty",
+  "contract": "marketplace/1",
+  "req_ids": ["MKT-093a", "MKT-093b"],
+  "description": "Three deployments differ ONLY in the state of their required-pack roster source, and the case exists to fix that two of the three outcomes are the same and the third is not. Host A's roster is ABSENT and host B's roster resolves to zero entries: both make no pack required, so both may uninstall waiveo/system freely -- an absent or empty roster withholds a restriction, and failing closed there would refuse to remove packs no deployment ever declared essential (deliberately the opposite of MKT-009b's empty anchor set, which withholds a permission and must refuse). Host C's roster is UNRESOLVABLE: it is present, but the host cannot read, parse, or validate it -- a truncated document, a document whose format discriminant names something else, a document the host will not read because its integrity is not being enforced. Host C MUST NOT be treated as host B. The deployment DID declare restrictions and this host failed to learn them, so C must refuse to start, or -- if it is already running -- refuse every pack removal, rather than proceed with every floor silently lifted. Refusing every removal is stated as the running-host branch; a host that additionally refuses installs is conformant and strictly safer, because a host that cannot name the floors cannot establish that an install leaves a required pack at or above one (MKT-093b(ii)). The distinction is the whole content of the requirement's unresolvable clause: a resolution that answered 'no entries' for C would be indistinguishable from B at every later decision, and every floor C's operator declared would be lifted with nothing reporting it.",
+  "input": {
+    "hosts": [
+      {
+        "host": "A-absent",
+        "roster_source": { "present": false },
+        "installed": [{ "pack_id": "waiveo/system", "version": "3.0.0" }]
+      },
+      {
+        "host": "B-empty",
+        "roster_source": { "present": true, "resolvable": true, "entries": [] },
+        "installed": [{ "pack_id": "waiveo/system", "version": "3.0.0" }]
+      },
+      {
+        "host": "C-unresolvable",
+        "roster_source": {
+          "present": true,
+          "resolvable": false,
+          "reasons": [
+            "the document is truncated and does not parse",
+            "the document parses but declares a format other than the roster format",
+            "the document is readable but its integrity is not enforced by the host (it is group- or world-writable)"
+          ]
+        },
+        "installed": [{ "pack_id": "waiveo/system", "version": "3.0.0" }]
+      }
+    ],
+    "attempted_on_each_host": [
+      { "op": "uninstall", "pack_id": "waiveo/system" },
+      { "op": "install", "pack_id": "waiveo/system", "version": "2.0.0" }
+    ]
+  },
+  "expected": {
+    "A-absent": {
+      "required_packs": [],
+      "uninstall_waiveo_system": "permitted",
+      "install_waiveo_system_2.0.0": "permitted"
+    },
+    "B-empty": {
+      "required_packs": [],
+      "uninstall_waiveo_system": "permitted",
+      "install_waiveo_system_2.0.0": "permitted"
+    },
+    "C-unresolvable": {
+      "treated_as_empty_roster": false,
+      "host_refuses_to_start": true,
+      "if_already_running_uninstall_waiveo_system": "REQUIRED_PACK_FLOOR",
+      "if_already_running_install_waiveo_system_2.0.0": "REQUIRED_PACK_FLOOR"
+    },
+    "absent_and_empty_agree": true,
+    "unresolvable_differs_from_empty": true
+  }
+}

@@ -631,3 +631,86 @@ func TestPackLifecycleRefusesBelowAdminAtTheOrgNode(t *testing.T) {
 		t.Fatalf("an admin at the org node was refused by the lifecycle gate; body %s", raw)
 	}
 }
+
+// ---- the roster a deployment actually authors ------------------------------
+
+// requiredPacksRosterOnDisk writes a required-pack roster document (MKT-093a)
+// the way a deployment provisions one — 0600, in a 0700 directory — and resolves
+// it with packs.LoadRoster, which is the exact call the shipped feeder makes.
+//
+// Going through the FILE rather than through packs.NewRoster is the point. A
+// test that hands the api a roster built in memory proves the store enforces
+// what it is given; it proves nothing about whether anything a deployment can
+// author ever becomes that value. Before the loader existed, every floor test in
+// this repo was of the first kind, and the floor enforced nothing on a real box.
+func requiredPacksRosterOnDisk(t *testing.T, body string) packs.Roster {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "required-packs.json")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write roster: %v", err)
+	}
+	r, err := packs.LoadRoster(path)
+	if err != nil {
+		t.Fatalf("packs.LoadRoster(%s): %v", path, err)
+	}
+	return r
+}
+
+// TestARosterAuthoredOnDiskRefusesTheUninstallOverHTTP is MKT-093b(i) driven
+// from the artifact an operator writes: a roster document on disk, resolved by
+// the loader, wired through the option the feeder passes, refusing a real
+// DELETE. Every link the shipped binary uses is in this chain except main's own
+// call sites, which cmd/waiveo-feeder's tests pin.
+func TestARosterAuthoredOnDiskRefusesTheUninstallOverHTTP(t *testing.T) {
+	roster := requiredPacksRosterOnDisk(t,
+		`{"format":"required-packs/1","required":[{"pack_id":"acme/menu-board","floor_version":"1.0.0"}]}`)
+
+	reg := newMktRegistry(t)
+	reg.publish("acme/menu-board", "1.0.0",
+		signPack(t, packBundle(t, packManifest()), "acme/menu-board", "1.0.0"), nil)
+	e := newEnvWithOptions(t, reg.option(), api.WithRequiredPacks(roster))
+
+	ref := mustJSON(t, map[string]any{"pack_id": "acme/menu-board", "trust_channel": "community"})
+	if resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", ref, jsonHeaders); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("install status = %d, want 201 (%s)", resp.StatusCode, raw)
+	}
+
+	resp, raw := e.do(t, http.MethodDelete, "/api/v1/packs/acme/menu-board", nil,
+		map[string]string{"If-Match": `"1"`})
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("uninstall of a roster-declared pack status = %d, want 422 (%s)", resp.StatusCode, raw)
+	}
+	if codes := problemCodes(t, raw); len(codes) != 1 || codes[0] != "REQUIRED_PACK_FLOOR" {
+		t.Fatalf("problem codes = %v, want [REQUIRED_PACK_FLOOR]", codes)
+	}
+	if resp, raw := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board", nil, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("the refused uninstall removed the pack: get status = %d (%s)", resp.StatusCode, raw)
+	}
+}
+
+// TestARosterAuthoredOnDiskRefusesABelowFloorInstallOverHTTP is the other half
+// of MKT-093b from the same authored document: an install that would leave a
+// required pack below its declared floor is refused, on the resolution path, at
+// the same 422 discriminant.
+func TestARosterAuthoredOnDiskRefusesABelowFloorInstallOverHTTP(t *testing.T) {
+	roster := requiredPacksRosterOnDisk(t,
+		`{"format":"required-packs/1","required":[{"pack_id":"acme/menu-board","floor_version":"2.0.0"}]}`)
+
+	reg := newMktRegistry(t)
+	reg.publish("acme/menu-board", "1.0.0",
+		signPack(t, packBundle(t, packManifest()), "acme/menu-board", "1.0.0"), nil)
+	e := newEnvWithOptions(t, reg.option(), api.WithRequiredPacks(roster))
+
+	ref := mustJSON(t, map[string]any{"pack_id": "acme/menu-board", "trust_channel": "community"})
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", ref, jsonHeaders)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("below-floor install status = %d, want 422 (%s)", resp.StatusCode, raw)
+	}
+	if codes := problemCodes(t, raw); len(codes) != 1 || codes[0] != "REQUIRED_PACK_FLOOR" {
+		t.Fatalf("problem codes = %v, want [REQUIRED_PACK_FLOOR]", codes)
+	}
+	if resp, raw := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board", nil, nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("the refused install landed the pack anyway: get status = %d (%s)", resp.StatusCode, raw)
+	}
+}

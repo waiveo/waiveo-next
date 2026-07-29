@@ -57,7 +57,7 @@ One row per requirement ID `contracts/marketplace-1.md` defines. Format: `confor
 | MKT-091 | `contracts/marketplace-1.md#update-default-and-install-records` | - | TBD-wave1 |
 | MKT-092 | `contracts/marketplace-1.md#update-default-and-install-records` | - | TBD-wave1 |
 | MKT-093 | `contracts/marketplace-1.md#update-default-and-install-records` | `MKT-093-revert-to-last-known-good` | TBD-wave1 |
-| MKT-093a | `contracts/marketplace-1.md#update-default-and-install-records` | `MKT-093a-required-floor-declared-not-derived` | TBD-wave1 |
+| MKT-093a | `contracts/marketplace-1.md#update-default-and-install-records` | `MKT-093a-required-floor-declared-not-derived`, `MKT-093a-unresolvable-roster-not-empty` | TBD-wave1 |
 | MKT-093b | `contracts/marketplace-1.md#update-default-and-install-records` | `MKT-093b-required-pack-uninstall-refused`, `MKT-093b-below-floor-install-refused-every-path` | TBD-wave1 |
 | MKT-094 | `contracts/marketplace-1.md#update-default-and-install-records` | - | TBD-wave1 |
 | MKT-094a | `contracts/marketplace-1.md#update-default-and-install-records` | `MKT-094a-install-record-pins-verified-provenance` | TBD-wave1 |
