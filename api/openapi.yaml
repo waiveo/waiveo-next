@@ -3614,6 +3614,13 @@ components:
       minProperties: 1
       additionalProperties: false
       properties:
+        # Relocation. Every other scoped family accepts this on update, and
+        # the server has an authorization branch for the destination node —
+        # omitting it here made that branch unreachable for this family and
+        # turned a supported move into a 422 once the body was validated
+        # against this schema.
+        scope_node:
+          $ref: "#/components/schemas/Ulid"
         external_id:
           type: ["string", "null"]
           x-go-type: "*string"
@@ -4153,6 +4160,13 @@ components:
       minProperties: 1
       additionalProperties: false
       properties:
+        # Relocation. Every other scoped family accepts this on update, and
+        # the server has an authorization branch for the destination node —
+        # omitting it here made that branch unreachable for this family and
+        # turned a supported move into a 422 once the body was validated
+        # against this schema.
+        scope_node:
+          $ref: "#/components/schemas/Ulid"
         external_id:
           type: ["string", "null"]
           x-go-type: "*string"

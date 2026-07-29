@@ -70,18 +70,34 @@ func contractRegistry(t *testing.T, contract string) map[string]bool {
 func publishedCodes(t *testing.T) map[string]string {
 	t.Helper()
 	out := map[string]string{}
-	for _, c := range []string{"api-1.md", "relay-1.md", "events-1.md"} {
+	// api/1 and events/1 ONLY — deliberately not relay/1. relay/1's registry is
+	// the vocabulary of its own wire frames (REL-007), a channel with no HTTP
+	// methods; unioning it here would admit every relay frame code as a legal
+	// answer on this HTTP door, which is the opposite of what this oracle is
+	// for. (Confirmed: with relay/1 in the union, answering a 405 with
+	// CHANNEL_BINDING_INVALID passed.) The sibling oracle in internal/app/eventsse
+	// unions exactly these two.
+	for _, c := range []string{"api-1.md", "events-1.md"} {
 		for code := range contractRegistry(t, c) {
 			out[code] = c
 		}
 	}
 	// Both directions, so a parser reading the wrong thing cannot pass.
-	if out["AUTH_REQUIRED"] != "events-1.md" || out["MALFORMED_MESSAGE"] != "relay-1.md" {
-		t.Fatalf("the Error taxonomy parser did not read the registries correctly: AUTH_REQUIRED=%q MALFORMED_MESSAGE=%q",
-			out["AUTH_REQUIRED"], out["MALFORMED_MESSAGE"])
+	// Both directions, so a parser reading the wrong thing cannot pass.
+	if out["AUTH_REQUIRED"] != "events-1.md" || out["METHOD_NOT_ALLOWED"] != "api-1.md" {
+		t.Fatalf("the Error taxonomy parser did not read the registries correctly: AUTH_REQUIRED=%q METHOD_NOT_ALLOWED=%q",
+			out["AUTH_REQUIRED"], out["METHOD_NOT_ALLOWED"])
 	}
-	if out["METHOD_NOT_ALLOWED"] != "" {
-		t.Fatal("the Error taxonomy parser reported an unpublished code as published; it is matching too much")
+	// A relay/1-only code must NOT resolve here: this door answers in api/1's
+	// vocabulary, and admitting relay frame codes would make the oracle green for
+	// answers no HTTP client can interpret.
+	if out["MALFORMED_MESSAGE"] != "" {
+		t.Fatalf("a relay/1 wire-frame code resolved as publishable on this HTTP door (from %q) — the union is too wide", out["MALFORMED_MESSAGE"])
+	}
+	// A genuinely invented code must not resolve, or the parser is matching too
+	// much and the whole oracle is decorative.
+	if out["NOT_A_REAL_PUBLISHED_CODE"] != "" {
+		t.Fatal("the Error taxonomy parser reported an invented code as published; it is matching too much")
 	}
 	return out
 }

@@ -388,6 +388,14 @@ func (srv *server) destroyWorkspace(ctx context.Context) (code, detail string) {
 			return "INTERNAL", "The workspace's content assets could not be destroyed."
 		}
 	}
+	// The retained idempotency records go with the content and the rows. A kept
+	// response outlives the bytes it names: replaying the same key after an
+	// erasure returns the original 201 for a content id that no longer exists
+	// and skips the re-upload that would have recreated it — the client is told
+	// the upload succeeded and then refused at authoring. The records also hold
+	// request hashes and response bodies for the very content this operation
+	// exists to destroy.
+	srv.idem.Purge()
 	if err := srv.store.PurgeWorkspace(ctx); err != nil {
 		if err == store.ErrNoWorkspace {
 			return "NOT_FOUND", "The workspace no longer exists."

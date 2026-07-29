@@ -288,6 +288,7 @@ api/1 has no connection-time handshake — it is negotiated once, structurally, 
 | `VALIDATION_FAILED` | The request body or a query parameter failed schema or business validation. | no — fix the request |
 | `UNAUTHENTICATED` | No valid principal was presented. | no — re-authenticate |
 | `FORBIDDEN` | The principal is authenticated but not authorized for this operation. | no |
+| `METHOD_NOT_ALLOWED` | The request's HTTP method is not one this route serves. Carried with `405`, alongside the `Allow` header RFC 9110 §15.5.6 requires. Distinct from `VALIDATION_FAILED`, which API-013a binds to a body or query-parameter failure (422/400): a wrong method is neither, and answering one with the other repurposes a published code against API-012. | no — use a method the route serves |
 | `NOT_FOUND` | No resource exists at the identifier named by the request. | no |
 | `REVISION_CONFLICT` | `If-Match` did not equal the resource's current `ETag`/`revision`. | yes — re-read and retry with the fresh revision |
 | `IF_MATCH_REQUIRED` | A state-changing request against an existing resource omitted `If-Match`. | yes — retry with `If-Match` set |

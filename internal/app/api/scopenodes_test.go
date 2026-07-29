@@ -517,8 +517,14 @@ func TestCreateClientSuppliedIDRejectedAsClientProblem(t *testing.T) {
 	if _, present := p["errors"]; present {
 		t.Fatalf("the Problem carries an errors[] member without VALIDATION_FAILED (body %s)", raw)
 	}
-	if detail, _ := p["detail"].(string); !strings.Contains(detail, "id") {
-		t.Fatalf("detail = %q, want it to name the offending field (body %s)", detail, raw)
+	// The detail must name the field the refusal is ABOUT. A bare
+	// Contains(detail, "id") passes on the template's own "identity" and
+	// "external_id", so it would hold for any field name at all — the assertion
+	// it replaced (errors[0].field == "id") genuinely pinned this, and dropping
+	// errors[] must not drop the property with it.
+	detail, _ := p["detail"].(string)
+	if !strings.Contains(detail, `a resource's id is assigned by the server`) {
+		t.Fatalf("detail = %q, want it to name `id` as the offending field (body %s)", detail, raw)
 	}
 	// The original row is untouched — the rejected create wrote nothing.
 	resp, _ = e.do(t, http.MethodGet, "/api/v1/scope-nodes/"+siteID, nil, nil)
@@ -528,8 +534,9 @@ func TestCreateClientSuppliedIDRejectedAsClientProblem(t *testing.T) {
 }
 
 // TestPatchClientSuppliedIDRejectedAsClientProblem: a PATCH body naming a
-// non-empty "id" is rejected the same way a create is (422 VALIDATION_FAILED,
-// ID_SERVER_ASSIGNED on field "id") — and, crucially, the row is left entirely
+// non-empty "id" is rejected the same way a create is (422 with a TOP-LEVEL
+// ID_SERVER_ASSIGNED, the offending field named in detail) — and, crucially,
+// the row is left entirely
 // untouched: not merely its id, but every OTHER field the same patch tried to
 // change. This pins the exact danger commit 76dd3a3 named as its own motivation
 // for calling rejectClientSuppliedID from patch() too: store.Update's
@@ -553,8 +560,14 @@ func TestPatchClientSuppliedIDRejectedAsClientProblem(t *testing.T) {
 	if _, present := p["errors"]; present {
 		t.Fatalf("the Problem carries an errors[] member without VALIDATION_FAILED (body %s)", raw)
 	}
-	if detail, _ := p["detail"].(string); !strings.Contains(detail, "id") {
-		t.Fatalf("detail = %q, want it to name the offending field (body %s)", detail, raw)
+	// The detail must name the field the refusal is ABOUT. A bare
+	// Contains(detail, "id") passes on the template's own "identity" and
+	// "external_id", so it would hold for any field name at all — the assertion
+	// it replaced (errors[0].field == "id") genuinely pinned this, and dropping
+	// errors[] must not drop the property with it.
+	detail, _ := p["detail"].(string)
+	if !strings.Contains(detail, `a resource's id is assigned by the server`) {
+		t.Fatalf("detail = %q, want it to name `id` as the offending field (body %s)", detail, raw)
 	}
 
 	// The row is untouched: same id, same (never-renamed) name, same revision —

@@ -198,21 +198,20 @@ func (in *ingest) authenticate(w http.ResponseWriter, r *http.Request, traceID s
 func (in *ingest) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	traceID := apihttp.TraceID(r)
 	if r.Method != http.MethodPost {
-		// VALIDATION_FAILED is api/1's published code for "this request does not
-		// select the operation this door serves" (Error taxonomy), and it is what
-		// the other doors on this deployment already answer a wrong method with —
-		// eventsse's codeRequestInvalid, the auth handlers'.
+		// METHOD_NOT_ALLOWED is now PUBLISHED by api/1's registry, which is what
+		// API-011 requires and what it previously lacked.
 		//
-		// The code this used to answer with, METHOD_NOT_ALLOWED, is published by
-		// NO contract's registry, and API-011 forbids emitting one that is not:
-		// a client's error handling is a switch over a published table, so an
-		// unminted value is indistinguishable from a bug. Publishing it instead
-		// would have to publish it somewhere, and the two candidates are both
-		// wrong. relay/1's registry is the vocabulary of its own wire frames
-		// (REL-007), a channel with no HTTP methods at all — a method code has no
-		// meaning there. api/1's registry governs the Problem documents this route
-		// already emits, and it already has the entry for this condition.
-		apihttp.WriteProblem(w, r, traceID, http.StatusMethodNotAllowed, "VALIDATION_FAILED",
+		// Answering with VALIDATION_FAILED instead was the wrong repair: API-013a
+		// binds that code to a body or query-parameter failure carrying 422 or
+		// 400, and a wrong method is neither — so a 405 wearing it repurposes a
+		// published code, which API-012 forbids in as many words. Trading an
+		// unpublished code for a misused one is not a fix.
+		//
+		// The Allow header is not decoration: RFC 9110 §15.5.6 makes it a MUST on
+		// every 405, and it is the only part of the response that tells a client
+		// what to do instead.
+		w.Header().Set("Allow", http.MethodPost)
+		apihttp.WriteProblem(w, r, traceID, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED",
 			"Method Not Allowed")
 		return
 	}

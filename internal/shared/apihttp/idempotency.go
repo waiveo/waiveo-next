@@ -274,3 +274,21 @@ func (s *IdempotencyStore) len() int {
 	defer s.mu.Unlock()
 	return len(s.entries)
 }
+
+// Purge drops every retained record.
+//
+// It exists for one caller: the workspace erasure that destroys the content
+// origin and the store. A retained response outlives the bytes it names, so
+// after an erasure a replay of the same key returns the original 201 — naming a
+// content id that no longer exists, and skipping the re-upload that would have
+// recreated it. The client is told its upload succeeded and then blocked at
+// authoring, which is the worst of both answers.
+//
+// The other half is the erasure's own promise: the records hold request hashes
+// and response bodies for user content, so leaving them keeps fragments of what
+// was supposed to be destroyed for the rest of the retention window.
+func (s *IdempotencyStore) Purge() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.entries = make(map[idempotencyKey]idempotencyEntry)
+}

@@ -1409,6 +1409,7 @@ export interface components {
         };
         /** @description Partial update — every field optional, at least one required. */
         AutomationUpdate: {
+            scope_node?: components["schemas"]["Ulid"];
             external_id?: string | null;
             name?: string;
             labels?: components["schemas"]["LabelMap"];
@@ -1625,6 +1626,7 @@ export interface components {
         };
         /** @description Partial update — every member optional, at least one present. */
         WebhookEndpointUpdate: {
+            scope_node?: components["schemas"]["Ulid"];
             external_id?: string | null;
             name?: string;
             /** Format: uri */

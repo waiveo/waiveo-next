@@ -683,10 +683,13 @@ type AutomationUpdate struct {
 	Labels *LabelMap `json:"labels,omitempty"`
 
 	// Max Concurrency cap; meaningful only under `parallel` mode.
-	Max      **int                     `json:"max,omitempty"`
-	Mode     *AutomationUpdateMode     `json:"mode,omitempty"`
-	Name     *string                   `json:"name,omitempty"`
-	Triggers *[]map[string]interface{} `json:"triggers,omitempty"`
+	Max  **int                 `json:"max,omitempty"`
+	Mode *AutomationUpdateMode `json:"mode,omitempty"`
+	Name *string               `json:"name,omitempty"`
+
+	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScopeNode *Ulid                     `json:"scope_node,omitempty"`
+	Triggers  *[]map[string]interface{} `json:"triggers,omitempty"`
 }
 
 // AutomationUpdateMode defines model for AutomationUpdate.Mode.
@@ -1274,7 +1277,10 @@ type WebhookEndpointUpdate struct {
 	Labels  *LabelMap `json:"labels,omitempty"`
 	Name    *string   `json:"name,omitempty"`
 	Schemas *[]string `json:"schemas,omitempty"`
-	Url     *string   `json:"url,omitempty"`
+
+	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScopeNode *Ulid   `json:"scope_node,omitempty"`
+	Url       *string `json:"url,omitempty"`
 }
 
 // WebhookSigningSecretRequest The secret every delivery to this endpoint is signed with (EVT-151's HMAC-SHA256 key). Supplied by the caller, because the same value has to end up configured on a receiving server this platform does not own.
