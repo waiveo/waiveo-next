@@ -68,6 +68,12 @@ type dmCase struct {
 			Method  string            `json:"method"`
 			Path    string            `json:"path"`
 			Headers map[string]string `json:"headers"`
+			// Body is decoded and sent even though no frozen case carries one
+			// today (all three are deletes). Reading it here rather than leaving
+			// it out is what stops a later case's body being silently dropped —
+			// the request would still be issued, against a handler that never saw
+			// what the case said to send, and the diff would blame the handler.
+			Body json.RawMessage `json:"body"`
 		} `json:"request"`
 	} `json:"input"`
 	Expected struct {
@@ -161,7 +167,11 @@ func driveDataModel1Case(t *testing.T, c dmCase) {
 	}
 
 	req := c.Input.Request
-	resp, raw := e.do(t, req.Method, req.Path, nil, req.Headers)
+	var reqBody []byte
+	if len(req.Body) > 0 {
+		reqBody = req.Body
+	}
+	resp, raw := e.do(t, req.Method, req.Path, reqBody, req.Headers)
 
 	if resp.StatusCode != c.Expected.Status {
 		t.Fatalf("status = %d, want %d (body %s)", resp.StatusCode, c.Expected.Status, raw)
