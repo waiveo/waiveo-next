@@ -516,25 +516,27 @@ func main() {
 	deviceRegistry := devices.New()
 
 	// The app-tier persisted monotonic clock floor (security-model/1
-	// SEC-066-068). It is opened BEFORE anything that reads a clock, because it
-	// is not a component beside the clock — it IS this process's clock: nowMs
-	// below is the floor's own floor-aware reading, so every timestamp this
-	// process stamps, and every time-windowed check it makes (a TOTP step, a
-	// grant ttl), is evaluated against the later of the host wall clock and the
-	// last time the app independently verified.
+	// SEC-066-068), opened before anything that reads a clock: nowMs below is
+	// the floor's floor-aware reading.
 	//
-	// SEC-066 states the property this buys: "a rolled-back or reset host clock
-	// cannot walk the app's own notion of current time behind time it has
-	// already verified, so a time-windowed check ... cannot be silently defeated
-	// by turning the host clock back."
+	// READ THE LIMITS BEFORE RELYING ON THIS. SEC-066 exists so that a
+	// time-windowed check — a TOTP step, a grant ttl — cannot be defeated by
+	// turning the host clock back. THIS DEPLOYMENT DOES NOT YET BUY THAT
+	// PROPERTY, for two independent reasons:
 	//
-	// Worth stating plainly rather than leaving a reader to infer it: this
-	// deployment wires no authenticated time SOURCE yet, so nothing calls
-	// Advance and the floor stays where it is. That is not a stub — the floor,
-	// its persistence, its restart clamp and its assessment are all live, and
-	// SEC-067 leaves "which authenticated-time sources a given deployment
-	// trusts" implementation-defined per tier. It means the honest assessment
-	// today is `untrusted`, which is exactly what it reports.
+	//  1. The auth store, which decides both of those checks, is opened with
+	//     auth.OpenDefault and therefore runs on the bare wall clock, not on
+	//     this floor. Grant expiry and every TOTP step read that clock. Putting
+	//     the auth store on the floor needs a clock seam that store does not
+	//     have yet.
+	//  2. No authenticated time SOURCE is wired, so nothing calls Advance: the
+	//     floor stays at 0, Now() is always the wall clock, and the restart
+	//     clamp never fires.
+	//
+	// What IS live and load-bearing today: the floor's persistence, its
+	// monotonic guard, its restart clamp and its assessment (reported honestly
+	// as `untrusted`, which is what it is). The mechanism is real; the property
+	// SEC-066 names is not yet delivered, and no traceability row claims it.
 	clockFloor, err := auth.OpenClockFloor(cfg.authDir, func() int64 { return time.Now().UnixMilli() })
 	if err != nil {
 		log.Fatalf("waiveo-feeder: open the app clock floor: %v", err)
