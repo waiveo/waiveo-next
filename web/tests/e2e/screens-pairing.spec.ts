@@ -43,6 +43,22 @@ const SCREEN_NAME = `E2E Paired Screen ${Date.now()}`;
 
 let api: APIRequestContext;
 
+// Does the credential this spec signs in with already exist on the box?
+//
+// This is the ONLY true way to ask. Nothing publishes claim state — the setup
+// route's own doc explains why that endpoint deliberately does not exist — so
+// the question "has this box been claimed already, by us" has exactly one honest
+// probe: present the credential and see. One failed attempt is well inside
+// SEC-090's tolerated budget (five consecutive failures per credential/IP class
+// before any backoff), and on the path where it fails the claim below is about
+// to create the credential anyway.
+async function ownerCredentialWorks(): Promise<boolean> {
+  const res = await api.post("/api/v1/auth/login", {
+    data: { identifier: OWNER_ID, password: OWNER_PASSWORD },
+  });
+  return res.ok();
+}
+
 // Claim the box the way an operator standing at it does: on the console.
 //
 // This used to POST /api/v1/auth/setup directly, because the console had no
@@ -51,12 +67,24 @@ let api: APIRequestContext;
 // sign-in page, follow the setup link it offers every caller, fill the form with
 // the code the feeder printed, and come out the other side already signed in.
 //
-// The presence of the code file IS the claim state (the feeder writes it on an
-// unclaimed boot and deletes it once an owner exists), so this runs at most
-// once per box: later runs find no file and sign in below with the credential
-// this one created.
+// # What the code file does and does not mean
+//
+// It is NOT claim state. Nothing in the claim path touches it: the handler never
+// writes disk, and the only removal is EnsureClaimWindow's claimed branch, which
+// runs at PROCESS START (internal/app/auth/bootstrap.go). So a successful claim
+// leaves the file exactly where it was, and its presence means "the feeder has
+// not booted since the claim" — which, against a stack that is already up, is
+// true immediately after this function claims the box.
+//
+// Reading it as "unclaimed" is what made a second `npm run e2e` against a
+// still-running feeder fail every test in this file: the form was driven with a
+// spent code, the box answered GRANT_ALREADY_REDEEMED, the page stayed on /setup
+// and the Overview assertion timed out inside `beforeAll`. So the real question
+// is asked of the box first, and the file only decides whether there is a code
+// to present at all.
 async function ensureOwnerCredential(browser: Browser): Promise<void> {
-  if (!existsSync(SETUP_CODE_PATH)) return; // claimed in an earlier boot; login below
+  if (await ownerCredentialWorks()) return; // claimed by an earlier run; login below
+  if (!existsSync(SETUP_CODE_PATH)) return; // no code to redeem; the sign-in below reports why
   const code = readFileSync(SETUP_CODE_PATH, "utf8").trim();
   const context = await browser.newContext({ baseURL: BASE_URL, ignoreHTTPSErrors: true });
   const page = await context.newPage();
@@ -76,10 +104,25 @@ async function ensureOwnerCredential(browser: Browser): Promise<void> {
     await page.getByLabel(/^Confirm password/).fill(OWNER_PASSWORD);
     await page.getByRole("button", { name: "Set up this box" }).click();
 
-    // The claim minted the session itself, so the console opens on the Overview
-    // — no second sign-in, which is the whole point of the surface. A setup form
-    // that rendered and did nothing lands on /login instead and fails here.
-    await expect(page.getByRole("heading", { level: 1, name: "Overview" })).toBeVisible();
+    // Two outcomes are acceptable, and only two.
+    //
+    // The Overview means the claim worked: the claim minted the session itself,
+    // so the console opens with no second sign-in, which is the whole point of
+    // the surface. A setup form that rendered and did nothing lands on /login
+    // instead and fails here — the regression this click-through exists to catch
+    // is still caught.
+    //
+    // "Already been used" means the code on disk was spent by someone else
+    // (a box claimed outside this spec, or a stale file beside a claimed store).
+    // That is a legitimate state of the world, not a defect in the page, and the
+    // sign-in in each test is where it gets adjudicated: a credential mismatch
+    // fails ONE test with a sign-in error rather than failing `beforeAll` and
+    // with it every test in the file. Anything else — a wrong-code refusal, a
+    // dead button, a page that neither navigates nor complains — matches neither
+    // and still fails here.
+    const opened = page.getByRole("heading", { level: 1, name: "Overview" });
+    const alreadyClaimed = page.getByRole("alert").filter({ hasText: /already been used/i });
+    await expect(opened.or(alreadyClaimed)).toBeVisible();
   } finally {
     await context.close();
   }
