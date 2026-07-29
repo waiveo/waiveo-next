@@ -35,6 +35,7 @@ import (
 	"log"
 	"math/big"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -347,6 +348,36 @@ func (s *Server) RelayEnrollmentKey(relayID string) (ed25519.PublicKey, bool) {
 	defer s.mu.Unlock()
 	pub, ok := s.relayKeys[relayID]
 	return pub, ok
+}
+
+// ActiveRelayIDs lists, in stable order, every relay_id this feeder has enrolled
+// whose most-recently-issued certificate is NOT revoked — the relays that may
+// still open a /relay/v1 connection (REL-016's check is over that same
+// most-recent issuance) and therefore the relays that may still be serving
+// screens from a desired-state generation this app peer handed them.
+//
+// It answers a question ConnectedRelays cannot: which relays EXIST. A relay that
+// enrolled, applied a generation and then went offline is invisible to the
+// connection registry while its screens keep fetching content from this feeder's
+// origin — so anything that reasons about "what generation is the fleet on" has
+// to start from the enrolled set and treat an absent member as unknown rather
+// than as absent-therefore-irrelevant.
+//
+// A revoked relay is excluded deliberately. It has been cut off on purpose; if it
+// counted, revoking one relay would hold the whole fleet's generation floor at
+// whatever it last reported, forever.
+func (s *Server) ActiveRelayIDs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, 0, len(s.relayKeys))
+	for relayID := range s.relayKeys {
+		if list := s.issuances[relayID]; len(list) > 0 && list[0].revoked {
+			continue
+		}
+		out = append(out, relayID)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // recordIssuance prepends a freshly issued certificate to relayID's issuance

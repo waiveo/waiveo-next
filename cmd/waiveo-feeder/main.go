@@ -54,21 +54,32 @@ import (
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
-// retentionSweepInterval is how often the feeder retires rows that have outlived
-// their window: the events/1 retention policy over the persisted event log
-// (deleting rows past their class's window, trimming a class past its row cap),
-// and the pending second-factor enrollments past their ttl (SEC-004,
-// auth.PendingTOTPEnrollmentTTLMs).
+// retentionSweepInterval is how often the feeder retires state that has outlived
+// its use: the events/1 retention policy over the persisted event log (deleting
+// rows past their class's window, trimming a class past its row cap), the pending
+// second-factor enrollments past their ttl (SEC-004,
+// auth.PendingTOTPEnrollmentTTLMs), and the content assets no live desired-state
+// generation references any more (internal/feeder/contentgc).
 //
 // It is a SWEEP cadence, not a guarantee, and that is why one cadence can serve
-// two windows of very different sizes. For the event log the guarantee is the
+// three windows of very different sizes. For the event log the guarantee is the
 // policy's per-class window, which is a floor — "retained for a bounded window"
 // (EVT-010) — so a row that outlives it by up to one sweep is still inside the
 // guarantee, and the shortest window the policy configures is measured in days.
 // For a pending enrollment the guarantee is not the sweep at all: an expired
 // enrollment stops arming anything the instant it expires, checked against the
 // clock on every read and inside the arming transaction, so the sweep only keeps
-// the abandoned rows from piling up. Neither is weakened by being coarse.
+// the abandoned rows from piling up. For content there is no window to miss in
+// the first place: nothing promises an unreferenced asset is gone by any
+// deadline, and every one of that sweep's guards fails toward keeping the bytes.
+// None of the three is weakened by being coarse.
+//
+// The content arm has NO boot counterpart, unlike the other two. Their boot
+// sweeps exist because a box that was off for a month comes back holding rows
+// that expired while it slept. Content has no such backlog: reclaiming needs the
+// fleet to be connected and converged (nothing is, at boot) and needs an asset
+// observed unreferenced by an EARLIER sweep (there is none, at boot), so a
+// boot-time content sweep could only ever reclaim nothing.
 const retentionSweepInterval = time.Hour
 
 // firstPhotonSite is the app peer's authoritative site_binding for Wave-1
@@ -1051,6 +1062,30 @@ func main() {
 		},
 	}
 
+	// The content retention sweep (internal/feeder/contentgc): the only thing
+	// standing between a box that runs for years and a content origin that grows
+	// forever. Every asset ever uploaded is on disk until something reclaims it,
+	// and nothing did.
+	//
+	// It rides the SAME cadence as the event-log and pending-enrollment sweeps
+	// below rather than a second timer, because it is the same kind of work — a
+	// periodic pass that retires state which has outlived its use — and because
+	// its own guarantee is not the cadence. An asset is reclaimed only after the
+	// fleet has converged, its bytes have aged, and it has been observed
+	// unreferenced across sweeps, so a sweep that runs late reclaims later and a
+	// sweep that never runs reclaims nothing. Neither is a correctness event.
+	//
+	// The fleet oracle is assembled from the two registries that hold the facts:
+	// which relays are enrolled and unrevoked (and may therefore still be serving
+	// screens even while disconnected), and what generation each connected relay
+	// last said it applied.
+	contentSweeper, err := newContentSweeper(st, contentStore,
+		contentSweepFleetFloor(enrollSrv.ActiveRelayIDs, relayConnSrv.ConnectedRelays, relayConnSrv.LastStateAck),
+		nowMs)
+	if err != nil {
+		log.Fatalf("waiveo-feeder: build the content retention sweep: %v", err)
+	}
+
 	log.Printf("waiveo-feeder listening (HTTPS) on %s (content base %s)", cfg.listen, cfg.contentBaseURL)
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.ListenAndServeTLS("", "") }()
@@ -1060,8 +1095,8 @@ func main() {
 	// stays up for months. Stopped on shutdown so the sweep never races the drain
 	// below.
 	//
-	// The two halves are independent: one failing must not skip the other, which
-	// is why neither arm short-circuits the loop iteration.
+	// The three arms are independent: one failing must not skip the others, which
+	// is why no arm short-circuits the loop iteration.
 	retentionSweep := time.NewTicker(retentionSweepInterval)
 	go func() {
 		for range retentionSweep.C {
@@ -1075,6 +1110,7 @@ func main() {
 			} else if n > 0 {
 				log.Printf("waiveo-feeder: retired %d abandoned second-factor enrollment(s) past their window", n)
 			}
+			runContentSweep(ctx, contentSweeper)
 		}
 	}()
 
