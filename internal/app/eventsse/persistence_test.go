@@ -44,7 +44,7 @@ func (f *feederStack) close() {
 // and the live authenticated handler.
 func bootFeederStack(t *testing.T, dsn string, nowMs func() int64) *feederStack {
 	t.Helper()
-	st, err := store.Open(dsn)
+	st, err := store.Open(dsn, store.WallClockMs)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

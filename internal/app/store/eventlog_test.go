@@ -84,7 +84,7 @@ func auditEvent(t *testing.T, id string, ts int64) events.Envelope {
 // test that expected a clean run can assert nothing was swallowed.
 func openEventLog(t *testing.T, dsn string, clock *fakeClock) (*store.Store, *store.EventLog, *[]error) {
 	t.Helper()
-	st, err := store.Open(dsn)
+	st, err := store.Open(dsn, store.WallClockMs)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -361,7 +361,7 @@ func TestEventLog_TelemetryFloodNeverEvictsAudit(t *testing.T) {
 		events.AuditRetentionClass: {Window: 400 * 24 * time.Hour, MaxRows: 0},
 	}, events.ClassRetention{Window: time.Hour, MaxRows: 2})
 
-	st, err := store.Open(dsn)
+	st, err := store.Open(dsn, store.WallClockMs)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

@@ -31,7 +31,7 @@ type twoPrincipalEnv struct {
 
 func newTwoPrincipalEnv(t *testing.T) *twoPrincipalEnv {
 	t.Helper()
-	st, err := store.Open(":memory:")
+	st, err := store.Open(":memory:", store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}

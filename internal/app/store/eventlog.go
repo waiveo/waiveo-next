@@ -8,7 +8,6 @@ import (
 	"fmt"
 	stdlog "log"
 	"sync"
-	"time"
 
 	"github.com/maaxton/waiveo-next/internal/events"
 	"github.com/maaxton/waiveo-next/internal/shared/ulid"
@@ -131,8 +130,14 @@ var _ events.Log = (*EventLog)(nil)
 //
 // policy is the retention configuration (events.DefaultRetentionPolicy for the
 // shipping one). nowMs is the injected clock every expiry decision is evaluated
-// against — nil defaults to the wall clock, which is the right default for a
-// process and the wrong one for a test, so a test always passes its own.
+// against — nil defaults to THE STORE'S OWN clock, the one its opener chose.
+//
+// That default used to be a bare time.Now, which made a nil here a silent third
+// clock in the process: this log rides the store, its retention decides how long
+// the store's own audit trail survives, and measuring that against a different
+// reading than the events were stamped with is measuring a skew rather than an
+// age. Inheriting the store's clock means a nil is a caller declining to make a
+// choice — not a caller opting out of the deployment's.
 //
 // onErr receives every storage failure the events.Log surface cannot return
 // (see the type's own doc); nil defaults to the standard logger. It is not
@@ -148,7 +153,7 @@ func OpenEventLog(s *Store, policy events.RetentionPolicy, nowMs func() int64, o
 		return nil, errors.New("store: open event log: nil store")
 	}
 	if nowMs == nil {
-		nowMs = func() int64 { return time.Now().UnixMilli() }
+		nowMs = s.nowMs
 	}
 	if onErr == nil {
 		onErr = func(err error) { stdlog.Printf("store: event log: %v", err) }

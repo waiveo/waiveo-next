@@ -85,7 +85,7 @@ type devicePlaneEnv struct {
 // the shape that makes the device-vs-entity distinction observable.
 func newDevicePlaneEnv(t *testing.T) *devicePlaneEnv {
 	t.Helper()
-	st, err := store.Open(":memory:")
+	st, err := store.Open(":memory:", store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
@@ -414,7 +414,7 @@ func TestSendEntityCommandRelayOfflineIs503(t *testing.T) {
 // shape: the entity is known but no connection plane exists to carry a command
 // to it.
 func TestSendEntityCommandWithoutADispatcherIs503(t *testing.T) {
-	st, err := store.Open(":memory:")
+	st, err := store.Open(":memory:", store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}

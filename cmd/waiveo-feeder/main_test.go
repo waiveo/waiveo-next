@@ -175,7 +175,7 @@ const feederE2EContentDaypartID = "01J8Z7DEM0DAYPARTC0NTENT01"
 func TestDesiredStateSourceCurrentRebuildsOnAPIWriteGenerationBump(t *testing.T) {
 	ctx := context.Background()
 
-	st, err := store.Open(":memory:")
+	st, err := store.Open(":memory:", store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
@@ -314,7 +314,7 @@ func doFeederReq(t *testing.T, ts *httptest.Server, method, path string, body []
 func TestAPIWriteNudgesConnectedRelayEndToEnd(t *testing.T) {
 	ctx := context.Background()
 
-	st, err := store.Open(":memory:")
+	st, err := store.Open(":memory:", store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
@@ -522,7 +522,7 @@ func feederContentInstant(t *testing.T) func() int64 {
 func TestDesiredStateSourceMultiItemCastOrderedAndVerifiable(t *testing.T) {
 	ctx := context.Background()
 
-	st, err := store.Open(":memory:")
+	st, err := store.Open(":memory:", store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}

@@ -16,7 +16,7 @@ import (
 // returns it (closed on cleanup).
 func seededStore(t *testing.T, assetRef string) *store.Store {
 	t.Helper()
-	s, err := store.Open(":memory:")
+	s, err := store.Open(":memory:", store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open(:memory:): %v", err)
 	}

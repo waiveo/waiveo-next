@@ -55,7 +55,7 @@ func envOverStore(t *testing.T, st *store.Store, fixture *authtest.Fixture) *tes
 func newFileEnv(t *testing.T) (*testEnv, string) {
 	t.Helper()
 	dsn := filepath.Join(t.TempDir(), "app.db")
-	st, err := store.Open(dsn)
+	st, err := store.Open(dsn, store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open(%s): %v", dsn, err)
 	}
@@ -377,7 +377,7 @@ func TestJobSurvivesProcessRestart(t *testing.T) {
 	if err := e.store.Close(); err != nil {
 		t.Fatalf("close store: %v", err)
 	}
-	reopened, err := store.Open(dsn)
+	reopened, err := store.Open(dsn, store.WallClockMs)
 	if err != nil {
 		t.Fatalf("reopen %s: %v", dsn, err)
 	}

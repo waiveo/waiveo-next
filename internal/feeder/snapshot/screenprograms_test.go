@@ -515,7 +515,7 @@ func TestScreenWithUnresolvableTZIsOmittedNotSubstituted(t *testing.T) {
 // never a fabricated placeholder entry and never a null.
 func TestStoreWithNoScreenRowsYieldsAnEmptySection(t *testing.T) {
 	id := testIdentity(t)
-	s, err := store.Open(":memory:")
+	s, err := store.Open(":memory:", store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}

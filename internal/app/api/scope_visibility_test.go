@@ -615,7 +615,7 @@ func newScopedDevicePlaneEnv(t *testing.T) (*devicePlaneEnv, scopedTree) {
 	registry := devices.New(devScopeA)
 	dispatcher := &fakeDispatcher{result: wire.DeviceCommandResultBody{OK: true}}
 
-	st, err := store.Open(":memory:")
+	st, err := store.Open(":memory:", store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}

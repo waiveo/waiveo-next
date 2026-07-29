@@ -83,7 +83,7 @@ func newAPIOverConnection(t *testing.T, h *harness, relayID string) *httptest.Se
 		t.Fatalf("PutEntity: %v", err)
 	}
 
-	st, err := store.Open(":memory:")
+	st, err := store.Open(":memory:", store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}

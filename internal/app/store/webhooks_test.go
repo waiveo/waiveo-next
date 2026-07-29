@@ -15,7 +15,7 @@ const (
 
 func openWebhookStore(t *testing.T) *store.Store {
 	t.Helper()
-	s, err := store.Open(":memory:")
+	s, err := store.Open(":memory:", store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}

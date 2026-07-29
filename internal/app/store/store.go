@@ -184,8 +184,11 @@ type WriteGuard func(existing []Resource) error
 // under mu (write lock) and reads take mu (read lock), so a revision/generation
 // bump is atomic against any concurrent read.
 type Store struct {
-	db    *sql.DB
-	mu    sync.RWMutex
+	db *sql.DB
+	mu sync.RWMutex
+	// nowMs is the clock the OPENER chose (Open's required argument): every
+	// stamp this store writes reads it, and nothing in this package reaches for
+	// time.Now beside it.
 	nowMs func() int64
 
 	// onCommit (OnCommit) runs after every COMMITTED write transaction —
@@ -234,13 +237,47 @@ CREATE TABLE IF NOT EXISTS %s (
 );
 `
 
+// WallClockMs reads the host wall clock in epoch milliseconds.
+//
+// It is exported for the callers that genuinely want the HOST's reading: tests,
+// and read-only diagnostics that run outside a serving process (the feeder's
+// -store-check, which opens the store, reports and writes nothing). Naming it
+// makes that a deliberate choice at the call site rather than an unremarkable
+// `func() int64 { return time.Now().UnixMilli() }` nobody reads twice.
+//
+// A DEPLOYMENT does not pass this. It passes the app's persisted monotonic clock
+// floor reading (internal/app/auth.ClockFloor.Now), so a row's created_at, the
+// credential rows written in the same request and the audit event describing
+// both come from ONE clock.
+func WallClockMs() int64 { return time.Now().UnixMilli() }
+
 // Open opens (creating if necessary) the SQLite store at dsn, migrating the
 // schema. Pass ":memory:" for an ephemeral, test-only store, or a filesystem
 // path for the feeder's persistent store (its parent dir is created 0700). A
 // file-backed store runs under WAL + synchronous=FULL; every store uses
 // _txlock=immediate so a write transaction takes its write lock up front (no
 // read→write upgrade deadlock), reinforcing the serialized write path.
-func Open(dsn string) (*Store, error) {
+//
+// nowMs is the injected clock every stamp this store writes comes from — a
+// resource's created_at/updated_at baseline, a job's timestamps, a pack's
+// install record, a pairing grant's expiry sweep, a webhook's delivery state.
+// It is REQUIRED and positional, exactly as internal/app/auth.Open's is, and for
+// the same reason: this package used to hardcode time.Now with no seam at all,
+// so the app store stamped rows from the bare host clock while the credential
+// store beside it ran on the app's persisted monotonic clock floor (SEC-066).
+// The two agree only while the floor is 0. The day a time source advances the
+// floor they diverge, and a store baseline written behind the credential row
+// created in the same request is a discrepancy nobody would think to look for.
+//
+// There is deliberately NO variadic option with a wall-clock default. A default
+// that silently reads the host clock is the defect this argument exists to
+// remove, and a seam nobody is forced to fill is a seam that stays unfilled —
+// which is how the hardcoded one survived as long as it did. A caller that
+// genuinely wants the host's reading passes WallClockMs and says so.
+func Open(dsn string, nowMs func() int64) (*Store, error) {
+	if nowMs == nil {
+		return nil, errors.New("store: Open requires a clock (a deployment passes auth.ClockFloor.Now; a test or a read-only diagnostic passes store.WallClockMs)")
+	}
 	var connString string
 	switch dsn {
 	case ":memory:":
@@ -355,7 +392,7 @@ func Open(dsn string) (*Store, error) {
 		}
 	}
 
-	return &Store{db: db, nowMs: func() int64 { return time.Now().UnixMilli() }}, nil
+	return &Store{db: db, nowMs: nowMs}, nil
 }
 
 // Close flushes the WAL (best-effort) and closes the database handle.

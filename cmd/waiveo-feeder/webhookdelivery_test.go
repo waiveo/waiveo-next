@@ -139,7 +139,7 @@ func TestFeederDeliversToARegisteredWebhookEndpoint(t *testing.T) {
 	ctx := context.Background()
 	clock := func() int64 { return webhookE2ENowMs }
 
-	st, err := store.Open(":memory:")
+	st, err := store.Open(":memory:", store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestWebhookLoopShutdownDoesNotWaitOnAStalledReceiver(t *testing.T) {
 	ctx := context.Background()
 	clock := func() int64 { return webhookE2ENowMs }
 
-	st, err := store.Open(":memory:")
+	st, err := store.Open(":memory:", store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}

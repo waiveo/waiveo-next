@@ -333,7 +333,7 @@ func newHarnessAs(nowMs int64, newID func() string, principalID string) (*harnes
 // role leaves the fixture's own default (authtest binds `owner` at the
 // workspace root), so every existing call site is unchanged.
 func newHarnessAsRole(nowMs int64, newID func() string, principalID, role string) (*harness, error) {
-	st, err := store.Open(":memory:")
+	st, err := store.Open(":memory:", store.WallClockMs)
 	if err != nil {
 		return nil, fmt.Errorf("store.Open: %w", err)
 	}

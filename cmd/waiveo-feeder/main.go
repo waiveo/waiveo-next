@@ -312,7 +312,12 @@ func envOr(env func(string) string, key, def string) string {
 // needs a rewrite the boot can perform, 1 when it cannot be opened or the
 // rewrite would be refused.
 func reportStoreIDs(storePath string, out io.Writer) int {
-	st, err := store.Open(storePath)
+	// The HOST clock deliberately, and the only place in this binary that is the
+	// right answer. This subcommand stamps nothing — it reports and returns — so
+	// there is no row for a floor to keep consistent with anything, and reaching
+	// for the floor would mean creating the auth-state directory it lives in as a
+	// side effect of a read-only check that runs before the server does.
+	st, err := store.Open(storePath, store.WallClockMs)
 	if err != nil {
 		fmt.Fprintf(out, "cannot open %s: %v\n", storePath, err)
 		return 1
@@ -551,7 +556,10 @@ func main() {
 	// when empty, so a first run resolves a program while a persisted store keeps
 	// whatever was authored.
 	ctx := context.Background()
-	st, err := store.Open(cfg.storePath)
+	// On nowMs, not the host clock: a resource's created_at baseline and the
+	// credential row written in the same request must come from ONE reading, or
+	// the two disagree the day the host clock is wrong — the only day it matters.
+	st, err := store.Open(cfg.storePath, nowMs)
 	if err != nil {
 		log.Fatalf("waiveo-feeder: open store: %v", err)
 	}

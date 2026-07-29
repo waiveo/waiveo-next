@@ -180,7 +180,7 @@ func (s *discoveryStack) report(t *testing.T, wantDevices int) {
 // there through the connection.
 func newAPIOverRegistry(t *testing.T, h *harness, registry *devices.Registry) *httptest.Server {
 	t.Helper()
-	st, err := store.Open(":memory:")
+	st, err := store.Open(":memory:", store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}

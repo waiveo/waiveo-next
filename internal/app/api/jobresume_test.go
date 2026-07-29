@@ -51,7 +51,7 @@ func restart(t *testing.T, e *testEnv, dsn string) *testEnv {
 	if err := e.store.Close(); err != nil {
 		t.Fatalf("close store: %v", err)
 	}
-	reopened, err := store.Open(dsn)
+	reopened, err := store.Open(dsn, store.WallClockMs)
 	if err != nil {
 		t.Fatalf("reopen %s: %v", dsn, err)
 	}
@@ -291,7 +291,7 @@ func TestStrandedTargetOfUnresumableJobIsReconciled(t *testing.T) {
 func newFileWorkspaceEnv(t *testing.T) (*workspaceEnv, string) {
 	t.Helper()
 	dsn := filepath.Join(t.TempDir(), "app.db")
-	st, err := store.Open(dsn)
+	st, err := store.Open(dsn, store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open(%s): %v", dsn, err)
 	}

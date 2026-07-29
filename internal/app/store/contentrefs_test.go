@@ -36,7 +36,7 @@ func refsPlaylist(t *testing.T, id string, items ...datamodel.PlaylistItem) []by
 // and reference no origin content — contributing nothing.
 func TestWithContentReferencesProjectsEveryPlaylistItem(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.Open(":memory:")
+	st, err := store.Open(":memory:", store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestWithContentReferencesProjectsEveryPlaylistItem(t *testing.T) {
 func TestWithContentReferencesAbortsOnAnUndecodablePlaylist(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "refs.db")
-	st, err := store.Open(path)
+	st, err := store.Open(path, store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestWithContentReferencesAbortsOnAnUndecodablePlaylist(t *testing.T) {
 // as a failure to finish after the release.
 func TestWithContentReferencesHoldsTheWriteLock(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.Open(":memory:")
+	st, err := store.Open(":memory:", store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestWithContentReferencesHoldsTheWriteLock(t *testing.T) {
 // because "the sweep ran" and "the sweep worked" are the two things an operator
 // needs to be able to tell apart.
 func TestWithContentReferencesPropagatesTheCallbackError(t *testing.T) {
-	st, err := store.Open(":memory:")
+	st, err := store.Open(":memory:", store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}

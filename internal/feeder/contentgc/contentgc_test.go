@@ -57,7 +57,7 @@ func newHarness(t *testing.T, opts ...func(*contentgc.Config)) *harness {
 	if err != nil {
 		t.Fatalf("origin.Open: %v", err)
 	}
-	h.store, err = store.Open(":memory:")
+	h.store, err = store.Open(":memory:", store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}

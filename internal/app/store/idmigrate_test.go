@@ -85,7 +85,7 @@ func newPlaylistBody(scopeNode string) json.RawMessage {
 // openStoreAt opens a file-backed store and closes it when the test ends.
 func openStoreAt(t *testing.T, dsn string) *store.Store {
 	t.Helper()
-	s, err := store.Open(dsn)
+	s, err := store.Open(dsn, store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open(%s): %v", dsn, err)
 	}
@@ -273,7 +273,7 @@ func storedIDs(t *testing.T, dsn string) []string {
 func seededStore(t *testing.T) string {
 	t.Helper()
 	dsn := filepath.Join(t.TempDir(), "feeder-store.db")
-	s, err := store.Open(dsn)
+	s, err := store.Open(dsn, store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}

@@ -217,7 +217,7 @@ func newResetHarness() (*resetHarness, error) {
 			return nil, err
 		}
 	}
-	st, err := store.Open(":memory:")
+	st, err := store.Open(":memory:", store.WallClockMs)
 	if err != nil {
 		return nil, err
 	}

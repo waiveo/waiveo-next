@@ -75,7 +75,7 @@ type workspaceEnv struct {
 // archive directory, and a real workspace signing key in a directory of its own.
 func newWorkspaceEnv(t *testing.T) *workspaceEnv {
 	t.Helper()
-	st, err := store.Open(":memory:")
+	st, err := store.Open(":memory:", store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}

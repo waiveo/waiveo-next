@@ -192,7 +192,7 @@ func newEnv(t *testing.T) *env {
 // has to mean.
 func openEnv(t *testing.T, dir string, clk *clock) *env {
 	t.Helper()
-	st, err := store.Open(dir + "/workspace.sqlite")
+	st, err := store.Open(dir+"/workspace.sqlite", store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}

@@ -57,7 +57,7 @@ func fixtureOp() store.JobOperation {
 func openFile(t *testing.T) (*store.Store, string) {
 	t.Helper()
 	dsn := filepath.Join(t.TempDir(), "app.db")
-	s, err := store.Open(dsn)
+	s, err := store.Open(dsn, store.WallClockMs)
 	if err != nil {
 		t.Fatalf("Open(%s): %v", dsn, err)
 	}
@@ -293,7 +293,7 @@ func TestJobSurvivesStoreRestart(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	reopened, err := store.Open(dsn)
+	reopened, err := store.Open(dsn, store.WallClockMs)
 	if err != nil {
 		t.Fatalf("reopen %s: %v", dsn, err)
 	}

@@ -40,7 +40,7 @@ import (
 const seedDemoAssetRef = "sha256:00000000000000000000000000000000000000000000000000000000aabb"
 
 func TestSeedDemoRowsAddressableThroughAPIConventions(t *testing.T) {
-	st, err := store.Open(":memory:")
+	st, err := store.Open(":memory:", store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}

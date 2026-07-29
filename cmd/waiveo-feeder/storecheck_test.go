@@ -19,7 +19,7 @@ const storeCheckAssetRef = "sha256:3a5439d0a1f4b2c6e7889900aabbccddeeff001122334
 func seedStoreFileForCheck(t *testing.T) string {
 	t.Helper()
 	dsn := filepath.Join(t.TempDir(), "feeder-store.db")
-	s, err := store.Open(dsn)
+	s, err := store.Open(dsn, store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}

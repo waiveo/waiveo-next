@@ -1299,7 +1299,7 @@ func driveWebhookDeliveryOverHTTP(rep *report.Report, c corpus.Case, secret, del
 	}))
 	defer srv.Close()
 
-	st, err := store.Open(":memory:")
+	st, err := store.Open(":memory:", store.WallClockMs)
 	if err != nil {
 		return fail("open store", err)
 	}

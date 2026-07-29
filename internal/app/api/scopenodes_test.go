@@ -132,7 +132,7 @@ func newEnvWithOptions(t *testing.T, opts ...api.Option) *testEnv {
 
 func newEnvWith(t *testing.T, content *origin.Store, opts []api.Option) *testEnv {
 	t.Helper()
-	st, err := store.Open(":memory:")
+	st, err := store.Open(":memory:", store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}

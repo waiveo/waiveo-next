@@ -35,7 +35,7 @@ import (
 // inherits to every node, so nothing here is filtered and the case still isolates
 // exactly one variable: which resource type minted the cursor.
 func TestListCursorScopedPerResource(t *testing.T) {
-	st, err := store.Open(":memory:")
+	st, err := store.Open(":memory:", store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}

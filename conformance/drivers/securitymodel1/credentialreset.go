@@ -451,7 +451,7 @@ func newCredentialResetHarness(dir string, startMs int64, ids func() string) (*c
 	if err != nil {
 		return nil, err
 	}
-	appStore, err := store.Open(":memory:")
+	appStore, err := store.Open(":memory:", store.WallClockMs)
 	if err != nil {
 		_ = authStore.Close()
 		return nil, err

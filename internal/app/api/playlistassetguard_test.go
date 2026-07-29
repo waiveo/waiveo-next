@@ -62,7 +62,7 @@ func newGuardTestFixture(t *testing.T) (*origin.Store, *store.Store, string, []b
 	if err != nil {
 		t.Fatalf("origin.Add: %v", err)
 	}
-	st, err := store.Open(":memory:")
+	st, err := store.Open(":memory:", store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}

@@ -40,7 +40,7 @@ func mustJSON(t *testing.T, v any) json.RawMessage {
 
 func openMem(t *testing.T) *store.Store {
 	t.Helper()
-	s, err := store.Open(":memory:")
+	s, err := store.Open(":memory:", store.WallClockMs)
 	if err != nil {
 		t.Fatalf("Open(:memory:): %v", err)
 	}

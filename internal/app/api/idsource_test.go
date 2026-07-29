@@ -19,7 +19,7 @@ import (
 // newID sequence lets both outcomes be asserted exactly, proving neither path
 // mints its own id from a generator of its own anymore.
 func TestInjectedIDSourceMintsBothCreateAndJobIDs(t *testing.T) {
-	st, err := store.Open(":memory:")
+	st, err := store.Open(":memory:", store.WallClockMs)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
