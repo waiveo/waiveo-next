@@ -1,16 +1,18 @@
-import { test, expect, request as pwRequest, type APIRequestContext } from "@playwright/test";
+import { test, expect, request as pwRequest, type APIRequestContext, type Browser } from "@playwright/test";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 
 /**
  * The operator pairing click-through: drives the REAL console the feeder
- * serves — sign-in form included — through the whole app-side half of screen
- * pairing, and cross-checks every UI claim against the live API:
+ * serves — first-boot setup and sign-in forms included — through the whole
+ * app-side half of screen pairing, and cross-checks every UI claim against the
+ * live API:
  *
- *   1. Establish a real owner credential through the real flow: redeem the
- *      first-boot setup grant (the code the feeder persisted on disk,
- *      security-model SEC-120's "printed or on-screen" presentation) via
- *      POST /auth/setup, once; later runs sign in with the same credential.
+ *   1. Establish a real owner credential the way an operator does: follow the
+ *      sign-in page's setup link and redeem the first-boot setup grant on the
+ *      actual /setup form (the code the feeder persisted on disk, security-model
+ *      SEC-120's "printed or on-screen" presentation), once; later runs sign in
+ *      with the same credential.
  *   2. Sign in through the actual login form (no cookie injection).
  *   3. Screens page → "Pair a new screen" → name + placement → "Create & get
  *      code": the screen identity row must exist via /api/v1/screens and the
@@ -41,23 +43,51 @@ const SCREEN_NAME = `E2E Paired Screen ${Date.now()}`;
 
 let api: APIRequestContext;
 
-// Redeem the on-disk setup code if the workspace is still unclaimed; a claimed
-// workspace (GRANT_ALREADY_REDEEMED / no code on disk) signs in instead.
-async function ensureOwnerCredential(): Promise<void> {
+// Claim the box the way an operator standing at it does: on the console.
+//
+// This used to POST /api/v1/auth/setup directly, because the console had no
+// surface for it — which meant the one step every self-hosted deployment starts
+// with was the one step no test drove. It is a real click-through now: open the
+// sign-in page, follow the setup link it offers every caller, fill the form with
+// the code the feeder printed, and come out the other side already signed in.
+//
+// The presence of the code file IS the claim state (the feeder writes it on an
+// unclaimed boot and deletes it once an owner exists), so this runs at most
+// once per box: later runs find no file and sign in below with the credential
+// this one created.
+async function ensureOwnerCredential(browser: Browser): Promise<void> {
   if (!existsSync(SETUP_CODE_PATH)) return; // claimed in an earlier boot; login below
   const code = readFileSync(SETUP_CODE_PATH, "utf8").trim();
-  const res = await api.post("/api/v1/auth/setup", {
-    data: { code, identifier: OWNER_ID, password: OWNER_PASSWORD },
-  });
-  // 201 = this run claimed it; 403 GRANT_ALREADY_REDEEMED = an earlier run did.
-  if (res.status() !== 201 && res.status() !== 403) {
-    throw new Error(`auth/setup: ${res.status()} ${await res.text()}`);
+  const context = await browser.newContext({ baseURL: BASE_URL, ignoreHTTPSErrors: true });
+  const page = await context.newPage();
+  try {
+    await page.goto("/login");
+    await page.getByRole("link", { name: "Enter your setup code" }).click();
+    await expect(page.getByRole("button", { name: "Set up this box" })).toBeVisible();
+
+    await page.getByLabel("Setup code").fill(code);
+    await page.getByLabel("Identifier").fill(OWNER_ID);
+    // Anchored, not exact. `getByLabel` matches the LABEL ELEMENT'S TEXT, and a
+    // required field's label carries the decorative asterisk in that text — so
+    // `{ exact: true }` on "Password" matches nothing at all (it is "Password*"),
+    // while a bare substring match would also catch "Confirm password*". An
+    // anchored pattern picks exactly one and survives either reading.
+    await page.getByLabel(/^Password/).fill(OWNER_PASSWORD);
+    await page.getByLabel(/^Confirm password/).fill(OWNER_PASSWORD);
+    await page.getByRole("button", { name: "Set up this box" }).click();
+
+    // The claim minted the session itself, so the console opens on the Overview
+    // — no second sign-in, which is the whole point of the surface. A setup form
+    // that rendered and did nothing lands on /login instead and fails here.
+    await expect(page.getByRole("heading", { level: 1, name: "Overview" })).toBeVisible();
+  } finally {
+    await context.close();
   }
 }
 
-test.beforeAll(async () => {
+test.beforeAll(async ({ browser }) => {
   api = await pwRequest.newContext({ baseURL: BASE_URL, ignoreHTTPSErrors: true });
-  await ensureOwnerCredential();
+  await ensureOwnerCredential(browser);
 });
 
 test.afterAll(async () => {
