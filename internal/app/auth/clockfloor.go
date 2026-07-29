@@ -66,6 +66,12 @@ const (
 // directory. It rides beside the auth database because they share a lifecycle:
 // a factory reset that destroys the credential store has no business leaving a
 // clock floor behind, and an operator locating one has located the other.
+//
+// That shared lifecycle is ENFORCED, not merely asserted: a Store opened with
+// WithClockFloor destroys this file in DestroyLocalAuthState (destroy.go), which
+// is the auth tier's half of SEC-121's factory reset. It said so here for a
+// while before any code did it, which is how a re-provisioned box could inherit
+// the previous owner's ratchet.
 const clockFloorFile = "clock-floor.json"
 
 // clockFloorState is the on-disk shape. It is JSON with a named field rather

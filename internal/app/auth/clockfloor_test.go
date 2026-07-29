@@ -1,9 +1,12 @@
 package auth
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/maaxton/waiveo-next/internal/shared/ulid"
 )
 
 // clockfloor_test.go covers the halves of the app-tier clock floor
@@ -52,6 +55,57 @@ func TestClockFloorRefusesAnUnauthenticatedAdvanceHoweverLarge(t *testing.T) {
 	}
 	if got := floor.Assessment(); got != ClockTrusted {
 		t.Errorf("assessment = %q, want trusted — a verifiable value above the floor was accepted (SEC-068)", got)
+	}
+}
+
+// TestClockFloorNowTracksTheWallClockAboveTheFloor is the OTHER half of
+// SEC-066's clamp, and the half nothing else in this tree asserts.
+//
+// Now() is max(wall, floor). Every other test here, and the frozen SEC-066 case,
+// exercises the side where the floor WINS — a host clock rolled back below the
+// floor. Nothing exercised the side where the wall wins, which meant a Now()
+// that simply returned the floor whenever one was established passed the entire
+// corpus and the entire package. That mutation is not a subtle one: with the
+// auth store now opened on this clock (cmd/waiveo-feeder), it freezes the app's
+// notion of time at the instant of the last verified advance forever — every
+// grant issued at the same millisecond, every ttl measured from a clock that
+// never moves, every TOTP step pinned to one window, and every audit record
+// stamped with the same time.
+//
+// The floor is a LOWER BOUND, never a substitute for the clock.
+func TestClockFloorNowTracksTheWallClockAboveTheFloor(t *testing.T) {
+	dir := t.TempDir()
+	wall := int64(5_000)
+	floor, err := OpenClockFloor(dir, func() int64 { return wall })
+	if err != nil {
+		t.Fatalf("OpenClockFloor: %v", err)
+	}
+	if advanced, err := floor.Advance(10_000, TimeSourceVerifiable); err != nil || !advanced {
+		t.Fatalf("seed the floor: advanced=%v err=%v", advanced, err)
+	}
+	// Below the floor: the floor wins (the case the frozen corpus covers).
+	if got := floor.Now(); got != 10_000 {
+		t.Fatalf("Now() = %d with wall below the floor, want the floor 10000", got)
+	}
+
+	// At and above the floor: the WALL wins, and keeps winning as it advances.
+	for _, tc := range []struct{ wallMs, want int64 }{
+		{10_000, 10_000},
+		{10_001, 10_001},
+		{1 << 45, 1 << 45},
+	} {
+		wall = tc.wallMs
+		if got := floor.Now(); got != tc.want {
+			t.Errorf("Now() = %d with wall %d above a floor of 10000, want %d — the floor is a lower bound, not the clock",
+				got, tc.wallMs, tc.want)
+		}
+	}
+
+	// And the floor did not quietly ratchet up to follow the wall: only a
+	// verifiable Advance moves it (SEC-067), so a bare host reading must leave it
+	// exactly where it was however far ahead the host has run.
+	if got := floor.FloorMs(); got != 10_000 {
+		t.Errorf("floor = %d after Now() read a much later wall clock, want 10000 — Now must not launder a wall reading into the floor", got)
 	}
 }
 
@@ -110,5 +164,80 @@ func TestClockFloorResetIsTheOnlyWayDown(t *testing.T) {
 	}
 	if got := reopened.Now(); got != 42 {
 		t.Errorf("Now() = %d after a reset and restart, want the bare host reading 42", got)
+	}
+}
+
+// TestDestroyLocalAuthStateDestroysTheClockFloor is the assertion behind the
+// lifecycle claim clockfloor.go makes: "a factory reset that destroys the
+// credential store has no business leaving a clock floor behind". Before this
+// existed the sentence was true of nothing — the reset removed every row and
+// left clock-floor.json exactly where it was, so a re-provisioned box inherited
+// the previous owner's ratchet.
+func TestDestroyLocalAuthStateDestroysTheClockFloor(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	floor, err := OpenClockFloor(dir, func() int64 { return 1_000 })
+	if err != nil {
+		t.Fatalf("OpenClockFloor: %v", err)
+	}
+	if advanced, err := floor.Advance(9_000_000, TimeSourceVerifiable); err != nil || !advanced {
+		t.Fatalf("seed the floor: advanced=%v err=%v", advanced, err)
+	}
+	path := filepath.Join(dir, clockFloorFile)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("the floor was not persisted before the reset: %v", err)
+	}
+
+	st, err := Open(":memory:", floor.Now, ulid.New, WithClockFloor(floor))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+	if _, err := st.CreatePrincipal(ctx, KindUser, "someone"); err != nil {
+		t.Fatalf("CreatePrincipal: %v", err)
+	}
+
+	if err := st.DestroyLocalAuthState(ctx); err != nil {
+		t.Fatalf("DestroyLocalAuthState: %v", err)
+	}
+
+	if got := floor.FloorMs(); got != 0 {
+		t.Errorf("floor = %d after a factory reset, want 0", got)
+	}
+	if got := floor.Assessment(); got != ClockUntrusted {
+		t.Errorf("assessment = %q after a factory reset, want untrusted", got)
+	}
+	// The FILE, not merely the in-memory value: the next boot reads this
+	// directory, and a box handed on with the previous owner's floor still on
+	// disk is clamped to their clock with no reachable way down (the console
+	// reset verb, SEC-075, has no transport in this tree).
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("clock-floor.json survived a factory reset (stat err = %v)", err)
+	}
+	// And the rows really went, so this is a reset that also destroyed the floor
+	// rather than a floor reset wearing a reset's name.
+	if n, err := st.CountPrincipals(ctx); err != nil || n != 0 {
+		t.Errorf("principals after the reset = %d (err %v), want 0", n, err)
+	}
+}
+
+// TestDestroyLocalAuthStateWithNoFloorWired proves the floor step is optional
+// rather than required: a store opened without WithClockFloor still destroys its
+// rows instead of failing on a nil floor.
+func TestDestroyLocalAuthStateWithNoFloorWired(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(":memory:", func() int64 { return 1_000 }, ulid.New)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+	if _, err := st.CreatePrincipal(ctx, KindUser, "someone"); err != nil {
+		t.Fatalf("CreatePrincipal: %v", err)
+	}
+	if err := st.DestroyLocalAuthState(ctx); err != nil {
+		t.Fatalf("DestroyLocalAuthState with no floor wired: %v", err)
+	}
+	if n, err := st.CountPrincipals(ctx); err != nil || n != 0 {
+		t.Errorf("principals after the reset = %d (err %v), want 0", n, err)
 	}
 }

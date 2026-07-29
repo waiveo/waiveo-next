@@ -609,8 +609,8 @@ func TestFactoryResetClearsTOTPState(t *testing.T) {
 		t.Fatalf("BeginTOTPEnrollment: %v", err)
 	}
 
-	if err := st.DestroyAllPrincipals(ctx); err != nil {
-		t.Fatalf("DestroyAllPrincipals: %v", err)
+	if err := st.DestroyLocalAuthState(ctx); err != nil {
+		t.Fatalf("DestroyLocalAuthState: %v", err)
 	}
 	if _, seen, err := st.TOTPLastStep(ctx, cred.CredentialID); err != nil || seen {
 		t.Fatalf("a step floor survived factory reset (seen=%v, err=%v)", seen, err)

@@ -35,21 +35,53 @@ import (
 // path is the named exception, and it re-opens claim exactly as the exception
 // requires.
 
-// DestroyAllPrincipals removes every principal, credential, session, role
-// binding and grant in ONE transaction — the auth-tier half of SEC-121's
+// DestroyLocalAuthState removes EVERYTHING this package persists for a
+// workspace — every principal, credential, session, role binding and grant, and
+// the persisted clock floor beside them — as the auth-tier half of SEC-121's
 // key-material destruction.
 //
-// It is deliberately all-or-nothing. A partial destruction that removed
-// credentials but left role bindings, or removed principals but left live
-// sessions, would leave a deployment that is neither claimable nor usable: the
-// sessions would still authenticate against principals that no longer exist,
+// The row destruction is deliberately all-or-nothing. A partial destruction that
+// removed credentials but left role bindings, or removed principals but left
+// live sessions, would leave a deployment that is neither claimable nor usable:
+// the sessions would still authenticate against principals that no longer exist,
 // and CountOwnerBindings would still report the box claimed. One transaction
 // means the deployment is only ever observed in the state before or the state
-// after.
-//
-// The order within the transaction is child-table-first, so a foreign-key
+// after. The order within the transaction is child-table-first, so a foreign-key
 // enforcement added later cannot turn this into a partial delete.
-func (s *Store) DestroyAllPrincipals(ctx context.Context) error {
+//
+// # Why the clock floor goes too, and why it goes FIRST
+//
+// clockfloor.go states that the floor "rides beside the auth database because
+// they share a lifecycle: a factory reset that destroys the credential store has
+// no business leaving a clock floor behind". That sentence was a claim no code
+// made true — the reset destroyed the rows and left clock-floor.json on disk —
+// and this is where it becomes true.
+//
+// It matters operationally, not just for tidiness. The floor is a one-way
+// ratchet whose only sanctioned way down is the console binding's reset verb
+// (SEC-075), and that binding has no transport in this tree. A box handed on
+// with a future-dated floor would clamp its NEXT owner's clock to the previous
+// owner's last verified reading, with no reachable way to lower it — a reset
+// that leaves the box unadministrable in a new way is not a reset. It is also
+// the app-side analog of what SEC-124 requires outright of a relay-only
+// appliance, whose factory reset "MUST destroy its device identity, its
+// certificate/keypair, its operational state ... and its persisted clock floor".
+//
+// The floor goes FIRST because of the same ordering rule the api-tier path
+// follows (internal/app/api/workspacerun.go): everything before the credential
+// destruction must be retryable by an operator who still holds a live session.
+// Removing the floor is idempotent and costs no administrability; destroying the
+// credentials is the step there is no coming back from, so it stays last.
+//
+// A Store opened without WithClockFloor has no floor to destroy and skips the
+// step — never silently, since a deployment that wired one gets it reset and a
+// test that did not never had one on disk to begin with.
+func (s *Store) DestroyLocalAuthState(ctx context.Context) error {
+	if s.floor != nil {
+		if err := s.floor.Reset(); err != nil {
+			return fmt.Errorf("auth: destroy the persisted clock floor: %w", err)
+		}
+	}
 	return s.writeTx(ctx, func(tx *sql.Tx) error {
 		// totp_pending and totp_steps ride the same delete. A pending enrollment
 		// left behind would let a code minted before the reset arm a credential

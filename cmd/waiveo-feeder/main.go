@@ -443,12 +443,41 @@ func main() {
 		log.Printf("waiveo-feeder seeded make-dev demo into %s (%d playlist item(s))", cfg.storePath, len(assetRefs))
 	}
 
+	// The app-tier persisted monotonic clock floor (security-model/1
+	// SEC-066-068). It is opened HERE, ahead of every component in this process
+	// that reads a clock, because nowMs — the floor's floor-aware reading — is
+	// the app's ONE notion of current time from this line down. Nothing below
+	// reads time.Now: a process that stamped an audit record from one clock, a
+	// grant's expiry from a second and a screen's schedule from a third would be
+	// three deployments wearing one binary, and the difference between them
+	// would only ever be visible on the day the host clock was wrong, which is
+	// the day it matters.
+	//
+	// READ THE LIMIT BEFORE RELYING ON THIS. SEC-066 exists so a time-windowed
+	// check — a TOTP step, a grant ttl — cannot be defeated by turning the host
+	// clock back, and the mechanism is now genuinely load-bearing: the auth
+	// store below is opened ON this clock, so grant expiry and every TOTP step
+	// read the floor-clamped reading rather than the bare host clock. What is
+	// still missing is the OTHER half: no authenticated time SOURCE is wired, so
+	// nothing calls Advance, the floor stays at 0, Now() equals the wall clock,
+	// and the restart clamp never actually fires on this deployment. Which
+	// authenticated-time sources to trust is a deployment-tier decision SEC-067
+	// leaves open ("implementation-defined per deployment tier"), and inventing
+	// one here would be inventing the trust decision with it. So: the clamp is
+	// real and wired to the checks that need it, and it currently clamps against
+	// a floor of zero. No traceability row claims SEC-066 until a source exists.
+	clockFloor, err := auth.OpenClockFloor(cfg.authDir, func() int64 { return time.Now().UnixMilli() })
+	if err != nil {
+		log.Fatalf("waiveo-feeder: open the app clock floor: %v", err)
+	}
+	nowMs := clockFloor.Now
+
 	// The desired-state source: rebuilds the signed snapshot from the store,
 	// cached by generation and invalidated when an api write advances it — so each
 	// pull serves the current generation (the authoring loop's serving half).
 	src := &desiredStateSource{
 		store: st, contentBaseURL: contentBaseURL, id: id,
-		nowMs: func() int64 { return time.Now().UnixMilli() },
+		nowMs: nowMs,
 	}
 	// Fail fast if the seeded/persisted store cannot derive a signed snapshot
 	// at all — better a boot-time exit than every relay pull failing later.
@@ -515,33 +544,6 @@ func main() {
 	// unmounted paths.
 	deviceRegistry := devices.New()
 
-	// The app-tier persisted monotonic clock floor (security-model/1
-	// SEC-066-068), opened before anything that reads a clock: nowMs below is
-	// the floor's floor-aware reading.
-	//
-	// READ THE LIMITS BEFORE RELYING ON THIS. SEC-066 exists so that a
-	// time-windowed check — a TOTP step, a grant ttl — cannot be defeated by
-	// turning the host clock back. THIS DEPLOYMENT DOES NOT YET BUY THAT
-	// PROPERTY, for two independent reasons:
-	//
-	//  1. The auth store, which decides both of those checks, is opened with
-	//     auth.OpenDefault and therefore runs on the bare wall clock, not on
-	//     this floor. Grant expiry and every TOTP step read that clock. Putting
-	//     the auth store on the floor needs a clock seam that store does not
-	//     have yet.
-	//  2. No authenticated time SOURCE is wired, so nothing calls Advance: the
-	//     floor stays at 0, Now() is always the wall clock, and the restart
-	//     clamp never fires.
-	//
-	// What IS live and load-bearing today: the floor's persistence, its
-	// monotonic guard, its restart clamp and its assessment (reported honestly
-	// as `untrusted`, which is what it is). The mechanism is real; the property
-	// SEC-066 names is not yet delivered, and no traceability row claims it.
-	clockFloor, err := auth.OpenClockFloor(cfg.authDir, func() int64 { return time.Now().UnixMilli() })
-	if err != nil {
-		log.Fatalf("waiveo-feeder: open the app clock floor: %v", err)
-	}
-	nowMs := clockFloor.Now
 	idem := apihttp.NewIdempotencyStore(nowMs, 0)
 
 	// The live observability plane (events/1 EVT-010/013/100/130-144): ONE shared
@@ -670,7 +672,23 @@ func main() {
 	// emits an ordinary events/1 audit.event (SEC-150), never a second audit
 	// schema of its own, so a login lands in the same stream an operator is
 	// already watching.
-	authStore, err := auth.OpenDefault(filepath.Join(cfg.authDir, authStoreFile), auth.WithSecretSealer(secretSealer))
+	//
+	// It is opened on nowMs — the clock floor's floor-aware reading — and not on
+	// the host wall clock, which is what makes the floor above load-bearing
+	// rather than decorative. Every time-windowed check this store owns reads
+	// that clock: a grant's `ttl` expiry (SEC-032/035), every TOTP step
+	// (SEC-004), the pending-enrollment window, the lockout backoff (SEC-090),
+	// and the created/revoked stamps on principals, credentials, sessions, API
+	// keys and role bindings. On a host clock rolled back below the floor, all
+	// of them stay where the floor says they are instead of walking backwards
+	// with the host.
+	//
+	// WithClockFloor is the floor's LIFECYCLE wiring, distinct from the clock
+	// above: a factory reset (SEC-121) destroys the persisted floor along with
+	// the credentials it rides beside, rather than handing the next owner a
+	// ratchet they have no reachable way to lower.
+	authStore, err := auth.Open(filepath.Join(cfg.authDir, authStoreFile), nowMs, ulid.New,
+		auth.WithSecretSealer(secretSealer), auth.WithClockFloor(clockFloor))
 	if err != nil {
 		log.Fatalf("waiveo-feeder: open auth store: %v", err)
 	}

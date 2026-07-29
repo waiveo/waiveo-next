@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 
 	"github.com/maaxton/waiveo-next/internal/shared/ulid"
 	_ "modernc.org/sqlite"
@@ -160,6 +159,14 @@ type Store struct {
 	// forgot to wire it.
 	sealer SecretSealer
 
+	// floor is the app's persisted monotonic clock floor (SEC-066), installed by
+	// WithClockFloor. It is held for LIFECYCLE, not for time: this store's clock
+	// is the injected nowMs above (which a deployment points at the floor), and
+	// what this handle buys is that DestroyLocalAuthState destroys the floor
+	// along with the credentials it rides beside. Nil is legal — a store with no
+	// floor wired has none to destroy.
+	floor *ClockFloor
+
 	// onRevoke (OnRevoke) runs after every session this store revokes, with
 	// that session's id. It is the seam EVT-114's live-stream teardown hangs
 	// off: the events binding registers a hook that closes every open stream
@@ -255,10 +262,32 @@ func WithSecretSealer(sealer SecretSealer) StoreOption {
 	return func(s *Store) { s.sealer = sealer }
 }
 
-// OpenDefault opens the auth store at dsn with the wall clock and ulid.New.
-func OpenDefault(dsn string, opts ...StoreOption) (*Store, error) {
-	return Open(dsn, func() int64 { return time.Now().UnixMilli() }, ulid.New, opts...)
+// WithClockFloor binds the app's persisted monotonic clock floor (SEC-066,
+// clockfloor.go) to this store's LIFECYCLE — not to its clock.
+//
+// The two are separate wirings on purpose. The clock is the positional nowMs
+// argument, and a deployment passes ClockFloor.Now there so every time-windowed
+// check this store owns reads the floor-clamped reading. This option answers a
+// different question: what does a factory reset destroy? The floor file lives in
+// the same directory as the auth database and clockfloor.go says outright that
+// the two share a lifecycle, so DestroyLocalAuthState removes both — see its own
+// doc for why leaving a floor behind is an operational trap rather than a
+// harmless leftover.
+func WithClockFloor(floor *ClockFloor) StoreOption {
+	return func(s *Store) { s.floor = floor }
 }
+
+// There is deliberately NO OpenDefault convenience that supplies a wall clock.
+// One existed, the shipped feeder was its only caller, and the result was that
+// the app's credential store — which decides grant `ttl` expiry (SEC-032/035)
+// and every TOTP step (SEC-004) — ran on the bare host clock while the rest of
+// the process ran on the app's persisted monotonic clock floor (SEC-066,
+// clockfloor.go). A host clock rolled back below the floor could therefore
+// re-open a time-windowed check that the floor existed precisely to hold shut.
+//
+// The clock is a required positional argument for exactly that reason: an
+// app-tier caller must name the clock it is putting its credentials on, and the
+// answer for a deployment is ClockFloor.Now, never time.Now.
 
 // Close closes the database handle, flushing the WAL best-effort first.
 func (s *Store) Close() error {

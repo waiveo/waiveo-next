@@ -365,7 +365,7 @@ func (srv *server) workspaceAssets(ctx context.Context) ([]archive.AssetEntry, e
 //
 // The ORDER is the design. Credentials go LAST:
 //
-//	content assets -> relational rows -> workspace signing key -> principals
+//	content assets -> relational rows -> workspace signing key -> auth state
 //
 // Every step before the last is recoverable-by-retry if it fails, because the
 // owner who submitted the request still holds a live session and can look at
@@ -400,7 +400,12 @@ func (srv *server) destroyWorkspace(ctx context.Context) (code, detail string) {
 		}
 	}
 	if srv.authn != nil {
-		if err := srv.authn.Store().DestroyAllPrincipals(ctx); err != nil {
+		// Everything the auth tier persists for this workspace: every principal,
+		// credential, session, role binding and grant, plus the persisted clock
+		// floor that rides in the same directory (SEC-066). See
+		// auth.Store.DestroyLocalAuthState for why the floor goes with them
+		// rather than surviving into the next owner's deployment.
+		if err := srv.authn.Store().DestroyLocalAuthState(ctx); err != nil {
 			return "INTERNAL", "The workspace's credentials could not be destroyed."
 		}
 	}
