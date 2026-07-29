@@ -907,7 +907,7 @@ type MarketplaceRef struct {
 // MarketplaceRefTrustChannel The provenance tier this install is accepted under (MKT-020). It is REQUIRED and is never defaulted server-side: MKT-022's production-install bar and MKT-090's auto-tracking pin are both stated per channel, so a host filling this in would be choosing how much review the installed code has had, in whatever direction the registry currently points.
 type MarketplaceRefTrustChannel string
 
-// PairingCodeResult A freshly minted screen-bound pairing grant (`relay/1` REL-121a) and, when a relay is connected, the human-enterable pairing code (`player/1` PLY-024) an operator reads onto the screen. Exactly one of `pairing_code` and `code_unavailable_reason` is present — the grant is minted and delivered to the relay either way.
+// PairingCodeResult A freshly minted pairing grant, bound to this screen row (`relay/1` REL-121a) and to the one relay that may redeem it (REL-121b), plus the human-enterable pairing code (`player/1` PLY-024) an operator reads onto the screen. Exactly one of `pairing_code` and `code_unavailable_reason` is present: the grant is minted, bound, and delivered either way, and the reason describes only why the code itself could not be formed for the relay it is bound to. A request with no relay to bind to at all is refused before anything is minted (`503`).
 type PairingCodeResult struct {
 	// CodeUnavailableReason Why no code could be formed (for instance, no relay is connected). Present exactly when `pairing_code` is not.
 	CodeUnavailableReason *string `json:"code_unavailable_reason,omitempty"`
@@ -927,7 +927,7 @@ type PairingCodeResult struct {
 	PairingCode    *string                         `json:"pairing_code,omitempty"`
 	RedemptionMode PairingCodeResultRedemptionMode `json:"redemption_mode"`
 
-	// RelayId The connected relay the code dials. Present exactly when `pairing_code` is.
+	// RelayId The one relay this grant is bound to and its code dials (`relay/1` REL-121b). Always present on a 201 — an issuance that could not name a relay is refused rather than minted — including when `code_unavailable_reason` explains why the code itself could not be formed for it.
 	RelayId *string `json:"relay_id,omitempty"`
 
 	// ScreenId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
@@ -10884,6 +10884,7 @@ type IssueScreenPairingCodeResponse struct {
 	ApplicationproblemJSON403 *Forbidden
 	ApplicationproblemJSON404 *NotFound
 	ApplicationproblemJSON409 *Conflict
+	ApplicationproblemJSON503 *ServiceUnavailable
 }
 
 // Status returns HTTPResponse.Status
@@ -15321,6 +15322,13 @@ func ParseIssueScreenPairingCodeResponse(rsp *http.Response) (*IssueScreenPairin
 			return nil, err
 		}
 		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest ServiceUnavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
 
 	}
 

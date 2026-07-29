@@ -624,7 +624,7 @@ export interface paths {
         put?: never;
         /**
          * Issue a pairing code for a screen
-         * @description Mints a one-time pairing grant bound to this screen row (`relay/1` REL-121a) and persists it as desired state, so it rides the next signed snapshot's `pairing_grants` section to the site's relay (REL-067). The response carries the human-enterable pairing code (`player/1` PLY-024) formed against the connected relay's advertised dial address and trust-anchor commitment — or, when no code can be formed (no relay connected), the minted grant with an explanatory `code_unavailable_reason`. Redemption happens at the relay (`player/1` Pairing redemption); this operation reports issuance, never a redemption state it has no evidence for.
+         * @description Mints a one-time pairing grant bound to this screen row (`relay/1` REL-121a) AND to the one relay that may redeem it (REL-121b), and persists it as desired state, so it rides the next signed snapshot's `pairing_grants` section to the site's relays (REL-067). The response carries the human-enterable pairing code (`player/1` PLY-024) formed against that same relay's advertised dial address and trust-anchor commitment — or, when the relay is named but its address or key is unusable, the minted grant with an explanatory `code_unavailable_reason`. With no relay connected at all, the request is refused `503 UNAVAILABLE` and nothing is minted: an unbound one-time grant would be redeemable once per enrolled relay, each redemption resolving to this same screen row, which REL-121c forbids an app peer from delivering. Redemption happens at the relay (`player/1` Pairing redemption); this operation reports issuance, never a redemption state it has no evidence for.
          */
         post: operations["issueScreenPairingCode"];
         delete?: never;
@@ -1277,7 +1277,7 @@ export interface components {
             device_id?: string | null;
             labels?: components["schemas"]["LabelMap"];
         };
-        /** @description A freshly minted screen-bound pairing grant (`relay/1` REL-121a) and, when a relay is connected, the human-enterable pairing code (`player/1` PLY-024) an operator reads onto the screen. Exactly one of `pairing_code` and `code_unavailable_reason` is present — the grant is minted and delivered to the relay either way. */
+        /** @description A freshly minted pairing grant, bound to this screen row (`relay/1` REL-121a) and to the one relay that may redeem it (REL-121b), plus the human-enterable pairing code (`player/1` PLY-024) an operator reads onto the screen. Exactly one of `pairing_code` and `code_unavailable_reason` is present: the grant is minted, bound, and delivered either way, and the reason describes only why the code itself could not be formed for the relay it is bound to. A request with no relay to bind to at all is refused before anything is minted (`503`). */
         PairingCodeResult: {
             /** @description The minted grant's identifier — also the `grant_selector` the pairing code encodes. */
             grant_id: string;
@@ -1290,7 +1290,7 @@ export interface components {
             expires_at: components["schemas"]["Timestamp"];
             /** @description The hyphen-grouped code the screen's pairing UI accepts — encoding the relay's dial address, this grant's selector, and the relay's trust-anchor fingerprint commitment (`relay/1` REL-126). */
             pairing_code?: string;
-            /** @description The connected relay the code dials. Present exactly when `pairing_code` is. */
+            /** @description The one relay this grant is bound to and its code dials (`relay/1` REL-121b). Always present on a 201 — an issuance that could not name a relay is refused rather than minted — including when `code_unavailable_reason` explains why the code itself could not be formed for it. */
             relay_id?: string;
             /** @description Why no code could be formed (for instance, no relay is connected). Present exactly when `pairing_code` is not. */
             code_unavailable_reason?: string;
@@ -3311,6 +3311,7 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     listAdoptedDevices: {
