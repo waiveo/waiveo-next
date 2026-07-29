@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -315,7 +316,7 @@ func newTestPlayerServer(t *testing.T) (*playerserver.Server, ed25519.PrivateKey
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
 
-	srv, err := playerserver.NewServer(certPEM, []wire.PairingGrant{testPlayerServerGrant()})
+	srv, err := playerserver.NewServer(certPEM, []wire.PairingGrant{testPlayerServerGrant()}, playerserver.WallClockMs)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -1281,7 +1282,7 @@ func TestOfflineBootServesEveryPersistedScreenProgram(t *testing.T) {
 
 	srv, err := playerserver.NewServer(certPEM, []wire.PairingGrant{
 		twoScreenGrant(lobbyScreen), twoScreenGrant(cafeScreen), twoScreenGrant(darkScreen),
-	})
+	}, playerserver.WallClockMs)
 	if err != nil {
 		t.Fatalf("playerserver.NewServer: %v", err)
 	}
@@ -1323,5 +1324,55 @@ func TestOfflineBootServesEveryPersistedScreenProgram(t *testing.T) {
 	}
 	if len(dark.Content) != 0 {
 		t.Errorf("dark screen served content %+v, want none (display:blank)", dark.Content)
+	}
+}
+
+// TestDialAddressRefusesALoopbackCodeBehindALANListener covers the deployment
+// footgun in the pairing dial address. pairHost defaults to loopback, which is
+// right while the listener is also on loopback (a dev run, CI, the in-process
+// harness — the player is on this same host). It becomes wrong the instant an
+// on-box deployment overrides only WAIVEO_RELAY_LISTEN: the relay then binds
+// where a screen on the LAN can reach it and forms a code telling that screen to
+// dial 127.0.0.1, which is the SCREEN's own loopback.
+//
+// A code that cannot work is worse than no code — the same judgement the
+// REL-121b relay-binding skip already makes — so the mismatch yields no dial
+// address at all, and every consumer (the printed code, the SSDP announcement,
+// and the address hello advertises for the app peer to form codes from) declines
+// rather than publishing a wrong one.
+//
+// It deliberately refuses ONLY the mismatch. Guessing which LAN address a screen
+// should use is a deployment fact this binary does not have.
+func TestDialAddressRefusesALoopbackCodeBehindALANListener(t *testing.T) {
+	cases := []struct {
+		name    string
+		listen  string
+		host    string
+		wantErr bool // true = no dial address may be formed
+	}{
+		{"loopback listener, loopback dial (dev/CI default)", "127.0.0.1:7421", "127.0.0.1", false},
+		{"localhost listener, localhost dial", "localhost:7421", "localhost", false},
+		{"LAN listener, LAN dial (a configured deployment)", "192.168.50.12:7421", "192.168.50.12", false},
+		{"LAN listener, loopback dial (the footgun)", "192.168.50.12:7421", "127.0.0.1", true},
+		{"all-interfaces listener, loopback dial", "0.0.0.0:7421", "127.0.0.1", true},
+		{"portless all-interfaces listener, loopback dial", ":7421", "127.0.0.1", true},
+		{"LAN listener, localhost dial", "192.168.50.12:7421", "localhost", true},
+		{"LAN listener, ipv6 loopback dial", "192.168.50.12:7421", "::1", true},
+		{"LAN listener, hostname dial (not second-guessed)", "192.168.50.12:7421", "waiveo.local", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config{listen: tc.listen, pairHost: tc.host, pairPort: 7421}
+			got := cfg.dialAddress()
+			if tc.wantErr && got != "" {
+				t.Errorf("dialAddress() = %q, want \"\" — a code formed from this pairing dial host tells a screen to dial its own loopback", got)
+			}
+			if !tc.wantErr && got == "" {
+				t.Errorf("dialAddress() = \"\", want a dial address — this configuration is dialable and must keep forming codes")
+			}
+			if !tc.wantErr && got != net.JoinHostPort(tc.host, "7421") {
+				t.Errorf("dialAddress() = %q, want %q", got, net.JoinHostPort(tc.host, "7421"))
+			}
+		})
 	}
 }

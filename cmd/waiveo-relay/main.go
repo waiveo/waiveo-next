@@ -139,6 +139,65 @@ type config struct {
 	keepaliveOn  bool
 }
 
+// dialAddress is the address a player is told to dial to reach this relay's
+// player/1 surface — the value a formed pairing code encodes (REL-126) and the
+// value hello advertises to the app peer, which forms codes from it too
+// (REL-037). It is "" when this relay can tell the address cannot work, and
+// every consumer treats "" as "no code can be formed" rather than forming one.
+//
+// The case it catches is the deployment default drifting apart from the
+// deployment. pairHost defaults to loopback, which is exactly right while the
+// listener is also on loopback — a dev run or CI, where the player is on this
+// same host — and becomes a footgun the moment an on-box deployment overrides
+// only the LISTEN address. The relay then binds somewhere a screen on the LAN
+// can reach and hands that screen a code saying "dial 127.0.0.1", which is the
+// screen's OWN loopback: a code that cannot work, printed with the same
+// confidence as one that can, failing at the far end as an ordinary "cannot
+// reach the server" with nothing pointing back here.
+//
+// So this refuses precisely the mismatch — a loopback dial address behind a
+// non-loopback listener — and nothing else. It does NOT guess a LAN address:
+// which interface a screen should reach this relay on is a deployment fact
+// nobody here knows (a multi-homed box, NAT, a VIP fronting several relays,
+// REL-121c), so the remedy is for the deployment to state it in
+// WAIVEO_RELAY_PAIR_HOST. A loopback listener with a loopback dial address is
+// left exactly as it was.
+func (c config) dialAddress() string {
+	if c.pairHost == "" {
+		return ""
+	}
+	if isLoopbackHost(c.pairHost) && !isLoopbackHost(hostOf(c.listen)) {
+		return ""
+	}
+	return net.JoinHostPort(c.pairHost, strconv.Itoa(c.pairPort))
+}
+
+// isLoopbackHost reports whether host names the local machine's own loopback.
+// A non-address hostname is NOT treated as loopback: "waiveo.local" or a real
+// DNS name is a dialable name this relay has no business second-guessing, and
+// resolving it here would make a boot-time config check depend on a resolver.
+// "localhost" is spelled out because it is the one name whose meaning is fixed.
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// hostOf is the host component of a "host:port" bind address, or the whole
+// string when it does not split — a bind address with no port is malformed and
+// net.Listen will reject it later; this predicate just needs something to
+// classify. An empty host (":7421", every interface) is deliberately NOT
+// loopback: binding every interface includes the LAN ones.
+func hostOf(addr string) string {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	return host
+}
+
 // loadConfig reads the relay config from env (os.Getenv in main), falling back
 // to loopback defaults. Returns an error only on an unparseable pair port, so a
 // misconfiguration fails fast at startup rather than emitting an unusable code.
@@ -252,6 +311,36 @@ const (
 	relayRenewalWindowJitter = 3 * 24 * time.Hour
 )
 
+// flooredNowMs is THE reading every time-windowed decision in this binary makes
+// — the latest of three values:
+//
+//   - the OS wall clock;
+//   - the persisted clock floor (REL-130), which is advance-only, so a
+//     backwards-jumped OS clock can never walk this reading behind a time the
+//     relay has already verified; and
+//   - the hint-adjusted runtime clock (REL-133-bounded; before any accepted hint
+//     it reads as bare uptime and never wins the max).
+//
+// It exists as a named function, rather than inline at each caller, because
+// every caller that reads a different clock quietly opts out of REL-130. That
+// is what "on restart it MUST NOT adopt a wall-clock reading earlier than this
+// persisted floor" is for: a rolled-back host clock must not be able to re-open
+// a window that has closed — a certificate renewal that is due (REL-015), a
+// pairing grant whose ttl elapsed (REL-121), a channel token past its
+// expires_at (PLY-072). A floor store that cannot be read degrades to the other
+// two readings rather than failing: the floor raises this value, never lowers
+// it, so its absence can only make the reading more conservative.
+func flooredNowMs(store *identity.Store, clock *clocktrust.RuntimeClock) int64 {
+	nowMs := time.Now().UnixMilli()
+	if floorMs, ok, err := store.ClockFloor(); err == nil && ok && floorMs > nowMs {
+		nowMs = floorMs
+	}
+	if runtimeMs := clock.WallMillis(); runtimeMs > nowMs {
+		nowMs = runtimeMs
+	}
+	return nowMs
+}
+
 // renewalDue reports whether the persisted leaf is inside its proactive
 // renewal window (REL-015), evaluated on a floor-aware clock: the LATEST of
 // the OS wall clock, the persisted clock floor (REL-130 — advance-only, so
@@ -271,14 +360,7 @@ func renewalDue(store *identity.Store, clock *clocktrust.RuntimeClock, window ti
 	if !ok {
 		return false
 	}
-	nowMs := time.Now().UnixMilli()
-	if floorMs, ok, err := store.ClockFloor(); err == nil && ok && floorMs > nowMs {
-		nowMs = floorMs
-	}
-	if runtimeMs := clock.WallMillis(); runtimeMs > nowMs {
-		nowMs = runtimeMs
-	}
-	due, err := reenroll.ExpiresWithin(id.CertPEM, time.UnixMilli(nowMs), window)
+	due, err := reenroll.ExpiresWithin(id.CertPEM, time.UnixMilli(flooredNowMs(store, clock)), window)
 	if err != nil {
 		log.Printf("waiveo-relay: renewal predicate: %v", err)
 		return false
@@ -551,7 +633,13 @@ func main() {
 		log.Fatalf("waiveo-relay: build TLS certificate from enrollment identity: %v", err)
 	}
 
-	pairingSrv, err := playerserver.NewServer(relayID.CertPEM, applied.PairingGrants)
+	// The player/1 surface reads the floor-aware clock, not the host's: a
+	// pairing grant's ttl and a channel token's expires_at are exactly the
+	// time windows REL-130's persisted floor exists to keep a rolled-back host
+	// clock from re-opening.
+	pairingSrv, err := playerserver.NewServer(relayID.CertPEM, applied.PairingGrants, func() int64 {
+		return flooredNowMs(store, clockCtl.Clock())
+	})
 	if err != nil {
 		log.Fatalf("waiveo-relay: build player/1 pairing server: %v", err)
 	}
@@ -797,8 +885,14 @@ func main() {
 	// pairing code end up dialing the identical address. Off by default
 	// (WAIVEO_RELAY_SSDP_ANNOUNCE unset): CI and loopback dev runs must
 	// never multicast.
-	if cfg.ssdpAnnounce {
-		baseURL := fmt.Sprintf("https://%s/player/v1", net.JoinHostPort(cfg.pairHost, strconv.Itoa(cfg.pairPort)))
+	if cfg.ssdpAnnounce && cfg.dialAddress() == "" {
+		// Multicasting "reach me at 127.0.0.1" to the LAN is the same defect a
+		// formed pairing code would carry (dialAddress's own doc), and louder:
+		// every player that hears it records an address pointing at itself.
+		log.Printf("waiveo-relay: SSDP responder NOT started: listening on %s but the pairing dial host is %q (loopback), so the announced base URL would point a screen at its own loopback. Set WAIVEO_RELAY_PAIR_HOST.",
+			cfg.listen, cfg.pairHost)
+	} else if cfg.ssdpAnnounce {
+		baseURL := fmt.Sprintf("https://%s/player/v1", cfg.dialAddress())
 		responder, err := ssdpresponder.New(ssdpresponder.Config{
 			BaseURL: baseURL,
 			USN:     fmt.Sprintf("uuid:waiveo-relay:%s", relayID.RelayID),
@@ -1068,6 +1162,16 @@ func registerClockHint(mux *http.ServeMux, certDER []byte, ctl *clocktrust.Contr
 // can read one off the relay's own log and hand it to a later player/1 client
 // task. A grant bound to a different relay (REL-121b) is skipped — see below.
 func logPairingCodes(cfg config, applied desiredstate.Applied, relayCertDER []byte, relayID string) {
+	if cfg.dialAddress() == "" {
+		// No code is better than a code that dials the reader's own loopback —
+		// the same judgement the REL-121b skip below makes, for the same reason.
+		// The message names the remedy, because the alternative is an operator
+		// debugging a screen that says "cannot reach the server" with nothing
+		// connecting that back to this box's configuration.
+		log.Printf("waiveo-relay: NOT forming pairing codes: listening on %s but the pairing dial host is %q (loopback), so a formed code would tell a screen to dial its OWN loopback. Set WAIVEO_RELAY_PAIR_HOST to the address a screen reaches this relay on.",
+			cfg.listen, cfg.pairHost)
+		return
+	}
 	for _, grant := range applied.PairingGrants {
 		// A grant bound to another relay (REL-121b) is not this relay's to
 		// display: the code would encode THIS relay's dial address for a
@@ -1425,7 +1529,13 @@ func relayHelloDeclaration(cfg config) hello.Declaration {
 		// a multi-homed or 0.0.0.0-bound relay is not dialable at all. The
 		// app peer forms pairing codes from this value (relayconn
 		// ConnectedRelays), so drift here would mint codes that dial nowhere.
-		SubnetMetadata: hello.SubnetMetadata{AdvertisedAddress: net.JoinHostPort(cfg.pairHost, strconv.Itoa(cfg.pairPort))},
+		//
+		// A dial address this relay knows cannot work is advertised as NO
+		// address at all (dialAddress, below): the app peer's own pairing-code
+		// formation already degrades that to "the connected relay advertised no
+		// dialable address" and mints the grant anyway, which is a far better
+		// outcome than a code that dials the reader's own loopback.
+		SubnetMetadata: hello.SubnetMetadata{AdvertisedAddress: cfg.dialAddress()},
 		ClockState:     hello.ClockState{State: "untrusted", Source: "cold_boot"},
 	}
 }
