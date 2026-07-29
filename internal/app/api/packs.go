@@ -26,6 +26,23 @@ func WithPackTrust(anchors packsig.TrustAnchors) Option {
 	return func(s *server) { s.packTrust = anchors }
 }
 
+// WithRequiredPacks wires the deployment's required-pack roster (marketplace/1
+// MKT-093a): which packs hold tier-granted "Required" status here and the floor
+// version each may not be uninstalled or regressed below.
+//
+// It is host configuration, never discovery — nothing an index entry or an
+// artifact claims puts a pack on it. The roster is handed to the STORE rather
+// than kept here, because MKT-093b requires the floor to be enforced inside the
+// install and uninstall transactions, where no caller can arrive beside it;
+// this handler package only renders the refusal the store produces.
+//
+// Without this option no pack is required, which is MKT-093a's own default: an
+// empty roster withholds a restriction, so failing closed would mean refusing to
+// uninstall packs no deployment ever declared essential.
+func WithRequiredPacks(r store.RequiredPacks) Option {
+	return func(s *server) { s.store.SetRequiredPacks(r) }
+}
+
 // packResourceType is the api/1 resource-type tag the packs list's keyset
 // cursor is bound to, so a cursor minted by another resource's list is refused
 // here rather than paged from as an arbitrary position (API-033/035).
@@ -91,6 +108,7 @@ func (srv *server) mountPacks(rt *router) {
 	rt.HandleFunc("GET "+base+"/{publisher}/{name}/pages/{path...}", srv.getPackPage)
 	rt.HandleFunc("GET "+base+"/{publisher}/{name}/messages/{locale}", srv.getPackMessages)
 	rt.HandleFunc("GET "+base+"/{publisher}/{name}/installs", srv.listPackInstalls)
+	rt.HandleFunc("POST "+base+"/{publisher}/{name}/update", srv.updatePack)
 
 	// The pack-data surface: CRUD over a declared collection's universal-envelope
 	// rows (MAN-051/052), with the full api/1 conventions. The literal `data`
@@ -342,6 +360,24 @@ func (srv *server) deletePack(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := srv.store.UninstallPack(r.Context(), id, p.Revision); err != nil {
+		// MKT-093b(i): a required pack cannot be uninstalled. The decision was
+		// made inside the removal transaction — this only renders it, through
+		// the same 422 / VALIDATION_FAILED + errors[] discriminant every other
+		// pack refusal uses (the api/1 top-level code registry is closed,
+		// API-011, so REQUIRED_PACK_FLOOR rides in errors[] rather than as the
+		// top-level code).
+		var ferr *store.RequiredPackFloorError
+		if errors.As(err, &ferr) {
+			apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), http.StatusUnprocessableEntity,
+				"VALIDATION_FAILED", "Validation Failed",
+				fmt.Sprintf("%s is a required pack on this deployment (floor version %s) and cannot be uninstalled.", ferr.PackID, ferr.Floor),
+				map[string]any{"errors": []map[string]string{{
+					"field":   "pack",
+					"code":    "REQUIRED_PACK_FLOOR",
+					"message": ferr.Error(),
+				}}})
+			return
+		}
 		var rme *store.RevisionMismatchError
 		if errors.As(err, &rme) {
 			apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), http.StatusPreconditionFailed,

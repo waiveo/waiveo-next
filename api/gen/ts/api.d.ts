@@ -814,7 +814,10 @@ export interface paths {
         get: operations["getPack"];
         put?: never;
         post?: never;
-        /** Uninstall a pack */
+        /**
+         * Uninstall a pack
+         * @description Removes the pack and everything it owns — its bundle, its authored collection rows, and its install records (marketplace/1 MKT-094b) — in one transaction. The per-(pack, trust channel) resolved-version high-water mark deliberately survives (MKT-050/MKT-094b), so uninstall-then-reinstall is not a downgrade path. A pack on this deployment's required-pack roster cannot be uninstalled at all (MKT-093b): removal is removal to no version, which is below every floor, and the refusal is decided inside the removal transaction rather than in this handler.
+         */
         delete: operations["uninstallPack"];
         options?: never;
         head?: never;
@@ -888,6 +891,31 @@ export interface paths {
         get: operations["listPackInstalls"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/packs/{publisher}/{name}/update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The publisher half of a pack's `<publisher>/<name>` identity (manifest/1 MAN-001). It is its own path segment rather than half of one percent-encoded value, so a pack id is addressable without the client having to escape the slash inside it. */
+                publisher: components["parameters"]["PackPublisherParam"];
+                /** @description The name half of a pack's `<publisher>/<name>` identity (manifest/1 MAN-001). */
+                name: components["parameters"]["PackNameParam"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run one update check against a pack's pinned trust channel
+         * @description Channel auto-tracking, applied on demand (marketplace/1 MKT-090): the pack's own pinned trust channel and registry source are read off its newest install record (MKT-094) and re-resolved through that source's channel pointer — nothing about how the pack is re-resolved comes from this request, so a host never silently chooses a provenance tier (MKT-060a(b)) on the operator's behalf. A pack installed directly, with no trust channel pinned, is not auto-tracked and is refused rather than defaulted onto a channel (MKT-094a). If the currently applied version has itself been yanked, the check reverts to the most recent version this install previously applied that is still resolvable (MKT-093, the sole exception MKT-050 allows a resolved version to decrease under). A refused update writes nothing: the install transaction upserts, so the previously installed version, its bundle and its records are left intact. A mutating POST outside plain resource creation — accepts Idempotency-Key so a client's retry-on-timeout cannot run a second check.
+         */
+        post: operations["updatePack"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3726,6 +3754,7 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             412: components["responses"]["PreconditionFailed"];
+            422: components["responses"]["UnprocessableContent"];
             428: components["responses"]["PreconditionRequired"];
         };
     };
@@ -3821,6 +3850,39 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    updatePack: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                /** @description The publisher half of a pack's `<publisher>/<name>` identity (manifest/1 MAN-001). It is its own path segment rather than half of one percent-encoded value, so a pack id is addressable without the client having to escape the slash inside it. */
+                publisher: components["parameters"]["PackPublisherParam"];
+                /** @description The name half of a pack's `<publisher>/<name>` identity (manifest/1 MAN-001). */
+                name: components["parameters"]["PackNameParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The update check's outcome. Shape stub, matching the rest of this surface — `action` is `unchanged`, `updated`, or `reverted`, with `from_version`/`to_version`. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableContent"];
         };
     };
     listPackRows: {

@@ -3,6 +3,8 @@ package api
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"io"
 	"mime"
 	"net/http"
 	"strings"
@@ -93,6 +95,79 @@ func (srv *server) installPackFromRef(w http.ResponseWriter, r *http.Request, bo
 	}
 	w.Header().Set("Location", apiPrefix+"/packs/"+res.ID)
 	writeJSONValue(w, status, res)
+}
+
+// ---- update check -----------------------------------------------------------
+
+// packUpdateWire is one update check's outcome. `action` is the discriminant:
+//
+//   - `unchanged` — the pinned channel still points at the installed version.
+//     Nothing was written, so `pages`/`collections`/`locales` are absent.
+//   - `updated`   — the pointer named a different version and it installed.
+//   - `reverted`  — the applied version had been yanked, and the most recent
+//     still-resolvable version this install had previously applied was
+//     reinstalled in its place (marketplace/1 MKT-093).
+//
+// `from_version`/`to_version` are equal exactly when `action` is `unchanged`.
+type packUpdateWire struct {
+	Action      string   `json:"action"`
+	ID          string   `json:"id"`
+	FromVersion string   `json:"from_version"`
+	ToVersion   string   `json:"to_version"`
+	Pages       []string `json:"pages,omitempty"`
+	Collections []string `json:"collections,omitempty"`
+	Locales     []string `json:"locales,omitempty"`
+}
+
+// updatePack runs one update check against an installed pack's own pinned
+// trust channel (marketplace/1 MKT-090) and, if the applied version has been
+// yanked, reverts it to its last known good version (MKT-093).
+//
+// Nothing about HOW the pack is re-resolved comes from the request: the source
+// and trust channel are read off the install-record pin (MKT-094). That is what
+// keeps a host from silently choosing a provenance tier (MKT-060a(b)) on an
+// operator's behalf — and why a pack installed directly, with no channel pinned,
+// is refused here rather than defaulted onto one (MKT-094a).
+//
+// It is a mutating POST outside plain resource creation, so it honors
+// Idempotency-Key through the same srv.idempotent wrapper install and the
+// automations `run` POST use. The body is empty and is the replay-vs-reuse
+// content hash, so a retry with the same key replays the original outcome rather
+// than running a second check.
+func (srv *server) updatePack(w http.ResponseWriter, r *http.Request) {
+	// The operation takes no body and is fully determined by its path, so the
+	// Idempotency-Key replay-vs-reuse hash is over an EMPTY body rather than
+	// over whatever a client happened to send: two update checks under one key
+	// are the same operation, and there is no request content that could make
+	// them differ. Whatever arrives is drained (bounded) rather than left
+	// unread.
+	_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, 1<<16))
+	srv.idempotent(w, r, nil, func(w http.ResponseWriter) { srv.updatePackExec(w, r) })
+}
+
+func (srv *server) updatePackExec(w http.ResponseWriter, r *http.Request) {
+	packID := packIDFromPath(r)
+	out, err := srv.installer.Update(r.Context(), packID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			srv.packNotFound(w, r)
+			return
+		}
+		srv.writeInstallError(w, r, err)
+		return
+	}
+	wire := packUpdateWire{
+		Action:      string(out.Action),
+		ID:          packID,
+		FromVersion: out.FromVersion,
+		ToVersion:   out.ToVersion,
+	}
+	if out.Action != packs.UpdateUnchanged {
+		wire.Pages = out.Result.Pages
+		wire.Collections = out.Result.Collections
+		wire.Locales = out.Result.Locales
+	}
+	writeJSONValue(w, http.StatusOK, wire)
 }
 
 // ---- install history --------------------------------------------------------

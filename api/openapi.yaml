@@ -2152,6 +2152,16 @@ paths:
     delete:
       operationId: uninstallPack
       summary: Uninstall a pack
+      description: >-
+        Removes the pack and everything it owns — its bundle, its authored
+        collection rows, and its install records (marketplace/1 MKT-094b) — in
+        one transaction. The per-(pack, trust channel) resolved-version
+        high-water mark deliberately survives (MKT-050/MKT-094b), so
+        uninstall-then-reinstall is not a downgrade path. A pack on this
+        deployment's required-pack roster cannot be uninstalled at all
+        (MKT-093b): removal is removal to no version, which is below every
+        floor, and the refusal is decided inside the removal transaction rather
+        than in this handler.
       tags: [packs]
       parameters:
         - $ref: "#/components/parameters/IfMatchParam"
@@ -2167,6 +2177,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
         "428":
           $ref: "#/components/responses/PreconditionRequired"
   /packs/{publisher}/{name}/pages/{path}:
@@ -2249,6 +2261,49 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+  /packs/{publisher}/{name}/update:
+    parameters:
+      - $ref: "#/components/parameters/PackPublisherParam"
+      - $ref: "#/components/parameters/PackNameParam"
+    post:
+      operationId: updatePack
+      summary: Run one update check against a pack's pinned trust channel
+      description: >-
+        Channel auto-tracking, applied on demand (marketplace/1 MKT-090): the
+        pack's own pinned trust channel and registry source are read off its
+        newest install record (MKT-094) and re-resolved through that source's
+        channel pointer — nothing about how the pack is re-resolved comes from
+        this request, so a host never silently chooses a provenance tier
+        (MKT-060a(b)) on the operator's behalf. A pack installed directly, with
+        no trust channel pinned, is not auto-tracked and is refused rather than
+        defaulted onto a channel (MKT-094a). If the currently applied version has
+        itself been yanked, the check reverts to the most recent version this
+        install previously applied that is still resolvable (MKT-093, the sole
+        exception MKT-050 allows a resolved version to decrease under). A refused
+        update writes nothing: the install transaction upserts, so the previously
+        installed version, its bundle and its records are left intact. A mutating
+        POST outside plain resource creation — accepts Idempotency-Key so a
+        client's retry-on-timeout cannot run a second check.
+      tags: [packs, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: >-
+            The update check's outcome. Shape stub, matching the rest of this
+            surface — `action` is `unchanged`, `updated`, or `reverted`, with
+            `from_version`/`to_version`.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
   /packs/{publisher}/{name}/data/{collection}:
     parameters:
       - $ref: "#/components/parameters/PackPublisherParam"

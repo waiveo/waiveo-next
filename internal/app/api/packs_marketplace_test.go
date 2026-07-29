@@ -64,6 +64,34 @@ func (r *mktRegistry) publish(artifactID, version string, artifact []byte, extra
 	r.ptrs[artifactID]["community"] = version
 }
 
+// reindex rewrites index.json in place, so a test can publish a new version (and
+// move the channel pointer with it) AFTER the server was built — the Source
+// keeps pointing at the same directory and the resolver re-reads the document on
+// every resolution, which is what makes an update check observable over HTTP.
+func (r *mktRegistry) reindex(t *testing.T) {
+	t.Helper()
+	r.writeIndex()
+}
+
+func (r *mktRegistry) writeIndex() {
+	r.t.Helper()
+	pointers := []map[string]any{}
+	for packID, channels := range r.ptrs {
+		pointers = append(pointers, map[string]any{"pack_id": packID, "channels": channels})
+	}
+	doc := map[string]any{"signed": map[string]any{
+		"role": "targets", "format_version": "1.0", "channel": "marketplace/stable",
+		"version": 1, "artifacts": r.entries, "channel_pointers": pointers,
+	}}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		r.t.Fatalf("marshal index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(r.dir, "index.json"), raw, 0o644); err != nil {
+		r.t.Fatalf("write index: %v", err)
+	}
+}
+
 func (r *mktRegistry) option(reserved ...string) api.Option {
 	r.t.Helper()
 	pointers := []map[string]any{}
@@ -389,5 +417,150 @@ func TestMarketplaceRefWithoutAConfiguredRegistry(t *testing.T) {
 	}
 	if codes := problemCodes(t, raw); len(codes) != 1 || codes[0] != "MARKETPLACE_REF_UNRESOLVED" {
 		t.Fatalf("errors[] codes = %v, want [MARKETPLACE_REF_UNRESOLVED]", codes)
+	}
+}
+
+// ---- update check + required-pack floor, over the real HTTP surface ---------
+
+// packUpdateResponse mirrors what POST .../update serves.
+type packUpdateResponse struct {
+	Action      string `json:"action"`
+	ID          string `json:"id"`
+	FromVersion string `json:"from_version"`
+	ToVersion   string `json:"to_version"`
+}
+
+// TestUpdatePackOverHTTP: the update check driven end to end. Nothing about the
+// re-resolution is in the request — the trust channel and registry source come
+// off the install-record pin (marketplace/1 MKT-094/MKT-090) — so this also
+// proves the pin is load-bearing rather than decorative.
+func TestUpdatePackOverHTTP(t *testing.T) {
+	reg := newMktRegistry(t)
+	reg.publish("acme/menu-board", "1.0.0",
+		signPack(t, packBundle(t, packManifest()), "acme/menu-board", "1.0.0"), nil)
+	e := newEnvWithOptions(t, reg.option())
+
+	ref := mustJSON(t, map[string]any{"pack_id": "acme/menu-board", "trust_channel": "community"})
+	if resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", ref, jsonHeaders); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("install status = %d, want 201 (%s)", resp.StatusCode, raw)
+	}
+
+	// A no-op check first: the pointer has not moved, so nothing is written and
+	// the history stays at one record.
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs/acme/menu-board/update", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("update status = %d, want 200 (%s)", resp.StatusCode, raw)
+	}
+	var out packUpdateResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode update: %v (%s)", err, raw)
+	}
+	if out.Action != "unchanged" || out.ToVersion != "1.0.0" {
+		t.Fatalf("update = %+v, want unchanged at 1.0.0", out)
+	}
+	if page := packInstallHistory(t, e, "acme/menu-board"); len(page.Items) != 1 {
+		t.Fatalf("a no-op update check appended a record: %d", len(page.Items))
+	}
+
+	// Publish 2.0.0 and move the pointer; the next check applies it in place.
+	m := packManifest()
+	m["version"] = "2.0.0"
+	reg.publish("acme/menu-board", "2.0.0",
+		signPack(t, packBundle(t, m), "acme/menu-board", "2.0.0"), nil)
+	reg.reindex(t)
+
+	resp, raw = e.do(t, http.MethodPost, "/api/v1/packs/acme/menu-board/update", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("update status = %d, want 200 (%s)", resp.StatusCode, raw)
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode update: %v (%s)", err, raw)
+	}
+	if out.Action != "updated" || out.FromVersion != "1.0.0" || out.ToVersion != "2.0.0" {
+		t.Fatalf("update = %+v, want updated 1.0.0 -> 2.0.0", out)
+	}
+
+	// Checked through a different route than the one that claimed it: the pack
+	// really is at 2.0.0 and the history really did grow.
+	resp, raw = e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get pack status = %d (%s)", resp.StatusCode, raw)
+	}
+	var got struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil || got.Version != "2.0.0" {
+		t.Fatalf("installed version = %q (err=%v), want 2.0.0", got.Version, err)
+	}
+	page := packInstallHistory(t, e, "acme/menu-board")
+	if len(page.Items) != 2 || page.Items[1].ResolvedVersion != "2.0.0" {
+		t.Fatalf("install history = %d record(s), newest %+v", len(page.Items), page.Items[len(page.Items)-1])
+	}
+}
+
+// TestUpdatePackOfAnUninstalledPackIs404: there is nothing to re-resolve, and
+// no reference is invented for it.
+func TestUpdatePackOfAnUninstalledPackIs404(t *testing.T) {
+	reg := newMktRegistry(t)
+	e := newEnvWithOptions(t, reg.option())
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs/acme/menu-board/update", nil, nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("update of an uninstalled pack status = %d, want 404 (%s)", resp.StatusCode, raw)
+	}
+}
+
+// TestUpdatePackRefusesADirectInstallOverHTTP: MKT-094a — a pack installed from
+// raw artifact bytes pins no trust channel, is not channel auto-tracked, and the
+// host does not default one for it.
+func TestUpdatePackRefusesADirectInstallOverHTTP(t *testing.T) {
+	reg := newMktRegistry(t)
+	e := newEnvWithOptions(t, reg.option())
+
+	art := signPack(t, packBundle(t, packManifest()), "acme/menu-board", "1.0.0")
+	if resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", art, nil); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("direct install status = %d, want 201 (%s)", resp.StatusCode, raw)
+	}
+
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs/acme/menu-board/update", nil, nil)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("update of a direct install status = %d, want 422 (%s)", resp.StatusCode, raw)
+	}
+	if codes := problemCodes(t, raw); len(codes) != 1 || codes[0] != "TRUST_CHANNEL_UNKNOWN" {
+		t.Fatalf("problem codes = %v, want [TRUST_CHANNEL_UNKNOWN]", codes)
+	}
+}
+
+// TestUninstallOfARequiredPackIsRefusedOverHTTP: MKT-093b(i). The decision is
+// made inside the removal transaction; this checks the surface renders it as the
+// same 422 / VALIDATION_FAILED + errors[] discriminant every other pack refusal
+// uses, and that the pack is genuinely still there afterwards.
+func TestUninstallOfARequiredPackIsRefusedOverHTTP(t *testing.T) {
+	reg := newMktRegistry(t)
+	reg.publish("acme/menu-board", "1.0.0",
+		signPack(t, packBundle(t, packManifest()), "acme/menu-board", "1.0.0"), nil)
+	roster, err := packs.NewRoster(map[string]string{"acme/menu-board": "1.0.0"})
+	if err != nil {
+		t.Fatalf("NewRoster: %v", err)
+	}
+	e := newEnvWithOptions(t, reg.option(), api.WithRequiredPacks(roster))
+
+	ref := mustJSON(t, map[string]any{"pack_id": "acme/menu-board", "trust_channel": "community"})
+	if resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", ref, jsonHeaders); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("install status = %d, want 201 (%s)", resp.StatusCode, raw)
+	}
+
+	resp, raw := e.do(t, http.MethodDelete, "/api/v1/packs/acme/menu-board", nil,
+		map[string]string{"If-Match": `"1"`})
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("uninstall of a required pack status = %d, want 422 (%s)", resp.StatusCode, raw)
+	}
+	if codes := problemCodes(t, raw); len(codes) != 1 || codes[0] != "REQUIRED_PACK_FLOOR" {
+		t.Fatalf("problem codes = %v, want [REQUIRED_PACK_FLOOR]", codes)
+	}
+	if resp, raw := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board", nil, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("the refused uninstall removed the pack: get status = %d (%s)", resp.StatusCode, raw)
+	}
+	if page := packInstallHistory(t, e, "acme/menu-board"); len(page.Items) != 1 {
+		t.Fatalf("the refused uninstall removed the install records: %d left", len(page.Items))
 	}
 }
