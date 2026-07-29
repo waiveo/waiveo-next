@@ -31,10 +31,14 @@ servers:
 tags:
   - name: auth
     description: >-
-      Session issuance and revocation, and the first-boot workspace claim.
-      `login` and `setup` are credential-exchange operations declaring
-      `security: []` (API-090/091); `logout` and `session` are ordinary
-      authenticated operations.
+      Session issuance and revocation, the first-boot workspace claim, and
+      credential reset. THREE operations here are credential-exchange
+      operations declaring `security: []` (API-090/091) — `login`, `setup`
+      and `redeemCredentialReset` — because each has a caller who by
+      definition holds no session: one presenting credentials to get one, one
+      claiming a box that has no principal at all, and one locked out of the
+      credential being replaced. Everything else in this family, `logout` and
+      `session` included, is an ordinary authenticated operation.
   - name: scope-nodes
     description: The org → site → group → screen tree every resource and durable event attaches to. Worked fully.
   - name: screens

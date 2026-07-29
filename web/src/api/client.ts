@@ -343,7 +343,7 @@ export class ApiClient {
    *
    * A 401 here keeps its ordinary meaning (the session is gone) and raises the
    * unauthenticated hook. The `security: []` operations for which it CANNOT mean
-   * that use `exchange` instead. */
+   * that use `exchange` instead — all three of them, which `exchange` names. */
   async post<T>(path: string, body: unknown): Promise<T> {
     const res = await this.send("POST", path, {
       headers: { "Content-Type": "application/json" },
@@ -353,8 +353,14 @@ export class ApiClient {
     return (await res.json()) as T;
   }
 
-  /** POST a credential-exchange operation — an api/1 `security: []` route
-   * (API-090/091: `/auth/login`, `/auth/setup`) — and read its JSON response.
+  /** POST a credential-exchange operation — an api/1 `security: []` route — and
+   * read its JSON response.
+   *
+   * api/1 declares `security: []` on exactly THREE operations (API-090/091):
+   * `/auth/login`, `/auth/setup`, and `/auth/credential-reset/redeem`. The first
+   * two are bound to this method. The third has no binding in this client at
+   * all, and when it gets one it must NOT be bound to `postNoContent`, which is
+   * where its shape would otherwise send an implementer — see that method.
    *
    * Identical to `post` in every respect but one: a 401 does NOT raise the
    * unauthenticated hook. That hook means "the session you were using is gone,
@@ -377,7 +383,27 @@ export class ApiClient {
     return (await res.json()) as T;
   }
 
-  /** POST expecting a 204 (a logout). */
+  /** POST expecting a 204 — the logout verb, and ONLY the logout verb.
+   *
+   * Like `post` and unlike `exchange`, a 401 here raises the unauthenticated
+   * hook. That is right for logout, where a 401 genuinely does mean the session
+   * is already gone, and wrong for every `security: []` operation, for the reason
+   * `exchange` sets out at length.
+   *
+   * Which makes this a trap worth marking rather than a gap worth pre-filling.
+   * api/1's third `security: []` operation, `/auth/credential-reset/redeem`,
+   * answers 204 — so it is the one route needing a no-content verb AND the hook
+   * exemption at once, and this method offers only the first half. Binding it
+   * here would navigate the page collecting the new password away from itself the
+   * moment a reset code is refused: precisely the bug `exchange` exists to
+   * prevent, on the one flow whose caller is BY DEFINITION someone who cannot
+   * sign in — so the redirect strands them on a form they have no way through.
+   *
+   * What it needs is an `exchangeNoContent`: `send`, then `fail(res, true)` on a
+   * non-2xx, and no body read. That method is deliberately NOT written here. An
+   * unused verb is dead code this repo's reachability gate would have to carry a
+   * baseline entry for, and a marked trap outlives a speculative method — write
+   * it WITH the binding that needs it, not before. */
   async postNoContent(path: string): Promise<void> {
     const res = await this.send("POST", path);
     if (!res.ok) await this.fail(res);
