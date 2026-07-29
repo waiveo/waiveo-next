@@ -471,3 +471,24 @@ func TestUnresolvedRosterRefusesEveryPackMutationInTheStore(t *testing.T) {
 		t.Fatalf("UninstallPack under a RESOLVED empty roster: %v — an empty roster requires nothing (MKT-093a)", err)
 	}
 }
+
+// TestUnresolvedRosterRefusesAParseableFloor pins the SECOND of the two reasons
+// an unresolved roster refuses, independently of the first.
+//
+// The type documents two: RequiredFloor hands back a sentinel that is not a
+// MAN-002 version, AND MeetsFloor refuses outright when the roster is
+// unresolved. Every existing assertion took its floor FROM RequiredFloor, so it
+// passed if either reason held and could not tell them apart — both guards were
+// individually removable with the whole suite green. That matters because the
+// code's own comment names the hazard: somebody later "fixes" the sentinel into
+// a valid-looking version, at which point the free meetsFloor used by the revert
+// narrowing (which has no resolved guard) would admit every candidate.
+func TestUnresolvedRosterRefusesAParseableFloor(t *testing.T) {
+	var zero packs.Roster
+	if zero.MeetsFloor("9.9.9", "1.0.0") {
+		t.Error("an unresolved roster admitted a version against a parseable floor — MeetsFloor's own resolved guard is not doing anything")
+	}
+	if packs.ValidVersion(packs.UnresolvedFloor) {
+		t.Errorf("UnresolvedFloor %q parses as a MAN-002 version — the sentinel's second refusal reason is gone", packs.UnresolvedFloor)
+	}
+}

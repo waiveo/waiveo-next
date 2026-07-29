@@ -82,23 +82,30 @@ import (
 // The equivalent attack on the anchors merely denies installs, because an empty
 // anchor set fails closed.
 //
-// The containing DIRECTORY is checked too, which the anchors do not do. A
-// file-mode check alone is defeated by a writable parent: an attacker who can
-// write the directory renames their own 0644 document over the path, and the
-// mode check passes on a file they authored. Checking the directory is what
-// makes the file check mean something.
+// The path is resolved through symlinks and EVERY ancestor directory is checked.
+// A file-mode check alone is defeated by a writable parent — an attacker who can
+// write the directory renames their own 0600 document over the path and the mode
+// check passes on a file they authored — and a parent-only check is defeated one
+// level up, by moving the whole directory aside. A symlinked path defeats both,
+// since the mode check follows the link to its target while a lexical parent
+// does not.
 //
-// Two limits, stated rather than left to be discovered:
+// Limits, stated rather than left to be discovered:
 //
-//   - OWNERSHIP is not checked. Mode 0644 owned by an attacker passes. Reaching
-//     that state requires writing the directory, which the directory check
-//     refuses; and the process's own euid is not a sound authority on who
-//     SHOULD own deployment configuration, so a uid comparison would refuse
-//     legitimate non-root service deployments to close a path already closed.
-//   - The directory is checked only when a roster file is PRESENT. A deployment
+//   - OWNERSHIP is not checked, and the reason is NOT that the directory check
+//     already closes it — that argument is false. A directory owned by the
+//     process's own uid at 0700 passes every check here and is writable by that
+//     uid by definition, so a compromised feeder can author a roster pinning its
+//     own pack un-uninstallable. The real reason is narrower: the process's euid
+//     is not a sound authority on who SHOULD own deployment configuration, and a
+//     uid comparison would refuse legitimate non-root service deployments. The
+//     defence against a compromised process writing its own config is to keep
+//     that config outside the paths the service can write — which the shipped
+//     unit does — not a check inside the process being compromised.
+//   - Ancestors are checked only when a roster file is PRESENT. A deployment
 //     that never authored a roster is not made unbootable by the mode of a
 //     directory it does not use — but note the consequence: a writable config
-//     directory does let an attacker PLANT a roster that the next boot honours.
+//     directory lets an attacker PLANT a roster that the next boot honours.
 //     That is an argument for the directory's mode, not for refusing to boot a
 //     deployment that declared nothing.
 
@@ -148,6 +155,21 @@ type rosterEntry struct {
 // path should already be absolute. The caller pins it once at config load, for
 // the reason the trust-anchor path is pinned: a relative path means the file the
 // host consults follows the process's working directory.
+// RosterAbsent reports whether no roster file existed at path — as distinct from
+// one that existed and declared nothing.
+//
+// The two are the same to the enforcement (neither requires any pack) and very
+// different to an operator. A typo'd env var, an edited-out unit line, a wrong
+// working directory, or a roster on a filesystem that mounts after the unit all
+// land on ABSENT, which is permissive and — because the roster is read once —
+// permanent for the process's life. If the boot report cannot tell an operator
+// which of the two happened, it cannot confirm the deployment loaded the roster
+// it meant to, which is the only reason the report exists.
+func RosterAbsent(path string) bool {
+	_, err := os.Stat(path)
+	return errors.Is(err, os.ErrNotExist)
+}
+
 func LoadRoster(path string) (Roster, error) {
 	info, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -182,6 +204,22 @@ func LoadRoster(path string) (Roster, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return Roster{}, fmt.Errorf("packs: the required-pack roster %s cannot be read (%w) — it is UNRESOLVABLE, not empty (marketplace/1 MKT-093a)", path, err)
+	}
+
+	// A DUPLICATED key is checked before anything is decoded, because the decoder
+	// cannot see it: encoding/json has no duplicate-name detection, and
+	// DisallowUnknownFields only rejects names the struct does not define —
+	// `required` is a name it DOES define, so a second one is simply last-wins.
+	//
+	// That is the worst possible failure for this file. Appending
+	// `,"required":[]` before the closing brace produces a document that reads
+	// top to bottom — in review, in a config-management diff — as declaring
+	// strict floors, and resolves to a roster that requires nothing. No parse
+	// error, no format mismatch, no unknown field, no trailing content: it walks
+	// through every other guard here and lands on the PERMISSIVE side, which is
+	// precisely the degradation this loader exists to make impossible.
+	if err := refuseDuplicateNames(raw); err != nil {
+		return Roster{}, fmt.Errorf("packs: the required-pack roster %s %w — it is UNRESOLVABLE, not empty (marketplace/1 MKT-093a)", path, err)
 	}
 
 	dec := json.NewDecoder(bytes.NewReader(raw))
@@ -231,13 +269,114 @@ func LoadRoster(path string) (Roster, error) {
 // the attack this check exists to stop, so refusing there would be a false
 // refusal.
 func checkRosterDir(path string) error {
-	dir := filepath.Dir(path)
-	info, err := os.Stat(dir)
+	// Resolve symlinks FIRST. os.Stat follows them, so the file's own mode check
+	// applies to the target — while filepath.Dir(path) is the lexical parent of
+	// the LINK, which need not be the directory actually holding the file. A
+	// roster symlinked out of a tight directory into a writable one would pass
+	// both checks while living somewhere anyone can replace it, which is not an
+	// exotic setup: packaging that points /etc/waiveo/required-packs.json at a
+	// path under the service's own writable tree produces exactly it.
+	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
-		return fmt.Errorf("packs: the directory holding the required-pack roster, %s, cannot be examined (%w) — the roster is UNRESOLVABLE, not empty (marketplace/1 MKT-093a)", dir, err)
+		return fmt.Errorf("packs: the required-pack roster %s cannot be resolved (%w) — it is UNRESOLVABLE, not empty (marketplace/1 MKT-093a)", path, err)
 	}
-	if perm := info.Mode().Perm(); perm&0o022 != 0 && info.Mode()&os.ModeSticky == 0 {
-		return fmt.Errorf("packs: the directory holding the required-pack roster, %s, is group- or world-writable (mode %04o) and not sticky — anyone who can write it can replace the roster with one that lifts every floor, so the roster is refused rather than read (marketplace/1 MKT-093a)", dir, perm)
+
+	// EVERY ancestor, not just the immediate parent. The argument for checking
+	// the parent — someone who can write it renames their own document over the
+	// path — applies unchanged one level up: with write access to a grandparent,
+	// an attacker moves the whole directory aside and puts their own in its
+	// place, and every mode below is theirs to choose. Checking one level is
+	// checking the level an attacker simply steps over.
+	dir := filepath.Dir(resolved)
+	for {
+		info, err := os.Stat(dir)
+		if err != nil {
+			return fmt.Errorf("packs: the directory %s, holding the required-pack roster, cannot be examined (%w) — the roster is UNRESOLVABLE, not empty (marketplace/1 MKT-093a)", dir, err)
+		}
+		if perm := info.Mode().Perm(); perm&0o022 != 0 && info.Mode()&os.ModeSticky == 0 {
+			return fmt.Errorf("packs: %s, an ancestor of the required-pack roster, is group- or world-writable (mode %04o) and not sticky — anyone who can write it can substitute the roster or the directory holding it with one that lifts every floor, so the roster is refused rather than read (marketplace/1 MKT-093a)", dir, perm)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return nil // reached the root
+		}
+		dir = parent
 	}
-	return nil
+}
+
+// refuseDuplicateNames walks raw as a token stream and reports the first object
+// that declares one name twice, at any depth.
+//
+// It exists because Go's decoder silently keeps the last of two same-named
+// members, so a duplicate is invisible to Decode, to DisallowUnknownFields, and
+// to the trailing-content check. For a document whose whole job is to declare
+// restrictions, last-wins is the wrong direction: the later value is the one an
+// appender controls, and an empty later value lifts every floor.
+//
+// Depth matters as much as the top level: a duplicated `pack_id` inside an entry
+// would let the visible id differ from the one that binds.
+func refuseDuplicateNames(raw []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	// One frame per open container. For an object, names records what it has
+	// already declared and expectName says whether the next token is a member
+	// name or the value of the one just read — without that distinction a string
+	// VALUE would be mistaken for a name and a legitimate document refused.
+	type frame struct {
+		object     bool
+		names      map[string]bool
+		expectName bool
+	}
+	var stack []frame
+
+	// valueRead advances the enclosing object past the value it was expecting,
+	// so the token after it is read as the next member name.
+	valueRead := func() {
+		if n := len(stack); n > 0 && stack[n-1].object {
+			stack[n-1].expectName = true
+		}
+	}
+
+	for {
+		tok, err := dec.Token()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			// A malformed document is the decoder's error to report, not this
+			// one's: returning nil here lets Decode produce the precise message.
+			return nil
+		}
+
+		if d, ok := tok.(json.Delim); ok {
+			switch d {
+			case '{':
+				stack = append(stack, frame{object: true, names: map[string]bool{}, expectName: true})
+			case '[':
+				stack = append(stack, frame{})
+			case '}', ']':
+				if len(stack) > 0 {
+					stack = stack[:len(stack)-1]
+				}
+				// The container that just closed WAS a value of its parent.
+				valueRead()
+			}
+			continue
+		}
+
+		n := len(stack)
+		if n > 0 && stack[n-1].object && stack[n-1].expectName {
+			name, ok := tok.(string)
+			if !ok {
+				return nil // not a name where one was due; leave it to Decode
+			}
+			if stack[n-1].names[name] {
+				return fmt.Errorf("declares the member %q more than once, so its later value silently replaces the earlier one", name)
+			}
+			stack[n-1].names[name] = true
+			stack[n-1].expectName = false
+			continue
+		}
+		// A scalar value — of an object member, or an array element.
+		valueRead()
+	}
 }

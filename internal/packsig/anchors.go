@@ -75,13 +75,32 @@ func (f FileAnchors) KeysFor(namespace string) ([]TrustedKey, error) {
 	// forbids non-owners from renaming or unlinking files they do not own, which
 	// is precisely the attack this closes, so refusing there would be a false
 	// refusal.
-	dir := filepath.Dir(f.Path)
-	dirInfo, err := os.Stat(dir)
+	// Symlinks are resolved FIRST, and EVERY ancestor is checked, not just the
+	// immediate parent. os.Stat follows links, so the file-mode check above
+	// applies to the target while filepath.Dir would give the lexical parent of
+	// the LINK — a trust root symlinked into a writable directory would pass
+	// both checks while living somewhere anyone can replace it. And the argument
+	// for checking the parent applies unchanged one level up: with write access
+	// to a grandparent an attacker moves the whole directory aside and supplies
+	// their own, choosing every mode below it.
+	resolved, err := filepath.EvalSymlinks(f.Path)
 	if err != nil {
-		return nil, fmt.Errorf("packsig: the directory holding trust anchors %s cannot be examined: %w", dir, err)
+		return nil, fmt.Errorf("packsig: trust anchors %s cannot be resolved: %w", f.Path, err)
 	}
-	if perm := dirInfo.Mode().Perm(); perm&0o022 != 0 && dirInfo.Mode()&os.ModeSticky == 0 {
-		return nil, fmt.Errorf("packsig: the directory holding trust anchors, %s, is group- or world-writable (mode %04o) and not sticky — anyone who can write it can substitute the trust root, so it is refused rather than read", dir, perm)
+	dir := filepath.Dir(resolved)
+	for {
+		dirInfo, err := os.Stat(dir)
+		if err != nil {
+			return nil, fmt.Errorf("packsig: the directory %s, holding trust anchors, cannot be examined: %w", dir, err)
+		}
+		if perm := dirInfo.Mode().Perm(); perm&0o022 != 0 && dirInfo.Mode()&os.ModeSticky == 0 {
+			return nil, fmt.Errorf("packsig: %s, an ancestor of the trust anchors, is group- or world-writable (mode %04o) and not sticky — anyone who can write it can substitute the trust root, so it is refused rather than read", dir, perm)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
 	}
 
 	raw, err := os.ReadFile(f.Path)

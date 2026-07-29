@@ -424,9 +424,18 @@ func main() {
 			"    so it refuses to start rather than serve with every required-pack floor silently lifted (marketplace/1 MKT-093a).\n"+
 			"    Fix or remove %s. An ABSENT roster is valid and makes no pack required.", err, cfg.requiredPacksPath)
 	}
-	if declared := requiredPacks.Declared(); len(declared) == 0 {
+	// Absent and authored-empty are both permissive and are NOT the same event to
+	// an operator: a typo'd env var, an edited-out unit line, a wrong working
+	// directory or a late-mounting filesystem all produce ABSENT, and because the
+	// roster is read once that disables the feature for the process's life. A
+	// report that prints one line for both cannot confirm the deployment loaded
+	// the roster it meant to, which is the only thing the report is for.
+	switch declared := requiredPacks.Declared(); {
+	case packs.RosterAbsent(cfg.requiredPacksPath):
+		log.Printf("waiveo-feeder: NO required-pack roster at %s — no pack is protected from uninstall or downgrade. If this deployment authored one, it is not being read (marketplace/1 MKT-093a)", cfg.requiredPacksPath)
+	case len(declared) == 0:
 		log.Printf("waiveo-feeder: required-pack roster %s declares no required pack — no pack is protected from uninstall or downgrade (marketplace/1 MKT-093a)", cfg.requiredPacksPath)
-	} else {
+	default:
 		log.Printf("waiveo-feeder: required-pack roster %s declares %d required pack(s): %v", cfg.requiredPacksPath, len(declared), declared)
 	}
 
