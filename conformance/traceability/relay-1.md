@@ -82,7 +82,10 @@ One row per requirement ID `contracts/relay-1.md` defines. Format: `conformance/
 | REL-104 | `contracts/relay-1.md#loss-marker` | `REL-094-valid-telemetry-latest-only-heartbeat-superseded` | covered |
 | REL-105 | `contracts/relay-1.md#loss-marker` | `REL-090-valid-telemetry-overflow-loss-marker` | covered |
 | REL-110 | `contracts/relay-1.md#device-plane` | `REL-110-valid-device-candidate-and-command` | covered |
+| REL-110a | `contracts/relay-1.md#device-plane` | `REL-110-valid-device-candidate-and-command`, `REL-110b-valid-derived-identity-across-relays` | covered |
+| REL-110b | `contracts/relay-1.md#device-plane` | `REL-110b-valid-derived-identity-across-relays` | covered |
 | REL-111 | `contracts/relay-1.md#device-plane` | `REL-110-valid-device-candidate-and-command` | covered |
+| REL-111a | `contracts/relay-1.md#device-plane` | `REL-110-valid-device-candidate-and-command`, `REL-110b-valid-derived-identity-across-relays` | covered |
 | REL-112 | `contracts/relay-1.md#device-plane` | `REL-110-valid-device-candidate-and-command` | covered |
 | REL-113 | `contracts/relay-1.md#device-plane` | `REL-110-valid-device-candidate-and-command` | covered |
 | REL-114 | `contracts/relay-1.md#device-plane` | - | TBD-wave1 |
@@ -110,4 +113,4 @@ One row per requirement ID `contracts/relay-1.md` defines. Format: `conformance/
 | REL-150 | `contracts/relay-1.md#multi-relay-identity` | - | TBD-wave1 |
 | REL-151 | `contracts/relay-1.md#multi-relay-identity` | - | TBD-wave1 |
 | REL-152 | `contracts/relay-1.md#multi-relay-identity` | - | TBD-wave1 |
-| REL-153 | `contracts/relay-1.md#multi-relay-identity` | - | TBD-wave1 |
+| REL-153 | `contracts/relay-1.md#multi-relay-identity` | `REL-110b-valid-derived-identity-across-relays` | covered |

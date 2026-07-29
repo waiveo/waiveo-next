@@ -1,0 +1,88 @@
+{
+  "case_id": "REL-110b-valid-derived-identity-across-relays",
+  "contract": "relay/1",
+  "req_ids": ["REL-110b", "REL-111a", "REL-153"],
+  "description": "Two relays serving one site report device.candidates. A device_id and each entity_id are DERIVED from the identity tuple (site, driver, native_id[, entity key]) rather than assigned by either peer, so the device BOTH relays observe resolves to ONE row with one derived id, carrying the relay_id of whichever reported it most recently; the device only one relay observes is its own row. Every derived id is a syntactically valid Canonical ULID (data-model/1 DAT-005a) while a relay_id deliberately is not. The replace each report performs is keyed by device identity and scoped to the reporting relay (REL-111a), so when the second relay stops reporting the shared device it survives and reverts to the relay that still reports it.",
+  "input": {
+    "site_scope_node": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5",
+    "reports": [
+      {
+        "relay_id": "relay-0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+        "candidates": [
+          {
+            "match": { "ssdp": "urn:roku-com:device:player:1" },
+            "provenance": "discovered",
+            "status": "pending",
+            "ignored_until": null,
+            "first_seen": 1752537000000,
+            "last_seen": 1752537600000,
+            "driver": "roku-ecp",
+            "native_id": "uuid:roku:ecp:X10001",
+            "device_class": "media-player",
+            "name": "Lobby Roku",
+            "entities": [{ "key": "main", "device_class": "media-player" }]
+          },
+          {
+            "match": { "ssdp": "urn:roku-com:device:player:1" },
+            "provenance": "discovered",
+            "status": "pending",
+            "ignored_until": null,
+            "first_seen": 1752537100000,
+            "last_seen": 1752537600000,
+            "driver": "roku-ecp",
+            "native_id": "uuid:roku:ecp:X10002",
+            "device_class": "media-player",
+            "name": "Break Room Roku",
+            "entities": [{ "key": "main", "device_class": "media-player" }]
+          }
+        ]
+      },
+      {
+        "relay_id": "relay-1a2b3c4d5e6f78899a8b7c6d5e4f3021",
+        "candidates": [
+          {
+            "match": { "ssdp": "urn:roku-com:device:player:1" },
+            "provenance": "discovered",
+            "status": "pending",
+            "ignored_until": null,
+            "first_seen": 1752537200000,
+            "last_seen": 1752537600000,
+            "driver": "roku-ecp",
+            "native_id": "uuid:roku:ecp:X10001",
+            "device_class": "media-player",
+            "name": "Lobby Roku",
+            "entities": [{ "key": "main", "device_class": "media-player" }]
+          }
+        ]
+      }
+    ],
+    "final_report": {
+      "relay_id": "relay-1a2b3c4d5e6f78899a8b7c6d5e4f3021",
+      "candidates": []
+    }
+  },
+  "expected": {
+    "device_row_count": 2,
+    "device_row_count_after_final_report": 2,
+    "derived_ids_are_canonical_ulids": true,
+    "relay_ids_are_canonical_ulids": false,
+    "derived_rows": [
+      {
+        "driver": "roku-ecp",
+        "native_id": "uuid:roku:ecp:X10001",
+        "device_id": "46ADFJAXTHS0EFTQGWJWXVFZQ3",
+        "entity_ids": { "main": "7CE2HBFBCG63SKAD3PE9A16KCJ" },
+        "relay_id_after_both_reports": "relay-1a2b3c4d5e6f78899a8b7c6d5e4f3021",
+        "relay_id_after_final_report": "relay-0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+      },
+      {
+        "driver": "roku-ecp",
+        "native_id": "uuid:roku:ecp:X10002",
+        "device_id": "5R1R68VNSK5BXGZGTPB14TKWVB",
+        "entity_ids": { "main": "6QR538M409DZJB1K87S672PH9K" },
+        "relay_id_after_both_reports": "relay-0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+        "relay_id_after_final_report": "relay-0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+      }
+    ]
+  }
+}
