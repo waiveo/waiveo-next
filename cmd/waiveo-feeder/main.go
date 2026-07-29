@@ -155,7 +155,12 @@ const defaultEnrollDir = ".dev/feeder-enroll"
 // generation and nudges every live relay connection to re-pull (relay/1
 // REL-057); a login has no business advancing desired state, and folding the two
 // together would make every session issuance look like an authored change.
-const defaultAuthDir = ".dev/feeder-auth"
+//
+// The value comes from the auth package rather than being spelled here, because
+// the console binding's socket (SEC-070) lives in this same directory and a
+// second process looking for it must resolve the same path this one serves it
+// from.
+const defaultAuthDir = auth.DefaultAuthDir
 
 // authStoreFile is the auth database's filename inside defaultAuthDir.
 const authStoreFile = "auth.db"
@@ -706,8 +711,33 @@ func main() {
 	// above: a factory reset (SEC-121) destroys the persisted floor along with
 	// the credentials it rides beside, rather than handing the next owner a
 	// ratchet they have no reachable way to lower.
+	//
+	// clockAssessment is reported on every login-failure audit record (SEC-091).
+	// It is READ from the app's own clock floor (SEC-066-068) rather than
+	// hardcoded: SEC-068 defines the assessment as `untrusted` "while it holds no
+	// independently verified time above the floor, `trusted` once it does", and
+	// that is precisely what ClockFloor.Assessment answers. It reports
+	// `untrusted` today for the reason the floor's own wiring note above gives —
+	// no authenticated time source is configured — but it reports it because the
+	// app asked, not because a constant said so, and it will start telling the
+	// truth about `trusted` the moment a source is wired.
+	//
+	// eventIDs, not a generator of the auditor's own: an audit record and a
+	// telemetry record land in the SAME log, and the ordering guarantee EVT-011
+	// states is over that log. Two independent id sources would invert against
+	// each other inside a shared millisecond, and an audit record that sorted
+	// under an already-delivered telemetry record would be appended behind every
+	// connected subscriber's cursor — recorded, and never seen.
+	//
+	// The auditor is built BEFORE the store and handed to it, rather than after:
+	// SEC-034 requires an audit record for EVERY grant creation and redemption,
+	// the store is what creates and redeems them, and a store that could be
+	// opened and used before its sink arrived would have a window — the first
+	// boot's setup grant, precisely — in which a grant is minted unrecorded.
+	auditor := auth.NewAuditor(eventHub, firstPhotonSite.ScopeNode, nowMs, eventIDs, clockFloor.Assessment)
 	authStore, err := auth.Open(filepath.Join(cfg.authDir, authStoreFile), nowMs, ulid.New,
-		auth.WithSecretSealer(secretSealer), auth.WithClockFloor(clockFloor))
+		auth.WithSecretSealer(secretSealer), auth.WithClockFloor(clockFloor),
+		auth.WithAuditor(auditor))
 	if err != nil {
 		log.Fatalf("waiveo-feeder: open auth store: %v", err)
 	}
@@ -742,30 +772,42 @@ func main() {
 	revocations := auth.NewRevocations()
 	authStore.OnRevoke(revocations.Revoked)
 
-	// clockAssessment is reported on every login-failure audit record (SEC-091).
-	// It is now READ from the app's own clock floor (SEC-066-068) rather than
-	// hardcoded: SEC-068 defines the assessment as `untrusted` "while it holds no
-	// independently verified time above the floor, `trusted` once it does", and
-	// that is precisely what ClockFloor.Assessment answers. It reports
-	// `untrusted` today for the reason the floor's own wiring note above gives —
-	// no authenticated time source is configured — but it now reports it because
-	// the app asked, not because a constant said so, and it will start telling
-	// the truth about `trusted` the moment a source is wired.
-	clockAssessment := clockFloor.Assessment
-	// eventIDs, not a generator of the auditor's own: an audit record and a
-	// telemetry record land in the SAME log, and the ordering guarantee EVT-011
-	// states is over that log. Two independent id sources would invert against
-	// each other inside a shared millisecond, and an audit record that sorted
-	// under an already-delivered telemetry record would be appended behind every
-	// connected subscriber's cursor — recorded, and never seen.
-	auditor := auth.NewAuditor(eventHub, firstPhotonSite.ScopeNode, nowMs, eventIDs, clockAssessment)
 	authn := auth.NewAuthenticator(authStore, auditor, auth.NewDefaultLockout(), revocations)
+
+	// The console binding (SEC-070-078): a host-local Unix domain socket in the
+	// auth state directory, admitting only a uid-0 peer (SEC-072) and serving
+	// SEC-075's closed verb set attributed to the synthetic `system-console`
+	// principal (SEC-073).
+	//
+	// It is bound HERE, on the same clock floor and the same auditor as every
+	// other credential path, and it is bound BEFORE the HTTPS listener because of
+	// what SEC-078 says it is for: "the recovery path of last resort precisely
+	// because it does not depend on the thing that might be broken." A process
+	// that gave up before reaching this line because a certificate would not load
+	// would have no recovery path at exactly the moment one is needed.
+	//
+	// Failure to bind is FATAL rather than a warning. Every way this can fail is
+	// a deployment-state problem an operator must see — an unwritable or
+	// wrong-owner state directory, a non-socket file sitting on the path, a
+	// filesystem that will not honour 0700 — and a box that boots without its
+	// recovery path, silently, is the exact class of "shipped non-conformant and
+	// nobody noticed" this binding exists to end. It is the same posture the auth
+	// store, the workspace key and the clock floor above already take.
+	console := auth.NewConsole(authStore, clockFloor, auditor)
+	consoleLn, err := auth.ListenConsole(cfg.authDir, console, func(format string, args ...any) {
+		log.Printf("waiveo-feeder: "+format, args...)
+	})
+	if err != nil {
+		log.Fatalf("waiveo-feeder: open the console binding: %v", err)
+	}
+	go consoleLn.Serve()
+	log.Printf("waiveo-feeder: console binding listening on %s (uid 0 only; verbs %v)", consoleLn.Path(), auth.ConsoleVerbs())
 
 	// The first-boot claim window (SEC-120). On an unclaimed box this mints a
 	// one-time setup grant and persists its code 0600; the setup endpoint is
 	// claimable ONLY by redeeming it, so an installed-but-unclaimed box on a
 	// shared network is never first-come-first-served.
-	claim, err := auth.EnsureClaimWindow(ctx, authStore, cfg.authDir, auth.RootScopeNode, auditor)
+	claim, err := auth.EnsureClaimWindow(ctx, authStore, cfg.authDir, auth.RootScopeNode)
 	if err != nil {
 		log.Fatalf("waiveo-feeder: evaluate first-boot claim window: %v", err)
 	}
@@ -955,6 +997,12 @@ func main() {
 		retentionSweep.Stop()
 		relayConnSrv.CloseAll()
 		eventHub.Close()
+		// The console binding closes first among the credential surfaces, and
+		// unlinks its socket as it goes, so the next boot's stale-socket check has
+		// nothing to reason about after a clean stop.
+		if err := consoleLn.Close(); err != nil {
+			log.Printf("waiveo-feeder: close the console binding: %v", err)
+		}
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {

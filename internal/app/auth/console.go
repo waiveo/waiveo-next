@@ -217,7 +217,7 @@ func (c *Console) Dispatch(ctx context.Context, peerUID int, req ConsoleRequest)
 			Detail: "This verb is outside the console binding's enumerated verb set."}
 	}
 
-	code, detail, body := c.exec(ctx, req)
+	code, detail, body := c.exec(ctx, principalID, req)
 	c.audit(req.TraceID, principalID, req.Verb, code == "")
 	return ConsoleResponse{
 		Admitted:      true,
@@ -232,8 +232,31 @@ func (c *Console) Dispatch(ctx context.Context, peerUID int, req ConsoleRequest)
 
 // exec runs one admitted verb. Every branch returns a typed code rather than a
 // Go error, so the caller's response shape is decided in one place.
-func (c *Console) exec(ctx context.Context, req ConsoleRequest) (code, detail string, body map[string]any) {
+//
+// principalID is the synthetic `system-console` principal Dispatch materialized
+// (SEC-073); a verb whose effect is auditable in its own right attributes it to
+// that principal, so a console-issued grant names an actor that joins to the
+// principal relation exactly as an api-issued one does.
+func (c *Console) exec(ctx context.Context, principalID string, req ConsoleRequest) (code, detail string, body map[string]any) {
 	switch req.Verb {
+	case ConsoleVerbGrantIssue:
+		return c.execGrantIssue(ctx, principalID, req)
+
+	case ConsoleVerbGrantRedeem:
+		// Inside SEC-075's set and deliberately not served by this build.
+		//
+		// Both redeemable purposes this tree mints have a redeemer who is NOT the
+		// console operator. A `setup` code is redeemed by whoever claims the box,
+		// which mints their credential and their owner binding (SEC-120); a
+		// `credential-reset` code is redeemed by the TARGET, choosing a value
+		// SEC-050 says the issuer must have no path to choose. The console
+		// redemption SEC-075 enumerates is the break-glass one (SEC-061), whose
+		// section is unimplemented here — and issuing plus redeeming in one place
+		// is precisely the shape SEC-050 forbids, so it is not something to add
+		// ahead of the flow that legitimately needs it.
+		return ErrCodeUnimplemented,
+			"This build serves no console redemption: the break-glass flow it belongs to (SEC-061) is not implemented, and the two purposes this deployment mints are redeemed by the claimant and by the reset's target, never by the console operator.", nil
+
 	case ConsoleVerbSessionRevoke:
 		id, ok := consoleStringParam(req.Params, "session_id")
 		if !ok {
@@ -292,6 +315,94 @@ func (c *Console) exec(ctx context.Context, req ConsoleRequest) (code, detail st
 	}
 }
 
+// execGrantIssue serves SEC-075's "grant issuance" over the console binding.
+//
+// # Why the purpose set here is NARROWER than SEC-030's seven
+//
+// SEC-076 would admit any of them — root can write the grants table directly, so
+// no purpose adds reach. The narrowing is about what this BUILD can perform
+// completely, and one purpose in particular cannot be:
+//
+// A `recovery`-purpose grant issued via the console carries SEC-063, which is an
+// unconditional, un-suppressible obligation to notify every `owner`-role
+// principal and raise a persistent UI banner — "the compensating detection
+// control for a threat model that concedes prevention at the root boundary".
+// This deployment has no notification plane and no banner store, so issuing one
+// here would produce exactly the artifact SEC-063 exists to make impossible: a
+// root-issued recovery credential that nobody is told about. It is refused as
+// UNIMPLEMENTED, which the error taxonomy distinguishes from "the contract
+// forbids this verb" for precisely this reason.
+//
+// The remaining purposes are refused as validation failures rather than
+// unimplemented: `setup` is minted by the first-boot bootstrap and is not an
+// operator-issued thing, `pairing`/`relay-claim` belong to relay/1's own flows,
+// `invite` has no redemption flow in this tree, and `support` has no redemption
+// mechanics defined in the contract at all (SEC-030's own draft-note).
+func (c *Console) execGrantIssue(ctx context.Context, principalID string, req ConsoleRequest) (code, detail string, body map[string]any) {
+	purpose, ok := consoleStringParam(req.Params, "purpose")
+	if !ok {
+		return ErrCodeValidationFailed, "`purpose` is required.", nil
+	}
+	switch purpose {
+	case PurposeCredentialReset:
+	case PurposeRecovery:
+		return ErrCodeUnimplemented,
+			"A console-issued recovery grant carries SEC-063's unconditional owner notification and persistent banner; this build has neither, and issuing the grant without them would remove the compensating control the requirement exists to guarantee.", nil
+	default:
+		return ErrCodeValidationFailed,
+			fmt.Sprintf("The console binding issues no %q-purpose grant in this build.", purpose), nil
+	}
+
+	target, ok := consoleStringParam(req.Params, "target_principal_id")
+	if !ok {
+		return ErrCodeValidationFailed, "`target_principal_id` is required.", nil
+	}
+	keep, ok := consoleBoolParam(req.Params, "keep_existing_sessions")
+	if !ok {
+		return ErrCodeValidationFailed, "`keep_existing_sessions`, when present, must be a boolean.", nil
+	}
+	// base_url is OPTIONAL and operator-supplied. It is never derived from
+	// anything the request carries about where it came from — a Unix socket peer
+	// has no Host header to poison, and this is the same discipline the api route
+	// holds to for the reason its own doc gives.
+	baseURL, _ := consoleStringParam(req.Params, "base_url")
+
+	handoff, err := c.store.IssueCredentialResetGrantViaConsole(ctx, principalID, target, CredentialResetOptions{
+		KeepExistingSessions: keep,
+		BaseURL:              baseURL,
+		TraceID:              req.TraceID,
+	})
+	switch {
+	case err == nil:
+	case errors.Is(err, ErrPrincipalNotFound), errors.Is(err, ErrResetIdentifierUnknown):
+		// One code for "no such principal" and "that principal holds no password
+		// credential to reset". Root could distinguish them by reading the
+		// database, so this is not a disclosure boundary — it is that both mean
+		// the same thing to the operator: there is nothing here to reset.
+		return ErrCodeNotFound, "No such principal holds a password credential to reset.", nil
+	case errors.Is(err, ErrResetTargetNotUser):
+		return ErrCodeValidationFailed, "A credential-reset grant targets a `user` principal (SEC-012).", nil
+	default:
+		return ErrCodeInternal, "The credential-reset grant could not be issued.", nil
+	}
+
+	// The one-time code rides in the RESPONSE, which is SEC-050's own shape
+	// ("return a one-time code or URL for the issuing admin to hand to the target
+	// user"). It reaches the operator's terminal and nothing else: it is not in
+	// the audit record this dispatch emits, not in the grant row (only its hash
+	// is), and the console binding takes no argv.
+	out := map[string]any{
+		"grant_id":            handoff.GrantID,
+		"code":                handoff.Code,
+		"target_principal_id": handoff.TargetPrincipalID,
+		"expires_at_ms":       handoff.ExpiresAtMs,
+	}
+	if handoff.URL != "" {
+		out["url"] = handoff.URL
+	}
+	return "", "", out
+}
+
 // audit emits SEC-077's unconditional record: "Every verb invocation over the
 // console binding MUST emit an audit.event attributing the action to
 // system-console, with no exception."
@@ -306,6 +417,13 @@ func (c *Console) audit(traceID, principalID, verb string, ok bool) {
 	result := "failure"
 	if ok {
 		result = "success"
+	}
+	// A connection refused by the admission rule is recorded before any request
+	// body has been read, so it names no verb at all. The record still has to say
+	// what it is about: an empty `target` would read as a missing field rather
+	// than as "the peer never got to name one".
+	if verb == "" {
+		verb = "<unread>"
 	}
 	c.auditor.Emit(Record{
 		TraceID: traceID,
@@ -326,6 +444,19 @@ func consoleStringParam(params map[string]any, key string) (string, bool) {
 	}
 	s, ok := v.(string)
 	return s, ok && s != ""
+}
+
+// consoleBoolParam reads an OPTIONAL boolean param. Absent reads as false and is
+// valid; present-but-not-a-boolean is invalid, so a caller that sent
+// `"keep_existing_sessions": "true"` (a string) is told so rather than having
+// SEC-053's opt-out silently ignored and every session of the target evicted.
+func consoleBoolParam(params map[string]any, key string) (bool, bool) {
+	v, present := params[key]
+	if !present || v == nil {
+		return false, true
+	}
+	b, ok := v.(bool)
+	return b, ok
 }
 
 // EnsureSystemConsolePrincipal returns the deployment's single synthetic
