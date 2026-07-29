@@ -3,6 +3,7 @@ import { ThemeProvider } from "@/components/theme/theme-provider";
 import { SessionGate } from "@/auth/session-gate";
 import { AppShell } from "@/shell/app-shell";
 import LoginRoute from "@/routes/login/login-route";
+import SetupRoute from "@/routes/setup/setup-route";
 import OverviewRoute from "@/routes/overview/overview-route";
 import ScreensRoute from "@/routes/screens/screens-route";
 import SchedulesRoute from "@/routes/schedules/schedules-route";
@@ -33,6 +34,15 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<LoginRoute />} />
+          {/* First-boot claim (security-model/1 SEC-120), outside the gate for
+              the same reason /login is: it runs before any session exists — it
+              is what MINTS the first one. Mounted unconditionally, on a claimed
+              box as much as an unclaimed one, because nothing tells the console
+              which it is and publishing that would be the disclosure, not the
+              route. SEC-121 re-opens the claim window after a factory reset, and
+              this page works a second time because it holds no state that could
+              remember the first. */}
+          <Route path="/setup" element={<SetupRoute />} />
           <Route
             element={
               <SessionGate>

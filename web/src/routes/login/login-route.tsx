@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { useNavigate, useSearchParams } from "react-router";
+import { Link, useNavigate, useSearchParams } from "react-router";
 import { Button, FormField } from "@/components/kit";
 import { ApiError, createApi, secondFactorRequired, type WaiveoApi } from "@/api";
 
@@ -194,6 +194,19 @@ export default function LoginRoute({ api }: LoginRouteProps = {}) {
             {busy ? "Signing in…" : "Sign in"}
           </Button>
         </form>
+
+        {/* The way in for an operator holding a setup code, on a box nobody has
+            claimed yet (SEC-120). It is offered UNCONDITIONALLY — this page has
+            no idea whether the box is claimed, and giving it one would mean the
+            box telling every anonymous caller whether it is sitting inside its
+            claim window. Every Waiveo box shows this same link, so the link
+            itself says nothing about this one. */}
+        <p className="mt-6 text-center text-sm text-muted-foreground">
+          Setting up a new box?{" "}
+          <Link to="/setup" className="text-[color:var(--wv-accent-text)] underline-offset-4 hover:underline">
+            Enter your setup code
+          </Link>
+        </p>
       </div>
     </main>
   );

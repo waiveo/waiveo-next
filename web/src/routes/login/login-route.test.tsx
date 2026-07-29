@@ -124,6 +124,16 @@ describe("LoginRoute", () => {
     expect(screen.getByRole("button", { name: /sign in/i })).toBeEnabled();
   });
 
+  it("offers the first-boot setup path unconditionally (SEC-120)", () => {
+    renderLogin(apiStub({}));
+    // An operator standing at a box nobody has claimed yet arrives HERE — the
+    // console has no way to know the box is unclaimed, and giving it one would
+    // mean the box answering "am I unclaimed?" to any anonymous caller that
+    // asked. So the way through is always on offer, and says nothing about this
+    // particular box because every box says it.
+    expect(screen.getByRole("link", { name: /setup code/i })).toHaveAttribute("href", "/setup");
+  });
+
   it("labels both fields, so the form is operable by assistive tech", () => {
     renderLogin(apiStub({}));
     expect(screen.getByLabelText(/identifier/i)).toHaveAttribute("autocomplete", "username");

@@ -36,6 +36,9 @@ beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => {
   server.resetHandlers();
   window.localStorage.clear();
+  // The routes are mounted on a BrowserRouter, so a test that navigates does it
+  // by pushing real history; put it back so the next test starts at the console.
+  window.history.pushState({}, "", "/");
 });
 afterAll(() => server.close());
 
@@ -57,5 +60,16 @@ describe("App", () => {
     // console to render without a session — the shell must not paint at all.
     expect(await screen.findByRole("button", { name: /sign in/i })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Overview" })).not.toBeInTheDocument();
+  });
+
+  it("serves the first-boot setup form at /setup, outside the session gate", async () => {
+    window.history.pushState({}, "", "/setup");
+    render(<App />);
+    // Outside the gate, like /login: it runs before any session exists because
+    // it is what mints the first one. A /setup mounted INSIDE the gate would be
+    // redirected to /login by the very absence it exists to fix, and no session
+    // probe should even be issued here.
+    expect(await screen.findByRole("button", { name: /set up this box/i })).toBeInTheDocument();
+    expect(screen.getByLabelText(/setup code/i)).toBeInTheDocument();
   });
 });
