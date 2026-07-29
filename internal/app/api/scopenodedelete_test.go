@@ -123,6 +123,48 @@ func TestDeleteScopeNodeInUseIsRefused(t *testing.T) {
 	}
 }
 
+// TestDeleteScopeNodeAPackRowIsPlacedAtIsRefused: DAT-021 for the one kind of
+// row that is not one of this surface's own families. A pack's collection rows
+// carry the same `scope_node` in the same role — the pack-data surface authorizes
+// and visibility-filters them by it exactly as it does every other row — so a node
+// one of them sits under is in use, whoever declared the collection.
+//
+// It gets its own case rather than a row in the table above because pack_rows is
+// the single entry in the placement scan that is NOT derived from the resource
+// kinds: it is named by hand, and it identifies its rows by `entity_id` rather
+// than `id`. Both are exactly the sort of thing that is written once and never
+// exercised.
+func TestDeleteScopeNodeAPackRowIsPlacedAtIsRefused(t *testing.T) {
+	e := newEnv(t)
+	siteID := e.createNode(t, siteNode(""))
+	nodeID := e.createNode(t, screenNode("", siteID, ""))
+	e.installDataPack(t)
+
+	resp, row := e.createRow(t, map[string]any{"scope_node": nodeID, "name": "Burger", "price": 9.5}, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create pack row = %d (%+v)", resp.StatusCode, row)
+	}
+
+	resp, raw := e.do(t, http.MethodDelete, "/api/v1/scope-nodes/"+nodeID, nil, map[string]string{"If-Match": `"1"`})
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("delete of a node a pack row is placed at = %d, want 409 (body %s)", resp.StatusCode, raw)
+	}
+	p := assertProblem(t, resp, raw, "SCOPE_NODE_IN_USE")
+	// No family noun: a pack collection is not one of this surface's own
+	// resource families, so the refusal names the rule and stops there.
+	if detail, _ := p["detail"].(string); strings.Contains(detail, "(") {
+		t.Fatalf("refusal detail %q names a resource family for a pack row, which has none", detail)
+	}
+
+	entityID, _ := row["entity_id"].(string)
+	if resp, raw := e.do(t, http.MethodDelete, menuRowsPath+"/"+entityID, nil, map[string]string{"If-Match": `"1"`}); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete of the pack row = %d, want 204 (body %s)", resp.StatusCode, raw)
+	}
+	if resp, raw := e.do(t, http.MethodDelete, "/api/v1/scope-nodes/"+nodeID, nil, map[string]string{"If-Match": `"1"`}); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete of the now-unreferenced node = %d, want 204 (body %s)", resp.StatusCode, raw)
+	}
+}
+
 // TestDeleteOrgScopeNodeIsRefused: DAT-022, on an org node that is EMPTY —
 // nothing beneath it, nothing placed at it. DAT-020 and DAT-021 have nothing to
 // say about it, so the only rule that can refuse is the org rule itself, and a
