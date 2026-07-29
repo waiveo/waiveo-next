@@ -97,6 +97,8 @@ func webhookEndpointsConfig() resourceConfig {
 		path:         "webhook-endpoints",
 		resourceType: "webhook-endpoints",
 		displayName:  "webhook endpoint",
+		createSchema: "WebhookEndpointCreate",
+		updateSchema: "WebhookEndpointUpdate",
 		selLabels:    func(f resourceFields) map[string]string { return f.Labels },
 		placement:    func(f resourceFields) string { return f.ScopeNode },
 		extScope:     func(f resourceFields) string { return f.ScopeNode },

@@ -54,7 +54,6 @@ func appAutomationBody(id, scopeNode string, labels map[string]string) []byte {
 
 func automationBody(id, scopeNode string, labels map[string]string, actionJSON string) []byte {
 	m := map[string]any{
-		"id":         id,
 		"name":       "Demo Automation",
 		"scope_node": scopeNode,
 		"enabled":    true,
@@ -66,6 +65,12 @@ func automationBody(id, scopeNode string, labels map[string]string, actionJSON s
 	if labels != nil {
 		m["labels"] = labels
 	}
+	// A create body carries an id only when a case is deliberately exercising
+	// API-105's refusal of one: `id` is not a member AutomationCreate declares,
+	// and a create body is checked against that declared schema.
+	if id != "" {
+		m["id"] = id
+	}
 	b, _ := json.Marshal(m)
 	return b
 }
@@ -76,7 +81,6 @@ func automationBody(id, scopeNode string, labels map[string]string, actionJSON s
 // nothing.
 func nonCompilingAutomationBody(id, scopeNode string) []byte {
 	m := map[string]any{
-		"id":         id,
 		"name":       "Bad Automation",
 		"scope_node": scopeNode,
 		"enabled":    true,
@@ -84,6 +88,9 @@ func nonCompilingAutomationBody(id, scopeNode string) []byte {
 		"triggers":   []any{map[string]any{"type": "teleport", "entity_id": autoScreenEntity}},
 		"conditions": []any{},
 		"actions":    []any{map[string]any{"type": "device_command", "entity_id": autoScreenEntity, "command": "launch"}},
+	}
+	if id != "" {
+		m["id"] = id
 	}
 	b, _ := json.Marshal(m)
 	return b

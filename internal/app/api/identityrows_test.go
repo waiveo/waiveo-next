@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/maaxton/waiveo-next/internal/app/auth/authtest"
@@ -143,7 +144,12 @@ func TestIdentityFamiliesValidationSplit(t *testing.T) {
 	siteID := e.createNode(t, siteNode(""))
 
 	// Body: an adopted device with no driver has half an identity tuple, which
-	// relay/1 REL-063 makes a device_id's identity — 422 with a per-field error.
+	// relay/1 REL-063 makes a device_id's identity. api/openapi.yaml declares
+	// `driver` as minLength 1, so this body no longer reaches the store: it is
+	// refused against the declared schema before any write (bodyschema.go), 422
+	// with the offending member named. The datamodel rule behind the same field
+	// (DEVICE_IDENTITY_INCOMPLETE) still guards every non-HTTP write path and is
+	// pinned by internal/datamodel's own tests.
 	bad := adoptedDeviceFixture(siteID, "Nameless Driver", "", "10.0.0.41", nil)
 	resp, raw := e.do(t, http.MethodPost, "/api/v1/adopted-devices", mustJSON(t, bad), nil)
 	if resp.StatusCode != http.StatusUnprocessableEntity {
@@ -151,10 +157,7 @@ func TestIdentityFamiliesValidationSplit(t *testing.T) {
 	}
 	var problem struct {
 		Code   string `json:"code"`
-		Errors []struct {
-			Field string `json:"field"`
-			Code  string `json:"code"`
-		} `json:"errors"`
+		Detail string `json:"detail"`
 	}
 	if err := json.Unmarshal(raw, &problem); err != nil {
 		t.Fatalf("decode problem: %v (%s)", err, raw)
@@ -162,13 +165,7 @@ func TestIdentityFamiliesValidationSplit(t *testing.T) {
 	if problem.Code != "VALIDATION_FAILED" {
 		t.Errorf("problem code = %q, want VALIDATION_FAILED", problem.Code)
 	}
-	var namedDriver bool
-	for _, fe := range problem.Errors {
-		if fe.Field == "driver" && fe.Code == "DEVICE_IDENTITY_INCOMPLETE" {
-			namedDriver = true
-		}
-	}
-	if !namedDriver {
+	if !strings.Contains(problem.Detail, "driver") {
 		t.Errorf("the 422 body does not name the offending field: %s", raw)
 	}
 

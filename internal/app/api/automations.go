@@ -36,6 +36,8 @@ func automationsConfig() resourceConfig {
 		path:         "automations",
 		resourceType: "automations",
 		displayName:  "automation",
+		createSchema: "AutomationCreate",
+		updateSchema: "AutomationUpdate",
 		selLabels:    func(f resourceFields) map[string]string { return f.Labels },
 		placement:    func(f resourceFields) string { return f.ScopeNode },
 		extScope:     func(f resourceFields) string { return f.ScopeNode },

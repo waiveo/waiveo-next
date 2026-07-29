@@ -413,6 +413,19 @@ type resourceConfig struct {
 	// different questions, and a kind that answered them differently would
 	// silently authorize against the wrong node if one field served both.
 	writeScope func(resourceFields) string
+	// createSchema/updateSchema name the `api/openapi.yaml` component schemas this
+	// family's POST and PATCH bodies are DECLARED as. A named schema is enforced
+	// at request time, before any store write (bodyschema.go); an empty name means
+	// the family declares no request body at all in the document, which today is
+	// true of the three "Shape stub — the row schema is a later minor" kinds
+	// (playlists, schedules, dayparts) and of nothing else.
+	//
+	// These are the declared schema's OWN names rather than a per-kind rule set
+	// restated here, so a family cannot be validated against a shape the document
+	// does not declare — and a name the document does not define refuses the
+	// write rather than skipping the check (bodyschema.go declaredSchema).
+	createSchema string
+	updateSchema string
 	// validate, when non-nil, is a per-kind pre-write body validation run over the
 	// EFFECTIVE request body — the create body, or a patch shallow-merged onto the
 	// current row — BEFORE the store write; a non-empty result is rendered
@@ -570,6 +583,14 @@ func (rs *resource) create(w http.ResponseWriter, r *http.Request) {
 // so the exact bytes are retainable for an Idempotency-Key replay.
 func (rs *resource) createExec(w http.ResponseWriter, r *http.Request, raw []byte) {
 	if rs.rejectClientSuppliedID(w, r, raw) {
+		return
+	}
+	// The body the CLIENT sent, against the schema api/openapi.yaml declares for
+	// this operation (bodyschema.go). It runs on raw — before ensureID injects the
+	// server-minted id, which every Create schema forbids — and after
+	// rejectClientSuppliedID, so a client-supplied id keeps API-105's own code
+	// rather than collapsing into a generic schema violation.
+	if rs.schemaRejected(w, r, rs.cfg.createSchema, raw) {
 		return
 	}
 	// The server always mints the id (openapi: id is not part of the create
@@ -888,6 +909,14 @@ func (rs *resource) patch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if rs.rejectClientSuppliedID(w, r, patchBody) {
+		return
+	}
+	// The PATCH body the client sent, against the Update schema api/openapi.yaml
+	// declares for this family (bodyschema.go). It runs on the patch body rather
+	// than the merge: an Update schema describes what a client may SEND (every
+	// member optional, at least one present), not what a complete stored row looks
+	// like, so validating the merge would answer a different question.
+	if rs.schemaRejected(w, r, rs.cfg.updateSchema, patchBody) {
 		return
 	}
 
