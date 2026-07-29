@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/datamodel"
+	"github.com/maaxton/waiveo-next/internal/shared/secretfile"
 	_ "modernc.org/sqlite"
 )
 
@@ -326,6 +327,24 @@ func Open(dsn string) (*Store, error) {
 		if _, err := db.Exec(fmt.Sprintf(resourceTableDDL, string(k))); err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("store: migrate %s: %w", k, err)
+		}
+	}
+
+	// This database is secret material at rest, and was sitting at the umask
+	// default. It holds the sealed webhook signing secrets, the durable audit
+	// log, and the install records naming which key vouched for the code that is
+	// running — none of which belongs to anyone but the process that opened it.
+	// The sidecars go with it: WAL mode writes recently-changed page images to
+	// `<db>-wal`, so leaving that readable leaks exactly what the database mode
+	// is protecting.
+	if dsn != ":memory:" {
+		if err := os.Chmod(dsn, 0o600); err != nil && !os.IsNotExist(err) {
+			_ = db.Close()
+			return nil, fmt.Errorf("store: chmod %s: %w", dsn, err)
+		}
+		if err := secretfile.TightenSQLiteSidecars(dsn, 0o600); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("store: %w", err)
 		}
 	}
 

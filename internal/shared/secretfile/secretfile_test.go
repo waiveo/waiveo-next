@@ -127,3 +127,45 @@ func TestWriteRejectsAnEmptyDirectory(t *testing.T) {
 		t.Fatal("EnsureDir(\"\") returned nil, want an error")
 	}
 }
+
+// TestTightenSQLiteSidecarsCoversWhatTheDatabaseModeProtects reads the modes off
+// disk rather than trusting the call, because this is exactly the property that
+// regresses silently: nothing fails, nothing logs, and a file that should be
+// 0600 is 0644 until someone happens to run `ls -la`.
+//
+// The `-wal` sidecar holds recently-written page images. A reader who cannot
+// open the database can read what was just written to it, so a database at 0600
+// beside a WAL at 0644 protects nothing it meant to.
+func TestTightenSQLiteSidecarsCoversWhatTheDatabaseModeProtects(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "x.db")
+	for _, name := range []string{"x.db", "x.db-wal", "x.db-shm"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
+		// WriteFile honours the umask, so set the mode explicitly — otherwise
+		// this test asserts the umask rather than the function.
+		if err := os.Chmod(filepath.Join(dir, name), 0o644); err != nil {
+			t.Fatalf("chmod %s: %v", name, err)
+		}
+	}
+
+	if err := TightenSQLiteSidecars(db, 0o600); err != nil {
+		t.Fatalf("TightenSQLiteSidecars: %v", err)
+	}
+	for _, name := range []string{"x.db-wal", "x.db-shm"} {
+		info, err := os.Stat(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("stat %s: %v", name, err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Errorf("%s is mode %04o, want 0600 — it holds what the database mode protects", name, got)
+		}
+	}
+
+	// An absent sidecar is not an error: WAL and SHM are removed on a clean
+	// close and recreated on the next open, when this runs again.
+	if err := TightenSQLiteSidecars(filepath.Join(dir, "gone.db"), 0o600); err != nil {
+		t.Errorf("an absent sidecar was treated as an error: %v", err)
+	}
+}

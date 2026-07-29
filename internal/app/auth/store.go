@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/maaxton/waiveo-next/internal/shared/secretfile"
 	"github.com/maaxton/waiveo-next/internal/shared/ulid"
 	_ "modernc.org/sqlite"
 )
@@ -243,6 +244,14 @@ func Open(dsn string, nowMs func() int64, newID func() string, opts ...StoreOpti
 		if err := os.Chmod(dsn, 0o600); err != nil && !os.IsNotExist(err) {
 			_ = db.Close()
 			return nil, fmt.Errorf("auth: chmod %s: %w", dsn, err)
+		}
+		// The schema exec above is a write, so WAL mode has created the sidecars
+		// by now — and the driver creates them at the umask, not at the database's
+		// mode. The `-wal` file holds recently-written page images: the same rows
+		// the line above is protecting, readable by anyone the 0600 excludes.
+		if err := secretfile.TightenSQLiteSidecars(dsn, 0o600); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("auth: %w", err)
 		}
 	}
 	s := &Store{db: db, nowMs: nowMs, newID: newID}
