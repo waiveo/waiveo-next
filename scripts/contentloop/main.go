@@ -6,13 +6,20 @@
 // asset, and a screen fetches those exact bytes direct from the content origin —
 // the relay is never in this data path (REL-140).
 //
-// AUTHENTICATION, stated here rather than left to a confusing 401 at run time:
-// every /api/v1 route is now authenticated (security-model/1 SEC-005 — an
-// unresolvable principal is refused, never default-permitted), and this probe
-// presents no credential, so it is refused 401 against a live feeder until a
-// dev-script credential bridge exists. That bridge is deliberately separate
-// work: doing it properly means minting a scoped API key at dev-up and handing
-// it to the probes, not weakening the surface they exist to probe.
+// AUTHENTICATION: the two legs of this loop are deliberately not the same.
+//
+// The UPLOAD is an /api/v1 operation and is authenticated (security-model/1
+// SEC-005), so it presents the local dev API key through scripts/devcred — see
+// that package's doc for the provisioning path (`make dev-key`) and the
+// authority the key holds.
+//
+// The FETCH presents nothing, on purpose. It stands in for the GET a real screen
+// performs against the content origin, and that route (/content/, mounted
+// outside the api middleware) is open today — so fetching with an admin
+// credential would prove the loop works for an operator while saying nothing
+// about whether it works for a screen. If the content origin ever grows an
+// authentication requirement, this leg is what fails, which is the honest
+// signal.
 //
 // It is written in Go on purpose, like scripts/devsmoke: the feeder serves an
 // ed25519-leaf TLS cert some system curl builds (macOS LibreSSL) cannot
@@ -27,7 +34,6 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
-	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -35,6 +41,8 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/maaxton/waiveo-next/scripts/devcred"
 )
 
 // feederAPIBase is the loopback dev feeder (matching scripts/devsmoke and
@@ -50,27 +58,29 @@ type uploadResponse struct {
 }
 
 func main() {
-	// The feeder's dev cert is self-signed; skipping verification here is a probe
-	// against a loopback dev process, never a trust decision.
-	client := &http.Client{
-		Timeout:   3 * time.Second,
-		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
+	uploader, err := devcred.Client(3 * time.Second)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "CONTENT LOOP FAIL: %v\n", err)
+		os.Exit(1)
 	}
+	// The screen's client: same loopback dev TLS, no credential (see the package
+	// doc's second paragraph).
+	screen := devcred.InsecureClient(3 * time.Second)
 
-	if err := run(client); err != nil {
+	if err := run(uploader, screen); err != nil {
 		fmt.Fprintf(os.Stderr, "CONTENT LOOP FAIL: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(client *http.Client) error {
+func run(uploader, screen *http.Client) error {
 	// A distinctive, run-stable asset (no secrets). Its asset_ref is the sha256 of
 	// these exact bytes — the server MUST compute the same, never trust a client ref.
 	asset := []byte("waiveo-next make-dev content-loop asset — the quick brown fox jumps over the lazy dog")
 	wantRef := "sha256:" + hexSHA256(asset)
 
 	// 1. Upload the asset (retry ~10s to absorb any residual cold-start race).
-	up, err := uploadWithRetry(client, asset)
+	up, err := uploadWithRetry(uploader, asset)
 	if err != nil {
 		return err
 	}
@@ -83,7 +93,7 @@ func run(client *http.Client) error {
 
 	// 2. Fetch the asset back from the url the server returned — the GET a screen
 	// performs against the content origin — and verify content-addressing.
-	fetched, err := get(client, up.URL)
+	fetched, err := get(screen, up.URL)
 	if err != nil {
 		return fmt.Errorf("fetch resolved url %s: %w", up.URL, err)
 	}

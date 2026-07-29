@@ -10,6 +10,13 @@
 // /events/v1 over an ed25519-leaf TLS cert some system curl builds cannot
 // handshake; Go's TLS stack handles ed25519, matching the all-Go stack.
 //
+// AUTHENTICATION: /events/v1 is authenticated on both bindings (events/1
+// EVT-110/111), and a subscriber's visible set is resolved per connection from
+// its role bindings (EVT-120), so an unauthenticated read is a 401 and a read
+// with no binding sees nothing. The probe presents the local dev API key through
+// scripts/devcred — that package's doc carries the provisioning path (`make
+// dev-key`) and the authority the key holds.
+//
 // The probe requests the WHOLE retained backlog via a genesis resume_from — a
 // valid ULID strictly below every real event id, which events/1 resolves to a
 // retention gap that streams the retained log from its oldest id (EVT-140/143),
@@ -17,13 +24,15 @@
 // that would miss an event recorded before the probe connected. An empty log
 // answers that resume_from with a 400 RESUME_FROM_INVALID (nothing recorded to
 // resume against yet); the probe retries until the automation.run lands or the
-// budget elapses. Prints OBSERVABILITY OK on success, exits non-zero otherwise.
+// budget elapses. A 401/403 is NOT retried: it is a definitive refusal of the
+// credential, and retrying it for the whole budget only buys a timeout message
+// that blames the observability loop for an auth fault. Prints OBSERVABILITY OK
+// on success, exits non-zero otherwise.
 package main
 
 import (
 	"bufio"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -31,6 +40,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/maaxton/waiveo-next/scripts/devcred"
 )
 
 // feederSSEURL is the app peer's live events stream (events/1 EVT-100); the
@@ -52,17 +63,24 @@ func main() {
 		url = v
 	}
 
-	// The feeder's dev cert is self-signed and ed25519-leaf; skipping verification
-	// here is a probe against a loopback dev process, never a trust decision.
-	client := &http.Client{
-		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, //nolint:gosec // loopback dev probe
+	// No client timeout: each request is bounded by its own context below, since
+	// a successful subscribe holds the stream open by design.
+	client, err := devcred.Client(0)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "OBSERVABILITY FAIL: %v\n", err)
+		os.Exit(1)
 	}
 
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
-		if detail, ok := probeOnce(client, url); ok {
+		detail, ok, refusal := probeOnce(client, url)
+		if ok {
 			fmt.Printf("OBSERVABILITY OK (%s)\n", detail)
 			return
+		}
+		if refusal != "" {
+			fmt.Fprintf(os.Stderr, "OBSERVABILITY FAIL: the events stream refused the presented credential: %s\n", refusal)
+			os.Exit(1)
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
@@ -73,28 +91,38 @@ func main() {
 
 // probeOnce opens the SSE stream requesting the full backlog and scans it for an
 // automation.run event (origin relay, mode_disposition ran). It returns a detail
-// string + true on the first match, and false otherwise — including a 400
-// RESUME_FROM_INVALID, which means the event log is still empty (nothing
-// ingested yet) and the caller should retry.
-func probeOnce(client *http.Client, url string) (string, bool) {
+// string + true on the first match.
+//
+// A non-match is reported two ways, because the two conditions want opposite
+// treatment. A 400 RESUME_FROM_INVALID means the event log is still empty
+// (nothing ingested yet) and the caller should retry. A 401/403 means the
+// credential itself was refused; no amount of retrying changes that, so it comes
+// back as a non-empty `refusal` carrying the server's Problem body for the
+// caller to print and stop on.
+func probeOnce(client *http.Client, url string) (detail string, ok bool, refusal string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url+"?resume_from="+resumeFromGenesis, nil)
 	if err != nil {
-		return "", false
+		return "", false, ""
 	}
 	req.Header.Set("Accept", "text/event-stream")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", false
+		return "", false, ""
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", false // 400 = log still empty (RESUME_FROM_INVALID); retry
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+		return "", false, fmt.Sprintf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
-	return scanForAutomationRun(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", false, "" // 400 = log still empty (RESUME_FROM_INVALID); retry
+	}
+	d, matched := scanForAutomationRun(resp.Body)
+	return d, matched, ""
 }
 
 // scanForAutomationRun reads SSE frames from r (the resolved backlog is written

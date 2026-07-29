@@ -6,13 +6,13 @@
 // installs end to end on the live stack; NOTHING in the pack executes — a pack is
 // data (a manifest, page documents, a locale catalog).
 //
-// AUTHENTICATION, stated here rather than left to a confusing 401 at run time:
-// every /api/v1 route is now authenticated (security-model/1 SEC-005 — an
-// unresolvable principal is refused, never default-permitted), and this probe
-// presents no credential, so it is refused 401 against a live feeder until a
-// dev-script credential bridge exists. That bridge is deliberately separate
-// work: doing it properly means minting a scoped API key at dev-up and handing
-// it to the probes, not weakening the surface they exist to probe.
+// AUTHENTICATION: every /api/v1 route is authenticated (security-model/1
+// SEC-005), and the pack lifecycle routes ask for more than the method floor —
+// `admin` at the workspace org node, since a pack's capabilities are granted
+// workspace-wide. The probe presents the local dev API key through
+// scripts/devcred, whose package doc carries the provisioning path (`make
+// dev-key`) and the argument for the authority that key holds. This probe is
+// the reason that authority is `admin` rather than `operator`.
 //
 // Like the other dev probes it is written in Go on purpose: the feeder serves an
 // ed25519/ECDSA self-signed leaf a Go client handshakes cleanly (a curl upload
@@ -30,7 +30,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -41,6 +40,7 @@ import (
 
 	examplepacks "github.com/maaxton/waiveo-next/examples/packs"
 	"github.com/maaxton/waiveo-next/internal/packsig"
+	"github.com/maaxton/waiveo-next/scripts/devcred"
 )
 
 const packsEndpoint = "https://127.0.0.1:7420/api/v1/packs"
@@ -93,11 +93,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	// The feeder's dev cert is self-signed; skipping verification here is a probe
-	// against a loopback dev process, never a trust decision.
-	client := &http.Client{
-		Timeout:   5 * time.Second,
-		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, //nolint:gosec // loopback dev probe, never a trust decision
+	client, err := devcred.Client(5 * time.Second)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "PACK FAIL: %v\n", err)
+		os.Exit(1)
 	}
 
 	summary, err := install(client, art)

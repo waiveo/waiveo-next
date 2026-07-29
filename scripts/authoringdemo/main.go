@@ -9,13 +9,11 @@
 // cannot handshake, so a curl-based edit would spuriously fail against a healthy
 // server. Go's TLS stack handles ed25519, matching the all-Go, all-ed25519 stack.
 //
-// AUTHENTICATION, stated here rather than left to a confusing 401 at run time:
-// every /api/v1 route is now authenticated (security-model/1 SEC-005 — an
-// unresolvable principal is refused, never default-permitted), and this probe
-// presents no credential, so it is refused 401 against a live feeder until a
-// dev-script credential bridge exists. That bridge is deliberately separate
-// work: doing it properly means minting a scoped API key at dev-up and handing
-// it to the probes, not weakening the surface they exist to probe.
+// AUTHENTICATION: every /api/v1 route is authenticated (security-model/1
+// SEC-005 — an unresolvable principal is refused, never default-permitted), so
+// this probe presents the local dev API key through scripts/devcred. That
+// package's doc carries the provisioning path (`make dev-key`) and the argument
+// for the authority the key holds; nothing about it is repeated here.
 //
 // What it does:
 //  1. Reads the relay's current resolved display off its log (the boot-time
@@ -37,13 +35,14 @@ package main
 
 import (
 	"bytes"
-	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/maaxton/waiveo-next/scripts/devcred"
 )
 
 // Feeder api base + the seed demo's screen/daypart fixture ids (mirroring
@@ -66,9 +65,10 @@ func main() {
 		logPath = ".dev/relay.log"
 	}
 
-	client := &http.Client{
-		Timeout:   5 * time.Second,
-		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, //nolint:gosec // loopback dev probe, never a trust decision
+	client, err := devcred.Client(5 * time.Second)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "AUTHORING LOOP FAIL: %v\n", err)
+		os.Exit(1)
 	}
 
 	if err := run(client, logPath); err != nil {
