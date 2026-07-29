@@ -434,6 +434,18 @@ type resourceConfig struct {
 	// each item's asset_ref must resolve in the shared content origin (you cannot
 	// schedule content that was never uploaded, DAT-041) — see scheduling.go.
 	validate func(srv *server, body []byte) []datamodel.Error
+	// writeGuards, when non-nil, contributes per-kind store.WriteGuards evaluated
+	// over the EFFECTIVE body INSIDE the store's write transaction, beside the
+	// external_id-uniqueness guard every kind already carries.
+	//
+	// It exists for the rules whose input can change between a pre-write check and
+	// the write itself. `validate` above is the pre-write form and is the right
+	// place for anything that depends only on the body; this is for anything that
+	// depends on state another writer can move underneath it. Only the playlist
+	// kind sets it: an asset_ref's presence in the content origin is checked here
+	// as well as pre-write, because the content retention sweep can reclaim an
+	// asset in between — see playlistAssetGuards (scheduling.go).
+	writeGuards func(srv *server, body []byte) []store.WriteGuard
 }
 
 // resource binds a resourceConfig to the shared server so the handler methods
@@ -628,7 +640,7 @@ func (rs *resource) createExec(w http.ResponseWriter, r *http.Request, raw []byt
 	}
 
 	res, err := rs.srv.store.Create(r.Context(), rs.cfg.kind, body,
-		rs.externalIDGuards(fields.ExternalID, rs.cfg.extScope(fields), "")...)
+		rs.writeGuards(fields, "", body)...)
 	if err != nil {
 		rs.writeStoreError(w, r, err)
 		return
@@ -954,8 +966,9 @@ func (rs *resource) patch(w http.ResponseWriter, r *http.Request) {
 	// enforced atomically inside the store write by a WriteGuard — closing the
 	// check-then-write race a pre-write snapshot in a separate critical section left
 	// open. selfID excludes this row, so an unchanged external_id never self-collides.
+	// The per-kind guards ride the same transaction, over the same effective body.
 	res, err := rs.srv.store.Update(r.Context(), rs.cfg.kind, id, current.Revision, patchBody,
-		rs.externalIDGuards(eff.ExternalID, rs.cfg.extScope(eff), id)...)
+		rs.writeGuards(eff, id, merged)...)
 	if err != nil {
 		rs.writeStoreError(w, r, err)
 		return
@@ -1021,6 +1034,21 @@ func (rs *resource) delete(w http.ResponseWriter, r *http.Request) {
 // verbatim for writeStoreError to render. selfID excuses the row being updated (so
 // an unchanged external_id never self-collides); an empty externalID needs no
 // guard, since it can never collide (API-100).
+// writeGuards is the full guard set one write carries into the store
+// transaction: the external_id-uniqueness guard every kind shares, plus whatever
+// the kind's own resourceConfig.writeGuards contributes over the effective body.
+//
+// One assembly point, used by both create and patch, so a kind cannot end up with
+// its guards enforced on one verb and not the other — which is how a rule ends up
+// looking enforced while a PATCH walks straight past it.
+func (rs *resource) writeGuards(fields resourceFields, selfID string, body []byte) []store.WriteGuard {
+	guards := rs.externalIDGuards(fields.ExternalID, rs.cfg.extScope(fields), selfID)
+	if rs.cfg.writeGuards != nil {
+		guards = append(guards, rs.cfg.writeGuards(rs.srv, body)...)
+	}
+	return guards
+}
+
 func (rs *resource) externalIDGuards(externalID, scopeNode, selfID string) []store.WriteGuard {
 	if externalID == "" {
 		return nil

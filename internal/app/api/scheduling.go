@@ -72,7 +72,47 @@ func playlistsConfig() resourceConfig {
 		extScope:     func(f resourceFields) string { return f.ScopeNode },
 		writeScope:   func(f resourceFields) string { return f.ScopeNode },
 		validate:     validatePlaylistAssets,
+		writeGuards:  playlistAssetGuards,
 	}
+}
+
+// playlistAssetGuards re-checks, INSIDE the store's write transaction, that every
+// asset_ref the row being written names is still present in the content origin.
+//
+// It is the same rule validatePlaylistAssets applies before the write, and it is
+// not a redundant second copy of it. The pre-write check runs in its own critical
+// section: between it and the store write, the content retention sweep
+// (internal/feeder/contentgc) can reclaim an asset that was present when the
+// check ran. That interleaving stores a playlist whose item resolves to a URL the
+// origin 404s — the api answers 201, and every screen the playlist plays on shows
+// nothing. It is exactly the check-then-write race the external_id guard beside
+// it was introduced to close, on a rule whose failure is visible in a shop window.
+//
+// The sweep holds the store's WRITE LOCK across its reference read and its
+// deletions (store.WithContentReferences), and this guard runs inside a write
+// transaction under that same lock, so the two are mutually exclusive: either the
+// playlist commits first and the sweep then sees the asset referenced and keeps
+// it, or the sweep deletes first and this guard refuses the playlist with the
+// REFERENCE_INVALID the client would have got a moment earlier. There is no
+// interleaving in which a stored row references reclaimed bytes.
+//
+// The check is deliberately scoped to the row BEING WRITTEN rather than to the
+// resulting full playlist set (which is how the datamodel validators judge a
+// write). An asset that goes missing outside this path — a corrupted file Open
+// declines to load — would, under a whole-set check, make every subsequent
+// playlist write anywhere in the workspace fail on account of an unrelated row:
+// a write-dead store, from a fault this rule was not written to detect.
+//
+// existing is ignored: presence is a fact about the content origin, not about the
+// other rows. The parameter is the WriteGuard contract's, and taking it is what
+// buys the in-transaction position.
+func playlistAssetGuards(srv *server, body []byte) []store.WriteGuard {
+	return []store.WriteGuard{func([]store.Resource) error {
+		if errs := validatePlaylistAssets(srv, body); len(errs) > 0 {
+			return &store.ValidationError{Errors: errs}
+		}
+		return nil
+	}}
 }
 
 // validatePlaylistAssets is the playlist kind's pre-write guard (wired as
