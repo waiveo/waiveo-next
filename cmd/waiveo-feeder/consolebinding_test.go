@@ -1,6 +1,9 @@
 package main
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"net"
 	"os"
@@ -127,4 +130,52 @@ func TestFeederConsoleBindingUnlinksItsSocketOnClose(t *testing.T) {
 		t.Fatalf("re-binding after a clean stop: %v", err)
 	}
 	_ = again.Close()
+}
+
+// TestMainStartsTheConsoleBinding is the other half of the reachability claim,
+// and it is deliberately a check on main's SOURCE rather than on its behavior.
+//
+// The test above proves startConsoleBinding does the right thing. It cannot
+// prove main calls it: removing the call from main leaves that test passing,
+// which was verified rather than assumed (a mutation deleting the call from
+// main kept `go test ./cmd/waiveo-feeder -run Console` green). Two tests are
+// therefore needed, and this is the second.
+//
+// It parses main.go and asserts main's own body contains the call. That is a
+// weaker kind of evidence than driving the built binary — it says the statement
+// is there, not that a running feeder serves the socket — and it is what a test
+// can say without building and booting the whole feeder on every run. The
+// behavioral proof at binary level is the first test's assertions applied to the
+// identical function main invokes.
+func TestMainStartsTheConsoleBinding(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "main.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse main.go: %v", err)
+	}
+	var mainFn *ast.FuncDecl
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if ok && fn.Recv == nil && fn.Name.Name == "main" {
+			mainFn = fn
+			break
+		}
+	}
+	if mainFn == nil {
+		t.Fatal("main.go declares no func main")
+	}
+	called := false
+	ast.Inspect(mainFn, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == "startConsoleBinding" {
+			called = true
+		}
+		return true
+	})
+	if !called {
+		t.Fatal("func main does not call startConsoleBinding — the console binding (SEC-070) would not exist on a running feeder, which is the state this whole binding was in before it had a socket")
+	}
 }
