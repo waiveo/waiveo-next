@@ -700,6 +700,40 @@ type ClaimRequest struct {
 	Password   string `json:"password"`
 }
 
+// CredentialResetHandoff What the issuing admin receives (SEC-050). Every member is an identifier or the one-time code itself; none is, or can become, the credential value the target eventually sets.
+type CredentialResetHandoff struct {
+	// Code The one-time code, returned exactly once and recoverable from nowhere else — the grant row stores only its hash (SEC-051). It identifies a grant; it is not itself a rendered credential.
+	Code string `json:"code"`
+
+	// ExpiresAtMs When the code stops being redeemable (SEC-032, ~15 minutes).
+	ExpiresAtMs int64 `json:"expires_at_ms"`
+
+	// GrantId The `credential-reset`-purpose grant this issuance minted.
+	GrantId string `json:"grant_id"`
+
+	// SessionsRevokedOnRedemption Whether redemption will apply SEC-053's revoke-everything default, so the admin sees which of the two behaviours their issuance chose.
+	SessionsRevokedOnRedemption bool `json:"sessions_revoked_on_redemption"`
+
+	// TargetPrincipalId Echoed back so an admin can confirm they reset the account they meant to.
+	TargetPrincipalId string `json:"target_principal_id"`
+}
+
+// CredentialResetRedeemRequest The one-time code the target was handed, and the credential value THEY choose (SEC-050).
+type CredentialResetRedeemRequest struct {
+	// Code The one-time `credential-reset`-purpose grant code.
+	Code     string `json:"code"`
+	Password string `json:"password"`
+}
+
+// CredentialResetRequest Who is being reset. There is deliberately no credential-bearing member: SEC-050 says the issuing admin "MUST NOT be shown, and MUST have no path to choose, the credential value the target user eventually sets", and `additionalProperties: false` is what makes that a property of the wire rather than of a handler's discipline.
+type CredentialResetRequest struct {
+	// KeepExistingSessions SEC-053's per-issuance opt-out. Redemption revokes every existing session and API-key credential of the target BY DEFAULT — which is what makes a post-takeover reset also evict whatever session an attacker was using — and this opts one single issuance out of it.
+	KeepExistingSessions *bool `json:"keep_existing_sessions,omitempty"`
+
+	// TargetPrincipalId The `user` principal whose password credential is being reset.
+	TargetPrincipalId string `json:"target_principal_id"`
+}
+
 // Cursor An opaque, URL-safe continuation token. `null` signals no further rows. Never constructed, parsed, or compared for meaning by a client.
 type Cursor = *string
 
@@ -1382,6 +1416,18 @@ type UpdateAdoptedDeviceParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// IssueCredentialResetParams defines parameters for IssueCredentialReset.
+type IssueCredentialResetParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// RedeemCredentialResetParams defines parameters for RedeemCredentialReset.
+type RedeemCredentialResetParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // LoginParams defines parameters for Login.
 type LoginParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
@@ -1994,6 +2040,12 @@ type CreateAdoptedDeviceJSONRequestBody = AdoptedDeviceCreate
 // UpdateAdoptedDeviceJSONRequestBody defines body for UpdateAdoptedDevice for application/json ContentType.
 type UpdateAdoptedDeviceJSONRequestBody = AdoptedDeviceUpdate
 
+// IssueCredentialResetJSONRequestBody defines body for IssueCredentialReset for application/json ContentType.
+type IssueCredentialResetJSONRequestBody = CredentialResetRequest
+
+// RedeemCredentialResetJSONRequestBody defines body for RedeemCredentialReset for application/json ContentType.
+type RedeemCredentialResetJSONRequestBody = CredentialResetRedeemRequest
+
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest
 
@@ -2139,6 +2191,16 @@ type ClientInterface interface {
 	UpdateAdoptedDeviceWithBody(ctx context.Context, adoptedDeviceId Ulid, params *UpdateAdoptedDeviceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	UpdateAdoptedDevice(ctx context.Context, adoptedDeviceId Ulid, params *UpdateAdoptedDeviceParams, body UpdateAdoptedDeviceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// IssueCredentialResetWithBody request with any body
+	IssueCredentialResetWithBody(ctx context.Context, params *IssueCredentialResetParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	IssueCredentialReset(ctx context.Context, params *IssueCredentialResetParams, body IssueCredentialResetJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RedeemCredentialResetWithBody request with any body
+	RedeemCredentialResetWithBody(ctx context.Context, params *RedeemCredentialResetParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	RedeemCredentialReset(ctx context.Context, params *RedeemCredentialResetParams, body RedeemCredentialResetJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// LoginWithBody request with any body
 	LoginWithBody(ctx context.Context, params *LoginParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2452,6 +2514,54 @@ func (c *Client) UpdateAdoptedDeviceWithBody(ctx context.Context, adoptedDeviceI
 
 func (c *Client) UpdateAdoptedDevice(ctx context.Context, adoptedDeviceId Ulid, params *UpdateAdoptedDeviceParams, body UpdateAdoptedDeviceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewUpdateAdoptedDeviceRequest(c.Server, adoptedDeviceId, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) IssueCredentialResetWithBody(ctx context.Context, params *IssueCredentialResetParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewIssueCredentialResetRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) IssueCredentialReset(ctx context.Context, params *IssueCredentialResetParams, body IssueCredentialResetJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewIssueCredentialResetRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RedeemCredentialResetWithBody(ctx context.Context, params *RedeemCredentialResetParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRedeemCredentialResetRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RedeemCredentialReset(ctx context.Context, params *RedeemCredentialResetParams, body RedeemCredentialResetJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRedeemCredentialResetRequest(c.Server, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -3812,6 +3922,116 @@ func NewUpdateAdoptedDeviceRequestWithBody(server string, adoptedDeviceId Ulid, 
 			}
 
 			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewIssueCredentialResetRequest calls the generic IssueCredentialReset builder with application/json body
+func NewIssueCredentialResetRequest(server string, params *IssueCredentialResetParams, body IssueCredentialResetJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewIssueCredentialResetRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewIssueCredentialResetRequestWithBody generates requests for IssueCredentialReset with any type of body
+func NewIssueCredentialResetRequestWithBody(server string, params *IssueCredentialResetParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/auth/credential-reset")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewRedeemCredentialResetRequest calls the generic RedeemCredentialReset builder with application/json body
+func NewRedeemCredentialResetRequest(server string, params *RedeemCredentialResetParams, body RedeemCredentialResetJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewRedeemCredentialResetRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewRedeemCredentialResetRequestWithBody generates requests for RedeemCredentialReset with any type of body
+func NewRedeemCredentialResetRequestWithBody(server string, params *RedeemCredentialResetParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/auth/credential-reset/redeem")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
 		}
 
 	}
@@ -8278,6 +8498,16 @@ type ClientWithResponsesInterface interface {
 
 	UpdateAdoptedDeviceWithResponse(ctx context.Context, adoptedDeviceId Ulid, params *UpdateAdoptedDeviceParams, body UpdateAdoptedDeviceJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateAdoptedDeviceResponse, error)
 
+	// IssueCredentialResetWithBodyWithResponse request with any body
+	IssueCredentialResetWithBodyWithResponse(ctx context.Context, params *IssueCredentialResetParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*IssueCredentialResetResponse, error)
+
+	IssueCredentialResetWithResponse(ctx context.Context, params *IssueCredentialResetParams, body IssueCredentialResetJSONRequestBody, reqEditors ...RequestEditorFn) (*IssueCredentialResetResponse, error)
+
+	// RedeemCredentialResetWithBodyWithResponse request with any body
+	RedeemCredentialResetWithBodyWithResponse(ctx context.Context, params *RedeemCredentialResetParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RedeemCredentialResetResponse, error)
+
+	RedeemCredentialResetWithResponse(ctx context.Context, params *RedeemCredentialResetParams, body RedeemCredentialResetJSONRequestBody, reqEditors ...RequestEditorFn) (*RedeemCredentialResetResponse, error)
+
 	// LoginWithBodyWithResponse request with any body
 	LoginWithBodyWithResponse(ctx context.Context, params *LoginParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*LoginResponse, error)
 
@@ -8681,6 +8911,73 @@ func (r UpdateAdoptedDeviceResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r UpdateAdoptedDeviceResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type IssueCredentialResetResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON201                   *CredentialResetHandoff
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON422 *UnprocessableContent
+}
+
+// Status returns HTTPResponse.Status
+func (r IssueCredentialResetResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r IssueCredentialResetResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r IssueCredentialResetResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type RedeemCredentialResetResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Problem
+	ApplicationproblemJSON422 *UnprocessableContent
+	ApplicationproblemJSON429 *TooManyRequests
+}
+
+// Status returns HTTPResponse.Status
+func (r RedeemCredentialResetResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r RedeemCredentialResetResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r RedeemCredentialResetResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -10996,6 +11293,40 @@ func (c *ClientWithResponses) UpdateAdoptedDeviceWithResponse(ctx context.Contex
 	return ParseUpdateAdoptedDeviceResponse(rsp)
 }
 
+// IssueCredentialResetWithBodyWithResponse request with arbitrary body returning *IssueCredentialResetResponse
+func (c *ClientWithResponses) IssueCredentialResetWithBodyWithResponse(ctx context.Context, params *IssueCredentialResetParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*IssueCredentialResetResponse, error) {
+	rsp, err := c.IssueCredentialResetWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseIssueCredentialResetResponse(rsp)
+}
+
+func (c *ClientWithResponses) IssueCredentialResetWithResponse(ctx context.Context, params *IssueCredentialResetParams, body IssueCredentialResetJSONRequestBody, reqEditors ...RequestEditorFn) (*IssueCredentialResetResponse, error) {
+	rsp, err := c.IssueCredentialReset(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseIssueCredentialResetResponse(rsp)
+}
+
+// RedeemCredentialResetWithBodyWithResponse request with arbitrary body returning *RedeemCredentialResetResponse
+func (c *ClientWithResponses) RedeemCredentialResetWithBodyWithResponse(ctx context.Context, params *RedeemCredentialResetParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RedeemCredentialResetResponse, error) {
+	rsp, err := c.RedeemCredentialResetWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRedeemCredentialResetResponse(rsp)
+}
+
+func (c *ClientWithResponses) RedeemCredentialResetWithResponse(ctx context.Context, params *RedeemCredentialResetParams, body RedeemCredentialResetJSONRequestBody, reqEditors ...RequestEditorFn) (*RedeemCredentialResetResponse, error) {
+	rsp, err := c.RedeemCredentialReset(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRedeemCredentialResetResponse(rsp)
+}
+
 // LoginWithBodyWithResponse request with arbitrary body returning *LoginResponse
 func (c *ClientWithResponses) LoginWithBodyWithResponse(ctx context.Context, params *LoginParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*LoginResponse, error) {
 	rsp, err := c.LoginWithBody(ctx, params, contentType, body, reqEditors...)
@@ -12014,6 +12345,107 @@ func ParseUpdateAdoptedDeviceResponse(rsp *http.Response) (*UpdateAdoptedDeviceR
 			return nil, err
 		}
 		response.ApplicationproblemJSON428 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseIssueCredentialResetResponse parses an HTTP response from a IssueCredentialResetWithResponse call
+func ParseIssueCredentialResetResponse(rsp *http.Response) (*IssueCredentialResetResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &IssueCredentialResetResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest CredentialResetHandoff
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseRedeemCredentialResetResponse parses an HTTP response from a RedeemCredentialResetWithResponse call
+func ParseRedeemCredentialResetResponse(rsp *http.Response) (*RedeemCredentialResetResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &RedeemCredentialResetResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Problem
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
 
 	}
 

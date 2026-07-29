@@ -957,6 +957,111 @@ paths:
           $ref: "#/components/responses/UnprocessableContent"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+  /auth/credential-reset:
+    post:
+      operationId: issueCredentialReset
+      summary: Issue a one-time credential-reset code for a user principal
+      description: >-
+        Routine credential reset, issuing half (`security-model.md` SEC-050).
+        Mints a `credential-reset`-purpose grant (SEC-030) for the named
+        `user` principal and returns the one-time code for the issuing admin
+        to hand over. Requires at least the `admin` role somewhere in the
+        scope tree (SEC-012).
+
+        The response carries NO credential value and no way to choose one:
+        the target chooses their own value when they redeem, on
+        `redeemCredentialReset`. That is a property of this operation's
+        shape rather than a runtime check — there is no request or response
+        field a credential could travel in.
+
+        A `url` field is deliberately absent. Any link this operation
+        returned would have to name a host learned from the request, and a
+        poisoned `Host` header would produce a handoff link carrying a live
+        one-time code to somebody else's origin. SEC-050 admits "a one-time
+        code or URL"; this binding returns the code.
+      tags: [auth]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CredentialResetRequest"
+      responses:
+        "201":
+          description: The grant was minted; its one-time code, for handing to the target.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CredentialResetHandoff"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+  /auth/credential-reset/redeem:
+    post:
+      operationId: redeemCredentialReset
+      summary: Redeem a credential-reset code and set a new password
+      description: >-
+        Routine credential reset, redeeming half (`security-model.md`
+        SEC-050/052/053). The TARGET presents the one-time code they were
+        handed and chooses their own new credential value — the only point in
+        this flow where a credential value is accepted at all.
+
+        Credential-exchange operation (API-090/091), `security: []`: the
+        caller is by definition someone who cannot sign in, so requiring a
+        session would make the operation unreachable by the only party
+        permitted to perform it. Bounded by SEC-033's attempt budget, applied
+        before the code is looked up, and by SEC-036's atomic
+        check-and-consume.
+
+        Redemption revokes every existing session and API-key credential of
+        the target by default (SEC-053), unless the issuance opted out. It
+        does NOT touch the target's TOTP enrollment (SEC-052), and it mints
+        no session: a principal holding a second factor still has to present
+        it at `login`, so a reset can never become a way past it.
+      tags: [auth]
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CredentialResetRedeemRequest"
+      responses:
+        "204":
+          description: >-
+            The credential was set. No body and no session — the target signs
+            in through `login`, second factor included.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: >-
+            The grant was expired (`GRANT_EXPIRED`), already redeemed
+            (`GRANT_ALREADY_REDEEMED`), or of a purpose that does not match
+            this endpoint (`GRANT_PURPOSE_MISMATCH`) — `security-model.md`
+            SEC-035.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
   /auth/totp/enroll:
     post:
       operationId: enrollTotp
@@ -2843,6 +2948,79 @@ components:
           minLength: 1
         identifier:
           type: string
+          minLength: 1
+        password:
+          type: string
+          format: password
+          minLength: 1
+
+    CredentialResetRequest:
+      type: object
+      description: >-
+        Who is being reset. There is deliberately no credential-bearing
+        member: SEC-050 says the issuing admin "MUST NOT be shown, and MUST
+        have no path to choose, the credential value the target user
+        eventually sets", and `additionalProperties: false` is what makes
+        that a property of the wire rather than of a handler's discipline.
+      required: [target_principal_id]
+      additionalProperties: false
+      properties:
+        target_principal_id:
+          type: string
+          description: The `user` principal whose password credential is being reset.
+          minLength: 1
+        keep_existing_sessions:
+          type: boolean
+          default: false
+          description: >-
+            SEC-053's per-issuance opt-out. Redemption revokes every existing
+            session and API-key credential of the target BY DEFAULT — which is
+            what makes a post-takeover reset also evict whatever session an
+            attacker was using — and this opts one single issuance out of it.
+    CredentialResetHandoff:
+      type: object
+      description: >-
+        What the issuing admin receives (SEC-050). Every member is an
+        identifier or the one-time code itself; none is, or can become, the
+        credential value the target eventually sets.
+      required:
+        [grant_id, code, target_principal_id, expires_at_ms, sessions_revoked_on_redemption]
+      additionalProperties: false
+      properties:
+        grant_id:
+          type: string
+          description: The `credential-reset`-purpose grant this issuance minted.
+        code:
+          type: string
+          description: >-
+            The one-time code, returned exactly once and recoverable from
+            nowhere else — the grant row stores only its hash (SEC-051). It
+            identifies a grant; it is not itself a rendered credential.
+        target_principal_id:
+          type: string
+          description: >-
+            Echoed back so an admin can confirm they reset the account they
+            meant to.
+        expires_at_ms:
+          type: integer
+          format: int64
+          description: When the code stops being redeemable (SEC-032, ~15 minutes).
+        sessions_revoked_on_redemption:
+          type: boolean
+          description: >-
+            Whether redemption will apply SEC-053's revoke-everything default,
+            so the admin sees which of the two behaviours their issuance chose.
+    CredentialResetRedeemRequest:
+      type: object
+      description: >-
+        The one-time code the target was handed, and the credential value THEY
+        choose (SEC-050).
+      required: [code, password]
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+          description: The one-time `credential-reset`-purpose grant code.
           minLength: 1
         password:
           type: string

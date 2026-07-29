@@ -729,6 +729,21 @@ var probes = map[string]probe{
 	"getSession": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
 		return e.do(t, http.MethodGet, "/api/v1/auth/session", nil, nil)
 	},
+	"issueCredentialReset": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		// A real target: a `user` principal holding a real password credential,
+		// because the issuance refuses a principal with nothing to reset
+		// (SEC-050 resets an EXISTING login handle rather than inventing one).
+		target, err := e.authStore.CreatePrincipal(t.Context(), auth.KindUser, "reset-target")
+		if err != nil {
+			t.Fatalf("create the reset target: %v", err)
+		}
+		if _, err := e.authStore.PutPasswordCredential(t.Context(), target.PrincipalID,
+			"reset-target@example.invalid", "the-password-being-replaced"); err != nil {
+			t.Fatalf("seed the reset target's credential: %v", err)
+		}
+		return e.do(t, http.MethodPost, "/api/v1/auth/credential-reset",
+			mustJSON(t, map[string]any{"target_principal_id": target.PrincipalID}), nil)
+	},
 	"enrollTotp": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
 		return e.do(t, http.MethodPost, "/api/v1/auth/totp/enroll", []byte(`{}`), nil)
 	},

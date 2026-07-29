@@ -152,15 +152,23 @@ type server struct {
 // routes are reachable unauthenticated" is one readable set rather than a
 // property emergent from mux pattern precedence.
 //
-// Both entries are credential-exchange operations under API-091: a login mints
-// the session a caller does not yet hold, and the first-boot claim mints the
-// very first principal on the box. Requiring a pre-existing session for either
-// would be circular. Everything else under /api/v1 — including logout and the
-// session read — is authenticated, which is what subjects logout to the same
-// CSRF discipline as any other mutating browser route (SEC-024).
+// All three entries are credential-exchange operations under API-091: a login
+// mints the session a caller does not yet hold, the first-boot claim mints the
+// very first principal on the box, and a credential-reset REDEMPTION is
+// performed by the one person who by definition cannot present a session — the
+// user whose credential is being reset (SEC-050). Requiring a pre-existing
+// session for any of the three would be circular.
+//
+// Note which half of the reset is here and which is not: the ISSUING route
+// (`POST /auth/credential-reset`) is absent from this set and is authenticated
+// like any other mutating operation, because the admin issuing it is signed in.
+// Only the redemption is exempt. Everything else under /api/v1 — including
+// logout and the session read — is authenticated, which is what subjects logout
+// to the same CSRF discipline as any other mutating browser route (SEC-024).
 var authExemptPaths = map[string]bool{
-	apiPrefix + "/auth/login": true,
-	apiPrefix + "/auth/setup": true,
+	apiPrefix + "/auth/login":                   true,
+	apiPrefix + "/auth/setup":                   true,
+	apiPrefix + "/auth/credential-reset/redeem": true,
 }
 
 // authExempt reports whether r names one of the `security: []` operations.
@@ -343,13 +351,26 @@ func (srv *server) mountAll(rt, rootRT *router, authHandlers *auth.Handlers) {
 	// available on the self-signed fallback, unlike `passkey` (SEC-102).
 	rt.HandleFunc("POST "+apiPrefix+"/auth/totp/enroll", authHandlers.EnrollTOTP)
 	rt.HandleFunc("POST "+apiPrefix+"/auth/totp/confirm", authHandlers.ConfirmTOTP)
+	// The ISSUING half of the routine credential reset (security-model/1
+	// SEC-050). Authenticated, and behind the middleware with everything else
+	// that mutates: the admin issuing a reset for somebody else is signed in as
+	// themselves, so there is nothing circular about requiring a session here.
+	// SEC-012's `admin` floor is enforced inside the store's issuance function.
+	rt.HandleFunc("POST "+apiPrefix+"/auth/credential-reset", authHandlers.IssueCredentialReset)
 
 	// The credential-exchange half (API-090/091) mounts on the ROOT mux, ahead
 	// of the middleware. Go's ServeMux prefers the more specific method+path
-	// pattern over the "/" catch-all, so these two reach their handlers directly
+	// pattern over the "/" catch-all, so these reach their handlers directly
 	// while every other path falls through to the authenticated mux.
 	rootRT.HandleFunc("POST "+apiPrefix+"/auth/login", authHandlers.Login)
 	rootRT.HandleFunc("POST "+apiPrefix+"/auth/setup", authHandlers.Claim)
+	// The REDEEMING half of the credential reset. It is the third `security: []`
+	// operation, and for API-091's own reason: the caller is the person who
+	// cannot log in, so requiring a session would make the operation unreachable
+	// by the only party SEC-050 allows to perform it. What stands in for a
+	// session is the one-time code — 256 bits, hashed at rest, single-use under
+	// SEC-036's atomic consume, and rate-limited under SEC-033 before the lookup.
+	rootRT.HandleFunc("POST "+apiPrefix+"/auth/credential-reset/redeem", authHandlers.RedeemCredentialReset)
 }
 
 // resourceConfig parameterizes the generic resource handler for one resource
