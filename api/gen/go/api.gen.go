@@ -274,6 +274,30 @@ func (e JobTargetState) Valid() bool {
 	}
 }
 
+// Defines values for MarketplaceRefTrustChannel.
+const (
+	Community  MarketplaceRefTrustChannel = "community"
+	Dev        MarketplaceRefTrustChannel = "dev"
+	FirstParty MarketplaceRefTrustChannel = "first-party"
+	Verified   MarketplaceRefTrustChannel = "verified"
+)
+
+// Valid indicates whether the value is a known member of the MarketplaceRefTrustChannel enum.
+func (e MarketplaceRefTrustChannel) Valid() bool {
+	switch e {
+	case Community:
+		return true
+	case Dev:
+		return true
+	case FirstParty:
+		return true
+	case Verified:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PairingCodeResultRedemptionMode.
 const (
 	OneTime PairingCodeResultRedemptionMode = "one-time"
@@ -827,6 +851,24 @@ type LoginRequest struct {
 	// TotpCode The second-factor code (`security-model.md` SEC-004). Optional in SHAPE and mandatory in EFFECT for any principal holding a `totp` credential: such a login is refused without it, with the Problem's `second_factor` member naming the factor to collect, and the client re-calls this same operation carrying everything. There is no intermediate credential between the two calls — nothing is minted until both factors are satisfied.
 	TotpCode *string `json:"totp_code,omitempty"`
 }
+
+// MarketplaceRef A marketplace reference (`marketplace/1` MKT-060a): the input an install is resolved from. Posted as the `application/json` body of installPack, it names a pack in the deployment's configured registry sources instead of carrying the artifact's own bytes.
+type MarketplaceRef struct {
+	// PackId The fully publisher-qualified pack id `<publisher>/<name>` (`manifest/1` MAN-001, MKT-008). A bare, unqualified name is refused — every cross-reference to a pack uses the full form.
+	PackId string `json:"pack_id"`
+
+	// Source Optional. Omitted, the configured registry sources are consulted in configured order, which is a resolution preference and never a trust decision (MKT-061). Supplied, it names exactly one configured source and no other is consulted; a name no configured source carries is refused rather than fetched.
+	Source *string `json:"source,omitempty"`
+
+	// TrustChannel The provenance tier this install is accepted under (MKT-020). It is REQUIRED and is never defaulted server-side: MKT-022's production-install bar and MKT-090's auto-tracking pin are both stated per channel, so a host filling this in would be choosing how much review the installed code has had, in whatever direction the registry currently points.
+	TrustChannel MarketplaceRefTrustChannel `json:"trust_channel"`
+
+	// Version Optional. Omitted, the source's channel pointer for (`pack_id`, `trust_channel`) is resolved (MKT-046/047) under MKT-050's anti-rollback. Supplied, that exact version's entry is resolved — the same-version re-resolution path MKT-044 preserves — with every other resolution-time check unchanged. It MUST be a three-component MAJOR.MINOR.PATCH version (MAN-002, MKT-050a): a version outside that grammar has no position in the order the anti-rollback high-water mark compares under.
+	Version *string `json:"version,omitempty"`
+}
+
+// MarketplaceRefTrustChannel The provenance tier this install is accepted under (MKT-020). It is REQUIRED and is never defaulted server-side: MKT-022's production-install bar and MKT-090's auto-tracking pin are both stated per channel, so a host filling this in would be choosing how much review the installed code has had, in whatever direction the registry currently points.
+type MarketplaceRefTrustChannel string
 
 // PairingCodeResult A freshly minted screen-bound pairing grant (`relay/1` REL-121a) and, when a relay is connected, the human-enterable pairing code (`player/1` PLY-024) an operator reads onto the screen. Exactly one of `pairing_code` and `code_unavailable_reason` is present — the grant is minted and delivered to the relay either way.
 type PairingCodeResult struct {
@@ -1622,6 +1664,18 @@ type UpdatePackRowParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// ListPackInstallsParams defines parameters for ListPackInstalls.
+type ListPackInstallsParams struct {
+	// Cursor Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client.
+	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Limit Maximum rows to return in this page.
+	Limit *LimitParam `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // GetPackMessagesParams defines parameters for GetPackMessages.
 type GetPackMessagesParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
@@ -1955,6 +2009,9 @@ type RunAutomationJSONRequestBody = AutomationRunRequest
 // SendEntityCommandJSONRequestBody defines body for SendEntityCommand for application/json ContentType.
 type SendEntityCommandJSONRequestBody = EntityCommandRequest
 
+// InstallPackJSONRequestBody defines body for InstallPack for application/json ContentType.
+type InstallPackJSONRequestBody = MarketplaceRef
+
 // CreateScopeNodeJSONRequestBody defines body for CreateScopeNode for application/json ContentType.
 type CreateScopeNodeJSONRequestBody = ScopeNodeCreate
 
@@ -2165,6 +2222,8 @@ type ClientInterface interface {
 	// InstallPackWithBody request with any body
 	InstallPackWithBody(ctx context.Context, params *InstallPackParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	InstallPack(ctx context.Context, params *InstallPackParams, body InstallPackJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// UninstallPack request
 	UninstallPack(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *UninstallPackParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -2185,6 +2244,9 @@ type ClientInterface interface {
 
 	// UpdatePackRow request
 	UpdatePackRow(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *UpdatePackRowParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListPackInstalls request
+	ListPackInstalls(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *ListPackInstallsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetPackMessages request
 	GetPackMessages(ctx context.Context, publisher PackPublisherParam, name PackNameParam, locale string, params *GetPackMessagesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2784,6 +2846,18 @@ func (c *Client) InstallPackWithBody(ctx context.Context, params *InstallPackPar
 	return c.Client.Do(req)
 }
 
+func (c *Client) InstallPack(ctx context.Context, params *InstallPackParams, body InstallPackJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewInstallPackRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) UninstallPack(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *UninstallPackParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewUninstallPackRequest(c.Server, publisher, name, params)
 	if err != nil {
@@ -2858,6 +2932,18 @@ func (c *Client) GetPackRow(ctx context.Context, publisher PackPublisherParam, n
 
 func (c *Client) UpdatePackRow(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *UpdatePackRowParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewUpdatePackRowRequest(c.Server, publisher, name, collection, entityId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListPackInstalls(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *ListPackInstallsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListPackInstallsRequest(c.Server, publisher, name, params)
 	if err != nil {
 		return nil, err
 	}
@@ -5220,6 +5306,17 @@ func NewListPacksRequest(server string, params *ListPacksParams) (*http.Request,
 	return req, nil
 }
 
+// NewInstallPackRequest calls the generic InstallPack builder with application/json body
+func NewInstallPackRequest(server string, params *InstallPackParams, body InstallPackJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewInstallPackRequestWithBody(server, params, "application/json", bodyReader)
+}
+
 // NewInstallPackRequestWithBody generates requests for InstallPack with any type of body
 func NewInstallPackRequestWithBody(server string, params *InstallPackParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
@@ -5793,6 +5890,101 @@ func NewUpdatePackRowRequest(server string, publisher PackPublisherParam, name P
 			}
 
 			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewListPackInstallsRequest generates requests for ListPackInstalls
+func NewListPackInstallsRequest(server string, publisher PackPublisherParam, name PackNameParam, params *ListPackInstallsParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "publisher", publisher, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/packs/%s/%s/installs", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.Cursor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "cursor", *params.Cursor, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "limit", *params.Limit, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
 		}
 
 	}
@@ -8086,6 +8278,8 @@ type ClientWithResponsesInterface interface {
 	// InstallPackWithBodyWithResponse request with any body
 	InstallPackWithBodyWithResponse(ctx context.Context, params *InstallPackParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*InstallPackResponse, error)
 
+	InstallPackWithResponse(ctx context.Context, params *InstallPackParams, body InstallPackJSONRequestBody, reqEditors ...RequestEditorFn) (*InstallPackResponse, error)
+
 	// UninstallPackWithResponse request
 	UninstallPackWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *UninstallPackParams, reqEditors ...RequestEditorFn) (*UninstallPackResponse, error)
 
@@ -8106,6 +8300,9 @@ type ClientWithResponsesInterface interface {
 
 	// UpdatePackRowWithResponse request
 	UpdatePackRowWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *UpdatePackRowParams, reqEditors ...RequestEditorFn) (*UpdatePackRowResponse, error)
+
+	// ListPackInstallsWithResponse request
+	ListPackInstallsWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *ListPackInstallsParams, reqEditors ...RequestEditorFn) (*ListPackInstallsResponse, error)
 
 	// GetPackMessagesWithResponse request
 	GetPackMessagesWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, locale string, params *GetPackMessagesParams, reqEditors ...RequestEditorFn) (*GetPackMessagesResponse, error)
@@ -9460,6 +9657,38 @@ func (r UpdatePackRowResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r UpdatePackRowResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ListPackInstallsResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON404 *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r ListPackInstallsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListPackInstallsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ListPackInstallsResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -10927,6 +11156,14 @@ func (c *ClientWithResponses) InstallPackWithBodyWithResponse(ctx context.Contex
 	return ParseInstallPackResponse(rsp)
 }
 
+func (c *ClientWithResponses) InstallPackWithResponse(ctx context.Context, params *InstallPackParams, body InstallPackJSONRequestBody, reqEditors ...RequestEditorFn) (*InstallPackResponse, error) {
+	rsp, err := c.InstallPack(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseInstallPackResponse(rsp)
+}
+
 // UninstallPackWithResponse request returning *UninstallPackResponse
 func (c *ClientWithResponses) UninstallPackWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *UninstallPackParams, reqEditors ...RequestEditorFn) (*UninstallPackResponse, error) {
 	rsp, err := c.UninstallPack(ctx, publisher, name, params, reqEditors...)
@@ -10988,6 +11225,15 @@ func (c *ClientWithResponses) UpdatePackRowWithResponse(ctx context.Context, pub
 		return nil, err
 	}
 	return ParseUpdatePackRowResponse(rsp)
+}
+
+// ListPackInstallsWithResponse request returning *ListPackInstallsResponse
+func (c *ClientWithResponses) ListPackInstallsWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *ListPackInstallsParams, reqEditors ...RequestEditorFn) (*ListPackInstallsResponse, error) {
+	rsp, err := c.ListPackInstalls(ctx, publisher, name, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListPackInstallsResponse(rsp)
 }
 
 // GetPackMessagesWithResponse request returning *GetPackMessagesResponse
@@ -13232,6 +13478,46 @@ func ParseUpdatePackRowResponse(rsp *http.Response) (*UpdatePackRowResponse, err
 			return nil, err
 		}
 		response.ApplicationproblemJSON428 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListPackInstallsResponse parses an HTTP response from a ListPackInstallsWithResponse call
+func ParseListPackInstallsResponse(rsp *http.Response) (*ListPackInstallsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListPackInstallsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
 
 	}
 

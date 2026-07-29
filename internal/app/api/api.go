@@ -83,6 +83,12 @@ type server struct {
 	// PACK_UNSIGNED, signed as PACK_SIGNER_UNTRUSTED) — an unwired deployment
 	// can never install a pack, which is refusal, never default-permit.
 	packTrust packsig.TrustAnchors
+	// market is the configured registry a pack install BY MARKETPLACE REFERENCE
+	// resolves through (marketplace/1 MKT-060), wired by WithMarketplace. Left
+	// nil, the artifact-upload route is unaffected and a marketplace reference
+	// refuses: a deployment with no configured registry has nothing to resolve
+	// against and must not invent one.
+	market *packs.Market
 	// devices is the device plane's read model (adopted devices and the entities
 	// they expose) the devices/entities list operations serve, and the resolver a
 	// command's target entity is looked up in; dispatch carries that command down
@@ -223,9 +229,11 @@ func New(st *store.Store, idem *apihttp.IdempotencyStore, nowMs func() int64, ne
 	for _, opt := range opts {
 		opt(srv)
 	}
-	// Built AFTER the options so WithPackTrust's anchors reach the pipeline. A
-	// caller that wired none gets a fail-closed installer (see packTrust).
-	srv.installer = packs.NewInstaller(st, srv.packTrust)
+	// Built AFTER the options so WithPackTrust's anchors and WithMarketplace's
+	// sources both reach the pipeline. A caller that wired no anchors gets a
+	// fail-closed installer (see packTrust); one that wired no registry gets an
+	// installer that only accepts a directly-supplied artifact.
+	srv.installer = packs.NewInstaller(st, srv.packTrust, packs.WithMarketplace(srv.market))
 	// A handler built without WithJobRunner still EXECUTES the work its async
 	// operations accept — it just does not hand anyone the lifecycle. The
 	// default is started here rather than left stopped so that forgetting the

@@ -90,6 +90,7 @@ func (srv *server) mountPacks(rt *router) {
 	rt.HandleFunc("DELETE "+base+"/{publisher}/{name}", srv.deletePack)
 	rt.HandleFunc("GET "+base+"/{publisher}/{name}/pages/{path...}", srv.getPackPage)
 	rt.HandleFunc("GET "+base+"/{publisher}/{name}/messages/{locale}", srv.getPackMessages)
+	rt.HandleFunc("GET "+base+"/{publisher}/{name}/installs", srv.listPackInstalls)
 
 	// The pack-data surface: CRUD over a declared collection's universal-envelope
 	// rows (MAN-051/052), with the full api/1 conventions. The literal `data`
@@ -129,8 +130,17 @@ func packEnvelopeOf(p store.Pack) packEnvelope {
 
 // ---- install --------------------------------------------------------------
 
-// installPack installs a pack from a raw zip request body, gated by the real
-// manifest engine (internal/app/packs). A fresh install is 201 with the pack
+// installPack installs a pack, from one of two request bodies distinguished by
+// content type: raw artifact bytes (the default, any content type but JSON), or
+// a marketplace reference (`application/json`, marketplace/1 MKT-060a) the
+// configured registry sources are resolved against. Both routes converge on the
+// same pipeline — same signature envelope verification against the same trust
+// anchors, same manifest engine, same atomic store write, same install record —
+// so resolving a pack can never accept an artifact a direct upload would refuse.
+//
+// The rest of this comment describes the raw-artifact body, which is unchanged.
+//
+// It is gated by the real manifest engine (internal/app/packs). A fresh install is 201 with the pack
 // identity + summary; a reinstall that updated an existing pack is 200. An
 // unsafe/malformed artifact is a 422 whose errors[] extension carries the
 // artifact's own stable code under the registry-valid top-level VALIDATION_FAILED;
@@ -158,6 +168,13 @@ func (srv *server) installPack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The body bytes are the Idempotency-Key replay-vs-reuse content hash on
+	// EITHER route, so a retried marketplace reference replays its original
+	// response exactly as a retried artifact upload does.
+	if wantsMarketplaceRef(r) {
+		srv.idempotent(w, r, artifact, func(w http.ResponseWriter) { srv.installPackFromRef(w, r, artifact) })
+		return
+	}
 	srv.idempotent(w, r, artifact, func(w http.ResponseWriter) { srv.installPackExec(w, r, artifact) })
 }
 

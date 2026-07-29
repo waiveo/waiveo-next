@@ -788,8 +788,8 @@ export interface paths {
         get: operations["listPacks"];
         put?: never;
         /**
-         * Install a pack from its artifact
-         * @description The request body is the pack artifact's bytes. Installation is manifest-gated (manifest/1) and executes nothing — a pack is data.
+         * Install a pack from its artifact or by marketplace reference
+         * @description Two request bodies, distinguished by content type. Raw artifact bytes (any content type but `application/json`) install that artifact directly. An `application/json` body is a marketplace reference (marketplace/1 MKT-060a) resolved against the deployment's configured registry sources. Both converge on one pipeline — the same signature envelope verification against the same trust anchors, the same manifest gate, the same atomic write and the same install record — so resolving a pack can never accept an artifact a direct upload would refuse. Installation executes nothing: a pack is data.
          */
         post: operations["installPack"];
         delete?: never;
@@ -861,6 +861,31 @@ export interface paths {
         };
         /** Read a pack's message catalog for one locale */
         get: operations["getPackMessages"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/packs/{publisher}/{name}/installs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The publisher half of a pack's `<publisher>/<name>` identity (manifest/1 MAN-001). It is its own path segment rather than half of one percent-encoded value, so a pack id is addressable without the client having to escape the slash inside it. */
+                publisher: components["parameters"]["PackPublisherParam"];
+                /** @description The name half of a pack's `<publisher>/<name>` identity (manifest/1 MAN-001). */
+                name: components["parameters"]["PackNameParam"];
+            };
+            cookie?: never;
+        };
+        /**
+         * List a pack's install-record history
+         * @description Keyset-paginated, oldest first: the append-only install records marketplace/1 MKT-094b requires, whose last entry is MKT-094's current pin. Each record carries what was resolved (version, trust channel, registry source) and the provenance the install was accepted on (MKT-094a): the content digest and key id of the signature envelope verification that admitted the artifact. That envelope is dropped at install and never persisted (MKT-009a), so these records are the only answer to "which key vouched for the bytes that are running". A pack that is not installed is a 404 — its records were removed with it.
+         */
+        get: operations["listPackInstalls"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1337,6 +1362,30 @@ export interface components {
         WorkspaceDeleteRequest: {
             /** @description The id of the workspace this request destroys — the deployment's own org-kind scope node (data-model/1 DAT-012, the row that reaches `purged` once this operation has run). It MUST equal that id exactly; any other value, or none, refuses the request without destroying anything. */
             confirm_workspace_id: components["schemas"]["Ulid"];
+        };
+        /** @description A marketplace reference (`marketplace/1` MKT-060a): the input an install is resolved from. Posted as the `application/json` body of installPack, it names a pack in the deployment's configured registry sources instead of carrying the artifact's own bytes. */
+        MarketplaceRef: {
+            /**
+             * @description The fully publisher-qualified pack id `<publisher>/<name>` (`manifest/1` MAN-001, MKT-008). A bare, unqualified name is refused — every cross-reference to a pack uses the full form.
+             * @example acme/weather-widget
+             */
+            pack_id: string;
+            /**
+             * @description The provenance tier this install is accepted under (MKT-020). It is REQUIRED and is never defaulted server-side: MKT-022's production-install bar and MKT-090's auto-tracking pin are both stated per channel, so a host filling this in would be choosing how much review the installed code has had, in whatever direction the registry currently points.
+             * @example verified
+             * @enum {string}
+             */
+            trust_channel: "first-party" | "verified" | "community" | "dev";
+            /**
+             * @description Optional. Omitted, the source's channel pointer for (`pack_id`, `trust_channel`) is resolved (MKT-046/047) under MKT-050's anti-rollback. Supplied, that exact version's entry is resolved — the same-version re-resolution path MKT-044 preserves — with every other resolution-time check unchanged. It MUST be a three-component MAJOR.MINOR.PATCH version (MAN-002, MKT-050a): a version outside that grammar has no position in the order the anti-rollback high-water mark compares under.
+             * @example 1.2.0
+             */
+            version?: string;
+            /**
+             * @description Optional. Omitted, the configured registry sources are consulted in configured order, which is a resolution preference and never a trust decision (MKT-061). Supplied, it names exactly one configured source and no other is consulted; a name no configured source carries is refused rather than fetched.
+             * @example acme-registry
+             */
+            source?: string;
         };
         /** @description A relay's permanent identity, assigned to it by enrollment and unchanged across every later certificate renewal or re-enrollment (`relay/1` REL-012/014). Deliberately NOT typed as a ULID: unlike a resource this API mints, a relay id is issued by the enrollment path and is opaque here — this API reads it, routes a command by it, and never constructs or parses one. */
         RelayId: string;
@@ -3594,6 +3643,7 @@ export interface operations {
         requestBody: {
             content: {
                 "application/octet-stream": string;
+                "application/json": components["schemas"]["MarketplaceRef"];
             };
         };
         responses: {
@@ -3735,6 +3785,40 @@ export interface operations {
                 };
                 content?: never;
             };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    listPackInstalls: {
+        parameters: {
+            query?: {
+                /** @description Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client. */
+                cursor?: components["parameters"]["CursorParam"];
+                /** @description Maximum rows to return in this page. */
+                limit?: components["parameters"]["LimitParam"];
+            };
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                /** @description The publisher half of a pack's `<publisher>/<name>` identity (manifest/1 MAN-001). It is its own path segment rather than half of one percent-encoded value, so a pack id is addressable without the client having to escape the slash inside it. */
+                publisher: components["parameters"]["PackPublisherParam"];
+                /** @description The name half of a pack's `<publisher>/<name>` identity (manifest/1 MAN-001). */
+                name: components["parameters"]["PackNameParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of install records. Shape stub — the install-record schema is a later minor, matching the rest of this surface. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
         };
