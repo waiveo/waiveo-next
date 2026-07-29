@@ -198,7 +198,22 @@ func (in *ingest) authenticate(w http.ResponseWriter, r *http.Request, traceID s
 func (in *ingest) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	traceID := apihttp.TraceID(r)
 	if r.Method != http.MethodPost {
-		apihttp.WriteProblem(w, r, traceID, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method Not Allowed")
+		// VALIDATION_FAILED is api/1's published code for "this request does not
+		// select the operation this door serves" (Error taxonomy), and it is what
+		// the other doors on this deployment already answer a wrong method with —
+		// eventsse's codeRequestInvalid, the auth handlers'.
+		//
+		// The code this used to answer with, METHOD_NOT_ALLOWED, is published by
+		// NO contract's registry, and API-011 forbids emitting one that is not:
+		// a client's error handling is a switch over a published table, so an
+		// unminted value is indistinguishable from a bug. Publishing it instead
+		// would have to publish it somewhere, and the two candidates are both
+		// wrong. relay/1's registry is the vocabulary of its own wire frames
+		// (REL-007), a channel with no HTTP methods at all — a method code has no
+		// meaning there. api/1's registry governs the Problem documents this route
+		// already emits, and it already has the entry for this condition.
+		apihttp.WriteProblem(w, r, traceID, http.StatusMethodNotAllowed, "VALIDATION_FAILED",
+			"Method Not Allowed")
 		return
 	}
 	// REL-003/041/016: the pushing relay's mTLS identity, resolved and authorized
