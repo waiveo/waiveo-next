@@ -57,13 +57,25 @@ them rather than take this note's word for it. Each was applied to a scratch cop
 of the tree (`git archive HEAD`), touching ONLY the implementation — never the
 corpus, never the driver:
 
-| row | mutation | result |
-|---|---|---|
-| SEC-035 | `writeGrantProblem` types an expired grant `UNAUTHENTICATED` | SEC-035a FAILS, SEC-035 passes |
-| SEC-035 | `writeGrantProblem` types a replayed one-time code `GRANT_EXPIRED` | SEC-035a FAILS |
-| SEC-035 | `RedeemGrant`'s purpose check deleted (a `pairing` code redeems at the setup endpoint) | SEC-035a FAILS |
-| SEC-120 | `Claim` requires no code and admits the first caller on an unclaimed box | SEC-120a FAILS, SEC-120 passes |
-| SEC-120 | `Claim` refuses every caller (a shut endpoint) | SEC-120a FAILS on its code-holder leg |
+For the SEC-035 row:
+
+- `writeGrantProblem` types an expired grant `UNAUTHENTICATED` — the new case
+  FAILS, the original one still passes.
+- `writeGrantProblem` types a replayed one-time code `GRANT_EXPIRED` — the new
+  case FAILS.
+- `RedeemGrant`'s purpose check deleted, so a `pairing` code redeems against the
+  setup endpoint — the new case FAILS.
+
+For the SEC-120 row:
+
+- `Claim` requires no code and admits the first caller on an unclaimed box, then
+  refuses everyone after — the new case FAILS, the original one still passes.
+- `Claim` refuses every caller (a shut endpoint) — the new case FAILS on its
+  code-holder leg, which is why that leg is in the case.
+
+(This list is deliberately prose rather than a table: a markdown table whose first
+column reads as a requirement ID is parsed by `scripts/validate-coverage.mjs` as
+traceability rows, and these are not rows.)
 
 Two residuals ride with those rows rather than being hidden by them. SEC-035's
 `GRANT_PURPOSE_MISMATCH` clause illustrates itself with "a `pairing`-purpose code
