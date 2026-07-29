@@ -2,11 +2,132 @@
 
 One row per requirement ID `contracts/security-model.md` defines. Format: `conformance/traceability/README.md`.
 
-**2026-07-28 drive note:** `conformance/drivers/securitymodel1` executes all
-eleven frozen cases against live `internal/app` code, and
+**2026-07-28 drive note (second):** the credential-reset flow and the console
+binding both have surfaces now, and **eleven rows are `covered`: SEC-034,
+SEC-035, SEC-050, SEC-051, SEC-053, SEC-070, SEC-071, SEC-072, SEC-073, SEC-075
+and SEC-120.** Thirteen frozen cases, all driven. What changed, and what
+deliberately did not, is the second half of this note; the first half is the
+earlier drive note, kept because its reasoning still governs every row it left
+`TBD-wave1`.
+
+**What was built.** The console binding got its transport — a Unix domain socket
+in the auth state directory, mode 0700 inside a 0700 directory, with the peer's
+effective uid read off the live connection (SO_PEERCRED on Linux,
+LOCAL_PEERCRED on Darwin) — and the feeder binds it at boot. The
+credential-reset flow got two api/1 routes: an authenticated `admin` issuance
+and an unauthenticated redemption. SEC-034's records moved into `MintGrant` and
+`RedeemGrant` themselves.
+
+**The case that was passing on its own output.** SEC-050's
+`argv_capture_contains_secret` searched a haystack whose only audit record was
+one THE DRIVER constructed and emitted — and the flow it was searching emitted
+none at all, so the assertion could not have failed however the flow behaved.
+Its `admin_response.*` fields described a Go struct rather than a response an
+admin receives. Both now come off the shipped routes, and SEC-034 has a case of
+its own reading a real events sink.
+
+**Rows this note deliberately does NOT flip, with the reason for each:**
+
+- **SEC-074** (the console binding reuses api/1's Problem shape and body
+  conventions). The listener does, and `internal/app/auth`'s own Go tests assert
+  it — but every verb-level response needs an ADMITTED peer, which needs uid 0,
+  which a conformance run is not and must not have to be. No frozen case asserts
+  the console's response body, so the row stays where the earlier note put it:
+  Go tests are not the bar this column measures.
+- **SEC-076** (a verb may be added only if uid-0 could already perform an
+  equivalent action). A design-time admission rule about the SET, not wire
+  behavior; no case can hold an implementation to it. The SEC-075 case proves
+  the set is closed, which is SEC-075's clause, and is cited on both rows for
+  that reason.
+- **SEC-077** (every verb INVOCATION emits an audit record). SEC-072a asserts the
+  record for a refused CONNECTION, which is not a verb invocation; the executed-
+  verb record needs an admitted peer, as SEC-074 does.
+- **SEC-052** (a credential-reset grant does not authorize a TOTP change). Its
+  first clause is genuinely driven — SEC-050's case arms a real second factor and
+  compares the credential id and sealed secret across the redemption. Its second
+  clause requires TOTP clearing to demand an `owner` flag or console redemption,
+  and no TOTP-clearing path exists in this tree at all, so half the requirement
+  would be claimed on a vacuum. The case is cited; the row is not flipped.
+- **SEC-012, SEC-030, SEC-033, SEC-036** are each exercised by the new routes
+  and by Go tests (the `admin` floor, the persisted grant's fields, the attempt
+  budget refusing before the lookup, single-use redemption) and by no frozen
+  case naming them. Same bar, same answer.
+- **SEC-060-065** (break-glass recovery) remain unimplemented, and this note
+  records the reason rather than leaving it to be rediscovered: SEC-063 makes an
+  owner notification and a persistent UI banner an unconditional,
+  un-suppressible obligation on every console-issued `recovery` grant, and this
+  platform has neither a notification plane nor a banner store. `recover` built
+  without them would ship a root-issued recovery credential nobody is told
+  about — the precise artifact SEC-063 exists to prevent. The console's
+  `grant.issue` verb therefore refuses a `recovery` purpose as `UNIMPLEMENTED`,
+  and `grant.redeem` is likewise unserved: both purposes this tree mints are
+  redeemed by someone other than the console operator, and issuing plus
+  redeeming in one place is the shape SEC-050 forbids.
+
+**The mutations behind the nine NEW `covered` rows.** Each was applied to a
+scratch copy of the tree (`git archive HEAD`), touching ONLY the implementation
+— never the corpus, never the driver:
+
+- SEC-034: `MintGrant` emits nothing — SEC-034's case FAILS on
+  `grant_created.emitted`. `RedeemGrant` emits nothing — FAILS on
+  `grant_redeemed.emitted`. The record hardcodes `issued_via: api` instead of
+  reading the row — the console-issuance Go test FAILS (no corpus case can see
+  this one, since every corpus grant is api-issued; recorded here so the limit is
+  visible).
+- SEC-050: the issuing route honours a `password` member the admin supplied —
+  FAILS on `admin_response.admin_can_choose_credential_value`. The routes are
+  unmounted — the case FAILS, and so do the api package's surface and
+  response-schema drift checks.
+- SEC-051: the raw one-time code is written into the `grant.created` record's
+  target — FAILS on `argv_capture_contains_secret` AND on SEC-034's
+  `records_contain_secret`.
+- SEC-053: the redemption's revocation branch is disabled — FAILS on
+  `on_redemption.target_sessions_revoked` and `target_api_keys_revoked`.
+- SEC-070: the socket inode is replaced with a regular file — SEC-072a FAILS on
+  `socket_network` and cannot connect at all.
+- SEC-071: the socket is chmod'd 0755 — FAILS on `socket_file_mode`. The
+  directory gate (chmod + mode check) is deleted — FAILS on
+  `socket_directory_mode`. That second one initially SURVIVED, because
+  `os.MkdirTemp` already creates 0700 and the case was asserting the OS's default
+  rather than the listener's action; the driver now hands the listener a 0755
+  directory, and the mutation fails as it should.
+- SEC-072: the peer-credential read is skipped and every peer treated as uid 0 —
+  FAILS on all four of `admitted`, `response_body_bytes`,
+  `audit_record_names_a_verb` and `audit_result`. `readPeerUID` returning 0
+  unconditionally — the package's own syscall test FAILS on any non-root runner.
+- SEC-073: the attribution is changed to `user` — SEC-072's case FAILS on
+  `attributed_principal_kind`. The store's refusal to attach a credential to the
+  `system-console` principal is removed — FAILS on
+  `attributed_principal_credential_row_required`.
+- SEC-075: `ConsoleVerbAllowed` returns true for everything — SEC-075's case
+  FAILS on `admitted` and `error.code`.
+
+**One reachability guard is source-level, and it is named here rather than
+buried.** `startConsoleBinding` is behaviorally tested, but deleting its call
+from the feeder's `main` left that test green (verified). A second test parses
+`main.go` and asserts the call is present. That says the statement is there, not
+that a running feeder serves the socket; the binary-level proof was performed by
+hand — the built feeder binds `auth/console.sock` at `srwx------` inside a
+`drwx------` directory, logs `refused a connection from uid 501`, returns zero
+bytes to it, and unlinks the socket on SIGTERM — and is not automated, because
+doing so would add a build and a boot to every test run.
+
+**SEC-072a runs only on a non-root runner.** It models a peer whose effective uid
+is not 0 connecting to the real socket; a conformance process running as uid 0
+would be ADMITTED, so the driver reports the case PENDING with that reason rather
+than asserting a refusal that did not occur. This machine and GitHub-hosted
+runners are both non-root. A root runner would show one pending case and a
+correspondingly weaker SEC-070/071/072 claim.
+
+---
+
+**2026-07-28 drive note (first):** `conformance/drivers/securitymodel1` executes
+all eleven frozen cases against live `internal/app` code, and
 `conformance/driven-manifest.json` records all eleven as driven. **TWO rows are
 `covered`: SEC-035 and SEC-120.** Every other row stays `TBD-wave1`, and the gap
 between "eleven cases pass" and "two rows covered" is the point of this note.
+(Superseded in part by the note above, which flips nine more; every row it does
+not name still stands on this one's reasoning.)
 
 Three rows (SEC-066, SEC-067, SEC-120) were briefly marked `covered` earlier the
 same day and were reverted, after an adversarial review demonstrated for each one
@@ -105,6 +226,10 @@ caller:
   its refusal half (the corpus carries no `peer_uid: 1000` case); that half
   is covered by `internal/app/auth`'s own Go tests, which is not the bar this
   column measures.
+  *(CLOSED for SEC-070/071/072/073/075 by the note above: the socket exists, the
+  feeder binds it, and `SEC-072a-invalid-console-peer-not-root` is the frozen
+  refusal case this paragraph said was missing. SEC-074, SEC-076 and SEC-077 are
+  NOT closed, each for its own reason — see that note.)*
 - **The credential-reset flow has no caller.** SEC-050 names
   `waiveo user password-reset <user>`; no such command exists, and no
   `api/1` route serves the flow either. `Store.IssueCredentialResetGrant` /
@@ -113,10 +238,19 @@ caller:
   target's actual credential values, and the eviction is confirmed on both the
   session token and the API key's own credential row — but an operator cannot
   invoke any of it, so SEC-050/051/053 stay `TBD-wave1`.
+  *(CLOSED by the note above: `POST /api/v1/auth/credential-reset` and
+  `.../redeem` are mounted and drive the case. The `waiveo` CLI SEC-050 names
+  still does not exist — no `waiveo` binary exists at all — and building one
+  would first require SEC-025's own client credential store, which is a separate
+  requirement. The requirement's substance is what the row claims: a grant of
+  the right purpose is created, a one-time code is returned, and the issuer has
+  no path to the value. The frozen case's own expectation of `issued_via: "api"`
+  is what says the corpus models that command as an api client.)*
 - **Break-glass recovery does not exist.** SEC-060–065 are unimplemented,
   which is also why SEC-068 stays `TBD-wave1` despite its assessment being
   live and driven: SEC-068 requires `recover` to surface the assessment before
-  proceeding, and there is no `recover`.
+  proceeding, and there is no `recover`. *(Still true, now with the blocker
+  named: SEC-063's obligation has no mechanism to hang off. See the note above.)*
 
 **SEC-031 is where the bookkeeping used to be inverted, and it is now stated the
 right way round.** The case named `SEC-120-invalid-first-boot-claim-outside-window`
@@ -219,7 +353,7 @@ wins.
 | SEC-031 | `contracts/security-model.md#grants` | `SEC-120-invalid-first-boot-claim-outside-window` | TBD-wave1 |
 | SEC-032 | `contracts/security-model.md#grants` | `SEC-035-invalid-grant-expired-rejected` | TBD-wave1 |
 | SEC-033 | `contracts/security-model.md#grants` | - | TBD-wave1 |
-| SEC-034 | `contracts/security-model.md#grants` | - | TBD-wave1 |
+| SEC-034 | `contracts/security-model.md#grants` | `SEC-034-valid-grant-audit-carries-purpose-and-issued-via` | covered |
 | SEC-035 | `contracts/security-model.md#grants` | `SEC-035-invalid-grant-expired-rejected`, `SEC-035a-invalid-grant-refusals-on-the-redemption-endpoint` | covered |
 | SEC-036 | `contracts/security-model.md#grants` | - | TBD-wave1 |
 | SEC-040 | `contracts/security-model.md#key-hierarchy` | - | TBD-wave1 |
@@ -231,10 +365,10 @@ wins.
 | SEC-046 | `contracts/security-model.md#key-hierarchy` | - | TBD-wave1 |
 | SEC-047 | `contracts/security-model.md#key-hierarchy` | - | TBD-wave1 |
 | SEC-048 | `contracts/security-model.md#key-hierarchy` | - | TBD-wave1 |
-| SEC-050 | `contracts/security-model.md#credential-reset-grants` | `SEC-050-valid-credential-reset-grant-flow` | TBD-wave1 |
-| SEC-051 | `contracts/security-model.md#credential-reset-grants` | `SEC-050-valid-credential-reset-grant-flow` | TBD-wave1 |
-| SEC-052 | `contracts/security-model.md#credential-reset-grants` | - | TBD-wave1 |
-| SEC-053 | `contracts/security-model.md#credential-reset-grants` | `SEC-050-valid-credential-reset-grant-flow` | TBD-wave1 |
+| SEC-050 | `contracts/security-model.md#credential-reset-grants` | `SEC-050-valid-credential-reset-grant-flow` | covered |
+| SEC-051 | `contracts/security-model.md#credential-reset-grants` | `SEC-050-valid-credential-reset-grant-flow`, `SEC-034-valid-grant-audit-carries-purpose-and-issued-via` | covered |
+| SEC-052 | `contracts/security-model.md#credential-reset-grants` | `SEC-050-valid-credential-reset-grant-flow` | TBD-wave1 |
+| SEC-053 | `contracts/security-model.md#credential-reset-grants` | `SEC-050-valid-credential-reset-grant-flow` | covered |
 | SEC-060 | `contracts/security-model.md#break-glass-recovery` | - | TBD-wave1 |
 | SEC-061 | `contracts/security-model.md#break-glass-recovery` | - | TBD-wave1 |
 | SEC-062 | `contracts/security-model.md#break-glass-recovery` | - | TBD-wave1 |
@@ -244,12 +378,12 @@ wins.
 | SEC-066 | `contracts/security-model.md#app-tier-clock-trust` | `SEC-066-valid-monotonic-floor-survives-restart` | TBD-wave1 |
 | SEC-067 | `contracts/security-model.md#app-tier-clock-trust` | `SEC-067-invalid-unauthenticated-time-claim-does-not-advance-floor`, `SEC-067a-invalid-unauthenticated-claim-below-a-verifiable-value` | TBD-wave1 |
 | SEC-068 | `contracts/security-model.md#app-tier-clock-trust` | `SEC-067-invalid-unauthenticated-time-claim-does-not-advance-floor` | TBD-wave1 |
-| SEC-070 | `contracts/security-model.md#the-console-binding` | - | TBD-wave1 |
-| SEC-071 | `contracts/security-model.md#the-console-binding` | - | TBD-wave1 |
-| SEC-072 | `contracts/security-model.md#the-console-binding` | `SEC-072-valid-console-admission-uid0` | TBD-wave1 |
-| SEC-073 | `contracts/security-model.md#the-console-binding` | `SEC-072-valid-console-admission-uid0` | TBD-wave1 |
+| SEC-070 | `contracts/security-model.md#the-console-binding` | `SEC-072a-invalid-console-peer-not-root` | covered |
+| SEC-071 | `contracts/security-model.md#the-console-binding` | `SEC-072a-invalid-console-peer-not-root` | covered |
+| SEC-072 | `contracts/security-model.md#the-console-binding` | `SEC-072-valid-console-admission-uid0`, `SEC-072a-invalid-console-peer-not-root` | covered |
+| SEC-073 | `contracts/security-model.md#the-console-binding` | `SEC-072-valid-console-admission-uid0` | covered |
 | SEC-074 | `contracts/security-model.md#the-console-binding` | - | TBD-wave1 |
-| SEC-075 | `contracts/security-model.md#the-console-binding` | `SEC-075-invalid-console-verb-not-allowed` | TBD-wave1 |
+| SEC-075 | `contracts/security-model.md#the-console-binding` | `SEC-075-invalid-console-verb-not-allowed` | covered |
 | SEC-076 | `contracts/security-model.md#the-console-binding` | `SEC-075-invalid-console-verb-not-allowed` | TBD-wave1 |
 | SEC-077 | `contracts/security-model.md#the-console-binding` | - | TBD-wave1 |
 | SEC-078 | `contracts/security-model.md#the-console-binding` | - | TBD-wave1 |
