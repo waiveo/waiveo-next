@@ -25,6 +25,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -684,37 +685,6 @@ func (s *Server) redeem(selector string) (redemption, error) {
 	if grant.RelayID != "" && grant.RelayID != s.relayID {
 		return redemption{}, errPairingCodeInvalid
 	}
-	// REL-123: `revoked` is enforced against EVERY channel-token issuance, not
-	// only against a token later presented. Without this, a revoked screen
-	// pairs successfully, is handed a fresh credential, and is refused only at
-	// its first program pull — the relay minting a credential it has already
-	// been told is void. The screen a redemption credentials is the grant's own
-	// (REL-121a), so the revocation check has a screen_id to run against before
-	// anything is minted. PLY-075's "never issue a token for an unrecognized
-	// screen_id" lands here too, in the one form a relay can actually evaluate:
-	// the app peer's own statement that this screen is no longer to be
-	// credentialed. (Absence from `screen_programs` is NOT that statement — the
-	// feeder legitimately omits an entry for a screen whose effective timezone
-	// will not resolve, data-model/1 DAT-034, so a relay inferring revocation
-	// from absence would terminally revoke a live screen over a placement
-	// mistake.)
-	//
-	// Placed with the REL-121b binding check and BEFORE both the ttl and the
-	// consumption check, for that check's own reasons:
-	//
-	//   - it draws the IDENTICAL error an unresolvable selector draws, so the
-	//     refusal tells a holder of the code nothing about whether the grant
-	//     exists, has expired, or names a revoked screen. A distinguishable
-	//     code would make the pairing endpoint an oracle for which of a site's
-	//     screens have been revoked.
-	//   - nothing below this line runs, so a one-time grant is NOT consumed.
-	//     Consuming it would make the revocation destructive: an app peer that
-	//     removes the screen from `revoked` again (SetRevokedScreens' own
-	//     both-directions rule) would find the grant already spent by an
-	//     attempt that was refused and minted nothing.
-	if grant.ScreenID != "" && s.isScreenRevokedLocked(grant.ScreenID) {
-		return redemption{}, errPairingCodeInvalid
-	}
 	if grant.RedemptionMode == "one-time" && s.grantAlreadyRedeemedLocked(grant.GrantID) {
 		return redemption{}, errPairingCodeInvalid
 	}
@@ -731,6 +701,55 @@ func (s *Server) redeem(selector string) (redemption, error) {
 	nowMs := s.nowMs()
 	if nowMs > grant.IssuedAt+grant.TTL*1000 {
 		return redemption{}, errPairingExpired
+	}
+
+	// REL-123: `revoked` is enforced against EVERY channel-token issuance, not
+	// only against a token later presented. Without this, a revoked screen
+	// pairs successfully, is handed a fresh credential, and is refused only at
+	// its first program pull — the relay minting a credential it has already
+	// been told is void. The screen a redemption credentials is the grant's own
+	// (REL-121a), so the revocation check has a screen_id to run against before
+	// anything is minted. PLY-075's "never issue a token for an unrecognized
+	// screen_id" lands here too, in the one form a relay can actually evaluate:
+	// the app peer's own statement that this screen is no longer to be
+	// credentialed. (Absence from `screen_programs` is NOT that statement — the
+	// feeder legitimately omits an entry for a screen whose effective timezone
+	// will not resolve, data-model/1 DAT-034, so a relay inferring revocation
+	// from absence would terminally revoke a live screen over a placement
+	// mistake.)
+	//
+	// Placed AFTER the ttl check and BEFORE consumption, and both halves of
+	// that placement are load-bearing:
+	//
+	//   - AFTER the ttl check, because the two draw DIFFERENT codes
+	//     (PAIRING_CODE_INVALID vs PAIRING_EXPIRED) and an earlier revocation
+	//     check made that difference an oracle: for one and the same expired
+	//     grant, a not-revoked screen drew PAIRING_EXPIRED and a revoked one
+	//     drew PAIRING_CODE_INVALID, so anyone holding a pairing code learned
+	//     the screen's revocation state simply by waiting for expiry. Checking
+	//     the ttl first collapses that: revoked-and-expired now draws
+	//     PAIRING_EXPIRED like any other expired grant, and revoked-inside-ttl
+	//     draws PAIRING_CODE_INVALID like an unresolvable selector. Neither
+	//     answer distinguishes a revoked screen from an unrevoked one.
+	//   - BEFORE consumption, so nothing below this line runs and a one-time
+	//     grant is NOT consumed. Consuming it would make the revocation
+	//     destructive: an app peer that removes the screen from `revoked` again
+	//     (SetRevokedScreens' own both-directions rule) would find the grant
+	//     already spent by an attempt that was refused and minted nothing.
+	if grant.ScreenID != "" && s.isScreenRevokedLocked(grant.ScreenID) {
+		// The wire answer is deliberately indistinguishable; the operator's is
+		// not. With no authoring surface for revocation anywhere yet, a field
+		// tech at the screen sees a bare "Pairing Code Invalid" and nothing in
+		// the system says why — so the reason is recorded HERE, server-side,
+		// where the relay's own log is the only place it can be read. This does
+		// not touch the response.
+		//
+		// Unbounded log growth from an unauthenticated endpoint is already
+		// bounded upstream: handlePair spends the SEC-033 attempt budget (10
+		// per source per 15 minutes) before redeem is ever called.
+		log.Printf("playerserver: refused pairing redemption for screen %s: the relay's last-synced revocation view (generation %d) names it revoked, so no channel token may be issued for it (REL-066/REL-123); answering PAIRING_CODE_INVALID, the same code an unresolvable selector draws",
+			grant.ScreenID, s.revokedGen)
+		return redemption{}, errPairingCodeInvalid
 	}
 
 	if grant.RedemptionMode == "one-time" {
