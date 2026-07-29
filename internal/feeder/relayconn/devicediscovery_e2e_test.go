@@ -92,6 +92,7 @@ type discoveryStack struct {
 	client     *relayclient.Client
 	controller *recordingController
 	relayID    string
+	serial     string
 	ts         *httptest.Server
 }
 
@@ -136,9 +137,10 @@ func newDiscoveryStack(t *testing.T) *discoveryStack {
 	// peer states an id to the other; they derive the same ones from this.
 	candStore.SetSite(client.HelloAck().SiteBinding.ScopeNode)
 
+	_, serial := certSerial(t, identStore)
 	return &discoveryStack{
 		h: h, registry: registry, candStore: candStore, client: client,
-		controller: controller, relayID: id.RelayID,
+		controller: controller, relayID: id.RelayID, serial: serial,
 		ts: newAPIOverRegistry(t, h, registry),
 	}
 }
@@ -631,5 +633,40 @@ func sendReport(t *testing.T, c *relayclient.Client, store *deviceplane.Store) {
 	}
 	if err := c.SendDeviceCandidates(wire.DeviceCandidatesBody{Candidates: cands}); err != nil {
 		t.Fatalf("SendDeviceCandidates: %v", err)
+	}
+}
+
+// TestRevokedRelayStopsDescribingTheSite drives revocation end to end and
+// asserts the consequence that was missing: a revoked relay's devices leave the
+// read model.
+//
+// Views were written by the intake and deleted by nobody, so a relay whose
+// enrollment had been revoked kept serving rows from /devices and /entities
+// indefinitely, out of its last full report. Commands against those entities
+// did fail typed, so this was stale authority rather than misrouting — but the
+// whole point of revoking a relay is that it no longer speaks for the site, and
+// leaving its report in place left it speaking for the site anyway.
+//
+// Nothing here calls Forget. The revocation is recorded the way an operator
+// records one, the relay then sends a frame, and the read model is read back
+// over the real api handler.
+func TestRevokedRelayStopsDescribingTheSite(t *testing.T) {
+	s := newDiscoveryStack(t)
+	// A discovered device, reported over the real connection and visible.
+	s.candStore.Observe(discoveredRoku(t, discNativeA, "Lobby Roku"), discObservedMs)
+	s.report(t, 1)
+
+	// Revoked the way an operator revokes: recorded against the enrollment.
+	if !s.h.enrollSrv.Revoke(s.relayID, s.serial) {
+		t.Fatalf("Revoke(%s, %s) found no issuance on record", s.relayID, s.serial)
+	}
+
+	// The next frame draws the refusal — and takes the relay's view with it.
+	_ = s.client.SendDeviceCandidates(wire.DeviceCandidatesBody{})
+
+	waitFor(t, 5*time.Second, func() bool { return len(s.registry.Devices()) == 0 },
+		"a REVOKED relay's devices were still being served from the read model — revoking it did not stop it describing the site")
+	if n := len(s.registry.Entities()); n != 0 {
+		t.Fatalf("a revoked relay left %d entit(ies) in the read model", n)
 	}
 }

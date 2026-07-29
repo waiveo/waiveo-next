@@ -214,6 +214,34 @@ func (r *Registry) viewFor(relayID string) *relayView {
 	return v
 }
 
+// Forget drops a relay's whole view and rebuilds the merged rows without it.
+//
+// Nothing removed a view before this: a view was written by the intake and
+// deleted by nobody, so a relay that disconnected — or one whose enrollment was
+// REVOKED — kept serving rows from `/devices` and `/entities` indefinitely, out
+// of its last full report, along with that report's memory. Commands against
+// those entities did fail typed, so this was stale authority rather than
+// misrouting; but a revoked relay continuing to describe the site is exactly the
+// thing revocation is for.
+//
+// It is deliberately NOT called on a brief disconnect by the caller that merely
+// notices a connection drop — see the caller for that argument. Forgetting a
+// relay that reconnects a second later would blank its devices in between, and a
+// device flickering out of the read model is worse than one described a moment
+// too long.
+//
+// Forgetting an unknown relay is a no-op, so a caller may call it without first
+// asking whether the relay ever reported.
+func (r *Registry) Forget(relayID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.views[relayID]; !ok {
+		return
+	}
+	delete(r.views, relayID)
+	r.rematerialize()
+}
+
 // rematerialize rebuilds the merged rows from every relay's view, oldest report
 // first, so a row two relays both report ends up carrying the RELAY_ID OF THE
 // ONE THAT REPORTED IT MOST RECENTLY — REL-153's own rule ("the app peer's own

@@ -109,6 +109,18 @@ type SnapshotProvider func() (wire.StateSnapshotBody, error)
 // with a typed refusal and the sink's prior view is expected to be intact.
 type CandidateSink interface {
 	ApplyCandidates(relayID string, candidates []wire.DeviceCandidate) error
+
+	// Forget drops everything a relay reported. It is called when that relay's
+	// enrollment is REVOKED, not when its connection merely drops: a relay that
+	// reconnects a second later would otherwise have its devices blank out in
+	// between, and a device flickering out of the read model is worse than one
+	// described a moment too long. Revocation is different in kind — the point
+	// of revoking a relay is that it no longer speaks for the site, and leaving
+	// its last full report serving `/devices` indefinitely would leave it
+	// speaking for the site anyway.
+	//
+	// Forgetting a relay that reported nothing is a no-op.
+	Forget(relayID string)
 }
 
 // WithCandidateSink wires the intake a relay's `device.candidates` reports are
@@ -735,6 +747,7 @@ func (s *Server) serve(req *http.Request, ws *websocket.Conn) {
 		if s.isRevoked(relayID, serial) {
 			_ = conn.send(wire.NewErrorFrame(f.ID, f.TraceID, relayID,
 				"CERT_REVOKED", "the presented certificate has been revoked (REL-016)"))
+			s.forgetCandidates(relayID)
 			return
 		}
 		// A frame whose id matches an outstanding app-initiated request
@@ -807,6 +820,17 @@ func (s *Server) closeRevoked(conn *serverConn) {
 	_ = conn.send(wire.NewErrorFrame("", "", conn.relayID,
 		"CERT_REVOKED", "the presented certificate has been revoked (REL-016)"))
 	_ = conn.ws.CloseNow()
+	s.forgetCandidates(conn.relayID)
+}
+
+// forgetCandidates drops a revoked relay's reported devices, if an intake is
+// wired. Revocation means the relay no longer speaks for this site; without
+// this its last full report kept describing the site from `/devices` and
+// `/entities` forever, which is the state revocation exists to end.
+func (s *Server) forgetCandidates(relayID string) {
+	if s.candidates != nil {
+		s.candidates.Forget(relayID)
+	}
 }
 
 // handleDeviceCandidates applies one `device.candidates` report to the wired
