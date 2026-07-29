@@ -9,6 +9,11 @@ import (
 	"github.com/maaxton/waiveo-next/internal/app/store"
 )
 
+// packSpec is a direct-path install spec: the record it carries is the one a
+// direct artifact upload produces (SourceDirect, no trust channel), with the
+// verified-provenance members InstallPack now REQUIRES. A spec without them is
+// refused by the store, which is the point — an install can never land without
+// recording which key vouched for it.
 func packSpec(id, version string, dataModelVersion int, files ...store.PackFile) store.PackInstall {
 	return store.PackInstall{
 		ID:               id,
@@ -16,8 +21,18 @@ func packSpec(id, version string, dataModelVersion int, files ...store.PackFile)
 		DataModelVersion: dataModelVersion,
 		Manifest:         json.RawMessage(`{"id":"` + id + `","version":"` + version + `"}`),
 		Files:            files,
+		Record: store.PackInstallRecord{
+			Source:        store.SourceDirect,
+			ContentDigest: "sha256:" + fixtureDigestHex,
+			KeyID:         "ed25519:fixture",
+		},
 	}
 }
+
+// fixtureDigestHex is a syntactically real sha256 hex body for fixture records —
+// the store stores a digest opaquely; the packs pipeline is what binds it to a
+// verification.
+const fixtureDigestHex = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
 
 // TestInstallPackWritesRowsAndBumpsGenerationOnce: a fresh install lands the pack
 // row + every bundled file and advances the store generation exactly once (the

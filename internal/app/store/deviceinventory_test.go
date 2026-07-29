@@ -85,6 +85,13 @@ func invPackWithDevices(id, devicesJSON string) store.PackInstall {
 		Version:          "1.0.0",
 		DataModelVersion: 1,
 		Manifest:         json.RawMessage(`{"id":"` + id + `","version":"1.0.0","devices":` + devicesJSON + `}`),
+		// Every install carries its provenance record (MKT-094a); this fixture
+		// uses the direct-upload shape (see packSpec).
+		Record: store.PackInstallRecord{
+			Source:        store.SourceDirect,
+			ContentDigest: "sha256:" + fixtureDigestHex,
+			KeyID:         "ed25519:fixture",
+		},
 	}
 }
 

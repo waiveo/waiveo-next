@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS pack_rows (
 	body            TEXT NOT NULL,
 	PRIMARY KEY (pack_id, collection, entity_id)
 );
-`
+` + packInstallsSchema
 
 // pack_files.file_kind values: a ui-schema/1 page document, or a locale catalog.
 const (
@@ -106,6 +106,21 @@ type PackInstall struct {
 	DataModelVersion int
 	Manifest         json.RawMessage
 	Files            []PackFile
+
+	// Record is the install record appended atomically with the pack row
+	// (marketplace/1 MKT-094/094a/094b). It is REQUIRED — InstallPack refuses a
+	// spec without a verified ContentDigest/KeyID rather than persisting an
+	// install whose provenance nothing on the box can answer for. Coupling it to
+	// this transaction is what makes the two invariants structural rather than
+	// remembered: an install can never land without its record, and a record can
+	// never exist for an install that was refused.
+	Record PackInstallRecord
+
+	// ChannelMark, when set, raises the (ID, trust channel) resolved-version
+	// high-water mark MKT-050's anti-rollback reads — committed in this same
+	// transaction, so a refused install never advances it. A direct
+	// (non-registry) install pins no trust channel and leaves this nil.
+	ChannelMark *ChannelMarkAdvance
 }
 
 // InstallGuard is a caller-supplied precondition re-checked INSIDE the install
@@ -256,6 +271,27 @@ func (s *Store) InstallPack(ctx context.Context, spec PackInstall, guards ...Ins
 			}
 		}
 
+		// The install record and the MKT-050 mark land inside THIS transaction,
+		// after the pack row and its files and before the generation bump — so a
+		// rollback anywhere in the install takes the record and the mark with it.
+		// That is the "refusals leave no residue" bar applied to provenance: a
+		// refused install advances no anti-rollback state and leaves no record
+		// claiming a key vouched for something that never installed.
+		rec := spec.Record
+		rec.PackID = spec.ID
+		rec.InstalledAt = now
+		if rec.ResolvedVersion == "" {
+			rec.ResolvedVersion = spec.Version
+		}
+		if err := appendInstallRecord(ctx, tx, rec); err != nil {
+			return err
+		}
+		if spec.ChannelMark != nil {
+			if err := advanceChannelMark(ctx, tx, spec.ID, now, *spec.ChannelMark); err != nil {
+				return err
+			}
+		}
+
 		if err := bumpGeneration(ctx, tx); err != nil {
 			return err
 		}
@@ -292,9 +328,15 @@ func (s *Store) UninstallPack(ctx context.Context, id string, rev int64) error {
 		if curRev != rev {
 			return &RevisionMismatchError{Expected: rev, Current: curRev}
 		}
+		// pack_installs is pack-owned state and goes with the pack (MKT-094b).
+		// pack_channel_marks deliberately does NOT: it is the verifier's own
+		// anti-rollback memory of what it has EVER resolved (MKT-050), and
+		// clearing it here would make uninstall-then-reinstall a downgrade path
+		// in which every individual step succeeds.
 		for _, stmt := range []string{
 			`DELETE FROM pack_rows WHERE pack_id = ?`,
 			`DELETE FROM pack_files WHERE pack_id = ?`,
+			`DELETE FROM pack_installs WHERE pack_id = ?`,
 			`DELETE FROM packs WHERE id = ?`,
 		} {
 			if _, err := tx.ExecContext(ctx, stmt, id); err != nil {

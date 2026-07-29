@@ -124,6 +124,22 @@ type Installer struct {
 	store   *store.Store
 	limits  Limits
 	anchors packsig.TrustAnchors
+	// market is the configured registry (marketplace.go), wired by
+	// WithMarketplace. Nil — the default — means this deployment installs only
+	// from a directly-supplied artifact: a marketplace reference refuses rather
+	// than silently resolving against nothing.
+	market *Market
+}
+
+// InstallerOption configures an Installer at construction.
+type InstallerOption func(*Installer)
+
+// WithMarketplace wires the registry a marketplace reference resolves through
+// (marketplace/1 MKT-060/060a). It adds a way to LOCATE an artifact; it adds no
+// trust — every resolved artifact still passes the same signature envelope
+// verification against the same anchors as a hand-uploaded one.
+func WithMarketplace(m *Market) InstallerOption {
+	return func(in *Installer) { in.market = m }
 }
 
 // NewInstaller builds an Installer over st with the default artifact limits,
@@ -134,8 +150,12 @@ type Installer struct {
 // signed artifact refuses PACK_SIGNER_UNTRUSTED (and an unsigned one
 // PACK_UNSIGNED), so an unwired deployment can never install a pack, signed or
 // not — refusal, never default-permit.
-func NewInstaller(st *store.Store, anchors packsig.TrustAnchors) *Installer {
-	return &Installer{store: st, limits: DefaultLimits, anchors: anchors}
+func NewInstaller(st *store.Store, anchors packsig.TrustAnchors, opts ...InstallerOption) *Installer {
+	in := &Installer{store: st, limits: DefaultLimits, anchors: anchors}
+	for _, opt := range opts {
+		opt(in)
+	}
+	return in
 }
 
 // hostRegistries builds the install-time HostRegistries the manifest engine
@@ -181,6 +201,36 @@ var PageTypes = []string{"list-detail", "settings-form", "dashboard", "wizard"}
 // unsafe/malformed/unsigned/tampered artifact, or a *ManifestError for a
 // manifest the engine refused. It executes NOTHING from the artifact.
 func (in *Installer) Install(ctx context.Context, artifact []byte) (Result, error) {
+	return in.install(ctx, artifact, nil)
+}
+
+// provenance is everything a marketplace resolution contributes to an install
+// beyond the artifact's bytes: the identity the resolved index entry CLAIMED
+// (checked against the artifact's own signed identity, MKT-040a) and the record
+// members only a registry-mediated install can carry (MKT-094/MKT-094a). A
+// direct artifact upload passes nil — it still records, with no trust channel
+// and no entry digest, per MKT-094a's direct-path clause.
+type provenance struct {
+	// Source is the registry source id the entry was served from.
+	Source string
+	// TrustChannel is the reference's pinned trust channel (MKT-060a(b)).
+	TrustChannel string
+	// The entry's own claimed identity and digest, as published.
+	EntryID      string
+	EntryKind    string
+	EntrySubtype string
+	EntryVersion string
+	EntryDigest  string
+	// StaleSource marks a file://-resolved install (MKT-063/MKT-094).
+	StaleSource bool
+}
+
+// install is the one install path. Every caller — the direct artifact upload and
+// the marketplace resolver alike — runs THIS function, so there is no route by
+// which a resolved artifact skips the signature gate, the manifest gate, or the
+// install record. A resolution supplies extra expectations (prov); it never
+// supplies extra trust.
+func (in *Installer) install(ctx context.Context, artifact []byte, prov *provenance) (Result, error) {
 	bundle, err := ReadBundle(artifact, in.limits)
 	if err != nil {
 		return Result{}, err
@@ -226,6 +276,20 @@ func (in *Installer) Install(ctx context.Context, artifact []byte) (Result, erro
 			m.ID, m.Version, env.ArtifactID, env.Version)
 	}
 
+	// MKT-040a: where a resolution named this artifact, the index entry's
+	// CLAIMED identity must equal the artifact's SIGNED identity. The entry's
+	// digest already proved these are the bytes the entry named, and the
+	// envelope already proved those bytes carry this identity — but neither
+	// forbids a source from listing a validly-signed artifact under a different
+	// entry's identity, which would install, record, pin and auto-track a pack
+	// nobody asked for. The signed identity is authoritative here; the entry is
+	// the claim being checked.
+	if prov != nil {
+		if err := checkResolvedIdentity(*prov, env); err != nil {
+			return Result{}, err
+		}
+	}
+
 	// The currently-installed dataModel.version, if this pack is already
 	// installed — the input MAN-053's version-regression check needs. Read
 	// outside the install transaction (dev-POC: the store is single-writer, so
@@ -260,6 +324,18 @@ func (in *Installer) Install(ctx context.Context, artifact []byte) (Result, erro
 		DataModelVersion: m.DataModel.Version,
 		Manifest:         append(json.RawMessage(nil), manifestBytes...),
 		Files:            files,
+		Record:           installRecord(m.Version, env, prov),
+	}
+	// A registry-mediated install raises the (pack, trust channel) high-water
+	// mark MKT-050's anti-rollback reads — in the install transaction, so a
+	// refusal further down advances nothing. A direct upload pins no channel and
+	// therefore marks nothing (MKT-094a).
+	if prov != nil {
+		spec.ChannelMark = &store.ChannelMarkAdvance{
+			TrustChannel: prov.TrustChannel,
+			Version:      m.Version,
+			Higher:       VersionHigher,
+		}
 	}
 	// Re-assert MAN-053 inside the install transaction, against the prior row read
 	// under the store's write lock — not the installedVersion snapshot read above.
@@ -441,6 +517,62 @@ func verifyArtifactSignature(bundle *Bundle, anchors packsig.TrustAnchors) (pack
 	default:
 		return packsig.Envelope{}, artifactErr("PACK_SIGNATURE_INVALID", "%s", verr.Message)
 	}
+}
+
+// checkResolvedIdentity enforces marketplace/1 MKT-040a: the resolved index
+// entry's claimed (artifact_id, kind, subtype, version) must equal the signed
+// identity of the artifact that entry pointed at. A mismatch refuses
+// RESOLVED_IDENTITY_MISMATCH and installs neither identity.
+//
+// The failure this closes is not a corrupted download — the entry digest would
+// already catch that. It is a source publishing entry `acme/b@2.0.0` pointing at
+// a genuine, correctly-signed `acme/a@1.0.0`: every existing check passes, and
+// what lands is a pack whose id and version differ from the one the reference,
+// the install record, the channel pointer and the anti-rollback mark are all
+// keyed on.
+func checkResolvedIdentity(prov provenance, env packsig.Envelope) error {
+	if prov.EntryID == env.ArtifactID && prov.EntryKind == env.Kind &&
+		prov.EntrySubtype == env.Subtype && prov.EntryVersion == env.Version {
+		return nil
+	}
+	return artifactErr("RESOLVED_IDENTITY_MISMATCH",
+		"the resolved index entry claims %s (%s) version %s, but the artifact it names is signed as %s (%s) version %s",
+		prov.EntryID, entryKindLabel(prov.EntryKind, prov.EntrySubtype), prov.EntryVersion,
+		env.ArtifactID, entryKindLabel(env.Kind, env.Subtype), env.Version)
+}
+
+// entryKindLabel renders a kind/subtype pair for a refusal message.
+func entryKindLabel(kind, subtype string) string {
+	if subtype == "" {
+		return kind
+	}
+	return kind + "/" + subtype
+}
+
+// installRecord builds the install record persisted with the pack
+// (marketplace/1 MKT-094 + MKT-094a). ContentDigest and KeyID always come from
+// the envelope that ACTUALLY verified — never from the reference, the entry, or
+// anything the artifact merely asserts — so the record can only ever name a key
+// that did vouch for these bytes.
+//
+// A direct upload records SourceDirect with no trust channel and no entry
+// digest: there is no channel pointer behind it to auto-track (MKT-090) and no
+// index entry to name. The empty trust channel is the load-bearing part, not a
+// missing value.
+func installRecord(version string, env packsig.Envelope, prov *provenance) store.PackInstallRecord {
+	rec := store.PackInstallRecord{
+		ResolvedVersion: version,
+		Source:          store.SourceDirect,
+		ContentDigest:   env.ContentDigest,
+		KeyID:           env.KeyID,
+	}
+	if prov != nil {
+		rec.Source = prov.Source
+		rec.TrustChannel = prov.TrustChannel
+		rec.ArtifactDigest = prov.EntryDigest
+		rec.StaleSource = prov.StaleSource
+	}
+	return rec
 }
 
 // collectionNames returns the pack's declared collection names (MAN-051), sorted
