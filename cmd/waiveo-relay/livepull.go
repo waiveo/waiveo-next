@@ -28,9 +28,9 @@ import (
 type pullFunc func(sinceGeneration int64) (desiredstate.Applied, error)
 
 // scheduleDriver owns the serving side of a desired-state generation apply for
-// one relay: apply installs that generation's app-authored per-screen program
-// baseline (REL-061) and its schedule resolvers + background re-resolve loops
-// over the player server. A subsequent apply cancels the prior generation's
+// one relay: apply installs that generation's revocation view (REL-066), its
+// app-authored per-screen program baseline (REL-061), and its schedule
+// resolvers + background re-resolve loops over the player server. A subsequent apply cancels the prior generation's
 // loops before installing the new ones (the REL-056 atomic-swap discipline).
 // Cancellation stops the loops but cannot interrupt a resolver goroutine already
 // mid-resolve, so a superseded generation's late write could otherwise land
@@ -51,9 +51,10 @@ type scheduleDriver struct {
 	cancel context.CancelFunc
 }
 
-// apply installs applied's serving state: this generation's app-authored
-// per-screen `screen_programs` baseline first, then its schedule resolution over
-// the top of it (resolveAndServe at nowMs, plus the background re-resolve loops).
+// apply installs applied's serving state: this generation's revocation view
+// (REL-066) first, then its app-authored per-screen `screen_programs` baseline,
+// then its schedule resolution over the top of that (resolveAndServe at nowMs,
+// plus the background re-resolve loops).
 // The new loops run under a child of ctx, so cancelling ctx (process shutdown)
 // stops them too. It returns how many baseline entries were installed, and the
 // resolvers built (empty when the schedule governs no carried screen — the
@@ -94,6 +95,20 @@ type scheduleDriver struct {
 // partial view?) and what the relay should serve instead, which is a contract
 // question, not a wiring one.
 //
+// The revocation view installed above is NOT that decision, and must not be
+// mistaken for it. `player/1` PLY-075 says a relay presented a `screen_id` it
+// "no longer recognizes at all" refuses that credential terminally — but a
+// screen's absence from `screen_programs` does not establish that it is
+// unrecognized. The feeder OMITS an entry for a screen whose effective timezone
+// will not resolve (`data-model/1` DAT-034, snapshot.DeriveScreenPrograms), a
+// degrade a live screen row reaches just by being placed under a node carrying
+// no geo. A relay that inferred revocation from a dropped entry would answer
+// that recoverable authoring mistake with CHANNEL_TOKEN_REVOKED, which PLY-073
+// requires the player treat as terminal — clearing its credential and
+// re-pairing. `revoked` is the channel the app peer states a deletion on
+// explicitly (REL-066), and nothing else in a snapshot carries a screen roster
+// to derive one from, so this stays the app peer's statement to make.
+//
 // # Ordering
 //
 // Baseline BEFORE resolution, matching the boot path exactly. Both write at
@@ -106,6 +121,23 @@ func (d *scheduleDriver) apply(ctx context.Context, applied desiredstate.Applied
 	if d.cancel != nil {
 		d.cancel() // tear down the prior generation's resolve loops before the swap
 	}
+	// This generation's revocation view (REL-066) BEFORE its programs, and
+	// before its schedule resolves over them. Ordering is a real choice on a
+	// LIVE apply, where the player/1 routes are already serving: installing
+	// revocation first means there is no instant at which a screen this
+	// generation revokes can pull the program the same generation carries. The
+	// inverse order leaves exactly that window open, narrow but real.
+	//
+	// Installed here rather than only at boot, for the reason the baseline
+	// re-install below is: boot-only wiring goes stale the moment a generation
+	// is applied live. A revocation authored after the relay started would
+	// otherwise never be enforced until the process restarted — which is the
+	// whole failure mode REL-123 exists to prevent, since a relay is expected
+	// to run for weeks between restarts and to enforce a synced revocation
+	// while disconnected. This one call site covers BOTH paths: boot applies
+	// through this same function (main's own driver.apply, before Register
+	// mounts any route), so no screen is ever served before it runs.
+	d.srv.SetRevokedScreens(applied.Generation, applied.Revoked)
 	installed = serveAppAuthoredPrograms(d.srv, applied.Generation, applied.ScreenPrograms)
 	loopCtx, cancel := context.WithCancel(ctx)
 	d.cancel = cancel
