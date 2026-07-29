@@ -14,6 +14,7 @@ import (
 	"github.com/maaxton/waiveo-next/conformance/drivers/corpus"
 	"github.com/maaxton/waiveo-next/conformance/drivers/report"
 	"github.com/maaxton/waiveo-next/internal/app/auth"
+	"github.com/maaxton/waiveo-next/internal/events"
 )
 
 // driveConsoleAdmission drives SEC-072-valid-console-admission-uid0 against the
@@ -346,7 +347,31 @@ func driveConsolePeerNotRoot(rep *report.Report, c corpus.Case) {
 // "Names a verb" is asked of the verb the CASE sent, not of any verb: a record
 // whose target is the placeholder the refusal path writes is not naming one, and
 // that difference is the whole assertion.
+//
+// It WAITS for the record rather than reading whatever has arrived. The refusal
+// is written by the LISTENER'S goroutine (ConsoleListener.serveConn), and the
+// driver learns of the refusal by its own connection closing — which orders
+// nothing with respect to the audit write that follows on the other side. Read
+// immediately, this asked "has the record arrived yet"; it passed because it
+// usually had. Under the race detector's slower scheduling it did not, and the
+// case reported `<no console.verb record emitted>` against an implementation
+// that emits one correctly.
+//
+// That is worth stating plainly because three requirements are `covered` on the
+// strength of this case: a verdict that depends on winning a scheduling race is
+// not evidence about the implementation, whichever way it happens to land.
 func consoleAuditVerbAndResult(sink *recordingSink, verb string) (bool, string) {
+	// Bounded, and short: the record is written microseconds after the refusal
+	// on any healthy build. The deadline exists so a genuine failure to record
+	// still FAILS the case rather than hanging it — an implementation that never
+	// audits must be caught here, which is the mutation this case has to survive.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if len(consoleVerbRecords(sink)) > 0 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
 	for _, env := range sink.snapshot() {
 		raw, err := json.Marshal(env)
 		if err != nil {
@@ -368,4 +393,29 @@ func consoleAuditVerbAndResult(sink *recordingSink, verb string) (bool, string) 
 		return strings.Contains(decoded.Payload.Target, verb), decoded.Payload.Result
 	}
 	return false, "<no console.verb record emitted>"
+}
+
+// consoleVerbRecords returns every console-verb audit record the sink holds so
+// far. It is the wait predicate above, kept separate from the assertion so the
+// two do not share a decoder and quietly drift apart.
+func consoleVerbRecords(sink *recordingSink) []events.Envelope {
+	var out []events.Envelope
+	for _, env := range sink.snapshot() {
+		raw, err := json.Marshal(env)
+		if err != nil {
+			continue
+		}
+		var decoded struct {
+			Payload struct {
+				Action string `json:"action"`
+			} `json:"payload"`
+		}
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			continue
+		}
+		if decoded.Payload.Action == auth.ActionConsoleVerb {
+			out = append(out, env)
+		}
+	}
+	return out
 }

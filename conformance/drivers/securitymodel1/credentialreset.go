@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/maaxton/waiveo-next/conformance/drivers/corpus"
 	"github.com/maaxton/waiveo-next/conformance/drivers/report"
@@ -564,21 +565,44 @@ func containsAny(haystack []string, needles ...string) bool {
 // SEC-034's mandatory records and SEC-051's "not in a journald-logged line" can
 // both be checked against what the platform actually records rather than against
 // something the driver wrote.
-type recordingSink struct{ envelopes []events.Envelope }
+// It is guarded because Append does NOT run on the driver's own goroutine. The
+// console binding's listener accepts on its own goroutine and audits from there
+// (auth.ConsoleListener.serveConn -> Auditor -> this sink), while a case reads
+// the collected set from the driver's. Unguarded, that is a data race the race
+// detector reports — and worse than a race in ordinary test scaffolding, because
+// a case that reads this set with no happens-before edge to the writes it is
+// checking may observe a partial one. Several security-model rows are `covered`
+// on the strength of what these cases assert about recorded audit records; a
+// verdict taken from a racy read is not reproducible-for-the-right-reason, which
+// is the whole distinction the coverage bar exists to draw.
+type recordingSink struct {
+	mu        sync.Mutex
+	envelopes []events.Envelope
+}
 
-func (s *recordingSink) Append(e events.Envelope) { s.envelopes = append(s.envelopes, e) }
+func (s *recordingSink) Append(e events.Envelope) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.envelopes = append(s.envelopes, e)
+}
 
 // reset drops the fixture's own emissions so a case reads only the flow's.
-func (s *recordingSink) reset() { s.envelopes = nil }
+func (s *recordingSink) reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.envelopes = nil
+}
 
 func (s *recordingSink) snapshot() []events.Envelope {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return append([]events.Envelope(nil), s.envelopes...)
 }
 
 // byAction returns every recorded envelope whose audit action is action.
 func (s *recordingSink) byAction(action string) []events.Envelope {
 	var out []events.Envelope
-	for _, env := range s.envelopes {
+	for _, env := range s.snapshot() {
 		raw, err := json.Marshal(env)
 		if err != nil {
 			continue
