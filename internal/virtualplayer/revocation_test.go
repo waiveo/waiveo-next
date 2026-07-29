@@ -205,7 +205,9 @@ func TestReconnectRevokedClearsTokenOnlyEndToEnd(t *testing.T) {
 
 	// The relay's own revocation surface (REL-066): a newer generation's
 	// `revoked` set names the paired screen, so it no longer validates.
-	relayServer.SetRevokedScreens(1, []string{sess.ScreenID})
+	if err := relayServer.SetRevokedScreens(1, []string{sess.ScreenID}); err != nil {
+		t.Fatalf("SetRevokedScreens: %v", err)
+	}
 
 	attempt, err := sess.PullProgram()
 	if err != nil {

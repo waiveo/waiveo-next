@@ -437,21 +437,44 @@ func (s *Server) handleProgram(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	screenID, expiresAt, ok := s.LookupChannelToken(token)
+	// lookupSession, not LookupChannelToken: a session the relay has DROPPED
+	// (SetRevokedScreens' own session termination) must still resolve here, or
+	// the revocation check below has no screen_id to run against and a revoked
+	// screen's own token would draw CHANNEL_TOKEN_INVALID where PLY-072
+	// requires CHANNEL_TOKEN_REVOKED.
+	sess, ok := s.lookupSession(token)
 	if !ok {
 		apihttp.WriteProblem(w, r, traceID, http.StatusUnauthorized, "CHANNEL_TOKEN_INVALID", "Channel Token Invalid")
 		return
 	}
+	screenID := sess.ScreenID
 	// Revocation (PLY-072) is checked BEFORE expiry: it is terminal (PLY-073's
 	// re-pair path), so a token that is both revoked and expired reports
 	// CHANNEL_TOKEN_REVOKED — driving the player to re-pair rather than to a
 	// renewal (PLY-074) of a credential whose screen no longer validates
 	// (PLY-075). The check reads the relay's own last-synced revocation view,
 	// valid even while disconnected from the app peer (REL-123).
+	//
+	// It is also checked before the dropped-session check below, and that order
+	// is the contract's: PLY-072 names CHANNEL_TOKEN_REVOKED for a token whose
+	// screen_id is present in `revoked`, whatever else is true of the token.
 	if s.isScreenRevoked(screenID) {
 		apihttp.WriteProblem(w, r, traceID, http.StatusUnauthorized, "CHANNEL_TOKEN_REVOKED", "Channel Token Revoked")
 		return
 	}
+	// A session the relay dropped, whose screen is no longer revoked: the
+	// credential itself is dead and stays dead. Withdrawing a revocation
+	// restores the ability to PAIR, never a token minted before it — the only
+	// party still presenting one is whoever kept a copy of a credential an
+	// honest player already cleared (PLY-073). CHANNEL_TOKEN_INVALID is the
+	// taxonomy's own code for a token that no longer resolves to a usable
+	// session, and PLY-136 makes a player clear it and re-pair — the outcome
+	// this state wants.
+	if sess.Terminated {
+		apihttp.WriteProblem(w, r, traceID, http.StatusUnauthorized, "CHANNEL_TOKEN_INVALID", "Channel Token Invalid")
+		return
+	}
+	expiresAt := sess.ExpiresAt
 	// Read ONCE, from the server's own clock (NewServer's required nowMs), and
 	// reused for the Lease's own stamps below. On a relay that is the
 	// floor-aware reading, so a rolled-back host clock cannot revive a channel

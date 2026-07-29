@@ -120,11 +120,20 @@ var (
 var errSessionPersistFailed = errors.New("playerserver: failed to persist pairing/session state durably")
 
 // channelTokenRecord is what a minted channel token resolves to: the
-// screen_id it authorizes and its own bounded expiry — the record a later
-// /player/v1/program task validates a presented token against.
+// screen_id it authorizes, its own bounded expiry, and whether the relay has
+// since DROPPED the session — the record a later /player/v1/program task
+// validates a presented token against.
+//
+// Terminated is a tombstone, not a deletion, and the record stays resolvable
+// after it is set: a dropped session's token must still resolve to its
+// screen_id, because PLY-072 requires a token naming a currently-revoked screen
+// be refused `CHANNEL_TOKEN_REVOKED` specifically, and a relay that had
+// forgotten which screen the token named could only answer
+// `CHANNEL_TOKEN_INVALID`. See SetRevokedScreens for what sets it.
 type channelTokenRecord struct {
-	ScreenID  string
-	ExpiresAt int64
+	ScreenID   string
+	ExpiresAt  int64
+	Terminated bool
 }
 
 // redemption is one completed pairing-grant redemption's terminal result
@@ -341,19 +350,37 @@ func (s *Server) Register(mux *http.ServeMux) {
 }
 
 // LookupChannelToken reports the screen_id and expires_at a previously
-// minted channel token resolves to, and whether it is currently known at
-// all — the accessor a later /player/v1/program task uses to validate a
-// presented Authorization: Bearer channel token (PLY-076, Channel tokens).
+// minted channel token resolves to, and whether it still AUTHORIZES anything —
+// the accessor a later /player/v1/program task uses to validate a presented
+// Authorization: Bearer channel token (PLY-076, Channel tokens).
+//
+// A session the relay has dropped (SetRevokedScreens' own session termination)
+// reports ok=false here, since it authorizes nothing. The request path does not
+// use this accessor for exactly that reason — it needs the dropped session's
+// screen_id to tell PLY-072's `CHANNEL_TOKEN_REVOKED` from its
+// `CHANNEL_TOKEN_INVALID` — and calls lookupSession instead.
 func (s *Server) LookupChannelToken(token string) (screenID string, expiresAt int64, ok bool) {
+	rec, known := s.lookupSession(token)
+	if !known || rec.Terminated {
+		return "", 0, false
+	}
+	return rec.ScreenID, rec.ExpiresAt, true
+}
+
+// lookupSession resolves token to its session record, whether or not that
+// session still authorizes anything — the raw read LookupChannelToken and
+// handleProgram both sit on. ok reports only that a record EXISTS; a caller
+// MUST consult rec.Terminated before treating it as a credential.
+func (s *Server) lookupSession(token string) (channelTokenRecord, bool) {
 	s.mu.Lock()
 	rec, known := s.tokens[token]
 	store := s.sessionStore
 	s.mu.Unlock()
 	if known {
-		return rec.ScreenID, rec.ExpiresAt, true
+		return rec, true
 	}
 	if store == nil {
-		return "", 0, false
+		return channelTokenRecord{}, false
 	}
 
 	// A cache miss with persistence enabled does not by itself mean the
@@ -363,18 +390,39 @@ func (s *Server) LookupChannelToken(token string) (screenID string, expiresAt in
 	// lifetime". Consult the durable store, keyed by the token's own hash
 	// (identity.HashToken — EnablePersistence's own doc on why a hash
 	// rather than the raw token) rather than the unrecoverable raw value.
-	screenID, expiresAt, found, err := store.PlayerSession(identity.HashToken(token))
+	//
+	// A durably-terminated session is loaded back AS terminated, not dropped
+	// on the floor: that is what makes a session the relay dropped before a
+	// restart stay dropped after one, which is the whole point of terminating
+	// it durably rather than only in this process's map.
+	durable, found, err := store.PlayerSession(identity.HashToken(token))
 	if err != nil || !found {
-		return "", 0, false
+		return channelTokenRecord{}, false
 	}
+	rec = channelTokenRecord{ScreenID: durable.ScreenID, ExpiresAt: durable.ExpiresAt, Terminated: durable.Terminated()}
 
 	// Backfill the in-memory cache so this SAME token resolves from memory
 	// on a screen's every later poll this process lifetime, without
 	// repeating the durable lookup on every single one.
 	s.mu.Lock()
-	s.tokens[token] = channelTokenRecord{ScreenID: screenID, ExpiresAt: expiresAt}
+	// Re-checked under the lock, against the revocation view as it stands NOW.
+	// The durable read above ran with s.mu released, so a SetRevokedScreens
+	// could have completed in between: its in-memory sweep would not have found
+	// this token (it was not cached yet) and its durable UPDATE may have landed
+	// after this read returned, so a naive backfill would install a LIVE cache
+	// entry for a session the relay had just dropped — outliving the revocation
+	// itself, since the entry is only consulted once the screen is un-revoked.
+	//
+	// A currently-revoked screen has no live session by construction: installing
+	// the set drops the ones that exist, and redeem mints none while it stands
+	// (REL-123). So "revoked now" implies "this session is dropped", and that is
+	// the invariant restated here rather than a heuristic.
+	if s.revokedScreens[rec.ScreenID] {
+		rec.Terminated = true
+	}
+	s.tokens[token] = rec
 	s.mu.Unlock()
-	return screenID, expiresAt, true
+	return rec, true
 }
 
 // EnablePersistence points s at store — the relay's own durable operational
@@ -462,6 +510,38 @@ func (s *Server) SetPairingGrants(generation int64, grants []wire.PairingGrant) 
 // (PLY-073) rather than to a futile renewal, and no channel token is minted for
 // one at all (redeem, REL-123). Safe for concurrent use.
 //
+// It returns an error only when the DURABLE half of the session drop below
+// failed. The in-memory revocation view is installed either way and before
+// anything else can fail — enforcement is never withheld on account of a
+// storage fault — so a caller that ignores the error still enforces the
+// revocation for this process's lifetime; what it loses is the guarantee that
+// the dropped sessions stay dropped across a restart. Callers log it
+// (cmd/waiveo-relay's own apply seam).
+//
+// # Dropping the sessions a revocation voids
+//
+// Installing a set does not merely gate future decisions: every screen the set
+// names that the PRIOR view did not is dropped from this server's live and
+// durable session state (identity.Store.TerminatePlayerSessionsForScreen).
+// Without that, a revocation is undone by its own withdrawal in the one way it
+// must not be — a credential minted BEFORE the revocation authorizes again the
+// moment the app peer restates the set without that screen, never re-issued and
+// never re-paired. Withdrawal restores the ability to PAIR (the one-time grant
+// was refused, not consumed — see redeem); it must not resurrect an
+// already-minted token.
+//
+// The drop is a tombstone, not a delete, so a dropped session's token still
+// resolves to its screen_id and PLY-072's `CHANNEL_TOKEN_REVOKED` remains
+// answerable for as long as the screen is revoked (channelTokenRecord's own
+// doc). Only after the revocation is withdrawn does that token fall through to
+// `CHANNEL_TOKEN_INVALID` — which PLY-136 makes a player clear its token and
+// re-pair on, the same terminal path.
+//
+// Only NEWLY-revoked screens are dropped. A screen the prior view already held
+// has already had its sessions dropped, so re-installing the same set drops
+// nothing a second time — which is what keeps a repeated install free of
+// apply-time side effects (see the generation fence below).
+//
 // # Why a set-replace and not a one-at-a-time mark
 //
 // `revoked` is not an event stream of revocations; it is a SET the app peer
@@ -490,14 +570,30 @@ func (s *Server) SetPairingGrants(generation int64, grants []wire.PairingGrant) 
 // generation withdrew, or WITHDRAW one the current generation added — either
 // direction a credential decision, and the second one a security regression
 // that no subsequent snapshot would correct until the app peer happened to
-// change the set again. A same-generation write is admitted (only a strictly
-// older one is dropped), so re-applying the same generation is idempotent
-// (REL-070) rather than a no-op that could not repair a partial install.
-func (s *Server) SetRevokedScreens(generation int64, screenIDs []string) {
+// change the set again.
+//
+// A same-generation write is admitted — only a strictly older one is dropped —
+// because this fence's job is ORDERING, not idempotence. REL-070's rule is the
+// opposite of an idempotence licence: a relay applying a snapshot whose hash
+// equals its persisted last-applied hash "MUST NOT re-run any apply-time side
+// effect", and that holds "regardless of whether generation itself advanced".
+//
+// Nothing here relies on that rule being caught upstream. cmd/waiveo-relay's
+// rePuller.tick does return before any apply for a generation not strictly
+// greater than the last-applied one, which covers the same-generation repeat —
+// but it fences on the GENERATION, and REL-070's condition is the HASH, so an
+// advancing generation carrying byte-identical sections reaches an apply. This
+// method is therefore written to have no apply-time side effect to re-run at
+// all when the set it is handed is one it already holds: the view is REPLACED
+// with an equal set (not merged, so no accumulation), and the session drop runs
+// only for screens the prior view did not already name. A repeated install
+// drops nothing a second time and changes no credential decision, whether it
+// arrives under the same generation number or a higher one.
+func (s *Server) SetRevokedScreens(generation int64, screenIDs []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if generation < s.revokedGen {
-		return // stale generation's late write — never revert a newer generation's revocation view (REL-052/056)
+		return nil // stale generation's late write — never revert a newer generation's revocation view (REL-052/056)
 	}
 	s.revokedGen = generation
 	revoked := make(map[string]bool, len(screenIDs))
@@ -507,7 +603,65 @@ func (s *Server) SetRevokedScreens(generation int64, screenIDs []string) {
 		}
 		revoked[id] = true
 	}
+
+	// Newly revoked = named now, not named by the view being replaced. Computed
+	// BEFORE the swap, and enforcement installed before any session work, so a
+	// failure below never leaves the screen un-revoked.
+	newlyRevoked := make([]string, 0, len(revoked))
+	for id := range revoked {
+		if !s.revokedScreens[id] {
+			newlyRevoked = append(newlyRevoked, id)
+		}
+	}
 	s.revokedScreens = revoked
+
+	return s.dropSessionsForLocked(newlyRevoked)
+}
+
+// dropSessionsForLocked terminates every live channel-token session issued to
+// any of screenIDs, in this process's own map and in the durable store when one
+// is wired. The caller holds s.mu.
+//
+// The in-memory sweep marks rather than deletes, for channelTokenRecord's own
+// documented reason: a dropped session's token has to keep resolving to its
+// screen_id or the relay cannot answer PLY-072's `CHANNEL_TOKEN_REVOKED` for
+// it. It also keeps the cache honest against the durable row, so a later
+// lookup does not read a terminated row and then overwrite it with a live
+// cache entry.
+func (s *Server) dropSessionsForLocked(screenIDs []string) error {
+	if len(screenIDs) == 0 {
+		return nil
+	}
+	drop := make(map[string]bool, len(screenIDs))
+	for _, id := range screenIDs {
+		drop[id] = true
+	}
+	for token, rec := range s.tokens {
+		if rec.Terminated || !drop[rec.ScreenID] {
+			continue
+		}
+		rec.Terminated = true
+		s.tokens[token] = rec
+	}
+
+	if s.sessionStore == nil {
+		return nil
+	}
+	// The relay's own clock, never the host's: this stamp is a durable record
+	// of when the relay acted, and every other time-dependent decision this
+	// server makes reads the same floor-aware source (NewServer's nowMs).
+	atMs := s.nowMs()
+	if atMs == 0 {
+		// 0 is the store's not-terminated sentinel, so a clock reading of
+		// exactly the epoch would write tombstones that read back as live.
+		atMs = 1
+	}
+	for _, id := range screenIDs {
+		if _, err := s.sessionStore.TerminatePlayerSessionsForScreen(id, atMs); err != nil {
+			return fmt.Errorf("playerserver: drop durable sessions for revoked screen %s: %w", id, err)
+		}
+	}
+	return nil
 }
 
 // isScreenRevoked reports whether screenID is present in the relay's own

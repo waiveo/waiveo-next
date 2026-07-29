@@ -32,6 +32,16 @@ import (
 // grant_id, and a timestamp are the only values any of their columns can ever
 // carry.
 //
+// player_channel_tokens.terminated_at is a TOMBSTONE, not a delete: 0 means the
+// session is live, any other value is the instant the relay dropped it
+// (TerminatePlayerSessionsForScreen). The row survives its own termination on
+// purpose. A deleted row would make its token merely UNKNOWN, and player/1
+// PLY-072 requires a token naming a currently-revoked screen be refused
+// `CHANNEL_TOKEN_REVOKED` specifically — which the relay can only answer if it
+// can still resolve that token to its screen_id. Keeping the row keeps that
+// answer available while the screen is revoked, and keeps the token dead after
+// the revocation is withdrawn.
+//
 // player_redemption_reports.seq is a plain rowid alias, not AUTOINCREMENT: a
 // reported row is DELETED, so the ledger has no history for a reused rowid to
 // collide with, and AUTOINCREMENT would add a hidden sqlite_sequence table to a
@@ -41,9 +51,10 @@ import (
 // row still pending.
 const playerSessionSchema = `
 CREATE TABLE IF NOT EXISTS player_channel_tokens (
-	token_hash  TEXT PRIMARY KEY,
-	screen_id   TEXT NOT NULL,
-	expires_at  INTEGER NOT NULL
+	token_hash    TEXT PRIMARY KEY,
+	screen_id     TEXT NOT NULL,
+	expires_at    INTEGER NOT NULL,
+	terminated_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS player_redeemed_grants (
 	grant_id     TEXT PRIMARY KEY,
@@ -55,6 +66,33 @@ CREATE TABLE IF NOT EXISTS player_redemption_reports (
 	redeemed_at  INTEGER NOT NULL
 );
 `
+
+// migratePlayerSessionSchema brings a player_channel_tokens created by an
+// earlier build up to the current column set, the same shape identity.go's
+// migrateLastAppliedSchema and telemetrystore.go's migrateTelemetrySchema use
+// and for the same reason (`CREATE TABLE IF NOT EXISTS` is a no-op against an
+// existing table).
+//
+// The added column defaults to 0 — live — so every session a relay minted
+// before terminations existed keeps working across the upgrade. That is the
+// safe default in the only direction that matters here: an upgraded relay
+// re-installs its persisted revocation set at boot
+// (internal/relay/desiredstate.ServedRevocation), and that install terminates
+// the sessions of every screen the set names, so a screen revoked before the
+// upgrade has its sessions dropped on the first boot after it.
+func migratePlayerSessionSchema(db *sql.DB) error {
+	has, err := hasColumn(db, "player_channel_tokens", "terminated_at")
+	if err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+	if _, err := db.Exec(`ALTER TABLE player_channel_tokens ADD COLUMN terminated_at INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return fmt.Errorf("add player_channel_tokens.terminated_at: %w", err)
+	}
+	return nil
+}
 
 // HashToken returns the SHA-256 hex digest of a channel token — the value
 // SetPlayerSession persists and PlayerSession looks up by, never the raw
@@ -85,10 +123,14 @@ func HashToken(token string) string {
 // player/1 PLY-071's 24-hour bounded expiry presupposes a token remains
 // valid for its issued lifetime regardless of how many times the relay
 // process restarts in between.
+// A freshly minted session is live: terminated_at is reset to 0 on the
+// conflict path too, so re-minting under a token hash that once belonged to a
+// terminated session (only reachable by a digest collision, but the row is the
+// authority either way) yields a live session rather than a dead one.
 func (s *Store) SetPlayerSession(tokenHash, screenID string, expiresAt int64) error {
 	_, err := s.db.Exec(
-		`INSERT INTO player_channel_tokens (token_hash, screen_id, expires_at) VALUES (?, ?, ?)
-		 ON CONFLICT (token_hash) DO UPDATE SET screen_id = excluded.screen_id, expires_at = excluded.expires_at`,
+		`INSERT INTO player_channel_tokens (token_hash, screen_id, expires_at, terminated_at) VALUES (?, ?, ?, 0)
+		 ON CONFLICT (token_hash) DO UPDATE SET screen_id = excluded.screen_id, expires_at = excluded.expires_at, terminated_at = 0`,
 		tokenHash, screenID, expiresAt,
 	)
 	if err != nil {
@@ -97,19 +139,76 @@ func (s *Store) SetPlayerSession(tokenHash, screenID string, expiresAt int64) er
 	return nil
 }
 
-// PlayerSession returns the screen_id and expires_at persisted under
-// tokenHash (HashToken(token)), and whether a record is persisted there at
-// all — the read half SetPlayerSession's own doc describes.
-func (s *Store) PlayerSession(tokenHash string) (screenID string, expiresAt int64, ok bool, err error) {
-	err = s.db.QueryRow(`SELECT screen_id, expires_at FROM player_channel_tokens WHERE token_hash = ?`, tokenHash).
-		Scan(&screenID, &expiresAt)
+// PlayerSessionRecord is one persisted channel-token session: the screen it
+// authorizes, when it expires, and — when non-zero — the instant the relay
+// terminated it (TerminatePlayerSessionsForScreen). A terminated session is
+// still RESOLVABLE on purpose; it just no longer authorizes anything. See
+// playerSessionSchema's own doc for why the row outlives its termination.
+type PlayerSessionRecord struct {
+	ScreenID     string
+	ExpiresAt    int64
+	TerminatedAt int64
+}
+
+// Terminated reports whether this session has been dropped by the relay.
+func (r PlayerSessionRecord) Terminated() bool { return r.TerminatedAt != 0 }
+
+// PlayerSession returns the session persisted under tokenHash
+// (HashToken(token)), and whether a record is persisted there at all — the read
+// half SetPlayerSession's own doc describes. A terminated session is returned
+// with ok=true and TerminatedAt set; deciding what a terminated session
+// authorizes (nothing) belongs to the caller, which is the only layer that
+// knows whether the screen is ALSO currently revoked and therefore owes
+// player/1's `CHANNEL_TOKEN_REVOKED` rather than its `CHANNEL_TOKEN_INVALID`.
+func (s *Store) PlayerSession(tokenHash string) (PlayerSessionRecord, bool, error) {
+	var rec PlayerSessionRecord
+	err := s.db.QueryRow(`SELECT screen_id, expires_at, terminated_at FROM player_channel_tokens WHERE token_hash = ?`, tokenHash).
+		Scan(&rec.ScreenID, &rec.ExpiresAt, &rec.TerminatedAt)
 	if err == sql.ErrNoRows {
-		return "", 0, false, nil
+		return PlayerSessionRecord{}, false, nil
 	}
 	if err != nil {
-		return "", 0, false, fmt.Errorf("identity: PlayerSession: %w", err)
+		return PlayerSessionRecord{}, false, fmt.Errorf("identity: PlayerSession: %w", err)
 	}
-	return screenID, expiresAt, true, nil
+	return rec, true, nil
+}
+
+// TerminatePlayerSessionsForScreen drops every still-live channel-token session
+// issued to screenID, stamping atMs as the moment it happened, and reports how
+// many it dropped. It is what a relay calls when it learns screenID has been
+// revoked (relay/1 REL-066/REL-123): a revocation that only refused FUTURE
+// issuance would leave every credential minted before it fully alive the moment
+// the app peer withdrew the revocation again — a token never re-issued and
+// never re-paired, resurrected by a set-replace.
+//
+// player/1 PLY-071's own rationale for bounding a channel token to 24 hours is
+// that this bounds "a revoked-but-still-cached token's natural lifetime", which
+// presupposes the token is already dead AT THE RELAY; PLY-073 then makes an
+// honest player clear its token and re-pair on the first refusal. So after a
+// revoke-then-withdraw the only party still holding the old credential is one
+// that kept a copy, and this is what makes that copy worthless.
+//
+// Already-terminated rows are left exactly as they are (`WHERE terminated_at =
+// 0`), so the stamp records the FIRST termination rather than the most recent
+// re-statement of a revocation the relay already acted on.
+func (s *Store) TerminatePlayerSessionsForScreen(screenID string, atMs int64) (int64, error) {
+	if atMs == 0 {
+		// 0 is the live sentinel; a caller passing a zero clock would write
+		// tombstones that read as live rows.
+		return 0, fmt.Errorf("identity: TerminatePlayerSessionsForScreen: atMs must not be 0 — 0 is the not-terminated sentinel")
+	}
+	res, err := s.db.Exec(
+		`UPDATE player_channel_tokens SET terminated_at = ? WHERE screen_id = ? AND terminated_at = 0`,
+		atMs, screenID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("identity: TerminatePlayerSessionsForScreen: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("identity: TerminatePlayerSessionsForScreen: %w", err)
+	}
+	return n, nil
 }
 
 // MarkPairingGrantRedeemed durably records that grantID's one-time pairing

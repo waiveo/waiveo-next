@@ -171,13 +171,14 @@ func TestChannelTokenExpiresAtIsUnaffectedByPersistence(t *testing.T) {
 	var pr PairingResponse
 	remarshal(t, raw, &pr)
 
-	_, expiresAt, ok, err := store.PlayerSession(identity.HashToken(pr.ChannelToken))
+	sess, ok, err := store.PlayerSession(identity.HashToken(pr.ChannelToken))
 	if err != nil {
 		t.Fatalf("store.PlayerSession: %v", err)
 	}
 	if !ok {
 		t.Fatal("persisted session not found in store immediately after redemption")
 	}
+	expiresAt := sess.ExpiresAt
 	wantExpiresAt := before.Add(24 * time.Hour).UnixMilli()
 	if diff := expiresAt - wantExpiresAt; diff < -1000 || diff > 1000 {
 		t.Errorf("persisted expires_at = %d, want approximately %d (PLY-071 24h bound)", expiresAt, wantExpiresAt)

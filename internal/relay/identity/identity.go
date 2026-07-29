@@ -168,6 +168,10 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("identity: migrate last-applied schema: %w", err)
 	}
+	if err := migratePlayerSessionSchema(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("identity: migrate player-session schema: %w", err)
+	}
 
 	return &Store{db: db}, nil
 }

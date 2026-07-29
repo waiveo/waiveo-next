@@ -136,8 +136,21 @@ func (d *scheduleDriver) apply(ctx context.Context, applied desiredstate.Applied
 	// to run for weeks between restarts and to enforce a synced revocation
 	// while disconnected. This one call site covers BOTH paths: boot applies
 	// through this same function (main's own driver.apply, before Register
-	// mounts any route), so no screen is ever served before it runs.
-	d.srv.SetRevokedScreens(applied.Generation, applied.Revoked)
+	// mounts any route), so no screen is ever served before it runs — and on
+	// the OFFLINE boot path main fills applied.Revoked from the durable store
+	// first (desiredstate.ServedRevocation), so a relay restarting mid-outage
+	// installs its last-synced set rather than an empty one.
+	//
+	// A returned error means only that the DURABLE half of the session drop
+	// failed; the revocation itself is installed regardless (SetRevokedScreens'
+	// own doc). Logged rather than fatal: refusing to serve at all would turn a
+	// storage hiccup into the outage, while the revocation this generation
+	// carries is already being enforced. What is lost is durability of the
+	// drop — the dropped sessions could come back on the next restart — so it
+	// says so.
+	if err := d.srv.SetRevokedScreens(applied.Generation, applied.Revoked); err != nil {
+		log.Printf("waiveo-relay: generation %d's revocation is enforced, but dropping the revoked screens' durable sessions failed (%v); a restart could revive a credential minted before the revocation", applied.Generation, err)
+	}
 	installed = serveAppAuthoredPrograms(d.srv, applied.Generation, applied.ScreenPrograms)
 	loopCtx, cancel := context.WithCancel(ctx)
 	d.cancel = cancel
