@@ -392,7 +392,7 @@ func (h *Handlers) Claim(w http.ResponseWriter, r *http.Request) {
 		principal PrincipalRow
 		granted   Role
 	)
-	grant, err := store.RedeemGrant(ctx, req.Code, PurposeSetup, func(tx *sql.Tx, g GrantRow) error {
+	_, err := store.RedeemGrant(ctx, req.Code, PurposeSetup, func(tx *sql.Tx, g GrantRow) error {
 		p, err := store.CreatePrincipalTx(ctx, tx, g.ResultingPrincipalKind, req.Identifier)
 		if err != nil {
 			return err
@@ -413,20 +413,18 @@ func (h *Handlers) Claim(w http.ResponseWriter, r *http.Request) {
 		}
 		principal, granted = p, role
 		return nil
-	})
+	},
+		// SEC-034's record is RedeemGrant's own. The owner principal this claim
+		// creates does not exist until the consume function above has run, so the
+		// actor is supplied as a closure the store resolves after commit rather
+		// than as a value that would still be empty here.
+		RedeemedBy(func() string { return principal.PrincipalID }),
+		RedeemTraceID(traceID))
 	if err != nil {
-		h.writeGrantProblem(w, r, traceID, err)
+		h.writeGrantProblem(w, r, traceID, err, "The setup code is not valid.")
 		return
 	}
 
-	// SEC-034: a grant redemption's audit record carries the grant's purpose and
-	// issued_via, so a console-issued recovery redemption stays distinguishable
-	// from a routine invite months later.
-	h.auth.auditor.Emit(Record{
-		TraceID: traceID, Actor: principal.PrincipalID, Action: ActionGrantRedeemed,
-		Target: "grant:" + grant.GrantID, Result: "success",
-		Purpose: grant.Purpose, IssuedVia: grant.IssuedVia,
-	})
 	h.auth.auditor.Success(traceID, principal.PrincipalID, ActionPrincipalCreate, "principal:"+principal.PrincipalID)
 	h.auth.auditor.Success(traceID, principal.PrincipalID, ActionSetupClaimed, "principal:"+principal.PrincipalID)
 
@@ -451,13 +449,202 @@ func (h *Handlers) Claim(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// credentialResetRequest is POST /auth/credential-reset's body: WHO is being
+// reset, and nothing else that could carry a value.
+//
+// The absence is the requirement. SEC-050: the issuing admin "MUST NOT be shown,
+// and MUST have no path to choose, the credential value the target user
+// eventually sets." This struct is the whole of what the wire accepts on the
+// issuance side, so there is no field to send one in — a request that includes
+// a password field is not refused, it is simply not parsed into anything.
+type credentialResetRequest struct {
+	TargetPrincipalID string `json:"target_principal_id"`
+	// KeepExistingSessions is SEC-053's per-issuance opt-out from the
+	// revoke-everything default.
+	KeepExistingSessions bool `json:"keep_existing_sessions,omitempty"`
+}
+
+// credentialResetResponse is what the issuing admin receives (SEC-050's "a
+// one-time code or URL for the issuing admin to hand to the target user").
+//
+// # Why there is no `url`, only a `code`
+//
+// A URL would have to name a host, and the only host this handler could learn
+// from the request is the `Host` header — which the CLIENT sends. An admin
+// tricked into issuing a reset through a request carrying `Host:
+// attacker.example` would be handed a link that walks the target to the
+// attacker's origin with a LIVE one-time code in the query string, and would
+// hand it over believing it came from their own box. That is a credential
+// handoff to a third party produced by the platform itself.
+//
+// So this surface returns the code alone, which SEC-050 admits in as many words
+// ("a one-time code or URL"), and the URL form stays on the console binding
+// where the operator supplies the base themselves and no header is involved.
+type credentialResetResponse struct {
+	GrantID                     string `json:"grant_id"`
+	Code                        string `json:"code"`
+	TargetPrincipalID           string `json:"target_principal_id"`
+	ExpiresAtMs                 int64  `json:"expires_at_ms"`
+	SessionsRevokedOnRedemption bool   `json:"sessions_revoked_on_redemption"`
+}
+
+// IssueCredentialReset is SEC-050's issuance over api/1: an authenticated
+// `admin` mints a `credential-reset` grant for a `user` principal and receives
+// the one-time code to hand over.
+//
+// It is an AUTHENTICATED operation, mounted behind the middleware like any other
+// mutating route — the person issuing a reset is not the person who lost their
+// credential, so nothing here is circular and nothing needs a `security: []`
+// override. SEC-012's issuer restriction (`admin` or above, anywhere in the
+// tree) is enforced by the store, in the one function that mints the grant,
+// rather than a second time here: a check duplicated at the handler is a check
+// that can be forgotten by the next surface that calls the same store function.
+func (h *Handlers) IssueCredentialReset(w http.ResponseWriter, r *http.Request) {
+	traceID := apihttp.TraceID(r)
+	p, err := RequirePrincipal(r.Context())
+	if err != nil {
+		writeInternal(w, r, traceID)
+		return
+	}
+	var req credentialResetRequest
+	if !decodeBody(w, r, traceID, &req) {
+		return
+	}
+	if req.TargetPrincipalID == "" {
+		writeValidationProblem(w, r, traceID, []fieldError{
+			{"target_principal_id", "required", "the principal whose credential is being reset is required"}})
+		return
+	}
+
+	handoff, err := h.auth.store.IssueCredentialResetGrant(r.Context(), p.ID, req.TargetPrincipalID,
+		CredentialResetOptions{KeepExistingSessions: req.KeepExistingSessions, TraceID: traceID})
+	switch {
+	case err == nil:
+	case errors.Is(err, ErrResetNotAdmin):
+		// EVT-083: a refused issuance is exactly as auditable as an accepted one.
+		// The record names the ATTEMPT — a non-admin trying to mint a reset for
+		// somebody else is the event an operator most wants to find later — and it
+		// is emitted here rather than by the store, which never saw a grant.
+		h.auth.auditor.Failure(traceID, p.ID, ActionGrantCreated, "principal:"+req.TargetPrincipalID)
+		apihttp.WriteProblemExt(w, r, traceID, http.StatusForbidden,
+			"FORBIDDEN", "Forbidden", "Issuing a credential-reset grant requires at least the `admin` role.", nil)
+		return
+	case errors.Is(err, ErrPrincipalNotFound), errors.Is(err, ErrResetIdentifierUnknown):
+		// One answer for "no such principal" and "that principal holds no password
+		// credential", deliberately: an admin can list principals through the api
+		// anyway, so this is not a disclosure boundary — it is that both mean the
+		// same thing to the caller, and branching would make this route a probe for
+		// which principals hold password credentials.
+		apihttp.WriteProblemExt(w, r, traceID, http.StatusNotFound,
+			"NOT_FOUND", "Not Found", "No such principal holds a password credential to reset.", nil)
+		return
+	case errors.Is(err, ErrResetTargetNotUser):
+		writeValidationProblem(w, r, traceID, []fieldError{
+			{"target_principal_id", "invalid", "a credential-reset grant targets a `user` principal"}})
+		return
+	default:
+		writeInternal(w, r, traceID)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, credentialResetResponse{
+		GrantID:                     handoff.GrantID,
+		Code:                        handoff.Code,
+		TargetPrincipalID:           handoff.TargetPrincipalID,
+		ExpiresAtMs:                 handoff.ExpiresAtMs,
+		SessionsRevokedOnRedemption: !req.KeepExistingSessions,
+	})
+}
+
+// credentialResetRedeemRequest is POST /auth/credential-reset/redeem's body: the
+// one-time code the target was handed, and the credential value THEY choose.
+type credentialResetRedeemRequest struct {
+	Code     string `json:"code"`
+	Password string `json:"password"`
+}
+
+// RedeemCredentialReset is SEC-050's redemption half, and the only point in the
+// whole flow where a credential value is accepted.
+//
+// # Why this one is unauthenticated
+//
+// The caller is a person who cannot log in — that is the entire premise of a
+// credential reset — so requiring a session would make the operation
+// unreachable by the only party SEC-050 permits to perform it. It is
+// `security: []` for the same reason API-091 makes login and first-boot claim so:
+// its whole purpose is to serve a caller holding no session.
+//
+// What stands in for a session is the code itself, and three things bound what
+// that admits:
+//
+//   - 256 bits of crypto/rand entropy in the code (SEC-032 floors it at 128),
+//     stored only as a hash, so the database cannot yield a redeemable code;
+//   - SEC-033's attempt budget, checked BEFORE the code is looked up, so a
+//     guessing sweep is refused without the lookups it is trying to make;
+//   - SEC-036's atomic check-and-consume with a ~15-minute ttl (SEC-032).
+//
+// # Why it does not return a session
+//
+// The obvious convenience — sign the target in, they just proved possession —
+// would walk straight past their second factor. SEC-052 makes a credential-reset
+// grant explicitly NOT authorize a TOTP change, so a principal holding a `totp`
+// credential still holds it after this call; minting a session here would hand
+// out an authenticated session for that principal without the factor ever being
+// presented, turning "reset my password" into "bypass 2FA". So this returns 204
+// and the target logs in through the front door, factor included.
+func (h *Handlers) RedeemCredentialReset(w http.ResponseWriter, r *http.Request) {
+	traceID := apihttp.TraceID(r)
+	if r.Method != http.MethodPost {
+		apihttp.WriteProblem(w, r, traceID, http.StatusMethodNotAllowed, "VALIDATION_FAILED", "Method Not Allowed")
+		return
+	}
+	var req credentialResetRedeemRequest
+	if !decodeBody(w, r, traceID, &req) {
+		return
+	}
+	var fieldErrs []fieldError
+	if req.Code == "" {
+		fieldErrs = append(fieldErrs, fieldError{"code", "required", "the one-time reset code is required"})
+	}
+	if req.Password == "" {
+		fieldErrs = append(fieldErrs, fieldError{"password", "required", "a new password is required"})
+	}
+	if len(fieldErrs) > 0 {
+		writeValidationProblem(w, r, traceID, fieldErrs)
+		return
+	}
+
+	store := h.auth.store
+	// SEC-033, enforced BEFORE the lookup — "the attack this bounds" is guessing
+	// a code that already exists, so the budget must refuse without checking the
+	// guess. Keyed on this purpose, so a sweep against reset codes cannot be
+	// masked by ordinary setup-code traffic and vice versa.
+	if !h.budget.Allow(PurposeCredentialReset, RequestIPClass(r), store.Now()) {
+		apihttp.WriteProblemExt(w, r, traceID, http.StatusTooManyRequests,
+			"RATE_LIMITED", "Too Many Requests",
+			"Too many reset-code redemption attempts from this source; retry after a backoff.", nil)
+		return
+	}
+
+	if _, err := store.RedeemCredentialResetGrant(r.Context(), req.Code, req.Password, traceID); err != nil {
+		h.writeGrantProblem(w, r, traceID, err, "The reset code is not valid.")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // writeGrantProblem maps a redemption failure onto its security-model/1 error
 // code (SEC-035). ErrGrantNotFound has no code of its own in that taxonomy — the
 // contract only names expired / already-redeemed / purpose-mismatch — so an
 // unknown code is refused as UNAUTHENTICATED, which is both accurate (no valid
 // principal was presented) and non-disclosing (it does not confirm that some
 // other code would have worked).
-func (h *Handlers) writeGrantProblem(w http.ResponseWriter, r *http.Request, traceID string, err error) {
+//
+// unknownDetail is the human-readable line for that last case, supplied by the
+// caller because it is the ONE branch whose wording names the kind of code the
+// endpoint takes ("setup code" / "reset code"); every other branch's detail is
+// about the grant lifecycle and is identical on every redemption endpoint.
+func (h *Handlers) writeGrantProblem(w http.ResponseWriter, r *http.Request, traceID string, err error, unknownDetail string) {
 	switch {
 	case errors.Is(err, ErrGrantExpired):
 		apihttp.WriteProblemExt(w, r, traceID, http.StatusForbidden,
@@ -470,7 +657,7 @@ func (h *Handlers) writeGrantProblem(w http.ResponseWriter, r *http.Request, tra
 			"GRANT_PURPOSE_MISMATCH", "Forbidden", "This grant's purpose does not match the endpoint it was presented to.", nil)
 	case errors.Is(err, ErrGrantNotFound):
 		apihttp.WriteProblemExt(w, r, traceID, http.StatusUnauthorized,
-			"UNAUTHENTICATED", "Unauthorized", "The setup code is not valid.", nil)
+			"UNAUTHENTICATED", "Unauthorized", unknownDetail, nil)
 	default:
 		writeInternal(w, r, traceID)
 	}

@@ -141,3 +141,17 @@ func (s *Store) CountPrincipals(ctx context.Context) (int, error) {
 	}
 	return n, nil
 }
+
+// CountGrants returns how many grant rows of a purpose exist — the observable
+// behind "a refused issuance minted nothing", which a returned error alone
+// cannot establish (a handler that refused AFTER minting returns the same error
+// as one that refused before).
+func (s *Store) CountGrants(ctx context.Context, purpose string) (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM grants WHERE purpose = ?`, purpose).Scan(&n); err != nil {
+		return 0, fmt.Errorf("auth: count %s grants: %w", purpose, err)
+	}
+	return n, nil
+}

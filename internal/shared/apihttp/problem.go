@@ -97,6 +97,34 @@ func WriteProblem(w http.ResponseWriter, r *http.Request, traceID string, status
 // shadow a base member. As with WriteProblem, `code` is also echoed into the
 // ProblemCodeHeader response header (PLY-008).
 func WriteProblemExt(w http.ResponseWriter, r *http.Request, traceID string, status int, code, title, detail string, extra map[string]any) {
+	instance := ""
+	if r != nil && r.URL != nil {
+		instance = r.URL.Path
+	}
+	body := ProblemBody(traceID, status, code, title, detail, instance, extra)
+
+	w.Header().Set("Content-Type", ProblemContentType)
+	w.Header().Set(ProblemCodeHeader, code)
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+// ProblemBody builds the RFC 9457 document WriteProblemExt writes, WITHOUT
+// writing it anywhere — the members and their names in one place, for a carrier
+// that is not an http.ResponseWriter.
+//
+// It exists because api/1's Problem shape is reused verbatim over a transport
+// that has no HTTP response writer at all: the security-model/1 console binding
+// (SEC-074, "the console binding's request and response bodies MUST reuse
+// api/1's own conventions unmodified: the Problem error shape ... this contract
+// defines the console binding's transport and admission rule, never a second
+// error shape"). A second hand-written map over there is exactly how "the same
+// shape" becomes two shapes that drift, so the socket encoder calls this and
+// WriteProblemExt calls this, and neither owns a copy.
+//
+// instance is the request's own path (API-015) where the carrier has one, and
+// empty where it does not — a console request names a verb, not a URL path.
+func ProblemBody(traceID string, status int, code, title, detail, instance string, extra map[string]any) map[string]any {
 	body := map[string]any{
 		"type":     problemType,
 		"title":    title,
@@ -107,15 +135,11 @@ func WriteProblemExt(w http.ResponseWriter, r *http.Request, traceID string, sta
 	if detail != "" {
 		body["detail"] = detail
 	}
-	if r != nil && r.URL != nil && r.URL.Path != "" {
-		body["instance"] = r.URL.Path
+	if instance != "" {
+		body["instance"] = instance
 	}
 	for k, v := range extra {
 		body[k] = v
 	}
-
-	w.Header().Set("Content-Type", ProblemContentType)
-	w.Header().Set(ProblemCodeHeader, code)
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(body)
+	return body
 }

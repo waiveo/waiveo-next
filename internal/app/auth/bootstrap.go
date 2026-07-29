@@ -65,7 +65,12 @@ type Bootstrap struct {
 // the current one — an operator holding an old printout is refused rather than
 // silently granted, and a box that has been power-cycled has not accumulated N
 // live claim codes.
-func EnsureClaimWindow(ctx context.Context, store *Store, dir, scopeNode string, auditor *Auditor) (Bootstrap, error) {
+// The setup grant's own SEC-034 `grant.created` record is emitted by MintGrant
+// itself, from the store's auditor (Store.auditor / WithAuditor) — this function
+// takes no audit sink of its own. It used to, and the record was written here;
+// that arrangement made the emission a property of THIS call site rather than of
+// grant creation, which is the opposite of what SEC-034's word "every" asks for.
+func EnsureClaimWindow(ctx context.Context, store *Store, dir, scopeNode string) (Bootstrap, error) {
 	owners, err := store.CountOwnerBindings(ctx)
 	if err != nil {
 		return Bootstrap{}, err
@@ -96,6 +101,9 @@ func EnsureClaimWindow(ctx context.Context, store *Store, dir, scopeNode string,
 		TTLMs:                  DefaultSetupGrantTTLMs,
 		RedemptionMode:         RedemptionOneTime,
 		IssuedVia:              IssuedViaConsole,
+		// No actor: the installer's stand-in runs before any principal exists, so
+		// UnresolvedActorPrincipal (MintGrant's default) is the honest attribution
+		// rather than a placeholder id.
 	})
 	if err != nil {
 		return Bootstrap{}, err
@@ -103,13 +111,6 @@ func EnsureClaimWindow(ctx context.Context, store *Store, dir, scopeNode string,
 	if err := writeSecret(path, minted.Code); err != nil {
 		return Bootstrap{}, err
 	}
-	// SEC-034: every grant creation emits an audit.event carrying the grant's
-	// purpose and issued_via.
-	auditor.Emit(Record{
-		Actor: UnresolvedActorPrincipal, Action: ActionGrantCreated,
-		Target: "grant:" + minted.Grant.GrantID, Result: "success",
-		Purpose: minted.Grant.Purpose, IssuedVia: minted.Grant.IssuedVia,
-	})
 	return Bootstrap{Claimed: false, Code: minted.Code, CodePath: path}, nil
 }
 

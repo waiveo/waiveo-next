@@ -93,3 +93,34 @@ func newSecurityTestStore(t *testing.T) *Store {
 	t.Cleanup(func() { _ = st.Close() })
 	return st
 }
+
+// testIDs mints deterministic, ascending, valid ULIDs for a test store — the
+// same shape newSecurityTestStore uses, exposed so a test that also needs an
+// Auditor draws its record ids from one source rather than two.
+func testIDs() func() string {
+	const prefix = "01J8Z9AVTHCNSE0F1XTV0000"
+	const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+	n := 0
+	return func() string {
+		hi := alphabet[(n/32)%32]
+		lo := alphabet[n%32]
+		n++
+		return prefix + string([]byte{hi, lo})
+	}
+}
+
+// newAuditedTestStore is newSecurityTestStore with an events sink wired in, for
+// the assertions about SEC-034's mandatory grant records — which a store opened
+// without one does not emit, deliberately.
+func newAuditedTestStore(t *testing.T, sink EventSink) (*Store, *Auditor) {
+	t.Helper()
+	ids := testIDs()
+	clock := func() int64 { return 1752537600000 }
+	auditor := NewAuditor(sink, "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5", clock, ids, nil)
+	st, err := Open(":memory:", clock, ids, WithAuditor(auditor))
+	if err != nil {
+		t.Fatalf("auth.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	return st, auditor
+}

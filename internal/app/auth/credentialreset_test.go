@@ -40,7 +40,7 @@ func TestCredentialResetOptOutKeepsSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
-	redemption, err := st.RedeemCredentialResetGrant(ctx, handoff.Code, "new-passphrase")
+	redemption, err := st.RedeemCredentialResetGrant(ctx, handoff.Code, "new-passphrase", "")
 	if err != nil {
 		t.Fatalf("redeem: %v", err)
 	}

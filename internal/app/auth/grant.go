@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/maaxton/waiveo-next/internal/events"
 	"github.com/maaxton/waiveo-next/internal/relay/reenroll"
 )
 
@@ -110,6 +111,18 @@ type MintGrantOptions struct {
 	MaxRedemptions         int
 	ConsentRecord          string
 	IssuedVia              string
+	// Actor and TraceID name WHO minted this grant and under which api/1
+	// Trace-Id, for the SEC-034 record MintGrant emits. Actor defaults to
+	// UnresolvedActorPrincipal — an installer-run first-boot bootstrap genuinely
+	// has no principal to attribute — and TraceID to a fresh id, exactly as any
+	// other audit record with no inbound trace does.
+	//
+	// They are OPTIONS rather than positional arguments because the emission is
+	// unconditional either way: SEC-034 is satisfied by MintGrant whether or not
+	// a caller filled these in, so forgetting them costs attribution quality and
+	// can never cost the record itself.
+	Actor   string
+	TraceID string
 }
 
 // MintedGrant is a freshly issued grant: the row plus the RAW code, which exists
@@ -191,7 +204,60 @@ func (s *Store) MintGrant(ctx context.Context, opt MintGrantOptions) (MintedGran
 	}); err != nil {
 		return MintedGrant{}, fmt.Errorf("auth: mint grant: %w", err)
 	}
+	// SEC-034: "Every grant creation ... MUST emit an audit.event carrying that
+	// grant's purpose and issued_via in its payload."
+	//
+	// It is emitted HERE, in the one function that creates a grant, rather than
+	// in each issuing flow. That placement is the requirement's own word "every"
+	// taken structurally: a flow added later cannot forget an emission it does
+	// not perform, and the two fields SEC-034 names are read off the row that was
+	// just persisted rather than off the caller's intent, so a flow that asked
+	// for one purpose and stored another is recorded as what it stored.
+	//
+	// The raw code is NOT in this record and cannot be: the record names the
+	// grant by grant_id, which is SEC-051's "the code or URL identifies a grant;
+	// it is not itself a rendered credential" applied to the audit trail.
+	s.auditor.Emit(Record{
+		TraceID: opt.TraceID, Actor: auditActor(opt.Actor), Action: ActionGrantCreated,
+		Target: "grant:" + row.GrantID, Result: events.AuditResultSuccess,
+		Purpose: row.Purpose, IssuedVia: row.IssuedVia,
+	})
 	return MintedGrant{Grant: row, Code: code}, nil
+}
+
+// auditActor resolves an actor id for a record, falling back to the reserved
+// "no principal resolved" id rather than emitting an empty actor EVT-080 would
+// reject (and events.Validate would then drop, losing a mandatory emission).
+func auditActor(actor string) string {
+	if actor == "" {
+		return UnresolvedActorPrincipal
+	}
+	return actor
+}
+
+// RedeemGrantOption carries the attribution RedeemGrant's own SEC-034 record
+// needs. It is an option set rather than extra parameters because the redeeming
+// principal is frequently not known until the consume function has run — the
+// first-boot claim CREATES the principal inside its own transaction — so the
+// actor has to be supplied as something read after commit, not before.
+type RedeemGrantOption func(*redeemOptions)
+
+type redeemOptions struct {
+	actor   func() string
+	traceID string
+}
+
+// RedeemedBy names the principal the redemption is attributed to. The value is
+// resolved AFTER the transaction commits, so a caller whose principal is created
+// inside consume can close over the variable it assigns there.
+func RedeemedBy(actor func() string) RedeemGrantOption {
+	return func(o *redeemOptions) { o.actor = actor }
+}
+
+// RedeemTraceID propagates the api/1 Trace-Id of the request performing the
+// redemption onto its audit record.
+func RedeemTraceID(traceID string) RedeemGrantOption {
+	return func(o *redeemOptions) { o.traceID = traceID }
 }
 
 // InvalidateGrants deletes every unredeemed grant of a purpose — how a fresh
@@ -228,7 +294,11 @@ func (s *Store) InvalidateGrants(ctx context.Context, purpose string) error {
 // The caller MUST perform whatever the grant authorizes inside consume, which
 // runs in the same transaction: a grant marked consumed whose effect then failed
 // to commit would be a code burned for nothing.
-func (s *Store) RedeemGrant(ctx context.Context, code, wantPurpose string, consume func(tx *sql.Tx, g GrantRow) error) (GrantRow, error) {
+func (s *Store) RedeemGrant(ctx context.Context, code, wantPurpose string, consume func(tx *sql.Tx, g GrantRow) error, opts ...RedeemGrantOption) (GrantRow, error) {
+	var ro redeemOptions
+	for _, opt := range opts {
+		opt(&ro)
+	}
 	hash := HashToken(code)
 	var out GrantRow
 	err := s.writeTx(ctx, func(tx *sql.Tx) error {
@@ -299,6 +369,27 @@ func (s *Store) RedeemGrant(ctx context.Context, code, wantPurpose string, consu
 	if err != nil {
 		return GrantRow{}, err
 	}
+	// SEC-034's other half: "every grant redemption MUST emit an audit.event
+	// carrying that grant's purpose and issued_via", so "a recovery-purpose,
+	// console-issued redemption is distinguishable in the audit trail from a
+	// routine invite redemption months later". Both fields come off the REDEEMED
+	// row, so `issued_via` records the channel the grant was ISSUED over — which
+	// is the distinction the requirement's own sentence asks for — rather than
+	// the channel the redemption arrived on.
+	//
+	// Emitted only on success, and after the transaction committed. A refused
+	// redemption is not a grant redemption; it is recorded by the refusing
+	// surface, which is the only layer that knows which code the caller was
+	// refused with and must not put it in a record (SEC-051).
+	actor := ""
+	if ro.actor != nil {
+		actor = ro.actor()
+	}
+	s.auditor.Emit(Record{
+		TraceID: ro.traceID, Actor: auditActor(actor), Action: ActionGrantRedeemed,
+		Target: "grant:" + out.GrantID, Result: events.AuditResultSuccess,
+		Purpose: out.Purpose, IssuedVia: out.IssuedVia,
+	})
 	return out, nil
 }
 

@@ -46,6 +46,14 @@ func (s *recordingSink) payloads(action string) []map[string]any {
 	return out
 }
 
+// snapshot returns every envelope recorded so far, for an assertion that has to
+// look across actions rather than at one.
+func (s *recordingSink) snapshot() []events.Envelope {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]events.Envelope(nil), s.events...)
+}
+
 // harness is a full auth HTTP environment: a store with one owner principal
 // holding a password, the authenticator, the handlers, and the mux they and a
 // protected route are mounted on — exactly the composition the feeder runs.
@@ -522,15 +530,21 @@ func TestCredentialInQueryStringIsRefused(t *testing.T) {
 // shared network."
 func TestClaimRequiresTheSetupGrant(t *testing.T) {
 	clock := newTestClock()
-	st, err := Open(":memory:", clock.now, ulid.New)
+	sink := &recordingSink{}
+	auditor := NewAuditor(sink, "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5", clock.now, ulid.New, nil)
+	// The store carries the auditor, because SEC-034's grant.created and
+	// grant.redeemed records are emitted by MintGrant and RedeemGrant rather
+	// than by the handlers that call them — "every grant creation and every
+	// grant redemption", taken as a property of the two functions that perform
+	// those acts. A store opened without a sink records neither, which is what
+	// makes WithAuditor a deployment requirement rather than a convenience.
+	st, err := Open(":memory:", clock.now, ulid.New, WithAuditor(auditor))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 
-	sink := &recordingSink{}
-	auditor := NewAuditor(sink, "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5", clock.now, ulid.New, nil)
 	a := NewAuthenticator(st, auditor, nil, nil)
 	handlers := NewHandlers(a, nil, RootScopeNode)
 
@@ -546,7 +560,7 @@ func TestClaimRequiresTheSetupGrant(t *testing.T) {
 
 	// An unclaimed box with a live setup grant still refuses a caller who does
 	// not hold the code — arrival order buys nothing.
-	boot, err := EnsureClaimWindow(ctx, st, t.TempDir(), RootScopeNode, auditor)
+	boot, err := EnsureClaimWindow(ctx, st, t.TempDir(), RootScopeNode)
 	if err != nil {
 		t.Fatalf("EnsureClaimWindow: %v", err)
 	}
@@ -600,7 +614,7 @@ func TestClaimRequiresTheSetupGrant(t *testing.T) {
 	}
 
 	// Re-running the bootstrap on a now-claimed box shuts the window.
-	boot2, err := EnsureClaimWindow(ctx, st, t.TempDir(), RootScopeNode, auditor)
+	boot2, err := EnsureClaimWindow(ctx, st, t.TempDir(), RootScopeNode)
 	if err != nil {
 		t.Fatalf("EnsureClaimWindow (claimed): %v", err)
 	}
@@ -621,7 +635,7 @@ func TestSetupCodeIsPersisted0600(t *testing.T) {
 	defer func() { _ = st.Close() }()
 
 	dir := t.TempDir()
-	boot, err := EnsureClaimWindow(context.Background(), st, dir, RootScopeNode, nil)
+	boot, err := EnsureClaimWindow(context.Background(), st, dir, RootScopeNode)
 	if err != nil {
 		t.Fatalf("EnsureClaimWindow: %v", err)
 	}

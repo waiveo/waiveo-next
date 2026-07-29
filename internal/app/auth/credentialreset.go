@@ -57,6 +57,9 @@ type CredentialResetOptions struct {
 	BaseURL string
 	// TTLMs overrides SEC-032's ~15-minute default for this purpose.
 	TTLMs int64
+	// TraceID is the api/1 Trace-Id of the request issuing this reset, carried
+	// onto SEC-034's `grant.created` record. It is an identifier, never a value.
+	TraceID string
 }
 
 // CredentialResetHandoff is what the ISSUING ADMIN receives. Every field is
@@ -128,6 +131,34 @@ func (s *Store) IssueCredentialResetGrant(ctx context.Context, issuingPrincipalI
 	if err := s.requireAdmin(ctx, issuingPrincipalID); err != nil {
 		return CredentialResetHandoff{}, err
 	}
+	return s.issueCredentialResetGrant(ctx, issuingPrincipalID, targetPrincipalID, opt, IssuedViaAPI)
+}
+
+// IssueCredentialResetGrantViaConsole is the same issuance reached over the
+// console binding's `grant.issue` verb (SEC-075), attributed to the synthetic
+// `system-console` principal and stamped `issued_via: console` (SEC-030).
+//
+// It performs NO role check, and that omission is the contract's own rule rather
+// than a shortcut. SEC-073: "a request admitted over the console binding MUST be
+// attributed to the synthetic system-console principal without any further
+// credential exchange — SO_PEERCRED admission is this binding's sole
+// authentication mechanism." There is no role to check: the caller proved uid-0,
+// and SEC-076 admits the verb only because "uid-0 could already perform an
+// equivalent action through direct filesystem or OS-level access on the same
+// host" — root can write the grants table with sqlite3. Running requireAdmin
+// here would demand a credential SEC-073 says this binding does not exchange.
+//
+// It is a SEPARATE exported function rather than a flag on the one above so the
+// bypass is visible at every call site and reviewable in one place: there is no
+// argument value that turns SEC-012's issuer restriction off on the api path.
+func (s *Store) IssueCredentialResetGrantViaConsole(ctx context.Context, consolePrincipalID, targetPrincipalID string, opt CredentialResetOptions) (CredentialResetHandoff, error) {
+	return s.issueCredentialResetGrant(ctx, consolePrincipalID, targetPrincipalID, opt, IssuedViaConsole)
+}
+
+// issueCredentialResetGrant is the issuance both entry points share: the subject
+// checks SEC-012 places on the TARGET (never the issuer, which is each entry
+// point's own business), the mint, and the handoff.
+func (s *Store) issueCredentialResetGrant(ctx context.Context, actorPrincipalID, targetPrincipalID string, opt CredentialResetOptions, issuedVia string) (CredentialResetHandoff, error) {
 	target, err := s.GetPrincipal(ctx, targetPrincipalID)
 	if err != nil {
 		return CredentialResetHandoff{}, err
@@ -147,7 +178,9 @@ func (s *Store) IssueCredentialResetGrant(ctx context.Context, issuingPrincipalI
 		ResultingPrincipalKind: KindUser,
 		TTLMs:                  ttl,
 		RedemptionMode:         RedemptionOneTime, // SEC-031
-		IssuedVia:              IssuedViaAPI,      // SEC-030; the console path passes IssuedViaConsole
+		IssuedVia:              issuedVia,         // SEC-030
+		Actor:                  actorPrincipalID,  // SEC-034's record names the issuer
+		TraceID:                opt.TraceID,
 		Labels: map[string]string{
 			resetLabelTarget: targetPrincipalID,
 			resetLabelRevoke: boolLabel(!opt.KeepExistingSessions),
@@ -183,7 +216,11 @@ func (s *Store) IssueCredentialResetGrant(ctx context.Context, issuingPrincipalI
 // unreachable: a consumed code that set no credential, a set credential whose
 // code stayed live, and a credential set without the session eviction SEC-053
 // makes the default.
-func (s *Store) RedeemCredentialResetGrant(ctx context.Context, code, newPassword string) (CredentialResetRedemption, error) {
+// traceID is the api/1 Trace-Id of the redeeming request, carried onto SEC-034's
+// `grant.redeemed` record. It sits beside newPassword in the signature and is
+// the only other value here; nothing in this call reaches an audit record or a
+// log except the grant id and the target's principal id (SEC-051).
+func (s *Store) RedeemCredentialResetGrant(ctx context.Context, code, newPassword, traceID string) (CredentialResetRedemption, error) {
 	if newPassword == "" {
 		return CredentialResetRedemption{}, errors.New("auth: a credential-reset redemption needs a new credential value")
 	}
@@ -216,7 +253,15 @@ func (s *Store) RedeemCredentialResetGrant(ctx context.Context, code, newPasswor
 		// credential-reset-purpose grant MUST NOT itself authorize a change to
 		// the target principal's TOTP enrollment."
 		return nil
-	})
+	},
+		// SEC-034's redemption record is attributed to the TARGET — the principal
+		// whose credential this redemption set — not to the admin who issued the
+		// code, because the admin is not the party performing this act and the
+		// whole shape of SEC-050 is that they cannot be. The target's id is read
+		// out of the grant's labels inside the transaction, so it is resolved as a
+		// closure the store evaluates after commit.
+		RedeemedBy(func() string { return out.TargetPrincipalID }),
+		RedeemTraceID(traceID))
 	if err != nil {
 		return CredentialResetRedemption{}, err
 	}

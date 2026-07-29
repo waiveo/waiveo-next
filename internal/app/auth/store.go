@@ -167,6 +167,20 @@ type Store struct {
 	// floor wired has none to destroy.
 	floor *ClockFloor
 
+	// auditor is the events/1 sink this store's own mandatory emissions publish
+	// through (SEC-150). Exactly one class of record is emitted from here rather
+	// than from a surface: SEC-034's grant creation and grant redemption, which
+	// says "every" and therefore belongs in the two functions that create and
+	// redeem a grant rather than in each flow that calls them (see MintGrant).
+	//
+	// Nil is legal and silent — Auditor.Emit nil-checks, and a unit test for the
+	// password KDF should not have to invent an event sink. A DEPLOYMENT wiring
+	// none loses a mandatory emission, which is why the feeder builds the auditor
+	// before the store and passes it here rather than attaching one afterwards:
+	// a store that could be opened, used, and only then given a sink has a window
+	// in which grants are minted unrecorded.
+	auditor *Auditor
+
 	// onRevoke (OnRevoke) runs after every session this store revokes, with
 	// that session's id. It is the seam EVT-114's live-stream teardown hangs
 	// off: the events binding registers a hook that closes every open stream
@@ -275,6 +289,18 @@ func WithSecretSealer(sealer SecretSealer) StoreOption {
 // harmless leftover.
 func WithClockFloor(floor *ClockFloor) StoreOption {
 	return func(s *Store) { s.floor = floor }
+}
+
+// WithAuditor installs the events/1 sink this store emits SEC-034's grant
+// creation and grant redemption records through.
+//
+// It is an Open option rather than a setter deliberately: SEC-034 admits no
+// unaudited grant, and a store that can exist without a sink and acquire one
+// later has a window — however short — in which a mint is not recorded. Passing
+// it at construction makes "this store records its grants" a property of every
+// instance a deployment can hold a reference to.
+func WithAuditor(a *Auditor) StoreOption {
+	return func(s *Store) { s.auditor = a }
 }
 
 // There is deliberately NO OpenDefault convenience that supplies a wall clock.
