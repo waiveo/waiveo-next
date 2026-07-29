@@ -31,7 +31,7 @@ func twoScreenServer(t *testing.T) (srv *Server, tokenA, tokenB string) {
 	grantA := testGrantForScreen(testScreenIDA)
 	grantB := testGrantForScreen(testScreenIDB)
 
-	srv, err := NewServer(certPEM, []wire.PairingGrant{grantA, grantB})
+	srv, err := NewServer(certPEM, []wire.PairingGrant{grantA, grantB}, WallClockMs)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestScreenWithNoEntryIsServedTheTerminalDefault(t *testing.T) {
 	grantA := testGrantForScreen(testScreenIDA)
 	grantB := testGrantForScreen(testScreenIDB)
 
-	srv, err := NewServer(certPEM, []wire.PairingGrant{grantA, grantB})
+	srv, err := NewServer(certPEM, []wire.PairingGrant{grantA, grantB}, WallClockMs)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestScreenWithNoEntryIsServedTheTerminalDefault(t *testing.T) {
 //     whatever it had, or on nothing, with no error anywhere.
 func TestGenerationFenceIsPerScreen(t *testing.T) {
 	certPEM, _, priv, _ := testRelaySigningIdentity(t)
-	srv, err := NewServer(certPEM, nil)
+	srv, err := NewServer(certPEM, nil, WallClockMs)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestGenerationFenceIsPerScreen(t *testing.T) {
 // screen sharing whichever program was written last.
 func TestConcurrentPerScreenWritesDoNotOverwriteEachOther(t *testing.T) {
 	certPEM, _, priv, _ := testRelaySigningIdentity(t)
-	srv, err := NewServer(certPEM, nil)
+	srv, err := NewServer(certPEM, nil, WallClockMs)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -283,7 +283,7 @@ func revisionForIndex(i int) string {
 // content.
 func TestCurrentDisplayReportsTheAskedScreen(t *testing.T) {
 	certPEM, _, priv, _ := testRelaySigningIdentity(t)
-	srv, err := NewServer(certPEM, nil)
+	srv, err := NewServer(certPEM, nil, WallClockMs)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -312,7 +312,7 @@ func TestCurrentDisplayReportsTheAskedScreen(t *testing.T) {
 // would be a guess with a real chance of naming the wrong screen.
 func TestSoleServedScreenOnlyAnswersWhenThereIsNoAmbiguity(t *testing.T) {
 	certPEM, _, priv, _ := testRelaySigningIdentity(t)
-	srv, err := NewServer(certPEM, nil)
+	srv, err := NewServer(certPEM, nil, WallClockMs)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -341,7 +341,7 @@ func TestSoleServedScreenOnlyAnswersWhenThereIsNoAmbiguity(t *testing.T) {
 // different name.
 func TestSetProgramIgnoresAnEmptyScreenID(t *testing.T) {
 	certPEM, _, priv, _ := testRelaySigningIdentity(t)
-	srv, err := NewServer(certPEM, nil)
+	srv, err := NewServer(certPEM, nil, WallClockMs)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

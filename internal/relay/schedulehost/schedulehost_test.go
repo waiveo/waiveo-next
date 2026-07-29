@@ -486,7 +486,7 @@ func newTestPlayerServer(t *testing.T) (*playerserver.Server, ed25519.PrivateKey
 		RedemptionMode:         "one-time",
 		IssuedAt:               time.Now().UnixMilli(),
 	}
-	srv, err := playerserver.NewServer(certPEM, []wire.PairingGrant{grant})
+	srv, err := playerserver.NewServer(certPEM, []wire.PairingGrant{grant}, playerserver.WallClockMs)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

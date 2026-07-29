@@ -369,7 +369,7 @@ func (r *InProcessRelay) bootRelay(feederBaseURL, bindHost, dialHost string) err
 	}
 	r.certDER = der
 
-	pairingSrv, err := playerserver.NewServer(relayID.CertPEM, applied.PairingGrants)
+	pairingSrv, err := playerserver.NewServer(relayID.CertPEM, applied.PairingGrants, playerserver.WallClockMs)
 	if err != nil {
 		return fmt.Errorf("playerserver.NewServer: %w", err)
 	}

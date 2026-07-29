@@ -139,7 +139,7 @@ func driveREL121b(rep *report.Report, client RelayClient, feeder Feeder, cases m
 	// from (playerserver.NewServer).
 	servers := map[string]*httptest.Server{}
 	for label, id := range idents {
-		srv, err := playerserver.NewServer(id.CertPEM, grants)
+		srv, err := playerserver.NewServer(id.CertPEM, grants, playerserver.WallClockMs)
 		if err != nil {
 			rep.Fail(c.CaseID, contract, fmt.Sprintf("build relay %s player/1 server: %v", label, err))
 			return

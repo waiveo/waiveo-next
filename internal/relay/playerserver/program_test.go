@@ -101,7 +101,7 @@ func programTestServer(t *testing.T) (srv *Server, pub ed25519.PublicKey, token 
 	certPEM, _, priv, pub := testRelaySigningIdentity(t)
 	grant := testGrantForScreen(testScreenIDA)
 
-	srv, err := NewServer(certPEM, []wire.PairingGrant{grant})
+	srv, err := NewServer(certPEM, []wire.PairingGrant{grant}, WallClockMs)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -405,7 +405,7 @@ func TestLeaseAckRecordsAck(t *testing.T) {
 // generation-7 write below reverts the served program.
 func TestSetProgramFencesStaleGenerationWrite(t *testing.T) {
 	certPEM, _, priv, _ := testRelaySigningIdentity(t)
-	srv, err := NewServer(certPEM, []wire.PairingGrant{testGrant()})
+	srv, err := NewServer(certPEM, []wire.PairingGrant{testGrant()}, WallClockMs)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

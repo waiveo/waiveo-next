@@ -47,7 +47,7 @@ func testGrant() wire.PairingGrant {
 func newTestServer(t *testing.T, grants ...wire.PairingGrant) (*Server, []byte, []byte) {
 	t.Helper()
 	certPEM, certDER := testRelayCert(t)
-	srv, err := NewServer(certPEM, grants)
+	srv, err := NewServer(certPEM, grants, WallClockMs)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

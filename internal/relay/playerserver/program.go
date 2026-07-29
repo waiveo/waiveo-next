@@ -400,7 +400,18 @@ func (s *Server) handleProgram(w http.ResponseWriter, r *http.Request) {
 		apihttp.WriteProblem(w, r, traceID, http.StatusUnauthorized, "CHANNEL_TOKEN_REVOKED", "Channel Token Revoked")
 		return
 	}
-	if time.Now().UnixMilli() > expiresAt {
+	// Read ONCE, from the server's own clock (NewServer's required nowMs), and
+	// reused for the Lease's own stamps below. On a relay that is the
+	// floor-aware reading, so a rolled-back host clock cannot revive a channel
+	// token whose expires_at has passed (PLY-072) any more than it can revive
+	// an elapsed pairing grant.
+	//
+	// One read rather than three also keeps the Lease self-consistent: issued_at
+	// and valid_until come from the same instant the expiry check ran, so a
+	// token that just barely validated can never be handed a Lease stamped as
+	// though it were already stale.
+	nowMs := s.nowMs()
+	if nowMs > expiresAt {
 		apihttp.WriteProblem(w, r, traceID, http.StatusUnauthorized, "CHANNEL_TOKEN_EXPIRED", "Channel Token Expired")
 		return
 	}
@@ -455,8 +466,8 @@ func (s *Server) handleProgram(w http.ResponseWriter, r *http.Request) {
 		Priority:        prog.Priority,
 		Display:         prog.Display,
 		Content:         clampContentDurations(filterContentTypes(prog.Content, req.Capabilities.ContentTypes)),
-		IssuedAt:        time.Now().UnixMilli(),
-		ValidUntil:      time.Now().Add(leaseValidity).UnixMilli(),
+		IssuedAt:        nowMs,
+		ValidUntil:      nowMs + leaseValidity.Milliseconds(),
 	}
 
 	canon, err := wire.LeaseSignedBytes(lease)

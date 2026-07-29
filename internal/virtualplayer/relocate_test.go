@@ -258,7 +258,7 @@ func bootRelocatableRelay(t *testing.T, feederBaseURL string) (primaryHost strin
 	}
 	certDER = der
 
-	srv, err := playerserver.NewServer(relayID.CertPEM, applied.PairingGrants)
+	srv, err := playerserver.NewServer(relayID.CertPEM, applied.PairingGrants, playerserver.WallClockMs)
 	if err != nil {
 		t.Fatalf("playerserver.NewServer: %v", err)
 	}

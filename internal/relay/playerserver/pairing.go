@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
+	"github.com/maaxton/waiveo-next/internal/relay/reenroll"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/paircode"
 	"github.com/maaxton/waiveo-next/internal/shared/tlsboot"
@@ -39,6 +40,22 @@ import (
 // channelTokenTTL bounds a minted channel token's lifetime at issuance —
 // the banked PLY-071 value (no more than 24h after issuance).
 const channelTokenTTL = 24 * time.Hour
+
+// Pairing attempt-budget defaults (security-model/1 SEC-033): 10 redemption
+// attempts per source address per 15 minutes.
+//
+// They are the app's own grant-budget numbers verbatim
+// (internal/app/auth.DefaultGrantAttemptLimit/DefaultGrantAttemptWindowMs), not
+// a second policy: SEC-033 is one requirement over one kind of secret, and a
+// relay that bounded pairing-code guesses differently from the app bounding
+// setup-code guesses would be two policies nobody could reason about together.
+// Against a grant_id carrying SEC-032's 128-bit floor this is astronomically
+// more than an attacker needs to be hopeless, and far more than a human
+// fumbling a hand-typed pairing code on a TV remote needs.
+const (
+	pairAttemptLimit          = 10
+	pairAttemptWindowMs int64 = 15 * 60_000
+)
 
 // PairingRequest is player/1's PairingRequest body (PLY-030, PLY-012):
 // hardware_id, capabilities, and — on the human-typed pairing-code path —
@@ -150,6 +167,22 @@ type Server struct {
 	// consume.
 	relayID string
 
+	// nowMs is the clock every time-dependent decision this server makes reads
+	// — a pairing grant's ttl at redemption (REL-121), a minted channel token's
+	// issued_at/expires_at (PLY-071), a presented token's expiry (PLY-072), an
+	// issued Lease's issued_at/valid_until (PLY-092), and the attempt budget's
+	// own window (SEC-033). NewServer REQUIRES it; see NewServer's own doc for
+	// why there is no wall-clock default.
+	nowMs func() int64
+
+	// pairAttempts is SEC-033's attempt budget over POST /player/v1/pair,
+	// keyed by the attempt's source address (apihttp.RequestSource). It is
+	// internal/relay/reenroll.RateLimiter — a per-key counting window driven by
+	// an injected clock — reused rather than reimplemented, the same primitive
+	// internal/app/auth.GrantAttemptBudget wraps for the app-side redemption
+	// endpoints. Its own state is guarded internally, so it is not under mu.
+	pairAttempts *reenroll.RateLimiter
+
 	mu             sync.Mutex
 	grants         map[string]wire.PairingGrant // grant_id -> grant
 	grantsGen      int64                        // desired-state generation the currently-redeemable grants set was applied for; SetPairingGrants fences a strictly-older write (REL-052/056), mirroring programGen below
@@ -212,6 +245,20 @@ type Server struct {
 	renderEnds   []RenderEndRequest
 }
 
+// WallClockMs reads the host wall clock in epoch milliseconds.
+//
+// It is exported for the callers that genuinely want the HOST's reading: tests,
+// conformance harnesses, and the virtual player — none of which have a relay
+// clock-trust runtime to read. Naming it makes that a deliberate choice at the
+// call site rather than an unremarkable inline closure nobody reads twice.
+//
+// A DEPLOYMENT does not pass this. cmd/waiveo-relay passes its floor-aware
+// reading — the latest of the host clock, the persisted clock floor (REL-130)
+// and the hint-adjusted runtime clock (REL-133) — so a rolled-back host clock
+// cannot walk this server's notion of now behind time the relay has already
+// verified.
+func WallClockMs() int64 { return time.Now().UnixMilli() }
+
 // NewServer builds a pairing Server that redeems against grants (the
 // relay's own applied pairing_grants, REL-067) and presents relayCertPEM as
 // this relay's sole trust_anchors entry (PLY-042) on every redemption —
@@ -219,7 +266,26 @@ type Server struct {
 // (tlsboot.CommitmentForCertDER) is computed over at pairing-code formation
 // time (FormPairingCode), so a player's local PLY-052 comparison is always
 // checking the cert this server actually hands back.
-func NewServer(relayCertPEM []byte, grants []wire.PairingGrant) (*Server, error) {
+//
+// nowMs is the clock every time-dependent decision this server makes reads: a
+// grant's ttl at redemption, a channel token's issuance and expiry, an issued
+// Lease's own window, and the SEC-033 attempt budget's window. It is REQUIRED
+// and positional, matching internal/app/store.Open's, and for the same reason:
+// this package used to call time.Now directly with no seam at all, so a grant's
+// ttl was enforced against the bare host clock while the relay maintained a
+// persisted, advance-only clock floor (REL-130) precisely so that a rolled-back
+// host clock could not re-open a time window that had closed. A deliberately
+// NOT-optional argument with no wall-clock default: a default that silently
+// reads the host clock is the defect the argument exists to remove, and a seam
+// nobody is forced to fill is a seam that stays unfilled. A caller that
+// genuinely wants the host's reading passes the named WallClockMs and says so.
+//
+// It is read per decision, never captured once: a clock floor that advances
+// mid-process must move the next check with it.
+func NewServer(relayCertPEM []byte, grants []wire.PairingGrant, nowMs func() int64) (*Server, error) {
+	if nowMs == nil {
+		return nil, fmt.Errorf("playerserver: NewServer: nowMs must not be nil — a server that can be built without naming its clock will eventually be built without one; pass WallClockMs to choose the host's reading deliberately")
+	}
 	block, _ := pem.Decode(relayCertPEM)
 	if block == nil || block.Type != "CERTIFICATE" {
 		return nil, fmt.Errorf("playerserver: NewServer: relayCertPEM did not PEM-decode to a CERTIFICATE block")
@@ -242,6 +308,8 @@ func NewServer(relayCertPEM []byte, grants []wire.PairingGrant) (*Server, error)
 	return &Server{
 		relayCertPEM:   relayCertPEM,
 		relayID:        leaf.Subject.CommonName,
+		nowMs:          nowMs,
+		pairAttempts:   reenroll.NewRateLimiter(pairAttemptLimit, pairAttemptWindowMs),
 		grants:         grantIndex,
 		redeemedGrants: map[string]bool{},
 		tokens:         map[string]channelTokenRecord{},
@@ -409,6 +477,13 @@ func (s *Server) isScreenRevoked(screenID string) bool {
 // redeemed PairingResponse or a typed PLY-036 error — never a pending
 // status that can never resolve, since Wave-1 first-photon's redemption is
 // always synchronous.
+//
+// This route is reachable with no credential at all — a screen that has never
+// paired holds none, which is the entire premise of pairing — so what stands in
+// for one is the grant_selector itself, and three things bound what that
+// admits: a grant_id carrying at least 128 bits of entropy (SEC-032), an atomic
+// check-and-consume for a one-time grant (SEC-036, redeem below), and SEC-033's
+// attempt budget enforced BEFORE the selector is looked up.
 func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -416,6 +491,29 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 	}
 
 	traceID := apihttp.TraceID(r)
+
+	// SEC-033, enforced BEFORE the body is even read and long before the
+	// selector is resolved: "guessing a code that already exists is the attack
+	// this bounds", so the budget must refuse without checking the guess. A
+	// budget spent only on lookups that reached the grant index would be
+	// counting the attacker's successes rather than their attempts.
+	//
+	// The key is the attempt's SOURCE ADDRESS (apihttp.RequestSource, which
+	// owns why an address and not a coarser class). A `pairing` purpose is the
+	// only purpose this endpoint redeems, so unlike the app's budget there is
+	// no purpose component to separate one sweep from another here.
+	//
+	// The refusal is UNAVAILABLE: player/1's error taxonomy has no rate-limit
+	// code of its own, and PLY-007 forbids reaching into api/1's registry for
+	// one. UNAVAILABLE is that taxonomy's own "the relay is temporarily unable
+	// to serve the request, retry with backoff", which is exactly true and,
+	// unlike PAIRING_CODE_INVALID, does not tell an operator holding a
+	// perfectly good code to throw it away and fetch another. The HTTP status
+	// is the accurate 429.
+	if !s.pairAttempts.Allow(apihttp.RequestSource(r), s.nowMs()) {
+		apihttp.WriteProblem(w, r, traceID, http.StatusTooManyRequests, "UNAVAILABLE", "Too Many Requests")
+		return
+	}
 
 	var req PairingRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -536,17 +634,24 @@ func (s *Server) redeem(selector string) (redemption, error) {
 		return redemption{}, errPairingCodeInvalid
 	}
 
-	issuedAt := time.UnixMilli(grant.IssuedAt)
-	if time.Now().After(issuedAt.Add(time.Duration(grant.TTL) * time.Second)) {
+	// The grant's ttl is enforced against the SERVER'S clock (s.nowMs), never
+	// the bare host clock. On a relay that is the floor-aware reading — the
+	// latest of the host clock, the persisted advance-only clock floor
+	// (REL-130) and the hint-adjusted runtime clock (REL-133) — so a host clock
+	// rolled back below a time the relay has already verified cannot re-open a
+	// grant whose ttl has elapsed. Reading time.Now here made REL-130's whole
+	// point ("on restart it MUST NOT adopt a wall-clock reading earlier than
+	// this persisted floor") true of everything except the one check on this
+	// path that a time window actually gates.
+	nowMs := s.nowMs()
+	if nowMs > grant.IssuedAt+grant.TTL*1000 {
 		return redemption{}, errPairingExpired
 	}
-
-	now := time.Now()
 
 	if grant.RedemptionMode == "one-time" {
 		s.redeemedGrants[grant.GrantID] = true
 		if s.sessionStore != nil {
-			if err := s.sessionStore.MarkPairingGrantRedeemed(grant.GrantID, now.UnixMilli()); err != nil {
+			if err := s.sessionStore.MarkPairingGrantRedeemed(grant.GrantID, nowMs); err != nil {
 				return redemption{}, fmt.Errorf("%w: %v", errSessionPersistFailed, err)
 			}
 		}
@@ -556,7 +661,7 @@ func (s *Server) redeem(selector string) (redemption, error) {
 	// only a one-time one — so this rides outside the branch above. It is
 	// enqueued BEFORE the credential is minted and returned, so a redemption a
 	// player actually received can never be one this relay forgot it owed.
-	if err := s.recordRedemptionOwedLocked(grant.GrantID, now.UnixMilli()); err != nil {
+	if err := s.recordRedemptionOwedLocked(grant.GrantID, nowMs); err != nil {
 		return redemption{}, err
 	}
 
@@ -574,8 +679,8 @@ func (s *Server) redeem(selector string) (redemption, error) {
 	rec := redemption{
 		ChannelToken: newOpaqueToken("ct"),
 		ScreenID:     screenID,
-		IssuedAt:     now.UnixMilli(),
-		ExpiresAt:    now.Add(channelTokenTTL).UnixMilli(),
+		IssuedAt:     nowMs,
+		ExpiresAt:    nowMs + channelTokenTTL.Milliseconds(),
 	}
 	s.tokens[rec.ChannelToken] = channelTokenRecord{ScreenID: rec.ScreenID, ExpiresAt: rec.ExpiresAt}
 	if s.sessionStore != nil {

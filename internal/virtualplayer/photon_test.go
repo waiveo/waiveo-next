@@ -210,7 +210,7 @@ func bootTestRelay(t *testing.T, feederBaseURL string) (host string, port int, c
 	}
 	certDER = der
 
-	pairingSrv, err := playerserver.NewServer(relayID.CertPEM, applied.PairingGrants)
+	pairingSrv, err := playerserver.NewServer(relayID.CertPEM, applied.PairingGrants, playerserver.WallClockMs)
 	if err != nil {
 		t.Fatalf("playerserver.NewServer: %v", err)
 	}

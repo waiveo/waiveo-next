@@ -18,7 +18,7 @@ func preemptProgramTestServer(t *testing.T) (srv *Server, token string) {
 	certPEM, _, priv, _ := testRelaySigningIdentity(t)
 	grant := testGrantForScreen(testScreenIDA)
 
-	srv, err := NewServer(certPEM, []wire.PairingGrant{grant})
+	srv, err := NewServer(certPEM, []wire.PairingGrant{grant}, WallClockMs)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

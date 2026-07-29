@@ -28,7 +28,7 @@ func TestSetServedProgramDeliversPersistedPreemptLease(t *testing.T) {
 	certPEM, _, priv, _ := testRelaySigningIdentity(t)
 	grant := testGrantForScreen(offlineScreenID)
 
-	srv, err := NewServer(certPEM, []wire.PairingGrant{grant})
+	srv, err := NewServer(certPEM, []wire.PairingGrant{grant}, WallClockMs)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestSetServedProgramCarriesPerItemContentType(t *testing.T) {
 	certPEM, _, priv, _ := testRelaySigningIdentity(t)
 	grant := testGrantForScreen(offlineScreenID)
 
-	srv, err := NewServer(certPEM, []wire.PairingGrant{grant})
+	srv, err := NewServer(certPEM, []wire.PairingGrant{grant}, WallClockMs)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

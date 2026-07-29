@@ -64,7 +64,7 @@ func relayCertFor(t *testing.T, relayID string) []byte {
 // serverForRelay builds a pairing Server enrolled as relayID, holding grants.
 func serverForRelay(t *testing.T, relayID string, grants ...wire.PairingGrant) *Server {
 	t.Helper()
-	srv, err := NewServer(relayCertFor(t, relayID), grants)
+	srv, err := NewServer(relayCertFor(t, relayID), grants, WallClockMs)
 	if err != nil {
 		t.Fatalf("NewServer(%s): %v", relayID, err)
 	}
@@ -290,7 +290,7 @@ func TestOwedRedemptionReportSurvivesARelayRestart(t *testing.T) {
 	g := grantBoundTo("grant-restart-0123456789ab", relayA)
 	cert := relayCertFor(t, relayA)
 
-	before, err := NewServer(cert, []wire.PairingGrant{g})
+	before, err := NewServer(cert, []wire.PairingGrant{g}, WallClockMs)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -306,7 +306,7 @@ func TestOwedRedemptionReportSurvivesARelayRestart(t *testing.T) {
 	}
 
 	// The restart: a brand-new Server, same durable store.
-	after, err := NewServer(cert, []wire.PairingGrant{g})
+	after, err := NewServer(cert, []wire.PairingGrant{g}, WallClockMs)
 	if err != nil {
 		t.Fatalf("NewServer (restart): %v", err)
 	}
