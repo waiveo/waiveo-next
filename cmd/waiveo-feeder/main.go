@@ -313,10 +313,17 @@ func envOr(env func(string) string, key, def string) string {
 // rewrite would be refused.
 func reportStoreIDs(storePath string, out io.Writer) int {
 	// The HOST clock deliberately, and the only place in this binary that is the
-	// right answer. This subcommand stamps nothing — it reports and returns — so
-	// there is no row for a floor to keep consistent with anything, and reaching
-	// for the floor would mean creating the auth-state directory it lives in as a
-	// side effect of a read-only check that runs before the server does.
+	// right answer. This subcommand stamps no ROW — it plans and reports, and the
+	// migration planner takes a read lock and writes nothing — so there is no
+	// stamp for a floor to keep consistent with anything, and reaching for the
+	// floor would mean creating the auth-state directory it lives in as a side
+	// effect of a check that runs before the server does.
+	//
+	// "Stamps no row" rather than "writes nothing", because the open itself is
+	// not inert: against a path with no store, store.Open creates the directory
+	// and file and runs every migration, so -store-check on a fresh path reports
+	// a conforming store it just created. That is a surprising-but-harmless
+	// property of the subcommand, not of this clock choice.
 	st, err := store.Open(storePath, store.WallClockMs)
 	if err != nil {
 		fmt.Fprintf(out, "cannot open %s: %v\n", storePath, err)

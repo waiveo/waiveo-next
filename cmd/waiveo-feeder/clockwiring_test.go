@@ -4,6 +4,8 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -104,6 +106,8 @@ func TestMainWiresOneClockIntoEveryComponentThatTakesOne(t *testing.T) {
 				want.callee, want.why)
 		}
 	}
+
+	checkNoOtherClockReaches(t)
 }
 
 // parseMainFunc returns main.go's func main, failing the test if it is absent.
@@ -160,4 +164,89 @@ func render(e ast.Expr) string {
 		}
 	}
 	return ""
+}
+
+// hostClockException names one place this package is ALLOWED to read the host
+// clock, and why. Anything not on this list is a finding.
+type hostClockException struct {
+	fn   string // enclosing function name
+	expr string // the rendered expression, e.g. "store.WallClockMs"
+	why  string
+}
+
+var hostClockExceptions = []hostClockException{
+	{"reportStoreIDs", "store.WallClockMs",
+		"a read-only diagnostic subcommand that stamps no row and runs before a serving process exists to have a notion of time"},
+	{"main", "time.Now",
+		"the host reading the clock floor itself is built ON — the floor's whole job is to clamp it, so it has to be able to see it"},
+}
+
+// checkNoOtherClockReaches is the COMPLETENESS half of this file, and it is the
+// half that actually holds.
+//
+// The table above asserts what main hands each component at a call site. Two
+// escapes from that shape were demonstrated rather than imagined:
+//
+//   - desiredStateSource takes its clock by STRUCT LITERAL, which is not a call
+//     expression and therefore cannot be expressed as a {callee, index} row at
+//     all. That is the component deciding which program each screen is serving
+//     at this instant, and pointing it at the host clock passed the whole suite.
+//   - startWebhookDelivery and newContentSweeper are local WRAPPERS. The table
+//     proves main hands them nowMs and says nothing about what they do with it;
+//     replacing the clock INSIDE either one passed the whole suite too. The
+//     content sweeper is the worse case, because it deletes content bytes based
+//     on an age measured from that clock.
+//
+// So instead of enumerating the ways a clock can arrive — which is unbounded —
+// this asserts the host clock is not READ anywhere in this package except the
+// two places it legitimately is. That covers call arguments, struct literals,
+// wrappers, and whatever shape the next component is wired in, without anyone
+// having to remember to add a row.
+func checkNoOtherClockReaches(t *testing.T) {
+	t.Helper()
+	allowed := map[string]bool{}
+	for _, e := range hostClockExceptions {
+		allowed[e.fn+" "+e.expr] = true
+	}
+
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read package dir: %v", err)
+	}
+	fset := token.NewFileSet()
+	found := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, e.Name(), nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", e.Name(), err)
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok {
+				continue
+			}
+			ast.Inspect(fn, func(n ast.Node) bool {
+				sel, ok := n.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				expr := render(sel)
+				if expr != "store.WallClockMs" && expr != "time.Now" {
+					return true
+				}
+				found++
+				if !allowed[fn.Name.Name+" "+expr] {
+					t.Errorf("%s reads the host clock (%s) at %s — every component in this process must stamp from nowMs, the clock floor's reading. If this one genuinely must not, add it to hostClockExceptions with the reason.",
+						fn.Name.Name, expr, fset.Position(sel.Pos()))
+				}
+				return true
+			})
+		}
+	}
+	if found == 0 {
+		t.Error("no host-clock read found anywhere in this package, not even the allowed ones; the scan is matching nothing and would pass whatever the package does")
+	}
 }
