@@ -72,7 +72,7 @@ func driveREL061(rep *report.Report, cases map[string]corpus.Case) {
 	// Seed the durable store exactly as an earlier, ONLINE apply would have
 	// left it — internal/relay/identity.Store.ApplyGeneration is the same
 	// atomic commit desiredstate.Pull itself calls (REL-056).
-	if err := store.ApplyGeneration(in.RelayPersistedLastApplied.Generation, in.RelayPersistedLastApplied.Hash, programsJSON); err != nil {
+	if err := store.ApplyGeneration(in.RelayPersistedLastApplied.Generation, in.RelayPersistedLastApplied.Hash, programsJSON, nil); err != nil {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("seed persisted last-applied generation %d: %v", in.RelayPersistedLastApplied.Generation, err))
 		return
 	}

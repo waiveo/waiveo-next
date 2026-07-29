@@ -293,6 +293,27 @@ func TestLoadConfigRejectsMalformedECPTargets(t *testing.T) {
 // (PLY-090) — is ed25519, a distinct key from the feeder's TLS serving leaf.
 func newTestPlayerServer(t *testing.T) (*playerserver.Server, string) {
 	t.Helper()
+	certPEM, priv := newTestRelayIdentity(t)
+
+	srv, err := playerserver.NewServer(certPEM, []wire.PairingGrant{testPlayerServerGrant()}, playerserver.WallClockMs)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	// The relay's own Lease-signing identity, installed exactly as the boot path
+	// installs it (main's own pairingSrv.SetSigningKey) and independently of any
+	// program: a program write carries no key, so nothing else on this server can
+	// establish one and every pull would answer 500 without this.
+	srv.SetSigningKey(priv)
+	return srv, testPlayerServerGrantID
+}
+
+// newTestRelayIdentity mints one self-signed relay certificate and its private
+// key — the pair a player/1 server presents as its sole trust anchor and signs
+// every Lease with. Hoisted out of newTestPlayerServer so a case that builds
+// TWO servers across a simulated restart can give both the SAME relay identity,
+// as a restarted process would have (it reads its persisted one back).
+func newTestRelayIdentity(t *testing.T) ([]byte, ed25519.PrivateKey) {
+	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("ed25519.GenerateKey: %v", err)
@@ -314,18 +335,7 @@ func newTestPlayerServer(t *testing.T) (*playerserver.Server, string) {
 	if err != nil {
 		t.Fatalf("x509.CreateCertificate: %v", err)
 	}
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-
-	srv, err := playerserver.NewServer(certPEM, []wire.PairingGrant{testPlayerServerGrant()}, playerserver.WallClockMs)
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
-	}
-	// The relay's own Lease-signing identity, installed exactly as the boot path
-	// installs it (main's own pairingSrv.SetSigningKey) and independently of any
-	// program: a program write carries no key, so nothing else on this server can
-	// establish one and every pull would answer 500 without this.
-	srv.SetSigningKey(priv)
-	return srv, testPlayerServerGrantID
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}), priv
 }
 
 // testPlayerServerGrantID is newTestPlayerServer's own boot-time REL-121

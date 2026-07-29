@@ -97,17 +97,29 @@ func VerifyAndApply(store *identity.Store, body wire.StateSnapshotBody, rawSecti
 		return Applied{}, fmt.Errorf("desiredstate: VerifyAndApply: %w", err)
 	}
 
-	// 4. Persist {generation, hash} AND the applied screen_programs as ONE
-	// atomic apply-unit (REL-055/056) — see Pull's original comment for the
-	// torn-write hazard store.ApplyGeneration closes. Only reached once
-	// hash + signature have both verified and the generation has not
-	// regressed. Re-applying the same already-applied generation is a no-op
-	// by construction (REL-070) — the row is upserted to the same values.
+	// 4. Persist {generation, hash}, the applied screen_programs AND this
+	// generation's `revocation_and_site.revoked` set as ONE atomic apply-unit
+	// (REL-055/056) — see Pull's original comment for the torn-write hazard
+	// store.ApplyGeneration closes. Only reached once hash + signature have
+	// both verified and the generation has not regressed. Re-applying the same
+	// already-applied generation is a no-op by construction (REL-070) — the row
+	// is upserted to the same values.
+	//
+	// `revoked` is persisted here rather than only carried on the returned
+	// Applied because REL-123 enforces it "regardless of connectivity", and a
+	// process restart is the connectivity gap an in-memory-only copy cannot
+	// survive: the relay would come back serving its persisted programs to its
+	// persisted channel tokens with nothing revoked (ServedRevocation's own
+	// doc).
 	programsJSON, err := json.Marshal(applied.ScreenPrograms)
 	if err != nil {
 		return Applied{}, fmt.Errorf("desiredstate: VerifyAndApply: marshal applied screen_programs: %w", err)
 	}
-	if err := store.ApplyGeneration(body.Generation, body.Hash, programsJSON); err != nil {
+	revokedJSON, err := json.Marshal(applied.Revoked)
+	if err != nil {
+		return Applied{}, fmt.Errorf("desiredstate: VerifyAndApply: marshal applied revoked: %w", err)
+	}
+	if err := store.ApplyGeneration(body.Generation, body.Hash, programsJSON, revokedJSON); err != nil {
 		return Applied{}, fmt.Errorf("desiredstate: VerifyAndApply: persist applied generation: %w", err)
 	}
 

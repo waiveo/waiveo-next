@@ -5,7 +5,9 @@
 // trust anchor, `#28`), and its last-applied desired-state generation
 // (REL-073: persisted beside the verification key, so both survive a power
 // cycle and remain usable for offline verification without contacting the
-// app peer).
+// app peer) — including that generation's own `revocation_and_site.revoked`
+// set, which REL-123 requires the relay enforce from its last-synced copy
+// "regardless of connectivity", a restart included.
 //
 // This is deliberately a narrow, operational store — relay/1 REL-142 scopes
 // a relay's durable local state to exactly this identity/trust/progress
@@ -81,7 +83,8 @@ CREATE TABLE IF NOT EXISTS last_applied_generation (
 	id              INTEGER PRIMARY KEY CHECK (id = 1),
 	generation      INTEGER NOT NULL,
 	hash            TEXT NOT NULL,
-	screen_programs BLOB NOT NULL DEFAULT '[]'
+	screen_programs BLOB NOT NULL DEFAULT '[]',
+	revoked         BLOB NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS clock_floor (
 	id          INTEGER PRIMARY KEY CHECK (id = 1),
@@ -148,13 +151,22 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("identity: create telemetry schema: %w", err)
 	}
+	if _, err := db.Exec(playerSessionSchema); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("identity: create player-session schema: %w", err)
+	}
+
+	// Column migrations run AFTER every CREATE TABLE IF NOT EXISTS above:
+	// each one exists precisely because that statement is a no-op against a
+	// table an earlier build already created, so each must inspect the table
+	// as it now stands.
 	if err := migrateTelemetrySchema(db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("identity: migrate telemetry schema: %w", err)
 	}
-	if _, err := db.Exec(playerSessionSchema); err != nil {
+	if err := migrateLastAppliedSchema(db); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("identity: create player-session schema: %w", err)
+		return nil, fmt.Errorf("identity: migrate last-applied schema: %w", err)
 	}
 
 	return &Store{db: db}, nil
@@ -189,6 +201,68 @@ func verifyWriteDiscipline(db *sql.DB) error {
 		return fmt.Errorf("busy_timeout = %d, want 5000", busyTimeout)
 	}
 	return nil
+}
+
+// migrateLastAppliedSchema brings a last_applied_generation created by an
+// earlier build up to the current column set, exactly as migrateTelemetrySchema
+// does for the telemetry queue and for the same reason: `CREATE TABLE IF NOT
+// EXISTS` is a no-op against an existing table, so a relay that has been
+// running since before `revoked` existed would keep a four-column row and fail
+// every ApplyGeneration — no generation applying at all, which is a harder
+// outage than the one the column exists to fix.
+//
+// The added column defaults to the REL-060 empty placeholder, so a relay
+// upgraded mid-life comes up revoking nothing until its next pull restates the
+// set. That is the correct default and not a silent un-revocation: a relay on
+// the old build was not enforcing a persisted revocation at all (it had nowhere
+// to persist one), so there is no prior durable statement for the migration to
+// lose.
+func migrateLastAppliedSchema(db *sql.DB) error {
+	has, err := hasColumn(db, "last_applied_generation", "revoked")
+	if err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+	if _, err := db.Exec(`ALTER TABLE last_applied_generation ADD COLUMN revoked BLOB NOT NULL DEFAULT '[]'`); err != nil {
+		return fmt.Errorf("add last_applied_generation.revoked: %w", err)
+	}
+	return nil
+}
+
+// hasColumn reports whether table already carries column. It is a PRAGMA read
+// rather than a blind `ALTER TABLE ... ADD COLUMN` whose "duplicate column"
+// error is swallowed: swallowing an error class to make a statement idempotent
+// also swallows the unrelated failures that share it.
+func hasColumn(db *sql.DB, table, column string) (bool, error) {
+	// PRAGMA table_info takes no bound parameter, and both call sites pass a
+	// package-constant table name — never anything a caller or a wire message
+	// could reach.
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return false, fmt.Errorf("inspect %s: %w", table, err)
+	}
+	defer rows.Close()
+
+	found := false
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
+			return false, fmt.Errorf("scan %s column: %w", table, err)
+		}
+		if name == column {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate %s columns: %w", table, err)
+	}
+	return found, nil
 }
 
 // Checkpoint flushes the WAL back into the main database file and truncates
@@ -333,11 +407,13 @@ func (s *Store) SetLastAppliedGeneration(generation int64, hash string) error {
 }
 
 // ApplyGeneration persists the relay's last-applied desired-state generation
-// number, section hash, AND the applied screen_programs array as ONE atomic
-// row write (REL-055/056): the generation swap completes entirely against
-// either the prior or the new generation, never a torn cross-generation mix
-// where last-applied reports the new {generation, hash} while the served
-// screen_programs are still the prior generation's array.
+// number, section hash, the applied screen_programs array AND that generation's
+// `revocation_and_site.revoked` set as ONE atomic row write (REL-055/056): the
+// generation swap completes entirely against either the prior or the new
+// generation, never a torn cross-generation mix where last-applied reports the
+// new {generation, hash} while the served screen_programs — or the revocation
+// set enforced against every credential decision — are still the prior
+// generation's.
 //
 // This is the single apply-unit primitive the desired-state apply path
 // (internal/relay/desiredstate.VerifyAndApply) MUST use instead of a separate
@@ -346,22 +422,45 @@ func (s *Store) SetLastAppliedGeneration(generation int64, hash string) error {
 // commits (a power-pull) surfaces exactly the torn state REL-056 forbids — the
 // relay believing itself caught up on the new generation while still serving
 // the old generation's screen_programs, silently never applying an emergency
-// preempt/blank the new generation carried. Because all three fields ride a
+// preempt/blank the new generation carried. Because all four fields ride a
 // single INSERT … ON CONFLICT statement against the singleton row, SQLite's
 // own statement-level atomicity (under the store's WAL + synchronous=FULL write
 // discipline) guarantees they commit together or not at all — there is no
-// intermediate row state where generation and screen_programs disagree.
+// intermediate row state where generation, screen_programs and revoked
+// disagree.
 //
-// An empty or nil screenProgramsJSON is stored as the REL-060 empty
-// placeholder (`[]`), matching SetServedScreenPrograms.
-func (s *Store) ApplyGeneration(generation int64, hash string, screenProgramsJSON []byte) error {
+// # Why `revoked` rides this same row
+//
+// REL-123 requires a SYNCED revocation be enforced "regardless of
+// connectivity", and REL-073's rule for the trust anchor — persisted beside
+// `{generation, hash}` so both "survive a power cycle and remain usable for
+// offline verification without contacting the app peer" — is the same rule
+// applied to the same class of state. A revocation held only in the running
+// process's memory is enforced only until the next restart, so a relay that
+// reboots during an app-peer outage would come up serving its PERSISTED
+// programs to its PERSISTED channel tokens with an EMPTY revocation set —
+// precisely the window REL-123 exists to close. And it belongs in THIS write
+// rather than a write of its own for the reason the other three do: a row where
+// the generation says N while the revocation set is still N-1's is the same
+// torn cross-generation mix, one credential decision wide.
+//
+// An empty or nil screenProgramsJSON or revokedJSON is stored as the REL-060
+// empty placeholder (`[]`), matching SetServedScreenPrograms.
+func (s *Store) ApplyGeneration(generation int64, hash string, screenProgramsJSON, revokedJSON []byte) error {
 	if len(screenProgramsJSON) == 0 {
 		screenProgramsJSON = []byte("[]")
 	}
+	// "null" as well as empty: a nil []string marshals to `null`, and while
+	// that decodes back to a nil slice that every consumer already reads as
+	// "this generation revokes nothing", storing the REL-060 placeholder keeps
+	// the persisted row saying what the section says.
+	if len(revokedJSON) == 0 || string(revokedJSON) == "null" {
+		revokedJSON = []byte("[]")
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO last_applied_generation (id, generation, hash, screen_programs) VALUES (1, ?, ?, ?)
-		 ON CONFLICT (id) DO UPDATE SET generation = excluded.generation, hash = excluded.hash, screen_programs = excluded.screen_programs`,
-		generation, hash, screenProgramsJSON,
+		`INSERT INTO last_applied_generation (id, generation, hash, screen_programs, revoked) VALUES (1, ?, ?, ?, ?)
+		 ON CONFLICT (id) DO UPDATE SET generation = excluded.generation, hash = excluded.hash, screen_programs = excluded.screen_programs, revoked = excluded.revoked`,
+		generation, hash, screenProgramsJSON, revokedJSON,
 	)
 	if err != nil {
 		return fmt.Errorf("identity: ApplyGeneration: %w", err)
@@ -426,6 +525,39 @@ func (s *Store) LastAppliedScreenPrograms() ([]byte, error) {
 	}
 	if err != nil {
 		return nil, fmt.Errorf("identity: LastAppliedScreenPrograms: %w", err)
+	}
+	if len(raw) == 0 {
+		return []byte("[]"), nil
+	}
+	return raw, nil
+}
+
+// LastAppliedRevokedScreens returns the persisted last-applied
+// `revocation_and_site.revoked` set as its raw JSON bytes (REL-066) — the read
+// half of the durable revocation state ApplyGeneration commits, and the exact
+// counterpart of LastAppliedScreenPrograms. A store that has never applied a
+// generation — or one whose applied generation revoked nothing — returns the
+// REL-060 empty placeholder (`[]`), never a nil or an error, so the offline
+// boot path (internal/relay/desiredstate.ServedRevocation) decodes cleanly to
+// an empty set rather than failing.
+//
+// An empty result is the app peer positively stating that nothing is revoked,
+// not an absence of information — REL-066 puts the key on every snapshot. What
+// a caller MUST NOT do is treat "never applied a generation" as an empty
+// revocation set it may act on: the relay in that state has synced nothing at
+// all, and REL-123's own carve-out is that "a revocation the relay has not yet
+// pulled is not yet enforceable". cmd/waiveo-relay only reaches this read on a
+// boot that HAS a persisted last-applied generation (its offline-serve
+// fallback is fatal without one), so the two cases never have to be told apart
+// here.
+func (s *Store) LastAppliedRevokedScreens() ([]byte, error) {
+	var raw []byte
+	err := s.db.QueryRow(`SELECT revoked FROM last_applied_generation WHERE id = 1`).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return []byte("[]"), nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("identity: LastAppliedRevokedScreens: %w", err)
 	}
 	if len(raw) == 0 {
 		return []byte("[]"), nil

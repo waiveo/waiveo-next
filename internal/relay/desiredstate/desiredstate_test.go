@@ -108,7 +108,19 @@ func openStore(t *testing.T) *identity.Store {
 // desired_state_verification_key trust anchor before the verify chain is exercised.
 func enrolledStore(t *testing.T, ts *httptest.Server) *identity.Store {
 	t.Helper()
-	store := openStore(t)
+	return enrolledStoreAt(t, ts, filepath.Join(t.TempDir(), "relay.db"))
+}
+
+// enrolledStoreAt is enrolledStore over a caller-chosen on-disk path — what a
+// case that closes the store and REOPENS the same file needs, since the file is
+// the only thing carried across a simulated restart.
+func enrolledStoreAt(t *testing.T, ts *httptest.Server, dbPath string) *identity.Store {
+	t.Helper()
+	store, err := identity.Open(dbPath)
+	if err != nil {
+		t.Fatalf("identity.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
 	if err := relayenroll.Run(ts.URL, store); err != nil {
 		t.Fatalf("relayenroll.Run: %v", err)
 	}
@@ -509,6 +521,81 @@ func TestApplyExposesRevoked(t *testing.T) {
 	}
 	if !reflect.DeepEqual(applied.Revoked, want) {
 		t.Errorf("applied.Revoked = %v, want %v (REL-066, unmodified and in order)", applied.Revoked, want)
+	}
+}
+
+// TestServedRevocationSurvivesTheStore is REL-123's durability half: the same
+// verified `revoked` list, read back through the OFFLINE accessor from a store
+// closed and reopened from its own on-disk file. Carrying it only on the
+// returned Applied would leave a relay that reboots during an app-peer outage
+// serving its PERSISTED programs to its PERSISTED channel tokens with an EMPTY
+// revocation set, until a pull it cannot make restated one — which is exactly
+// the window "a synced one MUST be enforced regardless of connectivity" closes.
+//
+// The read path takes only the store: no feeder, no app peer, no connection —
+// so a successful read here IS the offline property, not a simulation of it.
+func TestServedRevocationSurvivesTheStore(t *testing.T) {
+	img := loadTestImage(t)
+	id := testFeederIdentity(t)
+
+	snap, err := snapshot.Build(img, "https://origin.example", id, nil)
+	if err != nil {
+		t.Fatalf("snapshot.Build: %v", err)
+	}
+	want := []string{"01J8Z3K4N5P6Q7R8S9T0V1W2R1", "01J8Z3K4N5P6Q7R8S9T0V1W2R2"}
+	snap.Sections.RevocationAndSite.Revoked = want
+	snap.Hash, err = wire.HashSections(snap.Sections)
+	if err != nil {
+		t.Fatalf("wire.HashSections: %v", err)
+	}
+	canon, err := wire.SignedScopeBytes(snap.Generation, snap.Hash)
+	if err != nil {
+		t.Fatalf("wire.SignedScopeBytes: %v", err)
+	}
+	snap.Signature = wire.EncodeSignature(signhash.Sign(id.SigningPriv(), canon))
+
+	dbPath := filepath.Join(t.TempDir(), "relay.db")
+	ts := newTestFeeder(t, id)
+	store := enrolledStoreAt(t, ts, dbPath)
+
+	if _, err := applySnapshot(t, store, snap); err != nil {
+		t.Fatalf("VerifyAndApply: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("store.Close(): %v", err)
+	}
+
+	reopened, err := identity.Open(dbPath)
+	if err != nil {
+		t.Fatalf("identity.Open (reopen): %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+
+	got, err := ServedRevocation(reopened)
+	if err != nil {
+		t.Fatalf("ServedRevocation: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ServedRevocation after a restart = %v, want %v (REL-066/REL-123)", got, want)
+	}
+}
+
+// TestServedRevocationEmptyOnFreshStore asserts a relay that has never applied
+// a generation reads back an empty set rather than an error — a boot with
+// nothing synced must not fail on the read itself. REL-123's own carve-out
+// covers what that empty set means: "a revocation the relay has not yet pulled
+// is not yet enforceable."
+func TestServedRevocationEmptyOnFreshStore(t *testing.T) {
+	id := testFeederIdentity(t)
+	ts := newTestFeeder(t, id)
+	store := enrolledStore(t, ts)
+
+	got, err := ServedRevocation(store)
+	if err != nil {
+		t.Fatalf("ServedRevocation on a store that has applied nothing: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("ServedRevocation on a fresh store = %v, want empty", got)
 	}
 }
 

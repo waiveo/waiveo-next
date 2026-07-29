@@ -63,33 +63,15 @@ CREATE TABLE IF NOT EXISTS telemetry_seq_high_water (
 // to the current column set. `CREATE TABLE IF NOT EXISTS` is a no-op against an
 // existing table, so a relay that has been running since before trace_id existed
 // would otherwise keep a four-column queue and fail every insert — the whole
-// durable backlog silently unwritable. The check is a PRAGMA read rather than a
-// blind `ALTER TABLE ... ADD COLUMN` whose "duplicate column" error is swallowed:
-// swallowing an error class to make a statement idempotent also swallows the
-// unrelated failures that share it.
+// durable backlog silently unwritable. The column check is identity.go's shared
+// hasColumn, a PRAGMA read rather than a blind `ALTER TABLE ... ADD COLUMN`
+// whose "duplicate column" error is swallowed: swallowing an error class to
+// make a statement idempotent also swallows the unrelated failures that share
+// it.
 func migrateTelemetrySchema(db *sql.DB) error {
-	rows, err := db.Query(`PRAGMA table_info(telemetry_queue)`)
+	hasTraceID, err := hasColumn(db, "telemetry_queue", "trace_id")
 	if err != nil {
-		return fmt.Errorf("inspect telemetry_queue: %w", err)
-	}
-	defer rows.Close()
-
-	hasTraceID := false
-	for rows.Next() {
-		var cid int
-		var name, colType string
-		var notNull int
-		var dflt sql.NullString
-		var pk int
-		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
-			return fmt.Errorf("scan telemetry_queue column: %w", err)
-		}
-		if name == "trace_id" {
-			hasTraceID = true
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate telemetry_queue columns: %w", err)
+		return err
 	}
 	if hasTraceID {
 		return nil

@@ -111,7 +111,7 @@ func driveREL056(rep *report.Report, cases map[string]corpus.Case) {
 
 	// Seed the prior generation exactly as ApplyGeneration would have left it
 	// from an earlier apply — the corpus's relay_last_applied precondition.
-	if err := store.ApplyGeneration(oldPair.Generation, oldPair.Hash, []byte(rel056OldScreenProgramsJSON)); err != nil {
+	if err := store.ApplyGeneration(oldPair.Generation, oldPair.Hash, []byte(rel056OldScreenProgramsJSON), nil); err != nil {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("seed prior generation %d: %v", oldPair.Generation, err))
 		return
 	}
@@ -158,7 +158,7 @@ func driveREL056(rep *report.Report, cases map[string]corpus.Case) {
 		}
 	}()
 
-	if err := store.ApplyGeneration(newPair.Generation, newPair.Hash, newProgramsJSON); err != nil {
+	if err := store.ApplyGeneration(newPair.Generation, newPair.Hash, newProgramsJSON, nil); err != nil {
 		close(stop)
 		wg.Wait()
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("apply new generation %d: %v", newPair.Generation, err))

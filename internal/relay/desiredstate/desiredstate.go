@@ -197,6 +197,36 @@ func ServedProgram(store *identity.Store) ([]wire.ScreenProgram, error) {
 	return programs, nil
 }
 
+// ServedRevocation returns the relay's persisted last-applied
+// `revocation_and_site.revoked` set (REL-066) from store, decoded — the
+// revocation counterpart of ServedProgram, and read on the same OFFLINE boot
+// path for the same reason. Its sole input is the durable operational store: it
+// performs no network I/O and contacts no app peer, which is what makes REL-123
+// enforceable "regardless of connectivity" across a restart, not merely across
+// a disconnection the process survived. A relay that has never applied a
+// generation returns an empty slice (the REL-060 empty placeholder), not an
+// error.
+//
+// The two reads are deliberately symmetric: a boot that installs its persisted
+// screen_programs without also installing the revocation set that was applied
+// in the SAME generation serves those programs to credentials the app peer has
+// already voided — the relay's own durable state disagreeing with itself about
+// one generation.
+func ServedRevocation(store *identity.Store) ([]string, error) {
+	if store == nil {
+		return nil, fmt.Errorf("desiredstate: ServedRevocation: store must not be nil")
+	}
+	raw, err := store.LastAppliedRevokedScreens()
+	if err != nil {
+		return nil, fmt.Errorf("desiredstate: ServedRevocation: read persisted revoked: %w", err)
+	}
+	var revoked []string
+	if err := json.Unmarshal(raw, &revoked); err != nil {
+		return nil, fmt.Errorf("desiredstate: ServedRevocation: decode persisted revoked: %w", err)
+	}
+	return revoked, nil
+}
+
 // extractApplied builds VerifyAndApply's returned Applied from a verified
 // snapshot's sections. ScreenPrograms carries the whole section; the flat
 // convenience fields (ScreenID, ProgramRevision, Priority, Display, Image)

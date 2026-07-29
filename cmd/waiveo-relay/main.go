@@ -663,34 +663,15 @@ func main() {
 	pairingSrv.EnablePersistence(store)
 	logPairingCodes(cfg, applied, certDER, relayID.RelayID)
 
-	// Configure program delivery (GET /player/v1/program) from the relay's
-	// OWN persisted last-applied screen_programs (REL-055/061), not directly
-	// from the live Applied value — the same durable copy Pull just wrote, so
-	// the serve path reads what a restart with a disconnected app peer would
-	// read (Offline continuity). ServedProgram's sole input is the operational
-	// store; it contacts no app peer.
-	//
-	// EVERY entry is installed, each under its own screen_id: `screen_programs`
-	// is one entry per screen identity row (REL-061), and a paired player
-	// presents a channel token naming exactly which row it is (PLY-035), so the
-	// serve path selects by that. Installing only entry [0] served whatever
-	// screen happened to sort first to every paired player on the site.
-	//
-	// No signing key travels with these writes: the Lease-signing identity was
-	// established once by the SetSigningKey call above, and a program write has
-	// no authority over it (playerserver.SetProgram's own doc).
-	served, err := desiredstate.ServedProgram(store)
+	// Configure the serving surface from the relay's OWN durable last-applied
+	// row — its programs AND its revocation set (REL-055/061/066) — rather than
+	// from the live Applied value, so a boot whose pull failed serves and
+	// enforces exactly what one whose pull succeeded does. See
+	// installPersistedServingState's own doc.
+	applied, err = installPersistedServingState(store, pairingSrv, applied)
 	if err != nil {
-		log.Fatalf("waiveo-relay: read persisted screen_programs for offline serve: %v", err)
+		log.Fatalf("waiveo-relay: install persisted serving state: %v", err)
 	}
-	if len(served) == 0 {
-		// REL-060's empty placeholder, not a fault — and now a fully served
-		// state: the signing key installed above is the relay's, not any
-		// screen's, so a screen that pairs here is answered with DAT-118's
-		// terminal default rather than a configuration error.
-		log.Printf("waiveo-relay: persisted last-applied snapshot carried no screen_programs; every screen serves the terminal default until one is authored")
-	}
-	serveAppAuthoredPrograms(pairingSrv, applied.Generation, served)
 
 	// commandSurface is the ONE relay/1 REL-112/113/115 device-command surface
 	// this binary's non-edge-rule dispatch paths share — the schedule-preset
@@ -1511,6 +1492,73 @@ func serveAppAuthoredPrograms(srv *playerserver.Server, generation int64, served
 		installed++
 	}
 	return installed
+}
+
+// installPersistedServingState configures srv from the relay's OWN durable
+// last-applied row — the app-authored per-screen programs (REL-055/061) and the
+// generation's `revocation_and_site.revoked` set (REL-066) — and returns applied
+// with its Revoked filled from that same row. It performs no network I/O and
+// contacts no app peer: its sole input is the operational store, so a boot
+// during an app-peer outage installs exactly what a boot with a live connection
+// does (Offline continuity).
+//
+// # The programs
+//
+// Read from the durable copy rather than from the live Applied value, because
+// that is the copy a restart with a disconnected app peer would read — the boot
+// path exercises the offline path even when it is online. EVERY entry is
+// installed, each under its own screen_id: `screen_programs` is one entry per
+// screen identity row (REL-061), and a paired player presents a channel token
+// naming exactly which row it is (PLY-035), so the serve path selects by that.
+// No signing key travels with these writes — the Lease-signing identity is
+// established separately (playerserver.Server.SetSigningKey).
+//
+// # The revocation set, and why it is RETURNED rather than installed here
+//
+// The set is carried onto the returned applied instead of installed directly,
+// so the ONE apply seam (scheduleDriver.apply) installs it. It has to be: a boot
+// whose pull failed — or that never had a live connection at all — leaves
+// applied the zero value, and driver.apply installs applied.Revoked WHOLESALE,
+// a set-replace by REL-066's own shape. An install at this line would therefore
+// be wiped moments later by the empty set the zero value carries, and the relay
+// would come up serving its persisted programs to its persisted channel tokens
+// with nothing revoked.
+//
+// That is precisely what REL-123 forbids — a SYNCED revocation MUST be enforced
+// "regardless of connectivity" — and a restart during an app-peer outage is
+// exactly when a relay has only its own last-synced copy to go on. The programs
+// and the revocation ride one durable row committed by one atomic write
+// (identity.Store.ApplyGeneration), so reading them together here is what keeps
+// the relay from serving one generation's programs under another generation's
+// credential rules.
+//
+// On a boot whose pull SUCCEEDED this changes nothing: VerifyAndApply persisted
+// exactly the set it returned, in that same row write, so the durable copy and
+// applied.Revoked are the same list — and reading the durable one keeps both
+// boot paths on a single source of truth rather than two that can drift.
+func installPersistedServingState(store *identity.Store, srv *playerserver.Server, applied desiredstate.Applied) (desiredstate.Applied, error) {
+	served, err := desiredstate.ServedProgram(store)
+	if err != nil {
+		return applied, fmt.Errorf("read persisted screen_programs for offline serve: %w", err)
+	}
+	if len(served) == 0 {
+		// REL-060's empty placeholder, not a fault — and still a fully served
+		// state: the relay's own signing key is not any screen's, so a screen
+		// that pairs here is answered with DAT-118's terminal default rather
+		// than a configuration error.
+		log.Printf("waiveo-relay: persisted last-applied snapshot carried no screen_programs; every screen serves the terminal default until one is authored")
+	}
+	serveAppAuthoredPrograms(srv, applied.Generation, served)
+
+	revoked, err := desiredstate.ServedRevocation(store)
+	if err != nil {
+		return applied, fmt.Errorf("read persisted revoked set for offline enforcement: %w", err)
+	}
+	applied.Revoked = revoked
+	if len(revoked) > 0 {
+		log.Printf("waiveo-relay: persisted last-applied snapshot revokes %d screen(s); enforced from boot against every credential decision, app peer reachable or not (REL-123)", len(revoked))
+	}
+	return applied, nil
 }
 
 // soleServedScreenID returns the screen identity row a governed scope node's
