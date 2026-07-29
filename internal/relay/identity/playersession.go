@@ -22,13 +22,23 @@ import (
 	"fmt"
 )
 
-// playerSessionSchema creates the two tables this file's accessors read and
+// playerSessionSchema creates the three tables this file's accessors read and
 // write: a minted channel token's own record — keyed by the token's OWN
-// SHA-256 digest, NEVER the raw token itself (see HashToken's doc) — and a
-// one-time pairing grant's redemption marker, keyed by grant_id. Neither can
-// hold asset/media bytes (`#52` gateway posture): a token-hash digest, a
-// screen_id, an expiry, and a grant_id are the only values either table's
-// columns can ever carry.
+// SHA-256 digest, NEVER the raw token itself (see HashToken's doc) — a
+// one-time pairing grant's redemption marker, keyed by grant_id, and the ledger
+// of redemptions this relay owes its app peer upstream (relay/1 REL-124/124a,
+// admitted into this durable tier by REL-142a). None can hold asset/media bytes
+// (`#52` gateway posture): a token-hash digest, a screen_id, an expiry, a
+// grant_id, and a timestamp are the only values any of their columns can ever
+// carry.
+//
+// player_redemption_reports.seq is a plain rowid alias, not AUTOINCREMENT: a
+// reported row is DELETED, so the ledger has no history for a reused rowid to
+// collide with, and AUTOINCREMENT would add a hidden sqlite_sequence table to a
+// store whose table set is deliberately pinned
+// (TestOpenCreatesExactOperationalTableSet). Reuse cannot reorder the ledger
+// either — SQLite assigns max(rowid)+1, so a fresh row always sorts after every
+// row still pending.
 const playerSessionSchema = `
 CREATE TABLE IF NOT EXISTS player_channel_tokens (
 	token_hash  TEXT PRIMARY KEY,
@@ -37,6 +47,11 @@ CREATE TABLE IF NOT EXISTS player_channel_tokens (
 );
 CREATE TABLE IF NOT EXISTS player_redeemed_grants (
 	grant_id     TEXT PRIMARY KEY,
+	redeemed_at  INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS player_redemption_reports (
+	seq          INTEGER PRIMARY KEY,
+	grant_id     TEXT NOT NULL,
 	redeemed_at  INTEGER NOT NULL
 );
 `
@@ -111,6 +126,72 @@ func (s *Store) MarkPairingGrantRedeemed(grantID string, redeemedAtMs int64) err
 	)
 	if err != nil {
 		return fmt.Errorf("identity: MarkPairingGrantRedeemed: %w", err)
+	}
+	return nil
+}
+
+// PendingRedemptionReport is one redemption this relay performed and owes its
+// app peer (relay/1 REL-124/REL-124a). Seq is the ledger position the row
+// occupies — opaque to the caller except that it is the value
+// MarkRedemptionReported clears the row by, so a report delivered on the wire
+// retires exactly the row it came from and no other.
+type PendingRedemptionReport struct {
+	Seq        int64
+	GrantID    string
+	RedeemedAt int64
+}
+
+// RecordRedemptionReport durably enqueues one redemption for upstream report
+// (REL-124/REL-124a, admitted into this durable tier by REL-142a). One row per
+// REDEMPTION rather than per grant: REL-124 requires every redemption be
+// reported, and a `multi` grant (REL-121's other redemption_mode) is redeemed
+// more than once, so a grant-keyed ledger would silently collapse the second
+// and later redemptions of one into the first's report.
+//
+// Rows survive a restart on purpose: "the next connection opportunity" may
+// arrive after one, and a redemption performed while disconnected (REL-122) is
+// exactly the case REL-124 exists for.
+func (s *Store) RecordRedemptionReport(grantID string, redeemedAtMs int64) error {
+	if _, err := s.db.Exec(
+		`INSERT INTO player_redemption_reports (grant_id, redeemed_at) VALUES (?, ?)`,
+		grantID, redeemedAtMs,
+	); err != nil {
+		return fmt.Errorf("identity: RecordRedemptionReport: %w", err)
+	}
+	return nil
+}
+
+// PendingRedemptionReports returns every not-yet-reported redemption in ledger
+// order (oldest first) — the batch a connected relay drains onto the wire.
+func (s *Store) PendingRedemptionReports() ([]PendingRedemptionReport, error) {
+	rows, err := s.db.Query(`SELECT seq, grant_id, redeemed_at FROM player_redemption_reports ORDER BY seq`)
+	if err != nil {
+		return nil, fmt.Errorf("identity: PendingRedemptionReports: %w", err)
+	}
+	defer rows.Close()
+
+	out := []PendingRedemptionReport{}
+	for rows.Next() {
+		var r PendingRedemptionReport
+		if err := rows.Scan(&r.Seq, &r.GrantID, &r.RedeemedAt); err != nil {
+			return nil, fmt.Errorf("identity: PendingRedemptionReports: scan: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("identity: PendingRedemptionReports: %w", err)
+	}
+	return out, nil
+}
+
+// MarkRedemptionReported clears the ledger row seq names, once its report has
+// actually been written to the connection. Clearing by seq rather than by
+// grant_id is what keeps a `multi` grant's OTHER outstanding redemptions
+// pending: they are distinct rows and a delivered report for one says nothing
+// about the rest.
+func (s *Store) MarkRedemptionReported(seq int64) error {
+	if _, err := s.db.Exec(`DELETE FROM player_redemption_reports WHERE seq = ?`, seq); err != nil {
+		return fmt.Errorf("identity: MarkRedemptionReported: %w", err)
 	}
 	return nil
 }

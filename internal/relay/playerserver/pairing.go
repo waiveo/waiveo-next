@@ -19,6 +19,7 @@ package playerserver
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -132,6 +133,23 @@ type redemption struct {
 type Server struct {
 	relayCertPEM []byte
 
+	// relayID is this relay's OWN enrolled identity, read from the subject
+	// CommonName of relayCertPEM at construction — the same value the
+	// enrollment issuer put there (internal/feeder/enroll issues every relay
+	// leaf with `Subject: pkix.Name{CommonName: relayID}`) and the same value
+	// the app peer authenticates the relay by on its own connection, which
+	// takes the identity from the mTLS client certificate and never from a
+	// self-asserted field (REL-041/150).
+	//
+	// It is derived rather than passed in on purpose: REL-121b's binding check
+	// compares a grant's `relay_id` against "the relay's OWN enrolled identity
+	// — the identity its enrollment-issued certificate carries", so reading it
+	// from the very certificate this server presents as its trust anchor makes
+	// the two impossible to desync. A caller-supplied string could drift from
+	// the certificate and would silently decide which grants this relay may
+	// consume.
+	relayID string
+
 	mu             sync.Mutex
 	grants         map[string]wire.PairingGrant // grant_id -> grant
 	grantsGen      int64                        // desired-state generation the currently-redeemable grants set was applied for; SetPairingGrants fences a strictly-older write (REL-052/056), mirroring programGen below
@@ -163,6 +181,21 @@ type Server struct {
 	// (PLY-075) is modeled the same way — RevokeScreen marks it revoked.
 	revokedScreens map[string]bool
 
+	// pendingReports is the REL-124/REL-124a ledger of redemptions this relay
+	// performed and has not yet reported upstream, used ONLY when no durable
+	// session store is wired (sessionStore == nil). With one wired, the
+	// durable ledger is the single source of truth — a report owed at "the
+	// next connection opportunity" has to survive a restart that happens
+	// before one arrives (REL-142a), which an in-process slice cannot do.
+	//
+	// nextReportSeq is a strictly monotonic counter, NOT len(pendingReports):
+	// a length-derived seq is reused as soon as an earlier report is
+	// acknowledged and removed, and MarkRedemptionReported would then retire
+	// two distinct owed reports on one acknowledgement — the silent loss
+	// REL-124d forbids.
+	pendingReports []RedemptionReport
+	nextReportSeq  int64
+
 	// Playback telemetry a player posts (PLY-110/111): recorded in order of
 	// arrival. Wave-1 records them in memory only — REL-090/093's durable
 	// upstream forward of each as an events/1 content.played (PLY-113) is a
@@ -184,6 +217,15 @@ func NewServer(relayCertPEM []byte, grants []wire.PairingGrant) (*Server, error)
 	if block == nil || block.Type != "CERTIFICATE" {
 		return nil, fmt.Errorf("playerserver: NewServer: relayCertPEM did not PEM-decode to a CERTIFICATE block")
 	}
+	// The relay's own enrolled identity, for REL-121b's binding check (see
+	// Server.relayID). A certificate that will not parse cannot be served over
+	// either, so this is a construction failure rather than a degrade — a
+	// server that silently ran with an empty relayID would refuse every bound
+	// grant, which reads on the wire exactly like an invalid pairing code.
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("playerserver: NewServer: parse relayCertPEM: %w", err)
+	}
 
 	grantIndex := make(map[string]wire.PairingGrant, len(grants))
 	for _, g := range grants {
@@ -192,6 +234,7 @@ func NewServer(relayCertPEM []byte, grants []wire.PairingGrant) (*Server, error)
 
 	return &Server{
 		relayCertPEM:   relayCertPEM,
+		relayID:        leaf.Subject.CommonName,
 		grants:         grantIndex,
 		redeemedGrants: map[string]bool{},
 		tokens:         map[string]channelTokenRecord{},
@@ -448,6 +491,15 @@ func (s *Server) handlePairStatus(w http.ResponseWriter, r *http.Request) {
 // wins, and every path here would leave a one-time grant no more than
 // once-redeemed even under real concurrency, not merely in the common
 // sequential case.
+//
+// That atomicity is per-RELAY, and on its own it is not the site-wide
+// at-most-once REL-121 requires: `pairing_grants` is a section of the ONE
+// signed snapshot every relay of the site applies, and REL-122 makes a grant
+// redeemable for its whole ttl with no app peer reachable, so nothing here can
+// ask anyone else whether a sibling relay already consumed the grant. The
+// REL-121b binding check below is what closes that: a grant naming another
+// relay is refused outright, so at most one relay can ever reach the
+// check-and-mark at all and its own count IS the site's.
 func (s *Server) redeem(selector string) (redemption, error) {
 	if selector == "" {
 		return redemption{}, errPairingCodeInvalid
@@ -458,6 +510,17 @@ func (s *Server) redeem(selector string) (redemption, error) {
 
 	grant, known := s.grants[selector]
 	if !known {
+		return redemption{}, errPairingCodeInvalid
+	}
+	// REL-121b, checked BEFORE ttl and before the consumption check, and
+	// answering with the identical error an unresolvable selector draws: a
+	// relay that may not consume this grant must not report anything about it
+	// — not that it exists, not that it expired, not that it was already
+	// taken. Distinguishing those would make every relay of a site an oracle
+	// for the grants held at its siblings. Nothing below this line runs for a
+	// grant bound elsewhere, so no credential is minted and no consumption is
+	// recorded either.
+	if grant.RelayID != "" && grant.RelayID != s.relayID {
 		return redemption{}, errPairingCodeInvalid
 	}
 	if grant.RedemptionMode == "one-time" && s.grantAlreadyRedeemedLocked(grant.GrantID) {
@@ -478,6 +541,14 @@ func (s *Server) redeem(selector string) (redemption, error) {
 				return redemption{}, fmt.Errorf("%w: %v", errSessionPersistFailed, err)
 			}
 		}
+	}
+
+	// REL-124: EVERY redemption this relay performs is owed upstream — not
+	// only a one-time one — so this rides outside the branch above. It is
+	// enqueued BEFORE the credential is minted and returned, so a redemption a
+	// player actually received can never be one this relay forgot it owed.
+	if err := s.recordRedemptionOwedLocked(grant.GrantID, now.UnixMilli()); err != nil {
+		return redemption{}, err
 	}
 
 	// REL-121a: a screen-bound grant's redemption results in exactly the
@@ -531,6 +602,91 @@ func (s *Server) grantAlreadyRedeemedLocked(grantID string) bool {
 	}
 	s.redeemedGrants[grantID] = true // backfill the in-memory cache
 	return true
+}
+
+// RedemptionReport is one pairing-grant redemption this relay performed and
+// owes its app peer (REL-124), as the connection's own `pairing.redeemed` frame
+// carries it (REL-124a's `{grant_id, redeemed_at}`) plus the ledger position
+// that identifies WHICH owed redemption it is. Seq is opaque to a caller except
+// that MarkRedemptionReported clears the ledger by it — a value that must be
+// carried back, never re-derived from grant_id, so a `multi` grant's other
+// outstanding redemptions are not retired by one delivered report.
+type RedemptionReport struct {
+	Seq        int64
+	GrantID    string
+	RedeemedAt int64
+}
+
+// recordRedemptionOwedLocked enqueues one redemption for upstream report. The
+// durable ledger is the sole source of truth whenever one is wired
+// (EnablePersistence): a report owed at "the next connection opportunity"
+// (REL-124a) has to survive a restart that happens before one arrives, which an
+// in-process slice cannot do. Without persistence the in-memory slice keeps
+// today's non-durable behavior for tests and harnesses byte-for-byte. The
+// caller holds s.mu.
+func (s *Server) recordRedemptionOwedLocked(grantID string, redeemedAtMs int64) error {
+	if s.sessionStore == nil {
+		s.nextReportSeq++
+		s.pendingReports = append(s.pendingReports, RedemptionReport{
+			Seq:        s.nextReportSeq,
+			GrantID:    grantID,
+			RedeemedAt: redeemedAtMs,
+		})
+		return nil
+	}
+	if err := s.sessionStore.RecordRedemptionReport(grantID, redeemedAtMs); err != nil {
+		return fmt.Errorf("%w: %v", errSessionPersistFailed, err)
+	}
+	return nil
+}
+
+// PendingRedemptionReports returns every redemption this relay owes its app
+// peer, oldest first (REL-124/REL-124a) — what the connection owner drains onto
+// the wire on connect and while connected. Safe for concurrent use.
+func (s *Server) PendingRedemptionReports() ([]RedemptionReport, error) {
+	s.mu.Lock()
+	store := s.sessionStore
+	if store == nil {
+		out := make([]RedemptionReport, len(s.pendingReports))
+		copy(out, s.pendingReports)
+		s.mu.Unlock()
+		return out, nil
+	}
+	s.mu.Unlock()
+
+	rows, err := store.PendingRedemptionReports()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]RedemptionReport, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, RedemptionReport{Seq: r.Seq, GrantID: r.GrantID, RedeemedAt: r.RedeemedAt})
+	}
+	return out, nil
+}
+
+// MarkRedemptionReported retires the owed redemption seq names, once its
+// `pairing.redeemed` frame has actually been written to the connection. A
+// caller MUST NOT call it before the write succeeds: REL-124a requires an
+// unreported redemption be re-sent at the next connection opportunity, and
+// retiring one that never crossed the wire is precisely the loss that rule
+// forbids.
+func (s *Server) MarkRedemptionReported(seq int64) error {
+	s.mu.Lock()
+	store := s.sessionStore
+	if store == nil {
+		kept := s.pendingReports[:0]
+		for _, r := range s.pendingReports {
+			if r.Seq != seq {
+				kept = append(kept, r)
+			}
+		}
+		s.pendingReports = kept
+		s.mu.Unlock()
+		return nil
+	}
+	s.mu.Unlock()
+	return store.MarkRedemptionReported(seq)
 }
 
 // errorCode maps redeem's sentinel errors to PLY-036's registry codes.

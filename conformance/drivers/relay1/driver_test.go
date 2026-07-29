@@ -33,6 +33,7 @@ var expectedDriven = []string{
 	"REL-094-valid-telemetry-latest-only-heartbeat-superseded",
 	"REL-110-valid-device-candidate-and-command",
 	"REL-110b-valid-derived-identity-across-relays",
+	"REL-121b-invalid-second-relay-redeems-bound-grant",
 	"REL-133-valid-clock-hint-bounded",
 	"REL-136-valid-coldboot-skew-tolerant-connect",
 }

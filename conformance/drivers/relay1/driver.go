@@ -28,7 +28,8 @@
 // reapply, REL-071 wrong-peer-key rejection, REL-090/094 telemetry buffer
 // overflow / latest-only heartbeat supersession against
 // internal/relay/telemetry, REL-110/112/113 device-candidate report +
-// command resolve/dispatch against internal/relay/deviceplane, REL-133
+// command resolve/dispatch against internal/relay/deviceplane, REL-121b's
+// two-relay pairing-grant binding against internal/relay/playerserver, REL-133
 // bounded clock.hint, REL-136/137 cold-boot skew-tolerant/deferred connect)
 // — the pending set is empty; every corpus case is driven.
 package relay1
@@ -171,6 +172,7 @@ func Run(client RelayClient, feeder Feeder) report.Report {
 	driveREL094(&rep, cases)
 	driveREL110(&rep, cases)
 	driveREL110b(&rep, cases)
+	driveREL121b(&rep, client, feeder, cases)
 	driveREL133(&rep, cases)
 	driveREL136(&rep, client, feeder, cases)
 

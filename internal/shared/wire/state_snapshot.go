@@ -315,11 +315,24 @@ type SiteEffective struct {
 // one join between the app's screen row and the credential the relay mints.
 // `omitempty` keeps a baseline REL-121 record (no binding) byte-identical to
 // before the field existed.
+//
+// RelayID is REL-121b's relay binding: the enrolled identity (REL-150) of the
+// ONE relay this grant may be redeemed at. `pairing_grants` is a section of the
+// single signed snapshot EVERY relay enrolled to the site applies, and REL-122
+// makes a grant redeemable for its whole ttl with no app peer reachable — so a
+// one-time grant carrying no binding is redeemable once PER RELAY, and (being
+// screen-bound, REL-121a) every one of those redemptions resolves to the same
+// screen row. This field is what collapses that to once site-wide: a relay
+// refuses a grant naming another relay outright (playerserver.redeem), so the
+// relay's own atomic check-and-consume is the site's. REL-121c puts the
+// matching obligation on the app peer — it MUST bind every one-time grant it
+// mints. `omitempty` again keeps a baseline REL-121 record byte-identical.
 type PairingGrant struct {
 	GrantID                string `json:"grant_id"`
 	Purpose                string `json:"purpose"`
 	ResultingPrincipalKind string `json:"resulting_principal_kind"`
 	ScreenID               string `json:"screen_id,omitempty"`
+	RelayID                string `json:"relay_id,omitempty"`
 	TTL                    int64  `json:"ttl"`
 	RedemptionMode         string `json:"redemption_mode"`
 	IssuedAt               int64  `json:"issued_at"`

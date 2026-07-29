@@ -53,6 +53,22 @@ const (
 	FrameTypeStateChanged   = "state.changed"
 	FrameTypeStateAck       = "state.ack"
 	FrameTypeError          = "error"
+
+	// FrameTypePairingRedeemed is REL-124/REL-124a's upstream report that the
+	// relay consumed a pairing grant, and FrameTypePairingRedeemedAck the app
+	// peer's acknowledgment of it, echoing the report's correlation id
+	// (REL-006). It rides THIS connection rather than the telemetry channel
+	// because REL-095 closes that channel's schema set to exactly the five
+	// events/1 registered schemas REL-093–094 name, with events/1 as their
+	// sole normative source — relay/1 has no schema there for a redemption and
+	// may not mint one.
+	//
+	// The exchange is acknowledged rather than fire-and-forget for the same
+	// reason the telemetry channel's is (REL-092): a write that left the
+	// socket is not a record the app peer kept, so REL-124d forbids a relay
+	// from discarding an owed report until its own ack arrives.
+	FrameTypePairingRedeemed    = "pairing.redeemed"
+	FrameTypePairingRedeemedAck = "pairing.redeemed_ack"
 )
 
 // Frame is the relay/1 connection envelope (package doc above). Zero-valued
@@ -150,6 +166,34 @@ type StateAckBody struct {
 	AppliedGeneration int64         `json:"applied_generation"`
 	Error             *AckErrorBody `json:"error,omitempty"`
 	DivergenceReason  string        `json:"divergence_reason,omitempty"`
+}
+
+// PairingRedeemedBody is `pairing.redeemed`'s body (REL-124a): the grant the
+// relay consumed and when it consumed it (Timestamp, epoch ms).
+//
+// Exactly two fields, and neither of them an identity: the app peer attributes
+// the report to the connection's own authenticated identity, never to anything
+// the frame carries (REL-124b), so there is no reporter field here to forge.
+// The screen the redemption paired is likewise absent — the app peer already
+// holds the grant's own screen binding (REL-121a), and a relay-asserted
+// screen_id would be a second, contradictable source for a value the app peer
+// minted itself.
+type PairingRedeemedBody struct {
+	GrantID    string `json:"grant_id"`
+	RedeemedAt int64  `json:"redeemed_at"`
+}
+
+// PairingRedeemedAckBody is `pairing.redeemed_ack`'s body (REL-124a): the grant
+// whose report the app peer has recorded. The envelope's own correlation id is
+// what pairs the ack with its report (REL-006); grant_id rides here so the ack
+// is legible on its own, exactly as `telemetry.ack`'s own cursor is.
+//
+// An ack means the app peer took the report — nothing more. It is emphatically
+// NOT a statement that the redemption was legitimate or that any other relay is
+// now prevented from redeeming: that property is the grant's own relay binding
+// (REL-121b), and REL-124c forbids building anything on this report's arrival.
+type PairingRedeemedAckBody struct {
+	GrantID string `json:"grant_id"`
 }
 
 // AckErrorBody is the `{code, message}` object an unsuccessful apply's

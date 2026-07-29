@@ -284,6 +284,7 @@ func assertNoMediaTable(t *testing.T, store *Store) {
 		"last_applied_generation",
 		"player_channel_tokens",
 		"player_redeemed_grants",
+		"player_redemption_reports",
 		"relay_identity",
 		"telemetry_loss_marker",
 		"telemetry_queue",

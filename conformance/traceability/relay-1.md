@@ -94,9 +94,15 @@ One row per requirement ID `contracts/relay-1.md` defines. Format: `conformance/
 | REL-120 | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
 | REL-121 | `contracts/relay-1.md#player-credential-authority` | `REL-056-valid-generation-apply-atomic-swap` | covered |
 | REL-121a | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
+| REL-121b | `contracts/relay-1.md#player-credential-authority` | `REL-121b-invalid-second-relay-redeems-bound-grant` | covered |
+| REL-121c | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
 | REL-122 | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
 | REL-123 | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
 | REL-124 | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
+| REL-124a | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
+| REL-124b | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
+| REL-124c | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
+| REL-124d | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
 | REL-125 | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
 | REL-126 | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
 | REL-130 | `contracts/relay-1.md#clock-trust` | `REL-133-valid-clock-hint-bounded` | covered |
@@ -110,6 +116,7 @@ One row per requirement ID `contracts/relay-1.md` defines. Format: `conformance/
 | REL-140 | `contracts/relay-1.md#gateway-posture` | - | TBD-wave1 |
 | REL-141 | `contracts/relay-1.md#gateway-posture` | - | TBD-wave1 |
 | REL-142 | `contracts/relay-1.md#gateway-posture` | - | TBD-wave1 |
+| REL-142a | `contracts/relay-1.md#gateway-posture` | - | TBD-wave1 |
 | REL-143 | `contracts/relay-1.md#gateway-posture` | - | TBD-wave1 |
 | REL-150 | `contracts/relay-1.md#multi-relay-identity` | - | TBD-wave1 |
 | REL-151 | `contracts/relay-1.md#multi-relay-identity` | - | TBD-wave1 |

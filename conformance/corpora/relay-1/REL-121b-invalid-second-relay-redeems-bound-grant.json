@@ -1,0 +1,53 @@
+{
+  "case_id": "REL-121b-invalid-second-relay-redeems-bound-grant",
+  "contract": "relay/1",
+  "req_ids": ["REL-121b"],
+  "description": "Two relays are enrolled to one site and both apply the SAME signed snapshot, whose pairing_grants carries one screen-bound, one-time grant naming relay A. The screen redeems it at relay A and receives a channel token for the grant's own screen_id. An observer of the pairing code then presents the identical grant_selector at relay B, which holds that very grant, has no record of A's redemption, and cannot ask anyone (REL-122) — B must refuse with the same typed rejection an unresolvable selector draws, mint nothing, disclose nothing, and leave the grant unconsumed; an expired grant bound elsewhere must draw that same rejection rather than PAIRING_EXPIRED, which would confirm the selector names a real record.",
+  "input": {
+    "relays": ["A", "B"],
+    "snapshot_pairing_grants": [
+      {
+        "grant_id": "01J8Z4K4N5P6Q7R8S9T0V1W3C1",
+        "purpose": "pairing",
+        "resulting_principal_kind": "screen",
+        "screen_id": "01J8Z3K4N5P6Q7R8S9T0V1W2S1",
+        "relay_id": "$relays[0]",
+        "ttl": 900,
+        "redemption_mode": "one-time",
+        "issued_at": "now"
+      },
+      {
+        "grant_id": "01J8Z4K4N5P6Q7R8S9T0V1W3C2",
+        "purpose": "pairing",
+        "resulting_principal_kind": "screen",
+        "screen_id": "01J8Z3K4N5P6Q7R8S9T0V1W2S1",
+        "relay_id": "$relays[0]",
+        "ttl": 900,
+        "redemption_mode": "one-time",
+        "issued_at": "expired"
+      }
+    ],
+    "attempts": [
+      { "at_relay": "A", "grant_selector": "01J8Z4K4N5P6Q7R8S9T0V1W3C1" },
+      { "at_relay": "B", "grant_selector": "01J8Z4K4N5P6Q7R8S9T0V1W3C1" },
+      { "at_relay": "B", "grant_selector": "01J8Z4K4N5P6Q7R8S9T0V1W3C2" },
+      { "at_relay": "B", "grant_selector": "01J8Z9N0SUCHGRANTXXXXXXXXX" },
+      { "at_relay": "A", "grant_selector": "01J8Z4K4N5P6Q7R8S9T0V1W3C1" }
+    ]
+  },
+  "expected": {
+    "attempts": [
+      {
+        "pairing_status": "redeemed",
+        "screen_id": "01J8Z3K4N5P6Q7R8S9T0V1W2S1",
+        "channel_token_minted": true
+      },
+      { "code": "PAIRING_CODE_INVALID", "channel_token_minted": false, "screen_id_disclosed": false },
+      { "code": "PAIRING_CODE_INVALID", "channel_token_minted": false, "screen_id_disclosed": false },
+      { "code": "PAIRING_CODE_INVALID", "channel_token_minted": false, "screen_id_disclosed": false },
+      { "code": "PAIRING_CODE_INVALID", "channel_token_minted": false, "screen_id_disclosed": false }
+    ],
+    "site_wide_redemption_count": 1,
+    "distinct_screen_ids_credentialed": 1
+  }
+}
