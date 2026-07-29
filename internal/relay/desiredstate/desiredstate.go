@@ -116,6 +116,25 @@ type Applied struct {
 	// array is the complete source of truth.
 	ScreenPrograms []wire.ScreenProgram
 
+	// Revoked is the verified snapshot's
+	// sections.revocation_and_site.revoked (REL-066), carried unmodified —
+	// the opaque identifier strings the relay's own player-credential
+	// authority MUST treat as revoked. REL-123 makes this the relay's LAST-
+	// SYNCED copy: it is enforced against every credential decision the relay
+	// makes regardless of whether its app peer is reachable at that moment,
+	// which is only possible because it rides the persisted, verified snapshot
+	// like every other section rather than being asked for per decision.
+	//
+	// Carried as the snapshot decoded it, including nil. A nil slice and an
+	// empty one mean the same thing to every consumer here — this generation
+	// revokes nothing — and normalizing would be inventing a distinction the
+	// section does not draw. What consumers MUST NOT do is treat an empty list
+	// as "no information": REL-066 requires the key on every snapshot, so an
+	// empty one is the app peer positively stating that nothing is revoked,
+	// and a screen that was revoked in an earlier generation and is absent
+	// here is thereby UN-revoked (playerserver.Server.SetRevokedScreens).
+	Revoked []string
+
 	// SiteEffective is the verified snapshot's
 	// sections.revocation_and_site.site_effective (REL-066), carried
 	// unmodified — the site's persisted {tz, lat, long} a relay's dayparting
@@ -222,6 +241,7 @@ func extractApplied(generation int64, sections wire.Sections) (Applied, error) {
 		PairingGrants:   sections.PairingGrants,
 		EdgeRules:       sections.EdgeRules.Rules,
 		ScreenPrograms:  sections.ScreenPrograms,
+		Revoked:         sections.RevocationAndSite.Revoked,
 		SiteEffective:   sections.RevocationAndSite.SiteEffective,
 		ContentOrigin:   sections.RevocationAndSite.ContentOrigin,
 		Schedule:        sections.Schedule,

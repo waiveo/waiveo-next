@@ -464,6 +464,54 @@ func TestApplyExposesSiteEffective(t *testing.T) {
 	}
 }
 
+// TestApplyExposesRevoked asserts a verified snapshot's
+// revocation_and_site.revoked (REL-066) is surfaced on Applied.Revoked
+// unmodified. Until it was, the list was decoded off the wire and dropped on
+// the floor here — nothing downstream could enforce a revocation because
+// nothing downstream could see one, which is what left REL-123 unimplementable
+// however carefully the player/1 server checked its local set.
+//
+// The list is populated by hand and the snapshot re-hashed + re-signed under
+// the feeder's own key, because neither feeder builder ever emits a non-empty
+// `revoked` (both hardcode an empty slice, internal/feeder/snapshot) — so a
+// test that only used what the feeder produces would pass against an
+// implementation that dropped the field entirely.
+func TestApplyExposesRevoked(t *testing.T) {
+	img := loadTestImage(t)
+	id := testFeederIdentity(t)
+
+	snap, err := snapshot.Build(img, "https://origin.example", id, nil)
+	if err != nil {
+		t.Fatalf("snapshot.Build: %v", err)
+	}
+	if len(snap.Sections.RevocationAndSite.Revoked) != 0 {
+		t.Fatal("precondition: snapshot.Build emitted a non-empty revoked list; this case populates its own")
+	}
+
+	want := []string{"01J8Z3K4N5P6Q7R8S9T0V1W2R1", "01J8Z3K4N5P6Q7R8S9T0V1W2R2"}
+	snap.Sections.RevocationAndSite.Revoked = want
+	snap.Hash, err = wire.HashSections(snap.Sections)
+	if err != nil {
+		t.Fatalf("wire.HashSections: %v", err)
+	}
+	canon, err := wire.SignedScopeBytes(snap.Generation, snap.Hash)
+	if err != nil {
+		t.Fatalf("wire.SignedScopeBytes: %v", err)
+	}
+	snap.Signature = wire.EncodeSignature(signhash.Sign(id.SigningPriv(), canon))
+
+	ts := newTestFeeder(t, id)
+	store := enrolledStore(t, ts)
+
+	applied, err := applySnapshot(t, store, snap)
+	if err != nil {
+		t.Fatalf("VerifyAndApply: %v", err)
+	}
+	if !reflect.DeepEqual(applied.Revoked, want) {
+		t.Errorf("applied.Revoked = %v, want %v (REL-066, unmodified and in order)", applied.Revoked, want)
+	}
+}
+
 // TestApplyExposesContentOrigin asserts a verified snapshot's
 // revocation_and_site.content_origin (REL-061/066) is surfaced on
 // Applied.ContentOrigin unmodified — the content-origin base URL a later
