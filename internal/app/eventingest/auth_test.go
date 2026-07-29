@@ -106,7 +106,7 @@ func TestIngest_UnenrolledOrRevokedRelayIsRefused(t *testing.T) {
 		"no authorizer configured": nil,
 	} {
 		log := events.NewEventLog(0)
-		h := New(log, siteScope, seqIDs(), authorize)
+		h := New(log, siteScope, seqIDs(), testWallMs, authorize)
 
 		req := pushRequest(t, pushBatch(autoEntry(1, validAutomationRunPayload())))
 		if name == "unenrolled identity" {
@@ -135,7 +135,7 @@ func TestIngest_RevokingASerialStopsFurtherPushes(t *testing.T) {
 	relay := testRelay()
 	revoked := false
 	log := events.NewEventLog(0)
-	h := New(log, siteScope, seqIDs(), func(relayID, serial string) bool {
+	h := New(log, siteScope, seqIDs(), testWallMs, func(relayID, serial string) bool {
 		return !revoked && relayID == relay.RelayID && serial == relay.Serial
 	})
 
@@ -172,7 +172,7 @@ func TestIngest_OverARealMutualTLSListener(t *testing.T) {
 	relay := testRelay()
 	log := events.NewEventLog(0)
 
-	srv := httptest.NewUnstartedServer(New(log, siteScope, seqIDs(), relay.Authorizer()))
+	srv := httptest.NewUnstartedServer(New(log, siteScope, seqIDs(), testWallMs, relay.Authorizer()))
 	srv.TLS = relay.ServerTLSConfig(&tls.Config{MinVersion: tls.VersionTLS13})
 	srv.StartTLS()
 	defer srv.Close()

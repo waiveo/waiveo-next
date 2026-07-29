@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/maaxton/waiveo-next/internal/app/eventingest/ingesttest"
 	"github.com/maaxton/waiveo-next/internal/events"
@@ -78,11 +79,16 @@ var testRelay = sync.OnceValue(func() *ingesttest.Relay {
 	return r
 })
 
+// testWallMs is the host clock, which is what a test wants: these cases assert
+// what the handler DOES with a reading, never which reading it got. The one case
+// that asserts the reading itself injects its own (see TestIngestStampsTSFromTheInjectedClock).
+func testWallMs() int64 { return time.Now().UnixMilli() }
+
 // newTestIngest mounts the live handler over log, admitting exactly the fixture
 // relay identity.
 func newTestIngest(t *testing.T, sink EventSink) http.Handler {
 	t.Helper()
-	return New(sink, siteScope, seqIDs(), testRelay().Authorizer())
+	return New(sink, siteScope, seqIDs(), testWallMs, testRelay().Authorizer())
 }
 
 // pushRequest builds the REL-090 telemetry.push request, carrying the connection

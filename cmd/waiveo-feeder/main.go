@@ -771,7 +771,7 @@ func main() {
 	}
 	eventIDs := ulid.MonotonicFrom(eventHead)
 	eventHub := eventsse.NewHub(eventLog)
-	telemetryIngest := eventingest.New(eventHub, firstPhotonSite.ScopeNode, eventIDs,
+	telemetryIngest := eventingest.New(eventHub, firstPhotonSite.ScopeNode, eventIDs, nowMs,
 		func(relayID, serial string) bool {
 			if _, enrolled := enrollSrv.RelayEnrollmentKey(relayID); !enrolled {
 				return false

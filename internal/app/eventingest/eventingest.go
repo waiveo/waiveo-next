@@ -64,7 +64,6 @@ import (
 	stdlog "log"
 	"net/http"
 	"sync"
-	"time"
 
 	"github.com/maaxton/waiveo-next/internal/events"
 	"github.com/maaxton/waiveo-next/internal/relay/telemetry"
@@ -114,6 +113,11 @@ type ingest struct {
 	// constructed without one, and the fail-closed answer to that wiring bug is
 	// an ingest nobody can write to (SEC-005).
 	authorize RelayAuthorizer
+	// nowMs stamps each reconstructed envelope's ts (New's required argument),
+	// and nothing in this package reaches for time.Now beside it. It cannot be
+	// nil: New refuses to build an ingest without one, so an event stamped from
+	// a clock nobody chose is not a state this type can be in.
+	nowMs func() int64
 	// logf records an EVT-013 drop; it defaults to the stdlib logger and is a
 	// field so a test can assert a dropped record is logged, not silently lost.
 	logf func(format string, args ...any)
@@ -148,11 +152,29 @@ type ingest struct {
 // random tail leaves same-millisecond ids unordered.
 // authorize decides which enrolled relay identity may push (see this package's
 // doc); a nil authorizer refuses every request.
-func New(sink EventSink, siteScopeNode string, idSeq func() string, authorize RelayAuthorizer) http.Handler {
+//
+// nowMs is the clock an ingested envelope's ts is stamped from, and it is
+// REQUIRED for the reason auth.Open's and store.Open's are: this layer used to
+// read time.Now directly, so a relay's telemetry entered the app's own durable
+// log stamped from the bare host clock while the audit records describing the
+// same request came from the app's persisted monotonic clock floor (SEC-066).
+// Those agree only while the floor is 0; the day a time source advances it, an
+// event would carry a ts BEHIND the auth row it describes, and a reader
+// reconstructing what happened would see the effect before the cause.
+//
+// A nil clock panics HERE rather than at the first push. This is built once, at
+// boot, from a single call site; a nil that survived construction would surface
+// as a recovered nil-deref inside net/http — one 500 per push, with the batch
+// lost and nothing naming the wiring bug that caused it.
+func New(sink EventSink, siteScopeNode string, idSeq func() string, nowMs func() int64, authorize RelayAuthorizer) http.Handler {
+	if nowMs == nil {
+		panic("eventingest: New requires a clock (a deployment passes the app's clock-floor reading, never time.Now)")
+	}
 	return &ingest{
 		sink:          sink,
 		siteScopeNode: siteScopeNode,
 		idSeq:         idSeq,
+		nowMs:         nowMs,
 		authorize:     authorize,
 		logf:          stdlog.Printf,
 		processed:     make(map[int64]bool),
@@ -314,7 +336,7 @@ func (in *ingest) buildEnvelope(e telemetry.Entry) (events.Envelope, error) {
 	env := events.Envelope{
 		ID:             in.idSeq(),
 		Schema:         e.Schema,
-		TS:             time.Now().UnixMilli(),
+		TS:             in.nowMs(),
 		ScopeNode:      in.siteScopeNode,
 		TraceID:        in.resolveTraceID(e),
 		CostClass:      cost,

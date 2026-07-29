@@ -167,7 +167,7 @@ func newIngestHarness() *ingestHarness {
 	relay := pushRelay()
 	return &ingestHarness{
 		log:     log,
-		handler: eventingest.New(log, siteScope, monotonicIDs(), relay.Authorizer()),
+		handler: eventingest.New(log, siteScope, monotonicIDs(), store.WallClockMs, relay.Authorizer()),
 		relay:   relay,
 	}
 }

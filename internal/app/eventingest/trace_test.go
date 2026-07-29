@@ -72,7 +72,7 @@ func traceEntity(st string) state.Entity {
 func newTLSIngest(t *testing.T, sink EventSink) (*httptest.Server, *http.Client) {
 	t.Helper()
 	relay := testRelay()
-	srv := httptest.NewUnstartedServer(New(sink, siteScope, seqIDs(), relay.Authorizer()))
+	srv := httptest.NewUnstartedServer(New(sink, siteScope, seqIDs(), testWallMs, relay.Authorizer()))
 	srv.TLS = relay.ServerTLSConfig(&tls.Config{MinVersion: tls.VersionTLS13})
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
@@ -228,7 +228,7 @@ func TestTraceID_OriginatingTraceRidesThroughUnchanged(t *testing.T) {
 // that actually needs attention.
 func TestTraceID_AbsentIsReplacedAndTheEventStillDelivers(t *testing.T) {
 	log := events.NewEventLog(0)
-	h := New(log, siteScope, seqIDs(), testRelay().Authorizer())
+	h := New(log, siteScope, seqIDs(), testWallMs, testRelay().Authorizer())
 	var logged []string
 	h.(*ingest).logf = func(format string, args ...any) { logged = append(logged, format) }
 
@@ -272,7 +272,7 @@ func TestTraceID_MalformedIsReplacedNotDropped(t *testing.T) {
 		"ZZZZZZZZZZZZZZZZZZZZZZZZZZ",       // right length, out-of-range leading symbol
 	} {
 		log := events.NewEventLog(0)
-		h := New(log, siteScope, seqIDs(), testRelay().Authorizer())
+		h := New(log, siteScope, seqIDs(), testWallMs, testRelay().Authorizer())
 		var logged int
 		h.(*ingest).logf = func(format string, args ...any) { logged++ }
 
@@ -303,7 +303,7 @@ func TestTraceID_MalformedIsReplacedNotDropped(t *testing.T) {
 // events.Validate — which is what EVT-013 promises a subscriber.
 func TestTraceID_MalformedNeverPoisonsAnEnvelope(t *testing.T) {
 	log := events.NewEventLog(0)
-	h := New(log, siteScope, seqIDs(), testRelay().Authorizer())
+	h := New(log, siteScope, seqIDs(), testWallMs, testRelay().Authorizer())
 	h.(*ingest).logf = func(format string, args ...any) {}
 
 	postBatch(t, h, telemetry.PushBatch{

@@ -13,6 +13,7 @@ import (
 
 	"github.com/maaxton/waiveo-next/internal/app/eventingest"
 	"github.com/maaxton/waiveo-next/internal/app/eventingest/ingesttest"
+	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/events"
 	"github.com/maaxton/waiveo-next/internal/relay/telemetry"
 )
@@ -39,7 +40,7 @@ var pushRelay = sync.OnceValue(func() *ingesttest.Relay {
 func newIngestServer(t *testing.T, hub *Hub) (*httptest.Server, *http.Client) {
 	t.Helper()
 	relay := pushRelay()
-	srv := httptest.NewUnstartedServer(eventingest.New(hub, siteScope, ulidSeq(), relay.Authorizer()))
+	srv := httptest.NewUnstartedServer(eventingest.New(hub, siteScope, ulidSeq(), store.WallClockMs, relay.Authorizer()))
 	srv.TLS = relay.ServerTLSConfig(&tls.Config{MinVersion: tls.VersionTLS13})
 	srv.StartTLS()
 

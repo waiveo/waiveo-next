@@ -12,6 +12,7 @@ import (
 	"github.com/maaxton/waiveo-next/conformance/drivers/report"
 	"github.com/maaxton/waiveo-next/internal/app/eventingest"
 	"github.com/maaxton/waiveo-next/internal/app/eventingest/ingesttest"
+	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/events"
 	"github.com/maaxton/waiveo-next/internal/relay/telemetry"
 	"github.com/maaxton/waiveo-next/internal/shared/ulid"
@@ -98,7 +99,7 @@ func newTraceIngestHarness() *traceIngestHarness {
 	log := events.NewEventLog(0)
 	return &traceIngestHarness{
 		log:     log,
-		handler: eventingest.New(log, traceIngestScope, traceIngestIDs(), traceRelay().Authorizer()),
+		handler: eventingest.New(log, traceIngestScope, traceIngestIDs(), store.WallClockMs, traceRelay().Authorizer()),
 	}
 }
 
