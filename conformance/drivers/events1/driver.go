@@ -2152,13 +2152,21 @@ func driveMidStreamBufferExceeded(rep *report.Report, cases map[string]corpus.Ca
 	}
 	appendPhase("before_connect")
 
+	// ORDER MATTERS, and getting it wrong turns this case's most important
+	// failure into a CI timeout. Deferred calls run last-in-first-out, so
+	// srv.Close() must be registered BEFORE gate.shutdown() in order to run
+	// AFTER it: Close blocks until in-flight handlers return, and the handler
+	// this case parks inside the flush gate cannot return until the gate is
+	// released. Registered the other way round, an implementation that never
+	// emits the marker — the silent loss this case exists to catch — deadlocks
+	// on cleanup and is reported as a hung job rather than as a diff.
 	gate := newFlushGate()
-	defer gate.shutdown()
 	nodes := in.ScopeNodes
 	srv := httptest.NewServer(gatedHandler(eventsse.New(hub, fixture.Auth, func(context.Context) ([]datamodel.ScopeNode, error) {
 		return nodes, nil
 	}), gate))
 	defer srv.Close()
+	defer gate.shutdown()
 
 	cred := fixture.Credential()
 	br, cancel := dialSSEAs(srv, cred, "resume_from="+in.ResumeFrom)

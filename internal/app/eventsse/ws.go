@@ -314,11 +314,19 @@ func (s *server) runWS(reqCtx context.Context, ws *websocket.Conn, principal aut
 			return
 
 		case <-sub.wake():
-			if err := s.drainOnce(sk, st, filter); err != nil {
+			// Reset only on a drain that actually WROTE. A wake means the log
+			// grew, not that this subscriber was sent anything — and for one
+			// watching a quiet scope beside a busy sibling it usually means the
+			// opposite, which would silence the EVT-095 ping exactly when a
+			// half-open socket most needs reaping.
+			wrote, err := s.drainOnce(sk, st, filter)
+			if err != nil {
 				s.endWS(conn, err)
 				return
 			}
-			idle.Reset(s.pingInterval)
+			if wrote {
+				idle.Reset(s.pingInterval)
+			}
 
 		case <-idle.C:
 			// EVT-095: the connection has been idle for the interval — ping, and

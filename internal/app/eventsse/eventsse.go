@@ -776,7 +776,16 @@ func (s *server) deliverBacklog(sk sink, sub *Subscription, outcome events.Resum
 //
 // EVT-123's boundary is applied per event here, at delivery time — never
 // delegated to whatever the subscriber's own selector claimed.
-func (s *server) drainOnce(sk sink, st *stream, filter events.Filter) error {
+// drainOnce reports whether it WROTE anything, not merely whether it ran.
+//
+// The distinction is the whole keepalive. A wake means the log grew; it does not
+// mean this subscriber was sent a byte, and for a subscriber whose scope sees
+// none of that traffic it usually means the opposite. Resetting the idle timer
+// on a wake therefore silences the keepalive exactly when it is needed: a
+// subscriber watching a quiet scope while a sibling scope is busy would be woken
+// continuously and sent nothing, which is the held-stream shape the requirement
+// exists to make observable. It must reset on frames sent.
+func (s *server) drainOnce(sk sink, st *stream, filter events.Filter) (wrote bool, err error) {
 	evicted, tail := s.hub.drain(st.considered)
 	if evicted {
 		st.markLoss()
@@ -785,19 +794,21 @@ func (s *server) drainOnce(sk sink, st *stream, filter events.Filter) error {
 		st.considered = env.ID
 		if st.pending && filter.Visible(env) {
 			if err := sk.gap(st.resolveLoss(env.ID)); err != nil {
-				return err
+				return wrote, err
 			}
+			wrote = true
 		}
 		if !filter.Allows(env) {
 			continue
 		}
 		if err := sk.event(env); err != nil {
-			return err
+			return wrote, err
 		}
 		st.delivered = env.ID
+		wrote = true
 	}
 	st.arm()
-	return sk.flush()
+	return wrote, sk.flush()
 }
 
 // ServeHTTP serves both events/1 bindings at the one path EVT-001 fixes,
@@ -922,8 +933,9 @@ func (s *server) serveSSE(w http.ResponseWriter, r *http.Request, traceID string
 	_ = s.deliverBacklog(sk, sub, outcome, st, filter)
 
 	// EVT-105a: an SSE stream that has sent nothing for the keepalive interval
-	// emits a comment line. It is a Timer rather than a Ticker so "idle" means
-	// idle SINCE THE LAST FRAME, exactly as the WS binding's ping does — and
+	// emits a comment line. It is a Timer rather than a Ticker, and it is reset
+	// only when a drain actually WROTE — so "idle" means idle since the last
+	// frame this subscriber received, not since the last time the log grew —
 	// without it an idle stream, a stream holding a deferred marker, and a
 	// connection that died in a middlebox are all the same zero bytes.
 	idle := time.NewTimer(s.pingInterval)
@@ -956,8 +968,11 @@ func (s *server) serveSSE(w http.ResponseWriter, r *http.Request, traceID string
 			s.logf("eventsse: ending an SSE stream whose buffer_exceeded marker found no visible resume point within %s (EVT-142a)", s.gapDeferral)
 			return
 		case <-sub.wake():
-			_ = s.drainOnce(sk, st, filter)
-			idle.Reset(s.pingInterval)
+			// Reset only when this drain actually SENT something. A wake is not
+			// a frame — see drainOnce.
+			if wrote, _ := s.drainOnce(sk, st, filter); wrote {
+				idle.Reset(s.pingInterval)
+			}
 		case <-idle.C:
 			sk.keepalive()
 			idle.Reset(s.pingInterval)
