@@ -8,6 +8,14 @@ import (
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
+// offlineScreenID is the screen identity row (DAT-004a) these offline-serve
+// cases both bind their pairing grant to and install their persisted
+// screen_programs entry for. The two MUST be the same id: the relay serves a
+// program per screen, so a grant redeeming into a different screen would be
+// served the terminal default and these cases would assert nothing about the
+// persisted entry.
+const offlineScreenID = "01J8Z3K4N5P6Q7R8S9T0V1W2X6"
+
 // TestSetServedProgramDeliversPersistedPreemptLease is Task 2's player-side
 // half of REL-061: the relay sources its program-delivery lease from a
 // PERSISTED screen_programs entry (a wire.ScreenProgram, as desiredstate's
@@ -18,7 +26,7 @@ import (
 // screen through the relay's own offline continuity with no app peer live.
 func TestSetServedProgramDeliversPersistedPreemptLease(t *testing.T) {
 	certPEM, _, priv, _ := testRelaySigningIdentity(t)
-	grant := testGrant()
+	grant := testGrantForScreen(offlineScreenID)
 
 	srv, err := NewServer(certPEM, []wire.PairingGrant{grant})
 	if err != nil {
@@ -30,7 +38,7 @@ func TestSetServedProgramDeliversPersistedPreemptLease(t *testing.T) {
 	// preempt priority, content display, rev-99 — carrying signed content
 	// pointers (never asset bytes, REL-140).
 	served := wire.ScreenProgram{
-		ScreenID:        "01J8Z3K4N5P6Q7R8S9T0V1W2X6",
+		ScreenID:        offlineScreenID,
 		ProgramRevision: "rev-99",
 		Priority:        "preempt",
 		Display:         "content",
@@ -92,7 +100,7 @@ func TestSetServedProgramDeliversPersistedPreemptLease(t *testing.T) {
 // codebase's historical single-image behavior byte-for-byte.
 func TestSetServedProgramCarriesPerItemContentType(t *testing.T) {
 	certPEM, _, priv, _ := testRelaySigningIdentity(t)
-	grant := testGrant()
+	grant := testGrantForScreen(offlineScreenID)
 
 	srv, err := NewServer(certPEM, []wire.PairingGrant{grant})
 	if err != nil {
@@ -100,7 +108,7 @@ func TestSetServedProgramCarriesPerItemContentType(t *testing.T) {
 	}
 
 	served := wire.ScreenProgram{
-		ScreenID:        "01J8Z3K4N5P6Q7R8S9T0V1W2X6",
+		ScreenID:        offlineScreenID,
 		ProgramRevision: "rev-cast-1",
 		Priority:        "scheduled",
 		Display:         "content",

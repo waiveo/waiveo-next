@@ -569,8 +569,14 @@ func main() {
 	// from the live Applied value — the same durable copy Pull just wrote, so
 	// the serve path reads what a restart with a disconnected app peer would
 	// read (Offline continuity). ServedProgram's sole input is the operational
-	// store; it contacts no app peer. Wave-1 first-photon carries exactly one
-	// applied screen-program system-wide, so SetServedProgram takes entry [0].
+	// store; it contacts no app peer.
+	//
+	// EVERY entry is installed, each under its own screen_id: `screen_programs`
+	// is one entry per screen identity row (REL-061), and a paired player
+	// presents a channel token naming exactly which row it is (PLY-035), so the
+	// serve path selects by that. Installing only entry [0] served whatever
+	// screen happened to sort first to every paired player on the site.
+	//
 	// signingKey is the SAME enrollment private key relayID.CertPEM certifies,
 	// so a player's PLY-090 signature check against its pinned trust anchor
 	// lines up with the cert this listener actually presents.
@@ -578,17 +584,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("waiveo-relay: read persisted screen_programs for offline serve: %v", err)
 	}
-	if len(served) == 0 {
-		// An empty section is REL-060's stated empty placeholder, not a fault:
-		// the app peer derives one entry per authored screen row, so a site with
-		// no screens yet has nothing to serve. Leave the player server with no
-		// configured program — a pull gets an empty program rather than a
-		// fabricated one — and keep booting, so pairing, the device plane and
-		// the schedule resolver all still come up.
-		log.Printf("waiveo-relay: persisted last-applied snapshot carried no screen_programs; serving no program until one is authored")
-	} else {
-		pairingSrv.SetServedProgram(applied.Generation, served[0], relayID.PrivateKey)
-	}
+	serveAppAuthoredPrograms(pairingSrv, applied.Generation, served, relayID.PrivateKey)
 
 	// commandSurface is the ONE relay/1 REL-112/113/115 device-command surface
 	// this binary's non-edge-rule dispatch paths share — the schedule-preset
@@ -682,12 +678,27 @@ func main() {
 					loggingController{inner: baseController, source: "keep-alive"},
 					deviceRegistry, devResolver),
 				relayID.RelayID),
-			// Wave-1 bridge (playerserver.Server.CurrentDisplay's own doc):
-			// exactly one screen-program is served system-wide today, so
-			// every entityID maps to that SAME currently active Lease
-			// display — the real PLY-155 signal (internal/relay/keepalive's
-			// package doc, "PLY-155/156" section).
-			ActiveDisplay: func(string) string { return pairingSrv.CurrentDisplay() },
+			// PLY-155 gates on "the TARGET screen's own currently active
+			// Lease", and keepalive polls DEVICE ENTITIES: answering needs an
+			// entity -> screen binding the relay does not have. relay/1's
+			// `device_inventory` (REL-063) carries no screen reference on an
+			// adopted entity, and ecpTargets is keyed by entity id alone.
+			//
+			// Where this relay serves exactly ONE screen the binding is not
+			// needed to answer — every polled entity belongs to that screen,
+			// because there is no other — and this reports its real display.
+			// Where it serves several, an entity cannot be attributed to one of
+			// them, so this reports "" (keepalive's documented not-blank
+			// degrade) rather than a DIFFERENT screen's display, which would
+			// both suppress recovery on a live screen and relaunch an
+			// intentionally blanked one.
+			ActiveDisplay: func(string) string {
+				screenID, sole := pairingSrv.SoleServedScreen()
+				if !sole {
+					return ""
+				}
+				return pairingSrv.CurrentDisplay(screenID)
+			},
 		})
 		go func() {
 			if err := ka.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
@@ -1228,9 +1239,33 @@ func bootScheduleResolverAt(applied desiredstate.Applied, srv *playerserver.Serv
 // applicable schedule) is left exactly as it was: the app-authored
 // screen_programs SetServedProgram already configured on srv stays served,
 // unchanged — this function builds no Resolver for it and calls SetProgram
-// for it not at all. The same holds, vacuously, when applied.Schedule carries
-// no scope nodes at all (today's first-photon empty-schedule state): the
+// for it not at all. Because a resolver's write now names the ONE screen it
+// serves, that additive policy holds for real rather than by luck: before,
+// every resolver wrote the server's single shared program, so resolving ONE
+// governed screen replaced what every OTHER screen was being served. The same
+// holds, vacuously, when applied.Schedule carries no scope nodes at all: the
 // returned slice is empty and every screen's serving is untouched.
+//
+// # Which screen a governed scope node's resolution is served to
+//
+// Resolution happens at a SCOPE NODE; a program is served to a SCREEN IDENTITY
+// ROW; data-model/1 DAT-004a makes those distinct rows with distinct ids. The
+// join between them is a screen row's own `scope_node` placement — which the
+// app peer has (internal/feeder/snapshot derives `screen_programs` from exactly
+// it) and the relay does NOT: REL-065's carried `schedule` section is keyed by
+// scope node and carries scheduling-core rows plus scope nodes, no screen
+// identity rows. So this function can only serve a resolution to a screen where
+// the answer is forced rather than guessed: the carried schedule governs exactly
+// one scope node AND the relay serves exactly one screen, in which case that
+// node's resolution is that screen's and there is no other candidate either way.
+//
+// Otherwise every resolver is built with no served screen: it still resolves and
+// still fires its node's preset batches (DAT-075 is a scope-node concern needing
+// no screen identity), and every screen keeps the app-authored per-screen
+// `screen_programs` baseline — correct at the instant the generation was built,
+// just not re-resolved locally at a daypart boundary until the next re-pull.
+// Serving one screen's schedule resolution to another because the relay cannot
+// tell them apart is the failure this refuses.
 //
 // site is the app peer's authoritative site_binding (REL-036, the same value
 // bootAutomationStack adopts into the edge engine) — carried through only for
@@ -1243,28 +1278,35 @@ func resolveAndServe(ctx context.Context, applied desiredstate.Applied, srv *pla
 		log.Printf("waiveo-relay: schedule section: %s: %s: %s", e.Field, e.Code, e.Message)
 	}
 
-	var resolvers []*schedulehost.Resolver
-	for _, screenID := range scheduleScreenNodeIDs(applied.Schedule) {
-		if !schedulehost.Governs(store, screenID) {
-			continue
+	var governed []string
+	for _, nodeID := range scheduleScreenNodeIDs(applied.Schedule) {
+		if schedulehost.Governs(store, nodeID) {
+			governed = append(governed, nodeID)
 		}
+	}
+	servedScreenID := soleServedScreenID(governed, applied.ScreenPrograms)
 
-		display, _, content, _, err := schedulehost.ProjectLease(store, screenID, nowMs, applied.ContentOrigin)
+	var resolvers []*schedulehost.Resolver
+	for _, nodeID := range governed {
+		display, _, content, _, err := schedulehost.ProjectLease(store, nodeID, nowMs, applied.ContentOrigin)
 		if err != nil {
 			// An unresolvable effective tz (DAT-034) degrades to the app-authored
 			// program already served — never a box-local substitution.
-			log.Printf("waiveo-relay: schedule resolver: screen %s: resolve at boot: %v; serving app-authored program", screenID, err)
+			log.Printf("waiveo-relay: schedule resolver: scope node %s: resolve at boot: %v; serving app-authored program", nodeID, err)
 			continue
 		}
 
-		r := schedulehost.NewResolver(store, screenID, srv, signingKey, applied.Generation, applied.ContentOrigin)
+		r := schedulehost.NewResolver(store, nodeID, servedScreenID, srv, signingKey, applied.Generation, applied.ContentOrigin)
 		r.TickBoot(nowMs, sink) // the level-triggered STATE projection + the misfire-governed boot resume-edge preset (DAT-075/076/094/119/121).
 		resolvers = append(resolvers, r)
 
-		if display == "content" && len(content) > 0 {
-			log.Printf("SCHEDULE RESOLVER OK (screen %s: display:content, asset %s; site tz %s)", screenID, content[0].AssetRef, site.TZ)
-		} else {
-			log.Printf("SCHEDULE RESOLVER OK (screen %s: display:%s; site tz %s)", screenID, display, site.TZ)
+		switch {
+		case servedScreenID == "":
+			log.Printf("SCHEDULE RESOLVER OK (scope node %s: display:%s, presets only — no screen placement carried to attribute this resolution to a screen; app-authored program stays served; site tz %s)", nodeID, display, site.TZ)
+		case display == "content" && len(content) > 0:
+			log.Printf("SCHEDULE RESOLVER OK (scope node %s -> screen %s: display:content, asset %s; site tz %s)", nodeID, servedScreenID, content[0].AssetRef, site.TZ)
+		default:
+			log.Printf("SCHEDULE RESOLVER OK (scope node %s -> screen %s: display:%s; site tz %s)", nodeID, servedScreenID, display, site.TZ)
 		}
 
 		ticker := time.NewTicker(tickEvery)
@@ -1280,11 +1322,78 @@ func resolveAndServe(ctx context.Context, applied desiredstate.Applied, srv *pla
 	return resolvers
 }
 
+// serveAppAuthoredPrograms installs EVERY persisted `screen_programs` entry on
+// srv, each under its own `screen_id` (REL-061) — the app-authored per-screen
+// baseline the relay serves from its own durable store with no app peer
+// reachable (REL-055/061, Offline continuity).
+//
+// Every entry, not entry [0]: the section is one entry per screen identity row
+// (data-model/1 DAT-004a) and a paired player presents a channel token naming
+// exactly which row it is, so installing one of them served whichever screen
+// sorted first to every paired player on the site.
+//
+// An empty `served` is REL-060's stated empty placeholder, not a fault: the app
+// peer derives one entry per authored screen row, so a site with no screens yet
+// has nothing to serve. Every screen then pulls data-model/1's terminal default
+// (DAT-118, display:blank) rather than a fabricated program, and boot continues
+// so pairing, the device plane and the schedule resolver all still come up.
+func serveAppAuthoredPrograms(srv *playerserver.Server, generation int64, served []wire.ScreenProgram, signingKey ed25519.PrivateKey) {
+	if len(served) == 0 {
+		log.Printf("waiveo-relay: persisted last-applied snapshot carried no screen_programs; every screen serves the terminal default until one is authored")
+		return
+	}
+	for _, sp := range served {
+		if sp.ScreenID == "" {
+			// An entry naming no screen cannot be served to any screen — no
+			// channel token resolves to an empty screen_id — so it is reported
+			// rather than installed where nothing could ever read it.
+			log.Printf("waiveo-relay: persisted screen_programs entry (program_revision %q) carries no screen_id; not served", sp.ProgramRevision)
+			continue
+		}
+		srv.SetServedProgram(generation, sp, signingKey)
+	}
+}
+
+// soleServedScreenID returns the screen identity row a governed scope node's
+// schedule resolution may be served to, or "" when the relay cannot say which
+// screen that is without guessing.
+//
+// It is "" unless BOTH sides of the join are singular: exactly one governed
+// scope node, and exactly one screen in the relay's own `screen_programs`
+// (REL-061). Then there is no other node the screen's program could come from
+// and no other screen the node's resolution could be for, so the attribution is
+// forced by the inputs rather than assumed. With several of either, the join is
+// a screen row's own `scope_node` placement (data-model/1 DAT-004a), which the
+// relay never receives — REL-065's `schedule` section carries scheduling-core
+// rows and scope nodes, no screen identity rows — and this returns "" so every
+// resolver serves nobody rather than serving one screen's schedule to another.
+//
+// A `screen_programs` entry with no screen_id is not a candidate: it names no
+// screen, so counting it would make a one-real-screen site look ambiguous.
+func soleServedScreenID(governedNodeIDs []string, programs []wire.ScreenProgram) string {
+	if len(governedNodeIDs) != 1 {
+		return ""
+	}
+	screenID := ""
+	for _, sp := range programs {
+		if sp.ScreenID == "" {
+			continue
+		}
+		if screenID != "" {
+			return "" // more than one screen: the node -> screen attribution is not forced.
+		}
+		screenID = sp.ScreenID
+	}
+	return screenID
+}
+
 // scheduleScreenNodeIDs returns the id of every carried scope node of kind
-// "screen" in sec — the candidate screens bootScheduleResolverAt checks
-// schedulehost.Governs against. A node that fails to unmarshal is skipped
-// (schedulehost.BuildStore already reports it as a ROW_MALFORMED error above)
-// rather than aborting the whole scan.
+// "screen" in sec — the candidate scope nodes bootScheduleResolverAt checks
+// schedulehost.Governs against. These are scope nodes (data-model/1 DAT-001),
+// NOT screen identity rows (DAT-004a); soleServedScreenID above is what decides
+// which screen, if any, a governed one's resolution is served to. A node that
+// fails to unmarshal is skipped (schedulehost.BuildStore already reports it as a
+// ROW_MALFORMED error above) rather than aborting the whole scan.
 func scheduleScreenNodeIDs(sec wire.ScheduleSection) []string {
 	var ids []string
 	for _, raw := range sec.ScopeNodes {

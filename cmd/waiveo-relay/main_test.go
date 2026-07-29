@@ -334,11 +334,19 @@ const testPlayerServerGrantID = "grant-schedresolver-test-01"
 // testPlayerServerGrant builds the wire.PairingGrant record NewServer boots
 // srv with (testPlayerServerGrantID), freshly timestamped so its TTL is
 // always live for the calling test's own real-time duration.
+// testPlayerServerScreenID is the SCREEN IDENTITY ROW (data-model/1 DAT-004a)
+// these cases' pairing grant redeems into — the same id the feeder's fixture
+// snapshot puts on its one screen_programs entry (snapshot.FixtureScreenID),
+// so a test player pairing here is served that entry rather than the terminal
+// default a relay serves an unknown screen.
+const testPlayerServerScreenID = snapshot.FixtureScreenID
+
 func testPlayerServerGrant() wire.PairingGrant {
 	return wire.PairingGrant{
 		GrantID:                testPlayerServerGrantID,
 		Purpose:                "pairing",
 		ResultingPrincipalKind: "screen",
+		ScreenID:               testPlayerServerScreenID,
 		TTL:                    900,
 		RedemptionMode:         "one-time",
 		IssuedAt:               time.Now().UnixMilli(),
@@ -729,7 +737,26 @@ func buildRePullContentApplied(t *testing.T, gen int64, assetRef string) desired
 	// test that DOES want to exercise a superseding grant set (a new or
 	// dropped grant_id) overwrites this field explicitly on the returned
 	// value, same as it already does for other fields.
-	return desiredstate.Applied{Generation: gen, Schedule: sec, PairingGrants: []wire.PairingGrant{testPlayerServerGrant()}}
+	// One screen_programs entry, for the screen testPlayerServerGrant redeems
+	// into. It is what tells the relay WHICH screen this schedule's resolution
+	// is served to: resolution happens at a scope node and a program is served
+	// to a screen identity row (DAT-004a), and with no screen carried at all
+	// there is nobody to attribute the resolution to. Its own display is blank
+	// so a test observing display:content can only be seeing the resolver's
+	// output, never this baseline.
+	programs := []wire.ScreenProgram{{
+		ScreenID:        testPlayerServerScreenID,
+		ProgramRevision: "app-authored-baseline",
+		Priority:        "scheduled",
+		Display:         "blank",
+	}}
+
+	return desiredstate.Applied{
+		Generation:     gen,
+		Schedule:       sec,
+		ScreenPrograms: programs,
+		PairingGrants:  []wire.PairingGrant{testPlayerServerGrant()},
+	}
 }
 
 // newRePullFixture wires the live serving collaborators a re-pull tick drives —
@@ -867,9 +894,14 @@ func TestRePullSupersedesPairingGrantsWithNewerGeneration(t *testing.T) {
 		GrantID:                newGrantID,
 		Purpose:                "pairing",
 		ResultingPrincipalKind: "screen",
-		TTL:                    900,
-		RedemptionMode:         "one-time",
-		IssuedAt:               time.Now().UnixMilli(),
+		// The same screen the boot grant is bound to (REL-121a): the assertion
+		// below is about the program a redemption is served, and a program is
+		// served per screen, so a grant redeeming into some other screen would
+		// be served the terminal default no matter what the resolver did.
+		ScreenID:       testPlayerServerScreenID,
+		TTL:            900,
+		RedemptionMode: "one-time",
+		IssuedAt:       time.Now().UnixMilli(),
 	}}
 
 	puller := &rePuller{
@@ -1190,4 +1222,106 @@ func TestRenewalDue(t *testing.T) {
 			t.Error("renewalDue = true for an unenrolled store, want false")
 		}
 	})
+}
+
+// twoScreenGrant builds a live screen-bound pairing grant (REL-121a) for
+// screenID with its own grant_id, so one player server can carry a redeemable
+// grant per screen.
+func twoScreenGrant(screenID string) wire.PairingGrant {
+	return wire.PairingGrant{
+		GrantID:                "grant-offline-" + screenID,
+		Purpose:                "pairing",
+		ResultingPrincipalKind: "screen",
+		ScreenID:               screenID,
+		TTL:                    900,
+		RedemptionMode:         "one-time",
+		IssuedAt:               time.Now().UnixMilli(),
+	}
+}
+
+// TestOfflineBootServesEveryPersistedScreenProgram is the offline-continuity
+// oracle at the granularity that actually matters (REL-055/061): the boot path
+// reads the relay's OWN durable copy of screen_programs — no app peer in the
+// picture at all — and every screen it names comes back served ITS OWN entry.
+//
+// The path under test is the one a restart with the app peer down takes:
+// serveAppAuthoredPrograms over what desiredstate.ServedProgram returns from
+// the store. Serving only the first entry left every other screen on the site
+// showing the first screen's content, which is not a degraded continuity but a
+// wrong one.
+func TestOfflineBootServesEveryPersistedScreenProgram(t *testing.T) {
+	const (
+		lobbyScreen = "01J8Z9DEM0SCREENR0WL0BBY01"
+		cafeScreen  = "01J8Z9DEM0SCREENR0WCAFE001"
+		darkScreen  = "01J8Z9DEM0SCREENR0WDARK001"
+	)
+
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("ed25519.GenerateKey: %v", err)
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		t.Fatalf("generate serial: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: "waiveo-relay"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().AddDate(10, 0, 0),
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+	}
+	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, priv)
+	if err != nil {
+		t.Fatalf("x509.CreateCertificate: %v", err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+
+	srv, err := playerserver.NewServer(certPEM, []wire.PairingGrant{
+		twoScreenGrant(lobbyScreen), twoScreenGrant(cafeScreen), twoScreenGrant(darkScreen),
+	})
+	if err != nil {
+		t.Fatalf("playerserver.NewServer: %v", err)
+	}
+
+	// The persisted last-applied section, exactly as desiredstate.ServedProgram
+	// hands it back from the relay's own durable store: three screens, three
+	// different programs, and one malformed entry naming no screen at all.
+	served := []wire.ScreenProgram{
+		{ScreenID: lobbyScreen, ProgramRevision: "rev-lobby", Priority: "scheduled", Display: "content",
+			Content: []wire.ContentRef{{AssetRef: "sha256:aa", URL: "https://origin.example/content/lobby"}}},
+		{ScreenID: cafeScreen, ProgramRevision: "rev-cafe", Priority: "preempt", Display: "content",
+			Content: []wire.ContentRef{{AssetRef: "sha256:bb", URL: "https://origin.example/content/cafe"}}},
+		{ScreenID: darkScreen, ProgramRevision: "rev-dark", Priority: "scheduled", Display: "blank"},
+		{ScreenID: "", ProgramRevision: "rev-orphan", Priority: "scheduled", Display: "content"},
+	}
+	serveAppAuthoredPrograms(srv, 12, served, priv)
+
+	lobby := pairAndPull(t, srv, "grant-offline-"+lobbyScreen)
+	cafe := pairAndPull(t, srv, "grant-offline-"+cafeScreen)
+	dark := pairAndPull(t, srv, "grant-offline-"+darkScreen)
+
+	if lobby.ProgramRevision != "rev-lobby" {
+		t.Errorf("lobby screen served program_revision %q, want rev-lobby", lobby.ProgramRevision)
+	}
+	if cafe.ProgramRevision != "rev-cafe" {
+		t.Errorf("cafe screen served program_revision %q, want rev-cafe — a later screen_programs entry was never installed, so this screen is showing the first entry's program", cafe.ProgramRevision)
+	}
+	if dark.ProgramRevision != "rev-dark" || dark.Display != "blank" {
+		t.Errorf("dark screen served %q/%q, want rev-dark/blank", dark.ProgramRevision, dark.Display)
+	}
+	if cafe.Priority != "preempt" {
+		t.Errorf("cafe screen served priority %q, want preempt (PLY-108, from its own entry)", cafe.Priority)
+	}
+	if len(lobby.Content) != 1 || len(cafe.Content) != 1 {
+		t.Fatalf("content counts = lobby:%d cafe:%d, want 1 each", len(lobby.Content), len(cafe.Content))
+	}
+	if lobby.Content[0].URL == cafe.Content[0].URL {
+		t.Errorf("lobby and cafe were served the same content url %q — every paired screen is showing one screen's program", lobby.Content[0].URL)
+	}
+	if len(dark.Content) != 0 {
+		t.Errorf("dark screen served content %+v, want none (display:blank)", dark.Content)
+	}
 }

@@ -62,7 +62,7 @@ func bootPreemptRelay(t *testing.T, feederBaseURL string) (host string, port int
 	}
 	// The takeover: a preempt-priority program carrying the feeder's image
 	// (PLY-100/101/108 — priority mirrors the screen-program, unmodified).
-	srv.SetProgram(applied.Generation, applied.ProgramRevision, "preempt", "content", []wire.LeaseContent{{
+	srv.SetProgram(applied.Generation, applied.ScreenID, applied.ProgramRevision, "preempt", "content", []wire.LeaseContent{{
 		Type:      "image",
 		AssetRef:  applied.Image.AssetRef,
 		URL:       applied.Image.URL,

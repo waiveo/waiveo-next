@@ -16,13 +16,13 @@ func preemptProgramTestServer(t *testing.T) (srv *Server, token string) {
 	t.Helper()
 
 	certPEM, _, priv, _ := testRelaySigningIdentity(t)
-	grant := testGrant()
+	grant := testGrantForScreen(testScreenIDA)
 
 	srv, err := NewServer(certPEM, []wire.PairingGrant{grant})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	srv.SetProgram(1, "rev-18", "preempt", "content", testImageContent(), priv)
+	srv.SetProgram(1, testScreenIDA, "rev-18", "preempt", "content", testImageContent(), priv)
 
 	_, raw := doPair(t, srv, PairingRequest{
 		HardwareID:    "hw-0001",

@@ -88,11 +88,18 @@ type RenderEndRequest struct {
 	Completion      string `json:"completion"`
 }
 
-// program is the relay's one served screen-program (Wave-1 first-photon:
-// exactly one applied screen-program system-wide, `relay/1` REL-061),
-// carried unmodified from the verified desired-state snapshot
+// program is ONE screen's served screen-program (`relay/1` REL-061), carried
+// unmodified from the verified desired-state snapshot
 // (internal/relay/desiredstate.Applied) — SetProgram is main.go's own
 // hand-off point from that verified value into this server.
+//
+// A Server holds one of these PER SCREEN, keyed by the screen_id a channel
+// token resolves to (Server.programs). It is deliberately not one value for
+// the whole server: `screen_programs` is an ARRAY with one entry per screen
+// identity row (REL-061), and a player presents a channel token that names
+// exactly which of them it is (PLY-035/076), so a single shared value would
+// serve every paired player whichever screen's entry happened to be written
+// last — including one screen's content to a different screen.
 type program struct {
 	ProgramRevision string
 	Priority        string
@@ -100,10 +107,63 @@ type program struct {
 	Content         []wire.LeaseContent
 }
 
+// TerminalProgramRevision is the stable `program_revision` a screen parked at
+// data-model/1's terminal default carries (DAT-118). It is a fixed sentinel
+// rather than a derived value so a screen sitting at the terminal blank never
+// spuriously re-swaps: a player only re-fetches content when the revision
+// changes, and a revision that varied would churn a screen that is showing
+// nothing.
+//
+// It is exported because internal/relay/schedulehost's own DAT-118 projection
+// must carry the identical value — a schedule that resolves to the terminal
+// default and a screen with no `screen_programs` entry at all reach the SAME
+// contract-defined state, and two sentinels for one state would present as a
+// spurious program change to any player that crossed between them.
+const TerminalProgramRevision = "terminal:blank"
+
+// terminalDefault is the program a screen this server holds no entry for is
+// served: data-model/1's terminal default (DAT-118) — `display: blank` with no
+// content, "powered on, showing nothing, distinct from off".
+//
+// DAT-118 is explicit that resolution "never leaves N's state unresolved and
+// never falls back to any box-local or player-local content"; a relay asked
+// for a screen it has no program for is in exactly that position, and this is
+// the empty-but-DEFINED state the contract names for it. What it must NOT do
+// is hand back some other screen's program, which is what a single
+// whole-server program value did for every screen but the last one written.
+//
+// `priority` is `scheduled` because PLY-108's other value, `preempt`, is a
+// deliberately-invoked emergency takeover — the absence of any program for a
+// screen is the opposite of one, and a blank Lease claiming `preempt` would
+// make an unauthored screen outrank an authored preemption on any consumer
+// that compares them.
+func terminalDefault() program {
+	return program{
+		ProgramRevision: TerminalProgramRevision,
+		Priority:        "scheduled",
+		Display:         DisplayBlank,
+	}
+}
+
 // SetProgram configures the program-delivery state GET /player/v1/program
-// serves: programRevision/priority/display/content carried UNMODIFIED onto
-// every Lease this server issues (PLY-108 priority, PLY-109 display —
-// REL-061's entry reflected exactly), signed with signingKey.
+// serves FOR ONE SCREEN: programRevision/priority/display/content carried
+// UNMODIFIED onto every Lease this server issues to the player holding a
+// channel token for screenID (PLY-108 priority, PLY-109 display — REL-061's
+// entry for that screen reflected exactly), signed with signingKey.
+//
+// screenID is the screen identity row's id (data-model/1 DAT-004a) — the same
+// value a `screen_programs` entry names (REL-061), a screen-bound pairing
+// grant carries (REL-121a), and a redeemed channel token therefore resolves to
+// (PLY-035, LookupChannelToken). It is NOT a scope node's id: DAT-004a is
+// explicit that "a `screen`-kind scope node is a placement classification —
+// never a screen identity in its own right", so a caller resolving scheduling
+// state AT a scope node must translate to the screen row it serves before
+// calling this. Installing a program under a scope-node id would key it where
+// no channel token can ever reach it.
+//
+// An empty screenID is ignored outright rather than installed under "": no
+// channel token ever resolves to an empty screen_id (redeem always mints or
+// carries a non-empty one), so such an entry could only ever be dead state.
 //
 // signingKey MUST be the relay's own enrollment private key
 // (internal/relay/identity.RelayIdentity.PrivateKey) — the SAME keypair
@@ -111,7 +171,13 @@ type program struct {
 // player's Steady-state-pinning verification of a Lease's signature
 // (PLY-090, "verifiable... against the same trust anchor its... connection
 // to this relay is itself pinned to") checks against the exact cert this
-// relay's player/1 listener presents.
+// relay's player/1 listener presents. It is held once for the whole server
+// rather than per screen ON PURPOSE: it is the relay's own identity, identical
+// for every screen, and a re-enrollment that rotates it (REL-027–029) must take
+// effect for EVERY screen's Leases at once — a per-screen copy would keep
+// signing one screen's Leases with a retired key until that screen's program
+// happened to be rewritten, and a player pinning the currently-presented cert
+// would reject them.
 //
 // generation is the desired-state generation this program was resolved for
 // (relay/1 REL-052/056). The live re-pull loop drives SetProgram concurrently
@@ -119,21 +185,30 @@ type program struct {
 // generation's per-screen resolver goroutines are cancelled but one may still be
 // mid-flight inside a resolve, so its late write can arrive AFTER the new
 // generation's. SetProgram FENCES that hazard: a write whose generation is
-// strictly older than the last one applied here is dropped, so a stale
-// resolver can never revert the served program to a superseded generation
-// (upholding the "an API edit MUST change the resolved program" oracle across
-// the atomic-swap window). A write at the same-or-higher generation wins
-// (last-write-wins WITHIN a generation is preserved, so the schedule resolver's
-// TickBoot correctly replaces the app-authored baseline SetServedProgram
-// configured at the same generation at boot).
-func (s *Server) SetProgram(generation int64, programRevision, priority, display string, content []wire.LeaseContent, signingKey ed25519.PrivateKey) {
+// strictly older than the last one applied FOR THAT SCREEN is dropped, so a
+// stale resolver can never revert the screen's served program to a superseded
+// generation (upholding the "an API edit MUST change the resolved program"
+// oracle across the atomic-swap window). A write at the same-or-higher
+// generation wins (last-write-wins WITHIN a generation is preserved, so the
+// schedule resolver's TickBoot correctly replaces the app-authored baseline
+// SetServedProgram configured at the same generation at boot).
+//
+// The fence is PER SCREEN, and that is load-bearing rather than incidental: a
+// single whole-server fence lets a screen whose resolver happens to be running
+// at a higher generation silently refuse every other screen's writes at the
+// generation they were legitimately resolved for. Screens do not supersede one
+// another; only a later generation of the SAME screen does.
+func (s *Server) SetProgram(generation int64, screenID, programRevision, priority, display string, content []wire.LeaseContent, signingKey ed25519.PrivateKey) {
+	if screenID == "" {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if generation < s.programGen {
-		return // stale generation's late write — never revert a newer generation's served program (REL-052/056).
+	if generation < s.programGens[screenID] {
+		return // stale generation's late write — never revert a newer generation's served program for THIS screen (REL-052/056).
 	}
-	s.programGen = generation
-	s.program = program{
+	s.programGens[screenID] = generation
+	s.programs[screenID] = program{
 		ProgramRevision: programRevision,
 		Priority:        priority,
 		Display:         display,
@@ -171,6 +246,12 @@ func (s *Server) SetProgram(generation int64, programRevision, priority, display
 // documents — the same trust anchor a player pins its Lease-signature check
 // against (PLY-090).
 //
+// The entry is installed for sp.ScreenID alone (REL-061's own `screen_id`),
+// so a caller replays the whole persisted `screen_programs` array through this
+// method — one call per entry — and each screen is served ITS entry. A screen
+// the array carries no entry for is served data-model/1's terminal default
+// (DAT-118, terminalDefault), never a sibling screen's program.
+//
 // generation is the persisted last-applied generation this served program
 // belongs to (relay/1 REL-052/056), carried into SetProgram's own generation
 // fence: it is the boot-time baseline a same-generation schedule resolver then
@@ -193,25 +274,71 @@ func (s *Server) SetServedProgram(generation int64, sp wire.ScreenProgram, signi
 			DurationMS: c.DurationMS,
 		})
 	}
-	s.SetProgram(generation, sp.ProgramRevision, sp.Priority, sp.Display, content, signingKey)
+	s.SetProgram(generation, sp.ScreenID, sp.ProgramRevision, sp.Priority, sp.Display, content, signingKey)
+}
+
+// programFor returns the program this server currently serves screenID —
+// SetProgram/SetServedProgram's own installed entry, or data-model/1's
+// terminal default (DAT-118, terminalDefault) when this server holds no entry
+// for that screen. It is the ONE place the served-program selection happens,
+// so handleProgram and CurrentDisplay cannot disagree about what a given
+// screen is currently being served. The caller holds s.mu.
+func (s *Server) programForLocked(screenID string) program {
+	prog, ok := s.programs[screenID]
+	if !ok {
+		return terminalDefault()
+	}
+	return prog
 }
 
 // CurrentDisplay returns the `display` value (PLY-093: DisplayContent or
-// DisplayBlank) of whatever Lease this server is currently configured to
-// issue — SetProgram/SetServedProgram's own program.Display, read under the
-// same lock those setters take. This is the real signal
-// internal/relay/keepalive's screen-liveness recovery gates PLY-155's
-// blank-Lease suppression on (Config.ActiveDisplay, playerserver.LivenessSignal
-// via liveness.go's EvaluateRecovery). Wave-1 first-photon carries exactly one
-// applied screen-program system-wide (program's own doc above), so this
-// reports that ONE program's display regardless of which screen asks — the
-// same simplification cmd/waiveo-relay's own Wave-1 bridge resolvers already
-// make elsewhere (e.g. loopbackResolver's "a configured ECP target IS the
-// adopted entity").
-func (s *Server) CurrentDisplay() string {
+// DisplayBlank) of the Lease this server is currently configured to issue TO
+// screenID — SetProgram/SetServedProgram's own program.Display for that
+// screen, read under the same lock those setters take, or DisplayBlank when
+// this server holds no program for it (data-model/1's DAT-118 terminal
+// default, which is exactly what a pull for that screen would be served).
+//
+// This is the real signal internal/relay/keepalive's screen-liveness recovery
+// gates PLY-155's blank-Lease suppression on (Config.ActiveDisplay,
+// playerserver.LivenessSignal via liveness.go's EvaluateRecovery). PLY-155
+// gates on "the TARGET screen's own currently active Lease", so it takes the
+// screen id rather than reporting some arbitrary screen's display: an accessor
+// that answered for the whole server would suppress recovery on a live screen
+// because a DIFFERENT screen is blank, and relaunch an intentionally blanked
+// one because a different screen is showing content.
+func (s *Server) CurrentDisplay(screenID string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.program.Display
+	return s.programForLocked(screenID).Display
+}
+
+// SoleServedScreen reports the screen_id of the ONE screen this server holds a
+// program for, and whether there is exactly one. It is false for zero screens
+// and for two or more.
+//
+// It exists for the one caller that must ask about a screen it cannot name:
+// internal/relay/keepalive polls DEVICE ENTITIES and needs the display of the
+// screen each entity is attached to (PLY-155), but nothing in relay/1's
+// desired state binds an adopted entity to a screen identity row —
+// `device_inventory` (REL-063) carries `{device_id, driver, native_id,
+// poll_cadence_seconds, entities}` and no screen reference, and the relay's ECP
+// targets are keyed by entity id alone. Where this server serves exactly one
+// screen the binding is not needed to answer the question — every polled entity
+// belongs to that screen, because there is no other — and this reports it.
+// Where it serves several, the caller has no way to attribute an entity to one
+// of them and MUST NOT guess: answering with some other screen's display is the
+// defect a per-screen CurrentDisplay exists to remove, so the caller degrades
+// to keepalive's documented not-blank reading instead.
+func (s *Server) SoleServedScreen() (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.programs) != 1 {
+		return "", false
+	}
+	for screenID := range s.programs {
+		return screenID, true
+	}
+	return "", false
 }
 
 // LeaseAck returns a previously recorded lease/ack for leaseID, and
@@ -288,10 +415,32 @@ func (s *Server) handleProgram(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&req)
 	}
 
+	// The Lease is selected by the TOKEN'S OWN screen_id — the screen identity
+	// row this credential was minted for (PLY-035, REL-121a) — so a site with
+	// several screens serves each paired player its own screen's program. A
+	// screen this server holds no entry for is served data-model/1's terminal
+	// default (DAT-118), never a sibling screen's program.
 	s.mu.Lock()
-	prog := s.program
+	prog := s.programForLocked(screenID)
 	signingKey := s.signingKey
 	s.mu.Unlock()
+
+	// No signing key configured yet — nothing has called SetProgram on this
+	// server at all. Every Lease MUST carry a signature a player verifies
+	// against its pinned trust anchor (PLY-090), and there is no unsigned Lease
+	// in that contract, so this refuses rather than issuing one. It is a 500
+	// because the fault is entirely the relay's own configuration: the player's
+	// credential is valid and its request is well-formed.
+	//
+	// Reachable whenever a screen pairs before any program has been installed —
+	// a site whose persisted screen_programs is empty (REL-060's empty
+	// placeholder) is exactly that, and signhash.Sign on a nil key panics
+	// rather than erroring, which on the serving goroutine takes the request's
+	// whole connection down.
+	if len(signingKey) != ed25519.PrivateKeySize {
+		apihttp.WriteProblem(w, r, traceID, http.StatusInternalServerError, "INTERNAL", "Internal Error")
+		return
+	}
 
 	lease := wire.Lease{
 		// PLY-097: lease_id MUST be a ULID (unique per issuance), unlike

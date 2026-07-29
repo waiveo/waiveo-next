@@ -418,11 +418,15 @@ func TestBuildRejectsNilIdentity(t *testing.T) {
 }
 
 // TestBuildWithGrantsRidesAndVerifies asserts a populated grants slice
-// rides into `sections.pairing_grants` verbatim, and that the snapshot's
-// hash/signature still verify with grants present (REL-053: grants are
-// part of `sections`, so they're covered by `hash`; REL-075 transitively).
-// This is the Task 6 carry — grant.Mint()'s one pairing grant rides the
-// snapshot to the relay.
+// rides into `sections.pairing_grants` with only its screen binding filled in,
+// and that the snapshot's hash/signature still verify with grants present
+// (REL-053: grants are part of `sections`, so they're covered by `hash`;
+// REL-075 transitively).
+//
+// The one field the builder does set is `screen_id`: a fixture snapshot names
+// the screen its own program is for, and an unbound grant would redeem into a
+// different, invented screen than the program was installed under (REL-121a;
+// see BuildCast). Every other field rides verbatim.
 func TestBuildWithGrantsRidesAndVerifies(t *testing.T) {
 	img := loadTestImage(t)
 	id := testIdentity(t)
@@ -441,8 +445,14 @@ func TestBuildWithGrantsRidesAndVerifies(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 
-	if len(snap.Sections.PairingGrants) != 1 || snap.Sections.PairingGrants[0] != g {
-		t.Fatalf("Sections.PairingGrants = %#v, want exactly [%#v]", snap.Sections.PairingGrants, g)
+	want := g
+	want.ScreenID = FixtureScreenID
+	if len(snap.Sections.PairingGrants) != 1 || snap.Sections.PairingGrants[0] != want {
+		t.Fatalf("Sections.PairingGrants = %#v, want exactly [%#v]", snap.Sections.PairingGrants, want)
+	}
+	if snap.Sections.ScreenPrograms[0].ScreenID != snap.Sections.PairingGrants[0].ScreenID {
+		t.Errorf("the fixture grant redeems into screen %q but the fixture program is for screen %q — a player pairing on this snapshot would be served the terminal default",
+			snap.Sections.PairingGrants[0].ScreenID, snap.Sections.ScreenPrograms[0].ScreenID)
 	}
 
 	recomputed, err := hashSections(snap.Sections)

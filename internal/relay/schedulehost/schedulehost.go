@@ -55,7 +55,12 @@ const (
 	// terminalProgramRevision is the stable programRevision for the DAT-118
 	// terminal default (a governing schedule holds nothing): a fixed sentinel,
 	// so a screen parked at the terminal blank never spuriously re-swaps.
-	terminalProgramRevision = "terminal:blank"
+	//
+	// It is single-sourced from playerserver, which serves the SAME DAT-118
+	// terminal default to a screen it holds no program for at all: both paths
+	// arrive at one contract-defined state, and two sentinels for it would read
+	// to a player as a real program change every time it crossed between them.
+	terminalProgramRevision = playerserver.TerminalProgramRevision
 )
 
 // BuildStore parses a carried `schedule` desired-state section (REL-065)
@@ -295,17 +300,45 @@ func contentURL(contentOrigin, assetRef string) string {
 	return contentOrigin + "/content/" + strings.TrimPrefix(assetRef, "sha256:")
 }
 
-// Resolver owns the per-instant serving of ONE screen's schedule-resolved
-// program: it resolves the screen's effective state, projects it onto the
+// Resolver owns the per-instant serving of ONE scope node's schedule-resolved
+// program: it resolves that node's effective state, projects it onto the
 // player/1 Lease the player server issues (Resolver.ResolveNow), and tracks the
 // previous effective state so a daypart's rising edge can fire its preset batch
-// (a later task dispatches the returned datamodel.PresetFire). One Resolver
-// serves one screen; a site with several screens runs one Resolver each.
+// (a later task dispatches the returned datamodel.PresetFire). A site with
+// several governed scope nodes runs one Resolver each.
+//
+// # Two id spaces, deliberately separate
+//
+// screenNodeID is the SCOPE NODE resolution happens at (data-model/1 DAT-001,
+// what datamodel.Resolve and Governs take). servedScreenID is the SCREEN
+// IDENTITY ROW whose player/1 program the projection is installed as
+// (DAT-004a, what a channel token resolves to and playerserver.SetProgram
+// keys on). DAT-004a is explicit that these are distinct rows with distinct
+// ids and that "a `screen`-kind scope node is a placement classification —
+// never a screen identity in its own right", so they are two parameters rather
+// than one: passing a scope-node id where a screen id belongs installs the
+// program under a key no channel token can ever reach.
+//
+// servedScreenID MAY be empty, and then this Resolver serves no player at all
+// — it still resolves and still returns the preset-batch rising edge, which is
+// a scope-node-level concern (DAT-075) needing no screen identity. That is the
+// mode a caller uses when it cannot say which screen a governed node's
+// resolution belongs to: relay/1's carried `schedule` section (REL-065) is
+// keyed by scope node and carries no screen identity rows, so the relay has no
+// screen -> scope-node placement to join on. Firing that node's presets while
+// serving nobody is strictly better than serving the resolution to a screen it
+// might not be for.
 type Resolver struct {
 	store        datamodel.RowStore
 	screenNodeID string
-	srv          *playerserver.Server
-	signingKey   ed25519.PrivateKey
+
+	// servedScreenID is the screen identity row (DAT-004a) this resolver's
+	// projection is served to, or "" to resolve and fire presets without
+	// serving any player — see the type doc.
+	servedScreenID string
+
+	srv        *playerserver.Server
+	signingKey ed25519.PrivateKey
 
 	// contentOrigin is the desired-state content-origin base URL
 	// (desiredstate.Applied.ContentOrigin, from revocation_and_site.content_origin,
@@ -337,11 +370,17 @@ type Resolver struct {
 	lastResolveMs int64
 }
 
-// NewResolver builds a Resolver serving screenNodeID from store, writing each
-// resolved Lease to srv (playerserver.Server.SetProgram) signed with signingKey
-// — the relay's own enrollment key, the SAME trust anchor a player pins its
-// Lease-signature check against (PLY-090), exactly as playerserver.SetProgram
-// documents.
+// NewResolver builds a Resolver resolving scope node screenNodeID from store
+// and writing each resolved Lease to srv as servedScreenID's program
+// (playerserver.Server.SetProgram) signed with signingKey — the relay's own
+// enrollment key, the SAME trust anchor a player pins its Lease-signature check
+// against (PLY-090), exactly as playerserver.SetProgram documents.
+//
+// screenNodeID and servedScreenID are two different id spaces (DAT-004a) and
+// the caller MUST NOT pass one for the other — see the Resolver type doc.
+// servedScreenID may be "" for a resolver that fires a node's presets without
+// serving any player, which is what a caller that cannot join the node to a
+// screen passes rather than guessing.
 //
 // generation is the desired-state generation store was applied for (relay/1
 // REL-052/056): it is carried onto every SetProgram write as the fence key, so
@@ -357,8 +396,16 @@ type Resolver struct {
 // form. An empty contentOrigin degrades resolved content to url-less refs
 // (REL-140) — the live re-pull path passes applied.ContentOrigin, so a feeder
 // that carried no content origin degrades rather than fabricating one.
-func NewResolver(store datamodel.RowStore, screenNodeID string, srv *playerserver.Server, signingKey ed25519.PrivateKey, generation int64, contentOrigin string) *Resolver {
-	return &Resolver{store: store, screenNodeID: screenNodeID, srv: srv, signingKey: signingKey, generation: generation, contentOrigin: contentOrigin}
+func NewResolver(store datamodel.RowStore, screenNodeID, servedScreenID string, srv *playerserver.Server, signingKey ed25519.PrivateKey, generation int64, contentOrigin string) *Resolver {
+	return &Resolver{
+		store:          store,
+		screenNodeID:   screenNodeID,
+		servedScreenID: servedScreenID,
+		srv:            srv,
+		signingKey:     signingKey,
+		generation:     generation,
+		contentOrigin:  contentOrigin,
+	}
 }
 
 // ResolveNow resolves the screen's effective state at nowMs, serves the
@@ -385,7 +432,13 @@ func (r *Resolver) ResolveNow(nowMs int64) (fired *datamodel.PresetFire, err err
 	}
 
 	display, priority, content, programRevision := projectState(r.store, state, r.contentOrigin)
-	r.srv.SetProgram(r.generation, programRevision, priority, display, content, r.signingKey)
+	// Served to THIS resolver's own screen alone. A resolver with no screen to
+	// serve (servedScreenID "") still resolves and still reports the rising edge
+	// below — the preset batch is a scope-node concern (DAT-075) and needs no
+	// screen identity — it simply installs no program.
+	if r.srv != nil && r.servedScreenID != "" {
+		r.srv.SetProgram(r.generation, r.servedScreenID, programRevision, priority, display, content, r.signingKey)
+	}
 
 	fired = datamodel.PresetTransition(r.prev, &state)
 	r.prev = &state

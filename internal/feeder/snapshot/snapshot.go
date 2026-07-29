@@ -70,7 +70,17 @@ type SignedSnapshot = wire.StateSnapshotBody
 // and that resolves to a screen ROW, not a `screen`-kind scope node (DAT-004a).
 // The store-derived path does not use this at all; it names every screen from
 // the row it resolved (DeriveScreenPrograms).
+//
+// It is exported as FixtureScreenID for the harnesses that must know which
+// screen a fixture snapshot's one program is for — a relay serves a program
+// PER SCREEN, so a fixture player that pairs into some other screen id is
+// served the terminal default (data-model/1 DAT-118) rather than the fixture
+// program, which reads as a mysteriously blank screen rather than as the
+// mismatch it is.
 const fixtureScreenID = store.SeedScreenID
+
+// FixtureScreenID is fixtureScreenID, exported for out-of-package harnesses.
+const FixtureScreenID = fixtureScreenID
 
 // Wave-1 first-automation edge_rules placeholders (REL-062). The feeder
 // emits one hard-coded demo edge rule ahead of any real
@@ -220,9 +230,23 @@ func BuildCast(items []CastItem, contentBaseURL string, id *signing.Identity, gr
 		return SignedSnapshot{}, fmt.Errorf("snapshot: BuildCast: items must be non-empty")
 	}
 
-	if grants == nil {
-		grants = []wire.PairingGrant{}
+	// A fixture snapshot names its own screen, so its pairing grants name it
+	// too: an unbound grant redeems into a freshly-invented opaque screen id
+	// (REL-121's baseline shape), and a relay serves a program PER SCREEN, so a
+	// player pairing on one would be served data-model/1's terminal default
+	// instead of the program this very snapshot carries. Binding here is also
+	// what REL-121a/REL-121c require of an app peer for a one-time grant, which
+	// is what these fixture grants are. A grant that already names a screen is
+	// left alone — only an unstated binding is filled in — and the caller's own
+	// slice is never mutated.
+	bound := make([]wire.PairingGrant, 0, len(grants))
+	for _, g := range grants {
+		if g.ScreenID == "" {
+			g.ScreenID = fixtureScreenID
+		}
+		bound = append(bound, g)
 	}
+	grants = bound
 
 	content := make([]wire.ContentRef, 0, len(items))
 	for _, item := range items {

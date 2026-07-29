@@ -439,6 +439,13 @@ func TestProjectLeaseProgramRevisionStableWithinDaypartChangesAcross(t *testing.
 // serves the browser-facing ECDSA P-256 leaf): the relay's lease-signing
 // identity — the cert whose public key a player verifies Leases against
 // (PLY-090) — is ed25519, a distinct key from the feeder's TLS serving leaf.
+// testServedScreenID is the SCREEN IDENTITY ROW (data-model/1 DAT-004a) these
+// cases' resolvers serve. It is deliberately a different value from
+// demoScreenScopeNodeID, the SCOPE NODE they resolve at: DAT-004a makes those
+// distinct rows with distinct ids, and a test that used one value for both
+// would pass even if the resolver conflated them.
+const testServedScreenID = "01J8Z9DEM0SCREENR0WF1RSTPH"
+
 func newTestPlayerServer(t *testing.T) (*playerserver.Server, ed25519.PrivateKey, string) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -465,10 +472,16 @@ func newTestPlayerServer(t *testing.T) (*playerserver.Server, ed25519.PrivateKey
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
 
 	const grantID = "grant-test-fixture-000000001"
+	// Screen-bound (REL-121a) so the redeemed channel token resolves to
+	// testServedScreenID — the SAME screen every resolver in this file is built
+	// to serve. A relay serves a program per screen, so an unbound grant would
+	// redeem into a fresh opaque screen id and pairAndPull would observe the
+	// terminal default instead of whatever the resolver under test served.
 	grant := wire.PairingGrant{
 		GrantID:                grantID,
 		Purpose:                "pairing",
 		ResultingPrincipalKind: "screen",
+		ScreenID:               testServedScreenID,
 		TTL:                    900,
 		RedemptionMode:         "one-time",
 		IssuedAt:               time.Now().UnixMilli(),
@@ -550,7 +563,7 @@ func TestResolveNowServesResolvedProgramViaSetProgram(t *testing.T) {
 	wantAssetRef := store.Rows.Playlists[0].Items[0].AssetRef
 
 	srv, priv, grantID := newTestPlayerServer(t)
-	r := NewResolver(store, demoScreenScopeNodeID, srv, priv, 1, "")
+	r := NewResolver(store, demoScreenScopeNodeID, testServedScreenID, srv, priv, 1, "")
 
 	midDay := demoLocalInstant(t, 12, 0)
 	if _, err := r.ResolveNow(midDay); err != nil {
@@ -599,11 +612,11 @@ func TestResolveNowStaleGenerationDoesNotRevertServedProgram(t *testing.T) {
 
 	// Generation 8 has taken over the served program (the new schedule edit,
 	// applied live by the re-pull loop).
-	srv.SetProgram(8, "gen-8-live", "scheduled", "content", nil, priv)
+	srv.SetProgram(8, testServedScreenID, "gen-8-live", "scheduled", "content", nil, priv)
 
 	// A superseded generation-7 resolver resolves late — its background loop was
 	// mid-resolve when generation 8 was applied — and writes via SetProgram.
-	stale := NewResolver(store, demoScreenScopeNodeID, srv, priv, 7, "")
+	stale := NewResolver(store, demoScreenScopeNodeID, testServedScreenID, srv, priv, 7, "")
 	if _, err := stale.ResolveNow(demoLocalInstant(t, 12, 0)); err != nil {
 		t.Fatalf("ResolveNow(stale generation 7): %v", err)
 	}
@@ -640,7 +653,7 @@ func unresolvableTZStore(t *testing.T) (datamodel.RowStore, string) {
 // serve path was left untouched.
 func TestResolveNowUnresolvableTZLeavesSetProgramUncalledAndErrors(t *testing.T) {
 	store, screenID := unresolvableTZStore(t)
-	r := NewResolver(store, screenID, nil, nil, 1, "")
+	r := NewResolver(store, screenID, testServedScreenID, nil, nil, 1, "")
 
 	var fire *datamodel.PresetFire
 	var err error
@@ -726,7 +739,7 @@ func TestTickCrossingIntoContentFiresPresetOnceThenHolds(t *testing.T) {
 		t.Fatalf("BuildStore(demo section) errs = %+v, want none", errs)
 	}
 	srv, priv, _ := newTestPlayerServer(t)
-	r := NewResolver(store, demoScreenScopeNodeID, srv, priv, 1, "")
+	r := NewResolver(store, demoScreenScopeNodeID, testServedScreenID, srv, priv, 1, "")
 	sink, ctrl := newFakeSink(t)
 
 	// Overnight: the blank daypart holds and binds no preset — nothing fires.
@@ -758,7 +771,7 @@ func TestFirePresetDispatchesBatchAndCollectsCompleteOutcome(t *testing.T) {
 	if len(errs) != 0 {
 		t.Fatalf("BuildStore(demo section) errs = %+v, want none", errs)
 	}
-	r := NewResolver(store, demoScreenScopeNodeID, nil, nil, 1, "") // FirePreset never touches the player server
+	r := NewResolver(store, demoScreenScopeNodeID, testServedScreenID, nil, nil, 1, "") // FirePreset never touches the player server
 	sink, ctrl := newFakeSink(t)
 
 	fire := &datamodel.PresetFire{DaypartID: demoContentDaypartID, PresetBatchID: demoPresetBatchID}
@@ -788,7 +801,7 @@ func TestFirePresetNilFireDispatchesNothing(t *testing.T) {
 	if len(errs) != 0 {
 		t.Fatalf("BuildStore(demo section) errs = %+v, want none", errs)
 	}
-	r := NewResolver(store, demoScreenScopeNodeID, nil, nil, 1, "")
+	r := NewResolver(store, demoScreenScopeNodeID, testServedScreenID, nil, nil, 1, "")
 	sink, ctrl := newFakeSink(t)
 
 	out := r.FirePreset(nil, sink)
@@ -868,7 +881,7 @@ func maskedStore(t *testing.T) datamodel.RowStore {
 func TestTickMaskedDaypartDoesNotFire(t *testing.T) {
 	store := maskedStore(t)
 	srv, priv, _ := newTestPlayerServer(t)
-	r := NewResolver(store, maskedScreenID, srv, priv, 1, "")
+	r := NewResolver(store, maskedScreenID, testServedScreenID, srv, priv, 1, "")
 	sink, ctrl := newFakeSink(t)
 
 	r.Tick(demoLocalInstant(t, 12, 0), sink)
@@ -896,7 +909,7 @@ func TestLoopDrivesTickOnInjectedTicks(t *testing.T) {
 		t.Fatalf("BuildStore(demo section) errs = %+v, want none", errs)
 	}
 	srv, priv, _ := newTestPlayerServer(t)
-	r := NewResolver(store, demoScreenScopeNodeID, srv, priv, 1, "")
+	r := NewResolver(store, demoScreenScopeNodeID, testServedScreenID, srv, priv, 1, "")
 	sink, ctrl := newFakeSink(t)
 
 	ticks := make(chan time.Time)
@@ -983,7 +996,7 @@ func resumeMisfireStore(t *testing.T, daypartMisfire string) datamodel.RowStore 
 func TestTickBootSkipMisfireSuppressesResumeFireButStillProjectsState(t *testing.T) {
 	store := resumeMisfireStore(t, "skip")
 	srv, priv, _ := newTestPlayerServer(t)
-	r := NewResolver(store, resumeMisfireScreenID, srv, priv, 1, "")
+	r := NewResolver(store, resumeMisfireScreenID, testServedScreenID, srv, priv, 1, "")
 	sink, ctrl := newFakeSink(t)
 
 	r.TickBoot(demoLocalInstant(t, 12, 0), sink)
@@ -1005,7 +1018,7 @@ func TestTickBootSkipMisfireSuppressesResumeFireButStillProjectsState(t *testing
 func TestTickBootDefaultMisfireStillFiresResumeEdge(t *testing.T) {
 	store := resumeMisfireStore(t, "") // no explicit misfire -> catch_up_once (DAT-121)
 	srv, priv, _ := newTestPlayerServer(t)
-	r := NewResolver(store, resumeMisfireScreenID, srv, priv, 1, "")
+	r := NewResolver(store, resumeMisfireScreenID, testServedScreenID, srv, priv, 1, "")
 	sink, ctrl := newFakeSink(t)
 
 	r.TickBoot(demoLocalInstant(t, 12, 0), sink)

@@ -168,10 +168,17 @@ type Server struct {
 	// non-durable behavior byte-for-byte.
 	sessionStore *identity.Store
 
-	program    program                    // Task 10: SetProgram's own configured state
-	programGen int64                      // desired-state generation the served program was applied for; SetProgram fences a strictly-older write (REL-052/056)
-	signingKey ed25519.PrivateKey         // Task 10: relay's own key, signs every issued Lease (PLY-090)
-	leaseAcks  map[string]LeaseAckRequest // Task 10: lease_id -> most recent LeaseAck (PLY-091)
+	// programs is the served screen-program PER SCREEN (REL-061's own
+	// `screen_programs` array), keyed by the screen identity row's id
+	// (data-model/1 DAT-004a) — the same id a channel token resolves to, so
+	// handleProgram selects a Lease by the credential the player actually
+	// presented. programGens fences each screen's writes independently
+	// (SetProgram's own doc): a slow resolver for one screen must not be able
+	// to refuse another screen's legitimate write.
+	programs    map[string]program         // screen_id -> SetProgram's own configured state for that screen
+	programGens map[string]int64           // screen_id -> desired-state generation that screen's served program was applied for (REL-052/056)
+	signingKey  ed25519.PrivateKey         // relay's own key, signs every issued Lease (PLY-090) — one per relay, never per screen; see SetProgram
+	leaseAcks   map[string]LeaseAckRequest // lease_id -> most recent LeaseAck (PLY-091)
 
 	// revokedScreens is the relay's own last-synced view of the screen_ids in
 	// relay/1 REL-066's revocation_and_site.revoked (PLY-072): a channel token
@@ -239,6 +246,8 @@ func NewServer(relayCertPEM []byte, grants []wire.PairingGrant) (*Server, error)
 		redeemedGrants: map[string]bool{},
 		tokens:         map[string]channelTokenRecord{},
 		pollResults:    map[string]redemption{},
+		programs:       map[string]program{},
+		programGens:    map[string]int64{},
 		leaseAcks:      map[string]LeaseAckRequest{},
 		revokedScreens: map[string]bool{},
 	}, nil

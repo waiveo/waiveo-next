@@ -373,7 +373,11 @@ func (r *InProcessRelay) bootRelay(feederBaseURL, bindHost, dialHost string) err
 	if err != nil {
 		return fmt.Errorf("playerserver.NewServer: %w", err)
 	}
-	pairingSrv.SetProgram(applied.Generation, applied.ProgramRevision, applied.Priority, applied.Display, []wire.LeaseContent{{
+	// Served for the snapshot's OWN screen (applied.ScreenID): a relay serves a
+	// program per screen identity row (REL-061), so the id here has to be the
+	// one the fixture's pairing grants redeem into (snapshot.FixtureScreenID),
+	// or every paired driver player would be served the terminal default.
+	pairingSrv.SetProgram(applied.Generation, applied.ScreenID, applied.ProgramRevision, applied.Priority, applied.Display, []wire.LeaseContent{{
 		Type:      "image",
 		AssetRef:  applied.Image.AssetRef,
 		URL:       applied.Image.URL,

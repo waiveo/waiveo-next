@@ -71,6 +71,26 @@ func testImageContent() []wire.LeaseContent {
 	}}
 }
 
+// Screen identity row ids (data-model/1 DAT-004a) this package's tests bind
+// pairing grants to and install programs for. A program is served PER SCREEN,
+// so a test that installs one under one id and pairs into another is testing
+// the terminal default, not the program — binding the grant is what keeps the
+// two ends of a test naming the same screen.
+const (
+	testScreenIDA = "01J8Z9DEM0SCREENR0WF1RSTPH"
+	testScreenIDB = "01J8Z9DEM0SCREENR0WSEC0NDS"
+)
+
+// testGrantForScreen is testGrant bound to screenID (REL-121a), with a
+// distinct grant_id per screen so one Server can carry several redeemable
+// grants at once.
+func testGrantForScreen(screenID string) wire.PairingGrant {
+	g := testGrant()
+	g.GrantID = "grant-test-" + screenID
+	g.ScreenID = screenID
+	return g
+}
+
 // programTestServer builds a Server with one redeemable grant and one
 // configured program (priority scheduled, display content, one image
 // item), returning it alongside its signing pub key (for signature
@@ -79,13 +99,13 @@ func programTestServer(t *testing.T) (srv *Server, pub ed25519.PublicKey, token 
 	t.Helper()
 
 	certPEM, _, priv, pub := testRelaySigningIdentity(t)
-	grant := testGrant()
+	grant := testGrantForScreen(testScreenIDA)
 
 	srv, err := NewServer(certPEM, []wire.PairingGrant{grant})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	srv.SetProgram(1, "rev-17", "scheduled", "content", testImageContent(), priv)
+	srv.SetProgram(1, testScreenIDA, "rev-17", "scheduled", "content", testImageContent(), priv)
 
 	_, raw := doPair(t, srv, PairingRequest{
 		HardwareID:    "hw-0001",
@@ -274,9 +294,11 @@ func TestProgramHandlerClampsUnsafeDurationEndToEnd(t *testing.T) {
 	srv, _, token := programTestServer(t)
 
 	srv.mu.Lock()
-	srv.program.Content = []wire.LeaseContent{
+	prog := srv.programs[testScreenIDA]
+	prog.Content = []wire.LeaseContent{
 		{Type: "image", AssetRef: "sha256:aaaa", URL: "https://example/content/aaaa", DurationMS: 1},
 	}
+	srv.programs[testScreenIDA] = prog
 	srv.mu.Unlock()
 
 	resp, raw := doProgram(t, srv, token, []string{"image", "video"})
@@ -389,13 +411,13 @@ func TestSetProgramFencesStaleGenerationWrite(t *testing.T) {
 	}
 
 	// Generation 8 is applied and served (an admin's schedule edit, live).
-	srv.SetProgram(8, "gen-8", "scheduled", "content", testImageContent(), priv)
+	srv.SetProgram(8, testScreenIDA, "gen-8", "scheduled", "content", testImageContent(), priv)
 	// A superseded generation-7 resolver, still mid-resolve when 8 was applied,
 	// writes late — the concrete re-pull race this fence closes.
-	srv.SetProgram(7, "gen-7", "blank", "blank", nil, priv)
+	srv.SetProgram(7, testScreenIDA, "gen-7", "blank", "blank", nil, priv)
 
 	srv.mu.Lock()
-	gotRev, gotDisplay, gotGen := srv.program.ProgramRevision, srv.program.Display, srv.programGen
+	gotRev, gotDisplay, gotGen := srv.programs[testScreenIDA].ProgramRevision, srv.programs[testScreenIDA].Display, srv.programGens[testScreenIDA]
 	srv.mu.Unlock()
 
 	if gotRev != "gen-8" {
@@ -411,9 +433,9 @@ func TestSetProgramFencesStaleGenerationWrite(t *testing.T) {
 	// A same-generation write still wins: the fence must not freeze the program,
 	// so a same-generation schedule resolver replaces the boot baseline (the
 	// additive serving policy) exactly as before.
-	srv.SetProgram(8, "gen-8-schedule", "scheduled", "content", testImageContent(), priv)
+	srv.SetProgram(8, testScreenIDA, "gen-8-schedule", "scheduled", "content", testImageContent(), priv)
 	srv.mu.Lock()
-	gotRev = srv.program.ProgramRevision
+	gotRev = srv.programs[testScreenIDA].ProgramRevision
 	srv.mu.Unlock()
 	if gotRev != "gen-8-schedule" {
 		t.Errorf("program_revision = %q, want gen-8-schedule — a same-generation write must still win (last-write-wins within a generation)", gotRev)
