@@ -1,0 +1,24 @@
+{
+  "case_id": "SEC-067a-invalid-unauthenticated-claim-below-a-verifiable-value",
+  "contract": "security-model/1",
+  "req_ids": ["SEC-067"],
+  "description": "Provenance decides an advance, not magnitude: an unauthenticated client-supplied claim whose timestamp is SMALLER than the authenticated-network-time value offered next — both plausible, both above the persisted floor, both a forward move — MUST NOT advance the floor nor flip the assessment, while the verifiable value MUST do both. The two candidates differ in exactly one variable, whether the app can verify them independently, so an implementation that gates on plausible magnitude rather than on source cannot pass this case while failing the requirement.",
+  "input": {
+    "persisted_clock_floor_ms": 1752537600000,
+    "assessment_before": "untrusted",
+    "candidates": [
+      { "source": "unauthenticated-client-claim", "verifiable": false, "ts_ms": 1752541200000 },
+      { "source": "authenticated-network-time", "verifiable": true, "ts_ms": 1752624000000 }
+    ]
+  },
+  "expected": {
+    "unauthenticated_claim_is_below_verifiable_value": true,
+    "unauthenticated_claim_is_above_floor": true,
+    "floor_after_unauthenticated_claim_ms": 1752537600000,
+    "unauthenticated_claim_advanced_floor": false,
+    "assessment_after_unauthenticated_claim": "untrusted",
+    "floor_after_verifiable_value_ms": 1752624000000,
+    "verifiable_value_advanced_floor": true,
+    "assessment_after": "trusted"
+  }
+}

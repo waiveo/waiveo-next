@@ -1,0 +1,58 @@
+{
+  "case_id": "SEC-035a-invalid-grant-refusals-on-the-redemption-endpoint",
+  "contract": "security-model/1",
+  "req_ids": ["SEC-035"],
+  "description": "SEC-035's three refusals, each read off the live redemption endpoint's own wire response rather than off an internal error value: a code whose ttl elapsed before redemption is refused GRANT_EXPIRED, a one-time code presented a second time after a successful redemption is refused GRANT_ALREADY_REDEEMED, and a pairing-purpose code presented to the setup endpoint is refused GRANT_PURPOSE_MISMATCH even though it is otherwise well-formed and resolves to a real, live, unredeemed grant. No attempt is admitted, and each carries the code the Error taxonomy names for it — a handler that refuses correctly but types the refusal wrongly fails this case. The literal `$grant.code` is a marker, not a code: it names the code that attempt's own grant minted, which the driver resolves before presenting it.",
+  "input": {
+    "endpoint": "/api/v1/auth/setup",
+    "redemption_endpoint_purpose": "setup",
+    "attempts": [
+      {
+        "refusal": "expired",
+        "grant": {
+          "purpose": "setup",
+          "resulting_principal_kind": "user",
+          "ttl": "PT24H",
+          "issued_at": "2026-07-15T00:00:00Z",
+          "redemption_mode": "one-time"
+        },
+        "redeemed_before_this_attempt": false,
+        "presented_code": "$grant.code",
+        "redemption_attempted_at": "2026-07-16T00:00:01Z"
+      },
+      {
+        "refusal": "already-redeemed",
+        "grant": {
+          "purpose": "setup",
+          "resulting_principal_kind": "user",
+          "ttl": "PT24H",
+          "issued_at": "2026-07-15T00:00:00Z",
+          "redemption_mode": "one-time"
+        },
+        "redeemed_before_this_attempt": true,
+        "presented_code": "$grant.code",
+        "redemption_attempted_at": "2026-07-15T00:05:00Z"
+      },
+      {
+        "refusal": "purpose-mismatch",
+        "grant": {
+          "purpose": "pairing",
+          "resulting_principal_kind": "screen",
+          "ttl": "PT15M",
+          "issued_at": "2026-07-15T00:00:00Z",
+          "redemption_mode": "one-time"
+        },
+        "redeemed_before_this_attempt": false,
+        "presented_code": "$grant.code",
+        "redemption_attempted_at": "2026-07-15T00:05:00Z"
+      }
+    ]
+  },
+  "expected": {
+    "attempts": [
+      { "redeemed": false, "http_status": 403, "error": { "code": "GRANT_EXPIRED" } },
+      { "redeemed": false, "http_status": 403, "error": { "code": "GRANT_ALREADY_REDEEMED" } },
+      { "redeemed": false, "http_status": 403, "error": { "code": "GRANT_PURPOSE_MISMATCH" } }
+    ]
+  }
+}

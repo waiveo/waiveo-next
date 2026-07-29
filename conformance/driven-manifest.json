@@ -173,12 +173,15 @@
     "driver": "conformance/drivers/securitymodel1 (go run ./conformance/cmd/driven-manifest -write)",
     "driven": [
       "SEC-035-invalid-grant-expired-rejected",
+      "SEC-035a-invalid-grant-refusals-on-the-redemption-endpoint",
       "SEC-050-valid-credential-reset-grant-flow",
       "SEC-066-valid-monotonic-floor-survives-restart",
       "SEC-067-invalid-unauthenticated-time-claim-does-not-advance-floor",
+      "SEC-067a-invalid-unauthenticated-claim-below-a-verifiable-value",
       "SEC-072-valid-console-admission-uid0",
       "SEC-075-invalid-console-verb-not-allowed",
       "SEC-120-invalid-first-boot-claim-outside-window",
+      "SEC-120a-invalid-unclaimed-box-claimed-without-the-setup-code",
       "SEC-121-valid-factory-reset-destroys-key-material"
     ],
     "pending": []

@@ -150,6 +150,107 @@ func driveClockFloorAdvanceGate(rep *report.Report, c corpus.Case) {
 	k.finish(rep)
 }
 
+// driveClockFloorProvenanceGate drives
+// SEC-067a-invalid-unauthenticated-claim-below-a-verifiable-value against the
+// same live component, and it exists because the case above cannot decide
+// SEC-067 on its own.
+//
+// SEC-067 is a statement about PROVENANCE: "an unauthenticated time claim MUST
+// NOT by itself advance the floor". The case above offers an unauthenticated
+// candidate whose timestamp is far HIGHER than its verifiable one, so its two
+// candidates differ in two variables at once — where the value came from, and
+// how big it is. An implementation that ignores provenance entirely and admits
+// any candidate under some absolute plausibility cap passes that case (the
+// year-2030 claim is refused for being implausible, the near one accepted for
+// being plausible) while letting any client-supplied time walk the floor
+// forward, which is the exact MUST-NOT.
+//
+// This case closes that hole by holding magnitude fixed as a variable and
+// varying only provenance: its unauthenticated candidate is SMALLER than the
+// verifiable value that follows, and both sit above the persisted floor. Any
+// gate that would admit the verifiable value on plausibility alone must admit
+// the unauthenticated one too, since the unauthenticated one is the LESS
+// extreme of the two. The only rule that separates them is the source
+// classification, which is what the requirement is about.
+//
+// Both halves of that isolation are asserted rather than assumed: the case
+// declares `unauthenticated_claim_is_below_verifiable_value` and
+// `unauthenticated_claim_is_above_floor` in its own expected block, and the
+// driver computes both off the case's own input and diffs them. A later edit
+// that raised the unauthenticated candidate back above the verifiable one would
+// fail HERE, loudly, instead of quietly restoring the two-variable case this one
+// replaces.
+func driveClockFloorProvenanceGate(rep *report.Report, c corpus.Case) {
+	k := newCheck(c)
+
+	floorMs, okFloor := inputInt(c, "persisted_clock_floor_ms")
+	assessmentBefore, okBefore := inputString(c, "assessment_before")
+	unauthTS, okUnauth := inputInt(c, "candidates.0.ts_ms")
+	unauthVerifiable, okUV := digInput(c, "candidates.0.verifiable")
+	verifiedTS, okVerified := inputInt(c, "candidates.1.ts_ms")
+	verifiableFlag, okVF := digInput(c, "candidates.1.verifiable")
+	if !okFloor || !okBefore || !okUnauth || !okUV || !okVerified || !okVF {
+		k.fail(rep, "the frozen input block is missing a field this case is driven from")
+		return
+	}
+
+	// The case's own isolation invariant, checked before anything is concluded
+	// from the case: the unauthenticated candidate must be the SMALLER of the two
+	// and must still be a forward move from the floor. If either stops holding,
+	// the case has stopped isolating provenance and its result means nothing.
+	k.boolAt("unauthenticated_claim_is_below_verifiable_value", unauthTS < verifiedTS)
+	k.boolAt("unauthenticated_claim_is_above_floor", unauthTS > floorMs)
+
+	dir, err := os.MkdirTemp("", "secmodel1-provenance-")
+	if err != nil {
+		k.fail(rep, "scratch dir: %v", err)
+		return
+	}
+	defer os.RemoveAll(dir)
+
+	seed, err := auth.OpenClockFloor(dir, func() int64 { return floorMs })
+	if err != nil {
+		k.fail(rep, "open the clock floor: %v", err)
+		return
+	}
+	if advanced, err := seed.Advance(floorMs, auth.TimeSourceVerifiable); err != nil || !advanced {
+		k.fail(rep, "seed the persisted floor: advanced=%v err=%v", advanced, err)
+		return
+	}
+	floor, err := auth.OpenClockFloor(dir, func() int64 { return floorMs })
+	if err != nil {
+		k.fail(rep, "reopen the clock floor: %v", err)
+		return
+	}
+	if got := floor.Assessment(); got != assessmentBefore {
+		k.diff("assessment_before (input precondition)", assessmentBefore, got)
+	}
+
+	unauthAdvanced, err := floor.Advance(unauthTS, timeSource(unauthVerifiable))
+	if err != nil {
+		k.fail(rep, "offer the unauthenticated candidate: %v", err)
+		return
+	}
+	k.intAt("floor_after_unauthenticated_claim_ms", floor.FloorMs())
+	k.boolAt("unauthenticated_claim_advanced_floor", unauthAdvanced)
+	// The assessment is read BETWEEN the two candidates, which the case above
+	// never does: SEC-068 defines `trusted` as holding independently verified
+	// time above the floor, so a gate that admitted the unauthenticated claim as
+	// evidence would report `trusted` here even if it had somehow left the floor
+	// where it was.
+	k.stringAt("assessment_after_unauthenticated_claim", floor.Assessment())
+
+	verifiedAdvanced, err := floor.Advance(verifiedTS, timeSource(verifiableFlag))
+	if err != nil {
+		k.fail(rep, "offer the verifiable candidate: %v", err)
+		return
+	}
+	k.intAt("floor_after_verifiable_value_ms", floor.FloorMs())
+	k.boolAt("verifiable_value_advanced_floor", verifiedAdvanced)
+	k.stringAt("assessment_after", floor.Assessment())
+	k.finish(rep)
+}
+
 // timeSource maps a corpus candidate's own `verifiable` flag onto the closed
 // TimeSource type the advance gate takes (SEC-067).
 func timeSource(verifiable any) auth.TimeSource {

@@ -6,9 +6,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 
 	"github.com/maaxton/waiveo-next/conformance/drivers/corpus"
 	"github.com/maaxton/waiveo-next/conformance/drivers/report"
@@ -20,11 +22,16 @@ import (
 )
 
 // grantErrorCode maps a redemption failure onto the security-model/1 error code
-// its own Error taxonomy names for it (SEC-035). It is deliberately the same
-// three-way mapping internal/app/auth/handlers.go's writeGrantProblem makes for
-// the HTTP surface, expressed here for the cases that drive the store directly —
-// and it returns "" for a nil error so a caller reads "no error" as the taxonomy
-// does, as the absence of a code.
+// its own Error taxonomy names for it (SEC-035), for the cases that drive the
+// STORE directly and so never see a wire response. It returns "" for a nil error
+// so a caller reads "no error" as the taxonomy does, as the absence of a code.
+//
+// It is a SECOND copy of the mapping internal/app/auth/handlers.go's
+// writeGrantProblem makes, and that is a real limit rather than a convenience: a
+// shipped handler that refused correctly and typed the refusal wrongly would
+// pass every case that reads its code from here. Nothing this function returns
+// therefore decides SEC-035 — driveGrantRefusalsOnTheWire does, by reading each
+// code out of the response body the mounted route actually writes.
 func grantErrorCode(err error) string {
 	switch {
 	case err == nil:
@@ -134,6 +141,15 @@ func driveGrantExpired(rep *report.Report, c corpus.Case) {
 // merely wrong code resolves to no grant at all and is refused UNAUTHENTICATED
 // (which is correct behavior and a different requirement). The replay is the leg
 // that reaches the code the case pins.
+//
+// WHAT THIS CASE ACTUALLY PROVES is SEC-031's, not SEC-120's: replaying a
+// consumed code proves a `one-time` grant is single-use, which is a property of
+// every purpose, and it says nothing at all about whether an UNCLAIMED box is
+// first-come-first-served — a handler that admitted the first caller with no
+// code whatsoever, and refused everyone after, passes this case exactly as the
+// shipped one does. SEC-120's own clause is driven by
+// driveUnclaimedBoxWithoutCode below, and the traceability rows are attributed
+// accordingly.
 func driveFirstBootClaimOutsideWindow(rep *report.Report, c corpus.Case) {
 	k := newCheck(c)
 	ctx := context.Background()
@@ -156,7 +172,7 @@ func driveFirstBootClaimOutsideWindow(rep *report.Report, c corpus.Case) {
 	}
 	defer os.RemoveAll(dir)
 
-	h, err := newClaimHarness(dir)
+	h, err := newClaimHarness(dir, corpusInstantMs)
 	if err != nil {
 		k.fail(rep, "build the claim harness: %v", err)
 		return
@@ -210,6 +226,272 @@ func driveFirstBootClaimOutsideWindow(rep *report.Report, c corpus.Case) {
 	k.finish(rep)
 }
 
+// driveUnclaimedBoxWithoutCode drives
+// SEC-120a-invalid-unclaimed-box-claimed-without-the-setup-code against the same
+// LIVE, HTTP-mounted claim route, and it is the case that decides SEC-120.
+//
+// SEC-120's own clause is about an UNCLAIMED box: "the setup endpoint MUST be
+// claimable only by redeeming this grant. An installed-but-unclaimed box MUST
+// NOT be first-come-first-served to whoever reaches its setup endpoint first on
+// a shared network." Every leg below therefore runs while the box is still
+// unclaimed and its setup grant still live and unredeemed — the exact window a
+// first-come-first-served handler would give away.
+//
+// Three legs, and the third is what stops this case being satisfiable by a
+// handler that simply refuses everything:
+//
+//  1. a caller presenting NO code — the pure arrival-order attack;
+//  2. a caller presenting a wrong but well-formed code;
+//  3. the caller who holds the code the installer actually generated, who MUST
+//     still be able to claim afterwards. That leg proves the two refusals were
+//     the code check firing rather than the endpoint being shut, and it proves
+//     the failed attempts did not burn the one-time grant the legitimate owner
+//     is holding.
+func driveUnclaimedBoxWithoutCode(rep *report.Report, c corpus.Case) {
+	k := newCheck(c)
+	ctx := context.Background()
+
+	if state, _ := inputString(c, "box_claim_state"); state != "unclaimed" {
+		k.fail(rep, "this case is about an UNCLAIMED box; its input declares box_claim_state %q", state)
+		return
+	}
+	if endpoint, ok := inputString(c, "endpoint"); ok && endpoint != claimRoute {
+		k.note("corpus input names endpoint %q; the shipped mux mounts the first-boot claim at %q — driven against the shipped route", endpoint, claimRoute)
+	}
+	attempts, okAttempts := digInput(c, "claim_attempts")
+	attemptList, okList := attempts.([]any)
+	if !okAttempts || !okList || len(attemptList) == 0 {
+		k.fail(rep, "the frozen input block carries no claim_attempts array")
+		return
+	}
+
+	dir, err := os.MkdirTemp("", "secmodel1-unclaimed-")
+	if err != nil {
+		k.fail(rep, "scratch dir: %v", err)
+		return
+	}
+	defer os.RemoveAll(dir)
+
+	h, err := newClaimHarness(dir, corpusInstantMs)
+	if err != nil {
+		k.fail(rep, "build the claim harness: %v", err)
+		return
+	}
+	defer h.close()
+
+	// The installer's stand-in, run exactly as the shipped feeder runs it at
+	// boot: it mints the one-time setup grant and persists the code that is the
+	// only key to this endpoint.
+	boot, err := auth.EnsureClaimWindow(ctx, h.authStore, dir, auth.RootScopeNode, nil)
+	if err != nil {
+		k.fail(rep, "EnsureClaimWindow: %v", err)
+		return
+	}
+	if boot.Claimed || boot.Code == "" {
+		k.fail(rep, "the fixture box reports claimed=%v code-present=%v; the case's unclaimed premise was not established", boot.Claimed, boot.Code != "")
+		return
+	}
+	if want, present := digInput(c, "setup_grant.redeemed"); present && want != false {
+		k.fail(rep, "this case requires an UNREDEEMED setup grant; its input declares setup_grant.redeemed=%v", want)
+		return
+	}
+	// The marker table every `$`-prefixed presented_code in this case resolves
+	// through. A code the driver could not resolve is a driver failure, never a
+	// literal that gets sent as-is.
+	markers := map[string]string{"$setup_grant.code": boot.Code}
+
+	for i := range attemptList {
+		base := fmt.Sprintf("claim_attempts.%d", i)
+		code, okCode := inputString(c, base+".presented_code")
+		identifier, okID := inputString(c, base+".identifier")
+		password, okPW := inputString(c, base+".password")
+		if !okCode || !okID || !okPW {
+			k.fail(rep, "%s is missing a field this case is driven from (code=%v identifier=%v password=%v)", base, okCode, okID, okPW)
+			return
+		}
+		resolved, ok := resolveMarker(code, markers)
+		if !ok {
+			k.fail(rep, "%s.presented_code names the marker %q, which this driver cannot resolve", base, code)
+			return
+		}
+		ownersBefore, err := h.authStore.CountOwnerBindings(ctx)
+		if err != nil {
+			k.fail(rep, "count owner bindings before %s: %v", base, err)
+			return
+		}
+		res := h.claim(resolved, identifier, password)
+		ownersAfter, err := h.authStore.CountOwnerBindings(ctx)
+		if err != nil {
+			k.fail(rep, "count owner bindings after %s: %v", base, err)
+			return
+		}
+		want := fmt.Sprintf("claim_attempts.%d", i)
+		k.boolAt(want+".claimed", res.status == http.StatusCreated)
+		k.boolAt(want+".new_owner_principal_created", ownersAfter > ownersBefore)
+		k.stringAt(want+".error.code", problemCode(res))
+	}
+
+	ownersAfterAttempts, err := h.authStore.CountOwnerBindings(ctx)
+	if err != nil {
+		k.fail(rep, "count owner bindings after the attempts: %v", err)
+		return
+	}
+	k.intAt("owner_bindings_after_attempts", int64(ownersAfterAttempts))
+	k.stringAt("box_claim_state_after_attempts", claimState(ownersAfterAttempts))
+
+	// Leg 3: the code holder. Anything other than a clean claim here means the
+	// two refusals above proved nothing about the code check.
+	holderCode, okCode := inputString(c, "then_the_code_holder_claims.presented_code")
+	holderID, okID := inputString(c, "then_the_code_holder_claims.identifier")
+	holderPW, okPW := inputString(c, "then_the_code_holder_claims.password")
+	if !okCode || !okID || !okPW {
+		k.fail(rep, "then_the_code_holder_claims is missing a field this case is driven from")
+		return
+	}
+	resolved, ok := resolveMarker(holderCode, markers)
+	if !ok {
+		k.fail(rep, "then_the_code_holder_claims.presented_code names the marker %q, which this driver cannot resolve", holderCode)
+		return
+	}
+	holder := h.claim(resolved, holderID, holderPW)
+	ownersAfterHolder, err := h.authStore.CountOwnerBindings(ctx)
+	if err != nil {
+		k.fail(rep, "count owner bindings after the code holder's claim: %v", err)
+		return
+	}
+	k.boolAt("code_holder_claimed", holder.status == http.StatusCreated)
+	k.intAt("owner_bindings_after_code_holder", int64(ownersAfterHolder))
+	k.finish(rep)
+}
+
+// driveGrantRefusalsOnTheWire drives
+// SEC-035a-invalid-grant-refusals-on-the-redemption-endpoint against the LIVE,
+// HTTP-mounted redemption endpoint, reading each refusal's code off the api/1
+// Problem body the route actually writes.
+//
+// This is the case that lets SEC-035 be decided at all. SEC-035 is a statement
+// about WIRE CODES — "MUST be refused with GRANT_EXPIRED ... GRANT_ALREADY_
+// REDEEMED ... GRANT_PURPOSE_MISMATCH" — and the SEC-035 case above drives the
+// store directly, so its `error.code` is produced by grantErrorCode in this same
+// driver: a shipped handler that refused correctly but typed the refusal with
+// the wrong code would keep that case green. Here the code is read out of the
+// response body, so the mapping under test is the shipped one.
+//
+// Each of the three refusals gets its OWN harness, because each needs a
+// different grant state and a different clock reading, and a fixture that shared
+// one would have to sequence them into an order the contract does not require.
+func driveGrantRefusalsOnTheWire(rep *report.Report, c corpus.Case) {
+	k := newCheck(c)
+	ctx := context.Background()
+
+	endpointPurpose, okPurpose := inputString(c, "redemption_endpoint_purpose")
+	if !okPurpose {
+		k.fail(rep, "the frozen input block names no redemption_endpoint_purpose")
+		return
+	}
+	if endpointPurpose != auth.PurposeSetup {
+		// Honest rather than silently normalized: this tree mounts exactly one
+		// grant-redemption route, the first-boot claim, and it redeems `setup`.
+		k.fail(rep, "the only grant-redemption route this tree mounts redeems %q; the case names %q", auth.PurposeSetup, endpointPurpose)
+		return
+	}
+	if endpoint, ok := inputString(c, "endpoint"); ok && endpoint != claimRoute {
+		k.note("corpus input names endpoint %q; the shipped mux mounts the redemption route at %q — driven against the shipped route", endpoint, claimRoute)
+	}
+	attempts, okAttempts := digInput(c, "attempts")
+	attemptList, okList := attempts.([]any)
+	if !okAttempts || !okList || len(attemptList) == 0 {
+		k.fail(rep, "the frozen input block carries no attempts array")
+		return
+	}
+
+	for i := range attemptList {
+		base := fmt.Sprintf("attempts.%d", i)
+		purpose, okP := inputString(c, base+".grant.purpose")
+		kind, okK := inputString(c, base+".grant.resulting_principal_kind")
+		mode, okM := inputString(c, base+".grant.redemption_mode")
+		issuedAt, okI := inputTimeMs(c, base+".grant.issued_at")
+		ttlMs, okT := inputDurationMs(c, base+".grant.ttl")
+		attemptAt, okA := inputTimeMs(c, base+".redemption_attempted_at")
+		presented, okC := inputString(c, base+".presented_code")
+		redeemedFirst, okR := digInput(c, base+".redeemed_before_this_attempt")
+		if !okP || !okK || !okM || !okI || !okT || !okA || !okC || !okR {
+			k.fail(rep, "%s is missing a field this case is driven from", base)
+			return
+		}
+
+		dir, err := os.MkdirTemp("", "secmodel1-refusal-")
+		if err != nil {
+			k.fail(rep, "scratch dir: %v", err)
+			return
+		}
+		outcome, drvErr := func() (httpResult, error) {
+			defer os.RemoveAll(dir)
+			// The harness starts at the grant's own issued_at, so the grant row is
+			// stamped with the instant the case declares rather than with whatever
+			// the harness happened to be set to.
+			h, err := newClaimHarness(dir, issuedAt)
+			if err != nil {
+				return httpResult{}, fmt.Errorf("build the claim harness: %w", err)
+			}
+			defer h.close()
+
+			minted, err := h.authStore.MintGrant(ctx, auth.MintGrantOptions{
+				Purpose:                purpose,
+				ResultingPrincipalKind: kind,
+				ScopeNode:              auth.RootScopeNode,
+				TTLMs:                  ttlMs,
+				RedemptionMode:         mode,
+			})
+			if err != nil {
+				return httpResult{}, fmt.Errorf("mint the %s grant: %w", purpose, err)
+			}
+			resolved, ok := resolveMarker(presented, map[string]string{"$grant.code": minted.Code})
+			if !ok {
+				return httpResult{}, fmt.Errorf("presented_code names the marker %q, which this driver cannot resolve", presented)
+			}
+
+			if redeemedFirst == true {
+				first := h.claim(resolved, "first-redeemer@example.invalid", "first-redeemer-passphrase")
+				if first.status != http.StatusCreated {
+					return httpResult{}, fmt.Errorf("the first redemption was refused (%d %s) — this attempt's already-redeemed premise could not be established", first.status, first.raw)
+				}
+			}
+
+			// The clock moves to the instant of the attempt. No sleep: the whole
+			// harness reads one injected variable.
+			h.setNow(attemptAt)
+			return h.claim(resolved, "attempting@example.invalid", "attempting-passphrase"), nil
+		}()
+		if drvErr != nil {
+			k.fail(rep, "%s: %v", base, drvErr)
+			return
+		}
+
+		want := fmt.Sprintf("attempts.%d", i)
+		k.boolAt(want+".redeemed", outcome.status == http.StatusCreated)
+		k.intAt(want+".http_status", int64(outcome.status))
+		k.stringAt(want+".error.code", problemCode(outcome))
+	}
+	k.finish(rep)
+}
+
+// resolveMarker resolves a `$`-prefixed corpus marker naming a value the LIVE
+// fixture minted (a setup code, a grant code) against the table the driving
+// function built. A non-marker string is its own value.
+//
+// The false return is deliberately fatal at every call site rather than a
+// fallback to the literal: a marker sent verbatim would be a wrong code, which
+// several of these cases expect to be refused anyway — so the case would still
+// pass, for entirely the wrong reason.
+func resolveMarker(raw string, markers map[string]string) (string, bool) {
+	if !strings.HasPrefix(raw, "$") {
+		return raw, true
+	}
+	v, ok := markers[raw]
+	return v, ok
+}
+
 // claimRoute is where internal/app/api actually mounts the first-boot claim.
 const claimRoute = "/api/v1/auth/setup"
 
@@ -218,15 +500,25 @@ const claimRoute = "/api/v1/auth/setup"
 // EnsureClaimWindow persists the setup code into the same directory, and a
 // fixture that split those two would not be the deployment shape SEC-120
 // describes.
+//
+// Its clock is a VARIABLE the caller moves (nowMs), never a sleep: the same
+// injectable-clock discipline the package doc states, extended to the HTTP
+// surface so a wire-level expiry case (SEC-035a) can be driven at all.
 type claimHarness struct {
 	authStore *auth.Store
 	appStore  *store.Store
 	handler   http.Handler
+	nowMs     *int64
 }
 
-func newClaimHarness(dir string) (*claimHarness, error) {
-	fixedNow := int64(1752537600000) // 2026-07-15T00:00:00Z, the instant the frozen corpora pin to
-	clock := func() int64 { return fixedNow }
+// corpusInstantMs is the instant the frozen corpora pin to
+// (2026-07-15T00:00:00Z as the corpus writes it), used where a case declares no
+// instant of its own.
+const corpusInstantMs int64 = 1752537600000
+
+func newClaimHarness(dir string, startMs int64) (*claimHarness, error) {
+	now := startMs
+	clock := func() int64 { return now }
 	ids := deterministicIDs()
 
 	authStore, err := auth.Open(dir+"/auth.db", clock, ids)
@@ -241,8 +533,14 @@ func newClaimHarness(dir string) (*claimHarness, error) {
 	authn := auth.NewAuthenticator(authStore, nil, auth.NewDefaultLockout(), auth.NewRevocations())
 	handler := api.New(appStore, apihttp.NewIdempotencyStore(clock, 0), clock, ids,
 		origin.New(), "https://origin.example", authn, api.WithJobRunner(api.NewJobRunner()))
-	return &claimHarness{authStore: authStore, appStore: appStore, handler: handler}, nil
+	return &claimHarness{authStore: authStore, appStore: appStore, handler: handler, nowMs: &now}, nil
 }
+
+// setNow moves the harness's injected clock. Every component built above shares
+// the closure that reads it, so one assignment moves the store's row timestamps,
+// the grant expiry check and the api layer together — a fixture whose halves
+// disagreed about the time would prove nothing about a ttl.
+func (h *claimHarness) setNow(ms int64) { *h.nowMs = ms }
 
 func (h *claimHarness) close() {
 	_ = h.authStore.Close()

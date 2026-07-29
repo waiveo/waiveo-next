@@ -1,0 +1,44 @@
+{
+  "case_id": "SEC-120a-invalid-unclaimed-box-claimed-without-the-setup-code",
+  "contract": "security-model/1",
+  "req_ids": ["SEC-120"],
+  "description": "An installed-but-UNCLAIMED box, whose one-time setup grant is still live and unredeemed, is reached at its setup endpoint by two callers who do not hold the code the installer generated: the first presents no code at all, the second presents a wrong but well-formed one. Neither claims the box and neither creates an owner — arrival order on a shared network confers nothing — the box is still unclaimed afterwards, and the setup grant they failed against is still redeemable by the caller who does hold the generated code, so the refusals cost the legitimate owner nothing. The literal `$setup_grant.code` is a marker, not a code: it names the code the live installer step actually minted, which the driver resolves before presenting it.",
+  "input": {
+    "box_claim_state": "unclaimed",
+    "endpoint": "/api/v1/auth/setup",
+    "setup_grant": {
+      "purpose": "setup",
+      "redemption_mode": "one-time",
+      "redeemed": false
+    },
+    "claim_attempts": [
+      {
+        "attempt": "first-arrival presents no code",
+        "presented_code": "",
+        "identifier": "first-arrival@example.invalid",
+        "password": "first-arrival-passphrase"
+      },
+      {
+        "attempt": "second-arrival presents a wrong code",
+        "presented_code": "NOT-THE-GENERATED-SETUP-CODE",
+        "identifier": "second-arrival@example.invalid",
+        "password": "second-arrival-passphrase"
+      }
+    ],
+    "then_the_code_holder_claims": {
+      "presented_code": "$setup_grant.code",
+      "identifier": "code-holder@example.invalid",
+      "password": "code-holder-passphrase"
+    }
+  },
+  "expected": {
+    "claim_attempts": [
+      { "claimed": false, "new_owner_principal_created": false, "error": { "code": "VALIDATION_FAILED" } },
+      { "claimed": false, "new_owner_principal_created": false, "error": { "code": "UNAUTHENTICATED" } }
+    ],
+    "owner_bindings_after_attempts": 0,
+    "box_claim_state_after_attempts": "unclaimed",
+    "code_holder_claimed": true,
+    "owner_bindings_after_code_holder": 1
+  }
+}

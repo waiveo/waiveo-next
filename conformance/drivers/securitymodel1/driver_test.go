@@ -14,12 +14,15 @@ import (
 // see expectedFailing.
 var expectedDriven = []string{
 	"SEC-035-invalid-grant-expired-rejected",
+	"SEC-035a-invalid-grant-refusals-on-the-redemption-endpoint",
 	"SEC-050-valid-credential-reset-grant-flow",
 	"SEC-066-valid-monotonic-floor-survives-restart",
 	"SEC-067-invalid-unauthenticated-time-claim-does-not-advance-floor",
+	"SEC-067a-invalid-unauthenticated-claim-below-a-verifiable-value",
 	"SEC-072-valid-console-admission-uid0",
 	"SEC-075-invalid-console-verb-not-allowed",
 	"SEC-120-invalid-first-boot-claim-outside-window",
+	"SEC-120a-invalid-unclaimed-box-claimed-without-the-setup-code",
 	"SEC-121-valid-factory-reset-destroys-key-material",
 }
 
@@ -165,6 +168,153 @@ func TestSecurityModel1FactoryResetHasTeeth(t *testing.T) {
 	t.Logf("\n%s", rep.String())
 	if !caseFailed(rep, id) {
 		t.Errorf("expected %s to FAIL against a corrupted (data_key_present:true) expectation, but it did not; report:\n%s", id, rep.String())
+	}
+}
+
+// TestSecurityModel1ProvenanceGateHasTeeth is the same proof on the advance
+// gate SEC-067a exists to isolate: corrupting only the expected
+// `unauthenticated_claim_advanced_floor` to true — leaving the live floor
+// untouched — must FAIL.
+func TestSecurityModel1ProvenanceGateHasTeeth(t *testing.T) {
+	cases, err := securitymodel1.LoadCorpus()
+	if err != nil {
+		t.Fatalf("LoadCorpus: %v", err)
+	}
+	const id = "SEC-067a-invalid-unauthenticated-claim-below-a-verifiable-value"
+	broken, ok := cases[id]
+	if !ok {
+		t.Fatalf("%s missing from the frozen corpus", id)
+	}
+	expected := deepCopyMap(broken.Expected)
+	if expected["unauthenticated_claim_advanced_floor"] != false {
+		t.Fatalf("test bug: expected unauthenticated_claim_advanced_floor false in the real corpus, got %v", expected["unauthenticated_claim_advanced_floor"])
+	}
+	expected["unauthenticated_claim_advanced_floor"] = true // the live gate refuses it; this is a lie.
+	broken.Expected = expected
+	cases[id] = broken
+
+	rep := securitymodel1.RunCases(cases)
+	t.Logf("\n%s", rep.String())
+	if !caseFailed(rep, id) {
+		t.Errorf("expected %s to FAIL against a corrupted (unauthenticated_claim_advanced_floor:true) expectation, but it did not; report:\n%s", id, rep.String())
+	}
+}
+
+// TestSecurityModel1ProvenanceGateGuardsItsOwnIsolation is the guard on the
+// property that makes SEC-067a worth more than the case it supplements: its
+// unauthenticated candidate must stay SMALLER than its verifiable one, so the
+// two differ only in provenance. Raising the unauthenticated candidate above the
+// verifiable value — an INPUT edit, not an expectation edit — collapses the case
+// back into the two-variable shape that decides nothing, and the driver must
+// report FAIL rather than quietly keep passing.
+func TestSecurityModel1ProvenanceGateGuardsItsOwnIsolation(t *testing.T) {
+	cases, err := securitymodel1.LoadCorpus()
+	if err != nil {
+		t.Fatalf("LoadCorpus: %v", err)
+	}
+	const id = "SEC-067a-invalid-unauthenticated-claim-below-a-verifiable-value"
+	broken, ok := cases[id]
+	if !ok {
+		t.Fatalf("%s missing from the frozen corpus", id)
+	}
+	input := deepCopyMap(broken.Input)
+	candidates, ok := input["candidates"].([]any)
+	if !ok || len(candidates) != 2 {
+		t.Fatalf("SEC-067a input carries %v, want a two-candidate array", input["candidates"])
+	}
+	unauth, ok := candidates[0].(map[string]any)
+	if !ok {
+		t.Fatal("SEC-067a's first candidate is not an object")
+	}
+	unauth = deepCopyMap(unauth)
+	unauth["ts_ms"] = float64(1900000000000) // far ABOVE the verifiable value: isolation lost.
+	input["candidates"] = []any{unauth, candidates[1]}
+	broken.Input = input
+	cases[id] = broken
+
+	rep := securitymodel1.RunCases(cases)
+	t.Logf("\n%s", rep.String())
+	if !caseFailed(rep, id) {
+		t.Errorf("expected %s to FAIL once its unauthenticated candidate outgrew its verifiable one (the case no longer isolates provenance), but it did not; report:\n%s", id, rep.String())
+	}
+}
+
+// TestSecurityModel1UnclaimedBoxHasTeeth is the same proof on SEC-120's own
+// clause: corrupting SEC-120a's second attempt (a wrong code against an
+// UNCLAIMED box) to an expected `claimed: true` — leaving the live handler
+// untouched — must FAIL.
+func TestSecurityModel1UnclaimedBoxHasTeeth(t *testing.T) {
+	cases, err := securitymodel1.LoadCorpus()
+	if err != nil {
+		t.Fatalf("LoadCorpus: %v", err)
+	}
+	const id = "SEC-120a-invalid-unclaimed-box-claimed-without-the-setup-code"
+	broken, ok := cases[id]
+	if !ok {
+		t.Fatalf("%s missing from the frozen corpus", id)
+	}
+	expected := deepCopyMap(broken.Expected)
+	attempts, ok := expected["claim_attempts"].([]any)
+	if !ok || len(attempts) != 2 {
+		t.Fatalf("SEC-120a expects %v, want a two-attempt array", expected["claim_attempts"])
+	}
+	second, ok := attempts[1].(map[string]any)
+	if !ok {
+		t.Fatal("SEC-120a's second expected attempt is not an object")
+	}
+	if second["claimed"] != false {
+		t.Fatalf("test bug: expected claim_attempts[1].claimed false in the real corpus, got %v", second["claimed"])
+	}
+	second = deepCopyMap(second)
+	second["claimed"] = true // the live handler refuses a wrong code; this is a lie.
+	expected["claim_attempts"] = []any{attempts[0], second}
+	broken.Expected = expected
+	cases[id] = broken
+
+	rep := securitymodel1.RunCases(cases)
+	t.Logf("\n%s", rep.String())
+	if !caseFailed(rep, id) {
+		t.Errorf("expected %s to FAIL against a corrupted (claim_attempts[1].claimed:true) expectation, but it did not; report:\n%s", id, rep.String())
+	}
+}
+
+// TestSecurityModel1WireRefusalCodeHasTeeth is the proof that SEC-035a reads the
+// refusal code off the RESPONSE rather than off a mapping of the driver's own:
+// corrupting the expected code for the expired attempt — leaving the live
+// handler untouched — must FAIL.
+func TestSecurityModel1WireRefusalCodeHasTeeth(t *testing.T) {
+	cases, err := securitymodel1.LoadCorpus()
+	if err != nil {
+		t.Fatalf("LoadCorpus: %v", err)
+	}
+	const id = "SEC-035a-invalid-grant-refusals-on-the-redemption-endpoint"
+	broken, ok := cases[id]
+	if !ok {
+		t.Fatalf("%s missing from the frozen corpus", id)
+	}
+	expected := deepCopyMap(broken.Expected)
+	attempts, ok := expected["attempts"].([]any)
+	if !ok || len(attempts) != 3 {
+		t.Fatalf("SEC-035a expects %v, want a three-attempt array", expected["attempts"])
+	}
+	first, ok := attempts[0].(map[string]any)
+	if !ok {
+		t.Fatal("SEC-035a's first expected attempt is not an object")
+	}
+	problem, ok := first["error"].(map[string]any)
+	if !ok || problem["code"] != "GRANT_EXPIRED" {
+		t.Fatalf("test bug: expected attempts[0].error.code GRANT_EXPIRED in the real corpus, got %v", first["error"])
+	}
+	first = deepCopyMap(first)
+	first["error"] = map[string]any{"code": "GRANT_ALREADY_REDEEMED"} // the wire says GRANT_EXPIRED; this is a lie.
+	expected["attempts"] = []any{first, attempts[1], attempts[2]}
+	broken.Expected = expected
+	cases[id] = broken
+
+	rep := securitymodel1.RunCases(cases)
+	t.Logf("\n%s", rep.String())
+	if !caseFailed(rep, id) {
+		t.Errorf("expected %s to FAIL against a corrupted (attempts[0].error.code) expectation, but it did not; report:\n%s", id, rep.String())
 	}
 }
 

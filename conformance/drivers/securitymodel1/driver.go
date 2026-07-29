@@ -93,14 +93,17 @@ func LoadCorpus() (map[string]corpus.Case, error) { return corpus.LoadDir(corpus
 // it. It is a map from SHORT id (never the descriptive full filename stem), so
 // renaming a case file's tail does not silently unwire it.
 var drivers = map[string]func(*report.Report, corpus.Case){
-	"SEC-035": driveGrantExpired,
-	"SEC-050": driveCredentialReset,
-	"SEC-066": driveClockFloorSurvivesRestart,
-	"SEC-067": driveClockFloorAdvanceGate,
-	"SEC-072": driveConsoleAdmission,
-	"SEC-075": driveConsoleVerbNotAllowed,
-	"SEC-120": driveFirstBootClaimOutsideWindow,
-	"SEC-121": driveFactoryReset,
+	"SEC-035":  driveGrantExpired,
+	"SEC-035a": driveGrantRefusalsOnTheWire,
+	"SEC-050":  driveCredentialReset,
+	"SEC-066":  driveClockFloorSurvivesRestart,
+	"SEC-067":  driveClockFloorAdvanceGate,
+	"SEC-067a": driveClockFloorProvenanceGate,
+	"SEC-072":  driveConsoleAdmission,
+	"SEC-075":  driveConsoleVerbNotAllowed,
+	"SEC-120":  driveFirstBootClaimOutsideWindow,
+	"SEC-120a": driveUnclaimedBoxWithoutCode,
+	"SEC-121":  driveFactoryReset,
 }
 
 // pendingCaseIDs are cases frozen under conformance/corpora/security-model that
