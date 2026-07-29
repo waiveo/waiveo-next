@@ -165,11 +165,19 @@ func TestIssuePairingCodeMintsDeliverableGrant(t *testing.T) {
 	}
 }
 
-// TestIssuePairingCodeWithNoRelayStillMintsTheGrant: no connected relay means
-// no code can be formed — but the grant IS minted and delivered (it will ride
-// the snapshot the moment a relay connects and pulls), and the response says
-// exactly why the code is absent instead of failing or pretending.
-func TestIssuePairingCodeWithNoRelayStillMintsTheGrant(t *testing.T) {
+// TestIssuePairingCodeWithNoRelayMintsNothing: with no relay connected there is
+// no relay to BIND the grant to, and REL-121c forbids an app peer from
+// delivering an unbound one-time grant — it would be redeemable once per
+// enrolled relay, every redemption resolving to this same screen row. So the
+// issuance refuses (503 UNAVAILABLE, retryable once a relay connects) and
+// persists nothing, rather than minting the one shape of grant the app peer may
+// not deliver. The refusal is layered three deep — this precondition,
+// grant.MintForScreen's own empty-relayID refusal, and the store's refusal to
+// persist an unbound one-time grant — so guard-disabled verification took all
+// three off: with only the precondition removed the issuance still refuses, as
+// a 500 from the constructor (this test fails on the status); with all three
+// removed it answers 201 and the desired-state read carries an unbound grant.
+func TestIssuePairingCodeWithNoRelayMintsNothing(t *testing.T) {
 	dir := api.PairingRelayDirectory{
 		ConnectedRelays: func() []api.PairingRelay { return nil },
 		RelaySPKI:       func(string) ([]byte, bool) { return nil, false },
@@ -178,19 +186,54 @@ func TestIssuePairingCodeWithNoRelayStillMintsTheGrant(t *testing.T) {
 	siteID := e.createNode(t, siteNode(""))
 	screenID := createScreenRow(t, e, siteID)
 
+	genBefore := e.generation(t)
+	resp, _ := issueCode(t, e, screenID, nil)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("issue with no relay connected: %d, want 503", resp.StatusCode)
+	}
+	if ds := desiredStateOf(t, e); len(ds.PairingGrants) != 0 {
+		t.Fatalf("a refused issue persisted %+v — an unbound one-time grant reached desired state (REL-121c)", ds.PairingGrants)
+	}
+	if genAfter := e.generation(t); genAfter != genBefore {
+		t.Errorf("generation moved %d -> %d on a refused issue", genBefore, genAfter)
+	}
+}
+
+// TestIssuePairingCodeBindsGrantToTheRelayTheCodeDials is the app-side half of
+// the site-wide one-time guarantee (REL-121b/REL-121c): the grant that reaches
+// desired state names exactly one relay, and it is the SAME relay the returned
+// pairing code dials. If those two ever diverged, the code would be refused at
+// redemption by construction (REL-121b). Guard-disabled check: minting through
+// grant.Mint() (or MintForScreen without the relay argument) leaves relay_id
+// empty and fails the first assertion.
+func TestIssuePairingCodeBindsGrantToTheRelayTheCodeDials(t *testing.T) {
+	dir, _ := pairingDirFixture(t, "192.0.2.40:7443")
+	e := newEnvWithOptions(t, api.WithPairing(dir))
+	siteID := e.createNode(t, siteNode(""))
+	screenID := createScreenRow(t, e, siteID)
+
 	resp, out := issueCode(t, e, screenID, nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("issue: %d, want 201", resp.StatusCode)
 	}
-	if out.PairingCode != "" || out.RelayID != "" {
-		t.Errorf("a code was formed with no relay connected: %+v", out)
-	}
-	if out.CodeUnavailableReason == "" {
-		t.Error("code_unavailable_reason is empty — the absent code must be explained")
-	}
+
 	ds := desiredStateOf(t, e)
-	if len(ds.PairingGrants) != 1 || ds.PairingGrants[0].GrantID != out.GrantID {
-		t.Fatalf("desired state carries %+v, want exactly the minted grant", ds.PairingGrants)
+	if len(ds.PairingGrants) != 1 {
+		t.Fatalf("desired state carries %d grants, want 1", len(ds.PairingGrants))
+	}
+	got := ds.PairingGrants[0]
+	if got.RelayID != pairingRelayID {
+		t.Fatalf("delivered grant relay_id = %q, want %q — an unbound one-time grant is redeemable once per relay (REL-121b/REL-121c)", got.RelayID, pairingRelayID)
+	}
+	if out.RelayID != pairingRelayID {
+		t.Errorf("response relay_id = %q, want %q", out.RelayID, pairingRelayID)
+	}
+	_, _, selector, _, err := paircode.Decode(out.PairingCode)
+	if err != nil {
+		t.Fatalf("Decode(%q): %v", out.PairingCode, err)
+	}
+	if selector != got.GrantID {
+		t.Errorf("the code selects %q but the bound grant is %q", selector, got.GrantID)
 	}
 }
 

@@ -323,6 +323,13 @@ func Open(dsn string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: migrate pairing grants: %w", err)
 	}
+	// CREATE TABLE IF NOT EXISTS is a no-op against a table an earlier build
+	// already created, so a column added since then needs its own step
+	// (migratePairingGrantsSchema's own doc).
+	if err := migratePairingGrantsSchema(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("store: migrate pairing grants: %w", err)
+	}
 	for _, k := range allKinds {
 		if _, err := db.Exec(fmt.Sprintf(resourceTableDDL, string(k))); err != nil {
 			_ = db.Close()

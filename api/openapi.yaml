@@ -1650,15 +1650,20 @@ paths:
       summary: Issue a pairing code for a screen
       description: >-
         Mints a one-time pairing grant bound to this screen row (`relay/1`
-        REL-121a) and persists it as desired state, so it rides the next
-        signed snapshot's `pairing_grants` section to the site's relay
-        (REL-067). The response carries the human-enterable pairing code
-        (`player/1` PLY-024) formed against the connected relay's advertised
-        dial address and trust-anchor commitment — or, when no code can be
-        formed (no relay connected), the minted grant with an explanatory
-        `code_unavailable_reason`. Redemption happens at the relay
-        (`player/1` Pairing redemption); this operation reports issuance,
-        never a redemption state it has no evidence for.
+        REL-121a) AND to the one relay that may redeem it (REL-121b), and
+        persists it as desired state, so it rides the next signed snapshot's
+        `pairing_grants` section to the site's relays (REL-067). The response
+        carries the human-enterable pairing code (`player/1` PLY-024) formed
+        against that same relay's advertised dial address and trust-anchor
+        commitment — or, when the relay is named but its address or key is
+        unusable, the minted grant with an explanatory
+        `code_unavailable_reason`. With no relay connected at all, the request
+        is refused `503 UNAVAILABLE` and nothing is minted: an unbound one-time
+        grant would be redeemable once per enrolled relay, each redemption
+        resolving to this same screen row, which REL-121c forbids an app peer
+        from delivering. Redemption happens at the relay (`player/1` Pairing
+        redemption); this operation reports issuance, never a redemption state
+        it has no evidence for.
       tags: [screens, "mcp:act"]
       parameters:
         - $ref: "#/components/parameters/IdempotencyKeyParam"
@@ -1681,6 +1686,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
   # ---------------------------------------------------------------------
   # adopted-devices — the rows relay/1 REL-063's device_inventory is compiled from.
   # ---------------------------------------------------------------------
@@ -3284,11 +3291,14 @@ components:
     PairingCodeResult:
       type: object
       description: >-
-        A freshly minted screen-bound pairing grant (`relay/1` REL-121a) and,
-        when a relay is connected, the human-enterable pairing code
-        (`player/1` PLY-024) an operator reads onto the screen. Exactly one of
-        `pairing_code` and `code_unavailable_reason` is present — the grant is
-        minted and delivered to the relay either way.
+        A freshly minted pairing grant, bound to this screen row (`relay/1`
+        REL-121a) and to the one relay that may redeem it (REL-121b), plus the
+        human-enterable pairing code (`player/1` PLY-024) an operator reads onto
+        the screen. Exactly one of `pairing_code` and
+        `code_unavailable_reason` is present: the grant is minted, bound, and
+        delivered either way, and the reason describes only why the code itself
+        could not be formed for the relay it is bound to. A request with no
+        relay to bind to at all is refused before anything is minted (`503`).
       required: [grant_id, screen_id, ttl_seconds, redemption_mode, issued_at, expires_at]
       additionalProperties: false
       properties:
@@ -3316,7 +3326,12 @@ components:
             trust-anchor fingerprint commitment (`relay/1` REL-126).
         relay_id:
           type: string
-          description: The connected relay the code dials. Present exactly when `pairing_code` is.
+          description: >-
+            The one relay this grant is bound to and its code dials (`relay/1`
+            REL-121b). Always present on a 201 — an issuance that could not name
+            a relay is refused rather than minted — including when
+            `code_unavailable_reason` explains why the code itself could not be
+            formed for it.
         code_unavailable_reason:
           type: string
           description: Why no code could be formed (for instance, no relay is connected). Present exactly when `pairing_code` is not.

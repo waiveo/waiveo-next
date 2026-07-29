@@ -84,3 +84,41 @@ func TestMintNoREL126Fields(t *testing.T) {
 		}
 	}
 }
+
+// TestMintForScreenRequiresBothBindings: MintForScreen is the constructor the
+// running app mints every pairing grant through, and it refuses either binding
+// missing. The relayID half is the load-bearing one (REL-121b/REL-121c): a
+// one-time grant with no relay binding rides the single signed snapshot to
+// EVERY enrolled relay and is redeemable once at each, all of them resolving to
+// the same screen row. Refusing it here is the first of three layers (the store
+// refuses to persist one, and the api refuses to mint without a relay to name);
+// a Go signature that will not compile without a relayID is the reason a future
+// caller cannot reach this constructor and forget.
+func TestMintForScreenRequiresBothBindings(t *testing.T) {
+	if _, err := MintForScreen("", "01J8ZRELAYAAAAAAAAAAAAAAA1"); err == nil {
+		t.Error("MintForScreen with no screen_id was accepted (REL-121a)")
+	}
+	if _, err := MintForScreen("01J8Z4SCREENR0WAAAAAAAAAAA", ""); err == nil {
+		t.Error("MintForScreen with no relay_id was accepted — an unbound one-time grant is redeemable once per relay (REL-121b/REL-121c)")
+	}
+
+	g, err := MintForScreen("01J8Z4SCREENR0WAAAAAAAAAAA", "01J8ZRELAYAAAAAAAAAAAAAAA1")
+	if err != nil {
+		t.Fatalf("MintForScreen: %v", err)
+	}
+	if g.ScreenID != "01J8Z4SCREENR0WAAAAAAAAAAA" || g.RelayID != "01J8ZRELAYAAAAAAAAAAAAAAA1" {
+		t.Fatalf("minted %+v, want both bindings carried verbatim", g)
+	}
+	if g.RedemptionMode != "one-time" {
+		t.Errorf("redemption_mode = %q, want one-time", g.RedemptionMode)
+	}
+
+	// The relay binding must actually reach the wire: it is what the relay
+	// compares against its own enrolled identity at redemption.
+	raw := grantJSON(t, g)
+	if got, ok := raw["relay_id"]; !ok {
+		t.Error("the marshaled grant carries no relay_id — the binding never reaches the relay (REL-121b)")
+	} else if string(got) != `"01J8ZRELAYAAAAAAAAAAAAAAA1"` {
+		t.Errorf("marshaled relay_id = %s, want the bound relay", got)
+	}
+}

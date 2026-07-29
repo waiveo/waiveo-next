@@ -461,12 +461,12 @@ func TestBuildFromStoreCarriesStoredPairingGrants(t *testing.T) {
 
 	live := wire.PairingGrant{
 		GrantID: "grant-11111111111111111111111111111111", Purpose: "pairing",
-		ResultingPrincipalKind: "screen", ScreenID: store.SeedScreenID,
+		ResultingPrincipalKind: "screen", ScreenID: store.SeedScreenID, RelayID: "01J8ZRELAYAAAAAAAAAAAAAAA1",
 		TTL: 900, RedemptionMode: "one-time", IssuedAt: now - 1_000,
 	}
 	expired := wire.PairingGrant{
 		GrantID: "grant-22222222222222222222222222222222", Purpose: "pairing",
-		ResultingPrincipalKind: "screen", ScreenID: store.SeedScreenID,
+		ResultingPrincipalKind: "screen", ScreenID: store.SeedScreenID, RelayID: "01J8ZRELAYAAAAAAAAAAAAAAA1",
 		TTL: 900, RedemptionMode: "one-time", IssuedAt: now - 901_000,
 	}
 	for _, g := range []wire.PairingGrant{live, expired} {
@@ -482,7 +482,7 @@ func TestBuildFromStoreCarriesStoredPairingGrants(t *testing.T) {
 	ds := desiredState(t, s)
 	ds.PairingGrants = append(ds.PairingGrants, wire.PairingGrant{
 		GrantID: "grant-33333333333333333333333333333333", Purpose: "pairing",
-		ResultingPrincipalKind: "screen", ScreenID: "01J8Z9G0NESCREENR0WXXXXXXX",
+		ResultingPrincipalKind: "screen", ScreenID: "01J8Z9G0NESCREENR0WXXXXXXX", RelayID: "01J8ZRELAYAAAAAAAAAAAAAAA1",
 		TTL: 900, RedemptionMode: "one-time", IssuedAt: now - 1_000,
 	})
 

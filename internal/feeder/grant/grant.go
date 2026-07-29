@@ -1,10 +1,10 @@
-// Package grant mints relay/1 pairing-grant records (REL-121/REL-121a): the
-// records that ride the signed desired-state snapshot's `pairing_grants`
-// section (REL-067) to the relay, for the relay to later resolve and redeem
-// on a screen's behalf. The running app mints one per operator "pair this
-// screen" request (MintForScreen, persisted by store.AddPairingGrant so it
-// rides the next generation); Mint remains the unbound baseline for
-// harnesses exercising REL-121's minimal shape.
+// Package grant mints relay/1 pairing-grant records (REL-121/REL-121a/
+// REL-121b): the records that ride the signed desired-state snapshot's
+// `pairing_grants` section (REL-067) to the relay, for the relay to later
+// resolve and redeem on a screen's behalf. The running app mints one per
+// operator "pair this screen" request (MintForScreen, persisted by
+// store.AddPairingGrant so it rides the next generation); Mint remains the
+// unbound baseline for harnesses exercising REL-121's minimal shape.
 //
 // Shape note: REL-121 defines the grant record itself as `{grant_id,
 // purpose, resulting_principal_kind, ttl, redemption_mode, issued_at}` —
@@ -57,18 +57,37 @@ func Mint() wire.PairingGrant {
 	}
 }
 
-// MintForScreen mints a screen-bound pairing-grant record (REL-121a): Mint's
-// exact record plus `screen_id` — the screen identity row (data-model/1
-// DAT-004a) whose id the relay hands back as the paired screen's identity at
-// redemption. screenID's existence is the CALLER's concern (the store checks
-// it against its own screen rows at persist time); this constructor only
-// refuses the empty string, which could never name a row.
-func MintForScreen(screenID string) (wire.PairingGrant, error) {
+// MintForScreen mints a screen-bound, relay-bound pairing-grant record: Mint's
+// exact record plus `screen_id` (REL-121a) — the screen identity row
+// (data-model/1 DAT-004a) whose id the relay hands back as the paired screen's
+// identity at redemption — and `relay_id` (REL-121b), the ONE relay this grant
+// may be redeemed at.
+//
+// Both bindings are REQUIRED here, and relayID's is the reason this constructor
+// cannot be reached without one. `pairing_grants` is a section of the single
+// signed snapshot every relay enrolled to the site applies (REL-067), and
+// REL-122 makes a grant redeemable for its whole ttl with no app peer
+// reachable — so a one-time grant carrying no relay binding is redeemable once
+// PER RELAY, and (being screen-bound) every one of those redemptions resolves
+// to the same screen row. REL-121c therefore obliges an app peer to bind every
+// one-time grant it mints; a Go signature that will not compile without a
+// relayID is how this package refuses to be the place that forgets.
+//
+// Neither id's existence is checked here: screenID is checked against the
+// store's own screen rows at persist time, and relayID is the caller's own
+// choice of an enrolled relay (the one whose dial address the pairing code will
+// encode, REL-126). This constructor only refuses the empty string for either,
+// which could never name anything.
+func MintForScreen(screenID, relayID string) (wire.PairingGrant, error) {
 	if screenID == "" {
 		return wire.PairingGrant{}, fmt.Errorf("grant: MintForScreen: screenID must not be empty (REL-121a)")
 	}
+	if relayID == "" {
+		return wire.PairingGrant{}, fmt.Errorf("grant: MintForScreen: relayID must not be empty — a one-time grant delivered unbound is redeemable once per relay (REL-121b/REL-121c)")
+	}
 	g := Mint()
 	g.ScreenID = screenID
+	g.RelayID = relayID
 	return g, nil
 }
 

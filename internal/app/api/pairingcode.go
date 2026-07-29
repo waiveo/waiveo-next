@@ -55,9 +55,24 @@ import (
 // # What this operation does NOT know
 //
 // Whether the code was ever redeemed. The relay redeems autonomously
-// (REL-121/122) and its redemption report upstream (REL-124) is not yet
-// implemented, so this surface truthfully reports the grant's issuance and
-// expiry — never a "paired" state it has no evidence for.
+// (REL-121/122) and reports the redemption upstream afterwards (REL-124),
+// which retires the grant from later generations — but that report always
+// TRAILS the redemption, by the relay's own disconnection (REL-122) and by its
+// reporting cadence, so this surface truthfully reports the grant's issuance
+// and expiry and never a "paired" state it has no evidence for at the moment
+// it answers.
+//
+// # Why this operation names a relay before it mints anything
+//
+// A one-time grant is consumed by the redeeming relay ALONE — `pairing_grants`
+// is a section of the one signed snapshot every relay of the site applies
+// (REL-067) and REL-122 makes it redeemable for its whole ttl with no app peer
+// reachable, so no relay can ask anyone whether a sibling already consumed it.
+// An unbound one-time grant delivered to N relays is therefore redeemable N
+// times, and because it is screen-bound (REL-121a) every one of those
+// redemptions resolves to the SAME screen row. REL-121c puts the obligation to
+// bind on the app peer; this operation discharges it by resolving the relay
+// FIRST and refusing when it cannot name one (issuePairingCodeExec).
 
 // PairingRelay is one live relay the pairing-code issuance may dial a code
 // at: its enrollment identity and the canonical advertised address its hello
@@ -148,7 +163,22 @@ func (srv *server) issuePairingCodeExec(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	g, err := grant.MintForScreen(id)
+	// The relay is resolved BEFORE anything is minted, because REL-121c makes
+	// naming one a precondition of minting at all: a one-time grant delivered
+	// without a relay binding is redeemable once per enrolled relay, and every
+	// one of those redemptions resolves to this same screen row (REL-121a).
+	// With no relay nameable there is nothing to bind to, so this refuses
+	// rather than persisting the one shape of grant the app peer is forbidden
+	// to deliver. The refusal costs an operator nothing they had: with no relay
+	// connected, no pairing code could be formed for them to type either, and
+	// the screen has no relay to pair against.
+	relay, reason := srv.pairingRelay()
+	if reason != "" {
+		writeProblem(w, r, http.StatusServiceUnavailable, "UNAVAILABLE", "Service Unavailable", reason)
+		return
+	}
+
+	g, err := grant.MintForScreen(id, relay.RelayID)
 	if err != nil {
 		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
 		return
@@ -198,7 +228,8 @@ func (srv *server) issuePairingCodeExec(w http.ResponseWriter, r *http.Request) 
 		IssuedAt:       g.IssuedAt,
 		ExpiresAt:      g.IssuedAt + g.TTL*1000,
 	}
-	out.PairingCode, out.RelayID, out.CodeUnavailableReason = srv.formPairingCode(g)
+	out.RelayID = relay.RelayID
+	out.PairingCode, out.CodeUnavailableReason = srv.formPairingCode(g, relay)
 
 	body, err := json.Marshal(out)
 	if err != nil {
@@ -208,32 +239,47 @@ func (srv *server) issuePairingCodeExec(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusCreated, body)
 }
 
-// formPairingCode forms the REL-126 code for g against the first connected
-// relay, or explains why it could not. Every degrade is a reason, never an
-// error status: the grant IS minted and delivered either way, and the
-// operator's remedy (connect a relay, read the code off the relay itself)
-// is theirs to choose.
-func (srv *server) formPairingCode(g wire.PairingGrant) (code, relayID, reason string) {
+// pairingRelay picks the ONE relay this issuance binds its grant to and forms
+// its code against — the first connected relay — or returns the reason no relay
+// can be named. A non-empty reason is a refusal, not a degrade: REL-121c
+// forbids an app peer from delivering an unbound one-time grant, so an issuance
+// that cannot name a relay must not mint one (issuePairingCodeExec's own doc).
+//
+// The relay bound and the relay the code dials are deliberately the same value,
+// resolved once here: a code that dialed relay A while its grant named relay B
+// would be refused at redemption by construction (REL-121b), which is the one
+// way this pair of decisions can be wrong.
+func (srv *server) pairingRelay() (relay PairingRelay, reason string) {
 	dir := srv.pairingRelays
 	if dir.ConnectedRelays == nil || dir.RelaySPKI == nil {
-		return "", "", "this deployment has no relay directory wired; read the pairing code off the relay's own display"
+		return PairingRelay{}, "This deployment has no relay directory wired, so no relay can be named to redeem a pairing grant."
 	}
 	relays := dir.ConnectedRelays()
 	if len(relays) == 0 {
-		return "", "", "no relay is connected; the code can be formed once one is"
+		return PairingRelay{}, "No relay is connected, so no relay can be named to redeem a pairing grant. Retry once one is."
 	}
-	relay := relays[0]
+	return relays[0], ""
+}
+
+// formPairingCode forms the REL-126 code for g against relay — the SAME relay
+// g is bound to (REL-121b) — or explains why it could not. A missing dial
+// address or trust-anchor key is a degrade with a reason, never an error
+// status: the grant IS minted, bound, and delivered either way, and the
+// operator's remedy (read the code off the relay's own display) is theirs to
+// choose. What is NOT a degrade is having no relay at all — pairingRelay
+// refuses that before anything is minted.
+func (srv *server) formPairingCode(g wire.PairingGrant, relay PairingRelay) (code, reason string) {
 	host, portStr, err := net.SplitHostPort(relay.AdvertisedAddress)
 	if err != nil {
-		return "", "", "the connected relay advertised no dialable address"
+		return "", "the connected relay advertised no dialable address"
 	}
 	port, err := strconv.Atoi(portStr)
 	if err != nil || port < 0 || port > 65535 {
-		return "", "", "the connected relay advertised no dialable address"
+		return "", "the connected relay advertised no dialable address"
 	}
-	spki, ok := dir.RelaySPKI(relay.RelayID)
+	spki, ok := srv.pairingRelays.RelaySPKI(relay.RelayID)
 	if !ok {
-		return "", "", "the connected relay's trust-anchor key is not on record"
+		return "", "the connected relay's trust-anchor key is not on record"
 	}
-	return paircode.Encode(host, port, g.GrantID, tlsboot.Commitment(spki)), relay.RelayID, ""
+	return paircode.Encode(host, port, g.GrantID, tlsboot.Commitment(spki)), ""
 }

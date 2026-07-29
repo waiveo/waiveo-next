@@ -5,6 +5,7 @@ import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { ThemeProvider } from "@/components/theme/theme-provider";
 import { PairingPanel } from "./pairing-panel";
+import { Toaster } from "@/components/kit/toaster";
 import { createApi, type Screen, type ScopeNode } from "@/api";
 import { TEST_BASE, TRACE_ID, ULID_A, ULID_B, scopeNode, ok } from "@/api/test-support";
 
@@ -69,6 +70,10 @@ function renderPanel(parents: ScopeNode[] = [site, group]) {
         parents={parents}
         nodeNames={new Map(parents.map((p) => [p.id, p.name]))}
       />
+      {/* The refusal path surfaces through a toast, so the panel's tests mount
+          the same Toaster the app shell does — otherwise a refusal would look
+          identical to silence. */}
+      <Toaster />
     </ThemeProvider>,
   );
 }
@@ -153,6 +158,9 @@ describe("PairingPanel — pair a new screen, clicked through", () => {
     expect(within(codeDialog).getByTestId("pairing-code")).toHaveTextContent(PAIRING_CODE);
   });
 
+  // The no-relay-at-all case is no longer a degrade: the app refuses to mint an
+  // unbound one-time grant (relay/1 REL-121c) and answers 503. What remains is a
+  // grant that IS bound but whose relay advertised no usable dial address.
   it("shows the server's honest reason when no code could be formed", async () => {
     server.use(
       http.get(`${TEST_BASE}/screens`, () => page([screenRow()])),
@@ -160,8 +168,7 @@ describe("PairingPanel — pair a new screen, clicked through", () => {
         ok(
           pairingCodeResult({
             pairing_code: undefined,
-            relay_id: undefined,
-            code_unavailable_reason: "no relay is connected; the code can be formed once one is",
+            code_unavailable_reason: "the connected relay advertised no dialable address",
           }),
           { status: 201 },
         ),
@@ -172,9 +179,40 @@ describe("PairingPanel — pair a new screen, clicked through", () => {
     await user.click(await screen.findByRole("button", { name: "Pairing code" }));
     const codeDialog = await screen.findByRole("dialog", { name: /Pairing code — Lobby TV/ });
     expect(
-      within(codeDialog).getByText(/no relay is connected/),
+      within(codeDialog).getByText(/advertised no dialable address/),
     ).toBeInTheDocument();
     expect(within(codeDialog).queryByTestId("pairing-code")).not.toBeInTheDocument();
+  });
+
+  // With no relay connected there is no relay to BIND the grant to, and a
+  // one-time grant delivered unbound is redeemable once per enrolled relay
+  // (relay/1 REL-121b/REL-121c) — so the app refuses (503 UNAVAILABLE) and mints
+  // nothing. The console must surface that refusal rather than opening a code
+  // dialog for a grant that does not exist.
+  it("surfaces the refusal when no relay can be named, and opens no code dialog", async () => {
+    server.use(
+      http.get(`${TEST_BASE}/screens`, () => page([screenRow()])),
+      http.post(`${TEST_BASE}/screens/${SCREEN_ROW_ID}/pairing-code`, () =>
+        HttpResponse.json(
+          {
+            type: "about:blank",
+            title: "Service Unavailable",
+            status: 503,
+            code: "UNAVAILABLE",
+            detail: "No relay is connected, so no relay can be named to redeem a pairing grant. Retry once one is.",
+            trace_id: TRACE_ID,
+          },
+          { status: 503, headers: { "Content-Type": "application/problem+json", "Trace-Id": TRACE_ID } },
+        ),
+      ),
+    );
+    renderPanel();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Pairing code" }));
+
+    await screen.findByText(/No relay is connected/);
+    expect(screen.queryByRole("dialog", { name: /Pairing code — Lobby TV/ })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("pairing-code")).not.toBeInTheDocument();
   });
 });
 

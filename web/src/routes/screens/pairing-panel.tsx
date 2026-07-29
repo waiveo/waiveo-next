@@ -301,12 +301,12 @@ export function PairingPanel({ api, parents, nodeNames }: PairingPanelProps) {
           ) : (
             <div className="flex flex-col gap-3">
               <p className="text-sm">
-                The pairing grant was created and will reach the site's relay, but no code could
+                The pairing grant was created and bound to the site's relay, but no code could
                 be shown: {dialog.result.code_unavailable_reason ?? "no reason reported."}
               </p>
               <p className="text-sm text-muted-foreground">
-                Once a relay is connected, use the screen's Pairing code button to issue a fresh
-                code.
+                Read the code off the relay's own display, or use the screen's Pairing code
+                button to issue a fresh one once the relay reports a usable address.
               </p>
             </div>
           )

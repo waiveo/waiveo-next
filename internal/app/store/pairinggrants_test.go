@@ -9,14 +9,20 @@ import (
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
-// boundGrant builds a screen-bound pairing-grant record (REL-121a) against the
-// seeded demo screen row, issued at issuedAt with the ordinary 900s ttl.
+// testRelayID is the enrolled relay identity every fixture grant here binds to
+// (REL-121b) — the store refuses an unbound one-time grant outright.
+const testRelayID = "01J8ZRELAYAAAAAAAAAAAAAAA1"
+
+// boundGrant builds a screen-bound (REL-121a), relay-bound (REL-121b)
+// pairing-grant record against the seeded demo screen row, issued at issuedAt
+// with the ordinary 900s ttl.
 func boundGrant(grantID, screenID string, issuedAt int64) wire.PairingGrant {
 	return wire.PairingGrant{
 		GrantID:                grantID,
 		Purpose:                "pairing",
 		ResultingPrincipalKind: "screen",
 		ScreenID:               screenID,
+		RelayID:                testRelayID,
 		TTL:                    900,
 		RedemptionMode:         "one-time",
 		IssuedAt:               issuedAt,
@@ -162,5 +168,125 @@ func TestAddPairingGrantRetiresExpiredRows(t *testing.T) {
 	}
 	if len(ds.PairingGrants) != 1 || ds.PairingGrants[0].GrantID != fresh.GrantID {
 		t.Fatalf("after the sweep the store holds %+v, want only the fresh grant", ds.PairingGrants)
+	}
+}
+
+// TestAddPairingGrantRefusesAnUnboundOneTimeGrant is the storage-boundary half
+// of REL-121c. Every grant written here rides `pairing_grants` inside ONE
+// signed snapshot to EVERY relay enrolled to the site (REL-067), and REL-122
+// makes each of them able to redeem it for its whole ttl with no app peer
+// reachable — so an unbound one-time grant is redeemable once per relay, and
+// (being screen-bound, REL-121a) every one of those redemptions resolves to the
+// same screen row. The refusal lives here as well as in the api handler so no
+// future caller can reach desired state by another route.
+//
+// Guard-disabled check: removing the relay-binding refusal in AddPairingGrant
+// makes the unbound grant persist and ride DesiredState, failing both
+// assertions below.
+func TestAddPairingGrantRefusesAnUnboundOneTimeGrant(t *testing.T) {
+	s := openMem(t)
+	ctx := context.Background()
+	if err := s.SeedDemo(ctx, seedAssetRef); err != nil {
+		t.Fatalf("SeedDemo: %v", err)
+	}
+
+	before := gen(t, s)
+	g := boundGrant("grant-unbound-00000000000000000000000000", store.SeedScreenID, 1752537000000)
+	g.RelayID = ""
+
+	if err := s.AddPairingGrant(ctx, g, "01J8Z4DEM0SCREENF1RSTPH0TN", "api"); err == nil {
+		t.Fatal("AddPairingGrant accepted an unbound one-time grant (REL-121b/REL-121c)")
+	}
+	if after := gen(t, s); after != before {
+		t.Errorf("generation moved %d -> %d on a refused mint", before, after)
+	}
+	ds, err := s.DesiredState(ctx)
+	if err != nil {
+		t.Fatalf("DesiredState: %v", err)
+	}
+	if len(ds.PairingGrants) != 0 {
+		t.Fatalf("desired state carries %+v — an unbound one-time grant reached every relay", ds.PairingGrants)
+	}
+}
+
+// TestRetirePairingGrantOnlyForTheRelayItIsBoundTo is REL-124b's own oracle at
+// the storage layer: a redemption report retires a grant, so a relay able to
+// retire a grant bound to a DIFFERENT relay could cancel a pairing in progress
+// at its sibling with one frame. The delete is conditioned on the reporting
+// connection's own authenticated identity, and a grant naming another relay is
+// refused with nothing written.
+//
+// It also pins the two non-refusal shapes REL-124b requires: an unknown grant
+// is an idempotent no-op (a relay re-sending an owed report, or reporting one
+// already retired, is doing what REL-124d requires of it), and a legitimate
+// retirement bumps the generation so the spent grant stops riding snapshots.
+//
+// Guard-disabled check: replacing the bound-relay comparison with an
+// unconditional delete makes the foreign-relay case retire relay A's grant and
+// fails the "still on record" assertion.
+func TestRetirePairingGrantOnlyForTheRelayItIsBoundTo(t *testing.T) {
+	const relayA, relayB = "01J8ZRELAYAAAAAAAAAAAAAAA1", "01J8ZRELAYBBBBBBBBBBBBBBB2"
+
+	s := openMem(t)
+	ctx := context.Background()
+	if err := s.SeedDemo(ctx, seedAssetRef); err != nil {
+		t.Fatalf("SeedDemo: %v", err)
+	}
+
+	g := boundGrant("grant-retire-0000000000000000000000000000", store.SeedScreenID, 1752537000000)
+	g.RelayID = relayA
+	if err := s.AddPairingGrant(ctx, g, "01J8Z4DEM0SCREENF1RSTPH0TN", "api"); err != nil {
+		t.Fatalf("AddPairingGrant: %v", err)
+	}
+
+	// Relay B reports a redemption of relay A's grant: refused, nothing written.
+	beforeForeign := gen(t, s)
+	retired, err := s.RetirePairingGrant(ctx, g.GrantID, relayB)
+	if !errors.Is(err, store.ErrPairingGrantBoundElsewhere) {
+		t.Fatalf("RetirePairingGrant(relay B) = (%v, %v), want ErrPairingGrantBoundElsewhere", retired, err)
+	}
+	if after := gen(t, s); after != beforeForeign {
+		t.Errorf("generation moved %d -> %d on a refused report", beforeForeign, after)
+	}
+	ds, err := s.DesiredState(ctx)
+	if err != nil {
+		t.Fatalf("DesiredState: %v", err)
+	}
+	if len(ds.PairingGrants) != 1 || ds.PairingGrants[0].GrantID != g.GrantID {
+		t.Fatalf("relay A's grant is no longer on record after relay B reported it: %+v", ds.PairingGrants)
+	}
+
+	// A grant this store does not hold: an idempotent no-op, never a refusal.
+	beforeUnknown := gen(t, s)
+	retired, err = s.RetirePairingGrant(ctx, "grant-never-minted-000000000000", relayA)
+	if err != nil || retired {
+		t.Fatalf("RetirePairingGrant(unknown) = (%v, %v), want (false, nil) — REL-124b makes it a no-op", retired, err)
+	}
+	if after := gen(t, s); after != beforeUnknown {
+		t.Errorf("generation moved %d -> %d on a no-op report", beforeUnknown, after)
+	}
+
+	// The bound relay's own report retires it and advances the generation.
+	beforeRetire := gen(t, s)
+	retired, err = s.RetirePairingGrant(ctx, g.GrantID, relayA)
+	if err != nil || !retired {
+		t.Fatalf("RetirePairingGrant(relay A) = (%v, %v), want (true, nil)", retired, err)
+	}
+	if after := gen(t, s); after != beforeRetire+1 {
+		t.Errorf("generation = %d after retirement, want %d (the spent grant must stop riding snapshots)", after, beforeRetire+1)
+	}
+	ds, err = s.DesiredState(ctx)
+	if err != nil {
+		t.Fatalf("DesiredState: %v", err)
+	}
+	if len(ds.PairingGrants) != 0 {
+		t.Fatalf("desired state still carries %+v after retirement", ds.PairingGrants)
+	}
+
+	// Re-reporting the now-retired grant is a no-op, not a refusal (REL-124d's
+	// re-send rule makes a duplicate report normal traffic).
+	retired, err = s.RetirePairingGrant(ctx, g.GrantID, relayA)
+	if err != nil || retired {
+		t.Fatalf("re-report of a retired grant = (%v, %v), want (false, nil)", retired, err)
 	}
 }
