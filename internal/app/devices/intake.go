@@ -78,7 +78,13 @@ func (r *Registry) ApplyCandidates(relayID string, candidates []wire.DeviceCandi
 		if err := validateCandidate(c); err != nil {
 			return fmt.Errorf("devices: relay %s candidate[%d]: %w", relayID, i, err)
 		}
-		identity := c.Driver + "\x00" + c.NativeID
+		// Length-prefixed, not separator-joined: a NUL is valid UTF-8 and can
+		// appear inside a native_id off the LAN, so ("a","b\x00c") and
+		// ("a\x00b","c") would collide on a joined key while deriving DIFFERENT
+		// device ids — refusing a report as "one device, two candidates" for two
+		// genuinely distinct devices. This is the ambiguity deviceid length-
+		// prefixes against, two lines from the derivation itself.
+		identity := deviceid.IdentityKey(c.Driver, c.NativeID)
 		if seenIdentity[identity] {
 			// Two candidates for one (driver, native_id) is one device claimed
 			// twice: REL-153 makes that tuple the identity, so the report does

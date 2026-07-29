@@ -2,10 +2,13 @@ package deviceplane
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/maaxton/waiveo-next/internal/shared/deviceid"
 )
@@ -355,5 +358,79 @@ func TestResolveEntityDerivesRatherThanTrusting(t *testing.T) {
 	s.Ignore(Key("roku-ecp", "X1"), &forever)
 	if _, _, ok := s.ResolveEntity(wantEntity); ok {
 		t.Error("an ignored candidate still resolves — suppression would be cosmetic if commands still reached it")
+	}
+}
+
+// TestObserveDropsHostileSightingsRatherThanPoisoningTheReport pins the fix for
+// a LAN kill switch.
+//
+// A sighting's identity is an SSDP USN or an mDNS PTR record — bytes anything on
+// the LAN chooses, with no authentication anywhere in the path. The app applies a
+// candidate report ALL-OR-NOTHING, on the sound ground that a partial replace
+// would delete the devices whose candidates happened to be malformed. Put those
+// together and one spoofed reply carrying an over-long or non-UTF-8 USN makes
+// every subsequent report unapplyable — blanking the whole site's device list,
+// permanently, because nothing here expires a candidate.
+//
+// So a hostile sighting is dropped at the boundary and the genuine devices around
+// it still report. The store cap is the second half: without it a flood grows a
+// report until it no longer fits the relay connection's frame limit, which closes
+// the connection rather than refusing the report, taking state sync, command
+// dispatch and pairing down with it.
+func TestObserveDropsHostileSightingsRatherThanPoisoningTheReport(t *testing.T) {
+	s := NewStore("01J8Z2Q1M8H8N4T0V1W2X3Y4Z5")
+	const now = int64(1_700_000_000_000)
+
+	good := func(nativeID string) Observation {
+		return Observation{
+			Driver: "roku-ecp", NativeID: nativeID, DeviceClass: "media-player",
+			Match: Match{SSDP: "urn:roku-com:device:player:1"}, Provenance: "ssdp",
+		}
+	}
+	s.Observe(good("uuid:real-one"), now)
+	s.Observe(good("uuid:real-two"), now)
+
+	hostile := []struct {
+		name string
+		obs  Observation
+	}{
+		{"an over-long USN", good(strings.Repeat("A", 300))},
+		{"a non-UTF-8 USN", good(string([]byte{0xff, 0xfe, 0xfd}))},
+		{"an over-long name", func() Observation {
+			o := good("uuid:named")
+			o.Name = strings.Repeat("N", 300)
+			return o
+		}()},
+	}
+	for _, h := range hostile {
+		s.Observe(h.obs, now)
+	}
+
+	got := s.Report().Body.Candidates
+	if len(got) != 2 {
+		t.Fatalf("store holds %d candidate(s) after hostile sightings, want the 2 genuine ones — a spoofed reply poisons every later report", len(got))
+	}
+	for _, c := range got {
+		if len(c.NativeID) > 256 || !utf8.ValidString(c.NativeID) {
+			t.Fatalf("a hostile native_id was stored: %q", c.NativeID)
+		}
+	}
+
+	// The cap: a flood cannot displace the real devices or grow the report
+	// without bound.
+	for i := 0; i < 5000; i++ {
+		s.Observe(good(fmt.Sprintf("uuid:flood-%d", i)), now)
+	}
+	if n := len(s.Report().Body.Candidates); n > 1024 {
+		t.Fatalf("store grew to %d candidates under a flood; the cap did not hold", n)
+	}
+	var haveReal int
+	for _, c := range s.Report().Body.Candidates {
+		if c.NativeID == "uuid:real-one" || c.NativeID == "uuid:real-two" {
+			haveReal++
+		}
+	}
+	if haveReal != 2 {
+		t.Fatalf("a flood displaced %d of the 2 genuine devices — the cap must refuse newcomers, not evict incumbents", 2-haveReal)
 	}
 }

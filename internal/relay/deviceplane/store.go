@@ -2,6 +2,7 @@ package deviceplane
 
 import (
 	"sync"
+	"unicode/utf8"
 
 	"github.com/maaxton/waiveo-next/internal/shared/deviceid"
 )
@@ -48,6 +49,27 @@ const (
 
 // IgnoredForever is REL-110's literal ignored_until value meaning a candidate
 // is suppressed with no expiry (as opposed to a Timestamp-ms expiry).
+// Bounds on what a sighting off the LAN may contain. They mirror the app-side
+// intake caps (internal/app/devices) deliberately: a candidate that could not
+// survive intake must never reach the store, or it poisons every later report.
+//
+// maxStoredCandidates additionally keeps a flood from growing a report until it
+// exceeds the relay connection's frame limit — which would tear the connection
+// down and take state sync, command dispatch and pairing with it, rather than
+// being refused. It is far above any real site's device count.
+const (
+	maxObservationFieldBytes = 256
+	maxObservedEntities      = 256
+	maxStoredCandidates      = 1024
+)
+
+// observationFieldOK reports whether one identity/label field off the LAN is
+// safe to store: within the byte cap and valid UTF-8. An EMPTY value passes —
+// several of these are optional, and the caller checks the required ones.
+func observationFieldOK(v string) bool {
+	return len(v) <= maxObservationFieldBytes && utf8.ValidString(v)
+}
+
 const IgnoredForever = "forever"
 
 // candidatesMessageType is the device.candidates envelope type (REL-110).
@@ -90,7 +112,21 @@ type Observation struct {
 // uses (internal/datamodel.checkDeviceEntry), so the two planes agree on when
 // two records name one device. The site is not part of the key because a relay
 // serves exactly one site.
-func (o Observation) identityKey() string { return o.Driver + "\x00" + o.NativeID }
+// identityKey is the store key for one REL-153 identity.
+//
+// It length-prefixes each part rather than joining on a separator, for the same
+// reason deviceid.Device does: a NUL is valid UTF-8 and may appear inside a
+// native_id off the LAN, so ("a", "b\x00c") and ("a\x00b", "c") would share a
+// separator-joined key while deriving DIFFERENT device ids. Two records that the
+// derivation calls distinct must not collide here, or a report is refused as
+// "one device, two candidates" for devices that are genuinely two.
+func (o Observation) identityKey() string { return identityKeyOf(o.Driver, o.NativeID) }
+
+// identityKeyOf is the injective join both planes key on — the SHARED one, so
+// the relay and the app cannot drift on when two records name one device.
+func identityKeyOf(driver, nativeID string) string {
+	return deviceid.IdentityKey(driver, nativeID)
+}
 
 // Candidate is one entry in a device.candidates report (REL-110/110a): a
 // discovery Match, how it was learned (Provenance), its lifecycle Status, an
@@ -178,6 +214,41 @@ func (s *Store) Observe(o Observation, atMs int64) {
 	if o.Driver == "" || o.NativeID == "" {
 		return
 	}
+	// A sighting's identity comes off UNAUTHENTICATED multicast — an SSDP USN or
+	// an mDNS PTR record — so anything on the LAN chooses these bytes. They are
+	// validated HERE, at the only layer that knows they are hostile, and a
+	// sighting that fails is DROPPED exactly as an identity-less one already is.
+	//
+	// Dropping is not fastidiousness. The app's intake applies a candidate report
+	// all-or-nothing, on the sound ground that a partial replace would delete the
+	// devices whose candidates happened to be malformed. But the malformed
+	// candidate is attacker-CHOSEN: one spoofed reply carrying an over-long or
+	// non-UTF-8 USN would make every subsequent report unapplyable and blank the
+	// whole site's device list — permanently, since nothing here expires a
+	// candidate. A per-device problem must not become a site-wide outage, and the
+	// place to stop it is before the poison is ever stored.
+	if !observationFieldOK(o.Driver) || !observationFieldOK(o.NativeID) ||
+		!observationFieldOK(o.DeviceClass) || !observationFieldOK(o.Name) {
+		return
+	}
+	if len(o.Entities) > maxObservedEntities {
+		return
+	}
+	for _, e := range o.Entities {
+		if !observationFieldOK(e.Key) || !observationFieldOK(e.DeviceClass) || !observationFieldOK(e.State) {
+			return
+		}
+	}
+	if len(s.byKey) >= maxStoredCandidates {
+		if _, known := s.byKey[o.identityKey()]; !known {
+			// Full, and this is a NEW identity. Refusing the newcomer rather than
+			// evicting keeps a flood from displacing the real devices already
+			// found; the cap exists so a spoofer cannot grow this store until a
+			// report stops fitting in a frame, which closes the connection rather
+			// than being refused.
+			return
+		}
+	}
 	key := o.identityKey()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -208,7 +279,7 @@ func (s *Store) Observe(o Observation, atMs int64) {
 
 // Key returns the store key for one REL-153 identity — what Adopt and Ignore
 // name a candidate by.
-func Key(driver, nativeID string) string { return driver + "\x00" + nativeID }
+func Key(driver, nativeID string) string { return identityKeyOf(driver, nativeID) }
 
 // Adopt marks the candidate with the given identity Key adopted and clears any
 // ignored_until (REL-110: ignored_until is present only while ignored). A

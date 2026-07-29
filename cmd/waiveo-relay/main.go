@@ -495,7 +495,15 @@ func main() {
 			}
 			return bridge(entityID)
 		}
-		log.Printf("waiveo-relay device plane: ECP controller live (%d target(s))", len(cfg.ecpTargets))
+		// Name what is actually installed. This line said "ECP controller live"
+		// unconditionally, including on the default path where the controller is
+		// the loopback stand-in and no command reaches hardware — an operator
+		// reading the boot log had every reason to believe otherwise.
+		if len(cfg.ecpTargets) > 0 {
+			log.Printf("waiveo-relay device plane: ECP controller live (%d target(s))", len(cfg.ecpTargets))
+		} else {
+			log.Printf("waiveo-relay device plane: NO device adapter configured — discovered entities resolve, but every command is refused (set WAIVEO_RELAY_ECP_TARGETS)")
+		}
 	}
 
 	host, err := bootAutomationStack(store, relayID, applied, site, deviceRegistry, devController, devResolver)
@@ -1287,9 +1295,27 @@ func relayHelloDeclaration(cfg config) hello.Declaration {
 // physical device. It never fails, so a fired rule's dispatch always succeeds.
 type loopbackController struct{}
 
+// Dispatch REFUSES rather than reporting success.
+//
+// It used to log and return nil, which meant that on a relay with no configured
+// ECP targets — the DEFAULT — an operator issuing a real command against a real
+// discovered device received `{"ok":true}` while nothing was sent to any
+// hardware. That is the same shape this codebase has shipped three times before
+// (a 202 that mutated nothing, a webhook loop with no caller, a secret-install
+// path with no secrets), and it is worse here because it wears a success
+// response: an operator watching a screen that did not change has been told the
+// command worked.
+//
+// A stand-in must be honest about standing in. The refusal is typed, so the api
+// surface renders it as a refusal an operator can act on rather than a silent
+// nothing, and the automation stack a loopback exists to exercise still runs —
+// it just reports that no device plane is attached, which is true.
 func (loopbackController) Dispatch(entityID, command string, params map[string]any) error {
-	log.Printf("waiveo-relay automation dispatch (loopback): %s %s", entityID, command)
-	return nil
+	log.Printf("waiveo-relay dispatch refused (no device adapter configured): %s %s", entityID, command)
+	return &deviceplane.ControllerError{
+		Code:    "COMMAND_UNRESOLVED",
+		Message: "this relay has no device adapter configured, so the command reached no hardware (set WAIVEO_RELAY_ECP_TARGETS)",
+	}
 }
 
 // loggingController wraps a DeviceController so every dispatch leaves an

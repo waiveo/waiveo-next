@@ -37,6 +37,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"hash"
+	"strings"
 
 	"github.com/maaxton/waiveo-next/internal/shared/ulid"
 )
@@ -97,4 +98,26 @@ func writePart(h hash.Hash, part string) {
 	binary.BigEndian.PutUint64(n[:], uint64(len(part)))
 	_, _ = h.Write(n[:])
 	_, _ = h.Write([]byte(part))
+}
+
+// IdentityKey is the injective in-memory key for one REL-153 device identity.
+//
+// It exists so a caller deduplicating or indexing by identity uses the SAME
+// notion of "these two records name one device" that Device/Entity derive ids
+// under. A separator-joined key does not: a NUL is valid UTF-8 and may appear
+// inside a native_id read off unauthenticated multicast, so ("a", "b\x00c") and
+// ("a\x00b", "c") share a joined key while deriving different ids — which shows
+// up as a report refused for naming one device twice when it named two.
+//
+// It is NOT an id and never reaches the wire: it is unencoded, may contain NULs,
+// and carries no domain separation. Use Device/Entity for anything durable.
+func IdentityKey(driver, nativeID string) string {
+	var b strings.Builder
+	var n [8]byte
+	for _, part := range []string{driver, nativeID} {
+		binary.BigEndian.PutUint64(n[:], uint64(len(part)))
+		b.Write(n[:])
+		b.WriteString(part)
+	}
+	return b.String()
 }
