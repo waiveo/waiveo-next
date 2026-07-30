@@ -27,14 +27,14 @@
       "ARC-014-invalid-decrypt-failed-wrong-passphrase",
       "ARC-016-invalid-truncated-tail-rejected",
       "ARC-023-invalid-signature-verification-failed",
-      "ARC-060-valid-assets-by-reference"
+      "ARC-041-invalid-epoch-mismatch",
+      "ARC-060-valid-assets-by-reference",
+      "ARC-102-invalid-yanked-pack-blocked",
+      "ARC-103-invalid-dev-channel-refused"
     ],
     "pending": [
       "ARC-031-valid-manifest-full",
-      "ARC-041-invalid-epoch-mismatch",
-      "ARC-091-valid-manifest-incremental",
-      "ARC-102-invalid-yanked-pack-blocked",
-      "ARC-103-invalid-dev-channel-refused"
+      "ARC-091-valid-manifest-incremental"
     ]
   },
   "data-model/1": {

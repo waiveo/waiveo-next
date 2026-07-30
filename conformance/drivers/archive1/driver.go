@@ -94,15 +94,15 @@ func driveCases(rep *report.Report, cases map[string]corpus.Case) {
 		"ARC-016-invalid-truncated-tail-rejected":         driveTruncatedTail,
 		"ARC-023-invalid-signature-verification-failed":   driveSignatureInvalid,
 		"ARC-060-valid-assets-by-reference":               driveAssetsByReference,
+		"ARC-041-invalid-epoch-mismatch":                  driveEpochTooNew,
+		"ARC-102-invalid-yanked-pack-blocked":             driveYankedPackBlocked,
+		"ARC-103-invalid-dev-channel-refused":             driveDevChannelRefused,
 	}
 	// Each pending case names the SPECIFIC thing that does not exist, not a shared
 	// "not implemented" — the three restore refusals and the incremental export are
 	// different gaps with different work behind them, and a reader of
 	// driven-manifest.json should be able to tell which is which.
 	pending := map[string]string{
-		"ARC-041-invalid-epoch-mismatch":      restorePathPending,
-		"ARC-102-invalid-yanked-pack-blocked": restorePathPending,
-		"ARC-103-invalid-dev-channel-refused": restorePathPending,
 		"ARC-031-valid-manifest-full": "the case's first asset declares storage:embedded with asset_ref " +
 			"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85, whose hex part is 63 characters — " +
 			"not a valid sha256. No bytes can hash to it, and Open verifies every embedded asset's bytes against its own " +
@@ -320,7 +320,217 @@ func driveAssetsByReference(rep *report.Report, c corpus.Case) {
 	finishWithNotes(rep, c, diffs, notes)
 }
 
+// ---- the restore-decision cases ------------------------------------------
+//
+// These three are decided by archive.Preflight against a described destination,
+// before a restore applies anything. Each case's `input` says what the
+// destination looks like; the driver builds that destination and diffs the
+// verdict.
+//
+// Note what is NOT claimed by driving them: Preflight is the DECISION half of a
+// restore and nothing in either binary calls it. These cases pin that the
+// refusals are correct, not that a restore exists.
+
+// driveEpochTooNew: ARC-041/104. An archive whose platform_schema_epoch is newer
+// than the destination understands refuses to open — identically on fresh
+// infrastructure and over an already-running destination, which is the variant
+// this case names.
+func driveEpochTooNew(rep *report.Report, c corpus.Case) {
+	m, ok := c.Input["manifest"].(map[string]any)
+	if !ok {
+		rep.Fail(c.CaseID, contract, "case declares no input.manifest")
+		return
+	}
+	archiveEpoch, ok := m["platform_schema_epoch"].(float64)
+	if !ok {
+		rep.Fail(c.CaseID, contract, "case declares no input.manifest.platform_schema_epoch")
+		return
+	}
+	dstEpoch, ok := c.Input["destination_understood_epoch"].(float64)
+	if !ok {
+		rep.Fail(c.CaseID, contract, "case declares no input.destination_understood_epoch")
+		return
+	}
+
+	res := archive.Preflight(
+		archive.Manifest{PlatformSchemaEpoch: int(archiveEpoch)},
+		archive.Destination{SchemaEpoch: int(dstEpoch), PackTrust: trustEverything, HasAsset: resolveEverything},
+	)
+
+	var diffs []report.Diff
+	if want := expectedCode(c); !hasFatalCode(res, want) {
+		diffs = append(diffs, report.Diff{Field: "error.code", Expected: want, Actual: fatalCodes(res)})
+	}
+	// "workspace_opened: false" is exactly what a fatal verdict means here, and it is
+	// asserted rather than assumed: a refusal that still permitted the restore would
+	// be the defect this case exists for.
+	if wantOpened, ok := c.Expected["workspace_opened"].(bool); ok && !wantOpened && res.OK() {
+		diffs = append(diffs, report.Diff{Field: "workspace_opened", Expected: false, Actual: true})
+	}
+	// "maintenance_mode: true" describes what the DESTINATION does after refusing —
+	// a platform behaviour outside this decision's reach. Recorded rather than
+	// quietly treated as satisfied.
+	notes := []string{"maintenance_mode: not observable from the restore decision — it is destination behaviour after the refusal"}
+
+	finishWithNotes(rep, c, diffs, notes)
+}
+
+// driveYankedPackBlocked: ARC-101/102. The destination's CURRENT trust state
+// marks the locked version yanked and offers no substitute, so that one pack is
+// blocked with an operator-facing signal — and the restore itself proceeds.
+func driveYankedPackBlocked(rep *report.Report, c corpus.Case) {
+	pack, err := lockedPackFrom(c)
+	if err != nil {
+		rep.Fail(c.CaseID, contract, err.Error())
+		return
+	}
+	trust, _ := c.Input["destination_trust_state"].(map[string]any)
+	substitute, _ := trust["substitute_available"].(bool)
+
+	consulted := false
+	res := archive.Preflight(
+		archive.Manifest{Packs: []archive.PackLock{pack}},
+		archive.Destination{
+			SchemaEpoch: 4,
+			HasAsset:    resolveEverything,
+			PackTrust: func(p archive.PackLock) archive.PackTrust {
+				// The flag is the case's own assertion that the DESTINATION's trust state
+				// was consulted (ARC-101), rather than the archive's.
+				consulted = true
+				t := archive.PackTrust{Yanked: trustSaysYanked(trust, p)}
+				if substitute {
+					t.Substitute = "substituted-by-the-destination"
+				}
+				return t
+			},
+		},
+	)
+
+	var diffs []report.Diff
+	out, found := packOutcome(res, pack.PackID)
+	switch {
+	case !found:
+		diffs = append(diffs, report.Diff{Field: "packs[]", Expected: pack.PackID, Actual: "no outcome for this pack"})
+	default:
+		if want := expectedCode(c); out.Code != want {
+			diffs = append(diffs, report.Diff{Field: "error.code", Expected: want, Actual: out.Code})
+		}
+		if wantRestored, ok := c.Expected["pack_restored"].(bool); ok && out.Restored != wantRestored {
+			diffs = append(diffs, report.Diff{Field: "pack_restored", Expected: wantRestored, Actual: out.Restored})
+		}
+		if wantSignal, ok := c.Expected["operator_signal_raised"].(bool); ok && out.OperatorSignal != wantSignal {
+			diffs = append(diffs, report.Diff{Field: "operator_signal_raised", Expected: wantSignal, Actual: out.OperatorSignal})
+		}
+	}
+	// "trust_source_consulted: destination current trust state" — observed by the
+	// destination's own callback having been invoked. A preflight that decided from
+	// the archive's contents would never have called it.
+	if _, ok := c.Expected["trust_source_consulted"]; ok && !consulted {
+		diffs = append(diffs, report.Diff{Field: "trust_source_consulted",
+			Expected: "the destination's trust state", Actual: "the destination was never asked"})
+	}
+
+	finish(rep, c, diffs)
+}
+
+// driveDevChannelRefused: ARC-052/103. A dev-channel lock on a destination
+// without developer mode refuses THAT pack — and the restore overall still
+// succeeds, which is the half a whole-restore refusal would get wrong.
+func driveDevChannelRefused(rep *report.Report, c corpus.Case) {
+	pack, err := lockedPackFrom(c)
+	if err != nil {
+		rep.Fail(c.CaseID, contract, err.Error())
+		return
+	}
+	devMode, _ := c.Input["destination_developer_mode"].(bool)
+	requiredToBoot, _ := c.Input["pack_required_to_boot"].(bool)
+
+	res := archive.Preflight(
+		archive.Manifest{Packs: []archive.PackLock{pack}},
+		archive.Destination{
+			SchemaEpoch: 4, DeveloperMode: devMode,
+			PackTrust: trustEverything, HasAsset: resolveEverything,
+			BootCritical: func(archive.PackLock) bool { return requiredToBoot },
+		},
+	)
+
+	var diffs []report.Diff
+	out, found := packOutcome(res, pack.PackID)
+	if !found {
+		diffs = append(diffs, report.Diff{Field: "packs[]", Expected: pack.PackID, Actual: "no outcome for this pack"})
+	} else {
+		if want := expectedCode(c); out.Code != want {
+			diffs = append(diffs, report.Diff{Field: "error.code", Expected: want, Actual: out.Code})
+		}
+		if wantRestored, ok := c.Expected["pack_restored"].(bool); ok && out.Restored != wantRestored {
+			diffs = append(diffs, report.Diff{Field: "pack_restored", Expected: wantRestored, Actual: out.Restored})
+		}
+	}
+	// "restore_overall_result: succeeded, one pack refused" — the case says the
+	// restore SUCCEEDS, so a fatal verdict here is a divergence even though the
+	// refusal code matches. This is the assertion that catches an implementation
+	// which refuses correctly but too widely.
+	if want, ok := c.Expected["restore_overall_result"].(string); ok && strings.HasPrefix(want, "succeeded") && !res.OK() {
+		diffs = append(diffs, report.Diff{Field: "restore_overall_result", Expected: want, Actual: fatalCodes(res)})
+	}
+
+	finish(rep, c, diffs)
+}
+
 // ---- comparison helpers --------------------------------------------------
+
+// lockedPackFrom builds the case's locked pack. schema_epoch and source are not
+// members these cases declare — they are manifest-validation concerns, not
+// restore-decision ones — so they are filled with values that satisfy the shape
+// without standing in for anything the case asserts.
+func lockedPackFrom(c corpus.Case) (archive.PackLock, error) {
+	raw, ok := c.Input["locked_pack"].(map[string]any)
+	if !ok {
+		return archive.PackLock{}, fmt.Errorf("case declares no input.locked_pack")
+	}
+	var p archive.PackLock
+	if err := remarshal(raw, &p); err != nil {
+		return archive.PackLock{}, fmt.Errorf("decode input.locked_pack: %w", err)
+	}
+	p.Source, p.SchemaEpoch = "https://index.example", 1
+	return p, nil
+}
+
+// trustSaysYanked reads the case's own trust-state map, whose keys are
+// "<pack_id>@<version>".
+func trustSaysYanked(trust map[string]any, p archive.PackLock) bool {
+	state, _ := trust[p.PackID+"@"+p.Version].(string)
+	return state == "yanked" || state == "revoked"
+}
+
+func trustEverything(archive.PackLock) archive.PackTrust { return archive.PackTrust{} }
+func resolveEverything(string) bool                      { return true }
+
+func fatalCodes(r archive.PreflightResult) []string {
+	var out []string
+	for _, e := range r.Fatal {
+		out = append(out, e.ErrCode)
+	}
+	return out
+}
+
+func hasFatalCode(r archive.PreflightResult, code string) bool {
+	for _, e := range r.Fatal {
+		if e.ErrCode == code {
+			return true
+		}
+	}
+	return false
+}
+
+func packOutcome(r archive.PreflightResult, packID string) (archive.PackOutcome, bool) {
+	for _, p := range r.Packs {
+		if p.Pack.PackID == packID {
+			return p, true
+		}
+	}
+	return archive.PackOutcome{}, false
+}
 
 func expectedCode(c corpus.Case) string {
 	e, _ := c.Expected["error"].(map[string]any)

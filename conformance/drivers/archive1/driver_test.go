@@ -15,7 +15,10 @@ var expectedDriven = []string{
 	"ARC-014-invalid-decrypt-failed-wrong-passphrase",
 	"ARC-016-invalid-truncated-tail-rejected",
 	"ARC-023-invalid-signature-verification-failed",
+	"ARC-041-invalid-epoch-mismatch",
 	"ARC-060-valid-assets-by-reference",
+	"ARC-102-invalid-yanked-pack-blocked",
+	"ARC-103-invalid-dev-channel-refused",
 }
 
 // expectedPending is every case this driver deliberately does not drive, and each
@@ -23,18 +26,13 @@ var expectedDriven = []string{
 // hard. Pinned as a set so a case leaving it is noticed as progress and a case
 // joining it cannot happen quietly.
 //
-//   - ARC-041 / ARC-102 / ARC-103: restore-time refusals, and there is no restore
-//     path (internal/archive.Open has no caller outside its own tests).
 //   - ARC-031: the case declares an embedded asset whose asset_ref hex is 63
 //     characters, so no bytes can hash to it and no round trip can carry it.
 //   - ARC-091: Create implements full mode only; nothing can write an incremental
 //     archive to read back.
 var expectedPending = []string{
 	"ARC-031-valid-manifest-full",
-	"ARC-041-invalid-epoch-mismatch",
 	"ARC-091-valid-manifest-incremental",
-	"ARC-102-invalid-yanked-pack-blocked",
-	"ARC-103-invalid-dev-channel-refused",
 }
 
 // TestArchive1DriverGreen replays the frozen archive-1 corpus against the live

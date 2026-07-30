@@ -83,14 +83,8 @@
     },
     {
       "contract": "archive-1.md",
-      "reason": "internal/archive implements the container READER, and the six codes a read can reach on its own bytes are all raised there. These five belong to a RESTORER, which decides them against a destination's schema epoch, asset store, base-archive chain, and live trust state. internal/archive/errors.go declares them anyway, under a comment that says exactly this: 'Declared, not raised here.' There is no restorer, and scripts/deadcode-baseline.json records the same gap from the other side — the entire reader is unreachable from every root.",
-      "codes": [
-        "EPOCH_TOO_NEW",
-        "BASE_ARCHIVE_UNAVAILABLE",
-        "ASSET_UNAVAILABLE",
-        "PACK_YANKED_BLOCKED",
-        "DEV_CHANNEL_REFUSED"
-      ]
+      "reason": "BASE_ARCHIVE_UNAVAILABLE is state (a): it refuses an incremental archive whose base-archive chain cannot be resolved, and no incremental archive can exist to have a chain — archive.Source declares no base-archive reference and nothing writes mode:incremental, so Create produces full-mode containers only. The manifest type can READ a base_archive member (Manifest.BaseArchive, ModeIncremental); no export path can WRITE one. Implementing this refusal ahead of incremental export would be a check with nothing to check. The other four codes that used to head this group left it when internal/archive/preflight.go grew archive.Preflight: EPOCH_TOO_NEW (ARC-041/104), ASSET_UNAVAILABLE (ARC-063), PACK_YANKED_BLOCKED (ARC-101/102) and DEV_CHANNEL_REFUSED (ARC-052/103) are each decided there against a described destination and driven by their own frozen corpus cases. Worth stating precisely: Preflight is the DECISION half of a restore and nothing in either binary calls it — there is still no apply path, no rollback (ARC-107) and no route, so these four are raised by a real implementation that no production caller consults yet.",
+      "codes": ["BASE_ARCHIVE_UNAVAILABLE"]
     },
     {
       "contract": "data-model-1.md",
