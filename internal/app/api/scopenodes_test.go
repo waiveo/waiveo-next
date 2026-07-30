@@ -39,6 +39,14 @@ const fixedNowMs = int64(1_700_000_000_000)
 // its create response instead of pinned as a constant.
 const boundaryOrgID = "01J8Z0A0000000000000000000"
 
+// neverMintedULID is well-formed and was never created, and that combination is
+// the whole point: a case about parent RESOLUTION has to send an id the store can
+// look up and fail to find. A malformed id draws the same code from shape
+// validation alone, so a test using one would pass with resolution removed
+// entirely — a refusal for the wrong reason, which reads exactly like the right
+// one. Unlike boundaryOrgID, createNode never substitutes anything for it.
+const neverMintedULID = "01J8Z0B0000000000000000000"
+
 const (
 	siteTZ   = "America/Chicago"
 	siteLat  = 41.8781

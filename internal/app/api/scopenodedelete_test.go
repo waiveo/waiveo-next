@@ -319,6 +319,22 @@ func TestOrgCannotBeReKindedIntoDeletability(t *testing.T) {
 	resp, raw := e.do(t, http.MethodPatch, "/api/v1/scope-nodes/"+orgID, patch, map[string]string{"If-Match": `"1"`})
 	assertValidationError(t, resp, raw, "SCOPE_NODE_PARENT_INVALID")
 
+	// Re-kind with parent_id simply OMITTED — the same bypass with the field left
+	// out rather than pointed somewhere, and it leaves the row not dangling but
+	// parentless, so strict resolution has nothing to resolve and cannot see it.
+	// The per-row rule is what refuses it (a non-org MUST have a non-null
+	// parent_id), which is why it is pinned separately: neither check is evidence
+	// about the other.
+	//
+	// It has to run HERE, while the org is still childless. Once a child exists
+	// the flip is refused by the child's own DAT-003 re-validation instead — the
+	// same code, a different rule, and a pass that says nothing about this route.
+	patch = mustJSON(t, map[string]any{
+		"kind": "site", "tz": siteTZ, "lat": siteLat, "long": siteLong,
+	})
+	resp, raw = e.do(t, http.MethodPatch, "/api/v1/scope-nodes/"+orgID, patch, map[string]string{"If-Match": `"1"`})
+	assertValidationError(t, resp, raw, "SCOPE_NODE_PARENT_INVALID")
+
 	// Re-kind under a RESOLVING parent, on a POPULATED org: the child's own
 	// re-validation refuses (a site cannot carry a site, DAT-003), so this
 	// route was never open — pinned here so it cannot silently become one.
@@ -330,8 +346,8 @@ func TestOrgCannotBeReKindedIntoDeletability(t *testing.T) {
 	resp, raw = e.do(t, http.MethodPatch, "/api/v1/scope-nodes/"+orgID, patch, map[string]string{"If-Match": `"1"`})
 	assertValidationError(t, resp, raw, "SCOPE_NODE_PARENT_INVALID")
 
-	// Both refusals left the org untouched: same kind, same revision — so the
-	// SAME If-Match still addresses it, and the delete guard still answers.
+	// All three refusals left the org untouched: same kind, same revision — so
+	// the SAME If-Match still addresses it, and the delete guard still answers.
 	resp, raw = e.do(t, http.MethodDelete, "/api/v1/scope-nodes/"+orgID, nil, map[string]string{"If-Match": `"1"`})
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("delete of the org after refused re-kinds = %d, want 409 (body %s)", resp.StatusCode, raw)
@@ -348,7 +364,7 @@ func TestCreateScopeNodeUnderNonexistentParentIsRefused(t *testing.T) {
 	e.createNode(t, orgNode("Demo Org"))
 
 	n := siteNode("")
-	n.ParentID = strp("01J8Z0B0000000000000000000") // never created
+	n.ParentID = strp(neverMintedULID)
 	resp, raw := e.do(t, http.MethodPost, "/api/v1/scope-nodes", mustJSON(t, n), nil)
 	assertValidationError(t, resp, raw, "SCOPE_NODE_PARENT_INVALID")
 }
