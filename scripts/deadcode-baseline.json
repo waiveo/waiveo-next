@@ -28,70 +28,76 @@
     {
       "package": "examples/packs",
       "reason": "Readers beside the in-repo example pack. scripts/examplepack builds and writes the zip, which is all `make example-pack` and the end-to-end pack install need; these two read a built pack back apart, which only the pack e2e test and this package's own test do.",
-      "funcs": ["MenuBoardFile", "MenuBoardEntryNames"]
+      "funcs": [
+        "MenuBoardFile",
+        "MenuBoardEntryNames"
+      ]
     },
     {
       "package": "internal/app/api",
       "reason": "A functional option the feeder does not pass. cmd/waiveo-feeder builds the API surface without a marketplace, because marketplace source resolution is itself unwired (see internal/app/packs below) — the same gap marketplace/1's nine unimplemented error codes record from the contract side.",
-      "funcs": ["WithMarketplace"]
+      "funcs": [
+        "WithMarketplace"
+      ]
     },
     {
       "package": "internal/app/auth",
       "reason": "ValidCredentialKind has no caller at all — not in a binary, a driver, a script, or a test; the credential-kind vocabulary is validated inline where it is read. DecodeTOTPSecret is the inverse of EncodeTOTPSecret and exists so a test can compute the enrollee's own codes (internal/app/auth/totphttp_test.go); the server stores and compares sealed, never decoding back.",
-      "funcs": ["ValidCredentialKind", "DecodeTOTPSecret"]
+      "funcs": [
+        "ValidCredentialKind",
+        "DecodeTOTPSecret"
+      ]
     },
     {
       "package": "internal/app/auth/authtest",
       "reason": "A test-fixture package: every function here exists to be called from a _test.go, and unit tests are not roots for this analysis. AddPrincipal is the one fixture verb no current test needs — the fixtures build their principals at construction instead.",
-      "funcs": ["Fixture.AddPrincipal"]
+      "funcs": [
+        "Fixture.AddPrincipal"
+      ]
     },
     {
       "package": "internal/app/eventingest/ingesttest",
       "reason": "A test-fixture relay for the event-ingest path, same standing as authtest above. These three expose the fixture's TLS material for a caller that wants to build its own client or server config; the tests that use the fixture take its ready-made Client()/Server() instead.",
-      "funcs": ["Relay.CAPool", "Relay.ServerTLSConfig", "Relay.ClientTLSConfig"]
+      "funcs": [
+        "Relay.CAPool",
+        "Relay.ServerTLSConfig",
+        "Relay.ClientTLSConfig"
+      ]
     },
     {
       "package": "internal/app/eventsse",
       "reason": "Three constructor options production never passes (the defaults ship) and one test-only counter. Hub.after used to head this list and is now DELETED rather than baselined: it was a bare tail read left behind when the live loop moved to drain, which reads the tail and the eviction condition under one lock hold, and keeping it invited a future delivery path to read a tail with no discontinuity check — the silent loss EVT-143 forbids.",
-      "funcs": ["Hub.subscriberCount", "WithHeartbeat", "WithGapDeferral", "WithWriteTimeout"]
+      "funcs": [
+        "Hub.subscriberCount",
+        "WithHeartbeat",
+        "WithGapDeferral",
+        "WithWriteTimeout"
+      ]
     },
     {
       "package": "internal/app/packs",
       "reason": "The marketplace half of pack installation is built and not mounted: NewMarket, its source list, and the file-backed fetcher have no caller outside this package's own tests, so the feeder installs packs from an uploaded zip and never from a registry source. Bundle.Has is a reader on the same unwired path.",
-      "funcs": ["FileFetcher.Fetch", "FileFetcher.resolve", "NewMarket", "Market.Sources", "Bundle.Has"]
+      "funcs": [
+        "FileFetcher.Fetch",
+        "FileFetcher.resolve",
+        "NewMarket",
+        "Market.Sources",
+        "Bundle.Has"
+      ]
     },
     {
       "package": "internal/app/workspacekey",
       "reason": "An accessor for the workspace key's public half. The sealing paths that use the key need the private half and the key id; nothing yet publishes the public half to a peer, which is what this would be for.",
-      "funcs": ["Key.Public"]
-    },
-    {
-      "package": "internal/archive",
-      "reason": "archive/1's container READER is complete and wired to nothing: open, header-signature verification, frame decryption, tail and digest checks, manifest parsing — the whole path from bytes to a validated manifest, with no caller in either binary. There is no restorer to call it, which is the same gap archive/1's five restorer-owned error codes record from the contract side (its own errors.go calls them \"Declared, not raised here\"). Wiring the restorer is what removes this entire group; deleting any part of it individually would be wrong.",
       "funcs": [
-        "majorMinor",
-        "Code",
-        "wrapf",
-        "newFrameReader",
-        "frameReader.Read",
-        "frameReader.nextFrame",
-        "frameReader.checkTail",
-        "frameReader.checkDigest",
-        "frameReader.Finish",
-        "parseManifest",
-        "assetRefFromEntryName",
-        "Open",
-        "readHeaderRegion",
-        "verifyHeaderSignature",
-        "headerCrypto",
-        "readEntries",
-        "sha256Sum"
+        "Key.Public"
       ]
     },
     {
       "package": "internal/datamodel",
       "reason": "A convenience lookup on the built scope tree. The callers that need a node's kind hold the node itself by then; only data-model/1's in-package corpus driver asks the tree.",
-      "funcs": ["ScopeTree.KindOf"]
+      "funcs": [
+        "ScopeTree.KindOf"
+      ]
     },
     {
       "package": "internal/events",
@@ -110,7 +116,10 @@
     {
       "package": "internal/feeder/relayconn",
       "reason": "Two constructor options only tests pass; the feeder's relay listener runs on the shipped heartbeat and write-timeout defaults.",
-      "funcs": ["WithWriteTimeout", "WithHeartbeat"]
+      "funcs": [
+        "WithWriteTimeout",
+        "WithHeartbeat"
+      ]
     },
     {
       "package": "internal/manifest",
@@ -129,12 +138,16 @@
     {
       "package": "internal/packsig",
       "reason": "A lookup on the statically-compiled anchor set. Verification resolves anchors by key id through the trust store; nothing asks the static set for a channel's keys directly.",
-      "funcs": ["StaticAnchors.KeysFor"]
+      "funcs": [
+        "StaticAnchors.KeysFor"
+      ]
     },
     {
       "package": "internal/relay/automationhost",
       "reason": "The automation host's device-command sink. Rules that dispatch a device command reach the device plane through the relay's own command path; this host-level entry point is exercised only by tests.",
-      "funcs": ["Host.DeviceCommand"]
+      "funcs": [
+        "Host.DeviceCommand"
+      ]
     },
     {
       "package": "internal/relay/clocktrust",
@@ -151,42 +164,67 @@
     {
       "package": "internal/relay/deviceplane",
       "reason": "Two constructor options only tests pass: production wires the command log and journal at construction rather than through an option.",
-      "funcs": ["WithCommandLog", "WithCommandJournal"]
+      "funcs": [
+        "WithCommandLog",
+        "WithCommandJournal"
+      ]
     },
     {
       "package": "internal/relay/ecp",
       "reason": "A constructor option for injecting an HTTP client; only tests substitute one, the relay takes the default.",
-      "funcs": ["WithHTTPClient"]
+      "funcs": [
+        "WithHTTPClient"
+      ]
     },
     {
       "package": "internal/relay/ecppoll",
       "reason": "Three constructor options for the ECP poller. Tests pass the client and channel-size ones; WithRegistry has no caller at all — the poller's registry is set at construction.",
-      "funcs": ["WithChannelSize", "WithHTTPClient", "WithRegistry"]
+      "funcs": [
+        "WithChannelSize",
+        "WithHTTPClient",
+        "WithRegistry"
+      ]
     },
     {
       "package": "internal/relay/identity",
       "reason": "An introspection helper listing the identity store's tables, used by a migration test to assert the schema. Nothing in the relay enumerates its own tables.",
-      "funcs": ["Store.tableNames"]
+      "funcs": [
+        "Store.tableNames"
+      ]
     },
     {
       "package": "internal/relay/playerserver",
       "reason": "Four read-side accessors on the player-facing server — resolve a channel token, read the last lease ack, read render start/end counts. Each is exercised by this package's own tests; nothing in the relay's serving path or in a driver reads back through them, so the state they expose has no consumer.",
-      "funcs": ["Server.LookupChannelToken", "Server.LeaseAck", "Server.RenderStarts", "Server.RenderEnds"]
+      "funcs": [
+        "Server.LookupChannelToken",
+        "Server.LeaseAck",
+        "Server.RenderStarts",
+        "Server.RenderEnds"
+      ]
     },
     {
       "package": "internal/relay/reenroll",
       "reason": "An introspection helper on the re-enrollment rate limiter, used by its own test to assert eviction. The limiter itself is wired.",
-      "funcs": ["RateLimiter.trackedKeys"]
+      "funcs": [
+        "RateLimiter.trackedKeys"
+      ]
     },
     {
       "package": "internal/relay/relayconn",
       "reason": "Three accessors on the connection supervisor — the live client, an explicit stop, and a done channel. The feeder owns the supervisor's lifetime through its context and never calls them; the e2e test does.",
-      "funcs": ["Supervisor.Client", "Supervisor.Stop", "Supervisor.Done"]
+      "funcs": [
+        "Supervisor.Client",
+        "Supervisor.Stop",
+        "Supervisor.Done"
+      ]
     },
     {
       "package": "internal/relay/ssdpresponder",
       "reason": "The SSDP responder's LOCATION URL is set once at construction and never updated, so both the public updater and the setter behind it are uncalled. A relay that changed address mid-run would need them.",
-      "funcs": ["dynamicLocation.set", "Responder.UpdateBaseURL"]
+      "funcs": [
+        "dynamicLocation.set",
+        "Responder.UpdateBaseURL"
+      ]
     },
     {
       "package": "internal/rules/engine",
@@ -204,32 +242,54 @@
     {
       "package": "internal/rules/eval",
       "reason": "EvalCondition is the superseded, location-less form of EvalConditionAt: every production caller passes a location and calls the -At variant, and only the corpus driver still calls the older one. Hold.Reset is the same kind of leftover on the hold-timer type.",
-      "funcs": ["EvalCondition", "Hold.Reset"]
+      "funcs": [
+        "EvalCondition",
+        "Hold.Reset"
+      ]
     },
     {
       "package": "internal/rules/expr",
       "reason": "The error type's Error() method: the expression parser's failures are consumed as typed values (code and field are read off the struct) and never formatted as a string, so the method that formats them is never reached.",
-      "funcs": ["ParseError.Error"]
+      "funcs": [
+        "ParseError.Error"
+      ]
     },
     {
       "package": "internal/rules/vocab",
       "reason": "A String() method on the vocabulary class enum; the class is compared and serialized as its underlying value, never printed.",
-      "funcs": ["Class.String"]
+      "funcs": [
+        "Class.String"
+      ]
     },
     {
       "package": "internal/shared/apihttp",
       "reason": "ResolveRef — resolve an external-id reference to an internal id — has no caller anywhere: the API's write paths take ids directly, so the field that was meant to accept either form does not exist yet. The rest are two String()/Error() methods on types nothing formats and two idempotency-store introspection helpers.",
-      "funcs": ["ResolveRef", "BeginKind.String", "IdempotencyStore.Now", "IdempotencyStore.len", "PageParamError.Error"]
+      "funcs": [
+        "ResolveRef",
+        "BeginKind.String",
+        "IdempotencyStore.Now",
+        "IdempotencyStore.len",
+        "PageParamError.Error"
+      ]
     },
     {
       "package": "internal/shared/apiselector",
       "reason": "The selector parser's Error() method, same shape as internal/rules/expr above: callers branch on the typed failure and never render it.",
-      "funcs": ["ParseError.Error"]
+      "funcs": [
+        "ParseError.Error"
+      ]
     },
     {
       "package": "internal/virtualplayer",
       "reason": "The software player's preemption, relocation, and revocation scenarios are driven by this package's own tests (the software first-photon suite), not by a contract driver under conformance/drivers, so nothing in the analysed root set reaches them. They are scenario entry points for a harness, not product code — but the harness that calls them is a unit test, and this gate deliberately does not count those.",
-      "funcs": ["Preempt", "postRenderStart", "postRenderEnd", "Session.Relocate", "Pair", "Session.PullProgram"]
+      "funcs": [
+        "Preempt",
+        "postRenderStart",
+        "postRenderEnd",
+        "Session.Relocate",
+        "Pair",
+        "Session.PullProgram"
+      ]
     }
   ]
 }

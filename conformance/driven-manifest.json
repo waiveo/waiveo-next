@@ -21,6 +21,22 @@
     ],
     "pending": []
   },
+  "archive/1": {
+    "driver": "conformance/drivers/archive1 (go run ./conformance/cmd/driven-manifest -write)",
+    "driven": [
+      "ARC-014-invalid-decrypt-failed-wrong-passphrase",
+      "ARC-016-invalid-truncated-tail-rejected",
+      "ARC-023-invalid-signature-verification-failed",
+      "ARC-060-valid-assets-by-reference"
+    ],
+    "pending": [
+      "ARC-031-valid-manifest-full",
+      "ARC-041-invalid-epoch-mismatch",
+      "ARC-091-valid-manifest-incremental",
+      "ARC-102-invalid-yanked-pack-blocked",
+      "ARC-103-invalid-dev-channel-refused"
+    ]
+  },
   "data-model/1": {
     "driver": "internal/datamodel/corpus_test.go corpusHandlers (the reference-engine cases) + internal/app/api/datamodel_corpus_test.go (the request-shaped cases, driven against the mounted handler) (hand-maintained: both live in _test.go compilation units, not importable by conformance/cmd/driven-manifest; kept fresh by TestDataModel1DrivenManifestMatchesRuntime in internal/datamodel/driven_manifest_test.go and TestDataModel1HTTPCorpusIsInTheDrivenManifest in internal/app/api/datamodel_corpus_test.go)",
     "driven": [

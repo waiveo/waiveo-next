@@ -37,6 +37,7 @@ import (
 	"sort"
 
 	"github.com/maaxton/waiveo-next/conformance/drivers/api1"
+	"github.com/maaxton/waiveo-next/conformance/drivers/archive1"
 	"github.com/maaxton/waiveo-next/conformance/drivers/deviceclass1"
 	"github.com/maaxton/waiveo-next/conformance/drivers/events1"
 	"github.com/maaxton/waiveo-next/conformance/drivers/manifest1"
@@ -129,6 +130,7 @@ func generate() (map[string]Entry, error) {
 		"conformance/drivers/player1 (go run ./conformance/cmd/driven-manifest -write)",
 	)
 
+	out["archive/1"] = fromReport(archive1.Run(), "conformance/drivers/archive1 (go run ./conformance/cmd/driven-manifest -write)")
 	out["events/1"] = fromReport(events1.Run(), "conformance/drivers/events1 (go run ./conformance/cmd/driven-manifest -write)")
 	out["manifest/1"] = fromReport(manifest1.Run(), "conformance/drivers/manifest1 (go run ./conformance/cmd/driven-manifest -write)")
 	out["device-class-registry/1"] = fromReport(deviceclass1.Run(), "conformance/drivers/deviceclass1 (go run ./conformance/cmd/driven-manifest -write)")
