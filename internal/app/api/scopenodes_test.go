@@ -2,12 +2,14 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -25,11 +27,16 @@ import (
 // wall-clock read leaks into the api-layer tests.
 const fixedNowMs = int64(1_700_000_000_000)
 
-// boundaryOrgID is a fixture ULID (no secrets) naming a subtree-boundary parent
-// that is never itself created — every id an actual create mints is now
-// exclusively server-assigned (rejectClientSuppliedID), so every OTHER fixture
-// id below is captured from its create response instead of pinned as a
-// constant.
+// boundaryOrgID is a fixture ULID (no secrets) that createNode RESOLVES to the
+// env's own lazily-created org root. It used to name a never-created
+// "subtree-boundary" parent, which the store tolerated — but the app store
+// holds the FULL tree, where DAT-002 makes an unresolvable parent_id a
+// violation, so a fixture site now has to hang off a real org like production
+// data does. A body that reaches the server without passing through createNode
+// keeps the literal value, which is exactly what a test needs when the point IS
+// a nonexistent parent. Every id an actual create mints is server-assigned
+// (rejectClientSuppliedID), so every OTHER fixture id below is captured from
+// its create response instead of pinned as a constant.
 const boundaryOrgID = "01J8Z0A0000000000000000000"
 
 const (
@@ -83,6 +90,8 @@ type testEnv struct {
 	// observes execution — neither races the other, and no case waits on a
 	// clock to find out which it got.
 	jobs *api.JobRunner
+	// orgID is the env's lazily-created org root — see orgRoot.
+	orgID string
 }
 
 // runJobs releases the env's job runner and blocks until every job accepted so
@@ -195,14 +204,67 @@ func mustJSON(t *testing.T, v any) []byte {
 
 // createNode POSTs a scope node (its own id left empty — server-assigned,
 // rejectClientSuppliedID) and returns the server-minted id, failing if the
-// status is not 201.
+// status is not 201. A parent_id naming the boundaryOrgID sentinel is resolved
+// to the env's org root, created on first use — the full tree the store
+// validates has no tolerance for a parent that does not exist (DAT-002).
 func (e *testEnv) createNode(t *testing.T, n datamodel.ScopeNode) string {
 	t.Helper()
+	n = e.resolveBoundaryParent(t, n)
 	resp, raw := e.do(t, http.MethodPost, "/api/v1/scope-nodes", mustJSON(t, n), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create %s node %q: status %d, body %s", n.Kind, n.Name, resp.StatusCode, raw)
 	}
 	return decodeID(t, raw)
+}
+
+// resolveBoundaryParent substitutes the env's real org root for a parent_id
+// naming the boundaryOrgID sentinel. createNode applies it for every create it
+// issues; a test that POSTs a fixture body ITSELF (because it asserts on the
+// raw response) applies it by hand.
+//
+// It is a separate step from the POST precisely so a case whose subject IS a
+// nonexistent parent can bypass it and send the literal.
+func (e *testEnv) resolveBoundaryParent(t *testing.T, n datamodel.ScopeNode) datamodel.ScopeNode {
+	t.Helper()
+	if n.ParentID != nil && *n.ParentID == boundaryOrgID {
+		n.ParentID = strp(e.orgRoot(t))
+	}
+	return n
+}
+
+// orgRoot returns the env's org-kind root, creating it on first use. Lazy
+// rather than seeded in newEnv so a test about the org itself (or about an
+// empty store) starts from the same blank slate it always did.
+//
+// It carries `account_state` because DAT-010 says an org-kind node MUST, and
+// because the workspace surface reads it (the deployment's org node IS the
+// workspace's identity) — so the one org row this env creates is the same row
+// both the tree and the workspace mean.
+func (e *testEnv) orgRoot(t *testing.T) string {
+	t.Helper()
+	if e.orgID == "" {
+		e.orgID = e.createNode(t, datamodel.ScopeNode{Kind: "org", Name: "Fixture Org", AccountState: "active"})
+	}
+	return e.orgID
+}
+
+// seedOrgRootThroughStore writes the org root at the literal boundaryOrgID,
+// bypassing the api surface entirely.
+//
+// It exists for the two tests that build their own server around a store they
+// hold directly and cannot afford a create through the api: one counts every id
+// an injected id source mints, the other sends raw JSON bodies that name the
+// parent by that constant. Neither could get this row over HTTP — a resource's
+// own id is exclusively server-assigned (rejectClientSuppliedID) — and both need
+// it to exist, because the store validates the WHOLE tree and an unresolvable
+// parent_id is a DAT-002 violation there rather than a subtree boundary.
+func seedOrgRootThroughStore(t *testing.T, st *store.Store) {
+	t.Helper()
+	if _, err := st.Create(context.Background(), store.KindScopeNode, mustJSON(t, datamodel.ScopeNode{
+		ID: boundaryOrgID, Kind: "org", Name: "Fixture Org", AccountState: "active",
+	})); err != nil {
+		t.Fatalf("seed org root %s: %v", boundaryOrgID, err)
+	}
 }
 
 // assertProblem asserts the body is an api/1 Problem carrying the expected code
@@ -246,7 +308,10 @@ func decodeID(t *testing.T, raw []byte) string {
 func TestCreateAndGetScopeNode(t *testing.T) {
 	e := newEnv(t)
 
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/scope-nodes", mustJSON(t, siteNode("")), nil)
+	// POSTed here rather than through createNode because the assertions below are
+	// about the raw create RESPONSE (ETag, Location, Trace-Id), which createNode
+	// discards — so the sentinel parent is resolved by hand.
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/scope-nodes", mustJSON(t, e.resolveBoundaryParent(t, siteNode(""))), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create status = %d, body %s", resp.StatusCode, raw)
 	}
@@ -284,57 +349,53 @@ func TestCreateAndGetScopeNode(t *testing.T) {
 func TestListPaginationRoundtrip(t *testing.T) {
 	e := newEnv(t)
 	// ulid.Monotonic (newEnvWithContent) guarantees the site's minted id is
-	// strictly less than the screen's — creation order is id order.
+	// strictly less than the screen's — creation order is id order. The org root
+	// is created FIRST and named here, because the collection this walks is the
+	// whole scope_nodes table: DAT-002's single root is one of its rows, not an
+	// implied ancestor outside it.
+	orgID := e.orgRoot(t)
 	siteID := e.createNode(t, siteNode(""))
 	screen1ID := e.createNode(t, screenNode("", siteID, ""))
+	want := []string{orgID, siteID, screen1ID}
 
 	type page struct {
 		Items  []json.RawMessage `json:"items"`
 		Cursor *string           `json:"cursor"`
 	}
 
-	// Page 1: limit=1 → the first node (site) + a cursor.
-	resp, raw := e.do(t, http.MethodGet, "/api/v1/scope-nodes?limit=1", nil, nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("list p1 status = %d, body %s", resp.StatusCode, raw)
+	// limit=1, replaying each returned cursor: every page carries exactly one
+	// item, the walk terminates on a null cursor, and it covers the collection in
+	// id order with no skip and no repeat.
+	var walked []string
+	cursor := ""
+	for i := 0; i <= len(want); i++ { // hard cap: a paging bug must fail, not hang
+		u := "/api/v1/scope-nodes?limit=1"
+		if cursor != "" {
+			u += "&cursor=" + url.QueryEscape(cursor)
+		}
+		resp, raw := e.do(t, http.MethodGet, u, nil, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("list page %d status = %d, body %s", i+1, resp.StatusCode, raw)
+		}
+		var p page
+		if err := json.Unmarshal(raw, &p); err != nil {
+			t.Fatalf("decode page %d: %v (body %s)", i+1, err, raw)
+		}
+		if len(p.Items) != 1 {
+			t.Fatalf("page %d items = %d, want 1", i+1, len(p.Items))
+		}
+		walked = append(walked, decodeID(t, p.Items[0]))
+		if p.Cursor == nil {
+			break
+		}
+		cursor = *p.Cursor
 	}
-	var p1 page
-	if err := json.Unmarshal(raw, &p1); err != nil {
-		t.Fatalf("decode p1: %v (body %s)", err, raw)
-	}
-	if len(p1.Items) != 1 {
-		t.Fatalf("page 1 items = %d, want 1", len(p1.Items))
-	}
-	if p1.Cursor == nil {
-		t.Fatalf("page 1 cursor is null, want a continuation token")
-	}
-	got1 := decodeID(t, p1.Items[0])
-
-	// Page 2: replay the cursor → the remaining node + a null cursor.
-	resp, raw = e.do(t, http.MethodGet, "/api/v1/scope-nodes?limit=1&cursor="+url.QueryEscape(*p1.Cursor), nil, nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("list p2 status = %d, body %s", resp.StatusCode, raw)
-	}
-	var p2 page
-	if err := json.Unmarshal(raw, &p2); err != nil {
-		t.Fatalf("decode p2: %v (body %s)", err, raw)
-	}
-	if len(p2.Items) != 1 {
-		t.Fatalf("page 2 items = %d, want 1", len(p2.Items))
-	}
-	if p2.Cursor != nil {
-		t.Fatalf("page 2 cursor = %q, want null (last page)", *p2.Cursor)
-	}
-	got2 := decodeID(t, p2.Items[0])
-
-	// The two pages cover the collection exactly once, no skip/repeat.
-	seen := map[string]bool{got1: true, got2: true}
-	if !seen[siteID] || !seen[screen1ID] || got1 == got2 {
-		t.Fatalf("pages did not cover {%s,%s} exactly once: p1=%s p2=%s", siteID, screen1ID, got1, got2)
+	if !reflect.DeepEqual(walked, want) {
+		t.Fatalf("cursor walk covered %v, want exactly %v (in id order, once each)", walked, want)
 	}
 
 	// A malformed cursor is CURSOR_INVALID, never "from the beginning".
-	resp, raw = e.do(t, http.MethodGet, "/api/v1/scope-nodes?cursor="+url.QueryEscape("not a cursor!!"), nil, nil)
+	resp, raw := e.do(t, http.MethodGet, "/api/v1/scope-nodes?cursor="+url.QueryEscape("not a cursor!!"), nil, nil)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("bad-cursor status = %d, want 400", resp.StatusCode)
 	}

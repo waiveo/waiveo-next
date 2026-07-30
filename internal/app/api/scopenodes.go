@@ -48,7 +48,7 @@ func scopeNodesConfig() resourceConfig {
 		// This family names NO createSchema/updateSchema, and that is deliberate
 		// rather than an omission — see bodyschema.go's "What this does NOT cover".
 		// A scope node's body is already validated field-by-field by
-		// datamodel.BuildScopeTree inside the store write, which reports EVERY
+		// datamodel.BuildFullScopeTree inside the store write, which reports EVERY
 		// failing member at once with data-model/1's own published per-field codes
 		// (SCOPE_NODE_NAME_INVALID, SCOPE_NODE_KIND_INVALID, ...) in API-013's
 		// multi-field `errors[]` shape — the exact shape api/1's own
@@ -64,16 +64,23 @@ func scopeNodesConfig() resourceConfig {
 // every other row names it. Removing one therefore breaks two references nothing
 // else in the write path notices.
 //
-// Neither is caught by the store's post-write revalidation, and the reason is
-// worth stating because the shape invites the opposite assumption. Every write
-// re-validates the full remaining row set, so the natural expectation is that an
-// orphaned child fails revalidation and the delete rolls back. It does not:
-// datamodel.BuildScopeTree is subtree-tolerant ON PURPOSE — a relay/1 snapshot
-// carries a subtree, not the whole tree, so a node whose parent is absent is a
-// subtree boundary rather than an error — and datamodel.ValidateRows checks a
-// row's references to OTHER ROWS, never that its scope_node names a node that
-// exists. Both are correct for what they do. They simply leave deletion
-// unguarded, which is why these rules are stated here rather than assumed there.
+// DAT-021 is not caught by the store's post-write revalidation at all, and
+// DAT-020 is caught only with the wrong code — the reason is worth stating
+// because the shape invites the opposite assumption.
+//
+// DAT-021: datamodel.ValidateRows checks a row's references to OTHER ROWS, never
+// that its scope_node names a scope node that exists. No validator looks at a
+// reference INTO the tree, so removing a node rows are placed at revalidates
+// clean. This guard is the only thing that sees it.
+//
+// DAT-020: removing an interior node leaves its children's parent_id
+// unresolvable, and the store's scope-node validator is now the strict variant
+// (datamodel.BuildFullScopeTree — the app store holds the whole tree, so an
+// absent parent there is a violation and not the relay/1 snapshot's subtree
+// boundary), which does reject it. But it rejects it as a 422 VALIDATION_FAILED
+// carrying SCOPE_NODE_PARENT_INVALID, and DAT-020 publishes a 409
+// SCOPE_NODE_NOT_EMPTY. Guards run before the removal, so this one answers
+// first; the strict tree is the backstop underneath it, not the refusal.
 
 // orgKind is the scope-node kind DAT-002 makes the tree's single root.
 const orgKind = "org"
@@ -122,7 +129,7 @@ func scopeNodeDeleteGuards(srv *server, id string) []store.DeleteGuard {
 			for _, n := range nodes {
 				// The target itself is skipped rather than assumed absent: DAT-003
 				// permits a group under a group, so a node naming ITSELF as parent is
-				// structurally valid to BuildScopeTree, and counting it as its own
+				// structurally valid to the tree builder, and counting it as its own
 				// child would make it undeletable forever.
 				if n.ID == id {
 					continue

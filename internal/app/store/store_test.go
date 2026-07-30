@@ -57,6 +57,18 @@ func gen(t *testing.T, s *store.Store) int64 {
 	return g
 }
 
+// orgNode is the tree's root. It is a REAL row every fixture tree starts from:
+// the store validates the FULL tree on every scope-node write (DAT-002), so a
+// site whose parent_id names a node that was never created is a validation
+// failure, not a tolerated subtree boundary.
+func orgNode() datamodel.ScopeNode {
+	return datamodel.ScopeNode{
+		ID:   orgParentID,
+		Kind: "org",
+		Name: "Demo Org",
+	}
+}
+
 func siteNode() datamodel.ScopeNode {
 	return datamodel.ScopeNode{
 		ID:       siteNodeID,
@@ -69,6 +81,14 @@ func siteNode() datamodel.ScopeNode {
 	}
 }
 
+// seedOrg creates the org root a fixture site hangs off.
+func seedOrg(t *testing.T, s *store.Store) {
+	t.Helper()
+	if _, err := s.Create(context.Background(), store.KindScopeNode, mustJSON(t, orgNode())); err != nil {
+		t.Fatalf("create org node: %v", err)
+	}
+}
+
 func screenNode() datamodel.ScopeNode {
 	return datamodel.ScopeNode{
 		ID:       screenNodeID,
@@ -78,11 +98,12 @@ func screenNode() datamodel.ScopeNode {
 	}
 }
 
-// seedSiteScreen creates the site + screen scope nodes, returning the running
-// generation after both writes.
+// seedSiteScreen creates the org + site + screen scope nodes — THREE committed
+// writes, for a test counting generations or commit hooks.
 func seedSiteScreen(t *testing.T, s *store.Store) {
 	t.Helper()
 	ctx := context.Background()
+	seedOrg(t, s)
 	if _, err := s.Create(ctx, store.KindScopeNode, mustJSON(t, siteNode())); err != nil {
 		t.Fatalf("create site node: %v", err)
 	}
@@ -106,6 +127,7 @@ func TestCreateDuplicateIDIsValidationError(t *testing.T) {
 	s := openMem(t)
 	ctx := context.Background()
 
+	seedOrg(t, s)
 	if _, err := s.Create(ctx, store.KindScopeNode, mustJSON(t, siteNode())); err != nil {
 		t.Fatalf("first create: %v", err)
 	}
@@ -132,7 +154,7 @@ func TestCreateDuplicateIDIsValidationError(t *testing.T) {
 func TestWriteGuardRunsAtomicallyAndCanReject(t *testing.T) {
 	s := openMem(t)
 	ctx := context.Background()
-	seedSiteScreen(t, s) // one site + one screen already present
+	seedSiteScreen(t, s) // the org root + one site + one screen already present
 	genBefore := gen(t, s)
 
 	sentinel := errors.New("guard rejected")
@@ -149,8 +171,8 @@ func TestWriteGuardRunsAtomicallyAndCanReject(t *testing.T) {
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("guarded create error = %v, want the sentinel verbatim", err)
 	}
-	if sawRows != 2 {
-		t.Fatalf("guard saw %d existing rows, want 2 (the site+screen snapshot)", sawRows)
+	if sawRows != 3 {
+		t.Fatalf("guard saw %d existing rows, want 3 (the org+site+screen snapshot)", sawRows)
 	}
 	if g := gen(t, s); g != genBefore {
 		t.Fatalf("generation advanced on guard-rejected create: %d -> %d", genBefore, g)
@@ -169,6 +191,11 @@ func TestCreateScopeNodeBumpsRevisionAndGeneration(t *testing.T) {
 	s := openMem(t)
 	ctx := context.Background()
 
+	seedOrg(t, s)
+	// The org root's own write already bumped the generation, so what this test
+	// asserts is ONE further bump — not an absolute value that would have to be
+	// re-counted every time the fixture tree grows a node.
+	genBefore := gen(t, s)
 	res, err := s.Create(ctx, store.KindScopeNode, mustJSON(t, siteNode()))
 	if err != nil {
 		t.Fatalf("create site node: %v", err)
@@ -179,8 +206,8 @@ func TestCreateScopeNodeBumpsRevisionAndGeneration(t *testing.T) {
 	if res.ID != siteNodeID {
 		t.Fatalf("created id = %q, want %q", res.ID, siteNodeID)
 	}
-	if g := gen(t, s); g != 1 {
-		t.Fatalf("generation after one create = %d, want 1", g)
+	if g := gen(t, s); g != genBefore+1 {
+		t.Fatalf("generation after one create = %d, want %d", g, genBefore+1)
 	}
 
 	// The stored body carries the store-owned revision.
@@ -208,9 +235,9 @@ func TestCreateScheduleValidatedAndStored(t *testing.T) {
 	if res.Revision != 1 {
 		t.Fatalf("schedule revision = %d, want 1", res.Revision)
 	}
-	// site + screen + schedule = three writes, generation 3.
-	if g := gen(t, s); g != 3 {
-		t.Fatalf("generation after seed+schedule = %d, want 3", g)
+	// org + site + screen + schedule = four writes, generation 4.
+	if g := gen(t, s); g != 4 {
+		t.Fatalf("generation after seed+schedule = %d, want 4", g)
 	}
 
 	got, ok, err := s.Get(ctx, store.KindSchedule, scheduleID)
@@ -478,8 +505,8 @@ func TestDesiredStateRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DesiredStateRows: %v", err)
 	}
-	if len(nodes) != 2 {
-		t.Fatalf("DesiredStateRows scope nodes = %d, want 2", len(nodes))
+	if len(nodes) != 3 {
+		t.Fatalf("DesiredStateRows scope nodes = %d, want 3 (org + site + screen)", len(nodes))
 	}
 	if len(rows.Schedules) != 1 {
 		t.Fatalf("DesiredStateRows schedules = %d, want 1", len(rows.Schedules))
@@ -511,8 +538,8 @@ func TestDesiredStateRows(t *testing.T) {
 func TestConcurrentWritesSerialized(t *testing.T) {
 	s := openMem(t)
 	ctx := context.Background()
-	seedSiteScreen(t, s) // generation now 2
-	const seedGen = 2
+	seedSiteScreen(t, s) // generation now 3 (org + site + screen)
+	const seedGen = 3
 
 	const n = 24
 	var wg sync.WaitGroup
@@ -671,13 +698,13 @@ func TestOnCommitHookFiresOnCommittedWritesOnly(t *testing.T) {
 		mu.Unlock()
 	})
 
-	seedSiteScreen(t, s) // two committed writes
+	seedSiteScreen(t, s) // three committed writes (org + site + screen)
 	mu.Lock()
-	if fired != 2 {
-		t.Fatalf("hook fired %d time(s) after two committed writes, want 2", fired)
+	if fired != 3 {
+		t.Fatalf("hook fired %d time(s) after three committed writes, want 3", fired)
 	}
-	if genInHook != 2 {
-		t.Fatalf("generation observed inside the hook = %d, want the committed 2", genInHook)
+	if genInHook != 3 {
+		t.Fatalf("generation observed inside the hook = %d, want the committed 3", genInHook)
 	}
 	mu.Unlock()
 
@@ -687,8 +714,8 @@ func TestOnCommitHookFiresOnCommittedWritesOnly(t *testing.T) {
 		t.Fatal("duplicate-id create was accepted, want validation failure")
 	}
 	mu.Lock()
-	if fired != 2 {
-		t.Fatalf("hook fired %d time(s) after a rolled-back write, want still 2 (no nudge for nothing)", fired)
+	if fired != 3 {
+		t.Fatalf("hook fired %d time(s) after a rolled-back write, want still 3 (no nudge for nothing)", fired)
 	}
 	mu.Unlock()
 }

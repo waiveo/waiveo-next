@@ -108,9 +108,15 @@ func newWorkspaceEnv(t *testing.T) *workspaceEnv {
 
 // seedWorkspace creates the deployment's org node — the row that IS the
 // workspace's identity (DAT-010/012/014) — and returns its server-minted id.
+//
+// It goes through the env's shared orgRoot rather than creating an org of its
+// own, because DAT-002 admits exactly ONE org-kind node: a test that seeds the
+// workspace AND builds a scope tree (the export case does both) would otherwise
+// create a second one and be refused SCOPE_NODE_MULTIPLE_ORG. The workspace's
+// org node and the tree's root are the same row in production too.
 func (e *workspaceEnv) seedWorkspace(t *testing.T) string {
 	t.Helper()
-	return e.createNode(t, datamodel.ScopeNode{Kind: "org", Name: "Fixture Org", AccountState: "active"})
+	return e.orgRoot(t)
 }
 
 // postWorkspace drives one data-subject operation as who and returns the

@@ -48,6 +48,15 @@ func TestInjectedIDSourceMintsBothCreateAndJobIDs(t *testing.T) {
 	t.Cleanup(ts.Close)
 	e := &testEnv{ts: ts, store: st, content: content, contentBase: testContentBase, auth: fixture, jobs: jobs}
 
+	// The org root the site below hangs off, written DIRECTLY THROUGH THE STORE
+	// under the id boundaryOrgID names. Through the api it would consume an id
+	// from the injected sequence this whole test is counting, and it could not
+	// carry that id at all (a resource's own id is exclusively server-assigned,
+	// rejectClientSuppliedID) — the store has no such rule, which is what lets
+	// the constant be the real row. It has to be a real row: the store holds the
+	// FULL tree, where an unresolvable parent_id is a DAT-002 violation.
+	seedOrgRootThroughStore(t, st)
+
 	// A create body with NO id: ensureID must mint from the injected source,
 	// never a package-level generator of its own.
 	body := map[string]any{

@@ -58,6 +58,7 @@ func TestCreateStampsBaselineFromTheInjectedClock(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 	ctx := context.Background()
 
+	seedOrg(t, s)
 	res, err := s.Create(ctx, store.KindScopeNode, mustJSON(t, siteNode()))
 	if err != nil {
 		t.Fatalf("create site node: %v", err)

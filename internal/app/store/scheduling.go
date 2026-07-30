@@ -11,7 +11,7 @@ import (
 
 // schedulingKinds is the subset of resource kinds whose writes are validated
 // through datamodel.ValidateRows (the six data-model/1 scheduling-core kinds).
-// A scope-node write is validated separately, through BuildScopeTree.
+// A scope-node write is validated separately, through BuildFullScopeTree.
 var schedulingKinds = map[Kind]bool{
 	KindPlaylist:       true,
 	KindSchedule:       true,
@@ -39,7 +39,10 @@ var identityKinds = map[Kind]bool{
 // validation appropriate to the kind just written, over the RESULTING full
 // row-set — so a write is judged against the state it produced, and a failure
 // aborts the whole transaction (nothing persisted, generation unchanged). A
-// scope-node write is checked with BuildScopeTree (DAT-001-003/030-032); a
+// scope-node write is checked with BuildFullScopeTree (DAT-001-003/030-032,
+// with DAT-002's parent-resolution enforced — this store IS the full tree, so
+// a dangling parent_id here is never a relay-snapshot subtree boundary; it is
+// how a re-kinded org or a re-parent-to-garbage write orphans the tree). A
 // scheduling-core write with ValidateRows (DAT-005-008/040-101, references,
 // DAT-073 daypart partition). Errors are wrapped in *ValidationError for the api
 // layer to render as VALIDATION_FAILED.
@@ -50,7 +53,7 @@ func validateAfterWrite(ctx context.Context, tx *sql.Tx, kind Kind) error {
 		if err != nil {
 			return err
 		}
-		if _, errs := datamodel.BuildScopeTree(nodes); len(errs) > 0 {
+		if _, errs := datamodel.BuildFullScopeTree(nodes); len(errs) > 0 {
 			return &ValidationError{Errors: errs}
 		}
 		return nil

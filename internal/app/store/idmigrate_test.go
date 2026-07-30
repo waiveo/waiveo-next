@@ -29,7 +29,7 @@ import (
 // change, and a migration that touched them would be a bug this file is here to
 // catch.
 var preRuleSeedIDs = map[string]string{
-	"01J8Z0DEM00RGANCEST0RB0VND": "01J8Z0DEMOORGANCESTORBOUND", // org ancestor (a dangling parent_id)
+	"01J8Z0DEM00RGANCEST0RB0VND": "01J8Z0DEMOORGANCESTORBOUND", // org root scope node
 	"01J8Z4DEM0SCREENF1RSTPH0TN": "01J8Z4DEMOSCREENFIRSTPHOTN", // screen scope node
 	"01J8Z5DEM0SCHEDV1ETW0DAYPT": "01J8Z5DEMOSCHEDULETWODAYPT", // schedule
 	"01J8Z6DEM0P1AY11STC0NTENT1": "01J8Z6DEMOPLAYLISTCONTENT1", // playlist
@@ -299,7 +299,10 @@ func TestMigrateRowIDsUnsticksAPreRuleStore(t *testing.T) {
 	// production seed path before the fixture is regressed, never from the
 	// migration.
 	wantIDs := storedIDs(t, dsn)
-	wantGeneration := int64(9)
+	// Ten seeded writes: the org root, the site and screen scope nodes, the screen
+	// identity row, a playlist, a schedule, a preset batch, two dayparts, and one
+	// automation.
+	wantGeneration := int64(10)
 
 	regressToPreRuleIDs(t, dsn)
 
@@ -308,9 +311,6 @@ func TestMigrateRowIDsUnsticksAPreRuleStore(t *testing.T) {
 	// are untouched.
 	legacy := strings.Join(storedIDs(t, dsn), " ")
 	for current, old := range preRuleSeedIDs {
-		if current == "01J8Z0DEM00RGANCEST0RB0VND" {
-			continue // a dangling parent_id, never a row of its own
-		}
 		if !strings.Contains(legacy, old) {
 			t.Fatalf("fixture is not a pre-rule store: expected legacy id %q among %v", old, legacy)
 		}

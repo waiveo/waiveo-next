@@ -28,16 +28,16 @@ func TestSeedDemoInsertsResolvableProgram(t *testing.T) {
 	if err := s.SeedDemo(ctx, seedAssetRef); err != nil {
 		t.Fatalf("SeedDemo: %v", err)
 	}
-	if g := gen(t, s); g != 9 {
-		t.Fatalf("generation after seed = %d, want 9 (2 scope nodes + screen row + playlist + schedule + preset + 2 dayparts + 1 automation)", g)
+	if g := gen(t, s); g != 10 {
+		t.Fatalf("generation after seed = %d, want 10 (3 scope nodes + screen row + playlist + schedule + preset + 2 dayparts + 1 automation)", g)
 	}
 
 	nodes, rows, se, generation, err := s.DesiredStateRows(ctx)
 	if err != nil {
 		t.Fatalf("DesiredStateRows: %v", err)
 	}
-	if generation != 9 {
-		t.Fatalf("DesiredStateRows generation = %d, want 9", generation)
+	if generation != 10 {
+		t.Fatalf("DesiredStateRows generation = %d, want 10", generation)
 	}
 
 	// The scheduling rows validate as a complete, referentially-sound set.
@@ -49,8 +49,8 @@ func TestSeedDemoInsertsResolvableProgram(t *testing.T) {
 		t.Fatalf("seeded scope tree failed validation: %+v", errs)
 	}
 
-	if len(nodes) != 2 {
-		t.Fatalf("seeded scope nodes = %d, want 2 (site + screen)", len(nodes))
+	if len(nodes) != 3 {
+		t.Fatalf("seeded scope nodes = %d, want 3 (org + site + screen)", len(nodes))
 	}
 	if len(rows.Playlists) != 1 || len(rows.Schedules) != 1 || len(rows.Dayparts) != 2 || len(rows.PresetBatches) != 1 {
 		t.Fatalf("seeded rows = playlists:%d schedules:%d dayparts:%d presets:%d, want 1/1/2/1",
@@ -71,8 +71,8 @@ func TestSeedDemoInsertsResolvableProgram(t *testing.T) {
 	if len(bodies) != 1 {
 		t.Fatalf("EdgeRuleBodies after seed = %d, want 1 (the seeded demo automation)", len(bodies))
 	}
-	if edgeGen != 9 {
-		t.Fatalf("EdgeRuleBodies generation = %d, want 9", edgeGen)
+	if edgeGen != 10 {
+		t.Fatalf("EdgeRuleBodies generation = %d, want 10", edgeGen)
 	}
 }
 
@@ -108,11 +108,11 @@ func TestDesiredStateBundlesTheRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DesiredState: %v", err)
 	}
-	if ds.Generation != 9 {
-		t.Fatalf("DesiredState.Generation = %d, want 9", ds.Generation)
+	if ds.Generation != 10 {
+		t.Fatalf("DesiredState.Generation = %d, want 10", ds.Generation)
 	}
-	if len(ds.ScopeNodes) != 2 || len(ds.Rows.Dayparts) != 2 {
-		t.Fatalf("DesiredState bundled nodes:%d dayparts:%d, want 2/2", len(ds.ScopeNodes), len(ds.Rows.Dayparts))
+	if len(ds.ScopeNodes) != 3 || len(ds.Rows.Dayparts) != 2 {
+		t.Fatalf("DesiredState bundled nodes:%d dayparts:%d, want 3/2", len(ds.ScopeNodes), len(ds.Rows.Dayparts))
 	}
 	if len(ds.EdgeRules.Rules) != 1 {
 		t.Fatalf("DesiredState.EdgeRules.Rules = %d, want 1 (the seeded demo automation, REL-062)", len(ds.EdgeRules.Rules))

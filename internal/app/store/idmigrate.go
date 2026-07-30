@@ -84,8 +84,11 @@ func foldToCanonicalULID(id string) (string, bool) {
 // IDRewrite is one identifier the migration replaced (or, from
 // PlanRowIDMigration, would replace). Kind names the table the identifier
 // addresses — which for a dangling scope-node parent_id is still scope_nodes,
-// even though no such row is stored (BuildScopeTree treats an absent parent as a
-// subtree boundary, so that reference is legitimately unresolved).
+// even though no such row is stored. This store can no longer ACCEPT a write
+// that leaves a parent_id unresolved (validateAfterWrite's strict tree), but a
+// store an older build wrote may already hold one on disk, and that is exactly
+// the population this migration exists for: it has to be able to address a
+// reference it would refuse to create.
 type IDRewrite struct {
 	Kind Kind
 	From string
@@ -358,8 +361,8 @@ func applyIDRewrites(ctx context.Context, tx *sql.Tx, plan []IDRewrite) error {
 // verifyAfterIDRewrite is the migration's safety net, run inside the same
 // transaction as the rewrite so a failure discards all of it.
 //
-// It re-runs the very validators the write path runs — BuildScopeTree over the
-// scope nodes, ValidateRows over the six scheduling-core kinds (which is what
+// It re-runs the very validators the write path runs — BuildFullScopeTree over
+// the scope nodes, ValidateRows over the six scheduling-core kinds (which is what
 // checks that every schedule/playlist/daypart/fallback/preset reference still
 // resolves), and the automation id check — via validateAfterWrite, so the
 // migration is judged by exactly the rule it exists to satisfy rather than by a

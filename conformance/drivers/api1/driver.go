@@ -445,13 +445,88 @@ func (h *harness) do(method, path string, body []byte, headers map[string]string
 // setup, not the operation under test — the same pattern internal/app/api's
 // own e2e tests use: seed via the store, drive the case under test through the
 // live handler). fields is marshaled as-is as the row body.
+//
+// Any ancestor the row's parent_id names and the fixture does not itself supply
+// is materialized first (seedMissingAncestors). Several frozen api/1 fixtures
+// name a parent outside their own collection_state, which the store used to
+// tolerate — a scope node whose parent is absent read as a relay/1 snapshot
+// subtree boundary. The app store holds the WHOLE tree, so an unresolvable
+// parent_id there is a DAT-002 violation, and fixture setup has to build the
+// tree production data would have. This is the same accommodation
+// driveIdempotency's own seed_scope_nodes made for API-052/053, generalized:
+// the api/1 conventions under test are indifferent to how deep the fixture tree
+// is, so the driver supplies the depth rather than the corpus being re-frozen
+// around it.
 func (h *harness) seedScopeNode(fields map[string]any) error {
+	if err := h.seedMissingAncestors(fields); err != nil {
+		return err
+	}
 	b, err := json.Marshal(fields)
 	if err != nil {
 		return err
 	}
 	_, err = h.store.Create(context.Background(), store.KindScopeNode, b)
 	return err
+}
+
+// syntheticOrgID is the org root every ancestor chain this driver synthesizes
+// terminates at — one per harness, since DAT-002 admits exactly one org-kind
+// node. A fixture that names its own org (driveIdempotency's seed_scope_nodes,
+// driveWorkspace's org body) creates that id instead and nothing is synthesized,
+// because the chain is already complete.
+const syntheticOrgID = "01J8Z0SYNTHET1C0RGR00T0001"
+
+// The parent ids the two hand-written fixture seeds below name (the concurrency
+// case's screen, the bulk-enable case's site). Each is now a REAL row —
+// seedMissingAncestors materializes it — so each has to be a syntactically valid
+// Canonical ULID (DAT-005a). Crockford base32 excludes I, L, O and U, so the
+// earlier spellings ("…PLACEHOLDERPARENT…", "…JOBPLACEHOLDERORG…") could only
+// ever have been dangling references, never a row's own id.
+const (
+	concurrencyFixtureParentID = "01J8Z0PARENTS1TEF0RETAG001"
+	bulkEnableFixtureOrgID     = "01J8Z0BV1KENAB1E0RGR00T001"
+)
+
+// syntheticParentKind is DAT-003's parent table, read backwards: the kind this
+// driver gives an ancestor it has to invent for a child of the named kind. A
+// screen or group could sit under either a site or a group; a site is chosen
+// because it terminates the chain one step sooner and carries the geo every
+// descendant's EffectiveGeo needs.
+var syntheticParentKind = map[string]string{
+	"site":   "org",
+	"group":  "site",
+	"screen": "site",
+}
+
+// seedMissingAncestors materializes, bottom-up, every ancestor a fixture row's
+// parent_id names that is not already stored. It returns without writing
+// anything when the row is an org (no parent), when it names no parent, or when
+// the parent it names already exists.
+func (h *harness) seedMissingAncestors(fields map[string]any) error {
+	parent, _ := fields["parent_id"].(string)
+	kind, _ := fields["kind"].(string)
+	if parent == "" || kind == "org" {
+		return nil
+	}
+	if _, found, err := h.store.Get(context.Background(), store.KindScopeNode, parent); err != nil || found {
+		return err
+	}
+	parentKind, ok := syntheticParentKind[kind]
+	if !ok {
+		return fmt.Errorf("no synthetic parent kind for a %q node (DAT-003)", kind)
+	}
+	row := map[string]any{"id": parent, "kind": parentKind, "name": "Synthetic " + parentKind + " " + parent}
+	switch parentKind {
+	case "org":
+		row["account_state"] = "active"
+		row["entitlements"] = map[string]any{}
+	case "site":
+		row["parent_id"] = syntheticOrgID
+		siteGeo(row)
+	}
+	// Recursive: seeding the parent seeds ITS missing parent first, so a chain of
+	// any depth terminates at the single org root.
+	return h.seedScopeNode(row)
 }
 
 // seedAutomation writes a compile-clean edge-automation row directly into the
@@ -664,7 +739,7 @@ func driveConcurrency(rep *report.Report, c corpus.Case) {
 	// A screen (not a site) needs no geo columns (DAT-031 only binds a site),
 	// so seeding needs no fields beyond what the concurrency convention itself
 	// cares about: identity and revision.
-	if err := h.seedScopeNode(map[string]any{"id": id, "kind": "screen", "parent_id": "01J8Z0PLACEHOLDERPARENT01", "name": "Original Site"}); err != nil {
+	if err := h.seedScopeNode(map[string]any{"id": id, "kind": "screen", "parent_id": concurrencyFixtureParentID, "name": "Original Site"}); err != nil {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("seed scope node: %v", err))
 		return
 	}
@@ -1362,7 +1437,7 @@ func driveJob(rep *report.Report, c corpus.Case) {
 	// selector's `scope_node subtree` term resolves against the SAME tree the
 	// live inSubtreeFn reads, not a driver-modeled membership set.
 	const siteNode = "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5"
-	siteBody := map[string]any{"id": siteNode, "kind": "site", "parent_id": "01J8Z0JOBPLACEHOLDERORG01", "name": "Bulk-Enable Site"}
+	siteBody := map[string]any{"id": siteNode, "kind": "site", "parent_id": bulkEnableFixtureOrgID, "name": "Bulk-Enable Site"}
 	siteGeo(siteBody)
 	if err := h.seedScopeNode(siteBody); err != nil {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("seed site scope node: %v", err))

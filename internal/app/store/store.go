@@ -6,7 +6,7 @@
 // plus its full JSON body, behind a store-level monotonic `generation`.
 //
 // Every write is validated before commit — a scheduling-core write through
-// datamodel.ValidateRows, a scope-node write through datamodel.BuildScopeTree —
+// datamodel.ValidateRows, a scope-node write through datamodel.BuildFullScopeTree —
 // so a row that fails validation is never persisted (the api layer surfaces the
 // carried errors as VALIDATION_FAILED). Every accepted write bumps the row's
 // revision and the store generation in the SAME transaction, and the write path
@@ -523,7 +523,7 @@ func (s *Store) runWriteTx(ctx context.Context, fn func(tx *sql.Tx) error) error
 // the baseline: it sets revision to 1 and created_at/updated_at to now, injects
 // them into the stored body, and denormalizes external_id/scope_node/labels into
 // columns. The generation is bumped and the resulting full row-set validated
-// (BuildScopeTree for scope nodes, ValidateRows for scheduling kinds) before
+// (BuildFullScopeTree for scope nodes, ValidateRows for scheduling kinds) before
 // commit — a validation failure rolls the whole thing back.
 //
 // The baseline it owns is the whole api/1 representation, not only the three
@@ -792,12 +792,21 @@ func (s *Store) Update(ctx context.Context, kind Kind, id string, rev int64, pat
 //
 // That post-write revalidation is deliberately NOT the whole of referential
 // integrity, and a caller must not read it as such. It re-runs the kind's own
-// validator over what remains, and one of those validators is subtree-tolerant on
-// purpose: datamodel.BuildScopeTree treats a node whose parent is absent as a
-// subtree boundary (relay/1 snapshots carry subtrees), so removing an INTERIOR
-// scope node revalidates clean while orphaning everything beneath it. Rules a
-// remaining-row-set check cannot see are the caller's to supply as guards, which
-// is what DeleteGuard is for.
+// validator over what remains, and no validator sees a reference INTO the
+// scope-node tree: datamodel.ValidateRows checks a row's references to other
+// ROWS, never that a row's own scope_node names a node that exists, so removing
+// a node rows are placed at revalidates clean (DAT-021). Rules a remaining-row-set
+// check cannot see are the caller's to supply as guards, which is what
+// DeleteGuard is for.
+//
+// One rule is now covered TWICE, and the guard order is what decides which
+// answer a caller gets. Removing an interior scope node leaves its children's
+// parent_id unresolvable, which validateAfterWrite's strict tree
+// (datamodel.BuildFullScopeTree) rejects — but as a 422 VALIDATION_FAILED
+// carrying SCOPE_NODE_PARENT_INVALID, which is the wrong shape for a deletion
+// refusal. DAT-020 publishes SCOPE_NODE_NOT_EMPTY for it. The guards run BEFORE
+// the removal, so the published refusal answers first and the strict tree is
+// only the backstop underneath it.
 func (s *Store) Delete(ctx context.Context, kind Kind, id string, rev int64, guards ...DeleteGuard) error {
 	table, err := tableFor(kind)
 	if err != nil {

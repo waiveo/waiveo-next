@@ -473,11 +473,10 @@ func TestScreenWithUnresolvableTZIsOmittedNotSubstituted(t *testing.T) {
 	)
 
 	s := seededStore(t, asset)
-	// The seeded tree names orgRoot as the site's parent but never inserts it, so
-	// insert it here to make it a real, geo-less org node with a screen on it.
-	createRow(t, s, store.KindScopeNode, datamodel.ScopeNode{
-		ID: orgRoot, Kind: "org", Name: "Demo Org",
-	})
+	// orgRoot is already a real row: the seed inserts the org root the site hangs
+	// off (DAT-002 makes an unresolvable parent_id a violation in the store, which
+	// holds the whole tree). An org node carries no geo by rule (DAT-032), so
+	// placing a screen row directly on it is a chain that reaches no site.
 	createRow(t, s, store.KindScreen, datamodel.Screen{
 		ID: orgScreen, ScopeNode: orgRoot, Name: "Screen on the org root",
 	})

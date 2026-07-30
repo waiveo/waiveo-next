@@ -34,7 +34,7 @@ package api
 //
 //  2. Scope nodes are deliberately NOT gated here (scopenodes.go says so at the
 //     config). Their bodies are already validated field-by-field by
-//     datamodel.BuildScopeTree inside the store write, which reports EVERY
+//     datamodel.BuildFullScopeTree inside the store write, which reports EVERY
 //     failing member at once under data-model/1's own published per-field codes
 //     in API-013's multi-field `errors[]` shape — the shape api/1's own
 //     API-013 corpus case pins. A fail-fast gate ahead of it would replace a

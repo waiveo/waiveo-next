@@ -102,6 +102,7 @@ func TestSeedDemoRowsAddressableThroughAPIConventions(t *testing.T) {
 		selector string // "" = the sanctioned matches-everything selector
 		want     int
 	}{
+		{"scope-nodes", "kind=org", 1},
 		{"scope-nodes", "kind=site", 1},
 		{"scope-nodes", "kind=screen", 1},
 		{"playlists", "scope_node=" + screenID, 1},
@@ -129,7 +130,7 @@ func TestSeedDemoRowsAddressableThroughAPIConventions(t *testing.T) {
 		path  string
 		total int
 	}{
-		{"scope-nodes", 2},
+		{"scope-nodes", 3}, // the org root + the site + the screen
 		{"playlists", 1},
 		{"schedules", 1},
 		{"dayparts", 2},

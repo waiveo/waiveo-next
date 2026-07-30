@@ -98,8 +98,8 @@ var seedDemoAutomationJSON = json.RawMessage(`{"id":"` + seedDemoAutomationID + 
 	`"conditions":[],` +
 	`"actions":[{"type":"device_command","entity_id":"` + seedRuleEntityID + `","command":"launch","params":{"channel":"dev"}}]}`)
 
-// SeedDemo inserts the make-dev demo as authored store rows: a two-node scope
-// tree (a site + a screen-kind node under it), a SCREEN IDENTITY ROW placed on
+// SeedDemo inserts the make-dev demo as authored store rows: a three-node scope
+// tree (the org root, a site, a screen-kind node under it), a SCREEN IDENTITY ROW placed on
 // that node, a playlist whose items are assetRefs in order, a schedule on the
 // screen node, two non-overlapping dayparts partitioning the day (a content
 // daypart 06:00–22:00 playing the playlist and firing a rising-edge preset, and
@@ -115,7 +115,7 @@ var seedDemoAutomationJSON = json.RawMessage(`{"id":"` + seedDemoAutomationID + 
 // schedule governing nothing and delivers no program.
 //
 // Rows are inserted in dependency order so each write's pre-commit
-// datamodel.ValidateRows / BuildScopeTree / ValidateIdentityRows sees a
+// datamodel.ValidateRows / BuildFullScopeTree / ValidateIdentityRows sees a
 // referentially complete set: the scope nodes first (a child after its parent),
 // then the screen row on the node it is placed under, then the playlist + preset
 // before the daypart that references them, the schedule before its dayparts. The
@@ -148,6 +148,12 @@ func (s *Store) SeedDemo(ctx context.Context, assetRefs ...string) error {
 		kind Kind
 		row  any
 	}{
+		// The org root is a REAL row, not a tolerated boundary: the store
+		// validates the full tree, where DAT-002 demands every parent resolve
+		// and exactly one org-kind node exist. An org carries no geo (DAT-032).
+		{KindScopeNode, datamodel.ScopeNode{
+			ID: seedOrgAncestorScopeNodeID, Kind: "org", Name: "Demo Org",
+		}},
 		{KindScopeNode, datamodel.ScopeNode{
 			ID: seedSiteScopeNodeID, Kind: "site", ParentID: &orgParent, Name: "Demo Site",
 			TZ: &tz, Lat: &lat, Long: &long,

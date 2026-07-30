@@ -10,7 +10,7 @@ import (
 )
 
 // readScopeNodes loads every scope-node row body, ordered by id, into typed
-// datamodel.ScopeNode values — the input BuildScopeTree and the desired-state
+// datamodel.ScopeNode values — the input the tree builders and the desired-state
 // derivation consume.
 func readScopeNodes(ctx context.Context, q queryer) ([]datamodel.ScopeNode, error) {
 	bodies, err := readBodies(ctx, q, string(KindScopeNode))
@@ -63,7 +63,7 @@ func readScreens(ctx context.Context, q queryer) ([]datamodel.Screen, error) {
 //
 // site_effective is taken from the SITE scope node's OWN placement columns
 // (DAT-033) — never from the feeder's OS locale (the no-box-local-desired-state
-// rule). A site node always carries all three geo columns non-null (BuildScopeTree
+// rule). A site node always carries all three geo columns non-null (the tree builder
 // enforced it at write time). If no site node is present the zero SiteEffective
 // is returned.
 func desiredStateRows(ctx context.Context, q queryer) (scopeNodes []datamodel.ScopeNode, rows datamodel.RawRows, siteEffective wire.SiteEffective, err error) {
