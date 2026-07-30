@@ -87,6 +87,39 @@ const maxScopeNodeNameLen = 200
 // root), not an error. An ancestor chain that cannot reach a site is surfaced later,
 // per DAT-034, by EffectiveGeo — never by substituting box-local state.
 func BuildScopeTree(nodes []ScopeNode) (ScopeTree, []Error) {
+	return buildScopeTree(nodes, false)
+}
+
+// BuildFullScopeTree is BuildScopeTree for a holder of the COMPLETE tree — the
+// app store's post-write validation. The one difference: a parent_id that does
+// not resolve is a DAT-002 violation (SCOPE_NODE_PARENT_INVALID), never a
+// subtree boundary — "every non-org scope node's parent_id MUST reference an
+// existing scope node" is stated of the tree itself, and only a relay/1
+// snapshot has an excuse to be missing the rest of it.
+//
+// What this DOES close, beyond the dangling reference itself: re-kinding the org
+// node away from `org` can no longer produce a conformant full tree. A non-org
+// node must name a parent that RESOLVES, and the only kinds a re-kinded root
+// could take must sit under a node whose own kind permits them (DAT-003) — which,
+// on a populated tree, its own children then refuse. DAT-022's delete refusal is
+// decided from the row's `kind`, so it is only as strong as that field's
+// integrity: this is the write that used to be able to erode it.
+//
+// What it does NOT close, stated so the gap is not mistaken for coverage:
+// DAT-002's exactly-one-org clause. Both variants share only the
+// SCOPE_NODE_MULTIPLE_ORG upper bound (more than one org). Neither requires that
+// an org exist — an empty set is a valid tree, the state before the root is
+// created — and "every parent resolves" does not by itself imply a root: DAT-003
+// permits a group under a group, so a group→group cycle has every parent present
+// and no null-parented node anywhere. Such a component is unreachable from the
+// org rather than dangling, which is a different defect from the one this
+// variant refuses; AncestorChain is cycle-guarded, so it is a reachability
+// question, not a liveness one.
+func BuildFullScopeTree(nodes []ScopeNode) (ScopeTree, []Error) {
+	return buildScopeTree(nodes, true)
+}
+
+func buildScopeTree(nodes []ScopeNode, fullTree bool) (ScopeTree, []Error) {
 	tree := ScopeTree{byID: make(map[string]ScopeNode, len(nodes))}
 	var errs []Error
 
@@ -139,10 +172,14 @@ func BuildScopeTree(nodes []ScopeNode) (ScopeTree, []Error) {
 				errs = append(errs, Error{Field: "parent_id", Code: "SCOPE_NODE_PARENT_INVALID", Message: "a non-org scope node MUST have a non-null parent_id (DAT-002)"})
 			} else if parent, ok := tree.byID[*n.ParentID]; ok {
 				// DAT-003: a present parent must permit this child's kind. If the
-				// parent is absent, this is a subtree boundary, not a violation.
+				// parent is absent, this is a subtree boundary, not a violation —
+				// unless the caller holds the full tree, where absent means
+				// nonexistent and DAT-002 makes that a violation in its own right.
 				if !permittedChildKinds[parent.Kind][n.Kind] {
 					errs = append(errs, Error{Field: "parent_id", Code: "SCOPE_NODE_PARENT_INVALID", Message: "scope-node kind is not a permitted child of its parent's kind (DAT-003)"})
 				}
+			} else if fullTree {
+				errs = append(errs, Error{Field: "parent_id", Code: "SCOPE_NODE_PARENT_INVALID", Message: "a non-org scope node's parent_id MUST reference an existing scope node (DAT-002)"})
 			}
 		}
 

@@ -327,3 +327,43 @@ func TestScopeNodeNameValidation(t *testing.T) {
 		}
 	})
 }
+
+// BuildFullScopeTree is the app store's variant: DAT-002's "parent_id MUST
+// reference an existing scope node" is enforced rather than treated as a
+// subtree boundary. The tolerant variant's answer on the same input is asserted
+// alongside, so the strictness provably lives in the full-tree variant and not
+// in a check both share — a relay snapshot must keep validating without its org.
+func TestBuildFullScopeTreeResolvesEveryParent(t *testing.T) {
+	org := ScopeNode{ID: "01J8Z0A0000000000000000001", Kind: "org", Name: "Org"}
+	site := ScopeNode{
+		ID: "01J8Z0A0000000000000000002", Kind: "site", ParentID: ptrStr(org.ID), Name: "Site",
+		TZ: ptrStr("America/Chicago"), Lat: ptrF64(41.8), Long: ptrF64(-87.6),
+	}
+	screen := ScopeNode{ID: "01J8Z0A0000000000000000003", Kind: "screen", ParentID: ptrStr(site.ID), Name: "Screen"}
+
+	t.Run("a complete resolving tree is valid in both variants", func(t *testing.T) {
+		if _, errs := BuildFullScopeTree([]ScopeNode{org, site, screen}); len(errs) != 0 {
+			t.Errorf("full: %+v", errs)
+		}
+		if _, errs := BuildScopeTree([]ScopeNode{org, site, screen}); len(errs) != 0 {
+			t.Errorf("tolerant: %+v", errs)
+		}
+	})
+
+	t.Run("an empty set is valid — the tree before its org is created", func(t *testing.T) {
+		if _, errs := BuildFullScopeTree(nil); len(errs) != 0 {
+			t.Errorf("full: %+v", errs)
+		}
+	})
+
+	t.Run("a dangling parent is DAT-002-invalid in the full tree, a boundary in a snapshot", func(t *testing.T) {
+		// site+screen without the org row: exactly what a re-kinded org (the
+		// DAT-022 bypass) or a re-parent-to-garbage PATCH would leave stored.
+		if _, errs := BuildFullScopeTree([]ScopeNode{site, screen}); !hasErr(errs, "SCOPE_NODE_PARENT_INVALID", "parent_id") {
+			t.Errorf("full: want SCOPE_NODE_PARENT_INVALID on the dangling parent; got %+v", errs)
+		}
+		if _, errs := BuildScopeTree([]ScopeNode{site, screen}); len(errs) != 0 {
+			t.Errorf("tolerant: a subtree must stay valid; got %+v", errs)
+		}
+	})
+}
