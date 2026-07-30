@@ -44,6 +44,12 @@ type Lockout struct {
 type lockoutEntry struct {
 	failures  int
 	lockedTil int64
+	// lastMs is the instant of the most recent failure against this key. It
+	// exists for eviction (evictOneLocked): without it, "which entry is least
+	// worth keeping" has no answer for a key that has accumulated failures but
+	// not yet crossed the threshold, and those are exactly the entries a
+	// map-filling attacker creates.
+	lastMs int64
 }
 
 // Lockout defaults. Five tolerated failures then a 30s lock doubling to a 15m
@@ -58,6 +64,18 @@ const (
 	DefaultLockoutBaseMs    int64 = 30_000
 	DefaultLockoutMaxMs     int64 = 15 * 60_000
 	lockoutMaxShift         uint  = 20 // guards the doubling against int64 overflow
+	// maxLockoutEntries bounds the map. The key is (credential identifier,
+	// source-IP class) and the identifier half is whatever an unauthenticated
+	// caller typed, so its cardinality is attacker-chosen and unbounded; the
+	// only pruning path used to be Succeed, which requires a SUCCESSFUL
+	// authentication on that exact key — something that can never happen for an
+	// identifier that does not exist. So every attempt against a made-up name
+	// left a permanent entry. Argon2id's cost throttles the fill rate; it does
+	// not bound it, and an appliance runs for weeks.
+	//
+	// 4096 matches internal/relay/reenroll.RateLimiter's bound, which faced the
+	// same shape at the same kind of endpoint.
+	maxLockoutEntries = 4096
 )
 
 // NewLockout returns a Lockout tolerating threshold consecutive failures per key
@@ -99,9 +117,17 @@ func (l *Lockout) Fail(key string, nowMs int64) (lockedForMs int64) {
 	defer l.mu.Unlock()
 	e, ok := l.entries[key]
 	if !ok {
+		// At capacity, make room by dropping an entry no lock currently rests
+		// on. If every entry is a live lock, nothing is dropped and this key
+		// simply goes untracked for now — see evictOneLocked for why that is the
+		// deliberate direction to fail in.
+		if len(l.entries) >= maxLockoutEntries && !l.evictOneLocked(nowMs) {
+			return 0
+		}
 		e = &lockoutEntry{}
 		l.entries[key] = e
 	}
+	e.lastMs = nowMs
 	e.failures++
 	if e.failures <= l.threshold {
 		return 0
@@ -125,6 +151,45 @@ func (l *Lockout) Succeed(key string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	delete(l.entries, key)
+}
+
+// evictOneLocked drops one entry to make room and reports whether it managed
+// to. It must be called with l.mu held.
+//
+// It NEVER evicts an entry whose lock is currently in force. That is the whole
+// security constraint here, and it is the reason this is not simply an LRU: a
+// bound that could evict a live lock would hand an attacker a way to CLEAR
+// THEIR OWN LOCKOUT by flooding the map with fresh keys, turning a memory fix
+// into an authentication bypass. A leak is much cheaper than that.
+//
+// Among the evictable entries — those holding no in-force lock, i.e. failure
+// history and nothing more — it takes the least recently touched. Those are
+// precisely what a map-filling attacker leaves behind: one or two failures
+// against an identifier that does not exist, never locked, never to be pruned
+// by Succeed because nobody will ever authenticate as a name that is not there.
+//
+// When every entry IS a live lock, it evicts nothing and returns false. Fail
+// then declines to track the new key rather than displacing a lock. That
+// degrades in the safe direction: an existing lock keeps being enforced, and
+// reaching this state at all requires 4096 simultaneous in-force locks, each
+// bought with threshold+1 failures at Argon2id cost. It is also self-clearing —
+// locks lift, and the next Fail sweeps one.
+func (l *Lockout) evictOneLocked(nowMs int64) bool {
+	victim := ""
+	var victimAt int64
+	for k, e := range l.entries {
+		if e.lockedTil > nowMs {
+			continue // a lock is resting on this one
+		}
+		if victim == "" || e.lastMs < victimAt {
+			victim, victimAt = k, e.lastMs
+		}
+	}
+	if victim == "" {
+		return false
+	}
+	delete(l.entries, victim)
+	return true
 }
 
 // LockoutKey builds SEC-090's `(credential, source-IP class)` composite key.
