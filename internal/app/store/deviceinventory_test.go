@@ -125,6 +125,7 @@ func readInventory(t *testing.T, s *store.Store) (devices []string, patterns []s
 // external_id, labels, revision, timestamps) deliberately left behind.
 func TestDeviceInventoryProjectsExactlyTheContractMembers(t *testing.T) {
 	s := openMem(t)
+	seedPlacementNode(t, s, screenNodeID)
 	cadence := invPollCadenceSecs
 	if _, err := s.Create(context.Background(), store.KindAdoptedDevice,
 		mustJSON(t, invDeviceRow(invDeviceLobbyID, invLobbyNativeID, &cadence))); err != nil {
@@ -155,6 +156,7 @@ func TestDeviceInventoryProjectsExactlyTheContractMembers(t *testing.T) {
 // (which a relay would read as "poll continuously") and never an absent key.
 func TestDeviceInventoryPollCadenceNullWhenUnstated(t *testing.T) {
 	s := openMem(t)
+	seedPlacementNode(t, s, screenNodeID)
 	if _, err := s.Create(context.Background(), store.KindAdoptedDevice,
 		mustJSON(t, invDeviceRow(invDeviceLobbyID, invLobbyNativeID, nil))); err != nil {
 		t.Fatalf("create adopted device: %v", err)
@@ -251,6 +253,7 @@ func TestPackMatchPatternsComeFromInstalledPacks(t *testing.T) {
 //     could ever be found.
 func TestPackMatchPatternsAreIndependentOfTheAdoptedSet(t *testing.T) {
 	s := openMem(t)
+	seedPlacementNode(t, s, screenNodeID)
 	ctx := context.Background()
 
 	// A device adopted with NO pack installed: the section carries the device
@@ -350,6 +353,7 @@ func TestPackContributionWithNoMatchPatternsContributesNothing(t *testing.T) {
 // differently each time even though nothing had been authored.
 func TestDeviceInventoryIsStableAcrossReads(t *testing.T) {
 	s := openMem(t)
+	seedPlacementNode(t, s, screenNodeID)
 	ctx := context.Background()
 
 	// The atrium row is written FIRST but sorts SECOND by id, so a derivation

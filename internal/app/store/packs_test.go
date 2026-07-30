@@ -201,6 +201,7 @@ func rowIn(scopeNode, externalID string, body string) store.PackRow {
 // generation once.
 func TestCreatePackRowAssignsEnvelopeAndBumpsGeneration(t *testing.T) {
 	st := openMem(t)
+	seedPlacementNode(t, st, testScopeNode)
 	ctx := context.Background()
 	if _, _, err := st.InstallPack(ctx, packSpec("acme/menu-board", "1.0.0", 1)); err != nil {
 		t.Fatalf("install: %v", err)
@@ -240,6 +241,7 @@ func TestCreatePackRowAssignsEnvelopeAndBumpsGeneration(t *testing.T) {
 // the immutable entity_id + created_at, and refreshes updated_at.
 func TestUpdatePackRowOptimistic(t *testing.T) {
 	st := openMem(t)
+	seedPlacementNode(t, st, testScopeNode)
 	ctx := context.Background()
 	_, _, _ = st.InstallPack(ctx, packSpec("acme/menu-board", "1.0.0", 1))
 	row, err := st.CreatePackRow(ctx, "acme/menu-board", "menu_items", rowIn(testScopeNode, "", `{"name":"Burger"}`))
@@ -274,6 +276,7 @@ func TestUpdatePackRowOptimistic(t *testing.T) {
 // bumps the generation; a stale revision is refused; a missing row is ErrNotFound.
 func TestDeletePackRowOptimistic(t *testing.T) {
 	st := openMem(t)
+	seedPlacementNode(t, st, testScopeNode)
 	ctx := context.Background()
 	_, _, _ = st.InstallPack(ctx, packSpec("acme/menu-board", "1.0.0", 1))
 	row, _ := st.CreatePackRow(ctx, "acme/menu-board", "menu_items", rowIn(testScopeNode, "", `{"name":"Burger"}`))
@@ -296,6 +299,7 @@ func TestDeletePackRowOptimistic(t *testing.T) {
 // (the keyset order the cursor pages over) and scopes to the given pack+collection.
 func TestListPackRowsOrderedByEntityID(t *testing.T) {
 	st := openMem(t)
+	seedPlacementNode(t, st, testScopeNode)
 	ctx := context.Background()
 	_, _, _ = st.InstallPack(ctx, packSpec("acme/menu-board", "1.0.0", 1))
 	for i := 0; i < 5; i++ {
@@ -324,6 +328,7 @@ func TestListPackRowsOrderedByEntityID(t *testing.T) {
 // (no row, no generation bump) and propagates the error verbatim.
 func TestPackRowGuardRunsInsideWrite(t *testing.T) {
 	st := openMem(t)
+	seedPlacementNode(t, st, testScopeNode)
 	ctx := context.Background()
 	_, _, _ = st.InstallPack(ctx, packSpec("acme/menu-board", "1.0.0", 1))
 	before := gen(t, st)
@@ -346,6 +351,7 @@ func TestPackRowGuardRunsInsideWrite(t *testing.T) {
 // dev-POC destructive uninstall).
 func TestUninstallCascadesPackRows(t *testing.T) {
 	st := openMem(t)
+	seedPlacementNode(t, st, testScopeNode)
 	ctx := context.Background()
 	pack, _, _ := st.InstallPack(ctx, packSpec("acme/menu-board", "1.0.0", 1))
 	if _, err := st.CreatePackRow(ctx, "acme/menu-board", "menu_items", rowIn(testScopeNode, "", `{"name":"Burger"}`)); err != nil {
@@ -366,6 +372,7 @@ func TestUninstallCascadesPackRows(t *testing.T) {
 // uninstall and resurface if the same pack id were later reinstalled fresh.
 func TestCreatePackRowRefusesOrphanAfterUninstall(t *testing.T) {
 	st := openMem(t)
+	seedPlacementNode(t, st, testScopeNode)
 	ctx := context.Background()
 
 	pack, _, err := st.InstallPack(ctx, packSpec("acme/ghost", "1.0.0", 1))
@@ -400,6 +407,7 @@ func TestCreatePackRowRefusesOrphanAfterUninstall(t *testing.T) {
 // the create path — a defensive close against touching a pre-existing orphan row.
 func TestUpdatePackRowRefusesOrphanPack(t *testing.T) {
 	st := openMem(t)
+	seedPlacementNode(t, st, testScopeNode)
 	ctx := context.Background()
 
 	pack, _, err := st.InstallPack(ctx, packSpec("acme/ghost", "1.0.0", 1))

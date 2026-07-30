@@ -30,6 +30,9 @@ const exampleMenuRowsPath = "/api/v1/packs/waiveo/menu-board/data/menu_items"
 
 func TestExamplePackInstallsAndServesDataEndToEnd(t *testing.T) {
 	e := newEnv(t)
+	// The node the menu-item row below is placed at: a pack row carries the same
+	// DAT-006 placement a resource row does, and the store resolves it.
+	e.seedPlacementNodes(t, rowScopeNodeA)
 
 	raw, err := examplepacks.MenuBoardZip()
 	if err != nil {

@@ -4,16 +4,39 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/maaxton/waiveo-next/internal/datamodel"
 )
 
-// placement.go answers one question the tree cannot answer about itself: which
-// rows, anywhere in this store, are PLACED at a given scope node — data-model/1
-// DAT-006's `scope_node`, the column every row but a scope node itself carries.
+// placement.go owns data-model/1 DAT-006's `scope_node` — the column every row
+// but a scope node itself carries — as a REFERENCE, in both of the directions the
+// tree cannot answer about itself:
 //
-// It exists for the deletion rules (DAT-021): a scope node still named as some
-// row's scope_node MUST NOT be removed, and nothing else in this package looks
-// at placement from the referenced side. The forward direction (ListFilter.
-// ScopeNode) has always been here; this is the reverse.
+//   - placedAt — the REFERENCED side: which rows, anywhere in this store, are
+//     placed AT a given scope node. It exists for the deletion rules (DAT-021): a
+//     scope node still named as some row's scope_node MUST NOT be removed.
+//   - scopeNodeExists / checkPlacementResolves — the REFERRING side: does the node
+//     a row is being placed at exist at all? DAT-006 says a row's scope_node is
+//     "the id of the scope node it is placed under", and a row placed under nothing
+//     is the identical dangling state a delete is refused for, reached from the
+//     other end.
+//
+// One state, two entrances, and the entrances need different shapes: a deletion
+// asks about ONE node across EVERY table (so placedAt is a compound scan over
+// placementTables), while a write asks about ONE node against the tree (so the
+// forward check is a single lookup and needs no table list at all).
+//
+// What they DO share is placementTables' subject matter: the set of tables whose
+// scope_node is a LIVE placement is both the set that must block a deletion and
+// the set whose writes must resolve. A table on one list and not the other would be
+// a store where a node cannot be deleted but a row may point at nothing, or the
+// reverse. placementTables is that one inventory;
+// TestEveryScopeNodeColumnIsScannedOrExcluded holds it against the live schema, and
+// TestEveryPlacementTableRefusesAnUnresolvablePlacement holds every table on it to
+// the forward refusal.
+//
+// The plain forward read (ListFilter.ScopeNode) has always been here; neither of
+// these is that.
 
 // Placement names one row found placed at a scope node: the table it lives in
 // (a Kind's string value IS its table name — tableFor's own identity) and the
@@ -139,4 +162,83 @@ func placedAt(ctx context.Context, q queryer, scopeNode string) (Placement, bool
 		return Placement{}, false, fmt.Errorf("store: scan row placed at %s: %w", scopeNode, err)
 	}
 	return p, true, nil
+}
+
+// scopeNodeExistsQuery answers the one question a WRITE has to ask about a
+// placement: is the node there? It is the forward direction of placedAt's reverse
+// scan, and it needs no table list at all — the whole tree lives in one table.
+const scopeNodeExistsQuery = `SELECT 1 FROM scope_nodes WHERE id = ? LIMIT 1`
+
+// scopeNodeExists reports whether scopeNode names a stored scope node.
+//
+// An empty argument is reported as existing, and that is not a shortcut. Every
+// row's scope_node column defaults to the empty string, so "" means UNPLACED, not
+// "placed at a node whose id is empty" — the same distinction placedAt draws from
+// its own side. Whether a given kind MAY be unplaced is DAT-006's presence half,
+// enforced per kind by the datamodel validators (ROW_SCOPE_NODE_MISSING for the
+// identity rows); a reference check that refused an absent reference would be
+// deciding that rule for every kind at once, silently.
+func scopeNodeExists(ctx context.Context, q queryer, scopeNode string) (bool, error) {
+	if scopeNode == "" {
+		return true, nil
+	}
+	rows, err := q.QueryContext(ctx, scopeNodeExistsQuery, scopeNode)
+	if err != nil {
+		return false, fmt.Errorf("store: resolve scope node %s: %w", scopeNode, err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		return true, nil
+	}
+	return false, rows.Err()
+}
+
+// checkPlacementResolves is the refusal scopeNodeExists feeds: a *ValidationError
+// naming DAT-006's `scope_node` field, for the api layer to render as
+// VALIDATION_FAILED with the per-field code. kind names the row's own family, so
+// the message says which table refused rather than only which column.
+//
+// # Which rows are checked, and why that is enough
+//
+// This judges the placement the write itself carries, not the table it landed in.
+// The invariant — no row references a scope node that is not there — has exactly
+// two entrances, and both are now closed: a row arrives carrying an unresolvable
+// scope_node (here), or the node a resolving reference names is removed underneath
+// it (DAT-021, refused by the delete guard reading placedAt). There is no third,
+// so a whole-table sweep would add no coverage and would refuse a caller's
+// perfectly good write because some OTHER row is wrong — with a `scope_node`
+// error naming a body member the request does not have.
+//
+// # The code
+//
+// data-model/1 publishes NO error code for this refusal. Its Error taxonomy has
+// SCOPE_NODE_PARENT_INVALID for a scope node's own parent_id (DAT-002/003) and
+// SCOPE_NODE_IN_USE / _NOT_EMPTY / _ORG_UNDELETABLE for the deletion side
+// (DAT-020-022) — none of which is a row's own placement — and DAT-006 states the
+// requirement without naming a refusal for it. So this uses REFERENCE_INVALID,
+// which is what every OTHER unresolvable cross-row reference in the data model is
+// already spelled as (DAT-050/060/070/075/080's schedule_id, playlist_id,
+// fallback_id and preset_batch_id, and PLY-124's optional device_id — see
+// internal/datamodel/validate.go and identityrows.go). It is not itself published;
+// it is this data model's established per-field vocabulary for "this reference
+// names no row", and a row's scope_node is that, exactly. Borrowing
+// SCOPE_NODE_PARENT_INVALID instead would tell a caller their parent_id was wrong
+// on a row that has no parent_id.
+//
+// The published code a caller branches on first is api/1's own, and it is the one
+// this becomes: VALIDATION_FAILED, 422.
+func checkPlacementResolves(ctx context.Context, q queryer, kind, scopeNode string) error {
+	found, err := scopeNodeExists(ctx, q, scopeNode)
+	if err != nil {
+		return err
+	}
+	if found {
+		return nil
+	}
+	return &ValidationError{Errors: []datamodel.Error{{
+		Field: "scope_node",
+		Code:  "REFERENCE_INVALID",
+		Message: "a row's scope_node MUST be the id of an existing scope node (DAT-006); " +
+			scopeNode + " names none (table " + kind + ")",
+	}}}
 }

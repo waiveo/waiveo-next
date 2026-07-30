@@ -10,11 +10,20 @@ import (
 	"github.com/maaxton/waiveo-next/internal/datamodel"
 )
 
-// placement_test.go covers the delete-guard seam from the outside: that a
-// DeleteGuard actually gates the removal (and its error reaches the caller
+// placement_test.go covers both directions of DAT-006's `scope_node` reference
+// from the outside.
+//
+// The REFERENCED side (a scope node a row is placed at must not be deleted): that
+// a DeleteGuard actually gates the removal (and its error reaches the caller
 // unwrapped), that it reads the store as it still stands, and that the reverse
-// placement lookup it reads through sees a row of every kind that carries a
-// scope_node. The lookup's own table list is asserted structurally in
+// lookup it reads through sees a row of every kind that carries a scope_node.
+//
+// The REFERRING side (a row must not be placed at a node that is not there): that
+// a write carrying an unresolvable placement is refused, for every one of those
+// same kinds, on create and on re-place alike — and that an EMPTY placement is not
+// mistaken for one.
+//
+// The table list both directions rest on is asserted structurally in
 // placement_internal_test.go — see the note on placementProbes.
 
 // errGuardRefused is a sentinel a test guard returns, so the assertion is that
@@ -282,5 +291,155 @@ func placedAutomation(id, node string) map[string]any {
 		"actions": []any{map[string]any{
 			"type": "device_command", "entity_id": entity, "command": "power_on",
 		}},
+	}
+}
+
+// ---- the forward direction: a placement that names no scope node ----------
+
+// absentPlacementNode is a fixture ULID (no secrets) that names NO scope node in
+// any test below. It is the whole subject of the cases that follow: DAT-006 makes
+// a row's scope_node the id of the node it is placed under, and this is not one.
+const absentPlacementNode = "01J8ZN0SVCHN0DEANYWHERE001"
+
+// assertUnresolvedPlacement requires err to be the store's DAT-006 refusal, and
+// requires it to be the ONLY error carried.
+//
+// "Only" is the load-bearing half. The check runs ahead of every per-kind
+// validator, so a row refused for its placement must not ALSO be reported against
+// rules it could not possibly satisfy while unplaced (a daypart's schedule_id, say,
+// naming a schedule whose own create was refused for the same reason). A caller
+// reading the 422 gets the one fixable thing.
+func assertUnresolvedPlacement(t *testing.T, err error, what string) {
+	t.Helper()
+	var verr *store.ValidationError
+	if !errors.As(err, &verr) {
+		t.Errorf("%s placed at a node that does not exist: err = %v, want a *store.ValidationError", what, err)
+		return
+	}
+	if len(verr.Errors) != 1 {
+		t.Errorf("%s: refusal carries %d error(s) (%+v), want exactly the placement one", what, len(verr.Errors), verr.Errors)
+		return
+	}
+	if e := verr.Errors[0]; e.Field != "scope_node" || e.Code != "REFERENCE_INVALID" {
+		t.Errorf("%s: refusal = {field:%q code:%q}, want {scope_node REFERENCE_INVALID}", what, e.Field, e.Code)
+	}
+}
+
+// TestEveryPlacementTableRefusesAnUnresolvablePlacement is the forward direction's
+// completeness check, run over the SAME probe set the reverse lookup's own test
+// uses — one minimal, valid row per kind that carries a scope_node.
+//
+// Those probes are known-good at a real node: TestPlacedAtSeesEveryKindThatCarriesA
+// Placement creates every one of them successfully. So a refusal here is
+// attributable to the placement and to nothing else, and the tree the store holds
+// is a complete, conformant one — the only thing wrong in the whole store is where
+// these rows say they are.
+//
+// pack_rows gets an arm of its own because it is not a Kind and is written through
+// its own method, which is exactly why placement.go names it by hand; the structural
+// half of the claim (that these are ALL the placement tables) is
+// placement_internal_test.go's.
+func TestEveryPlacementTableRefusesAnUnresolvablePlacement(t *testing.T) {
+	s := openMem(t)
+	ctx := context.Background()
+	seedSiteScreen(t, s)
+
+	for _, probe := range placementProbes(t) {
+		for _, row := range probe.rows(absentPlacementNode) {
+			_, err := s.Create(ctx, row.kind, row.body)
+			assertUnresolvedPlacement(t, err, string(row.kind)+" (probing "+string(probe.kind)+")")
+			// Nothing was written: the table is still empty, so the refusal is a
+			// rollback rather than a stored row plus an error.
+			if stored, err := s.List(ctx, row.kind, store.ListFilter{}); err != nil {
+				t.Fatalf("list %s: %v", row.kind, err)
+			} else if len(stored) != 0 {
+				t.Errorf("%s: a refused create left %d row(s) behind", row.kind, len(stored))
+			}
+		}
+	}
+
+	if _, _, err := s.InstallPack(ctx, packSpec("acme/placement", "1.0.0", 1)); err != nil {
+		t.Fatalf("install the pack whose collection row is probed: %v", err)
+	}
+	_, err := s.CreatePackRow(ctx, "acme/placement", "menu_items",
+		store.PackRow{LifecycleState: "published", ScopeNode: absentPlacementNode, Body: json.RawMessage(`{"name":"Burger"}`)})
+	assertUnresolvedPlacement(t, err, "pack_rows")
+	rows, err := s.ListPackRows(ctx, "acme/placement", "menu_items")
+	if err != nil {
+		t.Fatalf("list pack rows: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("a refused pack-row create left %d row(s) behind", len(rows))
+	}
+}
+
+// TestRePlacingOntoAnAbsentNodeIsRefused is the UPDATE half. A create is not the
+// only way a row acquires a placement: a patch may move one, and the effective
+// post-merge scope_node is what has to resolve — otherwise a row could be created
+// correctly and then walked off the tree in a second request.
+func TestRePlacingOntoAnAbsentNodeIsRefused(t *testing.T) {
+	s := openMem(t)
+	ctx := context.Background()
+	seedSiteScreen(t, s)
+
+	pl := datamodel.Playlist{
+		ID: playlistID, ScopeNode: screenNodeID, Name: "Placed",
+		Items: []datamodel.PlaylistItem{{Source: "asset", AssetRef: "sha256:cafef00d"}},
+	}
+	created, err := s.Create(ctx, store.KindPlaylist, mustJSON(t, pl))
+	if err != nil {
+		t.Fatalf("create the playlist to be re-placed: %v", err)
+	}
+
+	_, err = s.Update(ctx, store.KindPlaylist, playlistID, created.Revision,
+		mustJSON(t, map[string]any{"scope_node": absentPlacementNode}))
+	assertUnresolvedPlacement(t, err, "playlists (re-placed)")
+
+	// The refusal rolled back: the row is still at the node it was authored at,
+	// still at the revision the caller held.
+	after, found, err := s.Get(ctx, store.KindPlaylist, playlistID)
+	if err != nil || !found {
+		t.Fatalf("the refused update removed the row (found=%v err=%v)", found, err)
+	}
+	if after.ScopeNode != screenNodeID || after.Revision != created.Revision {
+		t.Fatalf("after a refused re-place: scope_node=%q revision=%d, want %q/%d",
+			after.ScopeNode, after.Revision, screenNodeID, created.Revision)
+	}
+}
+
+// TestAnUnplacedRowIsNotARowPlacedAtNothing: an EMPTY scope_node is left alone by
+// the reference check. Every row's column defaults to the empty string, so ""
+// means unplaced — and whether a given kind may BE unplaced is DAT-006's presence
+// half, which the per-kind validators decide (a screen row is refused
+// ROW_SCOPE_NODE_MISSING; a webhook endpoint is not). A reference check that
+// refused "" would be quietly deciding that rule for every kind at once.
+func TestAnUnplacedRowIsNotARowPlacedAtNothing(t *testing.T) {
+	s := openMem(t)
+	ctx := context.Background()
+
+	if _, err := s.Create(ctx, store.KindWebhookEndpoint, mustJSON(t, map[string]any{
+		"id": "01J8ZN0P1ACEDWEBH00KR0W001", "url": "https://webhook.example/ingest",
+		"schemas": []any{"content.played"},
+	})); err != nil {
+		t.Fatalf("create an endpoint carrying no placement: %v", err)
+	}
+
+	// And the presence half still answers for a kind that DOES require one, so
+	// this is a division of labour rather than a hole.
+	_, err := s.Create(ctx, store.KindScreen, mustJSON(t, map[string]any{
+		"id": "01J8ZN0P1ACEDSCREENR0W0001", "name": "Unplaced Screen",
+	}))
+	var verr *store.ValidationError
+	if !errors.As(err, &verr) {
+		t.Fatalf("a screen row carrying no placement: err = %v, want a *store.ValidationError", err)
+	}
+	var sawMissing bool
+	for _, e := range verr.Errors {
+		if e.Code == "ROW_SCOPE_NODE_MISSING" {
+			sawMissing = true
+		}
+	}
+	if !sawMissing {
+		t.Fatalf("a screen row carrying no placement was refused %+v, want a ROW_SCOPE_NODE_MISSING among them", verr.Errors)
 	}
 }

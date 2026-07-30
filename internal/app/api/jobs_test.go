@@ -225,6 +225,7 @@ func validTargetState(s string) bool {
 // "a client determines completion by reading the Job resource again".
 func TestJobFromAsyncEndpointIsPollable(t *testing.T) {
 	e := newEnv(t)
+	e.placementNode(t)
 	root := e.auth.Credential()
 	a := e.createAutomation(t, root, autoScopeNode, map[string]string{"env": "prod"})
 	b := e.createAutomation(t, root, autoScopeNode, map[string]string{"env": "prod"})
@@ -283,6 +284,7 @@ func TestJobFromAsyncEndpointIsPollable(t *testing.T) {
 // is asserted is the HTTP surface's answer.
 func TestJobPollReportsCurrentState(t *testing.T) {
 	e := newEnv(t)
+	e.placementNode(t)
 	root := e.auth.Credential()
 	a := e.createAutomation(t, root, autoScopeNode, map[string]string{"env": "prod"})
 	b := e.createAutomation(t, root, autoScopeNode, map[string]string{"env": "prod"})
@@ -357,6 +359,7 @@ func pollState(t *testing.T, e *testEnv, who authtest.Credential, jobID string) 
 // what this case is about.
 func TestJobSurvivesProcessRestart(t *testing.T) {
 	e, dsn := newFileEnv(t)
+	e.placementNode(t)
 	root := e.auth.Credential()
 	a := e.createAutomation(t, root, autoScopeNode, map[string]string{"env": "prod"})
 	b := e.createAutomation(t, root, autoScopeNode, map[string]string{"env": "prod"})

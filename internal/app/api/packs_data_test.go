@@ -35,8 +35,13 @@ func dataPackManifest() map[string]any {
 }
 
 // installDataPack installs the data pack (acme/menu-board) and fails on a non-201.
+//
+// It also seeds the two scope nodes the row fixtures are placed at: a pack row
+// carries the same DAT-006 placement a resource row does, and the store resolves
+// it, so a row placed at an id no node carries is refused.
 func (e *testEnv) installDataPack(t *testing.T) {
 	t.Helper()
+	e.seedPlacementNodes(t, rowScopeNodeA, rowScopeNodeB)
 	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", packBundle(t, dataPackManifest()), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("install data pack: status %d, body %s", resp.StatusCode, raw)

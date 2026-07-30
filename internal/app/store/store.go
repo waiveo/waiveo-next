@@ -602,7 +602,7 @@ func (s *Store) Create(ctx context.Context, kind Kind, body json.RawMessage, gua
 		if err := bumpGeneration(ctx, tx); err != nil {
 			return err
 		}
-		return validateAfterWrite(ctx, tx, kind)
+		return validateAfterWrite(ctx, tx, kind, bf.ScopeNode)
 	}); err != nil {
 		return Resource{}, err
 	}
@@ -769,7 +769,7 @@ func (s *Store) Update(ctx context.Context, kind Kind, id string, rev int64, pat
 		if err := bumpGeneration(ctx, tx); err != nil {
 			return err
 		}
-		if err := validateAfterWrite(ctx, tx, kind); err != nil {
+		if err := validateAfterWrite(ctx, tx, kind, bf.ScopeNode); err != nil {
 			return err
 		}
 		res = Resource{
@@ -839,7 +839,8 @@ func (s *Store) Delete(ctx context.Context, kind Kind, id string, rev int64, gua
 		if err := bumpGeneration(ctx, tx); err != nil {
 			return err
 		}
-		return validateAfterWrite(ctx, tx, kind)
+		// No placement to resolve: a delete removes a reference, never adds one.
+		return validateAfterWrite(ctx, tx, kind, "")
 	})
 }
 

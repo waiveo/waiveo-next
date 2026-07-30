@@ -101,6 +101,7 @@ func nonCompilingAutomationBody(id, scopeNode string) []byte {
 // conventions scope-nodes honor.
 func TestCreateAndGetAutomation(t *testing.T) {
 	e := newEnv(t)
+	e.placementNode(t)
 
 	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", edgeAutomationBody("", autoScopeNode, nil), nil)
 	if resp.StatusCode != http.StatusCreated {
@@ -178,6 +179,7 @@ func TestCreateNonCompilingAutomationRejected(t *testing.T) {
 // gate — a patch that breaks compilation is rejected 422 and nothing changes.
 func TestPatchAutomationRecompileGated(t *testing.T) {
 	e := newEnv(t)
+	e.placementNode(t)
 	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", edgeAutomationBody("", autoScopeNode, nil), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create status = %d", resp.StatusCode)
@@ -227,6 +229,7 @@ func TestPatchAutomationRecompileGated(t *testing.T) {
 // pagination and the label selector, exactly as the scope-nodes list does.
 func TestListAutomationsPaginationAndSelector(t *testing.T) {
 	e := newEnv(t)
+	e.placementNode(t)
 	create := func(labels map[string]string) string {
 		resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", edgeAutomationBody("", autoScopeNode, labels), nil)
 		if resp.StatusCode != http.StatusCreated {
@@ -289,6 +292,7 @@ func TestListAutomationsPaginationAndSelector(t *testing.T) {
 // scope-nodes uses — the automations handler reuses them, never re-derives them.
 func TestCreateAutomationExternalIDAndIdempotency(t *testing.T) {
 	e := newEnv(t)
+	e.placementNode(t)
 
 	body := edgeAutomationBody("", autoScopeNode, nil)
 	withExt := func(ext string) []byte {
@@ -333,6 +337,7 @@ func TestCreateAutomationExternalIDAndIdempotency(t *testing.T) {
 // starts a run reports `ran`.
 func TestRunAutomationReturnsDisposition(t *testing.T) {
 	e := newEnv(t)
+	e.placementNode(t)
 	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", edgeAutomationBody("", autoScopeNode, nil), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create status = %d, body %s", resp.StatusCode, raw)
@@ -383,6 +388,7 @@ func TestRunAutomationReturnsDisposition(t *testing.T) {
 // once engine.Load is relaxed to run app rules app-side) is caught here.
 func TestRunAppClassAutomationRefused(t *testing.T) {
 	e := newEnv(t)
+	e.placementNode(t)
 
 	// An app-classified automation (a notify action is app-class unconditionally,
 	// RUL-210) is stored + validated exactly like an edge rule — the compile gate
@@ -409,6 +415,7 @@ func TestRunAppClassAutomationRefused(t *testing.T) {
 // selector-matched automation ids, each pending (API-110/111).
 func TestBulkEnableReturnsJobOverMatchedIDs(t *testing.T) {
 	e := newEnv(t)
+	e.placementNode(t)
 	create := func(labels map[string]string) string {
 		resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", edgeAutomationBody("", autoScopeNode, labels), nil)
 		if resp.StatusCode != http.StatusCreated {
@@ -488,6 +495,7 @@ func TestBulkEnableMalformedBodyIs422(t *testing.T) {
 // cannot omit its target predicate and touch the whole fleet by accident.
 func TestBulkEnableRequiresSelector(t *testing.T) {
 	e := newEnv(t)
+	e.placementNode(t)
 	// A stored automation the fleet-wide default WOULD have matched, so a missing
 	// guard is observable as a Job over it rather than a 422.
 	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", edgeAutomationBody("", autoScopeNode, nil), nil)
@@ -527,6 +535,7 @@ func TestBulkEnableRequiresSelector(t *testing.T) {
 // run, while a different key executes a genuinely fresh run.
 func TestRunAutomationIdempotency(t *testing.T) {
 	e := newEnv(t)
+	e.placementNode(t)
 	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", edgeAutomationBody("", autoScopeNode, nil), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create status = %d, body %s", resp.StatusCode, raw)
@@ -579,6 +588,7 @@ func TestRunAutomationIdempotency(t *testing.T) {
 // (409 / IDEMPOTENCY_KEY_REUSED).
 func TestBulkEnableIdempotency(t *testing.T) {
 	e := newEnv(t)
+	e.placementNode(t)
 	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", edgeAutomationBody("", autoScopeNode, map[string]string{"env": "prod"}), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create status = %d, body %s", resp.StatusCode, raw)

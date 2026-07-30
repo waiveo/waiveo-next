@@ -56,6 +56,11 @@ func TestInjectedIDSourceMintsBothCreateAndJobIDs(t *testing.T) {
 	// the constant be the real row. It has to be a real row: the store holds the
 	// FULL tree, where an unresolvable parent_id is a DAT-002 violation.
 	seedOrgRootThroughStore(t, st)
+	// And the node the automation below is placed at — also written through the
+	// store, for the same reason: a placement is a reference the store resolves
+	// (DAT-006), and creating the node over the api would consume an id from the
+	// very sequence this test is counting.
+	e.placementNode(t)
 
 	// A create body with NO id: ensureID must mint from the injected source,
 	// never a package-level generator of its own.

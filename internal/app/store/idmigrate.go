@@ -380,7 +380,9 @@ func verifyAfterIDRewrite(ctx context.Context, tx *sql.Tx, plan []IDRewrite) err
 	// ValidateIdentityRows over BOTH identity tables (a screen's device_id link
 	// crosses them, so one kind selects the pair).
 	for _, kind := range []Kind{KindScopeNode, KindPlaylist, KindAutomation, KindScreen} {
-		if err := validateAfterWrite(ctx, tx, kind); err != nil {
+		// No placement of its own to resolve: the migration writes no new row, and
+		// the rewritten scope_node columns are covered by the mapping sweep below.
+		if err := validateAfterWrite(ctx, tx, kind, ""); err != nil {
 			return fmt.Errorf("store: canonicalized row ids did not validate: %w", err)
 		}
 	}

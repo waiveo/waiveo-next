@@ -89,6 +89,23 @@ func seedOrg(t *testing.T, s *store.Store) {
 	}
 }
 
+// seedPlacementNode creates ONE org-kind scope node carrying the given id: the
+// smallest conformant tree there is, and enough for a row to be placed at.
+//
+// It is the fixture for a test whose subject is a ROW rather than the tree. A
+// row's scope_node is a reference the store now resolves (DAT-006), so placing a
+// fixture row at an id no node ever carried is authoring the dangling state the
+// store refuses — and DAT-004 says a row may sit at a node of ANY kind, an org
+// included, so no site/screen scaffolding is needed to give it somewhere to be.
+func seedPlacementNode(t *testing.T, s *store.Store, id string) {
+	t.Helper()
+	if _, err := s.Create(context.Background(), store.KindScopeNode, mustJSON(t, datamodel.ScopeNode{
+		ID: id, Kind: "org", Name: "Fixture Placement Org",
+	})); err != nil {
+		t.Fatalf("seed placement node %s: %v", id, err)
+	}
+}
+
 func screenNode() datamodel.ScopeNode {
 	return datamodel.ScopeNode{
 		ID:       screenNodeID,

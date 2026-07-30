@@ -248,6 +248,99 @@ func (e *testEnv) orgRoot(t *testing.T) string {
 	return e.orgID
 }
 
+// autoSiteNodeID is the site the fixture placement node hangs off — see
+// placementNode. A fixture ULID, no secrets.
+const autoSiteNodeID = "01J8Z0F1XTVRES1TEF0RR0WS01"
+
+// placementNode seeds the scope node the automation, job and pack-data fixtures
+// place their rows at, and returns its id: the autoScopeNode constant itself,
+// which those fixture bodies name directly.
+//
+// A row's scope_node is a reference the store resolves (DAT-006), so a fixture
+// that skipped this was authoring a row placed at nothing — which is why every
+// such test now says out loud that its node exists.
+//
+// It writes through the STORE, not the api, for two reasons: the api assigns a
+// resource's own id (rejectClientSuppliedID) so the constant could not be
+// reached over HTTP, and one test counts every id an injected source mints.
+// Each node is created only if absent, so calling this beside orgRoot, or twice,
+// is safe — and it hangs the tree off whatever org the env already has, because
+// DAT-002 admits exactly one.
+func (e *testEnv) placementNode(t *testing.T) string {
+	t.Helper()
+	e.seedPlacementNodes(t, autoScopeNode)
+	return autoScopeNode
+}
+
+// seedPlacementNodes seeds one screen-kind scope node per id, under the env's
+// fixture site, so a fixture row may be placed at any of them. See placementNode
+// for why these are written through the store and why re-seeding is safe.
+func (e *testEnv) seedPlacementNodes(t *testing.T, ids ...string) {
+	t.Helper()
+	site := e.fixtureSite(t)
+	for _, id := range ids {
+		e.ensureNode(t, datamodel.ScopeNode{ID: id, Kind: "screen", ParentID: strp(site), Name: "Fixture Screen"})
+	}
+}
+
+// fixtureSite returns the site every seeded placement node hangs off, creating it
+// — and the single org root DAT-002 requires above it — on first use.
+//
+// The org is looked for in the STORE, not only in e.orgID, because a fixture may
+// have created one without going through orgRoot (seedScopedTree builds a whole
+// tree of its own). DAT-002 admits exactly one org-kind node, so a second would be
+// SCOPE_NODE_MULTIPLE_ORG — the site has to hang off whichever one is already
+// there.
+func (e *testEnv) fixtureSite(t *testing.T) string {
+	t.Helper()
+	if e.orgID == "" {
+		e.orgID = e.storedOrgID(t)
+	}
+	if e.orgID == "" {
+		e.ensureNode(t, datamodel.ScopeNode{ID: boundaryOrgID, Kind: "org", Name: "Fixture Org", AccountState: "active"})
+		e.orgID = boundaryOrgID
+	}
+	e.ensureNode(t, datamodel.ScopeNode{
+		ID: autoSiteNodeID, Kind: "site", ParentID: strp(e.orgID), Name: "Fixture Site",
+		TZ: strp(siteTZ), Lat: f64p(siteLat), Long: f64p(siteLong),
+	})
+	return autoSiteNodeID
+}
+
+// storedOrgID returns the id of the stored org-kind scope node, or "" when the
+// tree has no root yet.
+func (e *testEnv) storedOrgID(t *testing.T) string {
+	t.Helper()
+	rows, err := e.store.List(context.Background(), store.KindScopeNode, store.ListFilter{})
+	if err != nil {
+		t.Fatalf("list scope nodes: %v", err)
+	}
+	for _, r := range rows {
+		var n datamodel.ScopeNode
+		if err := json.Unmarshal(r.Body, &n); err != nil {
+			t.Fatalf("decode scope node %s: %v", r.ID, err)
+		}
+		if n.Kind == "org" {
+			return n.ID
+		}
+	}
+	return ""
+}
+
+// ensureNode writes n through the store unless a row already carries its id.
+func (e *testEnv) ensureNode(t *testing.T, n datamodel.ScopeNode) {
+	t.Helper()
+	ctx := context.Background()
+	if _, found, err := e.store.Get(ctx, store.KindScopeNode, n.ID); err != nil {
+		t.Fatalf("read scope node %s: %v", n.ID, err)
+	} else if found {
+		return
+	}
+	if _, err := e.store.Create(ctx, store.KindScopeNode, mustJSON(t, n)); err != nil {
+		t.Fatalf("seed scope node %s: %v", n.ID, err)
+	}
+}
+
 // seedOrgRootThroughStore writes the org root at the literal boundaryOrgID,
 // bypassing the api surface entirely.
 //

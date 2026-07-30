@@ -137,6 +137,7 @@ func jobTargetsByID(j jobBody) map[string]jobTarget {
 // removed while the process was down.
 func TestInterruptedBulkEnableResumesAfterRestart(t *testing.T) {
 	e, dsn := newFileEnv(t)
+	e.placementNode(t)
 	root := e.auth.Credential()
 	done := e.createAutomation(t, root, autoScopeNode, map[string]string{"env": "prod"})
 	stranded := e.createAutomation(t, root, autoScopeNode, map[string]string{"env": "prod"})
@@ -214,6 +215,7 @@ func TestInterruptedBulkEnableResumesAfterRestart(t *testing.T) {
 // anything, the fresh job's targets would be in it.
 func TestResumeDoesNotDisturbThisProcessesOwnRun(t *testing.T) {
 	e, dsn := newFileEnv(t)
+	e.placementNode(t)
 	root := e.auth.Credential()
 	old := e.createAutomation(t, root, autoScopeNode, map[string]string{"env": "old"})
 	oldJobID, _ := e.bulkEnable(t, root, "env=old", false)

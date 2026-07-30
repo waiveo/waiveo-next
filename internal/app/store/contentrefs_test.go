@@ -41,6 +41,7 @@ func TestWithContentReferencesProjectsEveryPlaylistItem(t *testing.T) {
 		t.Fatalf("store.Open: %v", err)
 	}
 	defer st.Close()
+	seedPlacementNode(t, st, refsScopeNode)
 
 	if _, err := st.Create(ctx, store.KindPlaylist, refsPlaylist(t, refsPlaylistA,
 		datamodel.PlaylistItem{Source: "asset", AssetRef: "sha256:aa11"},
@@ -150,6 +151,7 @@ func TestWithContentReferencesHoldsTheWriteLock(t *testing.T) {
 		t.Fatalf("store.Open: %v", err)
 	}
 	defer st.Close()
+	seedPlacementNode(t, st, refsScopeNode)
 
 	writerStarted := make(chan struct{})
 	writerDone := make(chan error, 1)

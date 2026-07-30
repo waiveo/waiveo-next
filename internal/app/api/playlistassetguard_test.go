@@ -67,6 +67,17 @@ func newGuardTestFixture(t *testing.T) (*origin.Store, *store.Store, string, []b
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
+	// The node the fixture playlist is placed at. A row's scope_node is a
+	// reference the store resolves (DAT-006) and its refusal is ALSO a
+	// REFERENCE_INVALID, so a fixture that skipped this would make the guard's own
+	// refusal indistinguishable from a fixture mistake — and would make the
+	// guard-disabled case below fail for a reason that has nothing to do with the
+	// guard.
+	if _, err := st.Create(context.Background(), store.KindScopeNode, mustJSONBody(t, datamodel.ScopeNode{
+		ID: guardTestScopeNode, Kind: "org", Name: "Fixture Org", AccountState: "active",
+	})); err != nil {
+		t.Fatalf("seed the fixture scope node: %v", err)
+	}
 
 	body := mustJSONBody(t, datamodel.Playlist{
 		ID: guardTestPlaylistID, ScopeNode: guardTestScopeNode, Name: "Guarded",

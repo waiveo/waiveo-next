@@ -46,10 +46,14 @@ func screenRow(id string, deviceID *string) datamodel.Screen {
 }
 
 // createIdentityRows writes one device and one screen linked to it, returning
-// both stored resources.
+// both stored resources. The node both rows are placed at is seeded first: a
+// row's scope_node is a reference the store resolves (DAT-006), and a fixture
+// that skipped it would be refused for its PLACEMENT — which would make the
+// cases below pass on the wrong refusal.
 func createIdentityRows(t *testing.T, s *store.Store) (dev, scr store.Resource) {
 	t.Helper()
 	ctx := context.Background()
+	seedPlacementNode(t, s, screenNodeID)
 	dev, err := s.Create(ctx, store.KindAdoptedDevice, mustJSON(t, deviceRow(idDeviceRowA, "roku-ecp", "10.0.0.41")))
 	if err != nil {
 		t.Fatalf("create device row: %v", err)
@@ -98,6 +102,7 @@ func TestIdentityRowsCarryTheResourceBaseline(t *testing.T) {
 func TestIdentityRowDeclaredMembersMaterialized(t *testing.T) {
 	s := openMem(t)
 	ctx := context.Background()
+	seedPlacementNode(t, s, screenNodeID)
 
 	res, err := s.Create(ctx, store.KindScreen, json.RawMessage(
 		`{"id":"`+idScreenRowA+`","scope_node":"`+screenNodeID+`","name":"Lobby Screen"}`))
@@ -125,6 +130,7 @@ func TestIdentityRowDeclaredMembersMaterialized(t *testing.T) {
 func TestScreenLinkToAbsentDeviceRejected(t *testing.T) {
 	s := openMem(t)
 	ctx := context.Background()
+	seedPlacementNode(t, s, screenNodeID)
 	before := gen(t, s)
 
 	missing := idDeviceRowB
@@ -173,6 +179,7 @@ func TestDeletingALinkedDeviceRejected(t *testing.T) {
 func TestDuplicateDeviceIdentityRejected(t *testing.T) {
 	s := openMem(t)
 	ctx := context.Background()
+	seedPlacementNode(t, s, screenNodeID)
 
 	if _, err := s.Create(ctx, store.KindAdoptedDevice, mustJSON(t, deviceRow(idDeviceRowA, "roku-ecp", "10.0.0.41"))); err != nil {
 		t.Fatalf("first device create: %v", err)

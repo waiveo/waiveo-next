@@ -487,6 +487,17 @@ const (
 	bulkEnableFixtureOrgID     = "01J8Z0BV1KENAB1E0RGR00T001"
 )
 
+// seedPlacementNode writes a single org-kind scope node carrying id — the
+// smallest conformant tree there is, and enough for a row to be placed at
+// (DAT-004 lets a row sit at a node of any kind). It is the fixture for a case
+// whose subject is a ROW rather than the tree.
+func (h *harness) seedPlacementNode(id string) error {
+	return h.seedScopeNode(map[string]any{
+		"id": id, "kind": "org", "name": "Placement Node " + id,
+		"account_state": "active", "entitlements": map[string]any{},
+	})
+}
+
 // syntheticParentKind is DAT-003's parent table, read backwards: the kind this
 // driver gives an ancestor it has to invent for a child of the named kind. A
 // screen or group could sit under either a site or a group; a site is chosen
@@ -916,7 +927,15 @@ func drivePagination(rep *report.Report, c corpus.Case) {
 	}
 	defer h.close()
 
-	const scopeNode = "01J8Z0PAGINATIONSCOPENODE1"
+	// The node every seeded row is placed at. It has to be a REAL row now: a
+	// row's scope_node is a reference the store resolves (DAT-006). The id also
+	// had to be respelled — the earlier "…PAGINATIONSCOPENODE…" carries I and O,
+	// which Crockford base32 excludes, so it could never have been a row's own id.
+	const scopeNode = "01J8Z0PAG1NAT10NSC0PEN0DE1"
+	if err := h.seedPlacementNode(scopeNode); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("seed placement scope node: %v", err))
+		return
+	}
 	for _, row := range in.CollectionState {
 		var seedErr error
 		switch row.Kind {

@@ -536,6 +536,15 @@ func (s *Store) CreatePackRow(ctx context.Context, packID, collection string, in
 		); err != nil {
 			return fmt.Errorf("store: insert pack row: %w", err)
 		}
+		// A pack's collection row carries the same DAT-006 placement, in the same
+		// role, as any resource row (it is authorized and visibility-filtered by it
+		// exactly as one is), so it clears the same reference rule: the node it is
+		// placed at has to be there. Spelled here rather than reached through
+		// validateAfterWrite because pack_rows is not a Kind and has no per-kind
+		// validator to hang off.
+		if err := checkPlacementResolves(ctx, tx, packRowsTable, out.ScopeNode); err != nil {
+			return err
+		}
 		return bumpGeneration(ctx, tx)
 	}); err != nil {
 		return PackRow{}, err
@@ -605,6 +614,11 @@ func (s *Store) UpdatePackRow(ctx context.Context, packID, collection, entityID 
 			out.PackID, out.Collection, out.EntityID,
 		); err != nil {
 			return fmt.Errorf("store: update pack row: %w", err)
+		}
+		// The same DAT-006 reference check the insert clears — a re-place is as able
+		// to name a node that is not there as an original placement is.
+		if err := checkPlacementResolves(ctx, tx, packRowsTable, out.ScopeNode); err != nil {
+			return err
 		}
 		return bumpGeneration(ctx, tx)
 	}); err != nil {

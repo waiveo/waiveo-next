@@ -106,6 +106,7 @@ func e2eEntity(id, st string) state.Entity {
 // command and params. A non-triggering observation must fire nothing.
 func TestAutomationAuthoringLoopAuthoredRuleLoadsAndFires(t *testing.T) {
 	e := newEnv(t)
+	e.placementNode(t)
 	ctx := context.Background()
 
 	// --- Author an edge rule over the api/1 handler: a state trigger on
@@ -228,6 +229,7 @@ func TestAutomationAuthoringLoopAuthoredRuleLoadsAndFires(t *testing.T) {
 // only the carry path drops it.
 func TestAutomationAuthoringLoopDisabledRuleNeverFires(t *testing.T) {
 	e := newEnv(t)
+	e.placementNode(t)
 	ctx := context.Background()
 
 	// --- Author an edge rule identical to the positive oracle's, but enabled:false.

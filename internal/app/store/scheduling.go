@@ -46,7 +46,23 @@ var identityKinds = map[Kind]bool{
 // scheduling-core write with ValidateRows (DAT-005-008/040-101, references,
 // DAT-073 daypart partition). Errors are wrapped in *ValidationError for the api
 // layer to render as VALIDATION_FAILED.
-func validateAfterWrite(ctx context.Context, tx *sql.Tx, kind Kind) error {
+//
+// scopeNode is the placement the write being validated carries — the effective
+// post-merge value for an Update, empty for a Delete (which removes a placement
+// and can never introduce one) — and it is checked against the scope-node table
+// first, ahead of the per-kind switch (DAT-006, checkPlacementResolves).
+//
+// It is here rather than inside any one arm because it is the one rule none of the
+// per-kind validators can express: each is handed rows of its own kinds and never
+// sees the scope-node table, so a row's reference INTO the tree is invisible to all
+// of them. That is the same blind spot the deletion rules needed a guard for, seen
+// from the other end — and it is why a scope_node naming nothing used to be a 201.
+// Checking it first also means the refusal a caller reads names the reference
+// itself, rather than whichever downstream rule the unplaced row happened to trip.
+func validateAfterWrite(ctx context.Context, tx *sql.Tx, kind Kind, scopeNode string) error {
+	if err := checkPlacementResolves(ctx, tx, string(kind), scopeNode); err != nil {
+		return err
+	}
 	switch {
 	case kind == KindScopeNode:
 		nodes, err := readScopeNodes(ctx, tx)

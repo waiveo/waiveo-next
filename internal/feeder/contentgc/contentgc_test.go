@@ -62,6 +62,14 @@ func newHarness(t *testing.T, opts ...func(*contentgc.Config)) *harness {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = h.store.Close() })
+	// The node every fixture playlist is placed at. A row's scope_node is a
+	// reference the store resolves (DAT-006), so a playlist placed at an id no
+	// node carries is refused — and an org-kind node is the smallest conformant
+	// tree a row may sit at (DAT-002/DAT-004).
+	if _, err := h.store.Create(context.Background(), store.KindScopeNode, json.RawMessage(
+		`{"id":"`+testScopeNode+`","kind":"org","name":"Fixture Org","account_state":"active"}`)); err != nil {
+		t.Fatalf("seed the fixture scope node: %v", err)
+	}
 
 	cfg := contentgc.Config{
 		Origin:     h.origin,

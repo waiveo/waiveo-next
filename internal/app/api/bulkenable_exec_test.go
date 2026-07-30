@@ -80,6 +80,7 @@ func (e *testEnv) generation(t *testing.T) int64 {
 // does NOT advance it; that is asserted separately below.)
 func TestBulkEnableFlipsMatchedAutomations(t *testing.T) {
 	e := newEnv(t)
+	e.placementNode(t)
 	root := e.auth.Credential()
 	a := e.createAutomation(t, root, autoScopeNode, map[string]string{"env": "prod"})
 	b := e.createAutomation(t, root, autoScopeNode, map[string]string{"env": "prod"})
@@ -135,6 +136,7 @@ func TestBulkEnableFlipsMatchedAutomations(t *testing.T) {
 // drained.
 func TestBulkEnablePollObservesProgressToTerminal(t *testing.T) {
 	e := newEnv(t)
+	e.placementNode(t)
 	root := e.auth.Credential()
 	a := e.createAutomation(t, root, autoScopeNode, map[string]string{"env": "prod"})
 
@@ -174,6 +176,7 @@ func TestBulkEnablePollObservesProgressToTerminal(t *testing.T) {
 // before it runs.
 func TestBulkEnableIsPartialWhenOneTargetFails(t *testing.T) {
 	e := newEnv(t)
+	e.placementNode(t)
 	root := e.auth.Credential()
 	survivor := e.createAutomation(t, root, autoScopeNode, map[string]string{"env": "prod"})
 	doomed := e.createAutomation(t, root, autoScopeNode, map[string]string{"env": "prod"})
@@ -228,6 +231,7 @@ func TestBulkEnableIsPartialWhenOneTargetFails(t *testing.T) {
 // an error" would satisfy the failed half while making the member meaningless.
 func TestBulkEnableFailedTargetReportsWhyOnTheWire(t *testing.T) {
 	e := newEnv(t)
+	e.placementNode(t)
 	root := e.auth.Credential()
 	survivor := e.createAutomation(t, root, autoScopeNode, map[string]string{"env": "prod"})
 	doomed := e.createAutomation(t, root, autoScopeNode, map[string]string{"env": "prod"})
@@ -291,6 +295,7 @@ func TestBulkEnableFailedTargetReportsWhyOnTheWire(t *testing.T) {
 // job transitions (pending -> running -> succeeded) on either side of it.
 func TestBulkEnableProgressDoesNotAdvanceGeneration(t *testing.T) {
 	e := newEnv(t)
+	e.placementNode(t)
 	root := e.auth.Credential()
 	e.createAutomation(t, root, autoScopeNode, map[string]string{"env": "prod"})
 

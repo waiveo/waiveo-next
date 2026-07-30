@@ -554,6 +554,21 @@ func (srv *server) writePackRowStoreError(w http.ResponseWriter, r *http.Request
 		srv.packProblem(w, r, xerr.Status, xerr.Code, xerr.Title, xerr.Detail)
 		return
 	}
+	// A store-side data-model refusal — a pack row placed at a scope node that
+	// does not exist (DAT-006) is the one that reaches here today. It renders as
+	// the SAME 422 VALIDATION_FAILED with an API-013 `errors[]` extension a
+	// first-party resource write's refusal does: a pack row carries the universal
+	// envelope's own scope_node and is placed by it exactly as a resource is, so a
+	// caller must be able to branch on the identical shape. Without this arm the
+	// store's refusal fell through to INTERNAL, which tells a client with a fixable
+	// request that the server is broken.
+	var verr *store.ValidationError
+	if errors.As(err, &verr) {
+		apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), http.StatusUnprocessableEntity,
+			"VALIDATION_FAILED", "Validation Failed",
+			"One or more fields failed validation.", validationExtra(verr.Errors))
+		return
+	}
 	var rme *store.RevisionMismatchError
 	if errors.As(err, &rme) {
 		apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), http.StatusPreconditionFailed,
