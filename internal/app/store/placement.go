@@ -51,14 +51,30 @@ const packRowsTable = "pack_rows"
 // exactly as every resource row is (internal/app/api/packs_data.go). A node they
 // sit under is genuinely in use, whoever declared the collection.
 //
-// Deliberately NOT here, each for a reason rather than an oversight:
-//   - jobs / job_targets — an execution record over other rows, carrying no
-//     scope_node of its own (jobs.go).
+// Deliberately NOT here, each for a reason rather than an oversight. Three of
+// the four DO carry a `scope_node` column, so "no such column" is never the
+// reason — what disqualifies them is what the column MEANS there:
+//   - job_targets — a FROZEN AUTHORIZATION SNAPSHOT, not a placement: the node
+//     each target sat at when the job was accepted, recorded so a Job's
+//     readability cannot drift or be widened afterwards (JobRecord.ScopeNodes,
+//     consumed by the api layer's jobVisible). It is the same "historical record"
+//     rationale as events, one row per target instead of per event, and treating
+//     it as a live reference would make every node any job ever touched
+//     permanently undeletable. Deleting a node is fail-closed here rather than
+//     dangling: the deleted id resolves through no ancestor chain, so
+//     jobVisible's canRead answers only via the workspace-root fallback and the
+//     Job NARROWS to root-bound callers and its own submitter. (jobs is the
+//     parent row and has no `scope_node` column at all.)
 //   - events — an immutable historical record. Blocking a deletion because
 //     history MENTIONS a node would make every node that ever did anything
 //     permanently undeletable.
 //   - pairing_grants — minted, consumed and swept on expiry; never a durable
 //     placement.
+//
+// TestEveryScopeNodeColumnIsScannedOrExcluded (placement_internal_test.go) reads
+// the live schema and fails on a table carrying a `scope_node` column that is
+// neither scanned above nor named in that test's exclusion list, so this
+// completeness argument is checked rather than asserted.
 var placementTables = func() []placementTable {
 	out := make([]placementTable, 0, len(allKinds))
 	for _, k := range allKinds {
