@@ -277,3 +277,78 @@ func siteUnder(orgID string) datamodel.ScopeNode {
 	n.ParentID = &orgID
 	return n
 }
+
+// assertValidationError asserts a 422 VALIDATION_FAILED whose api/1 `errors`
+// extension carries the expected per-field code.
+func assertValidationError(t *testing.T, resp *http.Response, raw []byte, wantCode string) {
+	t.Helper()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422 (body %s)", resp.StatusCode, raw)
+	}
+	p := assertProblem(t, resp, raw, "VALIDATION_FAILED")
+	errsAny, _ := p["errors"].([]any)
+	for _, e := range errsAny {
+		if m, _ := e.(map[string]any); m != nil && m["code"] == wantCode {
+			return
+		}
+	}
+	t.Fatalf("errors[] carries no %s (body %s)", wantCode, raw)
+}
+
+// TestOrgCannotBeReKindedIntoDeletability: DAT-022's refusal is decided from the
+// row's `kind`, so the guard is only as strong as that field's integrity. DAT-002
+// is what supplies it — the full tree must hold exactly one org and every
+// parent_id must resolve — so a PATCH that re-kinds the org away from `org`
+// cannot produce a conformant tree and MUST be rejected, whether the new parent
+// dangles (DAT-002) or resolves to a node whose kind cannot carry a site
+// (DAT-003). Without this, two ordinary writes delete the tree's root: PATCH
+// kind→site, then DELETE — the exact "ordinary write" DAT-022 forbids.
+func TestOrgCannotBeReKindedIntoDeletability(t *testing.T) {
+	e := newEnv(t)
+	orgID := e.createNode(t, orgNode("Demo Org"))
+
+	// Re-kind a CHILDLESS org with a dangling parent — the live bypass. With no
+	// child left to fail its own DAT-003 re-validation, only strict parent
+	// resolution stands between this write and a rootless tree; tolerating the
+	// dangle as a "subtree boundary" here is the relay-snapshot affordance
+	// leaking into the authority that holds the whole tree.
+	patch := mustJSON(t, map[string]any{
+		"kind": "site", "parent_id": boundaryOrgID,
+		"tz": siteTZ, "lat": siteLat, "long": siteLong,
+	})
+	resp, raw := e.do(t, http.MethodPatch, "/api/v1/scope-nodes/"+orgID, patch, map[string]string{"If-Match": `"1"`})
+	assertValidationError(t, resp, raw, "SCOPE_NODE_PARENT_INVALID")
+
+	// Re-kind under a RESOLVING parent, on a POPULATED org: the child's own
+	// re-validation refuses (a site cannot carry a site, DAT-003), so this
+	// route was never open — pinned here so it cannot silently become one.
+	siteID := e.createNode(t, siteUnder(orgID))
+	patch = mustJSON(t, map[string]any{
+		"kind": "site", "parent_id": siteID,
+		"tz": siteTZ, "lat": siteLat, "long": siteLong,
+	})
+	resp, raw = e.do(t, http.MethodPatch, "/api/v1/scope-nodes/"+orgID, patch, map[string]string{"If-Match": `"1"`})
+	assertValidationError(t, resp, raw, "SCOPE_NODE_PARENT_INVALID")
+
+	// Both refusals left the org untouched: same kind, same revision — so the
+	// SAME If-Match still addresses it, and the delete guard still answers.
+	resp, raw = e.do(t, http.MethodDelete, "/api/v1/scope-nodes/"+orgID, nil, map[string]string{"If-Match": `"1"`})
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("delete of the org after refused re-kinds = %d, want 409 (body %s)", resp.StatusCode, raw)
+	}
+	assertProblem(t, resp, raw, "SCOPE_NODE_ORG_UNDELETABLE")
+}
+
+// TestCreateScopeNodeUnderNonexistentParentIsRefused: DAT-002's other half on
+// the ordinary write path — a create whose parent_id names no stored node MUST
+// be rejected SCOPE_NODE_PARENT_INVALID. The app store holds the whole tree;
+// only a relay/1 snapshot may treat an absent parent as a subtree boundary.
+func TestCreateScopeNodeUnderNonexistentParentIsRefused(t *testing.T) {
+	e := newEnv(t)
+	e.createNode(t, orgNode("Demo Org"))
+
+	n := siteNode("")
+	n.ParentID = strp("01J8Z0B0000000000000000000") // never created
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/scope-nodes", mustJSON(t, n), nil)
+	assertValidationError(t, resp, raw, "SCOPE_NODE_PARENT_INVALID")
+}
