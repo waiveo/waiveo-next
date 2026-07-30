@@ -64,3 +64,10 @@ dev-api-key
 
 # graphify (local knowledge graph, on-demand dev tooling)
 graphify-out/
+
+# Agent-tool scratch: .claude/ holds session state and, under worktrees/, FULL
+# checkouts of this repo made for parallel agent runs. A stale one is easy to
+# leave behind (a workflow that ends without cleanup), and untracked it is one
+# `git add -A` away from committing a second copy of the whole tree into a
+# public repo. Ignored rather than tidied by hand for that reason.
+.claude/
