@@ -3,7 +3,20 @@ package api
 // bodyschema.go enforces, at request time, the request-body schema
 // `api/openapi.yaml` DECLARES for a resource family — `required`,
 // `additionalProperties: false`, `minLength`, `pattern`, `enum`, `minItems`,
-// `minProperties`, and every other JSON Schema keyword the document uses.
+// `minProperties`, and `propertyNames`.
+//
+// Not "every keyword the document uses", which this comment used to claim and
+// which was wrong twice over. `propertyNames` was declared and enforced by
+// nothing until propertyNamesViolation below; and `format` is not validated at
+// all, because kin-openapi only applies it when explicitly enabled — so
+// `WebhookEndpointCreate.url: format: uri` accepts `not a url at all` here. That
+// one is not exploitable, since the handler independently checks scheme, host,
+// userinfo and query before storing, but a comment claiming coverage it does not
+// have is worse than no comment: it stops the next reader looking.
+//
+// What is and is not enforced is now checked rather than described:
+// bodyschema_drift_test.go fails on any keyword this document uses that
+// kin-openapi does not model and this file does not apply.
 //
 // Before this, the declared schemas were enforced nowhere on the generic
 // resource surface. The document said `scope_node` was a required 26-character
@@ -22,8 +35,15 @@ package api
 //
 // # What this does NOT cover — stated, not silent
 //
-// The gap this closes is narrower than the gap that exists. Two exclusions, both
-// deliberate:
+// The gap this closes is narrower than the gap that exists. Two exclusions are
+// deliberate and described below — but they are not the whole residue. Of the
+// document's declared request schemas, the ones reached here are the seven
+// resource families; the action-style POSTs (bulk-enable, workspace export and
+// delete, the webhook signing secret, entity command, automation run, marketplace
+// ref, TOTP confirm, login, claim, credential reset) each carry hand-written
+// guards on their key fields, so what they miss in practice is
+// `additionalProperties: false` — POST /automations/bulk-enable accepts an
+// undeclared member. That is tracked, not fixed here.
 //
 //  1. Playlists, schedules, and dayparts declare NO request body at all in
 //     `api/openapi.yaml` ("Shape stub — the row schema is a later minor"). There
@@ -59,6 +79,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -141,7 +162,130 @@ func (rs *resource) schemaRejected(w http.ResponseWriter, r *http.Request, name 
 			schemaViolationDetail(err))
 		return true
 	}
+	if detail := propertyNamesViolation(schema, body); detail != "" {
+		rs.problem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Unprocessable Content", detail)
+		return true
+	}
 	return false
+}
+
+// propertyNamesViolation enforces `propertyNames`, which VisitJSON does not.
+//
+// kin-openapi does not model the keyword, so it parks it in Schema.Extensions —
+// parsed, carried, and applied by nothing. The distinction matters: the
+// constraint is not lost, it is unenforced, which is why this can read it from
+// the same parsed document rather than re-parsing the YAML or restating the rule.
+//
+// It is the only place the label-key charset is enforced on a write. API-042
+// constrains keys and values alike so "every label is expressible in a selector
+// term without escaping", and the VALUE half was enforced (its `pattern` sits on
+// additionalProperties, which VisitJSON does apply) while the KEY half was not.
+// A key carrying `,` `=` `!` or a space stored fine and then could not be named
+// by any selector — the row is there and no scoped query finds it. The selector
+// parser's own key check runs when READING a selector, never on the way in, so
+// there was no second line of defence.
+//
+// Returns "" when the body conforms.
+func propertyNamesViolation(schema *openapi3.Schema, body any) string {
+	if schema == nil {
+		return ""
+	}
+	obj, isObject := body.(map[string]any)
+
+	if pattern, ok := propertyNamePattern(schema); ok && isObject {
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			// A document whose own pattern will not compile is a document problem, and
+			// reporting it as a client's malformed body would send an operator hunting
+			// through their request for a fault that is not there.
+			return fmt.Sprintf("this operation's declared propertyNames pattern is not a valid regular expression (%v).", err)
+		}
+		// Sorted, so a body with several bad keys always names the same one — an
+		// unordered map would make the same request answer differently between runs.
+		var bad []string
+		for k := range obj {
+			if !re.MatchString(k) {
+				bad = append(bad, k)
+			}
+		}
+		if len(bad) > 0 {
+			sort.Strings(bad)
+			return fmt.Sprintf("%s: not a permitted property name.", clipKey(bad[0]))
+		}
+	}
+
+	// Recurse the shapes a request body actually takes here. Deliberately not a
+	// general JSON Schema walker: this reaches the members, array elements and
+	// composition branches this document uses, and a keyword it does not reach is
+	// caught by TestNoRequestSchemaUsesAnUnenforcedKeyword rather than passing
+	// quietly.
+	if isObject {
+		for name, sub := range schema.Properties {
+			if v, present := obj[name]; present {
+				if d := propertyNamesViolation(sub.Value, v); d != "" {
+					return d
+				}
+			}
+		}
+		if ap := schema.AdditionalProperties.Schema; ap != nil {
+			for name, v := range obj {
+				if _, declared := schema.Properties[name]; declared {
+					continue
+				}
+				if d := propertyNamesViolation(ap.Value, v); d != "" {
+					return d
+				}
+			}
+		}
+	}
+	if arr, isArray := body.([]any); isArray && schema.Items != nil {
+		for _, v := range arr {
+			if d := propertyNamesViolation(schema.Items.Value, v); d != "" {
+				return d
+			}
+		}
+	}
+	for _, group := range [][]*openapi3.SchemaRef{schema.AllOf, schema.AnyOf, schema.OneOf} {
+		for _, sub := range group {
+			if d := propertyNamesViolation(sub.Value, body); d != "" {
+				return d
+			}
+		}
+	}
+	return ""
+}
+
+// propertyNamePattern reads a schema's `propertyNames.pattern` out of the
+// Extensions map kin-openapi parks unmodelled keywords in.
+func propertyNamePattern(schema *openapi3.Schema) (string, bool) {
+	raw, ok := schema.Extensions["propertyNames"]
+	if !ok {
+		return "", false
+	}
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	pattern, ok := obj["pattern"].(string)
+	return pattern, ok
+}
+
+// maxEchoedKey bounds how much of a client-supplied KEY a Problem echoes.
+//
+// The detail never carries a value, but a key is a name and names are reflected —
+// by this function's callers and by kin-openapi's own reason string. A 100 KB
+// property name produced a 100 KB detail, and because a 422 is under 500 it is
+// RETAINED and replayed verbatim for the idempotency window: a client controls
+// both the amplification and how long it is stored. Clipping costs nothing an
+// operator needs, since a name too long to read is a name too long to fix by
+// reading.
+const maxEchoedKey = 96
+
+func clipKey(key string) string {
+	if len(key) <= maxEchoedKey {
+		return key
+	}
+	return key[:maxEchoedKey] + fmt.Sprintf("… (%d bytes)", len(key))
 }
 
 // declaredMemberNames returns the member names the component schema `name`
@@ -218,13 +362,35 @@ func (rs *resource) undeclaredMemberRejected(w http.ResponseWriter, r *http.Requ
 			unknown = append(unknown, member)
 		}
 	}
-	if len(unknown) == 0 {
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		rs.problem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Unprocessable Content",
+			fmt.Sprintf("%s: not a member this operation declares.", clipKey(unknown[0])))
+		return true
+	}
+
+	// propertyNames is the same CLASS of constraint — a rule about a name rather
+	// than a value — so a family running the member half runs this too. It is what
+	// keeps a scope node's label keys inside API-042's charset: nothing downstream
+	// looks at labels at all, and the selector parser's own key check runs when
+	// READING a selector, never on the way in.
+	//
+	// Label VALUES stay unchecked for these families, and that is the value half
+	// they deliberately opt out of rather than an omission here.
+	schema, err := declaredSchema(name)
+	if err != nil {
+		rs.internal(w, r, err)
+		return true
+	}
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
 		return false
 	}
-	sort.Strings(unknown)
-	rs.problem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Unprocessable Content",
-		fmt.Sprintf("%s: not a member this operation declares.", unknown[0]))
-	return true
+	if detail := propertyNamesViolation(schema, decoded); detail != "" {
+		rs.problem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Unprocessable Content", detail)
+		return true
+	}
+	return false
 }
 
 // schemaViolationDetail renders one schema violation as a human-readable
@@ -246,8 +412,15 @@ func schemaViolationDetail(err error) string {
 	if reason == "" {
 		reason = "does not conform to this operation's declared schema"
 	}
+	// Both halves are clipped, because both embed client-supplied NAMES: the
+	// pointer is built from nested keys, and kin-openapi's reason quotes the
+	// offending property for an additionalProperties violation. A 100 KB property
+	// name produced a 100 KB detail — retained and replayed for the idempotency
+	// window, since a 422 is under 500 — so a client controlled both the
+	// amplification and how long it was stored.
 	if ptr := strings.Join(se.JSONPointer(), "."); ptr != "" {
-		return ptr + ": " + reason + "."
+		return clipKey(ptr) + ": " + clipKey(reason) + "."
 	}
+	reason = clipKey(reason)
 	return strings.ToUpper(reason[:1]) + reason[1:] + "."
 }
