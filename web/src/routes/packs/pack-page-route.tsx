@@ -20,14 +20,20 @@ import { loadPackCatalog, primaryCollection, resolveTitle } from "./catalog";
 /**
  * The scope node a create attaches a new pack row under (MAN-051: a pack row
  * attaches to ANY scope node). A self-hosted deployment is one-org/one-site and
- * ALWAYS carries a resolvable scope after `make dev-up` — but the demo seed
- * materializes only a Demo Site whose org ancestor is a virtual boundary (never an
- * inserted row), so resolving `kind=org` ALONE finds nothing and a cold-open create
- * would wrongly refuse. Resolve the deployment's ROOT deterministically instead:
- * prefer the org root, else a site (the invariant guarantees one), else the topmost
- * node of any kind (a node whose parent is not itself a queryable row). Returns
- * `null` ONLY for a genuinely scope-less deployment — which cannot happen after
- * `make dev-up`.
+ * ALWAYS carries a resolvable scope after `make dev-up`, so this resolves the
+ * deployment's ROOT deterministically: prefer the org root, else a site, else the
+ * topmost node of any kind (a node whose parent is not itself a queryable row).
+ * Returns `null` ONLY for a genuinely scope-less deployment — which cannot happen
+ * after `make dev-up`.
+ *
+ * The org root is now always the answer against a seeded store, and the two
+ * fallbacks are defence rather than the live path. They used to be the live path:
+ * the demo seed materialized only a Demo Site whose org ancestor was a reference to
+ * a node that was never inserted, so `kind=org` alone found nothing and a cold-open
+ * create would have wrongly refused. The server no longer accepts that store — a
+ * scope node's parent has to resolve — so the seed inserts the org root it names.
+ * The fallbacks stay because this function must not depend on that: it also runs
+ * against a per-scope subtree, where the root legitimately is not carried.
  */
 export function resolveDefaultScopeNode(nodes: ScopeNode[]): string | null {
   if (nodes.length === 0) return null;
@@ -36,8 +42,8 @@ export function resolveDefaultScopeNode(nodes: ScopeNode[]): string | null {
     nodes.filter((n) => n.kind === kind).sort(byId)[0]?.id ?? null;
   // The org root first, then a site (the self-hosted invariant guarantees one),
   // then the topmost node of ANY kind — a node whose parent is absent from the
-  // queryable set (the seed's site references a virtual org boundary) — with a
-  // sortable-ULID tiebreak so the choice is deterministic across page loads.
+  // queryable set — with a sortable-ULID tiebreak so the choice is deterministic
+  // across page loads.
   const org = firstOfKind("org");
   if (org) return org;
   const site = firstOfKind("site");
