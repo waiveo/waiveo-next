@@ -67,3 +67,35 @@ jobs:
       # precisely because this step ran without the flag.
       - name: conformance — the same drivers under the race detector
         run: go test -race -count=1 ./conformance/drivers/...
+      # Chromium is ~400MB and the only real cost in the lane below (~5s of
+      # actual testing). Keyed on the runner and the pinned @playwright/test
+      # version, so a version bump misses the cache deliberately rather than
+      # running a browser the lockfile no longer names.
+      - name: cache the Playwright browser
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('web/package-lock.json') }}
+      # The browser lane, merge-tier and not pr-tier on purpose.
+      #
+      # It is here at all because it was in NO tier, and that is how it stayed
+      # red: its one unauthenticated request threw in a `beforeAll`, so of five
+      # test cases one failed and three never ran — for days, with every other
+      # gate green. A lane no tier runs is a lane nobody reads.
+      #
+      # Not pr-tier yet: it drives a real browser against two real processes
+      # over loopback HTTPS with timing-sensitive polls. It has been green on
+      # every run since the fix, which is encouraging and not yet a dataset.
+      # merge-tier blocks no one while still attributing a failure to the merge
+      # that caused it; promote it once there are weeks of green behind it.
+      #
+      # Not nightly, twice over: that lane is deliberately Node-only with no Go
+      # toolchain, and a nightly-only lane is precisely the unread lane this
+      # step exists to stop being.
+      #
+      # `make web-e2e` brings the stack up and down itself and writes only to
+      # gitignored paths, so it is safe beside the drift checks above.
+      - name: web — console click-through and pairing (real browser, real stack)
+        run: |
+          npx playwright install --with-deps chromium
+          make web-e2e
