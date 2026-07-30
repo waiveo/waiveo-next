@@ -186,7 +186,78 @@ func buildScopeTree(nodes []ScopeNode, fullTree bool) (ScopeTree, []Error) {
 		errs = append(errs, validateGeo(n)...)
 	}
 
+	if fullTree {
+		errs = append(errs, unreachableFromRoot(nodes, tree.byID)...)
+	}
+
 	return tree, errs
+}
+
+// unreachableFromRoot reports every node whose parent_id chain CYCLES instead of
+// reaching the tree's org root — DAT-002's exactly-one-org clause read as a
+// property of the whole tree rather than of one row.
+//
+// Deliberately narrower than its name suggests, and the boundary is worth stating.
+// It catches a CYCLE. It does not report "this tree has no org at all", because
+// every non-cyclic way to be detached is already an error from a per-row rule: a
+// non-org with a nil parent_id, or one whose parent does not resolve. The only
+// detached shape those two miss is a cycle, where every reference is real.
+//
+// A version of this that also flagged an org-less tree fired on the bootstrap
+// case — creating the first node of an empty store as a non-org — which is
+// contract-correct but collides with a frozen corpus case testing multi-field
+// validation, adding a third error about the tree's shape to a case about two bad
+// fields. Enforcing that half is a separate change with a corpus decision in it.
+//
+// It runs ONLY for the full tree, and that restriction is the point. A relay
+// receives a SUBTREE in its snapshot — REL-065 carries the scope nodes a site's
+// schedule needs, not the tree above them — so nothing in a relay's node set
+// reaches an org, and asking would reject every legitimate snapshot. The
+// subtree-tolerant builder must never call this.
+//
+// Why this is not covered by anything above it: every check so far is about ONE
+// row's own fields. A cycle passes all of them. Two group nodes each naming the
+// other have parent_id non-null (DAT-002), a resolving parent (the resolution
+// check added for the full tree), and a permitted parent kind, because DAT-003
+// allows group under group. Every reference is real; the component simply hangs
+// off nothing. That is why closing the four ways a reference can DANGLE did not
+// close this — reachability is a different question from resolution, and only a
+// walk answers it.
+//
+// Cost: one upward walk per node, each step a map lookup, stopping at the org, at
+// a missing parent, or on revisiting a node. Worst case is O(n·depth) with depth
+// bounded by the tree's own height — org→site→group…→screen, single digits in any
+// real deployment — and it runs on scope-node writes only, which are rare
+// compared with the scheduling-core writes this same validator serves.
+func unreachableFromRoot(nodes []ScopeNode, byID map[string]ScopeNode) []Error {
+	var errs []Error
+	for _, n := range nodes {
+		if n.Kind == "org" {
+			continue
+		}
+		seen := map[string]bool{n.ID: true}
+		cur := n
+		for {
+			if cur.ParentID == nil {
+				break // a non-org with no parent is already reported above
+			}
+			parent, ok := byID[*cur.ParentID]
+			if !ok {
+				break // a missing parent is already reported above
+			}
+			if parent.Kind == "org" {
+				break // reached the root
+			}
+			if seen[parent.ID] {
+				errs = append(errs, Error{Field: "parent_id", Code: "SCOPE_NODE_PARENT_INVALID",
+					Message: "a scope node's parent_id chain MUST reach the tree's org-kind root (DAT-002); this one cycles without reaching it"})
+				break
+			}
+			seen[parent.ID] = true
+			cur = parent
+		}
+	}
+	return errs
 }
 
 // validateGeo enforces DAT-031 (site geo required) and DAT-032 (org geo forbidden;

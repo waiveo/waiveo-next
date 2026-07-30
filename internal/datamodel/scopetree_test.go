@@ -367,3 +367,86 @@ func TestBuildFullScopeTreeResolvesEveryParent(t *testing.T) {
 		}
 	})
 }
+
+// TestACycleIsRefusedByTheFullTreeButNotTheSubtreeBuilder pins both halves of
+// the reachability check: that it catches what no per-row rule can, and that it
+// does not fire where a subtree is legitimate.
+//
+// A cycle passes every other check. Two groups each naming the other have a
+// non-null parent_id (DAT-002), a parent that resolves, and a permitted parent
+// kind — DAT-003 allows group under group. Every reference is real; the pair
+// simply hangs off nothing, which is DAT-002's exactly-one-org clause read as a
+// property of the tree rather than of one row.
+func TestACycleIsRefusedByTheFullTreeButNotTheSubtreeBuilder(t *testing.T) {
+	orgID := "01J8Z" + strings.Repeat("A", 21)
+	gA := "01J8Z" + strings.Repeat("B", 21)
+	gB := "01J8Z" + strings.Repeat("C", 21)
+
+	// An org, plus two groups pointing at each other rather than at the org.
+	nodes := []ScopeNode{
+		{ID: orgID, Kind: "org", Name: "Root", AccountState: "active", Entitlements: json.RawMessage(`{}`)},
+		{ID: gA, Kind: "group", ParentID: &gB, Name: "A"},
+		{ID: gB, Kind: "group", ParentID: &gA, Name: "B"},
+	}
+
+	if _, errs := BuildFullScopeTree(nodes); len(errs) == 0 {
+		t.Fatal("the full tree accepted a cycle detached from the root — every reference resolves, so no per-row rule can catch this; only a reachability walk can")
+	} else {
+		var sawReach bool
+		for _, e := range errs {
+			if e.Field == "parent_id" && strings.Contains(e.Message, "org-kind root") {
+				sawReach = true
+			}
+		}
+		if !sawReach {
+			t.Fatalf("the full tree refused the cycle for some other reason: %+v", errs)
+		}
+	}
+
+	// The SUBTREE builder must accept the same shape. A relay receives the scope
+	// nodes its own site's schedule needs and nothing above them, so no node in a
+	// snapshot reaches an org — asking would reject every legitimate snapshot.
+	subtree := []ScopeNode{
+		{ID: gA, Kind: "group", ParentID: &gB, Name: "A"},
+		{ID: gB, Kind: "group", ParentID: &gA, Name: "B"},
+	}
+	if _, errs := BuildScopeTree(subtree); len(errs) != 0 {
+		t.Fatalf("the subtree builder rejected a rootless set: %+v — the reachability check must not reach the relay path", errs)
+	}
+}
+
+// TestAnOrglessTreeIsNotReportedByTheReachabilityWalk pins the boundary the walk
+// deliberately does NOT cross.
+//
+// Every non-cyclic way to be detached is already an error from a per-row rule — a
+// non-org with a nil parent_id, or one whose parent does not resolve — so the walk
+// only needs to add cycles. Flagging an org-less tree as well fired on the
+// bootstrap case (the first node of an empty store, created as a non-org) and put
+// a third error about the tree's shape onto a frozen corpus case about two bad
+// fields. That half is a separate change with a corpus decision in it.
+func TestAnOrglessTreeIsNotReportedByTheReachabilityWalk(t *testing.T) {
+	site := "01J8Z" + strings.Repeat("D", 21)
+	org := "01J8Z" + strings.Repeat("E", 21)
+	tz := "America/Chicago"
+	lat, long := 41.8781, -87.6298
+
+	// A site whose parent resolves to a node that is not there: reported by the
+	// per-row resolution rule, NOT by the walk, and reported once.
+	_, errs := BuildFullScopeTree([]ScopeNode{
+		{ID: site, Kind: "site", ParentID: &org, Name: "Orphan",
+			TZ: &tz, Lat: &lat, Long: &long},
+	})
+	for _, e := range errs {
+		if strings.Contains(e.Message, "cycles without reaching") {
+			t.Errorf("the walk reported a non-cyclic detached node: %+v — that is the resolution rule's job", e)
+		}
+	}
+	if len(errs) == 0 {
+		t.Fatal("a site whose parent does not resolve was accepted")
+	}
+
+	// And an empty set is not a fault: a store before its first write has no tree.
+	if _, errs := BuildFullScopeTree(nil); len(errs) != 0 {
+		t.Fatalf("an empty node set was refused: %+v", errs)
+	}
+}
