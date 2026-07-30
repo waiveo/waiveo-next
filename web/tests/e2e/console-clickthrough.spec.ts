@@ -1,26 +1,34 @@
-import { test, expect, request as pwRequest, type APIRequestContext } from "@playwright/test";
+import { test, expect, signIn, csrfHeader } from "./support/console-session";
+import type { APIRequestContext, Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
 /**
- * The click-through gate (Wave 4b, Task 5) — the anti-regression this wave exists
- * for. The whole reason the dead New button shipped is that 500+ unit tests and the
- * Go e2e all asserted RENDERING/validation/data-flow and NONE pressed a control
- * through to an effect. This spec drives the REAL console the feeder serves and
- * presses the actual buttons: New -> fill -> Save (a new row must appear in the
- * table AND exist via the pack-data API), select -> edit -> Save (the change must
- * persist), Delete (the row must be gone from the table AND the API), and every core
- * nav item (its page heading must appear). A control that renders but does nothing —
+ * The click-through gate — the anti-regression this suite exists for. The whole
+ * reason the dead New button shipped is that 500+ unit tests and the Go e2e all
+ * asserted RENDERING/validation/data-flow and NONE pressed a control through to an
+ * effect. This spec drives the REAL console the feeder serves and presses the
+ * actual buttons: New -> fill -> Save (a new row must appear in the table AND
+ * exist via the pack-data API), select -> edit -> Save (the change must persist),
+ * Delete (the row must be gone from the table AND the API), and every core nav
+ * item (its page heading must appear). A control that renders but does nothing —
  * the exact failure mode a render-only test misses — fails this gate.
  *
  * The stack (feeder + relay + the embedded SPA) is up already, managed by
  * `make web-e2e`. The `baseURL` + `ignoreHTTPSErrors` in playwright.config.ts point
- * at the feeder's self-signed HTTPS origin, same-origin for both the browser and the
- * `APIRequestContext` this file opens for its API assertions and setup.
+ * at the feeder's self-signed HTTPS origin, same-origin for both the browser and
+ * the `page.request` context this file cross-checks the API with.
+ *
+ * Every test here begins by signing in through the real login form: the console is
+ * behind the SessionGate (every api/1 route is authenticated, SEC-005), so an
+ * anonymous navigation lands on /login rather than on the page under test. The
+ * owner credential that sign-in uses is established by the suite's shared
+ * bootstrap (support/console-session.ts), which claims the box on a fresh one and
+ * reuses the credential on a box an earlier run already claimed — so this spec and
+ * its sibling work in either order and against a box in either state.
  */
 
-const BASE_URL = process.env.PW_BASE_URL ?? "https://127.0.0.1:7420";
 const PACK_ID = "waiveo/menu-board";
 const MENU_PAGE = "/p/waiveo/menu-board/menu-items";
 const ROWS_API = "/api/v1/packs/waiveo/menu-board/data/menu_items";
@@ -29,8 +37,6 @@ const ROWS_API = "/api/v1/packs/waiveo/menu-board/data/menu_items";
 // stack is freshly seeded each `make web-e2e` run (an empty store), so a fixed name
 // is deterministic; it carries no secret and is not a real menu item.
 const ITEM_NAME = "E2E Flat White";
-
-let api: APIRequestContext;
 
 // NOTE (cold-open create): the create test below drives New → fill → Save with NO
 // test-provisioned scope. A pack row must attach to a scope_node (MAN-051), and a
@@ -43,7 +49,12 @@ let api: APIRequestContext;
 // Install the in-repo example pack over the REAL install endpoint if it is not already
 // present. The zip bytes come from `make example-pack` (one source of truth,
 // examples/packs); its path is handed in via PW_PACK_ZIP, with a repo-relative fallback.
-async function ensurePackInstalled(): Promise<void> {
+//
+// It runs over the signed-in operator's own session, so the pack is installed by the
+// same principal the UI then acts as — and the install being a POST is why it carries
+// the CSRF echo the console's api client would normally add.
+async function ensurePackInstalled(page: Page): Promise<void> {
+  const api = page.request;
   const res = await api.get("/api/v1/packs");
   expect(res.ok(), `list packs: ${res.status()}`).toBeTruthy();
   const body = (await res.json()) as { items?: Array<{ id?: string }> };
@@ -51,7 +62,11 @@ async function ensurePackInstalled(): Promise<void> {
   const zipPath = process.env.PW_PACK_ZIP ?? resolve(process.cwd(), "..", ".dev", "menu-board.pack.zip");
   const zip = readFileSync(zipPath);
   const installed = await api.post("/api/v1/packs", {
-    headers: { "Content-Type": "application/zip", "Idempotency-Key": randomUUID() },
+    headers: {
+      "Content-Type": "application/zip",
+      "Idempotency-Key": randomUUID(),
+      ...(await csrfHeader(page)),
+    },
     data: zip,
   });
   // 201 fresh install or 200 reinstall-in-place are both success.
@@ -62,7 +77,7 @@ async function ensurePackInstalled(): Promise<void> {
 
 // The current menu_items rows straight off the pack-data api/1 surface — the ground
 // truth every UI assertion is cross-checked against (the row is real, queryable data).
-async function apiRows(): Promise<Array<Record<string, unknown>>> {
+async function apiRows(api: APIRequestContext): Promise<Array<Record<string, unknown>>> {
   const res = await api.get(ROWS_API);
   expect(res.ok(), `list rows: ${res.status()}`).toBeTruthy();
   const body = (await res.json()) as { items?: Array<Record<string, unknown>> };
@@ -74,7 +89,7 @@ async function apiRows(): Promise<Array<Record<string, unknown>>> {
 // cold-open create with no operator-provisioned org. A stock `make dev-up` seeds
 // exactly one site; assert it is present so a scope-less seed fails loudly here rather
 // than surfacing opaquely downstream.
-async function siteScopeNodeId(): Promise<string> {
+async function siteScopeNodeId(api: APIRequestContext): Promise<string> {
   const res = await api.get("/api/v1/scope-nodes");
   expect(res.ok(), `list scope nodes: ${res.status()}`).toBeTruthy();
   const body = (await res.json()) as { items?: Array<{ id?: string; kind?: string }> };
@@ -83,19 +98,13 @@ async function siteScopeNodeId(): Promise<string> {
   return site!.id!;
 }
 
-test.beforeAll(async () => {
-  api = await pwRequest.newContext({ baseURL: BASE_URL, ignoreHTTPSErrors: true });
-  await ensurePackInstalled();
-});
-
-test.afterAll(async () => {
-  await api.dispose();
-});
-
 // The create → edit → delete chain is STATEFUL over one row; serial so a failure stops
 // the chain (a corrupted-state cascade of red would obscure the first real failure).
 test.describe.serial("installed pack list-detail — real create / edit / delete clicks", () => {
   test("New enters a blank draft; Save adds a row to the table AND the pack-data API", async ({ page }) => {
+    const api = await signIn(page);
+    await ensurePackInstalled(page);
+
     await page.goto(MENU_PAGE);
     await expect(page.getByRole("heading", { level: 1, name: "Menu Items" })).toBeVisible();
 
@@ -119,7 +128,7 @@ test.describe.serial("installed pack list-detail — real create / edit / delete
 
     // And it truly persisted — present via the pack-data API with the typed price.
     await expect
-      .poll(async () => (await apiRows()).find((r) => r.name === ITEM_NAME)?.price)
+      .poll(async () => (await apiRows(api)).find((r) => r.name === ITEM_NAME)?.price)
       .toBe(4.5);
 
     // The app resolved the create scope on its OWN: with NO test-provisioned org, the
@@ -127,13 +136,16 @@ test.describe.serial("installed pack list-detail — real create / edit / delete
     // — the org → site → any resolution (MAN-051). This pins the actual fix: the scope
     // is neither null (which would have refused with "no scope to attach records to
     // yet") nor the screen beneath the site.
-    const siteScopeNode = await siteScopeNodeId();
+    const siteScopeNode = await siteScopeNodeId(api);
     await expect
-      .poll(async () => (await apiRows()).find((r) => r.name === ITEM_NAME)?.scope_node)
+      .poll(async () => (await apiRows(api)).find((r) => r.name === ITEM_NAME)?.scope_node)
       .toBe(siteScopeNode);
   });
 
   test("selecting the row, editing Price, and Save persists the change", async ({ page }) => {
+    const api = await signIn(page);
+    await ensurePackInstalled(page);
+
     await page.goto(MENU_PAGE);
     const table = page.getByRole("table", { name: "Menu items" });
     await expect(table.getByText(ITEM_NAME)).toBeVisible();
@@ -149,10 +161,13 @@ test.describe.serial("installed pack list-detail — real create / edit / delete
 
     await expect(table.getByText("$6.25")).toBeVisible();
     await expect(table.getByText("$4.50")).toHaveCount(0);
-    await expect.poll(async () => (await apiRows()).find((r) => r.name === ITEM_NAME)?.price).toBe(6.25);
+    await expect.poll(async () => (await apiRows(api)).find((r) => r.name === ITEM_NAME)?.price).toBe(6.25);
   });
 
   test("Delete removes the row from the table AND the pack-data API", async ({ page }) => {
+    const api = await signIn(page);
+    await ensurePackInstalled(page);
+
     await page.goto(MENU_PAGE);
     const table = page.getByRole("table", { name: "Menu items" });
     await table.getByRole("button", { name: new RegExp(ITEM_NAME) }).click();
@@ -161,7 +176,7 @@ test.describe.serial("installed pack list-detail — real create / edit / delete
     await detail.getByRole("button", { name: "Delete item" }).click();
 
     await expect(page.getByText(ITEM_NAME)).toHaveCount(0);
-    await expect.poll(async () => (await apiRows()).some((r) => r.name === ITEM_NAME)).toBe(false);
+    await expect.poll(async () => (await apiRows(api)).some((r) => r.name === ITEM_NAME)).toBe(false);
   });
 });
 
@@ -169,7 +184,9 @@ test.describe.serial("installed pack list-detail — real create / edit / delete
 // A nav item that renders but routes nowhere (or a page that never paints its header)
 // fails here.
 test("core navigation — each nav item routes to its page heading", async ({ page }) => {
-  await page.goto("/");
+  // Signing in lands on the overview, which is where the nav walk starts — and its
+  // Overview heading assertion is the first destination already proven.
+  await signIn(page);
   const nav = page.getByRole("navigation", { name: "Primary" });
 
   const destinations: Array<[label: string, heading: string]> = [
