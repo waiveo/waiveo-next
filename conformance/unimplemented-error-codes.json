@@ -17,7 +17,7 @@
     "      holds the value, a handler runs — and the specific rejection the contract promises was",
     "      never written. These are the dangerous ones: the feature reads as finished, and a",
     "      traceability row can sit at `covered` because a driver observed the accept side.",
-    "      data-model/1's two, security-model's four, player/1's LEASE_UNKNOWN and relay/1's one.",
+    "      data-model/1's two, security-model's four and relay/1's one.",
     "  (c) the refusal EXISTS but is not spelled as the published code — free-text prose, a bare",
     "      bool, a silent skip. A caller told to branch on `code` still cannot.",
     "",
@@ -113,8 +113,8 @@
     },
     {
       "contract": "player-1.md",
-      "reason": "TRUST_ANCHOR_AUTH_FAILED is state (c): the check is implemented TWICE and refuses correctly — player-v3/source/crypto/Commitment.brs:100 and internal/virtualplayer/virtualplayer.go:108 — but both report it as prose ('fingerprint commitment MISMATCH -- refusing to pair'), never as the published code, so a caller told to branch on `code` cannot. CONTENT_TYPE_UNSUPPORTED is a silent drop rather than a refusal: internal/relay/playerserver/program.go:709 filters unsupported items out of the program and returns no error, so the player receives a short program instead of a typed rejection. LEASE_UNKNOWN is state (b): the lease concept is thoroughly built, and the three handlers that would check it (program.go:570, :600, :628) validate non-emptiness only — handleLeaseAck stores the client's own lease_id as the map key, so any invented id is accepted, and handleRenderEnd does not inspect lease_id at all.",
-      "codes": ["TRUST_ANCHOR_AUTH_FAILED", "CONTENT_TYPE_UNSUPPORTED", "LEASE_UNKNOWN"]
+      "reason": "TRUST_ANCHOR_AUTH_FAILED is state (c): the check is implemented TWICE and refuses correctly — player-v3/source/crypto/Commitment.brs:100 and internal/virtualplayer/virtualplayer.go:108 — but both report it as prose ('fingerprint commitment MISMATCH -- refusing to pair'), never as the published code, so a caller told to branch on `code` cannot. CONTENT_TYPE_UNSUPPORTED is a silent drop rather than a refusal: internal/relay/playerserver/program.go:709 filters unsupported items out of the program and returns no error, so the player receives a short program instead of a typed rejection.",
+      "codes": ["TRUST_ANCHOR_AUTH_FAILED", "CONTENT_TYPE_UNSUPPORTED"]
     },
     {
       "contract": "rules-1.md",

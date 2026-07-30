@@ -1,7 +1,6 @@
 package virtualplayer
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -211,14 +210,14 @@ func Preempt(pairingCode string, active ActiveRender, deliveryTime int64) (Adopt
 
 	// PLY-091: acknowledge the new Lease before any render/start under it
 	// (PLY-114).
-	if err := ackLease(client, base, lease.LeaseID); err != nil {
+	if err := ackLease(client, base, pairResp.ChannelToken, lease.LeaseID); err != nil {
 		return Adoption{}, fmt.Errorf("virtualplayer: Preempt: lease ack: %w", err)
 	}
 
 	// PLY-101 interrupt-now: report the interrupted asset's render/end under
 	// the OLD lease it was rendering (PLY-111, full events/1 EVT-050 shape).
 	if adopt.InterruptedImmediately {
-		if err := postRenderEnd(client, base, renderEndRequest{
+		if err := postRenderEnd(client, base, pairResp.ChannelToken, renderEndRequest{
 			ScreenID:        lease.ScreenID,
 			AssetRef:        adopt.PreviousRenderEnd.AssetRef,
 			ProgramRevision: active.ProgramRevision,
@@ -235,7 +234,7 @@ func Preempt(pairingCode string, active ActiveRender, deliveryTime int64) (Adopt
 	// Lease renders content (AdoptionOf leaves TakeoverRenderStart zero for a
 	// blank Lease, PLY-093/104).
 	if adopt.TakeoverRenderStart.LeaseID != "" {
-		if err := postRenderStart(client, base, renderStartRequest{
+		if err := postRenderStart(client, base, pairResp.ChannelToken, renderStartRequest{
 			LeaseID:  adopt.TakeoverRenderStart.LeaseID,
 			AssetRef: adopt.TakeoverRenderStart.AssetRef,
 			TS:       adopt.TakeoverRenderStart.TS,
@@ -278,13 +277,15 @@ type renderEndRequest struct {
 	Completion      string `json:"completion"`
 }
 
-// postRenderStart performs PLY-110: POST /player/v1/render/start.
-func postRenderStart(client *http.Client, base string, req renderStartRequest) error {
+// postRenderStart performs PLY-110: POST /player/v1/render/start, presenting the
+// channel token PLY-076 requires on every operation it authorizes — render
+// acknowledgement and telemetry among them (PLY-070).
+func postRenderStart(client *http.Client, base, channelToken string, req renderStartRequest) error {
 	reqBody, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("marshal RenderStart: %w", err)
 	}
-	resp, err := client.Post(base+"/player/v1/render/start", "application/json", bytes.NewReader(reqBody))
+	resp, err := postAuthorized(client, base+"/player/v1/render/start", channelToken, reqBody)
 	if err != nil {
 		return fmt.Errorf("POST /player/v1/render/start: %w", err)
 	}
@@ -292,13 +293,15 @@ func postRenderStart(client *http.Client, base string, req renderStartRequest) e
 	return decodeOrProblem(resp, &out)
 }
 
-// postRenderEnd performs PLY-111: POST /player/v1/render/end.
-func postRenderEnd(client *http.Client, base string, req renderEndRequest) error {
+// postRenderEnd performs PLY-111: POST /player/v1/render/end, with the channel
+// token (PLY-070/076). The body's own `screen_id` must be the one that token was
+// issued to — a relay refuses a report filed against any other screen.
+func postRenderEnd(client *http.Client, base, channelToken string, req renderEndRequest) error {
 	reqBody, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("marshal RenderEnd: %w", err)
 	}
-	resp, err := client.Post(base+"/player/v1/render/end", "application/json", bytes.NewReader(reqBody))
+	resp, err := postAuthorized(client, base+"/player/v1/render/end", channelToken, reqBody)
 	if err != nil {
 		return fmt.Errorf("POST /player/v1/render/end: %w", err)
 	}

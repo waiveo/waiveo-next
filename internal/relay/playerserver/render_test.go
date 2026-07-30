@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
@@ -60,22 +61,56 @@ func TestProgramServesPreemptPriorityLease(t *testing.T) {
 	}
 }
 
+// postPlayerJSON posts body to a player/1 route with the channel token in the
+// Authorization header, as PLY-076 requires on every operation a channel token
+// authorizes. A test that means to post WITHOUT a credential passes an empty
+// token — the absence then reads as deliberate rather than as an omission, which
+// is how three of these routes came to require none at all.
+func postPlayerJSON(t *testing.T, ts *httptest.Server, token, path string, body []byte) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, ts.URL+path, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request %s: %v", path, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	return resp
+}
+
+// leaseFor pulls a program and returns the issued Lease, so a render or ack case
+// references a lease_id this relay actually issued to this token's screen
+// (PLY-114) instead of an invented one.
+func leaseFor(t *testing.T, srv *Server, token string) LeaseResponse {
+	t.Helper()
+	resp, raw := doProgram(t, srv, token, []string{"image", "video"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("program pull for a lease: status = %d, body %v", resp.StatusCode, raw)
+	}
+	var lease LeaseResponse
+	remarshal(t, raw, &lease)
+	return lease
+}
+
 // TestRenderStartRecorded confirms POST /player/v1/render/start (PLY-110)
 // records the report, retrievable via Server.RenderStarts.
 func TestRenderStartRecorded(t *testing.T) {
-	srv, _ := preemptProgramTestServer(t)
+	srv, token := preemptProgramTestServer(t)
 	ts := newPairingTestServer(t, srv)
+	lease := leaseFor(t, srv, token)
 
 	start := RenderStartRequest{
-		LeaseID:  "01J8Z3K4N5P6Q7R8S9T0V1W2ZG",
+		LeaseID:  lease.LeaseID,
 		AssetRef: "sha256:cccc",
 		TS:       1752538000600,
 	}
 	body, _ := json.Marshal(start)
-	resp, err := http.Post(ts.URL+"/player/v1/render/start", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("POST /player/v1/render/start: %v", err)
-	}
+	resp := postPlayerJSON(t, ts, token, "/player/v1/render/start", body)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("render/start status = %d, want 200", resp.StatusCode)
@@ -94,11 +129,13 @@ func TestRenderStartRecorded(t *testing.T) {
 // the report in its full events/1 EVT-050 shape, retrievable via
 // Server.RenderEnds.
 func TestRenderEndRecorded(t *testing.T) {
-	srv, _ := preemptProgramTestServer(t)
+	srv, token := preemptProgramTestServer(t)
 	ts := newPairingTestServer(t, srv)
 
 	end := RenderEndRequest{
-		ScreenID:        "01J8Z3K4N5P6Q7R8S9T0V1W2ZE",
+		// The token's OWN screen: PLY-111's body carries screen_id as the subject
+		// of the record, and PLY-070 binds a channel token to exactly one.
+		ScreenID:        testScreenIDA,
 		AssetRef:        "sha256:aaaa",
 		ProgramRevision: "rev-17",
 		TStart:          1752537960000,
@@ -107,10 +144,7 @@ func TestRenderEndRecorded(t *testing.T) {
 		Completion:      "interrupted",
 	}
 	body, _ := json.Marshal(end)
-	resp, err := http.Post(ts.URL+"/player/v1/render/end", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("POST /player/v1/render/end: %v", err)
-	}
+	resp := postPlayerJSON(t, ts, token, "/player/v1/render/end", body)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("render/end status = %d, want 200", resp.StatusCode)
@@ -128,13 +162,10 @@ func TestRenderEndRecorded(t *testing.T) {
 // TestRenderEndRejectsMissingBody confirms a malformed render/end body is
 // refused with a typed VALIDATION_FAILED, never silently recorded.
 func TestRenderEndRejectsMissingBody(t *testing.T) {
-	srv, _ := preemptProgramTestServer(t)
+	srv, token := preemptProgramTestServer(t)
 	ts := newPairingTestServer(t, srv)
 
-	resp, err := http.Post(ts.URL+"/player/v1/render/end", "application/json", bytes.NewReader([]byte("{")))
-	if err != nil {
-		t.Fatalf("POST /player/v1/render/end: %v", err)
-	}
+	resp := postPlayerJSON(t, ts, token, "/player/v1/render/end", []byte("{"))
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("render/end status = %d, want 400", resp.StatusCode)

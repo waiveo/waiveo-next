@@ -373,10 +373,7 @@ func TestLeaseAckRecordsAck(t *testing.T) {
 	if err != nil {
 		t.Fatalf("json.Marshal: %v", err)
 	}
-	ackResp, err := http.Post(ts.URL+"/player/v1/lease/ack", "application/json", bytes.NewReader(ackBody))
-	if err != nil {
-		t.Fatalf("POST /player/v1/lease/ack: %v", err)
-	}
+	ackResp := postPlayerJSON(t, ts, token, "/player/v1/lease/ack", ackBody)
 	defer ackResp.Body.Close()
 	if ackResp.StatusCode != http.StatusOK {
 		t.Fatalf("lease/ack status = %d, want 200", ackResp.StatusCode)

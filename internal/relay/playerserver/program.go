@@ -17,6 +17,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -431,63 +432,8 @@ func (s *Server) handleProgram(w http.ResponseWriter, r *http.Request) {
 
 	traceID := apihttp.TraceID(r)
 
-	token := bearerToken(r)
-	if token == "" {
-		apihttp.WriteProblem(w, r, traceID, http.StatusUnauthorized, "CHANNEL_TOKEN_INVALID", "Channel Token Invalid")
-		return
-	}
-
-	// lookupSession, not LookupChannelToken: a session the relay has DROPPED
-	// (SetRevokedScreens' own session termination) must still resolve here, or
-	// the revocation check below has no screen_id to run against and a revoked
-	// screen's own token would draw CHANNEL_TOKEN_INVALID where PLY-072
-	// requires CHANNEL_TOKEN_REVOKED.
-	sess, ok := s.lookupSession(token)
+	screenID, nowMs, ok := s.authorizeChannelToken(w, r, traceID)
 	if !ok {
-		apihttp.WriteProblem(w, r, traceID, http.StatusUnauthorized, "CHANNEL_TOKEN_INVALID", "Channel Token Invalid")
-		return
-	}
-	screenID := sess.ScreenID
-	// Revocation (PLY-072) is checked BEFORE expiry: it is terminal (PLY-073's
-	// re-pair path), so a token that is both revoked and expired reports
-	// CHANNEL_TOKEN_REVOKED — driving the player to re-pair rather than to a
-	// renewal (PLY-074) of a credential whose screen no longer validates
-	// (PLY-075). The check reads the relay's own last-synced revocation view,
-	// valid even while disconnected from the app peer (REL-123).
-	//
-	// It is also checked before the dropped-session check below, and that order
-	// is the contract's: PLY-072 names CHANNEL_TOKEN_REVOKED for a token whose
-	// screen_id is present in `revoked`, whatever else is true of the token.
-	if s.isScreenRevoked(screenID) {
-		apihttp.WriteProblem(w, r, traceID, http.StatusUnauthorized, "CHANNEL_TOKEN_REVOKED", "Channel Token Revoked")
-		return
-	}
-	// A session the relay dropped, whose screen is no longer revoked: the
-	// credential itself is dead and stays dead. Withdrawing a revocation
-	// restores the ability to PAIR, never a token minted before it — the only
-	// party still presenting one is whoever kept a copy of a credential an
-	// honest player already cleared (PLY-073). CHANNEL_TOKEN_INVALID is the
-	// taxonomy's own code for a token that no longer resolves to a usable
-	// session, and PLY-136 makes a player clear it and re-pair — the outcome
-	// this state wants.
-	if sess.Terminated {
-		apihttp.WriteProblem(w, r, traceID, http.StatusUnauthorized, "CHANNEL_TOKEN_INVALID", "Channel Token Invalid")
-		return
-	}
-	expiresAt := sess.ExpiresAt
-	// Read ONCE, from the server's own clock (NewServer's required nowMs), and
-	// reused for the Lease's own stamps below. On a relay that is the
-	// floor-aware reading, so a rolled-back host clock cannot revive a channel
-	// token whose expires_at has passed (PLY-072) any more than it can revive
-	// an elapsed pairing grant.
-	//
-	// One read rather than three also keeps the Lease self-consistent: issued_at
-	// and valid_until come from the same instant the expiry check ran, so a
-	// token that just barely validated can never be handed a Lease stamped as
-	// though it were already stale.
-	nowMs := s.nowMs()
-	if nowMs > expiresAt {
-		apihttp.WriteProblem(w, r, traceID, http.StatusUnauthorized, "CHANNEL_TOKEN_EXPIRED", "Channel Token Expired")
 		return
 	}
 
@@ -553,7 +499,128 @@ func (s *Server) handleProgram(w http.ResponseWriter, r *http.Request) {
 	}
 	signature := wire.EncodeSignature(signhash.Sign(signingKey, canon))
 
+	// Remember which screen this lease was issued to, so the acknowledgement and
+	// telemetry routes can tell an ack for THIS player's lease from an ack for a
+	// sibling screen's — the cross-screen case PLY-070 forbids outright. Recorded
+	// only once the Lease is certain to be handed out: a lease that failed to
+	// sign was never issued, and binding it would let an id nobody received be
+	// acknowledged.
+	s.mu.Lock()
+	s.rememberIssuedLeaseLocked(screenID, lease.LeaseID)
+	s.mu.Unlock()
+
 	writeJSON(w, http.StatusOK, LeaseResponse{Lease: lease, Signature: signature})
+}
+
+// authorizeChannelToken performs the channel-token check every operation a
+// channel token authorizes MUST perform (PLY-070: Program delivery, Leases,
+// render acknowledgement and telemetry, and renewal), and writes the Problem
+// itself when it refuses — so a caller is one `if !ok { return }` away from
+// being correct, and no route can accidentally implement four of the five
+// checks. It returns the token's own screen_id and the single clock reading the
+// expiry check used.
+//
+// Auth error taxonomy: an absent, malformed, or unresolvable token maps to
+// `CHANNEL_TOKEN_INVALID` — the Error taxonomy's own code for "malformed or
+// unknown"; a resolvable token past its own `expires_at` maps to
+// `CHANNEL_TOKEN_EXPIRED` (PLY-072), distinct because PLY-073 requires a player
+// treat the two differently (renew vs. re-pair).
+func (s *Server) authorizeChannelToken(w http.ResponseWriter, r *http.Request, traceID string) (string, int64, bool) {
+	token := bearerToken(r)
+	if token == "" {
+		apihttp.WriteProblem(w, r, traceID, http.StatusUnauthorized, "CHANNEL_TOKEN_INVALID", "Channel Token Invalid")
+		return "", 0, false
+	}
+
+	// lookupSession, not LookupChannelToken: a session the relay has DROPPED
+	// (SetRevokedScreens' own session termination) must still resolve here, or
+	// the revocation check below has no screen_id to run against and a revoked
+	// screen's own token would draw CHANNEL_TOKEN_INVALID where PLY-072
+	// requires CHANNEL_TOKEN_REVOKED.
+	sess, ok := s.lookupSession(token)
+	if !ok {
+		apihttp.WriteProblem(w, r, traceID, http.StatusUnauthorized, "CHANNEL_TOKEN_INVALID", "Channel Token Invalid")
+		return "", 0, false
+	}
+	screenID := sess.ScreenID
+	// Revocation (PLY-072) is checked BEFORE expiry: it is terminal (PLY-073's
+	// re-pair path), so a token that is both revoked and expired reports
+	// CHANNEL_TOKEN_REVOKED — driving the player to re-pair rather than to a
+	// renewal (PLY-074) of a credential whose screen no longer validates
+	// (PLY-075). The check reads the relay's own last-synced revocation view,
+	// valid even while disconnected from the app peer (REL-123).
+	//
+	// It is also checked before the dropped-session check below, and that order
+	// is the contract's: PLY-072 names CHANNEL_TOKEN_REVOKED for a token whose
+	// screen_id is present in `revoked`, whatever else is true of the token.
+	if s.isScreenRevoked(screenID) {
+		apihttp.WriteProblem(w, r, traceID, http.StatusUnauthorized, "CHANNEL_TOKEN_REVOKED", "Channel Token Revoked")
+		return "", 0, false
+	}
+	// A session the relay dropped, whose screen is no longer revoked: the
+	// credential itself is dead and stays dead. Withdrawing a revocation
+	// restores the ability to PAIR, never a token minted before it — the only
+	// party still presenting one is whoever kept a copy of a credential an
+	// honest player already cleared (PLY-073). CHANNEL_TOKEN_INVALID is the
+	// taxonomy's own code for a token that no longer resolves to a usable
+	// session, and PLY-136 makes a player clear it and re-pair — the outcome
+	// this state wants.
+	if sess.Terminated {
+		apihttp.WriteProblem(w, r, traceID, http.StatusUnauthorized, "CHANNEL_TOKEN_INVALID", "Channel Token Invalid")
+		return "", 0, false
+	}
+	expiresAt := sess.ExpiresAt
+	// Read ONCE, from the server's own clock (NewServer's required nowMs), and
+	// reused for the Lease's own stamps below. On a relay that is the
+	// floor-aware reading, so a rolled-back host clock cannot revive a channel
+	// token whose expires_at has passed (PLY-072) any more than it can revive
+	// an elapsed pairing grant.
+	//
+	// One read rather than three also keeps the Lease self-consistent: issued_at
+	// and valid_until come from the same instant the expiry check ran, so a
+	// token that just barely validated can never be handed a Lease stamped as
+	// though it were already stale.
+	nowMs := s.nowMs()
+	if nowMs > expiresAt {
+		apihttp.WriteProblem(w, r, traceID, http.StatusUnauthorized, "CHANNEL_TOKEN_EXPIRED", "Channel Token Expired")
+		return "", 0, false
+	}
+
+	return screenID, nowMs, true
+}
+
+// leaseHistoryPerScreen is how many recently-issued lease_ids a screen's entry
+// keeps. PLY-114 draws the line at "currently or most-recently active", which is
+// two; the extra room absorbs a player that pulls a few times while an
+// acknowledgement is in flight without ever admitting an id this relay did not
+// mint. Small deliberately: the point of the record is to refuse ids, so a long
+// history only widens what is accepted.
+const leaseHistoryPerScreen = 4
+
+// rememberIssuedLeaseLocked records that leaseID was issued to screenID. Caller
+// holds s.mu.
+func (s *Server) rememberIssuedLeaseLocked(screenID, leaseID string) {
+	h := append(s.issuedLeases[screenID], leaseID)
+	if len(h) > leaseHistoryPerScreen {
+		// Copy forward rather than reslicing: h[1:] keeps the whole backing array
+		// alive, so a long-lived screen's entry would pin every lease_id it was
+		// ever issued while showing a length of four.
+		h = append([]string(nil), h[len(h)-leaseHistoryPerScreen:]...)
+	}
+	s.issuedLeases[screenID] = h
+}
+
+// leaseIssuedTo reports whether leaseID is one this relay issued to screenID.
+//
+// A lease_id issued to a DIFFERENT screen answers false here exactly as an
+// invented one does, and that is deliberate: the presenting player learns its
+// own reference is not one it holds, not that some other screen holds it.
+// Answering differently would make this route a probe for whether a given
+// lease_id exists somewhere on the relay.
+func (s *Server) leaseIssuedTo(screenID, leaseID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Contains(s.issuedLeases[screenID], leaseID)
 }
 
 // handleLeaseAck implements POST /player/v1/lease/ack (PLY-091): records a
@@ -575,6 +642,11 @@ func (s *Server) handleLeaseAck(w http.ResponseWriter, r *http.Request) {
 
 	traceID := apihttp.TraceID(r)
 
+	screenID, _, ok := s.authorizeChannelToken(w, r, traceID)
+	if !ok {
+		return
+	}
+
 	var req LeaseAckRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		apihttp.WriteProblem(w, r, traceID, http.StatusBadRequest, "VALIDATION_FAILED", "Validation Failed")
@@ -582,6 +654,15 @@ func (s *Server) handleLeaseAck(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.LeaseID == "" {
 		apihttp.WriteProblem(w, r, traceID, http.StatusBadRequest, "VALIDATION_FAILED", "Validation Failed")
+		return
+	}
+	// PLY-114/LEASE_UNKNOWN: the acknowledgement has to name a Lease this relay
+	// issued to THIS screen. Without it the ack map is keyed on whatever id the
+	// caller supplies, so an acknowledgement can be recorded for a Lease that was
+	// never issued, or for a sibling screen's — and PLY-091 makes this record
+	// something the platform reasons about.
+	if !s.leaseIssuedTo(screenID, req.LeaseID) {
+		apihttp.WriteProblem(w, r, traceID, http.StatusBadRequest, "LEASE_UNKNOWN", "Lease Unknown")
 		return
 	}
 
@@ -604,6 +685,11 @@ func (s *Server) handleRenderStart(w http.ResponseWriter, r *http.Request) {
 	}
 	traceID := apihttp.TraceID(r)
 
+	screenID, _, ok := s.authorizeChannelToken(w, r, traceID)
+	if !ok {
+		return
+	}
+
 	var req RenderStartRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		apihttp.WriteProblem(w, r, traceID, http.StatusBadRequest, "VALIDATION_FAILED", "Validation Failed")
@@ -611,6 +697,14 @@ func (s *Server) handleRenderStart(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.LeaseID == "" || req.AssetRef == "" {
 		apihttp.WriteProblem(w, r, traceID, http.StatusBadRequest, "VALIDATION_FAILED", "Validation Failed")
+		return
+	}
+	// Same binding as the ack, and it matters more here: PLY-113/REL-090 forward
+	// this report upstream where it becomes events/1 content.played — the record a
+	// proof-of-play claim would rest on. An unbound lease_id lets a caller assert
+	// that a screen displayed something it never displayed.
+	if !s.leaseIssuedTo(screenID, req.LeaseID) {
+		apihttp.WriteProblem(w, r, traceID, http.StatusBadRequest, "LEASE_UNKNOWN", "Lease Unknown")
 		return
 	}
 
@@ -632,12 +726,33 @@ func (s *Server) handleRenderEnd(w http.ResponseWriter, r *http.Request) {
 	}
 	traceID := apihttp.TraceID(r)
 
+	screenID, _, ok := s.authorizeChannelToken(w, r, traceID)
+	if !ok {
+		return
+	}
+
 	var req RenderEndRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		apihttp.WriteProblem(w, r, traceID, http.StatusBadRequest, "VALIDATION_FAILED", "Validation Failed")
 		return
 	}
 	if req.AssetRef == "" || req.Cause == "" || req.Completion == "" {
+		apihttp.WriteProblem(w, r, traceID, http.StatusBadRequest, "VALIDATION_FAILED", "Validation Failed")
+		return
+	}
+	// This body carries a CLIENT-SUPPLIED screen_id, because PLY-111 makes it
+	// events/1's content.played payload field for field (EVT-050) — and that field
+	// is the subject of the record, not a hint. An authenticated player naming
+	// another screen there would file playback evidence against a screen it does
+	// not hold a credential for, which is the cross-screen presentation PLY-070
+	// forbids in as many words.
+	//
+	// Refused rather than silently overwritten with the token's screen: PLY-111's
+	// body IS the upstream record, so a relay quietly rewriting a field would make
+	// the report disagree with what the player believes it sent, and the player
+	// would never learn its own screen_id was wrong. An empty screen_id is the
+	// same refusal — a report has to say which screen it is about.
+	if req.ScreenID != screenID {
 		apihttp.WriteProblem(w, r, traceID, http.StatusBadRequest, "VALIDATION_FAILED", "Validation Failed")
 		return
 	}

@@ -142,7 +142,7 @@ func Photon(pairingCode string) ([]byte, error) {
 		return nil, fmt.Errorf("virtualplayer: Photon: %w", err)
 	}
 
-	if err := ackLease(client, base, lease.LeaseID); err != nil {
+	if err := ackLease(client, base, pairResp.ChannelToken, lease.LeaseID); err != nil {
 		return nil, fmt.Errorf("virtualplayer: Photon: lease ack: %w", err)
 	}
 
@@ -405,15 +405,32 @@ func verifyLeaseSignature(lease leaseResponse, relayPub ed25519.PublicKey) error
 	return nil
 }
 
+// postAuthorized POSTs JSON with the channel token as an Authorization: Bearer
+// header — PLY-076's only defined credential placement, required on every
+// operation a channel token authorizes (PLY-070). It exists so the three
+// telemetry routes cannot each forget it independently, which is how all three
+// came to be posted bare.
+func postAuthorized(client *http.Client, url, channelToken string, body []byte) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+channelToken)
+	return client.Do(req)
+}
+
 // ackLease performs PLY-091: POST /player/v1/lease/ack {lease_id,
-// accepted: true}.
-func ackLease(client *http.Client, base, leaseID string) error {
+// accepted: true}, presenting the channel token (PLY-070/076). A relay refuses
+// an acknowledgement naming a Lease it did not issue to this token's own screen
+// (LEASE_UNKNOWN, PLY-114).
+func ackLease(client *http.Client, base, channelToken, leaseID string) error {
 	reqBody, err := json.Marshal(leaseAckRequest{LeaseID: leaseID, Accepted: true})
 	if err != nil {
 		return fmt.Errorf("marshal LeaseAckRequest: %w", err)
 	}
 
-	resp, err := client.Post(base+"/player/v1/lease/ack", "application/json", bytes.NewReader(reqBody))
+	resp, err := postAuthorized(client, base+"/player/v1/lease/ack", channelToken, reqBody)
 	if err != nil {
 		return fmt.Errorf("POST /player/v1/lease/ack: %w", err)
 	}

@@ -225,6 +225,25 @@ type Server struct {
 	signingKey  ed25519.PrivateKey         // relay's own key, signs every issued Lease (PLY-090) — one per relay, never per screen, installed by SetSigningKey independently of any program
 	leaseAcks   map[string]LeaseAckRequest // lease_id -> most recent LeaseAck (PLY-091)
 
+	// issuedLeases is which screen each recently-issued lease_id was handed to,
+	// so the acknowledgement and telemetry routes can distinguish a player's own
+	// lease from a sibling screen's — the cross-screen presentation PLY-070
+	// forbids — and an invented id from a real one (LEASE_UNKNOWN, PLY-114).
+	//
+	// Keyed BY SCREEN and bounded per screen rather than keyed by lease_id, and
+	// that is the whole reason for the shape: every program pull mints a fresh
+	// lease (PLY-097), so a lease_id-keyed map grows without bound for as long as
+	// a relay runs, and a relay is the component with no operator watching its
+	// memory. Bounded by screen count instead, which desired state bounds.
+	//
+	// It keeps a few per screen rather than only the newest because PLY-114's own
+	// wording is "currently or most-recently active": a player that pulled again
+	// before acknowledging the previous Lease is behaving conformantly, and
+	// refusing that ack would break a legitimate flow to enforce a rule about
+	// invented ids. Oldest-first eviction, so the id under pressure is always the
+	// one least likely to still be in play.
+	issuedLeases map[string][]string // screen_id -> recently issued lease_ids, oldest first
+
 	// revokedScreens is the relay's own last-synced view of the screen_ids in
 	// relay/1 REL-066's revocation_and_site.revoked (PLY-072): a channel token
 	// naming a screen_id present here is rejected CHANNEL_TOKEN_REVOKED, and no
@@ -333,6 +352,7 @@ func NewServer(relayCertPEM []byte, grants []wire.PairingGrant, nowMs func() int
 		programs:       map[string]program{},
 		programGens:    map[string]int64{},
 		leaseAcks:      map[string]LeaseAckRequest{},
+		issuedLeases:   map[string][]string{},
 		revokedScreens: map[string]bool{},
 	}, nil
 }
