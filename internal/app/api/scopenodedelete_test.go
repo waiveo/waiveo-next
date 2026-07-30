@@ -76,24 +76,24 @@ func TestDeleteScopeNodeInUseIsRefused(t *testing.T) {
 	}{
 		{"screen row", "/api/v1/screens", func(t *testing.T, n string) []byte {
 			return mustJSON(t, screenFixture(n, "Lobby Screen", nil))
-		}, "(a screen)"},
+		}, "(a screen row)"},
 		{"adopted device", "/api/v1/adopted-devices", func(t *testing.T, n string) []byte {
 			return mustJSON(t, adoptedDeviceFixture(n, "Lobby Roku", "roku-ecp", "10.0.0.41", nil))
-		}, "(an adopted device)"},
+		}, "(an adopted device row)"},
 		{"playlist", "/api/v1/playlists", func(t *testing.T, n string) []byte {
 			return mustJSON(t, playlistFixture(n, nil))
-		}, "(a playlist)"},
+		}, "(a playlist row)"},
 		{"schedule", "/api/v1/schedules", func(t *testing.T, n string) []byte {
 			return mustJSON(t, scheduleFixture(n))
-		}, "(a schedule)"},
+		}, "(a schedule row)"},
 		{"automation", "/api/v1/automations", func(_ *testing.T, n string) []byte {
 			return edgeAutomationBody("", n, nil)
-		}, "(an automation)"},
+		}, "(an automation row)"},
 		{"webhook endpoint", "/api/v1/webhook-endpoints", func(t *testing.T, n string) []byte {
 			return mustJSON(t, map[string]any{
 				"name": "Ops Endpoint", "scope_node": n, "url": "https://hooks.example.invalid/waiveo",
 			})
-		}, "(a webhook endpoint)"},
+		}, "(a webhook endpoint row)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEnv(t)

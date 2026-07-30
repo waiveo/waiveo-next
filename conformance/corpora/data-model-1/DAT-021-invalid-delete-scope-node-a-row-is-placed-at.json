@@ -2,7 +2,7 @@
   "case_id": "DAT-021-invalid-delete-scope-node-a-row-is-placed-at",
   "contract": "data-model/1",
   "req_ids": ["DAT-021"],
-  "description": "Deleting a childless screen scope node that a screen identity row still names as its scope_node is refused 409 Conflict / SCOPE_NODE_IN_USE, with the removal never executed. The node carries no child at all, so DAT-020 has nothing to say about it and the reference is the whole of the refusal.",
+  "description": "Deleting a childless screen scope node that a screen identity row still names as its scope_node is refused 409 Conflict / SCOPE_NODE_IN_USE, with the removal never executed. The node carries no child at all, so DAT-020 has nothing to say about it and the reference is the whole of the refusal. The frozen detail also pins that the refusal distinguishes the ROW from the NODE: this is the one pairing where the two nouns would otherwise collide (a screen-kind scope node blocked by a screen identity row), and DAT-004a makes them distinct rows with distinct ids.",
   "input": {
     "seed": {
       "scope_nodes": [
@@ -58,7 +58,7 @@
       "type": "about:blank",
       "title": "Conflict",
       "status": 409,
-      "detail": "This scope node is still named as the scope_node of at least one other row (a screen). Delete or re-place every such row first.",
+      "detail": "This scope node is still named as the scope_node of at least one other row (a screen row). A row placed at a node is a separate record from the node itself — delete or re-place every such row first.",
       "code": "SCOPE_NODE_IN_USE",
       "trace_id": "01J8ZDATTRACE2100000000000"
     }

@@ -150,17 +150,33 @@ func scopeNodeDeleteGuards(srv *server, id string) []store.DeleteGuard {
 				Status: http.StatusConflict,
 				Code:   "SCOPE_NODE_IN_USE",
 				Title:  "Conflict",
+				// The blocking thing is named as a ROW, and the sentence says so
+				// outright, because the two nouns otherwise collide on the one
+				// family where it matters most. Deleting a SCREEN-KIND SCOPE NODE
+				// blocked by a SCREEN IDENTITY ROW would read as "this screen
+				// cannot be deleted because a screen is placed at it" — and
+				// DAT-004a makes those genuinely different rows with different
+				// ids, a screen-kind node being "a placement classification,
+				// never a screen identity in its own right". An operator who
+				// reads them as one thing goes looking for the wrong record.
 				Detail: "This scope node is still named as the scope_node of at least one other row" +
-					srv.placedRowNoun(p.Table) + ". Delete or re-place every such row first.",
+					srv.placedRowNoun(p.Table) + ". A row placed at a node is a separate record from the " +
+					"node itself — delete or re-place every such row first.",
 			}
 		},
 	}
 }
 
-// placedRowNoun renders " (a playlist)" for the family a blocking row belongs to,
-// or nothing when the table is not a mounted resource family — pack collection
+// placedRowNoun renders " (a playlist row)" for the family a blocking row belongs
+// to, or nothing when the table is not a mounted resource family — pack collection
 // rows carry the same placement and are found by the same lookup, but they are
 // not one of this surface's own families and have no displayName to borrow.
+//
+// The trailing "row" is not filler. Several displayNames are also the word an
+// operator uses for a scope node of the matching kind — "screen" most of all — and
+// DAT-004a makes a screen identity row and a screen-kind scope node distinct rows
+// with distinct ids. Naming the blocker "a screen row" rather than "a screen"
+// keeps the refusal from describing the node it is refusing to delete.
 //
 // The noun leaks nothing: every rule that reaches this point has already
 // established the caller holds WRITE authority at the node, and write authority
@@ -168,7 +184,7 @@ func scopeNodeDeleteGuards(srv *server, id string) []store.DeleteGuard {
 func (srv *server) placedRowNoun(table string) string {
 	for _, cfg := range srv.families {
 		if string(cfg.kind) == table {
-			return " (" + indefiniteArticle(cfg.displayName) + " " + cfg.displayName + ")"
+			return " (" + indefiniteArticle(cfg.displayName) + " " + cfg.displayName + " row)"
 		}
 	}
 	return ""
