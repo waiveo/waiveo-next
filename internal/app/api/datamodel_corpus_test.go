@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -36,12 +37,20 @@ import (
 // # Which cases this drives, and how the two drivers agree on the split
 //
 // Neither driver holds a list of case ids. Both classify from the case's own
-// input block: a case whose `input` carries a `request` member is an HTTP case
-// (this file drives it); a case without one is an engine case (corpus_test.go
-// drives it). One property, read from the frozen data by both sides, so the two
-// cannot drift into driving the same case twice or neither driving it at all —
-// the api/1 driver's own "dispatch purely from input structure, never from
-// hard-coded case-id knowledge" rule, applied across a package boundary.
+// input block: a case whose `input` carries a PRESENT, NON-NULL `request` member
+// is an HTTP case (this file drives it); anything else is an engine case
+// (corpus_test.go drives it). One property, read from the frozen data by both
+// sides, so the two cannot drift into driving the same case twice or neither
+// driving it at all — the api/1 driver's own "dispatch purely from input
+// structure, never from hard-coded case-id knowledge" rule, applied across a
+// package boundary.
+//
+// "Non-null" is part of the rule, not pedantry. This driver's `Request` field is a
+// pointer, and encoding/json leaves a pointer nil for an explicit JSON null, so a
+// `"request": null` case is not owned here — and the engine side has to agree
+// exactly, or such a case is skipped by both. Each side pins its own half of the
+// rule: TestHTTPDriverOwnershipIsPresentAndNonNull here,
+// TestRequestShapedMatchesTheHTTPDriversDecode there.
 
 // corpusDirDataModel1 resolves the frozen data-model/1 corpus from THIS source
 // file's location, so it is found regardless of the working directory a test run
@@ -126,6 +135,50 @@ func httpDrivenDataModel1Cases(t *testing.T) []dmCase {
 		}
 	}
 	return out
+}
+
+// TestHTTPDriverOwnershipIsPresentAndNonNull pins THIS driver's half of the split
+// to the written rule: a case is owned here when its `input.request` member is
+// present and not JSON null — no more, no less.
+//
+// The rule has to be pinned on both sides independently, because neither side can
+// see the other's predicate (each lives in a _test.go file in a package the other
+// cannot import). The engine side pins its own half against the same sentence in
+// TestRequestShapedMatchesTheHTTPDriversDecode. Without this half, changing the
+// `Request` field's shape above — a non-pointer with a presence flag, say, or a
+// decode that treated null as an empty request — would move this driver's
+// ownership silently, and the engine side would go on skipping exactly the cases
+// it used to skip. The result is a case driven by nobody, which is precisely what
+// a `"request": null` case used to be.
+func TestHTTPDriverOwnershipIsPresentAndNonNull(t *testing.T) {
+	for _, c := range loadDataModel1Corpus(t) {
+		// The raw member, read without this file's own struct, so the comparison is
+		// against the RULE rather than against the same decode restated.
+		var raw struct {
+			Input map[string]json.RawMessage `json:"input"`
+		}
+		full := readCorpusFile(t, c.CaseID)
+		if err := json.Unmarshal(full, &raw); err != nil {
+			t.Fatalf("re-read %s: %v", c.CaseID, err)
+		}
+		member, present := raw.Input["request"]
+		wantOwned := present && string(bytes.TrimSpace(member)) != "null"
+		if owned := c.Input.Request != nil; owned != wantOwned {
+			t.Errorf("%s: this driver owns it = %v, but the rule (a present, non-null `request` member) says %v — "+
+				"the two drivers' shares no longer partition the corpus", c.CaseID, owned, wantOwned)
+		}
+	}
+}
+
+// readCorpusFile returns one frozen case's bytes by case id (which IS its
+// filename — loadDataModel1Corpus asserts as much).
+func readCorpusFile(t *testing.T, caseID string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(corpusDirDataModel1(), caseID+".json"))
+	if err != nil {
+		t.Fatalf("read case %s: %v", caseID, err)
+	}
+	return b
 }
 
 // TestDataModel1HTTPCorpus replays every request-shaped data-model/1 case

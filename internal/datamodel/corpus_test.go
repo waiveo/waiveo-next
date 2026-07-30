@@ -30,6 +30,11 @@ import (
 // (it imports this one) and which cannot import this file's handlers either, so
 // the split is decided by BOTH sides reading the same property off the same
 // frozen data rather than by either holding a list of the other's case ids.
+//
+// "Carries a `request` block" means present AND non-null on both sides — see
+// isRequestShaped. Agreeing on ONE predicate is what the no-double-drive and
+// no-drop claims rest on, and the two are pinned against each other by
+// TestRequestShapedMatchesTheHTTPDriversDecode.
 
 const corpusDir = "../../conformance/corpora/data-model-1"
 
@@ -112,14 +117,131 @@ func TestDataModel1Corpus(t *testing.T) {
 // the single property that decides which driver owns a data-model/1 case. The
 // HTTP driver reads the SAME property off the same files (see the header), so
 // neither side can claim a case the other is also driving, or neither is.
+//
+// "Carries a `request` block" is present AND NON-NULL, and the second half is
+// load-bearing rather than defensive. The HTTP driver decodes the member into a
+// `*struct` and drives the case only when that pointer is non-nil, and
+// encoding/json leaves a pointer nil for an explicit JSON null. A key-presence
+// test here would therefore call `"request": null` request-shaped while the HTTP
+// driver called it absent, and the case would be driven by NEITHER — silently,
+// because each side's skip is the other side's job. That is not the failure the
+// double-drive guard below catches; it is its mirror, and it was reachable
+// before this predicate rejected null. See TestRequestShapedMatchesTheHTTPDrivers
+// Decode, which pins the two spellings against each other.
 func isRequestShaped(t *testing.T, c corpusCase) bool {
 	t.Helper()
 	var input map[string]json.RawMessage
 	if err := json.Unmarshal(c.Input, &input); err != nil {
 		t.Fatalf("decode input of %s: %v", c.CaseID, err)
 	}
-	_, ok := input["request"]
-	return ok
+	raw, ok := input["request"]
+	if !ok {
+		return false
+	}
+	return !isJSONNull(t, c.CaseID, raw)
+}
+
+// isJSONNull reports whether raw is the JSON literal null, decided the same way
+// the HTTP driver decides it: by decoding into a POINTER and asking whether
+// encoding/json left it nil. Spelling it as a decode rather than as a byte
+// comparison against "null" is what keeps the two sides on one rule — whatever
+// encoding/json treats as null for a `*struct` field is what is treated as null
+// here, including any leading or trailing whitespace the raw member carries.
+func isJSONNull(t *testing.T, caseID string, raw json.RawMessage) bool {
+	t.Helper()
+	var probe *json.RawMessage
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		t.Fatalf("decode the `request` member of %s: %v", caseID, err)
+	}
+	return probe == nil
+}
+
+// httpDriverOwnsCase decides ownership the way internal/app/api/
+// datamodel_corpus_test.go decides it: the `request` member is decoded into a
+// POINTER field, and that driver drives the case only when encoding/json leaves
+// the pointer non-nil.
+//
+// It is the other driver's mechanism restated in the only form this package can
+// execute — internal/datamodel cannot import internal/app/api, which imports it,
+// and the real predicate lives in a _test.go file no package can import at all.
+// Restating it is therefore not duplication for its own sake: it is the only way
+// a test HERE can compare the two rules, and the api side pins its own half
+// against the same written rule (TestHTTPDriverOwnershipIsPresentAndNonNull).
+func httpDriverOwnsCase(t *testing.T, caseID string, input json.RawMessage) bool {
+	t.Helper()
+	var envelope struct {
+		Request *struct {
+			Method  string            `json:"method"`
+			Path    string            `json:"path"`
+			Headers map[string]string `json:"headers"`
+			Body    json.RawMessage   `json:"body"`
+		} `json:"request"`
+	}
+	if err := json.Unmarshal(input, &envelope); err != nil {
+		t.Fatalf("decode input of %s: %v", caseID, err)
+	}
+	return envelope.Request != nil
+}
+
+// TestRequestShapedMatchesTheHTTPDriversDecode pins the two drivers to ONE
+// predicate, which is the whole basis of the claim that a case cannot be driven
+// twice or not at all.
+//
+// The double-drive direction is already caught out loud: TestDataModel1Corpus
+// errors when a request-shaped case also has an engine handler. The DROP
+// direction had no check, and was reachable — a case carrying `"request": null`
+// was request-shaped to a key-presence test (so the engine skipped it) and nil to
+// the HTTP driver's pointer decode (so it skipped too), while every manifest
+// assertion still counted it as driven, because each side counts the OTHER side's
+// share from the corpus rather than from that driver. Nothing failed; the case
+// simply never ran. This is the check that makes that impossible.
+func TestRequestShapedMatchesTheHTTPDriversDecode(t *testing.T) {
+	// Every spelling of the member, including the ones no frozen case carries
+	// today — a corpus-only check would go green again the moment the offending
+	// case were deleted, which is how the gap got in.
+	t.Run("every spelling of the request member", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			input string
+			want  bool
+		}{
+			{"absent", `{"scope_nodes":[]}`, false},
+			{"explicit null", `{"request":null}`, false},
+			{"null with surrounding whitespace", "{\"request\":\n    null\n}", false},
+			{"a request object", `{"request":{"method":"DELETE","path":"/api/v1/scope-nodes/x"}}`, true},
+			{"an empty request object", `{"request":{}}`, true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				got := isRequestShaped(t, corpusCase{CaseID: tc.name, Input: json.RawMessage(tc.input)})
+				if got != tc.want {
+					t.Errorf("isRequestShaped(%s) = %v, want %v — a `request` member counts only when it is "+
+						"present AND non-null", tc.input, got, tc.want)
+				}
+				if http := httpDriverOwnsCase(t, tc.name, json.RawMessage(tc.input)); http != got {
+					t.Errorf("the two drivers disagree on %s: engine says request-shaped=%v, the HTTP driver's "+
+						"pointer decode says owned=%v — one of them would drive this case twice, or neither would "+
+						"drive it at all", tc.input, got, http)
+				}
+			})
+		}
+	})
+
+	// And on the real data, so a frozen case that manages to split the two is
+	// caught even if it is spelled in a way the table above did not anticipate.
+	t.Run("every frozen corpus case", func(t *testing.T) {
+		files, err := filepath.Glob(filepath.Join(corpusDir, "*.json"))
+		if err != nil || len(files) == 0 {
+			t.Fatalf("glob corpus: %v (%d file(s))", err, len(files))
+		}
+		for _, f := range files {
+			c := loadCase(t, f)
+			engine := isRequestShaped(t, c)
+			if http := httpDriverOwnsCase(t, c.CaseID, c.Input); http != engine {
+				t.Errorf("%s: engine says request-shaped=%v, the HTTP driver says owned=%v — exactly one driver "+
+					"must own every case", c.CaseID, engine, http)
+			}
+		}
+	})
 }
 
 // requestShapedCaseIDs are the case ids the HTTP driver owns, read off the frozen
