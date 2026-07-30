@@ -26,14 +26,14 @@
 //                      functions dead while a program in this repo calls them.
 //
 // The tempting fourth option — `-test ./...`, which makes EVERY package's own
-// unit tests roots — is deliberately not used. It collapses the report from 104
-// functions to 7, because a function called only by a unit test in its own
-// package then counts as live. That is the wrong bar for this gate twice over:
-// a constructor option only a test ever passes is precisely an unwired
-// capability, and, concretely, `-test ./...` does not report eventsse's
-// `Hub.after` — the real defect a review found by hand — because a unit test
-// exercises it while nothing in the delivery path does. The gate has to be able
-// to see that one.
+// unit tests roots — is deliberately not used. It collapses the report by more
+// than an order of magnitude, because a function called only by a unit test in
+// its own package then counts as live. That is the wrong bar for this gate twice
+// over: a constructor option only a test ever passes is precisely an unwired
+// capability, and, concretely, `-test ./...` did not report eventsse's
+// `Hub.after` — the real defect a review found by hand, since deleted — because a
+// unit test exercised it while nothing in the delivery path did. The gate has to
+// be able to see that shape.
 //
 // ── GOOS/GOARCH ─────────────────────────────────────────────────────────────
 // RTA is valid for one build configuration at a time, and this module has

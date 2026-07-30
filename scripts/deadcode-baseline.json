@@ -9,14 +9,15 @@
     "matters when you come to close it:",
     "  (a) a whole subsystem is built and not yet wired to anything (internal/archive);",
     "  (b) a capability was declared and its caller never written — the defect class this gate",
-    "      exists for (internal/manifest's compat-range evaluation, eventsse's Hub.after);",
+    "      exists for (internal/manifest's compat-range evaluation);",
     "  (c) a constructor option, accessor, or fixture helper only a unit test ever passes. Not a",
     "      bug, but not a wired capability either: production takes the default and always has;",
     "  (d) a String()/Error() method on a type nothing ever formats.",
     "",
-    "Unit tests are deliberately NOT roots. If they were, this file would hold 7 entries instead",
-    "of 104 and would not contain Hub.after — the one defect here a human review had already",
-    "found by hand. See the header of scripts/validate-deadcode.mjs for the full root argument.",
+    "Unit tests are deliberately NOT roots. If they were, this file would hold a handful of",
+    "entries instead of 100-odd, and it would never have listed eventsse's Hub.after — the one",
+    "defect here a human review had already found by hand, since deleted, and the case that",
+    "settled the root set. See scripts/validate-deadcode.mjs's header for the full argument.",
     "",
     "Do not read a green gate as 'nothing is unwired'. RTA cannot report a new EXPORTED METHOD on",
     "a type whose values reach the reflection machinery — eventsse.Hub and relay/identity.Store",
@@ -51,8 +52,8 @@
     },
     {
       "package": "internal/app/eventsse",
-      "reason": "Hub.after is the entry a filed defect names, not a benign gap: the live loop used to call it directly and now calls drain, which reads the tail and the eviction condition under one lock hold — so this replay-from-cursor read was left behind with no caller on the delivery path. A review found it by hand before this gate existed, and it is the reason unit tests are not roots here: a unit test does exercise Hub.after, so any invocation that trusted tests would report this hub as fully wired. Alongside it: three constructor options production never passes (the defaults ship) and one test-only counter.",
-      "funcs": ["Hub.subscriberCount", "Hub.after", "WithHeartbeat", "WithGapDeferral", "WithWriteTimeout"]
+      "reason": "Three constructor options production never passes (the defaults ship) and one test-only counter. Hub.after used to head this list and is now DELETED rather than baselined: it was a bare tail read left behind when the live loop moved to drain, which reads the tail and the eviction condition under one lock hold, and keeping it invited a future delivery path to read a tail with no discontinuity check — the silent loss EVT-143 forbids.",
+      "funcs": ["Hub.subscriberCount", "WithHeartbeat", "WithGapDeferral", "WithWriteTimeout"]
     },
     {
       "package": "internal/app/packs",

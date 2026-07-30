@@ -430,8 +430,8 @@ func TestEventLog_RefusesANonULIDID(t *testing.T) {
 // TestEventLog_SubstrateQuestionsMatchTheInMemoryLog holds the persistent
 // implementation to the same answers internal/events states for the in-memory
 // one: a retained id is never aged out, an id ahead of the whole log was never
-// recorded (EVT-134's rejection, not EVT-141's gap), and OldestRetainedAfter is
-// strictly after its argument.
+// recorded (EVT-134's rejection, not EVT-141's gap), and the head is the newest
+// retained id.
 func TestEventLog_SubstrateQuestionsMatchTheInMemoryLog(t *testing.T) {
 	dsn := filepath.Join(t.TempDir(), "app.db")
 	clock := &fakeClock{ms: evtEpoch}
@@ -454,11 +454,8 @@ func TestEventLog_SubstrateQuestionsMatchTheInMemoryLog(t *testing.T) {
 	if got := log.HeadID(); got != evtE3 {
 		t.Fatalf("HeadID must be the newest retained id %s; got %q", evtE3, got)
 	}
-	if got := log.OldestRetainedAfter(evtE1); got != evtE2 {
-		t.Fatalf("OldestRetainedAfter must be STRICTLY after its argument; got %q", got)
-	}
-	if got := log.OldestRetainedAfter(evtE3); got != "" {
-		t.Fatalf("nothing is retained after the head; got %q", got)
+	if got := log.OldestRetainedID(); got != evtE1 {
+		t.Fatalf("the retention floor must be the earliest retained id; got %q", got)
 	}
 	if log.AgedOut(evtE4) {
 		t.Fatal("an id ahead of the whole log was never recorded — EVT-134's rejection, not EVT-141's gap")

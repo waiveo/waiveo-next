@@ -313,29 +313,23 @@ func (l *EventLog) Head() (string, error) {
 	return head.String, nil
 }
 
-// OldestRetainedID is the earliest retained id, "" for an empty log. Under
-// per-class retention it is NOT the point an aged-out resume resumes at (a
+// OldestRetainedID is the earliest retained id, "" for an empty log — the
+// retention floor AgedOut compares against.
+//
+// Under per-class retention it is NOT the point an aged-out resume resumes at (a
 // long-lived audit record outlives newer telemetry, so it can sit below an
-// aged-out point) — that is OldestRetainedAfter.
+// aged-out point), and neither is any substrate-level "oldest retained after id"
+// read: EVT-141's to_id must name the oldest id above the requested point that
+// the ASKING SUBSCRIBER may see, which no query here knows how to answer. That
+// is why events.Log carries no such method — see internal/events/resume.go's
+// oldestVisibleAfter, which walks the retained tail through the subscriber's
+// visible set instead (EVT-134a).
 func (l *EventLog) OldestRetainedID() string {
-	return l.oldestAfter(``, nil)
-}
-
-// OldestRetainedAfter is the earliest retained id strictly greater than id, ""
-// when nothing newer is retained (events.Log) — EVT-141's to_id.
-func (l *EventLog) OldestRetainedAfter(id string) string {
-	if id == "" {
-		return l.OldestRetainedID()
-	}
-	return l.oldestAfter(` WHERE id > ?`, []any{id})
-}
-
-func (l *EventLog) oldestAfter(where string, args []any) string {
 	l.store.mu.RLock()
 	defer l.store.mu.RUnlock()
 	var oldest sql.NullString
 	if err := l.store.db.QueryRowContext(context.Background(),
-		`SELECT MIN(id) FROM events`+where, args...).Scan(&oldest); err != nil {
+		`SELECT MIN(id) FROM events`).Scan(&oldest); err != nil {
 		l.onErr(fmt.Errorf("reading the oldest retained event failed; answering none: %w", err))
 		return ""
 	}

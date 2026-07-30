@@ -67,13 +67,6 @@ type Log interface {
 	// subscribe watermark (EVT-132) and the floor a restarted process seeds its
 	// recording-order id generator from (EVT-011).
 	HeadID() string
-	// OldestRetainedAfter is the earliest retained id strictly greater than id
-	// ("" when nothing newer is retained) — the id delivery resumes at when the
-	// caller's own point has aged out (EVT-141's to_id). It is deliberately not
-	// "the oldest retained id": with per-class retention a long-lived audit
-	// record can still be retained BELOW an aged-out telemetry point, and
-	// naming it as to_id would resume delivery behind the subscriber.
-	OldestRetainedAfter(id string) string
 	// AgedOut reports whether id names a point the log can no longer resume
 	// from because it (and everything at or below it) has been evicted — the
 	// retention_expired condition (EVT-141). It is false for a retained id.
@@ -155,9 +148,17 @@ func (l *EventLog) Append(env Envelope) {
 }
 
 // OldestRetainedID is the earliest id still recoverable. It is "" for an empty
-// log. Under this log's single uniform horizon it is also the point every
-// aged-out resume resumes at, but the substrate question Resolve actually asks
-// is OldestRetainedAfter — see that method.
+// log, and it is the retention floor AgedOut compares against.
+//
+// It is NOT the point an aged-out resume resumes at, and no resolution path may
+// use it as one. EVT-141's to_id has to be the oldest id above the requested
+// point that THIS subscriber may see, which is a question about the subscriber's
+// visible set rather than about the substrate — so it is answered by
+// oldestVisibleAfter over the retained tail (resume.go), never by a substrate
+// read. A substrate-level "oldest retained after id" reader is therefore
+// deliberately absent from Log: its answer looks right and is wrong, because it
+// can name an event outside the visible set (EVT-134a) and resume delivery
+// behind a subscriber that had already read past it.
 func (l *EventLog) OldestRetainedID() string {
 	if len(l.events) == 0 {
 		return ""
@@ -171,19 +172,6 @@ func (l *EventLog) HeadID() string {
 		return ""
 	}
 	return l.events[len(l.events)-1].ID
-}
-
-// OldestRetainedAfter is the earliest retained id strictly greater than id
-// (Log.OldestRetainedAfter). An empty id ("") yields the oldest retained id.
-func (l *EventLog) OldestRetainedAfter(id string) string {
-	pos := l.search(id)
-	if pos < len(l.events) && l.events[pos].ID == id {
-		pos++
-	}
-	if pos >= len(l.events) {
-		return ""
-	}
-	return l.events[pos].ID
 }
 
 // AgedOut reports whether id has aged past this log's retention horizon

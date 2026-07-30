@@ -93,7 +93,7 @@ import (
 // either binding reads through. It exists because events.EventLog is not safe for concurrent
 // use and delegates its synchronization to "the live transport" — this is that
 // transport, so every log mutation (Append) and every log read (subscribe /
-// after) is serialized under mu. It is also the fan-out registry: each Append
+// drain) is serialized under mu. It is also the fan-out registry: each Append
 // wakes every registered subscriber, where a single shared channel would deliver
 // the wake to only one of N waiting subscribers (EVT-100).
 type Hub struct {
@@ -116,7 +116,7 @@ type Hub struct {
 // subscriber is one connected SSE stream's wake mailbox: a buffered(1) channel
 // the Hub coalesces wakes into. A full buffer means "already signalled, not yet
 // drained" — one pending wake is enough because a drain reads the WHOLE
-// newly-appended tail via after(lastID), so coalescing loses no event. The
+// newly-appended tail via drain(lastID), so coalescing loses no event. The
 // per-subscriber channel is the fan-out unit: Append signals every subscriber's
 // channel, where a single shared channel would wake only one (EVT-100).
 type subscriber struct {
@@ -252,15 +252,6 @@ func (h *Hub) subscribe(resumeFrom string, visible func(events.Envelope) bool) (
 	return &Subscription{hub: h, sub: s, head: h.headLocked()}, outcome, nil
 }
 
-// after returns the retained tail strictly after id, read under the lock so it
-// never races a concurrent Append's slice mutation. EventLog.After returns a
-// fresh copy, so the result is safe to stream after the lock is released.
-func (h *Hub) after(id string) []events.Envelope {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.log.After(id)
-}
-
 // drain is one wake's worth of live delivery for a subscriber last at lastID:
 // the not-yet-considered tail, plus whether any event past lastID aged out of
 // retention before this drain (a mid-stream slow-consumer drop, EVT-142/143).
@@ -282,7 +273,7 @@ func (h *Hub) drain(lastID string) (evicted bool, tail []events.Envelope) {
 }
 
 // headLocked is the newest retained id — the fresh-subscribe watermark; the
-// caller holds mu. It is "" for an empty log (after("") then yields the whole
+// caller holds mu. It is "" for an empty log (drain("") then yields the whole
 // first live batch). It asks the substrate for the head rather than reading the
 // whole log and taking its last entry: on the persistent implementation that
 // difference is one indexed MAX(id) versus loading every retained event into

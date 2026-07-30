@@ -410,7 +410,7 @@ func TestSSE_MultipleSubscribersEachReceiveLiveAppend(t *testing.T) {
 }
 
 // TestSSE_ConcurrentAppendsAndReadsAreRaceFree is the finding-2/4 regression: an
-// SSE subscriber's live loop reads the shared log (hub.after) on one goroutine
+// SSE subscriber's live loop reads the shared log (hub.drain) on one goroutine
 // while a writer floods hub.Append on another. Both must go through the Hub's
 // single lock, so under `go test -race` there is no unsynchronized read/write on
 // the EventLog's backing slice, and every appended event is delivered exactly
@@ -488,8 +488,13 @@ func TestHub_SubscribeCapturesWatermarkAtomicallyWithRegistration(t *testing.T) 
 		t.Fatalf("Append after subscribe must wake the registered subscriber — registration and the watermark snapshot must be one atomic step (EVT-132)")
 	}
 	// ... and be strictly after the watermark, so the live loop delivers it (the
-	// pre-existing idA is excluded from a fresh subscriber's live tail).
-	tail := hub.after(sub.head)
+	// pre-existing idA is excluded from a fresh subscriber's live tail). Read
+	// through drain — the one tail read the live loop actually performs — so this
+	// asserts over the delivery path rather than over a reader beside it.
+	evicted, tail := hub.drain(sub.head)
+	if evicted {
+		t.Fatalf("an unbounded log evicts nothing, so no drain may report a discontinuity")
+	}
 	if len(tail) != 1 || tail[0].ID != idB {
 		t.Fatalf("the event appended at connection time must be in the deliverable tail after the watermark, never dropped (EVT-132/143); got %+v", tail)
 	}
@@ -527,7 +532,7 @@ func TestSSE_FreshDeliversEveryAppendAfterConnect(t *testing.T) {
 // wake — MUST report that discontinuity alongside the surviving tail, never
 // return the truncated tail with no signal.
 //
-// Before the fix the live loop called hub.after(lastID) directly: once lastID
+// Before the fix the live loop called a bare tail read on lastID: once lastID
 // aged out, After just returned the surviving tail starting at the new oldest id,
 // with no signal and no way for the caller to know entries were skipped — the
 // silent loss EVT-143 forbids.

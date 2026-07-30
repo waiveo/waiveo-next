@@ -127,13 +127,18 @@ func TestEventLog_RetentionHorizon(t *testing.T) {
 	}
 }
 
-// TestEventLog_SubstrateQuestions exercises the three Log questions the
-// generic resume/live path asks that are NOT plain membership or slicing:
-// HeadID (the fresh-subscribe watermark and a restarted process's id floor),
-// OldestRetainedAfter (the id an aged-out resume resumes AT), and AgedOut (the
+// TestEventLog_SubstrateQuestions exercises the two Log questions the generic
+// resume/live path asks that are NOT plain membership or slicing: HeadID (the
+// fresh-subscribe watermark and a restarted process's id floor) and AgedOut (the
 // retention_expired condition). They are stated on the in-memory log here and
 // re-stated against the persistent one in internal/app/store, so the two
 // implementations of the same interface are held to one behaviour.
+//
+// The id an aged-out resume resumes AT is deliberately not among them: it is a
+// question about the subscriber's visible set, not about the substrate, so it is
+// answered over the retained tail (resume.go's oldestVisibleAfter) and pinned in
+// resume_visible_test.go. OldestRetainedID is exercised through AgedOut, which is
+// the only thing that reads it.
 func TestEventLog_SubstrateQuestions(t *testing.T) {
 	const (
 		y5 = "01J8Z3K4N5P6Q7R8S9T0V1W2Y5"
@@ -150,8 +155,8 @@ func TestEventLog_SubstrateQuestions(t *testing.T) {
 	if empty.AgedOut(y6) {
 		t.Fatal("an empty log has evicted nothing, so no id has aged out of it")
 	}
-	if got := empty.OldestRetainedAfter(""); got != "" {
-		t.Fatalf("an empty log retains nothing after any point; got %q", got)
+	if got := empty.OldestRetainedID(); got != "" {
+		t.Fatalf("an empty log has no retention floor; got %q", got)
 	}
 
 	l := NewEventLog(2)
@@ -162,14 +167,8 @@ func TestEventLog_SubstrateQuestions(t *testing.T) {
 	if got := l.HeadID(); got != y8 {
 		t.Fatalf("HeadID must be the newest retained id Y8; got %q", got)
 	}
-	if got := l.OldestRetainedAfter(""); got != y7 {
-		t.Fatalf("OldestRetainedAfter(\"\") must be the oldest retained id Y7; got %q", got)
-	}
-	if got := l.OldestRetainedAfter(y7); got != y8 {
-		t.Fatalf("OldestRetainedAfter must be STRICTLY after its argument: after Y7 that is Y8; got %q", got)
-	}
-	if got := l.OldestRetainedAfter(y8); got != "" {
-		t.Fatalf("nothing is retained after the head; got %q", got)
+	if got := l.OldestRetainedID(); got != y7 {
+		t.Fatalf("the retention floor must advance to the oldest retained id Y7; got %q", got)
 	}
 
 	if !l.AgedOut(y6) {
