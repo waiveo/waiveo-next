@@ -1,6 +1,9 @@
 package archive
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // preflight_test.go covers the four pre-apply refusals and, just as importantly,
 // the cases that must NOT refuse: an older epoch, a healthy pack, an embedded
@@ -282,5 +285,115 @@ func TestAHealthyArchiveIsAccepted(t *testing.T) {
 	}
 	if !r.Packs[0].Restored || r.Packs[0].OperatorSignal {
 		t.Errorf("outcome = %+v, want restored with no signal", r.Packs[0])
+	}
+}
+
+// ---- ARC-092: the base-archive chain -------------------------------------
+
+func incremental(baseDigest string) Manifest {
+	return Manifest{
+		Mode:                ModeIncremental,
+		PlatformSchemaEpoch: 4,
+		BaseArchive:         &BaseArchiveRef{Digest: baseDigest, CreatedAt: 1752537600000},
+	}
+}
+
+func TestAFullArchiveNeedsNoChain(t *testing.T) {
+	dst := trusting()
+	dst.ResolveBaseArchive = func(string) (Manifest, bool) {
+		t.Error("a full archive asked the destination to resolve a base archive")
+		return Manifest{}, false
+	}
+	if r := Preflight(Manifest{Mode: ModeFull, PlatformSchemaEpoch: 4}, dst); !r.OK() {
+		t.Fatalf("a full archive was refused: %v", fatalCodes(r))
+	}
+}
+
+func TestAnUnresolvableBaseArchiveIsFatal(t *testing.T) {
+	dst := trusting()
+	dst.ResolveBaseArchive = func(string) (Manifest, bool) { return Manifest{}, false }
+
+	r := Preflight(incremental("sha-base"), dst)
+	if got := fatalCodes(r); len(got) != 1 || got[0] != CodeBaseArchiveUnavailable {
+		t.Fatalf("fatal codes = %v, want exactly [%s] (ARC-092)", got, CodeBaseArchiveUnavailable)
+	}
+}
+
+// TestTheWholeChainIsWalkedNotJustTheFirstLink: ARC-092 says "the COMPLETE base-archive
+// chain back to the nearest full archive". A walk that stopped at the first
+// resolvable base would accept a chain whose second link is missing — and every
+// asset inherited from that link would be discovered missing partway through a
+// restore already in progress, which is exactly what this refusal exists to
+// prevent.
+func TestTheWholeChainIsWalkedNotJustTheFirstLink(t *testing.T) {
+	dst := trusting()
+	dst.ResolveBaseArchive = func(digest string) (Manifest, bool) {
+		if digest == "sha-mid" {
+			// The middle link resolves, and is ITSELF incremental against a base the
+			// destination does not hold.
+			return incremental("sha-missing"), true
+		}
+		return Manifest{}, false
+	}
+
+	r := Preflight(incremental("sha-mid"), dst)
+	if got := fatalCodes(r); len(got) != 1 || got[0] != CodeBaseArchiveUnavailable {
+		t.Fatalf("fatal codes = %v, want [%s]: the walk stopped at the first link", got, CodeBaseArchiveUnavailable)
+	}
+}
+
+func TestAResolvableChainReachingAFullArchiveIsAccepted(t *testing.T) {
+	dst := trusting()
+	dst.ResolveBaseArchive = func(digest string) (Manifest, bool) {
+		switch digest {
+		case "sha-mid":
+			return incremental("sha-full"), true
+		case "sha-full":
+			return Manifest{Mode: ModeFull, PlatformSchemaEpoch: 4}, true
+		}
+		return Manifest{}, false
+	}
+
+	if r := Preflight(incremental("sha-mid"), dst); !r.OK() {
+		t.Fatalf("a complete chain was refused: %v", fatalCodes(r))
+	}
+}
+
+// TestACyclicChainIsRefusedRatherThanFollowed: a chain that revisits an archive
+// never reaches a full one. Bounded by a seen-set rather than a depth limit,
+// because the failure is "this never terminates" and not "this is deep".
+func TestACyclicChainIsRefusedRatherThanFollowed(t *testing.T) {
+	dst := trusting()
+	dst.ResolveBaseArchive = func(digest string) (Manifest, bool) {
+		switch digest {
+		case "sha-a":
+			return incremental("sha-b"), true
+		case "sha-b":
+			return incremental("sha-a"), true
+		}
+		return Manifest{}, false
+	}
+
+	done := make(chan []string, 1)
+	go func() { done <- fatalCodes(Preflight(incremental("sha-a"), dst)) }()
+	select {
+	case got := <-done:
+		if len(got) != 1 || got[0] != CodeBaseArchiveUnavailable {
+			t.Fatalf("fatal codes = %v, want [%s]", got, CodeBaseArchiveUnavailable)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Preflight did not return: a cyclic base-archive chain was followed instead of refused")
+	}
+}
+
+// TestANilResolverRefusesAnIncrementalArchive is the fail-closed half, matching
+// the trust and asset resolvers: a destination that holds no base archives must
+// not be treated as one whose chain is fine.
+func TestANilResolverRefusesAnIncrementalArchive(t *testing.T) {
+	dst := trusting()
+	dst.ResolveBaseArchive = nil
+
+	if r := Preflight(incremental("sha-base"), dst); r.OK() {
+		t.Error("a nil base-archive resolver accepted an incremental archive")
 	}
 }

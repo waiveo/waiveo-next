@@ -105,9 +105,13 @@ func (f *fixture) multiFrameArchive() ([]byte, error) {
 // container that fails for a reason the case is not about.
 func (f *fixture) createFrom(m archive.Manifest, snapshot func() (io.ReadCloser, int64, error)) ([]byte, error) {
 	for _, a := range m.Assets {
-		if a.Storage == "embedded" {
-			return nil, fmt.Errorf("fixture cannot serve an embedded asset (%s): its bytes must hash to its asset_ref (ARC-062), "+
-				"which a synthetic fixture cannot satisfy for an arbitrary ref", a.AssetRef)
+		if a.Storage != archive.StorageEmbedded {
+			continue
+		}
+		if _, ok := corpusPreimages[a.AssetRef]; !ok {
+			return nil, fmt.Errorf("fixture has no preimage for embedded asset %s: Open recomputes an embedded entry's "+
+				"bytes against its own asset_ref (ARC-062), so a fixture must serve bytes that actually hash to it — "+
+				"add the preimage to corpusPreimages, or the ref is not a digest of anything", a.AssetRef)
 		}
 	}
 	if snapshot == nil {
@@ -115,6 +119,14 @@ func (f *fixture) createFrom(m archive.Manifest, snapshot func() (io.ReadCloser,
 			body := []byte("fixture-snapshot")
 			return io.NopCloser(bytes.NewReader(body)), int64(len(body)), nil
 		}
+	}
+
+	asset := func(ref string) (io.ReadCloser, int64, error) {
+		body, ok := corpusPreimages[ref]
+		if !ok {
+			return nil, 0, fmt.Errorf("no preimage for %s", ref)
+		}
+		return io.NopCloser(bytes.NewReader(body)), int64(len(body)), nil
 	}
 
 	src := archive.Source{
@@ -125,6 +137,7 @@ func (f *fixture) createFrom(m archive.Manifest, snapshot func() (io.ReadCloser,
 		Assets:              m.Assets,
 		SecretStubs:         m.SecretStubs,
 		Snapshot:            snapshot,
+		Asset:               asset,
 		// The wrap is opaque to archive/1 by its own Scope (ARC-071 forbids carrying a
 		// raw data key and leaves the algorithm to the key hierarchy), so the fixture
 		// returns a deterministic stand-in derived from the wrap key it is handed —
@@ -133,9 +146,9 @@ func (f *fixture) createFrom(m archive.Manifest, snapshot func() (io.ReadCloser,
 			return base64.RawStdEncoding.EncodeToString(wrapKey[:16]), nil
 		},
 	}
-	// No base-archive plumbing: archive.Source has no such field, because Create
-	// implements full mode only. A case whose subject is an incremental manifest is
-	// reported PENDING rather than approximated here.
+	// An incremental manifest's base reference rides through unchanged; nil leaves
+	// it a full archive.
+	src.BaseArchive = m.BaseArchive
 
 	var buf writeSeekBuffer
 	err := archive.Create(&buf, src, archive.Options{
@@ -185,6 +198,23 @@ func frameCount(container []byte) int {
 		at += 4 + flen
 	}
 	return n
+}
+
+// corpusPreimages are the bytes whose sha256 the frozen archive-1 cases use as
+// asset_refs. An embedded entry's bytes are recomputed against its own ref when
+// the archive is opened (ARC-062), so a fixture cannot invent them — it has to
+// serve the actual preimage.
+//
+// The corpus authors used well-known short strings, which is what makes this
+// possible at all. A ref with no entry here is a ref that is not the digest of
+// anything the driver can produce, and createFrom says so rather than serving
+// wrong bytes and failing on the asset check for a reason the case is not about.
+var corpusPreimages = map[string][]byte{
+	// sha256("test") — ARC-091's freshly embedded asset.
+	"sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08": []byte("test"),
+	// sha256("hello") — ARC-031/060's by-reference asset. Present for completeness:
+	// a by-reference entry carries no bytes, so nothing asks for this one today.
+	"sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824": []byte("hello"),
 }
 
 // writeSeekBuffer is an in-memory io.WriteSeeker, which Create requires because

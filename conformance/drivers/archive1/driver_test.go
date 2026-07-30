@@ -26,10 +26,11 @@ var expectedDriven = []string{
 // hard. Pinned as a set so a case leaving it is noticed as progress and a case
 // joining it cannot happen quietly.
 //
-//   - ARC-031: the case declares an embedded asset whose asset_ref hex is 63
-//     characters, so no bytes can hash to it and no round trip can carry it.
-//   - ARC-091: Create implements full mode only; nothing can write an incremental
-//     archive to read back.
+//   - ARC-031 and ARC-091 both declare an asset whose asset_ref hex is 63
+//     characters rather than 64. One corpus defect, two cases: the same truncated
+//     value appears in the contract's own Wire shapes example. ARC-091's handler
+//     DERIVES this from the case rather than being listed, so it starts driving
+//     the moment the corpus is corrected.
 var expectedPending = []string{
 	"ARC-031-valid-manifest-full",
 	"ARC-091-valid-manifest-incremental",

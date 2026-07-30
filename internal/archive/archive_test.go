@@ -1212,3 +1212,92 @@ func TestCreateWritesNothingBeyondTheContainer(t *testing.T) {
 		t.Error("a write after Create did not land at the end of the container")
 	}
 }
+
+// mustPub is the fixture signer's public half, for the two incremental cases
+// below that open what they just created.
+func mustPub(t *testing.T) ed25519.PublicKey {
+	t.Helper()
+	pub, _ := testSigner(t)
+	return pub
+}
+
+// TestCreateWritesAnIncrementalArchive covers the export side of ARC-090/091/093
+// directly, because the frozen case that would cover it cannot be driven: its own
+// asset table carries a 63-character asset_ref, which the archive1 driver reports
+// as its pending reason. Without this, incremental export would ship exercised by
+// nothing at all.
+func TestCreateWritesAnIncrementalArchive(t *testing.T) {
+	base := &BaseArchiveRef{Digest: strings.Repeat("b5", 32), CreatedAt: testCreatedAt - 86_400_000}
+	inherited := []byte("bytes that already live in the base archive")
+
+	f := newFixture()
+	f.src.BaseArchive = base
+	// ARC-091: the table enumerates EVERY asset the resulting workspace
+	// references, never only the new ones. ARC-093 lets the three mechanisms mix,
+	// which is what keeping the fixture's own embedded and by-reference entries
+	// alongside an inherited one pins.
+	f.src.Assets = append(f.src.Assets, AssetEntry{
+		AssetRef: refOf(inherited), Size: int64(len(inherited)), Storage: StorageInherited,
+	})
+
+	container := createContainer(t, f, Options{})
+	m, entries, err := Open(bytes.NewReader(container), testPassphrase, mustPub(t))
+	if err != nil {
+		t.Fatalf("Open the incremental archive: %v", err)
+	}
+
+	if m.Mode != ModeIncremental {
+		t.Errorf("mode = %q, want %q — Source.BaseArchive is what selects it", m.Mode, ModeIncremental)
+	}
+	if m.BaseArchive == nil {
+		t.Fatalf("base_archive is absent (ARC-090)")
+	}
+	if *m.BaseArchive != *base {
+		t.Errorf("base_archive = %+v, want %+v", *m.BaseArchive, *base)
+	}
+
+	names := map[string]bool{}
+	for _, e := range entries {
+		names[e.Name] = true
+	}
+	// The economy claim, and the whole point of incremental mode: an inherited
+	// entry costs one manifest row and NO bytes.
+	if names["assets/"+strings.TrimPrefix(refOf(inherited), "sha256:")] {
+		t.Error("the inherited asset's bytes were embedded — an unchanged asset must cost one manifest row (ARC-091)")
+	}
+	// The other half, or "inherited" would be indistinguishable from "dropped":
+	// the fixture's genuinely embedded assets must still carry their bytes.
+	for _, a := range f.src.Assets {
+		if a.Storage != StorageEmbedded {
+			continue
+		}
+		if !names["assets/"+strings.TrimPrefix(a.AssetRef, "sha256:")] {
+			t.Errorf("embedded asset %s carries no bytes in an incremental archive", a.AssetRef)
+		}
+	}
+	// ARC-091: the snapshot is embedded in full regardless of mode — never
+	// incrementally diffed.
+	if !names[SnapshotEntryName] {
+		t.Errorf("no %s entry: the workspace snapshot is always embedded in full", SnapshotEntryName)
+	}
+}
+
+// TestAFullArchiveCarriesNoBaseReference is the negative half. Leaving
+// Source.BaseArchive nil must produce a full archive, and a full-mode manifest
+// carrying base_archive is a contradiction its own reader refuses — so a mode
+// selected by anything other than this field would show up here.
+func TestAFullArchiveCarriesNoBaseReference(t *testing.T) {
+	f := newFixture()
+	container := createContainer(t, f, Options{})
+
+	m, _, err := Open(bytes.NewReader(container), testPassphrase, mustPub(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if m.Mode != ModeFull {
+		t.Errorf("mode = %q, want %q", m.Mode, ModeFull)
+	}
+	if m.BaseArchive != nil {
+		t.Errorf("base_archive = %+v, want none", m.BaseArchive)
+	}
+}

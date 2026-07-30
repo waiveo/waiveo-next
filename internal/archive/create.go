@@ -49,6 +49,22 @@ type Source struct {
 	Assets []AssetEntry
 	// SecretStubs are carried unchanged, byte for byte (ARC-070/072).
 	SecretStubs []SecretStub
+	// BaseArchive, when set, makes this an INCREMENTAL archive deltaing against
+	// the prior archive it identifies (ARC-090). Nil produces a full archive.
+	//
+	// Setting it changes what `assets` MEANS but not what it must CONTAIN:
+	// ARC-091 requires an incremental manifest to enumerate every asset the
+	// resulting workspace references, exactly as a full one does — never only the
+	// new entries. What changes is that an entry whose bytes already live in the
+	// base is marked `inherited` instead of being re-embedded, so an unchanged
+	// asset costs one manifest row rather than its bytes. Deciding WHICH entries
+	// are inherited is the caller's: only the caller can compare this workspace
+	// against the base archive it is deltaing from.
+	//
+	// The workspace snapshot itself is always embedded in full regardless of mode
+	// (ARC-091) — it is never incrementally diffed — which Create does
+	// unconditionally, so no caller can accidentally omit it.
+	BaseArchive *BaseArchiveRef
 	// WrapDataKey produces `data_key_wrap.wrapped_value` (ARC-071): the source
 	// workspace's own data key, re-wrapped under the data-key sub-key ARC-011
 	// derives. Create hands that sub-key in and carries whatever comes back as
@@ -360,13 +376,18 @@ func validateSigner(priv ed25519.PrivateKey) error {
 	return nil
 }
 
-// buildManifest assembles the full-mode manifest from src and validates it
+// buildManifest assembles the manifest from src and validates it
 // against the same rules Open enforces (ARC-031/033) — one validator, so a
 // writer cannot emit a shape its own reader would refuse.
 func buildManifest(src Source, dataKeyWrapped string) (Manifest, error) {
+	mode := ModeFull
+	if src.BaseArchive != nil {
+		mode = ModeIncremental
+	}
 	m := Manifest{
 		CreatedAt:           src.CreatedAt,
-		Mode:                ModeFull,
+		Mode:                mode,
+		BaseArchive:         src.BaseArchive,
 		WorkspaceID:         src.WorkspaceID,
 		PlatformSchemaEpoch: src.PlatformSchemaEpoch,
 		Packs:               src.Packs,
@@ -385,7 +406,29 @@ func buildManifest(src Source, dataKeyWrapped string) (Manifest, error) {
 	if m.SecretStubs == nil {
 		m.SecretStubs = []SecretStub{}
 	}
-	if err := validateManifest(m, map[string]json.RawMessage{}); err != nil {
+	// Validate against the presence map of the document this manifest MARSHALS TO,
+	// not against an empty one.
+	//
+	// validateManifest's presence-keyed rules exist because encoding/json cannot
+	// tell an absent `packs` from a present `"packs": []`, so the reader hands it
+	// the raw members it decoded. The writer used to hand it an empty map, which
+	// made every one of those rules vacuous here: `base_archive` read as absent
+	// whatever the manifest carried. That was invisible while Create emitted only
+	// full-mode manifests — the full branch refuses a base_archive that is PRESENT,
+	// and absent was the right answer by accident — and became a hard failure the
+	// moment an incremental manifest, whose branch requires it, could be built.
+	//
+	// Round-tripping through the marshal is what makes "one validator, so a writer
+	// cannot emit a shape its own reader would refuse" true rather than intended.
+	encoded, err := json.Marshal(m)
+	if err != nil {
+		return Manifest{}, fmt.Errorf("archive: Create: marshal manifest: %w", err)
+	}
+	var present map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &present); err != nil {
+		return Manifest{}, fmt.Errorf("archive: Create: re-read manifest members: %w", err)
+	}
+	if err := validateManifest(m, present); err != nil {
 		return Manifest{}, fmt.Errorf("archive: Create: %w", err)
 	}
 	for _, a := range m.Assets {

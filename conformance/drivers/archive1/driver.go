@@ -97,6 +97,7 @@ func driveCases(rep *report.Report, cases map[string]corpus.Case) {
 		"ARC-041-invalid-epoch-mismatch":                  driveEpochTooNew,
 		"ARC-102-invalid-yanked-pack-blocked":             driveYankedPackBlocked,
 		"ARC-103-invalid-dev-channel-refused":             driveDevChannelRefused,
+		"ARC-091-valid-manifest-incremental":              driveManifestIncremental,
 	}
 	// Each pending case names the SPECIFIC thing that does not exist, not a shared
 	// "not implemented" — the three restore refusals and the incremental export are
@@ -108,9 +109,6 @@ func driveCases(rep *report.Report, cases map[string]corpus.Case) {
 			"not a valid sha256. No bytes can hash to it, and Open verifies every embedded asset's bytes against its own " +
 			"asset_ref (ARC-062), so this case cannot be driven as a Create+Open round trip. The contract's own Wire shapes " +
 			"example carries the same truncated value, so the case inherited it rather than introducing it",
-		"ARC-091-valid-manifest-incremental": "Create cannot produce an incremental archive: archive.Source declares no " +
-			"base-archive reference and nothing writes mode:incremental, so the manifest type can READ one (Manifest.BaseArchive, " +
-			"ModeIncremental) but no export path can WRITE one — there is nothing to round-trip",
 	}
 
 	for id, c := range cases {
@@ -475,6 +473,125 @@ func driveDevChannelRefused(rep *report.Report, c corpus.Case) {
 	}
 
 	finish(rep, c, diffs)
+}
+
+// driveManifestIncremental: ARC-090/091/093.
+//
+// This case's `expected.manifest` is a PARTIAL manifest — it declares mode,
+// base_archive, assets and workspace_snapshot_mode, and nothing else. It is an
+// assertion about those members, not a document to round-trip whole: it carries
+// no created_at, workspace_id or data_key_wrap, and a conformant archive cannot
+// be built from it alone. So the driver starts from a complete minimal manifest,
+// overlays what the case declares, and compares only what the case declared.
+func driveManifestIncremental(rep *report.Report, c corpus.Case) {
+	var want archive.Manifest
+	if err := remarshal(c.Expected["manifest"], &want); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode expected.manifest: %v", err))
+		return
+	}
+
+	// A case whose own asset table cannot be expressed is reported PENDING here
+	// rather than from a hardcoded list, so the reason is DERIVED from the case and
+	// the case starts driving the moment the corpus is corrected — with no change
+	// to this driver.
+	if bad, ok := unusableAssetRef(want.Assets); ok {
+		rep.Pending(c.CaseID, contract, malformedRefPending(bad))
+		return
+	}
+
+	f := newFixture()
+	build := f.minimalManifest()
+	build.Mode = want.Mode
+	build.BaseArchive = want.BaseArchive
+	build.Assets = want.Assets
+
+	container, err := f.createFrom(build, nil)
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("create an incremental archive: %v", err))
+		return
+	}
+	got, entries, err := archive.Open(bytes.NewReader(container), f.passphrase, f.pub)
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("open a round-tripped incremental archive: %v", err))
+		return
+	}
+
+	var diffs []report.Diff
+	if got.Mode != want.Mode {
+		diffs = append(diffs, report.Diff{Field: "manifest.mode", Expected: want.Mode, Actual: got.Mode})
+	}
+	switch {
+	case want.BaseArchive == nil:
+	case got.BaseArchive == nil:
+		diffs = append(diffs, report.Diff{Field: "manifest.base_archive", Expected: *want.BaseArchive, Actual: nil})
+	case *got.BaseArchive != *want.BaseArchive:
+		diffs = append(diffs, report.Diff{Field: "manifest.base_archive", Expected: *want.BaseArchive, Actual: *got.BaseArchive})
+	}
+	if !reflect.DeepEqual(got.Assets, want.Assets) {
+		diffs = append(diffs, report.Diff{Field: "manifest.assets", Expected: want.Assets, Actual: got.Assets})
+	}
+
+	// ARC-091's economy claim: an inherited entry costs one manifest row and NO
+	// bytes. Asserted rather than assumed — re-embedding an unchanged asset would
+	// still round-trip cleanly and is exactly the waste incremental mode exists to
+	// avoid.
+	byName := map[string]bool{}
+	for _, e := range entries {
+		byName[e.Name] = true
+	}
+	for _, a := range want.Assets {
+		name := "assets/" + strings.TrimPrefix(a.AssetRef, "sha256:")
+		switch a.Storage {
+		case archive.StorageInherited:
+			if byName[name] {
+				diffs = append(diffs, report.Diff{Field: "tar entry for inherited " + a.AssetRef,
+					Expected: "absent — its bytes live in the base archive", Actual: "present"})
+			}
+		case archive.StorageEmbedded:
+			// The other half: an entry the case says is freshly embedded must actually
+			// carry its bytes here, or "inherited" would be indistinguishable from
+			// "forgotten".
+			if !byName[name] {
+				diffs = append(diffs, report.Diff{Field: "tar entry for embedded " + a.AssetRef,
+					Expected: "present", Actual: "absent"})
+			}
+		}
+	}
+
+	// "workspace_snapshot_mode": "full" — ARC-091 says the snapshot is always
+	// embedded in full regardless of mode, never incrementally diffed. Observed as
+	// its tar entry being present in an INCREMENTAL archive.
+	if mode, ok := c.Expected["workspace_snapshot_mode"].(string); ok && mode == "full" && !byName[archive.SnapshotEntryName] {
+		diffs = append(diffs, report.Diff{Field: "workspace_snapshot_mode",
+			Expected: "the snapshot embedded in full even in an incremental archive", Actual: "no " + archive.SnapshotEntryName + " entry"})
+	}
+
+	finish(rep, c, diffs)
+}
+
+// unusableAssetRef reports the first asset_ref in assets that is not a
+// well-formed `sha256:` URI with 64 lowercase hex digits — the shape every path
+// through this package validates.
+func unusableAssetRef(assets []archive.AssetEntry) (archive.AssetEntry, bool) {
+	for _, a := range assets {
+		hex, found := strings.CutPrefix(a.AssetRef, "sha256:")
+		if !found || len(hex) != 64 {
+			return a, true
+		}
+	}
+	return archive.AssetEntry{}, false
+}
+
+// malformedRefPending is the shared reason for a case whose asset table carries a
+// ref no implementation can accept. Written once because two frozen cases carry
+// the SAME truncated value, and two differently-worded explanations of one corpus
+// defect would read as two defects.
+func malformedRefPending(a archive.AssetEntry) string {
+	return fmt.Sprintf("the case declares an asset (%s, storage %q) whose asset_ref hex part is %d characters rather than 64, "+
+		"so it is not a sha256 URI any path through internal/archive accepts and the case cannot be built. "+
+		"The same truncated value appears in the contract's own Wire shapes example and in a second frozen case, "+
+		"so it is one corpus defect rather than a property of this case",
+		a.AssetRef, a.Storage, len(strings.TrimPrefix(a.AssetRef, "sha256:")))
 }
 
 // ---- comparison helpers --------------------------------------------------

@@ -87,6 +87,22 @@ type Destination struct {
 	// which is ARC-103's one escalation from "refuse this pack" to "fail the
 	// restore". Nil means no pack is boot-critical.
 	BootCritical func(PackLock) bool
+	// ResolveBaseArchive returns the manifest of the archive whose outer-header
+	// digest is `digest`, for walking an incremental archive's base chain
+	// (ARC-092). It reports false when the destination does not hold that archive.
+	//
+	// It returns a MANIFEST rather than bytes, and the contract is that the
+	// destination has already verified those bytes on their own terms: ARC-094 is
+	// explicit that every archive touched while resolving a chain must
+	// independently satisfy framing, encryption and signing on its own bytes, and
+	// must match the digest its child records — "a base archive earns trust only by
+	// satisfying these checks itself, never by inheriting a child archive's
+	// already-established trust". A resolver that returned an unverified manifest
+	// would hand this walk exactly the inherited trust that sentence forbids.
+	//
+	// Nil means the destination holds no base archives, which refuses any
+	// incremental archive rather than assuming a chain it cannot see.
+	ResolveBaseArchive func(digest string) (Manifest, bool)
 }
 
 // PackOutcome is one locked pack's preflight verdict.
@@ -157,6 +173,14 @@ func Preflight(m Manifest, dst Destination) PreflightResult {
 		}
 	}
 
+	// ARC-092: an incremental archive needs its COMPLETE chain back to the nearest
+	// full archive, because every `inherited` entry's bytes live somewhere along it.
+	// Refusing here rather than discovering a missing asset partway through is the
+	// difference between a refused restore and a workspace with holes in it.
+	if err := resolveBaseChain(m, dst); err != nil {
+		res.Fatal = append(res.Fatal, err)
+	}
+
 	for _, p := range m.Packs {
 		res.Packs = append(res.Packs, preflightPack(p, dst))
 	}
@@ -174,6 +198,53 @@ func Preflight(m Manifest, dst Destination) PreflightResult {
 		}
 	}
 	return res
+}
+
+// resolveBaseChain walks an incremental archive's base-archive references until
+// it reaches a full archive, and reports BASE_ARCHIVE_UNAVAILABLE if the walk
+// cannot complete.
+//
+// A full-mode manifest has no chain and returns nil immediately — the walk is not
+// "no base archive found", it is "this archive needs none".
+//
+// The walk is bounded by a seen-set rather than a depth limit: a chain that
+// revisits an archive is a cycle, and a cycle never reaches a full archive, so
+// following it would not terminate. A cycle can only exist in a destination's own
+// stored archives, but a restore is exactly the moment to discover that rather
+// than to loop.
+func resolveBaseChain(m Manifest, dst Destination) *Error {
+	if m.Mode != ModeIncremental {
+		return nil
+	}
+	seen := map[string]bool{}
+	cur := m
+	for cur.Mode == ModeIncremental {
+		if cur.BaseArchive == nil {
+			// parseManifest refuses this shape on read, so reaching it means the caller
+			// built a Manifest by hand. Refused rather than trusted: an incremental
+			// archive with no base reference has an unresolvable chain by definition.
+			return codedf(CodeBaseArchiveUnavailable,
+				"an incremental manifest carries no base_archive reference, so its chain cannot be resolved (ARC-090/092)")
+		}
+		digest := cur.BaseArchive.Digest
+		if seen[digest] {
+			return codedf(CodeBaseArchiveUnavailable,
+				"the base-archive chain revisits %s and so never reaches a full archive (ARC-092)", digest)
+		}
+		seen[digest] = true
+
+		if dst.ResolveBaseArchive == nil {
+			return codedf(CodeBaseArchiveUnavailable,
+				"base archive %s is required and this destination resolves no base archives (ARC-092)", digest)
+		}
+		next, ok := dst.ResolveBaseArchive(digest)
+		if !ok {
+			return codedf(CodeBaseArchiveUnavailable,
+				"base archive %s is not available at the destination, so every inherited asset it carries is unresolvable (ARC-092)", digest)
+		}
+		cur = next
+	}
+	return nil
 }
 
 func preflightPack(p PackLock, dst Destination) PackOutcome {
