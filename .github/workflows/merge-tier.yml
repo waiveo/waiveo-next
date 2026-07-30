@@ -97,5 +97,11 @@ jobs:
       # gitignored paths, so it is safe beside the drift checks above.
       - name: web — console click-through and pairing (real browser, real stack)
         run: |
-          npx playwright install --with-deps chromium
+          # Installed from web/, NOT the repo root. There is no @playwright/test
+          # at the root, so a root `npx` fetches the LATEST Playwright and
+          # installs browsers for that revision — then `make web-e2e` runs
+          # web/'s pinned version and cannot find the binary it expects. That
+          # exact mismatch turned this lane red on its first run:
+          # "Executable doesn't exist at .../chromium_headless_shell-1228".
+          npm --prefix web exec -- playwright install --with-deps chromium
           make web-e2e
