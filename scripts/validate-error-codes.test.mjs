@@ -304,3 +304,87 @@ Example of the shape:
     }
   );
 });
+
+// The api-layer/OpenAPI check (#5). It asks a question the other four cannot: a
+// code can be published AND implemented and still be absent from the schema, so
+// no generated client can name it. That happened for five codes before this
+// existed — three scope-node delete refusals and two pack ones — each of which
+// passed every other check in this file.
+const OPENAPI_WITH = `openapi: 3.1.0
+components:
+  schemas:
+    ErrorCode:
+      type: string
+      enum:
+        - THING_INVALID
+`;
+const OPENAPI_WITHOUT = `openapi: 3.1.0
+components:
+  schemas:
+    ErrorCode:
+      type: string
+      enum:
+        - SOMETHING_ELSE
+`;
+const API_LAYER_IMPL = `package api
+
+func refuse() {
+	writeProblem(w, r, 409, "THING_INVALID", "no")
+}
+`;
+
+test("a code the api layer emits but the ErrorCode enum omits fails", () => {
+  withFixture(
+    (w) => {
+      writeGoodTree(w, { impl: "package other\n" });
+      w("internal/app/api/handler.go", API_LAYER_IMPL);
+      w("api/openapi.yaml", OPENAPI_WITHOUT);
+    },
+    (r) => {
+      assert.equal(r.status, 1, r.stdout);
+      assert.match(r.stderr, /THING_INVALID is emitted by the api layer .* not a member of the ErrorCode enum/);
+    }
+  );
+});
+
+test("the same code present in the enum passes", () => {
+  withFixture(
+    (w) => {
+      writeGoodTree(w, { impl: "package other\n" });
+      w("internal/app/api/handler.go", API_LAYER_IMPL);
+      w("api/openapi.yaml", OPENAPI_WITH);
+    },
+    (r) => {
+      assert.equal(r.status, 0, r.stderr);
+    }
+  );
+});
+
+// A code emitted somewhere OTHER than the api layer rides a different binding and
+// belongs to no enum here — the check must not drag it in.
+test("a code emitted outside the api layer is not required to be in the enum", () => {
+  withFixture(
+    (w) => {
+      writeGoodTree(w);
+      w("api/openapi.yaml", OPENAPI_WITHOUT);
+    },
+    (r) => {
+      assert.equal(r.status, 0, r.stderr);
+    }
+  );
+});
+
+// A check that cannot find what it inspects must SAY so, not pass quietly.
+test("an unparseable ErrorCode enum fails rather than skipping", () => {
+  withFixture(
+    (w) => {
+      writeGoodTree(w, { impl: "package other\n" });
+      w("internal/app/api/handler.go", API_LAYER_IMPL);
+      w("api/openapi.yaml", "openapi: 3.1.0\ncomponents: {}\n");
+    },
+    (r) => {
+      assert.equal(r.status, 1, r.stdout);
+      assert.match(r.stderr, /could not locate the ErrorCode enum/);
+    }
+  );
+});

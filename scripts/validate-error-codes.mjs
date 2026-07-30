@@ -382,6 +382,41 @@ for (const [contract, codes] of publishedByContract) {
   }
 }
 
+// #5 a code the Go api layer can actually RETURN must be expressible in the
+// OpenAPI ErrorCode enum, or no generated client can name it.
+//
+// This is a different question from #1-#4, and the gate did not ask it: those walk
+// published -> implemented, so a code that IS implemented and IS published can
+// still be missing from the schema. That happened — three scope-node delete
+// refusals shipped, were published, passed every check here, and were absent from
+// the enum, so the console had to compare a raw string and cast past the type
+// system. API-011 says a server MUST NOT emit a code outside the registry; a
+// registry the clients cannot see is only half a registry.
+//
+// Scope is deliberately narrow: only codes this repo's own api layer emits, since
+// those are the ones an /api/v1 response can carry. A code emitted by the relay's
+// player surface rides a different binding and belongs to no enum here.
+const OPENAPI_PATH = "api/openapi.yaml";
+const API_LAYER_PREFIX = "internal/app/api/";
+if (existsSync(OPENAPI_PATH)) {
+  const spec = readFileSync(OPENAPI_PATH, "utf8");
+  const enumBlock = /\n    ErrorCode:\n(?:.*\n)*?      enum:\n((?:        - \w+\n)+)/.exec(spec);
+  if (!enumBlock) {
+    failures.push(`${OPENAPI_PATH}: could not locate the ErrorCode enum — this check cannot run, and a check that silently does not run is worse than none`);
+  } else {
+    const enumerated = new Set(enumBlock[1].split("\n").map((l) => l.trim().replace(/^- /, "")).filter(Boolean));
+    for (const code of publishedCodes) {
+      if (!usesByCode.get(code)?.some((at) => at.startsWith(API_LAYER_PREFIX))) continue;
+      if (enumerated.has(code)) continue;
+      const at1 = usesByCode.get(code).find((at) => at.startsWith(API_LAYER_PREFIX));
+      failures.push(
+        `${OPENAPI_PATH}: ${code} is emitted by the api layer (${at1}) and published in a contract taxonomy, but is not a member of the ErrorCode enum — ` +
+          `add it and regenerate both clients, or no generated client can branch on a code this binding returns`
+      );
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 const publishedPairs = [...publishedByContract.values()].reduce((n, c) => n + c.length, 0);
 if (failures.length) {

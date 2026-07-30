@@ -2853,9 +2853,12 @@ components:
         contract owns for operations that ride this same `/api/v1` binding.
         api/1's own registry governs API-011 for api/1's own rules; a sibling
         contract's Problem carries a `code` from ITS registry, by name — the
-        same reuse-by-name discipline `player/1` PLY-007 applies. The four
-        trailing values below belong to `security-model.md`'s Error taxonomy
-        and appear only on the `auth` operations.
+        same reuse-by-name discipline `player/1` PLY-007 applies. The trailing
+        values below belong to sibling contracts: four to
+        `security-model.md`'s Error taxonomy, appearing only on the `auth`
+        operations; three to `data-model-1.md`'s, appearing only on the
+        scope-node delete; and two to `marketplace-1.md`'s, appearing on the
+        pack operations.
       enum:
         - VALIDATION_FAILED
         - UNAUTHENTICATED
@@ -2876,6 +2879,11 @@ components:
         - GRANT_EXPIRED
         - GRANT_ALREADY_REDEEMED
         - GRANT_PURPOSE_MISMATCH
+        - SCOPE_NODE_NOT_EMPTY
+        - SCOPE_NODE_IN_USE
+        - SCOPE_NODE_ORG_UNDELETABLE
+        - MARKETPLACE_REF_INVALID
+        - REQUIRED_PACK_FLOOR
 
     LoginRequest:
       type: object

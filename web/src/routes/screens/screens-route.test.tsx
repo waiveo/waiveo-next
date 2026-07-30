@@ -254,12 +254,15 @@ describe("Screens — create / edit / delete over api/1", () => {
     let deleteCount = 0;
     server.use(
       http.get("*/api/v1/scope-nodes", () => page(state.rows)),
-      // The refusal is spelled as the wire bytes the Go handler actually sends
-      // rather than through the typed `problem()` helper, because `SCOPE_NODE_IN_USE`
-      // is data-model/1's code and api/1's generated `ErrorCode` union does not
-      // enumerate it. Hand-building the body is what keeps this a fixture of the
-      // real response instead of a cast that pretends otherwise. The delete leaves
-      // the row in place, exactly as the server's `delete_executed: false` says.
+      // The refusal is spelled as the wire bytes the Go handler actually sends.
+      // That began as a workaround — `SCOPE_NODE_IN_USE` is data-model/1's code
+      // and api/1's generated `ErrorCode` union did not enumerate it, so the typed
+      // `problem()` helper could not express it. The enum now carries all three
+      // scope-node delete refusals, so a cast is no longer needed; the hand-built
+      // body stays because a fixture of the real response bytes is worth more here
+      // than one assembled from the same types the code under test uses. The delete
+      // leaves the row in place, exactly as the server's `delete_executed: false`
+      // says.
       http.delete("*/api/v1/scope-nodes/:id", () => {
         deleteCount += 1;
         return HttpResponse.json(

@@ -168,9 +168,14 @@ const (
 	ErrorCodeIDSERVERASSIGNED         ErrorCode = "ID_SERVER_ASSIGNED"
 	ErrorCodeIFMATCHREQUIRED          ErrorCode = "IF_MATCH_REQUIRED"
 	ErrorCodeINTERNAL                 ErrorCode = "INTERNAL"
+	ErrorCodeMARKETPLACEREFINVALID    ErrorCode = "MARKETPLACE_REF_INVALID"
 	ErrorCodeNOTFOUND                 ErrorCode = "NOT_FOUND"
 	ErrorCodeRATELIMITED              ErrorCode = "RATE_LIMITED"
+	ErrorCodeREQUIREDPACKFLOOR        ErrorCode = "REQUIRED_PACK_FLOOR"
 	ErrorCodeREVISIONCONFLICT         ErrorCode = "REVISION_CONFLICT"
+	ErrorCodeSCOPENODEINUSE           ErrorCode = "SCOPE_NODE_IN_USE"
+	ErrorCodeSCOPENODENOTEMPTY        ErrorCode = "SCOPE_NODE_NOT_EMPTY"
+	ErrorCodeSCOPENODEORGUNDELETABLE  ErrorCode = "SCOPE_NODE_ORG_UNDELETABLE"
 	ErrorCodeSELECTORINVALID          ErrorCode = "SELECTOR_INVALID"
 	ErrorCodeUNAUTHENTICATED          ErrorCode = "UNAUTHENTICATED"
 	ErrorCodeUNAVAILABLE              ErrorCode = "UNAVAILABLE"
@@ -204,11 +209,21 @@ func (e ErrorCode) Valid() bool {
 		return true
 	case ErrorCodeINTERNAL:
 		return true
+	case ErrorCodeMARKETPLACEREFINVALID:
+		return true
 	case ErrorCodeNOTFOUND:
 		return true
 	case ErrorCodeRATELIMITED:
 		return true
+	case ErrorCodeREQUIREDPACKFLOOR:
+		return true
 	case ErrorCodeREVISIONCONFLICT:
+		return true
+	case ErrorCodeSCOPENODEINUSE:
+		return true
+	case ErrorCodeSCOPENODENOTEMPTY:
+		return true
+	case ErrorCodeSCOPENODEORGUNDELETABLE:
 		return true
 	case ErrorCodeSELECTORINVALID:
 		return true
@@ -830,7 +845,7 @@ type EntityListResponse struct {
 	Items  []Entity `json:"items"`
 }
 
-// ErrorCode The stable, additive-only machine-readable error registry (`contracts/api-1.md#error-taxonomy`), plus the codes a sibling contract owns for operations that ride this same `/api/v1` binding. api/1's own registry governs API-011 for api/1's own rules; a sibling contract's Problem carries a `code` from ITS registry, by name — the same reuse-by-name discipline `player/1` PLY-007 applies. The four trailing values below belong to `security-model.md`'s Error taxonomy and appear only on the `auth` operations.
+// ErrorCode The stable, additive-only machine-readable error registry (`contracts/api-1.md#error-taxonomy`), plus the codes a sibling contract owns for operations that ride this same `/api/v1` binding. api/1's own registry governs API-011 for api/1's own rules; a sibling contract's Problem carries a `code` from ITS registry, by name — the same reuse-by-name discipline `player/1` PLY-007 applies. The trailing values below belong to sibling contracts: four to `security-model.md`'s Error taxonomy, appearing only on the `auth` operations; three to `data-model-1.md`'s, appearing only on the scope-node delete; and two to `marketplace-1.md`'s, appearing on the pack operations.
 type ErrorCode string
 
 // Job The accepted-work resource returned by 202 Accepted. A client polls this resource (`GET /jobs/{job_id}`) until `state` reaches a terminal value (`succeeded`, `failed`, or `partial`).
@@ -869,7 +884,7 @@ type JobTargetState string
 // JobTargetError Why one target failed, typed from api/1's OWN error-code registry (API-115/API-014) rather than a parallel vocabulary — so a `failed` entry in a Job's `targets` is diagnosable exactly the way a synchronous refusal's Problem is, by asserting on `code`.
 // Present if and only if the target's `state` is `failed`. A pending, running or succeeded target carries no error at all, so a client reads the member's PRESENCE as the failure and never has to distinguish "no error" from a sentinel value. API-112 fixes a target's floor as `{target_id, state}` ("at least"); this is the member that makes API-115's registry rule observable to the client polling `GET /jobs/{job_id}`, which is the only completion signal the contract offers.
 type JobTargetError struct {
-	// Code The stable, additive-only machine-readable error registry (`contracts/api-1.md#error-taxonomy`), plus the codes a sibling contract owns for operations that ride this same `/api/v1` binding. api/1's own registry governs API-011 for api/1's own rules; a sibling contract's Problem carries a `code` from ITS registry, by name — the same reuse-by-name discipline `player/1` PLY-007 applies. The four trailing values below belong to `security-model.md`'s Error taxonomy and appear only on the `auth` operations.
+	// Code The stable, additive-only machine-readable error registry (`contracts/api-1.md#error-taxonomy`), plus the codes a sibling contract owns for operations that ride this same `/api/v1` binding. api/1's own registry governs API-011 for api/1's own rules; a sibling contract's Problem carries a `code` from ITS registry, by name — the same reuse-by-name discipline `player/1` PLY-007 applies. The trailing values below belong to sibling contracts: four to `security-model.md`'s Error taxonomy, appearing only on the `auth` operations; three to `data-model-1.md`'s, appearing only on the scope-node delete; and two to `marketplace-1.md`'s, appearing on the pack operations.
 	Code ErrorCode `json:"code"`
 
 	// Detail A human-readable explanation specific to this occurrence, carrying exactly the weight `Problem.detail` carries: `code` is the discriminant a client asserts on, `detail` is for the human reading the job report. Optional, because `code` alone is a complete machine-readable diagnosis — one code can cover several occurrences (`INTERNAL` for an unreadable row and for an interrupted run) and `detail` is what tells them apart in an operator's eyes.
@@ -942,7 +957,7 @@ type PairingCodeResultRedemptionMode string
 
 // Problem RFC 9457 problem+json, extended with `code` (this contract's machine-readable error registry) and `trace_id`. `code` is the discriminant a client asserts on; `title`/`detail` are for humans.
 type Problem struct {
-	// Code The stable, additive-only machine-readable error registry (`contracts/api-1.md#error-taxonomy`), plus the codes a sibling contract owns for operations that ride this same `/api/v1` binding. api/1's own registry governs API-011 for api/1's own rules; a sibling contract's Problem carries a `code` from ITS registry, by name — the same reuse-by-name discipline `player/1` PLY-007 applies. The four trailing values below belong to `security-model.md`'s Error taxonomy and appear only on the `auth` operations.
+	// Code The stable, additive-only machine-readable error registry (`contracts/api-1.md#error-taxonomy`), plus the codes a sibling contract owns for operations that ride this same `/api/v1` binding. api/1's own registry governs API-011 for api/1's own rules; a sibling contract's Problem carries a `code` from ITS registry, by name — the same reuse-by-name discipline `player/1` PLY-007 applies. The trailing values below belong to sibling contracts: four to `security-model.md`'s Error taxonomy, appearing only on the `auth` operations; three to `data-model-1.md`'s, appearing only on the scope-node delete; and two to `marketplace-1.md`'s, appearing on the pack operations.
 	Code ErrorCode `json:"code"`
 
 	// CurrentRevision Present only when `code` is REVISION_CONFLICT — the resource's current revision, so the client can re-read and retry.
