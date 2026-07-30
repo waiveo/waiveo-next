@@ -297,6 +297,84 @@ func TestScreenDeviceLinkSurfacedAs422(t *testing.T) {
 	e.createOK(t, "/api/v1/screens", mustJSON(t, body))
 }
 
+// TestScopeNodeIDIsNeverResolvableAsAScreen is data-model/1 DAT-004a's
+// substantive half, pinned on the surface that is the only place it can be
+// pinned: a screen identity row and the scope node it is placed under are
+// distinct rows with distinct ids, and a scope node's own id — including a
+// SCREEN-kind node's, the one pairing that would otherwise read as the same
+// thing — is never resolvable as a screen.
+//
+// What makes it hold is structural rather than a check: screen rows are their
+// own store kind, so every screen_id resolution here is kind-scoped and a
+// scope-node id is simply absent. That is worth a test precisely BECAUSE it is
+// structural — nothing states it, so a later kind-crossing fallback (resolve a
+// screen, and if that misses try a scope node) would look like a helpful
+// convenience and would silently make a screen-kind node answer as the screen it
+// classifies. The frozen corpus cannot reach this: it drives the identity-row
+// validator, which is handed rows and never a reference, so its DAT-004a-shaped
+// assertions are properties of the fixture and hold whatever any implementation
+// does. That is why DAT-004a's traceability row does not claim coverage.
+//
+// The refusal asserted here is the ordinary 404 NOT_FOUND, which is what the
+// platform answers today. data-model/1 publishes SCREEN_ID_UNRESOLVED for a
+// screen_id that "resolves to a scope node", and nothing raises it — because on
+// every mounted surface no such resolution happens. The status is deliberately
+// not the point of this test: any 2xx here is the defect.
+func TestScopeNodeIDIsNeverResolvableAsAScreen(t *testing.T) {
+	e := newEnv(t)
+	siteID := e.createNode(t, siteNode(""))
+	screenKindNodeID := e.createNode(t, screenNode("", siteID, ""))
+	groupID := e.createNode(t, identityGroupNode(siteID))
+
+	// A real screen row, placed under the GROUP — so the screen-kind node below
+	// classifies no row at all, and the two ids cannot be confused by accident.
+	rowID := decodeID(t, e.createOK(t, "/api/v1/screens", mustJSON(t, screenFixture(groupID, "Lobby Screen", nil))))
+
+	// The control: the row's own id does resolve, so a blanket 404 from a broken
+	// mount could not pass this test by refusing everything.
+	if resp, raw := e.do(t, http.MethodGet, "/api/v1/screens/"+rowID, nil, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("a screen row's own id must resolve: %d %s", resp.StatusCode, raw)
+	}
+
+	for _, node := range []struct{ role, id string }{
+		{"screen-kind", screenKindNodeID},
+		{"site", siteID},
+		{"group", groupID},
+	} {
+		for _, probe := range []struct {
+			method, path string
+			body         []byte
+		}{
+			{http.MethodGet, "/api/v1/screens/" + node.id, nil},
+			{http.MethodPatch, "/api/v1/screens/" + node.id, mustJSON(t, map[string]any{"name": "Renamed"})},
+			{http.MethodDelete, "/api/v1/screens/" + node.id, nil},
+			{http.MethodPost, "/api/v1/screens/" + node.id + "/pairing-code", nil},
+		} {
+			resp, raw := e.do(t, probe.method, probe.path, probe.body, nil)
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				t.Errorf("%s %s: %d — the %s scope node's own id was accepted as a screen identity (DAT-004a): %s",
+					probe.method, probe.path, resp.StatusCode, node.role, raw)
+				continue
+			}
+			if resp.StatusCode != http.StatusNotFound {
+				t.Errorf("%s %s: %d, want 404 — a scope-node id names no screen, so it must be refused as an unknown screen: %s",
+					probe.method, probe.path, resp.StatusCode, raw)
+				continue
+			}
+			var problem struct {
+				Code string `json:"code"`
+			}
+			if err := json.Unmarshal(raw, &problem); err != nil {
+				t.Errorf("%s %s: decode problem body %s: %v", probe.method, probe.path, raw, err)
+				continue
+			}
+			if problem.Code != "NOT_FOUND" {
+				t.Errorf("%s %s: code = %q, want NOT_FOUND", probe.method, probe.path, problem.Code)
+			}
+		}
+	}
+}
+
 // listIdentityIDs lists path as the environment's default principal and returns
 // the item ids plus the page cursor.
 func listIdentityIDs(t *testing.T, e *testEnv, path string) ([]string, *string) {

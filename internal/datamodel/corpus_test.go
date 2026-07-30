@@ -904,10 +904,23 @@ func checkPackOwned101(t *testing.T, rawIn, rawExp json.RawMessage) {
 // --- DAT-004a/DAT-005b: the two identity rows ---------------------------------
 
 // checkIdentityRows004a asserts a conformant screen identity row and device row
-// validate, and — the substance of DAT-004a — that the identifiers a screen_id
-// and a device_id name are the ROWS' own ids and are none of the scope-node ids
-// in the same fixture, including the screen-KIND node's. It also asserts the
-// placement freedom DAT-004 grants: neither row is placed at a screen-kind node.
+// validate (DAT-005b's baseline, positive half) and that neither is placed at a
+// screen-kind node — the placement freedom DAT-004 grants.
+//
+// It does NOT check DAT-004a, and the case it drives no longer claims to. The
+// id-separation assertions below — that each row's id is what a screen_id or
+// device_id names, that neither equals a scope-node id in the fixture, that
+// neither placement is the screen-kind node — are properties of the FIXTURE's
+// own chosen constants. They hold whatever this validator does, because this
+// validator is handed the row bundle and nothing else: it never sees a screen_id
+// REFERENCE, so there is no resolution here for an implementation to get wrong.
+// They are kept as fixture guards, not as tests: a fixture that reused a node id
+// as a row id, or placed a row at the screen-kind node, would silently stop
+// demonstrating DAT-004's placement freedom, and these catch that.
+//
+// DAT-004a's own obligation is a refusal on a surface that RESOLVES a screen_id,
+// and it sits at TBD-wave1 for that reason — see
+// conformance/unimplemented-error-codes.json's data-model-1 entry.
 func checkIdentityRows004a(t *testing.T, rawIn, rawExp json.RawMessage) {
 	var in struct {
 		ScopeNodes map[string]string `json:"scope_nodes"`
