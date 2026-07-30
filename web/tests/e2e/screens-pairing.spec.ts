@@ -1,23 +1,21 @@
-import { test, expect, request as pwRequest, type APIRequestContext, type Browser } from "@playwright/test";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { test, expect, signIn, DEV_DIR } from "./support/console-session";
+import { writeFileSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 
 /**
  * The operator pairing click-through: drives the REAL console the feeder
- * serves — first-boot setup and sign-in forms included — through the whole
- * app-side half of screen pairing, and cross-checks every UI claim against the
- * live API:
+ * serves — sign-in form included — through the whole app-side half of screen
+ * pairing, and cross-checks every UI claim against the live API:
  *
- *   1. Establish a real owner credential the way an operator does: follow the
- *      sign-in page's setup link and redeem the first-boot setup grant on the
- *      actual /setup form (the code the feeder persisted on disk, security-model
- *      SEC-120's "printed or on-screen" presentation), once; later runs sign in
- *      with the same credential.
- *   2. Sign in through the actual login form (no cookie injection).
- *   3. Screens page → "Pair a new screen" → name + placement → "Create & get
+ *   1. Sign in through the actual login form (no cookie injection). The owner
+ *      credential behind it is established by the suite's shared bootstrap
+ *      (support/console-session.ts): on a fresh box it redeems the first-boot
+ *      setup grant on the real /setup form, exactly as an operator standing at
+ *      the box does; on a box an earlier run claimed it reuses the credential.
+ *   2. Screens page → "Pair a new screen" → name + placement → "Create & get
  *      code": the screen identity row must exist via /api/v1/screens and the
  *      pairing code must be ON SCREEN with its expiry.
- *   4. The new row appears in the Displays table; its "Pairing code" button
+ *   3. The new row appears in the Displays table; its "Pairing code" button
  *      issues a fresh, DIFFERENT code (each issue mints a new one-time grant).
  *
  * Both captured codes are written under ../.dev/ for the player-side probe
@@ -29,124 +27,12 @@ import { resolve } from "node:path";
  * sibling spec assumes.
  */
 
-const BASE_URL = process.env.PW_BASE_URL ?? "https://127.0.0.1:7420";
-const DEV_DIR = resolve(process.cwd(), "..", ".dev");
-const SETUP_CODE_PATH = resolve(DEV_DIR, "feeder-auth", "setup-code.txt");
-
-// Dev-lab-only credential this spec claims the freshly-installed workspace
-// with (first run) and signs in with (every run). Not a real secret: the
-// stack is a loopback dev instance whose whole auth store is reset with .dev.
-const OWNER_ID = "e2e-owner";
-const OWNER_PASSWORD = "e2e-owner-password-1";
-
 const SCREEN_NAME = `E2E Paired Screen ${Date.now()}`;
-
-let api: APIRequestContext;
-
-// Does the credential this spec signs in with already exist on the box?
-//
-// This is the ONLY true way to ask. Nothing publishes claim state — the setup
-// route's own doc explains why that endpoint deliberately does not exist — so
-// the question "has this box been claimed already, by us" has exactly one honest
-// probe: present the credential and see. One failed attempt is well inside
-// SEC-090's tolerated budget (five consecutive failures per credential/IP class
-// before any backoff), and on the path where it fails the claim below is about
-// to create the credential anyway.
-async function ownerCredentialWorks(): Promise<boolean> {
-  const res = await api.post("/api/v1/auth/login", {
-    data: { identifier: OWNER_ID, password: OWNER_PASSWORD },
-  });
-  return res.ok();
-}
-
-// Claim the box the way an operator standing at it does: on the console.
-//
-// This used to POST /api/v1/auth/setup directly, because the console had no
-// surface for it — which meant the one step every self-hosted deployment starts
-// with was the one step no test drove. It is a real click-through now: open the
-// sign-in page, follow the setup link it offers every caller, fill the form with
-// the code the feeder printed, and come out the other side already signed in.
-//
-// # What the code file does and does not mean
-//
-// It is NOT claim state. Nothing in the claim path touches it: the handler never
-// writes disk, and the only removal is EnsureClaimWindow's claimed branch, which
-// runs at PROCESS START (internal/app/auth/bootstrap.go). So a successful claim
-// leaves the file exactly where it was, and its presence means "the feeder has
-// not booted since the claim" — which, against a stack that is already up, is
-// true immediately after this function claims the box.
-//
-// Reading it as "unclaimed" is what made a second `npm run e2e` against a
-// still-running feeder fail every test in this file: the form was driven with a
-// spent code, the box answered GRANT_ALREADY_REDEEMED, the page stayed on /setup
-// and the Overview assertion timed out inside `beforeAll`. So the real question
-// is asked of the box first, and the file only decides whether there is a code
-// to present at all.
-async function ensureOwnerCredential(browser: Browser): Promise<void> {
-  if (await ownerCredentialWorks()) return; // claimed by an earlier run; login below
-  if (!existsSync(SETUP_CODE_PATH)) return; // no code to redeem; the sign-in below reports why
-  const code = readFileSync(SETUP_CODE_PATH, "utf8").trim();
-  const context = await browser.newContext({ baseURL: BASE_URL, ignoreHTTPSErrors: true });
-  const page = await context.newPage();
-  try {
-    await page.goto("/login");
-    await page.getByRole("link", { name: "Enter your setup code" }).click();
-    await expect(page.getByRole("button", { name: "Set up this box" })).toBeVisible();
-
-    await page.getByLabel("Setup code").fill(code);
-    await page.getByLabel("Identifier").fill(OWNER_ID);
-    // Anchored, not exact. `getByLabel` matches the LABEL ELEMENT'S TEXT, and a
-    // required field's label carries the decorative asterisk in that text — so
-    // `{ exact: true }` on "Password" matches nothing at all (it is "Password*"),
-    // while a bare substring match would also catch "Confirm password*". An
-    // anchored pattern picks exactly one and survives either reading.
-    await page.getByLabel(/^Password/).fill(OWNER_PASSWORD);
-    await page.getByLabel(/^Confirm password/).fill(OWNER_PASSWORD);
-    await page.getByRole("button", { name: "Set up this box" }).click();
-
-    // Two outcomes are acceptable, and only two.
-    //
-    // The Overview means the claim worked: the claim minted the session itself,
-    // so the console opens with no second sign-in, which is the whole point of
-    // the surface. A setup form that rendered and did nothing lands on /login
-    // instead and fails here — the regression this click-through exists to catch
-    // is still caught.
-    //
-    // "Already been used" means the code on disk was spent by someone else
-    // (a box claimed outside this spec, or a stale file beside a claimed store).
-    // That is a legitimate state of the world, not a defect in the page, and the
-    // sign-in in each test is where it gets adjudicated: a credential mismatch
-    // fails ONE test with a sign-in error rather than failing `beforeAll` and
-    // with it every test in the file. Anything else — a wrong-code refusal, a
-    // dead button, a page that neither navigates nor complains — matches neither
-    // and still fails here.
-    const opened = page.getByRole("heading", { level: 1, name: "Overview" });
-    const alreadyClaimed = page.getByRole("alert").filter({ hasText: /already been used/i });
-    await expect(opened.or(alreadyClaimed)).toBeVisible();
-  } finally {
-    await context.close();
-  }
-}
-
-test.beforeAll(async ({ browser }) => {
-  api = await pwRequest.newContext({ baseURL: BASE_URL, ignoreHTTPSErrors: true });
-  await ensureOwnerCredential(browser);
-});
-
-test.afterAll(async () => {
-  await api.dispose();
-});
 
 test("pair a new screen end to end: create, code on screen, re-issue", async ({ page }) => {
   // ---- Sign in through the REAL login form. --------------------------------
-  await page.goto("/login");
-  await page.getByLabel("Identifier").fill(OWNER_ID);
-  await page.getByLabel("Password").fill(OWNER_PASSWORD);
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page.getByRole("heading", { level: 1, name: "Overview" })).toBeVisible();
-
   // The browser session's cookies back the API cross-checks below.
-  const authed = page.request;
+  const authed = await signIn(page);
 
   // ---- Screens → Pair a new screen. ----------------------------------------
   await page.getByRole("navigation", { name: "Primary" }).getByRole("link", { name: "Screens", exact: true }).click();
