@@ -295,7 +295,7 @@
   "unimportedPackages": [
     {
       "package": "github.com/maaxton/waiveo-next/internal/app/emergencykit",
-      "reason": "archive/1's emergency kit (ARC-110-114) is implemented and tested, and nothing imports it because its DELIVERY is an open decision rather than an oversight: ARC-113 forbids transmitting a kit's content electronically and calls it a physically-delivered artifact, so where an operator is present, what they are shown, and for how long is a product question about a surface. The natural caller is first boot — internal/app/workspacekey.LoadOrCreate is ARC-110's 'the point a workspace's data key is first established', and POST /api/v1/auth/setup plus the console's setup route are where a human already is. Wiring it there closes this entry; the decision is tracked on waiveo/program#88."
+      "reason": "archive/1's emergency kit (ARC-110-114) is implemented and tested, and nothing imports it because its DELIVERY is an open decision rather than an oversight: ARC-113 forbids transmitting a kit's content electronically and calls it a physically-delivered artifact, so where an operator is present, what they are shown, and for how long is a product question about a surface. The natural caller is first boot — internal/app/workspacekey.LoadOrCreate is ARC-110's 'the point a workspace's data key is first established', and POST /api/v1/auth/setup plus the console's setup route are where a human already is. Wiring it there closes this entry."
     }
   ]
 }
