@@ -17,7 +17,7 @@
     "      holds the value, a handler runs — and the specific rejection the contract promises was",
     "      never written. These are the dangerous ones: the feature reads as finished, and a",
     "      traceability row can sit at `covered` because a driver observed the accept side.",
-    "      data-model/1's three, security-model's four, player/1's LEASE_UNKNOWN and relay/1's one.",
+    "      data-model/1's two, security-model's four, player/1's LEASE_UNKNOWN and relay/1's one.",
     "  (c) the refusal EXISTS but is not spelled as the published code — free-text prose, a bare",
     "      bool, a silent skip. A caller told to branch on `code` still cannot.",
     "",
