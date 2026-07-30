@@ -191,3 +191,69 @@ func TestTheSchedulingCoreRefusesAnUndeclaredMember(t *testing.T) {
 		})
 	}
 }
+
+// TestActionStylePostsRefuseAnUndeclaredMember covers the POSTs that are not
+// resource families — a per-row action, a collection-wide one, an entity command,
+// the two workspace data-subject operations, and the webhook secret rotation.
+// None reaches the resource pipeline, each guards the fields it needs by hand,
+// and none bounded the members it does not declare: bulk-enable answered 202 and
+// accepted the job with an undeclared member on board.
+//
+// The check runs BEFORE the idempotency record is written, which this asserts
+// directly: a refused body recorded as a key's outcome would make the retry that
+// FIXES the body replay the refusal instead of executing.
+func TestActionStylePostsRefuseAnUndeclaredMember(t *testing.T) {
+	for _, tc := range []struct {
+		name, path string
+		valid      map[string]any
+	}{
+		{"bulk-enable", "/api/v1/automations/bulk-enable",
+			map[string]any{"selector": "env=prod", "enabled": true}},
+		{"workspace export", "/api/v1/workspace/export",
+			map[string]any{"passphrase": "conformance-export-passphrase"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+
+			smuggled := map[string]any{"nonsense_field": "smuggled"}
+			for k, v := range tc.valid {
+				smuggled[k] = v
+			}
+			resp, raw := e.do(t, http.MethodPost, tc.path, mustJSON(t, smuggled), nil)
+			if resp.StatusCode != http.StatusUnprocessableEntity {
+				t.Fatalf("%s with an undeclared member = %d, want 422 (body %s)", tc.name, resp.StatusCode, raw)
+			}
+			p := assertProblem(t, resp, raw, "VALIDATION_FAILED")
+			if detail, _ := p["detail"].(string); detail != "nonsense_field: not a member this operation declares." {
+				t.Errorf("detail = %q, want it to name the offending member", detail)
+			}
+		})
+	}
+}
+
+// TestARefusedBodyIsNotRecordedAsAnIdempotentOutcome: the refusal has to happen
+// before the idempotency record exists. Otherwise a client that retries the SAME
+// key with a corrected body replays the stored 422 forever, and the operation
+// becomes unreachable through no fault they can see.
+func TestARefusedBodyIsNotRecordedAsAnIdempotentOutcome(t *testing.T) {
+	e := newEnv(t)
+	const key = "3f1b1e2a-6c4d-4a9b-8f2e-9d7c6b5a4321"
+
+	bad := mustJSON(t, map[string]any{"selector": "env=prod", "enabled": true, "nonsense_field": 1})
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations/bulk-enable", bad,
+		map[string]string{"Idempotency-Key": key})
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("refused body = %d, want 422 (body %s)", resp.StatusCode, raw)
+	}
+
+	// The same key, a corrected body. It must EXECUTE rather than replay the 422.
+	good := mustJSON(t, map[string]any{"selector": "env=prod", "enabled": true})
+	resp, raw = e.do(t, http.MethodPost, "/api/v1/automations/bulk-enable", good,
+		map[string]string{"Idempotency-Key": key})
+	if resp.StatusCode == http.StatusUnprocessableEntity {
+		t.Fatalf("the corrected body replayed the refusal: the 422 was recorded as this key's outcome (body %s)", raw)
+	}
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("corrected body = %d, want 202 (body %s)", resp.StatusCode, raw)
+	}
+}

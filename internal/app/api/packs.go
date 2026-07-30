@@ -194,6 +194,18 @@ func (srv *server) installPack(w http.ResponseWriter, r *http.Request) {
 	// EITHER route, so a retried marketplace reference replays its original
 	// response exactly as a retried artifact upload does.
 	if wantsMarketplaceRef(r) {
+		// Deliberately NOT bounded by the declared member set here, unlike the other
+		// action POSTs. This route already refuses an undeclared member — with a
+		// better answer: a caller-supplied `key_id` or `content_digest` is an attempt
+		// to assert provenance the resolution must establish itself, and
+		// installPackFromRef refuses it as MARKETPLACE_REF_INVALID, a published code
+		// that says which mistake was made. The generic member check would fire
+		// first and replace that with "not a member this operation declares",
+		// which is true and less useful.
+		//
+		// The member check exists to catch members NOTHING else refuses. Where a
+		// published per-field code already covers them, adding it is a regression in
+		// the answer rather than an improvement in the enforcement.
 		srv.idempotent(w, r, artifact, func(w http.ResponseWriter) { srv.installPackFromRef(w, r, artifact) })
 		return
 	}

@@ -144,6 +144,11 @@ func (srv *server) exportWorkspace(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// See the note on runAutomation: the declared member set, checked before the
+	// idempotency record is written.
+	if srv.undeclaredMemberRejected(w, r, "WorkspaceExportRequest", body) {
+		return
+	}
 	srv.idempotent(w, r, body, func(w http.ResponseWriter) { srv.exportWorkspaceExec(w, r, body) })
 }
 
@@ -205,6 +210,11 @@ func (srv *server) exportWorkspaceExec(w http.ResponseWriter, r *http.Request, b
 func (srv *server) deleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	body, ok := readBody(w, r)
 	if !ok {
+		return
+	}
+	// See the note on runAutomation: the declared member set, checked before the
+	// idempotency record is written.
+	if srv.undeclaredMemberRejected(w, r, "WorkspaceDeleteRequest", body) {
 		return
 	}
 	srv.idempotent(w, r, body, func(w http.ResponseWriter) { srv.deleteWorkspaceExec(w, r, body) })

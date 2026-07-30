@@ -202,8 +202,18 @@ type entityCommandRequest struct {
 // than firing the command at the physical device a second time. The key handling
 // reuses srv.idempotent, the same mechanism the other mcp:act POSTs use.
 func (srv *server) sendEntityCommand(w http.ResponseWriter, r *http.Request) {
+	// The members this operation declares, and nothing else. These action-style
+	// POSTs are not resource families, so they reach none of the resource
+	// pipeline; each guards the fields it needs by hand, and none bounded the ones
+	// it does not declare.
+	//
+	// Ahead of srv.idempotent deliberately: a refused body must not be recorded as
+	// this key's outcome, or the retry that fixes the body replays the refusal.
 	raw, ok := readBody(w, r)
 	if !ok {
+		return
+	}
+	if srv.undeclaredMemberRejected(w, r, "EntityCommandRequest", raw) {
 		return
 	}
 	srv.idempotent(w, r, raw, func(w http.ResponseWriter) { srv.sendEntityCommandExec(w, r, raw) })

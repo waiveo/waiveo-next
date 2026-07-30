@@ -86,6 +86,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 	apispec "github.com/maaxton/waiveo-next/api"
+	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 )
 
 // declaredSchemas parses the embedded document once per process and yields its
@@ -339,12 +340,27 @@ var declaredMemberNames = func() func(string) (map[string]bool, error) {
 // against the declared set and never inspects a value, so it is incapable of
 // pre-empting a per-field code no matter how the body is malformed.
 func (rs *resource) undeclaredMemberRejected(w http.ResponseWriter, r *http.Request, name string, raw []byte) bool {
+	return rs.srv.undeclaredMemberRejected(w, r, name, raw)
+}
+
+// undeclaredMemberRejected on the server is the same check for the ACTION-style
+// POSTs — run, bulk-enable, entity command, workspace export and delete, the
+// webhook signing secret, pack install. They are not resource families, so they
+// reach none of the resource pipeline, and each carries hand-written guards on the
+// fields it needs. What none of them had was a bound on the members they do NOT
+// declare, so an undeclared member rode through: bulk-enable answered 202 and
+// accepted the job.
+//
+// One implementation, two entry points, because the alternative — a second copy
+// for the handlers that are not families — is how the two drift into disagreeing
+// about what the same document says.
+func (srv *server) undeclaredMemberRejected(w http.ResponseWriter, r *http.Request, name string, raw []byte) bool {
 	if name == "" {
 		return false
 	}
 	declared, err := declaredMemberNames(name)
 	if err != nil {
-		rs.internal(w, r, err)
+		apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.", nil)
 		return true
 	}
 	var body map[string]json.RawMessage
@@ -364,8 +380,9 @@ func (rs *resource) undeclaredMemberRejected(w http.ResponseWriter, r *http.Requ
 	}
 	if len(unknown) > 0 {
 		sort.Strings(unknown)
-		rs.problem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Unprocessable Content",
-			fmt.Sprintf("%s: not a member this operation declares.", clipKey(unknown[0])))
+		apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), http.StatusUnprocessableEntity,
+			"VALIDATION_FAILED", "Unprocessable Content",
+			fmt.Sprintf("%s: not a member this operation declares.", clipKey(unknown[0])), nil)
 		return true
 	}
 
@@ -379,7 +396,7 @@ func (rs *resource) undeclaredMemberRejected(w http.ResponseWriter, r *http.Requ
 	// they deliberately opt out of rather than an omission here.
 	schema, err := declaredSchema(name)
 	if err != nil {
-		rs.internal(w, r, err)
+		apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.", nil)
 		return true
 	}
 	var decoded any
@@ -387,7 +404,8 @@ func (rs *resource) undeclaredMemberRejected(w http.ResponseWriter, r *http.Requ
 		return false
 	}
 	if detail := propertyNamesViolation(schema, decoded); detail != "" {
-		rs.problem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Unprocessable Content", detail)
+		apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), http.StatusUnprocessableEntity,
+			"VALIDATION_FAILED", "Unprocessable Content", detail, nil)
 		return true
 	}
 	return false

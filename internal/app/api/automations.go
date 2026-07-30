@@ -94,8 +94,18 @@ func (srv *server) runAutomation(w http.ResponseWriter, r *http.Request) {
 	// The body is read up front so its content hash keys Idempotency-Key
 	// replay-vs-reuse (API-052) even though AutomationRunRequest.context is
 	// deferred; a keyed retry with the same body replays, a different body conflicts.
+	// The members this operation declares, and nothing else. These action-style
+	// POSTs are not resource families, so they reach none of the resource
+	// pipeline; each guards the fields it needs by hand, and none bounded the ones
+	// it does not declare.
+	//
+	// Ahead of srv.idempotent deliberately: a refused body must not be recorded as
+	// this key's outcome, or the retry that fixes the body replays the refusal.
 	raw, ok := readBody(w, r)
 	if !ok {
+		return
+	}
+	if srv.undeclaredMemberRejected(w, r, "AutomationRunRequest", raw) {
 		return
 	}
 	srv.idempotent(w, r, raw, func(w http.ResponseWriter) { srv.runAutomationExec(w, r) })
@@ -285,8 +295,18 @@ type bulkEnableRequest struct {
 // progress committed through the apijob state machine, which a client observes
 // by polling GET /jobs/{job_id} (API-112).
 func (srv *server) bulkEnableAutomations(w http.ResponseWriter, r *http.Request) {
+	// The members this operation declares, and nothing else. These action-style
+	// POSTs are not resource families, so they reach none of the resource
+	// pipeline; each guards the fields it needs by hand, and none bounded the ones
+	// it does not declare.
+	//
+	// Ahead of srv.idempotent deliberately: a refused body must not be recorded as
+	// this key's outcome, or the retry that fixes the body replays the refusal.
 	body, ok := readBody(w, r)
 	if !ok {
+		return
+	}
+	if srv.undeclaredMemberRejected(w, r, "AutomationBulkEnableRequest", body) {
 		return
 	}
 	srv.idempotent(w, r, body, func(w http.ResponseWriter) { srv.bulkEnableExec(w, r, body) })

@@ -247,6 +247,11 @@ func (srv *server) rotateWebhookSecret(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// See the note on runAutomation: the declared member set, checked before the
+	// idempotency record is written.
+	if srv.undeclaredMemberRejected(w, r, "WebhookSigningSecretRequest", raw) {
+		return
+	}
 	srv.idempotent(w, r, raw, func(w http.ResponseWriter) {
 		res, ok := srv.webhookEndpointFor(w, r, true)
 		if !ok {
