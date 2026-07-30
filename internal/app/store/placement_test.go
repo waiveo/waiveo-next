@@ -443,3 +443,48 @@ func TestAnUnplacedRowIsNotARowPlacedAtNothing(t *testing.T) {
 		t.Fatalf("a screen row carrying no placement was refused %+v, want a ROW_SCOPE_NODE_MISSING among them", verr.Errors)
 	}
 }
+
+// TestAScopeNodeIsNotItselfAPlacement pins the two halves of a regression that
+// shipped and was caught in review: the placement check ran for KindScopeNode.
+//
+// DAT-006 is explicit that every row "OTHER THAN A SCOPE NODE ITSELF" carries a
+// scope_node, so a scope node is the thing a placement points AT. Running the
+// check on it refused a scope-node write with a message naming `table
+// scope_nodes` — the one table that never holds a placement — and, worse, it put
+// scope_nodes on the FORWARD list while placedAt keeps it off the REVERSE one.
+// placement.go's own doc names that asymmetry as the defect to avoid: a table on
+// one list and not the other is a store where a node cannot be deleted but a row
+// may point at nothing.
+func TestAScopeNodeIsNotItselfAPlacement(t *testing.T) {
+	s := openMem(t)
+	ctx := context.Background()
+	seedSiteScreen(t, s)
+
+	// A screen-kind node under the seeded site, carrying a stray `scope_node`
+	// that resolves to nothing. It must not be refused FOR THAT: a scope node has
+	// no placement to be wrong about.
+	body := mustJSON(t, screenNode())
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	raw["id"] = "01J8ZSTRAYSCREENNDE0000001" // distinct from seedSiteScreen's own screen node
+	raw["scope_node"] = absentPlacementNode
+	withStray, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	if _, err := s.Create(ctx, store.KindScopeNode, withStray); err != nil {
+		var verr *store.ValidationError
+		if errors.As(err, &verr) {
+			for _, e := range verr.Errors {
+				if e.Field == "scope_node" {
+					t.Fatalf("a scope-node create was refused for its own scope_node (%s: %s) — a scope node is what a placement points at, not a row that carries one",
+						e.Code, e.Message)
+				}
+			}
+		}
+		t.Logf("refused for an unrelated reason, which is this fixture's business and not the placement rule's: %v", err)
+	}
+}

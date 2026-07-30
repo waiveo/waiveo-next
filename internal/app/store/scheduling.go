@@ -60,8 +60,30 @@ var identityKinds = map[Kind]bool{
 // Checking it first also means the refusal a caller reads names the reference
 // itself, rather than whichever downstream rule the unplaced row happened to trip.
 func validateAfterWrite(ctx context.Context, tx *sql.Tx, kind Kind, scopeNode string) error {
-	if err := checkPlacementResolves(ctx, tx, string(kind), scopeNode); err != nil {
-		return err
+	// NOT for scope nodes. A scope node is the thing a placement points AT, and
+	// DAT-006 says so in as many words: "Every row this contract defines OTHER
+	// THAN A SCOPE NODE ITSELF MUST carry scope_node". Running the placement
+	// check here did two wrong things at once.
+	//
+	// It refused an undeclared `scope_node` member on a scope-node body with a
+	// message naming `table scope_nodes` — the one table that never carries a
+	// placement — and, because scope nodes name no createSchema (bodyschema.go
+	// records that as deliberate), nothing rejected the stray member first. So
+	// one undeclared field collapsed API-013's multi-error answer to a single
+	// one, replacing a published, corpus-pinned shape with a poorer one. That is
+	// exactly the trade bodyschema.go refuses in writing.
+	//
+	// And it put scope_nodes on the FORWARD list while placedAt deliberately
+	// keeps it off the REVERSE one — the asymmetry placement.go's own doc calls
+	// out as a defect: "a table on one list and not the other would be a store
+	// where a node cannot be deleted but a row may point at nothing, or the
+	// reverse." A group placed at another group resolved on the way in and then
+	// survived that node's deletion, since placedAt never looked. One inventory,
+	// both directions, or neither.
+	if kind != KindScopeNode {
+		if err := checkPlacementResolves(ctx, tx, string(kind), scopeNode); err != nil {
+			return err
+		}
 	}
 	switch {
 	case kind == KindScopeNode:
