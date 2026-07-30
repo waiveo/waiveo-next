@@ -371,6 +371,6 @@ func TestCreateScopeNodeUnderNonexistentParentIsRefused(t *testing.T) {
 
 	n := siteNode("")
 	n.ParentID = strp(neverMintedULID)
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/scope-nodes", mustJSON(t, n), nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/scope-nodes", createBody(t, n), nil)
 	assertValidationError(t, resp, raw, "SCOPE_NODE_PARENT_INVALID")
 }

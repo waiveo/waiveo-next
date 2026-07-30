@@ -59,6 +59,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 
@@ -141,6 +142,89 @@ func (rs *resource) schemaRejected(w http.ResponseWriter, r *http.Request, name 
 		return true
 	}
 	return false
+}
+
+// declaredMemberNames returns the member names the component schema `name`
+// declares, memoized per process.
+//
+// It reads the SAME embedded document schemaRejected validates against, so the
+// set a body is bounded by and the set the generated clients are built from
+// cannot disagree.
+var declaredMemberNames = func() func(string) (map[string]bool, error) {
+	var mu sync.Mutex
+	cache := map[string]map[string]bool{}
+	return func(name string) (map[string]bool, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if got, ok := cache[name]; ok {
+			return got, nil
+		}
+		schema, err := declaredSchema(name)
+		if err != nil {
+			return nil, err
+		}
+		set := make(map[string]bool, len(schema.Properties))
+		for member := range schema.Properties {
+			set[member] = true
+		}
+		if len(set) == 0 {
+			// A schema with no properties would bound a body to nothing, refusing every
+			// write. That is a document problem, not a client problem, and silently
+			// accepting everything instead would make this check invisible.
+			return nil, fmt.Errorf("component schema %q declares no properties, so it cannot bound a request body", name)
+		}
+		cache[name] = set
+		return set, nil
+	}
+}()
+
+// undeclaredMemberRejected enforces ONE keyword of a declared schema —
+// `additionalProperties: false` — and nothing else.
+//
+// It exists because the scope-node family cannot use the full schema gate above.
+// Their bodies are validated field by field inside the store write, which reports
+// EVERY failing member at once under data-model/1's published per-field codes in
+// API-013's multi-field `errors[]` shape; a fail-fast whole-schema check ahead of
+// that would replace a richer, corpus-pinned answer with a poorer one. But the
+// document also declares `additionalProperties: false`, and no data-model rule can
+// express that: those validators see a DECODED row, where a member the struct does
+// not define has already vanished. So an undeclared member was accepted, stored,
+// and served back on every read.
+//
+// The narrowness is structural rather than promised: this compares member NAMES
+// against the declared set and never inspects a value, so it is incapable of
+// pre-empting a per-field code no matter how the body is malformed.
+func (rs *resource) undeclaredMemberRejected(w http.ResponseWriter, r *http.Request, name string, raw []byte) bool {
+	if name == "" {
+		return false
+	}
+	declared, err := declaredMemberNames(name)
+	if err != nil {
+		rs.internal(w, r, err)
+		return true
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &body); err != nil {
+		// Not this check's business: a non-object or unparseable body is caught by the
+		// decode the write path already performs, with its own message.
+		return false
+	}
+	// Sorted, so a body carrying several undeclared members always names the same
+	// one — an unordered map would report whichever the runtime happened to yield
+	// and make the same request answer differently between runs.
+	var unknown []string
+	for member := range body {
+		if !declared[member] {
+			unknown = append(unknown, member)
+		}
+	}
+	if len(unknown) == 0 {
+		return false
+	}
+	sort.Strings(unknown)
+	rs.problem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Unprocessable Content",
+		fmt.Sprintf("%s: not a member this operation declares.", unknown[0]))
+	return true
 }
 
 // schemaViolationDetail renders one schema violation as a human-readable

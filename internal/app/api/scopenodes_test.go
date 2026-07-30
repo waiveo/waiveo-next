@@ -218,11 +218,33 @@ func mustJSON(t *testing.T, v any) []byte {
 func (e *testEnv) createNode(t *testing.T, n datamodel.ScopeNode) string {
 	t.Helper()
 	n = e.resolveBoundaryParent(t, n)
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/scope-nodes", mustJSON(t, n), nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/scope-nodes", createBody(t, n), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create %s node %q: status %d, body %s", n.Kind, n.Name, resp.StatusCode, raw)
 	}
 	return decodeID(t, raw)
+}
+
+// createBody marshals n as a CREATE body: the server-owned members dropped.
+//
+// datamodel.ScopeNode is the stored/response shape, so marshalling it whole emits
+// id, revision, created_at and updated_at — none of which ScopeNodeCreate
+// declares, and all of which the surface now refuses as undeclared members. Every
+// fixture had been sending `created_at: 0` on every create and nothing looked,
+// because nothing enforced the declared member set until it did.
+//
+// A test whose SUBJECT is a server-owned member on a create body sends it by hand
+// rather than going through here.
+func createBody(t *testing.T, n datamodel.ScopeNode) []byte {
+	t.Helper()
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(mustJSON(t, n), &body); err != nil {
+		t.Fatalf("re-decode scope node: %v", err)
+	}
+	for _, serverOwned := range []string{"id", "revision", "created_at", "updated_at"} {
+		delete(body, serverOwned)
+	}
+	return mustJSON(t, body)
 }
 
 // resolveBoundaryParent substitutes the env's real org root for a parent_id
@@ -415,7 +437,7 @@ func TestCreateAndGetScopeNode(t *testing.T) {
 	// POSTed here rather than through createNode because the assertions below are
 	// about the raw create RESPONSE (ETag, Location, Trace-Id), which createNode
 	// discards — so the sentinel parent is resolved by hand.
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/scope-nodes", mustJSON(t, e.resolveBoundaryParent(t, siteNode(""))), nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/scope-nodes", createBody(t, e.resolveBoundaryParent(t, siteNode(""))), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create status = %d, body %s", resp.StatusCode, raw)
 	}
@@ -637,7 +659,7 @@ func TestExternalIDConflict(t *testing.T) {
 	// A duplicate external_id under the SAME parent → 400 / EXTERNAL_ID_CONFLICT,
 	// no write.
 	dup := screenNode("", siteID, "lobby-screen-1")
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/scope-nodes", mustJSON(t, dup), nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/scope-nodes", createBody(t, dup), nil)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("dup-external-id status = %d, want 400, body %s", resp.StatusCode, raw)
 	}
@@ -649,7 +671,7 @@ func TestExternalIDConflict(t *testing.T) {
 
 	// The SAME external_id under a DIFFERENT parent is NOT a collision (API-101).
 	ok := screenNode("", site2ID, "lobby-screen-1")
-	resp, raw = e.do(t, http.MethodPost, "/api/v1/scope-nodes", mustJSON(t, ok), nil)
+	resp, raw = e.do(t, http.MethodPost, "/api/v1/scope-nodes", createBody(t, ok), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("same-external-id-different-parent status = %d, want 201, body %s", resp.StatusCode, raw)
 	}
@@ -671,6 +693,10 @@ func TestCreateClientSuppliedIDRejectedAsClientProblem(t *testing.T) {
 	e := newEnv(t)
 	siteID := e.createNode(t, siteNode(""))
 
+	// By hand rather than through createBody: this case's SUBJECT is a client
+	// sending `id`, which createBody exists to strip. The undeclared-member check
+	// would otherwise refuse it first and this test would assert nothing about
+	// API-105's own code.
 	resp, raw := e.do(t, http.MethodPost, "/api/v1/scope-nodes", mustJSON(t, siteNode(siteID)), nil)
 	if resp.StatusCode == http.StatusInternalServerError {
 		t.Fatalf("client-supplied id surfaced as 500 INTERNAL (body %s)", raw)
@@ -776,7 +802,7 @@ func TestConcurrentCreateExternalIDUniqueness(t *testing.T) {
 		for i := 0; i < n; i++ {
 			// Server-assigned id (ulid.Monotonic, safe for concurrent use) — the
 			// PRIMARY KEY never collides regardless of client input.
-			bodies[i] = mustJSON(t, screenNode("", siteID, externalID))
+			bodies[i] = createBody(t, screenNode("", siteID, externalID))
 		}
 
 		start := make(chan struct{})
@@ -833,7 +859,7 @@ func TestIdempotentCreateReplaysFailure(t *testing.T) {
 	siteID := e.createNode(t, siteNode(""))
 	e.createNode(t, screenNode("", siteID, "lobby-screen-1"))
 
-	body := mustJSON(t, screenNode("", siteID, "lobby-screen-1"))
+	body := createBody(t, screenNode("", siteID, "lobby-screen-1"))
 	hdr := map[string]string{"Idempotency-Key": "dup-external-id-key"}
 
 	// First keyed create collides → 400 EXTERNAL_ID_CONFLICT (a fresh request:

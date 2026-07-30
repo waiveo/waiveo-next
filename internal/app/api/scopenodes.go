@@ -45,6 +45,17 @@ func scopeNodesConfig() resourceConfig {
 		// transaction. See scopeNodeUndeletable / scopeNodeDeleteGuards below.
 		undeletable:  scopeNodeUndeletable,
 		deleteGuards: scopeNodeDeleteGuards,
+		// The MEMBER half of schema enforcement, without the value half
+		// (bodyschema.go undeclaredMemberRejected). `additionalProperties: false` is
+		// declared for both bodies and can be enforced by nobody downstream: the
+		// datamodel validators see a DECODED row, where a member the struct does not
+		// define has already vanished — so an undeclared member was accepted, stored,
+		// and served back on every read of the node.
+		//
+		// It compares member NAMES only, so it cannot pre-empt a per-field code and
+		// the errors[] shape below is untouched.
+		createMembers: "ScopeNodeCreate",
+		updateMembers: "ScopeNodeUpdate",
 		// This family names NO createSchema/updateSchema, and that is deliberate
 		// rather than an omission — see bodyschema.go's "What this does NOT cover".
 		// A scope node's body is already validated field-by-field by

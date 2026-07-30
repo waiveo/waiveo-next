@@ -391,6 +391,30 @@ func (e ScopeNodeCreateKind) Valid() bool {
 	}
 }
 
+// Defines values for ScopeNodeUpdateKind.
+const (
+	ScopeNodeUpdateKindGroup  ScopeNodeUpdateKind = "group"
+	ScopeNodeUpdateKindOrg    ScopeNodeUpdateKind = "org"
+	ScopeNodeUpdateKindScreen ScopeNodeUpdateKind = "screen"
+	ScopeNodeUpdateKindSite   ScopeNodeUpdateKind = "site"
+)
+
+// Valid indicates whether the value is a known member of the ScopeNodeUpdateKind enum.
+func (e ScopeNodeUpdateKind) Valid() bool {
+	switch e {
+	case ScopeNodeUpdateKindGroup:
+		return true
+	case ScopeNodeUpdateKindOrg:
+		return true
+	case ScopeNodeUpdateKindScreen:
+		return true
+	case ScopeNodeUpdateKindSite:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SessionSummaryAal.
 const (
 	Recovery SessionSummaryAal = "recovery"
@@ -1063,7 +1087,8 @@ type ScopeNodeListResponse struct {
 	Items  []ScopeNode `json:"items"`
 }
 
-// ScopeNodeUpdate Partial update — every field optional, at least one required. `kind` is absent deliberately: it is patchable on the server and re-kinding the org root is refused by the tree rules rather than by this schema, so declaring it here would say nothing this document can enforce. See ScopeNodeCreate for why the two account members are not `required`.
+// ScopeNodeUpdate Partial update — every field optional, at least one required. See ScopeNodeCreate for why the two account members are not `required`.
+// `kind` is declared because the server accepts it: a node can be re-kinded, and what refuses a DANGEROUS re-kind is the tree rules (SCOPE_NODE_PARENT_INVALID), not this schema. It was briefly left out on the reasoning that declaring it "would say nothing this document can enforce" — true while nothing enforced the declared member set, and false the moment something did: omitting it then makes re-kinding impossible through the surface, which is a behaviour change no requirement asks for.
 type ScopeNodeUpdate struct {
 	// AccountState Mandatory on an `org`-kind node and forbidden on every other kind (contracts/data-model-1.md DAT-010). A body violating either half is rejected SCOPE_NODE_ACCOUNT_STATE_INVALID.
 	AccountState **string `json:"account_state,omitempty"`
@@ -1071,6 +1096,7 @@ type ScopeNodeUpdate struct {
 	// Entitlements Mandatory on an `org`-kind node, where an empty object is explicitly admitted, and forbidden on every other kind (DAT-013). This surface fixes the field's presence and placement only; the document's own internal schema is defined elsewhere. A body violating either half is rejected SCOPE_NODE_ENTITLEMENTS_INVALID.
 	Entitlements *map[string]interface{} `json:"entitlements,omitempty"`
 	ExternalId   **string                `json:"external_id,omitempty"`
+	Kind         *ScopeNodeUpdateKind    `json:"kind,omitempty"`
 
 	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
 	Labels *LabelMap `json:"labels,omitempty"`
@@ -1082,6 +1108,9 @@ type ScopeNodeUpdate struct {
 	ParentId **string `json:"parent_id,omitempty"`
 	Tz       *string  `json:"tz,omitempty"`
 }
+
+// ScopeNodeUpdateKind defines model for ScopeNodeUpdate.Kind.
+type ScopeNodeUpdateKind string
 
 // Screen A screen's own identity row — the row a `screen_id` names (`data-model/1` DAT-004a). It is NOT the `screen`-kind scope node it is placed under: DAT-004 lets a screen row hang off a node of ANY kind, so two screens may share one `group` node and a screen may sit directly under a `site`. The `screen_id` a `relay/1` `screen_programs` entry carries (REL-061), a player learns at pairing redemption (`player/1` PLY-035), and a `content.played` event records (`events/1` EVT-050) all name this row's `id`.
 type Screen struct {

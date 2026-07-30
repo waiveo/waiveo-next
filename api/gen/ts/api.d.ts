@@ -1249,8 +1249,13 @@ export interface components {
             lat?: number;
             long?: number;
         };
-        /** @description Partial update — every field optional, at least one required. `kind` is absent deliberately: it is patchable on the server and re-kinding the org root is refused by the tree rules rather than by this schema, so declaring it here would say nothing this document can enforce. See ScopeNodeCreate for why the two account members are not `required`. */
+        /**
+         * @description Partial update — every field optional, at least one required. See ScopeNodeCreate for why the two account members are not `required`.
+         *     `kind` is declared because the server accepts it: a node can be re-kinded, and what refuses a DANGEROUS re-kind is the tree rules (SCOPE_NODE_PARENT_INVALID), not this schema. It was briefly left out on the reasoning that declaring it "would say nothing this document can enforce" — true while nothing enforced the declared member set, and false the moment something did: omitting it then makes re-kinding impossible through the surface, which is a behaviour change no requirement asks for.
+         */
         ScopeNodeUpdate: {
+            /** @enum {string} */
+            kind?: "org" | "site" | "group" | "screen";
             /** @description Re-parents the node. `null` only for the single root org node (DAT-002); a value naming no existing node, or one whose kind may not carry this child, is rejected SCOPE_NODE_PARENT_INVALID. */
             parent_id?: string | null;
             /**

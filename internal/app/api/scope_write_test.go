@@ -9,7 +9,6 @@ import (
 
 	"github.com/maaxton/waiveo-next/internal/app/auth"
 	"github.com/maaxton/waiveo-next/internal/app/auth/authtest"
-	"github.com/maaxton/waiveo-next/internal/datamodel"
 )
 
 // scope_write_test.go is scope_visibility_test.go's other half: which rows a
@@ -198,7 +197,7 @@ func TestScopeNodeCreateIsAuthorizedAtItsParent(t *testing.T) {
 	alice := e.principalAt(t, tr.siteA)
 
 	resp, raw := e.as(t, alice, http.MethodPost, "/api/v1/scope-nodes",
-		mustJSON(t, screenNode("", tr.siteA, "")), nil)
+		createBody(t, screenNode("", tr.siteA, "")), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create a screen under the caller's OWN site = %d, want 201 — authority at a node inherits to "+
 			"the children created under it (SEC-010) (body %s)", resp.StatusCode, raw)
@@ -212,13 +211,13 @@ func TestScopeNodeCreateIsAuthorizedAtItsParent(t *testing.T) {
 	}
 
 	resp, raw = e.as(t, alice, http.MethodPost, "/api/v1/scope-nodes",
-		mustJSON(t, screenNode("", tr.siteB, "")), nil)
+		createBody(t, screenNode("", tr.siteB, "")), nil)
 	assertForbidden(t, resp, raw, "create a screen under the OTHER site")
 
 	// A node with no parent is a new top of the tree: a platform-wide act, which
 	// a subtree binding does not reach.
 	resp, raw = e.as(t, alice, http.MethodPost, "/api/v1/scope-nodes",
-		mustJSON(t, datamodel.ScopeNode{Kind: "org", Name: "Alice's Own Org"}), nil)
+		createBody(t, orgNode("Alice's Own Org")), nil)
 	assertForbidden(t, resp, raw, "create a parentless org")
 }
 

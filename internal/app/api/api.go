@@ -426,6 +426,13 @@ type resourceConfig struct {
 	// write rather than skipping the check (bodyschema.go declaredSchema).
 	createSchema string
 	updateSchema string
+	// createMembers/updateMembers name the component schemas whose declared member
+	// set bounds a body, for a family that runs the MEMBER half of schema
+	// enforcement without the value half. Set these instead of createSchema/
+	// updateSchema when a family's per-field validation lives downstream and must
+	// keep answering first (bodyschema.go undeclaredMemberRejected).
+	createMembers string
+	updateMembers string
 	// validate, when non-nil, is a per-kind pre-write body validation run over the
 	// EFFECTIVE request body — the create body, or a patch shallow-merged onto the
 	// current row — BEFORE the store write; a non-empty result is rendered
@@ -644,6 +651,9 @@ func (rs *resource) createExec(w http.ResponseWriter, r *http.Request, raw []byt
 	// rejectClientSuppliedID, so a client-supplied id keeps API-105's own code
 	// rather than collapsing into a generic schema violation.
 	if rs.schemaRejected(w, r, rs.cfg.createSchema, raw) {
+		return
+	}
+	if rs.undeclaredMemberRejected(w, r, rs.cfg.createMembers, raw) {
 		return
 	}
 	// The server always mints the id (openapi: id is not part of the create
@@ -970,6 +980,9 @@ func (rs *resource) patch(w http.ResponseWriter, r *http.Request) {
 	// member optional, at least one present), not what a complete stored row looks
 	// like, so validating the merge would answer a different question.
 	if rs.schemaRejected(w, r, rs.cfg.updateSchema, patchBody) {
+		return
+	}
+	if rs.undeclaredMemberRejected(w, r, rs.cfg.updateMembers, patchBody) {
 		return
 	}
 

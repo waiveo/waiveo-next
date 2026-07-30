@@ -268,11 +268,26 @@ func (h *resetHarness) seedSite(ctx context.Context, orgID string) (string, erro
 }
 
 func (h *resetHarness) createNode(node datamodel.ScopeNode) (string, error) {
-	body, err := json.Marshal(node)
+	raw, err := json.Marshal(node)
 	if err != nil {
 		return "", err
 	}
-	res := h.post("/api/v1/scope-nodes", json.RawMessage(body))
+	// datamodel.ScopeNode is the STORED shape, so marshalling it whole emits the
+	// server-owned members (id, revision, created_at, updated_at) that
+	// ScopeNodeCreate does not declare and the surface refuses as undeclared. A
+	// driver must send what a client can send, not what a row looks like.
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return "", err
+	}
+	for _, serverOwned := range []string{"id", "revision", "created_at", "updated_at"} {
+		delete(body, serverOwned)
+	}
+	created, err := json.Marshal(body)
+	if err != nil {
+		return "", err
+	}
+	res := h.post("/api/v1/scope-nodes", json.RawMessage(created))
 	if res.status != http.StatusCreated {
 		return "", errorString("create scope node: status " + http.StatusText(res.status) + ": " + string(res.raw))
 	}
