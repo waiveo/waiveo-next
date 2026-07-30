@@ -316,12 +316,18 @@ func assertUnresolvedPlacement(t *testing.T, err error, what string) {
 		t.Errorf("%s placed at a node that does not exist: err = %v, want a *store.ValidationError", what, err)
 		return
 	}
-	if len(verr.Errors) != 1 {
-		t.Errorf("%s: refusal carries %d error(s) (%+v), want exactly the placement one", what, len(verr.Errors), verr.Errors)
+	// The placement fault must be PRESENT and must LEAD — not be the only thing
+	// reported. Insisting on exactly one error was how this helper came to pin a
+	// regression: it made a short-circuit look correct, and a short-circuit
+	// collapses api/1 API-013's published multi-field answer to a single error
+	// whenever a row has an unrelated fault as well.
+	if len(verr.Errors) == 0 {
+		t.Errorf("%s: refusal carries no errors", what)
 		return
 	}
 	if e := verr.Errors[0]; e.Field != "scope_node" || e.Code != "REFERENCE_INVALID" {
-		t.Errorf("%s: refusal = {field:%q code:%q}, want {scope_node REFERENCE_INVALID}", what, e.Field, e.Code)
+		t.Errorf("%s: leading refusal = {field:%q code:%q}, want {scope_node REFERENCE_INVALID}; all = %+v",
+			what, e.Field, e.Code, verr.Errors)
 	}
 }
 

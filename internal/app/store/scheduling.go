@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/maaxton/waiveo-next/internal/datamodel"
@@ -80,10 +81,30 @@ func validateAfterWrite(ctx context.Context, tx *sql.Tx, kind Kind, scopeNode st
 	// reverse." A group placed at another group resolved on the way in and then
 	// survived that node's deletion, since placedAt never looked. One inventory,
 	// both directions, or neither.
+	// COLLECTED, not short-circuited. Returning here on the first fault would
+	// hand back one error where api/1 API-013 publishes a multi-field answer, and
+	// that answer is corpus-pinned — a daypart carrying both an unresolvable
+	// placement and an unrelated bad field went from two errors to one. Naming
+	// the reference is worth having; suppressing everything else to get it is
+	// not, and bodyschema.go already refuses that same trade in writing.
+	var placementErrs []datamodel.Error
 	if kind != KindScopeNode {
 		if err := checkPlacementResolves(ctx, tx, string(kind), scopeNode); err != nil {
-			return err
+			var verr *ValidationError
+			if !errors.As(err, &verr) {
+				return err // a storage failure, not a validation one
+			}
+			placementErrs = verr.Errors
 		}
+	}
+	// withPlacement prefixes the placement fault onto whatever the per-kind
+	// validator found, so the reference error leads and the rest survives.
+	withPlacement := func(errs []datamodel.Error) error {
+		all := append(append([]datamodel.Error(nil), placementErrs...), errs...)
+		if len(all) > 0 {
+			return &ValidationError{Errors: all}
+		}
+		return nil
 	}
 	switch {
 	case kind == KindScopeNode:
@@ -91,28 +112,22 @@ func validateAfterWrite(ctx context.Context, tx *sql.Tx, kind Kind, scopeNode st
 		if err != nil {
 			return err
 		}
-		if _, errs := datamodel.BuildFullScopeTree(nodes); len(errs) > 0 {
-			return &ValidationError{Errors: errs}
-		}
-		return nil
+		_, errs := datamodel.BuildFullScopeTree(nodes)
+		return withPlacement(errs)
 	case schedulingKinds[kind]:
 		raw, err := readRawRows(ctx, tx)
 		if err != nil {
 			return err
 		}
-		if _, errs := datamodel.ValidateRows(raw); len(errs) > 0 {
-			return &ValidationError{Errors: errs}
-		}
-		return nil
+		_, errs := datamodel.ValidateRows(raw)
+		return withPlacement(errs)
 	case identityKinds[kind]:
 		raw, err := readIdentityRows(ctx, tx)
 		if err != nil {
 			return err
 		}
-		if _, errs := datamodel.ValidateIdentityRows(raw); len(errs) > 0 {
-			return &ValidationError{Errors: errs}
-		}
-		return nil
+		_, errs := datamodel.ValidateIdentityRows(raw)
+		return withPlacement(errs)
 	case kind == KindAutomation:
 		// Automations are gated by the rules compiler (compile.Compile) at the top
 		// of Create/Update, not by datamodel.ValidateRows — a compile failure has
@@ -136,10 +151,7 @@ func validateAfterWrite(ctx context.Context, tx *sql.Tx, kind Kind, scopeNode st
 				errs = append(errs, *e)
 			}
 		}
-		if len(errs) > 0 {
-			return &ValidationError{Errors: errs}
-		}
-		return nil
+		return withPlacement(errs)
 	case kind == KindWebhookEndpoint:
 		// A webhook endpoint has no datamodel/1 row schema and no compiler: its
 		// body is validated by the api layer's own per-kind check before the
@@ -158,10 +170,7 @@ func validateAfterWrite(ctx context.Context, tx *sql.Tx, kind Kind, scopeNode st
 				errs = append(errs, *e)
 			}
 		}
-		if len(errs) > 0 {
-			return &ValidationError{Errors: errs}
-		}
-		return nil
+		return withPlacement(errs)
 	default:
 		return fmt.Errorf("store: no validator for kind %q", kind)
 	}
