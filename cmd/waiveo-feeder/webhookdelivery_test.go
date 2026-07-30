@@ -30,6 +30,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -54,33 +55,101 @@ const webhookE2ESecret = "whsec_feeder_e2e_0123456789abcdef"
 // webhookE2ENowMs is the injected instant this whole test runs at. Nothing here
 // reads a wall clock: the api handler, the idempotency store, the auth fixture,
 // the event log and the delivery loop are all handed this function.
+//
+// The tests below ASSERT that instant reaches the wire rather than merely
+// passing it in. They used to only pass it in, and that is not the same thing:
+// the delivery loop's only clock-derived output a receiver can see is the
+// X-Waiveo-Timestamp header, the verifying receiver reads that header out of the
+// request to reconstruct the HMAC, and so a loop that discarded the injected
+// clock and stamped the host's signed and verified exactly as before. Every
+// clock-dependent assertion in this file is therefore stated against
+// webhookE2ENowMs, not against "whatever arrived".
 const webhookE2ENowMs = int64(1752537600000)
 
+// webhookE2ETimestampSec is the exact X-Waiveo-Timestamp value a delivery made
+// at webhookE2ENowMs must carry, and the exact string it must have signed over:
+// the deliverer formats the header as whole seconds and signs that same string,
+// so one value pins both (EVT-151).
+var webhookE2ETimestampSec = strconv.FormatInt(webhookE2ENowMs/1000, 10)
+
+// webhookE2ERotatedSecret is the value the endpoint's secret is rotated TO in
+// the rotation-overlap test. Also at the surface's 32-character floor.
+const webhookE2ERotatedSecret = "whsec_feeder_e2e_rotated_9876543210"
+
 // verifyingReceiver is an in-process webhook receiver that accepts a delivery
-// only when the secret it holds reproduces the signature the request carries —
+// only when a secret it holds reproduces the signature the request carries —
 // the same check a real receiver performs. Recording "a request arrived" would
 // pass against a feeder that POSTed unsigned bodies, or signed with the wrong
 // secret, or signed the wrong material.
+//
+// It holds a LIST of secrets, newest first, because a receiver part-way through
+// a rotation legitimately holds two — that is the whole point of EVT-158's
+// overlap window. A delivery is accepted when X-Waiveo-Signature verifies under
+// any of them, and the receipt records WHICH one did, which is the observation
+// the rotation case turns on. Accepting rather than 401-ing a delivery signed
+// under a secret the receiver still holds also keeps the endpoint off the backoff
+// gate: with a frozen clock a single failed attempt sets next_attempt_at_ms
+// permanently in the future, so a receiver that refused the pre-rotation secret
+// would wedge the loop rather than test it.
 type verifyingReceiver struct {
-	secret   string
+	secrets  []string
 	accepted chan webhookReceipt
 	srv      *httptest.Server
 }
 
 // webhookReceipt is one verified delivery, read from the bytes on the wire.
+//
+// TimestampSec and PriorSignature are carried through because they are the only
+// two clock-derived outputs of the delivery loop a receiver can observe: the
+// timestamp the delivery was stamped and signed at, and whether the loop still
+// considered a rotation's overlap window open when it built the request. Both
+// have to be READ BACK for the injected clock to constrain anything.
 type webhookReceipt struct {
-	DeliveryID string
-	Envelope   events.Envelope
+	DeliveryID     string
+	TimestampSec   string
+	SignedUnder    string
+	PriorSignature string
+	Body           []byte
+	Envelope       events.Envelope
 }
 
-func newVerifyingReceiver(t *testing.T, secret string) *verifyingReceiver {
+// priorSignatureVerifies reports whether this delivery's X-Waiveo-Prior-Signature
+// is the signature of the SAME material under secret — the check a receiver that
+// still holds only the pre-rotation secret performs (EVT-158).
+func (r webhookReceipt) priorSignatureVerifies(secret string) bool {
+	if r.PriorSignature == "" {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(r.TimestampSec + "." + string(r.Body)))
+	want := hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(r.PriorSignature), []byte(want))
+}
+
+func newVerifyingReceiver(t *testing.T, secrets ...string) *verifyingReceiver {
 	t.Helper()
 	// Buffered well past what this test reads, so a receiver goroutine never
 	// blocks holding the delivery loop's only pass open.
-	r := &verifyingReceiver{secret: secret, accepted: make(chan webhookReceipt, 64)}
+	r := &verifyingReceiver{secrets: secrets, accepted: make(chan webhookReceipt, 64)}
 	r.srv = httptest.NewServer(http.HandlerFunc(r.serve))
 	t.Cleanup(r.srv.Close)
 	return r
+}
+
+// signedUnder returns the secret this receiver holds that reproduces sig over
+// material, "" when none does.
+func (r *verifyingReceiver) signedUnder(material, sig string) string {
+	if sig == "" {
+		return ""
+	}
+	for _, s := range r.secrets {
+		mac := hmac.New(sha256.New, []byte(s))
+		mac.Write([]byte(material))
+		if hmac.Equal([]byte(sig), []byte(hex.EncodeToString(mac.Sum(nil)))) {
+			return s
+		}
+	}
+	return ""
 }
 
 func (r *verifyingReceiver) serve(w http.ResponseWriter, req *http.Request) {
@@ -90,11 +159,8 @@ func (r *verifyingReceiver) serve(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	ts := req.Header.Get(events.HeaderTimestamp)
-	mac := hmac.New(sha256.New, []byte(r.secret))
-	mac.Write([]byte(ts + "." + string(body)))
-	want := hex.EncodeToString(mac.Sum(nil))
-	got := req.Header.Get(events.HeaderSignature)
-	if got == "" || !hmac.Equal([]byte(got), []byte(want)) {
+	signedUnder := r.signedUnder(ts+"."+string(body), req.Header.Get(events.HeaderSignature))
+	if signedUnder == "" {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
@@ -104,7 +170,14 @@ func (r *verifyingReceiver) serve(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	select {
-	case r.accepted <- webhookReceipt{DeliveryID: req.Header.Get(events.HeaderDeliveryID), Envelope: env}:
+	case r.accepted <- webhookReceipt{
+		DeliveryID:     req.Header.Get(events.HeaderDeliveryID),
+		TimestampSec:   ts,
+		SignedUnder:    signedUnder,
+		PriorSignature: req.Header.Get(events.HeaderPriorSignature),
+		Body:           body,
+		Envelope:       env,
+	}:
 	default:
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -128,13 +201,17 @@ const webhookE2EBacklog = 8
 // real api/1 surface, make one ordinary authoring write, and assert signed POSTs
 // actually reach the receiver — with nothing in the test calling Tick.
 //
-// It asserts two things a broken scheduler fails differently. That a delivery
+// It asserts three things a broken scheduler fails differently. That a delivery
 // happens AT ALL is the hole this loop was added to close. That the owed backlog
 // drains on one wake rather than one event per tick is the hole a scheduler
 // naively built out of a ticker would leave: a box that had been recording
 // events for a month would hand a newly registered endpoint its first month of
 // history at one event per interval, while every read of its delivery state
-// looked perfectly healthy.
+// looked perfectly healthy. And that every delivery is stamped and signed at the
+// INJECTED instant is what makes handing this loop a clock mean anything: the
+// receiver reconstructs the HMAC from the timestamp header it was sent, so a
+// loop stamping the host clock produces deliveries that verify perfectly, and
+// only reading the timestamp back against a known value catches it.
 func TestFeederDeliversToARegisteredWebhookEndpoint(t *testing.T) {
 	ctx := context.Background()
 	clock := func() int64 { return webhookE2ENowMs }
@@ -243,6 +320,21 @@ func TestFeederDeliversToARegisteredWebhookEndpoint(t *testing.T) {
 		if r.DeliveryID == "" {
 			t.Errorf("delivery %d carried no %s header", i, events.HeaderDeliveryID)
 		}
+		// The signed timestamp must be the INJECTED instant, not the host's. This
+		// is the whole cash value of handing the loop a clock: the receiver above
+		// verifies the HMAC over the timestamp it was SENT, so a loop stamping
+		// time.Now() signs and verifies indistinguishably — this comparison
+		// against a known value is the only thing that can tell the two apart.
+		if r.TimestampSec != webhookE2ETimestampSec {
+			t.Errorf("delivery %d %s = %q, want %q — the delivery must be stamped and signed at the clock the feeder was wired with, not at the host's",
+				i, events.HeaderTimestamp, r.TimestampSec, webhookE2ETimestampSec)
+		}
+		// No rotation has happened here, so no overlap window is open and no
+		// prior-signature header may ride the delivery (EVT-158). The rotation
+		// case is driven in its own test below.
+		if r.PriorSignature != "" {
+			t.Errorf("delivery %d carried %s with no rotation ever performed", i, events.HeaderPriorSignature)
+		}
 		if r.Envelope.Schema != events.SchemaAuditEvent {
 			t.Errorf("delivery %d schema = %q, want %q — the delivered body should be a real platform event",
 				i, r.Envelope.Schema, events.SchemaAuditEvent)
@@ -273,6 +365,155 @@ func TestFeederDeliversToARegisteredWebhookEndpoint(t *testing.T) {
 			t.Errorf("persisted last_delivered_id = %q, which sorts below the last accepted delivery %q",
 				state.LastDeliveredID, receipts[len(receipts)-1].Envelope.ID)
 		}
+	}
+}
+
+// TestFeederSignsARotationOverlapAtTheInjectedInstant is the second half of what
+// this binary's clock wiring claims: startWebhookDelivery is handed nowMs for
+// "delivery timing AND signature rotation overlap", and the overlap decision is
+// the half no timestamp assertion can reach.
+//
+// The window is evaluated as now - rotated_at_ms <= overlap (EVT-158), and the
+// two sides of that subtraction come from different places: rotated_at_ms is
+// stamped by the api handler and persisted, while now is read by the delivery
+// loop on each pass. They agree only because both read the same clock. A loop
+// reading the host clock instead subtracts a persisted instant from an unrelated
+// one — here about a year apart, far outside a 24-hour window — so it stops
+// emitting the prior signature immediately, and the platform silently breaks the
+// overlap the rotation response promised the operator. Every delivery still
+// verifies under the current secret, the endpoint stays active and healthy, and
+// the only visible symptom is a receiver that has not yet adopted the new secret
+// dropping deliveries it was told it had a day to migrate.
+//
+// So: arm the endpoint, rotate it through the real api route, and assert a
+// delivery arrives signed under the NEW secret and carrying a prior signature
+// over the same material under the OLD one.
+func TestFeederSignsARotationOverlapAtTheInjectedInstant(t *testing.T) {
+	ctx := context.Background()
+	clock := func() int64 { return webhookE2ENowMs }
+
+	st, err := store.Open(":memory:", store.WallClockMs)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	eventLog, err := st.EventLog(events.DefaultRetentionPolicy(), clock, func(err error) {
+		t.Errorf("event log failure: %v", err)
+	})
+	if err != nil {
+		t.Fatalf("EventLog: %v", err)
+	}
+	hub := eventsse.NewHub(eventLog)
+
+	wsKey, err := workspacekey.LoadOrCreate(t.TempDir(), ulid.New)
+	if err != nil {
+		t.Fatalf("workspacekey.LoadOrCreate: %v", err)
+	}
+	sealer, err := wsKey.SecretSealer()
+	if err != nil {
+		t.Fatalf("SecretSealer: %v", err)
+	}
+	secrets := webhookdeliver.NewSecrets(sealer)
+
+	fixture, err := authtest.New(authtest.Config{NowMs: clock, Sink: hub, Sealer: sealer})
+	if err != nil {
+		t.Fatalf("authtest.New: %v", err)
+	}
+	t.Cleanup(fixture.Close)
+	feederAPIAuth = fixture
+
+	apiTS := httptest.NewServer(api.New(st, apihttp.NewIdempotencyStore(clock, 0), clock, ulid.New,
+		origin.New(), "https://192.0.2.12:7420", fixture.Auth,
+		api.WithWebhookSecrets(secrets, webhookRotationOverlapMs)))
+	t.Cleanup(apiTS.Close)
+
+	// The receiver mid-migration: it holds both secrets, so a delivery signed
+	// under either is accepted and the receipt records which one signed it.
+	receiver := newVerifyingReceiver(t, webhookE2ERotatedSecret, webhookE2ESecret)
+
+	loop, err := startWebhookDelivery(st, eventLog, hub, secrets, clock)
+	if err != nil {
+		t.Fatalf("startWebhookDelivery: %v", err)
+	}
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		if err := loop.Shutdown(shutdownCtx); err != nil {
+			t.Errorf("loop.Shutdown: %v", err)
+		}
+	})
+
+	orgID := createFeederOrgNode(t, apiTS)
+	endpointID := registerFeederWebhookEndpoint(t, apiTS, orgID, receiver.srv.URL)
+
+	// The first install arms the endpoint and supersedes nothing, so no overlap
+	// opens yet.
+	if resp, raw := doFeederReq(t, apiTS, http.MethodPost,
+		"/api/v1/webhook-endpoints/"+endpointID+"/signing-secret",
+		mustFeederJSON(t, map[string]any{"secret": webhookE2ESecret}), nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("install signing secret: %d %s", resp.StatusCode, raw)
+	}
+
+	// The rotation. Its response names the instant the prior secret stops being
+	// accepted, computed off the SAME clock — read it back, because it is what
+	// the delivery loop then has to honour.
+	resp, raw := doFeederReq(t, apiTS, http.MethodPost,
+		"/api/v1/webhook-endpoints/"+endpointID+"/signing-secret",
+		mustFeederJSON(t, map[string]any{"secret": webhookE2ERotatedSecret}), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("rotate signing secret: %d %s", resp.StatusCode, raw)
+	}
+	var rotation struct {
+		RotatedAtMs int64  `json:"rotated_at_ms"`
+		ExpiresAtMs *int64 `json:"prior_secret_expires_at_ms"`
+	}
+	if err := json.Unmarshal(raw, &rotation); err != nil {
+		t.Fatalf("decode rotation response %s: %v", raw, err)
+	}
+	if rotation.RotatedAtMs != webhookE2ENowMs {
+		t.Fatalf("rotated_at_ms = %d, want the injected instant %d", rotation.RotatedAtMs, webhookE2ENowMs)
+	}
+	if rotation.ExpiresAtMs == nil {
+		t.Fatal("a rotation that superseded a secret must publish when the prior one stops being accepted")
+	}
+	if want := webhookE2ENowMs + webhookRotationOverlapMs; *rotation.ExpiresAtMs != want {
+		t.Fatalf("prior_secret_expires_at_ms = %d, want %d — the overlap the loop must honour is measured from the injected instant",
+			*rotation.ExpiresAtMs, want)
+	}
+
+	// One ordinary authoring write, so there is certainly something owed after
+	// the rotation landed.
+	renameFeederWebhookEndpoint(t, apiTS, endpointID, "Rotated Endpoint")
+
+	// Deliveries owed from before the rotation are signed under whichever secret
+	// was current when they went out, so read until one arrives under the NEW
+	// secret — that is the first delivery built from the rotated state.
+	var got webhookReceipt
+	deadline := time.After(10 * time.Second)
+	for got.SignedUnder != webhookE2ERotatedSecret {
+		select {
+		case r := <-receiver.accepted:
+			got = r
+		case <-deadline:
+			t.Fatal("no delivery signed under the rotated secret reached the receiver")
+		}
+	}
+
+	if got.TimestampSec != webhookE2ETimestampSec {
+		t.Errorf("%s = %q, want %q — the delivery must be stamped at the clock the feeder was wired with",
+			events.HeaderTimestamp, got.TimestampSec, webhookE2ETimestampSec)
+	}
+	if got.PriorSignature == "" {
+		t.Fatalf("a delivery made at %d, inside the overlap window this rotation published to %d, carried no %s: a receiver still holding the pre-rotation secret has no signature it can verify, which is the delivery gap EVT-158 forbids. The loop is measuring the window against a clock other than the one it was given",
+			webhookE2ENowMs, *rotation.ExpiresAtMs, events.HeaderPriorSignature)
+	}
+	if !got.priorSignatureVerifies(webhookE2ESecret) {
+		t.Errorf("%s did not verify under the superseded secret over the same signed material — the overlap header must let a receiver that has not yet migrated verify this exact delivery",
+			events.HeaderPriorSignature)
+	}
+	if got.Envelope.ScopeNode != orgID {
+		t.Errorf("delivered scope_node = %q, want the endpoint's own node %q", got.Envelope.ScopeNode, orgID)
 	}
 }
 
