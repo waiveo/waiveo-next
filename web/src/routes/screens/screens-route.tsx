@@ -246,16 +246,27 @@ export default function ScreensRoute({ api }: { api?: WaiveoApi }) {
         }
       },
       // "Delete screen": remove under its If-Match, then reload.
+      //
+      // The failure context says "screen placement", not "screen", and the two
+      // words are doing real work. This section manages screen-KIND SCOPE NODES
+      // (the h2 below calls them "Screen placements"); the PairingPanel above
+      // manages SCREEN IDENTITY ROWS. DAT-004a makes those distinct rows with
+      // distinct ids — a screen-kind node is "a placement classification, never a
+      // screen identity in its own right" — and the server's own refusal for a
+      // node still in use names a "screen row" as the blocker. Calling this one
+      // "the screen" too would render as "couldn't delete the screen: a screen row
+      // is placed at it", sending the operator after whichever record they
+      // happened to think of first.
       remove: async (_target, resource) => {
         const meta = idRev(resource);
         if (!meta) return;
         setConflictReview(false);
         try {
           await client.scopeNodes.remove(meta.id, etagForRevision(meta.revision));
-          toast.success("Deleted screen");
+          toast.success("Deleted screen placement");
           await reload();
         } catch (err) {
-          reportProblem("Couldn't delete the screen", err);
+          reportProblem("Couldn't delete this screen placement", err);
         }
       },
     }),

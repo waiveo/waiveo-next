@@ -248,6 +248,60 @@ describe("Screens — create / edit / delete over api/1", () => {
     await waitFor(() => expect(screen.queryByText("Lobby display")).not.toBeInTheDocument());
     expect(ifMatch).toBe('"2"');
   });
+
+  it("on a delete refused 409, tells the operator the server's own reason and keeps the row", async () => {
+    const state = { rows: [scopeNode({ id: ULID_A, name: "Lobby display", revision: 2 })] };
+    let deleteCount = 0;
+    server.use(
+      http.get("*/api/v1/scope-nodes", () => page(state.rows)),
+      // The refusal is spelled as the wire bytes the Go handler actually sends
+      // rather than through the typed `problem()` helper, because `SCOPE_NODE_IN_USE`
+      // is data-model/1's code and api/1's generated `ErrorCode` union does not
+      // enumerate it. Hand-building the body is what keeps this a fixture of the
+      // real response instead of a cast that pretends otherwise. The delete leaves
+      // the row in place, exactly as the server's `delete_executed: false` says.
+      http.delete("*/api/v1/scope-nodes/:id", () => {
+        deleteCount += 1;
+        return HttpResponse.json(
+          {
+            type: "about:blank",
+            title: "Conflict",
+            status: 409,
+            detail:
+              "This scope node is still named as the scope_node of at least one other row (a screen row). " +
+              "A row placed at a node is a separate record from the node itself — delete or re-place every such row first.",
+            code: "SCOPE_NODE_IN_USE",
+            trace_id: TRACE_ID,
+          },
+          { status: 409, headers: { "Content-Type": "application/problem+json", "Trace-Id": TRACE_ID } },
+        );
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderScreens();
+    await screen.findByRole("table", { name: "Screens" });
+    await user.click(screen.getByText("Lobby display").closest("tr") as HTMLElement);
+    await user.click(await screen.findByRole("button", { name: "Delete screen" }));
+
+    // The operator is told WHY, in the server's own sentence — not "409", and not a
+    // bare machine code they would have to look up.
+    const notice = await screen.findByText(/still named as the scope_node/i);
+    const shown = notice.textContent ?? "";
+    expect(shown).toContain("(a screen row)");
+    expect(shown).not.toMatch(/\b409\b/);
+
+    // And the two nouns stay apart: what is being deleted is a screen PLACEMENT (a
+    // screen-kind scope node), what blocks it is a screen ROW (a screen identity
+    // row). DAT-004a makes those distinct records with distinct ids, so a message
+    // that called both "the screen" would send the operator after the wrong one.
+    expect(shown).toMatch(/screen placement/i);
+    expect(shown).not.toMatch(/delete the screen\b/i);
+
+    // Nothing was removed, and the refusal was not retried behind the operator's back.
+    expect(screen.getByText("Lobby display")).toBeInTheDocument();
+    expect(deleteCount).toBe(1);
+  });
 });
 
 // A fourth fixture ULID (test-support exports A/B/C/ROOT) for the created row in
