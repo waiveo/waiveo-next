@@ -25,8 +25,10 @@
     "driver": "internal/datamodel/corpus_test.go corpusHandlers (the reference-engine cases) + internal/app/api/datamodel_corpus_test.go (the request-shaped cases, driven against the mounted handler) (hand-maintained: both live in _test.go compilation units, not importable by conformance/cmd/driven-manifest; kept fresh by TestDataModel1DrivenManifestMatchesRuntime in internal/datamodel/driven_manifest_test.go and TestDataModel1HTTPCorpusIsInTheDrivenManifest in internal/app/api/datamodel_corpus_test.go)",
     "driven": [
       "DAT-001-valid-scope-node-tree",
+      "DAT-002-invalid-create-scope-node-under-nonexistent-parent",
       "DAT-004a-valid-screen-and-device-identity-rows",
       "DAT-005b-invalid-identity-rows-missing-baseline",
+      "DAT-006-invalid-create-row-at-nonexistent-scope-node",
       "DAT-010-valid-org-account-states",
       "DAT-020-invalid-delete-scope-node-carrying-a-child",
       "DAT-021-invalid-delete-scope-node-a-row-is-placed-at",

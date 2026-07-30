@@ -20,12 +20,15 @@ import (
 //
 // The first — internal/datamodel/corpus_test.go — replays every case against
 // this platform's reference ENGINE, which is right for a contract whose
-// requirements are almost all pure functions over rows. DAT-020/021/022 are not:
-// they are refusals a REQUEST must receive, and the reference engine has no
-// delete operation to refuse one with. The rule lives on the HTTP surface, so
-// the case has to be driven there, against the mounted handler over a real
-// store — the same discipline the api/1 driver adopted after an audit found it
-// certifying the convention libraries rather than the shipped surface.
+// requirements are almost all pure functions over rows. The referential-integrity
+// rules are not: they are refusals a REQUEST must receive, and the reference
+// engine has no write path to refuse one with. It has no delete operation for
+// DAT-020/021/022, and no store for DAT-002's and DAT-006's create-side refusals,
+// each of which is a question about a REFERENCE into the stored tree rather than
+// about the row in hand. So those cases have to be driven on the HTTP surface,
+// against the mounted handler over a real store — the same discipline the api/1
+// driver adopted after an audit found it certifying the convention libraries
+// rather than the shipped surface.
 //
 // It lives here, in the api package's own external test package, because that is
 // the only place the mount and the corpus can be in one compilation unit:
@@ -77,18 +80,23 @@ type dmCase struct {
 			Method  string            `json:"method"`
 			Path    string            `json:"path"`
 			Headers map[string]string `json:"headers"`
-			// Body is decoded and sent even though no frozen case carries one
-			// today (all three are deletes). Reading it here rather than leaving
-			// it out is what stops a later case's body being silently dropped —
-			// the request would still be issued, against a handler that never saw
-			// what the case said to send, and the diff would blame the handler.
+			// Body is the create-shaped cases' request payload. It has to be
+			// read here rather than left out, or a case's body is silently
+			// dropped: the request would still be issued, against a handler that
+			// never saw what the case said to send, and the diff would blame the
+			// handler.
 			Body json.RawMessage `json:"body"`
 		} `json:"request"`
 	} `json:"input"`
 	Expected struct {
-		Status         int            `json:"status"`
-		ContentType    string         `json:"content_type"`
+		Status      int    `json:"status"`
+		ContentType string `json:"content_type"`
+		// DeleteExecuted / CreateExecuted are the halves a status code cannot
+		// carry: that the refused request changed nothing. Each is a pointer so
+		// "absent" is distinguishable from "false" — a case that does not pin the
+		// side effect is not silently asserted to have none.
 		DeleteExecuted *bool          `json:"delete_executed"`
+		CreateExecuted *bool          `json:"create_executed"`
 		Body           map[string]any `json:"body"`
 	} `json:"expected"`
 }
@@ -224,6 +232,14 @@ func driveDataModel1Case(t *testing.T, c dmCase) {
 	if len(req.Body) > 0 {
 		reqBody = req.Body
 	}
+	// The collection's size BEFORE the request, for a case pinning
+	// `create_executed: false`. Read here rather than after the fact because "the
+	// collection is empty" is not the claim — the claim is that this request added
+	// nothing to whatever was already there.
+	var itemsBefore int
+	if c.Expected.CreateExecuted != nil {
+		itemsBefore = collectionSize(t, e, req.Path)
+	}
 	resp, raw := e.do(t, req.Method, req.Path, reqBody, req.Headers)
 
 	if resp.StatusCode != c.Expected.Status {
@@ -262,6 +278,39 @@ func driveDataModel1Case(t *testing.T, c dmCase) {
 				req.Path, resp.StatusCode, raw)
 		}
 	}
+	// `create_executed: false` is the same half for a POST, and it is the one that
+	// matters most for a refusal whose whole subject is a row that must not exist:
+	// a 422 with the row stored anyway would be the dangling reference plus a
+	// misleading status. The collection is counted through the same surface that
+	// refused the write.
+	if c.Expected.CreateExecuted != nil && !*c.Expected.CreateExecuted {
+		if after := collectionSize(t, e, req.Path); after != itemsBefore {
+			t.Fatalf("after a refused create, %s holds %d row(s), want the %d it held before — "+
+				"the refusal must have executed nothing", req.Path, after, itemsBefore)
+		}
+	}
+}
+
+// collectionSize lists a resource collection through the mounted handler and
+// returns how many rows it holds. The limit is above every frozen case's row
+// count, so a short page can never read as an unchanged collection.
+func collectionSize(t *testing.T, e *testEnv, path string) int {
+	t.Helper()
+	resp, raw := e.do(t, http.MethodGet, path+"?limit=200", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list %s = %d, want 200 (body %s)", path, resp.StatusCode, raw)
+	}
+	var page struct {
+		Items  []json.RawMessage `json:"items"`
+		Cursor *string           `json:"cursor"`
+	}
+	if err := json.Unmarshal(raw, &page); err != nil {
+		t.Fatalf("decode %s page: %v (body %s)", path, err, raw)
+	}
+	if page.Cursor != nil {
+		t.Fatalf("list %s returned a continuation cursor: the collection is larger than this count can see", path)
+	}
+	return len(page.Items)
 }
 
 // seedableKind maps a case's `kind` string onto the store Kind it names. It is an

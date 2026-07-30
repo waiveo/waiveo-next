@@ -1,0 +1,64 @@
+{
+  "case_id": "DAT-002-invalid-create-scope-node-under-nonexistent-parent",
+  "contract": "data-model/1",
+  "req_ids": ["DAT-002"],
+  "description": "Creating a site whose parent_id names no stored scope node is refused 422 Unprocessable Content / VALIDATION_FAILED, carrying SCOPE_NODE_PARENT_INVALID against `parent_id`, with no row created. The seeded tree is complete and conformant — a real org root with a real site under it — so the only thing wrong in the whole store is where this create says its parent is. The refusal is the half of DAT-002 that the deletion rules' own guard cannot reach: an absent parent is a legitimate SUBTREE BOUNDARY to a reader holding part of the tree (a relay/1 per-scope snapshot need not carry the org root, REL-065), and this surface is the authority holding all of it, where the same absence is the unresolvable reference DAT-002 forbids. `id` is omitted because a resource's own id is exclusively server-assigned (api/1 API-105).",
+  "input": {
+    "seed": {
+      "scope_nodes": [
+        {
+          "id": "01J8ZDAT0RGN0DE00000000000",
+          "kind": "org",
+          "parent_id": null,
+          "name": "Demo Org",
+          "account_state": "active",
+          "entitlements": {}
+        },
+        {
+          "id": "01J8ZDATS1TEN0DE0000000000",
+          "kind": "site",
+          "parent_id": "01J8ZDAT0RGN0DE00000000000",
+          "name": "Demo Site",
+          "tz": "America/Chicago",
+          "lat": 41.8781,
+          "long": -87.6298
+        }
+      ]
+    },
+    "request": {
+      "method": "POST",
+      "path": "/api/v1/scope-nodes",
+      "headers": {
+        "Trace-Id": "01J8ZDATTRACE0200000000000"
+      },
+      "body": {
+        "kind": "site",
+        "parent_id": "01J8ZDATN0SVCHN0DE00000001",
+        "name": "Second Site",
+        "tz": "America/Chicago",
+        "lat": 41.8781,
+        "long": -87.6298
+      }
+    }
+  },
+  "expected": {
+    "status": 422,
+    "content_type": "application/problem+json",
+    "create_executed": false,
+    "body": {
+      "type": "about:blank",
+      "title": "Validation Failed",
+      "status": 422,
+      "detail": "One or more fields failed validation.",
+      "code": "VALIDATION_FAILED",
+      "errors": [
+        {
+          "field": "parent_id",
+          "code": "SCOPE_NODE_PARENT_INVALID",
+          "message": "a non-org scope node's parent_id MUST reference an existing scope node (DAT-002)"
+        }
+      ],
+      "trace_id": "01J8ZDATTRACE0200000000000"
+    }
+  }
+}
