@@ -191,3 +191,109 @@ test("a missing baseline file fails rather than passing vacuously", () => {
     }
   );
 });
+
+// ---------------------------------------------------------------------------
+// The unimported-package check.
+//
+// deadcode only loads what the roots transitively import, so a package no root
+// imports contributes no findings at all — an entire unwired package used to pass
+// green. These pin the separate question, and the two exemptions that keep
+// legitimate shapes out of the report without a baseline entry to maintain.
+
+const UNIMPORTED_PKG_GO = `package orphan
+
+// Real production code that nothing imports.
+func NeverCalled() string { return "nobody imports this package" }
+`;
+
+test("a package no root imports fails, even though deadcode never loads it", () => {
+  withFixture(
+    (w) => {
+      w("scripts/deadcode-baseline.json", BASELINE_WITH_NOCALLER);
+      w("internal/orphan/orphan.go", UNIMPORTED_PKG_GO);
+    },
+    (r) => {
+      assert.equal(r.status, 1, r.stdout);
+      assert.match(r.stderr, /internal\/orphan: no root imports this package/);
+    }
+  );
+});
+
+test("an unimported package with a reason passes", () => {
+  withFixture(
+    (w) => {
+      w("scripts/deadcode-baseline.json", {
+        ...BASELINE_WITH_NOCALLER,
+        unimportedPackages: [
+          {
+            package: "deadcodefixture/internal/orphan",
+            reason: "the fixture's stand-in for a package written ahead of the surface that will import it.",
+          },
+        ],
+      });
+      w("internal/orphan/orphan.go", UNIMPORTED_PKG_GO);
+    },
+    (r) => assert.equal(r.status, 0, r.stderr)
+  );
+});
+
+// A test-only package is not an unwired capability — there is no production code
+// in it to be dead. The exemption is DERIVED (zero non-test files) rather than
+// listed, so nobody has to keep an entry true forever.
+test("a test-only package is not reported", () => {
+  withFixture(
+    (w) => {
+      w("scripts/deadcode-baseline.json", BASELINE_WITH_NOCALLER);
+      w("internal/testonly/only_test.go", "package testonly\n\nimport \"testing\"\n\nfunc TestNothing(t *testing.T) {}\n");
+    },
+    (r) => assert.equal(r.status, 0, r.stderr)
+  );
+});
+
+// Same reasoning for a package whose only file is a package comment: it declares
+// nothing, so there is nothing unwired.
+test("a package whose only file declares nothing is not reported", () => {
+  withFixture(
+    (w) => {
+      w("scripts/deadcode-baseline.json", BASELINE_WITH_NOCALLER);
+      w("internal/docsonly/doc.go", "// Package docsonly documents a shell script that has nothing to import.\npackage docsonly\n");
+    },
+    (r) => assert.equal(r.status, 0, r.stderr)
+  );
+});
+
+test("an unimportedPackages entry that gained an importer fails, so the inventory shrinks", () => {
+  withFixture(
+    (w) => {
+      w("scripts/deadcode-baseline.json", {
+        ...BASELINE_WITH_NOCALLER,
+        unimportedPackages: [
+          {
+            package: "deadcodefixture/internal/lib",
+            reason: "internal/lib is imported by the fixture's own binary, so this entry is a lie the gate must catch.",
+          },
+        ],
+      });
+    },
+    (r) => {
+      assert.equal(r.status, 1, r.stdout);
+      assert.match(r.stderr, /which now HAS an importer/);
+    }
+  );
+});
+
+test("an unimportedPackages entry with a placeholder reason fails", () => {
+  withFixture(
+    (w) => {
+      w("scripts/deadcode-baseline.json", {
+        ...BASELINE_WITH_NOCALLER,
+        unimportedPackages: [{ package: "deadcodefixture/internal/orphan", reason: "TODO" }],
+      });
+      w("internal/orphan/orphan.go", UNIMPORTED_PKG_GO);
+    },
+    (r) => {
+      assert.equal(r.status, 1, r.stdout);
+      assert.match(r.stderr, /has no usable reason/);
+    }
+  );
+});

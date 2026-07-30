@@ -217,6 +217,103 @@ for (const [pkg, funcs] of reported) {
 }
 
 // ---------------------------------------------------------------------------
+// Step 4: no package that no root imports.
+//
+// The question above is "which FUNCTION is unreachable", and deadcode answers it
+// only for packages the analysis LOADS — which is whatever the roots transitively
+// import. A package no root imports is therefore not "reachable", it is absent:
+// it contributes no findings at all, and an entire unwired package passes. Proved
+// rather than assumed — an exported `ObviouslyDeadProbe` added to an unimported
+// package left this gate green.
+//
+// That is the largest possible instance of the very thing this gate exists for
+// ("a capability is declared and nothing is wired to it"), so it gets asked
+// separately here rather than by widening the root set, which the header explains
+// at length must not happen.
+//
+// A package is a candidate only if it has non-test files that DECLARE something.
+// That exemption is derived from the code rather than listed in the baseline, and
+// it is what keeps two legitimate shapes out of the report without anyone having
+// to maintain an entry for them: a test-only package (the rules/1 corpus driver
+// lives in one — zero non-test files) and a package whose only file is a package
+// comment (internal/tools/channelinstall, which exists to exercise a shell script
+// and says so). A listed exemption for either would be a line to keep true
+// forever; a derived one cannot go stale.
+function goList(args) {
+  // No explicit cwd: this scans the tree being ANALYSED, which is the process's
+  // own working directory. TOOL_MODULE_DIR is only where the deadcode binary is
+  // built from, so that its version stays pinned by this module's go.sum — using
+  // it here would list this module's packages while the analysis ran against
+  // somebody else's, which is precisely what the fixture-module tests caught.
+  const out = spawnSync("go", ["list", ...args], { encoding: "utf8" });
+  if (out.status !== 0) {
+    throw new Error(`go list ${args.join(" ")} failed:\n${out.stderr ?? ""}`);
+  }
+  return out.stdout.split("\n").map((l) => l.trim()).filter(Boolean);
+}
+
+function unimportedPackages() {
+  const reachable = new Set(goList(["-deps", "-test", ...PACKAGE_PATTERNS]));
+  const mine = goList(["./..."]);
+  const candidates = mine.filter((pkg) => !reachable.has(pkg));
+
+  const out = [];
+  for (const pkg of candidates) {
+    // GoFiles excludes _test.go by construction, so a test-only package answers
+    // with an empty list and never reaches the declaration scan.
+    const files = goList(["-f", "{{.Dir}}\t{{join .GoFiles \"|\"}}", pkg]);
+    const [dir, joined] = (files[0] ?? "").split("\t");
+    const goFiles = (joined ?? "").split("|").filter(Boolean);
+    const declares = goFiles.some((f) => DECLARATION_RE.test(readFileSync(join(dir, f), "utf8")));
+    if (declares) out.push(pkg);
+  }
+  return out;
+}
+
+// A top-level declaration: what makes a file code rather than a package comment.
+const DECLARATION_RE = /^(func|type|var|const)\s/m;
+
+const frozenPackages = new Map();
+for (const entry of baseline.unimportedPackages ?? []) {
+  const at = `${BASELINE_PATH}: unimportedPackages`;
+  if (!entry.package || typeof entry.package !== "string") {
+    failures.push(`${at}: an entry has no "package"`);
+    continue;
+  }
+  if (!entry.reason || entry.reason.trim().length < MIN_REASON_LENGTH || PLACEHOLDER_REASON_RE.test(entry.reason)) {
+    failures.push(
+      `${at}: ${entry.package} has no usable reason — say why a package with production code is imported by nothing`
+    );
+    continue;
+  }
+  frozenPackages.set(entry.package, entry.reason);
+}
+
+let unimported = [];
+try {
+  unimported = unimportedPackages();
+} catch (err) {
+  // A check that cannot run must fail rather than pass quietly.
+  failures.push(`${BASELINE_PATH}: the unimported-package scan could not run: ${err.message}`);
+}
+
+for (const pkg of unimported) {
+  if (frozenPackages.has(pkg)) continue;
+  failures.push(
+    `${pkg}: no root imports this package, so every function in it is unreachable and deadcode never even loads it — ` +
+      `wire it up, delete it, or add it to ${BASELINE_PATH} under "unimportedPackages" with a reason that says why ` +
+      `production code exists here with no importer`
+  );
+}
+for (const pkg of frozenPackages.keys()) {
+  if (unimported.includes(pkg)) continue;
+  failures.push(
+    `${BASELINE_PATH}: unimportedPackages lists ${pkg}, which now HAS an importer (or no longer exists) — delete the ` +
+      `entry; an inventory that outlives the gap it records makes the inventory lie`
+  );
+}
+
+// ---------------------------------------------------------------------------
 if (failures.length) {
   console.error(failures.join("\n"));
   console.log(`SUMMARY: validate-deadcode: FAILED — ${failures.length} issue(s); first: ${failures[0]}`);
