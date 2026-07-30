@@ -582,7 +582,7 @@ func TestUninstallOfARequiredPackIsRefusedOverHTTP(t *testing.T) {
 // is asking at the right NODE rather than merely asking for the right role.
 func TestPackLifecycleRefusesBelowAdminAtTheOrgNode(t *testing.T) {
 	e := newEnv(t)
-	orgID := e.createNode(t, datamodel.ScopeNode{Kind: "org", Name: "Fixture Org", AccountState: "active"})
+	orgID := e.createNode(t, orgNode("Fixture Org"))
 	tz, lat, long := "America/Chicago", 41.8781, -87.6298
 	siteID := e.createNode(t, datamodel.ScopeNode{
 		Kind: "site", Name: "Fixture Site", ParentID: &orgID,

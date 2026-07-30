@@ -256,7 +256,8 @@ func (h *resetHarness) close() {
 // seedWorkspace creates the deployment's org node — the row that IS the
 // workspace's identity (DAT-010/012/014) — through the live mux.
 func (h *resetHarness) seedWorkspace(ctx context.Context) (string, error) {
-	return h.createNode(datamodel.ScopeNode{Kind: "org", Name: "Conformance Org", AccountState: "active"})
+	return h.createNode(datamodel.ScopeNode{Kind: "org", Name: "Conformance Org",
+		AccountState: "active", Entitlements: json.RawMessage(`{}`)})
 }
 
 func (h *resetHarness) seedSite(ctx context.Context, orgID string) (string, error) {

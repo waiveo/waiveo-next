@@ -996,12 +996,15 @@ type RelayId = string
 
 // ScopeNode A node in the org → site → group → screen tree.
 type ScopeNode struct {
-	// AccountState Present only on the org node.
+	// AccountState Present only on the org node (DAT-010).
 	AccountState **string `json:"account_state,omitempty"`
 
 	// CreatedAt A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC 3339 string. The store stamps `created_at`/`updated_at` on every row it writes as an integer millisecond count and returns that value unchanged, so this is what a client reads and what an export/apply round trip carries back. Deliberately not `format: date-time`: the two are not interchangeable, and a client that parsed one as the other would silently read 1970 for every resource on this surface.
 	// The `Job` resource is the one exception on this API and says so at its own `created_at`: a Job's timestamp is minted in Go as a `time.Time` and serialized RFC 3339, because a Job is not a stored row of this baseline.
 	CreatedAt Timestamp `json:"created_at"`
+
+	// Entitlements Present only on the org node, possibly empty (DAT-013). This schema is `additionalProperties: false` and did not declare this member, while the server has always served it — so every org-node response was undeclared here.
+	Entitlements *map[string]interface{} `json:"entitlements,omitempty"`
 
 	// ExternalId Client-assigned identifier (contracts/api-1.md#client-assignable-external_id). Optional; unique within this resource's scope node among resources of the same type; MAY be used in place of `id` in a cross-reference; preserved unchanged through an export/apply round trip. Every resource in this API carries this same convention, not only scope-nodes and automations.
 	ExternalId **string `json:"external_id,omitempty"`
@@ -1031,10 +1034,15 @@ type ScopeNode struct {
 // ScopeNodeKind defines model for ScopeNode.Kind.
 type ScopeNodeKind string
 
-// ScopeNodeCreate defines model for ScopeNodeCreate.
+// ScopeNodeCreate Note what is NOT expressible as `required` here: `account_state` and `entitlements` are mandatory on an `org`-kind node and forbidden on every other kind, which is conditional on `kind` and so belongs to data-model/1's own per-field validation (DAT-010/013), not to this schema's `required` list. Declaring them unconditionally required would make every site, group and screen uncreatable; omitting them entirely — which is what this schema did — made the org node uncreatable through either generated client.
 type ScopeNodeCreate struct {
-	ExternalId **string            `json:"external_id,omitempty"`
-	Kind       ScopeNodeCreateKind `json:"kind"`
+	// AccountState Mandatory on an `org`-kind node and forbidden on every other kind (contracts/data-model-1.md DAT-010). A body violating either half is rejected SCOPE_NODE_ACCOUNT_STATE_INVALID.
+	AccountState **string `json:"account_state,omitempty"`
+
+	// Entitlements Mandatory on an `org`-kind node, where an empty object is explicitly admitted, and forbidden on every other kind (DAT-013). This surface fixes the field's presence and placement only; the document's own internal schema is defined elsewhere. A body violating either half is rejected SCOPE_NODE_ENTITLEMENTS_INVALID.
+	Entitlements *map[string]interface{} `json:"entitlements,omitempty"`
+	ExternalId   **string                `json:"external_id,omitempty"`
+	Kind         ScopeNodeCreateKind     `json:"kind"`
 
 	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
 	Labels   *LabelMap `json:"labels,omitempty"`
@@ -1055,16 +1063,24 @@ type ScopeNodeListResponse struct {
 	Items  []ScopeNode `json:"items"`
 }
 
-// ScopeNodeUpdate Partial update — every field optional, at least one required.
+// ScopeNodeUpdate Partial update — every field optional, at least one required. `kind` is absent deliberately: it is patchable on the server and re-kinding the org root is refused by the tree rules rather than by this schema, so declaring it here would say nothing this document can enforce. See ScopeNodeCreate for why the two account members are not `required`.
 type ScopeNodeUpdate struct {
-	ExternalId **string `json:"external_id,omitempty"`
+	// AccountState Mandatory on an `org`-kind node and forbidden on every other kind (contracts/data-model-1.md DAT-010). A body violating either half is rejected SCOPE_NODE_ACCOUNT_STATE_INVALID.
+	AccountState **string `json:"account_state,omitempty"`
+
+	// Entitlements Mandatory on an `org`-kind node, where an empty object is explicitly admitted, and forbidden on every other kind (DAT-013). This surface fixes the field's presence and placement only; the document's own internal schema is defined elsewhere. A body violating either half is rejected SCOPE_NODE_ENTITLEMENTS_INVALID.
+	Entitlements *map[string]interface{} `json:"entitlements,omitempty"`
+	ExternalId   **string                `json:"external_id,omitempty"`
 
 	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
 	Labels *LabelMap `json:"labels,omitempty"`
 	Lat    *float32  `json:"lat,omitempty"`
 	Long   *float32  `json:"long,omitempty"`
 	Name   *string   `json:"name,omitempty"`
-	Tz     *string   `json:"tz,omitempty"`
+
+	// ParentId Re-parents the node. `null` only for the single root org node (DAT-002); a value naming no existing node, or one whose kind may not carry this child, is rejected SCOPE_NODE_PARENT_INVALID.
+	ParentId **string `json:"parent_id,omitempty"`
+	Tz       *string  `json:"tz,omitempty"`
 }
 
 // Screen A screen's own identity row — the row a `screen_id` names (`data-model/1` DAT-004a). It is NOT the `screen`-kind scope node it is placed under: DAT-004 lets a screen row hang off a node of ANY kind, so two screens may share one `group` node and a screen may sit directly under a `site`. The `screen_id` a `relay/1` `screen_programs` entry carries (REL-061), a player learns at pairing redemption (`player/1` PLY-035), and a `content.played` event records (`events/1` EVT-050) all name this row's `id`.

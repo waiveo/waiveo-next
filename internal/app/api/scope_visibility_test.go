@@ -77,7 +77,7 @@ func (tr scopedTree) subtreeB() []string { return append([]string{tr.siteB}, tr.
 func seedScopedTree(t *testing.T, e *testEnv) scopedTree {
 	t.Helper()
 	tr := scopedTree{}
-	tr.org = e.createNode(t, datamodel.ScopeNode{Kind: "org", Name: "Demo Org"})
+	tr.org = e.createNode(t, orgNode("Demo Org"))
 	site := func(name string) string {
 		return e.createNode(t, datamodel.ScopeNode{
 			Kind: "site", ParentID: strp(tr.org), Name: name,

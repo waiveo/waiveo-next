@@ -69,7 +69,7 @@ func (e *testEnv) createWebhookEndpoint(t *testing.T, scopeNode string, extra ma
 func (e *testEnv) rootOrg(t *testing.T) string {
 	t.Helper()
 	resp, raw := e.do(t, http.MethodPost, "/api/v1/scope-nodes",
-		mustJSON(t, map[string]any{"kind": "org", "name": "Root Org", "account_state": "active"}), nil)
+		mustJSON(t, map[string]any{"kind": "org", "name": "Root Org", "account_state": "active", "entitlements": map[string]any{}}), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create org: %d %s", resp.StatusCode, raw)
 	}

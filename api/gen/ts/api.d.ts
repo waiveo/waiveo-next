@@ -1216,15 +1216,29 @@ export interface components {
             lat?: number;
             long?: number;
             /**
-             * @description Present only on the org node.
+             * @description Present only on the org node (DAT-010).
              * @enum {string|null}
              */
             account_state?: "trial" | "active" | "suspended" | "closed" | "purged" | null;
+            /** @description Present only on the org node, possibly empty (DAT-013). This schema is `additionalProperties: false` and did not declare this member, while the server has always served it — so every org-node response was undeclared here. */
+            entitlements?: {
+                [key: string]: unknown;
+            };
             revision: number;
             created_at: components["schemas"]["Timestamp"];
             updated_at: components["schemas"]["Timestamp"];
         };
+        /** @description Note what is NOT expressible as `required` here: `account_state` and `entitlements` are mandatory on an `org`-kind node and forbidden on every other kind, which is conditional on `kind` and so belongs to data-model/1's own per-field validation (DAT-010/013), not to this schema's `required` list. Declaring them unconditionally required would make every site, group and screen uncreatable; omitting them entirely — which is what this schema did — made the org node uncreatable through either generated client. */
         ScopeNodeCreate: {
+            /**
+             * @description Mandatory on an `org`-kind node and forbidden on every other kind (contracts/data-model-1.md DAT-010). A body violating either half is rejected SCOPE_NODE_ACCOUNT_STATE_INVALID.
+             * @enum {string|null}
+             */
+            account_state?: "trial" | "active" | "suspended" | "closed" | "purged" | null;
+            /** @description Mandatory on an `org`-kind node, where an empty object is explicitly admitted, and forbidden on every other kind (DAT-013). This surface fixes the field's presence and placement only; the document's own internal schema is defined elsewhere. A body violating either half is rejected SCOPE_NODE_ENTITLEMENTS_INVALID. */
+            entitlements?: {
+                [key: string]: unknown;
+            };
             external_id?: string | null;
             /** @enum {string} */
             kind: "org" | "site" | "group" | "screen";
@@ -1235,8 +1249,19 @@ export interface components {
             lat?: number;
             long?: number;
         };
-        /** @description Partial update — every field optional, at least one required. */
+        /** @description Partial update — every field optional, at least one required. `kind` is absent deliberately: it is patchable on the server and re-kinding the org root is refused by the tree rules rather than by this schema, so declaring it here would say nothing this document can enforce. See ScopeNodeCreate for why the two account members are not `required`. */
         ScopeNodeUpdate: {
+            /** @description Re-parents the node. `null` only for the single root org node (DAT-002); a value naming no existing node, or one whose kind may not carry this child, is rejected SCOPE_NODE_PARENT_INVALID. */
+            parent_id?: string | null;
+            /**
+             * @description Mandatory on an `org`-kind node and forbidden on every other kind (contracts/data-model-1.md DAT-010). A body violating either half is rejected SCOPE_NODE_ACCOUNT_STATE_INVALID.
+             * @enum {string|null}
+             */
+            account_state?: "trial" | "active" | "suspended" | "closed" | "purged" | null;
+            /** @description Mandatory on an `org`-kind node, where an empty object is explicitly admitted, and forbidden on every other kind (DAT-013). This surface fixes the field's presence and placement only; the document's own internal schema is defined elsewhere. A body violating either half is rejected SCOPE_NODE_ENTITLEMENTS_INVALID. */
+            entitlements?: {
+                [key: string]: unknown;
+            };
             external_id?: string | null;
             name?: string;
             labels?: components["schemas"]["LabelMap"];

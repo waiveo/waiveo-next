@@ -66,6 +66,10 @@ func orgNode() datamodel.ScopeNode {
 		ID:   orgParentID,
 		Kind: "org",
 		Name: "Demo Org",
+		// Both mandatory on this kind (DAT-010/013), and the full-tree validator
+		// every scope-node write runs now says so.
+		AccountState: "active",
+		Entitlements: json.RawMessage(`{}`),
 	}
 }
 
@@ -101,6 +105,7 @@ func seedPlacementNode(t *testing.T, s *store.Store, id string) {
 	t.Helper()
 	if _, err := s.Create(context.Background(), store.KindScopeNode, mustJSON(t, datamodel.ScopeNode{
 		ID: id, Kind: "org", Name: "Fixture Placement Org",
+		AccountState: "active", Entitlements: json.RawMessage(`{}`),
 	})); err != nil {
 		t.Fatalf("seed placement node %s: %v", id, err)
 	}

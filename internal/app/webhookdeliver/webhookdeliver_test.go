@@ -220,7 +220,7 @@ func (e *env) seedTree() {
 			e.t.Fatalf("create scope node: %v", err)
 		}
 	}
-	mk(`{"id":"` + orgNodeID + `","kind":"org","name":"Root Org"}`)
+	mk(`{"id":"` + orgNodeID + `","kind":"org","name":"Root Org","account_state":"active","entitlements":{}}`)
 	mk(`{"id":"` + siteNodeID + `","kind":"site","name":"Site A","parent_id":"` + orgNodeID + `","tz":"UTC","lat":47.6,"long":-122.3}`)
 	mk(`{"id":"` + otherSiteID + `","kind":"site","name":"Site B","parent_id":"` + orgNodeID + `","tz":"UTC","lat":47.7,"long":-122.4}`)
 }

@@ -305,7 +305,7 @@ func TestPurgeWorkspaceIsTheOneExemptRemovalRoute(t *testing.T) {
 	ctx := context.Background()
 	// PurgeWorkspace tombstones the org node, so one must exist.
 	if _, err := st.Create(ctx, store.KindScopeNode,
-		[]byte(`{"id":"01J8Z2Q1M8H8N4T0V1W2X3Y4Z5","kind":"org","name":"Root Org"}`)); err != nil {
+		[]byte(`{"id":"01J8Z2Q1M8H8N4T0V1W2X3Y4Z5","kind":"org","name":"Root Org","account_state":"active","entitlements":{}}`)); err != nil {
 		t.Fatalf("create org node: %v", err)
 	}
 

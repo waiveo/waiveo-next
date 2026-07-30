@@ -150,7 +150,7 @@ func TestPurgeWorkspaceDestroysWebhookSigningSecrets(t *testing.T) {
 	st := openWebhookStore(t)
 	ctx := t.Context()
 	if _, err := st.Create(ctx, store.KindScopeNode,
-		[]byte(`{"id":"`+webhookOrgNodeID+`","kind":"org","name":"Root Org"}`)); err != nil {
+		[]byte(`{"id":"`+webhookOrgNodeID+`","kind":"org","name":"Root Org","account_state":"active","entitlements":{}}`)); err != nil {
 		t.Fatalf("create org node: %v", err)
 	}
 

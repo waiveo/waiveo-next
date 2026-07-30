@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -22,9 +23,14 @@ import (
 // several apply at once.
 
 // orgNode is a scope-node create body for the tree's single org-kind root: no
-// parent, and none of the three geo columns (DAT-032 forbids them on an org).
+// parent, none of the three geo columns (DAT-032 forbids them on an org), and
+// both account fields an org MUST carry — account_state (DAT-010) and an
+// entitlements document, empty being explicitly admitted (DAT-013).
 func orgNode(name string) datamodel.ScopeNode {
-	return datamodel.ScopeNode{Kind: "org", Name: name}
+	return datamodel.ScopeNode{
+		Kind: "org", Name: name,
+		AccountState: "active", Entitlements: json.RawMessage(`{}`),
+	}
 }
 
 // TestDeleteScopeNodeCarryingAChildIsRefused: DAT-020. A site with a screen

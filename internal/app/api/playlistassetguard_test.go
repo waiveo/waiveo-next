@@ -74,7 +74,8 @@ func newGuardTestFixture(t *testing.T) (*origin.Store, *store.Store, string, []b
 	// guard-disabled case below fail for a reason that has nothing to do with the
 	// guard.
 	if _, err := st.Create(context.Background(), store.KindScopeNode, mustJSONBody(t, datamodel.ScopeNode{
-		ID: guardTestScopeNode, Kind: "org", Name: "Fixture Org", AccountState: "active",
+		ID: guardTestScopeNode, Kind: "org", Name: "Fixture Org",
+		AccountState: "active", Entitlements: json.RawMessage(`{}`),
 	})); err != nil {
 		t.Fatalf("seed the fixture scope node: %v", err)
 	}

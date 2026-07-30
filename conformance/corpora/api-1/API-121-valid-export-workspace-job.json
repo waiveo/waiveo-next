@@ -16,7 +16,8 @@
       "id": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z0",
       "kind": "org",
       "name": "Fixture Workspace",
-      "account_state": "active"
+      "account_state": "active",
+      "entitlements": {}
     },
     "body": {
       "passphrase": "conformance-export-passphrase"

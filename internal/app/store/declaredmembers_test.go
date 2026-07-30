@@ -62,7 +62,7 @@ func TestScopeNodeCreateMaterializesParentIDAndLabels(t *testing.T) {
 	ctx := context.Background()
 
 	res, err := s.Create(ctx, store.KindScopeNode,
-		json.RawMessage(`{"id":"`+dmOrgNodeID+`","kind":"org","name":"Root Org"}`))
+		json.RawMessage(`{"id":"`+dmOrgNodeID+`","kind":"org","name":"Root Org","account_state":"active","entitlements":{}}`))
 	if err != nil {
 		t.Fatalf("create org scope node: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestScopeNodeCreateKeepsAuthoredMembers(t *testing.T) {
 	ctx := context.Background()
 
 	if _, err := s.Create(ctx, store.KindScopeNode,
-		json.RawMessage(`{"id":"`+dmOrgNodeID+`","kind":"org","name":"Root Org"}`)); err != nil {
+		json.RawMessage(`{"id":"`+dmOrgNodeID+`","kind":"org","name":"Root Org","account_state":"active","entitlements":{}}`)); err != nil {
 		t.Fatalf("create org scope node: %v", err)
 	}
 	res, err := s.Create(ctx, store.KindScopeNode,
@@ -149,7 +149,7 @@ func TestUpdateNormalizesANulledRequiredMember(t *testing.T) {
 	ctx := context.Background()
 
 	res, err := s.Create(ctx, store.KindScopeNode,
-		json.RawMessage(`{"id":"`+dmOrgNodeID+`","kind":"org","name":"Root Org","labels":{"env":"prod"}}`))
+		json.RawMessage(`{"id":"`+dmOrgNodeID+`","kind":"org","name":"Root Org","labels":{"env":"prod"},"account_state":"active","entitlements":{}}`))
 	if err != nil {
 		t.Fatalf("create org scope node: %v", err)
 	}

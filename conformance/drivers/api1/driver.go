@@ -1204,12 +1204,15 @@ type idempotencyDriverInput struct {
 	// "collection_state": classifyShape treats an input carrying BOTH
 	// "requests" and "collection_state" as the pagination shape, so reusing
 	// that name here would misroute every idempotency case.
-	SeedScopeNodes []struct {
-		ID   string `json:"id"`
-		Kind string `json:"kind"`
-		Name string `json:"name"`
-	} `json:"seed_scope_nodes"`
-	Requests []struct {
+	// Decoded as raw objects, NOT into a struct of named fields: a struct drops
+	// every member it does not declare, so a case could declare a scope node the
+	// driver then seeds WITHOUT part of what the case said. That is how these
+	// cases came to seed an org missing the two members DAT-010/013 make
+	// mandatory even after the fixtures carried them — the driver rebuilt the row
+	// from id/kind/name and threw the rest away. Passing the object through means
+	// what a case declares is what gets seeded.
+	SeedScopeNodes []map[string]any `json:"seed_scope_nodes"`
+	Requests       []struct {
 		Method  string            `json:"method"`
 		Path    string            `json:"path"`
 		Headers map[string]string `json:"headers"`
@@ -1295,8 +1298,8 @@ func driveIdempotency(rep *report.Report, c corpus.Case) {
 	defer h.close()
 
 	for _, row := range in.SeedScopeNodes {
-		if err := h.seedScopeNode(map[string]any{"id": row.ID, "kind": row.Kind, "name": row.Name}); err != nil {
-			rep.Fail(c.CaseID, contract, fmt.Sprintf("seed scope node %s: %v", row.ID, err))
+		if err := h.seedScopeNode(row); err != nil {
+			rep.Fail(c.CaseID, contract, fmt.Sprintf("seed scope node %v: %v", row["id"], err))
 			return
 		}
 	}
@@ -1512,18 +1515,17 @@ func driveJob(rep *report.Report, c corpus.Case) {
 // --- data-subject export / delete (API-120-124) -------------------------
 
 type workspaceJobDriverInput struct {
-	Method         string            `json:"method"`
-	Path           string            `json:"path"`
-	Headers        map[string]string `json:"headers"`
-	Principal      string            `json:"principal"`
-	PrincipalRole  string            `json:"principal_role"`
-	WorkspaceState struct {
-		ID           string `json:"id"`
-		Kind         string `json:"kind"`
-		Name         string `json:"name"`
-		AccountState string `json:"account_state"`
-	} `json:"workspace_state"`
-	Body map[string]any `json:"body"`
+	Method        string            `json:"method"`
+	Path          string            `json:"path"`
+	Headers       map[string]string `json:"headers"`
+	Principal     string            `json:"principal"`
+	PrincipalRole string            `json:"principal_role"`
+	// A raw object for the same reason seed_scope_nodes is one: a named-field
+	// struct silently drops whatever the case also declares, so the row seeded
+	// would differ from the row the case wrote down. The id is read back out of
+	// the map where later stages need it.
+	WorkspaceState map[string]any `json:"workspace_state"`
+	Body           map[string]any `json:"body"`
 }
 
 // driveWorkspaceJob drives the data-subject export corpus case (API-121)
@@ -1580,7 +1582,8 @@ func driveWorkspaceJob(rep *report.Report, c corpus.Case) {
 			"one as a given, opaque input) — deriving it from the case's own expectation would let the assertion pass by construction")
 		return
 	}
-	if in.WorkspaceState.ID == "" {
+	workspaceID, _ := in.WorkspaceState["id"].(string)
+	if workspaceID == "" {
 		rep.Fail(c.CaseID, contract, "case declares no input.workspace_state.id: the Job's single target IS the workspace "+
 			"(API-123), so the target id must be seeded from an input, never read out of the expectation it is checked against")
 		return
@@ -1597,12 +1600,9 @@ func driveWorkspaceJob(rep *report.Report, c corpus.Case) {
 	// The workspace's own org node, seeded through the real store write path —
 	// the same fixture-setup pattern every other case here uses, and the same
 	// one internal/app/api's own e2e tests use.
-	orgBody := map[string]any{
-		"id":            in.WorkspaceState.ID,
-		"kind":          in.WorkspaceState.Kind,
-		"name":          in.WorkspaceState.Name,
-		"parent_id":     nil,
-		"account_state": in.WorkspaceState.AccountState,
+	orgBody := map[string]any{"parent_id": nil}
+	for k, v := range in.WorkspaceState {
+		orgBody[k] = v
 	}
 	if err := h.seedScopeNode(orgBody); err != nil {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("seed workspace org scope node: %v", err))

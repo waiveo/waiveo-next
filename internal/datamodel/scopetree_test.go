@@ -334,7 +334,12 @@ func TestScopeNodeNameValidation(t *testing.T) {
 // alongside, so the strictness provably lives in the full-tree variant and not
 // in a check both share — a relay snapshot must keep validating without its org.
 func TestBuildFullScopeTreeResolvesEveryParent(t *testing.T) {
-	org := ScopeNode{ID: "01J8Z0A0000000000000000001", Kind: "org", Name: "Org"}
+	// The org carries both account fields DAT-010/013 make mandatory on this kind.
+	// They are checked in the FULL variant only, so a tree built for the tolerant
+	// one would pass without them — which is exactly why they belong on the shared
+	// fixture rather than only where a case asserts them.
+	org := ScopeNode{ID: "01J8Z0A0000000000000000001", Kind: "org", Name: "Org",
+		AccountState: "active", Entitlements: json.RawMessage(`{}`)}
 	site := ScopeNode{
 		ID: "01J8Z0A0000000000000000002", Kind: "site", ParentID: ptrStr(org.ID), Name: "Site",
 		TZ: ptrStr("America/Chicago"), Lat: ptrF64(41.8), Long: ptrF64(-87.6),
@@ -448,5 +453,49 @@ func TestAnOrglessTreeIsNotReportedByTheReachabilityWalk(t *testing.T) {
 	// And an empty set is not a fault: a store before its first write has no tree.
 	if _, errs := BuildFullScopeTree(nil); len(errs) != 0 {
 		t.Fatalf("an empty node set was refused: %+v", errs)
+	}
+}
+
+// TestAccountFieldsAreJudgedOnlyByTheFullTree pins the boundary DAT-010/013's
+// enforcement sits behind, not merely the rules themselves.
+//
+// account_state and entitlements are ACCOUNT-level fields. A relay/1
+// desired-state snapshot carries neither — the relay has no reference to either
+// anywhere — and may present a subtree that includes the org node (REL-065). So
+// checking them in the subtree-tolerant builder would reject every legitimate
+// snapshot for the absence of a field its wire format never carries, while the
+// authority that holds the whole tree and mints these rows from requests is
+// exactly where DAT-010/013 place the obligation ("a create or update request").
+//
+// Without this case the gate is invisible: the full-tree tests would pass with
+// the condition removed, and a snapshot would start being refused in production
+// long before any test noticed.
+func TestAccountFieldsAreJudgedOnlyByTheFullTree(t *testing.T) {
+	// An org with NEITHER account field — what a relay snapshot's org node looks
+	// like, and what the app store must refuse.
+	bare := ScopeNode{ID: "01J8Z0A0000000000000000001", Kind: "org", Name: "Org"}
+
+	if _, errs := BuildScopeTree([]ScopeNode{bare}); len(errs) != 0 {
+		t.Errorf("the subtree-tolerant builder judged a snapshot's org node: %+v", errs)
+	}
+
+	_, errs := BuildFullScopeTree([]ScopeNode{bare})
+	var got []string
+	for _, e := range errs {
+		got = append(got, e.Code)
+	}
+	if len(got) != 2 {
+		t.Fatalf("full tree on a bare org: codes = %v, want both account-field codes", got)
+	}
+	for _, want := range []string{"SCOPE_NODE_ACCOUNT_STATE_INVALID", "SCOPE_NODE_ENTITLEMENTS_INVALID"} {
+		found := false
+		for _, c := range got {
+			if c == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("full tree on a bare org: %v does not include %s", got, want)
+		}
 	}
 }

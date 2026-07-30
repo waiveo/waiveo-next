@@ -1318,7 +1318,7 @@ func driveWebhookDeliveryOverHTTP(rep *report.Report, c corpus.Case, secret, del
 	// the store resolves (DAT-006), so it has to be a real row — an org-kind node
 	// is the smallest conformant tree, and DAT-004 lets a row sit at one.
 	if _, err := st.Create(context.Background(), store.KindScopeNode, json.RawMessage(
-		`{"id":"`+siteScope+`","kind":"org","name":"Conformance Org","account_state":"active"}`)); err != nil {
+		`{"id":"`+siteScope+`","kind":"org","name":"Conformance Org","account_state":"active","entitlements":{}}`)); err != nil {
 		return fail("seed the endpoint's scope node", err)
 	}
 

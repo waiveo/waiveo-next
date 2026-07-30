@@ -111,7 +111,7 @@ func TestListCursorScopedPerResource(t *testing.T) {
 	// where an unresolvable parent_id is a DAT-002 violation rather than a
 	// subtree boundary, so this row has to be real.
 	if _, err := st.Create(context.Background(), store.KindScopeNode,
-		json.RawMessage(`{"id":"01J8Z0A0000000000000000000","kind":"org","name":"Demo Org","account_state":"active"}`)); err != nil {
+		json.RawMessage(`{"id":"01J8Z0A0000000000000000000","kind":"org","name":"Demo Org","account_state":"active","entitlements":{}}`)); err != nil {
 		t.Fatalf("seed org root: %v", err)
 	}
 

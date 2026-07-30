@@ -18,8 +18,7 @@ import (
 // dangled.
 func TestReParentingIntoACycleIsRefused(t *testing.T) {
 	e := newEnv(t)
-	org := e.createNode(t, datamodel.ScopeNode{Kind: "org", Name: "Org",
-		AccountState: "active", Entitlements: json.RawMessage(`{}`)})
+	org := e.createNode(t, orgNode("Org"))
 	site := e.createNode(t, datamodel.ScopeNode{Kind: "site", ParentID: strp(org), Name: "Site",
 		TZ: strp(siteTZ), Lat: f64p(siteLat), Long: f64p(siteLong)})
 	groupA := e.createNode(t, datamodel.ScopeNode{Kind: "group", ParentID: strp(site), Name: "A"})
@@ -63,8 +62,7 @@ func TestReParentingIntoACycleIsRefused(t *testing.T) {
 // by shape alone and would prove nothing about resolution.
 func TestReParentingOntoAnAbsentParentIsRefused(t *testing.T) {
 	e := newEnv(t)
-	org := e.createNode(t, datamodel.ScopeNode{Kind: "org", Name: "Org",
-		AccountState: "active", Entitlements: json.RawMessage(`{}`)})
+	org := e.createNode(t, orgNode("Org"))
 	site := e.createNode(t, datamodel.ScopeNode{Kind: "site", ParentID: strp(org), Name: "Site",
 		TZ: strp(siteTZ), Lat: f64p(siteLat), Long: f64p(siteLong)})
 	group := e.createNode(t, datamodel.ScopeNode{Kind: "group", ParentID: strp(site), Name: "A"})

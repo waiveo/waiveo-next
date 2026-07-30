@@ -348,7 +348,8 @@ func TestCSRFIsRequiredOnTheRealAPIMux(t *testing.T) {
 	e := newTwoPrincipalEnv(t)
 
 	req, err := http.NewRequest(http.MethodPost, e.ts.URL+"/api/v1/scope-nodes",
-		bytes.NewReader(mustJSON(t, map[string]any{"kind": "org", "parent_id": nil, "name": "X", "labels": map[string]string{}})))
+		bytes.NewReader(mustJSON(t, map[string]any{"kind": "org", "parent_id": nil, "name": "X", "labels": map[string]string{},
+			"account_state": "active", "entitlements": map[string]any{}})))
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}

@@ -251,7 +251,8 @@ func (e *testEnv) resolveBoundaryParent(t *testing.T, n datamodel.ScopeNode) dat
 func (e *testEnv) orgRoot(t *testing.T) string {
 	t.Helper()
 	if e.orgID == "" {
-		e.orgID = e.createNode(t, datamodel.ScopeNode{Kind: "org", Name: "Fixture Org", AccountState: "active"})
+		e.orgID = e.createNode(t, datamodel.ScopeNode{Kind: "org", Name: "Fixture Org",
+			AccountState: "active", Entitlements: json.RawMessage(`{}`)})
 	}
 	return e.orgID
 }
@@ -305,7 +306,8 @@ func (e *testEnv) fixtureSite(t *testing.T) string {
 		e.orgID = e.storedOrgID(t)
 	}
 	if e.orgID == "" {
-		e.ensureNode(t, datamodel.ScopeNode{ID: boundaryOrgID, Kind: "org", Name: "Fixture Org", AccountState: "active"})
+		e.ensureNode(t, datamodel.ScopeNode{ID: boundaryOrgID, Kind: "org", Name: "Fixture Org",
+			AccountState: "active", Entitlements: json.RawMessage(`{}`)})
 		e.orgID = boundaryOrgID
 	}
 	e.ensureNode(t, datamodel.ScopeNode{
@@ -362,7 +364,8 @@ func (e *testEnv) ensureNode(t *testing.T, n datamodel.ScopeNode) {
 func seedOrgRootThroughStore(t *testing.T, st *store.Store) {
 	t.Helper()
 	if _, err := st.Create(context.Background(), store.KindScopeNode, mustJSON(t, datamodel.ScopeNode{
-		ID: boundaryOrgID, Kind: "org", Name: "Fixture Org", AccountState: "active",
+		ID: boundaryOrgID, Kind: "org", Name: "Fixture Org",
+		AccountState: "active", Entitlements: json.RawMessage(`{}`),
 	})); err != nil {
 		t.Fatalf("seed org root %s: %v", boundaryOrgID, err)
 	}

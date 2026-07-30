@@ -439,7 +439,7 @@ var _ = func(s *secretseal.Sealer) auth.SecretSealer { return s }
 func (e *schemaProbeEnv) mintOrg(t *testing.T) string {
 	t.Helper()
 	resp, raw := e.do(t, http.MethodPost, "/api/v1/scope-nodes",
-		mustJSON(t, map[string]any{"kind": "org", "name": "Fixture Org", "account_state": "active"}), nil)
+		mustJSON(t, map[string]any{"kind": "org", "name": "Fixture Org", "account_state": "active", "entitlements": map[string]any{}}), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("mint org node: %d %s", resp.StatusCode, raw)
 	}
@@ -575,10 +575,14 @@ func (e *schemaProbeEnv) claim(t *testing.T) (*http.Response, []byte) {
 var probes = map[string]probe{
 	// --- scope-nodes ------------------------------------------------------
 	"createScopeNode": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
-		// Deliberately the MINIMAL create — kind and name and nothing else. This
-		// is the exact request whose 201 carried neither `parent_id` nor `labels`.
+		// Deliberately the MINIMAL create — nothing optional. This is the exact
+		// request whose 201 carried neither `parent_id` nor `labels`. The minimum for
+		// an org is four members rather than two: DAT-010/013 make account_state and
+		// entitlements mandatory on this kind, so a two-member body is now refused
+		// and would probe nothing.
 		return e.do(t, http.MethodPost, "/api/v1/scope-nodes",
-			mustJSON(t, map[string]any{"kind": "org", "name": "Minimal Org"}), nil)
+			mustJSON(t, map[string]any{"kind": "org", "name": "Minimal Org",
+				"account_state": "active", "entitlements": map[string]any{}}), nil)
 	},
 	"getScopeNode": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
 		id := e.mintOrg(t)

@@ -624,7 +624,7 @@ func TestWebhookLoopShutdownDoesNotWaitOnAStalledReceiver(t *testing.T) {
 func createFeederOrgNode(t *testing.T, ts *httptest.Server) string {
 	t.Helper()
 	resp, raw := doFeederReq(t, ts, http.MethodPost, "/api/v1/scope-nodes",
-		mustFeederJSON(t, map[string]any{"kind": "org", "name": "Webhook E2E Org", "account_state": "active"}), nil)
+		mustFeederJSON(t, map[string]any{"kind": "org", "name": "Webhook E2E Org", "account_state": "active", "entitlements": map[string]any{}}), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("mint org node: %d %s", resp.StatusCode, raw)
 	}

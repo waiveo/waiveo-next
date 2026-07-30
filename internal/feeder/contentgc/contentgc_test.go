@@ -67,7 +67,7 @@ func newHarness(t *testing.T, opts ...func(*contentgc.Config)) *harness {
 	// node carries is refused — and an org-kind node is the smallest conformant
 	// tree a row may sit at (DAT-002/DAT-004).
 	if _, err := h.store.Create(context.Background(), store.KindScopeNode, json.RawMessage(
-		`{"id":"`+testScopeNode+`","kind":"org","name":"Fixture Org","account_state":"active"}`)); err != nil {
+		`{"id":"`+testScopeNode+`","kind":"org","name":"Fixture Org","account_state":"active","entitlements":{}}`)); err != nil {
 		t.Fatalf("seed the fixture scope node: %v", err)
 	}
 

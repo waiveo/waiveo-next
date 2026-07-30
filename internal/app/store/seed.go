@@ -151,8 +151,14 @@ func (s *Store) SeedDemo(ctx context.Context, assetRefs ...string) error {
 		// The org root is a REAL row, not a tolerated boundary: the store
 		// validates the full tree, where DAT-002 demands every parent resolve
 		// and exactly one org-kind node exist. An org carries no geo (DAT-032).
+		// account_state and entitlements are mandatory on an org (DAT-010/013), and
+		// this row carried neither until the validator started saying so — a demo
+		// seed that produces a store its own boot-time check refuses. `active` with
+		// an empty entitlements document is the plainest conforming value: the seed
+		// asserts nothing about tiering, and DAT-013 admits `{}` explicitly.
 		{KindScopeNode, datamodel.ScopeNode{
 			ID: seedOrgAncestorScopeNodeID, Kind: "org", Name: "Demo Org",
+			AccountState: "active", Entitlements: json.RawMessage(`{}`),
 		}},
 		{KindScopeNode, datamodel.ScopeNode{
 			ID: seedSiteScopeNodeID, Kind: "site", ParentID: &orgParent, Name: "Demo Site",

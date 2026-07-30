@@ -184,6 +184,9 @@ func buildScopeTree(nodes []ScopeNode, fullTree bool) (ScopeTree, []Error) {
 		}
 
 		errs = append(errs, validateGeo(n)...)
+		if fullTree {
+			errs = append(errs, validateAccountFields(n)...)
+		}
 	}
 
 	if fullTree {
@@ -258,6 +261,83 @@ func unreachableFromRoot(nodes []ScopeNode, byID map[string]ScopeNode) []Error {
 		}
 	}
 	return errs
+}
+
+// validAccountStates is DAT-010's closed set.
+var validAccountStates = map[string]bool{
+	"trial": true, "active": true, "suspended": true, "closed": true, "purged": true,
+}
+
+// validateAccountFields enforces DAT-010 (account_state) and DAT-013
+// (entitlements): both are mandatory on an org-kind node and forbidden on every
+// other kind. Each half of each rule is a distinct failure with its own message,
+// because "you left it off the org" and "you put it on a site" are opposite
+// mistakes with opposite remedies.
+//
+// FULL-TREE ONLY, and that is load-bearing rather than cautious. These are
+// account-level fields: a relay/1 desired-state snapshot carries neither (the
+// relay has no reference to either field anywhere) and may present a subtree
+// including the org node, so enforcing DAT-010 on a snapshot would reject every
+// legitimate one for the absence of a field the wire never carries. Only the
+// authority that holds the whole tree — and mints these rows from requests — can
+// judge them, which is also where DAT-010/013 place the obligation: on "a create
+// or update request".
+//
+// Reported here rather than as a fail-fast body-schema check so both codes arrive
+// in API-013's multi-field errors[] alongside every other failing member, which
+// is the shape data-model/1's own per-field codes are published for.
+func validateAccountFields(n ScopeNode) []Error {
+	var errs []Error
+
+	// Within each field the two org-side cases report the SAME code and differ only
+	// in message — "" is not a member of the valid set, and an absent entitlements
+	// document is not an object — so neither is independently load-bearing and
+	// removing either alone changes no outcome. They are split for the message an
+	// operator reads, not for the decision. Worth writing down: a mutation run that
+	// disables one case sees the other answer identically and reads as a test with
+	// no teeth, which is the opposite of what is happening.
+	if n.Kind == "org" {
+		switch {
+		case n.AccountState == "":
+			errs = append(errs, Error{Field: "account_state", Code: "SCOPE_NODE_ACCOUNT_STATE_INVALID",
+				Message: "an org-kind scope node MUST carry account_state (DAT-010)"})
+		case !validAccountStates[n.AccountState]:
+			errs = append(errs, Error{Field: "account_state", Code: "SCOPE_NODE_ACCOUNT_STATE_INVALID",
+				Message: "account_state must be one of trial, active, suspended, closed, purged (DAT-010)"})
+		}
+		// "present (possibly {})" — an empty object satisfies DAT-013, an absent
+		// field does not, and a non-object does not. The document's own internal
+		// schema is explicitly defined elsewhere, so this checks presence and JSON
+		// type and nothing further.
+		switch {
+		case len(n.Entitlements) == 0:
+			errs = append(errs, Error{Field: "entitlements", Code: "SCOPE_NODE_ENTITLEMENTS_INVALID",
+				Message: "an org-kind scope node MUST carry entitlements, an object (possibly empty) (DAT-013)"})
+		case !isJSONObject(n.Entitlements):
+			errs = append(errs, Error{Field: "entitlements", Code: "SCOPE_NODE_ENTITLEMENTS_INVALID",
+				Message: "entitlements MUST be a JSON object (DAT-013)"})
+		}
+		return errs
+	}
+
+	if n.AccountState != "" {
+		errs = append(errs, Error{Field: "account_state", Code: "SCOPE_NODE_ACCOUNT_STATE_INVALID",
+			Message: "a non-org scope node MUST NOT carry account_state (DAT-010)"})
+	}
+	if len(n.Entitlements) > 0 {
+		errs = append(errs, Error{Field: "entitlements", Code: "SCOPE_NODE_ENTITLEMENTS_INVALID",
+			Message: "a non-org scope node MUST NOT carry entitlements (DAT-013)"})
+	}
+	return errs
+}
+
+// isJSONObject reports whether raw is a JSON object rather than an array, string,
+// number, bool, or null. Decoding into a map is how the object-ness is decided,
+// so a syntactically invalid document answers false here rather than reaching the
+// store as an opaque blob.
+func isJSONObject(raw json.RawMessage) bool {
+	var obj map[string]json.RawMessage
+	return json.Unmarshal(raw, &obj) == nil && obj != nil
 }
 
 // validateGeo enforces DAT-031 (site geo required) and DAT-032 (org geo forbidden;
