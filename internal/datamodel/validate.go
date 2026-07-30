@@ -2,6 +2,7 @@ package datamodel
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/maaxton/waiveo-next/internal/shared/ulid"
 )
@@ -72,6 +73,33 @@ var validMisfire = map[string]bool{"catch_up_once": true, "skip": true, "fire_ea
 //
 // It validates a COMPLETE set (every referenced row present), matching the
 // relay/1 snapshot / full-tenant model; a dangling reference is a genuine error.
+// checkRowPlacement enforces DAT-006's PRESENCE half for a scheduling-core row:
+// the row must carry the id of the scope node it is placed under.
+//
+// DAT-006 says "every row THIS CONTRACT defines other than a scope node itself",
+// and DAT-005 enumerates them — playlist, schedule, validity window, daypart,
+// fallback, preset batch — so all six require a placement. The identity rows
+// (screen, device) require one too and already enforce it via
+// checkPlacementAndName; kinds this contract does NOT define (an automation, a
+// webhook endpoint, a pack row) are governed by their own contracts and are
+// deliberately not covered here.
+//
+// This is the PRESENCE half, and it is a different fault from the resolution half
+// (a scope_node naming a node that does not exist, refused by the store). An
+// unplaced row does not dangle — it points nowhere at all — and it fails
+// differently: its ancestor chain resolves to nil, so it falls through to the
+// workspace-root path and no scope selector finds it where an operator would look.
+func checkRowPlacement(scopeNode, kind string) *Error {
+	if strings.TrimSpace(scopeNode) != "" {
+		return nil
+	}
+	return &Error{
+		Field:   "scope_node",
+		Code:    "ROW_SCOPE_NODE_MISSING",
+		Message: "a " + kind + " row MUST carry the id of the scope node it is placed under (DAT-005/DAT-006)",
+	}
+}
+
 func ValidateRows(raw RawRows) (RowSet, []Error) {
 	var rs RowSet
 	var errs []Error
@@ -86,6 +114,9 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 			continue
 		}
 		if e := CheckRowID(v.ID, "id"); e != nil {
+			errs = append(errs, *e)
+		}
+		if e := checkRowPlacement(v.ScopeNode, "playlist"); e != nil {
 			errs = append(errs, *e)
 		}
 		rs.Playlists = append(rs.Playlists, v)
@@ -105,6 +136,9 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 		if v.Misfire != "" && !validMisfire[v.Misfire] {
 			errs = append(errs, Error{Field: "misfire", Code: "MISFIRE_INVALID", Message: "misfire must be one of catch_up_once, skip, fire_each (DAT-120)"})
 		}
+		if e := checkRowPlacement(v.ScopeNode, "schedule"); e != nil {
+			errs = append(errs, *e)
+		}
 		rs.Schedules = append(rs.Schedules, v)
 	}
 	for _, r := range raw.ValidityWindows {
@@ -121,6 +155,9 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 		}
 		if v.StartsAt != nil && v.EndsAt != nil && *v.EndsAt <= *v.StartsAt {
 			errs = append(errs, Error{Field: "ends_at", Code: "VALIDITY_WINDOW_RANGE_INVALID", Message: "ends_at must be strictly greater than starts_at when both are non-null (DAT-061)"})
+		}
+		if e := checkRowPlacement(v.ScopeNode, "validity window"); e != nil {
+			errs = append(errs, *e)
 		}
 		rs.ValidityWindows = append(rs.ValidityWindows, v)
 	}
@@ -142,6 +179,9 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 		if v.Misfire != "" && !validMisfire[v.Misfire] {
 			errs = append(errs, Error{Field: "misfire", Code: "MISFIRE_INVALID", Message: "misfire must be one of catch_up_once, skip, fire_each (DAT-120)"})
 		}
+		if e := checkRowPlacement(v.ScopeNode, "daypart"); e != nil {
+			errs = append(errs, *e)
+		}
 		rs.Dayparts = append(rs.Dayparts, v)
 	}
 	for _, r := range raw.Fallbacks {
@@ -159,6 +199,9 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 		if !validDisplayPower[v.DisplayPower] {
 			errs = append(errs, Error{Field: "display_power", Code: "DISPLAY_POWER_INVALID", Message: "display_power must be one of on, off, blank (DAT-074)"})
 		}
+		if e := checkRowPlacement(v.ScopeNode, "fallback"); e != nil {
+			errs = append(errs, *e)
+		}
 		rs.Fallbacks = append(rs.Fallbacks, v)
 	}
 	for _, r := range raw.PresetBatches {
@@ -175,6 +218,9 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 		}
 		if len(v.Commands) == 0 {
 			errs = append(errs, Error{Field: "commands", Code: "PRESET_BATCH_COMMANDS_EMPTY", Message: "a preset-batch row's commands array MUST be non-empty (DAT-091)"})
+		}
+		if e := checkRowPlacement(v.ScopeNode, "preset batch"); e != nil {
+			errs = append(errs, *e)
 		}
 		rs.PresetBatches = append(rs.PresetBatches, v)
 	}

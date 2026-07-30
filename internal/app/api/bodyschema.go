@@ -27,10 +27,16 @@ package api
 //
 //  1. Playlists, schedules, and dayparts declare NO request body at all in
 //     `api/openapi.yaml` ("Shape stub — the row schema is a later minor"). There
-//     is nothing to enforce for them. Their bodies remain unchecked, including
-//     the `scope_node` placement — a create carrying `"scope_node": ""` on those
-//     three kinds is still stored. Closing that has to start with declaring
-//     their schemas; this file enforces what is declared and invents nothing.
+//     is nothing to enforce for them. Their bodies remain unchecked HERE, and
+//     closing that has to start with declaring their schemas; this file enforces
+//     what is declared and invents nothing.
+//
+//     The `scope_node` placement is no longer among the gaps: an unplaced
+//     scheduling-core row is refused by the datamodel validator
+//     (checkRowPlacement, ROW_SCOPE_NODE_MISSING), on create and on a PATCH that
+//     would clear an existing placement. What is still unchecked here is the rest
+//     of those bodies — an undeclared member, a mistyped field — which is a
+//     schema question rather than a placement one.
 //
 //  2. Scope nodes are deliberately NOT gated here (scopenodes.go says so at the
 //     config). Their bodies are already validated field-by-field by

@@ -175,9 +175,17 @@ const scopeNodeExistsQuery = `SELECT 1 FROM scope_nodes WHERE id = ? LIMIT 1`
 // row's scope_node column defaults to the empty string, so "" means UNPLACED, not
 // "placed at a node whose id is empty" — the same distinction placedAt draws from
 // its own side. Whether a given kind MAY be unplaced is DAT-006's presence half,
-// enforced per kind by the datamodel validators (ROW_SCOPE_NODE_MISSING for the
-// identity rows); a reference check that refused an absent reference would be
-// deciding that rule for every kind at once, silently.
+// enforced per kind by the datamodel validators; a reference check that refused an
+// absent reference would be deciding that rule for every kind at once, silently.
+//
+// That claim used to be true of the identity rows ONLY, and it said so as though it
+// were true of everything — which is how six kinds came to accept an unplaced row
+// at 201 while this comment asserted otherwise. The presence half is now enforced
+// where DAT-006 requires it: the six scheduling-core kinds DAT-005 enumerates
+// (checkRowPlacement) plus the two identity kinds (checkPlacementAndName). A kind
+// this contract does NOT define — an automation, a webhook endpoint, a pack row —
+// is governed by its own contract and is deliberately not covered, which is why
+// the rule has to stay per-kind rather than becoming a blanket refusal here.
 func scopeNodeExists(ctx context.Context, q queryer, scopeNode string) (bool, error) {
 	if scopeNode == "" {
 		return true, nil

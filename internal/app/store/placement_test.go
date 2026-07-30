@@ -430,8 +430,12 @@ func TestAnUnplacedRowIsNotARowPlacedAtNothing(t *testing.T) {
 		t.Fatalf("create an endpoint carrying no placement: %v", err)
 	}
 
-	// And the presence half still answers for a kind that DOES require one, so
-	// this is a division of labour rather than a hole.
+	// And the presence half answers for a kind that DOES require one. When this
+	// test was written that made the split look like a division of labour; it was
+	// not — only the two identity kinds enforced presence, while all six
+	// scheduling-core kinds accepted an unplaced row. Both a screen (identity) and
+	// a schedule (scheduling core) are checked below, so the claim is now true of
+	// both halves of DAT-006's own list rather than of one example.
 	_, err := s.Create(ctx, store.KindScreen, mustJSON(t, map[string]any{
 		"id": "01J8ZN0P1ACEDSCREENR0W0001", "name": "Unplaced Screen",
 	}))
@@ -447,6 +451,32 @@ func TestAnUnplacedRowIsNotARowPlacedAtNothing(t *testing.T) {
 	}
 	if !sawMissing {
 		t.Fatalf("a screen row carrying no placement was refused %+v, want a ROW_SCOPE_NODE_MISSING among them", verr.Errors)
+	}
+}
+
+// TestAnUnplacedSchedulingRowIsRefusedToo is the other half of DAT-006's list.
+// The six scheduling-core kinds DAT-005 enumerates require a placement exactly as
+// the identity rows do; before checkRowPlacement they accepted one at 201.
+func TestAnUnplacedSchedulingRowIsRefusedToo(t *testing.T) {
+	s := openMem(t)
+	ctx := context.Background()
+
+	_, err := s.Create(ctx, store.KindSchedule, mustJSON(t, map[string]any{
+		"id": "01J8ZN0P1ACEDSCHEDR0W0001", "name": "Unplaced Schedule",
+		"timezone": "America/Chicago",
+	}))
+	var verr *store.ValidationError
+	if !errors.As(err, &verr) {
+		t.Fatalf("a schedule carrying no placement: err = %v, want a *store.ValidationError", err)
+	}
+	var found bool
+	for _, e := range verr.Errors {
+		if e.Field == "scope_node" && e.Code == "ROW_SCOPE_NODE_MISSING" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("refusal does not name scope_node/ROW_SCOPE_NODE_MISSING: %+v", verr.Errors)
 	}
 }
 
