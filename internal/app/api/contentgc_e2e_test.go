@@ -97,7 +97,7 @@ func gcAuthorPlaylist(t *testing.T, e *testEnv, assets ...[]byte) (string, []str
 		items = append(items, datamodel.PlaylistItem{Source: "asset", AssetRef: ref})
 	}
 	pl := datamodel.Playlist{ScopeNode: screenID, Name: "Retention Playlist", Items: items}
-	id := decodeID(t, e.createOK(t, "/api/v1/playlists", mustJSON(t, pl)))
+	id := decodeID(t, e.createOK(t, "/api/v1/playlists", rowCreateBody(t, pl)))
 	return id, refs
 }
 
@@ -343,7 +343,7 @@ func TestFreshUploadSurvivesASweepBeforeItIsScheduled(t *testing.T) {
 		ScopeNode: screenID, Name: "Authored Later",
 		Items: []datamodel.PlaylistItem{{Source: "asset", AssetRef: assetRef}},
 	}
-	e.createOK(t, "/api/v1/playlists", mustJSON(t, pl))
+	e.createOK(t, "/api/v1/playlists", rowCreateBody(t, pl))
 }
 
 // etagOf reads the current ETag of a playlist, so a PATCH can carry the

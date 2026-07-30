@@ -87,10 +87,10 @@ func TestDeleteScopeNodeInUseIsRefused(t *testing.T) {
 			return mustJSON(t, adoptedDeviceFixture(n, "Lobby Roku", "roku-ecp", "10.0.0.41", nil))
 		}, "(an adopted device row)"},
 		{"playlist", "/api/v1/playlists", func(t *testing.T, n string) []byte {
-			return mustJSON(t, playlistFixture(n, nil))
+			return rowCreateBody(t, playlistFixture(n, nil))
 		}, "(a playlist row)"},
 		{"schedule", "/api/v1/schedules", func(t *testing.T, n string) []byte {
-			return mustJSON(t, scheduleFixture(n))
+			return rowCreateBody(t, scheduleFixture(n))
 		}, "(a schedule row)"},
 		{"automation", "/api/v1/automations", func(_ *testing.T, n string) []byte {
 			return edgeAutomationBody("", n, nil)

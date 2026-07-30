@@ -328,6 +328,24 @@ func (e PairingCodeResultRedemptionMode) Valid() bool {
 	}
 }
 
+// Defines values for PlaylistItemSource.
+const (
+	Asset    PlaylistItemSource = "asset"
+	Playable PlaylistItemSource = "playable"
+)
+
+// Valid indicates whether the value is a known member of the PlaylistItemSource enum.
+func (e PlaylistItemSource) Valid() bool {
+	switch e {
+	case Asset:
+		return true
+	case Playable:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ProblemSecondFactor.
 const (
 	ProblemSecondFactorTotp ProblemSecondFactor = "totp"
@@ -779,6 +797,50 @@ type CredentialResetRequest struct {
 // Cursor An opaque, URL-safe continuation token. `null` signals no further rows. Never constructed, parsed, or compared for meaning by a client.
 type Cursor = *string
 
+// DaypartCreate defines model for DaypartCreate.
+type DaypartCreate struct {
+	DaysOfWeek   []int   `json:"days_of_week"`
+	DisplayPower string  `json:"display_power"`
+	EndTime      string  `json:"end_time"`
+	Misfire      *string `json:"misfire,omitempty"`
+	Name         *string `json:"name,omitempty"`
+
+	// PlaylistId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	PlaylistId *Ulid `json:"playlist_id,omitempty"`
+
+	// PresetBatchId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	PresetBatchId *Ulid `json:"preset_batch_id,omitempty"`
+
+	// ScheduleId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScheduleId Ulid `json:"schedule_id"`
+
+	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScopeNode Ulid   `json:"scope_node"`
+	StartTime string `json:"start_time"`
+}
+
+// DaypartUpdate Partial update — every member optional, at least one present.
+type DaypartUpdate struct {
+	DaysOfWeek   *[]int  `json:"days_of_week,omitempty"`
+	DisplayPower *string `json:"display_power,omitempty"`
+	EndTime      *string `json:"end_time,omitempty"`
+	Misfire      *string `json:"misfire,omitempty"`
+	Name         *string `json:"name,omitempty"`
+
+	// PlaylistId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	PlaylistId *Ulid `json:"playlist_id,omitempty"`
+
+	// PresetBatchId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	PresetBatchId *Ulid `json:"preset_batch_id,omitempty"`
+
+	// ScheduleId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScheduleId *Ulid `json:"schedule_id,omitempty"`
+
+	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScopeNode *Ulid   `json:"scope_node,omitempty"`
+	StartTime *string `json:"start_time,omitempty"`
+}
+
 // Device One adopted physical device behind a relay. Read-only on this API: a device is discovered and adopted by its own relay's device plane (`relay/1` Device plane), so this resource carries no `revision` and no optimistic-concurrency envelope — there is no write here to condition on. A device exposes one or more entities; commands are addressed to those entities, never to the device.
 type Device struct {
 	// DeviceClass The device class whose state, attribute, and command vocabulary governs this device (`device-class-registry/1`).
@@ -979,6 +1041,44 @@ type PairingCodeResult struct {
 // PairingCodeResultRedemptionMode defines model for PairingCodeResult.RedemptionMode.
 type PairingCodeResultRedemptionMode string
 
+// PlaylistCreate defines model for PlaylistCreate.
+type PlaylistCreate struct {
+	ExternalId **string       `json:"external_id,omitempty"`
+	Items      []PlaylistItem `json:"items"`
+
+	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
+	Labels *LabelMap `json:"labels,omitempty"`
+	Name   string    `json:"name"`
+
+	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScopeNode Ulid `json:"scope_node"`
+}
+
+// PlaylistItem One entry of a playlist's `items` (DAT-041). `source` selects which of the two content shapes the entry uses — `asset` carries `asset_ref`, `playable` carries `pack_id` + `content_id` — and data-model/1 enforces that pairing with its own per-field codes.
+type PlaylistItem struct {
+	AssetRef        *string            `json:"asset_ref,omitempty"`
+	ContentId       *string            `json:"content_id,omitempty"`
+	DurationSeconds **int              `json:"duration_seconds,omitempty"`
+	PackId          *string            `json:"pack_id,omitempty"`
+	Source          PlaylistItemSource `json:"source"`
+}
+
+// PlaylistItemSource defines model for PlaylistItem.Source.
+type PlaylistItemSource string
+
+// PlaylistUpdate Partial update — every member optional, at least one present.
+type PlaylistUpdate struct {
+	ExternalId **string        `json:"external_id,omitempty"`
+	Items      *[]PlaylistItem `json:"items,omitempty"`
+
+	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
+	Labels *LabelMap `json:"labels,omitempty"`
+	Name   *string   `json:"name,omitempty"`
+
+	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScopeNode *Ulid `json:"scope_node,omitempty"`
+}
+
 // Problem RFC 9457 problem+json, extended with `code` (this contract's machine-readable error registry) and `trace_id`. `code` is the discriminant a client asserts on; `title`/`detail` are for humans.
 type Problem struct {
 	// Code The stable, additive-only machine-readable error registry (`contracts/api-1.md#error-taxonomy`), plus the codes a sibling contract owns for operations that ride this same `/api/v1` binding. api/1's own registry governs API-011 for api/1's own rules; a sibling contract's Problem carries a `code` from ITS registry, by name — the same reuse-by-name discipline `player/1` PLY-007 applies. The trailing values below belong to sibling contracts: four to `security-model.md`'s Error taxonomy, appearing only on the `auth` operations; three to `data-model-1.md`'s, appearing only on the scope-node delete; and two to `marketplace-1.md`'s, appearing on the pack operations.
@@ -1017,6 +1117,40 @@ type ProblemSecondFactor string
 
 // RelayId A relay's permanent identity, assigned to it by enrollment and unchanged across every later certificate renewal or re-enrollment (`relay/1` REL-012/014). Deliberately NOT typed as a ULID: unlike a resource this API mints, a relay id is issued by the enrollment path and is opaque here — this API reads it, routes a command by it, and never constructs or parses one.
 type RelayId = string
+
+// ScheduleCreate defines model for ScheduleCreate.
+type ScheduleCreate struct {
+	ExternalId **string `json:"external_id,omitempty"`
+
+	// FallbackId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	FallbackId *Ulid `json:"fallback_id,omitempty"`
+
+	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
+	Labels   *LabelMap `json:"labels,omitempty"`
+	Misfire  *string   `json:"misfire,omitempty"`
+	Name     string    `json:"name"`
+	Priority **int     `json:"priority,omitempty"`
+
+	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScopeNode Ulid `json:"scope_node"`
+}
+
+// ScheduleUpdate Partial update — every member optional, at least one present.
+type ScheduleUpdate struct {
+	ExternalId **string `json:"external_id,omitempty"`
+
+	// FallbackId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	FallbackId *Ulid `json:"fallback_id,omitempty"`
+
+	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
+	Labels   *LabelMap `json:"labels,omitempty"`
+	Misfire  *string   `json:"misfire,omitempty"`
+	Name     *string   `json:"name,omitempty"`
+	Priority **int     `json:"priority,omitempty"`
+
+	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScopeNode *Ulid `json:"scope_node,omitempty"`
+}
 
 // ScopeNode A node in the org → site → group → screen tree.
 type ScopeNode struct {
@@ -2136,11 +2270,29 @@ type UpdateAutomationJSONRequestBody = AutomationUpdate
 // RunAutomationJSONRequestBody defines body for RunAutomation for application/json ContentType.
 type RunAutomationJSONRequestBody = AutomationRunRequest
 
+// CreateDaypartJSONRequestBody defines body for CreateDaypart for application/json ContentType.
+type CreateDaypartJSONRequestBody = DaypartCreate
+
+// UpdateDaypartJSONRequestBody defines body for UpdateDaypart for application/json ContentType.
+type UpdateDaypartJSONRequestBody = DaypartUpdate
+
 // SendEntityCommandJSONRequestBody defines body for SendEntityCommand for application/json ContentType.
 type SendEntityCommandJSONRequestBody = EntityCommandRequest
 
 // InstallPackJSONRequestBody defines body for InstallPack for application/json ContentType.
 type InstallPackJSONRequestBody = MarketplaceRef
+
+// CreatePlaylistJSONRequestBody defines body for CreatePlaylist for application/json ContentType.
+type CreatePlaylistJSONRequestBody = PlaylistCreate
+
+// UpdatePlaylistJSONRequestBody defines body for UpdatePlaylist for application/json ContentType.
+type UpdatePlaylistJSONRequestBody = PlaylistUpdate
+
+// CreateScheduleJSONRequestBody defines body for CreateSchedule for application/json ContentType.
+type CreateScheduleJSONRequestBody = ScheduleCreate
+
+// UpdateScheduleJSONRequestBody defines body for UpdateSchedule for application/json ContentType.
+type UpdateScheduleJSONRequestBody = ScheduleUpdate
 
 // CreateScopeNodeJSONRequestBody defines body for CreateScopeNode for application/json ContentType.
 type CreateScopeNodeJSONRequestBody = ScopeNodeCreate
@@ -2330,8 +2482,10 @@ type ClientInterface interface {
 	// ListDayparts request
 	ListDayparts(ctx context.Context, params *ListDaypartsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// CreateDaypart request
-	CreateDaypart(ctx context.Context, params *CreateDaypartParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// CreateDaypartWithBody request with any body
+	CreateDaypartWithBody(ctx context.Context, params *CreateDaypartParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	CreateDaypart(ctx context.Context, params *CreateDaypartParams, body CreateDaypartJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// DeleteDaypart request
 	DeleteDaypart(ctx context.Context, daypartId Ulid, params *DeleteDaypartParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2339,8 +2493,10 @@ type ClientInterface interface {
 	// GetDaypart request
 	GetDaypart(ctx context.Context, daypartId Ulid, params *GetDaypartParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// UpdateDaypart request
-	UpdateDaypart(ctx context.Context, daypartId Ulid, params *UpdateDaypartParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// UpdateDaypartWithBody request with any body
+	UpdateDaypartWithBody(ctx context.Context, daypartId Ulid, params *UpdateDaypartParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	UpdateDaypart(ctx context.Context, daypartId Ulid, params *UpdateDaypartParams, body UpdateDaypartJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListDevices request
 	ListDevices(ctx context.Context, params *ListDevicesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2400,8 +2556,10 @@ type ClientInterface interface {
 	// ListPlaylists request
 	ListPlaylists(ctx context.Context, params *ListPlaylistsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// CreatePlaylist request
-	CreatePlaylist(ctx context.Context, params *CreatePlaylistParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// CreatePlaylistWithBody request with any body
+	CreatePlaylistWithBody(ctx context.Context, params *CreatePlaylistParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	CreatePlaylist(ctx context.Context, params *CreatePlaylistParams, body CreatePlaylistJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// DeletePlaylist request
 	DeletePlaylist(ctx context.Context, playlistId Ulid, params *DeletePlaylistParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2409,14 +2567,18 @@ type ClientInterface interface {
 	// GetPlaylist request
 	GetPlaylist(ctx context.Context, playlistId Ulid, params *GetPlaylistParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// UpdatePlaylist request
-	UpdatePlaylist(ctx context.Context, playlistId Ulid, params *UpdatePlaylistParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// UpdatePlaylistWithBody request with any body
+	UpdatePlaylistWithBody(ctx context.Context, playlistId Ulid, params *UpdatePlaylistParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	UpdatePlaylist(ctx context.Context, playlistId Ulid, params *UpdatePlaylistParams, body UpdatePlaylistJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListSchedules request
 	ListSchedules(ctx context.Context, params *ListSchedulesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// CreateSchedule request
-	CreateSchedule(ctx context.Context, params *CreateScheduleParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// CreateScheduleWithBody request with any body
+	CreateScheduleWithBody(ctx context.Context, params *CreateScheduleParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	CreateSchedule(ctx context.Context, params *CreateScheduleParams, body CreateScheduleJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// DeleteSchedule request
 	DeleteSchedule(ctx context.Context, scheduleId Ulid, params *DeleteScheduleParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2424,8 +2586,10 @@ type ClientInterface interface {
 	// GetSchedule request
 	GetSchedule(ctx context.Context, scheduleId Ulid, params *GetScheduleParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// UpdateSchedule request
-	UpdateSchedule(ctx context.Context, scheduleId Ulid, params *UpdateScheduleParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// UpdateScheduleWithBody request with any body
+	UpdateScheduleWithBody(ctx context.Context, scheduleId Ulid, params *UpdateScheduleParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	UpdateSchedule(ctx context.Context, scheduleId Ulid, params *UpdateScheduleParams, body UpdateScheduleJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListScopeNodes request
 	ListScopeNodes(ctx context.Context, params *ListScopeNodesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2905,8 +3069,20 @@ func (c *Client) ListDayparts(ctx context.Context, params *ListDaypartsParams, r
 	return c.Client.Do(req)
 }
 
-func (c *Client) CreateDaypart(ctx context.Context, params *CreateDaypartParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewCreateDaypartRequest(c.Server, params)
+func (c *Client) CreateDaypartWithBody(ctx context.Context, params *CreateDaypartParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateDaypartRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateDaypart(ctx context.Context, params *CreateDaypartParams, body CreateDaypartJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateDaypartRequest(c.Server, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -2941,8 +3117,20 @@ func (c *Client) GetDaypart(ctx context.Context, daypartId Ulid, params *GetDayp
 	return c.Client.Do(req)
 }
 
-func (c *Client) UpdateDaypart(ctx context.Context, daypartId Ulid, params *UpdateDaypartParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewUpdateDaypartRequest(c.Server, daypartId, params)
+func (c *Client) UpdateDaypartWithBody(ctx context.Context, daypartId Ulid, params *UpdateDaypartParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUpdateDaypartRequestWithBody(c.Server, daypartId, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) UpdateDaypart(ctx context.Context, daypartId Ulid, params *UpdateDaypartParams, body UpdateDaypartJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUpdateDaypartRequest(c.Server, daypartId, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -3193,8 +3381,20 @@ func (c *Client) ListPlaylists(ctx context.Context, params *ListPlaylistsParams,
 	return c.Client.Do(req)
 }
 
-func (c *Client) CreatePlaylist(ctx context.Context, params *CreatePlaylistParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewCreatePlaylistRequest(c.Server, params)
+func (c *Client) CreatePlaylistWithBody(ctx context.Context, params *CreatePlaylistParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreatePlaylistRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreatePlaylist(ctx context.Context, params *CreatePlaylistParams, body CreatePlaylistJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreatePlaylistRequest(c.Server, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -3229,8 +3429,20 @@ func (c *Client) GetPlaylist(ctx context.Context, playlistId Ulid, params *GetPl
 	return c.Client.Do(req)
 }
 
-func (c *Client) UpdatePlaylist(ctx context.Context, playlistId Ulid, params *UpdatePlaylistParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewUpdatePlaylistRequest(c.Server, playlistId, params)
+func (c *Client) UpdatePlaylistWithBody(ctx context.Context, playlistId Ulid, params *UpdatePlaylistParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUpdatePlaylistRequestWithBody(c.Server, playlistId, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) UpdatePlaylist(ctx context.Context, playlistId Ulid, params *UpdatePlaylistParams, body UpdatePlaylistJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUpdatePlaylistRequest(c.Server, playlistId, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -3253,8 +3465,20 @@ func (c *Client) ListSchedules(ctx context.Context, params *ListSchedulesParams,
 	return c.Client.Do(req)
 }
 
-func (c *Client) CreateSchedule(ctx context.Context, params *CreateScheduleParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewCreateScheduleRequest(c.Server, params)
+func (c *Client) CreateScheduleWithBody(ctx context.Context, params *CreateScheduleParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateScheduleRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateSchedule(ctx context.Context, params *CreateScheduleParams, body CreateScheduleJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateScheduleRequest(c.Server, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -3289,8 +3513,20 @@ func (c *Client) GetSchedule(ctx context.Context, scheduleId Ulid, params *GetSc
 	return c.Client.Do(req)
 }
 
-func (c *Client) UpdateSchedule(ctx context.Context, scheduleId Ulid, params *UpdateScheduleParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewUpdateScheduleRequest(c.Server, scheduleId, params)
+func (c *Client) UpdateScheduleWithBody(ctx context.Context, scheduleId Ulid, params *UpdateScheduleParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUpdateScheduleRequestWithBody(c.Server, scheduleId, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) UpdateSchedule(ctx context.Context, scheduleId Ulid, params *UpdateScheduleParams, body UpdateScheduleJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUpdateScheduleRequest(c.Server, scheduleId, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -5023,8 +5259,19 @@ func NewListDaypartsRequest(server string, params *ListDaypartsParams) (*http.Re
 	return req, nil
 }
 
-// NewCreateDaypartRequest generates requests for CreateDaypart
-func NewCreateDaypartRequest(server string, params *CreateDaypartParams) (*http.Request, error) {
+// NewCreateDaypartRequest calls the generic CreateDaypart builder with application/json body
+func NewCreateDaypartRequest(server string, params *CreateDaypartParams, body CreateDaypartJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewCreateDaypartRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewCreateDaypartRequestWithBody generates requests for CreateDaypart with any type of body
+func NewCreateDaypartRequestWithBody(server string, params *CreateDaypartParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -5042,10 +5289,12 @@ func NewCreateDaypartRequest(server string, params *CreateDaypartParams) (*http.
 		return nil, err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
 	if err != nil {
 		return nil, err
 	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	if params != nil {
 
@@ -5183,8 +5432,19 @@ func NewGetDaypartRequest(server string, daypartId Ulid, params *GetDaypartParam
 	return req, nil
 }
 
-// NewUpdateDaypartRequest generates requests for UpdateDaypart
-func NewUpdateDaypartRequest(server string, daypartId Ulid, params *UpdateDaypartParams) (*http.Request, error) {
+// NewUpdateDaypartRequest calls the generic UpdateDaypart builder with application/json body
+func NewUpdateDaypartRequest(server string, daypartId Ulid, params *UpdateDaypartParams, body UpdateDaypartJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewUpdateDaypartRequestWithBody(server, daypartId, params, "application/json", bodyReader)
+}
+
+// NewUpdateDaypartRequestWithBody generates requests for UpdateDaypart with any type of body
+func NewUpdateDaypartRequestWithBody(server string, daypartId Ulid, params *UpdateDaypartParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -5209,10 +5469,12 @@ func NewUpdateDaypartRequest(server string, daypartId Ulid, params *UpdateDaypar
 		return nil, err
 	}
 
-	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), nil)
+	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), body)
 	if err != nil {
 		return nil, err
 	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	if params != nil {
 
@@ -6602,8 +6864,19 @@ func NewListPlaylistsRequest(server string, params *ListPlaylistsParams) (*http.
 	return req, nil
 }
 
-// NewCreatePlaylistRequest generates requests for CreatePlaylist
-func NewCreatePlaylistRequest(server string, params *CreatePlaylistParams) (*http.Request, error) {
+// NewCreatePlaylistRequest calls the generic CreatePlaylist builder with application/json body
+func NewCreatePlaylistRequest(server string, params *CreatePlaylistParams, body CreatePlaylistJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewCreatePlaylistRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewCreatePlaylistRequestWithBody generates requests for CreatePlaylist with any type of body
+func NewCreatePlaylistRequestWithBody(server string, params *CreatePlaylistParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -6621,10 +6894,12 @@ func NewCreatePlaylistRequest(server string, params *CreatePlaylistParams) (*htt
 		return nil, err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
 	if err != nil {
 		return nil, err
 	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	if params != nil {
 
@@ -6762,8 +7037,19 @@ func NewGetPlaylistRequest(server string, playlistId Ulid, params *GetPlaylistPa
 	return req, nil
 }
 
-// NewUpdatePlaylistRequest generates requests for UpdatePlaylist
-func NewUpdatePlaylistRequest(server string, playlistId Ulid, params *UpdatePlaylistParams) (*http.Request, error) {
+// NewUpdatePlaylistRequest calls the generic UpdatePlaylist builder with application/json body
+func NewUpdatePlaylistRequest(server string, playlistId Ulid, params *UpdatePlaylistParams, body UpdatePlaylistJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewUpdatePlaylistRequestWithBody(server, playlistId, params, "application/json", bodyReader)
+}
+
+// NewUpdatePlaylistRequestWithBody generates requests for UpdatePlaylist with any type of body
+func NewUpdatePlaylistRequestWithBody(server string, playlistId Ulid, params *UpdatePlaylistParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -6788,10 +7074,12 @@ func NewUpdatePlaylistRequest(server string, playlistId Ulid, params *UpdatePlay
 		return nil, err
 	}
 
-	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), nil)
+	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), body)
 	if err != nil {
 		return nil, err
 	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	if params != nil {
 
@@ -6913,8 +7201,19 @@ func NewListSchedulesRequest(server string, params *ListSchedulesParams) (*http.
 	return req, nil
 }
 
-// NewCreateScheduleRequest generates requests for CreateSchedule
-func NewCreateScheduleRequest(server string, params *CreateScheduleParams) (*http.Request, error) {
+// NewCreateScheduleRequest calls the generic CreateSchedule builder with application/json body
+func NewCreateScheduleRequest(server string, params *CreateScheduleParams, body CreateScheduleJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewCreateScheduleRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewCreateScheduleRequestWithBody generates requests for CreateSchedule with any type of body
+func NewCreateScheduleRequestWithBody(server string, params *CreateScheduleParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -6932,10 +7231,12 @@ func NewCreateScheduleRequest(server string, params *CreateScheduleParams) (*htt
 		return nil, err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
 	if err != nil {
 		return nil, err
 	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	if params != nil {
 
@@ -7073,8 +7374,19 @@ func NewGetScheduleRequest(server string, scheduleId Ulid, params *GetSchedulePa
 	return req, nil
 }
 
-// NewUpdateScheduleRequest generates requests for UpdateSchedule
-func NewUpdateScheduleRequest(server string, scheduleId Ulid, params *UpdateScheduleParams) (*http.Request, error) {
+// NewUpdateScheduleRequest calls the generic UpdateSchedule builder with application/json body
+func NewUpdateScheduleRequest(server string, scheduleId Ulid, params *UpdateScheduleParams, body UpdateScheduleJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewUpdateScheduleRequestWithBody(server, scheduleId, params, "application/json", bodyReader)
+}
+
+// NewUpdateScheduleRequestWithBody generates requests for UpdateSchedule with any type of body
+func NewUpdateScheduleRequestWithBody(server string, scheduleId Ulid, params *UpdateScheduleParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -7099,10 +7411,12 @@ func NewUpdateScheduleRequest(server string, scheduleId Ulid, params *UpdateSche
 		return nil, err
 	}
 
-	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), nil)
+	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), body)
 	if err != nil {
 		return nil, err
 	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	if params != nil {
 
@@ -8647,8 +8961,10 @@ type ClientWithResponsesInterface interface {
 	// ListDaypartsWithResponse request
 	ListDaypartsWithResponse(ctx context.Context, params *ListDaypartsParams, reqEditors ...RequestEditorFn) (*ListDaypartsResponse, error)
 
-	// CreateDaypartWithResponse request
-	CreateDaypartWithResponse(ctx context.Context, params *CreateDaypartParams, reqEditors ...RequestEditorFn) (*CreateDaypartResponse, error)
+	// CreateDaypartWithBodyWithResponse request with any body
+	CreateDaypartWithBodyWithResponse(ctx context.Context, params *CreateDaypartParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateDaypartResponse, error)
+
+	CreateDaypartWithResponse(ctx context.Context, params *CreateDaypartParams, body CreateDaypartJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateDaypartResponse, error)
 
 	// DeleteDaypartWithResponse request
 	DeleteDaypartWithResponse(ctx context.Context, daypartId Ulid, params *DeleteDaypartParams, reqEditors ...RequestEditorFn) (*DeleteDaypartResponse, error)
@@ -8656,8 +8972,10 @@ type ClientWithResponsesInterface interface {
 	// GetDaypartWithResponse request
 	GetDaypartWithResponse(ctx context.Context, daypartId Ulid, params *GetDaypartParams, reqEditors ...RequestEditorFn) (*GetDaypartResponse, error)
 
-	// UpdateDaypartWithResponse request
-	UpdateDaypartWithResponse(ctx context.Context, daypartId Ulid, params *UpdateDaypartParams, reqEditors ...RequestEditorFn) (*UpdateDaypartResponse, error)
+	// UpdateDaypartWithBodyWithResponse request with any body
+	UpdateDaypartWithBodyWithResponse(ctx context.Context, daypartId Ulid, params *UpdateDaypartParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateDaypartResponse, error)
+
+	UpdateDaypartWithResponse(ctx context.Context, daypartId Ulid, params *UpdateDaypartParams, body UpdateDaypartJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateDaypartResponse, error)
 
 	// ListDevicesWithResponse request
 	ListDevicesWithResponse(ctx context.Context, params *ListDevicesParams, reqEditors ...RequestEditorFn) (*ListDevicesResponse, error)
@@ -8717,8 +9035,10 @@ type ClientWithResponsesInterface interface {
 	// ListPlaylistsWithResponse request
 	ListPlaylistsWithResponse(ctx context.Context, params *ListPlaylistsParams, reqEditors ...RequestEditorFn) (*ListPlaylistsResponse, error)
 
-	// CreatePlaylistWithResponse request
-	CreatePlaylistWithResponse(ctx context.Context, params *CreatePlaylistParams, reqEditors ...RequestEditorFn) (*CreatePlaylistResponse, error)
+	// CreatePlaylistWithBodyWithResponse request with any body
+	CreatePlaylistWithBodyWithResponse(ctx context.Context, params *CreatePlaylistParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreatePlaylistResponse, error)
+
+	CreatePlaylistWithResponse(ctx context.Context, params *CreatePlaylistParams, body CreatePlaylistJSONRequestBody, reqEditors ...RequestEditorFn) (*CreatePlaylistResponse, error)
 
 	// DeletePlaylistWithResponse request
 	DeletePlaylistWithResponse(ctx context.Context, playlistId Ulid, params *DeletePlaylistParams, reqEditors ...RequestEditorFn) (*DeletePlaylistResponse, error)
@@ -8726,14 +9046,18 @@ type ClientWithResponsesInterface interface {
 	// GetPlaylistWithResponse request
 	GetPlaylistWithResponse(ctx context.Context, playlistId Ulid, params *GetPlaylistParams, reqEditors ...RequestEditorFn) (*GetPlaylistResponse, error)
 
-	// UpdatePlaylistWithResponse request
-	UpdatePlaylistWithResponse(ctx context.Context, playlistId Ulid, params *UpdatePlaylistParams, reqEditors ...RequestEditorFn) (*UpdatePlaylistResponse, error)
+	// UpdatePlaylistWithBodyWithResponse request with any body
+	UpdatePlaylistWithBodyWithResponse(ctx context.Context, playlistId Ulid, params *UpdatePlaylistParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdatePlaylistResponse, error)
+
+	UpdatePlaylistWithResponse(ctx context.Context, playlistId Ulid, params *UpdatePlaylistParams, body UpdatePlaylistJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdatePlaylistResponse, error)
 
 	// ListSchedulesWithResponse request
 	ListSchedulesWithResponse(ctx context.Context, params *ListSchedulesParams, reqEditors ...RequestEditorFn) (*ListSchedulesResponse, error)
 
-	// CreateScheduleWithResponse request
-	CreateScheduleWithResponse(ctx context.Context, params *CreateScheduleParams, reqEditors ...RequestEditorFn) (*CreateScheduleResponse, error)
+	// CreateScheduleWithBodyWithResponse request with any body
+	CreateScheduleWithBodyWithResponse(ctx context.Context, params *CreateScheduleParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateScheduleResponse, error)
+
+	CreateScheduleWithResponse(ctx context.Context, params *CreateScheduleParams, body CreateScheduleJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateScheduleResponse, error)
 
 	// DeleteScheduleWithResponse request
 	DeleteScheduleWithResponse(ctx context.Context, scheduleId Ulid, params *DeleteScheduleParams, reqEditors ...RequestEditorFn) (*DeleteScheduleResponse, error)
@@ -8741,8 +9065,10 @@ type ClientWithResponsesInterface interface {
 	// GetScheduleWithResponse request
 	GetScheduleWithResponse(ctx context.Context, scheduleId Ulid, params *GetScheduleParams, reqEditors ...RequestEditorFn) (*GetScheduleResponse, error)
 
-	// UpdateScheduleWithResponse request
-	UpdateScheduleWithResponse(ctx context.Context, scheduleId Ulid, params *UpdateScheduleParams, reqEditors ...RequestEditorFn) (*UpdateScheduleResponse, error)
+	// UpdateScheduleWithBodyWithResponse request with any body
+	UpdateScheduleWithBodyWithResponse(ctx context.Context, scheduleId Ulid, params *UpdateScheduleParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateScheduleResponse, error)
+
+	UpdateScheduleWithResponse(ctx context.Context, scheduleId Ulid, params *UpdateScheduleParams, body UpdateScheduleJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateScheduleResponse, error)
 
 	// ListScopeNodesWithResponse request
 	ListScopeNodesWithResponse(ctx context.Context, params *ListScopeNodesParams, reqEditors ...RequestEditorFn) (*ListScopeNodesResponse, error)
@@ -11601,9 +11927,17 @@ func (c *ClientWithResponses) ListDaypartsWithResponse(ctx context.Context, para
 	return ParseListDaypartsResponse(rsp)
 }
 
-// CreateDaypartWithResponse request returning *CreateDaypartResponse
-func (c *ClientWithResponses) CreateDaypartWithResponse(ctx context.Context, params *CreateDaypartParams, reqEditors ...RequestEditorFn) (*CreateDaypartResponse, error) {
-	rsp, err := c.CreateDaypart(ctx, params, reqEditors...)
+// CreateDaypartWithBodyWithResponse request with arbitrary body returning *CreateDaypartResponse
+func (c *ClientWithResponses) CreateDaypartWithBodyWithResponse(ctx context.Context, params *CreateDaypartParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateDaypartResponse, error) {
+	rsp, err := c.CreateDaypartWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateDaypartResponse(rsp)
+}
+
+func (c *ClientWithResponses) CreateDaypartWithResponse(ctx context.Context, params *CreateDaypartParams, body CreateDaypartJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateDaypartResponse, error) {
+	rsp, err := c.CreateDaypart(ctx, params, body, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -11628,9 +11962,17 @@ func (c *ClientWithResponses) GetDaypartWithResponse(ctx context.Context, daypar
 	return ParseGetDaypartResponse(rsp)
 }
 
-// UpdateDaypartWithResponse request returning *UpdateDaypartResponse
-func (c *ClientWithResponses) UpdateDaypartWithResponse(ctx context.Context, daypartId Ulid, params *UpdateDaypartParams, reqEditors ...RequestEditorFn) (*UpdateDaypartResponse, error) {
-	rsp, err := c.UpdateDaypart(ctx, daypartId, params, reqEditors...)
+// UpdateDaypartWithBodyWithResponse request with arbitrary body returning *UpdateDaypartResponse
+func (c *ClientWithResponses) UpdateDaypartWithBodyWithResponse(ctx context.Context, daypartId Ulid, params *UpdateDaypartParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateDaypartResponse, error) {
+	rsp, err := c.UpdateDaypartWithBody(ctx, daypartId, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUpdateDaypartResponse(rsp)
+}
+
+func (c *ClientWithResponses) UpdateDaypartWithResponse(ctx context.Context, daypartId Ulid, params *UpdateDaypartParams, body UpdateDaypartJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateDaypartResponse, error) {
+	rsp, err := c.UpdateDaypart(ctx, daypartId, params, body, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -11815,9 +12157,17 @@ func (c *ClientWithResponses) ListPlaylistsWithResponse(ctx context.Context, par
 	return ParseListPlaylistsResponse(rsp)
 }
 
-// CreatePlaylistWithResponse request returning *CreatePlaylistResponse
-func (c *ClientWithResponses) CreatePlaylistWithResponse(ctx context.Context, params *CreatePlaylistParams, reqEditors ...RequestEditorFn) (*CreatePlaylistResponse, error) {
-	rsp, err := c.CreatePlaylist(ctx, params, reqEditors...)
+// CreatePlaylistWithBodyWithResponse request with arbitrary body returning *CreatePlaylistResponse
+func (c *ClientWithResponses) CreatePlaylistWithBodyWithResponse(ctx context.Context, params *CreatePlaylistParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreatePlaylistResponse, error) {
+	rsp, err := c.CreatePlaylistWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreatePlaylistResponse(rsp)
+}
+
+func (c *ClientWithResponses) CreatePlaylistWithResponse(ctx context.Context, params *CreatePlaylistParams, body CreatePlaylistJSONRequestBody, reqEditors ...RequestEditorFn) (*CreatePlaylistResponse, error) {
+	rsp, err := c.CreatePlaylist(ctx, params, body, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -11842,9 +12192,17 @@ func (c *ClientWithResponses) GetPlaylistWithResponse(ctx context.Context, playl
 	return ParseGetPlaylistResponse(rsp)
 }
 
-// UpdatePlaylistWithResponse request returning *UpdatePlaylistResponse
-func (c *ClientWithResponses) UpdatePlaylistWithResponse(ctx context.Context, playlistId Ulid, params *UpdatePlaylistParams, reqEditors ...RequestEditorFn) (*UpdatePlaylistResponse, error) {
-	rsp, err := c.UpdatePlaylist(ctx, playlistId, params, reqEditors...)
+// UpdatePlaylistWithBodyWithResponse request with arbitrary body returning *UpdatePlaylistResponse
+func (c *ClientWithResponses) UpdatePlaylistWithBodyWithResponse(ctx context.Context, playlistId Ulid, params *UpdatePlaylistParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdatePlaylistResponse, error) {
+	rsp, err := c.UpdatePlaylistWithBody(ctx, playlistId, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUpdatePlaylistResponse(rsp)
+}
+
+func (c *ClientWithResponses) UpdatePlaylistWithResponse(ctx context.Context, playlistId Ulid, params *UpdatePlaylistParams, body UpdatePlaylistJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdatePlaylistResponse, error) {
+	rsp, err := c.UpdatePlaylist(ctx, playlistId, params, body, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -11860,9 +12218,17 @@ func (c *ClientWithResponses) ListSchedulesWithResponse(ctx context.Context, par
 	return ParseListSchedulesResponse(rsp)
 }
 
-// CreateScheduleWithResponse request returning *CreateScheduleResponse
-func (c *ClientWithResponses) CreateScheduleWithResponse(ctx context.Context, params *CreateScheduleParams, reqEditors ...RequestEditorFn) (*CreateScheduleResponse, error) {
-	rsp, err := c.CreateSchedule(ctx, params, reqEditors...)
+// CreateScheduleWithBodyWithResponse request with arbitrary body returning *CreateScheduleResponse
+func (c *ClientWithResponses) CreateScheduleWithBodyWithResponse(ctx context.Context, params *CreateScheduleParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateScheduleResponse, error) {
+	rsp, err := c.CreateScheduleWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateScheduleResponse(rsp)
+}
+
+func (c *ClientWithResponses) CreateScheduleWithResponse(ctx context.Context, params *CreateScheduleParams, body CreateScheduleJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateScheduleResponse, error) {
+	rsp, err := c.CreateSchedule(ctx, params, body, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -11887,9 +12253,17 @@ func (c *ClientWithResponses) GetScheduleWithResponse(ctx context.Context, sched
 	return ParseGetScheduleResponse(rsp)
 }
 
-// UpdateScheduleWithResponse request returning *UpdateScheduleResponse
-func (c *ClientWithResponses) UpdateScheduleWithResponse(ctx context.Context, scheduleId Ulid, params *UpdateScheduleParams, reqEditors ...RequestEditorFn) (*UpdateScheduleResponse, error) {
-	rsp, err := c.UpdateSchedule(ctx, scheduleId, params, reqEditors...)
+// UpdateScheduleWithBodyWithResponse request with arbitrary body returning *UpdateScheduleResponse
+func (c *ClientWithResponses) UpdateScheduleWithBodyWithResponse(ctx context.Context, scheduleId Ulid, params *UpdateScheduleParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateScheduleResponse, error) {
+	rsp, err := c.UpdateScheduleWithBody(ctx, scheduleId, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUpdateScheduleResponse(rsp)
+}
+
+func (c *ClientWithResponses) UpdateScheduleWithResponse(ctx context.Context, scheduleId Ulid, params *UpdateScheduleParams, body UpdateScheduleJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateScheduleResponse, error) {
+	rsp, err := c.UpdateSchedule(ctx, scheduleId, params, body, reqEditors...)
 	if err != nil {
 		return nil, err
 	}

@@ -61,7 +61,7 @@ func playlistAt(t *testing.T, node, externalID string) []byte {
 	t.Helper()
 	p := playlistFixture(node, nil)
 	p.ExternalID = externalID
-	return mustJSON(t, p)
+	return rowCreateBody(t, p)
 }
 
 // seedPlaylistAt creates a playlist at node AS THE ROOT-BOUND SEEDER and returns

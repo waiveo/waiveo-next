@@ -237,9 +237,18 @@ func (e *testEnv) createNode(t *testing.T, n datamodel.ScopeNode) string {
 // rather than going through here.
 func createBody(t *testing.T, n datamodel.ScopeNode) []byte {
 	t.Helper()
+	return rowCreateBody(t, n)
+}
+
+// rowCreateBody is createBody for any row type. Every datamodel row struct is the
+// STORED shape, so marshalling one whole emits id, revision, created_at and
+// updated_at — none of which a Create schema declares, and all of which the
+// surface refuses as undeclared members.
+func rowCreateBody(t *testing.T, row any) []byte {
+	t.Helper()
 	var body map[string]json.RawMessage
-	if err := json.Unmarshal(mustJSON(t, n), &body); err != nil {
-		t.Fatalf("re-decode scope node: %v", err)
+	if err := json.Unmarshal(mustJSON(t, row), &body); err != nil {
+		t.Fatalf("re-decode row: %v", err)
 	}
 	for _, serverOwned := range []string{"id", "revision", "created_at", "updated_at"} {
 		delete(body, serverOwned)

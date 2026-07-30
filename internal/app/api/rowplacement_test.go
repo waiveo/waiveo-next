@@ -22,7 +22,7 @@ func TestASchedulingRowMustCarryAPlacement(t *testing.T) {
 
 	t.Run("create with no scope_node is refused", func(t *testing.T) {
 		res, raw := e.do(t, http.MethodPost, "/api/v1/schedules",
-			[]byte(`{"name":"Unplaced","timezone":"America/Chicago"}`), nil)
+			[]byte(`{"name":"Unplaced"}`), nil)
 		if res.StatusCode != http.StatusUnprocessableEntity {
 			t.Fatalf("status = %d, want 422; body %s", res.StatusCode, raw)
 		}
@@ -34,7 +34,7 @@ func TestASchedulingRowMustCarryAPlacement(t *testing.T) {
 	t.Run("clearing an existing placement by PATCH is refused", func(t *testing.T) {
 		site := e.createNode(t, siteNode(""))
 		res, raw := e.do(t, http.MethodPost, "/api/v1/schedules",
-			[]byte(`{"scope_node":"`+site+`","name":"Placed","timezone":"America/Chicago"}`), nil)
+			[]byte(`{"scope_node":"`+site+`","name":"Placed"}`), nil)
 		if res.StatusCode != http.StatusCreated {
 			t.Fatalf("placed create = %d; body %s", res.StatusCode, raw)
 		}

@@ -1292,6 +1292,74 @@ export interface components {
             created_at: components["schemas"]["Timestamp"];
             updated_at: components["schemas"]["Timestamp"];
         };
+        /** @description One entry of a playlist's `items` (DAT-041). `source` selects which of the two content shapes the entry uses — `asset` carries `asset_ref`, `playable` carries `pack_id` + `content_id` — and data-model/1 enforces that pairing with its own per-field codes. */
+        PlaylistItem: {
+            /** @enum {string} */
+            source: "asset" | "playable";
+            asset_ref?: string;
+            pack_id?: string;
+            content_id?: string;
+            duration_seconds?: number;
+        };
+        PlaylistCreate: {
+            external_id?: string | null;
+            scope_node: components["schemas"]["Ulid"];
+            name: string;
+            items: components["schemas"]["PlaylistItem"][];
+            labels?: components["schemas"]["LabelMap"];
+        };
+        /** @description Partial update — every member optional, at least one present. */
+        PlaylistUpdate: {
+            external_id?: string | null;
+            scope_node?: components["schemas"]["Ulid"];
+            name?: string;
+            items?: components["schemas"]["PlaylistItem"][];
+            labels?: components["schemas"]["LabelMap"];
+        };
+        ScheduleCreate: {
+            external_id?: string | null;
+            scope_node: components["schemas"]["Ulid"];
+            name: string;
+            fallback_id?: components["schemas"]["Ulid"];
+            priority?: number;
+            misfire?: string;
+            labels?: components["schemas"]["LabelMap"];
+        };
+        /** @description Partial update — every member optional, at least one present. */
+        ScheduleUpdate: {
+            external_id?: string | null;
+            scope_node?: components["schemas"]["Ulid"];
+            name?: string;
+            fallback_id?: components["schemas"]["Ulid"];
+            priority?: number;
+            misfire?: string;
+            labels?: components["schemas"]["LabelMap"];
+        };
+        DaypartCreate: {
+            schedule_id: components["schemas"]["Ulid"];
+            scope_node: components["schemas"]["Ulid"];
+            days_of_week: number[];
+            start_time: string;
+            end_time: string;
+            display_power: string;
+            playlist_id?: components["schemas"]["Ulid"];
+            preset_batch_id?: components["schemas"]["Ulid"];
+            misfire?: string;
+            name?: string;
+        };
+        /** @description Partial update — every member optional, at least one present. */
+        DaypartUpdate: {
+            schedule_id?: components["schemas"]["Ulid"];
+            scope_node?: components["schemas"]["Ulid"];
+            days_of_week?: number[];
+            start_time?: string;
+            end_time?: string;
+            display_power?: string;
+            playlist_id?: components["schemas"]["Ulid"];
+            preset_batch_id?: components["schemas"]["Ulid"];
+            misfire?: string;
+            name?: string;
+        };
         ScreenCreate: {
             external_id?: string | null;
             name: string;
@@ -2752,7 +2820,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScheduleCreate"];
+            };
+        };
         responses: {
             /** @description The created schedule. Shape stub — the row schema is a later minor. */
             201: {
@@ -2837,7 +2909,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScheduleUpdate"];
+            };
+        };
         responses: {
             /** @description The updated schedule. Shape stub — the row schema is a later minor. */
             200: {
@@ -2896,7 +2972,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DaypartCreate"];
+            };
+        };
         responses: {
             /** @description The created daypart. Shape stub — the row schema is a later minor. */
             201: {
@@ -2981,7 +3061,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DaypartUpdate"];
+            };
+        };
         responses: {
             /** @description The updated daypart. Shape stub — the row schema is a later minor. */
             200: {
@@ -3040,7 +3124,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlaylistCreate"];
+            };
+        };
         responses: {
             /** @description The created playlist. Shape stub — the row schema is a later minor. */
             201: {
@@ -3125,7 +3213,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlaylistUpdate"];
+            };
+        };
         responses: {
             /** @description The updated playlist. Shape stub — the row schema is a later minor. */
             200: {

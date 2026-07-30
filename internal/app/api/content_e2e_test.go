@@ -63,10 +63,10 @@ func TestContentPipelineEndToEnd(t *testing.T) {
 		Name:      "Content Pipeline Playlist",
 		Items:     []datamodel.PlaylistItem{{Source: "asset", AssetRef: up.AssetRef}},
 	}
-	playlistID := decodeID(t, e.createOK(t, "/api/v1/playlists", mustJSON(t, pl)))
+	playlistID := decodeID(t, e.createOK(t, "/api/v1/playlists", rowCreateBody(t, pl)))
 
 	sch := datamodel.Schedule{ScopeNode: screenID, Name: "Content Pipeline Schedule"}
-	scheduleID := decodeID(t, e.createOK(t, "/api/v1/schedules", mustJSON(t, sch)))
+	scheduleID := decodeID(t, e.createOK(t, "/api/v1/schedules", rowCreateBody(t, sch)))
 
 	// A content daypart 06:00–22:00 every day, playing the playlist — the demo
 	// resolves at noon Chicago (e2eContentInstant), inside this window.
@@ -75,7 +75,7 @@ func TestContentPipelineEndToEnd(t *testing.T) {
 		DaysOfWeek: []int{0, 1, 2, 3, 4, 5, 6}, StartTime: "06:00:00", EndTime: "22:00:00",
 		DisplayPower: "on", PlaylistID: playlistID, Name: "Content Hours",
 	}
-	e.createOK(t, "/api/v1/dayparts", mustJSON(t, dp))
+	e.createOK(t, "/api/v1/dayparts", rowCreateBody(t, dp))
 
 	// --- 3. Resolve the screen's program through the full signed desired-state
 	// path (BuildFromStore carries content_origin; the apply gate verifies it),
@@ -140,7 +140,7 @@ func TestPlaylistUnknownAssetRefRejected(t *testing.T) {
 		ScopeNode: screenID, Name: "Dangling Asset Playlist",
 		Items: []datamodel.PlaylistItem{{Source: "asset", AssetRef: unknown}},
 	}
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/playlists", mustJSON(t, pl), nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/playlists", rowCreateBody(t, pl), nil)
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("un-uploaded asset_ref playlist status = %d, want 422 (body %s)", resp.StatusCode, raw)
 	}
@@ -220,7 +220,7 @@ func TestPlaylistReauthoringSurvivesOriginRestart(t *testing.T) {
 		ScopeNode: screenID, Name: "Restart Survivor Playlist",
 		Items: []datamodel.PlaylistItem{{Source: "asset", AssetRef: ref}},
 	}
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/playlists", mustJSON(t, pl), nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/playlists", rowCreateBody(t, pl), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("authoring a playlist for content uploaded before the restart: status %d, body %s (want 201 — the guard must not invert into rejecting already-uploaded content)", resp.StatusCode, raw)
 	}

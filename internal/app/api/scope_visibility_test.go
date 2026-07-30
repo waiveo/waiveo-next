@@ -346,7 +346,7 @@ func TestOutOfReachRowReadsAsNonexistent(t *testing.T) {
 	// out-of-reach screen is equally unaddressable, and its 404 names its OWN
 	// resource noun (api.go's displayName), not a generic one.
 	e.uploadContent(t, playlistFixtureAsset)
-	playlistID := decodeID(t, e.createOK(t, "/api/v1/playlists", mustJSON(t, playlistFixture(outOfReach, nil))))
+	playlistID := decodeID(t, e.createOK(t, "/api/v1/playlists", rowCreateBody(t, playlistFixture(outOfReach, nil))))
 	status, body := problemOf(http.MethodGet, "/api/v1/playlists/"+playlistID)
 	if status != http.StatusNotFound {
 		t.Fatalf("GET a playlist placed at an out-of-reach scope node = %d, want 404", status)

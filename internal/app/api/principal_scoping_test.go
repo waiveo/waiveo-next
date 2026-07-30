@@ -113,7 +113,7 @@ func TestIdempotencyKeyIsScopedPerPrincipal(t *testing.T) {
 
 	// The identical key AND the identical body from both callers.
 	const key = "shared-idempotency-key-1"
-	body := mustJSON(t, playlistFixture(screenID, nil))
+	body := rowCreateBody(t, playlistFixture(screenID, nil))
 	headers := map[string]string{"Idempotency-Key": key, "Content-Type": "application/json"}
 
 	aliceResp, aliceRaw := e.as(t, e.alice, http.MethodPost, "/api/v1/playlists", body, headers)
@@ -186,7 +186,7 @@ func TestExternalIDCollidesAcrossPrincipalsUnderOneScopeNode(t *testing.T) {
 	playlist := func(scopeNode string) []byte {
 		p := playlistFixture(scopeNode, nil)
 		p.ExternalID = "lobby-loop"
-		return mustJSON(t, p)
+		return rowCreateBody(t, p)
 	}
 
 	aliceResp, aliceRaw := e.as(t, e.alice, http.MethodPost, "/api/v1/playlists", playlist(screenID), nil)

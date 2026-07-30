@@ -332,7 +332,7 @@ func TestExportWorkspaceEmbedsReferencedAssets(t *testing.T) {
 	// playlist item references — the same rows the authoring surface's own tests
 	// build, so the export enumerates a workspace shaped like a real one.
 	screenID := seedSchedulingScope(t, e.testEnv)
-	resp, raw := e.as(t, who, http.MethodPost, "/api/v1/playlists", mustJSON(t, playlistFixture(screenID, nil)), nil)
+	resp, raw := e.as(t, who, http.MethodPost, "/api/v1/playlists", rowCreateBody(t, playlistFixture(screenID, nil)), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create playlist: status %d, body %s", resp.StatusCode, raw)
 	}

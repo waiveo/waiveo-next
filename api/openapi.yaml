@@ -1199,6 +1199,12 @@ paths:
       parameters:
         - $ref: "#/components/parameters/IdempotencyKeyParam"
         - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScheduleCreate"
       responses:
         "201":
           description: The created schedule. Shape stub — the row schema is a later minor.
@@ -1240,6 +1246,12 @@ paths:
       parameters:
         - $ref: "#/components/parameters/IfMatchParam"
         - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScheduleUpdate"
       responses:
         "200":
           description: The updated schedule. Shape stub — the row schema is a later minor.
@@ -1299,6 +1311,12 @@ paths:
       parameters:
         - $ref: "#/components/parameters/IdempotencyKeyParam"
         - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DaypartCreate"
       responses:
         "201":
           description: The created daypart. Shape stub — the row schema is a later minor.
@@ -1340,6 +1358,12 @@ paths:
       parameters:
         - $ref: "#/components/parameters/IfMatchParam"
         - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DaypartUpdate"
       responses:
         "200":
           description: The updated daypart. Shape stub — the row schema is a later minor.
@@ -1403,6 +1427,12 @@ paths:
       parameters:
         - $ref: "#/components/parameters/IdempotencyKeyParam"
         - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlaylistCreate"
       responses:
         "201":
           description: The created playlist. Shape stub — the row schema is a later minor.
@@ -1448,6 +1478,12 @@ paths:
       parameters:
         - $ref: "#/components/parameters/IfMatchParam"
         - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlaylistUpdate"
       responses:
         "200":
           description: The updated playlist. Shape stub — the row schema is a later minor.
@@ -3362,6 +3398,163 @@ components:
         updated_at:
           $ref: "#/components/schemas/Timestamp"
 
+    PlaylistItem:
+      type: object
+      description: >-
+        One entry of a playlist's `items` (DAT-041). `source` selects which of the
+        two content shapes the entry uses — `asset` carries `asset_ref`, `playable`
+        carries `pack_id` + `content_id` — and data-model/1 enforces that pairing
+        with its own per-field codes.
+      required: [source]
+      additionalProperties: false
+      properties:
+        source:
+          type: string
+          enum: [asset, playable]
+        asset_ref:
+          type: string
+        pack_id:
+          type: string
+        content_id:
+          type: string
+        duration_seconds:
+          type: integer
+          x-go-type: "*int"
+    PlaylistCreate:
+      type: object
+      required: [scope_node, name, items]
+      additionalProperties: false
+      properties:
+        external_id:
+          type: ["string", "null"]
+          x-go-type: "*string"
+        scope_node:
+          $ref: "#/components/schemas/Ulid"
+        name:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlaylistItem"
+        labels:
+          $ref: "#/components/schemas/LabelMap"
+    PlaylistUpdate:
+      type: object
+      description: Partial update — every member optional, at least one present.
+      minProperties: 1
+      additionalProperties: false
+      properties:
+        external_id:
+          type: ["string", "null"]
+          x-go-type: "*string"
+        scope_node:
+          $ref: "#/components/schemas/Ulid"
+        name:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlaylistItem"
+        labels:
+          $ref: "#/components/schemas/LabelMap"
+    ScheduleCreate:
+      type: object
+      required: [scope_node, name]
+      additionalProperties: false
+      properties:
+        external_id:
+          type: ["string", "null"]
+          x-go-type: "*string"
+        scope_node:
+          $ref: "#/components/schemas/Ulid"
+        name:
+          type: string
+        fallback_id:
+          $ref: "#/components/schemas/Ulid"
+        priority:
+          type: integer
+          x-go-type: "*int"
+        misfire:
+          type: string
+        labels:
+          $ref: "#/components/schemas/LabelMap"
+    ScheduleUpdate:
+      type: object
+      description: Partial update — every member optional, at least one present.
+      minProperties: 1
+      additionalProperties: false
+      properties:
+        external_id:
+          type: ["string", "null"]
+          x-go-type: "*string"
+        scope_node:
+          $ref: "#/components/schemas/Ulid"
+        name:
+          type: string
+        fallback_id:
+          $ref: "#/components/schemas/Ulid"
+        priority:
+          type: integer
+          x-go-type: "*int"
+        misfire:
+          type: string
+        labels:
+          $ref: "#/components/schemas/LabelMap"
+    DaypartCreate:
+      type: object
+      required: [schedule_id, scope_node, days_of_week, start_time, end_time, display_power]
+      additionalProperties: false
+      properties:
+        schedule_id:
+          $ref: "#/components/schemas/Ulid"
+        scope_node:
+          $ref: "#/components/schemas/Ulid"
+        days_of_week:
+          type: array
+          items:
+            type: integer
+        start_time:
+          type: string
+        end_time:
+          type: string
+        display_power:
+          type: string
+        playlist_id:
+          $ref: "#/components/schemas/Ulid"
+        preset_batch_id:
+          $ref: "#/components/schemas/Ulid"
+        misfire:
+          type: string
+        name:
+          type: string
+    DaypartUpdate:
+      type: object
+      description: Partial update — every member optional, at least one present.
+      minProperties: 1
+      additionalProperties: false
+      properties:
+        schedule_id:
+          $ref: "#/components/schemas/Ulid"
+        scope_node:
+          $ref: "#/components/schemas/Ulid"
+        days_of_week:
+          type: array
+          items:
+            type: integer
+        start_time:
+          type: string
+        end_time:
+          type: string
+        display_power:
+          type: string
+        playlist_id:
+          $ref: "#/components/schemas/Ulid"
+        preset_batch_id:
+          $ref: "#/components/schemas/Ulid"
+        misfire:
+          type: string
+        name:
+          type: string
     ScreenCreate:
       type: object
       required: [name, scope_node]

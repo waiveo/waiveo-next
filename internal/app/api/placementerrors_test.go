@@ -20,7 +20,7 @@ func TestAnUnresolvablePlacementDoesNotSuppressOtherFaults(t *testing.T) {
 	e := newEnv(t)
 	body := []byte(`{"scope_node":"01J8ZN0SVCHN0DEANYWHERE001",` +
 		`"schedule_id":"01J8ZSCHEDULEDOESNOTEXIST",` +
-		`"name":"Two faults","start":"06:00","end":"22:00","weekdays":[1,2,3,4,5],` +
+		`"name":"Two faults","start_time":"06:00","end_time":"22:00","days_of_week":[1,2,3,4,5],` +
 		`"display_power":"sideways"}`)
 
 	res, raw := e.do(t, http.MethodPost, "/api/v1/dayparts", body, nil)

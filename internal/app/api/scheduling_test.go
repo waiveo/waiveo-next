@@ -87,7 +87,7 @@ func TestSchedulingCoreCRUDHappyPath(t *testing.T) {
 	e := newEnv(t)
 	screenID := seedSchedulingScope(t, e)
 
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/playlists", mustJSON(t, playlistFixture(screenID, nil)), nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/playlists", rowCreateBody(t, playlistFixture(screenID, nil)), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create playlist status = %d, body %s", resp.StatusCode, raw)
 	}
@@ -96,7 +96,7 @@ func TestSchedulingCoreCRUDHappyPath(t *testing.T) {
 	}
 	playlistAID := decodeID(t, raw)
 
-	resp, raw = e.do(t, http.MethodPost, "/api/v1/schedules", mustJSON(t, scheduleFixture(screenID)), nil)
+	resp, raw = e.do(t, http.MethodPost, "/api/v1/schedules", rowCreateBody(t, scheduleFixture(screenID)), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create schedule status = %d, body %s", resp.StatusCode, raw)
 	}
@@ -108,12 +108,12 @@ func TestSchedulingCoreCRUDHappyPath(t *testing.T) {
 	// Two non-overlapping dayparts (half-open [06:00,12:00) then [12:00,22:00),
 	// same weekdays) referencing the schedule + playlist above.
 	d1 := daypartFixture(screenID, scheduleAID, playlistAID, "06:00:00", "12:00:00", []int{1, 2, 3, 4, 5})
-	resp, raw = e.do(t, http.MethodPost, "/api/v1/dayparts", mustJSON(t, d1), nil)
+	resp, raw = e.do(t, http.MethodPost, "/api/v1/dayparts", rowCreateBody(t, d1), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create daypart1 status = %d, body %s", resp.StatusCode, raw)
 	}
 	d2 := daypartFixture(screenID, scheduleAID, playlistAID, "12:00:00", "22:00:00", []int{1, 2, 3, 4, 5})
-	resp, raw = e.do(t, http.MethodPost, "/api/v1/dayparts", mustJSON(t, d2), nil)
+	resp, raw = e.do(t, http.MethodPost, "/api/v1/dayparts", rowCreateBody(t, d2), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create daypart2 status = %d, body %s", resp.StatusCode, raw)
 	}
@@ -127,15 +127,15 @@ func TestSchedulingCoreCRUDHappyPath(t *testing.T) {
 func TestDaypartOverlapValidationFailed(t *testing.T) {
 	e := newEnv(t)
 	screenID := seedSchedulingScope(t, e)
-	playlistAID := decodeID(t, e.createOK(t, "/api/v1/playlists", mustJSON(t, playlistFixture(screenID, nil))))
-	scheduleAID := decodeID(t, e.createOK(t, "/api/v1/schedules", mustJSON(t, scheduleFixture(screenID))))
+	playlistAID := decodeID(t, e.createOK(t, "/api/v1/playlists", rowCreateBody(t, playlistFixture(screenID, nil))))
+	scheduleAID := decodeID(t, e.createOK(t, "/api/v1/schedules", rowCreateBody(t, scheduleFixture(screenID))))
 
 	d1 := daypartFixture(screenID, scheduleAID, playlistAID, "06:00:00", "14:00:00", []int{1, 2, 3, 4, 5})
-	e.createOK(t, "/api/v1/dayparts", mustJSON(t, d1))
+	e.createOK(t, "/api/v1/dayparts", rowCreateBody(t, d1))
 
 	// d3 overlaps d1 on weekdays 1-5: [12:00,20:00) intersects [06:00,14:00).
 	d3 := daypartFixture(screenID, scheduleAID, playlistAID, "12:00:00", "20:00:00", []int{1, 2, 3, 4, 5})
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/dayparts", mustJSON(t, d3), nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/dayparts", rowCreateBody(t, d3), nil)
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("overlapping daypart create status = %d, want 422, body %s", resp.StatusCode, raw)
 	}
@@ -179,10 +179,10 @@ func TestDaypartOverlapValidationFailed(t *testing.T) {
 func TestDaypartMissingPlaylistValidationFailed(t *testing.T) {
 	e := newEnv(t)
 	screenID := seedSchedulingScope(t, e)
-	scheduleAID := decodeID(t, e.createOK(t, "/api/v1/schedules", mustJSON(t, scheduleFixture(screenID))))
+	scheduleAID := decodeID(t, e.createOK(t, "/api/v1/schedules", rowCreateBody(t, scheduleFixture(screenID))))
 
 	dangling := daypartFixture(screenID, scheduleAID, missingPlaylistID, "06:00:00", "22:00:00", []int{0, 1, 2, 3, 4, 5, 6})
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/dayparts", mustJSON(t, dangling), nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/dayparts", rowCreateBody(t, dangling), nil)
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("dangling-playlist daypart create status = %d, want 422, body %s", resp.StatusCode, raw)
 	}
@@ -222,8 +222,8 @@ func TestSchedulingListGetPatchDeleteConventions(t *testing.T) {
 	e := newEnv(t)
 	screenID := seedSchedulingScope(t, e)
 
-	playlistAID := decodeID(t, e.createOK(t, "/api/v1/playlists", mustJSON(t, playlistFixture(screenID, map[string]string{"region": "east"}))))
-	e.createOK(t, "/api/v1/playlists", mustJSON(t, playlistFixture(screenID, map[string]string{"region": "west"})))
+	playlistAID := decodeID(t, e.createOK(t, "/api/v1/playlists", rowCreateBody(t, playlistFixture(screenID, map[string]string{"region": "east"}))))
+	e.createOK(t, "/api/v1/playlists", rowCreateBody(t, playlistFixture(screenID, map[string]string{"region": "west"})))
 
 	// selector: only the east-labeled playlist.
 	q := url.Values{"selector": {"region=east"}}

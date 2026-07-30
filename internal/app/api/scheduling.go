@@ -37,42 +37,72 @@ import (
 // writeStoreError (api.go), which every mounted resource already shares.
 func schedulesConfig() resourceConfig {
 	return resourceConfig{
-		kind:         store.KindSchedule,
-		path:         "schedules",
-		resourceType: "schedules",
-		displayName:  "schedule",
-		selLabels:    func(f resourceFields) map[string]string { return f.Labels },
-		placement:    func(f resourceFields) string { return f.ScopeNode },
-		extScope:     func(f resourceFields) string { return f.ScopeNode },
-		writeScope:   func(f resourceFields) string { return f.ScopeNode },
+		// The MEMBER half of schema enforcement, not the whole schema
+		// (bodyschema.go undeclaredMemberRejected). These families' per-field rules
+		// live in the datamodel validators, which report EVERY failing member at once
+		// under data-model/1's published codes; a fail-fast whole-schema gate ahead of
+		// them would replace that with one poorer message. What the datamodel cannot
+		// see is a member it does not define — by the time it validates, an undeclared
+		// member has already vanished into the decoded row — so it was accepted,
+		// stored, and served back on every read.
+		createMembers: "ScheduleCreate",
+		updateMembers: "ScheduleUpdate",
+		kind:          store.KindSchedule,
+		path:          "schedules",
+		resourceType:  "schedules",
+		displayName:   "schedule",
+		selLabels:     func(f resourceFields) map[string]string { return f.Labels },
+		placement:     func(f resourceFields) string { return f.ScopeNode },
+		extScope:      func(f resourceFields) string { return f.ScopeNode },
+		writeScope:    func(f resourceFields) string { return f.ScopeNode },
 	}
 }
 
 func daypartsConfig() resourceConfig {
 	return resourceConfig{
-		kind:         store.KindDaypart,
-		path:         "dayparts",
-		resourceType: "dayparts",
-		displayName:  "daypart",
-		selLabels:    func(f resourceFields) map[string]string { return f.Labels },
-		placement:    func(f resourceFields) string { return f.ScopeNode },
-		extScope:     func(f resourceFields) string { return f.ScopeNode },
-		writeScope:   func(f resourceFields) string { return f.ScopeNode },
+		// The MEMBER half of schema enforcement, not the whole schema
+		// (bodyschema.go undeclaredMemberRejected). These families' per-field rules
+		// live in the datamodel validators, which report EVERY failing member at once
+		// under data-model/1's published codes; a fail-fast whole-schema gate ahead of
+		// them would replace that with one poorer message. What the datamodel cannot
+		// see is a member it does not define — by the time it validates, an undeclared
+		// member has already vanished into the decoded row — so it was accepted,
+		// stored, and served back on every read.
+		createMembers: "DaypartCreate",
+		updateMembers: "DaypartUpdate",
+		kind:          store.KindDaypart,
+		path:          "dayparts",
+		resourceType:  "dayparts",
+		displayName:   "daypart",
+		selLabels:     func(f resourceFields) map[string]string { return f.Labels },
+		placement:     func(f resourceFields) string { return f.ScopeNode },
+		extScope:      func(f resourceFields) string { return f.ScopeNode },
+		writeScope:    func(f resourceFields) string { return f.ScopeNode },
 	}
 }
 
 func playlistsConfig() resourceConfig {
 	return resourceConfig{
-		kind:         store.KindPlaylist,
-		path:         "playlists",
-		resourceType: "playlists",
-		displayName:  "playlist",
-		selLabels:    func(f resourceFields) map[string]string { return f.Labels },
-		placement:    func(f resourceFields) string { return f.ScopeNode },
-		extScope:     func(f resourceFields) string { return f.ScopeNode },
-		writeScope:   func(f resourceFields) string { return f.ScopeNode },
-		validate:     validatePlaylistAssets,
-		writeGuards:  playlistAssetGuards,
+		// The MEMBER half of schema enforcement, not the whole schema
+		// (bodyschema.go undeclaredMemberRejected). These families' per-field rules
+		// live in the datamodel validators, which report EVERY failing member at once
+		// under data-model/1's published codes; a fail-fast whole-schema gate ahead of
+		// them would replace that with one poorer message. What the datamodel cannot
+		// see is a member it does not define — by the time it validates, an undeclared
+		// member has already vanished into the decoded row — so it was accepted,
+		// stored, and served back on every read.
+		createMembers: "PlaylistCreate",
+		updateMembers: "PlaylistUpdate",
+		kind:          store.KindPlaylist,
+		path:          "playlists",
+		resourceType:  "playlists",
+		displayName:   "playlist",
+		selLabels:     func(f resourceFields) map[string]string { return f.Labels },
+		placement:     func(f resourceFields) string { return f.ScopeNode },
+		extScope:      func(f resourceFields) string { return f.ScopeNode },
+		writeScope:    func(f resourceFields) string { return f.ScopeNode },
+		validate:      validatePlaylistAssets,
+		writeGuards:   playlistAssetGuards,
 	}
 }
 

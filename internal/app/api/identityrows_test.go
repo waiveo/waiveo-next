@@ -241,7 +241,7 @@ func TestIdentityFamilyExternalIDUniquePerPlacement(t *testing.T) {
 
 	dup := screenFixture(siteID, "Lobby Again", nil)
 	dup["external_id"] = "lobby"
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/screens", mustJSON(t, dup), nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/screens", rowCreateBody(t, dup), nil)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("a repeated external_id under one node: %d %s, want 400", resp.StatusCode, raw)
 	}
