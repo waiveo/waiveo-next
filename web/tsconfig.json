@@ -25,5 +25,16 @@
     "paths": { "@/*": ["./src/*"] },
     "types": ["vite/client", "@testing-library/jest-dom"]
   },
-  "include": ["src"]
+  // Everything TypeScript in this package, not just the app. `src` alone left
+  // the Playwright specs and both config files in NO project, so `tsc --noEmit`
+  // never looked at them and a type error there could only surface as a browser
+  // test failing for a reason it does not explain.
+  //
+  // One project rather than a second one for the node-context files, because
+  // splitting buys nothing measurable here: @types/node is already in the src
+  // program (reached through a transitive d.ts reference, ~80 files), so the
+  // specs get node globals either way, and a vitest-only matcher written against
+  // Playwright's `expect` is rejected under both shapes. A split would only
+  // duplicate the strictness options and invite them to drift.
+  "include": ["src", "tests", "playwright.config.ts", "vite.config.ts"]
 }
