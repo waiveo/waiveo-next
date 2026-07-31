@@ -109,3 +109,76 @@ func TestValidateDataModelVersionRegressionInvalid(t *testing.T) {
 		t.Fatalf("expected the error to name dataModel.version, got %+v", errs)
 	}
 }
+
+// TestValidateRetentionDescriptorShapes pins MAN-054's value rule: each
+// retention entry is `"unbounded"` or a bounded descriptor naming exactly one of
+// maxAge/maxRows, each a positive integer.
+//
+// Measured before written: of the six rejection rules MAN-054 validation
+// implements, only the undeclared-collection key had a test. Deleting any of the
+// five value-shape rules left the whole suite green — the rules were enforced in
+// shipped code and pinned by nothing, so a refactor could have relaxed the
+// manifest surface silently.
+//
+// Each case asserts the SPECIFIC message rather than "some error", because every
+// one of these reports the same MANIFEST_SCHEMA_INVALID code: a test satisfied by
+// any error passes when the wrong rule fires, which is how five rules end up
+// looking covered by one.
+//
+// The valid rows are a control. Without them a mutant that rejects every
+// descriptor — the easiest way to break this surface — passes every negative
+// assertion here.
+func TestValidateRetentionDescriptorShapes(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		value   string
+		wantMsg string // "" means the descriptor must be accepted
+	}{
+		{"unbounded is the declared sentinel", `"unbounded"`, ""},
+		{"a bounded maxAge in days", `{"maxAge": 365}`, ""},
+		{"a bounded maxRows", `{"maxRows": 1000}`, ""},
+
+		{"any other string is not a sentinel", `"forever"`,
+			`retention value "forever" MUST be "unbounded" or a {maxAge}/{maxRows} descriptor (MAN-054)`},
+		{"a number is neither sentinel nor descriptor", `42`,
+			`retention value MUST be "unbounded" or a {maxAge}/{maxRows} descriptor (MAN-054)`},
+		{"an array is neither sentinel nor descriptor", `[365]`,
+			`retention value MUST be "unbounded" or a {maxAge}/{maxRows} descriptor (MAN-054)`},
+		{"maxAge zero is not a bound", `{"maxAge": 0}`,
+			"retention maxAge MUST be a positive integer (MAN-054)"},
+		{"maxAge negative is not a bound", `{"maxAge": -30}`,
+			"retention maxAge MUST be a positive integer (MAN-054)"},
+		{"maxRows zero is not a bound", `{"maxRows": 0}`,
+			"retention maxRows MUST be a positive integer (MAN-054)"},
+		{"maxRows negative is not a bound", `{"maxRows": -5}`,
+			"retention maxRows MUST be a positive integer (MAN-054)"},
+		{"both bounds is ambiguous, not stricter", `{"maxAge": 30, "maxRows": 100}`,
+			"retention descriptor MUST declare exactly one of maxAge or maxRows (MAN-054)"},
+		{"an empty descriptor bounds nothing", `{}`,
+			"retention descriptor MUST declare exactly one of maxAge or maxRows (MAN-054)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := loadManifest(t, man051File)
+			// "notes" is the collection the MAN-051 fixture declares, so the
+			// undeclared-key rule (the one rule already tested) cannot be what fires.
+			m.Retention["notes"] = []byte(tc.value)
+
+			var got []string
+			for _, e := range Validate(m, testHost()) {
+				if e.Field == "retention.notes" {
+					got = append(got, e.Message)
+				}
+			}
+
+			if tc.wantMsg == "" {
+				if len(got) != 0 {
+					t.Fatalf("retention %s is a conformant MAN-054 descriptor and was rejected: %v", tc.value, got)
+				}
+				return
+			}
+			if len(got) != 1 || got[0] != tc.wantMsg {
+				t.Fatalf("retention %s\n got: %v\nwant: [%s]", tc.value, got, tc.wantMsg)
+			}
+		})
+	}
+}

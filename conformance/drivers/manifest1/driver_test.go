@@ -20,6 +20,7 @@ var expectedDriven = []string{
 	"MAN-030-invalid-egress-wildcard",
 	"MAN-051-valid-data-model",
 	"MAN-052-invalid-two-title-fields",
+	"MAN-054-invalid-retention-both-bounds",
 	"MAN-072-invalid-devices-without-compat-relay",
 	"MAN-081-invalid-fixed-without-duration-seconds",
 	"MAN-090-invalid-non-namespaced-event",

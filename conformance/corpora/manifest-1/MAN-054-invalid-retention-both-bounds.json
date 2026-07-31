@@ -1,0 +1,71 @@
+{
+  "case_id": "MAN-054-invalid-retention-both-bounds",
+  "contract": "manifest/1",
+  "req_ids": [
+    "MAN-054"
+  ],
+  "description": "A manifest whose retention entry for a declared collection names BOTH maxAge and maxRows; validation fails, since MAN-054 admits \"unbounded\" or a descriptor naming exactly one bound. Declaring two is ambiguous rather than stricter \u2014 nothing in the contract says which wins, so a host would have to invent the precedence.",
+  "input": {
+    "id": "acme/notes-pack",
+    "version": "1.0.0",
+    "displayName": "msg:pack.displayName",
+    "compat": {
+      "ctx": ">=1.0 <2.0",
+      "renderer": [
+        "list-detail"
+      ]
+    },
+    "capabilities": [],
+    "egress": [],
+    "resources": {
+      "memory": 64,
+      "cpuWeight": 100,
+      "storageQuota": 128,
+      "maxScheduledTimers": 0
+    },
+    "dataModel": {
+      "version": 1,
+      "collections": [
+        {
+          "name": "notes",
+          "fields": [
+            {
+              "name": "title",
+              "type": "string",
+              "role": "title",
+              "searchable": true
+            },
+            {
+              "name": "body",
+              "type": "string",
+              "role": "summary",
+              "searchable": true,
+              "lifecycle": "draft-publish"
+            }
+          ]
+        }
+      ],
+      "migrations": []
+    },
+    "retention": {
+      "notes": {
+        "maxAge": 365,
+        "maxRows": 1000
+      }
+    },
+    "ui": {
+      "pages": []
+    },
+    "actions": []
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      {
+        "code": "MANIFEST_SCHEMA_INVALID",
+        "field": "retention.notes",
+        "message": "retention descriptor MUST declare exactly one of maxAge or maxRows (MAN-054)"
+      }
+    ]
+  }
+}

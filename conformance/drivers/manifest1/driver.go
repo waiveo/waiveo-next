@@ -72,6 +72,7 @@ func driveCases(rep *report.Report, cases map[string]corpus.Case) {
 	driveValidateCase(rep, cases, "MAN-030")
 	driveValidateCase(rep, cases, "MAN-051")
 	driveValidateCase(rep, cases, "MAN-052")
+	driveValidateCase(rep, cases, "MAN-054")
 	driveValidateCase(rep, cases, "MAN-072")
 	driveValidateCase(rep, cases, "MAN-081")
 	driveValidateCase(rep, cases, "MAN-090")
