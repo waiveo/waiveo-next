@@ -30,6 +30,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/maaxton/waiveo-next/internal/app/api"
 	"github.com/maaxton/waiveo-next/internal/app/auth"
 	"github.com/maaxton/waiveo-next/internal/app/devices"
@@ -1081,7 +1083,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", healthz)
+	mux.HandleFunc("/healthz", healthzFor(cfg.storePath, cfg.contentPath))
 	mux.Handle("/content/", contentStore.Handler())
 	mux.Handle("/api/v1/", apiHandler)
 	mux.Handle("/telemetry/v1/push", telemetryIngest)
@@ -1399,12 +1401,76 @@ func (d *desiredStateSource) current() (wire.StateSnapshotBody, error) {
 	return snap, nil
 }
 
-func healthz(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{
-		"component": "waiveo-feeder",
-		"status":    "ok",
-	})
+// healthzFor answers /healthz with this component's real operational state
+// rather than a constant.
+//
+// The previous body was `{"component":"waiveo-feeder","status":"ok"}` — a
+// literal, returned whether or not the box had run out of room to write. That is
+// not a hypothetical failure here: this deployment has already lost a box to a
+// full disk, and a probe that answers "ok" through it tells an operator the one
+// thing that is not true.
+//
+// The relay's own /healthz reports events/1's box.vitals (EVT-070), which is a
+// RELAY's physical health — CPU temperature, throttling, undervoltage. None of
+// that describes an app process, so this reports what is actually true of one
+// rather than borrowing a schema that does not fit. Disk headroom is the member
+// they share, and it is the one that has actually bitten.
+//
+// Deliberately NO store round-trip. A liveness probe that queries the database
+// can hang exactly when the database is the problem, turning "degraded" into "no
+// answer at all" — and the deploy tooling reads a timeout as a dead process. What
+// this reports is cheap and cannot block.
+//
+// `status` stays "ok" while the process answers, for the reason the relay's does:
+// deciding which readings constitute unhealthy is a threshold question that
+// belongs to a detector with a stated policy, not to a liveness probe inventing
+// one.
+func healthzFor(storePath, contentPath string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		body := map[string]any{
+			"component": "waiveo-feeder",
+			"status":    "ok",
+		}
+		// Both paths, because they are usually different filesystems on an
+		// appliance and either filling up stops writes: the store holds every
+		// authored row, the content origin holds asset bytes and grows fastest.
+		disk := map[string]any{}
+		unavailable := []string{}
+		for name, path := range map[string]string{
+			"store":   filepath.Dir(storePath),
+			"content": contentPath,
+		} {
+			if free, err := freeBytes(path); err == nil {
+				disk[name] = free
+			} else {
+				unavailable = append(unavailable, name)
+			}
+		}
+		if len(disk) > 0 {
+			body["disk_headroom_bytes"] = disk
+		}
+		if len(unavailable) > 0 {
+			// Named rather than left absent: a consumer seeing no reading should be
+			// able to tell "this path could not be stat'd" from "the field was
+			// dropped".
+			sort.Strings(unavailable)
+			body["disk_headroom_unavailable"] = unavailable
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(body)
+	}
+}
+
+// freeBytes reports the bytes available to an unprivileged writer on the
+// filesystem holding path. Bavail rather than Bfree: Bfree counts the kernel's
+// root reserve, which this process is not writing as, so reporting it would
+// promise space the feeder cannot actually use.
+func freeBytes(path string) (int64, error) {
+	var st unix.Statfs_t
+	if err := unix.Statfs(path, &st); err != nil {
+		return 0, err
+	}
+	return int64(st.Bavail) * int64(st.Bsize), nil
 }
 
 // placeholderImage builds a tiny in-memory 2x2 PNG — Wave-1 first-photon's
