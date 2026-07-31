@@ -597,6 +597,25 @@ func (s *Server) authorizeChannelToken(w http.ResponseWriter, r *http.Request, t
 // history only widens what is accepted.
 const leaseHistoryPerScreen = 4
 
+// telemetryHistory bounds the render reports and lease acknowledgements this
+// server keeps. A relay is the component with nobody watching its memory: it runs
+// on an appliance for months between touches, and every one of these records
+// arrives on an ordinary success path — a player reports a render start and end
+// per content item, for as long as it plays.
+//
+// Bounding them loses nothing that is currently kept, and that is worth being
+// precise about rather than hand-waving. PLY-091 does require a relay to persist
+// acknowledgement state durably (mirroring REL-142), and PLY-113/REL-090 require
+// render reports to reach the app peer — but neither is implemented: these are
+// Wave-1 in-memory records, read only by this server's own accessors. So the
+// choice here is between dropping the oldest and running out of memory, not
+// between dropping the oldest and keeping them.
+//
+// When the durable half lands, the bound moves: an acknowledgement must survive
+// long enough to be forwarded, which is a retention rule about DELIVERY rather
+// than a cap on count, and this constant should be replaced rather than raised.
+const telemetryHistory = 256
+
 // rememberIssuedLeaseLocked records that leaseID was issued to screenID. Caller
 // holds s.mu.
 func (s *Server) rememberIssuedLeaseLocked(screenID, leaseID string) {
@@ -608,6 +627,28 @@ func (s *Server) rememberIssuedLeaseLocked(screenID, leaseID string) {
 		h = append([]string(nil), h[len(h)-leaseHistoryPerScreen:]...)
 	}
 	s.issuedLeases[screenID] = h
+}
+
+// appendBounded appends v and keeps at most telemetryHistory entries, oldest
+// first out.
+//
+// It copies forward rather than reslicing when it trims. Reslicing keeps the
+// whole backing array alive behind the window, which is the leak this bound
+// exists to prevent wearing the shape of a fix — though only until the next
+// append outgrows the array and Go reallocates anyway, so the copy is defensive
+// rather than load-bearing.
+//
+// Said plainly because a mutation that switches it back to a reslice fails NO
+// test: the difference is a transient the runtime erases on its own, and a test
+// asserting on capacity measures Go's growth policy rather than this decision. I
+// wrote such a test, watched the mutant survive it, and deleted it — a test that
+// cannot see the thing it names is worse than none, because it reads as coverage.
+func appendBounded[T any](history []T, v T) []T {
+	history = append(history, v)
+	if len(history) > telemetryHistory {
+		history = append([]T(nil), history[len(history)-telemetryHistory:]...)
+	}
+	return history
 }
 
 // leaseIssuedTo reports whether leaseID is one this relay issued to screenID.
@@ -668,6 +709,15 @@ func (s *Server) handleLeaseAck(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	s.leaseAcks[req.LeaseID] = req
+	s.ackOrder = appendBounded(s.ackOrder, req.LeaseID)
+	// Evict the ack whose id fell off the order, so the map cannot outgrow it.
+	if len(s.ackOrder) == telemetryHistory {
+		for id := range s.leaseAcks {
+			if !slices.Contains(s.ackOrder, id) {
+				delete(s.leaseAcks, id)
+			}
+		}
+	}
 	s.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -709,7 +759,7 @@ func (s *Server) handleRenderStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.mu.Lock()
-	s.renderStarts = append(s.renderStarts, req)
+	s.renderStarts = appendBounded(s.renderStarts, req)
 	s.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -758,7 +808,7 @@ func (s *Server) handleRenderEnd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.mu.Lock()
-	s.renderEnds = append(s.renderEnds, req)
+	s.renderEnds = appendBounded(s.renderEnds, req)
 	s.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})

@@ -224,6 +224,10 @@ type Server struct {
 	programGens map[string]int64           // screen_id -> desired-state generation that screen's served program was applied for (REL-052/056)
 	signingKey  ed25519.PrivateKey         // relay's own key, signs every issued Lease (PLY-090) — one per relay, never per screen, installed by SetSigningKey independently of any program
 	leaseAcks   map[string]LeaseAckRequest // lease_id -> most recent LeaseAck (PLY-091)
+	// ackOrder is leaseAcks' arrival order, so the map can be trimmed oldest-first.
+	// A map alone has no order to evict by, and "delete an arbitrary one" would drop
+	// the ack a caller was about to read as readily as the oldest.
+	ackOrder []string
 
 	// issuedLeases is which screen each recently-issued lease_id was handed to,
 	// so the acknowledgement and telemetry routes can distinguish a player's own
