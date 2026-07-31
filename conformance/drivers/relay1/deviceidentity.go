@@ -39,10 +39,10 @@ type rel110bReport struct {
 // rel110bExpected is the oracle: the row count, and per identity the derived
 // ids plus which relay the row is attributed to at each stage.
 type rel110bExpected struct {
-	DeviceRowCount                 int  `json:"device_row_count"`
-	DeviceRowCountAfterFinalReport int  `json:"device_row_count_after_final_report"`
-	DerivedIDsAreCanonicalULIDs    bool `json:"derived_ids_are_canonical_ulids"`
-	RelayIDsAreCanonicalULIDs      bool `json:"relay_ids_are_canonical_ulids"`
+	DeviceRowCount                 int   `json:"device_row_count"`
+	DeviceRowCountAfterFinalReport int   `json:"device_row_count_after_final_report"`
+	DerivedIDsAreCanonicalULIDs    *bool `json:"derived_ids_are_canonical_ulids"`
+	RelayIDsAreCanonicalULIDs      bool  `json:"relay_ids_are_canonical_ulids"`
 	DerivedRows                    []struct {
 		Driver                  string            `json:"driver"`
 		NativeID                string            `json:"native_id"`
@@ -113,8 +113,14 @@ func driveREL110b(rep *report.Report, cases map[string]corpus.Case) {
 				diffs = append(diffs, report.Diff{Field: fmt.Sprintf("entity %s resolvable in the read model", wantEntity), Expected: true, Actual: false})
 			}
 		}
-		if exp.DerivedIDsAreCanonicalULIDs && !ulid.Valid(want.DeviceID) {
-			diffs = append(diffs, report.Diff{Field: fmt.Sprintf("device_id %s is a canonical ULID (DAT-005a)", want.DeviceID), Expected: true, Actual: false})
+		// Asserted the way RelayIDsAreCanonicalULIDs is eleven lines below — in both
+		// directions, and requiring the expectation to be declared. As a plain bool
+		// gating its own check, removing the key from the case removed the DAT-005a
+		// assertion and the driver still passed.
+		if canonical, missing := declaredBool("derived_ids_are_canonical_ulids", exp.DerivedIDsAreCanonicalULIDs); missing != nil {
+			diffs = append(diffs, *missing)
+		} else if canonical != ulid.Valid(want.DeviceID) {
+			diffs = append(diffs, report.Diff{Field: fmt.Sprintf("device_id %s is a canonical ULID (DAT-005a)", want.DeviceID), Expected: canonical, Actual: ulid.Valid(want.DeviceID)})
 		}
 		row, ok := rows[want.DeviceID]
 		if !ok {

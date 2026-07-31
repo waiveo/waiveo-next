@@ -55,11 +55,39 @@ type rel090Input struct {
 // rel090Expected is the subset of REL-090's expected block this stage
 // diffs the live Buffer/Channel behavior against.
 type rel090Expected struct {
-	EntryTraceIDCarriedUnmodified       bool     `json:"entry_trace_id_carried_unmodified"`
+	// The two POSITIVE assertions below are pointers so that ABSENT and FALSE are
+	// distinguishable.
+	//
+	// As plain bools they gated their own checks — `if exp.Flag && mismatch` —
+	// and Go's zero value is false, so deleting one key from the frozen case
+	// deleted the assertion with it and the driver still reported PASS. An
+	// assertion that vanishes when its expectation is removed is not an
+	// assertion; it is a switch the corpus can turn off silently.
+	//
+	// The inverted self-checks in this same struct (SilentLoss and friends) are
+	// deliberately NOT pointers: they assert the corpus declares the value FALSE,
+	// so absence and false mean the same thing and the check still fires.
+	EntryTraceIDCarriedUnmodified       *bool    `json:"entry_trace_id_carried_unmodified"`
 	LossMarkerFieldCount                int      `json:"loss_marker_field_count"`
 	LossMarkerFields                    []string `json:"loss_marker_fields"`
-	DroppedCountsSumMatchesDroppedRange bool     `json:"dropped_counts_sum_matches_dropped_range"`
+	DroppedCountsSumMatchesDroppedRange *bool    `json:"dropped_counts_sum_matches_dropped_range"`
 	SilentLoss                          bool     `json:"silent_loss"`
+}
+
+// declaredBool reads a corpus expectation that MUST be present.
+//
+// It returns the declared value plus a diff when the field is absent, so a case
+// that stops declaring an expectation fails loudly instead of quietly dropping
+// the check that consumed it.
+func declaredBool(field string, v *bool) (bool, *report.Diff) {
+	if v == nil {
+		return false, &report.Diff{
+			Field:    field,
+			Expected: "<declared in the corpus expected block>",
+			Actual:   "absent — the assertion this gates would have been skipped silently",
+		}
+	}
+	return *v, nil
 }
 
 func decodeRel090Input(c corpus.Case) (rel090Input, error) {
@@ -186,7 +214,11 @@ func driveREL090(rep *report.Report, cases map[string]corpus.Case) {
 	if exp.SilentLoss {
 		diffs = append(diffs, report.Diff{Field: "silent_loss (corpus self-check)", Expected: false, Actual: true})
 	}
-	if exp.DroppedCountsSumMatchesDroppedRange && sum != rangeWidth {
+	if want, missing := declaredBool("dropped_counts_sum_matches_dropped_range", exp.DroppedCountsSumMatchesDroppedRange); missing != nil {
+		diffs = append(diffs, *missing)
+	} else if want != (sum == rangeWidth) {
+		// Asserted in BOTH directions: a case declaring false and a run where the
+		// sums happen to match is just as much a divergence as the reverse.
 		diffs = append(diffs, report.Diff{Field: "dropped_counts_sum_matches_dropped_range (REL-103, no silent loss)", Expected: rangeWidth, Actual: sum})
 	}
 
@@ -260,7 +292,9 @@ func driveREL090(rep *report.Report, cases map[string]corpus.Case) {
 			// survivors carry DIFFERENT trace ids, so a batch-level value — or a
 			// value the buffer minted over the top of the recorded one — fails
 			// here rather than passing on a single-entry coincidence.
-			if exp.EntryTraceIDCarriedUnmodified && match.TraceID != want.TraceID {
+			if carried, missing := declaredBool("entry_trace_id_carried_unmodified", exp.EntryTraceIDCarriedUnmodified); missing != nil {
+				diffs = append(diffs, *missing)
+			} else if carried != (match.TraceID == want.TraceID) {
 				diffs = append(diffs, report.Diff{Field: fmt.Sprintf("telemetry.push.entries[schema=%s].trace_id (REL-090a)", want.Schema), Expected: want.TraceID, Actual: match.TraceID})
 			}
 		}

@@ -33,7 +33,7 @@ type rel110Input struct {
 type rel110Expected struct {
 	CandidateViewReplacesPriorView          bool              `json:"candidate_view_replaces_prior_view"`
 	CandidateCount                          int               `json:"candidate_count"`
-	CandidatesSharingOneMatchPattern        int               `json:"candidates_sharing_one_match_pattern"`
+	CandidatesSharingOneMatchPattern        *int              `json:"candidates_sharing_one_match_pattern"`
 	Results                                 []json.RawMessage `json:"results"`
 	UnresolvedCommandAttemptedAgainstDevice bool              `json:"unresolved_command_attempted_against_device"`
 }
@@ -212,8 +212,17 @@ func driveREL110(rep *report.Report, cases map[string]corpus.Case) {
 			sharing = n
 		}
 	}
-	if exp.CandidatesSharingOneMatchPattern > 0 && sharing != exp.CandidatesSharingOneMatchPattern {
-		diffs = append(diffs, report.Diff{Field: "candidates_sharing_one_match_pattern (REL-111a)", Expected: exp.CandidatesSharingOneMatchPattern, Actual: sharing})
+	// The `> 0` guard this replaces meant an absent key — decoding to 0 — skipped
+	// the REL-111a check entirely rather than asserting zero candidates shared a
+	// match pattern. Absence is now a failure and zero is a real expectation.
+	if exp.CandidatesSharingOneMatchPattern == nil {
+		diffs = append(diffs, report.Diff{
+			Field:    "candidates_sharing_one_match_pattern (REL-111a)",
+			Expected: "<declared in the corpus expected block>",
+			Actual:   "absent — the assertion this gates would have been skipped silently",
+		})
+	} else if sharing != *exp.CandidatesSharingOneMatchPattern {
+		diffs = append(diffs, report.Diff{Field: "candidates_sharing_one_match_pattern (REL-111a)", Expected: *exp.CandidatesSharingOneMatchPattern, Actual: sharing})
 	}
 
 	if !exp.CandidateViewReplacesPriorView {
