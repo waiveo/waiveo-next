@@ -1418,3 +1418,100 @@ func TestListeningLineAgreesWithPairingCodeFormation(t *testing.T) {
 		t.Errorf("listeningLine(mismatched) = %q, want it to say no code is formed, matching what logPairingCodes then reports", line)
 	}
 }
+
+// TestRePullSameHashHigherGenerationIsANoOp pins REL-070's actual condition: a
+// snapshot whose hash equals the last-applied hash MUST be treated as a no-op
+// and MUST NOT re-run any apply-time side effect — and that holds "regardless of
+// whether `generation` itself advanced".
+//
+// A higher generation carrying byte-identical sections is the ONLY case the
+// requirement is about that the generation guard cannot catch, and it is the
+// case that was reaching the apply path. What re-ran there is not cosmetic:
+// scheduleDriver.apply cancels the prior generation's in-flight schedule-resolve
+// loops, which REL-070 names outright ("no in-flight rule run is canceled on
+// account of it").
+//
+// The generation still advances. REL-070 suppresses the apply-time EFFECTS, not
+// the record of what was applied — a relay that kept reporting the stale
+// generation would look permanently behind to its app peer.
+func TestRePullSameHashHigherGenerationIsANoOp(t *testing.T) {
+	driver, host, srv, grantID, nowMs := newRePullFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	appliedB := buildRePullContentApplied(t, 8, rePullAssetB)
+	appliedB.Hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	driver.apply(ctx, appliedB, nowMs)
+
+	// Generation 9, same hash, and — deliberately — DIFFERENT content. If the
+	// no-op is honoured, that content must never reach the served program: the
+	// test would pass just as well with identical content, but then it could not
+	// tell a real no-op from an apply that happened to change nothing.
+	repeat := buildRePullContentApplied(t, 9, rePullAssetA)
+	repeat.Hash = appliedB.Hash
+
+	applies := 0
+	puller := &rePuller{
+		pull: func(int64) (desiredstate.Applied, error) {
+			applies++
+			return repeat, nil
+		},
+		driver:   driver,
+		host:     host,
+		nowFn:    func() int64 { return nowMs },
+		lastGen:  appliedB.Generation,
+		lastHash: appliedB.Hash,
+	}
+
+	if applied := puller.tick(ctx); applied {
+		t.Fatal("a higher generation carrying the SAME section hash reported applied=true; REL-070 makes it a no-op regardless of whether the generation advanced")
+	}
+	if applies != 1 {
+		t.Fatalf("pull was called %d times, want 1 — the fixture did not exercise a tick", applies)
+	}
+	// The generation advanced even though nothing re-ran.
+	if puller.lastGen != 9 {
+		t.Errorf("lastGen after a same-hash no-op = %d, want 9 — the apply-time effects are suppressed, not the record of what was applied", puller.lastGen)
+	}
+	// And the serving side is untouched: still B's asset, never A's.
+	lease := pairAndPull(t, srv, grantID)
+	if len(lease.Content) != 1 || lease.Content[0].AssetRef != rePullAssetB {
+		t.Fatalf("served content after a same-hash no-op = %+v, want unchanged asset %s — the apply re-ran and replaced the served program", lease.Content, rePullAssetB)
+	}
+}
+
+// TestRePullDifferentHashHigherGenerationApplies is the control. Without it, a
+// fence that refused EVERY apply — the easiest way to break this — satisfies the
+// no-op test above while making the relay permanently unable to take new state.
+func TestRePullDifferentHashHigherGenerationApplies(t *testing.T) {
+	driver, host, srv, grantID, nowMs := newRePullFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	appliedB := buildRePullContentApplied(t, 8, rePullAssetB)
+	appliedB.Hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	driver.apply(ctx, appliedB, nowMs)
+
+	next := buildRePullContentApplied(t, 9, rePullAssetA)
+	next.Hash = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+
+	puller := &rePuller{
+		pull:     func(int64) (desiredstate.Applied, error) { return next, nil },
+		driver:   driver,
+		host:     host,
+		nowFn:    func() int64 { return nowMs },
+		lastGen:  appliedB.Generation,
+		lastHash: appliedB.Hash,
+	}
+
+	if applied := puller.tick(ctx); !applied {
+		t.Fatal("a higher generation carrying a DIFFERENT section hash was not applied; REL-070's no-op is hash equality, not a blanket refusal")
+	}
+	if puller.lastHash != next.Hash {
+		t.Errorf("lastHash after an apply = %q, want the applied snapshot's hash %q — a stale comparison value makes the very next repeat undetectable", puller.lastHash, next.Hash)
+	}
+	lease := pairAndPull(t, srv, grantID)
+	if len(lease.Content) != 1 || lease.Content[0].AssetRef != rePullAssetA {
+		t.Fatalf("served content after a real apply = %+v, want the new asset %s", lease.Content, rePullAssetA)
+	}
+}

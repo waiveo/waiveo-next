@@ -175,10 +175,17 @@ type rePuller struct {
 	pull  pullFunc
 	nowFn func() int64
 
-	mu      sync.Mutex
-	driver  *scheduleDriver
-	host    *automationhost.Host
+	mu     sync.Mutex
+	driver *scheduleDriver
+	host   *automationhost.Host
+
 	lastGen int64
+	// lastHash is the section hash of the last snapshot whose apply-time effects
+	// actually ran — REL-070's comparison value. Empty until the first apply,
+	// which is why the hash guard tests for that explicitly: an empty hash equals
+	// an empty hash, and a relay that has applied nothing must not treat its first
+	// real snapshot as a repeat of it.
+	lastHash string
 }
 
 // adoptSite adopts the app peer's authoritative site_binding (REL-036) for
@@ -220,7 +227,37 @@ func (p *rePuller) tick(ctx context.Context) bool {
 		return false
 	}
 	if applied.Generation <= p.lastGen {
-		return false // same/lower generation — no re-resolve churn (REL-052/070)
+		// Same/lower generation — no re-resolve churn (REL-052). A state.unchanged
+		// answer lands here: it surfaces as an Applied carrying exactly the
+		// generation asked about and NO hash, so this guard — not the hash one
+		// below — is what makes it a no-op. Both are needed; neither subsumes the
+		// other.
+		return false
+	}
+	// REL-070's actual no-op condition: a snapshot whose hash equals the
+	// last-applied hash MUST NOT re-run any apply-time side effect, and that
+	// holds "regardless of whether `generation` itself advanced".
+	//
+	// The generation guard above cannot implement that, because the case the
+	// requirement is about is precisely a HIGHER generation carrying byte-identical
+	// sections — it passes the guard and re-runs everything below: cancelling the
+	// prior generation's in-flight schedule-resolve loops (which REL-070 names
+	// outright), re-installing served programs, replacing the pairing-grant set,
+	// reloading edge rules.
+	//
+	// The hash was always available — verified against a recompute over the
+	// sections and persisted beside the generation (REL-053/055) — it simply was
+	// not carried to the one place that decides whether to re-run.
+	if applied.Hash != "" && applied.Hash == p.lastHash {
+		log.Printf("waiveo-relay live pull: generation %d carries the same section hash as the last applied generation %d — treating the apply as a no-op, no apply-time side effect re-run (REL-070)",
+			applied.Generation, p.lastGen)
+		// The generation still advances: REL-070 suppresses the apply-time EFFECTS,
+		// not the record of what was applied. The pull already persisted
+		// {generation, hash} atomically, and the ack reports the advanced
+		// generation — a relay that reported the stale one would look permanently
+		// behind to the app peer.
+		p.lastGen = applied.Generation
+		return false
 	}
 
 	// Strictly higher generation — apply it live. The pull already persisted the
@@ -248,5 +285,6 @@ func (p *rePuller) tick(ctx context.Context) bool {
 	log.Printf("waiveo-relay live pull: applied generation %d live (%d screen program(s) re-installed, schedule re-resolved, %d edge rule(s) loaded)",
 		applied.Generation, installed, p.host.EdgeRuleCount())
 	p.lastGen = applied.Generation
+	p.lastHash = applied.Hash
 	return true
 }

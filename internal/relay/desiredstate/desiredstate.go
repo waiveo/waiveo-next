@@ -98,7 +98,18 @@ var (
 // SAME trust as everything else here — there is no separate verification
 // step for it, exactly as REL-062's signed-section discipline requires.
 type Applied struct {
-	Generation      int64
+	Generation int64
+	// Hash is the snapshot's own `hash` (REL-053), verified against a recompute
+	// over its sections before anything here was extracted.
+	//
+	// It is carried because REL-070 states the idempotent-apply no-op in terms of
+	// HASH equality and says so holds "regardless of whether `generation` itself
+	// advanced". A caller fencing on generation alone cannot implement that rule —
+	// the value it is stated in terms of never reaches the decision. That was the
+	// gap: the hash was verified here and persisted by ApplyGeneration, then
+	// dropped on the way out, so the one consumer that decides whether to re-run
+	// apply-time side effects had only the generation to go on.
+	Hash            string
 	ScreenID        string
 	ProgramRevision string
 	Priority        string
@@ -251,7 +262,7 @@ func ServedRevocation(store *identity.Store) ([]string, error) {
 // A genuinely malformed snapshot is still caught: hash and signature
 // verification run before this, and every typed rejection reason relay/1 owns
 // is raised there.
-func extractApplied(generation int64, sections wire.Sections) (Applied, error) {
+func extractApplied(generation int64, hash string, sections wire.Sections) (Applied, error) {
 	var prog wire.ScreenProgram
 	if len(sections.ScreenPrograms) > 0 {
 		prog = sections.ScreenPrograms[0]
@@ -263,6 +274,7 @@ func extractApplied(generation int64, sections wire.Sections) (Applied, error) {
 
 	return Applied{
 		Generation:      generation,
+		Hash:            hash,
 		ScreenID:        prog.ScreenID,
 		ProgramRevision: prog.ProgramRevision,
 		Priority:        prog.Priority,

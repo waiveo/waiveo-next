@@ -92,7 +92,7 @@ func VerifyAndApply(store *identity.Store, body wire.StateSnapshotBody, rawSecti
 		return Applied{}, ErrGenerationRegressed
 	}
 
-	applied, err := extractApplied(body.Generation, body.Sections)
+	applied, err := extractApplied(body.Generation, body.Hash, body.Sections)
 	if err != nil {
 		return Applied{}, fmt.Errorf("desiredstate: VerifyAndApply: %w", err)
 	}

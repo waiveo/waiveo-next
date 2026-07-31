@@ -939,10 +939,11 @@ func main() {
 	// here: an unaccepted relay serves its persisted last-applied snapshot
 	// offline and nothing more, until a redial is accepted.
 	puller := &rePuller{
-		nowFn:   func() int64 { return time.Now().UnixMilli() },
-		driver:  driver,
-		host:    host,
-		lastGen: applied.Generation,
+		nowFn:    func() int64 { return time.Now().UnixMilli() },
+		driver:   driver,
+		host:     host,
+		lastGen:  applied.Generation,
+		lastHash: applied.Hash,
 	}
 	puller.pull = func(since int64) (desiredstate.Applied, error) {
 		c := liveConn.get()

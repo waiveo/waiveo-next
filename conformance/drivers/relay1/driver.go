@@ -479,7 +479,17 @@ func driveREL070(rep *report.Report, client RelayClient, feeder Feeder, cases ma
 		return
 	}
 	rep.Pass(c.CaseID, contract,
-		"apply_time_side_effects_rerun=false / in_flight_run_canceled=false: first-photon applies desired state declaratively with no apply-time side effects or rule runs, so these are vacuously satisfied — the observable no-op property asserted is the unchanged persisted hash across the advanced generation.")
+		"Observed here: the generation advances to 43, the WIRE state.ack reports it (REL-054), and the persisted hash does NOT move. "+
+			"NOT observed here: apply_time_side_effects_rerun=false / in_flight_run_canceled=false. This driver exercises the "+
+			"verify-and-persist path (desiredstate.VerifyAndApply), which is declarative and re-runs nothing by construction; the "+
+			"apply-time effects REL-070 is about — cancelling in-flight schedule-resolve loops, re-installing served programs, "+
+			"replacing pairing grants, reloading edge rules — live in the relay's live-pull seam (cmd/waiveo-relay/livepull.go) and "+
+			"are not reachable from here. That seam fences on the section hash exactly as REL-070 states, including the "+
+			"higher-generation/identical-hash case the requirement calls out; it is pinned by "+
+			"TestRePullSameHashHigherGenerationIsANoOp and its apply-side control in cmd/waiveo-relay. "+
+			"An earlier version of this rationale called those two fields VACUOUSLY satisfied because the apply path had no side "+
+			"effects when it was written. That stopped being true as the seam grew, and the note outlived it — which is why it now "+
+			"names the boundary instead of claiming the question away.")
 }
 
 // driveREL071 drives the wrong-peer-key security gate: a snapshot at
