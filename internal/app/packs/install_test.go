@@ -9,6 +9,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/app/packs"
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/packsig"
+	"github.com/maaxton/waiveo-next/internal/shared/signhash"
 )
 
 func openStore(t *testing.T) *store.Store {
@@ -579,5 +580,68 @@ func TestInstallRefusesSurfacePointedAtTheSignatureEnvelope(t *testing.T) {
 	}
 	if after := gen(t, st); after != before {
 		t.Fatalf("generation advanced (%d -> %d) on a refused install", before, after)
+	}
+}
+
+// TestInstallRecordNamesTheKeyThatVerifiedNotJustItsLabel closes the record end
+// of MKT-094a: the persisted provenance must identify the key that vouched for
+// the running bytes, and key_id alone cannot.
+//
+// key_id is a truncated, publisher-supplied label, and packsig verifies against
+// EVERY anchored key bearing it — deliberately, so a colliding id cannot let a
+// shadow anchor refuse the genuine publisher. So the anchor set here holds a
+// decoy and the real signer under ONE id, with the decoy first. A record built
+// from the label would be satisfied by both; only the full key digest says which
+// one actually verified.
+//
+// MKT-094a is explicit that this is the point: "a record able to name a key that
+// did not verify would attest to provenance the host never established, which is
+// worse than recording none."
+func TestInstallRecordNamesTheKeyThatVerifiedNotJustItsLabel(t *testing.T) {
+	ctx := context.Background()
+	st := openStore(t)
+	signer := newTestSigner(t)
+	decoyPub, _ := signhash.GenerateKey()
+
+	// One id, two keys, decoy first: an installer that recorded the first
+	// candidate rather than the verifying one names the wrong key.
+	anchors := packsig.StaticAnchors{}
+	for _, ns := range fixtureNamespaces {
+		anchors[ns] = []packsig.TrustedKey{
+			{KeyID: signer.keyID, PublicKey: decoyPub},
+			{KeyID: signer.keyID, PublicKey: signer.pub},
+		}
+	}
+	in := packs.NewInstaller(st, anchors)
+
+	res, err := in.Install(ctx, signedPackZip(t, signer, baseManifest()))
+	if err != nil {
+		t.Fatalf("a colliding key_id must not stop the genuine publisher installing: %v", err)
+	}
+
+	recs, err := st.ListPackInstalls(ctx, res.ID)
+	if err != nil {
+		t.Fatalf("ListPackInstalls: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("expected exactly one install record (MKT-094b); got %d", len(recs))
+	}
+	rec := recs[0]
+
+	if want := packsig.KeyDigest(signer.pub); rec.VerifyingKey != want {
+		t.Errorf("install record's verifying key = %q, want the signer's digest %q", rec.VerifyingKey, want)
+	}
+	if rec.VerifyingKey == packsig.KeyDigest(decoyPub) {
+		t.Error("the record names the DECOY anchor — provenance the host never established (MKT-094a)")
+	}
+	// It must be the DIGEST, not the label restated under a new column name: the
+	// label is what fails to disambiguate, so recording it twice fixes nothing.
+	if rec.VerifyingKey == rec.KeyID {
+		t.Errorf("verifying key is the key_id %q restated, not the full key digest — the collision this exists for is unresolved", rec.KeyID)
+	}
+	// And key_id is still pinned, because that is what the contract mandates and
+	// what a publisher and an index speak in.
+	if rec.KeyID != signer.keyID {
+		t.Errorf("install record's key_id = %q, want %q", rec.KeyID, signer.keyID)
 	}
 }

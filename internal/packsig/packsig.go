@@ -100,6 +100,40 @@ type Envelope struct {
 	ContentDigest string `json:"content_digest"`
 	KeyID         string `json:"key_id"`
 	Signature     string `json:"signature"`
+
+	// VerifyingKey is the anchored public key that ACTUALLY verified this
+	// envelope's signature. It is set by VerifyBundle and is not part of the
+	// wire envelope — `json:"-"` — because it is not something a publisher
+	// asserts, it is something verification establishes.
+	//
+	// It exists because KeyID cannot answer the question the install record is
+	// for. key_id is a truncated, publisher-supplied LABEL: VerifyBundle tries
+	// every anchored key carrying it, deliberately, so that a colliding id
+	// cannot let a shadow anchor refuse the genuine publisher. The consequence
+	// is that with two anchors sharing an id, the label does not say which of
+	// them vouched for the bytes — and MKT-094a's whole stated purpose is
+	// answering "which key vouched for the bytes that are running", the first
+	// question a key-compromise response asks.
+	//
+	// Before this, the loop below knew the answer and discarded it.
+	VerifyingKey ed25519.PublicKey `json:"-"`
+}
+
+// KeyDigest is the full, collision-free identifier of a signing key: sha256
+// over the raw public key, hex, sha256-prefixed like every other digest this
+// package handles.
+//
+// "Full" is the point. key_id is 64 bits by convention and publisher-supplied,
+// so it can collide both by accident and on purpose; this cannot. An empty key
+// digests to the empty string rather than to the digest of nothing, so a record
+// built from a verification that never happened is visibly blank instead of
+// carrying a plausible-looking constant.
+func KeyDigest(pub ed25519.PublicKey) string {
+	if len(pub) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256(pub)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 // ContentDigest computes MKT-009a's canonical digest over an artifact's
@@ -401,6 +435,9 @@ func VerifyBundle(files map[string][]byte, anchors TrustAnchors) (Envelope, erro
 	msg := statement(env.ArtifactID, env.Kind, env.Subtype, env.Version, env.ContentDigest)
 	for _, pub := range candidates {
 		if signhash.Verify(pub, msg, sig) {
+			// Carried out rather than dropped: this is the only moment anything
+			// knows WHICH of the id-matching anchors vouched for these bytes.
+			env.VerifyingKey = pub
 			return env, nil
 		}
 	}

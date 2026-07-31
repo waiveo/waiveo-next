@@ -24,9 +24,18 @@ func TestInstallPackRefusesASpecWithNoProvenance(t *testing.T) {
 		rec  store.PackInstallRecord
 		want string
 	}{
-		{"no source", store.PackInstallRecord{ContentDigest: "sha256:x", KeyID: "k"}, "source"},
-		{"no content digest", store.PackInstallRecord{Source: store.SourceDirect, KeyID: "k"}, "content digest"},
-		{"no key id", store.PackInstallRecord{Source: store.SourceDirect, ContentDigest: "sha256:x"}, "key id"},
+		// Every row omits exactly ONE required member and supplies the rest, so a
+		// row fails for its own reason rather than for whichever check happens to
+		// run first. Before verifying_key existed these rows relied on that
+		// ordering, which made them a test of the check order as much as of the
+		// checks.
+		{"no source", store.PackInstallRecord{ContentDigest: "sha256:x", KeyID: "k", VerifyingKey: "sha256:kk"}, "source"},
+		{"no content digest", store.PackInstallRecord{Source: store.SourceDirect, KeyID: "k", VerifyingKey: "sha256:kk"}, "content digest"},
+		{"no key id", store.PackInstallRecord{Source: store.SourceDirect, ContentDigest: "sha256:x", VerifyingKey: "sha256:kk"}, "key id"},
+		// MKT-094a: a record naming a key_id with no key behind it reads as
+		// established provenance while, under a colliding id, identifying nothing —
+		// "worse than recording none".
+		{"no verifying key digest", store.PackInstallRecord{Source: store.SourceDirect, ContentDigest: "sha256:x", KeyID: "k"}, "verifying key digest"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			spec := packSpec("acme/menu-board", "1.0.0", 1)

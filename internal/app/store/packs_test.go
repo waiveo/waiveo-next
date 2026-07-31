@@ -25,6 +25,7 @@ func packSpec(id, version string, dataModelVersion int, files ...store.PackFile)
 			Source:        store.SourceDirect,
 			ContentDigest: "sha256:" + fixtureDigestHex,
 			KeyID:         "ed25519:fixture",
+			VerifyingKey:  "sha256:0000000000000000000000000000000000000000000000000000000000000001",
 		},
 	}
 }

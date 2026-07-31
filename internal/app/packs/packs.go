@@ -619,10 +619,16 @@ func entryKindLabel(kind, subtype string) string {
 }
 
 // installRecord builds the install record persisted with the pack
-// (marketplace/1 MKT-094 + MKT-094a). ContentDigest and KeyID always come from
-// the envelope that ACTUALLY verified — never from the reference, the entry, or
-// anything the artifact merely asserts — so the record can only ever name a key
-// that did vouch for these bytes.
+// (marketplace/1 MKT-094 + MKT-094a). ContentDigest, KeyID and VerifyingKey all
+// come from the envelope that ACTUALLY verified — never from the reference, the
+// entry, or anything the artifact merely asserts.
+//
+// VerifyingKey is what makes the record able to NAME the key rather than a label
+// for it. This comment used to claim key_id alone meant "the record can only
+// ever name a key that did vouch for these bytes"; that does not hold when two
+// anchors share an id, which packsig permits on purpose so a colliding id cannot
+// let a shadow anchor refuse the genuine publisher. The label was honest about
+// the envelope and silent about which key behind it verified.
 //
 // A direct upload records SourceDirect with no trust channel and no entry
 // digest: there is no channel pointer behind it to auto-track (MKT-090) and no
@@ -634,6 +640,7 @@ func installRecord(version string, env packsig.Envelope, prov *provenance) store
 		Source:          store.SourceDirect,
 		ContentDigest:   env.ContentDigest,
 		KeyID:           env.KeyID,
+		VerifyingKey:    packsig.KeyDigest(env.VerifyingKey),
 	}
 	if prov != nil {
 		rec.Source = prov.Source

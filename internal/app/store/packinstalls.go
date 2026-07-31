@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS pack_installs (
 	stale_source     INTEGER NOT NULL DEFAULT 0,
 	content_digest   TEXT NOT NULL,
 	key_id           TEXT NOT NULL,
+	verifying_key    TEXT NOT NULL DEFAULT '',
 	artifact_digest  TEXT NOT NULL DEFAULT '',
 	installed_at     INTEGER NOT NULL
 );
@@ -54,6 +55,55 @@ CREATE TABLE IF NOT EXISTS pack_channel_marks (
 	PRIMARY KEY (pack_id, trust_channel)
 );
 `
+
+// migratePackInstallsSchema brings a pack_installs table created by an earlier
+// build up to the current column set. `CREATE TABLE IF NOT EXISTS` is a no-op
+// against an existing table, so a store running since before verifying_key
+// existed would keep the old column set and fail every insert — every install
+// unrecordable, and since the record is written inside the install transaction,
+// every install refused. A PRAGMA read rather than a blind
+// `ALTER TABLE ... ADD COLUMN` whose "duplicate column" error is swallowed, for
+// the reason migratePairingGrantsSchema states: swallowing an error class to
+// make a statement idempotent also swallows the unrelated failures sharing it.
+//
+// Existing rows keep verifying_key = ”. Nothing back-fills it and nothing can:
+// the envelope that would name the key was dropped at install (MKT-009a), so the
+// answer for an install recorded by an older build is genuinely unrecoverable.
+// A blank is the honest representation of that — it reads as "this build did not
+// record which key verified", which is true, rather than fabricating a digest
+// from the key_id an anchor set happens to carry today.
+func migratePackInstallsSchema(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(pack_installs)`)
+	if err != nil {
+		return fmt.Errorf("inspect pack_installs: %w", err)
+	}
+	defer rows.Close()
+
+	hasVerifyingKey := false
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
+			return fmt.Errorf("scan pack_installs column: %w", err)
+		}
+		if name == "verifying_key" {
+			hasVerifyingKey = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate pack_installs columns: %w", err)
+	}
+	if hasVerifyingKey {
+		return nil
+	}
+	if _, err := db.Exec(`ALTER TABLE pack_installs ADD COLUMN verifying_key TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add pack_installs.verifying_key: %w", err)
+	}
+	return nil
+}
 
 // SourceDirect is the install record's `source` value for an install no registry
 // source mediated — the direct, out-of-band artifact upload (marketplace/1
@@ -72,11 +122,20 @@ const SourceDirect = "direct"
 // TrustChannel is therefore load-bearing, not a missing value — it is what says
 // this install is not eligible for channel auto-tracking (MKT-090).
 //
-// ContentDigest and KeyID are NEVER optional. They come from the packsig
-// envelope verification that admitted the artifact, and they are the only record
-// anywhere on the box of which key vouched for the bytes that are running: the
-// envelope itself is dropped at install and never persisted (MKT-009a), so once
-// this is not written the answer is unreconstructable.
+// ContentDigest, KeyID and VerifyingKey are NEVER optional. They come from the
+// packsig envelope verification that admitted the artifact, and they are the
+// only record anywhere on the box of which key vouched for the bytes that are
+// running: the envelope itself is dropped at install and never persisted
+// (MKT-009a), so once this is not written the answer is unreconstructable.
+//
+// KeyID alone could not carry that. It is a truncated, publisher-supplied label,
+// and packsig deliberately verifies against EVERY anchored key bearing it so a
+// colliding id cannot let a shadow anchor refuse the genuine publisher — which
+// means that with two such anchors the label does not say which one vouched.
+// VerifyingKey is the full digest of the key that actually did, so the record
+// answers MKT-094a's own stated question ("which key vouched for the bytes that
+// are running") even when ids collide. Both are kept: key_id is what the
+// contract mandates and what a publisher and an index speak in.
 type PackInstallRecord struct {
 	RecordID        string
 	PackID          string
@@ -86,8 +145,11 @@ type PackInstallRecord struct {
 	StaleSource     bool
 	ContentDigest   string
 	KeyID           string
-	ArtifactDigest  string
-	InstalledAt     int64
+	// VerifyingKey is packsig.KeyDigest of the public key that verified the
+	// envelope — the collision-free identity KeyID cannot provide.
+	VerifyingKey   string
+	ArtifactDigest string
+	InstalledAt    int64
 }
 
 // ChannelMarkAdvance is the MKT-050 resolved-version high-water advance an
@@ -137,6 +199,12 @@ func (r PackInstallRecord) validate() error {
 		return errors.New("store: install record carries no verified content digest (marketplace/1 MKT-094a)")
 	case r.KeyID == "":
 		return errors.New("store: install record carries no verifying key id (marketplace/1 MKT-094a)")
+	case r.VerifyingKey == "":
+		// Refused rather than defaulted. A record naming a key_id with no key
+		// behind it is exactly the state MKT-094a calls "worse than recording
+		// none": it reads as established provenance while naming a label that,
+		// under a colliding id, identifies nothing.
+		return errors.New("store: install record carries no verifying key digest (marketplace/1 MKT-094a)")
 	}
 	return nil
 }
@@ -165,10 +233,10 @@ func appendInstallRecord(ctx context.Context, tx *sql.Tx, rec PackInstallRecord)
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO pack_installs
-		   (record_id, pack_id, resolved_version, trust_channel, source, stale_source, content_digest, key_id, artifact_digest, installed_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		   (record_id, pack_id, resolved_version, trust_channel, source, stale_source, content_digest, key_id, verifying_key, artifact_digest, installed_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.RecordID, rec.PackID, rec.ResolvedVersion, rec.TrustChannel, rec.Source, stale,
-		rec.ContentDigest, rec.KeyID, rec.ArtifactDigest, rec.InstalledAt,
+		rec.ContentDigest, rec.KeyID, rec.VerifyingKey, rec.ArtifactDigest, rec.InstalledAt,
 	); err != nil {
 		return fmt.Errorf("store: append pack install record: %w", err)
 	}
@@ -254,7 +322,7 @@ func (s *Store) ListPackInstalls(ctx context.Context, packID string) ([]PackInst
 	defer s.mu.RUnlock()
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT record_id, pack_id, resolved_version, trust_channel, source, stale_source, content_digest, key_id, artifact_digest, installed_at
+		`SELECT record_id, pack_id, resolved_version, trust_channel, source, stale_source, content_digest, key_id, verifying_key, artifact_digest, installed_at
 		   FROM pack_installs WHERE pack_id = ? ORDER BY record_id ASC`, packID)
 	if err != nil {
 		return nil, fmt.Errorf("store: list pack installs: %w", err)
@@ -266,7 +334,7 @@ func (s *Store) ListPackInstalls(ctx context.Context, packID string) ([]PackInst
 		var r PackInstallRecord
 		var stale int
 		if err := rows.Scan(&r.RecordID, &r.PackID, &r.ResolvedVersion, &r.TrustChannel, &r.Source,
-			&stale, &r.ContentDigest, &r.KeyID, &r.ArtifactDigest, &r.InstalledAt); err != nil {
+			&stale, &r.ContentDigest, &r.KeyID, &r.VerifyingKey, &r.ArtifactDigest, &r.InstalledAt); err != nil {
 			return nil, fmt.Errorf("store: scan pack install record: %w", err)
 		}
 		r.StaleSource = stale != 0

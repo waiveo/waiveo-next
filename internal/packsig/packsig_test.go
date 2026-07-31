@@ -537,3 +537,71 @@ func TestFileAnchorsRefuseAWritableDirectory(t *testing.T) {
 		t.Fatalf("a 0700 directory resolved to (%d keys, %v), want (1, nil)", len(keys), err)
 	}
 }
+
+// TestVerifyReportsWhichCollidingAnchorActuallyVerified is the case key_id
+// cannot answer.
+//
+// key_id is a truncated, publisher-supplied label, and VerifyBundle tries EVERY
+// anchored key bearing it — deliberately, so a colliding id cannot let a shadow
+// anchor refuse the genuine publisher. The consequence is that with two anchors
+// sharing an id, key_id names a label rather than a key, and the install record
+// built from it cannot say which of the two vouched for the running bytes.
+// MKT-094a's entire stated purpose is answering exactly that.
+//
+// So the anchor set here holds two keys under ONE id: a decoy that did not sign,
+// and the real signer. The envelope's key_id is satisfied by both; only one
+// verifies; and VerifyingKey must name that one.
+func TestVerifyReportsWhichCollidingAnchorActuallyVerified(t *testing.T) {
+	signerPub, signerPriv := signhash.GenerateKey()
+	decoyPub, _ := signhash.GenerateKey()
+	keyID := packsig.KeyIDFor(signerPub)
+
+	signed, err := packsig.Sign(testArtifact(t), "acme/menu-board", "1.0.0", keyID, signerPriv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	// The decoy is listed FIRST, so a verifier that reported the first candidate
+	// rather than the verifying one names the wrong key.
+	anchors := packsig.StaticAnchors{"acme": {
+		{KeyID: keyID, PublicKey: decoyPub},
+		{KeyID: keyID, PublicKey: signerPub},
+	}}
+
+	env, err := packsig.VerifyBundle(extract(t, signed), anchors)
+	if err != nil {
+		t.Fatalf("a colliding id must not stop the genuine publisher verifying: %v", err)
+	}
+	if got, want := packsig.KeyDigest(env.VerifyingKey), packsig.KeyDigest(signerPub); got != want {
+		t.Errorf("VerifyingKey names %s, want the signer %s", got, want)
+	}
+	if packsig.KeyDigest(env.VerifyingKey) == packsig.KeyDigest(decoyPub) {
+		t.Error("VerifyingKey names the DECOY anchor — the record would attest to provenance the host never established (MKT-094a)")
+	}
+	// The ambiguity is CONSTRUCTED, not hoped for: both anchors are registered
+	// under the one key_id above, so both are candidates and the label alone
+	// cannot distinguish them. Asserted rather than assumed, because if the
+	// fixture ever stopped registering two entries under one id this test would
+	// quietly become a single-candidate round trip that proves nothing.
+	if n := len(anchors["acme"]); n != 2 {
+		t.Fatalf("the fixture must offer 2 anchors sharing one key_id; got %d", n)
+	}
+	for i, k := range anchors["acme"] {
+		if k.KeyID != keyID {
+			t.Fatalf("anchor %d carries key_id %q, want the shared %q — the collision this test is about is not set up", i, k.KeyID, keyID)
+		}
+	}
+}
+
+// TestKeyDigestDistinguishesKeysThatShareAnID pins the property the install
+// record depends on: two keys with the same 64-bit label have different full
+// digests, and an absent key digests to nothing rather than to a constant.
+func TestKeyDigestDistinguishesKeysThatShareAnID(t *testing.T) {
+	a, _ := signhash.GenerateKey()
+	b, _ := signhash.GenerateKey()
+	if packsig.KeyDigest(a) == packsig.KeyDigest(b) {
+		t.Error("two distinct keys produced the same digest")
+	}
+	if got := packsig.KeyDigest(nil); got != "" {
+		t.Errorf("KeyDigest(nil) = %q, want empty — a record built from a verification that never happened must be visibly blank, not carry a plausible constant", got)
+	}
+}

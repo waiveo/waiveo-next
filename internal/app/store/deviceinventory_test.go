@@ -91,6 +91,7 @@ func invPackWithDevices(id, devicesJSON string) store.PackInstall {
 			Source:        store.SourceDirect,
 			ContentDigest: "sha256:" + fixtureDigestHex,
 			KeyID:         "ed25519:fixture",
+			VerifyingKey:  "sha256:0000000000000000000000000000000000000000000000000000000000000001",
 		},
 	}
 }
