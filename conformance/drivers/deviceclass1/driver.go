@@ -179,20 +179,27 @@ func driveREG012(rep *report.Report, cases map[string]corpus.Case) {
 	rep.Pass(c.CaseID, contract)
 }
 
-// attemptClassRegistration models device-class-registry/1's REG-012
-// collision policy at the structural level: a candidate class id that already
-// resolves in the existing registry is rejected outright — never merged into
-// or shadowing the existing entry, regardless of whether that existing entry
-// is itself built-in or extension-registered. The actual pack→host
-// registration verb belongs to ctx/1 (deferred, out of scope per this
-// contract's Conformance note); this is the accept/reject decision that verb
-// will enforce.
-func attemptClassRegistration(existing deviceclass.Registry, id string, _ deviceclass.ClassEntry) (rejected bool, code string) {
-	if _, ok := existing.Class(id); ok {
-		return true, "CLASS_IDENTIFIER_COLLISION"
+// attemptClassRegistration OBSERVES the production REG-012 decision
+// (deviceclass.Registry.RegisterClass) rather than restating it.
+//
+// It used to decide the collision here, against the raw registry accessors,
+// because the pack→host registration verb belongs to ctx/1 and is deferred.
+// That made the suite green on a refusal no production path could raise — a
+// driver supplying the behaviour it then reports as present. The verb is still
+// ctx/1's; the DECISION it will call now lives in the package, and this reads it.
+func attemptClassRegistration(existing deviceclass.Registry, id string, e deviceclass.ClassEntry) (rejected bool, code string) {
+	if errs := errsOf(existing.RegisterClass(id, e)); len(errs) > 0 {
+		return true, errs[0].Code
 	}
 	return false, ""
 }
+
+// errsOf drops the registry a Register* call returns and keeps its violations,
+// so a caller that only cares whether the attempt was refused reads as one
+// expression. The dropped value is the point of the no-shadow guarantee — on
+// refusal it is the receiver, unchanged — and driveREG012 checks that
+// separately against the registry it still holds.
+func errsOf(_ deviceclass.Registry, errs []deviceclass.Error) []deviceclass.Error { return errs }
 
 // driveREG031 drives the group-name no-shadow collision case (REG-031): an
 // extension attempts to register a semantic group whose name already exists
@@ -256,18 +263,12 @@ func driveREG031(rep *report.Report, cases map[string]corpus.Case) {
 	rep.Pass(c.CaseID, contract)
 }
 
-// attemptGroupRegistration models device-class-registry/1's REG-031
-// collision policy at the structural level: a candidate group name that
-// already exists for the target class is rejected outright — never merged
-// into or redefining the existing group's membership. Same deferred-verb
-// relationship to ctx/1 as attemptClassRegistration.
-func attemptGroupRegistration(existing deviceclass.Registry, deviceClass, groupName string, _ []string) (rejected bool, code string) {
-	entry, ok := existing.Class(deviceClass)
-	if !ok {
-		return false, ""
-	}
-	if _, exists := entry.SemanticGroups[groupName]; exists {
-		return true, "GROUP_NAME_COLLISION"
+// attemptGroupRegistration OBSERVES the production REG-031 decision
+// (deviceclass.Registry.RegisterGroup), for the same reason as
+// attemptClassRegistration above.
+func attemptGroupRegistration(existing deviceclass.Registry, deviceClass, groupName string, members []string) (rejected bool, code string) {
+	if errs := errsOf(existing.RegisterGroup(deviceClass, groupName, members)); len(errs) > 0 {
+		return true, errs[0].Code
 	}
 	return false, ""
 }
