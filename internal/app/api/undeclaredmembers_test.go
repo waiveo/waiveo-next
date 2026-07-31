@@ -257,3 +257,81 @@ func TestARefusedBodyIsNotRecordedAsAnIdempotentOutcome(t *testing.T) {
 		t.Fatalf("corrected body = %d, want 202 (body %s)", resp.StatusCode, raw)
 	}
 }
+
+// TestAuthSurfacePostsRefuseAnUndeclaredMember covers the five POSTs whose
+// handlers live in internal/app/auth. They reach neither the resource pipeline nor
+// the server's own action-POST check, so they are wrapped at the mount instead —
+// one implementation, with the schema name sitting next to the route it belongs
+// to.
+//
+// The credential-reset case is the one that matters most, and it is not a
+// tidiness argument. CredentialResetRequest's own description says
+// `additionalProperties: false` is what makes "the issuing admin has no path to
+// choose the credential value" (SEC-050) a property of the WIRE rather than of a
+// handler's discipline. Nothing enforced it, so the wire made no such promise —
+// the conformance driver had been smuggling a password through that route and
+// proving only that the handler ignored it.
+func TestAuthSurfacePostsRefuseAnUndeclaredMember(t *testing.T) {
+	for _, tc := range []struct {
+		name, path string
+		valid      map[string]any
+	}{
+		{"login", "/api/v1/auth/login",
+			map[string]any{"identifier": "someone@example.invalid", "password": "hunter2hunter2"}},
+		{"credential-reset issue", "/api/v1/auth/credential-reset",
+			map[string]any{"target_principal_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZC"}},
+		{"credential-reset redeem", "/api/v1/auth/credential-reset/redeem",
+			map[string]any{"code": "not-a-real-code", "password": "hunter2hunter2"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+
+			smuggled := map[string]any{"nonsense_field": "smuggled"}
+			for k, v := range tc.valid {
+				smuggled[k] = v
+			}
+			resp, raw := e.do(t, http.MethodPost, tc.path, mustJSON(t, smuggled), nil)
+			if resp.StatusCode != http.StatusUnprocessableEntity {
+				t.Fatalf("%s with an undeclared member = %d, want 422 (body %s)", tc.name, resp.StatusCode, raw)
+			}
+			p := assertProblem(t, resp, raw, "VALIDATION_FAILED")
+			if detail, _ := p["detail"].(string); detail != "nonsense_field: not a member this operation declares." {
+				t.Errorf("detail = %q, want it to name the offending member", detail)
+			}
+		})
+	}
+}
+
+// TestTheIssuingAdminCannotOfferACredentialValue is SEC-050's wire-level half,
+// asserted on the exact member the requirement is about rather than on an
+// invented one. The issuing route must not accept a body carrying a credential —
+// not ignore it, not strip it: refuse it, so no handler has to be trusted to
+// discard it.
+func TestTheIssuingAdminCannotOfferACredentialValue(t *testing.T) {
+	e := newEnv(t)
+
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/auth/credential-reset",
+		mustJSON(t, map[string]any{
+			"target_principal_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZC",
+			"password":            "the-value-the-admin-tried-to-choose",
+		}), nil)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("the issuing route accepted a credential-bearing body = %d, want 422 (body %s)", resp.StatusCode, raw)
+	}
+}
+
+// TestAWrappedHandlerStillReadsItsOwnBody: the wrapper consumes the body to check
+// it, and every wrapped handler decodes its own. A wrapper that did not hand the
+// bytes back would leave all five reading an empty request — which fails as a
+// validation error the caller cannot act on, not as a missing wrapper.
+func TestAWrappedHandlerStillReadsItsOwnBody(t *testing.T) {
+	e := newEnv(t)
+
+	// A well-formed login with the wrong credentials must reach the handler and be
+	// answered on its merits, never refused for an empty body.
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/auth/login",
+		mustJSON(t, map[string]any{"identifier": "nobody@example.invalid", "password": "hunter2hunter2"}), nil)
+	if resp.StatusCode == http.StatusUnprocessableEntity {
+		t.Fatalf("a well-formed login was refused as unprocessable — the wrapper consumed the body (%s)", raw)
+	}
+}

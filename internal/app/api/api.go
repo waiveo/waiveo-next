@@ -350,27 +350,27 @@ func (srv *server) mountAll(rt, rootRT *router, authHandlers *auth.Handlers) {
 	// secure-context precondition: SEC-004 makes `totp` the floor that stays
 	// available on the self-signed fallback, unlike `passkey` (SEC-102).
 	rt.HandleFunc("POST "+apiPrefix+"/auth/totp/enroll", authHandlers.EnrollTOTP)
-	rt.HandleFunc("POST "+apiPrefix+"/auth/totp/confirm", authHandlers.ConfirmTOTP)
+	rt.HandleFunc("POST "+apiPrefix+"/auth/totp/confirm", srv.withDeclaredMembers("TotpConfirmRequest", authHandlers.ConfirmTOTP))
 	// The ISSUING half of the routine credential reset (security-model/1
 	// SEC-050). Authenticated, and behind the middleware with everything else
 	// that mutates: the admin issuing a reset for somebody else is signed in as
 	// themselves, so there is nothing circular about requiring a session here.
 	// SEC-012's `admin` floor is enforced inside the store's issuance function.
-	rt.HandleFunc("POST "+apiPrefix+"/auth/credential-reset", authHandlers.IssueCredentialReset)
+	rt.HandleFunc("POST "+apiPrefix+"/auth/credential-reset", srv.withDeclaredMembers("CredentialResetRequest", authHandlers.IssueCredentialReset))
 
 	// The credential-exchange half (API-090/091) mounts on the ROOT mux, ahead
 	// of the middleware. Go's ServeMux prefers the more specific method+path
 	// pattern over the "/" catch-all, so these reach their handlers directly
 	// while every other path falls through to the authenticated mux.
-	rootRT.HandleFunc("POST "+apiPrefix+"/auth/login", authHandlers.Login)
-	rootRT.HandleFunc("POST "+apiPrefix+"/auth/setup", authHandlers.Claim)
+	rootRT.HandleFunc("POST "+apiPrefix+"/auth/login", srv.withDeclaredMembers("LoginRequest", authHandlers.Login))
+	rootRT.HandleFunc("POST "+apiPrefix+"/auth/setup", srv.withDeclaredMembers("ClaimRequest", authHandlers.Claim))
 	// The REDEEMING half of the credential reset. It is the third `security: []`
 	// operation, and for API-091's own reason: the caller is the person who
 	// cannot log in, so requiring a session would make the operation unreachable
 	// by the only party SEC-050 allows to perform it. What stands in for a
 	// session is the one-time code — 256 bits, hashed at rest, single-use under
 	// SEC-036's atomic consume, and rate-limited under SEC-033 before the lookup.
-	rootRT.HandleFunc("POST "+apiPrefix+"/auth/credential-reset/redeem", authHandlers.RedeemCredentialReset)
+	rootRT.HandleFunc("POST "+apiPrefix+"/auth/credential-reset/redeem", srv.withDeclaredMembers("CredentialResetRedeemRequest", authHandlers.RedeemCredentialReset))
 }
 
 // resourceConfig parameterizes the generic resource handler for one resource

@@ -188,12 +188,27 @@ func driveCredentialReset(rep *report.Report, c corpus.Case) {
 	h.sink.reset()
 
 	// --- issuance (SEC-050), over the mounted route ---------------------------
+	// The forbidden shape FIRST, as its own probe. CredentialResetRequest's own
+	// description says `additionalProperties: false` is what makes "the issuing
+	// admin has no path to choose the credential value" a property of the WIRE
+	// rather than of a handler's discipline — so the strongest evidence for
+	// admin_can_choose_credential_value is that the request never reaches a
+	// handler at all.
+	//
+	// This used to be smuggled into the issuance below and proved behaviourally:
+	// send a password, then check the target's credential was untouched. That
+	// proved the handler IGNORED it. Refusing the body outright is the stronger
+	// claim, and it is the one the document makes.
+	smuggled := h.issue(adminKey.Token, map[string]any{
+		"target_principal_id":    target,
+		"keep_existing_sessions": optOut,
+		"password":               adminChosenPassword,
+	})
+	adminCouldOfferACredential := smuggled.status < 400
+
 	issued := h.issue(adminKey.Token, map[string]any{
 		"target_principal_id":    target,
 		"keep_existing_sessions": optOut,
-		// Not part of the declared request schema. A handler that honoured it
-		// would give the issuing admin exactly the path SEC-050 forbids.
-		"password": adminChosenPassword,
 	})
 	if issued.status != http.StatusCreated {
 		k.fail(rep, "the issuing route refused the admin (%d %s)", issued.status, issued.raw)
@@ -233,8 +248,11 @@ func driveCredentialReset(rep *report.Report, c corpus.Case) {
 	}
 	adminChoiceTook := auth.VerifyPassword(afterIssue.Secret, adminChosenPassword) == nil ||
 		auth.VerifyPassword(afterIssue.Secret, oldPassword) != nil
+	// Three independent ways the admin could have chosen the value, and any one of
+	// them makes the answer true: the surface declares a credential-bearing member,
+	// a body carrying one was ACCEPTED, or the target's credential moved.
 	k.boolAt("admin_response.admin_can_choose_credential_value",
-		issuanceSurfaceCanCarryACredential() || adminChoiceTook)
+		issuanceSurfaceCanCarryACredential() || adminCouldOfferACredential || adminChoiceTook)
 
 	// --- SEC-051's argv/log/at-rest capture -----------------------------------
 	haystack := append([]string(nil), argv...)

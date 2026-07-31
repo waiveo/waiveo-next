@@ -75,9 +75,11 @@ package api
 // enforces things a request-body schema cannot express.
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"sort"
@@ -441,4 +443,31 @@ func schemaViolationDetail(err error) string {
 	}
 	reason = clipKey(reason)
 	return strings.ToUpper(reason[:1]) + reason[1:] + "."
+}
+
+// withDeclaredMembers wraps a handler whose body this package does not otherwise
+// see, bounding it to the members the named schema declares.
+//
+// It exists for the auth surface. Those handlers live in internal/app/auth, so
+// they reach neither the resource pipeline nor srv.undeclaredMemberRejected — and
+// the alternative, a second copy of this check over there, is how two checks
+// drift into disagreeing about what the same document says. Wrapping at the mount
+// keeps one implementation and puts the schema name next to the route it belongs
+// to, where a reader comparing the two can see both at once.
+//
+// The body is read here and handed back to the wrapped handler intact: it decodes
+// its own body, and a wrapper that consumed it would leave every one of those
+// handlers reading an empty request.
+func (srv *server) withDeclaredMembers(schema string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		raw, ok := readBody(w, r)
+		if !ok {
+			return
+		}
+		if srv.undeclaredMemberRejected(w, r, schema, raw) {
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(raw))
+		next(w, r)
+	}
 }
