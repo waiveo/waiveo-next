@@ -34,8 +34,35 @@
 // placement is the relay's own site node, and its labels and external_id are
 // api/1 authored data a relay has no field to set. A hostile or misconfigured
 // relay can therefore make the app list a device that is not there; it cannot
-// make the app adopt one, re-place another relay's device, or write anything an
-// api/1 selector or authorization decision is taken from.
+// make the app adopt one, or write anything an api/1 selector or authorization
+// decision is taken from.
+//
+// # One thing a relay CAN write, and it is the routing input
+//
+// That paragraph used to end "…re-place another relay's device, or write
+// anything an api/1 selector or authorization decision is taken from", and the
+// second half of that is true in a way that misleads. `RelayID` is neither a
+// selector nor an authorization input — it is the DISPATCH input, the field that
+// decides which relay an operator command is sent to. And a relay can write it:
+// candidate views from every relay merge into one map keyed by the derived device
+// id, most-recent-reporter wins (REL-153), and dispatch routes to the entity's
+// RelayID.
+//
+// So a second ENROLLED relay that reports another relay's `(driver, native_id)`
+// captures that entity's commands — including `params`, which REL-114 explicitly
+// permits to carry per-dispatch credential material. The tuple is guessable by
+// construction: `native_id` is an SSDP USN, discoverable by anything on any
+// relay's LAN.
+//
+// Two bounds worth stating rather than leaving to be rediscovered. It requires an
+// ENROLLED relay, so this is an insider or compromised-relay scenario and not an
+// open-LAN one. And "most recent reporter wins" is REL-153's prescribed
+// behaviour, so closing it is a contract question — whether a device reported by
+// a relay that did not previously report it should require operator confirmation
+// before RelayID flips — rather than a bug to patch here.
+//
+// This comment is corrected ahead of that decision because the previous wording
+// is what would stop the next reader looking.
 //
 // # Why rows are held in memory
 //
