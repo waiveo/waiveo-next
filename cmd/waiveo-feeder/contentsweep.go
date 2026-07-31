@@ -57,6 +57,21 @@ func runContentSweep(ctx context.Context, sweeper *contentgc.Sweeper) {
 		log.Printf("waiveo-feeder: reclaimed %d unreferenced content asset(s), %d byte(s), at generation %d",
 			res.Reclaimed, res.ReclaimedBytes, res.Generation)
 	}
+	// Reclamation is permanent, and a reference set derived from ZERO playlist
+	// rows is the one shape where "this workspace schedules nothing" and "the
+	// read returned nothing it should have" are indistinguishable to the sweeper.
+	// Neither the store nor the pass can tell them apart — both are legitimate
+	// states, and a guard on the count would refuse the ordinary case (assets
+	// uploaded and not yet scheduled) to defend against the rare one.
+	//
+	// So it is said HERE, at the moment it stops being recoverable, to the one
+	// party who can tell: an operator who knows whether that workspace had
+	// playlists. Nothing is withheld and nothing is retried — the deletion has
+	// already happened, and this is the record that it happened on an empty read.
+	if res.Reclaimed > 0 && res.PlaylistRows == 0 {
+		log.Printf("waiveo-feeder: NOTE — those %d asset(s) were reclaimed from a reference set derived from zero playlist rows, at generation %d. If this workspace has playlists, that read was wrong and the content is gone; if it schedules nothing, this is the sweep working as intended",
+			res.Reclaimed, res.Generation)
+	}
 	// A fleet this process cannot account for is the one retention outcome an
 	// operator has to be able to see WITHOUT a reclamation having happened: it
 	// means content will accumulate indefinitely, and the cause (a relay that is

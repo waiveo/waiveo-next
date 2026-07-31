@@ -201,6 +201,12 @@ type Result struct {
 	FleetConverged bool
 	FleetKnown     bool
 	Scanned        int
+	// PlaylistRows is how many playlist rows the reference set this pass acted on
+	// was derived from. Carried out rather than consulted here: no rule inside the
+	// pass can act on it (see store.ContentReferences), but a reclamation taken
+	// from a zero-row reference set is worth saying out loud, and only the caller
+	// has somewhere to say it.
+	PlaylistRows   int
 	Reclaimed      int
 	ReclaimedBytes int64
 	Retained       map[Reason]int
@@ -310,6 +316,7 @@ func (s *Sweeper) Sweep(ctx context.Context) (Result, error) {
 		converged := fleetKnown && convergedAtAsked && askedGen == refs.Generation
 
 		res.Generation = refs.Generation
+		res.PlaylistRows = refs.PlaylistRows
 		res.FleetConverged = convergedAtAsked
 		res.FleetKnown = fleetKnown
 

@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -235,5 +236,117 @@ func TestMainRunsTheContentSweep(t *testing.T) {
 	}
 	if !called["runContentSweep"] {
 		t.Error("func main never calls runContentSweep — the sweeper would be built and never run, which no other test in this tree can tell apart from working")
+	}
+}
+
+// zeroRowRefs is a reference set that reads cleanly and reports NO playlist rows
+// and no digests — the shape a workspace with nothing scheduled produces, and
+// also the shape a read that returned nothing it should have produces. Telling
+// those apart is not this process's job and cannot be; saying which one it just
+// deleted content on is.
+type zeroRowRefs struct{}
+
+func (zeroRowRefs) Generation(context.Context) (int64, error) { return 7, nil }
+
+func (zeroRowRefs) WithContentReferences(_ context.Context, use func(store.ContentReferences) error) error {
+	return use(store.ContentReferences{Digests: map[string]bool{}, Generation: 7, PlaylistRows: 0})
+}
+
+// oneRowRefs reports a playlist row and still references nothing — a workspace
+// whose playlists are all empty. Content here is equally unreferenced and equally
+// reclaimable; what must NOT happen is the zero-row note firing about it.
+type oneRowRefs struct{}
+
+func (oneRowRefs) Generation(context.Context) (int64, error) { return 7, nil }
+
+func (oneRowRefs) WithContentReferences(_ context.Context, use func(store.ContentReferences) error) error {
+	return use(store.ContentReferences{Digests: map[string]bool{}, Generation: 7, PlaylistRows: 1})
+}
+
+// reclaimAllSweeper builds a sweeper over one unreferenced, fully-aged asset, so
+// a single pass reclaims it.
+func reclaimAllSweeper(t *testing.T, refs contentgc.ReferenceSource) (*contentgc.Sweeper, func()) {
+	t.Helper()
+	// One clock for the origin's stored-at stamp and the sweeper's now, or the
+	// asset reads as stored in the far future and is held as too new forever.
+	now := int64(0)
+	content, err := origin.Open(t.TempDir(), origin.WithClock(func() int64 { return now }))
+	if err != nil {
+		t.Fatalf("origin.Open: %v", err)
+	}
+	if _, err := content.Add([]byte("an asset no playlist names")); err != nil {
+		t.Fatalf("origin.Add: %v", err)
+	}
+	sweeper, err := contentgc.New(contentgc.Config{
+		Origin:     content,
+		References: refs,
+		Fleet:      func(gen int64) (bool, bool) { return gen == 7, true },
+		NowMs:      func() int64 { return now },
+	})
+	if err != nil {
+		t.Fatalf("contentgc.New: %v", err)
+	}
+	// age advances past both the min-asset-age and min-unreferenced windows, which
+	// is what the asset experiences between the marking sweep and the reclaiming one.
+	return sweeper, func() { now += contentgc.DefaultMinAssetAgeMs * 4 }
+}
+
+// captureLog runs fn with the standard logger redirected, and returns what it
+// wrote. The sweep reports through log.Printf, so the log IS the surface here —
+// asserting on Result alone would pass with nothing ever printed.
+func captureLog(t *testing.T, fn func()) string {
+	t.Helper()
+	var buf strings.Builder
+	prevOut, prevFlags := log.Writer(), log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() { log.SetOutput(prevOut); log.SetFlags(prevFlags) })
+	fn()
+	return buf.String()
+}
+
+// TestReclaimingFromAZeroRowReferenceSetIsReported is the whole point of
+// carrying PlaylistRows out of the pass.
+//
+// Reclamation is permanent. A sweep that deletes content while its reference set
+// came from zero playlist rows is the one combination where a silent read fault
+// and an empty workspace produce the same irreversible outcome, and no rule
+// inside the sweeper can distinguish them — both are legitimate. An operator who
+// knows whether that workspace had playlists can, but only if this is said.
+func TestReclaimingFromAZeroRowReferenceSetIsReported(t *testing.T) {
+	sweeper, age := reclaimAllSweeper(t, zeroRowRefs{})
+	out := captureLog(t, func() {
+		runContentSweep(context.Background(), sweeper) // marks
+		age()
+		runContentSweep(context.Background(), sweeper) // reclaims
+	})
+
+	if !strings.Contains(out, "reclaimed") {
+		t.Fatalf("the fixture never reclaimed anything, so this test proves nothing about the note; log was:\n%s", out)
+	}
+	if !strings.Contains(out, "zero playlist rows") {
+		t.Errorf("content was reclaimed from a reference set derived from zero playlist rows and nothing said so.\n"+
+			"That is the one case where a broken read and an empty workspace are indistinguishable AND the outcome "+
+			"is permanent — an operator who could tell them apart never gets the chance.\nlog was:\n%s", out)
+	}
+}
+
+// TestReclaimingFromANonEmptyReferenceSetIsNotReported is the other direction. A
+// note that fires on every reclamation is a note an operator learns to skip, and
+// it would be indistinguishable from a correct one at the moment it mattered.
+func TestReclaimingFromANonEmptyReferenceSetIsNotReported(t *testing.T) {
+	sweeper, age := reclaimAllSweeper(t, oneRowRefs{})
+	out := captureLog(t, func() {
+		runContentSweep(context.Background(), sweeper)
+		age()
+		runContentSweep(context.Background(), sweeper)
+	})
+
+	if !strings.Contains(out, "reclaimed") {
+		t.Fatalf("the fixture never reclaimed anything; log was:\n%s", out)
+	}
+	if strings.Contains(out, "zero playlist rows") {
+		t.Errorf("a sweep whose reference set came from a real playlist row raised the zero-row note.\n"+
+			"Firing on the ordinary case trains an operator to ignore it.\nlog was:\n%s", out)
 	}
 }

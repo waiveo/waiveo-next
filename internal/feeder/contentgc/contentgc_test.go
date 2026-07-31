@@ -460,3 +460,50 @@ func TestAReferenceTheSweeperNeverSawStillResetsTheClock(t *testing.T) {
 		t.Fatalf("reclaimed %d after a genuinely quiet full window, want 1 (retained=%v)", res.Reclaimed, res.Retained)
 	}
 }
+
+// TestSweepReportsThePlaylistRowCountItActedOn pins the carry-out that makes the
+// feeder's zero-row note possible.
+//
+// The number is deliberately not consulted inside the pass — zero rows is a
+// legitimate workspace state and a guard on it would refuse the sweeper's main
+// job — so nothing about reclamation changes when it is wrong. That is exactly
+// why it needs its own test: a Result field no decision reads is one a refactor
+// can quietly stop populating, and the only symptom would be a warning that
+// never fires again.
+func TestSweepReportsThePlaylistRowCountItActedOn(t *testing.T) {
+	h := newHarness(t)
+	kept, dropped := h.add("an asset a playlist names"), h.add("an asset nothing names")
+	h.reference("01J8ZH000000000000000000R1", kept)
+	h.reference("01J8ZH000000000000000000R2", kept)
+
+	if got := h.sweep().PlaylistRows; got != 2 {
+		t.Errorf("a sweep over two playlist rows reported PlaylistRows=%d, want 2 — the feeder's "+
+			"zero-row reclamation note reads this, so a wrong count silences it or fires it falsely", got)
+	}
+	_ = dropped
+}
+
+// TestSweepOverNoPlaylistsReportsZeroRows is the half the note actually keys on.
+// A count that were hardcoded to the number of assets, or to the digest-set size,
+// would pass the test above and fail here.
+func TestSweepOverNoPlaylistsReportsZeroRows(t *testing.T) {
+	h := newHarness(t)
+	orphan := h.add("an asset no playlist has ever named")
+
+	first := h.sweep()
+	if first.PlaylistRows != 0 {
+		t.Fatalf("a sweep over a workspace with no playlists reported PlaylistRows=%d, want 0", first.PlaylistRows)
+	}
+
+	// And the same sweep must still reclaim: the count is reported, never a guard.
+	// If a future change gates on it, this fails and says why.
+	h.age()
+	if second := h.sweep(); second.Reclaimed != 1 {
+		t.Errorf("a sweep over a zero-playlist workspace reclaimed %d unreferenced asset(s), want 1 — "+
+			"PlaylistRows must be REPORTED and never gate reclamation, or content uploaded before it is "+
+			"scheduled would accumulate forever", second.Reclaimed)
+	}
+	if h.onDisk(orphan) {
+		t.Error("the unreferenced asset survived a sweep of a workspace with no playlists")
+	}
+}

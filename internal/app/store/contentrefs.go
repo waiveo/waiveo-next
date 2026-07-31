@@ -22,6 +22,24 @@ import (
 // reported because "no content is referenced" and "no playlist row was read" look
 // identical in Digests and are entirely different facts: the first is a workspace
 // with nothing scheduled, the second is a read that saw nothing it should have.
+//
+// It cannot GATE that difference, and pretending otherwise would break the
+// sweep's main job. Zero rows is a legitimate workspace state — content uploaded
+// and not yet scheduled — and reclaiming those assets is exactly what the sweeper
+// exists to do. A guard on this number would refuse the ordinary case to defend
+// against a hypothetical one.
+//
+// What it can do is make the difference visible AT THE MOMENT IT STOPS BEING
+// recoverable. Reclamation is permanent, so a sweep that deletes content while
+// its reference set came from zero playlist rows is the one combination where a
+// silent read fault and an empty workspace produce the same irreversible outcome.
+// The feeder logs precisely that pair (cmd/waiveo-feeder/contentsweep.go), which
+// is the only place the two can be told apart — by a human who knows whether that
+// workspace had playlists.
+//
+// The other half of that fault is already closed at the source rather than here:
+// a body that will not decode ABORTS the read (see the failure posture below), so
+// the residue this number covers is a read that returned no rows without error.
 type ContentReferences struct {
 	Digests      map[string]bool
 	Generation   int64
