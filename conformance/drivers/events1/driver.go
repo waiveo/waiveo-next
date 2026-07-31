@@ -735,13 +735,26 @@ func driveBoxVitals(rep *report.Report, cases map[string]corpus.Case) {
 
 const auditRetentionClass = "audit-long"
 
-// driveAuditEvent drives EVT-080 directly against events.Validate — no
-// producer or HTTP endpoint anywhere in the tree constructs an audit.event
-// envelope today (grep confirms only envelope/validate/class.go reference
-// the schema; eventingest's relay telemetry channel does not carry it, REL-
-// 095's schema list is automation.run/content.played/entity.state_changed/
-// device.heartbeat/box.vitals only). This is a real, confirmed gap (D3/D8),
-// not a driver shortcut around a real handler.
+// driveAuditEvent drives EVT-080 through the PRODUCTION envelope constructor,
+// events.AuditEventEnvelope — the same call the platform's own audit path makes.
+//
+// It used to hand-marshal the payload map here and validate that, on the stated
+// grounds that "no producer or HTTP endpoint anywhere in the tree constructs an
+// audit.event envelope today". That was true when written and is not now:
+// internal/app/api/audit.go emits exactly one audit.event per mutating api/1
+// request from a middleware seam, and internal/app/auth's Auditor — "a small
+// adapter over events.AuditEventEnvelope" (SEC-150) — produces the login-failure
+// record this very corpus case describes.
+//
+// The note outliving the gap is the failure mode itself: a driver constructing
+// the shape it then validates proves the shape is well-formed and nothing about
+// what the platform emits. Building through the real constructor means a change
+// to what production puts in an audit envelope fails here.
+//
+// What is still NOT driven from here: the middleware seam that decides WHICH
+// requests emit and with what actor, and the sink that appends. Those are api/1
+// and security-model/1 surfaces with their own coverage; this case is the
+// events/1 envelope contract, and that is what this observes.
 func driveAuditEvent(rep *report.Report, cases map[string]corpus.Case) {
 	const id = "EVT-080-valid-audit-login-failure"
 	c, ok := corpus.ByID(cases, id)
@@ -772,25 +785,22 @@ func driveAuditEvent(rep *report.Report, cases map[string]corpus.Case) {
 		return
 	}
 
-	payload := map[string]any{
-		"actor_principal": input.ActorPrincipal,
-		"on_behalf_of":    nil,
-		"action":          input.Action,
-		"target":          "principal:" + input.ActorPrincipal,
-		"result":          input.Result,
-	}
-	payloadRaw, err := json.Marshal(payload)
-	if err != nil {
-		rep.Fail(c.CaseID, contract, fmt.Sprintf("marshal derived payload: %v", err))
-		return
-	}
-
-	env := events.Envelope{
-		ID: "01J8Z3K4N5P6Q7R8S9T0V1W2Y7", Schema: events.SchemaAuditEvent, TS: 1752537600000,
-		ScopeNode: siteScope, TraceID: "01J8Z3K4N5P6Q7R8S9T0V1W2Y7", CostClass: "telemetry",
-		RetentionClass: auditRetentionClass, Origin: "internal", OriginPrincipal: "01J8Z3K4N5P6Q7R8S9T0V1W2Y8",
-		Payload: payloadRaw,
-	}
+	// Only the identity/timing fields are supplied here — they are the caller's
+	// in production too. Everything the CONTRACT pins about an audit envelope
+	// (schema, cost and retention class, origin, and the payload's shape) comes
+	// out of the constructor, so this asserts against what the platform builds
+	// rather than against a copy of it made here.
+	env := events.AuditEventEnvelope(events.AuditEvent{
+		ID:             "01J8Z3K4N5P6Q7R8S9T0V1W2Y7",
+		TS:             1752537600000,
+		ScopeNode:      siteScope,
+		TraceID:        "01J8Z3K4N5P6Q7R8S9T0V1W2Y7",
+		ActorPrincipal: input.ActorPrincipal,
+		Action:         input.Action,
+		Target:         "principal:" + input.ActorPrincipal,
+		Result:         input.Result,
+	})
+	payloadRaw := env.Payload
 
 	var diffs []report.Diff
 	if env.Schema != want.Envelope.Schema {
@@ -807,8 +817,9 @@ func driveAuditEvent(rep *report.Report, cases map[string]corpus.Case) {
 
 	verr := events.Validate(env)
 	recordDelivery(rep, c, verr, want.Delivered, diffs,
-		"no producer or HTTP endpoint constructs an audit.event envelope anywhere in the tree today (D3/D8) — driven "+
-			"directly against the real Validate gate, not routable through any live handler yet")
+		"envelope built by the PRODUCTION constructor events.AuditEventEnvelope — the same call internal/app/auth's "+
+			"Auditor makes for this exact login-failure record — and driven against the real Validate gate. NOT driven "+
+			"from here: the api/1 middleware seam deciding which requests emit, and the sink that appends.")
 }
 
 // --- the live SSE transport (EVT-091/134/140) -------------------------------
