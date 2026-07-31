@@ -650,3 +650,67 @@ func TestWS_DeferredGapClosesSlowConsumerAtTheBound(t *testing.T) {
 
 	c.expectClose(t, events.CloseSlowConsumer, 3*time.Second)
 }
+
+// TestWS_WriteDeadlineExhaustedDisconnectsSlowConsumer pins EVT-142's OTHER
+// half — the disconnect one.
+//
+// EVT-142 draws a line between two responses to a subscriber that has fallen
+// behind: while the server can still write to the connection it MUST gap
+// (Hub.drain's buffer_exceeded marker) and keep the subscriber connected; it
+// MUST disconnect with SLOW_CONSUMER_DISCONNECTED "only once writes to that
+// connection are themselves backed up past a bounded timeout".
+//
+// The gap side was well covered. This side was not covered by ANYTHING —
+// removing endWS's classification entirely left the whole tree green, so the
+// server could have stopped disconnecting backed-up consumers and no test would
+// have said so. Note the neighbouring
+// TestWS_DeferredGapClosesSlowConsumerAtTheBound does NOT cover it: that reaches
+// the same close through EVT-142a's deferral bound, a different call site, and
+// it survives the same mutation.
+//
+// # Why the deadline is forced rather than provoked
+//
+// The realistic setup — a client that stops draining its socket while the
+// server pushes until the kernel buffers fill — depends on socket buffer sizes
+// and scheduling, which is precisely the kind of timing dependence that makes a
+// test flaky rather than thorough. What EVT-142 actually specifies here is the
+// CLASSIFICATION: a write that exhausted its own deadline means a slow consumer
+// and gets that close code. Setting the write timeout to a nanosecond makes the
+// server's first frame write exhaust its deadline deterministically, driving the
+// real path (wsSink → endWS → closeWith) with no timing race at all.
+func TestWS_WriteDeadlineExhaustedDisconnectsSlowConsumer(t *testing.T) {
+	e := newMidEnv(t, 4, WithWriteTimeout(time.Nanosecond), WithGapDeferral(30*time.Second))
+	anchor := e.put(siteANode)
+
+	// dialWS, not openWS: the hello-ack is itself a server write, so it is the
+	// write that exhausts the deadline here and openWS would fail on its absence
+	// before this could assert what replaced it.
+	c := dialWS(t, e.srv, e.cred)
+	c.send(t, events.HelloFrame{Type: events.FrameTypeHello, ResumeFrom: anchor})
+
+	// EVT-096: the close names the taxonomy code, and nothing else.
+	c.expectClose(t, events.CloseSlowConsumer, 3*time.Second)
+}
+
+// TestWS_WritesThatCompleteDoNotDisconnect is the control, and it is the half
+// that makes the test above mean something.
+//
+// EVT-142's rule is a LINE, not a disposition: a server that disconnected every
+// subscriber would satisfy "disconnect once writes are backed up" while
+// violating "MUST gap (not disconnect) whenever it can still write". Without
+// this, a mutant that closes unconditionally passes.
+func TestWS_WritesThatCompleteDoNotDisconnect(t *testing.T) {
+	e := newMidEnv(t, 4, WithGapDeferral(30*time.Second))
+	a0 := e.put(siteANode)
+	a1 := e.put(siteANode)
+
+	c, _ := e.midWS(t, a0)
+	if f := c.next(t, 2*time.Second); f.Type != events.FrameTypeEvent || f.Event.ID != a1 {
+		t.Fatalf("a subscriber the server can write to must be SERVED, not disconnected; got %+v", f)
+	}
+	// And it stays connected across a further live append.
+	a2 := e.put(siteANode)
+	if f := c.next(t, 2*time.Second); f.Type != events.FrameTypeEvent || f.Event.ID != a2 {
+		t.Fatalf("the connection did not survive a second delivery; got %+v", f)
+	}
+}
