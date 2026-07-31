@@ -43,6 +43,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -71,6 +72,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/ssdpresponder"
 	"github.com/maaxton/waiveo-next/internal/relay/telemetry"
 	"github.com/maaxton/waiveo-next/internal/relay/telemetryhttp"
+	"github.com/maaxton/waiveo-next/internal/relay/vitals"
 	"github.com/maaxton/waiveo-next/internal/rules/registry"
 	"github.com/maaxton/waiveo-next/internal/rules/state"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
@@ -1078,7 +1080,7 @@ func main() {
 	go telemetryFlushLoop(rootCtx, telemetryFlushTicker.C, telemetryChannel)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", healthz)
+	mux.HandleFunc("/healthz", healthzWithVitals(relayID.RelayID))
 	pairingSrv.Register(mux)
 
 	// Mount the relay/1 clock.hint receiver (REL-133) on this relay's own
@@ -1918,10 +1920,42 @@ func feederTLSClient(currentLeaf func() (*tls.Certificate, error)) *http.Client 
 	}
 }
 
-func healthz(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{
-		"component": "waiveo-relay",
-		"status":    "ok",
-	})
+// healthzWithVitals answers /healthz with this relay's real operational health
+// rather than a constant.
+//
+// The previous body was `{"component":"waiveo-relay","status":"ok"}` — a literal,
+// returned whether or not the box was overheating, throttled, undervolted or out
+// of disk. A probe that cannot fail is a probe that reports nothing, and the
+// deploy tooling treats a 200 here as "the relay is fine".
+//
+// `vitals` is events/1's box.vitals payload (EVT-070/071) rather than a shape
+// invented for this route, so the numbers an operator reads here are the same
+// ones a fleet consumer will receive when emission is wired — the cadence for
+// that is still an open question in the contract's own draft-note, which is why
+// this reads on demand and emits nothing.
+//
+// The disk read is the relay's OWN operational storage (identity.DefaultPath),
+// which is what EVT-070's disk_headroom is about — not whatever filesystem the
+// process happened to start in.
+//
+// `status` stays "ok" while the process is answering: this route reports health,
+// and deciding which readings constitute unhealthy is a Repairs-detector question
+// with its own thresholds, not something to invent inside a liveness probe.
+func healthzWithVitals(relayID string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		reading := vitals.Read(filepath.Dir(identity.DefaultPath))
+		body := map[string]any{
+			"component": "waiveo-relay",
+			"status":    "ok",
+			"vitals":    vitals.Payload(relayID, reading),
+		}
+		// Named plainly rather than left to be inferred from absent members: a
+		// consumer that sees no cpu_temp should be able to tell "this platform has
+		// no thermal sensor" from "the field was dropped".
+		if missing := reading.Unavailable(); len(missing) > 0 {
+			body["vitals_unavailable"] = missing
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(body)
+	}
 }
