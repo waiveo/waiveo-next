@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"log"
 	"math/big"
 	"net"
 	"net/http"
@@ -1513,5 +1514,113 @@ func TestRePullDifferentHashHigherGenerationApplies(t *testing.T) {
 	lease := pairAndPull(t, srv, grantID)
 	if len(lease.Content) != 1 || lease.Content[0].AssetRef != rePullAssetA {
 		t.Fatalf("served content after a real apply = %+v, want the new asset %s", lease.Content, rePullAssetA)
+	}
+}
+
+// relayTestCertDER mints a self-signed leaf for pairing-code formation, which
+// commits to the certificate a screen will pin.
+func relayTestCertDER(t *testing.T) []byte {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("ed25519.GenerateKey: %v", err)
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		t.Fatalf("generate serial: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: "waiveo-relay"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().AddDate(10, 0, 0),
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, priv)
+	if err != nil {
+		t.Fatalf("x509.CreateCertificate: %v", err)
+	}
+	return der
+}
+
+// TestBootPairingCodesSkipGrantsBoundToAnotherRelay pins REL-121b on the boot
+// log, which is a dev-console surface and was covered by nothing: deleting the
+// skip entirely leaves the whole tree green.
+//
+// Every relay of a site applies the SAME signed snapshot, so relay A holds
+// relay B's grants in memory whether or not it may redeem them. The skip is
+// what keeps them out of A's LOG. Two distinct reasons, and the second is the
+// one that makes this more than cosmetic:
+//
+//   - A code A forms encodes A's OWN dial address against a selector only B can
+//     redeem, so anyone who typed it would be refused. A code that cannot work
+//     is worse than no code.
+//   - It writes a selector redeemable AT RELAY B into relay A's log. Both boxes
+//     hold the grant, but only one of them can spend it, and a log is read by
+//     more people and kept longer than process memory.
+func TestBootPairingCodesSkipGrantsBoundToAnotherRelay(t *testing.T) {
+	const (
+		thisRelay  = "01J8ZRELAYSELF000000000001"
+		otherRelay = "01J8ZRELAYOTHER0000000002"
+	)
+	grants := []wire.PairingGrant{
+		{GrantID: "grant-mine-000000000000001", RelayID: thisRelay, ScreenID: "01J8ZSCREEN0000000000000A"},
+		{GrantID: "grant-theirs-00000000000002", RelayID: otherRelay, ScreenID: "01J8ZSCREEN0000000000000B"},
+		{GrantID: "grant-unbound-0000000000003", ScreenID: "01J8ZSCREEN0000000000000C"},
+	}
+	cfg := config{listen: "192.168.1.50:7421", pairHost: "192.168.1.50", pairPort: 7421}
+
+	var buf strings.Builder
+	prevOut, prevFlags := log.Writer(), log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() { log.SetOutput(prevOut); log.SetFlags(prevFlags) })
+
+	logPairingCodes(cfg, desiredstate.Applied{PairingGrants: grants}, relayTestCertDER(t), thisRelay)
+	out := buf.String()
+
+	if !strings.Contains(out, "grant-mine-000000000000001") {
+		t.Errorf("no pairing code was logged for this relay's OWN grant; the surface is doing nothing.\nlog:\n%s", out)
+	}
+	// An unbound grant is redeemable at any relay of the site (REL-121b's
+	// exemption), so this relay may display it.
+	if !strings.Contains(out, "grant-unbound-0000000000003") {
+		t.Errorf("no pairing code was logged for an UNBOUND grant, which any relay may redeem.\nlog:\n%s", out)
+	}
+	if strings.Contains(out, "grant-theirs-00000000000002") {
+		t.Errorf("this relay logged a pairing code for a grant bound to another relay (REL-121b). "+
+			"The code encodes THIS relay's dial address against a selector only the bound relay can redeem, and it "+
+			"puts that selector in this box's log.\nlog:\n%s", out)
+	}
+}
+
+// TestBootPairingCodesFormNoneWithoutADialableAddress: with no address a screen
+// could reach, the surface says so and forms nothing.
+//
+// This is the control. Without it a skip that dropped EVERY grant — the easiest
+// way to break the test above — passes it.
+func TestBootPairingCodesFormNoneWithoutADialableAddress(t *testing.T) {
+	grants := []wire.PairingGrant{{GrantID: "grant-mine-000000000000001", ScreenID: "01J8ZSCREEN0000000000000A"}}
+	// Loopback pair host behind a non-loopback listener: a formed code would
+	// tell a screen to dial its own loopback.
+	cfg := config{listen: "192.168.1.50:7421", pairHost: "127.0.0.1", pairPort: 7421}
+
+	var buf strings.Builder
+	prevOut, prevFlags := log.Writer(), log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() { log.SetOutput(prevOut); log.SetFlags(prevFlags) })
+
+	logPairingCodes(cfg, desiredstate.Applied{PairingGrants: grants}, relayTestCertDER(t), "01J8ZRELAYSELF000000000001")
+	out := buf.String()
+
+	if strings.Contains(out, "grant-mine-000000000000001") {
+		t.Errorf("a pairing code was formed with no dialable address; it would tell a screen to dial its own loopback.\nlog:\n%s", out)
+	}
+	if !strings.Contains(out, "NOT forming pairing codes") {
+		t.Errorf("no codes were formed and nothing said why — an operator debugging a screen that cannot reach the "+
+			"server has nothing connecting it to this box's configuration.\nlog:\n%s", out)
 	}
 }
