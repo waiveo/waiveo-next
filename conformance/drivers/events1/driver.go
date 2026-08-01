@@ -131,6 +131,7 @@ func driveCases(rep *report.Report, cases map[string]corpus.Case) {
 	driveSelectorAndSchemasParameters(rep, cases)
 	driveMidStreamBufferExceeded(rep, cases)
 	driveDeferralBound(rep, cases)
+	driveDeferralResolves(rep, cases)
 }
 
 // --- the live ingest harness ------------------------------------------------
@@ -2270,6 +2271,168 @@ func driveDeferralBound(rep *report.Report, cases map[string]corpus.Case) {
 		if !*want.ConnectionEndedAtBound {
 			fail("sse.connection_ended_at_bound", false, err.Error())
 		}
+	}
+
+	finishCase(rep, c, diffs)
+}
+
+// resolvingDeferralBound is the bound the resolve case runs under.
+//
+// Deliberately LONG, and for the opposite reason deferralBoundForDriver is
+// short: this case is about a marker that survives until a resume point arrives,
+// so the bound must not be what ends the wait. The ordering that makes the case
+// meaningful is enforced by the flush gate, not by racing this number.
+const resolvingDeferralBound = 30 * time.Second
+
+// driveDeferralResolves drives EVT-142a's other half: a deferred marker that
+// DOES find a resume point is emitted immediately ahead of the first event
+// inside the subscriber's visible set, with from_id unmoved.
+//
+// It exists because the bounded-deferral case cannot stand alone. A deferral
+// bound of ZERO satisfies "a deferral MUST be bounded" while never deferring at
+// all — and it passes every other case in this corpus, including the
+// exceeds-its-bound one, whose resume point never arrives so ending early looks
+// correct. Measured: forcing bound = 0 left the whole driver green before this
+// case existed.
+//
+// The ORDERING is the assertion. The subscriber must reach "marker pending,
+// nothing visible" and be seen to survive there BEFORE the resume point is
+// appended; a resume point already in the log when the loss is observed lets a
+// zero bound resolve the marker without ever having deferred. The gate provides
+// that ordering rather than a sleep.
+func driveDeferralResolves(rep *report.Report, cases map[string]corpus.Case) {
+	const id = "EVT-142a-valid-deferred-marker-resolves-inside-the-bound"
+	c, ok := corpus.ByID(cases, id)
+	if !ok {
+		rep.Fail(id, contract, "case not found in frozen corpus")
+		return
+	}
+
+	var in midStreamCase
+	if err := decodeInto(c.Input, &in); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode input: %v", err))
+		return
+	}
+	var want struct {
+		ConnectionSurvives *bool   `json:"connection_survives_the_pending_marker"`
+		MarkerEmitted      *bool   `json:"marker_emitted"`
+		MarkerFromID       *string `json:"marker_from_id"`
+		MarkerToID         *string `json:"marker_to_id"`
+		EventAfterMarker   *string `json:"event_after_marker"`
+	}
+	if err := decodeInto(c.Expected, &want); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode expected: %v", err))
+		return
+	}
+	if want.ConnectionSurvives == nil || want.MarkerEmitted == nil || want.MarkerFromID == nil ||
+		want.MarkerToID == nil || want.EventAfterMarker == nil {
+		rep.Fail(c.CaseID, contract, "corpus expected block is missing one of the five members this stage asserts")
+		return
+	}
+
+	fixture, err := authtest.New(authtest.Config{
+		Role:      auth.Role(in.SubscriberBinding.Role),
+		ScopeNode: in.SubscriberBinding.ScopeNode,
+	})
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("seed the subscriber's principal: %v", err))
+		return
+	}
+	defer fixture.Close()
+
+	hub := eventsse.NewHub(events.NewEventLog(in.Retention))
+	appendPhase := func(phase string) {
+		for _, e := range in.RecordedEvents {
+			if e.Phase == phase {
+				hub.Append(scopedFixtureEnvelope(e.ID, e.ScopeNode, ""))
+			}
+		}
+	}
+	appendPhase("before_connect")
+
+	gate := newFlushGate()
+	var gateOnce sync.Once
+	stopGating := func() { gateOnce.Do(gate.shutdown) }
+
+	nodes := in.ScopeNodes
+	srv := httptest.NewServer(gatedHandler(eventsse.New(hub, fixture.Auth, func(context.Context) ([]datamodel.ScopeNode, error) {
+		return nodes, nil
+	}, eventsse.WithGapDeferral(resolvingDeferralBound)), gate))
+	defer srv.Close()
+	defer stopGating()
+
+	br, cancel := dialSSEAs(srv, fixture.Credential(), "resume_from="+in.ResumeFrom)
+	defer cancel()
+
+	var diffs []report.Diff
+	fail := func(field string, expected, actual any) {
+		diffs = append(diffs, report.Diff{Field: field, Expected: expected, Actual: actual})
+	}
+
+	if f, err := readFrame(br, 3*time.Second); err != nil || f.event != "event" {
+		fail("sse.backlog", "one event frame above the resume anchor", fmt.Sprintf("frame=%+v err=%v", f, err))
+		finishCase(rep, c, diffs)
+		return
+	}
+	if err := gate.wait(3 * time.Second); err != nil {
+		fail("sse.backlog_flush", "the handler parks after flushing its backlog", err.Error())
+		finishCase(rep, c, diffs)
+		return
+	}
+
+	// The loss, with NOTHING this subscriber may read retained above it.
+	appendPhase("lost_undelivered")
+	appendPhase("tail_invisible")
+	gate.let()
+
+	// The subscriber wakes, finds the discontinuity, and has nowhere to point.
+	// Reaching this park is the observation that the marker is PENDING and the
+	// connection is still open — which is exactly what a zero bound cannot do.
+	if err := gate.wait(3 * time.Second); err != nil {
+		fail("sse.pending_marker_park", *want.ConnectionSurvives,
+			"the handler never reached another flush after the loss: with a deferral bound of zero the connection "+
+				"ends at the loss instead of holding the marker (EVT-142a) — "+err.Error())
+		finishCase(rep, c, diffs)
+		return
+	}
+
+	// Only NOW does something it may read arrive.
+	appendPhase("resume_point")
+	stopGating()
+
+	gap, err := readFrame(br, 3*time.Second)
+	if err != nil || gap.event != "gap" {
+		fail("sse.gap_frame", *want.MarkerEmitted,
+			fmt.Sprintf("no gap frame ahead of the resumed event (deferring is not dropping, EVT-142a/143): frame=%+v err=%v", gap, err))
+		finishCase(rep, c, diffs)
+		return
+	}
+	var marker struct {
+		FromID *string `json:"from_id"`
+		ToID   string  `json:"to_id"`
+		Reason string  `json:"reason"`
+	}
+	if err := json.Unmarshal([]byte(gap.data), &marker); err != nil {
+		fail("sse.gap_frame.data", "a parseable gap payload", err.Error())
+		finishCase(rep, c, diffs)
+		return
+	}
+	if marker.FromID == nil || *marker.FromID != *want.MarkerFromID {
+		got := "null"
+		if marker.FromID != nil {
+			got = *marker.FromID
+		}
+		fail("sse.gap.from_id", *want.MarkerFromID, got+" — deferral MUST NOT move from_id off the last id actually delivered")
+	}
+	if marker.ToID != *want.MarkerToID {
+		fail("sse.gap.to_id", *want.MarkerToID, marker.ToID)
+	}
+
+	// And the event the marker was held for follows it, rather than being lost
+	// to the deferral.
+	ev, err := readFrame(br, 3*time.Second)
+	if err != nil || ev.event != "event" || ev.id != *want.EventAfterMarker {
+		fail("sse.event_after_marker", *want.EventAfterMarker, fmt.Sprintf("event=%s id=%s err=%v", ev.event, ev.id, err))
 	}
 
 	finishCase(rep, c, diffs)

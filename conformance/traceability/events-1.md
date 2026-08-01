@@ -118,7 +118,7 @@ ever placed by that path.
 | EVT-140 | `contracts/events-1.md#loss-markers` | `EVT-140-valid-resume-with-gap`, `EVT-142-valid-mid-stream-buffer-exceeded-gap` | covered |
 | EVT-141 | `contracts/events-1.md#loss-markers` | `EVT-140-valid-resume-with-gap` | covered |
 | EVT-142 | `contracts/events-1.md#loss-markers` | `EVT-142-valid-mid-stream-buffer-exceeded-gap` | covered |
-| EVT-142a | `contracts/events-1.md#loss-markers` | `EVT-142a-invalid-deferral-exceeds-its-bound` | TBD-wave1 |
+| EVT-142a | `contracts/events-1.md#loss-markers` | `EVT-142a-invalid-deferral-exceeds-its-bound`, `EVT-142a-valid-deferred-marker-resolves-inside-the-bound` | TBD-wave1 |
 | EVT-143 | `contracts/events-1.md#loss-markers` | `EVT-140-valid-resume-with-gap`, `EVT-142-valid-mid-stream-buffer-exceeded-gap` | covered |
 | EVT-144 | `contracts/events-1.md#loss-markers` | - | TBD-wave1 |
 | EVT-150 | `contracts/events-1.md#webhook-delivery` | - | TBD-wave1 |
@@ -134,10 +134,15 @@ ever placed by that path.
 `EVT-142a` stays `TBD-wave1` even though it now cites a case, because the
 requirement has three separable clauses and the corpus measures one of them.
 
-- **Bounded deferral** — measured by `EVT-142a-invalid-deferral-exceeds-its-bound`.
-  An implementation whose deferral is effectively unbounded previously left this
-  whole driver green while the package's own Go tests failed; it now fails here
-  too, which is the gap that case was written to close.
+- **Bounded deferral** — measured by `EVT-142a-invalid-deferral-exceeds-its-bound`
+  together with `EVT-142a-valid-deferred-marker-resolves-inside-the-bound`, which
+  is its control rather than an extra. An unbounded deferral fails the first; a
+  deferral bound of ZERO — which satisfies "bounded" while never deferring at all
+  — passes it and fails the second, because only a resume point arriving AFTER
+  the loss has been observed tells the two apart. A bound that is positive but
+  vanishingly small passes both, and that is the contract being silent rather
+  than a gap: EVT-142a's own draft-note records that no normative source fixes
+  the duration, so no minimum exists to assert.
 - **Defer rather than name an outside id or drop the marker** — exercised by
   `EVT-142-valid-mid-stream-buffer-exceeded-gap`, whose `to_id` is resolved over
   the whole log rather than the visible set and whose `from_id` comes from the
