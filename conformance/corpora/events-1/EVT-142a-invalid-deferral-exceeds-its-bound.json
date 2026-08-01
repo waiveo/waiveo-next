@@ -1,0 +1,94 @@
+{
+  "case_id": "EVT-142a-invalid-deferral-exceeds-its-bound",
+  "contract": "events/1",
+  "req_ids": [
+    "EVT-142a"
+  ],
+  "description": "A subscriber's own event is evicted undelivered, and every id retained above its point belongs to a sibling site it may not read \u2014 so no id exists that its buffer_exceeded marker could name as to_id. EVT-142a requires the marker to be DEFERRED rather than dropped (that would be EVT-143 silent loss) or resolved with an id from outside the visible set, AND requires that deferral to be BOUNDED: a marker still without a resume point at the bound MUST end the connection rather than remain pending, because an unbounded deferral is indistinguishable from silent loss \u2014 the subscriber stays connected to a stream that has already lost something and will never say so. The bound's DURATION is deliberately not pinned here: EVT-142a's own draft-note records that no normative source fixes it yet, so this case asserts that the connection ends rather than how long it waits, and a driver supplies a short bound of its own choosing.",
+  "input": {
+    "retention": 4,
+    "scope_nodes": [
+      {
+        "id": "01J8Z5A0B1C2D3E4F5G6H7Z0RG",
+        "kind": "org",
+        "name": "org"
+      },
+      {
+        "id": "01J8Z5A0B1C2D3E4F5G6H7Z5A0",
+        "kind": "site",
+        "parent_id": "01J8Z5A0B1C2D3E4F5G6H7Z0RG",
+        "name": "site A",
+        "tz": "UTC",
+        "lat": 1,
+        "long": 2
+      },
+      {
+        "id": "01J8Z5A0B1C2D3E4F5G6H7Z5B0",
+        "kind": "site",
+        "parent_id": "01J8Z5A0B1C2D3E4F5G6H7Z0RG",
+        "name": "site B",
+        "tz": "UTC",
+        "lat": 3,
+        "long": 4
+      }
+    ],
+    "subscriber_binding": {
+      "scope_node": "01J8Z5A0B1C2D3E4F5G6H7Z5A0",
+      "role": "viewer"
+    },
+    "resume_from": "01J8Z3K4N5P6Q7R8S9T0V1W210",
+    "recorded_events": [
+      {
+        "id": "01J8Z3K4N5P6Q7R8S9T0V1W210",
+        "scope_node": "01J8Z5A0B1C2D3E4F5G6H7Z5A0",
+        "phase": "before_connect"
+      },
+      {
+        "id": "01J8Z3K4N5P6Q7R8S9T0V1W211",
+        "scope_node": "01J8Z5A0B1C2D3E4F5G6H7Z5A0",
+        "phase": "before_connect"
+      },
+      {
+        "id": "01J8Z3K4N5P6Q7R8S9T0V1W220",
+        "scope_node": "01J8Z5A0B1C2D3E4F5G6H7Z5A0",
+        "phase": "lost_undelivered"
+      },
+      {
+        "id": "01J8Z3K4N5P6Q7R8S9T0V1W221",
+        "scope_node": "01J8Z5A0B1C2D3E4F5G6H7Z5B0",
+        "phase": "tail_invisible"
+      },
+      {
+        "id": "01J8Z3K4N5P6Q7R8S9T0V1W222",
+        "scope_node": "01J8Z5A0B1C2D3E4F5G6H7Z5B0",
+        "phase": "tail_invisible"
+      },
+      {
+        "id": "01J8Z3K4N5P6Q7R8S9T0V1W223",
+        "scope_node": "01J8Z5A0B1C2D3E4F5G6H7Z5B0",
+        "phase": "tail_invisible"
+      },
+      {
+        "id": "01J8Z3K4N5P6Q7R8S9T0V1W224",
+        "scope_node": "01J8Z5A0B1C2D3E4F5G6H7Z5B0",
+        "phase": "tail_invisible"
+      },
+      {
+        "id": "01J8Z3K4N5P6Q7R8S9T0V1W225",
+        "scope_node": "01J8Z5A0B1C2D3E4F5G6H7Z5B0",
+        "phase": "tail_invisible"
+      }
+    ],
+    "phase_vocabulary": {
+      "before_connect": "recorded before the subscriber connects; resolved as its backlog",
+      "live_before_loss": "recorded through the ordinary write path while the subscriber is connected and draining. It is placed in the sibling site, so the subscriber CONSIDERS it and is not sent it \u2014 which is what moves its stream watermark off its last-delivered id, and therefore what makes from_id and the watermark two different values.",
+      "undrained": "recorded while the subscriber is parked mid-write and cannot drain \u2014 the burst it loses the race to. Retention 4 means 01J8Z3K4N5P6Q7R8S9T0V1W213, the subscriber's OWN event, is appended and aged out inside this burst: a genuinely lost eligible event, which is what the gap has to cover.",
+      "live": "recorded through the ordinary write path after the burst, in the subscriber's own site \u2014 the first id it may read above the discontinuity, and therefore where its delivery resumes."
+    }
+  },
+  "expected": {
+    "marker_emitted": false,
+    "connection_ended_at_bound": true,
+    "stream_went_silent": false
+  }
+}

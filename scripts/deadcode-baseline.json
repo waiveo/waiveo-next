@@ -8,19 +8,19 @@
     "Read the reasons. A function lands here for one of four honest causes, and which one it is",
     "matters when you come to close it:",
     "  (a) a whole subsystem is built and not yet wired to anything (internal/archive);",
-    "  (b) a capability was declared and its caller never written — the defect class this gate",
+    "  (b) a capability was declared and its caller never written \u2014 the defect class this gate",
     "      exists for (internal/manifest's compat-range evaluation);",
     "  (c) a constructor option, accessor, or fixture helper only a unit test ever passes. Not a",
     "      bug, but not a wired capability either: production takes the default and always has;",
     "  (d) a String()/Error() method on a type nothing ever formats.",
     "",
     "Unit tests are deliberately NOT roots. If they were, this file would hold a handful of",
-    "entries instead of 100-odd, and it would never have listed eventsse's Hub.after — the one",
+    "entries instead of 100-odd, and it would never have listed eventsse's Hub.after \u2014 the one",
     "defect here a human review had already found by hand, since deleted, and the case that",
     "settled the root set. See scripts/validate-deadcode.mjs's header for the full argument.",
     "",
     "Do not read a green gate as 'nothing is unwired'. RTA cannot report a new EXPORTED METHOD on",
-    "a type whose values reach the reflection machinery — eventsse.Hub and relay/identity.Store",
+    "a type whose values reach the reflection machinery \u2014 eventsse.Hub and relay/identity.Store",
     "are two, measured by mutation. Unexported methods, package-level functions, and exported",
     "methods on other types are all caught. This is a ratchet, not a proof."
   ],
@@ -35,14 +35,14 @@
     },
     {
       "package": "internal/app/api",
-      "reason": "A functional option the feeder does not pass. cmd/waiveo-feeder builds the API surface without a marketplace, because marketplace source resolution is itself unwired (see internal/app/packs below) — the same gap marketplace/1's nine unimplemented error codes record from the contract side.",
+      "reason": "A functional option the feeder does not pass. cmd/waiveo-feeder builds the API surface without a marketplace, because marketplace source resolution is itself unwired (see internal/app/packs below) \u2014 the same gap marketplace/1's nine unimplemented error codes record from the contract side.",
       "funcs": [
         "WithMarketplace"
       ]
     },
     {
       "package": "internal/app/auth",
-      "reason": "ValidCredentialKind has no caller at all — not in a binary, a driver, a script, or a test; the credential-kind vocabulary is validated inline where it is read. DecodeTOTPSecret is the inverse of EncodeTOTPSecret and exists so a test can compute the enrollee's own codes (internal/app/auth/totphttp_test.go); the server stores and compares sealed, never decoding back.",
+      "reason": "ValidCredentialKind has no caller at all \u2014 not in a binary, a driver, a script, or a test; the credential-kind vocabulary is validated inline where it is read. DecodeTOTPSecret is the inverse of EncodeTOTPSecret and exists so a test can compute the enrollee's own codes (internal/app/auth/totphttp_test.go); the server stores and compares sealed, never decoding back.",
       "funcs": [
         "ValidCredentialKind",
         "DecodeTOTPSecret"
@@ -50,7 +50,7 @@
     },
     {
       "package": "internal/app/auth/authtest",
-      "reason": "A test-fixture package: every function here exists to be called from a _test.go, and unit tests are not roots for this analysis. AddPrincipal is the one fixture verb no current test needs — the fixtures build their principals at construction instead.",
+      "reason": "A test-fixture package: every function here exists to be called from a _test.go, and unit tests are not roots for this analysis. AddPrincipal is the one fixture verb no current test needs \u2014 the fixtures build their principals at construction instead.",
       "funcs": [
         "Fixture.AddPrincipal"
       ]
@@ -66,11 +66,10 @@
     },
     {
       "package": "internal/app/eventsse",
-      "reason": "Three constructor options production never passes (the defaults ship) and one test-only counter. Hub.after used to head this list and is now DELETED rather than baselined: it was a bare tail read left behind when the live loop moved to drain, which reads the tail and the eviction condition under one lock hold, and keeping it invited a future delivery path to read a tail with no discontinuity check — the silent loss EVT-143 forbids.",
+      "reason": "Two constructor options production never passes (the defaults ship) and one test-only counter. WithGapDeferral left this list once the events/1 conformance driver began passing it: the EVT-142a bounded-deferral case has to run under a bound short enough to observe, and a driver is not a test \u2014 it is the thing that measures conformance, so an option it depends on is wired. Hub.after used to head this list and is now DELETED rather than baselined: it was a bare tail read left behind when the live loop moved to drain, which reads the tail and the eviction condition under one",
       "funcs": [
         "Hub.subscriberCount",
         "WithHeartbeat",
-        "WithGapDeferral",
         "WithWriteTimeout"
       ]
     },
@@ -101,7 +100,7 @@
     },
     {
       "package": "internal/events",
-      "reason": "Two unwired clusters. The webhook ENDPOINT LIFECYCLE — construct fresh, enable, rotate the signing secret, verify an inbound signature — has no caller: internal/app/webhookdeliver restores an existing endpoint's state and delivers with it, and never runs the lifecycle verbs, which is why events/1's WEBHOOK_ENDPOINT_DISABLED has nothing to emit it. The rest are constructors and frame builders on paths that take a different entry point today (retention is configured at the log, gap frames are built by the SSE hub).",
+      "reason": "Two unwired clusters. The webhook ENDPOINT LIFECYCLE \u2014 construct fresh, enable, rotate the signing secret, verify an inbound signature \u2014 has no caller: internal/app/webhookdeliver restores an existing endpoint's state and delivers with it, and never runs the lifecycle verbs, which is why events/1's WEBHOOK_ENDPOINT_DISABLED has nothing to emit it. The rest are constructors and frame builders on paths that take a different entry point today (retention is configured at the log, gap frames are built by the SSE hub).",
       "funcs": [
         "Gap",
         "AckHello",
@@ -123,7 +122,7 @@
     },
     {
       "package": "internal/manifest",
-      "reason": "The version-range half is a capability with no caller: VersionRange.Allows and the comparator behind it are exercised only by version_test.go, and structurally could not be called anyway — HostRegistries carries no map of host-implemented ctx/relay versions to evaluate a range against. That is exactly why manifest/1 publishes COMPAT_RANGE_UNSATISFIED with nothing to emit it: validateCompat parses the range and discards the result. The consent-diff cluster is a second, smaller instance — the reconsent decision is computed and no install path asks for it.",
+      "reason": "The version-range half is a capability with no caller: VersionRange.Allows and the comparator behind it are exercised only by version_test.go, and structurally could not be called anyway \u2014 HostRegistries carries no map of host-implemented ctx/relay versions to evaluate a range against. That is exactly why manifest/1 publishes COMPAT_RANGE_UNSATISFIED with nothing to emit it: validateCompat parses the range and discards the result. The consent-diff cluster is a second, smaller instance \u2014 the reconsent decision is computed and no install path asks for it.",
       "funcs": [
         "ConsentChange.RequiresReconsent",
         "ConsentDiff",
@@ -151,7 +150,7 @@
     },
     {
       "package": "internal/relay/clocktrust",
-      "reason": "The relay constructs the clock-trust Controller at boot and takes its clock, and then never asks it about trust: reading the state, reporting it, applying a verified time, and accepting a hint are all uncalled, as is peer-certificate validation. The controller tracks state; the consumers that were meant to branch on it — the ones that refuse or degrade while the clock is untrusted — are the missing half.",
+      "reason": "The relay constructs the clock-trust Controller at boot and takes its clock, and then never asks it about trust: reading the state, reporting it, applying a verified time, and accepting a hint are all uncalled, as is peer-certificate validation. The controller tracks state; the consumers that were meant to branch on it \u2014 the ones that refuse or degrade while the clock is untrusted \u2014 are the missing half.",
       "funcs": [
         "ValidatePeerCert",
         "Controller.State",
@@ -178,7 +177,7 @@
     },
     {
       "package": "internal/relay/ecppoll",
-      "reason": "Three constructor options for the ECP poller. Tests pass the client and channel-size ones; WithRegistry has no caller at all — the poller's registry is set at construction.",
+      "reason": "Three constructor options for the ECP poller. Tests pass the client and channel-size ones; WithRegistry has no caller at all \u2014 the poller's registry is set at construction.",
       "funcs": [
         "WithChannelSize",
         "WithHTTPClient",
@@ -194,7 +193,7 @@
     },
     {
       "package": "internal/relay/playerserver",
-      "reason": "Four read-side accessors on the player-facing server — resolve a channel token, read the last lease ack, read render start/end counts. Each is exercised by this package's own tests; nothing in the relay's serving path or in a driver reads back through them, so the state they expose has no consumer.",
+      "reason": "Four read-side accessors on the player-facing server \u2014 resolve a channel token, read the last lease ack, read render start/end counts. Each is exercised by this package's own tests; nothing in the relay's serving path or in a driver reads back through them, so the state they expose has no consumer.",
       "funcs": [
         "Server.LookupChannelToken",
         "Server.LeaseAck",
@@ -211,7 +210,7 @@
     },
     {
       "package": "internal/relay/relayconn",
-      "reason": "Three accessors on the connection supervisor — the live client, an explicit stop, and a done channel. The feeder owns the supervisor's lifetime through its context and never calls them; the e2e test does.",
+      "reason": "Three accessors on the connection supervisor \u2014 the live client, an explicit stop, and a done channel. The feeder owns the supervisor's lifetime through its context and never calls them; the e2e test does.",
       "funcs": [
         "Supervisor.Client",
         "Supervisor.Stop",
@@ -228,7 +227,7 @@
     },
     {
       "package": "internal/rules/engine",
-      "reason": "The rules engine's TICK LOOP — seed the schedule floor, tick, dispatch schedules, step trigger ticks, resume a delay, and the stabilization window around it — is driven by rules/1's corpus driver, which lives in this module as internal/rules/eval_corpus_test.go rather than under conformance/drivers, and by nothing in either binary. So the engine is measured against the contract without being run in production. Wiring it into the relay is what closes this group; it must not be deleted.",
+      "reason": "The rules engine's TICK LOOP \u2014 seed the schedule floor, tick, dispatch schedules, step trigger ticks, resume a delay, and the stabilization window around it \u2014 is driven by rules/1's corpus driver, which lives in this module as internal/rules/eval_corpus_test.go rather than under conformance/drivers, and by nothing in either binary. So the engine is measured against the contract without being run in production. Wiring it into the relay is what closes this group; it must not be deleted.",
       "funcs": [
         "Engine.SeedScheduleFloor",
         "Engine.Tick",
@@ -263,7 +262,7 @@
     },
     {
       "package": "internal/shared/apihttp",
-      "reason": "ResolveRef — resolve an external-id reference to an internal id — has no caller anywhere: the API's write paths take ids directly, so the field that was meant to accept either form does not exist yet. The rest are two String()/Error() methods on types nothing formats and two idempotency-store introspection helpers.",
+      "reason": "ResolveRef \u2014 resolve an external-id reference to an internal id \u2014 has no caller anywhere: the API's write paths take ids directly, so the field that was meant to accept either form does not exist yet. The rest are two String()/Error() methods on types nothing formats and two idempotency-store introspection helpers.",
       "funcs": [
         "ResolveRef",
         "BeginKind.String",
@@ -281,7 +280,7 @@
     },
     {
       "package": "internal/virtualplayer",
-      "reason": "The software player's preemption, relocation, and revocation scenarios are driven by this package's own tests (the software first-photon suite), not by a contract driver under conformance/drivers, so nothing in the analysed root set reaches them. They are scenario entry points for a harness, not product code — but the harness that calls them is a unit test, and this gate deliberately does not count those.",
+      "reason": "The software player's preemption, relocation, and revocation scenarios are driven by this package's own tests (the software first-photon suite), not by a contract driver under conformance/drivers, so nothing in the analysed root set reaches them. They are scenario entry points for a harness, not product code \u2014 but the harness that calls them is a unit test, and this gate deliberately does not count those.",
       "funcs": [
         "Preempt",
         "postRenderStart",
@@ -295,7 +294,7 @@
   "unimportedPackages": [
     {
       "package": "github.com/maaxton/waiveo-next/internal/app/emergencykit",
-      "reason": "archive/1's emergency kit (ARC-110-114) is implemented and tested, and nothing imports it because its DELIVERY is an open decision rather than an oversight: ARC-113 forbids transmitting a kit's content electronically and calls it a physically-delivered artifact, so where an operator is present, what they are shown, and for how long is a product question about a surface. The natural caller is first boot — internal/app/workspacekey.LoadOrCreate is ARC-110's 'the point a workspace's data key is first established', and POST /api/v1/auth/setup plus the console's setup route are where a human already is. Wiring it there closes this entry."
+      "reason": "archive/1's emergency kit (ARC-110-114) is implemented and tested, and nothing imports it because its DELIVERY is an open decision rather than an oversight: ARC-113 forbids transmitting a kit's content electronically and calls it a physically-delivered artifact, so where an operator is present, what they are shown, and for how long is a product question about a surface. The natural caller is first boot \u2014 internal/app/workspacekey.LoadOrCreate is ARC-110's 'the point a workspace's data key is first established', and POST /api/v1/auth/setup plus the console's setup route are where a human already is. Wiring it there closes this entry."
     }
   ]
 }

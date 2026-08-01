@@ -118,7 +118,7 @@ ever placed by that path.
 | EVT-140 | `contracts/events-1.md#loss-markers` | `EVT-140-valid-resume-with-gap`, `EVT-142-valid-mid-stream-buffer-exceeded-gap` | covered |
 | EVT-141 | `contracts/events-1.md#loss-markers` | `EVT-140-valid-resume-with-gap` | covered |
 | EVT-142 | `contracts/events-1.md#loss-markers` | `EVT-142-valid-mid-stream-buffer-exceeded-gap` | covered |
-| EVT-142a | `contracts/events-1.md#loss-markers` | - | TBD-wave1 |
+| EVT-142a | `contracts/events-1.md#loss-markers` | `EVT-142a-invalid-deferral-exceeds-its-bound` | TBD-wave1 |
 | EVT-143 | `contracts/events-1.md#loss-markers` | `EVT-140-valid-resume-with-gap`, `EVT-142-valid-mid-stream-buffer-exceeded-gap` | covered |
 | EVT-144 | `contracts/events-1.md#loss-markers` | - | TBD-wave1 |
 | EVT-150 | `contracts/events-1.md#webhook-delivery` | - | TBD-wave1 |
@@ -130,3 +130,26 @@ ever placed by that path.
 | EVT-156 | `contracts/events-1.md#webhook-delivery` | `EVT-151-valid-webhook-delivery-signed` | covered |
 | EVT-157 | `contracts/events-1.md#webhook-delivery` | `EVT-151-valid-webhook-delivery-signed` | covered |
 | EVT-158 | `contracts/events-1.md#webhook-delivery` | - | TBD-wave1 |
+
+`EVT-142a` stays `TBD-wave1` even though it now cites a case, because the
+requirement has three separable clauses and the corpus measures one of them.
+
+- **Bounded deferral** — measured by `EVT-142a-invalid-deferral-exceeds-its-bound`.
+  An implementation whose deferral is effectively unbounded previously left this
+  whole driver green while the package's own Go tests failed; it now fails here
+  too, which is the gap that case was written to close.
+- **Defer rather than name an outside id or drop the marker** — exercised by
+  `EVT-142-valid-mid-stream-buffer-exceeded-gap`, whose `to_id` is resolved over
+  the whole log rather than the visible set and whose `from_id` comes from the
+  last delivered id rather than the watermark.
+- **A deferral MUST NOT hold the subscriber's delivery position** — measured by
+  NOTHING in the corpus. An implementation that freezes the position while a
+  marker is pending leaves every case here green. It is pinned by
+  `TestSSE_DeferredGapDoesNotRescanTheRetainedTail` in `internal/app/eventsse`,
+  which is real evidence but is not the evidence this column reports, and the
+  clause matters: freezing the position is the tail-rescan amplifier that got an
+  earlier attempt reverted.
+
+Marking the row `covered` on the strength of one clause would be the kind of
+claim this table exists to prevent, so it cites what it has and says what it
+lacks.

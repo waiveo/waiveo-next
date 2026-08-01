@@ -130,6 +130,7 @@ func driveCases(rep *report.Report, cases map[string]corpus.Case) {
 	driveOutOfScopeResumeFrom(rep, cases)
 	driveSelectorAndSchemasParameters(rep, cases)
 	driveMidStreamBufferExceeded(rep, cases)
+	driveDeferralBound(rep, cases)
 }
 
 // --- the live ingest harness ------------------------------------------------
@@ -2102,6 +2103,176 @@ func gatedHandler(h http.Handler, g *flushGate) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h.ServeHTTP(&gatedResponseWriter{ResponseWriter: w, gate: g}, r)
 	})
+}
+
+// deferralBoundForDriver is the EVT-142a bound this driver runs the case under.
+//
+// The DURATION is not contract-fixed — EVT-142a's own draft-note records that no
+// normative source pins it yet — so the corpus case asserts that the connection
+// ENDS, never how long it waits, and this number is the driver's own choice.
+// Short enough that the case is not a slow test, long enough that a machine
+// under load still delivers the backlog first: the same 150ms the package's own
+// bounded-deferral test has run reliably on.
+const deferralBoundForDriver = 150 * time.Millisecond
+
+// driveDeferralBound drives EVT-142a's bounded-deferral clause: a marker still
+// without a resume point inside the visible set at the bound MUST end the
+// connection rather than remain pending.
+//
+// Why this needed its own case rather than an assertion on the EVT-142 one: an
+// implementation with an UNBOUNDED deferral passes the entire rest of the
+// corpus. Verified — making the bound effectively infinite leaves
+// conformance/drivers/events1 green while the package's own Go tests fail. The
+// traceability column measures the corpus, so a clause only the Go tests defend
+// reads as unmeasured, which is what this closes.
+//
+// The scenario is the one where deferral has nowhere to go: the subscriber's own
+// event is evicted undelivered, and every id retained above its point belongs to
+// a sibling site it may not read. There is no id its marker could name, ever, so
+// the only conformant outcomes are "end the connection" and "hang forever" —
+// and hanging forever is EVT-143 silent loss wearing a healthy-looking idle
+// stream as a disguise.
+func driveDeferralBound(rep *report.Report, cases map[string]corpus.Case) {
+	const id = "EVT-142a-invalid-deferral-exceeds-its-bound"
+	c, ok := corpus.ByID(cases, id)
+	if !ok {
+		rep.Fail(id, contract, "case not found in frozen corpus")
+		return
+	}
+
+	var in midStreamCase
+	if err := decodeInto(c.Input, &in); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode input: %v", err))
+		return
+	}
+	var want struct {
+		MarkerEmitted          *bool `json:"marker_emitted"`
+		ConnectionEndedAtBound *bool `json:"connection_ended_at_bound"`
+		StreamWentSilent       *bool `json:"stream_went_silent"`
+	}
+	if err := decodeInto(c.Expected, &want); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode expected: %v", err))
+		return
+	}
+	// Pointers, so a case that stops DECLARING an expectation fails here rather
+	// than silently dropping the assertion that reads it.
+	for field, v := range map[string]*bool{
+		"marker_emitted":            want.MarkerEmitted,
+		"connection_ended_at_bound": want.ConnectionEndedAtBound,
+		"stream_went_silent":        want.StreamWentSilent,
+	} {
+		if v == nil {
+			rep.Fail(c.CaseID, contract, fmt.Sprintf("corpus expected block declares no %s", field))
+			return
+		}
+	}
+
+	fixture, err := authtest.New(authtest.Config{
+		Role:      auth.Role(in.SubscriberBinding.Role),
+		ScopeNode: in.SubscriberBinding.ScopeNode,
+	})
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("seed the subscriber's principal: %v", err))
+		return
+	}
+	defer fixture.Close()
+
+	hub := eventsse.NewHub(events.NewEventLog(in.Retention))
+	appendPhase := func(phase string) {
+		for _, e := range in.RecordedEvents {
+			if e.Phase == phase {
+				hub.Append(scopedFixtureEnvelope(e.ID, e.ScopeNode, ""))
+			}
+		}
+	}
+	appendPhase("before_connect")
+
+	// The subscriber must LOSE the race to the eviction, and racing it by timing
+	// makes this case flaky in exactly the direction that hides the bug: a
+	// subscriber that drains in time never gaps at all, so the deferral never
+	// starts and the stream simply stays open. Observed happening — an ungated
+	// first version of this stage failed about one run in fifteen. The gate parks
+	// the handler inside its own flush so the eviction is ordered rather than
+	// raced, the same way driveMidStreamBufferExceeded does it.
+	//
+	// Deferred calls run last-in-first-out, so srv.Close() is registered BEFORE
+	// gate.shutdown() in order to run AFTER it: Close blocks until in-flight
+	// handlers return, and a handler parked in the gate cannot return until the
+	// gate is released.
+	gate := newFlushGate()
+	// Gating is turned OFF once the eviction is ordered. It parks the handler at
+	// EVERY flush, so leaving it on would park the handler again on its way to
+	// ending the stream — and a handler that cannot return is a stream that never
+	// ends, which is the very outcome under test. Idempotent because it runs both
+	// inline and as a deferred cleanup, and shutdown closes a channel.
+	var gateOnce sync.Once
+	stopGating := func() { gateOnce.Do(gate.shutdown) }
+
+	nodes := in.ScopeNodes
+	srv := httptest.NewServer(gatedHandler(eventsse.New(hub, fixture.Auth, func(context.Context) ([]datamodel.ScopeNode, error) {
+		return nodes, nil
+	}, eventsse.WithGapDeferral(deferralBoundForDriver)), gate))
+	defer srv.Close()
+	defer stopGating()
+
+	br, cancel := dialSSEAs(srv, fixture.Credential(), "resume_from="+in.ResumeFrom)
+	defer cancel()
+
+	var diffs []report.Diff
+	fail := func(field string, expected, actual any) {
+		diffs = append(diffs, report.Diff{Field: field, Expected: expected, Actual: actual})
+	}
+
+	// The one backlog event above the resume anchor, so the subscriber has a
+	// real last-delivered point for the marker's from_id to be fixed at.
+	if f, err := readFrame(br, 3*time.Second); err != nil || f.event != "event" {
+		fail("sse.backlog", "one event frame above the resume anchor", fmt.Sprintf("frame=%+v err=%v", f, err))
+		finishCase(rep, c, diffs)
+		return
+	}
+
+	// Park the handler, so what follows happens while this subscriber provably
+	// cannot drain.
+	if err := gate.wait(3 * time.Second); err != nil {
+		fail("sse.backlog_flush", "the handler parks after flushing its backlog", err.Error())
+		finishCase(rep, c, diffs)
+		return
+	}
+
+	// The subscriber's own event, evicted undelivered, followed by a retained
+	// tail entirely inside a site it may not read. No id it MAY read is ever
+	// retained above its point again.
+	appendPhase("lost_undelivered")
+	appendPhase("tail_invisible")
+	stopGating()
+
+	// Well past the bound. What must NOT happen is a stream that stays open and
+	// says nothing: that is indistinguishable from a healthy idle connection
+	// while a loss has already occurred.
+	f, err := readFrame(br, 3*time.Second)
+	switch {
+	case err == nil && f.event == "gap":
+		if *want.MarkerEmitted {
+			break
+		}
+		fail("sse.marker_emitted", false, fmt.Sprintf("a gap frame naming to_id=%s, which is an id this subscriber may not read", f.id))
+	case err == nil:
+		fail("sse.frame_after_loss", "the stream ends at the deferral bound (EVT-142a)", fmt.Sprintf("event=%s id=%s", f.event, f.id))
+	case strings.Contains(err.Error(), "timed out"):
+		// Silent and still open: the failure this case exists for.
+		fail("sse.stream_went_silent", *want.StreamWentSilent,
+			"the stream stayed open and said nothing past the deferral bound — an unbounded deferral is "+
+				"indistinguishable from silent loss (EVT-142a/143)")
+	default:
+		// Any other read error is the stream ending, which is the required
+		// outcome: EVT-105 gives the SSE binding no close frame to carry a
+		// reason, so ending IS how this binding says it.
+		if !*want.ConnectionEndedAtBound {
+			fail("sse.connection_ended_at_bound", false, err.Error())
+		}
+	}
+
+	finishCase(rep, c, diffs)
 }
 
 // driveMidStreamBufferExceeded drives EVT-142's mid-stream loss marker end to
