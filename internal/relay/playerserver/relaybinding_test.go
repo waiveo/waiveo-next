@@ -389,3 +389,60 @@ func TestOwedReportSeqIsNotReusedAfterAnAcknowledgement(t *testing.T) {
 		t.Fatalf("owed after the second acknowledgement = %+v (err %v), want exactly %s", left, err, owed[1].GrantID)
 	}
 }
+
+// TestRelayBindingIsAnIdentityCheckNotAnOrdering closes the direction the
+// two-relay case above leaves open.
+//
+// That case only ever has relay A redeem an A-bound grant and relay B refuse
+// one. Both hold for any rule that happens to favour A, so the suite could not
+// tell an identity comparison from an ordering: replacing
+// `grant.RelayID != s.relayID` with `grant.RelayID < s.relayID` passes every
+// existing test — verified by running it — while letting relay A consume a
+// grant bound to relay B, which is exactly the cross-relay capture REL-121b
+// exists to prevent, in the direction nothing looked at.
+//
+// So both remaining combinations are driven here, against the SAME snapshot both
+// relays hold: B redeems its own grant, and A refuses B's.
+func TestRelayBindingIsAnIdentityCheckNotAnOrdering(t *testing.T) {
+	// Bound to B — the relay whose id sorts AFTER the other's, which is what
+	// makes an ordering comparison behave differently from equality here.
+	g := grantBoundTo("grant-bound-to-b-0123456789", relayB)
+
+	srvA := serverForRelay(t, relayA, g)
+	srvB := serverForRelay(t, relayB, g)
+
+	req := func(hw string) PairingRequest {
+		return PairingRequest{
+			HardwareID:    hw,
+			GrantSelector: g.GrantID,
+			Capabilities:  Capabilities{ContentTypes: []string{"image"}, PlayerVersion: "1.0.0"},
+		}
+	}
+
+	// A must refuse a grant bound to B, and must say nothing about it —
+	// the same PAIRING_CODE_INVALID an unresolvable selector draws.
+	respA, rawA := doPair(t, srvA, req("hw-wrong-relay-0001"))
+	assertTypedError(t, respA, rawA, "PAIRING_CODE_INVALID")
+	if _, minted := rawA["channel_token"]; minted {
+		t.Fatalf("relay A minted a channel token for a grant bound to relay B: %v", rawA)
+	}
+	if _, leaked := rawA["screen_id"]; leaked {
+		t.Fatalf("relay A disclosed a screen_id for a grant it may not consume: %v", rawA)
+	}
+
+	// And B, which the whole existing corpus never has redeem anything, must
+	// still be able to redeem its own.
+	respB, rawB := doPair(t, srvB, req("hw-legit-0002"))
+	if respB.StatusCode != http.StatusOK {
+		t.Fatalf("the bound relay must redeem its own grant regardless of how its id sorts: status = %d, want 200; body = %v",
+			respB.StatusCode, rawB)
+	}
+	var redeemedB struct {
+		ChannelToken string `json:"channel_token"`
+		ScreenID     string `json:"screen_id"`
+	}
+	remarshal(t, rawB, &redeemedB)
+	if redeemedB.ChannelToken == "" {
+		t.Fatal("the bound relay minted no channel token for its own grant")
+	}
+}
