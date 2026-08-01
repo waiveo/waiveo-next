@@ -9,9 +9,11 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"log"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -499,5 +501,62 @@ func TestBootWithNoInstallableScreenProgramServesTheTerminalDefault(t *testing.T
 				t.Error("terminal-default Lease carries no signature; PLY-090 admits no unsigned Lease")
 			}
 		})
+	}
+}
+
+// TestBlankSuppressionDegradeIsAudibleExactlyOnce covers the reading keep-alive
+// suppresses recovery on, and the one thing about it that was fixable without a
+// wire change.
+//
+// PLY-155 gates on the target screen's own active Lease; keep-alive polls device
+// entities; nothing on the wire binds one to the other. On a multi-screen relay
+// the reading is therefore "", which is NOT blank — so suppression does not fire
+// and the relay will relaunch the channel on a screen an operator deliberately
+// blanked. That degrade is accepted (the alternative, reporting a different
+// screen's display, is wrong in a way nothing could notice) but it used to
+// happen with no trace at all.
+//
+// Asserted here: the reading itself in both shapes, that the degrade says so,
+// and that it says so ONCE — keep-alive polls continuously, and a line per poll
+// would bury the fact rather than report it.
+func TestBlankSuppressionDegradeIsAudibleExactlyOnce(t *testing.T) {
+	var buf strings.Builder
+	prevOut, prevFlags := log.Writer(), log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() { log.SetOutput(prevOut); log.SetFlags(prevFlags) })
+
+	srv := newPlayerServerWithGrants(t)
+	read := blankSuppressionReader(srv)
+
+	// One screen: the binding is forced, so the real display is reported and
+	// there is nothing to warn about.
+	srv.SetServedProgram(1, wire.ScreenProgram{ScreenID: msScreenRowA, Display: "blank", ProgramRevision: "rev-a"})
+	if got := read("entity-1"); got != "blank" {
+		t.Fatalf("single-screen reading = %q, want the screen's own display %q", got, "blank")
+	}
+	if strings.Contains(buf.String(), "INACTIVE") {
+		t.Errorf("a relay that CAN attribute warned about not being able to:\n%s", buf.String())
+	}
+
+	// A second screen makes attribution impossible.
+	srv.SetServedProgram(2, wire.ScreenProgram{ScreenID: msScreenRowB, Display: "content", ProgramRevision: "rev-b"})
+	if got := read("entity-1"); got != "" {
+		t.Fatalf("multi-screen reading = %q, want \"\" — reporting another screen's display is the defect "+
+			"per-screen display exists to remove", got)
+	}
+	if !strings.Contains(buf.String(), "INACTIVE") {
+		t.Errorf("the relay silently stopped suppressing blank-display recovery; an operator watching a blanked "+
+			"screen relaunch has nothing to connect it to.\nlog was:\n%s", buf.String())
+	}
+
+	// Keep-alive polls continuously. Nine more reads must add nothing.
+	before := strings.Count(buf.String(), "INACTIVE")
+	for i := 0; i < 9; i++ {
+		read("entity-1")
+	}
+	if after := strings.Count(buf.String(), "INACTIVE"); after != before || after != 1 {
+		t.Errorf("the degrade was logged %d time(s) across 10 reads, want exactly 1 — a line per poll buries the "+
+			"fact rather than reporting it", after)
 	}
 }

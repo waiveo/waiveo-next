@@ -342,6 +342,51 @@ func flooredNowMs(store *identity.Store, clock *clocktrust.RuntimeClock) int64 {
 	return nowMs
 }
 
+// blankSuppressionReader is the PLY-155 display reading keep-alive suppresses
+// recovery on, and the place this relay says when it cannot make that reading.
+//
+// PLY-155 gates on the TARGET screen's own active Lease; keep-alive polls DEVICE
+// ENTITIES; and nothing on the wire binds one to the other (REL-063's
+// device_inventory carries no screen reference). Where a relay serves exactly one
+// screen the binding is not needed — every polled entity belongs to that screen,
+// because there is no other. Where it serves several, an entity cannot be
+// attributed, and this answers "" rather than a DIFFERENT screen's display.
+//
+// # The cost of that answer, and why it is now audible
+//
+// "" is not blank, so suppression does not fire: on a multi-screen site the
+// relay will relaunch the channel on a screen an operator deliberately blanked.
+// That is the accepted degrade — the alternative, reporting some other screen's
+// display, would ALSO suppress recovery on a live screen, and would be wrong
+// without any way to notice.
+//
+// What was not acceptable is that it happened SILENTLY. An operator watching a
+// blanked lobby screen come back to life had nothing anywhere connecting that to
+// a missing wire binding. This logs the condition once, so the behaviour is
+// diagnosable without changing it.
+//
+// Once, not per poll: keep-alive polls continuously, and a line per poll would
+// bury the fact rather than report it. The condition is a property of the
+// deployment's shape rather than of any one poll. A relay whose screen set later
+// collapses to one and grows again does not log a second time, which is the
+// price of not being noisy.
+func blankSuppressionReader(srv *playerserver.Server) func(string) string {
+	var once sync.Once
+	return func(string) string {
+		screenID, sole := srv.SoleServedScreen()
+		if !sole {
+			once.Do(func() {
+				log.Printf("waiveo-relay: keep-alive cannot attribute a polled entity to a screen on this relay, " +
+					"so PLY-155 blank-display suppression is INACTIVE here: a screen left blank by its schedule may " +
+					"have its channel relaunched by recovery. This needs an entity-to-screen binding the wire does " +
+					"not carry (REL-063)")
+			})
+			return ""
+		}
+		return srv.CurrentDisplay(screenID)
+	}
+}
+
 // renewalDue reports whether the persisted leaf is inside its proactive
 // renewal window (REL-015), evaluated on a floor-aware clock: the LATEST of
 // the OS wall clock, the persisted clock floor (REL-130 — advance-only, so
@@ -781,13 +826,7 @@ func main() {
 			// degrade) rather than a DIFFERENT screen's display, which would
 			// both suppress recovery on a live screen and relaunch an
 			// intentionally blanked one.
-			ActiveDisplay: func(string) string {
-				screenID, sole := pairingSrv.SoleServedScreen()
-				if !sole {
-					return ""
-				}
-				return pairingSrv.CurrentDisplay(screenID)
-			},
+			ActiveDisplay: blankSuppressionReader(pairingSrv),
 		})
 		go func() {
 			if err := ka.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
