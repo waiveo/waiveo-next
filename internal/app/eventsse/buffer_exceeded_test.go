@@ -651,47 +651,26 @@ func TestWS_DeferredGapClosesSlowConsumerAtTheBound(t *testing.T) {
 	c.expectClose(t, events.CloseSlowConsumer, 3*time.Second)
 }
 
-// TestWS_WriteDeadlineExhaustedDisconnectsSlowConsumer pins EVT-142's OTHER
-// half — the disconnect one.
+// EVT-142's disconnect half is NOT pinned here, and this note is why.
 //
-// EVT-142 draws a line between two responses to a subscriber that has fallen
-// behind: while the server can still write to the connection it MUST gap
-// (Hub.drain's buffer_exceeded marker) and keep the subscriber connected; it
-// MUST disconnect with SLOW_CONSUMER_DISCONNECTED "only once writes to that
-// connection are themselves backed up past a bounded timeout".
+// A test forcing the write deadline with a nanosecond timeout landed in
+// 519718b, passed locally and in CI, and then failed a later CI run: the client
+// saw EOF instead of the SLOW_CONSUMER_DISCONNECTED close frame.
 //
-// The gap side was well covered. This side was not covered by ANYTHING —
-// removing endWS's classification entirely left the whole tree green, so the
-// server could have stopped disconnecting backed-up consumers and no test would
-// have said so. Note the neighbouring
-// TestWS_DeferredGapClosesSlowConsumerAtTheBound does NOT cover it: that reaches
-// the same close through EVT-142a's deferral bound, a different call site, and
-// it survives the same mutation.
+// The cause is not flaky timing around an otherwise sound assertion. Aborting a
+// write MID-FRAME leaves the connection's byte stream indeterminate, so the
+// library fails the socket outright and the close handshake closeWith performs
+// has nothing left to write on. Whether a 1ns deadline is observed BEFORE the
+// write touches the wire (clean abort, close frame lands) or DURING it (poisoned
+// socket, peer sees EOF) is a scheduling outcome. The commit that added it
+// claimed it drove the path "with no timing race at all"; that was wrong.
 //
-// # Why the deadline is forced rather than provoked
+// Removed rather than retried with a longer timeout, because a longer timeout is
+// the case that does not fail at all: at 1us and 1ms the writes simply succeed on
+// loopback and no deadline is ever exhausted. Pinning this needs a seam that
+// observes the classification endWS makes, rather than the close frame's race
+// with connection teardown — tracked on #138.
 //
-// The realistic setup — a client that stops draining its socket while the
-// server pushes until the kernel buffers fill — depends on socket buffer sizes
-// and scheduling, which is precisely the kind of timing dependence that makes a
-// test flaky rather than thorough. What EVT-142 actually specifies here is the
-// CLASSIFICATION: a write that exhausted its own deadline means a slow consumer
-// and gets that close code. Setting the write timeout to a nanosecond makes the
-// server's first frame write exhaust its deadline deterministically, driving the
-// real path (wsSink → endWS → closeWith) with no timing race at all.
-func TestWS_WriteDeadlineExhaustedDisconnectsSlowConsumer(t *testing.T) {
-	e := newMidEnv(t, 4, WithWriteTimeout(time.Nanosecond), WithGapDeferral(30*time.Second))
-	anchor := e.put(siteANode)
-
-	// dialWS, not openWS: the hello-ack is itself a server write, so it is the
-	// write that exhausts the deadline here and openWS would fail on its absence
-	// before this could assert what replaced it.
-	c := dialWS(t, e.srv, e.cred)
-	c.send(t, events.HelloFrame{Type: events.FrameTypeHello, ResumeFrom: anchor})
-
-	// EVT-096: the close names the taxonomy code, and nothing else.
-	c.expectClose(t, events.CloseSlowConsumer, 3*time.Second)
-}
-
 // TestWS_WritesThatCompleteDoNotDisconnect is the control, and it is the half
 // that makes the test above mean something.
 //
