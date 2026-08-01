@@ -269,3 +269,147 @@ func TestReopenPersistsAcrossProcesses(t *testing.T) {
 		t.Fatal("DesiredStateVerificationKey() did not survive reopen")
 	}
 }
+
+// TestClockFloorIsServedFromCacheAfterTheFirstRead proves the read is cached,
+// not merely fast.
+//
+// The floor is read on every time-windowed decision the relay makes. Because Go
+// evaluates a call's arguments before the call, that included the clock handed
+// to the pairing rate limiter — so an attempt the budget was about to REFUSE
+// still forced a durable read, letting an unauthenticated caller make the relay
+// do disk work by being turned away.
+//
+// Proven by removing the table out from under the store: an uncached read would
+// fail, so a correct answer here can only have come from memory. That is a
+// deterministic proof; timing a query would not be.
+func TestClockFloorIsServedFromCacheAfterTheFirstRead(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "relay.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if _, err := store.SetClockFloor(1_700_000_000_000); err != nil {
+		t.Fatalf("SetClockFloor: %v", err)
+	}
+	if ms, ok, err := store.ClockFloor(); err != nil || !ok || ms != 1_700_000_000_000 {
+		t.Fatalf("first ClockFloor = (%d, %v, %v); want the persisted floor", ms, ok, err)
+	}
+
+	if _, err := store.db.Exec(`DROP TABLE clock_floor`); err != nil {
+		t.Fatalf("dropping the table to prove the read is cached: %v", err)
+	}
+	ms, ok, err := store.ClockFloor()
+	if err != nil {
+		t.Fatalf("ClockFloor went to the database after the first read: %v", err)
+	}
+	if !ok || ms != 1_700_000_000_000 {
+		t.Errorf("cached ClockFloor = (%d, %v); want the floor read before the table was dropped", ms, ok)
+	}
+}
+
+// TestAdvancingTheFloorInvalidatesTheCache is the half that makes caching safe
+// to do at all.
+//
+// A cache that survived a write would report a floor LOWER than the persisted
+// one — precisely how a rolled-back host clock re-opens a window REL-130 exists
+// to keep closed. The floor is advance-only, so this is the only direction the
+// cache can be wrong in, and it must be impossible rather than unlikely.
+func TestAdvancingTheFloorInvalidatesTheCache(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "relay.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if _, err := store.SetClockFloor(1_000); err != nil {
+		t.Fatalf("SetClockFloor: %v", err)
+	}
+	if ms, _, _ := store.ClockFloor(); ms != 1_000 {
+		t.Fatalf("primed floor = %d, want 1000", ms)
+	}
+	if advanced, err := store.SetClockFloor(2_000); err != nil || !advanced {
+		t.Fatalf("SetClockFloor(2000) = (%v, %v); want advanced", advanced, err)
+	}
+	if ms, ok, err := store.ClockFloor(); err != nil || !ok || ms != 2_000 {
+		t.Errorf("after an advance ClockFloor = (%d, %v, %v); want 2000 — a stale cache here would let a "+
+			"rolled-back host clock re-open a window the relay had already closed (REL-130)", ms, ok, err)
+	}
+}
+
+// TestClockFloorAbsenceIsCachedButARejectedAdvanceStillRefreshes covers the two
+// remaining transitions: a store that has never had a floor answers ok=false
+// without going back to disk, and a SetClockFloor that does NOT advance still
+// leaves the next read correct rather than serving a value it assumed.
+func TestClockFloorAbsenceIsCachedButARejectedAdvanceStillRefreshes(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "relay.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if ms, ok, err := store.ClockFloor(); err != nil || ok || ms != 0 {
+		t.Fatalf("a store with no floor = (%d, %v, %v); want (0, false, nil)", ms, ok, err)
+	}
+	if _, err := store.SetClockFloor(5_000); err != nil {
+		t.Fatalf("SetClockFloor: %v", err)
+	}
+	// The absence must NOT have survived the write.
+	if ms, ok, _ := store.ClockFloor(); !ok || ms != 5_000 {
+		t.Fatalf("after the first floor was set, ClockFloor = (%d, %v); want (5000, true)", ms, ok)
+	}
+	// A rejected (non-advancing) write leaves the persisted floor alone; the next
+	// read must still report it.
+	if advanced, err := store.SetClockFloor(4_000); err != nil || advanced {
+		t.Fatalf("SetClockFloor(4000) = (%v, %v); want not advanced (the floor is advance-only)", advanced, err)
+	}
+	if ms, ok, _ := store.ClockFloor(); !ok || ms != 5_000 {
+		t.Errorf("after a rejected advance ClockFloor = (%d, %v); want the unchanged 5000", ms, ok)
+	}
+}
+
+// TestAFailedClockFloorReadIsNotCached: a store that could not answer must be
+// asked again, not remembered as broken.
+//
+// Caching a failure would be the worst version of this cache. The failure would
+// be cached as "no floor persisted", which reads as ok=false — so one transient
+// database error would permanently drop the relay back to its bare wall clock,
+// and a rolled-back host clock could then re-open every window REL-130 exists to
+// keep closed. That is the exact direction the advance-only argument says cannot
+// happen, so it must not be reachable by another route.
+func TestAFailedClockFloorReadIsNotCached(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "relay.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	// Persisted, and the cache left COLD: the write invalidates it, so the next
+	// read is the one that will fail.
+	if _, err := store.SetClockFloor(9_000); err != nil {
+		t.Fatalf("SetClockFloor: %v", err)
+	}
+	if _, err := store.db.Exec(`DROP TABLE clock_floor`); err != nil {
+		t.Fatalf("dropping the table: %v", err)
+	}
+	if _, _, err := store.ClockFloor(); err == nil {
+		t.Fatal("a read against a missing table returned no error; the rest of this test proves nothing")
+	}
+
+	// The store recovers. Recreated with the same floor the relay had persisted.
+	if _, err := store.db.Exec(`CREATE TABLE clock_floor (id INTEGER PRIMARY KEY CHECK (id = 1), floor_ms INTEGER NOT NULL)`); err != nil {
+		t.Fatalf("recreating the table: %v", err)
+	}
+	if _, err := store.db.Exec(`INSERT INTO clock_floor (id, floor_ms) VALUES (1, 9000)`); err != nil {
+		t.Fatalf("restoring the row: %v", err)
+	}
+
+	ms, ok, err := store.ClockFloor()
+	if err != nil {
+		t.Fatalf("ClockFloor after recovery: %v", err)
+	}
+	if !ok || ms != 9_000 {
+		t.Errorf("after a transient failure ClockFloor = (%d, %v); want (9000, true) — the failure was cached, "+
+			"so this relay would run on its bare wall clock until restarted (REL-130)", ms, ok)
+	}
+}

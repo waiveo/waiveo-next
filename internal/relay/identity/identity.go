@@ -45,6 +45,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	_ "modernc.org/sqlite"
 )
@@ -60,6 +61,27 @@ const DefaultPath = ".dev/relay-identity/relay.db"
 // still Close it exactly once when done.
 type Store struct {
 	db *sql.DB
+
+	// floorMu guards the clock-floor read cache below.
+	floorMu sync.RWMutex
+	// floorCached says the two fields under it are authoritative.
+	//
+	// The floor is read on EVERY time-windowed decision this relay makes — and,
+	// because Go evaluates a call's arguments first, that includes the clock
+	// handed to a rate limiter, so an attempt the budget is about to REFUSE
+	// still forced a durable read. That inverts part of the point of enforcing
+	// a budget early: an unauthenticated caller could make the relay do disk
+	// work by being turned away.
+	//
+	// Caching is safe here because of a property SetClockFloor already has: the
+	// floor is ADVANCE-ONLY, and this process is its only writer. A cached value
+	// therefore can never be higher than the persisted one, and the failure mode
+	// that would matter — reporting a floor LOWER than persisted, which is how a
+	// rolled-back host clock re-opens a window REL-130 closed — cannot arise from
+	// a value this process itself wrote.
+	floorCached bool
+	floorMs     int64
+	floorOK     bool
 }
 
 // schema creates the five singleton operational tables REL-142/REL-130/REL-011
@@ -627,21 +649,49 @@ func (s *Store) SetClockFloor(ms int64) (advanced bool, err error) {
 	if err != nil {
 		return false, fmt.Errorf("identity: SetClockFloor: %w", err)
 	}
+	// INVALIDATED rather than updated to ms. Updating would have to reproduce the
+	// advance-only rule the SQL statement just applied — and would be wrong the
+	// moment those two disagreed, in the direction that matters. Invalidating
+	// costs one read after a write, and writes are rare; it cannot be subtly
+	// wrong. Done unconditionally: a call that did NOT advance leaves the
+	// persisted value alone, but this process has no cheaper way to be sure of
+	// that than reading it back.
+	s.floorMu.Lock()
+	s.floorCached = false
+	s.floorMu.Unlock()
 	return n > 0, nil
 }
 
 // ClockFloor returns the persisted clock floor in milliseconds (REL-130),
 // and whether one has been persisted yet (SetClockFloor has never advanced
 // the floor returns ok=false, not an error).
+// It is served from an in-process cache after the first read; see Store's own
+// floorCached field for why that is safe and why a write invalidates rather than
+// updates. An error is never cached: a store that could not answer must be asked
+// again, not remembered as broken.
 func (s *Store) ClockFloor() (ms int64, ok bool, err error) {
+	s.floorMu.RLock()
+	if s.floorCached {
+		ms, ok = s.floorMs, s.floorOK
+		s.floorMu.RUnlock()
+		return ms, ok, nil
+	}
+	s.floorMu.RUnlock()
+
 	err = s.db.QueryRow(`SELECT floor_ms FROM clock_floor WHERE id = 1`).Scan(&ms)
-	if err == sql.ErrNoRows {
-		return 0, false, nil
-	}
-	if err != nil {
+	switch {
+	case err == sql.ErrNoRows:
+		ms, ok = 0, false
+	case err != nil:
 		return 0, false, fmt.Errorf("identity: ClockFloor: %w", err)
+	default:
+		ok = true
 	}
-	return ms, true, nil
+
+	s.floorMu.Lock()
+	s.floorMs, s.floorOK, s.floorCached = ms, ok, true
+	s.floorMu.Unlock()
+	return ms, ok, nil
 }
 
 // SetAppPeerTrustPin persists (replacing any previously persisted value) the
