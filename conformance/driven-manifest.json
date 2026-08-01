@@ -105,6 +105,7 @@
       "EVT-140-valid-resume-with-gap",
       "EVT-142-valid-mid-stream-buffer-exceeded-gap",
       "EVT-142a-invalid-deferral-exceeds-its-bound",
+      "EVT-142a-valid-deferral-does-not-hold-the-delivery-position",
       "EVT-142a-valid-deferred-marker-resolves-inside-the-bound",
       "EVT-151-valid-webhook-delivery-signed"
     ],

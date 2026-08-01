@@ -62,6 +62,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -132,6 +133,7 @@ func driveCases(rep *report.Report, cases map[string]corpus.Case) {
 	driveMidStreamBufferExceeded(rep, cases)
 	driveDeferralBound(rep, cases)
 	driveDeferralResolves(rep, cases)
+	driveDeferralDoesNotHoldPosition(rep, cases)
 }
 
 // --- the live ingest harness ------------------------------------------------
@@ -2436,6 +2438,205 @@ func driveDeferralResolves(rep *report.Report, cases map[string]corpus.Case) {
 	}
 
 	finishCase(rep, c, diffs)
+}
+
+// countingLog counts what the Hub reads out of the log substrate.
+//
+// events.Log is an interface and NewHub takes it, so this driver can observe the
+// substrate the same way the package's own tests do — by embedding the real
+// EventLog and counting the one method a pinned delivery position would inflate.
+// No production code is instrumented for this.
+type countingLog struct {
+	*events.EventLog
+	afterCalls     atomic.Int64
+	afterEnvelopes atomic.Int64
+}
+
+func (l *countingLog) After(id string) []events.Envelope {
+	out := l.EventLog.After(id)
+	l.afterCalls.Add(1)
+	l.afterEnvelopes.Add(int64(len(out)))
+	return out
+}
+
+// perWakeSlack is how much more than one-envelope-per-wake this stage tolerates.
+//
+// It is slack for wakes that coalesce (two appends landing between one drain and
+// the next), not a tuned threshold: the failure being caught inflates the count
+// by a factor of the RETENTION WINDOW, so anything between "a few per wake" and
+// "two hundred per wake" would separate them equally well. Stated as a small
+// integer rather than a fraction of the window so that raising the window in the
+// case makes the assertion STRICTER, never looser.
+const perWakeSlack = 4
+
+// driveDeferralDoesNotHoldPosition drives EVT-142a's third clause: a deferred
+// marker MUST NOT hold the subscriber's delivery position.
+//
+// This is the clause #138 recorded as pinned by nothing in the corpus, and the
+// one whose regression is worst — a held position re-reads the entire retention
+// window on every wake, inside the lock every Append takes, on behalf of a
+// subscriber that is by construction receiving nothing. That is an availability
+// amplifier reachable by any ordinary lagging subscriber.
+//
+// It is a SHAPE assertion, not a benchmark. Held versus advancing differ by a
+// factor of the window, so nothing here depends on how fast the machine is.
+func driveDeferralDoesNotHoldPosition(rep *report.Report, cases map[string]corpus.Case) {
+	const id = "EVT-142a-valid-deferral-does-not-hold-the-delivery-position"
+	c, ok := corpus.ByID(cases, id)
+	if !ok {
+		rep.Fail(id, contract, "case not found in frozen corpus")
+		return
+	}
+
+	var in struct {
+		midStreamCase
+		LagEvents struct {
+			ScopeNode string `json:"scope_node"`
+			Count     int    `json:"count"`
+		} `json:"lag_events"`
+		MeasuredWakes struct {
+			ScopeNode string `json:"scope_node"`
+			Count     int    `json:"count"`
+		} `json:"measured_wakes"`
+	}
+	if err := decodeInto(c.Input, &in); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode input: %v", err))
+		return
+	}
+	var want struct {
+		PositionAdvances *bool `json:"delivery_position_advances_while_marker_pending"`
+		MarkerPending    *bool `json:"marker_still_pending_at_the_end"`
+	}
+	if err := decodeInto(c.Expected, &want); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode expected: %v", err))
+		return
+	}
+	if want.PositionAdvances == nil || want.MarkerPending == nil {
+		rep.Fail(c.CaseID, contract, "corpus expected block does not declare both members this stage asserts")
+		return
+	}
+	if in.MeasuredWakes.Count < 1 || in.LagEvents.Count <= in.Retention {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf(
+			"the case must lag the subscriber PAST the window (%d lag events over a %d-entry window) and measure at "+
+				"least one wake (%d): otherwise no marker is pending and this measures nothing",
+			in.LagEvents.Count, in.Retention, in.MeasuredWakes.Count))
+		return
+	}
+
+	fixture, err := authtest.New(authtest.Config{
+		Role:      auth.Role(in.SubscriberBinding.Role),
+		ScopeNode: in.SubscriberBinding.ScopeNode,
+	})
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("seed the subscriber's principal: %v", err))
+		return
+	}
+	defer fixture.Close()
+
+	log := &countingLog{EventLog: events.NewEventLog(in.Retention)}
+	hub := eventsse.NewHub(log)
+	seq := 0
+	appendAt := func(node string) {
+		seq++
+		hub.Append(scopedFixtureEnvelope(syntheticEventID(seq), node, ""))
+	}
+	for _, e := range in.RecordedEvents {
+		if e.Phase == "before_connect" {
+			hub.Append(scopedFixtureEnvelope(e.ID, e.ScopeNode, ""))
+		}
+	}
+
+	gate := newFlushGate()
+	var gateOnce sync.Once
+	stopGating := func() { gateOnce.Do(gate.shutdown) }
+	nodes := in.ScopeNodes
+	srv := httptest.NewServer(gatedHandler(eventsse.New(hub, fixture.Auth, func(context.Context) ([]datamodel.ScopeNode, error) {
+		return nodes, nil
+	}, eventsse.WithGapDeferral(resolvingDeferralBound)), gate))
+	defer srv.Close()
+	defer stopGating()
+
+	br, cancel := dialSSEAs(srv, fixture.Credential(), "resume_from="+in.ResumeFrom)
+	defer cancel()
+
+	var diffs []report.Diff
+	fail := func(field string, expected, actual any) {
+		diffs = append(diffs, report.Diff{Field: field, Expected: expected, Actual: actual})
+	}
+	if f, err := readFrame(br, 3*time.Second); err != nil || f.event != "event" {
+		fail("sse.backlog", "one event frame above the resume anchor", fmt.Sprintf("frame=%+v err=%v", f, err))
+		finishCase(rep, c, diffs)
+		return
+	}
+	if err := gate.wait(5 * time.Second); err != nil {
+		fail("sse.backlog_flush", "the handler parks after flushing its backlog", err.Error())
+		finishCase(rep, c, diffs)
+		return
+	}
+
+	// Lag it past the horizon: its own event, then a full window it may not read.
+	for _, e := range in.RecordedEvents {
+		if e.Phase == "lost_undelivered" {
+			hub.Append(scopedFixtureEnvelope(e.ID, e.ScopeNode, ""))
+		}
+	}
+	for i := 0; i < in.LagEvents.Count; i++ {
+		appendAt(in.LagEvents.ScopeNode)
+	}
+	gate.let()
+	if err := gate.wait(5 * time.Second); err != nil {
+		fail("sse.pending_marker_park", true, "the handler never parked again after the loss: "+err.Error())
+		finishCase(rep, c, diffs)
+		return
+	}
+
+	// Steady state, one append per wake, none of it in this subscriber's scope.
+	// A held position re-reads the whole window here; an advancing one reads what
+	// arrived since.
+	callsBefore := log.afterCalls.Load()
+	envBefore := log.afterEnvelopes.Load()
+	for i := 0; i < in.MeasuredWakes.Count; i++ {
+		appendAt(in.MeasuredWakes.ScopeNode)
+		gate.let()
+		if err := gate.wait(5 * time.Second); err != nil {
+			fail("sse.wake", fmt.Sprintf("%d measured wakes", in.MeasuredWakes.Count),
+				fmt.Sprintf("the handler stopped waking after %d: %v", i, err))
+			finishCase(rep, c, diffs)
+			return
+		}
+	}
+	calls := log.afterCalls.Load() - callsBefore
+	copied := log.afterEnvelopes.Load() - envBefore
+
+	if calls == 0 {
+		fail("sse.measured_wakes", "at least one drain during the measured window", "none — the stage measured nothing")
+		finishCase(rep, c, diffs)
+		return
+	}
+	if budget := int64(perWakeSlack * in.MeasuredWakes.Count); copied > budget {
+		fail("sse.per_wake_work", *want.PositionAdvances, fmt.Sprintf(
+			"a pending marker held the delivery position: %d envelope(s) copied over %d drain(s) (%.1f per wake) on a "+
+				"%d-entry window, budget %d. The watermark MUST advance over the consumed tail while the marker is "+
+				"deferred (EVT-142a)", copied, calls, float64(copied)/float64(calls), in.Retention, budget))
+	}
+
+	// The marker must still be PENDING, not resolved or dropped: nothing this
+	// subscriber may read has arrived, so a gap frame here would name an id
+	// outside its visible set and a closed stream would mean the bound elapsed.
+	stopGating()
+	if f, err := readFrame(br, 500*time.Millisecond); err == nil {
+		fail("sse.marker_still_pending", *want.MarkerPending,
+			fmt.Sprintf("the stream produced %s id=%s while nothing visible had arrived", f.event, f.id))
+	}
+
+	finishCase(rep, c, diffs)
+}
+
+// syntheticEventID mints an ordered fixture id for the bulk events a case
+// declares by COUNT rather than enumerating. Monotonic in n, so log order
+// matches append order the way real ULIDs do.
+func syntheticEventID(n int) string {
+	return fmt.Sprintf("01J8Z9%020d", n)
 }
 
 // driveMidStreamBufferExceeded drives EVT-142's mid-stream loss marker end to

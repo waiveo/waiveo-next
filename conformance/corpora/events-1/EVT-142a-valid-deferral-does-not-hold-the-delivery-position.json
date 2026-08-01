@@ -1,0 +1,71 @@
+{
+  "case_id": "EVT-142a-valid-deferral-does-not-hold-the-delivery-position",
+  "contract": "events/1",
+  "req_ids": [
+    "EVT-142a"
+  ],
+  "description": "EVT-142a's third clause: \"Deferring a marker MUST NOT hold the subscriber's delivery position: the server continues to consider and deliver the retained tail normally while the marker is pending.\" A subscriber is lagged past the horizon so its marker is pending with no visible resume point \u2014 the state a pinned position would hold \u2014 and the stream is then driven through many wakes carrying only events it may not read. The work each wake does MUST scale with what is NEW at that wake, not with the size of the retained window. This is a SHAPE assertion, not a benchmark: a held position re-reads the whole retention window on every wake, so the two differ by a factor of the window (200 here, far more in production) rather than by a margin timing could confuse. The lag and wake events are declared as counts because none of their ids is asserted and enumerating two hundred fixture entries would bury the case rather than pin it. The contract's own reason for the clause is the cost: a held position turns every append anywhere on the platform into a scan of the whole window, inside the lock every Append takes, on behalf of a subscriber that is by construction receiving nothing.",
+  "input": {
+    "retention": 200,
+    "scope_nodes": [
+      {
+        "id": "01J8Z5A0B1C2D3E4F5G6H7Z0RG",
+        "kind": "org",
+        "name": "org"
+      },
+      {
+        "id": "01J8Z5A0B1C2D3E4F5G6H7Z5A0",
+        "kind": "site",
+        "parent_id": "01J8Z5A0B1C2D3E4F5G6H7Z0RG",
+        "name": "site A",
+        "tz": "UTC",
+        "lat": 1,
+        "long": 2
+      },
+      {
+        "id": "01J8Z5A0B1C2D3E4F5G6H7Z5B0",
+        "kind": "site",
+        "parent_id": "01J8Z5A0B1C2D3E4F5G6H7Z0RG",
+        "name": "site B",
+        "tz": "UTC",
+        "lat": 3,
+        "long": 4
+      }
+    ],
+    "subscriber_binding": {
+      "scope_node": "01J8Z5A0B1C2D3E4F5G6H7Z5A0",
+      "role": "viewer"
+    },
+    "resume_from": "01J8Z3K4N5P6Q7R8S9T0V1W210",
+    "recorded_events": [
+      {
+        "id": "01J8Z3K4N5P6Q7R8S9T0V1W210",
+        "scope_node": "01J8Z5A0B1C2D3E4F5G6H7Z5A0",
+        "phase": "before_connect"
+      },
+      {
+        "id": "01J8Z3K4N5P6Q7R8S9T0V1W211",
+        "scope_node": "01J8Z5A0B1C2D3E4F5G6H7Z5A0",
+        "phase": "before_connect"
+      },
+      {
+        "id": "01J8Z3K4N5P6Q7R8S9T0V1W220",
+        "scope_node": "01J8Z5A0B1C2D3E4F5G6H7Z5A0",
+        "phase": "lost_undelivered"
+      }
+    ],
+    "lag_events": {
+      "scope_node": "01J8Z5A0B1C2D3E4F5G6H7Z5B0",
+      "count": 208
+    },
+    "measured_wakes": {
+      "scope_node": "01J8Z5A0B1C2D3E4F5G6H7Z5B0",
+      "count": 40
+    }
+  },
+  "expected": {
+    "delivery_position_advances_while_marker_pending": true,
+    "per_wake_work_scales_with": "the events new at that wake, not the retained window",
+    "marker_still_pending_at_the_end": true
+  }
+}

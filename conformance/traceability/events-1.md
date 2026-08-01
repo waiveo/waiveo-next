@@ -118,7 +118,7 @@ ever placed by that path.
 | EVT-140 | `contracts/events-1.md#loss-markers` | `EVT-140-valid-resume-with-gap`, `EVT-142-valid-mid-stream-buffer-exceeded-gap` | covered |
 | EVT-141 | `contracts/events-1.md#loss-markers` | `EVT-140-valid-resume-with-gap` | covered |
 | EVT-142 | `contracts/events-1.md#loss-markers` | `EVT-142-valid-mid-stream-buffer-exceeded-gap` | covered |
-| EVT-142a | `contracts/events-1.md#loss-markers` | `EVT-142a-invalid-deferral-exceeds-its-bound`, `EVT-142a-valid-deferred-marker-resolves-inside-the-bound` | TBD-wave1 |
+| EVT-142a | `contracts/events-1.md#loss-markers` | `EVT-142a-invalid-deferral-exceeds-its-bound`, `EVT-142a-valid-deferred-marker-resolves-inside-the-bound`, `EVT-142a-valid-deferral-does-not-hold-the-delivery-position` | covered |
 | EVT-143 | `contracts/events-1.md#loss-markers` | `EVT-140-valid-resume-with-gap`, `EVT-142-valid-mid-stream-buffer-exceeded-gap` | covered |
 | EVT-144 | `contracts/events-1.md#loss-markers` | - | TBD-wave1 |
 | EVT-150 | `contracts/events-1.md#webhook-delivery` | - | TBD-wave1 |
@@ -131,8 +131,10 @@ ever placed by that path.
 | EVT-157 | `contracts/events-1.md#webhook-delivery` | `EVT-151-valid-webhook-delivery-signed` | covered |
 | EVT-158 | `contracts/events-1.md#webhook-delivery` | - | TBD-wave1 |
 
-`EVT-142a` stays `TBD-wave1` even though it now cites a case, because the
-requirement has three separable clauses and the corpus measures one of them.
+`EVT-142a` is `covered` as of the third case below. The requirement has three
+separable clauses and the corpus now measures each of them; it was deliberately
+held at `TBD-wave1` while only one or two were, because a row marked covered on
+part of a requirement is the claim this table exists to prevent.
 
 - **Bounded deferral** — measured by `EVT-142a-invalid-deferral-exceeds-its-bound`
   together with `EVT-142a-valid-deferred-marker-resolves-inside-the-bound`, which
@@ -148,13 +150,14 @@ requirement has three separable clauses and the corpus measures one of them.
   the whole log rather than the visible set and whose `from_id` comes from the
   last delivered id rather than the watermark.
 - **A deferral MUST NOT hold the subscriber's delivery position** — measured by
-  NOTHING in the corpus. An implementation that freezes the position while a
-  marker is pending leaves every case here green. It is pinned by
-  `TestSSE_DeferredGapDoesNotRescanTheRetainedTail` in `internal/app/eventsse`,
-  which is real evidence but is not the evidence this column reports, and the
-  clause matters: freezing the position is the tail-rescan amplifier that got an
-  earlier attempt reverted.
+  `EVT-142a-valid-deferral-does-not-hold-the-delivery-position`. Freezing the
+  live cursor while a marker is pending now fails the driver. It is a SHAPE
+  assertion rather than a benchmark: a held position re-reads the whole retention
+  window on every wake, so held and advancing differ by a factor of the window
+  rather than by a margin timing could confuse. The clause matters most of the
+  three — freezing the position is the tail-rescan amplifier that got an earlier
+  attempt reverted, and it is reachable by any ordinary lagging subscriber.
 
-Marking the row `covered` on the strength of one clause would be the kind of
-claim this table exists to prevent, so it cites what it has and says what it
-lacks.
+The three cases are not independent: the bounded-deferral case and its resolving
+control only separate a correct implementation from a zero bound when read
+together, which is why both are cited rather than the first alone.
