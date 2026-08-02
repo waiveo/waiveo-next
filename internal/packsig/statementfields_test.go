@@ -135,3 +135,43 @@ func TestStatementFieldsRejectEmptyAndMalformed(t *testing.T) {
 		})
 	}
 }
+
+// TestDecodeEnvelopeRefusesParserDifferentials pins the two checks that stop a
+// signature envelope meaning different things to different parsers.
+//
+// Both are the same class of attack: the verifier reads one value and whatever
+// consumes the document next reads another, so a signature that verified over
+// the first vouches for the second.
+//
+//   - TRAILING CONTENT: a second JSON value appended after the envelope. A
+//     lenient parser stops at the first and ignores the rest; a different one
+//     may not.
+//   - DUPLICATE MEMBERS: the same key twice. Parsers disagree about which wins —
+//     encoding/json takes the last, others take the first.
+//
+// The trailing-content check was pinned by nothing.
+func TestDecodeEnvelopeRefusesParserDifferentials(t *testing.T) {
+	valid := `{"format":"pack-signature/1","artifact_id":"acme/menu-board","kind":"pack",` +
+		`"version":"1.0.0","content_digest":"sha256:00","key_id":"k","signature":"c2ln"}`
+
+	// The control first: the envelope on its own decodes.
+	if _, err := decodeEnvelope([]byte(valid)); err != nil {
+		t.Fatalf("a well-formed envelope was refused: %v", err)
+	}
+
+	if _, err := decodeEnvelope([]byte(valid + `{"format":"pack-signature/1"}`)); err == nil {
+		t.Error("an envelope with a second JSON value appended was accepted — a parser that stops at the first " +
+			"and one that does not would disagree about what was signed")
+	} else if !strings.Contains(err.Error(), "trailing content") {
+		t.Errorf("trailing content refused with %q, want the trailing-content rule", err)
+	}
+
+	dup := `{"format":"pack-signature/1","artifact_id":"acme/menu-board","artifact_id":"attacker/evil",` +
+		`"kind":"pack","version":"1.0.0","content_digest":"sha256:00","key_id":"k","signature":"c2ln"}`
+	if _, err := decodeEnvelope([]byte(dup)); err == nil {
+		t.Error("an envelope declaring artifact_id twice was accepted — encoding/json keeps the last and other " +
+			"parsers keep the first, so the id verified is not necessarily the id installed")
+	} else if !strings.Contains(err.Error(), "more than once") {
+		t.Errorf("a duplicate member refused with %q, want the duplicate-member rule", err)
+	}
+}
