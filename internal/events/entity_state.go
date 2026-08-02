@@ -176,6 +176,13 @@ func requireArrayField(m map[string]json.RawMessage, field string) error {
 }
 
 // isJSONObject reports whether raw is a JSON object (not null, not an array).
+//
+// The explicit null check below is REDUNDANT with the obj != nil test that
+// follows, and is kept for legibility rather than effect: unmarshalling JSON
+// null into a map returns a nil error and leaves the map nil, so the second
+// check already refuses it. Stated because a mutation sweep flags this line as
+// unpinned and it cannot be pinned — no input reaches the null branch and gets a
+// different answer than it would without it. Measured, not assumed.
 func isJSONObject(raw json.RawMessage) bool {
 	if string(raw) == "null" {
 		return false
