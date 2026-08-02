@@ -120,19 +120,25 @@ func TestOversizedEntryIsRefusedOnItsDeclaredSize(t *testing.T) {
 	}
 }
 
-// The read cap in readCapped — the check that a decompressed entry did not
-// exceed the limit regardless of what its header claimed — is NOT pinned here,
-// and cannot be with an ordinary archive.
+// The read cap in readCapped — "exceeds the limit when decompressed" — is NOT
+// pinned here, and CANNOT BE while the declared-size check above it stands.
 //
-// It is the half that catches a header LYING about a small size, which is what a
-// decompression bomb is. Reaching it needs an archive whose declared
-// uncompressed size disagrees with its actual content, and archive/zip's writer
-// will not produce one: it measures what it writes. A test would have to build
-// the container by hand and patch the size fields in both the local header and
-// the central directory, with a Deflate entry so the decompressor keeps
-// producing bytes past the declared length.
+// An earlier version of this note said reaching it needed an archive whose
+// declared size disagrees with its content. That was wrong, and two probes say
+// why:
 //
-// That is worth doing and is deliberately not being rushed in beside the three
-// above. Recorded here rather than left as a bare sweep hit, so the next person
-// knows the guard is real, why the obvious test does not reach it, and what
-// reaching it actually requires.
+//   - Patch the central directory to declare 64 bytes for a 4096-byte entry and
+//     the declared-size check passes it — but the read then fails as
+//     PACK_ARTIFACT_INVALID ("zip: not a valid zip file"), because Go's zip
+//     reader enforces the declared size itself and refuses to yield more.
+//   - Disable the declared-size check and feed an honest 4096-byte entry under a
+//     1024-byte limit, and the read cap fires exactly as written.
+//
+// So it is a BACKSTOP for the check above it rather than an independently
+// reachable rule: no input reaches it while that check runs. That is the same
+// category as isJSONObject's null pre-check in internal/events — correct code,
+// worth keeping, and not something a test can hold.
+//
+// Keeping it is still right. It costs nothing, and it is the check that would
+// still bound the read if the declared-size test were ever relaxed or reordered
+// — which is precisely the change that would otherwise reintroduce the bomb.
