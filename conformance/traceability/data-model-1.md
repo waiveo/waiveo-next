@@ -39,6 +39,7 @@ reader nothing and costs a caller the clearer of the two answers.
 | DAT-003 | `contracts/data-model-1.md#scope-node-tree` | `DAT-001-valid-scope-node-tree` | covered |
 | DAT-004 | `contracts/data-model-1.md#scope-node-tree` | `DAT-001-valid-scope-node-tree`, `DAT-004a-valid-screen-and-device-identity-rows` | covered |
 | DAT-004a | `contracts/data-model-1.md#scope-node-tree` | - | TBD-wave1 |
+| DAT-004b | `contracts/data-model-1.md#scope-node-tree` | - | TBD-wave1 |
 | DAT-005 | `contracts/data-model-1.md#resource-row-baseline` | `DAT-001-valid-scope-node-tree` | covered |
 | DAT-005a | `contracts/data-model-1.md#resource-row-baseline` | `DAT-005b-invalid-identity-rows-missing-baseline` | covered |
 | DAT-005b | `contracts/data-model-1.md#resource-row-baseline` | `DAT-004a-valid-screen-and-device-identity-rows`, `DAT-005b-invalid-identity-rows-missing-baseline` | covered |

@@ -315,11 +315,17 @@ func TestScreenDeviceLinkSurfacedAs422(t *testing.T) {
 // assertions are properties of the fixture and hold whatever any implementation
 // does. That is why DAT-004a's traceability row does not claim coverage.
 //
-// The refusal asserted here is the ordinary 404 NOT_FOUND, which is what the
-// platform answers today. data-model/1 publishes SCREEN_ID_UNRESOLVED for a
-// screen_id that "resolves to a scope node", and nothing raises it — because on
-// every mounted surface no such resolution happens. The status is deliberately
-// not the point of this test: any 2xx here is the defect.
+// The refusal asserted here is the ordinary 404 NOT_FOUND, and that is now what
+// the contract asks for: DAT-004b retired the separate SCREEN_ID_UNRESOLVED
+// refusal, because raising it would mean resolving the id ACROSS kinds purely so
+// a scope-node id could be refused differently from any other unknown one —
+// telling a caller the identifier they named exists as something else.
+//
+// So this test is DAT-004b's own evidence, and its shape is the requirement's:
+// kind-scoped resolution is what makes the confusion impossible, and a 404 is
+// what that produces. The status is deliberately not the point — any 2xx here is
+// the defect, and a surface that answered a scope-node id with a screen would be
+// violating DAT-004a whatever code it used.
 func TestScopeNodeIDIsNeverResolvableAsAScreen(t *testing.T) {
 	e := newEnv(t)
 	siteID := e.createNode(t, siteNode(""))
