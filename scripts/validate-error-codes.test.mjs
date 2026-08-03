@@ -95,7 +95,7 @@ test("a clean tree passes and reports the pair count", () => {
     (w) => writeGoodTree(w),
     (r) => {
       assert.equal(r.status, 0, r.stderr);
-      assert.match(r.stdout, /SUMMARY: validate-error-codes: OK \(2 published pair\(s\), 1 allowlisted unimplemented\)/);
+      assert.match(r.stdout, /SUMMARY: validate-error-codes: OK \(2 published pair\(s\), 0 field-level pair\(s\), 0 emitted checked back, 1 allowlisted unimplemented\)/);
     }
   );
 });
@@ -385,6 +385,121 @@ test("an unparseable ErrorCode enum fails rather than skipping", () => {
     (r) => {
       assert.equal(r.status, 1, r.stdout);
       assert.match(r.stderr, /could not locate the ErrorCode enum/);
+    }
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The REVERSE direction (check #6): a code an implementation emits must be
+// published somewhere. Every other case in this file walks published ->
+// implemented, which is precisely the direction that cannot see an emitted code
+// nobody published — the defect that let twenty-six per-field codes ship
+// unpublished. These freeze the check that closes it.
+
+// A per-field emission in the shape the tree actually uses.
+const EMITS_UNPUBLISHED_GO = `package example
+
+type Error struct {
+	Field   string
+	Code    string
+	Message string
+}
+
+func Check(v string) []Error {
+	if v == "" {
+		return []Error{{Field: "thing", Code: "THING_UNPUBLISHED", Message: "thing is required"}}
+	}
+	return nil
+}
+`;
+
+const CONTRACT_WITH_FIELD_REGISTER = CONTRACT.replace(
+  "## Conformance notes",
+  `## Field-level error register
+
+| code | field-level meaning | retryable |
+|---|---|---|
+| \`THING_UNPUBLISHED\` | The thing's field is absent. | no |
+
+## Conformance notes`
+);
+
+test("an emitted code published in NO contract fails, naming the site and both registers", () => {
+  withFixture(
+    (w) => {
+      writeGoodTree(w);
+      w("internal/example/fields.go", EMITS_UNPUBLISHED_GO);
+    },
+    (r) => {
+      assert.equal(r.status, 1, "an emitted-but-unpublished code passed — the reverse walk is not running");
+      assert.match(r.stderr, /THING_UNPUBLISHED is emitted but published in no contract/);
+      assert.match(r.stderr, /internal\/example\/fields\.go:\d+/, "the failure must name the emit site");
+    }
+  );
+});
+
+test("publishing it in the Field-level error register satisfies the reverse walk", () => {
+  withFixture(
+    (w) => {
+      writeGoodTree(w, { contract: CONTRACT_WITH_FIELD_REGISTER });
+      w("internal/example/fields.go", EMITS_UNPUBLISHED_GO);
+    },
+    (r) => {
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, /1 field-level pair\(s\)/);
+      assert.match(r.stdout, /1 emitted code\(s\) checked back/);
+    }
+  );
+});
+
+test("a field-level code does NOT satisfy a top-level publication requirement", () => {
+  // The two registers are separate vocabularies appearing in different places
+  // in one response. If the field register could vouch for a top-level code,
+  // publishing a per-field code would silently license emitting it as a
+  // Problem's own `code`, which API-013 does not permit.
+  const contract = CONTRACT.replace(
+    "| `THING_MISSING` | There is no thing. | no |\n",
+    ""
+  ).replace(
+    "## Conformance notes",
+    `## Field-level error register
+
+| code | field-level meaning | retryable |
+|---|---|---|
+| \`THING_MISSING\` | Published as a FIELD code only. | no |
+
+## Conformance notes`
+  );
+  withFixture(
+    (w) => writeGoodTree(w, { contract }),
+    (r) => {
+      assert.equal(r.status, 1, "the allowlist entry for a now-unpublished top-level code was accepted");
+      assert.match(r.stderr, /does not publish THING_MISSING in its Error taxonomy/);
+    }
+  );
+});
+
+test("a two-argument call whose second argument is SCREAMING_SNAKE is not an emission", () => {
+  // q.Set("algorithm", "SHA1") is a URL parameter, and matched the reverse
+  // scan until it required the message argument every real emission carries.
+  const notAnEmission = `package example
+
+import "net/url"
+
+func Link() string {
+	q := url.Values{}
+	q.Set("algorithm", "SHA1")
+	return q.Encode()
+}
+`;
+  withFixture(
+    (w) => {
+      writeGoodTree(w);
+      w("internal/example/link.go", notAnEmission);
+    },
+    (r) => {
+      assert.equal(r.status, 0, r.stderr);
+      assert.doesNotMatch(r.stderr, /SHA1/, "a URL query parameter was read as an emitted error code");
     }
   );
 });

@@ -498,11 +498,13 @@ if (failures.length) {
   // check that silently matched nothing — a regex that stopped firing, a walk
   // that skipped the tree — looks exactly like a clean tree, which is the
   // failure this whole check exists to end.
+  //
+  // It is REPORTED rather than asserted non-zero. A tree with no emissions at
+  // all is a legitimate tree — the gate's own fixture trees are exactly that —
+  // so "zero" is not evidence of a broken scan in general. What guards the
+  // scan instead is scripts/validate-error-codes.test.mjs, which drives an
+  // emitted-but-unpublished code through it and requires the failure.
   const fieldPairs = [...publishedFieldByContract.values()].reduce((n, c) => n + c.length, 0);
-  if (emittedAt.size === 0) {
-    console.error("validate-error-codes: the emission scan matched ZERO codes — it is broken, and a broken scan passes");
-    process.exitCode = 1;
-  }
   console.log(
     `validate-error-codes: OK (${publishedPairs} published (contract, code) pair(s) over ${publishedByContract.size} contract(s), ` +
       `${publishedCodes.size} distinct code(s); ${allowed.size} allowlisted as unimplemented; ` +
