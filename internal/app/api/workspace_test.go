@@ -69,6 +69,8 @@ type workspaceEnv struct {
 	archiveDir string
 	keyDir     string
 	key        *workspacekey.Key
+	// storePath is the live store a restore stages beside.
+	storePath string
 }
 
 // newWorkspaceEnv builds an env whose export operation is fully wired: a scratch
@@ -88,6 +90,7 @@ func newWorkspaceEnv(t *testing.T) *workspaceEnv {
 		t.Fatalf("workspacekey.LoadOrCreate: %v", err)
 	}
 
+	storePath := filepath.Join(t.TempDir(), "app.db")
 	clock := func() int64 { return fixedNowMs }
 	idem := apihttp.NewIdempotencyStore(clock, 0)
 	fixture := newAuthFixture(t)
@@ -95,7 +98,8 @@ func newWorkspaceEnv(t *testing.T) *workspaceEnv {
 	jobs := api.NewJobRunner()
 	ts := httptest.NewServer(api.New(st, idem, clock, ulid.Monotonic(), content, testContentBase, fixture.Auth,
 		api.WithJobRunner(jobs),
-		api.WithWorkspaceArchive(&api.WorkspaceArchive{Dir: dir, Key: key, KDF: lightKDF()})))
+		api.WithWorkspaceArchive(&api.WorkspaceArchive{Dir: dir, Key: key, KDF: lightKDF()}),
+		api.WithStorePath(storePath)))
 	t.Cleanup(ts.Close)
 
 	return &workspaceEnv{
@@ -103,6 +107,7 @@ func newWorkspaceEnv(t *testing.T) *workspaceEnv {
 		archiveDir: dir,
 		keyDir:     keyDir,
 		key:        key,
+		storePath:  storePath,
 	}
 }
 

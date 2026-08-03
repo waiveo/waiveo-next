@@ -85,13 +85,6 @@
       ]
     },
     {
-      "package": "internal/app/workspacekey",
-      "reason": "An accessor for the workspace key's public half. The sealing paths that use the key need the private half and the key id; nothing yet publishes the public half to a peer, which is what this would be for.",
-      "funcs": [
-        "Key.Public"
-      ]
-    },
-    {
       "package": "internal/datamodel",
       "reason": "A convenience lookup on the built scope tree. The callers that need a node's kind hold the node itself by then; only data-model/1's in-package corpus driver asks the tree.",
       "funcs": [
@@ -302,9 +295,8 @@
     },
     {
       "package": "internal/app/restoreswap",
-      "reason": "The BOOT half of the offline swap is wired \u2014 cmd/waiveo-feeder calls Adopt before it opens the store, which is the only place it can be called, since the swap renames the very file that line opens. These three are the STAGING half, and what calls them is the restore Job: a POST that opens an archive/1 container, preflights it against this destination, builds the incoming store, and stages it for the next boot. That job is the remaining work on the restore path and the shape is decided (offline swap), so this is sequencing rather than a forgotten caller. Deleting them would leave a boot-time adopter with nothing able to stage anything for it to adopt.",
+      "reason": "The boot half (Adopt) and the staging half (Stage) are both wired now \u2014 cmd/waiveo-feeder adopts before it opens the store, and the restore Job stages into it. These two remain uncalled by production: Pending reports whether a swap is waiting and Discard abandons one. What would use them is an operator surface over a staged-but-not-yet-adopted restore \u2014 'a restore is ready, restart to apply, or cancel it' \u2014 which is a console question rather than a wiring one, and is worth answering before a restart becomes the only way to find out a restore landed.",
       "funcs": [
-        "Stage",
         "Discard",
         "Pending"
       ]

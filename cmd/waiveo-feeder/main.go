@@ -1063,6 +1063,8 @@ func main() {
 		api.WithRequiredPacks(requiredPacks),
 		api.WithWebhookSecrets(webhookSecrets, webhookRotationOverlapMs),
 		api.WithWorkspaceArchive(&api.WorkspaceArchive{Dir: cfg.archiveDir, Key: wsKey}),
+		// The live store a restore stages beside (archive/1, the offline swap).
+		api.WithStorePath(cfg.storePath),
 		// The emergency kit a first-boot claim issues (ARC-110). Its verifier
 		// lives beside the workspace key, never in the archive directory an
 		// operator copies away — a kit verifier travelling off the box with the

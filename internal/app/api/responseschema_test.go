@@ -395,6 +395,9 @@ func newSchemaProbeEnv(t *testing.T) *schemaProbeEnv {
 		// implementation that never sealed the signing secret it was handed.
 		api.WithWebhookSecrets(webhookdeliver.NewSecrets(sealer), 0),
 		api.WithWorkspaceArchive(&api.WorkspaceArchive{Dir: t.TempDir(), Key: key, KDF: lightKDF()}),
+		// A restore stages beside this; without it the route refuses 503 and the
+		// probe below could never reach the 202 it exists to verify.
+		api.WithStorePath(filepath.Join(t.TempDir(), "app.db")),
 		// A one-relay pairing directory, so the pairing-code probe validates
 		// the response's FULLER shape (pairing_code + relay_id present) rather
 		// than only the no-relay degrade.
@@ -713,6 +716,16 @@ var probes = map[string]probe{
 		e.mintOrg(t)
 		return e.do(t, http.MethodPost, "/api/v1/workspace/export",
 			mustJSON(t, map[string]any{"passphrase": testExportPassphrase}), nil)
+	},
+	"restoreWorkspace": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		// The 202 is returned on ACCEPTANCE, before the container is opened, so
+		// this probe verifies the accepted-Job shape without needing a real
+		// archive on disk. Whether that named container exists is the Job's
+		// business, and it reports a failed target rather than a different
+		// response shape.
+		e.mintOrg(t)
+		return e.do(t, http.MethodPost, "/api/v1/workspace/restore",
+			mustJSON(t, map[string]any{"archive": "some-container.waiveo", "passphrase": testExportPassphrase}), nil)
 	},
 	"deleteWorkspace": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
 		return e.do(t, http.MethodPost, "/api/v1/workspace/delete",

@@ -727,6 +727,56 @@ paths:
   # implicit in the request path, so API-110's selector convention does not
   # apply.
   # ---------------------------------------------------------------------
+  /workspace/restore:
+    post:
+      operationId: restoreWorkspace
+      summary: Stage a workspace restore from a portable archive
+      description: >-
+        Restores the workspace from a container `archive/1` defines, applied
+        through an OFFLINE SWAP: the restored relational store is built beside
+        the live one and adopted at the next boot. The Job's success therefore
+        means "staged and ready", never "your workspace is now the archived
+        one" — a restart is what completes it, and the destination is briefly
+        unavailable across it.
+
+        That shape is what makes ARC-107's rollback guarantee hold without a
+        rollback step: nothing the live workspace uses is touched until
+        everything has already succeeded, so a restore that fails has changed
+        nothing rather than needing to be undone. Owner-role only, like export.
+      tags: [workspace, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceRestoreRequest"
+      responses:
+        "202":
+          description: >-
+            Restore accepted; poll the returned Job resource. Its success means
+            the restored store is STAGED — the swap happens at the next boot.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
   /workspace/export:
     post:
       operationId: exportWorkspace
@@ -4036,6 +4086,27 @@ components:
     # workspace — the two data-subject operations' request bodies
     # (contracts/api-1.md#data-subject-export--delete).
     # -----------------------------------------------------------------
+    WorkspaceRestoreRequest:
+      type: object
+      description: >-
+        The request body for the workspace restore operation. It names a
+        container already present in this deployment's archive directory and
+        carries the export passphrase that opens it. The archive is NAMED
+        rather than uploaded: an upload would hold a multi-gigabyte container in
+        the request path before anything about it had been verified.
+      required: [archive, passphrase]
+      additionalProperties: false
+      properties:
+        archive:
+          type: string
+          minLength: 1
+          description: >-
+            The container's file name within the archive directory. A bare
+            name, never a path — a caller able to send a path would be choosing
+            which file the server opens and decrypts.
+        passphrase:
+          type: string
+          minLength: 12
     WorkspaceExportRequest:
       type: object
       description: >-

@@ -122,6 +122,10 @@ type server struct {
 	workspaceArchive *WorkspaceArchive
 	// emergencyKit, when set, makes a successful claim issue one (ARC-110).
 	emergencyKit *EmergencyKitConfig
+	// storePath is the live relational store a restore stages beside
+	// (internal/app/restoreswap). Empty means restores are refused UNAVAILABLE
+	// rather than accepted and failed later.
+	storePath string
 	// webhookSecrets seals and opens a registered webhook endpoint's signing
 	// secret (internal/app/webhookdeliver). Optional (WithWebhookSecrets): the
 	// registration routes mount either way, and without it the rotate operation
@@ -337,6 +341,7 @@ func (srv *server) mountAll(rt, rootRT *router, authHandlers *auth.Handlers) {
 	// their subject is the workspace as a whole, which has no id in the path, no
 	// revision to condition a write on, and no collection to list (workspace.go).
 	rt.HandleFunc("POST "+apiPrefix+"/workspace/export", srv.exportWorkspace)
+	rt.HandleFunc("POST "+apiPrefix+"/workspace/restore", srv.restoreWorkspace)
 	rt.HandleFunc("POST "+apiPrefix+"/workspace/delete", srv.deleteWorkspace)
 	// The device plane's two read families and its one mutating operation. They
 	// are not resourceConfig mounts: a device is a read-only projection of the
