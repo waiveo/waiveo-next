@@ -158,6 +158,14 @@
         "VARIABLE_NAME_DUPLICATE",
         "VARIABLE_VALUE_INVALID"
       ]
+    },
+    {
+      "contract": "repairs-1.md",
+      "reason": "repairs/1 is published as TEXT ahead of its implementation, deliberately: its four shape questions were decided and the contract is up for review before anything is built against it, so there is no Repairs surface yet and neither refusal has a site. ISSUE_RESOLVED answers a remediation invoked against an already-resolved issue (REP-022's idempotence) and REMEDIATION_UNKNOWN answers one naming an action the issue's type does not declare (REP-020); both belong to the api/1 operation that invokes a remediation, which is itself out of this contract's scope and lands with the implementation. This is a declared-ahead group and the whole of it goes away in one piece when the Repairs surface is built.",
+      "codes": [
+        "ISSUE_RESOLVED",
+        "REMEDIATION_UNKNOWN"
+      ]
     }
   ]
 }
