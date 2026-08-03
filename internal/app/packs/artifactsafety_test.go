@@ -135,9 +135,14 @@ func TestOversizedEntryIsRefusedOnItsDeclaredSize(t *testing.T) {
 //     1024-byte limit, and the read cap fires exactly as written.
 //
 // So it is a BACKSTOP for the check above it rather than an independently
-// reachable rule: no input reaches it while that check runs. That is the same
-// category as isJSONObject's null pre-check in internal/events — correct code,
-// worth keeping, and not something a test can hold.
+// reachable rule. Precisely: the line IS evaluated on every entry, but its
+// branch is never TAKEN while the check above runs. That distinction matters —
+// caplimits_test.go pins this same comparison's BOUNDARY, because flipping it to
+// `>=` refuses an entry sitting exactly on the cap, which is an input that does
+// reach here. Disabling the branch is unobservable; moving it is not.
+//
+// Same category as isJSONObject's null pre-check in internal/events: correct
+// code, worth keeping, and not something a disabling mutation can hold.
 //
 // Keeping it is still right. It costs nothing, and it is the check that would
 // still bound the read if the declared-size test were ever relaxed or reordered
