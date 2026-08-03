@@ -419,3 +419,26 @@ func (srv *server) destroyWorkspace(ctx context.Context) (code, detail string) {
 	}
 	return "", ""
 }
+
+// EmergencyKitConfig points the claim path at the directory a workspace's
+// emergency-kit verifier lives in, and names what the kit recovers (ARC-111).
+//
+// Dir is deliberately the workspace KEY directory rather than the archive
+// directory. The kit's verifier is custody material, and the archive directory
+// is output an operator is expected to copy away — a kit verifier sitting among
+// exported containers travels off the box with them.
+type EmergencyKitConfig struct {
+	Dir         string
+	WorkspaceID string
+	NewID       func() string
+}
+
+// WithEmergencyKit makes a successful first-boot claim issue an emergency kit
+// and return it, once, in the claim response (archive/1 ARC-110/113).
+//
+// Without it a claim issues none, which is what every test harness that stands
+// up this server wants — and what shipped before the delivery question had an
+// answer.
+func WithEmergencyKit(c *EmergencyKitConfig) Option {
+	return func(srv *server) { srv.emergencyKit = c }
+}

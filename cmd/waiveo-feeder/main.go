@@ -1046,6 +1046,13 @@ func main() {
 		api.WithRequiredPacks(requiredPacks),
 		api.WithWebhookSecrets(webhookSecrets, webhookRotationOverlapMs),
 		api.WithWorkspaceArchive(&api.WorkspaceArchive{Dir: cfg.archiveDir, Key: wsKey}),
+		// The emergency kit a first-boot claim issues (ARC-110). Its verifier
+		// lives beside the workspace key, never in the archive directory an
+		// operator copies away — a kit verifier travelling off the box with the
+		// exports would defeat the physical-access assumption ARC-113 rests on.
+		// The workspace signing key's own id names what the kit recovers
+		// (ARC-111): it is minted once and is stable for the life of the box.
+		api.WithEmergencyKit(&api.EmergencyKitConfig{Dir: cfg.keyDir, WorkspaceID: wsKey.KeyID(), NewID: ulid.New}),
 		// The pairing-code operation's relay directory: live connections (and
 		// the canonical advertised address each declared at hello, REL-037)
 		// from the relay-connection server, and each relay's trust-anchor

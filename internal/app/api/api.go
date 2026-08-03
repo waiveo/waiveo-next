@@ -120,6 +120,8 @@ type server struct {
 	// (workspacerun.go). Optional: without it the export route still mounts and
 	// still authorizes, and answers UNAVAILABLE.
 	workspaceArchive *WorkspaceArchive
+	// emergencyKit, when set, makes a successful claim issue one (ARC-110).
+	emergencyKit *EmergencyKitConfig
 	// webhookSecrets seals and opens a registered webhook endpoint's signing
 	// secret (internal/app/webhookdeliver). Optional (WithWebhookSecrets): the
 	// registration routes mount either way, and without it the rotate operation
@@ -260,7 +262,11 @@ func New(st *store.Store, idem *apihttp.IdempotencyStore, nowMs func() int64, ne
 	// one's live executions.
 	srv.scheduleResume()
 	rt, rootRT := newRouter(), newRouter()
-	srv.mountAll(rt, rootRT, auth.NewHandlers(authn, nil, auth.RootScopeNode))
+	authHandlers := auth.NewHandlers(authn, nil, auth.RootScopeNode)
+	if srv.emergencyKit != nil {
+		authHandlers = authHandlers.WithEmergencyKit(srv.emergencyKit.Dir, srv.emergencyKit.WorkspaceID, srv.emergencyKit.NewID)
+	}
+	srv.mountAll(rt, rootRT, authHandlers)
 	// The audit seam sits INSIDE the auth middleware and OUTSIDE the resource
 	// mux: inside, because a record needs the resolved principal EVT-080 requires
 	// (a request refused for bad credentials has no identity to attribute and is

@@ -289,12 +289,17 @@
         "Pair",
         "Session.PullProgram"
       ]
+    },
+    {
+      "package": "internal/app/emergencykit",
+      "reason": "The kit's ISSUANCE half is wired \u2014 a first-boot claim mints one and returns it once (archive/1 ARC-110/113) \u2014 and these four are its REDEMPTION half, which has no surface yet. Verify checks a passphrase an operator transcribed from a printed kit, Current reports which issuance is live, and loadRecord/normalize serve them. What would call them is a recovery flow: the operator has lost their credentials or the hardware, presents the kit, and the platform re-establishes access from it. That flow is not built, and it is a larger question than this package \u2014 it decides what a valid passphrase actually AUTHORIZES, which is a security-model call rather than a wiring one. Deleting them instead would leave a kit that can be issued and never redeemed, which is a printed page that does nothing.",
+      "funcs": [
+        "Verify",
+        "Current",
+        "loadRecord",
+        "normalize"
+      ]
     }
   ],
-  "unimportedPackages": [
-    {
-      "package": "github.com/maaxton/waiveo-next/internal/app/emergencykit",
-      "reason": "archive/1's emergency kit (ARC-110-114) is implemented and tested, and nothing imports it because its DELIVERY is an open decision rather than an oversight: ARC-113 forbids transmitting a kit's content electronically and calls it a physically-delivered artifact, so where an operator is present, what they are shown, and for how long is a product question about a surface. The natural caller is first boot \u2014 internal/app/workspacekey.LoadOrCreate is ARC-110's 'the point a workspace's data key is first established', and POST /api/v1/auth/setup plus the console's setup route are where a human already is. Wiring it there closes this entry."
-    }
-  ]
+  "unimportedPackages": []
 }

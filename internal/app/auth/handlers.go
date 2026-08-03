@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"github.com/maaxton/waiveo-next/internal/app/emergencykit"
 	"io"
 	"net/http"
 	"strconv"
@@ -31,6 +32,40 @@ type Handlers struct {
 	// claimScopeNode is the scope node the first owner binding is placed at
 	// (see Bootstrap).
 	claimScopeNode string
+
+	// kit* configure the emergency kit a successful claim issues (archive/1
+	// ARC-110/113). Unset means no kit is issued and the claim response carries
+	// none — the behaviour before delivery had a decided shape, kept so a test
+	// harness need not stand up a kit directory to exercise claiming.
+	kitDir         string
+	kitWorkspaceID string
+	kitNewID       func() string
+}
+
+// WithEmergencyKit wires the emergency kit into the claim path: a successful
+// first-boot claim issues one and returns it in the response, ONCE.
+//
+// # Why the claim, and not boot
+//
+// ARC-110 says "at the point a workspace's data key is first established", and
+// that point is boot — workspacekey.LoadOrCreate runs before anything is
+// serving. But a kit issued at boot has nobody to hand it to, and the only way
+// to show it later would be to persist the passphrase, which this package
+// deliberately never does (it stores an argon2id verifier and nothing a
+// passphrase can be recovered from). Issuing at the claim is the first instant
+// there is an operator to receive it, and it is the instant the owner asked for.
+//
+// # Why in the response body
+//
+// ARC-113 forbids transmitting a kit's content electronically — naming email,
+// chat, and "a copyable on-screen value left rendered indefinitely". A
+// once-through print step at setup is none of those: the operator is physically
+// at the box they just claimed, the value is returned exactly once, and no route
+// can retrieve it afterwards. Regenerating is the only other path to one, which
+// is the right answer to "I lost my kit".
+func (h *Handlers) WithEmergencyKit(dir, workspaceID string, newID func() string) *Handlers {
+	h.kitDir, h.kitWorkspaceID, h.kitNewID = dir, workspaceID, newID
+	return h
 }
 
 // NewHandlers returns the auth HTTP surface over a. budget may be nil, in which
@@ -57,6 +92,34 @@ type sessionResponse struct {
 	AAL         AAL    `json:"aal"`
 	SessionID   string `json:"session_id"`
 	CSRFToken   string `json:"csrf_token,omitempty"`
+}
+
+// claimResponse is POST /auth/setup's body: the ordinary session response, plus
+// the emergency kit this claim issued.
+//
+// The kit is HERE and nowhere else. There is no route that returns it again,
+// which is what makes ARC-113's "not left rendered indefinitely" true of the
+// API rather than only of whatever renders it.
+type claimResponse struct {
+	sessionResponse
+	// EmergencyKit is the once-only kit content (ARC-111). Absent when no kit
+	// directory is configured, or when issuing failed.
+	EmergencyKit *emergencyKitBody `json:"emergency_kit,omitempty"`
+	// EmergencyKitError explains an absent kit on a claim that otherwise
+	// SUCCEEDED. The claim is committed by the time a kit is issued, so a
+	// failure here cannot un-claim the box — reporting the claim as failed
+	// would strand an operator who is now locked out of a box that is
+	// genuinely theirs. They are told to regenerate instead.
+	EmergencyKitError string `json:"emergency_kit_error,omitempty"`
+}
+
+// emergencyKitBody is ARC-111's required content, and nothing else.
+type emergencyKitBody struct {
+	KitID              string `json:"kit_id"`
+	WorkspaceID        string `json:"workspace_id"`
+	RecoveryPassphrase string `json:"recovery_passphrase"`
+	IssuedAt           int64  `json:"issued_at"`
+	Instructions       string `json:"instructions"`
 }
 
 // loginRequest is POST /auth/login's body. API-091: a credential-exchange
@@ -439,14 +502,32 @@ func (h *Handlers) Claim(w http.ResponseWriter, r *http.Request) {
 	h.auth.auditor.Success(traceID, principal.PrincipalID, ActionSessionIssued, "session:"+minted.Session.SessionID)
 
 	SetSessionCookies(w, r, minted)
-	writeJSON(w, http.StatusCreated, sessionResponse{
+	resp := claimResponse{sessionResponse: sessionResponse{
 		PrincipalID: principal.PrincipalID,
 		Kind:        principal.Kind,
 		Role:        granted,
 		AAL:         minted.Session.AAL,
 		SessionID:   minted.Session.SessionID,
 		CSRFToken:   minted.CSRFToken,
-	})
+	}}
+	if h.kitDir != "" {
+		kit, err := emergencykit.Issue(h.kitDir, h.kitWorkspaceID, store.Now(), h.kitNewID)
+		if err != nil {
+			// Deliberately not fatal, and deliberately not logged with any part
+			// of the kit in it. The claim is committed; the box is theirs.
+			resp.EmergencyKitError = "The workspace was claimed, but its emergency kit could not be issued. " +
+				"Regenerate one before relying on recovery."
+		} else {
+			resp.EmergencyKit = &emergencyKitBody{
+				KitID:              kit.KitID,
+				WorkspaceID:        kit.WorkspaceID,
+				RecoveryPassphrase: kit.RecoveryPassphrase,
+				IssuedAt:           kit.IssuedAt,
+				Instructions:       kit.Instructions,
+			}
+		}
+	}
+	writeJSON(w, http.StatusCreated, resp)
 }
 
 // credentialResetRequest is POST /auth/credential-reset's body: WHO is being
