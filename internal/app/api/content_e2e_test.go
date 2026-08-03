@@ -249,7 +249,7 @@ func resolveContentThroughDesiredState(t *testing.T, e *testEnv, screenNodeID st
 	// The content-origin base the snapshot carries is the SAME base the upload
 	// endpoint built its url from (e.contentBase) — so an app-authored url and a
 	// schedule-resolved url are byte-identical for the same asset (REL-061).
-	snap, _, err := snapshot.BuildFromStore(ds, e.contentBase, id, nowMs)
+	snap, _, err := snapshot.BuildFromStore(ds, e.contentBase, id, nowMs, nil)
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -283,7 +283,7 @@ func resolveContentThroughDesiredState(t *testing.T, e *testEnv, screenNodeID st
 	if !schedulehost.Governs(rowStore, screenNodeID) {
 		t.Fatalf("the authored schedule does not govern screen %s", screenNodeID)
 	}
-	display, _, content, _, err := schedulehost.ProjectLease(rowStore, screenNodeID, nowMs, snap.Sections.RevocationAndSite.ContentOrigin)
+	display, _, content, _, err := schedulehost.ProjectLease(rowStore, screenNodeID, nowMs, snap.Sections.RevocationAndSite.ContentOrigin, nil)
 	if err != nil {
 		t.Fatalf("ProjectLease: %v", err)
 	}

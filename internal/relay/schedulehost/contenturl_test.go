@@ -42,7 +42,7 @@ func TestPlaylistContentThreadsContentOriginURL(t *testing.T) {
 	)
 	store := singleAssetStore(playlistID, assetRef)
 
-	content := playlistContent(store, playlistID, "https://origin.example")
+	content := playlistContent(store, playlistID, contentSigner{origin: "https://origin.example"})
 	if len(content) != 1 {
 		t.Fatalf("playlistContent returned %d items, want 1", len(content))
 	}
@@ -93,7 +93,7 @@ func TestPlaylistContentOrderedMultiItemCarriesDurationOverride(t *testing.T) {
 	assetRefs := [3]string{"sha256:AAA", "sha256:BBB", "sha256:CCC"}
 	store := multiAssetStore(playlistID, assetRefs, 9)
 
-	content := playlistContent(store, playlistID, "https://origin.example")
+	content := playlistContent(store, playlistID, contentSigner{origin: "https://origin.example"})
 	if len(content) != 3 {
 		t.Fatalf("playlistContent returned %d items, want 3", len(content))
 	}
@@ -124,7 +124,7 @@ func TestPlaylistContentEmptyOriginLeavesURLEmpty(t *testing.T) {
 	)
 	store := singleAssetStore(playlistID, assetRef)
 
-	content := playlistContent(store, playlistID, "")
+	content := playlistContent(store, playlistID, contentSigner{origin: ""})
 	if len(content) != 1 {
 		t.Fatalf("playlistContent returned %d items, want 1", len(content))
 	}
@@ -148,7 +148,7 @@ func TestScheduleResolvedURLMatchesSnapshotBuildByteForByte(t *testing.T) {
 	assetRef := signhash.ContentID(img)
 	store := singleAssetStore("01J8ZVR1F1XTVREP1AY11ST003", assetRef)
 
-	resolved := playlistContent(store, "01J8ZVR1F1XTVREP1AY11ST003", base)
+	resolved := playlistContent(store, "01J8ZVR1F1XTVREP1AY11ST003", contentSigner{origin: base})
 	if len(resolved) != 1 {
 		t.Fatalf("playlistContent returned %d items, want 1", len(resolved))
 	}
@@ -182,9 +182,9 @@ func TestProjectLeaseThreadsContentOriginToResolvedContent(t *testing.T) {
 		t.Fatalf("BuildStore(demo section) errs = %+v, want none", errs)
 	}
 
-	_, _, content, _, err := ProjectLease(store, demoScreenScopeNodeID, demoLocalInstant(t, 12, 0), "https://origin.example")
+	_, _, content, _, err := ProjectLease(store, demoScreenScopeNodeID, demoLocalInstant(t, 12, 0), "https://origin.example", nil)
 	if err != nil {
-		t.Fatalf("ProjectLease(mid-day, origin set): %v", err)
+		t.Fatalf("ProjectLease(mid-day, origin set, nil): %v", err)
 	}
 	if len(content) != 1 {
 		t.Fatalf("resolved content has %d items, want 1", len(content))
@@ -194,9 +194,9 @@ func TestProjectLeaseThreadsContentOriginToResolvedContent(t *testing.T) {
 		t.Errorf("resolved content[0].url = %q, want %q (content origin threaded through resolution, REL-061)", content[0].URL, wantURL)
 	}
 
-	_, _, degraded, _, err := ProjectLease(store, demoScreenScopeNodeID, demoLocalInstant(t, 12, 0), "")
+	_, _, degraded, _, err := ProjectLease(store, demoScreenScopeNodeID, demoLocalInstant(t, 12, 0), "", nil)
 	if err != nil {
-		t.Fatalf("ProjectLease(mid-day, empty origin): %v", err)
+		t.Fatalf("ProjectLease(mid-day, empty origin, nil): %v", err)
 	}
 	if len(degraded) != 1 {
 		t.Fatalf("degraded content has %d items, want 1", len(degraded))

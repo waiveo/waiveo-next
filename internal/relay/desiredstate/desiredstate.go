@@ -18,6 +18,7 @@
 package desiredstate
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -166,6 +167,17 @@ type Applied struct {
 	// fabricating a relay-local one (REL-140: relay never in the content path).
 	ContentOrigin string
 
+	// ContentURLKey is the verified snapshot's
+	// sections.revocation_and_site.content_url_key (REL-066a), decoded from
+	// base64 — the key this relay MINTS signed content URLs with, for every
+	// item it serves alike (REL-066d).
+	//
+	// Empty means the app peer delivered no key, and the relay serves unsigned
+	// URLs: the behaviour every deployment had before the field existed. It is
+	// credential material (REL-066b) — never logged, never in telemetry, never
+	// served to a screen, which receives minted URLs and never what mints them.
+	ContentURLKey []byte
+
 	// Schedule is the verified snapshot's sections.schedule (REL-065),
 	// carried unmodified — the scheduling-core rows + scope nodes the feeder
 	// signed, carried opaquely (raw JSON per row) for a later relay-side
@@ -286,6 +298,27 @@ func extractApplied(generation int64, hash string, sections wire.Sections) (Appl
 		Revoked:         sections.RevocationAndSite.Revoked,
 		SiteEffective:   sections.RevocationAndSite.SiteEffective,
 		ContentOrigin:   sections.RevocationAndSite.ContentOrigin,
+		ContentURLKey:   decodeContentURLKey(sections.RevocationAndSite.ContentURLKey),
 		Schedule:        sections.Schedule,
 	}, nil
+}
+
+// decodeContentURLKey decodes the base64 content-URL key a snapshot carries
+// (REL-066a), yielding nil for an absent or unusable value.
+//
+// A malformed key is treated as ABSENT rather than as an error that refuses the
+// snapshot. Refusing would let one bad field take down a relay's entire desired
+// state — schedules, revocations, pairing grants and all — over a field whose
+// own absence is explicitly conformant. Degrading instead means content URLs go
+// unsigned, which the origin then refuses, which surfaces as unfetchable content
+// on a screen rather than as a relay that will not apply anything.
+func decodeContentURLKey(b64 string) []byte {
+	if b64 == "" {
+		return nil
+	}
+	key, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return nil
+	}
+	return key
 }

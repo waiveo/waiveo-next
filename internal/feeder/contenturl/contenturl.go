@@ -54,11 +54,15 @@ package contenturl
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 )
 
@@ -210,4 +214,75 @@ func Verify(key []byte, hexDigest string, q url.Values, nowMs int64) error {
 		return fmt.Errorf("%w: deadline %d, now %d", ErrExpired, expiresAtMs, nowMs)
 	}
 	return nil
+}
+
+// KeyBytes is the length of a content-URL signing key: 32 bytes, matching
+// HMAC-SHA256's block-derived natural key size.
+const KeyBytes = 32
+
+// LoadOrCreateKey returns the deployment's content-URL signing key, generating
+// and persisting one at path on first call and reading it back on every later
+// one.
+//
+// # Why it persists rather than being derived
+//
+// Because a URL outlives the process that minted it. A relay applies a cached
+// snapshot for the whole of an outage (REL-050) and a screen holds URLs it has
+// not fetched yet, so a key regenerated at boot would invalidate every
+// outstanding URL on every restart — turning an ordinary process restart into a
+// site-wide content outage lasting until the next snapshot reached every relay.
+//
+// It is NOT derived from the feeder's signing identity. Deriving it would tie
+// two different secrets' lifetimes together, so rotating the signing identity
+// (an expiry, a re-enrollment) would silently invalidate every content URL as a
+// side effect, and rotating the content key would be impossible without
+// touching the identity. They rotate for different reasons and on different
+// schedules.
+//
+// The file is written 0600 and read back with its permissions checked, because
+// a key readable by another local account is a key that can mint URLs for every
+// asset at the site.
+func LoadOrCreateKey(path string) ([]byte, error) {
+	b, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		if len(b) != KeyBytes {
+			return nil, fmt.Errorf("contenturl: key file %s is %d bytes, want %d — refusing to sign with a "+
+				"truncated or foreign key rather than minting URLs nothing can verify", path, len(b), KeyBytes)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, fmt.Errorf("contenturl: stat key file %s: %w", path, err)
+		}
+		if perm := info.Mode().Perm(); perm&0o077 != 0 {
+			return nil, fmt.Errorf("contenturl: key file %s is mode %04o — it is readable beyond its owner, and a "+
+				"reader of this file can mint a URL for every asset at this site; chmod 600 it", path, perm)
+		}
+		return b, nil
+	case errors.Is(err, fs.ErrNotExist):
+		key := make([]byte, KeyBytes)
+		if _, err := rand.Read(key); err != nil {
+			return nil, fmt.Errorf("contenturl: generate key: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return nil, fmt.Errorf("contenturl: create key dir: %w", err)
+		}
+		// O_EXCL, so two feeders racing on one data dir cannot each believe they
+		// wrote the key: the loser sees ErrExist and reads the winner's, rather
+		// than both proceeding under keys that disagree.
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			if errors.Is(err, fs.ErrExist) {
+				return LoadOrCreateKey(path)
+			}
+			return nil, fmt.Errorf("contenturl: create key file: %w", err)
+		}
+		defer f.Close()
+		if _, err := f.Write(key); err != nil {
+			return nil, fmt.Errorf("contenturl: write key file: %w", err)
+		}
+		return key, nil
+	default:
+		return nil, fmt.Errorf("contenturl: read key file %s: %w", path, err)
+	}
 }

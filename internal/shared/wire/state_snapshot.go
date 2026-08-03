@@ -293,6 +293,17 @@ type RevocationAndSite struct {
 	Revoked       []string      `json:"revoked"`
 	SiteEffective SiteEffective `json:"site_effective"`
 	ContentOrigin string        `json:"content_origin"`
+
+	// ContentURLKey is the base64 symmetric key a relay MINTS signed content
+	// URLs with (REL-066a). `omitempty` is load-bearing: a snapshot that carries
+	// no key marshals to the exact bytes it did before this field existed, so the
+	// REL-053 hash — and every signature over it — is unchanged for a deployment
+	// that has not turned signing on.
+	//
+	// It is credential material (REL-066b): never logged, never in telemetry,
+	// never served to a screen. A screen receives minted URLs; only a relay holds
+	// what mints them.
+	ContentURLKey string `json:"content_url_key,omitempty"`
 }
 
 // SiteEffective mirrors `{tz, lat, long}` — relay/1's persisted copy of a

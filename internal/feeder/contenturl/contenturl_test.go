@@ -1,8 +1,11 @@
 package contenturl
 
 import (
+	"bytes"
 	"errors"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -255,5 +258,65 @@ func TestSignIsDeterministic(t *testing.T) {
 	}
 	if first != second {
 		t.Errorf("Sign is not deterministic:\n first: %s\nsecond: %s", first, second)
+	}
+}
+
+func TestLoadOrCreateKeyIsStableAcrossCalls(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sub", "content-url.key")
+	first, err := LoadOrCreateKey(path)
+	if err != nil {
+		t.Fatalf("first LoadOrCreateKey: %v", err)
+	}
+	if len(first) != KeyBytes {
+		t.Fatalf("generated key is %d bytes, want %d", len(first), KeyBytes)
+	}
+	second, err := LoadOrCreateKey(path)
+	if err != nil {
+		t.Fatalf("second LoadOrCreateKey: %v", err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Error("the key changed between calls — a key regenerated at boot invalidates every URL a relay is still " +
+			"serving from its cached snapshot, turning a restart into a site-wide content outage")
+	}
+}
+
+// TestTwoKeysDiffer is the control. Without it, a LoadOrCreateKey returning a
+// hardcoded constant would satisfy the stability test above perfectly.
+func TestTwoKeysDiffer(t *testing.T) {
+	a, err := LoadOrCreateKey(filepath.Join(t.TempDir(), "a.key"))
+	if err != nil {
+		t.Fatalf("a: %v", err)
+	}
+	b, err := LoadOrCreateKey(filepath.Join(t.TempDir(), "b.key"))
+	if err != nil {
+		t.Fatalf("b: %v", err)
+	}
+	if bytes.Equal(a, b) {
+		t.Fatal("two independent deployments generated the same key — it is not random, and every deployment could " +
+			"mint URLs for every other")
+	}
+}
+
+func TestAKeyFileReadableBeyondItsOwnerIsRefused(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "content-url.key")
+	if _, err := LoadOrCreateKey(path); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	if _, err := LoadOrCreateKey(path); err == nil {
+		t.Error("a world-readable key file was accepted; a reader of that file can mint a URL for every asset at the site")
+	}
+}
+
+func TestATruncatedKeyFileIsRefusedRatherThanUsed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "content-url.key")
+	if err := os.WriteFile(path, []byte("short"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := LoadOrCreateKey(path); err == nil {
+		t.Error("a 5-byte key file was accepted — signing with it mints URLs the origin's own full-length key cannot " +
+			"verify, so every fetch 403s with nothing saying why")
 	}
 }

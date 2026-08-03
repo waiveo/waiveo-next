@@ -56,7 +56,7 @@ func TestBuildFromStoreOverSeededStore(t *testing.T) {
 		t.Fatalf("DesiredState: %v", err)
 	}
 
-	snap, _, err := BuildFromStore(ds, "https://origin.example", id, contentInstant(t))
+	snap, _, err := BuildFromStore(ds, "https://origin.example", id, contentInstant(t), nil)
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestBuildFromStoreGenerationAdvances(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DesiredState #1: %v", err)
 	}
-	snap1, _, err := BuildFromStore(ds1, "https://origin.example", id, contentInstant(t))
+	snap1, _, err := BuildFromStore(ds1, "https://origin.example", id, contentInstant(t), nil)
 	if err != nil {
 		t.Fatalf("BuildFromStore #1: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestBuildFromStoreGenerationAdvances(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DesiredState #2: %v", err)
 	}
-	snap2, _, err := BuildFromStore(ds2, "https://origin.example", id, contentInstant(t))
+	snap2, _, err := BuildFromStore(ds2, "https://origin.example", id, contentInstant(t), nil)
 	if err != nil {
 		t.Fatalf("BuildFromStore #2: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestBuildFromStoreEmitsContentOrigin(t *testing.T) {
 		t.Fatalf("DesiredState: %v", err)
 	}
 
-	snap, _, err := BuildFromStore(ds, "https://origin.example", id, contentInstant(t))
+	snap, _, err := BuildFromStore(ds, "https://origin.example", id, contentInstant(t), nil)
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -261,8 +261,8 @@ func TestBuildFromStoreRejectsNilIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DesiredState: %v", err)
 	}
-	if _, _, err := BuildFromStore(ds, "https://origin.example", nil, contentInstant(t)); err == nil {
-		t.Error("BuildFromStore(nil identity) succeeded, want an error")
+	if _, _, err := BuildFromStore(ds, "https://origin.example", nil, contentInstant(t), nil); err == nil {
+		t.Error("BuildFromStore(nil identity, nil) succeeded, want an error")
 	}
 }
 
@@ -329,7 +329,7 @@ func TestBuildFromStoreCarriesSeededDemoAsEdgeRule(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DesiredState: %v", err)
 	}
-	snap, _, err := BuildFromStore(ds, "https://origin.example", id, contentInstant(t))
+	snap, _, err := BuildFromStore(ds, "https://origin.example", id, contentInstant(t), nil)
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -359,7 +359,7 @@ func TestBuildFromStoreEdgeRulesAdvanceWithAuthoredRule(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DesiredState #1: %v", err)
 	}
-	snap1, _, err := BuildFromStore(ds1, "https://origin.example", id, contentInstant(t))
+	snap1, _, err := BuildFromStore(ds1, "https://origin.example", id, contentInstant(t), nil)
 	if err != nil {
 		t.Fatalf("BuildFromStore #1: %v", err)
 	}
@@ -375,7 +375,7 @@ func TestBuildFromStoreEdgeRulesAdvanceWithAuthoredRule(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DesiredState #2: %v", err)
 	}
-	snap2, _, err := BuildFromStore(ds2, "https://origin.example", id, contentInstant(t))
+	snap2, _, err := BuildFromStore(ds2, "https://origin.example", id, contentInstant(t), nil)
 	if err != nil {
 		t.Fatalf("BuildFromStore #2: %v", err)
 	}
@@ -418,7 +418,7 @@ func TestBuildFromStoreEdgeRulesExcludeAppClassifiedRule(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DesiredState: %v", err)
 	}
-	snap, _, err := BuildFromStore(ds, "https://origin.example", id, contentInstant(t))
+	snap, _, err := BuildFromStore(ds, "https://origin.example", id, contentInstant(t), nil)
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -486,7 +486,7 @@ func TestBuildFromStoreCarriesStoredPairingGrants(t *testing.T) {
 		TTL: 900, RedemptionMode: "one-time", IssuedAt: now - 1_000,
 	})
 
-	snap, _, err := BuildFromStore(ds, "https://origin.example", id, now)
+	snap, _, err := BuildFromStore(ds, "https://origin.example", id, now, nil)
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}

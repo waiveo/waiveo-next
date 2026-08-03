@@ -143,7 +143,7 @@ func resolveThroughDesiredState(t *testing.T, st *store.Store, img []byte, id *s
 	if err != nil {
 		t.Fatalf("DesiredState: %v", err)
 	}
-	snap, _, err := snapshot.BuildFromStore(ds, "https://origin.example", id, nowMs)
+	snap, _, err := snapshot.BuildFromStore(ds, "https://origin.example", id, nowMs, nil)
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -180,7 +180,7 @@ func resolveThroughDesiredState(t *testing.T, st *store.Store, img []byte, id *s
 	if !schedulehost.Governs(rowStore, e2eScreenNodeID) {
 		t.Fatalf("the seeded schedule does not govern screen %s", e2eScreenNodeID)
 	}
-	display, _, content, programRevision, err = schedulehost.ProjectLease(rowStore, e2eScreenNodeID, nowMs, snap.Sections.RevocationAndSite.ContentOrigin)
+	display, _, content, programRevision, err = schedulehost.ProjectLease(rowStore, e2eScreenNodeID, nowMs, snap.Sections.RevocationAndSite.ContentOrigin, nil)
 	if err != nil {
 		t.Fatalf("ProjectLease: %v", err)
 	}

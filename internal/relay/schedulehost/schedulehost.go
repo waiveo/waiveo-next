@@ -20,6 +20,7 @@ package schedulehost
 import (
 	"context"
 	"encoding/json"
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"strings"
 	"time"
 
@@ -177,12 +178,12 @@ func Governs(store datamodel.RowStore, screenNodeID string) bool {
 // unresolvable effective tz (DAT-034) — and in that case returns no Lease
 // fields: resolution NEVER substitutes box-local state, so the caller degrades
 // rather than serving a guessed one.
-func ProjectLease(store datamodel.RowStore, screenNodeID string, nowMs int64, contentOrigin string) (display string, priority string, content []wire.LeaseContent, programRevision string, err error) {
+func ProjectLease(store datamodel.RowStore, screenNodeID string, nowMs int64, contentOrigin string, contentURLKey []byte) (display string, priority string, content []wire.LeaseContent, programRevision string, err error) {
 	state, err := datamodel.Resolve(store, screenNodeID, nowMs)
 	if err != nil {
 		return "", "", nil, "", err
 	}
-	display, priority, content, programRevision = projectState(store, state, contentOrigin)
+	display, priority, content, programRevision = projectState(store, state, contentSigner{origin: contentOrigin, key: contentURLKey, nowMs: nowMs})
 	return display, priority, content, programRevision, nil
 }
 
@@ -191,12 +192,12 @@ func ProjectLease(store datamodel.RowStore, screenNodeID string, nowMs int64, co
 // Resolve first) and Resolver.ResolveNow (which keeps the resolved state for the
 // preset rising-edge check) both use, so the two cannot drift on how a resolved
 // state becomes a Lease.
-func projectState(store datamodel.RowStore, state datamodel.EffectiveState, contentOrigin string) (display string, priority string, content []wire.LeaseContent, programRevision string) {
+func projectState(store datamodel.RowStore, state datamodel.EffectiveState, sign contentSigner) (display string, priority string, content []wire.LeaseContent, programRevision string) {
 	display = state.Display
 	priority = leasePriorityScheduled
 	programRevision = programRevisionFor(state)
 	if state.Display == leaseDisplayContent {
-		content = playlistContent(store, state.PlaylistID, contentOrigin)
+		content = playlistContent(store, state.PlaylistID, sign)
 	}
 	return display, priority, content, programRevision
 }
@@ -253,7 +254,7 @@ func programRevisionFor(state datamodel.EffectiveState) string {
 // the base carried in desired-state, never a relay-local guess, so a missing
 // base degrades to a url-less content item rather than fabricating a box-local
 // origin (REL-140).
-func playlistContent(store datamodel.RowStore, playlistID string, contentOrigin string) []wire.LeaseContent {
+func playlistContent(store datamodel.RowStore, playlistID string, sign contentSigner) []wire.LeaseContent {
 	if playlistID == "" {
 		return nil
 	}
@@ -274,7 +275,7 @@ func playlistContent(store datamodel.RowStore, playlistID string, contentOrigin 
 			content = append(content, wire.LeaseContent{
 				Type:       leaseContentTypeImage,
 				AssetRef:   item.AssetRef,
-				URL:        contentURL(contentOrigin, item.AssetRef),
+				URL:        sign.urlFor(item.AssetRef),
 				DurationMS: durationMS,
 			})
 		}
@@ -292,11 +293,52 @@ func playlistContent(store datamodel.RowStore, playlistID string, contentOrigin 
 // snapshot.Build's app-authored form byte-for-byte (REL-061). An empty
 // contentOrigin yields an empty url — the relay never fabricates a box-local
 // origin (REL-140); the caller degrades to a url-less content item.
-func contentURL(contentOrigin, assetRef string) string {
-	if contentOrigin == "" {
+// contentSigner carries everything minting one content URL needs: the origin
+// base, the key (REL-066a) and the clock the deadline is measured from.
+//
+// It replaces the bare origin string that was threaded through this file
+// because the three travel together — a URL minted from one relay's origin
+// under another's key, or against a clock other than the one the deadline is
+// read against, is not a URL that verifies.
+type contentSigner struct {
+	origin string
+	key    []byte
+	nowMs  int64
+}
+
+// contentURLTTL is how long a minted URL stays fetchable.
+//
+// Minting happens at SERVE time (REL-066d), so this bounds how long after a
+// screen was handed a URL it may still fetch it — not how long a snapshot is
+// good for. It is generous because the cost of it being too short is a screen
+// that cannot fetch content it was told to play, and the cost of it being too
+// long is bounded by the key's own rotation.
+const contentURLTTL = 24 * time.Hour
+
+// urlFor mints the URL for one asset_ref.
+//
+// With no key it returns the unsigned form, which is what a deployment whose app
+// peer delivers no key has always had. With no origin it returns empty, and the
+// relay never fabricates a box-local one (REL-140) — the caller degrades to a
+// url-less content item, which a screen surfaces as unresolvable rather than
+// fetching from somewhere nobody authorized.
+func (c contentSigner) urlFor(assetRef string) string {
+	if c.origin == "" {
 		return ""
 	}
-	return contentOrigin + "/content/" + strings.TrimPrefix(assetRef, "sha256:")
+	hexDigest := strings.TrimPrefix(assetRef, "sha256:")
+	if len(c.key) == 0 {
+		return c.origin + "/content/" + hexDigest
+	}
+	signed, err := contenturl.URL(c.origin, c.key, hexDigest, c.nowMs+contentURLTTL.Milliseconds())
+	if err != nil {
+		// A digest that will not sign is one this relay cannot serve a fetchable
+		// url for. Returning the UNSIGNED form would be worse than returning
+		// none: against a verifying origin it 403s, which reads to an operator
+		// as an authorization fault rather than as the malformed asset_ref it is.
+		return ""
+	}
+	return signed
 }
 
 // Resolver owns the per-instant serving of ONE scope node's schedule-resolved
@@ -347,6 +389,11 @@ type Resolver struct {
 	// items degrade to a url-less ref (REL-140) rather than a box-local guess.
 	contentOrigin string
 
+	// contentURLKey is the key this resolver MINTS content URLs with
+	// (REL-066a/066d), from the applied desired state. Empty means the app peer
+	// delivered none and URLs go out unsigned.
+	contentURLKey []byte
+
 	// generation is the desired-state generation this resolver was built for
 	// (relay/1 REL-052/056). It is stamped onto every playerserver.SetProgram
 	// write so a superseded generation's still-in-flight resolver goroutine —
@@ -395,7 +442,7 @@ type Resolver struct {
 // form. An empty contentOrigin degrades resolved content to url-less refs
 // (REL-140) — the live re-pull path passes applied.ContentOrigin, so a feeder
 // that carried no content origin degrades rather than fabricating one.
-func NewResolver(store datamodel.RowStore, screenNodeID, servedScreenID string, srv *playerserver.Server, generation int64, contentOrigin string) *Resolver {
+func NewResolver(store datamodel.RowStore, screenNodeID, servedScreenID string, srv *playerserver.Server, generation int64, contentOrigin string, contentURLKey []byte) *Resolver {
 	return &Resolver{
 		store:          store,
 		screenNodeID:   screenNodeID,
@@ -403,6 +450,7 @@ func NewResolver(store datamodel.RowStore, screenNodeID, servedScreenID string, 
 		srv:            srv,
 		generation:     generation,
 		contentOrigin:  contentOrigin,
+		contentURLKey:  contentURLKey,
 	}
 }
 
@@ -429,7 +477,7 @@ func (r *Resolver) ResolveNow(nowMs int64) (fired *datamodel.PresetFire, err err
 		return nil, err
 	}
 
-	display, priority, content, programRevision := projectState(r.store, state, r.contentOrigin)
+	display, priority, content, programRevision := projectState(r.store, state, contentSigner{origin: r.contentOrigin, key: r.contentURLKey, nowMs: nowMs})
 	// Served to THIS resolver's own screen alone. A resolver with no screen to
 	// serve (servedScreenID "") still resolves and still reports the rising edge
 	// below — the preset batch is a scope-node concern (DAT-075) and needs no

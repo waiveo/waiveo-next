@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"image"
 	"image/color"
 	"image/png"
@@ -564,7 +565,20 @@ func main() {
 	// so both must read the same clock or the guard measures a skew rather than
 	// an age, in the direction that DEFEATS it. That is why the floor is opened
 	// here rather than beside the auth store it also serves.
-	contentStore, err := origin.Open(cfg.contentPath, origin.WithClock(nowMs))
+	// The content-URL signing key: generated once, persisted, and reloaded on
+	// every later boot. A key regenerated at boot would invalidate every URL a
+	// relay is still serving from its cached snapshot (REL-050), turning an
+	// ordinary restart into a site-wide content outage.
+	contentURLKey, err := contenturl.LoadOrCreateKey(filepath.Join(cfg.authDir, "content-url.key"))
+	if err != nil {
+		log.Fatalf("waiveo-feeder: content-url key: %v", err)
+	}
+	// Verification is ON: an unsigned or expired fetch is refused before a byte
+	// of content is written. The key reaches every party that constructs a URL —
+	// this process for what it serves, and every enrolled relay through the
+	// signed snapshot (REL-066a) — so there is no longer a constructor left that
+	// cannot sign.
+	contentStore, err := origin.Open(cfg.contentPath, origin.WithClock(nowMs), origin.WithSigningKey(contentURLKey))
 	if err != nil {
 		log.Fatalf("waiveo-feeder: open content store: %v", err)
 	}
@@ -666,7 +680,7 @@ func main() {
 	// cached by generation and invalidated when an api write advances it — so each
 	// pull serves the current generation (the authoring loop's serving half).
 	src := &desiredStateSource{
-		store: st, contentBaseURL: contentBaseURL, id: id,
+		store: st, contentBaseURL: contentBaseURL, id: id, contentURLKey: contentURLKey,
 		nowMs: nowMs,
 	}
 	// Fail fast if the seeded/persisted store cannot derive a signed snapshot
@@ -1350,7 +1364,12 @@ func startWebhookDelivery(
 type desiredStateSource struct {
 	store          *store.Store
 	contentBaseURL string
-	id             *signing.Identity
+	// contentURLKey rides every derived snapshot's revocation_and_site
+	// (REL-066a) so every relay at this site can mint the content URLs it
+	// serves — including the schedule-resolved ones no app peer can pre-sign,
+	// and including re-minting through an outage (REL-050/066d).
+	contentURLKey []byte
+	id            *signing.Identity
 
 	// nowMs is the instant each rebuild resolves every screen's program at
 	// (snapshot.BuildFromStore). It is injected rather than read inline because
@@ -1384,7 +1403,7 @@ func (d *desiredStateSource) current() (wire.StateSnapshotBody, error) {
 	if err != nil {
 		return wire.StateSnapshotBody{}, err
 	}
-	snap, degrades, err := snapshot.BuildFromStore(ds, d.contentBaseURL, d.id, d.nowMs())
+	snap, degrades, err := snapshot.BuildFromStore(ds, d.contentBaseURL, d.id, d.nowMs(), d.contentURLKey)
 	if err != nil {
 		return wire.StateSnapshotBody{}, err
 	}

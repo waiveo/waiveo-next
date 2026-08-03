@@ -76,6 +76,10 @@ implementation behind it, which is what this note exists to prevent.
 | REL-064 | `contracts/relay-1.md#desired-state-snapshot-sections` | `REL-056-valid-generation-apply-atomic-swap` | covered |
 | REL-065 | `contracts/relay-1.md#desired-state-snapshot-sections` | `REL-056-valid-generation-apply-atomic-swap` | covered |
 | REL-066 | `contracts/relay-1.md#desired-state-snapshot-sections` | `REL-056-valid-generation-apply-atomic-swap`, `REL-123-valid-revocation-enforced-while-disconnected` | covered |
+| REL-066a | `contracts/relay-1.md#desired-state-snapshot-sections` | - | TBD-wave1 |
+| REL-066b | `contracts/relay-1.md#desired-state-snapshot-sections` | - | TBD-wave1 |
+| REL-066c | `contracts/relay-1.md#desired-state-snapshot-sections` | - | TBD-wave1 |
+| REL-066d | `contracts/relay-1.md#desired-state-snapshot-sections` | - | TBD-wave1 |
 | REL-067 | `contracts/relay-1.md#desired-state-snapshot-sections` | `REL-056-valid-generation-apply-atomic-swap` | covered |
 | REL-068 | `contracts/relay-1.md#desired-state-snapshot-sections` | `REL-056-valid-generation-apply-atomic-swap` | covered |
 | REL-070 | `contracts/relay-1.md#idempotent-apply--enrollment-anchored-trust` | `REL-070-valid-generation-reapply-idempotent-noop` | covered |

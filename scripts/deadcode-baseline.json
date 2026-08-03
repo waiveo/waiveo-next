@@ -289,21 +289,6 @@
         "Pair",
         "Session.PullProgram"
       ]
-    },
-    {
-      "package": "internal/feeder/contenturl",
-      "reason": "The MINTING side of signed content URLs, landing ahead of its production caller ON PURPOSE and recorded here rather than quietly. Verification is live and enforced (origin.Store.Handler refuses an unsigned or expired fetch whenever a key is set), but no deployment sets a key yet, because the key has to reach every party that CONSTRUCTS a content URL and one of them is not the feeder: REL-066 has the relay derive a schedule-resolved item's url itself from the content_origin base (internal/relay/schedulehost, deriveContentURL), holding no key. Enabling a key today would refuse that relay's own URLs. The same delivery gap has a second, sharper edge: REL-050 lets a relay apply a cached snapshot while offline for as long as the outage lasts, so any URL minted with a fixed deadline at snapshot-build time eventually expires with no way to refresh it \u2014 which makes relay-side re-minting a correctness requirement for offline operation, not just a convenience for schedule resolution. Both point at the same missing piece, and it is a trust-boundary change (a symmetric key delivered in the signed snapshot lets any enrolled relay mint a URL for any asset at that site), so it is tracked as its own work rather than half-decided here. Deleting this instead would leave the verification half with nothing to verify against.",
-      "funcs": [
-        "Sign",
-        "URL"
-      ]
-    },
-    {
-      "package": "internal/feeder/origin",
-      "reason": "The switch that turns signed-content-URL verification on. It has no production caller for exactly one reason, stated in full in the internal/feeder/contenturl group above: the relay constructs content URLs of its own (REL-066) and cannot sign them, so no deployment can set a key until that half exists. The verification it gates is NOT inert \u2014 it is driven end to end through the real http.Handler in signedurl_test.go, including the presence-oracle ordering and the empty-key case \u2014 and this entry exists so that gap is a recorded decision rather than something a reader has to infer from the absence of a caller.",
-      "funcs": [
-        "WithSigningKey"
-      ]
     }
   ],
   "unimportedPackages": [

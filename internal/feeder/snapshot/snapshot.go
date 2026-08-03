@@ -41,6 +41,7 @@
 package snapshot
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -396,7 +397,7 @@ func BuildCast(items []CastItem, contentBaseURL string, id *signing.Identity, gr
 // are preserved: this reuses the exact same wire helpers Build does
 // (hashSections / signGenerationHash), so signing here and verifying on the relay
 // (internal/relay/desiredstate) cannot drift.
-func BuildFromStore(rows store.DesiredStateResult, contentBaseURL string, id *signing.Identity, nowMs int64) (SignedSnapshot, []datamodel.Error, error) {
+func BuildFromStore(rows store.DesiredStateResult, contentBaseURL string, id *signing.Identity, nowMs int64, contentURLKey []byte) (SignedSnapshot, []datamodel.Error, error) {
 	if id == nil {
 		return SignedSnapshot{}, nil, fmt.Errorf("snapshot: BuildFromStore: id must not be nil")
 	}
@@ -440,6 +441,11 @@ func BuildFromStore(rows store.DesiredStateResult, contentBaseURL string, id *si
 			Revoked:       []string{},
 			SiteEffective: rows.SiteEffective,
 			ContentOrigin: contentBaseURL,
+			// REL-066a: the key every relay at this site MINTS content URLs
+			// with. base64 so it rides JSON; omitted entirely when unset, which
+			// keeps the REL-053 hash byte-identical for a deployment that has
+			// not turned signing on.
+			ContentURLKey: encodeContentURLKey(contentURLKey),
 		},
 		PairingGrants:      grants,
 		WorkflowGeneration: nil, // RESERVED, REL-068
@@ -547,4 +553,14 @@ func signGenerationHash(generation int64, hash string, id *signing.Identity) (st
 	}
 	sig := signhash.Sign(id.SigningPriv(), canon)
 	return wire.EncodeSignature(sig), nil
+}
+
+// encodeContentURLKey renders the content-URL signing key for the wire
+// (REL-066a), yielding "" for an absent key so the field is omitted rather than
+// carried as an empty string a relay would have to special-case.
+func encodeContentURLKey(key []byte) string {
+	if len(key) == 0 {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(key)
 }

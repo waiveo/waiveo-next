@@ -96,7 +96,7 @@ func TestEditingAPlaylistChangesTheDeliveredProgram(t *testing.T) {
 
 	s := seededStore(t, originalAsset)
 
-	before, _, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t))
+	before, _, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t), nil)
 	if err != nil {
 		t.Fatalf("BuildFromStore before the edit: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestEditingAPlaylistChangesTheDeliveredProgram(t *testing.T) {
 		t.Fatalf("update playlist: %v", err)
 	}
 
-	after, _, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t))
+	after, _, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t), nil)
 	if err != nil {
 		t.Fatalf("BuildFromStore after the edit: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestUnchangedProgramReproducesItsRevision(t *testing.T) {
 	const asset = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
 	s := seededStore(t, asset)
 
-	first, _, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t))
+	first, _, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t), nil)
 	if err != nil {
 		t.Fatalf("BuildFromStore #1: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestUnchangedProgramReproducesItsRevision(t *testing.T) {
 		Items: []datamodel.PlaylistItem{{Source: "asset", AssetRef: asset}},
 	})
 
-	second, _, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t))
+	second, _, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t), nil)
 	if err != nil {
 		t.Fatalf("BuildFromStore #2: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestTwoScreensUnderDifferentPlacementsGetDifferentPrograms(t *testing.T) {
 		DisplayPower: "on", PlaylistID: playlistB, Name: "All Day B",
 	})
 
-	snap, degrades, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t))
+	snap, degrades, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t), nil)
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestSiteScheduleCascadesToAScreenPlacedOnTheSiteNode(t *testing.T) {
 		DisplayPower: "on", PlaylistID: sitePlaylist, Name: "Site All Day",
 	})
 
-	snap, _, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t))
+	snap, _, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t), nil)
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -384,7 +384,7 @@ func TestScreenWithNoApplicableScheduleGetsTheTerminalDefault(t *testing.T) {
 		ID: unscheduledScr, ScopeNode: unscheduledNod, Name: "Unscheduled Screen",
 	})
 
-	snap, _, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t))
+	snap, _, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t), nil)
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -434,11 +434,11 @@ func TestBlankDaypartYieldsABlankProgramAtTheSameGeneration(t *testing.T) {
 	s := seededStore(t, asset)
 	ds := desiredState(t, s)
 
-	day, _, err := BuildFromStore(ds, "https://origin.example", id, contentInstant(t))
+	day, _, err := BuildFromStore(ds, "https://origin.example", id, contentInstant(t), nil)
 	if err != nil {
 		t.Fatalf("BuildFromStore (day): %v", err)
 	}
-	night, _, err := BuildFromStore(ds, "https://origin.example", id, blankInstant(t))
+	night, _, err := BuildFromStore(ds, "https://origin.example", id, blankInstant(t), nil)
 	if err != nil {
 		t.Fatalf("BuildFromStore (night): %v", err)
 	}
@@ -481,7 +481,7 @@ func TestScreenWithUnresolvableTZIsOmittedNotSubstituted(t *testing.T) {
 		ID: orgScreen, ScopeNode: orgRoot, Name: "Screen on the org root",
 	})
 
-	snap, degrades, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t))
+	snap, degrades, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t), nil)
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -520,7 +520,7 @@ func TestStoreWithNoScreenRowsYieldsAnEmptySection(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 
-	snap, degrades, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t))
+	snap, degrades, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t), nil)
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -562,7 +562,7 @@ func TestDerivedContentMatchesRelaySideProjection(t *testing.T) {
 	ds := desiredState(t, s)
 	at := contentInstant(t)
 
-	snap, _, err := BuildFromStore(ds, origin, id, at)
+	snap, _, err := BuildFromStore(ds, origin, id, at, nil)
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -574,7 +574,7 @@ func TestDerivedContentMatchesRelaySideProjection(t *testing.T) {
 	if len(errs) != 0 {
 		t.Fatalf("relay-side BuildStore reported %+v", errs)
 	}
-	display, priority, content, _, err := schedulehost.ProjectLease(rowStore, "01J8Z4DEM0SCREENF1RSTPH0TN", at, origin)
+	display, priority, content, _, err := schedulehost.ProjectLease(rowStore, "01J8Z4DEM0SCREENF1RSTPH0TN", at, origin, nil)
 	if err != nil {
 		t.Fatalf("relay-side ProjectLease: %v", err)
 	}

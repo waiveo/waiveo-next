@@ -129,7 +129,7 @@ func TestAutomationAuthoringLoopAuthoredRuleLoadsAndFires(t *testing.T) {
 	if err != nil {
 		t.Fatalf("signing.LoadOrCreate: %v", err)
 	}
-	snap, _, err := snapshot.BuildFromStore(ds, e.contentBase, id, automationE2EInstantMs)
+	snap, _, err := snapshot.BuildFromStore(ds, e.contentBase, id, automationE2EInstantMs, nil)
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -260,7 +260,7 @@ func TestAutomationAuthoringLoopDisabledRuleNeverFires(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DesiredState: %v", err)
 	}
-	snap, _, err := snapshot.BuildFromStore(ds, e.contentBase, mustSigning(t), automationE2EInstantMs)
+	snap, _, err := snapshot.BuildFromStore(ds, e.contentBase, mustSigning(t), automationE2EInstantMs, nil)
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
