@@ -403,3 +403,56 @@ func TestDurableBufferPrunesStoreOnOverflow(t *testing.T) {
 		t.Fatalf("after overflow, loss markers = %+v, want one [1,1] marker (REL-096/103)", markers)
 	}
 }
+
+// TestSeqHighWaterIsAdvanceOnly pins the discipline SaveSeqHighWater's doc
+// states — "an equal-or-lower value leaves it untouched (advance-only,
+// mirroring the clock floor's monotonic discipline)" — which the restart case
+// above depends on but does not itself exercise.
+//
+// It matters because the watermark is what a restart resumes ABOVE. A lower
+// value overwriting it would let the relay reissue a seq the app peer has
+// already observed, and REL-091 exists to make that impossible.
+//
+// The EQUAL case cannot distinguish `>` from `>=` in the SQL: both leave the
+// stored value at the same number, and SaveSeqHighWater returns only an error,
+// so nothing observable differs. It is asserted anyway because the STATED rule
+// is "equal-or-lower leaves it untouched", and a reader should find that
+// property held rather than have to derive its unobservability.
+func TestSeqHighWaterIsAdvanceOnly(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "relay.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	read := func() int64 {
+		t.Helper()
+		hw, err := store.LoadSeqHighWater()
+		if err != nil {
+			t.Fatalf("LoadSeqHighWater: %v", err)
+		}
+		return hw
+	}
+
+	for _, tc := range []struct {
+		name string
+		save int64
+		want int64
+	}{
+		{"the first value sets the mark", 5, 5},
+		{"a lower value leaves it untouched", 3, 5},
+		{"the same value leaves it untouched", 5, 5},
+		{"a higher value advances it", 7, 7},
+		{"a much lower value still leaves it", 1, 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := store.SaveSeqHighWater(tc.save); err != nil {
+				t.Fatalf("SaveSeqHighWater(%d): %v", tc.save, err)
+			}
+			if got := read(); got != tc.want {
+				t.Errorf("after SaveSeqHighWater(%d) the mark is %d, want %d — a mark that moves backward lets a "+
+					"restart reissue a seq the app peer has already observed (REL-091)", tc.save, got, tc.want)
+			}
+		})
+	}
+}
