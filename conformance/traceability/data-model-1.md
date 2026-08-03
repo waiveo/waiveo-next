@@ -2,6 +2,22 @@
 
 One row per requirement ID `contracts/data-model-1.md` defines. Format: `conformance/traceability/README.md`.
 
+**Variables (DAT-130–DAT-138):** every row is `TBD-wave1`. The section is a NEW
+normative surface written against a recorded decision on its four parameters
+(value type, identity, resolution, and that secrets do not ride it), and it is
+published as text ahead of its implementation so the model is reviewed rather
+than presented already built. There is no case to list yet, and naming one would
+be the overclaim this column exists to prevent.
+
+Two of these will want a driver rather than a corpus case. DAT-135 — resolution
+is per NAME, not as a unit — is a statement about what a lookup does NOT do, and
+the case for it is two variables set at different depths, which proves today's
+implementation separates them rather than that no future one couples them.
+DAT-138 forbids storing secrets as variables and no case can observe a rule
+about what an operator ought not to put in a field; it is enforceable only by a
+review of what the platform itself writes there, and it is stated so that a
+reader finds the prohibition where the surface is defined.
+
 **Where DEVICE_IDENTITY_INCOMPLETE is raised, and where it is not.** A reader
 tracing this code from data-model/1's Field-level error register should not go
 looking for it in an api/1 response, because it does not appear in one.
@@ -85,3 +101,13 @@ reader nothing and costs a caller the clearer of the two answers.
 | DAT-121 | `contracts/data-model-1.md#schedule-side-misfire-default` | `DAT-121-valid-misfire-catchup-vs-skip-by-kind` | covered |
 | DAT-122 | `contracts/data-model-1.md#schedule-side-misfire-default` | `DAT-121-valid-misfire-catchup-vs-skip-by-kind` | covered |
 | DAT-123 | `contracts/data-model-1.md#schedule-side-misfire-default` | `DAT-121-valid-misfire-catchup-vs-skip-by-kind` | covered |
+| DAT-130 | `contracts/data-model-1.md#variables` | - | TBD-wave1 |
+| DAT-131 | `contracts/data-model-1.md#variables` | - | TBD-wave1 |
+| DAT-131a | `contracts/data-model-1.md#variables` | - | TBD-wave1 |
+| DAT-132 | `contracts/data-model-1.md#variables` | - | TBD-wave1 |
+| DAT-133 | `contracts/data-model-1.md#variables` | - | TBD-wave1 |
+| DAT-134 | `contracts/data-model-1.md#variables` | - | TBD-wave1 |
+| DAT-135 | `contracts/data-model-1.md#variables` | - | TBD-wave1 |
+| DAT-136 | `contracts/data-model-1.md#variables` | - | TBD-wave1 |
+| DAT-137 | `contracts/data-model-1.md#variables` | - | TBD-wave1 |
+| DAT-138 | `contracts/data-model-1.md#variables` | - | TBD-wave1 |
