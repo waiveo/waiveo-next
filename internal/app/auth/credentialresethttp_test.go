@@ -58,7 +58,7 @@ func newResetEnv(t *testing.T, adminRole Role) *resetEnv {
 	if _, err := st.PutRoleBinding(ctx, admin.PrincipalID, RootScopeNode, adminRole); err != nil {
 		t.Fatalf("bind admin: %v", err)
 	}
-	key, err := st.MintAPIKey(ctx, admin.PrincipalID, "cli")
+	key, err := st.MintAPIKey(ctx, admin.PrincipalID, "cli", 0)
 	if err != nil {
 		t.Fatalf("mint api key: %v", err)
 	}

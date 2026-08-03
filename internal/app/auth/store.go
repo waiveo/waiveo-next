@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/maaxton/waiveo-next/internal/shared/secretfile"
@@ -51,7 +52,8 @@ CREATE TABLE IF NOT EXISTS credentials (
 	secret        TEXT NOT NULL DEFAULT '',
 	created_at    INTEGER NOT NULL,
 	last_used_at  INTEGER,
-	revoked_at    INTEGER
+	revoked_at    INTEGER,
+	expires_at    INTEGER
 );
 CREATE INDEX IF NOT EXISTS credentials_by_principal ON credentials(principal_id);
 CREATE UNIQUE INDEX IF NOT EXISTS credentials_identifier
@@ -233,6 +235,17 @@ func Open(dsn string, nowMs func() int64, newID func() string, opts ...StoreOpti
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("auth: migrate: %w", err)
+	}
+	// `CREATE TABLE IF NOT EXISTS` does not add a column to a table that
+	// already exists, so a store created before expires_at (SEC-003d) needs it
+	// added. A duplicate-column error is the success case on every later boot
+	// and is the only error tolerated — anything else is a real migration
+	// failure and must not be swallowed into a store missing a column every
+	// api-key presentation reads.
+	if _, err := db.Exec(`ALTER TABLE credentials ADD COLUMN expires_at INTEGER`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column name") {
+		_ = db.Close()
+		return nil, fmt.Errorf("auth: migrate credentials.expires_at: %w", err)
 	}
 	// A real deployment's auth database is credential material at rest even
 	// though every secret in it is hashed: the session token hashes are
@@ -665,6 +678,23 @@ func (s *Store) LookupSession(ctx context.Context, token string) (SessionRow, er
 	if !ok {
 		return SessionRow{}, ErrSessionNotFound
 	}
+	// touch names the credential to record a use on, AFTER the read lock is
+	// released. Doing it inline deadlocks: this path holds RLock and writeTx
+	// takes Lock, and a Go RWMutex is not upgradable — the first api-key
+	// request would hang forever, taking the store's single connection with it.
+	var touch string
+	row, err := s.lookupSessionLocked(ctx, token, kind, tokenAAL, &touch)
+	if touch != "" {
+		// SEC-003e. A failure here does not refuse the request: the key is
+		// valid, and declining to serve it because a bookkeeping write failed
+		// would turn a diagnostic convenience into an availability risk.
+		_ = s.touchCredential(ctx, touch)
+	}
+	return row, err
+}
+
+// lookupSessionLocked is LookupSession's read half, under the read lock.
+func (s *Store) lookupSessionLocked(ctx context.Context, token, kind string, tokenAAL AAL, touch *string) (SessionRow, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var (
@@ -691,7 +721,49 @@ func (s *Store) LookupSession(ctx context.Context, token string) (SessionRow, er
 	if deviceJSON != "" {
 		_ = json.Unmarshal([]byte(deviceJSON), &row.DeviceMetadata)
 	}
+	// An api-key's own credential row carries the expiry (SEC-003d) and is what
+	// a revocation marks, so it is consulted HERE, on presentation, rather than
+	// trusted to have been mirrored onto the session. A deadline enforced only
+	// where it was written is a deadline that stops applying the moment anything
+	// else creates a session.
+	if row.TokenKind == TokenKindAPIKey && row.CredentialID != "" {
+		var (
+			expiresAt sql.NullInt64
+			revokedAt sql.NullInt64
+		)
+		err := s.db.QueryRowContext(ctx,
+			`SELECT expires_at, revoked_at FROM credentials WHERE credential_id = ?`, row.CredentialID).
+			Scan(&expiresAt, &revokedAt)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			// The session outlived its credential row. Refused rather than
+			// served: the credential is the thing SEC-003 makes revocable, and
+			// a session that survives its own credential is a bearer token
+			// nothing can revoke.
+			return SessionRow{}, ErrSessionNotFound
+		case err != nil:
+			return SessionRow{}, fmt.Errorf("auth: lookup api-key credential: %w", err)
+		case revokedAt.Valid:
+			return SessionRow{}, ErrSessionNotFound
+		case expiresAt.Valid && s.nowMs() > expiresAt.Int64:
+			// Past its deadline is refused exactly as revoked is (SEC-003d) —
+			// the same ErrSessionNotFound, so a caller cannot tell an expired
+			// key from a revoked or invented one and learn which of its guesses
+			// once existed.
+			return SessionRow{}, ErrSessionNotFound
+		}
+		*touch = row.CredentialID
+	}
 	return row, nil
+}
+
+// touchCredential records that a credential was just presented (SEC-003e).
+func (s *Store) touchCredential(ctx context.Context, credentialID string) error {
+	return s.writeTx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx,
+			`UPDATE credentials SET last_used_at = ? WHERE credential_id = ?`, s.nowMs(), credentialID)
+		return err
+	})
 }
 
 // RevokeSession marks a session revoked at the store's current clock reading,
@@ -800,13 +872,19 @@ func (s *Store) ListSessionIDs(ctx context.Context, principalID string) ([]strin
 // key. label is carried as the credential's identifier so an operator can tell
 // two keys apart in a list; it is namespaced with the principal id so two
 // principals may both have a key labelled "cli".
-func (s *Store) MintAPIKey(ctx context.Context, principalID, label string) (Minted, error) {
+func (s *Store) MintAPIKey(ctx context.Context, principalID, label string, expiresAtMs int64) (Minted, error) {
 	p, err := s.GetPrincipal(ctx, principalID)
 	if err != nil {
 		return Minted{}, err
 	}
 	if p.Kind == KindSystemConsole {
 		return Minted{}, errors.New("auth: system-console carries no credential row (SEC-002)")
+	}
+	// SEC-003a: user principals only. A screen, relay or pack-service has its
+	// own credential ceremony, and an api-key for one would be a second, weaker
+	// path to an identity those ceremonies deliberately make expensive.
+	if p.Kind != KindUser {
+		return Minted{}, fmt.Errorf("auth: an api-key may be minted only for a `user` principal, not %q (SEC-003a)", p.Kind)
 	}
 	credentialID, err := s.mintID("credential")
 	if err != nil {
@@ -815,9 +893,9 @@ func (s *Store) MintAPIKey(ctx context.Context, principalID, label string) (Mint
 	now := s.nowMs()
 	if err := s.writeTx(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx,
-			`INSERT INTO credentials (credential_id, principal_id, kind, identifier, secret, created_at)
-			 VALUES (?, ?, ?, ?, '', ?)`,
-			credentialID, principalID, CredentialAPIKey, principalID+":"+label, now)
+			`INSERT INTO credentials (credential_id, principal_id, kind, identifier, secret, created_at, expires_at)
+			 VALUES (?, ?, ?, ?, '', ?, ?)`,
+			credentialID, principalID, CredentialAPIKey, principalID+":"+label, now, nullableMs(expiresAtMs))
 		return err
 	}); err != nil {
 		return Minted{}, fmt.Errorf("auth: create api-key credential: %w", err)
@@ -1022,4 +1100,18 @@ func (s *Store) RemapScopeNodes(ctx context.Context, mapping map[string]string) 
 		return 0, err
 	}
 	return changed, nil
+}
+
+// nullableMs renders an optional epoch-millisecond value for SQL: a
+// non-positive input is SQL NULL rather than 0.
+//
+// The distinction is the whole of SEC-003d. Stored as 0, "no expiry" would be a
+// deadline at the epoch — a key either permanently expired or, under a laxer
+// comparison, permanently valid. NULL says what is true: this key has no
+// deadline, and its only end is an explicit revocation.
+func nullableMs(ms int64) any {
+	if ms <= 0 {
+		return nil
+	}
+	return ms
 }

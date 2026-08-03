@@ -118,7 +118,7 @@ func New(cfg Config) (*Fixture, error) {
 		_ = store.Close()
 		return nil, fmt.Errorf("authtest: mint session: %w", err)
 	}
-	key, err := store.MintAPIKey(ctx, p.PrincipalID, "authtest")
+	key, err := store.MintAPIKey(ctx, p.PrincipalID, "authtest", 0)
 	if err != nil {
 		_ = store.Close()
 		return nil, fmt.Errorf("authtest: mint api key: %w", err)

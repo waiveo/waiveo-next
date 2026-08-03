@@ -491,7 +491,7 @@ func TestMutatingCookieRequestRequiresCSRFToken(t *testing.T) {
 	})
 
 	t.Run("a bearer API key needs no CSRF token", func(t *testing.T) {
-		key, err := h.store.MintAPIKey(context.Background(), h.owner.PrincipalID, "cli")
+		key, err := h.store.MintAPIKey(context.Background(), h.owner.PrincipalID, "cli", 0)
 		if err != nil {
 			t.Fatalf("MintAPIKey: %v", err)
 		}

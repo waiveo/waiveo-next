@@ -88,10 +88,10 @@ func TestCredentialsAreTheirOwnRelation(t *testing.T) {
 	if _, err := st.PutPasswordCredential(ctx, p.PrincipalID, "op@example.test", "correct horse battery staple"); err != nil {
 		t.Fatalf("PutPasswordCredential: %v", err)
 	}
-	if _, err := st.MintAPIKey(ctx, p.PrincipalID, "cli"); err != nil {
+	if _, err := st.MintAPIKey(ctx, p.PrincipalID, "cli", 0); err != nil {
 		t.Fatalf("MintAPIKey(cli): %v", err)
 	}
-	if _, err := st.MintAPIKey(ctx, p.PrincipalID, "ci"); err != nil {
+	if _, err := st.MintAPIKey(ctx, p.PrincipalID, "ci", 0); err != nil {
 		t.Fatalf("MintAPIKey(ci): %v", err)
 	}
 
@@ -118,7 +118,7 @@ func TestSystemConsoleCarriesNoCredential(t *testing.T) {
 	if _, err := st.PutPasswordCredential(ctx, p.PrincipalID, "console", "hunter2"); err == nil {
 		t.Fatal("attaching a password credential to a system-console principal must be refused (SEC-002)")
 	}
-	if _, err := st.MintAPIKey(ctx, p.PrincipalID, "console"); err == nil {
+	if _, err := st.MintAPIKey(ctx, p.PrincipalID, "console", 0); err == nil {
 		t.Fatal("minting an API key for a system-console principal must be refused (SEC-002)")
 	}
 }
@@ -311,7 +311,7 @@ func TestSessionsAndAPIKeysRevokeThroughOneMechanism(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MintSession(b): %v", err)
 	}
-	key, err := st.MintAPIKey(ctx, p.PrincipalID, "cli")
+	key, err := st.MintAPIKey(ctx, p.PrincipalID, "cli", 0)
 	if err != nil {
 		t.Fatalf("MintAPIKey: %v", err)
 	}

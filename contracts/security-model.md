@@ -41,6 +41,20 @@ security-model/1 defines the platform's principal/credential/grant model and the
 
 **[SEC-003]** A credential row MUST carry a `kind` — `password`, `passkey`, `totp`, `oidc-subject`, `api-key`, or `cert` — and a reference to the exactly one principal it belongs to. A principal MAY hold more than one credential, including more than one of the same `kind` (for instance, more than one active `api-key`).
 
+
+**[SEC-003a]** An `api-key` credential is minted through a dedicated operation, and MUST be mintable only for a principal of kind `user`. A `screen`, `relay`, or `pack-service` principal has its own credential ceremony — enrollment, pairing, tier grant — and an api-key for one would be a second, weaker path to an identity those ceremonies deliberately make expensive.
+
+**[SEC-003b]** A principal holding `admin` at the workspace root MAY mint an api-key **for itself**. Minting for ANY OTHER principal MUST require `owner`. The asymmetry is deliberate: minting for another principal is handing over a credential that acts as them, so it belongs with the other authority-transferring operations `owner` alone may perform (SEC-011). Were `admin` sufficient, admin-to-admin impersonation would be a one-call operation whose audit trail reads as the target principal's own activity.
+
+**[SEC-003c]** A minted api-key MUST carry exactly the role bindings its principal already holds, and the mint operation MUST NOT accept a scope or role narrowing. A key is a way to ACT AS a principal, not a second, weaker principal. A narrowing parameter would be a capability model, and a real one needs an attenuation grammar, per-key binding records, and an answer for what happens when the principal's own bindings later change — none of which this contract defines. Where narrower authority is wanted, the primitive is a principal with narrower bindings; mint the key for that one.
+
+**[SEC-003d]** An api-key MAY carry an absolute expiry, supplied by the caller at mint time and recorded on the credential row, and a presented key past its expiry MUST be refused exactly as a revoked one is. Expiry is OPTIONAL rather than mandatory because unattended callers — a scheduled job, a CI runner — are part of what api-keys exist for, and a mandatory deadline would make those fail on a schedule nobody is watching.
+
+An absent expiry means **until revoked**, and that is a stated choice rather than an omission: a key with no deadline is one whose only end is an explicit act, which is exactly what makes revocation and `last_used_at` (SEC-003e) load-bearing rather than conveniences.
+
+**[SEC-003e]** The plaintext of a minted api-key MUST be returned exactly once, by the mint operation, and MUST NOT be recoverable afterwards by any operation. A listing operation MUST return a key's `label`, `created_at`, and `last_used_at`, and MUST NOT return the secret or any prefix of it — a prefix is a shortcut for an attacker holding a partial capture and buys a legitimate operator nothing a label does not.
+
+`last_used_at` MUST be recorded on presentation. Without it the only way to answer "is anything still using this key?" is to revoke it and wait for something to break, which makes the safe act — retiring an unused credential — indistinguishable from an outage an operator caused.
 **[SEC-004]** `totp` MUST be supported as the guaranteed second-factor floor, available without a secure-context precondition. `passkey` (WebAuthn) credentials MUST be offered only where a secure context exists (Self-hosted TLS) — a deployment on the self-signed fallback (Self-signed fallback) MUST continue to accept `totp` while declining to offer `passkey` enrollment or authentication.
 
 **[SEC-005]** Every `api/1` route MUST authorize its caller against a role bound at a scope node (Roles and scope-node authorization) before executing; a route that cannot resolve an authorization decision for its caller MUST refuse the request rather than default-permit.

@@ -162,7 +162,7 @@ func TestEnsureDevScriptKeyIgnoresAnotherPrincipalsToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreatePrincipal: %v", err)
 	}
-	foreign, err := st.MintAPIKey(ctx, other.PrincipalID, "cli")
+	foreign, err := st.MintAPIKey(ctx, other.PrincipalID, "cli", 0)
 	if err != nil {
 		t.Fatalf("MintAPIKey: %v", err)
 	}

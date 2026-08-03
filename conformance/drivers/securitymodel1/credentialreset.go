@@ -132,7 +132,7 @@ func driveCredentialReset(rep *report.Report, c corpus.Case) {
 	// middleware resolves, not a principal this driver asserts into a context.
 	// The whole issuing route — including SEC-012's `admin` floor — therefore runs
 	// exactly as it does for a signed-in operator.
-	adminKey, err := h.authStore.MintAPIKey(ctx, admin.PrincipalID, "conformance")
+	adminKey, err := h.authStore.MintAPIKey(ctx, admin.PrincipalID, "conformance", 0)
 	if err != nil {
 		k.fail(rep, "mint the admin's api key: %v", err)
 		return
@@ -177,7 +177,7 @@ func driveCredentialReset(rep *report.Report, c corpus.Case) {
 		k.fail(rep, "mint the target's session: %v", err)
 		return
 	}
-	apiKey, err := h.authStore.MintAPIKey(ctx, target, "cli")
+	apiKey, err := h.authStore.MintAPIKey(ctx, target, "cli", 0)
 	if err != nil {
 		k.fail(rep, "mint the target's api key: %v", err)
 		return
@@ -496,7 +496,7 @@ func (h *credentialResetHarness) seedAdminAndTarget(ctx context.Context, identif
 	if _, err := h.authStore.PutRoleBinding(ctx, admin.PrincipalID, auth.RootScopeNode, auth.RoleAdmin); err != nil {
 		return "", "", "", err
 	}
-	key, err := h.authStore.MintAPIKey(ctx, admin.PrincipalID, "conformance")
+	key, err := h.authStore.MintAPIKey(ctx, admin.PrincipalID, "conformance", 0)
 	if err != nil {
 		return "", "", "", err
 	}

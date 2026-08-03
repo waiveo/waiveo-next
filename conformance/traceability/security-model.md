@@ -350,6 +350,11 @@ wins.
 | SEC-001 | `contracts/security-model.md#principal-kinds-and-credentials` | - | TBD-wave1 |
 | SEC-002 | `contracts/security-model.md#principal-kinds-and-credentials` | - | TBD-wave1 |
 | SEC-003 | `contracts/security-model.md#principal-kinds-and-credentials` | - | TBD-wave1 |
+| SEC-003a | `contracts/security-model.md#principals-and-credentials` | - | TBD-wave1 |
+| SEC-003b | `contracts/security-model.md#principals-and-credentials` | - | TBD-wave1 |
+| SEC-003c | `contracts/security-model.md#principals-and-credentials` | - | TBD-wave1 |
+| SEC-003d | `contracts/security-model.md#principals-and-credentials` | - | TBD-wave1 |
+| SEC-003e | `contracts/security-model.md#principals-and-credentials` | - | TBD-wave1 |
 | SEC-004 | `contracts/security-model.md#principal-kinds-and-credentials` | - | TBD-wave1 |
 | SEC-005 | `contracts/security-model.md#principal-kinds-and-credentials` | - | TBD-wave1 |
 | SEC-010 | `contracts/security-model.md#roles-and-scope-node-authorization` | - | TBD-wave1 |

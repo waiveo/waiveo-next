@@ -127,7 +127,10 @@ func (s *Store) EnsureDevScriptKey(ctx context.Context, presented string) (DevSc
 		return DevScriptKey{}, fmt.Errorf("auth: revoke prior dev-script keys: %w", err)
 	}
 	label := DevScriptKeyLabel + "-" + s.NewID()
-	minted, err := s.MintAPIKey(ctx, principalID, label)
+	// No expiry (SEC-003d): a dev-script key ends when it is revoked, which is
+	// what the RevokePrincipalSessions above does to its predecessor on every
+	// re-mint.
+	minted, err := s.MintAPIKey(ctx, principalID, label, 0)
 	if err != nil {
 		return DevScriptKey{}, fmt.Errorf("auth: mint dev-script key: %w", err)
 	}
