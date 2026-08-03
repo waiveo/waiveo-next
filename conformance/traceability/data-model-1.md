@@ -2,6 +2,19 @@
 
 One row per requirement ID `contracts/data-model-1.md` defines. Format: `conformance/traceability/README.md`.
 
+**Where DEVICE_IDENTITY_INCOMPLETE is raised, and where it is not.** A reader
+tracing this code from data-model/1's Field-level error register should not go
+looking for it in an api/1 response, because it does not appear in one.
+`AdoptedDeviceCreate` declares `driver` and `native_id` as `required` with
+`minLength: 1`, so the request-body schema refuses an absent or empty value
+before the row validator runs — for BOTH fields, not only `driver`. The code is
+what that validator raises on the paths a request body never passes through: an
+id migration, a seed, a snapshot build.
+
+This is recorded rather than resolved. Making it reachable over HTTP would mean
+weakening a declared schema so that a second refusal could fire, which buys a
+reader nothing and costs a caller the clearer of the two answers.
+
 | req-id | contract §anchor | case-id(s) | status |
 |---|---|---|---|
 | DAT-001 | `contracts/data-model-1.md#scope-node-tree` | `DAT-001-valid-scope-node-tree` | covered |

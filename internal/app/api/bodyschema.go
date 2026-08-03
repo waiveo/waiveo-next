@@ -410,6 +410,31 @@ func (srv *server) undeclaredMemberRejected(w http.ResponseWriter, r *http.Reque
 			"VALIDATION_FAILED", "Unprocessable Content", detail, nil)
 		return true
 	}
+	// minProperties belongs here for the same reason: it constrains how many
+	// members a body has, not what any of them contains, so a family running the
+	// member half can enforce it without touching the value half it opted out of.
+	//
+	// It was NOT enforced for these families, and the consequence was API-013b's
+	// exact failure mode. `PATCH {}` answered 200 and returned the row unchanged
+	// on schedules, dayparts and playlists, while answering 422 on the five
+	// families that run the whole-schema gate. One rule, two behaviours, decided
+	// by which validation path a family happens to use — and a client that
+	// learned the behaviour on one resource got a success back describing a
+	// resource it had not written on another.
+	//
+	// No data-model rule can express this either: an empty patch has no members
+	// to fail, so the validators the member-half families defer to see a body
+	// that is entirely in order and correctly change nothing.
+	if schema.MinProps > 0 {
+		var members map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &members); err == nil && uint64(len(members)) < schema.MinProps {
+			apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), http.StatusUnprocessableEntity,
+				"VALIDATION_FAILED", "Unprocessable Content",
+				fmt.Sprintf("this operation requires at least %d member(s); the body carries %d.", schema.MinProps, len(members)),
+				nil)
+			return true
+		}
+	}
 	return false
 }
 

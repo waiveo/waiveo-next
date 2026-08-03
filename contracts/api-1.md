@@ -52,6 +52,8 @@ The single `/api/v1` prefix (API-001) replaces a legacy core/extension URL split
 
 **[API-013a]** A request rejected with `code: VALIDATION_FAILED` MUST carry HTTP status `422 Unprocessable Content` when the failure is in the request body, and `400 Bad Request` when the failure is in a query parameter (API-031's `limit`).
 
+**[API-013b]** A partial-update request whose body carries no members MUST be refused `VALIDATION_FAILED` (422, API-013a), never treated as a successful no-op. An empty patch is not a request to change nothing — nothing needed sending for that — it is a client that built a body and put nothing in it, and answering `200` returns the caller a resource that looks like the one they meant to write and is not. The refusal is what turns a silent client defect into a report at the moment it happens, and it costs a correct caller nothing, since a correct caller has a member to send.
+
 **[API-014]** A background or per-target operation that surfaces an error outside the direct request/response cycle (a fleet job's per-target failure, a webhook delivery failure) MUST type that error using a `code` from this same registry, never a parallel vocabulary.
 
 **[API-015]** `instance`, when present, MUST be the request's own path, unmodified — an operator or client correlating a stored Problem document back to the endpoint that produced it MUST be able to do so from this field alone.
