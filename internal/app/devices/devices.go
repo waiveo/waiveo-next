@@ -45,8 +45,9 @@
 // selector nor an authorization input — it is the DISPATCH input, the field that
 // decides which relay an operator command is sent to. And a relay can write it:
 // candidate views from every relay merge into one map keyed by the derived device
-// id, most-recent-reporter wins (REL-153), and dispatch routes to the entity's
-// RelayID.
+// id and dispatch routes to the entity's RelayID. Under REL-153's original
+// most-recent-reporter rule that write was unguarded, which is the capture the
+// next paragraph describes and the one after it closes.
 //
 // So a second ENROLLED relay that reports another relay's `(driver, native_id)`
 // captures that entity's commands — including `params`, which REL-114 explicitly
@@ -54,15 +55,27 @@
 // construction: `native_id` is an SSDP USN, discoverable by anything on any
 // relay's LAN.
 //
-// Two bounds worth stating rather than leaving to be rediscovered. It requires an
-// ENROLLED relay, so this is an insider or compromised-relay scenario and not an
-// open-LAN one. And "most recent reporter wins" is REL-153's prescribed
-// behaviour, so closing it is a contract question — whether a device reported by
-// a relay that did not previously report it should require operator confirmation
-// before RelayID flips — rather than a bug to patch here.
+// # How it is closed
 //
-// This comment is corrected ahead of that decision because the previous wording
-// is what would stop the next reader looking.
+// REL-153a/b now hold a device's routing with its INCUMBENT — the relay
+// currently reporting it — and a different relay's report does not take that
+// routing while the incumbent is still reporting the same device. Incumbency is
+// per device rather than per relay, so a relay that is healthy but no longer
+// lists a device it used to has gone silent about THAT device and yields it
+// after IncumbencyWindowMs, with no operator action. That is what keeps the two
+// ordinary cases — replaced hardware, and a device moved onto another relay's
+// network — automatic, while a live incumbent's device is unclaimable.
+//
+// The scenario was always bounded to an ENROLLED relay, so it was an insider or
+// compromised-relay case rather than an open-LAN one; the open-LAN half was the
+// kill switch, closed separately.
+//
+// One consequence is accepted rather than worked around: while an incumbent
+// holds a device it has stopped reporting, that device is listed by nobody. The
+// incumbent no longer sees it and the only relay that does may not yet speak for
+// it, so attributing it to either would assert something this registry cannot
+// support. A brief absence is a smaller harm than a device listed under a relay
+// that merely guessed its tuple.
 //
 // # Why rows are held in memory
 //
@@ -160,18 +173,87 @@ type Registry struct {
 
 	views map[string]*relayView
 
+	// incumbency records, per DEVICE, which relay currently routes it and when
+	// that relay last reported it (REL-153a/b). It is what stops a second
+	// enrolled relay taking a live device's routing by naming its guessable
+	// (driver, native_id) tuple — and what lets one take it anyway once the
+	// incumbent has genuinely stopped reporting it.
+	incumbency map[string]incumbent
+
+	// nowMs is the clock incumbency windows are measured against. Injected
+	// rather than read from the wall, so a test can drive the window's boundary
+	// instead of sleeping through it.
+	nowMs func() int64
+
 	// Merged view, rebuilt from views on every write. Reads never touch views.
 	devices  map[string]Device
 	entities map[string]Entity
 }
 
+// incumbent is one device's current routing holder.
+type incumbent struct {
+	relayID string
+	// lastSeenMs is when the incumbent last REPORTED this device, not when it
+	// last spoke at all. A relay that is healthy and reporting, but no longer
+	// lists a device it used to, has gone silent about that device (REL-153b).
+	lastSeenMs int64
+}
+
+// IncumbencyWindowMs is how long a device's routing stays with the relay that
+// currently reports it after that relay stops reporting it (REL-153c).
+//
+// Fifteen minutes. Shorter would hand a device away during an incumbent's
+// ordinary restart — both a live-capture opportunity and an operational
+// surprise. Much longer would make replacing hardware feel broken and push an
+// operator toward whatever manual override exists, which is the outcome an
+// automatic rule is meant to avoid.
+const IncumbencyWindowMs int64 = 15 * 60 * 1000
+
 // New builds an empty registry whose rows are placed at siteScopeNode.
-func New(siteScopeNode string) *Registry {
+//
+// nowMs is the clock REL-153b's incumbency window is measured against. A nil
+// clock is treated as "no clock", which makes every incumbent permanent — the
+// safe direction, since it refuses re-homing rather than allowing capture.
+func New(siteScopeNode string, nowMs func() int64) *Registry {
 	return &Registry{
-		site:     siteScopeNode,
-		views:    map[string]*relayView{},
-		devices:  map[string]Device{},
-		entities: map[string]Entity{},
+		site:       siteScopeNode,
+		views:      map[string]*relayView{},
+		devices:    map[string]Device{},
+		entities:   map[string]Entity{},
+		incumbency: map[string]incumbent{},
+		nowMs:      nowMs,
+	}
+}
+
+// now reads the injected clock, or 0 when there is none.
+func (r *Registry) now() int64 {
+	if r.nowMs == nil {
+		return 0
+	}
+	return r.nowMs()
+}
+
+// routableBy reports whether relayID may hold deviceID's routing right now, and
+// records the claim when it may.
+//
+// Called under r.mu with the report's own instant, once per device in the
+// reporting relay's view. The three cases are REL-153a/b in full: an unheld
+// device is claimed, the incumbent refreshes its own hold, and a challenger is
+// refused while the incumbent is inside its window and accepted once it is not.
+func (r *Registry) routableBy(deviceID, relayID string, nowMs int64) bool {
+	held, ok := r.incumbency[deviceID]
+	switch {
+	case !ok, held.relayID == relayID:
+		r.incumbency[deviceID] = incumbent{relayID: relayID, lastSeenMs: nowMs}
+		return true
+	case nowMs-held.lastSeenMs > IncumbencyWindowMs:
+		// The incumbent has been silent about this device for longer than the
+		// window, so the challenger takes it with no operator action — this is
+		// the hardware-replacement and device-moved path (REL-153b).
+		r.incumbency[deviceID] = incumbent{relayID: relayID, lastSeenMs: nowMs}
+		return true
+	default:
+		return false
 	}
 }
 
@@ -290,9 +372,18 @@ func (r *Registry) rematerialize() {
 	ents := make(map[string]Entity, len(r.entities))
 	for _, v := range order {
 		for id, d := range v.devices {
+			// REL-153a: a later report does not take a live incumbent's
+			// routing. Without this line the loop is last-writer-wins, and the
+			// last writer is whoever most recently guessed the tuple.
+			if held, ok := r.incumbency[id]; ok && held.relayID != d.RelayID {
+				continue
+			}
 			devs[id] = d
 		}
 		for id, e := range v.entities {
+			if held, ok := r.incumbency[e.DeviceID]; ok && held.relayID != e.RelayID {
+				continue
+			}
 			ents[id] = e
 		}
 	}

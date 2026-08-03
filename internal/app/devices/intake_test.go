@@ -47,7 +47,7 @@ func candidate(driver, nativeID string) wire.DeviceCandidate {
 // labels (empty — a relay has no field to set them), and its external_id
 // (unset). None of these is anything a relay said.
 func TestReportedDeviceGetsDerivedIdsAndAppSidePlacement(t *testing.T) {
-	r := New(testSite)
+	r := New(testSite, func() int64 { return 0 })
 	if err := r.ApplyCandidates(relayA, []wire.DeviceCandidate{candidate("roku-ecp", "X1")}); err != nil {
 		t.Fatalf("ApplyCandidates: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestReportedDeviceGetsDerivedIdsAndAppSidePlacement(t *testing.T) {
 // returning, and this test fails on the "still holds" assertion: the prior
 // device is gone, replaced by the partial view.
 func TestMalformedCandidateRefusesTheWholeReport(t *testing.T) {
-	r := New(testSite)
+	r := New(testSite, func() int64 { return 0 })
 	if err := r.ApplyCandidates(relayA, []wire.DeviceCandidate{candidate("roku-ecp", "X1")}); err != nil {
 		t.Fatalf("seed report: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestBoundaryRefusals(t *testing.T) {
 
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
-			r := New(testSite)
+			r := New(testSite, func() int64 { return 0 })
 			if err := r.ApplyCandidates(relayA, []wire.DeviceCandidate{c}); err == nil {
 				t.Fatalf("accepted a candidate with %s", name)
 			}
@@ -174,7 +174,7 @@ func TestBoundaryRefusals(t *testing.T) {
 // report can cause. Without the cap, one frame within the transport's own byte
 // limit still buys a derivation and two map entries per candidate.
 func TestOversizeReportIsRefusedBeforeTheWorkIsDone(t *testing.T) {
-	r := New(testSite)
+	r := New(testSite, func() int64 { return 0 })
 	cands := make([]wire.DeviceCandidate, maxCandidatesPerReport+1)
 	for i := range cands {
 		cands[i] = candidate("roku-ecp", fmt.Sprintf("X%d", i))
@@ -192,7 +192,7 @@ func TestOversizeReportIsRefusedBeforeTheWorkIsDone(t *testing.T) {
 // the second win would make the app peer's view depend on array order for a
 // report that does not describe a set at all.
 func TestDuplicateIdentityInOneReportIsRefused(t *testing.T) {
-	r := New(testSite)
+	r := New(testSite, func() int64 { return 0 })
 	err := r.ApplyCandidates(relayA, []wire.DeviceCandidate{candidate("roku-ecp", "X1"), candidate("roku-ecp", "X1")})
 	if err == nil {
 		t.Fatal("accepted a report claiming one identity twice")
@@ -203,7 +203,7 @@ func TestDuplicateIdentityInOneReportIsRefused(t *testing.T) {
 // empty relay identity. A report with nowhere to belong could only be applied by
 // guessing whose it was.
 func TestUnauthenticatedReportIsRefused(t *testing.T) {
-	r := New(testSite)
+	r := New(testSite, func() int64 { return 0 })
 	if err := r.ApplyCandidates("", []wire.DeviceCandidate{candidate("roku-ecp", "X1")}); err == nil {
 		t.Fatal("accepted a report carrying no authenticated relay identity")
 	}
@@ -219,7 +219,7 @@ func TestIgnoredCandidateIsNotListed(t *testing.T) {
 	ignored.Status = wire.CandidateStatusIgnored
 	ignored.IgnoredUntil = &forever
 
-	r := New(testSite)
+	r := New(testSite, func() int64 { return 0 })
 	if err := r.ApplyCandidates(relayA, []wire.DeviceCandidate{ignored, candidate("roku-ecp", "X2")}); err != nil {
 		t.Fatalf("ApplyCandidates: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestIgnoredCandidateIsNotListed(t *testing.T) {
 // the "departed" assertion fails; make it clear every relay's rows and the
 // "other relay survives" assertion fails.
 func TestReportReplacesOnlyTheReportingRelaysView(t *testing.T) {
-	r := New(testSite)
+	r := New(testSite, func() int64 { return 0 })
 	if err := r.ApplyCandidates(relayA, []wire.DeviceCandidate{candidate("roku-ecp", "A1"), candidate("roku-ecp", "A2")}); err != nil {
 		t.Fatalf("relay A report: %v", err)
 	}
@@ -272,12 +272,16 @@ func TestReportReplacesOnlyTheReportingRelaysView(t *testing.T) {
 	}
 }
 
-// TestOneDeviceTwoRelaysIsOneRowAttributedToTheLatestReporter is REL-153: the
-// identity tuple excludes the relay, so both relays' reports name the same row.
-// The row records which relay reported it most recently, and survives either one
-// dropping it while the other still reports it.
-func TestOneDeviceTwoRelaysIsOneRowAttributedToTheLatestReporter(t *testing.T) {
-	r := New(testSite)
+// TestOneDeviceTwoRelaysIsOneRowHeldByItsIncumbent is REL-153 plus REL-153a:
+// the identity tuple excludes the relay, so both relays' reports name the same
+// row — and the routing stays with the relay that is reporting it.
+//
+// This test asserted "most recently reported" until REL-153a replaced that
+// rule. The identity half it also covers is unchanged and is why it is
+// rewritten rather than deleted.
+func TestOneDeviceTwoRelaysIsOneRowHeldByItsIncumbent(t *testing.T) {
+	now := int64(1_700_000_000_000)
+	r := New(testSite, func() int64 { return now })
 	shared := candidate("roku-ecp", "SHARED")
 	if err := r.ApplyCandidates(relayA, []wire.DeviceCandidate{shared}); err != nil {
 		t.Fatalf("relay A report: %v", err)
@@ -290,57 +294,84 @@ func TestOneDeviceTwoRelaysIsOneRowAttributedToTheLatestReporter(t *testing.T) {
 	if len(devs) != 1 {
 		t.Fatalf("one device seen by two relays gave %d row(s), want 1 (REL-153)", len(devs))
 	}
-	if devs[0].RelayID != relayB {
-		t.Errorf("relay_id = %q, want the most recent reporter %q", devs[0].RelayID, relayB)
-	}
-
-	// Relay B stops seeing it; relay A still does.
-	if err := r.ApplyCandidates(relayB, nil); err != nil {
-		t.Fatalf("relay B empty report: %v", err)
-	}
-	devs = r.Devices()
-	if len(devs) != 1 {
-		t.Fatalf("the device vanished when one of two reporters dropped it: %d row(s), want 1", len(devs))
-	}
 	if devs[0].RelayID != relayA {
-		t.Errorf("relay_id = %q, want the remaining reporter %q", devs[0].RelayID, relayA)
+		t.Errorf("relay_id = %q, want the INCUMBENT %q — a second relay reporting a device the first is still "+
+			"reporting must not take its routing (REL-153a)", devs[0].RelayID, relayA)
 	}
 
-	// Both stop: now it is genuinely gone.
+	// The incumbent stops reporting it. Inside the window it still holds.
 	if err := r.ApplyCandidates(relayA, nil); err != nil {
 		t.Fatalf("relay A empty report: %v", err)
 	}
-	if n := len(r.Devices()); n != 0 {
-		t.Fatalf("%d row(s) survive with no relay reporting them, want 0", n)
+	now += IncumbencyWindowMs
+	if err := r.ApplyCandidates(relayB, []wire.DeviceCandidate{shared}); err != nil {
+		t.Fatalf("relay B report at the window boundary: %v", err)
+	}
+	// At exactly the boundary the incumbent still holds — the window is a
+	// MINIMUM silence, and yielding at it would shorten every incumbency by one
+	// tick. The device is not listed while that is true, because the incumbent
+	// no longer sees it and the only relay that does may not yet speak for it.
+	// That absence is the accepted consequence REL-153b states, and asserting
+	// it here is what stops it being re-discovered later as a bug.
+	if devs := r.Devices(); len(devs) != 0 {
+		t.Errorf("at the window boundary the device is listed as %+v — it must be held by %q and listed by nobody, "+
+			"since attributing it to either relay asserts something the app peer cannot support", devs, relayA)
+	}
+
+	// Past the window it yields, with no operator action (REL-153b).
+	now += 1
+	if err := r.ApplyCandidates(relayB, []wire.DeviceCandidate{shared}); err != nil {
+		t.Fatalf("relay B report past the window: %v", err)
+	}
+	devs = r.Devices()
+	if len(devs) != 1 {
+		t.Fatalf("%d row(s) after the incumbent yielded, want 1", len(devs))
+	}
+	if devs[0].RelayID != relayB {
+		t.Errorf("relay_id = %q, want %q — an incumbent silent past the window must yield without an operator, or "+
+			"replacing hardware requires intervention (REL-153b)", devs[0].RelayID, relayB)
 	}
 }
 
-// TestConflictingReportsResolveToTheMostRecentReporter is the answer to what is
-// authoritative when two relays disagree about one device: REL-153's own rule,
-// the most recent report.
-func TestConflictingReportsResolveToTheMostRecentReporter(t *testing.T) {
-	r := New(testSite)
-	first := candidate("roku-ecp", "SHARED")
-	first.Name = "As Relay A Sees It"
-	second := candidate("roku-ecp", "SHARED")
-	second.Name = "As Relay B Sees It"
+// TestAnIncumbentKeepsItsDeviceAgainstARepeatedlyClaimingRelay is the capture
+// this rule exists to stop.
+//
+// A second enrolled relay can name any device's (driver, native_id) — it is an
+// SSDP USN, discoverable from any LAN the device is on. Under the old rule its
+// report took every operator command for that device, and REL-114 permits a
+// dispatched `params` to carry per-dispatch credential material. So the claim
+// is repeated here, the way an attacker would, while the incumbent keeps
+// reporting normally.
+func TestAnIncumbentKeepsItsDeviceAgainstARepeatedlyClaimingRelay(t *testing.T) {
+	now := int64(1_700_000_000_000)
+	r := New(testSite, func() int64 { return now })
+	real := candidate("roku-ecp", "SHARED")
+	real.Name = "As Its Own Relay Sees It"
+	claim := candidate("roku-ecp", "SHARED")
+	claim.Name = "pwned"
 
-	if err := r.ApplyCandidates(relayA, []wire.DeviceCandidate{first}); err != nil {
-		t.Fatalf("relay A report: %v", err)
-	}
-	if err := r.ApplyCandidates(relayB, []wire.DeviceCandidate{second}); err != nil {
-		t.Fatalf("relay B report: %v", err)
-	}
-	if got := r.Devices()[0].Name; got != "As Relay B Sees It" {
-		t.Errorf("name = %q, want the most recent reporter's %q", got, "As Relay B Sees It")
-	}
+	for i := range 10 {
+		if err := r.ApplyCandidates(relayA, []wire.DeviceCandidate{real}); err != nil {
+			t.Fatalf("incumbent report %d: %v", i, err)
+		}
+		if err := r.ApplyCandidates(relayB, []wire.DeviceCandidate{claim}); err != nil {
+			t.Fatalf("claimant report %d: %v", i, err)
+		}
+		// Well past the window in elapsed time — but the incumbent keeps
+		// reporting, so it never goes silent and the window never opens.
+		now += IncumbencyWindowMs * 2
 
-	// And the older reporter reporting again takes it back — the rule is
-	// recency, not first- or last-enrolled.
-	if err := r.ApplyCandidates(relayA, []wire.DeviceCandidate{first}); err != nil {
-		t.Fatalf("relay A re-report: %v", err)
-	}
-	if got := r.Devices()[0].Name; got != "As Relay A Sees It" {
-		t.Errorf("name = %q, want %q after relay A reported again", got, "As Relay A Sees It")
+		devs := r.Devices()
+		if len(devs) != 1 {
+			t.Fatalf("round %d: %d row(s), want 1", i, len(devs))
+		}
+		if devs[0].RelayID != relayA {
+			t.Fatalf("round %d: routing moved to %q — a live device's commands, including any credential material in "+
+				"params (REL-114), now go to a relay that only guessed its tuple", i, devs[0].RelayID)
+		}
+		if devs[0].Name != "As Its Own Relay Sees It" {
+			t.Errorf("round %d: name = %q — the claimant's view is being materialized even though its routing was "+
+				"refused", i, devs[0].Name)
+		}
 	}
 }

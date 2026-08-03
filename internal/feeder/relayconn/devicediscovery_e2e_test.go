@@ -104,7 +104,7 @@ type discoveryStack struct {
 func newDiscoveryStack(t *testing.T) *discoveryStack {
 	t.Helper()
 
-	registry := devices.New(apiSiteScopeNode)
+	registry := devices.New(apiSiteScopeNode, func() int64 { return 0 })
 	h := newHarness(t, feederrelayconn.WithCandidateSink(registry))
 
 	identStore := enrolledRelay(t, h)
@@ -460,11 +460,15 @@ func TestAForgedRelayIdInTheFrameCannotReplaceAnotherRelaysView(t *testing.T) {
 	}
 }
 
-// TestSameDeviceSeenByTwoRelaysIsOneRow is REL-153 over the real connection: a
-// device's identity is (site, driver, native_id), never the relay reporting it,
-// so two relays serving one site that both see one device hold ONE row between
-// them — attributed to whichever reported most recently — and it survives either
-// one of them ceasing to report it.
+// TestSameDeviceSeenByTwoRelaysIsOneRow is REL-153 + REL-153a over the real
+// connection: a device's identity is (site, driver, native_id), never the relay
+// reporting it, so two relays serving one site that both see one device hold ONE
+// row between them — held by its INCUMBENT, the relay already reporting it.
+//
+// This asserted "attributed to whichever reported most recently" until REL-153a
+// replaced that rule: the identity tuple is a discovery handle any relay on the
+// device's LAN can read, so last-writer-wins let a second enrolled relay take
+// the device's command routing by naming it.
 func TestSameDeviceSeenByTwoRelaysIsOneRow(t *testing.T) {
 	a := newDiscoveryStack(t)
 	a.candStore.Observe(discoveredRoku(t, discNativeA, "Lobby Roku"), discObservedMs)
@@ -490,24 +494,27 @@ func TestSameDeviceSeenByTwoRelaysIsOneRow(t *testing.T) {
 	sendReport(t, bClient, bStore)
 
 	wantID := deviceid.Device(apiSiteScopeNode, discDriver, discNativeA)
+	// One row, and it stays with A — the incumbent. B reporting the same tuple
+	// is exactly the capture REL-153a refuses.
 	waitFor(t, 5*time.Second, func() bool {
 		rows := a.registry.Devices()
-		return len(rows) == 1 && rows[0].RelayID == bID.RelayID
-	}, "the same device seen by two relays did not settle to one row attributed to the most recent reporter")
+		return len(rows) == 1 && rows[0].RelayID == a.relayID
+	}, "the same device seen by two relays did not settle to one row held by its incumbent (REL-153a)")
 
 	rows := a.registry.Devices()
 	if rows[0].ID != wantID {
 		t.Fatalf("row id = %q, want the identity-derived %q (REL-153)", rows[0].ID, wantID)
 	}
 
-	// Relay B stops seeing it. Relay A still does, so the row survives — and
-	// comes back to A, because A's view still holds it.
+	// Relay B stops seeing it. Nothing changes: B never held it, and A — which
+	// does — still reports it. The row must not flicker on a non-incumbent's
+	// report going away any more than it moved when that report arrived.
 	empty := deviceplane.NewStore(bID.RelayID)
 	sendReport(t, bClient, empty)
 	waitFor(t, 5*time.Second, func() bool {
 		rows := a.registry.Devices()
 		return len(rows) == 1 && rows[0].RelayID == a.relayID
-	}, "the device vanished (or stayed attributed to B) when B stopped reporting it, though A still reports it")
+	}, "the device vanished or moved when a relay that never held it stopped reporting it")
 }
 
 // TestMalformedReportLeavesThePriorViewIntact drives an untrusted report over

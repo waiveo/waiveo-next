@@ -320,6 +320,18 @@ The successor, when per-relay attribution or per-relay revocation is needed, is 
 
 **[REL-153]** A device's own identity (`device_id`, REL-063) is scoped to `(site, driver, native_id)`, never to the relay that happens to currently report it — re-homing an already-adopted device to a different relay serving the same site MUST resolve to the same `device_id`; the app peer's own records reflect only which relay most recently reported it.
 
+**[REL-153a]** Which relay a device's commands are ROUTED to is not decided by whoever reported it most recently. An app peer MUST hold a device's routing with the relay that currently reports it — its **incumbent** — and MUST NOT let a different relay's report take that routing while the incumbent is still reporting the same device.
+
+The reason is that `(site, driver, native_id)` is guessable by construction. A `native_id` is a discovery handle — an SSDP USN, a MAC, a serial — visible to anything on any LAN the device is reachable from. Under "most recent reporter wins", any OTHER enrolled relay that names an incumbent's tuple takes every operator command for that device, and REL-114 explicitly permits a dispatched `params` to carry per-dispatch credential material. That makes last-writer-wins a credential-redirection primitive available to any enrolled relay, which is a materially different thing from the identity rule REL-153 states.
+
+**[REL-153b]** An incumbent MUST yield after a bounded period of not reporting that device, and the app peer MUST then accept another relay's claim without operator action. Incumbency is per DEVICE, not per relay: a relay that is healthy and reporting, but no longer lists a device it used to, has gone silent about THAT device and yields it on the same terms. This is what keeps the two ordinary cases — a relay replaced by new hardware, and a device moved onto a different relay's network — from requiring an operator to intervene, while a live incumbent's device stays unclaimable.
+
+One consequence follows and is accepted rather than worked around: while an incumbent holds a device it has stopped reporting, that device is not listed at all — the incumbent no longer sees it, and the only relay that does is not yet permitted to speak for it. The app peer does not know whose device it is during that interval, and listing it under either relay would be asserting something it cannot support. A device being briefly absent is a smaller harm than a device listed under a relay that merely guessed its tuple, and the interval is bounded by the same window.
+
+**[REL-153c]** The window's length is an implementation choice this contract does not fix, but it MUST be long enough to survive an incumbent's ordinary restart and a brief network interruption, and short enough that replacing hardware does not require waiting out an outage-length delay. An implementation MUST state the value it chose. Waiveo's own app peer uses **fifteen minutes**.
+
+A shorter window would hand a device away during a routine restart, which is both a live-capture opportunity and an operational surprise; a much longer one would make hardware replacement feel broken and push operators toward whatever manual override exists, which is the outcome an automatic rule is meant to avoid.
+
 ## Wire shapes
 
 ```json

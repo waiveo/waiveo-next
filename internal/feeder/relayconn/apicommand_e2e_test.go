@@ -68,7 +68,7 @@ type commandResponse struct {
 func newAPIOverConnection(t *testing.T, h *harness, relayID string) *httptest.Server {
 	t.Helper()
 
-	registry := devices.New(apiSiteScopeNode)
+	registry := devices.New(apiSiteScopeNode, func() int64 { return 0 })
 	if err := registry.PutDevice(devices.Device{
 		ID: fixtureDevice1, RelayID: relayID, DeviceClass: fixtureDevClass,
 		Name: "Lobby TV", ScopeNode: apiSiteScopeNode,

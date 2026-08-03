@@ -2,7 +2,7 @@
   "case_id": "REL-110b-valid-derived-identity-across-relays",
   "contract": "relay/1",
   "req_ids": ["REL-110b", "REL-111a", "REL-153"],
-  "description": "Two relays serving one site report device.candidates. A device_id and each entity_id are DERIVED from the identity tuple (site, driver, native_id[, entity key]) rather than assigned by either peer, so the device BOTH relays observe resolves to ONE row with one derived id, carrying the relay_id of whichever reported it most recently; the device only one relay observes is its own row. Every derived id is a syntactically valid Canonical ULID (data-model/1 DAT-005a) while a relay_id deliberately is not. The replace each report performs is keyed by device identity and scoped to the reporting relay (REL-111a), so when the second relay stops reporting the shared device it survives and reverts to the relay that still reports it.",
+  "description": "Two relays serving one site report device.candidates. A device_id and each entity_id are DERIVED from the identity tuple (site, driver, native_id[, entity key]) rather than assigned by either peer, so the device BOTH relays observe resolves to ONE row with one derived id, carrying the relay_id of its INCUMBENT — the relay that currently reports it (REL-153a), not whichever reported it most recently, because the identity tuple is guessable and last-writer-wins would let any enrolled relay take a device's command routing; the device only one relay observes is its own row. Every derived id is a syntactically valid Canonical ULID (data-model/1 DAT-005a) while a relay_id deliberately is not. The replace each report performs is keyed by device identity and scoped to the reporting relay (REL-111a), so when the second relay stops reporting the shared device it survives under the relay that still reports it — which under REL-153a is the incumbent it never left.",
   "input": {
     "site_scope_node": "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5",
     "reports": [
@@ -72,7 +72,7 @@
         "native_id": "uuid:roku:ecp:X10001",
         "device_id": "46ADFJAXTHS0EFTQGWJWXVFZQ3",
         "entity_ids": { "main": "7CE2HBFBCG63SKAD3PE9A16KCJ" },
-        "relay_id_after_both_reports": "relay-1a2b3c4d5e6f78899a8b7c6d5e4f3021",
+        "relay_id_after_both_reports": "relay-0f1e2d3c4b5a69788796a5b4c3d2e1f0",
         "relay_id_after_final_report": "relay-0f1e2d3c4b5a69788796a5b4c3d2e1f0"
       },
       {

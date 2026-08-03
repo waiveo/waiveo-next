@@ -134,6 +134,27 @@ func (r *Registry) ApplyCandidates(relayID string, candidates []wire.DeviceCandi
 	defer r.mu.Unlock()
 	r.seq++
 	view.seq = r.seq
+
+	// Incumbency is decided HERE, from one reading of the clock, before the
+	// merge reads it (REL-153a/b). A device this relay may not route is dropped
+	// from its own view rather than filtered later: the view is what the merge
+	// and every future rematerialize consume, so a row left in it would be
+	// re-considered on every subsequent report and would take the device the
+	// moment the incumbent's window lapsed — silently completing a capture the
+	// relay attempted minutes earlier.
+	nowMs := r.now()
+	for id := range view.devices {
+		if r.routableBy(id, relayID, nowMs) {
+			continue
+		}
+		delete(view.devices, id)
+		for eid, e := range view.entities {
+			if e.DeviceID == id {
+				delete(view.entities, eid)
+			}
+		}
+	}
+
 	r.views[relayID] = view
 	r.rematerialize()
 	return nil

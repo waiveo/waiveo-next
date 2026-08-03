@@ -143,3 +143,6 @@ implementation behind it, which is what this note exists to prevent.
 | REL-151 | `contracts/relay-1.md#multi-relay-identity` | - | TBD-wave1 |
 | REL-152 | `contracts/relay-1.md#multi-relay-identity` | - | TBD-wave1 |
 | REL-153 | `contracts/relay-1.md#multi-relay-identity` | `REL-110b-valid-derived-identity-across-relays` | covered |
+| REL-153a | `contracts/relay-1.md#multi-relay-identity` | - | TBD-wave1 |
+| REL-153b | `contracts/relay-1.md#multi-relay-identity` | - | TBD-wave1 |
+| REL-153c | `contracts/relay-1.md#multi-relay-identity` | - | TBD-wave1 |

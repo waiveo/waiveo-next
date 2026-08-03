@@ -756,7 +756,7 @@ func main() {
 	// Its rows are placed at this deployment's site node, the same site_binding
 	// every hello-ack hands the relay (REL-036), which is also the third member
 	// of the identity tuple both peers derive a device_id from (REL-153/110b).
-	deviceRegistry := devices.New(firstPhotonSite.ScopeNode)
+	deviceRegistry := devices.New(firstPhotonSite.ScopeNode, nowMs)
 
 	relayConnSrv := relayconn.New(
 		src.current,

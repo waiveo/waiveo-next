@@ -86,7 +86,10 @@ func driveREL110b(rep *report.Report, cases map[string]corpus.Case) {
 
 	var diffs []report.Diff
 
-	registry := devices.New(in.SiteScopeNode)
+	// A frozen clock: this case drives identity derivation and merge order, not
+	// the REL-153b incumbency window, and a wall clock would make the window's
+	// boundary depend on how long the driver took to run.
+	registry := devices.New(in.SiteScopeNode, func() int64 { return 0 })
 	for i, r := range in.Reports {
 		if err := registry.ApplyCandidates(r.RelayID, r.Candidates); err != nil {
 			rep.Fail(c.CaseID, contract, fmt.Sprintf("report[%d] from %s was refused: %v", i, r.RelayID, err), diffs...)
@@ -128,7 +131,7 @@ func driveREL110b(rep *report.Report, cases map[string]corpus.Case) {
 			continue
 		}
 		if row.RelayID != want.RelayIDAfterBothReports {
-			diffs = append(diffs, report.Diff{Field: fmt.Sprintf("device %s relay_id after both reports (most recent reporter, REL-153)", want.DeviceID), Expected: want.RelayIDAfterBothReports, Actual: row.RelayID})
+			diffs = append(diffs, report.Diff{Field: fmt.Sprintf("device %s relay_id after both reports (incumbent holds it, REL-153a)", want.DeviceID), Expected: want.RelayIDAfterBothReports, Actual: row.RelayID})
 		}
 		if exp.RelayIDsAreCanonicalULIDs != ulid.Valid(row.RelayID) {
 			diffs = append(diffs, report.Diff{Field: fmt.Sprintf("relay_id %s is a canonical ULID", row.RelayID), Expected: exp.RelayIDsAreCanonicalULIDs, Actual: ulid.Valid(row.RelayID)})

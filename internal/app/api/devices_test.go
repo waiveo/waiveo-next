@@ -91,7 +91,7 @@ func newDevicePlaneEnv(t *testing.T) *devicePlaneEnv {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
-	registry := devices.New(devScopeA)
+	registry := devices.New(devScopeA, func() int64 { return 0 })
 	mustPutDevice(t, registry, devices.Device{
 		ID: devDevice1, RelayID: devRelayA, DeviceClass: "media-player",
 		Name: "Lobby TV", ScopeNode: devScopeA, Labels: map[string]string{"env": "prod"},
@@ -419,7 +419,7 @@ func TestSendEntityCommandWithoutADispatcherIs503(t *testing.T) {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	registry := devices.New(devScopeA)
+	registry := devices.New(devScopeA, func() int64 { return 0 })
 	mustPutEntity(t, registry, devices.Entity{
 		ID: devEntity1, DeviceID: devDevice1, RelayID: devRelayA,
 		DeviceClass: "media-player", Name: "Lobby TV player", ScopeNode: devScopeA,
@@ -510,7 +510,7 @@ func TestSendEntityCommandIdempotencyKeyReplays(t *testing.T) {
 // enrollment path (relay/1 REL-012/014), is NOT a ULID in the running system,
 // and is required only to be present.
 func TestRegistryRejectsMalformedIdentifiers(t *testing.T) {
-	r := devices.New(devScopeA)
+	r := devices.New(devScopeA, func() int64 { return 0 })
 	if err := r.PutDevice(devices.Device{ID: "not-a-ulid", RelayID: devRelayA}); err == nil {
 		t.Fatal("PutDevice accepted a non-ULID id")
 	}
