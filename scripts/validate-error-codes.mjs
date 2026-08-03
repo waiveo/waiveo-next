@@ -328,6 +328,27 @@ if (!existsSync(ALLOWLIST_PATH)) {
   }
 }
 
+const CODE_FIELD_RE = /\b(?:Err)?Code:\s*"([A-Z][A-Z0-9_]{2,})"/g;
+const FIELD_THEN_CODE_RE = /"[a-z][a-z0-9_.]*"\s*,\s*"([A-Z][A-Z0-9_]{2,})"\s*,/g;
+const CODE_FIRST_CALL_RE = /\b[A-Za-z_]\w*\(\s*"([A-Z][A-Z0-9_]{2,})"\s*,\s*[`"]/g;
+
+const emittedAt = new Map();
+for (const path of walk(".")) {
+  const rel = relative(".", path);
+  if (!implementationSource(rel)) continue;
+  const src = readFileSync(path, "utf8");
+  if (GENERATED_MARKER_RE.test(src)) continue;
+  for (const re of [CODE_FIELD_RE, FIELD_THEN_CODE_RE, CODE_FIRST_CALL_RE]) {
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(src)) !== null) {
+      const code = m[1];
+      const line = src.slice(0, m.index).split("\n").length;
+      if (!emittedAt.has(code)) emittedAt.set(code, `${rel}:${line}`);
+    }
+  }
+}
+
 // "contract\u0000code" -> the group's reason.
 const allowed = new Map();
 
@@ -351,6 +372,7 @@ for (const [gi, group] of (allowlist.groups ?? []).entries()) {
   if (codes.length === 0) failures.push(`${at} (${contract}): codes is empty — delete the group`);
 
   const published = publishedByContract.get(contract);
+  const publishedField = publishedFieldByContract.get(contract) ?? [];
   for (const code of codes) {
     const key = `${contract}\u0000${code}`;
     if (allowed.has(key)) {
@@ -358,16 +380,27 @@ for (const [gi, group] of (allowlist.groups ?? []).entries()) {
       continue;
     }
     allowed.set(key, reason);
-    // #2 the pair is really published.
-    if (!published.includes(code)) {
+    // #2 the pair is really published — in EITHER register. A field-level code
+    // is published in a different table and is unimplemented in exactly the same
+    // way, so it earns an entry here on the same terms.
+    const isField = publishedField.includes(code);
+    if (!published.includes(code) && !isField) {
       failures.push(
-        `${at}: ${contract} does not publish ${code} in its Error taxonomy — the code was renamed or removed; delete this entry`
+        `${at}: ${contract} does not publish ${code} in its Error taxonomy or its Field-level error register — ` +
+          `the code was renamed or removed; delete this entry`
       );
       continue;
     }
     // #3 the pair is still unimplemented.
-    if (isImplemented(code)) {
-      const at1 = usesByCode.get(code)?.[0] ?? "an implementation source";
+    //
+    // "Implemented" means something different for the two registers, and using
+    // one test for both would be wrong in both directions. A top-level code is
+    // implemented when an occurrence of it is classified as a USE (isImplemented,
+    // which knows about taxonomy mirrors and array literals). A field-level code
+    // only ever appears as an EMISSION — it is written into an errors[] entry and
+    // nowhere else — so the emission scan is its whole notion of implemented.
+    if (isField ? emittedAt.has(code) : isImplemented(code)) {
+      const at1 = (isField ? emittedAt.get(code) : usesByCode.get(code)?.[0]) ?? "an implementation source";
       failures.push(
         `${at}: ${contract}'s ${code} IS implemented now (${at1}) — delete it from ${ALLOWLIST_PATH}; ` +
           `the list is an inventory of what is missing, and an entry that outlives the gap makes it lie`
@@ -384,6 +417,32 @@ for (const [contract, codes] of publishedByContract) {
     failures.push(
       `contracts/${contract}: ${code} is published in the Error taxonomy but no implementation source emits it — ` +
         `wire the refusal, or add ${code} to a group in ${ALLOWLIST_PATH} whose reason says why the surface exists and the refusal does not`
+    );
+  }
+}
+
+// #7 every published FIELD-LEVEL pair has a verdict too.
+//
+// #1 asks this of the Error taxonomy and always has. The Field-level error
+// register arrived later and was not covered by it, so a per-field code could be
+// published with nothing emitting it, no reason recorded anywhere, and this gate
+// reporting OK — which is the "capability declared, caller never written" shape
+// the allowlist exists to make visible, reintroduced one table over from where it
+// was closed.
+//
+// It is not hypothetical: three VARIABLE_* codes were published for a surface
+// that does not exist yet and passed green. That is a legitimate thing to do —
+// contract text goes up for review before it is built — but it has to be SAID,
+// and saying it is what an allowlist entry is for.
+for (const [contract, codes] of publishedFieldByContract) {
+  for (const code of codes) {
+    if (emittedAt.has(code)) continue;
+    if (allowed.has(`${contract}\u0000${code}`)) continue;
+    failures.push(
+      `contracts/${contract}: ${code} is published in the Field-level error register but no implementation source emits it — ` +
+        `wire the refusal, or add ${code} to a group in ${ALLOWLIST_PATH} whose reason says why the field exists and the ` +
+        `refusal does not. A per-field code nothing raises is a promise to a client that cannot be kept, and it reaches no ` +
+        `generated client either.`
     );
   }
 }
@@ -451,32 +510,28 @@ if (existsSync(OPENAPI_PATH)) {
 // as its third argument, and a two-argument call does not; requiring the comma
 // separates them without a list of names to keep up to date.
 //
+//   (c) a call taking a quoted SCREAMING_SNAKE token as its FIRST argument and
+//       a string as its second — `artifactErr("PACK_ARTIFACT_INVALID", "...")`.
+//
+// (c) was added after check #7 below caught what (a) and (b) missed: the pack
+// surface builds its refusals through a helper that takes the code first, so
+// twenty-nine codes were emitted through a shape this scan did not recognise.
+// The two checks catch each other's blind spots, which is the argument for
+// having both rather than trusting either.
+//
+// (c) would also match a two-string call that is not an error at all —
+// `os.Setenv("SOME_VAR", "x")` has the same shape. None exists in this tree
+// today (every one of its twenty-nine matches is an error constructor), and if
+// one appears it fails loudly asking for the name to be published or changed,
+// rather than passing silently. That is the right direction for this check to
+// be wrong in.
+//
 // A call whose field argument is an EXPRESSION rather than a literal — the
-// `add(schemaField(i), "VALUE_INVALID", ...)` spelling — is not matched by (b),
-// so a code emitted ONLY that way would still be invisible here. That limit is
-// written down rather than papered over: it is the same class of blind spot
-// this check exists to close, one level in, and closing it properly wants a Go
-// AST pass rather than a regex.
-const CODE_FIELD_RE = /\b(?:Err)?Code:\s*"([A-Z][A-Z0-9_]{2,})"/g;
-const FIELD_THEN_CODE_RE = /"[a-z][a-z0-9_.]*"\s*,\s*"([A-Z][A-Z0-9_]{2,})"\s*,/g;
-
-const emittedAt = new Map();
-for (const path of walk(".")) {
-  const rel = relative(".", path);
-  if (!implementationSource(rel)) continue;
-  const src = readFileSync(path, "utf8");
-  if (GENERATED_MARKER_RE.test(src)) continue;
-  for (const re of [CODE_FIELD_RE, FIELD_THEN_CODE_RE]) {
-    re.lastIndex = 0;
-    let m;
-    while ((m = re.exec(src)) !== null) {
-      const code = m[1];
-      const line = src.slice(0, m.index).split("\n").length;
-      if (!emittedAt.has(code)) emittedAt.set(code, `${rel}:${line}`);
-    }
-  }
-}
-
+// `add(schemaField(i), "VALUE_INVALID", ...)` spelling — is still not matched,
+// so a code emitted ONLY that way remains invisible here. That limit is written
+// down rather than papered over: it is the same class of blind spot this check
+// exists to close, one level in, and closing it properly wants a Go AST pass
+// rather than a regex.
 for (const [code, at] of [...emittedAt].sort()) {
   if (publishedCodes.has(code) || publishedFieldCodes.has(code)) continue;
   failures.push(

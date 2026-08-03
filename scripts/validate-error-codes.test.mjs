@@ -452,15 +452,19 @@ test("publishing it in the Field-level error register satisfies the reverse walk
   );
 });
 
-test("a field-level code does NOT satisfy a top-level publication requirement", () => {
-  // The two registers are separate vocabularies appearing in different places
-  // in one response. If the field register could vouch for a top-level code,
-  // publishing a per-field code would silently license emitting it as a
-  // Problem's own `code`, which API-013 does not permit.
-  const contract = CONTRACT.replace(
-    "| `THING_MISSING` | There is no thing. | no |\n",
-    ""
-  ).replace(
+test("the two registers are counted separately, so neither can stand in for the other", () => {
+  // Originally this asserted that an allowlist entry for a field-published code
+  // FAILED check #2. That stopped being the right assertion once the allowlist
+  // was widened to cover both registers — a field-level code is unimplemented in
+  // exactly the same way and earns an entry on the same terms.
+  //
+  // The property it was really pinning survives and is asserted here instead:
+  // the sets stay disjoint in the gate's own accounting. A code moved from the
+  // taxonomy to the field register leaves the top-level count and joins the
+  // field one, so nothing that walks top-level codes — check #1's verdict
+  // requirement, check #5's ErrorCode enum — can be satisfied by publishing a
+  // per-field code instead.
+  const contract = CONTRACT.replace("| `THING_MISSING` | There is no thing. | no |\n", "").replace(
     "## Conformance notes",
     `## Field-level error register
 
@@ -473,8 +477,9 @@ test("a field-level code does NOT satisfy a top-level publication requirement", 
   withFixture(
     (w) => writeGoodTree(w, { contract }),
     (r) => {
-      assert.equal(r.status, 1, "the allowlist entry for a now-unpublished top-level code was accepted");
-      assert.match(r.stderr, /does not publish THING_MISSING in its Error taxonomy/);
+      assert.equal(r.status, 0, r.stderr);
+      // One top-level code left (THING_INVALID); THING_MISSING is now field-level.
+      assert.match(r.stdout, /SUMMARY: validate-error-codes: OK \(1 published pair\(s\), 1 field-level pair\(s\)/);
     }
   );
 });
@@ -500,6 +505,119 @@ func Link() string {
     (r) => {
       assert.equal(r.status, 0, r.stderr);
       assert.doesNotMatch(r.stderr, /SHA1/, "a URL query parameter was read as an emitted error code");
+    }
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The FORWARD walk over the field-level register (check #7), and the third
+// emission shape it caught.
+//
+// #6 gave the gate an emitted -> published direction but only for the codes its
+// patterns recognised, and nothing asked the field register for a verdict the
+// way check #1 asks the Error taxonomy. A per-field code could be published,
+// never wired, carry no recorded reason, and pass.
+
+const CONTRACT_FIELD_ONLY = CONTRACT.replace(
+  "## Conformance notes",
+  `## Field-level error register
+
+| code | field-level meaning | retryable |
+|---|---|---|
+| \`THING_FIELD_UNWIRED\` | Published; nothing raises it. | no |
+
+## Conformance notes`
+);
+
+test("a field-level code with no emitter fails, exactly as a top-level one does", () => {
+  withFixture(
+    (w) => writeGoodTree(w, { contract: CONTRACT_FIELD_ONLY }),
+    (r) => {
+      assert.equal(r.status, 1, "a published field-level code with nothing emitting it passed");
+      assert.match(r.stderr, /THING_FIELD_UNWIRED is published in the Field-level error register but no implementation source emits it/);
+    }
+  );
+});
+
+test("allowlisting a field-level code satisfies the forward walk", () => {
+  withFixture(
+    (w) =>
+      writeGoodTree(w, {
+        contract: CONTRACT_FIELD_ONLY,
+        allowlist: {
+          groups: [
+            ...ALLOWLIST.groups,
+            {
+              contract: "example-1.md",
+              reason:
+                "THING_FIELD_UNWIRED is published ahead of the surface that raises it; the validator that would emit it is not built yet, and the entry goes away with that work.",
+              codes: ["THING_FIELD_UNWIRED"],
+            },
+          ],
+        },
+      }),
+    (r) => {
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, /1 field-level pair\(s\)/);
+    }
+  );
+});
+
+test("an allowlist entry naming a code in NEITHER register still fails", () => {
+  // The widened check #2 accepts a code published in either register. It must
+  // not have widened into accepting one published in neither, which would let a
+  // renamed code keep a stale entry alive with a plausible reason attached.
+  withFixture(
+    (w) =>
+      writeGoodTree(w, {
+        allowlist: {
+          groups: [
+            {
+              contract: "example-1.md",
+              reason:
+                "THING_RENAMED_AWAY was published once and no longer is; this entry should not survive the code it describes.",
+              codes: ["THING_RENAMED_AWAY"],
+            },
+          ],
+        },
+      }),
+    (r) => {
+      assert.equal(r.status, 1, "an allowlist entry for a code in neither register was accepted");
+      assert.match(r.stderr, /does not publish THING_RENAMED_AWAY in its Error taxonomy or its Field-level error register/);
+    }
+  );
+});
+
+test("a code passed as a call's FIRST argument is recognised as an emission", () => {
+  // The shape the pack surface uses: artifactErr("CODE", "message", ...). It was
+  // invisible to the scan until check #7 surfaced a published-but-apparently-
+  // unemitted code that was in fact emitted twenty-nine times over.
+  const codeFirst = `package example
+
+type ArtifactError struct {
+	Code    string
+	Message string
+}
+
+func artifactErr(code, message string) *ArtifactError {
+	return &ArtifactError{Code: code, Message: message}
+}
+
+func Read(ok bool) *ArtifactError {
+	if !ok {
+		return artifactErr("THING_UNPUBLISHED", "the thing could not be read")
+	}
+	return nil
+}
+`;
+  withFixture(
+    (w) => {
+      writeGoodTree(w);
+      w("internal/example/reader.go", codeFirst);
+    },
+    (r) => {
+      assert.equal(r.status, 1, "a code passed as a call's first argument was not seen as an emission");
+      assert.match(r.stderr, /THING_UNPUBLISHED is emitted but published in no contract/);
     }
   );
 });

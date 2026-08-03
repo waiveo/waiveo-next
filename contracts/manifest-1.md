@@ -309,6 +309,15 @@ Problem's top-level `code` — that stays `VALIDATION_FAILED`.
 | `REQUIRED` | A required field of a pack-data row is absent. | no — supply the field |
 | `INVALID_TYPE` | A pack-data row's field is present but of the wrong JSON type for its declared shape. | no — correct the type |
 | `PACK_ARTIFACT_INVALID` | A pack artifact could not be read as the zip container the format requires, so nothing inside it could be examined. It names the artifact rather than a field, because an unreadable container has no fields to attribute a fault to. | no — republish a readable artifact |
+| `PACK_ARTIFACT_TOO_LARGE` | The artifact exceeds the deployment's whole-artifact byte limit. Refused before it is read, so the limit bounds what a caller can make the server hold rather than describing what it did hold. | no — publish a smaller artifact |
+| `PACK_ARTIFACT_TOO_MANY_FILES` | The artifact declares more entries than the deployment's entry limit. Separate from the byte limit because a zip's entry count is an independent cost — many tiny entries are cheap in bytes and expensive in work. | no — publish fewer entries |
+| `PACK_ARTIFACT_FILE_TOO_LARGE` | A single entry exceeds the per-file byte limit, even where the artifact as a whole is within its own. | no — shrink the entry |
+| `PACK_ARTIFACT_UNSAFE_ENTRY` | An entry is a symlink, an absolute path, or a path that escapes the artifact root. Refused at read time, so a consumer may key on and store entry names without re-checking them. | no — publish only regular, relative entries |
+| `PACK_MANIFEST_MISSING` | The artifact carries no `manifest.json` at its root. | no — add the manifest |
+| `PACK_MANIFEST_INVALID` | `manifest.json` is present and is not valid JSON, so nothing it declares could be read. Distinct from a manifest that parses and violates a rule, which is refused with the specific code for the rule it broke. | no — republish valid JSON |
+| `PACK_PAGE_DOC_MISSING` | `ui.pages` declares a path and the artifact carries no page document there (`ui-schema/1` UIS-001) — a declaration that resolves to nothing. | no — add the page document, or drop the declaration |
+| `PACK_PAGE_DOC_INVALID` | A page document is present and is not valid JSON. | no — republish valid JSON |
+| `PACK_LOCALE_INVALID` | A locale catalog is present and is not valid JSON. | no — republish valid JSON |
 | `INVALID_ULID` | A pack-data field that must be a ULID reference is present, a string, and not a valid one. | no — supply a canonical ULID |
 | `INVALID_LIFECYCLE_STATE` | A row's `lifecycle_state` is outside the closed set `draft`, `published`, `archived`. | no — use a declared state |
 | `LIFECYCLE_NOT_ALLOWED` | A row wrote a `lifecycle_state` other than `published` into a collection that does not declare `lifecycle: draft-publish` (MAN-052). The value is well-formed; the collection simply has no lifecycle for it to name. | no — declare the lifecycle, or write `published` |
