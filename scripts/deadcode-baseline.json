@@ -299,6 +299,15 @@
         "loadRecord",
         "normalize"
       ]
+    },
+    {
+      "package": "internal/app/restoreswap",
+      "reason": "The BOOT half of the offline swap is wired \u2014 cmd/waiveo-feeder calls Adopt before it opens the store, which is the only place it can be called, since the swap renames the very file that line opens. These three are the STAGING half, and what calls them is the restore Job: a POST that opens an archive/1 container, preflights it against this destination, builds the incoming store, and stages it for the next boot. That job is the remaining work on the restore path and the shape is decided (offline swap), so this is sequencing rather than a forgotten caller. Deleting them would leave a boot-time adopter with nothing able to stage anything for it to adopt.",
+      "funcs": [
+        "Stage",
+        "Discard",
+        "Pending"
+      ]
     }
   ],
   "unimportedPackages": []

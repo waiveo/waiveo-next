@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/maaxton/waiveo-next/internal/app/restoreswap"
 	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"image"
 	"image/color"
@@ -619,6 +620,22 @@ func main() {
 	// On nowMs, not the host clock: a resource's created_at baseline and the
 	// credential row written in the same request must come from ONE reading, or
 	// the two disagree the day the host clock is wrong — the only day it matters.
+	// A restore staged by a previous run is adopted HERE, before the store is
+	// opened, because the swap is a rename of the file this line is about to
+	// open — doing it after would leave the process serving the store the
+	// restore replaced (archive/1 ARC-107, the offline swap).
+	//
+	// A failure is fatal rather than degraded. Every state Adopt can resolve, it
+	// resolves; the one it cannot is a marker with neither store present, which
+	// means something outside this process deleted a file mid-swap. Booting on
+	// whatever is left would pick, silently, between two stores an operator has
+	// a real stake in telling apart — and the pre-restore copy is on disk for
+	// them to choose from.
+	if adopted, err := restoreswap.Adopt(cfg.storePath); err != nil {
+		log.Fatalf("waiveo-feeder: adopt a pending restore: %v", err)
+	} else if adopted {
+		log.Printf("waiveo-feeder: adopted a staged restore; the pre-restore store is kept beside it")
+	}
 	st, err := store.Open(cfg.storePath, nowMs)
 	if err != nil {
 		log.Fatalf("waiveo-feeder: open store: %v", err)
