@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/signhash"
 )
@@ -53,6 +54,10 @@ type Store struct {
 	// sweep's age arithmetic (contentgc) is drivable from a test without
 	// waiting out a real window; production leaves it at the wall clock.
 	nowMs func() int64
+
+	// signingKey, when non-empty, makes Handler require a valid signed content
+	// URL (WithSigningKey). Empty means serve by address, unsigned.
+	signingKey []byte
 }
 
 // item is one stored asset: its bytes, and when this deployment first obtained
@@ -76,6 +81,37 @@ func WithClock(nowMs func() int64) Option {
 	return func(s *Store) {
 		if nowMs != nil {
 			s.nowMs = nowMs
+		}
+	}
+}
+
+// WithSigningKey makes Handler REQUIRE a valid signed content URL
+// (internal/feeder/contenturl): every fetch must present an `exp`/`sig` pair
+// this key verifies, and a request that does not is refused before any byte of
+// content is written.
+//
+// # Why this is an option rather than always-on
+//
+// Because the key has to reach every party that constructs a content URL, and
+// one of them is not this process. REL-066 has the RELAY build a
+// schedule-resolved item's url itself, from the `content_origin` base it was
+// handed (internal/relay/schedulehost, deriveContentURL) — it holds no key and
+// can mint no signature. Turning verification on for a deployment whose relay
+// resolves schedules would refuse that relay's own URLs.
+//
+// So the key is set where the minting and the serving sides are known to
+// agree, and the relay-side half is tracked as its own work rather than
+// half-shipped here. A caller that sets no key gets the previous behaviour:
+// content served by address, unsigned.
+//
+// An empty key is ignored rather than stored, so a caller that computes a key
+// and gets nothing cannot silently end up with verification "enabled" against
+// a key that authenticates every forgery (contenturl.ErrNoKey exists for the
+// same reason).
+func WithSigningKey(key []byte) Option {
+	return func(s *Store) {
+		if len(key) > 0 {
+			s.signingKey = append([]byte(nil), key...)
 		}
 	}
 }
@@ -394,6 +430,17 @@ func (s *Store) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(contentPathPrefix, func(w http.ResponseWriter, r *http.Request) {
 		hexDigest := strings.TrimPrefix(r.URL.Path, contentPathPrefix)
+		// The signature is checked BEFORE the store is consulted, so a
+		// caller without one learns nothing about which digests this origin
+		// holds — an unsigned request gets the same refusal whether the
+		// asset exists or not. Checking after would make the pair of
+		// responses a presence oracle over the whole store.
+		if len(s.signingKey) > 0 {
+			if err := contenturl.Verify(s.signingKey, hexDigest, r.URL.Query(), s.nowMs()); err != nil {
+				apihttp.WriteProblem(w, r, apihttp.TraceID(r), http.StatusForbidden, "FORBIDDEN", "Forbidden")
+				return
+			}
+		}
 		b := s.Serve(hexDigest)
 		if b == nil {
 			apihttp.WriteProblem(w, r, apihttp.TraceID(r), http.StatusNotFound, "NOT_FOUND", "Not Found")
