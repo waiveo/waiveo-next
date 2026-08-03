@@ -1505,6 +1505,13 @@ type WorkspaceExportRequest struct {
 	Passphrase string `json:"passphrase"`
 }
 
+// WorkspaceRestoreRequest The request body for the workspace restore operation. It names a container already present in this deployment's archive directory and carries the export passphrase that opens it. The archive is NAMED rather than uploaded: an upload would hold a multi-gigabyte container in the request path before anything about it had been verified.
+type WorkspaceRestoreRequest struct {
+	// Archive The container's file name within the archive directory. A bare name, never a path — a caller able to send a path would be choosing which file the server opens and decrypts.
+	Archive    string `json:"archive"`
+	Passphrase string `json:"passphrase"`
+}
+
 // CursorParam An opaque, URL-safe continuation token. `null` signals no further rows. Never constructed, parsed, or compared for meaning by a client.
 type CursorParam = Cursor
 
@@ -2237,6 +2244,15 @@ type ExportWorkspaceParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// RestoreWorkspaceParams defines parameters for RestoreWorkspace.
+type RestoreWorkspaceParams struct {
+	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
+	IdempotencyKey *IdempotencyKeyParam `json:"Idempotency-Key,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // CreateAdoptedDeviceJSONRequestBody defines body for CreateAdoptedDevice for application/json ContentType.
 type CreateAdoptedDeviceJSONRequestBody = AdoptedDeviceCreate
 
@@ -2320,6 +2336,9 @@ type DeleteWorkspaceJSONRequestBody = WorkspaceDeleteRequest
 
 // ExportWorkspaceJSONRequestBody defines body for ExportWorkspace for application/json ContentType.
 type ExportWorkspaceJSONRequestBody = WorkspaceExportRequest
+
+// RestoreWorkspaceJSONRequestBody defines body for RestoreWorkspace for application/json ContentType.
+type RestoreWorkspaceJSONRequestBody = WorkspaceRestoreRequest
 
 // RequestEditorFn  is the function signature for the RequestEditor callback function
 type RequestEditorFn func(ctx context.Context, req *http.Request) error
@@ -2671,6 +2690,11 @@ type ClientInterface interface {
 	ExportWorkspaceWithBody(ctx context.Context, params *ExportWorkspaceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	ExportWorkspace(ctx context.Context, params *ExportWorkspaceParams, body ExportWorkspaceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RestoreWorkspaceWithBody request with any body
+	RestoreWorkspaceWithBody(ctx context.Context, params *RestoreWorkspaceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	RestoreWorkspace(ctx context.Context, params *RestoreWorkspaceParams, body RestoreWorkspaceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 }
 
 func (c *Client) ListAdoptedDevices(ctx context.Context, params *ListAdoptedDevicesParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -3887,6 +3911,30 @@ func (c *Client) ExportWorkspaceWithBody(ctx context.Context, params *ExportWork
 
 func (c *Client) ExportWorkspace(ctx context.Context, params *ExportWorkspaceParams, body ExportWorkspaceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewExportWorkspaceRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RestoreWorkspaceWithBody(ctx context.Context, params *RestoreWorkspaceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRestoreWorkspaceRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RestoreWorkspace(ctx context.Context, params *RestoreWorkspaceParams, body RestoreWorkspaceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRestoreWorkspaceRequest(c.Server, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -8830,6 +8878,72 @@ func NewExportWorkspaceRequestWithBody(server string, params *ExportWorkspacePar
 	return req, nil
 }
 
+// NewRestoreWorkspaceRequest calls the generic RestoreWorkspace builder with application/json body
+func NewRestoreWorkspaceRequest(server string, params *RestoreWorkspaceParams, body RestoreWorkspaceJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewRestoreWorkspaceRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewRestoreWorkspaceRequestWithBody generates requests for RestoreWorkspace with any type of body
+func NewRestoreWorkspaceRequestWithBody(server string, params *RestoreWorkspaceParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/workspace/restore")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.IdempotencyKey != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Idempotency-Key", *params.IdempotencyKey, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Idempotency-Key", headerParam0)
+		}
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
 func (c *Client) applyEditors(ctx context.Context, req *http.Request, additionalEditors []RequestEditorFn) error {
 	for _, r := range c.RequestEditors {
 		if err := r(ctx, req); err != nil {
@@ -9150,6 +9264,11 @@ type ClientWithResponsesInterface interface {
 	ExportWorkspaceWithBodyWithResponse(ctx context.Context, params *ExportWorkspaceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ExportWorkspaceResponse, error)
 
 	ExportWorkspaceWithResponse(ctx context.Context, params *ExportWorkspaceParams, body ExportWorkspaceJSONRequestBody, reqEditors ...RequestEditorFn) (*ExportWorkspaceResponse, error)
+
+	// RestoreWorkspaceWithBodyWithResponse request with any body
+	RestoreWorkspaceWithBodyWithResponse(ctx context.Context, params *RestoreWorkspaceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RestoreWorkspaceResponse, error)
+
+	RestoreWorkspaceWithResponse(ctx context.Context, params *RestoreWorkspaceParams, body RestoreWorkspaceJSONRequestBody, reqEditors ...RequestEditorFn) (*RestoreWorkspaceResponse, error)
 }
 
 type ListAdoptedDevicesResponse struct {
@@ -11641,6 +11760,42 @@ func (r ExportWorkspaceResponse) ContentType() string {
 	return ""
 }
 
+type RestoreWorkspaceResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON202                   *Job
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON422 *UnprocessableContent
+	ApplicationproblemJSON429 *TooManyRequests
+	ApplicationproblemJSON503 *ServiceUnavailable
+}
+
+// Status returns HTTPResponse.Status
+func (r RestoreWorkspaceResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r RestoreWorkspaceResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r RestoreWorkspaceResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 // ListAdoptedDevicesWithResponse request returning *ListAdoptedDevicesResponse
 func (c *ClientWithResponses) ListAdoptedDevicesWithResponse(ctx context.Context, params *ListAdoptedDevicesParams, reqEditors ...RequestEditorFn) (*ListAdoptedDevicesResponse, error) {
 	rsp, err := c.ListAdoptedDevices(ctx, params, reqEditors...)
@@ -12529,6 +12684,23 @@ func (c *ClientWithResponses) ExportWorkspaceWithResponse(ctx context.Context, p
 		return nil, err
 	}
 	return ParseExportWorkspaceResponse(rsp)
+}
+
+// RestoreWorkspaceWithBodyWithResponse request with arbitrary body returning *RestoreWorkspaceResponse
+func (c *ClientWithResponses) RestoreWorkspaceWithBodyWithResponse(ctx context.Context, params *RestoreWorkspaceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RestoreWorkspaceResponse, error) {
+	rsp, err := c.RestoreWorkspaceWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRestoreWorkspaceResponse(rsp)
+}
+
+func (c *ClientWithResponses) RestoreWorkspaceWithResponse(ctx context.Context, params *RestoreWorkspaceParams, body RestoreWorkspaceJSONRequestBody, reqEditors ...RequestEditorFn) (*RestoreWorkspaceResponse, error) {
+	rsp, err := c.RestoreWorkspace(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRestoreWorkspaceResponse(rsp)
 }
 
 // ParseListAdoptedDevicesResponse parses an HTTP response from a ListAdoptedDevicesWithResponse call
@@ -16332,6 +16504,74 @@ func ParseExportWorkspaceResponse(rsp *http.Response) (*ExportWorkspaceResponse,
 			return nil, err
 		}
 		response.ApplicationproblemJSON429 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseRestoreWorkspaceResponse parses an HTTP response from a RestoreWorkspaceWithResponse call
+func ParseRestoreWorkspaceResponse(rsp *http.Response) (*RestoreWorkspaceResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &RestoreWorkspaceResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 202:
+		var dest Job
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON202 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest ServiceUnavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
 
 	}
 

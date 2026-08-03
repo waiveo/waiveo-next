@@ -230,6 +230,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/workspace/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stage a workspace restore from a portable archive
+         * @description Restores the workspace from a container `archive/1` defines, applied through an OFFLINE SWAP: the restored relational store is built beside the live one and adopted at the next boot. The Job's success therefore means "staged and ready", never "your workspace is now the archived one" — a restart is what completes it, and the destination is briefly unavailable across it.
+         *     That shape is what makes ARC-107's rollback guarantee hold without a rollback step: nothing the live workspace uses is touched until everything has already succeeded, so a restore that fails has changed nothing rather than needing to be undone. Owner-role only, like export.
+         */
+        post: operations["restoreWorkspace"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/workspace/export": {
         parameters: {
             query?: never;
@@ -1554,6 +1575,12 @@ export interface components {
             /** @description The `enabled` value to apply to every automation the selector matches. */
             enabled: boolean;
         };
+        /** @description The request body for the workspace restore operation. It names a container already present in this deployment's archive directory and carries the export passphrase that opens it. The archive is NAMED rather than uploaded: an upload would hold a multi-gigabyte container in the request path before anything about it had been verified. */
+        WorkspaceRestoreRequest: {
+            /** @description The container's file name within the archive directory. A bare name, never a path — a caller able to send a path would be choosing which file the server opens and decrypts. */
+            archive: string;
+            passphrase: string;
+        };
         /** @description The request body for the data-subject export operation (API-120/121). It carries the export passphrase and nothing else: the operation's target is the workspace itself, implicit in the path (API-123). */
         WorkspaceExportRequest: {
             /**
@@ -2435,6 +2462,42 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    restoreWorkspace: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceRestoreRequest"];
+            };
+        };
+        responses: {
+            /** @description Restore accepted; poll the returned Job resource. Its success means the restored store is STAGED — the swap happens at the next boot. */
+            202: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     exportWorkspace: {
