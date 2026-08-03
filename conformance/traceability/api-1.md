@@ -17,6 +17,26 @@ seam). Every one of those is closed and no driven case diverges today — see
 `conformance/drivers/api1/driver_test.go`'s `expectedFailing` map, which is
 empty and stays in place to make a NEW divergence loud.
 
+**Service-log read (API-130–API-139):** every row is `TBD-wave1` and the
+reason is sequencing, not oversight. This section is a NEW normative surface
+written against a recorded decision on its four open parameters (what may be
+read, the role floor, the filter set, synchronous vs Job) and it is up for
+review as text BEFORE anything implements it — deliberately, so the surface is
+reviewed rather than presented already built. There is therefore no case to
+list yet, and claiming one would be exactly the overclaim this column exists to
+prevent.
+
+Two of these rows will stay harder to cover than the rest, and it is worth
+saying which before someone reads a later `covered` and assumes more than it
+means. API-131's "restrict at the source query" is a statement about HOW the
+journal is read, and a case that observes only the returned entries cannot tell
+a bounded query from an unbounded read that filtered afterwards — the two are
+identical on the wire. API-134 is a requirement that something does NOT exist;
+the case for it is a rejected request, which proves the filter is unsupported
+today rather than that no content search can be reached by any other spelling.
+Both are better served by a driver that inspects the query the source is asked
+for than by a corpus case over the response.
+
 **Data-subject export/delete update:** `POST /api/v1/workspace/export` and
 `POST /api/v1/workspace/delete` are now mounted
 (`internal/app/api/workspace.go`), so `API-121-valid-export-workspace-job` —
@@ -115,3 +135,13 @@ deferral of a fuller data-subject-request workflow and has nothing to cover.
 | API-122 | `contracts/api-1.md#data-subject-export--delete` | - | TBD-wave1 |
 | API-123 | `contracts/api-1.md#data-subject-export--delete` | `API-121-valid-export-workspace-job` | covered |
 | API-124 | `contracts/api-1.md#data-subject-export--delete` | - | TBD-wave1 |
+| API-130 | `contracts/api-1.md#service-log-read` | - | TBD-wave1 |
+| API-131 | `contracts/api-1.md#service-log-read` | - | TBD-wave1 |
+| API-132 | `contracts/api-1.md#service-log-read` | - | TBD-wave1 |
+| API-133 | `contracts/api-1.md#service-log-read` | - | TBD-wave1 |
+| API-134 | `contracts/api-1.md#service-log-read` | - | TBD-wave1 |
+| API-135 | `contracts/api-1.md#service-log-read` | - | TBD-wave1 |
+| API-136 | `contracts/api-1.md#service-log-read` | - | TBD-wave1 |
+| API-137 | `contracts/api-1.md#service-log-read` | - | TBD-wave1 |
+| API-138 | `contracts/api-1.md#service-log-read` | - | TBD-wave1 |
+| API-139 | `contracts/api-1.md#service-log-read` | - | TBD-wave1 |

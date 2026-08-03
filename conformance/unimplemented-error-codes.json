@@ -149,6 +149,13 @@
       "codes": [
         "FRAGMENT_RECURSION_DEPTH_EXCEEDED"
       ]
+    },
+    {
+      "contract": "api-1.md",
+      "reason": "The service-log read operation (api/1 Service-log read, API-130-API-139) is a NEW normative surface published as text ahead of its implementation, on purpose: its four open parameters \u2014 what may be read, the role floor, the filter set, synchronous vs Job \u2014 were decided by the owner, and the section is up for review as CONTRACT before anything is built against it, so the surface is reviewed rather than presented already finished. LOG_SOURCE_UNAVAILABLE is the refusal API-138 requires when a deployment's platform provides no service journal, which is the ordinary case on the macOS hosts this repo is developed on; it is unimplemented for exactly as long as the operation itself is, and it goes away in one piece with it. This is a declared-ahead group, not a capability whose caller was forgotten.",
+      "codes": [
+        "LOG_SOURCE_UNAVAILABLE"
+      ]
     }
   ]
 }

@@ -206,6 +206,28 @@ The single `/api/v1` prefix (API-001) replaces a legacy core/extension URL split
 
 **[API-124]** This section specifies the export and delete operations' request/response shape and their self-hosted realization (API-121–122) only; a fuller data-subject-request workflow — intake and tracking for a request that arrives outside this API — is a deferred implementation this contract does not itself define.
 
+### Service-log read
+
+**[API-130]** api/1 exposes a log-read operation returning entries from the service journal of the platform's own units. It is a diagnostic surface — the answer to "why did this deployment misbehave" — and not a general log-search facility. Every constraint this section places on it (API-131–API-137) is a deliberate narrowing of a privileged read, not an implementation limit that a later minor should be expected to relax.
+
+**[API-131]** The operation MUST restrict its source to the platform's OWN service units, and MUST NOT return an entry produced by any other unit on the host. A self-hosted deployment's journal carries every unit's output — the SSH daemon, `sudo`, the kernel, and whatever unrelated services the operator runs on the same machine — none of which this platform authored and none of which it can make any claim about. The restriction MUST be applied to the source query itself rather than to results already read: a read that retrieves the whole journal and discards the surplus has already brought that content into this process, where a later defect, a partial write, or an error path that echoes its input can surface it.
+
+**[API-132]** The operation's role floor MUST be `owner` at the workspace root — the same floor the workspace export operation carries (API-120–121). The two are comparable in what they expose: an export contains what a workspace deliberately stores, while a log line contains whatever a component happened to emit, which by construction includes material `security-model.md` SEC-051 forbids emitting and a defect may nonetheless have placed there. A floor below this one would make a read of that residue available to a principal the workspace's own contents are not.
+
+**[API-133]** The operation MUST accept exactly these filters, and no others: `since` and `until` (epoch milliseconds, half-open — `since` inclusive, `until` exclusive), `unit` (a value drawn from API-131's own set), `priority` (a syslog severity, 0–7, matching entries at that severity or more severe), `limit`, and `cursor`. An unrecognized filter MUST be refused with `VALIDATION_FAILED` rather than ignored: silently dropping a filter answers a question the caller did not ask, and a caller who believes they narrowed a log read has been handed more than they meant to see.
+
+**[API-134]** The operation MUST NOT accept a free-text, substring, or pattern search over entry content. A content search across lines this platform did not author is a search tool for whatever those lines happen to contain, and the operator who suspects a credential was logged and the attacker who suspects the same thing issue a byte-identical query. This is the one excluded filter whose absence costs an operator little — the remaining filters narrow to a page they can read — and whose presence would make every SEC-051 violation anywhere in the system directly retrievable rather than merely present.
+
+**[API-135]** The operation MUST be synchronous, and MUST NOT be realized as a Job (Fleet-mutating operations & the Job resource). A bounded page of entries completes inside its own request/response cycle, which is the boundary that resource exists to cross. Realizing it as a Job would also persist the returned entries into the job store — a second copy of exactly the content this section otherwise bounds, with its own lifetime, its own retention, and its own read path that none of API-131–134 govern.
+
+**[API-136]** The server MUST apply a maximum `limit` of its own, and MUST clamp a larger request to it rather than refusing the request. The bound is what keeps API-135's synchronous shape honest: without one, a caller names a `limit` that cannot be served inside a request, and the operation either fails under load or quietly becomes the long-running job API-135 forbids. Clamping rather than refusing is chosen because the caller's intent — "as much as I can get" — is satisfiable, and the response's own paging (API-137) tells them there is more.
+
+**[API-137]** The operation MUST page under this contract's keyset-pagination convention (Keyset pagination), returning a `cursor` when more entries match and refusing a malformed, expired, or foreign cursor with `CURSOR_INVALID`. Entries MUST be returned in a stable order that a cursor can resume from; a journal read that returned entries in an order two requests could disagree about would let a page be skipped or repeated with nothing in the response indicating it.
+
+**[API-138]** A deployment whose platform provides no service journal MUST answer with `LOG_SOURCE_UNAVAILABLE`, and MUST NOT answer with an empty success. An empty `200` is indistinguishable from "the platform ran and logged nothing" — a false statement about a working system, and one that sends an operator to look for a fault in the component they were investigating rather than in the absent journal. This is a platform-capability refusal, not a temporary one: `UNAVAILABLE` would invite the retry that a permanently journal-less host will never satisfy.
+
+**[API-139]** A returned entry MUST carry at least `{timestamp_ms, unit, priority, message}`. `unit` is included even though API-131 bounds the set it can be drawn from, because a caller filtering across more than one unit cannot otherwise attribute a line; `priority` is included as the numeric severity the filter uses, so a client can re-apply the same threshold it asked for without a second vocabulary. This contract defines no obligation to parse, normalize, or redact `message` — it is the unit's own emitted text — and a deployment MUST NOT represent it as anything else.
+
 ## Wire shapes
 
 ```json
@@ -293,6 +315,7 @@ api/1 has no connection-time handshake — it is negotiated once, structurally, 
 | `REVISION_CONFLICT` | `If-Match` did not equal the resource's current `ETag`/`revision`. | yes — re-read and retry with the fresh revision |
 | `IF_MATCH_REQUIRED` | A state-changing request against an existing resource omitted `If-Match`. | yes — retry with `If-Match` set |
 | `CURSOR_INVALID` | The supplied `cursor` was malformed, expired, or issued by a different operation. | yes — retry without a cursor |
+| `LOG_SOURCE_UNAVAILABLE` | The service-log read operation (Service-log read) was called on a deployment whose platform provides no service journal. A capability refusal, not a temporary one — distinct from `UNAVAILABLE`, which invites a retry a journal-less host will never satisfy. | no — the platform has no journal to read |
 | `SELECTOR_INVALID` | The supplied `selector` failed to parse under the label-selector grammar. | yes — retry with a corrected selector |
 | `IDEMPOTENCY_KEY_REUSED` | The same `Idempotency-Key` scope was presented with a different request body. | no — use a new key or the original body |
 | `IDEMPOTENCY_KEY_IN_PROGRESS` | The same `Idempotency-Key` scope's original request has not yet completed. | yes — after a short backoff |
