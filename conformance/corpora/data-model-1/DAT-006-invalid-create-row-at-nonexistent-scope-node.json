@@ -2,7 +2,7 @@
   "case_id": "DAT-006-invalid-create-row-at-nonexistent-scope-node",
   "contract": "data-model/1",
   "req_ids": ["DAT-006"],
-  "description": "Creating a schedule whose `scope_node` names no stored scope node is refused 422 Unprocessable Content / VALIDATION_FAILED against `scope_node`, with no row created. DAT-006 makes that column \"the id of the scope node it is placed under\", so a row placed under nothing is the same dangling state DAT-021 refuses a deletion for, reached from the referring end instead of the referenced one. The seeded tree is complete and conformant, so the only thing wrong in the whole store is where this row says it is. Note the code: data-model/1's Error taxonomy publishes NO code for this refusal — its scope-node codes are about a NODE's own parent_id (DAT-002/003) or about deletion (DAT-020-022) — so the per-field code is REFERENCE_INVALID, the one every other unresolvable cross-row reference in this data model already uses (DAT-050/060/070/075/080), and the published code the case pins is api/1's own VALIDATION_FAILED envelope. A schedule is the subject because it carries a placement and a name and nothing else: no asset reference, no owning row, nothing that could refuse this request ahead of its placement.",
+  "description": "Creating a schedule whose `scope_node` names no stored scope node is refused 422 Unprocessable Content / VALIDATION_FAILED against `scope_node`, with no row created. DAT-006 makes that column \"the id of the scope node it is placed under\", so a row placed under nothing is the same dangling state DAT-021 refuses a deletion for, reached from the referring end instead of the referenced one. The seeded tree is complete and conformant, so the only thing wrong in the whole store is where this row says it is. Note the code: data-model/1's Error taxonomy publishes NO code for this refusal — its scope-node codes are about a NODE's own parent_id (DAT-002/003) or about deletion (DAT-020-022) — so the per-field code is ROW_SCOPE_NODE_UNRESOLVED, the one every other unresolvable cross-row reference in this data model already uses (DAT-050/060/070/075/080), and the published code the case pins is api/1's own VALIDATION_FAILED envelope. A schedule is the subject because it carries a placement and a name and nothing else: no asset reference, no owning row, nothing that could refuse this request ahead of its placement.",
   "input": {
     "seed": {
       "scope_nodes": [
@@ -50,7 +50,7 @@
       "errors": [
         {
           "field": "scope_node",
-          "code": "REFERENCE_INVALID",
+          "code": "ROW_SCOPE_NODE_UNRESOLVED",
           "message": "a row's scope_node MUST be the id of an existing scope node (DAT-006); 01J8ZDATN0SVCHN0DE00000002 names none (table schedules)"
         }
       ],

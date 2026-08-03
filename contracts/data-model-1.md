@@ -382,7 +382,7 @@ This contract has no live wire handshake of its own; `api/1`'s CRUD operations a
 | `SCOPE_NODE_NAME_INVALID` | A scope node's `name` is empty, whitespace-only, or exceeds 200 characters (DAT-001a). | no |
 | `ROW_ID_INVALID` | A row's `id` (a preset-batch's `preset_id`) is not a syntactically valid Canonical ULID (DAT-005a). | no |
 | `SCREEN_ID_UNRESOLVED` | A `screen_id` does not name a screen identity row — it names a scope node, or nothing at all (DAT-004a). | no |
-| `SCOPE_NODE_PARENT_INVALID` | A scope node's `kind` is not a permitted child of its `parent_id`'s own `kind` (DAT-003), or `parent_id` is null on a non-`org` node or non-null on an `org` node (DAT-002). | no |
+| `SCOPE_NODE_PARENT_INVALID` | A scope node's `parent_id` is wrong in any of four ways, all of them DAT-002/DAT-003 faults on that one field: its `kind` is not a permitted child of the parent's own `kind` (DAT-003); `parent_id` is null on a non-`org` node or non-null on an `org` node (DAT-002); `parent_id` names no existing scope node (DAT-002's resolution half); or the `parent_id` chain cycles instead of reaching the `org` root (DAT-002's single-root half). The last two are enforced and were absent from this column until the register below was written — recorded here because a meaning that trails its implementation is the drift a reader cannot see, and no gate walks this column's prose. | no |
 | `SCOPE_NODE_MULTIPLE_ORG` | A scope-node tree contains more than one `org`-kind node, or a node's ancestor chain reaches a second `org`-kind node (DAT-002). | no |
 | `SCOPE_NODE_GEO_REQUIRED` | A `site`-kind scope node's `tz`/`lat`/`long` is missing or null (DAT-031). | no |
 | `SCOPE_NODE_ACCOUNT_STATE_INVALID` | `account_state` is missing or invalid on an `org`-kind node, or present on a non-`org`-kind node (DAT-010). | no |
@@ -394,6 +394,53 @@ This contract has no live wire handshake of its own; `api/1`'s CRUD operations a
 | `DAYPART_OVERLAP` | Two daypart rows under the same `schedule_id` declare an overlapping range (DAT-073). | no |
 | `SCHEDULER_ROW_PACK_OWNED` | A create or update request supplied a row-level pack-identifying field on a scheduling-core row (DAT-101). | no |
 | `PRESET_BATCH_COMMANDS_EMPTY` | A preset-batch row's `commands` array is empty (DAT-091). | no |
+
+## Field-level error register
+
+api/1's Problem shape carries two distinct code vocabularies (`api/1` API-013):
+the top-level `code`, drawn from the Error taxonomy above, and each
+`errors[].code`, "drawn from the error registry of the contract that owns the
+failing field's rule". Until this section existed, this contract published only
+the first. The second was emitted anyway — by more than twenty distinct
+per-field codes across the tree, none of them appearing in any taxonomy a
+client could read.
+
+That is a violation of API-011 ("a server MUST NOT emit a `code` value outside
+the registry") on its face. It has a second, quieter cost: an unpublished code
+cannot reach a generated client, so no console or CLI author can branch on it
+in a typed way — they compare a raw string, which is the thing published codes
+exist to avoid.
+
+**Ownership follows the FIELD, not the emitting package.** A code appears in
+the register of the contract that owns the rule the field violated, wherever in
+the tree the check happens to run. So a data-model row rule validated inside
+the api layer, the relay's schedule host, or the feeder's snapshot builder
+still draws its `errors[].code` from this register — that is what makes API-013
+mean anything, and it is why this table is not a list of one package's strings.
+
+These are per-field codes only. They never appear as a Problem's top-level
+`code`, which stays `VALIDATION_FAILED` for every one of them.
+
+| code | field-level meaning | retryable |
+|---|---|---|
+| `REFERENCE_INVALID` | A field naming another row does not resolve to an existing row of the expected kind — a schedule's `fallback_id`, a fallback's `playlist_id`, a daypart's `schedule_id`, a screen's `device_id`, and the rest of the cross-row references this model defines. | no — name a row that exists |
+| `ROW_SCOPE_NODE_MISSING` | A row that must be placed carries no `scope_node` at all (DAT-006's presence half). Distinct from `ROW_SCOPE_NODE_UNRESOLVED`: nothing was named, so nothing could be looked up. | no — place the row |
+| `ROW_SCOPE_NODE_UNRESOLVED` | A row's `scope_node` names a scope node that does not exist (DAT-006's resolution half). Given its own code rather than folded into `REFERENCE_INVALID` because "you named a node that is not there" and "you named a playlist that is not there" are different operator mistakes with different fixes, and a client that cannot tell them apart cannot say which. | no — name an existing scope node |
+| `ROW_NAME_INVALID` | A row's `name` is absent or not a usable name for the row kind. | no — supply a name |
+| `ROW_MALFORMED` | A row's raw body could not be decoded into the shape its kind declares. It names the row, not a field within it, because a body that will not decode has no fields to attribute the fault to. | no — fix the row's shape |
+| `SCOPE_NODE_MISMATCH` | A child row's `scope_node` does not equal its owning row's (DAT-007) — a daypart or validity window placed somewhere other than the schedule that owns it. | no — match the owner's placement |
+| `SCOPE_NODE_GEO_FORBIDDEN` | An `org`-kind scope node declares `tz`, `lat`, or `long`, which DAT-032 forbids. | no — remove the geo fields |
+| `SCOPE_NODE_GEO_PARTIAL` | A group or screen geo override declares some but not all of `tz`, `lat`, `long` (DAT-032/DAT-033). They resolve as one unit, so a partial override has no defined meaning. | no — declare all three or none |
+| `EFFECTIVE_GEO_UNRESOLVED` | A row's effective `tz`/`lat`/`long` cannot be resolved: no site-kind ancestor in the provided tree declares geo. This is a refusal rather than a fallback on purpose — the platform never substitutes a box-local timezone, which would make a schedule fire at a time nobody authored. | no — declare geo on a site ancestor |
+| `DISPLAY_POWER_INVALID` | A `display_power` value is outside the closed set `on`, `off`, `blank` (DAT-074). | no — use a declared value |
+| `DEVICE_IDENTITY_INCOMPLETE` | A device row is missing `driver` or `native_id` — each half of the `(site, driver, native_id)` tuple a `device_id`'s identity is scoped to (`relay/1` REL-063). | no — supply both halves |
+| `DEVICE_IDENTITY_DUPLICATE` | Another device row already claims the same `(site, driver, native_id)` identity. | no — the device is already registered |
+| `DEVICE_CLASS_MISSING` | A device row's entity carries no `device_class` — the vocabulary a command to that entity resolves against (`device-class-registry/1` REG-052). | no — declare the entity's class |
+| `ENTITY_ID_MISSING` | A device row's entity carries no `entity_id`, the unit a device command is addressed to (`relay/1` REL-063/REL-112). | no — supply an entity_id |
+| `ENTITY_ID_INVALID` | An `entity_id` is not a syntactically valid canonical ULID. | no — use a canonical ULID |
+| `ENTITY_ID_DUPLICATE` | A device row lists the same `entity_id` twice, which would give a command addressed to it two definitions of its policy. | no — list each entity once |
+| `ENTITY_CATEGORY_INVALID` | An entity's `category` is outside the closed set `primary`, `diagnostic` (`relay/1` REL-063). | no — use a declared category |
+| `POLL_CADENCE_INVALID` | A stated `poll_cadence_seconds` is not a positive number of seconds (`relay/1` REL-063). | no — state a positive cadence |
 
 ## Conformance notes
 

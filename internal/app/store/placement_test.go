@@ -325,8 +325,8 @@ func assertUnresolvedPlacement(t *testing.T, err error, what string) {
 		t.Errorf("%s: refusal carries no errors", what)
 		return
 	}
-	if e := verr.Errors[0]; e.Field != "scope_node" || e.Code != "REFERENCE_INVALID" {
-		t.Errorf("%s: leading refusal = {field:%q code:%q}, want {scope_node REFERENCE_INVALID}; all = %+v",
+	if e := verr.Errors[0]; e.Field != "scope_node" || e.Code != "ROW_SCOPE_NODE_UNRESOLVED" {
+		t.Errorf("%s: leading refusal = {field:%q code:%q}, want {scope_node ROW_SCOPE_NODE_UNRESOLVED}; all = %+v",
 			what, e.Field, e.Code, verr.Errors)
 	}
 }

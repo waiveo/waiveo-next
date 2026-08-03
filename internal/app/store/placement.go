@@ -219,19 +219,16 @@ func scopeNodeExists(ctx context.Context, q queryer, scopeNode string) (bool, er
 //
 // # The code
 //
-// data-model/1 publishes NO error code for this refusal. Its Error taxonomy has
-// SCOPE_NODE_PARENT_INVALID for a scope node's own parent_id (DAT-002/003) and
-// SCOPE_NODE_IN_USE / _NOT_EMPTY / _ORG_UNDELETABLE for the deletion side
-// (DAT-020-022) — none of which is a row's own placement — and DAT-006 states the
-// requirement without naming a refusal for it. So this uses REFERENCE_INVALID,
-// which is what every OTHER unresolvable cross-row reference in the data model is
-// already spelled as (DAT-050/060/070/075/080's schedule_id, playlist_id,
-// fallback_id and preset_batch_id, and PLY-124's optional device_id — see
-// internal/datamodel/validate.go and identityrows.go). It is not itself published;
-// it is this data model's established per-field vocabulary for "this reference
-// names no row", and a row's scope_node is that, exactly. Borrowing
-// SCOPE_NODE_PARENT_INVALID instead would tell a caller their parent_id was wrong
-// on a row that has no parent_id.
+// ROW_SCOPE_NODE_UNRESOLVED, published in data-model/1's Field-level error
+// register. It has its own code rather than the general REFERENCE_INVALID
+// because "you named a scope node that does not exist" and "you named a
+// playlist that does not exist" are different operator mistakes with different
+// fixes, and a client handed one code for both cannot say which it is looking
+// at. It is also distinct from ROW_SCOPE_NODE_MISSING, which is DAT-006's
+// PRESENCE half: there, nothing was named, so nothing could be looked up.
+//
+// Borrowing SCOPE_NODE_PARENT_INVALID was the other option and is worse — it
+// would tell a caller their parent_id is wrong on a row that has no parent_id.
 //
 // The published code a caller branches on first is api/1's own, and it is the one
 // this becomes: VALIDATION_FAILED, 422.
@@ -245,7 +242,7 @@ func checkPlacementResolves(ctx context.Context, q queryer, kind, scopeNode stri
 	}
 	return &ValidationError{Errors: []datamodel.Error{{
 		Field: "scope_node",
-		Code:  "REFERENCE_INVALID",
+		Code:  "ROW_SCOPE_NODE_UNRESOLVED",
 		Message: "a row's scope_node MUST be the id of an existing scope node (DAT-006); " +
 			scopeNode + " names none (table " + kind + ")",
 	}}}

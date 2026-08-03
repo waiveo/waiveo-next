@@ -295,6 +295,25 @@ manifest/1 has no live handshake of its own — negotiation happens at install t
 | `ACTION_IDEMPOTENCY_CLASS_INVALID` | An `actions[]` entry omits `idempotencyClass`, or its value is not `safe-to-retry`/`not-idempotent`. | no |
 | `DATAMODEL_VERSION_REGRESSION` | An update declares a `dataModel.version` lower than the currently installed version. | no |
 
+## Field-level error register
+
+api/1's Problem shape carries two code vocabularies (`api/1` API-013): the
+top-level `code` from the Error taxonomy above, and each `errors[].code`,
+"drawn from the error registry of the contract that owns the failing field's
+rule". This section publishes the second for this contract. Ownership follows
+the FIELD rather than the emitting package, and these codes never appear as a
+Problem's top-level `code` — that stays `VALIDATION_FAILED`.
+
+| code | field-level meaning | retryable |
+|---|---|---|
+| `REQUIRED` | A required field of a pack-data row is absent. | no — supply the field |
+| `INVALID_TYPE` | A pack-data row's field is present but of the wrong JSON type for its declared shape. | no — correct the type |
+| `PACK_ARTIFACT_INVALID` | A pack artifact could not be read as the zip container the format requires, so nothing inside it could be examined. It names the artifact rather than a field, because an unreadable container has no fields to attribute a fault to. | no — republish a readable artifact |
+| `INVALID_ULID` | A pack-data field that must be a ULID reference is present, a string, and not a valid one. | no — supply a canonical ULID |
+| `INVALID_LIFECYCLE_STATE` | A row's `lifecycle_state` is outside the closed set `draft`, `published`, `archived`. | no — use a declared state |
+| `LIFECYCLE_NOT_ALLOWED` | A row wrote a `lifecycle_state` other than `published` into a collection that does not declare `lifecycle: draft-publish` (MAN-052). The value is well-formed; the collection simply has no lifecycle for it to name. | no — declare the lifecycle, or write `published` |
+| `PARAMS_WITHOUT_TEMPLATE` | A row carries `params` with no `template_ref` (MAN-051) — parameters with nothing to parameterize. | no — supply a template_ref, or drop params |
+
 ## Conformance notes
 
 - Traceability map: `conformance/traceability/manifest-1.md` — maps every `MAN-NNN` above to the case(s) that exercise it.

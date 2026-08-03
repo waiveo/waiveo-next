@@ -122,8 +122,9 @@ function walk(dir, out = []) {
 // ---------------------------------------------------------------------------
 // contract filename -> string[] of codes, in table order.
 const publishedByContract = new Map();
+const publishedFieldByContract = new Map();
 
-function parseTaxonomy(path) {
+function parseTaxonomy(path, heading = "Error taxonomy") {
   const lines = readFileSync(path, "utf8").split("\n");
   const codes = [];
   let inSection = false;
@@ -135,7 +136,7 @@ function parseTaxonomy(path) {
     }
     if (inFence) continue;
     const line = raw.trim();
-    if (/^##\s+Error taxonomy\s*$/.test(line)) {
+    if (new RegExp(`^##\\s+${heading}\\s*$`).test(line)) {
       inSection = true;
       continue;
     }
@@ -159,6 +160,7 @@ for (const path of walk(CONTRACTS_ROOT)) {
   if (EXEMPT_CONTRACT_NAMES.has(name)) continue;
   const codes = parseTaxonomy(path);
   publishedByContract.set(name, codes);
+  publishedFieldByContract.set(name, parseTaxonomy(path, "Field-level error register"));
   const seen = new Set();
   for (const code of codes) {
     if (seen.has(code)) failures.push(`${path}: Error taxonomy lists ${code} twice`);
@@ -167,6 +169,10 @@ for (const path of walk(CONTRACTS_ROOT)) {
 }
 
 const publishedCodes = new Set([...publishedByContract.values()].flat());
+// Field-level codes are a SEPARATE register (api/1 API-013): they appear as
+// `errors[].code`, never as a Problem's top-level `code`. Kept apart so a
+// field code cannot satisfy a top-level publication requirement or vice versa.
+const publishedFieldCodes = new Set([...publishedFieldByContract.values()].flat());
 
 // ---------------------------------------------------------------------------
 // Step 2: classify every occurrence of a published code in implementation source.
@@ -417,6 +423,70 @@ if (existsSync(OPENAPI_PATH)) {
   }
 }
 
+// #6 THE REVERSE DIRECTION: a code an implementation EMITS must be published.
+//
+// Checks #1-#5 all walk published -> implemented. That direction cannot see a
+// code that is emitted and published nowhere, in either of its two forms — and
+// that is not hypothetical: twenty-two distinct per-field codes were emitted
+// across this tree while appearing in no taxonomy any client could read, which
+// is exactly what API-011 forbids ("a server MUST NOT emit a `code` value
+// outside the registry"). The gate was structurally silent about all of them.
+//
+// The cost of that silence is concrete. An unpublished code cannot reach a
+// generated client, so a console or CLI author cannot branch on it in a typed
+// way; they compare a raw string, which is the thing a published registry
+// exists to prevent.
+//
+// WHAT THIS RECOGNISES AS AN EMISSION, and what it therefore does not:
+//
+//   (a) a struct field named `Code`/`ErrCode` assigned a quoted
+//       SCREAMING_SNAKE token — `Error{Field: "x", Code: "Y"}`;
+//   (b) a quoted SCREAMING_SNAKE token immediately following a quoted
+//       lowercase field name AND followed by a comma — `RowError{"scope_node",
+//       "REQUIRED", "..."}` and `add("url", "VALUE_INVALID", "...")`.
+//
+// The trailing comma in (b) is load-bearing rather than incidental. Without it
+// the pattern also matched `q.Set("algorithm", "SHA1")` — a URL query
+// parameter, not an error at all. Every real emission carries a human message
+// as its third argument, and a two-argument call does not; requiring the comma
+// separates them without a list of names to keep up to date.
+//
+// A call whose field argument is an EXPRESSION rather than a literal — the
+// `add(schemaField(i), "VALUE_INVALID", ...)` spelling — is not matched by (b),
+// so a code emitted ONLY that way would still be invisible here. That limit is
+// written down rather than papered over: it is the same class of blind spot
+// this check exists to close, one level in, and closing it properly wants a Go
+// AST pass rather than a regex.
+const CODE_FIELD_RE = /\b(?:Err)?Code:\s*"([A-Z][A-Z0-9_]{2,})"/g;
+const FIELD_THEN_CODE_RE = /"[a-z][a-z0-9_.]*"\s*,\s*"([A-Z][A-Z0-9_]{2,})"\s*,/g;
+
+const emittedAt = new Map();
+for (const path of walk(".")) {
+  const rel = relative(".", path);
+  if (!implementationSource(rel)) continue;
+  const src = readFileSync(path, "utf8");
+  if (GENERATED_MARKER_RE.test(src)) continue;
+  for (const re of [CODE_FIELD_RE, FIELD_THEN_CODE_RE]) {
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(src)) !== null) {
+      const code = m[1];
+      const line = src.slice(0, m.index).split("\n").length;
+      if (!emittedAt.has(code)) emittedAt.set(code, `${rel}:${line}`);
+    }
+  }
+}
+
+for (const [code, at] of [...emittedAt].sort()) {
+  if (publishedCodes.has(code) || publishedFieldCodes.has(code)) continue;
+  failures.push(
+    `${at}: ${code} is emitted but published in no contract — api/1 API-011 forbids emitting a code outside the registry, ` +
+      `and an unpublished code cannot reach a generated client, so a caller must compare a raw string. ` +
+      `Publish it in the owning contract's "Field-level error register" (per-field, an errors[].code) or its "Error taxonomy" ` +
+      `(a top-level code). Ownership follows the FIELD's rule, not the emitting package (api/1 API-013).`
+  );
+}
+
 // ---------------------------------------------------------------------------
 const publishedPairs = [...publishedByContract.values()].reduce((n, c) => n + c.length, 0);
 if (failures.length) {
@@ -424,11 +494,22 @@ if (failures.length) {
   console.log(`SUMMARY: validate-error-codes: FAILED — ${failures.length} issue(s); first: ${failures[0]}`);
   process.exitCode = 1;
 } else {
+  // The field-register counts are reported, not merely computed. A reverse
+  // check that silently matched nothing — a regex that stopped firing, a walk
+  // that skipped the tree — looks exactly like a clean tree, which is the
+  // failure this whole check exists to end.
+  const fieldPairs = [...publishedFieldByContract.values()].reduce((n, c) => n + c.length, 0);
+  if (emittedAt.size === 0) {
+    console.error("validate-error-codes: the emission scan matched ZERO codes — it is broken, and a broken scan passes");
+    process.exitCode = 1;
+  }
   console.log(
     `validate-error-codes: OK (${publishedPairs} published (contract, code) pair(s) over ${publishedByContract.size} contract(s), ` +
-      `${publishedCodes.size} distinct code(s); ${allowed.size} allowlisted as unimplemented)`
+      `${publishedCodes.size} distinct code(s); ${allowed.size} allowlisted as unimplemented; ` +
+      `${fieldPairs} field-level pair(s), ${publishedFieldCodes.size} distinct; ${emittedAt.size} emitted code(s) checked back)`
   );
   console.log(
-    `SUMMARY: validate-error-codes: OK (${publishedPairs} published pair(s), ${allowed.size} allowlisted unimplemented)`
+    `SUMMARY: validate-error-codes: OK (${publishedPairs} published pair(s), ${fieldPairs} field-level pair(s), ` +
+      `${emittedAt.size} emitted checked back, ${allowed.size} allowlisted unimplemented)`
   );
 }

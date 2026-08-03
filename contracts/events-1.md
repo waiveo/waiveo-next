@@ -454,6 +454,19 @@ X-Waiveo-Signature: 5f6e...a1b2
 | `INTERNAL` | An unclassified server-side failure. | yes — with backoff |
 | `UNAVAILABLE` | The server or a dependency it needs is temporarily unable to serve the request. | yes — with backoff |
 
+## Field-level error register
+
+api/1's Problem shape carries two code vocabularies (`api/1` API-013): the
+top-level `code` from the Error taxonomy above, and each `errors[].code`,
+"drawn from the error registry of the contract that owns the failing field's
+rule". This section publishes the second for this contract. Ownership follows
+the FIELD rather than the emitting package, and these codes never appear as a
+Problem's top-level `code` — that stays `VALIDATION_FAILED`.
+
+| code | field-level meaning | retryable |
+|---|---|---|
+| `VALUE_INVALID` | A webhook endpoint field holds a value the endpoint's own rules refuse — a `url` that is not an absolute `http`/`https` URL, names no host, carries credentials in its userinfo component, or carries a query string (where a credential placed there would be recorded wherever the URL is), or a `schemas` entry that is not a non-empty registered or pack-namespaced schema name. | no — correct the value |
+
 ## Conformance notes
 
 - Traceability map: `conformance/traceability/events-1.md` — maps every `EVT-NNN` above to the case(s) that exercise it.
