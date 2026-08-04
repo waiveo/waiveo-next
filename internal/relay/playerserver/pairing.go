@@ -995,21 +995,28 @@ func (s *Server) redeem(selector string) (redemption, error) {
 		return redemption{}, errPairingCodeInvalid
 	}
 
-	if grant.RedemptionMode == "one-time" {
-		s.redeemedGrants[grant.GrantID] = true
-		if s.sessionStore != nil {
-			if err := s.sessionStore.MarkPairingGrantRedeemed(grant.GrantID, nowMs); err != nil {
-				return redemption{}, fmt.Errorf("%w: %v", errSessionPersistFailed, err)
-			}
-		}
-	}
-
-	// REL-124: EVERY redemption this relay performs is owed upstream — not
-	// only a one-time one — so this rides outside the branch above. It is
-	// enqueued BEFORE the credential is minted and returned, so a redemption a
-	// player actually received can never be one this relay forgot it owed.
-	if err := s.recordRedemptionOwedLocked(grant.GrantID, nowMs); err != nil {
+	// The consumption mark (REL-121c, one-time only) and the owed upstream
+	// report (REL-124, EVERY redemption) are recorded TOGETHER, before anything
+	// is minted, and the in-memory mark follows only once that succeeded.
+	//
+	// They used to be two writes with the consumption first, and a failure in
+	// the second BURNED THE GRANT: recorded as spent, no token minted, 500
+	// returned, and no retry able to recover because the grant the player needed
+	// was consumed by an attempt that gave it nothing.
+	//
+	// Reordering alone does not fix it — recording the report first turns the
+	// same failure into a report of a redemption that never happened, and the
+	// report ledger has no idempotency key, so the retry enqueues a second one.
+	// One transaction is the only ordering with no losing side.
+	oneTime := grant.RedemptionMode == "one-time"
+	if err := s.recordRedemptionLocked(grant.GrantID, nowMs, oneTime); err != nil {
 		return redemption{}, err
+	}
+	// In-memory last, because it cannot fail. Setting it earlier is what made a
+	// store failure consume the grant for the life of the process even when
+	// nothing durable had been written.
+	if oneTime {
+		s.redeemedGrants[grant.GrantID] = true
 	}
 
 	// REL-121a: a screen-bound grant's redemption results in exactly the
@@ -1085,8 +1092,10 @@ type RedemptionReport struct {
 // in-process slice cannot do. Without persistence the in-memory slice keeps
 // today's non-durable behavior for tests and harnesses byte-for-byte. The
 // caller holds s.mu.
-func (s *Server) recordRedemptionOwedLocked(grantID string, redeemedAtMs int64) error {
+func (s *Server) recordRedemptionLocked(grantID string, redeemedAtMs int64, oneTime bool) error {
 	if s.sessionStore == nil {
+		// No durable store: the in-memory queue is the whole record, and an
+		// append cannot fail, so there is no partial state to guard against.
 		s.nextReportSeq++
 		s.pendingReports = append(s.pendingReports, RedemptionReport{
 			Seq:        s.nextReportSeq,
@@ -1095,7 +1104,7 @@ func (s *Server) recordRedemptionOwedLocked(grantID string, redeemedAtMs int64) 
 		})
 		return nil
 	}
-	if err := s.sessionStore.RecordRedemptionReport(grantID, redeemedAtMs); err != nil {
+	if err := s.sessionStore.RecordRedemption(grantID, redeemedAtMs, oneTime); err != nil {
 		return fmt.Errorf("%w: %v", errSessionPersistFailed, err)
 	}
 	return nil

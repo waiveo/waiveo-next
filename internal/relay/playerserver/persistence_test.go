@@ -187,3 +187,79 @@ func TestChannelTokenExpiresAtIsUnaffectedByPersistence(t *testing.T) {
 		t.Errorf("persisted expires_at = %d, want it to match the response's own expires_at %d", expiresAt, pr.ExpiresAt)
 	}
 }
+
+// TestAStoreFailureDoesNotBurnTheGrant: a redemption whose durable writes fail
+// must leave the grant SPENDABLE.
+//
+// The path used to mark the grant consumed — in memory, then durably — and only
+// afterwards enqueue the owed upstream report. A failure in that enqueue
+// returned 500 with the grant already spent and no token minted, so the player
+// could not pair and no retry could recover: the credential it needed had been
+// consumed by an attempt that gave it nothing.
+//
+// Reordering alone would not have fixed it. Recording the report first turns the
+// same failure into a report of a redemption that never happened, and the report
+// ledger is append-only with no idempotency key, so the retry enqueues a second.
+// The two writes are one transaction now, and the in-memory mark follows only
+// once it commits.
+//
+// The failure is produced by CLOSING the store, which is the most faithful
+// cheap stand-in for the real cases (disk full, file removed underneath a long-
+// running relay): every write returns an error and none of them lands.
+//
+// WHAT THIS DOES NOT COVER, stated so a later reader does not assume it. Closing
+// the store fails BOTH writes, so this pins the ordering — a failed redemption
+// leaves the grant spendable — and not the transaction's atomicity. The case
+// atomicity exists for is the second write failing after the first succeeded,
+// which needs a store that can be told to fail one statement, and no such seam
+// exists here. The transaction is still the right construction: it removes that
+// case rather than leaving it to be tested.
+func TestAStoreFailureDoesNotBurnTheGrant(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "relay.db")
+	store, err := identity.Open(dbPath)
+	if err != nil {
+		t.Fatalf("identity.Open(%q): %v", dbPath, err)
+	}
+
+	grant := testGrant()
+	srv, _, _ := newTestServer(t, grant)
+	srv.EnablePersistence(store)
+
+	// Every durable write from here on fails.
+	if err := store.Close(); err != nil {
+		t.Fatalf("close the store to force write failures: %v", err)
+	}
+
+	req := PairingRequest{
+		HardwareID:    "hw-burn-0001",
+		GrantSelector: grant.GrantID,
+		Capabilities:  Capabilities{ContentTypes: []string{"image"}, PlayerVersion: "1.0.0"},
+	}
+	resp, raw := doPair(t, srv, req)
+	if resp.StatusCode == 200 {
+		t.Fatalf("a redemption whose store writes all failed reported success: body = %v", raw)
+	}
+
+	// The relay recovers — a fresh store over the same file, as a restart would
+	// produce — and the SAME grant must still redeem. This is the assertion the
+	// bug fails: the in-memory mark survives the new store, so a grant burned in
+	// memory stays burned for the life of the process even though nothing
+	// durable was ever written.
+	reopened, err := identity.Open(dbPath)
+	if err != nil {
+		t.Fatalf("identity.Open (reopen): %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	srv.EnablePersistence(reopened)
+
+	resp, raw = doPair(t, srv, req)
+	if resp.StatusCode != 200 {
+		t.Fatalf("the grant did not redeem after the failed attempt: status = %d, body = %v — a redemption that "+
+			"minted nothing must not consume the credential it was refused on", resp.StatusCode, raw)
+	}
+	var pr PairingResponse
+	remarshal(t, raw, &pr)
+	if pr.ChannelToken == "" {
+		t.Error("the recovering redemption minted no channel token")
+	}
+}

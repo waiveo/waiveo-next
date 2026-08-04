@@ -289,6 +289,51 @@ func (s *Store) MarkPairingGrantRedeemed(grantID string, redeemedAtMs int64) err
 	return nil
 }
 
+// RecordRedemption durably records ONE redemption: the owed upstream report
+// (REL-124) always, and the one-time consumption mark (REL-121c) when the grant
+// is one-time — in a single transaction, so either both land or neither does.
+//
+// # Why one transaction and not two calls
+//
+// Because the two were separate writes with the consumption first, and a failure
+// in the second BURNED THE GRANT: the relay recorded the grant as spent, minted
+// no token, and answered 500. The player could not pair and no retry could
+// recover, since the grant it needed was now consumed by an attempt that gave it
+// nothing.
+//
+// Reordering alone does not fix it. Recording the report first and consuming
+// second turns the same failure into a report of a redemption that never
+// happened — and the report table is an append-only ledger with no idempotency
+// key, so a retry after that failure enqueues a second one. Atomicity is the
+// only ordering with no losing side.
+func (s *Store) RecordRedemption(grantID string, redeemedAtMs int64, oneTime bool) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("identity: RecordRedemption: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if oneTime {
+		if _, err := tx.Exec(
+			`INSERT INTO player_redeemed_grants (grant_id, redeemed_at) VALUES (?, ?)
+			 ON CONFLICT (grant_id) DO NOTHING`,
+			grantID, redeemedAtMs,
+		); err != nil {
+			return fmt.Errorf("identity: RecordRedemption: mark consumed: %w", err)
+		}
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO player_redemption_reports (grant_id, redeemed_at) VALUES (?, ?)`,
+		grantID, redeemedAtMs,
+	); err != nil {
+		return fmt.Errorf("identity: RecordRedemption: record owed report: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("identity: RecordRedemption: commit: %w", err)
+	}
+	return nil
+}
+
 // PendingRedemptionReport is one redemption this relay performed and owes its
 // app peer (relay/1 REL-124/REL-124a). Seq is the ledger position the row
 // occupies — opaque to the caller except that it is the value
