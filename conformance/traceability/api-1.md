@@ -77,7 +77,7 @@ deferral of a fuller data-subject-request workflow and has nothing to cover.
 | API-016 | `contracts/api-1.md#error-shape` | `API-010-valid-simple-problem`, `API-013-valid-multi-field-validation-problem` | covered |
 | API-020 | `contracts/api-1.md#optimistic-concurrency` | `API-023-invalid-if-match-conflict` | covered |
 | API-021 | `contracts/api-1.md#optimistic-concurrency` | `API-022-invalid-if-match-missing`, `API-023-invalid-if-match-conflict` | covered |
-| API-022 | `contracts/api-1.md#optimistic-concurrency` | `API-022-invalid-if-match-missing` | covered |
+| API-022 | `contracts/api-1.md#optimistic-concurrency` | `API-022-invalid-if-match-missing`, `API-022-invalid-delete-org-scope-node-without-if-match` | covered |
 | API-023 | `contracts/api-1.md#optimistic-concurrency` | `API-023-invalid-if-match-conflict` | covered |
 | API-024 | `contracts/api-1.md#optimistic-concurrency` | - | TBD-wave1 |
 | API-025 | `contracts/api-1.md#optimistic-concurrency` | - | TBD-wave1 |

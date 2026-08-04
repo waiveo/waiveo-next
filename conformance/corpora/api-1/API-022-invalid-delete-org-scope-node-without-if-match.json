@@ -1,0 +1,41 @@
+{
+  "case_id": "API-022-invalid-delete-org-scope-node-without-if-match",
+  "contract": "api/1",
+  "req_ids": [
+    "API-022"
+  ],
+  "description": "Deleting the tree's org-kind node with NO If-Match is refused 428 Precondition Required / IF_MATCH_REQUIRED, not 409. API-022 is categorical — a state-changing request against an existing mutable resource that omits If-Match MUST be rejected 428 — and api/1 carves out nothing, so the org node gets the same precondition treatment as every other node. DAT-022's own refusal still applies; it is simply reached after the precondition rather than before it, which DAT-022 permits because it requires only that the refusal HAPPEN. This case exists because the opposite order shipped and was pinned by a unit test and an openapi description, neither of which is normative: the order is now frozen where a conformance driver reads it. The request carries a Trace-Id and no If-Match: the trace id is echoed into the Problem (API-060/061) while the ABSENT If-Match is what the case is about, so a reader cannot mistake the header block for the precondition it deliberately omits.",
+  "input": {
+    "seed": {
+      "scope_nodes": [
+        {
+          "id": "01J8ZDATR00T0N1Y0000000000",
+          "kind": "org",
+          "parent_id": null,
+          "name": "Demo Org",
+          "account_state": "active",
+          "entitlements": {}
+        }
+      ]
+    },
+    "request": {
+      "method": "DELETE",
+      "path": "/api/v1/scope-nodes/01J8ZDATR00T0N1Y0000000000",
+      "headers": {
+        "Trace-Id": "01J8Z3K4N5P6Q7R8S9T0V1W2X8"
+      }
+    }
+  },
+  "expected": {
+    "status": 428,
+    "content_type": "application/problem+json",
+    "delete_executed": false,
+    "body": {
+      "type": "about:blank",
+      "title": "Precondition Required",
+      "status": 428,
+      "code": "IF_MATCH_REQUIRED",
+      "trace_id": "01J8Z3K4N5P6Q7R8S9T0V1W2X8"
+    }
+  }
+}

@@ -223,12 +223,14 @@ func TestDeleteOrgScopeNodeIsRefusedIndependentOfItsChildren(t *testing.T) {
 //     404 an unminted id gets, and a caller who may read but not write gets the
 //     403 — both BEFORE any rule that inspects the rest of the store, so neither
 //     can learn from a 409 that a node exists, let alone that it is populated.
-//   - The org refusal precedes the If-Match precondition, for the reason the
-//     unwritable-placement refusal already does: no ETag will ever make the org
-//     node deletable, so answering 428 would invite a retry of an operation the
-//     caller can never complete. The other two are the opposite — a caller CAN
-//     clear them — so they stay behind the precondition, where a delete that
-//     will proceed has to present a fresh revision like any other.
+//   - EVERY refusal that inspects the row sits behind the If-Match precondition,
+//     the org one included. It used to precede it, on the reasoning that no ETag
+//     will ever make the org node deletable so a 428 invites a retry the caller
+//     can never complete. That reasoning is real and it lost: API-022/023 are
+//     categorical and carve out nothing, so the old order made exactly one node
+//     in the tree answer differently from every other. One extra round trip for
+//     a caller who omitted If-Match is a smaller price than one resource having
+//     its own precondition rules.
 func TestScopeNodeDeleteRefusalOrdering(t *testing.T) {
 	e := newEnv(t)
 	orgID := e.createNode(t, orgNode("Demo Org"))
@@ -268,10 +270,30 @@ func TestScopeNodeDeleteRefusalOrdering(t *testing.T) {
 	}
 	assertProblem(t, resp, raw, "REVISION_CONFLICT")
 
-	// The org node answers its own refusal with no If-Match at all.
+	// The org node is no exception: with no If-Match it answers 428 like every
+	// other mutable resource, and its own refusal waits until the precondition
+	// is satisfied.
 	resp, raw = e.do(t, http.MethodDelete, "/api/v1/scope-nodes/"+orgID, nil, nil)
+	if resp.StatusCode != http.StatusPreconditionRequired {
+		t.Fatalf("delete of the org node with no If-Match = %d, want 428 — API-022 is categorical and the org node is "+
+			"a mutable resource, so it may not have precondition rules of its own (body %s)", resp.StatusCode, raw)
+	}
+	assertProblem(t, resp, raw, "IF_MATCH_REQUIRED")
+
+	// A stale If-Match on the org node likewise answers 412 before its own
+	// refusal — the same order every other node gets.
+	resp, raw = e.do(t, http.MethodDelete, "/api/v1/scope-nodes/"+orgID, nil, map[string]string{"If-Match": `"99"`})
+	if resp.StatusCode != http.StatusPreconditionFailed {
+		t.Fatalf("delete of the org node with a stale If-Match = %d, want 412 (body %s)", resp.StatusCode, raw)
+	}
+	assertProblem(t, resp, raw, "REVISION_CONFLICT")
+
+	// And with a CONFORMING precondition, the caller learns what they came for:
+	// the delete is permanently refused. This is the control — without it, an
+	// implementation that answered 428 forever would satisfy everything above.
+	resp, raw = e.do(t, http.MethodDelete, "/api/v1/scope-nodes/"+orgID, nil, map[string]string{"If-Match": `"1"`})
 	if resp.StatusCode != http.StatusConflict {
-		t.Fatalf("delete of the org node with no If-Match = %d, want 409 — an ETag can never make it deletable (body %s)", resp.StatusCode, raw)
+		t.Fatalf("delete of the org node with a current If-Match = %d, want 409 (body %s)", resp.StatusCode, raw)
 	}
 	assertProblem(t, resp, raw, "SCOPE_NODE_ORG_UNDELETABLE")
 }

@@ -270,8 +270,11 @@ paths:
         (`SCOPE_NODE_NOT_EMPTY`), is still named as another row's `scope_node`
         (`SCOPE_NODE_IN_USE`), or is the tree's org-kind root, which no
         ordinary write may remove (`SCOPE_NODE_ORG_UNDELETABLE`) —
-        `contracts/data-model-1.md` DAT-020/021/022. The org refusal precedes
-        the If-Match precondition: no revision makes it deletable.
+        `contracts/data-model-1.md` DAT-020/021/022. All three refusals sit
+        BEHIND the If-Match precondition, the org one included: API-022/023 are
+        categorical and carve out nothing, so a caller omitting If-Match gets
+        428 here exactly as on any other node, and learns the org delete is
+        permanently refused on their first conforming request.
       tags: [scope-nodes, "mcp:act"]
       parameters:
         - $ref: "#/components/parameters/IfMatchParam"

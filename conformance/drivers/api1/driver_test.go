@@ -19,6 +19,7 @@ import (
 var expectedDriven = []string{
 	"API-010-valid-simple-problem",
 	"API-013-valid-multi-field-validation-problem",
+	"API-022-invalid-delete-org-scope-node-without-if-match",
 	"API-022-invalid-if-match-missing",
 	"API-023-invalid-if-match-conflict",
 	"API-032-valid-pagination-roundtrip",

@@ -105,7 +105,8 @@ const orgKind = "org"
 // own root identity, not merely one node in it". So an org node with no children
 // and nothing placed at it is refused exactly as a populated one is, and when
 // both rules apply this one answers — it is checked in the handler, ahead of the
-// precondition and ahead of the transaction the other two run in.
+// transaction the other two run in but BEHIND the If-Match precondition
+// (api.go's delete ordering explains why the precondition wins).
 func scopeNodeUndeletable(f resourceFields) *deleteRefused {
 	if f.Kind != orgKind {
 		return nil

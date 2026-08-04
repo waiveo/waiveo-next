@@ -51,6 +51,7 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/maaxton/waiveo-next/conformance/drivers/corpus"
@@ -104,7 +105,7 @@ func RunCases(cases map[string]corpus.Case) report.Report {
 // is every case in the frozen corpus with none left pending.
 var drivenCaseIDs = []string{
 	"API-010", "API-013",
-	"API-022", "API-023", "API-032", "API-034", "API-035", "API-044", "API-045", "API-101", "API-102",
+	"API-022-invalid-if-match-missing", "API-022-invalid-delete-org-scope-node-without-if-match", "API-023", "API-032", "API-034", "API-035", "API-044", "API-045", "API-101", "API-102",
 	"API-052", "API-053", "API-111", "API-121",
 	"API-063",
 }
@@ -159,6 +160,8 @@ func driveByShape(rep *report.Report, cases map[string]corpus.Case, short string
 		driveProblemNotFound(rep, c)
 	case shapeProblemValidation:
 		driveProblemValidation(rep, c)
+	case shapeScopeNodeDelete:
+		driveScopeNodeDelete(rep, c)
 	case shapeConcurrency:
 		driveConcurrency(rep, c)
 	case shapePagination:
@@ -191,6 +194,7 @@ const (
 	shapeProblemNotFound
 	shapeProblemValidation
 	shapeConcurrency
+	shapeScopeNodeDelete
 	shapePagination
 	shapeSelector
 	shapeExternalID
@@ -240,6 +244,16 @@ func classifyShape(caseID string, input map[string]any) shape {
 		if q, ok := req["query"].(map[string]any); ok {
 			if _, ok := q["selector"]; ok {
 				return shapeSelector
+			}
+		}
+		// A seeded scope-node tree plus ONE delete: the precondition-ordering
+		// shape. It is distinguished from shapeConcurrency by seeding the tree
+		// directly rather than declaring a current_resource_state revision —
+		// this family is about which refusal answers first, not about which
+		// revision a caller holds.
+		if m, _ := req["method"].(string); m == "DELETE" {
+			if _, ok := input["seed"]; ok {
+				return shapeScopeNodeDelete
 			}
 		}
 		return shapeUnknown
@@ -1786,4 +1800,74 @@ func corpusDir() string {
 // LoadCorpus loads every frozen api-1 corpus case, keyed by case_id.
 func LoadCorpus() (map[string]corpus.Case, error) {
 	return corpus.LoadDir(corpusDir())
+}
+
+// --- scope-node delete ordering (API-022/023 vs DAT-020/021/022) -----------
+
+type scopeNodeDeleteInput struct {
+	Seed struct {
+		ScopeNodes []map[string]any `json:"scope_nodes"`
+	} `json:"seed"`
+	Request struct {
+		Method  string            `json:"method"`
+		Path    string            `json:"path"`
+		Headers map[string]string `json:"headers"`
+	} `json:"request"`
+}
+
+// driveScopeNodeDelete drives one seeded scope-node DELETE against the live
+// handler and diffs the refusal against the corpus.
+//
+// The property this family exists to pin is ORDER: which of several applicable
+// refusals answers first. That order shipped one way, was pinned only by a unit
+// test and an openapi description — neither of which is normative — and was
+// changed by a contract decision. A case here is what makes the order a thing a
+// conformance run measures rather than a thing a reviewer remembers.
+func driveScopeNodeDelete(rep *report.Report, c corpus.Case) {
+	var in scopeNodeDeleteInput
+	if err := decodeField(c.Input, &in); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode input: %v", err))
+		return
+	}
+	h, err := newHarness(fixedNowMs, deterministicIDs())
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("newHarness: %v", err))
+		return
+	}
+	defer h.close()
+
+	for i, n := range in.Seed.ScopeNodes {
+		if err := h.seedScopeNode(n); err != nil {
+			rep.Fail(c.CaseID, contract, fmt.Sprintf("seed scope node[%d]: %v", i, err))
+			return
+		}
+	}
+
+	res := h.do(in.Request.Method, in.Request.Path, nil, in.Request.Headers)
+
+	// Whether the row survived is the half a status code cannot show: a refusal
+	// that answered correctly and deleted anyway is the failure this asserts.
+	id := strings.TrimPrefix(in.Request.Path, "/api/v1/scope-nodes/")
+	_, _, getErr := h.store.Get(context.Background(), store.KindScopeNode, id)
+	deleteExecuted := getErr != nil
+
+	var diffs []report.Diff
+	if want, ok := expectBool(c, "delete_executed"); ok && deleteExecuted != want {
+		diffs = append(diffs, report.Diff{Field: "delete_executed", Expected: want, Actual: deleteExecuted})
+	}
+	if want, ok := expectInt(c, "status"); ok && res.status != want {
+		diffs = append(diffs, report.Diff{Field: "status", Expected: want, Actual: res.status})
+	}
+	if want, ok := expectString(c, "content_type"); ok && want != "" {
+		if got := res.header.Get("Content-Type"); got != want {
+			diffs = append(diffs, report.Diff{Field: "content_type", Expected: want, Actual: got})
+		}
+	}
+	diffs = append(diffs, bodyDiffs(c, res.body)...)
+
+	if len(diffs) > 0 {
+		rep.Fail(c.CaseID, contract, "scope-node delete refusal diverged from the corpus expectation", diffs...)
+		return
+	}
+	rep.Pass(c.CaseID, contract)
 }

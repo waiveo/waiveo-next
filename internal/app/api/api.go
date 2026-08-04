@@ -1080,24 +1080,38 @@ func (rs *resource) delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A per-kind refusal no retry can clear (cfg.undeletable) sits here, between
-	// the authorization checks and the precondition. Behind the authorization, so
-	// it can never tell a caller who could not otherwise see this row that it
-	// exists; ahead of the precondition, for the reason the unwritable-placement
-	// refusal above is: a 428 or a 412 asks the caller to come back with a fresh
-	// revision, and there is no revision at which this delete would be allowed.
-	if rs.cfg.undeletable != nil {
-		if refusal := rs.cfg.undeletable(curFields); refusal != nil {
-			rs.problem(w, r, refusal.Status, refusal.Code, refusal.Title, refusal.Detail)
-			return
-		}
-	}
-
 	ifMatch, present := r.Header["If-Match"]
 	outcome := apihttp.CheckIfMatch(headerValue(ifMatch), present, current.Revision)
 	if !outcome.OK {
 		rs.concurrencyProblem(w, r, outcome)
 		return
+	}
+
+	// A per-kind refusal no retry can clear (cfg.undeletable) sits here: behind
+	// the authorization checks, so it can never tell a caller who could not
+	// otherwise see this row that it exists, and BEHIND THE PRECONDITION.
+	//
+	// It used to precede the precondition, on the reasoning that a 428 or 412
+	// invites a retry of an operation the caller can never complete. That
+	// reasoning is real and it lost, because API-022/023 are categorical: a
+	// state-changing request against an existing mutable resource that omits
+	// If-Match MUST be rejected 428, and a stale one 412, with no carve-out in
+	// api/1's text. A scope node is a mutable resource, so the old order made
+	// exactly one node in the tree answer differently from every other — which a
+	// strict "every unsafe request without If-Match returns 428" sweep fails on,
+	// and which nothing in either contract licensed.
+	//
+	// DAT-022 requires only that the refusal HAPPEN, never that it preempt the
+	// preconditions, so this order satisfies both contracts as written. The cost
+	// is one extra round trip for a caller who omitted If-Match: they learn the
+	// delete is permanently refused on their first conforming request instead of
+	// their first request. That is a smaller price than one resource in the tree
+	// having its own precondition rules.
+	if rs.cfg.undeletable != nil {
+		if refusal := rs.cfg.undeletable(curFields); refusal != nil {
+			rs.problem(w, r, refusal.Status, refusal.Code, refusal.Title, refusal.Detail)
+			return
+		}
 	}
 
 	// The per-kind rules a caller CAN clear (cfg.deleteGuards) run last, inside
