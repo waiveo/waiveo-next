@@ -4156,7 +4156,7 @@ components:
           default: false
     RevocationResponse:
       type: object
-      required: [subject_kind, subject_id, screens_affected, revoked, already_revoked]
+      required: [subject_kind, subject_id, screens_affected, revoked, already_revoked, certificates_revoked]
       additionalProperties: false
       properties:
         subject_kind:
@@ -4171,6 +4171,12 @@ components:
           type: boolean
         already_revoked:
           type: boolean
+        certificates_revoked:
+          type: integer
+          description: >-
+            How many of a relay's issued certificates this call marked revoked.
+            Zero for a screen, and zero for a relay that never enrolled — not a
+            failure: the record stands and the relay is refused if it later tries.
     WorkspaceRestoreRequest:
       type: object
       description: >-

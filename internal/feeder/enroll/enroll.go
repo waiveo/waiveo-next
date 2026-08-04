@@ -446,6 +446,39 @@ func (s *Server) Revoke(relayID, serial string) bool {
 	return false
 }
 
+// RevokeRelay marks EVERY certificate this feeder has issued to relayID as
+// revoked, and reports how many it marked.
+//
+// This is the operator-level act, and Revoke (one serial) is not. A relay that
+// has re-enrolled holds more than one issuance, and revoking the serial an
+// operator happened to name would leave the others valid — the relay
+// reconnects on the next one and the revocation reads as having silently
+// failed. "This relay is no longer trusted" is a statement about the relay, so
+// it has to reach every certificate the relay could present.
+//
+// Returning zero is not an error: a relay that has never enrolled, or whose
+// issuances a factory reset cleared, has nothing to revoke. The caller decides
+// what that means — the api/1 operation records the revocation regardless, so a
+// relay revoked BEFORE it ever enrolls is still refused when it tries.
+func (s *Server) RevokeRelay(relayID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for i := range s.issuances[relayID] {
+		if s.issuances[relayID][i].revoked {
+			continue
+		}
+		s.issuances[relayID][i].revoked = true
+		n++
+	}
+	if n > 0 {
+		if err := s.persistLocked(); err != nil {
+			log.Printf("enroll: persist enrollment state after revoking every certificate for %s: %v", relayID, err)
+		}
+	}
+	return n
+}
+
 // ClientCAPool returns a fresh x509.CertPool holding this feeder's
 // enrollment CA certificate — the pool a TLS listener sets as ClientCAs so
 // the leaf certificates this feeder itself issued at enrollment

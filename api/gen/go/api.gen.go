@@ -1167,7 +1167,10 @@ type RevocationRequestSubjectKind string
 // RevocationResponse defines model for RevocationResponse.
 type RevocationResponse struct {
 	AlreadyRevoked bool `json:"already_revoked"`
-	Revoked        bool `json:"revoked"`
+
+	// CertificatesRevoked How many of a relay's issued certificates this call marked revoked. Zero for a screen, and zero for a relay that never enrolled — not a failure: the record stands and the relay is refused if it later tries.
+	CertificatesRevoked int  `json:"certificates_revoked"`
+	Revoked             bool `json:"revoked"`
 
 	// ScreensAffected How many screens stop being served if this proceeds (API-143).
 	ScreensAffected int                           `json:"screens_affected"`

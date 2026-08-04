@@ -1613,6 +1613,8 @@ export interface components {
             screens_affected: number;
             revoked: boolean;
             already_revoked: boolean;
+            /** @description How many of a relay's issued certificates this call marked revoked. Zero for a screen, and zero for a relay that never enrolled — not a failure: the record stands and the relay is refused if it later tries. */
+            certificates_revoked: number;
         };
         /** @description The request body for the workspace restore operation. It names a container already present in this deployment's archive directory and carries the export passphrase that opens it. The archive is NAMED rather than uploaded: an upload would hold a multi-gigabyte container in the request path before anything about it had been verified. */
         WorkspaceRestoreRequest: {

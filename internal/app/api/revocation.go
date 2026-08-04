@@ -54,6 +54,11 @@ type revokeResponse struct {
 	// Revocation is terminal (API-142) and recording it twice is a no-op, so
 	// this is how a caller tells "I did that" from "that was already true".
 	AlreadyRevoked bool `json:"already_revoked"`
+	// CertificatesRevoked is how many of a relay's issued certificates this
+	// call marked revoked. Zero for a screen, and zero for a relay that has
+	// never enrolled — which is not a failure: the record stands, and the
+	// relay is refused if it later tries.
+	CertificatesRevoked int `json:"certificates_revoked"`
 }
 
 // revokeSubject is POST /api/v1/revocations.
@@ -124,6 +129,19 @@ func (srv *server) revokeSubjectExec(w http.ResponseWriter, r *http.Request, bod
 	}
 	resp.Revoked = true
 
+	// A relay's certificates are held by the enrollment authority, not by this
+	// store, so the record above is not by itself the revocation for that kind
+	// — the connection-time check reads the issuance registry (relay/1
+	// REL-016/041). Reaching it is what makes this operation the AUTHORING half
+	// rather than a second inert record beside an inert enforcement.
+	//
+	// Every issuance, not one serial: a re-enrolled relay holds more than one,
+	// and leaving the others valid means it reconnects on the next one while the
+	// operator believes it is cut off.
+	if kind == store.RevocationSubjectRelay && srv.relayCertRevoker != nil {
+		resp.CertificatesRevoked = srv.relayCertRevoker(subjectID)
+	}
+
 	// API-144: the record carries the radius REPORTED at confirmation, because
 	// that is what the operator was shown when they decided. A trail that omits
 	// it cannot answer whether they understood what they were about to do.
@@ -167,4 +185,21 @@ func (srv *server) revocationRadius(ctx context.Context, kind, subjectID string)
 		return len(ds.Screens), nil
 	}
 	return 0, nil
+}
+
+// WithRelayCertRevoker wires the revocation operation to the enrollment
+// authority that holds a relay's certificates.
+//
+// It is a function rather than the enroll server itself because the api package
+// must not depend on the feeder's enrollment internals: this surface needs one
+// verb — "revoke every certificate for this relay, tell me how many" — and
+// taking the whole server would let a later change here reach into a registry
+// this package has no business knowing the shape of.
+//
+// Unset, a relay revocation still records the decision and reports zero
+// certificates. That is the honest degraded answer for a deployment whose api
+// runs apart from its enrollment authority, and the count in the response is
+// what makes it visible rather than silent.
+func WithRelayCertRevoker(fn func(relayID string) int) Option {
+	return func(srv *server) { srv.relayCertRevoker = fn }
 }

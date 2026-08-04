@@ -126,6 +126,10 @@ type server struct {
 	// (internal/app/restoreswap). Empty means restores are refused UNAVAILABLE
 	// rather than accepted and failed later.
 	storePath string
+	// relayCertRevoker reaches the enrollment authority holding a relay's
+	// certificates (revocation.go). Nil means a relay revocation records the
+	// decision and reports zero certificates revoked.
+	relayCertRevoker func(relayID string) int
 	// webhookSecrets seals and opens a registered webhook endpoint's signing
 	// secret (internal/app/webhookdeliver). Optional (WithWebhookSecrets): the
 	// registration routes mount either way, and without it the rotate operation

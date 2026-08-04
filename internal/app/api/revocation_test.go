@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/maaxton/waiveo-next/internal/app/api"
 	"github.com/maaxton/waiveo-next/internal/app/auth"
 	"github.com/maaxton/waiveo-next/internal/app/auth/authtest"
 	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
@@ -18,11 +19,12 @@ import (
 // stops at "the row was written" would reproduce exactly the gap this closes.
 
 type revocationBody struct {
-	SubjectKind     string `json:"subject_kind"`
-	SubjectID       string `json:"subject_id"`
-	ScreensAffected int    `json:"screens_affected"`
-	Revoked         bool   `json:"revoked"`
-	AlreadyRevoked  bool   `json:"already_revoked"`
+	SubjectKind         string `json:"subject_kind"`
+	SubjectID           string `json:"subject_id"`
+	ScreensAffected     int    `json:"screens_affected"`
+	Revoked             bool   `json:"revoked"`
+	AlreadyRevoked      bool   `json:"already_revoked"`
+	CertificatesRevoked int    `json:"certificates_revoked"`
 }
 
 func postRevocation(t *testing.T, e *testEnv, kind, id string, confirm bool) (*http.Response, revocationBody) {
@@ -194,5 +196,60 @@ func TestRevocationRequiresOwnerAtRoot(t *testing.T) {
 	// everyone would satisfy every assertion above.
 	if _, got := postRevocation(t, e, "screen", screenID, true); !got.Revoked {
 		t.Error("the owner could not revoke — the refusals above would then prove nothing")
+	}
+}
+
+// TestRevokingARelayReachesTheEnrollmentAuthority is the relay half's
+// equivalent of the snapshot test above: the record is not the revocation.
+//
+// A relay's certificates live in the enrollment authority, and the
+// connection-time check reads that registry (relay/1 REL-016/041). An operation
+// that wrote a row and reached nothing would be a second inert record beside an
+// inert enforcement — which is the shape this whole issue reports.
+func TestRevokingARelayReachesTheEnrollmentAuthority(t *testing.T) {
+	var revokedFor []string
+	e := newEnvWithOptions(t, api.WithRelayCertRevoker(func(relayID string) int {
+		revokedFor = append(revokedFor, relayID)
+		return 2 // a re-enrolled relay holding two issuances
+	}))
+	e.createNode(t, siteNode(""))
+
+	const relayID = "relay-0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+
+	// The unconfirmed query must NOT reach the authority: it changes nothing.
+	if _, got := postRevocation(t, e, "relay", relayID, false); got.Revoked {
+		t.Fatal("an unconfirmed relay revocation reported itself performed")
+	}
+	if len(revokedFor) != 0 {
+		t.Fatalf("an UNCONFIRMED revocation reached the enrollment authority for %v — the radius query must change "+
+			"nothing, and revoking a certificate is a change", revokedFor)
+	}
+
+	_, got := postRevocation(t, e, "relay", relayID, true)
+	if !got.Revoked {
+		t.Fatal("the confirmed relay revocation was not recorded")
+	}
+	if len(revokedFor) != 1 || revokedFor[0] != relayID {
+		t.Fatalf("the enrollment authority saw %v, want exactly [%s] — a revocation that reaches only the store "+
+			"leaves the relay's own certificates valid, and it reconnects", revokedFor, relayID)
+	}
+	if got.CertificatesRevoked != 2 {
+		t.Errorf("certificates_revoked = %d, want 2 — the count is how an operator sees that the act reached "+
+			"something rather than silently reaching nothing", got.CertificatesRevoked)
+	}
+}
+
+// TestRevokingARelayWithNoRevokerStillRecordsTheDecision pins the documented
+// degraded answer: the record stands, and the zero count is what makes the gap
+// visible rather than silent.
+func TestRevokingARelayWithNoRevokerStillRecordsTheDecision(t *testing.T) {
+	e := newEnv(t)
+	e.createNode(t, siteNode(""))
+	_, got := postRevocation(t, e, "relay", "relay-0f1e2d3c4b5a69788796a5b4c3d2e1f0", true)
+	if !got.Revoked {
+		t.Fatal("the revocation was not recorded")
+	}
+	if got.CertificatesRevoked != 0 {
+		t.Errorf("certificates_revoked = %d with no revoker wired, want 0", got.CertificatesRevoked)
 	}
 }

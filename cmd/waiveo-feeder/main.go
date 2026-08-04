@@ -1065,6 +1065,10 @@ func main() {
 		api.WithWorkspaceArchive(&api.WorkspaceArchive{Dir: cfg.archiveDir, Key: wsKey}),
 		// The live store a restore stages beside (archive/1, the offline swap).
 		api.WithStorePath(cfg.storePath),
+		// The enrollment authority that holds relay certificates (api/1 API-140).
+		// Without this the revocation operation records the decision and reaches
+		// nothing — which is the state this whole operation was built to end.
+		api.WithRelayCertRevoker(enrollSrv.RevokeRelay),
 		// The emergency kit a first-boot claim issues (ARC-110). Its verifier
 		// lives beside the workspace key, never in the archive directory an
 		// operator copies away — a kit verifier travelling off the box with the
