@@ -146,3 +146,8 @@ deferral of a fuller data-subject-request workflow and has nothing to cover.
 | API-137 | `contracts/api-1.md#service-log-read` | - | TBD-wave1 |
 | API-138 | `contracts/api-1.md#service-log-read` | - | TBD-wave1 |
 | API-139 | `contracts/api-1.md#service-log-read` | - | TBD-wave1 |
+| API-140 | `contracts/api-1.md#revocation` | - | TBD-wave1 |
+| API-141 | `contracts/api-1.md#revocation` | - | TBD-wave1 |
+| API-142 | `contracts/api-1.md#revocation` | - | TBD-wave1 |
+| API-143 | `contracts/api-1.md#revocation` | - | TBD-wave1 |
+| API-144 | `contracts/api-1.md#revocation` | - | TBD-wave1 |

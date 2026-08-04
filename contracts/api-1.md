@@ -208,6 +208,24 @@ The single `/api/v1` prefix (API-001) replaces a legacy core/extension URL split
 
 **[API-124]** This section specifies the export and delete operations' request/response shape and their self-hosted realization (API-121–122) only; a fuller data-subject-request workflow — intake and tracking for a request that arrives outside this API — is a deferred implementation this contract does not itself define.
 
+### Revocation
+
+**[API-140]** api/1 exposes a **revocation** operation: the act by which an operator declares that a provisioned identity — a relay's enrollment certificate, or a screen — is no longer trusted. It is the AUTHORING half of controls whose enforcement halves already exist (`relay/1` REL-016/041 for a relay certificate, REL-066 and `player/1` PLY-072 for a screen).
+
+Both are one operation rather than two surfaces, because they are the same decision twice: what act revokes a thing, and where an operator performs it. Deciding them apart guarantees drift in authorization floor, audit shape and confirmation semantics — three things that must not differ between two revocations an operator reaches for in the same incident.
+
+**[API-141]** Revocation MUST be an explicit act of its own, and MUST NOT be implied by deleting the relay or screen it concerns. The threat the enforcement halves were built for is a still-provisioned peer that has become untrusted — a stolen relay, a compromised screen — and revoking one WITHOUT removing it is precisely the case delete-implies-revoke cannot express. Coupling them would also require the platform to retain a tombstone for every deleted row purely so a revocation could refer to it.
+
+**[API-142]** Revocation MUST be terminal: this contract defines no operation that un-revokes. Recovery from a mistaken revocation is re-enrollment, which re-establishes the identity through the same ceremony that established it in the first place.
+
+A one-way door is the conservative default for a fleet-level security act, and re-enrollment is the honest recovery path for a peer whose compromise status was ever in doubt: an un-revoke returns to service the exact identity an operator had reason to distrust, on the strength of a second click.
+
+**[API-143]** The operation MUST report the BLAST RADIUS of the revocation — at minimum the number of screens that would stop being served — and MUST require the caller to confirm before acting. An unconfirmed request MUST make no change and MUST answer with the radius, so the confirmation is informed by it rather than a formality.
+
+This is one extra round-trip on a rare operation, and it is what makes revocation a typed act rather than a foot-gun: revoking a site's only relay takes every screen at that site dark, and an operator who learns that from the outcome learns it too late.
+
+**[API-144]** A revocation MUST emit an audit record naming the actor, the target, and the radius reported at confirmation. The radius is recorded because it is what the operator was shown when they decided — an audit trail that omits it cannot answer whether they understood what they were about to do.
+
 ### Service-log read
 
 **[API-130]** api/1 exposes a log-read operation returning entries from the service journal of the platform's own units. It is a diagnostic surface — the answer to "why did this deployment misbehave" — and not a general log-search facility. Every constraint this section places on it (API-131–API-137) is a deliberate narrowing of a privileged read, not an implementation limit that a later minor should be expected to relax.
