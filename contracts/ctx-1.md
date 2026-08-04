@@ -294,7 +294,7 @@ ctx/1 defines the runtime protocol between the host and a running pack process: 
   "verb": "assets.derive",
   "body": {
     "profile": "html_bundle-to-png",
-    "inputs": ["sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85"],
+    "inputs": ["sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"],
     "params": { "width": 1920, "height": 1080 }
   }
 }

@@ -1830,7 +1830,7 @@ func scopedFixtureEnvelope(id, scopeNode, schema string) events.Envelope {
 		env.Schema = schema
 	}
 	if env.Schema == events.SchemaContentPlayed {
-		env.Payload = json.RawMessage(`{"asset_ref":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85",` +
+		env.Payload = json.RawMessage(`{"asset_ref":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",` +
 			`"screen_id":"01J8Z3K4N5P6Q7R8S9T0V1W2ZE","program_revision":"rev-00042","t_start":1752537000000,` +
 			`"t_end":1752537030000,"cause":"scheduled","completion":"completed"}`)
 	}

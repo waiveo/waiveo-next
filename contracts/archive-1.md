@@ -224,7 +224,7 @@ archive/1 defines the workspace archive: the one portable container file a works
     { "pack_id": "acme/weather-widget", "version": "1.2.0", "channel": "verified", "source": "https://index.example/community", "schema_epoch": 1 }
   ],
   "assets": [
-    { "asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85", "size": 20481, "content_type": "image/png", "storage": "embedded" },
+    { "asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "size": 20481, "content_type": "image/png", "storage": "embedded" },
     { "asset_ref": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824", "size": 883220, "content_type": "video/mp4", "storage": "by-reference" }
   ],
   "secret_stubs": [
@@ -247,7 +247,7 @@ archive/1 defines the workspace archive: the one portable container file a works
     { "pack_id": "acme/weather-widget", "version": "1.3.0", "channel": "verified", "source": "https://index.example/community", "schema_epoch": 1 }
   ],
   "assets": [
-    { "asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85", "size": 20481, "content_type": "image/png", "storage": "inherited" },
+    { "asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "size": 20481, "content_type": "image/png", "storage": "inherited" },
     { "asset_ref": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824", "size": 883220, "content_type": "video/mp4", "storage": "by-reference" },
     { "asset_ref": "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "size": 4096, "content_type": "image/png", "storage": "embedded" }
   ],

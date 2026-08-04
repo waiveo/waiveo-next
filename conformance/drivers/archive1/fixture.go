@@ -215,6 +215,11 @@ var corpusPreimages = map[string][]byte{
 	// sha256("hello") — ARC-031/060's by-reference asset. Present for completeness:
 	// a by-reference entry carries no bytes, so nothing asks for this one today.
 	"sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824": []byte("hello"),
+	// sha256("") — ARC-031's embedded asset. The EMPTY byte string, which is what
+	// that digest names and why the case declares size 0. It read as an image/png
+	// of 20481 bytes while its digest was a 63-character truncation of this one:
+	// two inconsistencies, the second hiding the first.
+	"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855": {},
 }
 
 // writeSeekBuffer is an in-memory io.WriteSeeker, which Create requires because

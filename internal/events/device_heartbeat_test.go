@@ -33,7 +33,7 @@ func TestDeviceHeartbeat_NowPlayingStringValid(t *testing.T) {
 		"device_id": "01J8Z3K4N5P6Q7R8S9T0V1W2YA",
 		"power_state": "on",
 		"app_state": "app",
-		"now_playing_content_id": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85"
+		"now_playing_content_id": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 	}`)
 	if err := validateDeviceHeartbeat(p); err != nil {
 		t.Fatalf("a string now_playing_content_id must validate; got %v", err)

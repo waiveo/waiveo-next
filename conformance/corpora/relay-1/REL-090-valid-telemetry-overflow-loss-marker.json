@@ -14,7 +14,7 @@
       "body": {
         "entries": [
           { "seq": 1001, "schema": "automation.run", "payload": { "rule_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z1", "rule_revision": 4, "mode_disposition": "ran" }, "trace_id": "01J8Z4K4N5P6Q7R8S9T0V1W3T1" },
-          { "seq": 1002, "schema": "content.played", "payload": { "asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85", "screen_id": "01J8Z3K4N5P6Q7R8S9T0V1W2X6" }, "trace_id": "01J8Z4K4N5P6Q7R8S9T0V1W3T2" }
+          { "seq": 1002, "schema": "content.played", "payload": { "asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "screen_id": "01J8Z3K4N5P6Q7R8S9T0V1W2X6" }, "trace_id": "01J8Z4K4N5P6Q7R8S9T0V1W3T2" }
         ],
         "loss_markers": [
           { "from_seq": 980, "to_seq": 999, "dropped_counts_by_schema": { "content.played": 12, "entity.state_changed": 8 }, "reason": "buffer_exceeded" }

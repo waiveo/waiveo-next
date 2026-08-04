@@ -36,7 +36,7 @@ func validAutomationRunPayload() json.RawMessage {
 // envelope carrying each passes events.Validate end to end, exercising that the
 // ingest classes and appends every telemetry schema, not just automation.run.
 func validContentPlayedPayload() json.RawMessage {
-	return json.RawMessage(`{"asset_ref":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85","screen_id":"01J8Z3K4N5P6Q7R8S9T0V1W2ZE","program_revision":"rev-00042","t_start":1752537000000,"t_end":1752537030000,"cause":"scheduled","completion":"completed"}`)
+	return json.RawMessage(`{"asset_ref":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","screen_id":"01J8Z3K4N5P6Q7R8S9T0V1W2ZE","program_revision":"rev-00042","t_start":1752537000000,"t_end":1752537030000,"cause":"scheduled","completion":"completed"}`)
 }
 
 func validEntityStateChangedPayload() json.RawMessage {

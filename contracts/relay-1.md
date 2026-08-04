@@ -466,7 +466,7 @@ A shorter window would hand a device away during a routine restart, which is bot
           "priority": "scheduled",
           "display": "content",
           "content": [
-            { "asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85", "url": "https://app.example/cas/e3b0c4...", "expires_at": 1752541200000, "content_type": "image", "duration_ms": 8000 },
+            { "asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "url": "https://app.example/cas/e3b0c4...", "expires_at": 1752541200000, "content_type": "image", "duration_ms": 8000 },
             { "asset_ref": "sha256:5f70bf18a086007016e948b04aed3b82103a36bea41755148132d576ae69f3a", "url": "https://app.example/cas/5f70bf...", "expires_at": 1752541200000, "content_type": "video" }
           ]
         }

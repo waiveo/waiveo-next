@@ -176,7 +176,7 @@ channel-index defines the signed, host-agnostic release-artifact index a client 
     "signing_time": 1752623000000,
     "targets_refs": {
       "platform-train/stable": { "version": 96, "digest": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" },
-      "relay-channel/stable": { "version": 41, "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85" }
+      "relay-channel/stable": { "version": 41, "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" }
     }
   },
   "signatures": [

@@ -11,7 +11,7 @@ import (
 // revision in force at t_start.
 func validContentPlayedPayload() json.RawMessage {
 	return json.RawMessage(`{
-		"asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85",
+		"asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 		"screen_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZE",
 		"program_revision": "rev-00042",
 		"t_start": 1752537000000,
@@ -33,7 +33,7 @@ func TestContentPlayed_CorpusPayloadValidates(t *testing.T) {
 // {scheduled,preempted,fallback,manual,loop} — a value outside it is rejected.
 func TestContentPlayed_CauseEnumBites(t *testing.T) {
 	p := json.RawMessage(`{
-		"asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85",
+		"asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 		"screen_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZE",
 		"program_revision": "rev-00042",
 		"t_start": 1752537000000,
@@ -52,7 +52,7 @@ func TestContentPlayed_CauseEnumBites(t *testing.T) {
 // {completed,interrupted,skipped} — a value outside it is rejected.
 func TestContentPlayed_CompletionEnumBites(t *testing.T) {
 	p := json.RawMessage(`{
-		"asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85",
+		"asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 		"screen_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZE",
 		"program_revision": "rev-00042",
 		"t_start": 1752537000000,
@@ -71,7 +71,7 @@ func TestContentPlayed_CompletionEnumBites(t *testing.T) {
 // (EVT-050).
 func TestContentPlayed_BadScreenIDULIDRejected(t *testing.T) {
 	p := json.RawMessage(`{
-		"asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85",
+		"asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 		"screen_id": "not-a-ulid",
 		"program_revision": "rev-00042",
 		"t_start": 1752537000000,
@@ -92,7 +92,7 @@ func TestContentPlayed_BadScreenIDULIDRejected(t *testing.T) {
 // requires an integer here).
 func TestContentPlayed_NullTStartRejected(t *testing.T) {
 	p := json.RawMessage(`{
-		"asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85",
+		"asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 		"screen_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZE",
 		"program_revision": "rev-00042",
 		"t_start": null,
@@ -113,7 +113,7 @@ func TestContentPlayed_NullTStartRejected(t *testing.T) {
 // object.
 func TestContentPlayed_PowerEvidenceOptionalObjectWhenPresent(t *testing.T) {
 	valid := json.RawMessage(`{
-		"asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85",
+		"asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 		"screen_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZE",
 		"program_revision": "rev-00042",
 		"t_start": 1752537000000,
@@ -127,7 +127,7 @@ func TestContentPlayed_PowerEvidenceOptionalObjectWhenPresent(t *testing.T) {
 	}
 
 	invalid := json.RawMessage(`{
-		"asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85",
+		"asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 		"screen_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZE",
 		"program_revision": "rev-00042",
 		"t_start": 1752537000000,

@@ -15,8 +15,10 @@ var expectedDriven = []string{
 	"ARC-014-invalid-decrypt-failed-wrong-passphrase",
 	"ARC-016-invalid-truncated-tail-rejected",
 	"ARC-023-invalid-signature-verification-failed",
+	"ARC-031-valid-manifest-full",
 	"ARC-041-invalid-epoch-mismatch",
 	"ARC-060-valid-assets-by-reference",
+	"ARC-091-valid-manifest-incremental",
 	"ARC-102-invalid-yanked-pack-blocked",
 	"ARC-103-invalid-dev-channel-refused",
 }
@@ -31,10 +33,12 @@ var expectedDriven = []string{
 //     value appears in the contract's own Wire shapes example. ARC-091's handler
 //     DERIVES this from the case rather than being listed, so it starts driving
 //     the moment the corpus is corrected.
-var expectedPending = []string{
-	"ARC-031-valid-manifest-full",
-	"ARC-091-valid-manifest-incremental",
-}
+//
+// It is EMPTY: both entries left it when the truncated asset digest they
+// inherited from the contract's own Wire shapes example was corrected. The
+// variable stays so a case joining it later is a deliberate act with a stated
+// reason rather than a silent omission.
+var expectedPending = []string{}
 
 // TestArchive1DriverGreen replays the frozen archive-1 corpus against the live
 // container implementation: every case is either driven and PASSing, or PENDING

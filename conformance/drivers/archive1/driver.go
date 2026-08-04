@@ -97,19 +97,23 @@ func driveCases(rep *report.Report, cases map[string]corpus.Case) {
 		"ARC-041-invalid-epoch-mismatch":                  driveEpochTooNew,
 		"ARC-102-invalid-yanked-pack-blocked":             driveYankedPackBlocked,
 		"ARC-103-invalid-dev-channel-refused":             driveDevChannelRefused,
-		"ARC-091-valid-manifest-incremental":              driveManifestIncremental,
+		"ARC-031-valid-manifest-full":                     driveManifestRoundTrip,
+		"ARC-091-valid-manifest-incremental":              driveManifestRoundTrip,
 	}
 	// Each pending case names the SPECIFIC thing that does not exist, not a shared
 	// "not implemented" — the three restore refusals and the incremental export are
 	// different gaps with different work behind them, and a reader of
 	// driven-manifest.json should be able to tell which is which.
-	pending := map[string]string{
-		"ARC-031-valid-manifest-full": "the case's first asset declares storage:embedded with asset_ref " +
-			"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85, whose hex part is 63 characters — " +
-			"not a valid sha256. No bytes can hash to it, and Open verifies every embedded asset's bytes against its own " +
-			"asset_ref (ARC-062), so this case cannot be driven as a Create+Open round trip. The contract's own Wire shapes " +
-			"example carries the same truncated value, so the case inherited it rather than introducing it",
-	}
+	// EMPTY. ARC-031 used to live here, pending because its embedded asset's
+	// asset_ref was a 63-character hex string no bytes could hash to — inherited
+	// from the contract's own Wire shapes example rather than introduced by the
+	// case. Both are corrected, so it drives.
+	//
+	// The map stays rather than being deleted: §10's no-silent-caps rule needs
+	// somewhere the next undrivable case is recorded WITH a reason, and a driver
+	// that has to grow the mechanism back before it can record one is a driver
+	// that will record none.
+	pending := map[string]string{}
 
 	for id, c := range cases {
 		switch {
@@ -477,13 +481,24 @@ func driveDevChannelRefused(rep *report.Report, c corpus.Case) {
 
 // driveManifestIncremental: ARC-090/091/093.
 //
-// This case's `expected.manifest` is a PARTIAL manifest — it declares mode,
+// driveManifestRoundTrip drives a manifest-shape case as a Create+Open round
+// trip: it overlays what the case declares onto a complete minimal manifest,
+// builds a real container, reads it back through every check Open performs, and
+// diffs only the members the case actually declared.
+//
+// One function for the full and incremental cases (ARC-031, ARC-091) because the
+// difference between them IS the manifest — mode, base_archive, and whether an
+// entry is embedded or inherited — and those are inputs to this machinery rather
+// than different machinery. Two copies would drift in what they assert about a
+// document whose shape is the subject of both.
+//
+// A case's `expected.manifest` may be PARTIAL — ARC-091's declares mode,
 // base_archive, assets and workspace_snapshot_mode, and nothing else. It is an
 // assertion about those members, not a document to round-trip whole: it carries
 // no created_at, workspace_id or data_key_wrap, and a conformant archive cannot
 // be built from it alone. So the driver starts from a complete minimal manifest,
 // overlays what the case declares, and compares only what the case declared.
-func driveManifestIncremental(rep *report.Report, c corpus.Case) {
+func driveManifestRoundTrip(rep *report.Report, c corpus.Case) {
 	var want archive.Manifest
 	if err := remarshal(c.Expected["manifest"], &want); err != nil {
 		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode expected.manifest: %v", err))
@@ -507,12 +522,12 @@ func driveManifestIncremental(rep *report.Report, c corpus.Case) {
 
 	container, err := f.createFrom(build, nil)
 	if err != nil {
-		rep.Fail(c.CaseID, contract, fmt.Sprintf("create an incremental archive: %v", err))
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("create the archive this case describes: %v", err))
 		return
 	}
 	got, entries, err := archive.Open(bytes.NewReader(container), f.passphrase, f.pub)
 	if err != nil {
-		rep.Fail(c.CaseID, contract, fmt.Sprintf("open a round-tripped incremental archive: %v", err))
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("open the round-tripped archive: %v", err))
 		return
 	}
 

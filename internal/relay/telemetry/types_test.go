@@ -93,7 +93,7 @@ func TestPushBatchMarshalsRel090Shape(t *testing.T) {
 			{
 				Seq:     1002,
 				Schema:  SchemaContentPlayed,
-				Payload: json.RawMessage(`{"asset_ref":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85","screen_id":"01J8Z3K4N5P6Q7R8S9T0V1W2X6"}`),
+				Payload: json.RawMessage(`{"asset_ref":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","screen_id":"01J8Z3K4N5P6Q7R8S9T0V1W2X6"}`),
 				TraceID: "01J8Z4K4N5P6Q7R8S9T0V1W3T2",
 			},
 		},

@@ -21,7 +21,7 @@
               "priority": "scheduled",
               "display": "content",
               "content": [
-                { "asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85", "url": "https://app.example/cas/e3b0c4...", "expires_at": 1752541200000 }
+                { "asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "url": "https://app.example/cas/e3b0c4...", "expires_at": 1752541200000 }
               ]
             }
           ],

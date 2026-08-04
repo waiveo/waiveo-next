@@ -302,7 +302,7 @@ This is the **window** analog of, and is deliberately distinct from, `rules/1`'s
   "scope_node": "01JGRPNDE1PG2X7R5JQC42EJ5E",
   "name": "Lobby Rotation",
   "items": [
-    { "source": "asset", "asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85", "duration_seconds": 10 },
+    { "source": "asset", "asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "duration_seconds": 10 },
     { "source": "playable", "pack_id": "acme-weather", "content_id": "forecast-strip" }
   ],
   "revision": 2,

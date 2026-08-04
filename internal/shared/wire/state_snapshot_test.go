@@ -28,7 +28,7 @@ func TestStateSnapshotBodyFieldNames(t *testing.T) {
 					Display:         "content",
 					Content: []ContentRef{
 						{
-							AssetRef:  "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85",
+							AssetRef:  "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 							URL:       "https://origin.example/content/e3b0c4",
 							ExpiresAt: 1752541200000,
 						},
@@ -471,7 +471,7 @@ func TestContractDocumentsContentOrigin(t *testing.T) {
 // changes the hash exactly like any other populated field.
 func TestContentRefContentTypeAndDurationOmitWhenUnset(t *testing.T) {
 	bare := ContentRef{
-		AssetRef:  "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85",
+		AssetRef:  "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 		URL:       "https://origin.example/content/e3b0c4",
 		ExpiresAt: 1752541200000,
 	}
