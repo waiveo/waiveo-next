@@ -132,6 +132,19 @@ type Record struct {
 	// authority over it. A producer with a placed subject therefore supplies it
 	// here rather than accepting the deployment-wide default.
 	ScopeNode string
+
+	// Detail is free-form context a producer needs preserved in the record.
+	//
+	// It exists for `api/1` API-144: a revocation's audit entry must carry the
+	// BLAST RADIUS that was reported to the operator at confirmation, because
+	// that is what they were shown when they decided. A trail that records only
+	// "who revoked what" cannot answer whether they understood what they were
+	// about to do — which is the question asked after a site goes dark.
+	//
+	// It is deliberately not a general-purpose bag: a producer that can express
+	// its context in Action, Target or ScopeNode should, since those are the
+	// fields a consumer can filter on.
+	Detail string
 }
 
 // Emit publishes r as an `audit.event`. A login-failure record automatically
@@ -173,6 +186,7 @@ func (a *Auditor) Emit(r Record) {
 		ClockAssessment: clock,
 		Purpose:         r.Purpose,
 		IssuedVia:       r.IssuedVia,
+		Detail:          r.Detail,
 	})
 	if err := events.Validate(env); err != nil {
 		return

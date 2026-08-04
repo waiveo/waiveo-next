@@ -391,6 +391,14 @@ func Open(dsn string, nowMs func() int64) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: migrate pairing grants: %w", err)
 	}
+	// Revoked screens and relay certificates (api/1 API-140, revocations.go).
+	// Their own table rather than a column, so a revocation outlives the row it
+	// concerns — the store hard-deletes, and a revocation lost to a tidy-up is
+	// a relay that stops refusing a credential it should still refuse.
+	if _, err := db.Exec(revocationsDDL); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("store: migrate revocations: %w", err)
+	}
 	// CREATE TABLE IF NOT EXISTS is a no-op against a table an earlier build
 	// already created, so a column added since then needs its own step
 	// (migratePairingGrantsSchema's own doc).

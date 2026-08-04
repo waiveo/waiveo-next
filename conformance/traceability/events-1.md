@@ -79,6 +79,7 @@ ever placed by that path.
 | EVT-070 | `contracts/events-1.md#boxvitals` | `EVT-070-valid-box-vitals` | covered |
 | EVT-071 | `contracts/events-1.md#boxvitals` | `EVT-070-valid-box-vitals` | covered |
 | EVT-080 | `contracts/events-1.md#auditevent` | `EVT-080-valid-audit-login-failure` | covered |
+| EVT-080a | `contracts/events-1.md#audit-event` | - | TBD-wave1 |
 | EVT-081 | `contracts/events-1.md#auditevent` | `EVT-080-valid-audit-login-failure` | covered |
 | EVT-082 | `contracts/events-1.md#auditevent` | - | TBD-wave1 |
 | EVT-083 | `contracts/events-1.md#auditevent` | `EVT-080-valid-audit-login-failure` | covered |

@@ -184,6 +184,12 @@ events/1 defines the platform's client push channel: the durable-event envelope,
 
 **[EVT-082]** `retention_class` (Durable-event envelope) on an `audit.event` event MUST be set to a value the platform's retention configuration treats as long-lived relative to the other registered schemas — an audit trail outliving the operational telemetry recorded alongside it is the property this field exists to express, even though this contract does not itself enumerate retention-class values or their durations.
 
+
+**[EVT-080a]** An `audit.event` payload MAY additionally carry `detail`: a short, free-form string recording context the acting surface needed preserved, additive to EVT-080's published shape.
+
+It exists for a specific obligation. `api/1` API-144 requires a revocation's audit record to carry the BLAST RADIUS reported to the operator at confirmation — what they were shown when they decided. A record of who revoked what cannot answer whether they understood what they were about to do, which is the question asked after a site goes dark.
+
+`detail` is deliberately narrow. It is not a general-purpose bag: a producer able to express its context in `action`, `target` or the envelope's own `scope_node` MUST use those, because those are the fields a consumer can filter on. And it carries no secret material, for the same reason no other audit field does — an audit record is retained and widely readable by construction.
 **[EVT-083]** `result: failure` MUST still carry every other field (EVT-080) — a failed action is exactly as auditable as a successful one, never elided for having failed.
 
 ### `variable.changed`

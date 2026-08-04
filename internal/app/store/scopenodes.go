@@ -150,6 +150,14 @@ type DesiredStateResult struct {
 	// concerns that do not belong in a plain read.
 	PairingGrants []wire.PairingGrant
 
+	// Revoked is every revoked screen id (revocations.go), for the snapshot's
+	// `revocation_and_site.revoked` (relay/1 REL-066). Read inside DesiredState's
+	// own lock section with everything else: a revocation bound to a different
+	// generation than the content around it is the one section where being one
+	// generation behind means a relay keeps honouring a credential an operator
+	// has just withdrawn.
+	Revoked []string
+
 	Generation int64
 }
 
@@ -198,6 +206,10 @@ func (s *Store) DesiredState(ctx context.Context) (DesiredStateResult, error) {
 	if err != nil {
 		return DesiredStateResult{}, err
 	}
+	revoked, err := s.revokedSubjectsLocked(ctx, RevocationSubjectScreen)
+	if err != nil {
+		return DesiredStateResult{}, err
+	}
 	generation, err := readGeneration(ctx, s.db)
 	if err != nil {
 		return DesiredStateResult{}, err
@@ -210,6 +222,7 @@ func (s *Store) DesiredState(ctx context.Context) (DesiredStateResult, error) {
 		DeviceInventory: inv,
 		Screens:         screens,
 		PairingGrants:   grants,
+		Revoked:         revoked,
 		Generation:      generation,
 	}, nil
 }

@@ -717,6 +717,16 @@ var probes = map[string]probe{
 		return e.do(t, http.MethodPost, "/api/v1/workspace/export",
 			mustJSON(t, map[string]any{"passphrase": testExportPassphrase}), nil)
 	},
+	"revokeSubject": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		// Unconfirmed: the radius query changes nothing, and is the response
+		// shape this probe exists to verify. The confirmed path is driven by
+		// revocation_test.go, where its side effects can be asserted.
+		// The org node must exist: the operation authorizes owner-at-root, and
+		// without a workspace root there is nothing to authorize against.
+		e.mintOrg(t)
+		return e.do(t, http.MethodPost, "/api/v1/revocations",
+			mustJSON(t, map[string]any{"subject_kind": "screen", "subject_id": rsEntityID}), nil)
+	},
 	"restoreWorkspace": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
 		// The 202 is returned on ACCEPTANCE, before the container is opened, so
 		// this probe verifies the accepted-Job shape without needing a real

@@ -68,6 +68,11 @@ type auditEventPayload struct {
 	ClockAssessment string `json:"clock_assessment,omitempty"`
 	Purpose         string `json:"purpose,omitempty"`
 	IssuedVia       string `json:"issued_via,omitempty"`
+
+	// Detail is EVT-080a's optional free-form context — the one field with no
+	// consumer that filters on it, for the case where what an operator was SHOWN
+	// is part of what the record must preserve (api/1 API-144's blast radius).
+	Detail string `json:"detail,omitempty"`
 }
 
 // AuditEvent is the input to AuditEventEnvelope: EVT-080's five payload fields
@@ -91,6 +96,9 @@ type AuditEvent struct {
 	ClockAssessment string
 	Purpose         string
 	IssuedVia       string
+
+	// Detail is EVT-080a's optional free-form context. Empty is omitted.
+	Detail string
 }
 
 // AuditEventEnvelope builds the full EVT-010 envelope for one audit.event
@@ -107,7 +115,8 @@ func AuditEventEnvelope(e AuditEvent) Envelope {
 		ClockAssessment: e.ClockAssessment,
 		Purpose:         e.Purpose,
 		IssuedVia:       e.IssuedVia,
-	})
+
+		Detail: e.Detail})
 	return Envelope{
 		ID:             e.ID,
 		Schema:         SchemaAuditEvent,

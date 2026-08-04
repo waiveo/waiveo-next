@@ -342,6 +342,7 @@ func (srv *server) mountAll(rt, rootRT *router, authHandlers *auth.Handlers) {
 	// revision to condition a write on, and no collection to list (workspace.go).
 	rt.HandleFunc("POST "+apiPrefix+"/workspace/export", srv.exportWorkspace)
 	rt.HandleFunc("POST "+apiPrefix+"/workspace/restore", srv.restoreWorkspace)
+	rt.HandleFunc("POST "+apiPrefix+"/revocations", srv.revokeSubject)
 	rt.HandleFunc("POST "+apiPrefix+"/workspace/delete", srv.deleteWorkspace)
 	// The device plane's two read families and its one mutating operation. They
 	// are not resourceConfig mounts: a device is a read-only projection of the

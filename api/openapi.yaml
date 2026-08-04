@@ -727,6 +727,57 @@ paths:
   # implicit in the request path, so API-110's selector convention does not
   # apply.
   # ---------------------------------------------------------------------
+  /revocations:
+    post:
+      operationId: revokeSubject
+      summary: Revoke a relay certificate or a screen
+      description: >-
+        Declares that a provisioned identity is no longer trusted (API-140).
+        Relay-certificate and screen revocation are ONE operation because they
+        are the same decision twice — what act revokes a thing, and where an
+        operator performs it — and deciding them apart guarantees drift in the
+        authorization floor, the audit shape and the confirmation.
+
+        Revocation is NOT implied by deleting the relay or screen (API-141): the
+        threat is a still-provisioned peer that has become untrusted. It is
+        TERMINAL (API-142); recovery is re-enrollment.
+
+        A request WITHOUT `confirm: true` changes nothing and answers with the
+        blast radius (API-143), so a caller that omits the field learns what
+        would stop working rather than causing it. Owner-at-root only
+        (`security-model.md` SEC-003f).
+      tags: [security, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RevocationRequest"
+      responses:
+        "200":
+          description: >-
+            The blast radius, and whether the revocation was performed. Without
+            `confirm` nothing changed and `revoked` is false.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RevocationResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
   /workspace/restore:
     post:
       operationId: restoreWorkspace
@@ -4086,6 +4137,40 @@ components:
     # workspace — the two data-subject operations' request bodies
     # (contracts/api-1.md#data-subject-export--delete).
     # -----------------------------------------------------------------
+    RevocationRequest:
+      type: object
+      description: >-
+        Names the identity to revoke. `confirm` is API-143's second half — its
+        absence makes this a radius query that changes nothing.
+      required: [subject_kind, subject_id]
+      additionalProperties: false
+      properties:
+        subject_kind:
+          type: string
+          enum: [screen, relay]
+        subject_id:
+          type: string
+          minLength: 1
+        confirm:
+          type: boolean
+          default: false
+    RevocationResponse:
+      type: object
+      required: [subject_kind, subject_id, screens_affected, revoked, already_revoked]
+      additionalProperties: false
+      properties:
+        subject_kind:
+          type: string
+          enum: [screen, relay]
+        subject_id:
+          type: string
+        screens_affected:
+          type: integer
+          description: How many screens stop being served if this proceeds (API-143).
+        revoked:
+          type: boolean
+        already_revoked:
+          type: boolean
     WorkspaceRestoreRequest:
       type: object
       description: >-

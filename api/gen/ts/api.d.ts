@@ -230,6 +230,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/revocations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revoke a relay certificate or a screen
+         * @description Declares that a provisioned identity is no longer trusted (API-140). Relay-certificate and screen revocation are ONE operation because they are the same decision twice — what act revokes a thing, and where an operator performs it — and deciding them apart guarantees drift in the authorization floor, the audit shape and the confirmation.
+         *     Revocation is NOT implied by deleting the relay or screen (API-141): the threat is a still-provisioned peer that has become untrusted. It is TERMINAL (API-142); recovery is re-enrollment.
+         *     A request WITHOUT `confirm: true` changes nothing and answers with the blast radius (API-143), so a caller that omits the field learns what would stop working rather than causing it. Owner-at-root only (`security-model.md` SEC-003f).
+         */
+        post: operations["revokeSubject"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/workspace/restore": {
         parameters: {
             query?: never;
@@ -1575,6 +1597,23 @@ export interface components {
             /** @description The `enabled` value to apply to every automation the selector matches. */
             enabled: boolean;
         };
+        /** @description Names the identity to revoke. `confirm` is API-143's second half — its absence makes this a radius query that changes nothing. */
+        RevocationRequest: {
+            /** @enum {string} */
+            subject_kind: "screen" | "relay";
+            subject_id: string;
+            /** @default false */
+            confirm: boolean;
+        };
+        RevocationResponse: {
+            /** @enum {string} */
+            subject_kind: "screen" | "relay";
+            subject_id: string;
+            /** @description How many screens stop being served if this proceeds (API-143). */
+            screens_affected: number;
+            revoked: boolean;
+            already_revoked: boolean;
+        };
         /** @description The request body for the workspace restore operation. It names a container already present in this deployment's archive directory and carries the export passphrase that opens it. The archive is NAMED rather than uploaded: an upload would hold a multi-gigabyte container in the request path before anything about it had been verified. */
         WorkspaceRestoreRequest: {
             /** @description The container's file name within the archive directory. A bare name, never a path — a caller able to send a path would be choosing which file the server opens and decrypts. */
@@ -2462,6 +2501,41 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    revokeSubject: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RevocationRequest"];
+            };
+        };
+        responses: {
+            /** @description The blast radius, and whether the revocation was performed. Without `confirm` nothing changed and `revoked` is false. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevocationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["TooManyRequests"];
         };
     };
     restoreWorkspace: {

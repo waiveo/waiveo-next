@@ -361,6 +361,42 @@ func (e ProblemSecondFactor) Valid() bool {
 	}
 }
 
+// Defines values for RevocationRequestSubjectKind.
+const (
+	RevocationRequestSubjectKindRelay  RevocationRequestSubjectKind = "relay"
+	RevocationRequestSubjectKindScreen RevocationRequestSubjectKind = "screen"
+)
+
+// Valid indicates whether the value is a known member of the RevocationRequestSubjectKind enum.
+func (e RevocationRequestSubjectKind) Valid() bool {
+	switch e {
+	case RevocationRequestSubjectKindRelay:
+		return true
+	case RevocationRequestSubjectKindScreen:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RevocationResponseSubjectKind.
+const (
+	RevocationResponseSubjectKindRelay  RevocationResponseSubjectKind = "relay"
+	RevocationResponseSubjectKindScreen RevocationResponseSubjectKind = "screen"
+)
+
+// Valid indicates whether the value is a known member of the RevocationResponseSubjectKind enum.
+func (e RevocationResponseSubjectKind) Valid() bool {
+	switch e {
+	case RevocationResponseSubjectKindRelay:
+		return true
+	case RevocationResponseSubjectKindScreen:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ScopeNodeKind.
 const (
 	ScopeNodeKindGroup  ScopeNodeKind = "group"
@@ -1117,6 +1153,30 @@ type ProblemSecondFactor string
 
 // RelayId A relay's permanent identity, assigned to it by enrollment and unchanged across every later certificate renewal or re-enrollment (`relay/1` REL-012/014). Deliberately NOT typed as a ULID: unlike a resource this API mints, a relay id is issued by the enrollment path and is opaque here — this API reads it, routes a command by it, and never constructs or parses one.
 type RelayId = string
+
+// RevocationRequest Names the identity to revoke. `confirm` is API-143's second half — its absence makes this a radius query that changes nothing.
+type RevocationRequest struct {
+	Confirm     *bool                        `json:"confirm,omitempty"`
+	SubjectId   string                       `json:"subject_id"`
+	SubjectKind RevocationRequestSubjectKind `json:"subject_kind"`
+}
+
+// RevocationRequestSubjectKind defines model for RevocationRequest.SubjectKind.
+type RevocationRequestSubjectKind string
+
+// RevocationResponse defines model for RevocationResponse.
+type RevocationResponse struct {
+	AlreadyRevoked bool `json:"already_revoked"`
+	Revoked        bool `json:"revoked"`
+
+	// ScreensAffected How many screens stop being served if this proceeds (API-143).
+	ScreensAffected int                           `json:"screens_affected"`
+	SubjectId       string                        `json:"subject_id"`
+	SubjectKind     RevocationResponseSubjectKind `json:"subject_kind"`
+}
+
+// RevocationResponseSubjectKind defines model for RevocationResponse.SubjectKind.
+type RevocationResponseSubjectKind string
 
 // ScheduleCreate defines model for ScheduleCreate.
 type ScheduleCreate struct {
@@ -2001,6 +2061,15 @@ type UpdatePlaylistParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// RevokeSubjectParams defines parameters for RevokeSubject.
+type RevokeSubjectParams struct {
+	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
+	IdempotencyKey *IdempotencyKeyParam `json:"Idempotency-Key,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // ListSchedulesParams defines parameters for ListSchedules.
 type ListSchedulesParams struct {
 	// Cursor Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client.
@@ -2304,6 +2373,9 @@ type CreatePlaylistJSONRequestBody = PlaylistCreate
 // UpdatePlaylistJSONRequestBody defines body for UpdatePlaylist for application/json ContentType.
 type UpdatePlaylistJSONRequestBody = PlaylistUpdate
 
+// RevokeSubjectJSONRequestBody defines body for RevokeSubject for application/json ContentType.
+type RevokeSubjectJSONRequestBody = RevocationRequest
+
 // CreateScheduleJSONRequestBody defines body for CreateSchedule for application/json ContentType.
 type CreateScheduleJSONRequestBody = ScheduleCreate
 
@@ -2590,6 +2662,11 @@ type ClientInterface interface {
 	UpdatePlaylistWithBody(ctx context.Context, playlistId Ulid, params *UpdatePlaylistParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	UpdatePlaylist(ctx context.Context, playlistId Ulid, params *UpdatePlaylistParams, body UpdatePlaylistJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RevokeSubjectWithBody request with any body
+	RevokeSubjectWithBody(ctx context.Context, params *RevokeSubjectParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	RevokeSubject(ctx context.Context, params *RevokeSubjectParams, body RevokeSubjectJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListSchedules request
 	ListSchedules(ctx context.Context, params *ListSchedulesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -3467,6 +3544,30 @@ func (c *Client) UpdatePlaylistWithBody(ctx context.Context, playlistId Ulid, pa
 
 func (c *Client) UpdatePlaylist(ctx context.Context, playlistId Ulid, params *UpdatePlaylistParams, body UpdatePlaylistJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewUpdatePlaylistRequest(c.Server, playlistId, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RevokeSubjectWithBody(ctx context.Context, params *RevokeSubjectParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRevokeSubjectRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RevokeSubject(ctx context.Context, params *RevokeSubjectParams, body RevokeSubjectJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRevokeSubjectRequest(c.Server, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -7156,6 +7257,72 @@ func NewUpdatePlaylistRequestWithBody(server string, playlistId Ulid, params *Up
 	return req, nil
 }
 
+// NewRevokeSubjectRequest calls the generic RevokeSubject builder with application/json body
+func NewRevokeSubjectRequest(server string, params *RevokeSubjectParams, body RevokeSubjectJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewRevokeSubjectRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewRevokeSubjectRequestWithBody generates requests for RevokeSubject with any type of body
+func NewRevokeSubjectRequestWithBody(server string, params *RevokeSubjectParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/revocations")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.IdempotencyKey != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Idempotency-Key", *params.IdempotencyKey, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Idempotency-Key", headerParam0)
+		}
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
 // NewListSchedulesRequest generates requests for ListSchedules
 func NewListSchedulesRequest(server string, params *ListSchedulesParams) (*http.Request, error) {
 	var err error
@@ -9165,6 +9332,11 @@ type ClientWithResponsesInterface interface {
 
 	UpdatePlaylistWithResponse(ctx context.Context, playlistId Ulid, params *UpdatePlaylistParams, body UpdatePlaylistJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdatePlaylistResponse, error)
 
+	// RevokeSubjectWithBodyWithResponse request with any body
+	RevokeSubjectWithBodyWithResponse(ctx context.Context, params *RevokeSubjectParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RevokeSubjectResponse, error)
+
+	RevokeSubjectWithResponse(ctx context.Context, params *RevokeSubjectParams, body RevokeSubjectJSONRequestBody, reqEditors ...RequestEditorFn) (*RevokeSubjectResponse, error)
+
 	// ListSchedulesWithResponse request
 	ListSchedulesWithResponse(ctx context.Context, params *ListSchedulesParams, reqEditors ...RequestEditorFn) (*ListSchedulesResponse, error)
 
@@ -10874,6 +11046,41 @@ func (r UpdatePlaylistResponse) ContentType() string {
 	return ""
 }
 
+type RevokeSubjectResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *RevocationResponse
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON422 *UnprocessableContent
+	ApplicationproblemJSON429 *TooManyRequests
+}
+
+// Status returns HTTPResponse.Status
+func (r RevokeSubjectResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r RevokeSubjectResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r RevokeSubjectResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type ListSchedulesResponse struct {
 	Body                      []byte
 	HTTPResponse              *http.Response
@@ -12362,6 +12569,23 @@ func (c *ClientWithResponses) UpdatePlaylistWithResponse(ctx context.Context, pl
 		return nil, err
 	}
 	return ParseUpdatePlaylistResponse(rsp)
+}
+
+// RevokeSubjectWithBodyWithResponse request with arbitrary body returning *RevokeSubjectResponse
+func (c *ClientWithResponses) RevokeSubjectWithBodyWithResponse(ctx context.Context, params *RevokeSubjectParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RevokeSubjectResponse, error) {
+	rsp, err := c.RevokeSubjectWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRevokeSubjectResponse(rsp)
+}
+
+func (c *ClientWithResponses) RevokeSubjectWithResponse(ctx context.Context, params *RevokeSubjectParams, body RevokeSubjectJSONRequestBody, reqEditors ...RequestEditorFn) (*RevokeSubjectResponse, error) {
+	rsp, err := c.RevokeSubject(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRevokeSubjectResponse(rsp)
 }
 
 // ListSchedulesWithResponse request returning *ListSchedulesResponse
@@ -15086,6 +15310,67 @@ func ParseUpdatePlaylistResponse(rsp *http.Response) (*UpdatePlaylistResponse, e
 			return nil, err
 		}
 		response.ApplicationproblemJSON428 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseRevokeSubjectResponse parses an HTTP response from a RevokeSubjectWithResponse call
+func ParseRevokeSubjectResponse(rsp *http.Response) (*RevokeSubjectResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &RevokeSubjectResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest RevocationResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
 
 	}
 

@@ -438,7 +438,11 @@ func BuildFromStore(rows store.DesiredStateResult, contentBaseURL string, id *si
 		DeviceInventory: rows.DeviceInventory.Normalized(),
 		Schedule:        scheduleSection,
 		RevocationAndSite: wire.RevocationAndSite{
-			Revoked:       []string{},
+			// REL-066: the revoked ids the store holds (api/1 API-140's authoring half),
+			// carried in the SIGNED snapshot so a relay enforces them while
+			// disconnected from its app peer — which is the case the enforcement
+			// was built for.
+			Revoked:       revokedOrEmpty(rows.Revoked),
 			SiteEffective: rows.SiteEffective,
 			ContentOrigin: contentBaseURL,
 			// REL-066a: the key every relay at this site MINTS content URLs
@@ -563,4 +567,17 @@ func encodeContentURLKey(key []byte) string {
 		return ""
 	}
 	return base64.StdEncoding.EncodeToString(key)
+}
+
+// revokedOrEmpty normalizes a nil revoked list to an empty one.
+//
+// REL-060 requires the section to marshal as `[]`, never `null`, and a caller
+// that builds a DesiredStateResult by hand — every test that does — would
+// otherwise change the snapshot's bytes and therefore its REL-053 hash purely
+// by leaving a field at its zero value.
+func revokedOrEmpty(ids []string) []string {
+	if ids == nil {
+		return []string{}
+	}
+	return ids
 }
