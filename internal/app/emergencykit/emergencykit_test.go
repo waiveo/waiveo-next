@@ -134,11 +134,31 @@ func TestAWrongPassphraseIsRefused(t *testing.T) {
 	dir := t.TempDir()
 	kit := issue(t, dir)
 
+	// The closest possible miss: exactly one character different.
+	//
+	// Built by replacing the first character with one it is NOT, rather than
+	// with a fixed letter. The fixed-letter version — Replace(pass, pass[0],
+	// "Z", 1) — produced the ORIGINAL passphrase whenever the kit happened to
+	// begin with Z, which is about one run in thirty-two over this alphabet.
+	// Verify then correctly accepted it and the test failed, reading as
+	// "Verify accepted a wrong passphrase" when what had happened is that the
+	// test handed it the right one. It cost a CI failure to notice, and the
+	// shape is worth keeping in mind: a test that CONSTRUCTS its negative case
+	// can construct the positive one by accident.
+	nearMiss := []byte(kit.RecoveryPassphrase)
+	if nearMiss[0] == 'Z' {
+		nearMiss[0] = 'Y'
+	} else {
+		nearMiss[0] = 'Z'
+	}
+	if string(nearMiss) == kit.RecoveryPassphrase {
+		t.Fatal("the near-miss passphrase equals the issued one, so this case would prove nothing")
+	}
+
 	for _, wrong := range []string{
 		"",
 		"NOTTHERIGHTPASSPHRASEATALL",
-		// One character changed: the closest possible miss.
-		strings.Replace(kit.RecoveryPassphrase, string(kit.RecoveryPassphrase[0]), "Z", 1),
+		string(nearMiss),
 	} {
 		ok, err := Verify(dir, wrong)
 		if err != nil {
