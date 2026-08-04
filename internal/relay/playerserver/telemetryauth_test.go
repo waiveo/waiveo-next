@@ -190,6 +190,14 @@ func TestAckAndRenderStartRefuseAnotherScreensLease(t *testing.T) {
 // This is the vector the reported symptom did not name: adding a credential alone
 // closes the anonymous case and leaves this one, since the caller here is a fully
 // authorized player.
+//
+// The CODE matters as much as the refusal. It reported VALIDATION_FAILED until
+// PLY-070a published a code for it, and that was wrong in a way a player acts
+// on: the body passed schema validation — every field present and well typed —
+// so telling a player its request was malformed sends it to re-serialize a body
+// that was never the problem. It is equally not CHANNEL_TOKEN_INVALID, whose
+// PLY-073 remedy is renew-or-re-pair: a correctly-provisioned player would then
+// discard a working credential in response to a bug in its own request.
 func TestRenderEndRefusesAReportFiledAgainstAnotherScreen(t *testing.T) {
 	srv, tokenA, _ := twoScreenServer(t)
 	ts := newPairingTestServer(t, srv)
@@ -197,7 +205,7 @@ func TestRenderEndRefusesAReportFiledAgainstAnotherScreen(t *testing.T) {
 	rt := telemetryRoutes()[2]
 	resp := postPlayerJSON(t, ts, tokenA, rt.path, rt.body(testScreenIDB, ""))
 	defer resp.Body.Close()
-	assertTypedError(t, resp, decodeProblem(t, resp), "VALIDATION_FAILED")
+	assertTypedError(t, resp, decodeProblem(t, resp), "CHANNEL_TOKEN_SCOPE_INVALID")
 	assertNothingRecorded(t, srv)
 
 	// Its own screen is accepted, so the refusal is about the mismatch.

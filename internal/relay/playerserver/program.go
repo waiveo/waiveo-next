@@ -802,8 +802,19 @@ func (s *Server) handleRenderEnd(w http.ResponseWriter, r *http.Request) {
 	// the report disagree with what the player believes it sent, and the player
 	// would never learn its own screen_id was wrong. An empty screen_id is the
 	// same refusal — a report has to say which screen it is about.
+	//
+	// CHANNEL_TOKEN_SCOPE_INVALID, not VALIDATION_FAILED (PLY-070a). This body
+	// PASSED schema validation — every field present and well typed. What failed
+	// is the body against the CREDENTIAL, which is a fault of its own kind, and
+	// reporting it as a validation failure tells a player its request was
+	// malformed and sends it to re-serialize a body that was never the problem.
+	//
+	// It is deliberately not CHANNEL_TOKEN_INVALID either: PLY-073 makes that
+	// code's remedy renew-or-re-pair, and a correctly-provisioned player would
+	// then discard a working credential in response to a bug in its own request
+	// (PLY-070b).
 	if req.ScreenID != screenID {
-		apihttp.WriteProblem(w, r, traceID, http.StatusBadRequest, "VALIDATION_FAILED", "Validation Failed")
+		apihttp.WriteProblem(w, r, traceID, http.StatusForbidden, "CHANNEL_TOKEN_SCOPE_INVALID", "Forbidden")
 		return
 	}
 

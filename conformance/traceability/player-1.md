@@ -62,6 +62,8 @@ One row per requirement ID `contracts/player-1.md` defines. Format: `conformance
 | PLY-065 | `contracts/player-1.md#steady-state-pinning` | - | TBD-wave1 |
 | PLY-066 | `contracts/player-1.md#steady-state-pinning` | - | TBD-wave1 |
 | PLY-070 | `contracts/player-1.md#channel-tokens` | - | TBD-wave1 |
+| PLY-070a | `contracts/player-1.md#channel-tokens` | - | TBD-wave1 |
+| PLY-070b | `contracts/player-1.md#channel-tokens` | - | TBD-wave1 |
 | PLY-071 | `contracts/player-1.md#channel-tokens` | `PLY-050-valid-pairing-happy-path-tofu-same-network` | covered |
 | PLY-072 | `contracts/player-1.md#channel-tokens` | `PLY-136-valid-token-revoked-reconnect-clears-token-only` | covered |
 | PLY-073 | `contracts/player-1.md#channel-tokens` | `PLY-136-valid-token-revoked-reconnect-clears-token-only` | covered |

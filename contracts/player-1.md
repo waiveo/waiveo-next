@@ -185,6 +185,14 @@ This residual is structural to trust-on-first-contact pairing generally — a fu
 
 **[PLY-071]** A channel token MUST carry a bounded expiry (`expires_at`, a Timestamp) at issuance (PLY-033) and at every renewal (PLY-074), set no more than 24 hours after the issuance or renewal that produced it. Twenty-four hours is long enough that a player polling at its ordinary cadence (Program delivery) renews well ahead of expiry without a dedicated renewal round trip on the common path (PLY-074), and short enough that a revoked-but-still-cached token's natural lifetime is bounded to a day.
 
+
+**[PLY-070a]** A relay MUST report PLY-070's wrong-`screen_id` rejection with `CHANNEL_TOKEN_SCOPE_INVALID` (Error taxonomy), not with a body-validation code.
+
+The body in question passed schema validation — every field present and well typed. What failed is the body against the CREDENTIAL: the player named a screen its token does not authorize. That is a credential fault, and the neighbouring codes already distinguish credential faults by kind (`CHANNEL_TOKEN_INVALID`, `_EXPIRED`, `_REVOKED`); a token used for the wrong screen is a fourth kind and the one PLY-070 states most explicitly. Reporting it as a validation failure tells a player its request was malformed, which sends it to re-serialize a body that was never the problem.
+
+**[PLY-070b]** A player receiving `CHANNEL_TOKEN_SCOPE_INVALID` MUST NOT renew its token (PLY-074) and MUST NOT re-enter Pairing redemption. Its credential is intact and neither act would change the outcome — the fault is in what the player ASKED FOR, not in what it holds.
+
+This is what makes the fourth kind worth publishing rather than folding into `CHANNEL_TOKEN_INVALID`. PLY-073 requires a player to treat `_EXPIRED` as renewable and `_REVOKED` as terminal-then-re-pair; a wrong-screen fault answered by either of those codes would drive a correctly-provisioned player to discard a working credential in response to a bug in its own request. A player MUST instead surface the condition — it is a provisioning or software fault an operator has to see — and MUST NOT retry the same request unchanged.
 **[PLY-072]** A relay MUST reject a request whose channel token has passed its `expires_at` with `CHANNEL_TOKEN_EXPIRED` (Error taxonomy), and MUST reject a request whose channel token names a `screen_id` present in `revocation_and_site.revoked` (`relay/1` REL-066) with `CHANNEL_TOKEN_REVOKED`, checked against the relay's own last-synced copy even while disconnected from its app peer, exactly as `relay/1` REL-123 requires of the relay's own enforcement.
 
 **[PLY-073]** A `CHANNEL_TOKEN_EXPIRED` response MUST be treated by a player as retryable via renewal (PLY-074), never as a trigger to re-enter Pairing redemption. A `CHANNEL_TOKEN_REVOKED` response MUST be treated as terminal for that token: a player MUST clear it and re-enter Pairing redemption, without discarding its persisted relay address or trust-anchor material (PLY-063's pattern, applied here to token revocation rather than trust-anchor loss).
@@ -572,6 +580,7 @@ Every code below is carried twice on the response that reports it: in the Proble
 | `PAIRING_EXPIRED` | The pairing grant behind this code or attempt has passed its `ttl` (PLY-036, `relay/1` REL-121). | no — obtain a fresh pairing grant |
 | `TRUST_ANCHOR_AUTH_FAILED` | Out-of-band cert authentication failed for this pairing attempt (PLY-057). | yes — a fresh pairing attempt with correct out-of-band material |
 | `CHANNEL_TOKEN_INVALID` | The presented channel token is malformed or unknown. | no — renew or re-pair |
+| `CHANNEL_TOKEN_SCOPE_INVALID` | The presented channel token is valid, and does not authorize the `screen_id` the request names (PLY-070/070a). A credential fault of its own kind: the token is intact, so neither renewal nor re-pairing changes the outcome (PLY-070b). | no — the request named a screen this token does not authorize |
 | `CHANNEL_TOKEN_EXPIRED` | The presented channel token's `expires_at` has passed (PLY-072). | yes — renew (PLY-074) |
 | `CHANNEL_TOKEN_REVOKED` | The presented channel token names a `screen_id` present in `revocation_and_site.revoked`, or names a `screen_id` the relay no longer recognizes (PLY-072–073, PLY-075). | no — re-enter Pairing redemption |
 | `CONTENT_TYPE_UNSUPPORTED` | A request implied a content type outside the caller's own declared `content_types` (PLY-012). | no — declare the type first, or the caller does not support it |
