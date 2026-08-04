@@ -7,6 +7,7 @@ import { PageRenderer } from "./PageRenderer";
 import { validatePage } from "./validate";
 import type { ActionHandler } from "./types";
 import { FRAGMENT_DEPTH_CEILING } from "./widgets/common";
+import { FRAGMENT_RECURSION_DEPTH_EXCEEDED } from "./schema";
 
 // THE AUTOMATION-BUILDER FIXTURE DRIVER.
 //
@@ -335,6 +336,17 @@ describe("the automation-builder fixture, through the real renderer", () => {
       data: { ...data, automations: [deep] },
       initialUi: { selected: deep.id },
     });
-    expect(screen.getByRole("alert")).toBeInTheDocument();
+    const alert = screen.getByRole("alert");
+    expect(alert).toBeInTheDocument();
+
+    // And it carries the code UIS-182 NAMES, not only a sentence.
+    //
+    // The ceiling was enforced and this assertion was `getByRole("alert")` alone,
+    // which is why FRAGMENT_RECURSION_DEPTH_EXCEEDED could be published and
+    // passed to nothing: the behaviour was pinned and its identity was not. A
+    // consumer branching on the code — a test, an operator reading a screenshot,
+    // a future error reporter — had nothing to branch on.
+    expect(alert.getAttribute("data-wv-code")).toBe(FRAGMENT_RECURSION_DEPTH_EXCEEDED);
+    expect(alert.textContent).toContain(FRAGMENT_RECURSION_DEPTH_EXCEEDED);
   });
 });

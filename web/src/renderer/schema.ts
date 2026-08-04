@@ -15,6 +15,16 @@ export type PageType = (typeof PAGE_TYPES)[number];
 
 // ── Error taxonomy (§Error taxonomy) ────────────────────────────────────────
 
+/** UIS-182's render-time recursion refusal, named once.
+ *
+ * Exported as its own constant because it is the only code in this taxonomy
+ * raised by the RENDERER rather than the validator — the depth a fragment chain
+ * reaches is a property of the bound data, which no static check can know — so
+ * the one place that raises it cannot reach it through the validator's `fail()`.
+ * A duplicated string literal there is how a published code drifts from the
+ * refusal that is supposed to carry it. */
+export const FRAGMENT_RECURSION_DEPTH_EXCEEDED = "FRAGMENT_RECURSION_DEPTH_EXCEEDED";
+
 export const ERROR_CODES = [
   "UNKNOWN_PAGE_TYPE",
   "UNKNOWN_WIDGET_TYPE",
@@ -24,7 +34,7 @@ export const ERROR_CODES = [
   "BINDING_PATH_INVALID",
   "BINDING_TYPE_MISMATCH",
   "FRAGMENT_REF_UNDEFINED",
-  "FRAGMENT_RECURSION_DEPTH_EXCEEDED",
+  FRAGMENT_RECURSION_DEPTH_EXCEEDED,
   "SLOT_NAME_DUPLICATE",
   "VOCAB_REF_UNKNOWN",
   "OPTION_SOURCE_INVALID",

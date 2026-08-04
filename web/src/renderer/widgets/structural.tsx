@@ -16,6 +16,7 @@ import { evalBindingExpr, resolvePath } from "../bindings";
 import { useRenderer } from "../state";
 import type { WidgetNode } from "../types";
 import { FRAGMENT_DEPTH_CEILING, narrowToFragmentBind, narrowToItem, resolveArray, type WidgetProps } from "./common";
+import { FRAGMENT_RECURSION_DEPTH_EXCEEDED } from "../schema";
 import { WidgetNodeView } from "./widget-node";
 
 export function SectionWidget({ node, scope, depth }: WidgetProps) {
@@ -114,10 +115,26 @@ export function FragmentWidget({ node, scope, depth }: WidgetProps) {
 
   if (!fragment) return null; // an unresolved ref was rejected at validation (UIS-180)
   // Fail closed at a finite ceiling rather than exhaust the stack (UIS-182).
+  //
+  // The refusal carries its published CODE, not only prose. UIS-182 says this
+  // failure "MUST fail closed as FRAGMENT_RECURSION_DEPTH_EXCEEDED", and the code
+  // is the machine-readable half of that: the validation surface already renders
+  // `code · path` for every static refusal (PageRenderer), and a render-time
+  // refusal that showed only a sentence would be the one failure in this renderer
+  // nothing could identify programmatically.
+  //
+  // It was declared in ERROR_CODES and passed to nothing, which is how the
+  // published-error-code gate found it. The ceiling itself was already enforced
+  // and tested — what was missing was the name.
   if (depth + 1 > FRAGMENT_DEPTH_CEILING) {
     return (
-      <div role="alert" className="text-sm text-[color:var(--wv-err)]">
-        Fragment recursion depth exceeded
+      <div
+        role="alert"
+        data-slot="fragment-recursion-exceeded"
+        data-wv-code={FRAGMENT_RECURSION_DEPTH_EXCEEDED}
+        className="text-sm text-[color:var(--wv-err)]"
+      >
+        {FRAGMENT_RECURSION_DEPTH_EXCEEDED} · fragment recursion depth exceeded
       </div>
     );
   }
