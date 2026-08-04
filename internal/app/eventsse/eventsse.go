@@ -312,6 +312,9 @@ type server struct {
 	// that could be constructed without the tree that defines it is a binding
 	// that will eventually be constructed without it.
 	scopeNodes ScopeNodesFunc
+	// onClose, when set, is called with the close code this server DECIDED for a
+	// connection, at the moment it decides it (WithCloseObserver).
+	onClose func(code string)
 	// logf records a non-fatal streaming hiccup (an envelope that fails to
 	// serialize, EVT-103) — it defaults to the stdlib logger and is a field so a
 	// corrupt frame is logged and skipped, never emitted.
@@ -356,6 +359,32 @@ func WithGapDeferral(d time.Duration) Option {
 // WithWriteTimeout overrides the WS binding's per-frame write deadline — the
 // bound EVT-142 draws the line at between gapping a slow subscriber and
 // disconnecting it SLOW_CONSUMER_DISCONNECTED.
+// WithCloseObserver reports the close code this server decided for a
+// connection, at the moment it decides it.
+//
+// # Why this exists, since a production hook for a test's benefit needs a reason
+//
+// EVT-142's slow-consumer disconnect could not be pinned by observing the wire.
+// Aborting a write MID-FRAME leaves the byte stream indeterminate, so the
+// library fails the socket outright and the close handshake has nothing left to
+// write on — whether a nanosecond deadline is observed BEFORE the write reaches
+// the wire (clean abort, close frame lands) or DURING it (poisoned socket, peer
+// sees EOF) is a scheduling outcome. A longer timeout does not help: at 1µs and
+// 1ms the writes simply succeed on loopback and no deadline is ever exhausted.
+// The only window that triggers the path is the one that races.
+//
+// So the classification is observed where it is MADE rather than where it is
+// transmitted. That is a narrower claim than the wire test attempted and a true
+// one: the requirement is about which close the server decides on, and the close
+// frame's survival is a property of the socket rather than of the decision.
+//
+// It is called on the connection's own goroutine, synchronously, so an observer
+// that blocks delays that connection's teardown and nothing else. Unset, the
+// server behaves exactly as before.
+func WithCloseObserver(fn func(code string)) Option {
+	return func(srv *server) { srv.onClose = fn }
+}
+
 func WithWriteTimeout(d time.Duration) Option {
 	return func(s *server) { s.writeTimeout = d }
 }

@@ -32,6 +32,9 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -651,26 +654,62 @@ func TestWS_DeferredGapClosesSlowConsumerAtTheBound(t *testing.T) {
 	c.expectClose(t, events.CloseSlowConsumer, 3*time.Second)
 }
 
-// EVT-142's disconnect half is NOT pinned here, and this note is why.
+// TestWS_WriteDeadlineExhaustedDecidesSlowConsumer is EVT-142's disconnect half,
+// finally pinned — and the history is worth keeping, because the two obvious
+// tests for it both fail for the same reason.
 //
-// A test forcing the write deadline with a nanosecond timeout landed in
-// 519718b, passed locally and in CI, and then failed a later CI run: the client
-// saw EOF instead of the SLOW_CONSUMER_DISCONNECTED close frame.
-//
-// The cause is not flaky timing around an otherwise sound assertion. Aborting a
-// write MID-FRAME leaves the connection's byte stream indeterminate, so the
-// library fails the socket outright and the close handshake closeWith performs
+// The FIRST attempt forced the deadline on a real connection and asserted on the
+// close frame. It failed a CI run: aborting a write mid-frame leaves the byte
+// stream indeterminate, so the library fails the socket and the close handshake
 // has nothing left to write on. Whether a 1ns deadline is observed BEFORE the
-// write touches the wire (clean abort, close frame lands) or DURING it (poisoned
-// socket, peer sees EOF) is a scheduling outcome. The commit that added it
-// claimed it drove the path "with no timing race at all"; that was wrong.
+// write touches the wire (clean abort, frame lands) or DURING it (poisoned
+// socket, peer sees EOF) is a scheduling outcome.
 //
-// Removed rather than retried with a longer timeout, because a longer timeout is
-// the case that does not fail at all: at 1us and 1ms the writes simply succeed on
-// loopback and no deadline is ever exhausted. Pinning this needs a seam that
-// observes the classification endWS makes, rather than the close frame's race
-// with connection teardown — tracked on #138.
+// The SECOND attempt kept the real connection and moved the observation off the
+// wire onto WithCloseObserver. It failed about one run in twelve at -count=40,
+// with no classification at all: whether a 1ns deadline is actually exhausted on
+// loopback is ALSO a scheduling outcome, so sometimes the write simply succeeded.
+// Moving the observation was necessary and not sufficient — the TRIGGER was still
+// a race, which is the same trap one level in.
 //
+// What EVT-142 requires is which close this server decides on for a write that
+// ran out its bounded timeout. That is a total function of the write's error, so
+// it is pinned by supplying the error rather than by racing a socket into
+// producing it.
+func TestWS_WriteDeadlineExhaustedDecidesSlowConsumer(t *testing.T) {
+	var decided []string
+	srv := &server{onClose: func(code string) { decided = append(decided, code) }}
+	// A nil socket: closeWith panics on it, and endWS reaches that only AFTER the
+	// classification this asserts. Recovering keeps the test on the decision
+	// rather than on the teardown, which is the distinction the two failed
+	// attempts above kept losing.
+	conn := &wsConn{writeTimeout: time.Nanosecond}
+	call := func(err error) {
+		defer func() { _ = recover() }()
+		srv.endWS(conn, err)
+	}
+
+	call(context.DeadlineExceeded)
+	if len(decided) != 1 || decided[0] != events.CloseSlowConsumer {
+		t.Fatalf("a deadline-exhausted write decided %v, want exactly [%s] — a write that ran out its own bounded "+
+			"timeout is EVT-142's slow consumer, and naming it anything else sends a client's reconnect logic down "+
+			"the wrong branch", decided, events.CloseSlowConsumer)
+	}
+
+	// The other half of the line: a connection that is already GONE is not a slow
+	// consumer. Without this, a server classifying every write error as
+	// SLOW_CONSUMER_DISCONNECTED would pass the assertion above while telling
+	// every client that dropped its socket to back off as though it were slow.
+	decided = nil
+	for _, err := range []error{io.EOF, errors.New("connection reset by peer"), net.ErrClosed} {
+		call(err)
+	}
+	if len(decided) != 0 {
+		t.Errorf("a connection that was already gone was classified %v — EVT-142's disconnect is for a peer the "+
+			"server can still reach and that has stopped draining, not for one that has left", decided)
+	}
+}
+
 // TestWS_WritesThatCompleteDoNotDisconnect is the control, and it is the half
 // that makes the test above mean something.
 //

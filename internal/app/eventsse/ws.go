@@ -365,9 +365,17 @@ func (s *server) runWS(reqCtx context.Context, ws *websocket.Conn, principal aut
 // nothing to close and no reason to name: attempting a close handshake on a dead
 // socket would just block out the write timeout.
 func (s *server) endWS(conn *wsConn, err error) {
-	if errors.Is(err, context.DeadlineExceeded) {
-		conn.closeWith(events.CloseSlowConsumer)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		return
 	}
+	// Observed BEFORE the close is attempted, not after. The close handshake may
+	// not survive — a write aborted mid-frame leaves the socket unusable — and
+	// the requirement is about which close this server DECIDED on, not about
+	// whether the frame reached a peer that had stopped reading.
+	if s.onClose != nil {
+		s.onClose(events.CloseSlowConsumer)
+	}
+	conn.closeWith(events.CloseSlowConsumer)
 }
 
 // readFrames pumps inbound frames onto a channel until the connection errors or

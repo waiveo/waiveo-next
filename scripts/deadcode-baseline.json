@@ -66,9 +66,10 @@
     },
     {
       "package": "internal/app/eventsse",
-      "reason": "Two constructor options production never passes (the defaults ship) and one test-only counter. WithGapDeferral left this list once the events/1 conformance driver began passing it: the EVT-142a bounded-deferral case has to run under a bound short enough to observe, and a driver is not a test \u2014 it is the thing that measures conformance, so an option it depends on is wired. Hub.after used to head this list and is now DELETED rather than baselined: it was a bare tail read left behind when the live loop moved to drain, which reads the tail and the eviction condition under one",
+      "reason": "Two constructor options production never passes (the defaults ship) and one test-only counter. WithGapDeferral left this list once the events/1 conformance driver began passing it: the EVT-142a bounded-deferral case has to run under a bound short enough to observe, and a driver is not a test \u2014 it is the thing that measures conformance, so an option it depends on is wired. Hub.after used to head this list and is now DELETED rather than baselined: it was a bare tail read left behind when the live loop moved to drain, which reads the tail and the eviction condition under one WithCloseObserver joins this list as a DELIBERATE test seam, approved as one: EVT-142's slow-consumer disconnect could not be pinned any other way. Two attempts failed for the same underlying reason \u2014 whether a nanosecond write deadline is actually exhausted on loopback, and whether the close frame survives a socket poisoned by a mid-frame abort, are both scheduling outcomes. The requirement is about which close the server DECIDES on, so the hook reports the decision where it is made. Production passes no observer and behaves exactly as before; the cost is one option nothing wires, and the alternative was the branch staying unpinned.",
       "funcs": [
         "Hub.subscriberCount",
+        "WithCloseObserver",
         "WithHeartbeat",
         "WithWriteTimeout"
       ]
