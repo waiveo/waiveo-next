@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
@@ -208,5 +209,71 @@ func TestPairBudgetSeparatesDistinctIPv6Prefixes(t *testing.T) {
 	}
 	if got := pairFrom(t, srv, "[2001:db8:0:2::7]:60001", grant.GrantID); got != http.StatusOK {
 		t.Errorf("a legitimate screen on a different /64 = %d, want 200 — an unrelated allocation's exhausted budget denied pairing (SEC-033 keying)", got)
+	}
+}
+
+// statusFrom GETs /player/v1/pair/status with remoteAddr as the source.
+func statusFrom(t *testing.T, srv *Server, remoteAddr, pollToken string) int {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/player/v1/pair/status?poll_token="+pollToken, nil)
+	req.RemoteAddr = remoteAddr
+	rec := httptest.NewRecorder()
+	apihttp.WithTraceID(http.HandlerFunc(srv.handlePairStatus)).ServeHTTP(rec, req)
+	return rec.Code
+}
+
+// TestPairStatusIsBudgeted: the status route is bounded like /pair.
+//
+// Its poll_token is guessable, and once asynchronous redemption exists it is a
+// live credential — an unbudgeted route hands one to whoever enumerates fastest.
+// It is harmless today only because pollResults is never populated, which makes
+// this the cheapest moment to hold the bound: after async redemption lands the
+// same assertion is a security fix under time pressure.
+func TestPairStatusIsBudgeted(t *testing.T) {
+	srv, _ := budgetTestServer(t)
+	const source = "198.51.100.7:5000"
+
+	// Every attempt inside the budget is refused for the ordinary reason: no
+	// poll_token was ever issued, so none resolves.
+	for i := range pairAttemptLimit {
+		if got := statusFrom(t, srv, source, "guess-"+strconv.Itoa(i)); got != http.StatusBadRequest {
+			t.Fatalf("status poll %d = %d, want 400 (no poll_token resolves today)", i+1, got)
+		}
+	}
+	if got := statusFrom(t, srv, source, "one-too-many"); got != http.StatusTooManyRequests {
+		t.Fatalf("status poll past the budget = %d, want 429 — an unbudgeted poll_token route is an enumeration "+
+			"oracle the moment asynchronous redemption populates it", got)
+	}
+}
+
+// TestPairAndPairStatusShareOneBudget: the two routes are one attack surface —
+// guess a code, or guess the token a redemption would have produced — and a
+// separate allowance would let a source refused at one continue at the other.
+func TestPairAndPairStatusShareOneBudget(t *testing.T) {
+	srv, _ := budgetTestServer(t)
+	const source = "198.51.100.9:5000"
+
+	for i := range pairAttemptLimit {
+		if got := pairFrom(t, srv, source, "no-such-selector"); got == http.StatusTooManyRequests {
+			t.Fatalf("attempt %d was refused by the budget before it was exhausted", i+1)
+		}
+	}
+	if got := statusFrom(t, srv, source, "any-token"); got != http.StatusTooManyRequests {
+		t.Errorf("a source that exhausted the budget at /pair was served at /pair/status (%d) — two allowances for "+
+			"one surface means being refused at one route is not being refused", got)
+	}
+}
+
+// TestAnotherSourceIsUnaffectedByAnExhaustedStatusBudget is the control: the
+// budget bounds a SOURCE, not the route. Without it, a limiter that refused
+// everyone once anyone exhausted their share would pass both tests above while
+// letting one caller take pairing away from every screen on the site.
+func TestAnotherSourceIsUnaffectedByAnExhaustedStatusBudget(t *testing.T) {
+	srv, _ := budgetTestServer(t)
+	for i := range pairAttemptLimit + 1 {
+		statusFrom(t, srv, "198.51.100.11:5000", "guess-"+strconv.Itoa(i))
+	}
+	if got := statusFrom(t, srv, "203.0.113.4:5000", "fresh-source"); got == http.StatusTooManyRequests {
+		t.Error("a second source was refused because a first exhausted its own budget")
 	}
 }

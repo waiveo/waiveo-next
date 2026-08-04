@@ -776,6 +776,19 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 	// perfectly good code to throw it away and fetch another. The HTTP status
 	// is the accurate 429.
 	if !s.pairAttempts.Allow(apihttp.RequestSource(r), s.nowMs()) {
+		// A refused attempt is the only evidence a sweep against this route
+		// leaves. The app-side twin emits an audit record for exactly this
+		// reason; the relay has no auditor and no durable event stream of its
+		// own, so a log line is the honest analogue rather than a lesser
+		// version of one.
+		//
+		// The SOURCE is named and the code is not: a pairing code is a
+		// credential, and a log that recorded the value an attacker guessed
+		// would put a working code in the journal every time one came close.
+		// What an operator needs is that someone is sweeping and from where.
+		log.Printf("playerserver: refused a pairing attempt from %s: the per-source attempt budget is exhausted (SEC-033). "+
+			"A pairing endpoint is reachable with no credential, so a burst here is what a sweep against this relay looks like",
+			apihttp.RequestSource(r))
 		apihttp.WriteProblem(w, r, traceID, http.StatusTooManyRequests, "UNAVAILABLE", "Too Many Requests")
 		return
 	}
@@ -827,6 +840,26 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePairStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Budgeted on the same terms as /pair, and BEFORE the token is read.
+	//
+	// A poll_token is guessable and, once asynchronous redemption exists, is a
+	// live credential — an unbudgeted route handing one out to whoever enumerates
+	// fastest. It is harmless today only because pollResults is never populated,
+	// which makes this the cheapest possible moment to add the bound: after
+	// async redemption lands, the same line is a security fix under time
+	// pressure rather than a precaution.
+	//
+	// It shares /pair's budget deliberately. The two are one attack surface —
+	// guess a code, or guess the token a redemption would have produced — and a
+	// separate allowance would let an attacker refused at one route continue at
+	// the other.
+	if !s.pairAttempts.Allow(apihttp.RequestSource(r), s.nowMs()) {
+		log.Printf("playerserver: refused a pairing-status poll from %s: the per-source attempt budget is exhausted (SEC-033)",
+			apihttp.RequestSource(r))
+		apihttp.WriteProblem(w, r, apihttp.TraceID(r), http.StatusTooManyRequests, "UNAVAILABLE", "Too Many Requests")
 		return
 	}
 
