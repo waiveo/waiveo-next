@@ -192,10 +192,20 @@ func safeEntryName(name string) error {
 	return nil
 }
 
-// readCapped opens a zip entry and reads at most cap bytes; if the entry yields
-// more (a lying uncompressed-size header trying to beat the per-file cap), it is
-// refused. Reading through an io.LimitReader means the cap holds against the
-// actual decompressed stream, not merely the declared size.
+// readCapped opens a zip entry and reads at most cap bytes, refusing an entry
+// that yields more.
+//
+// The over-read check is a BACKSTOP that cannot currently fire, and saying so is
+// more useful than implying a defence it is not the one providing. Two layers
+// already bound the stream: the caller refuses a declared UncompressedSize64
+// over the same cap before calling here, and archive/zip's own reader fails with
+// ErrFormat as soon as the decompressed stream exceeds that declared size. So a
+// header that overstates its content is refused above, and one that understates
+// it is refused by the stdlib — either way len(data) <= cap on return.
+//
+// It is kept because it is the only bound that does not depend on either of
+// those holding: the LimitReader caps the allocation whatever the archive claims
+// and whatever a future stdlib or a second caller with a different cap does.
 func readCapped(f *zip.File, cap int64) ([]byte, error) {
 	rc, err := f.Open()
 	if err != nil {
