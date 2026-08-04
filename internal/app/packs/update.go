@@ -295,15 +295,21 @@ func provenanceOf(res resolution, trustChannel string) provenance {
 // requiredFloorRefusal maps the store's typed floor refusal onto this pipeline's
 // stable REQUIRED_PACK_FLOOR ArtifactError (MKT-093b), so the api layer renders
 // it through the same errors[] discriminant every other PACK_* refusal uses.
+//
+// INSTALL ONLY. The store raises this error on two paths — an install below the
+// floor, and an uninstall, which it models as a move to no version and therefore
+// below every floor. Only the install path routes through here; the uninstall
+// refusal is rendered by the api handler on the DELETE route, which reads the
+// same typed error directly.
+//
+// So the version is never empty here, and a branch selecting an uninstall
+// wording used to sit below. It could not be reached and is removed rather than
+// kept: an unreachable message-selection branch reads as though this function
+// serves both paths, which is the one thing about it a reader needs to be right.
 func requiredFloorRefusal(err error) error {
 	var ferr *store.RequiredPackFloorError
 	if !errors.As(err, &ferr) {
 		return err
-	}
-	if ferr.Version == "" {
-		return artifactErr("REQUIRED_PACK_FLOOR",
-			"%s is a required pack on this deployment (floor %s) and cannot be uninstalled (marketplace/1 MKT-093b)",
-			ferr.PackID, ferr.Floor)
 	}
 	return artifactErr("REQUIRED_PACK_FLOOR",
 		"%s is a required pack on this deployment whose floor version is %s; version %s is below it and MUST NOT be installed on any path (marketplace/1 MKT-093b)",
