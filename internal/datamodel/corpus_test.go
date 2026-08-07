@@ -57,6 +57,8 @@ var corpusHandlers = map[string]func(*testing.T, json.RawMessage, json.RawMessag
 	"DAT-053-valid-equal-priority-same-node-lowest-id-wins":             checkSingleWinner,
 	"DAT-053-valid-equal-priority-specificity-nearer-node-wins":         checkSingleWinner,
 	"DAT-053-valid-screen-schedule-precedence-over-site":                checkSingleWinner,
+	"DAT-071-invalid-daypart-time-out-of-range":                         checkDaypartTimeInvalid071,
+	"DAT-071-invalid-daypart-time-24-boundary":                          checkDaypartTimeInvalid071,
 	"DAT-073-invalid-within-schedule-daypart-overlap-rejected":          checkOverlapReject073,
 	"DAT-073-invalid-midnight-wrap-collides-next-weekday":               checkOverlapReject073,
 	"DAT-074-valid-daypart-display-power-off":                           checkDisplayPowerOff074,
@@ -537,6 +539,46 @@ func checkSingleWinner(t *testing.T, rawIn, rawExp json.RawMessage) {
 }
 
 // --- DAT-073: within-schedule daypart overlap rejection -----------------------
+
+// checkDaypartTimeInvalid071 drives a daypart time-of-day refusal (DAT-071,
+// DAYPART_TIME_INVALID) through ValidateRows — the same authoring gate the
+// store's write path calls — never through the parser alone. The two cases
+// split the requirement's two halves: one time that is lexically well-formed
+// with a component out of range, and the 24:00:00 boundary, which is in range
+// digit-by-digit and still not a time within any day. Field, code, AND message
+// are compared byte-exact against the frozen expectation: the message is the
+// operator's remedy text, and a silent drift there is a corpus edit that
+// should be flagged, not absorbed.
+func checkDaypartTimeInvalid071(t *testing.T, rawIn, rawExp json.RawMessage) {
+	var in struct {
+		Schedule json.RawMessage   `json:"schedule"`
+		Dayparts []json.RawMessage `json:"dayparts"`
+	}
+	if err := json.Unmarshal(rawIn, &in); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	var exp struct {
+		Valid  bool `json:"valid"`
+		Errors []struct {
+			Field   string `json:"field"`
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(rawExp, &exp); err != nil {
+		t.Fatalf("decode expected: %v", err)
+	}
+	_, got := ValidateRows(RawRows{Schedules: []json.RawMessage{in.Schedule}, Dayparts: in.Dayparts})
+	if len(got) != len(exp.Errors) {
+		t.Fatalf("ValidateRows returned %d error(s) %v, corpus expects exactly %d", len(got), got, len(exp.Errors))
+	}
+	for i, want := range exp.Errors {
+		if got[i].Field != want.Field || got[i].Code != want.Code || got[i].Message != want.Message {
+			t.Fatalf("error[%d] = {%s, %s, %q}, want {%s, %s, %q}",
+				i, got[i].Field, got[i].Code, got[i].Message, want.Field, want.Code, want.Message)
+		}
+	}
+}
 
 func checkOverlapReject073(t *testing.T, rawIn, rawExp json.RawMessage) {
 	var in struct {

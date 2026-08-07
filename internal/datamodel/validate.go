@@ -64,7 +64,8 @@ var validMisfire = map[string]bool{"catch_up_once": true, "skip": true, "fire_ea
 //     (ROW_ID_INVALID);
 //   - platform ownership (DAT-100/101): no row carries a row-level pack field;
 //   - closed vocabularies (DAT-074 display_power, DAT-120 misfire);
-//   - row-shape MUSTs (DAT-061 validity range, DAT-091 non-empty commands);
+//   - row-shape MUSTs (DAT-061 validity range, DAT-071 daypart time-of-day
+//     format and ranges via DAYPART_TIME_INVALID, DAT-091 non-empty commands);
 //   - within-schedule daypart partition (DAT-073, DAYPART_OVERLAP via
 //     ValidateNoOverlap): a schedule's dayparts MUST NOT overlap;
 //   - referential integrity: a daypart/validity-window scope_node equals its
@@ -178,6 +179,17 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 		}
 		if v.Misfire != "" && !validMisfire[v.Misfire] {
 			errs = append(errs, Error{Field: "misfire", Code: "MISFIRE_INVALID", Message: "misfire must be one of catch_up_once, skip, fire_each (DAT-120)"})
+		}
+		// DAT-071's write-time refusal: a malformed time must never be STORED,
+		// because everything downstream of a stored row assumes it expands — the
+		// authoring gate is where a row that cannot expand becomes impossible,
+		// rather than a live row whose meaning depends on a runtime refusal
+		// firing everywhere it is read.
+		if _, err := parseTimeOfDay(v.StartTime); err != nil {
+			errs = append(errs, Error{Field: "start_time", Code: "DAYPART_TIME_INVALID", Message: err.Error() + "; start_time must be HH:MM:SS with HH 00-23 and MM/SS 00-59 (DAT-071)"})
+		}
+		if _, err := parseTimeOfDay(v.EndTime); err != nil {
+			errs = append(errs, Error{Field: "end_time", Code: "DAYPART_TIME_INVALID", Message: err.Error() + "; end_time must be HH:MM:SS with HH 00-23 and MM/SS 00-59 (DAT-071)"})
 		}
 		if e := checkRowPlacement(v.ScopeNode, "daypart"); e != nil {
 			errs = append(errs, *e)

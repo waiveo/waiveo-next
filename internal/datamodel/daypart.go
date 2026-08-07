@@ -2,7 +2,6 @@ package datamodel
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 )
 
@@ -24,18 +23,29 @@ type segment struct {
 
 // parseTimeOfDay parses a `HH:MM:SS` local time-of-day (DAT-071, the lexical
 // format rules/1 RUL-040 fixes) into seconds since local midnight in [0,86400).
+//
+// The lexical check is strict: exactly two ASCII digits per component. DAT-071
+// names the FORMAT `HH:MM:SS`, so "9:00:00" is not in it — and the two-digit
+// digits-only rule is also what keeps strconv's sign tolerance out ("+9" parses
+// as 9, the same trap MAN-002's version grammar pins against). The components
+// are then computed from the verified digits directly, so this function has
+// exactly the two failure modes the grammar has: not the format, or a component
+// out of range ("24:00:00" is out of range — a day's exclusive upper bound,
+// never a time within it; midnight is "00:00:00").
 func parseTimeOfDay(s string) (int, error) {
 	parts := strings.Split(s, ":")
 	if len(parts) != 3 {
 		return 0, fmt.Errorf("time-of-day %q is not HH:MM:SS", s)
 	}
-	h, herr := strconv.Atoi(parts[0])
-	m, merr := strconv.Atoi(parts[1])
-	sec, serr := strconv.Atoi(parts[2])
-	if herr != nil || merr != nil || serr != nil {
-		return 0, fmt.Errorf("time-of-day %q has non-numeric field", s)
+	var c [3]int
+	for i, p := range parts {
+		if len(p) != 2 || p[0] < '0' || p[0] > '9' || p[1] < '0' || p[1] > '9' {
+			return 0, fmt.Errorf("time-of-day %q is not HH:MM:SS", s)
+		}
+		c[i] = int(p[0]-'0')*10 + int(p[1]-'0')
 	}
-	if h < 0 || h > 23 || m < 0 || m > 59 || sec < 0 || sec > 59 {
+	h, m, sec := c[0], c[1], c[2]
+	if h > 23 || m > 59 || sec > 59 {
 		return 0, fmt.Errorf("time-of-day %q out of range", s)
 	}
 	return h*3600 + m*60 + sec, nil

@@ -1,0 +1,49 @@
+{
+  "case_id": "DAT-071-invalid-daypart-time-24-boundary",
+  "contract": "data-model/1",
+  "req_ids": [
+    "DAT-071"
+  ],
+  "description": "A daypart whose end_time is 24:00:00 -- lexically well-formed AND in range digit-by-digit, so neither a format-only check nor a naive per-digit check refuses it -- is refused DAYPART_TIME_INVALID at authoring time: 24:00:00 names a day's exclusive upper bound, never a time within it, and midnight is spelled 00:00:00 (which, as an end_time, declares a wrap per DAT-072). Left stored, a wrapping daypart declaring 24:00:00 emits no pre-midnight head at expansion.",
+  "input": {
+    "schedule": {
+      "id": "01JSCHED24B0DRYGXJVZ9CJD33",
+      "scope_node": "01JGRPNDE1PG2X7R5JQC42EJ5E",
+      "name": "Boundary Schedule",
+      "priority": 0,
+      "revision": 1,
+      "created_at": 1752537600000,
+      "updated_at": 1752537600000
+    },
+    "dayparts": [
+      {
+        "id": "01JDAYPART24B0DRY44FS7F2XX",
+        "schedule_id": "01JSCHED24B0DRYGXJVZ9CJD33",
+        "scope_node": "01JGRPNDE1PG2X7R5JQC42EJ5E",
+        "name": "Evening To Boundary",
+        "days_of_week": [
+          5,
+          6
+        ],
+        "start_time": "18:00:00",
+        "end_time": "24:00:00",
+        "display_power": "on",
+        "playlist_id": null,
+        "preset_batch_id": null,
+        "revision": 1,
+        "created_at": 1752537600000,
+        "updated_at": 1752537600000
+      }
+    ]
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      {
+        "field": "end_time",
+        "code": "DAYPART_TIME_INVALID",
+        "message": "time-of-day \"24:00:00\" out of range; end_time must be HH:MM:SS with HH 00-23 and MM/SS 00-59 (DAT-071)"
+      }
+    ]
+  }
+}

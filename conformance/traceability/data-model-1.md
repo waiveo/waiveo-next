@@ -70,7 +70,7 @@ reader nothing and costs a caller the clearer of the two answers.
 | DAT-061 | `contracts/data-model-1.md#scheduling-core-validity-window` | - | TBD-wave1 |
 | DAT-062 | `contracts/data-model-1.md#scheduling-core-validity-window` | - | TBD-wave1 |
 | DAT-070 | `contracts/data-model-1.md#scheduling-core-daypart` | `DAT-074-valid-daypart-display-power-off` | covered |
-| DAT-071 | `contracts/data-model-1.md#scheduling-core-daypart` | `DAT-074-valid-daypart-display-power-off` | covered |
+| DAT-071 | `contracts/data-model-1.md#scheduling-core-daypart` | `DAT-071-invalid-daypart-time-out-of-range`, `DAT-071-invalid-daypart-time-24-boundary` | covered |
 | DAT-072 | `contracts/data-model-1.md#scheduling-core-daypart` | `DAT-074-valid-daypart-display-power-off` | covered |
 | DAT-073 | `contracts/data-model-1.md#scheduling-core-daypart` | `DAT-074-valid-daypart-display-power-off`, `DAT-073-invalid-within-schedule-daypart-overlap-rejected`, `DAT-073-invalid-midnight-wrap-collides-next-weekday` | covered |
 | DAT-074 | `contracts/data-model-1.md#scheduling-core-daypart` | `DAT-074-valid-daypart-display-power-off` | covered |

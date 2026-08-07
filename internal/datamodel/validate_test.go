@@ -228,3 +228,74 @@ func TestCompleteConsistentRowSetIsValid(t *testing.T) {
 		t.Fatalf("row set not populated: %+v", rs)
 	}
 }
+
+// TestDaypartTimesAreRefusedAtTheWriteGate pins DAT-071's write-time refusal
+// (DAYPART_TIME_INVALID) through ValidateRows — the gate the store's write path
+// calls — across both halves the requirement names and the lexical edges the
+// strict format implies.
+//
+// The two decision shapes fail differently, which is why BOTH halves are
+// checked: "09:70:00" is lexically well-formed with a component out of range,
+// and "24:00:00" is in range digit-by-digit yet names a day's exclusive upper
+// bound, never a time within it. A format-only check refuses neither.
+//
+// The lexical half is STRICT two-digit: "9:00:00" is a parseable time but not
+// the HH:MM:SS format DAT-071 names, and "+9:00:00" is the strconv sign
+// tolerance the old Atoi-based parse would have admitted a spelling through —
+// the same second-spelling trap MAN-002's version grammar pins against.
+func TestDaypartTimesAreRefusedAtTheWriteGate(t *testing.T) {
+	daypartRow := func(start, end string) json.RawMessage {
+		return json.RawMessage(`{"id":"01JDAYPARTVVR1TEGATE4FS7F2","schedule_id":"01JSCHEDWR1TEGATEXJVZ9CJD3",` +
+			`"scope_node":"01JGRPNDE1PG2X7R5JQC42EJ5E","name":"Write Gate","days_of_week":[1],` +
+			`"start_time":"` + start + `","end_time":"` + end + `","display_power":"on",` +
+			`"playlist_id":null,"preset_batch_id":null,"revision":1,"created_at":1752537600000,"updated_at":1752537600000}`)
+	}
+	schedule := json.RawMessage(`{"id":"01JSCHEDWR1TEGATEXJVZ9CJD3","scope_node":"01JGRPNDE1PG2X7R5JQC42EJ5E",` +
+		`"name":"Write Gate","priority":0,"revision":1,"created_at":1752537600000,"updated_at":1752537600000}`)
+
+	for _, tc := range []struct {
+		name       string
+		start, end string
+		badField   string
+	}{
+		{"out-of-range minute", "09:70:00", "17:00:00", "start_time"},
+		{"the 24:00:00 boundary", "18:00:00", "24:00:00", "end_time"},
+		{"out-of-range hour", "25:00:00", "17:00:00", "start_time"},
+		{"single-digit hour", "9:00:00", "17:00:00", "start_time"},
+		{"two-field time", "09:00", "17:00:00", "start_time"},
+		{"signed component", "09:00:00", "+9:00:00", "end_time"},
+		{"non-numeric field", "09:00:00", "17:AB:00", "end_time"},
+		{"empty time", "09:00:00", "", "end_time"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, errs := ValidateRows(RawRows{
+				Schedules: []json.RawMessage{schedule},
+				Dayparts:  []json.RawMessage{daypartRow(tc.start, tc.end)},
+			})
+			if !hasErr(errs, "DAYPART_TIME_INVALID", tc.badField) {
+				t.Errorf("start=%q end=%q was not refused DAYPART_TIME_INVALID on %s; errs=%v — the write gate is "+
+					"what keeps a row the expansion cannot parse from ever being stored",
+					tc.start, tc.end, tc.badField, errs)
+			}
+		})
+	}
+
+	// The controls: both boundary spellings inside the grammar pass, so the
+	// refusals above are about the grammar, not about dayparts generally —
+	// including midnight as 00:00:00, the one legal spelling of the day
+	// boundary, and an end_time equal to start_time (a wrap, DAT-072, not a
+	// range error).
+	for _, tc := range []struct{ start, end string }{
+		{"00:00:00", "23:59:59"},
+		{"22:00:00", "06:00:00"},
+		{"09:00:00", "09:00:00"},
+	} {
+		_, errs := ValidateRows(RawRows{
+			Schedules: []json.RawMessage{schedule},
+			Dayparts:  []json.RawMessage{daypartRow(tc.start, tc.end)},
+		})
+		if hasErr(errs, "DAYPART_TIME_INVALID", "") {
+			t.Errorf("start=%q end=%q was refused: %v", tc.start, tc.end, errs)
+		}
+	}
+}

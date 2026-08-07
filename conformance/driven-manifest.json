@@ -54,6 +54,8 @@
       "DAT-053-valid-equal-priority-same-node-lowest-id-wins",
       "DAT-053-valid-equal-priority-specificity-nearer-node-wins",
       "DAT-053-valid-screen-schedule-precedence-over-site",
+      "DAT-071-invalid-daypart-time-24-boundary",
+      "DAT-071-invalid-daypart-time-out-of-range",
       "DAT-073-invalid-midnight-wrap-collides-next-weekday",
       "DAT-073-invalid-within-schedule-daypart-overlap-rejected",
       "DAT-074-valid-daypart-display-power-off",

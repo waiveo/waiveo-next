@@ -1,0 +1,50 @@
+{
+  "case_id": "DAT-071-invalid-daypart-time-out-of-range",
+  "contract": "data-model/1",
+  "req_ids": [
+    "DAT-071"
+  ],
+  "description": "A daypart whose start_time is 09:70:00 -- lexically well-formed HH:MM:SS whose MM component is out of range, so a format-only check accepts it -- is refused DAYPART_TIME_INVALID at authoring time. Write-time is where this MUST bites: a stored row whose times do not parse has its meaning decided by whichever runtime guard fires where it is read, and the failure shape (both bounds reading as zero, the midnight-wrap branch running) silently owns [00:00:00, 24:00:00) on every weekday the row names.",
+  "input": {
+    "schedule": {
+      "id": "01JSCHED1BADT1MEGXJVZ9CJD3",
+      "scope_node": "01JGRPNDE1PG2X7R5JQC42EJ5E",
+      "name": "Bad Time Schedule",
+      "priority": 0,
+      "revision": 1,
+      "created_at": 1752537600000,
+      "updated_at": 1752537600000
+    },
+    "dayparts": [
+      {
+        "id": "01JDAYPARTBADM1N0TE4FS7F20",
+        "schedule_id": "01JSCHED1BADT1MEGXJVZ9CJD3",
+        "scope_node": "01JGRPNDE1PG2X7R5JQC42EJ5E",
+        "name": "Out Of Range Minute",
+        "days_of_week": [
+          1,
+          2,
+          3
+        ],
+        "start_time": "09:70:00",
+        "end_time": "17:00:00",
+        "display_power": "on",
+        "playlist_id": null,
+        "preset_batch_id": null,
+        "revision": 1,
+        "created_at": 1752537600000,
+        "updated_at": 1752537600000
+      }
+    ]
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      {
+        "field": "start_time",
+        "code": "DAYPART_TIME_INVALID",
+        "message": "time-of-day \"09:70:00\" out of range; start_time must be HH:MM:SS with HH 00-23 and MM/SS 00-59 (DAT-071)"
+      }
+    ]
+  }
+}

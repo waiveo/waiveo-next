@@ -162,7 +162,7 @@ func TestTheSchedulingCoreRefusesAnUndeclaredMember(t *testing.T) {
 			sched := decodeID(t, e.createOK(t, "/api/v1/schedules",
 				mustJSON(t, map[string]any{"scope_node": site, "name": "S"})))
 			return map[string]any{"scope_node": site, "schedule_id": sched,
-				"days_of_week": []int{1}, "start_time": "06:00", "end_time": "22:00",
+				"days_of_week": []int{1}, "start_time": "06:00:00", "end_time": "22:00:00",
 				"display_power": "on"}
 		}},
 	} {
