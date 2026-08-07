@@ -38,8 +38,8 @@ One row per requirement ID `contracts/marketplace-1.md` defines. Format: `confor
 | MKT-047 | `contracts/marketplace-1.md#marketplace-index-entry-and-pack-kinds` | `MKT-040-valid-pack-index-entry` | TBD-wave1 |
 | MKT-048 | `contracts/marketplace-1.md#marketplace-index-entry-and-pack-kinds` | - | TBD-wave1 |
 | MKT-049 | `contracts/marketplace-1.md#marketplace-index-entry-and-pack-kinds` | `MKT-040-valid-pack-index-entry`, `MKT-041-valid-content-package-rule-template-entry` | TBD-wave1 |
-| MKT-050 | `contracts/marketplace-1.md#marketplace-index-entry-and-pack-kinds` | `MKT-050-channel-pointer-downgrade-rejected` | TBD-wave1 |
-| MKT-050a | `contracts/marketplace-1.md#marketplace-index-entry-and-pack-kinds` | `MKT-050a-version-high-water-order-is-numeric` | TBD-wave1 |
+| MKT-050 | `contracts/marketplace-1.md#marketplace-index-entry-and-pack-kinds` | `MKT-050-channel-pointer-downgrade-rejected`, `MKT-050a-leading-zero-second-spelling-unresolvable` | TBD-wave1 |
+| MKT-050a | `contracts/marketplace-1.md#marketplace-index-entry-and-pack-kinds` | `MKT-050a-version-high-water-order-is-numeric`, `MKT-050a-leading-zero-second-spelling-unresolvable` | TBD-wave1 |
 | MKT-060 | `contracts/marketplace-1.md#registry-sources` | `MKT-061-source-order-not-trust-rejected` | TBD-wave1 |
 | MKT-060a | `contracts/marketplace-1.md#registry-sources` | `MKT-060a-marketplace-ref-trust-channel-required` | TBD-wave1 |
 | MKT-061 | `contracts/marketplace-1.md#registry-sources` | `MKT-061-source-order-not-trust-rejected` | TBD-wave1 |

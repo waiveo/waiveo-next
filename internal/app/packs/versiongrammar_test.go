@@ -30,11 +30,14 @@ import (
 // cannot tell one from another — the same trap that let the locale pair look
 // covered.
 //
-// Worth stating what none of this catches, since it is the subject of the gated
-// issue #173: `1.0.05` satisfies this grammar and compares EQUAL to `1.0.5`, so a
-// pointer moved between those two spellings passes every check here. These guard
-// the boundary between "a version" and "not a version", not the injectivity of
-// the mapping inside it.
+// These checks guard the boundary between "a version" and "not a version". The
+// grammar itself is what makes that boundary sufficient: MAN-002 refuses a
+// leading zero in a component, so every version has exactly ONE spelling and
+// the injectivity of the mapping inside the boundary is the grammar's own
+// property, not a separate check. `1.0.05` used to satisfy this grammar and
+// compare EQUAL to `1.0.5` — a pointer moved between the two spellings passed
+// every check here; it is now refused at the boundary, and the pointer-move
+// test at the bottom of this file pins that on the update path.
 
 // TestAChannelPointerNamingANonVersionDoesNotResolve.
 //
@@ -148,4 +151,47 @@ func TestEveryVersionReachingTheIndexHasAlreadyPassedTheGrammar(t *testing.T) {
 		packs.Ref{PackID: "acme/menu-board", Version: "1.0.0", TrustChannel: "community"}); err != nil {
 		t.Fatalf("a reference pinning a real version did not resolve: %v", err)
 	}
+}
+
+// TestAPointerMovedToASecondSpellingOfTheInstalledVersionDoesNotResolve is the
+// case that demonstrates the defect MAN-002's leading-zero refusal closes.
+//
+// Before the grammar was narrowed, "1.0.05" was a valid version parsing to the
+// same triple as "1.0.5": not lower than the high-water mark, so MKT-050's
+// anti-rollback never fired, and not equal as a STRING to the installed
+// version, so the update path treated it as a change — a validly-signed index
+// could deliver a DIFFERENT artifact at what the deployment already treated as
+// its high-water version, with no attacker step beyond publishing a second
+// spelling. The registry here genuinely offers that second spelling as a
+// published artifact, so the grammar refusal on the pointer is the only thing
+// standing between the update check and applying it.
+func TestAPointerMovedToASecondSpellingOfTheInstalledVersionDoesNotResolve(t *testing.T) {
+	st, in, signer, reg := updateFixture(t)
+	publishVersion(t, reg, signer, "1.0.5")
+	if _, err := in.InstallRef(context.Background(),
+		packs.Ref{PackID: "acme/menu-board", TrustChannel: "community"}); err != nil {
+		t.Fatalf("installing 1.0.5: %v", err)
+	}
+	before := snapshotInstalled(t, st, "acme/menu-board", "community")
+
+	// The channel moves to the second spelling of the installed version.
+	publishVersion(t, reg, signer, "1.0.05")
+
+	_, err := in.Update(context.Background(), "acme/menu-board")
+	if err == nil {
+		t.Fatal(`the channel pointer moved from "1.0.5" to its second spelling "1.0.05" and the update followed it`)
+	}
+	artifactCode(t, err, "MARKETPLACE_REF_UNRESOLVED")
+
+	var aerr *packs.ArtifactError
+	if !errors.As(err, &aerr) {
+		t.Fatalf("error = %v (%T)", err, err)
+	}
+	if !strings.Contains(aerr.Message, "channel pointer") {
+		t.Errorf("refused as %q — the refusal must name the pointer as the fault: the artifact at the second "+
+			"spelling is validly published and signed, and the only thing wrong is what the channel points at",
+			aerr.Message)
+	}
+
+	before.assertUnchanged(t, st, "a pointer move to a second spelling of the installed version")
 }

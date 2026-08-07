@@ -1,0 +1,23 @@
+{
+  "case_id": "MKT-050a-leading-zero-second-spelling-unresolvable",
+  "contract": "marketplace/1",
+  "req_ids": ["MKT-050a", "MKT-050"],
+  "description": "The install auto-tracking (acme/weather-widget, verified) is at 1.0.5, its resolved-version high-water mark. A newly-signed index moves the channel pointer to 1.0.05 and publishes a validly-signed artifact at that string. Under MAN-002's pre-narrowing grammar both spellings were valid and parsed to the SAME triple: 1.0.05 was not lower than the mark, so MKT-050's anti-rollback never fired, and it differed from the installed version as a string, so the update path treated it as a change — a different artifact delivered at what the deployment already treated as its high-water version, with no attacker step beyond publishing a second spelling. MAN-002 now refuses a leading-zero component (one spelling per version, stated as an injectivity requirement), so 1.0.05 is not a version, has no position in MKT-050a's order, and the pointer is not resolvable — refused rather than compared, exactly as any value outside the grammar. The installed 1.0.5 and its high-water mark are untouched.",
+  "input": {
+    "high_water_mark": { "pack_id": "acme/weather-widget", "trust_channel": "verified", "resolved_version": "1.0.5" },
+    "current_install_version": "1.0.5",
+    "current_version_still_resolvable": true,
+    "channel_pointer": { "pack_id": "acme/weather-widget", "channels": { "verified": "1.0.05" } },
+    "entry_at_pointer_value_published_and_validly_signed": true,
+    "entries_are_active_non_yanked_and_hold_elapsed": true
+  },
+  "expected": {
+    "pointer_named_version_is_man_002_valid": false,
+    "rationale": "1.0.05 carries a leading zero in its PATCH component: under MAN-002's injective grammar it is a second spelling of 1.0.5, not a version, so it has no position in MKT-050a's order and no defined relation to the high-water mark",
+    "resolution_accepted": false,
+    "error_code": "MARKETPLACE_REF_UNRESOLVED",
+    "update_applied": false,
+    "installed_version_after": "1.0.5",
+    "high_water_mark_after": "1.0.5"
+  }
+}

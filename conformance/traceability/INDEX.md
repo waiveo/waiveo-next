@@ -6,7 +6,7 @@ Roll-up of the contract corpus: every contract, its requirement-ID count, its se
 
 | Contract | Requirements | Seed cases | covered | TBD-wave1 | Open draft-notes |
 |---|---|---|---|---|---|
-| manifest/1 | 44 | 11 | 20 | 24 | 1 |
+| manifest/1 | 44 | 12 | 20 | 24 | 1 |
 | ctx/1 | 43 | 5 | 0 | 43 | 3 |
 | rules/1 | 113 | 25 | 58 | 55 | 6 |
 | device-class-registry | 29 | 7 | 23 | 6 | 0 |
@@ -18,11 +18,11 @@ Roll-up of the contract corpus: every contract, its requirement-ID count, its se
 | player/1 | 128 | 7 | 46 | 82 | 9 |
 | surface/1 | 50 | 8 | 0 | 50 | 1 |
 | channel-index | 48 | 11 | 0 | 48 | 0 |
-| marketplace/1 | 58 | 26 | 0 | 58 | 4 |
+| marketplace/1 | 58 | 27 | 0 | 58 | 4 |
 | ui-schema/1 | 74 | 9 | 22 | 52 | 3 |
 | security-model | 90 | 13 | 11 | 79 | 7 |
 | repairs/1 | 13 | 0 | 0 | 13 | 0 |
-| **Total** | **1125** | **217** | **403** | **722** | **54** |
+| **Total** | **1125** | **219** | **403** | **722** | **54** |
 
 **Companion artifacts:**
 - `../fixtures/automation-builder/` — the ui-schema/1 go/no-go fixture (a complete declarative automation-builder document + render-walkthrough), gated two ways, both wired into the pr/merge CI tiers: `../fixtures/fixture-lint.mjs` asserts every widget/binding/vocabRef the fixture uses is defined in ui-schema/1, and `../../web/src/renderer/fixture-automation-builder.test.tsx` renders it against its own `sample-data.json` through the real renderer and asserts the structure it declares actually paints.

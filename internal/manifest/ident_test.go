@@ -62,6 +62,10 @@ func TestIsThreeComponentVersion(t *testing.T) {
 		{"10.20.30", true},
 		{"1.2", false},     // two components
 		{"1.2.0.1", false}, // four components
+		{"1.0.05", false},  // leading zero: a second spelling of 1.0.5 (MAN-002 injectivity)
+		{"01.2.0", false},  // leading zero, major
+		{"1.02.0", false},  // leading zero, minor
+		{"0.0.0", true},    // bare zero components are the one legal zero spelling
 		{"1.a.0", false},   // non-digit component
 		{"1..0", false},    // empty component
 		{"v1.2.0", false},  // leading v

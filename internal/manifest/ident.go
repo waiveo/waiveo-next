@@ -13,8 +13,12 @@ import (
 var idSegmentRe = regexp.MustCompile(`^[a-z][a-z0-9-]{1,38}$`)
 
 // versionRe is the MAN-002 version-string grammar: three dot-separated,
-// digits-only components (MAJOR.MINOR.PATCH).
-var versionRe = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+// digits-only components (MAJOR.MINOR.PATCH), no leading zero in a component
+// except `0` itself. The leading-zero refusal is MAN-002's injectivity rule —
+// exactly one spelling per version — so the string that identifies an artifact
+// and the triple that orders it (marketplace/1 MKT-050a) can never disagree;
+// "1.0.05" would be a second spelling of "1.0.5".
+var versionRe = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
 
 // iconNameRe is the grammar the optional display icon MUST match: a lowercase
 // kebab-case lucide glyph name — a letter-led segment of lowercase letters and
@@ -47,7 +51,7 @@ func IsMsgRef(s string) bool {
 }
 
 // IsThreeComponentVersion reports whether s is a MAN-002 version string:
-// three digits-only dot-separated components.
+// three digits-only dot-separated components, no leading zeros.
 func IsThreeComponentVersion(s string) bool {
 	return versionRe.MatchString(s)
 }

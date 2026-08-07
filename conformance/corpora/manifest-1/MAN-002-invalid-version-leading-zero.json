@@ -1,0 +1,38 @@
+{
+  "case_id": "MAN-002-invalid-version-leading-zero",
+  "contract": "manifest/1",
+  "req_ids": ["MAN-002"],
+  "description": "A manifest whose version carries a leading zero in a component (1.0.05) is refused: MAN-002's grammar admits exactly one spelling per version — the injectivity that keeps the string identifying an artifact and the triple ordering it (marketplace/1 MKT-050a) from disagreeing — and 1.0.05 is a second spelling of 1.0.5, not a distinct version.",
+  "input": {
+    "id": "acme/leading-zero-pack",
+    "version": "1.0.05",
+    "displayName": "msg:pack.displayName",
+    "compat": {
+      "ctx": ">=1.0 <2.0",
+      "renderer": []
+    },
+    "capabilities": [],
+    "egress": [],
+    "resources": {
+      "memory": 64,
+      "cpuWeight": 100,
+      "storageQuota": 16,
+      "maxScheduledTimers": 0
+    },
+    "dataModel": {
+      "version": 1,
+      "collections": []
+    },
+    "retention": {},
+    "ui": {
+      "pages": []
+    },
+    "actions": []
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      { "code": "MANIFEST_SCHEMA_INVALID", "field": "version", "message": "version MUST be a three-component digits-only dotted string with no leading zero in a component (MAN-002)" }
+    ]
+  }
+}

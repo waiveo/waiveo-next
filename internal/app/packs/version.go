@@ -21,6 +21,14 @@ import (
 // refuses it, and the caller turns that refusal into a resolution refusal
 // (MKT-050a). Admitting it would mean comparing a high-water mark against
 // something that has no defined relation to it.
+//
+// MAN-002 refuses a leading zero in a component (except `0` itself), which
+// makes the grammar INJECTIVE onto ordered triples: exactly one spelling per
+// version. Without that rule "1.0.05" and "1.0.5" are two distinct strings
+// comparing EQUAL — a pointer moved between them is not a rollback under
+// MKT-050 and not below a floor under MKT-093b, so the string that identifies
+// an artifact and the triple that orders it disagree. The refusal here is the
+// parser-level closure of that hole; do not relax it as cosmetic tolerance.
 
 // maxVersionComponent bounds a single version component so parsing is total:
 // a component that does not fit an int64 has no numeric position either, and
@@ -37,6 +45,11 @@ func parseVersion(s string) ([3]int64, bool) {
 	}
 	for i, p := range parts {
 		if p == "" || len(p) > maxVersionComponentDigits {
+			return out, false
+		}
+		// MAN-002's injectivity rule: no leading zero unless the component is
+		// exactly "0" — one spelling per version, see the file header.
+		if len(p) > 1 && p[0] == '0' {
 			return out, false
 		}
 		for _, r := range p {

@@ -51,6 +51,41 @@ func TestVersionGrammarRejectsSignedComponents(t *testing.T) {
 	}
 }
 
+// TestVersionGrammarRejectsLeadingZeros pins MAN-002's injectivity rule: a
+// component with a leading zero (other than exactly "0") is not a version.
+//
+// This is the closure of the same hole the signed-component test above pins a
+// different edge of: a SECOND SPELLING of an existing version. "1.0.05" and
+// "1.0.5" parsed to the same triple, so they compared EQUAL — a channel pointer
+// moved from "1.0.5" to "1.0.05" was not lower than the high-water mark
+// (MKT-050's anti-rollback never fired), and a pack at "1.0.05" satisfied a
+// required floor of "1.0.5" (MKT-093b). The grammar now admits exactly one
+// spelling per version, so the string that identifies an artifact and the
+// triple that orders it cannot disagree.
+func TestVersionGrammarRejectsLeadingZeros(t *testing.T) {
+	for _, bad := range []string{"1.0.05", "01.0.5", "1.00.5", "00.0.0", "0.0.00"} {
+		if packs.ValidVersion(bad) {
+			t.Errorf("%q was accepted as a MAN-002 version — a leading zero is a second spelling of an "+
+				"existing version, and two spellings of one version defeat every comparison built on the grammar", bad)
+		}
+	}
+
+	// The refusal removes the equal-but-distinct pair entirely: neither spelling
+	// ranks against the other because one of them is no longer a version.
+	if packs.VersionHigher("1.0.05", "1.0.5") || packs.VersionHigher("1.0.5", "1.0.05") ||
+		packs.VersionLower("1.0.05", "1.0.5") {
+		t.Error(`"1.0.05" still holds a position in the version order`)
+	}
+
+	// The control: zero components spelled as exactly "0" are the one legal zero
+	// spelling, and interior/trailing zeros in a nonzero component are untouched.
+	for _, ok := range []string{"0.0.0", "1.0.5", "1.0.50", "10.200.3"} {
+		if !packs.ValidVersion(ok) {
+			t.Errorf("%q was refused as a MAN-002 version", ok)
+		}
+	}
+}
+
 // TestVersionGrammarBoundsComponentWidth pins the digit cap, whose reason
 // parseVersion states: a component that does not fit an int64 has no numeric
 // position either, and silently wrapping one "would produce an ordering an

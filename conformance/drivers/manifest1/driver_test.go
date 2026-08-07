@@ -10,11 +10,13 @@ import (
 
 // expectedDriven is every conformance/corpora/manifest-1 case this driver
 // drives: the original identity/compat/capability/egress/data-model happy-path
-// and negative fixtures, plus the five new negative cases this task adds
-// (MAN-052/072/081/090/091) turning their traceability rows from a
-// positive-only "covered" into a genuinely negative-tested one.
+// and negative fixtures, the five negative cases (MAN-052/072/081/090/091)
+// that turned their traceability rows from a positive-only "covered" into a
+// genuinely negative-tested one, and MAN-002's leading-zero refusal — the
+// injectivity rule that keeps a version to exactly one spelling.
 var expectedDriven = []string{
 	"MAN-001-valid-minimal",
+	"MAN-002-invalid-version-leading-zero",
 	"MAN-020-valid-full-featured",
 	"MAN-021-invalid-unknown-capability",
 	"MAN-030-invalid-egress-wildcard",

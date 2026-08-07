@@ -28,7 +28,7 @@ manifest/1 defines the declarative document every pack ships at its root: identi
 
 **[MAN-001]** The manifest MUST declare `id` as a string of the form `<publisher>/<name>`, where `publisher` and `name` each match `^[a-z][a-z0-9-]{1,38}$`. `id` is the pack's permanent identity; it MUST NOT change across versions of the same pack.
 
-**[MAN-002]** The manifest MUST declare `version` as a three-component dotted version string (`MAJOR.MINOR.PATCH`, digits only per component). Two artifacts published under the same `id` MUST NOT share a `version`.
+**[MAN-002]** The manifest MUST declare `version` as a three-component dotted version string (`MAJOR.MINOR.PATCH`, digits only per component); a component MUST NOT carry a leading zero unless the component is exactly `0`. The leading-zero refusal exists to make the grammar **injective** onto ordered triples — exactly one spelling per version — so the string that identifies an artifact and the parsed triple that orders it (`marketplace/1` MKT-050a) can never disagree. Without it `1.0.05` and `1.0.5` are two distinct valid strings that compare equal: a registry could publish both without this requirement's own no-shared-`version` rule firing, and a channel pointer moved between the two spellings is not a rollback under MKT-050 and not below a floor under MKT-093b. The restriction MUST NOT be relaxed as a cosmetic tolerance; the injectivity is the property everything ordered on top of this grammar rests on. Two artifacts published under the same `id` MUST NOT share a `version`.
 
 **[MAN-003]** The manifest MUST declare `displayName` as a `msg:` locale-catalog reference (never a raw string), resolved against the pack's bundled locale catalogs (MAN-111) at render time.
 

@@ -62,11 +62,12 @@ func RunCases(cases map[string]corpus.Case) report.Report {
 
 // driveCases drives every case in the frozen manifest-1 corpus: the original
 // identity/compat/capability/egress/data-model happy-path and negative
-// fixtures, plus the five negative cases this task adds — each turning a
-// requirement whose traceability row was "covered" only by a positive
-// full-featured fixture into one a genuine failure-path case also exercises.
+// fixtures, the five negative cases that turned requirements covered only by a
+// positive full-featured fixture into genuinely failure-path-tested ones, and
+// MAN-002's leading-zero refusal (the grammar's injectivity rule).
 func driveCases(rep *report.Report, cases map[string]corpus.Case) {
 	driveValidateCase(rep, cases, "MAN-001")
+	driveValidateCase(rep, cases, "MAN-002")
 	driveValidateCase(rep, cases, "MAN-020")
 	driveValidateCase(rep, cases, "MAN-021")
 	driveValidateCase(rep, cases, "MAN-030")

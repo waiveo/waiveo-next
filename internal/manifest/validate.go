@@ -45,7 +45,7 @@ func validateIdentity(m PackManifest) []Error {
 	}
 	if !IsThreeComponentVersion(m.Version) {
 		errs = append(errs, Error{"MANIFEST_SCHEMA_INVALID", "version",
-			"version MUST be a three-component digits-only dotted string (MAN-002)"})
+			"version MUST be a three-component digits-only dotted string with no leading zero in a component (MAN-002)"})
 	}
 	if !IsMsgRef(m.DisplayName) {
 		errs = append(errs, Error{"MANIFEST_SCHEMA_INVALID", "displayName",

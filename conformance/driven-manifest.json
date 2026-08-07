@@ -115,6 +115,7 @@
     "driver": "conformance/drivers/manifest1 (go run ./conformance/cmd/driven-manifest -write)",
     "driven": [
       "MAN-001-valid-minimal",
+      "MAN-002-invalid-version-leading-zero",
       "MAN-020-valid-full-featured",
       "MAN-021-invalid-unknown-capability",
       "MAN-030-invalid-egress-wildcard",

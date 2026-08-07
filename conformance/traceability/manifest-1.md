@@ -5,7 +5,7 @@ One row per requirement ID `contracts/manifest-1.md` defines. Format: `conforman
 | req-id | contract §anchor | case-id(s) | status |
 |---|---|---|---|
 | MAN-001 | `contracts/manifest-1.md#pack-identity` | `MAN-001-valid-minimal` | covered |
-| MAN-002 | `contracts/manifest-1.md#pack-identity` | `MAN-001-valid-minimal` | covered |
+| MAN-002 | `contracts/manifest-1.md#pack-identity` | `MAN-001-valid-minimal`, `MAN-002-invalid-version-leading-zero` | covered |
 | MAN-003 | `contracts/manifest-1.md#pack-identity` | `MAN-001-valid-minimal` | covered |
 | MAN-004 | `contracts/manifest-1.md#pack-identity` | - | TBD-wave1 |
 | MAN-010 | `contracts/manifest-1.md#compatibility-declaration` | `MAN-001-valid-minimal` | covered |
