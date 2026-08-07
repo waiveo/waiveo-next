@@ -1,0 +1,32 @@
+{
+  "case_id": "DAT-071-invalid-daypart-phantom-weekday",
+  "contract": "data-model/1",
+  "req_ids": ["DAT-071"],
+  "description": "A wrapping daypart whose days_of_week names only the phantom weekday 9 is refused DAYPART_DAYS_INVALID at authoring time. This is the shape that fails OPEN if stored: DAT-073's wrap expansion places the post-midnight tail on (day + 1) mod 7 -- for 9 that is 3, a real Wednesday -- so the row's head matches nothing while its tail lands real coverage on a real weekday the author never named. The write gate is where such a row becomes impossible; the runtime additionally expands an out-of-range member to no coverage at all.",
+  "input": {
+    "schedule": { "id": "01JSCHEDPHANT0MGXJVZ9CJD33", "scope_node": "01JGRPNDE1PG2X7R5JQC42EJ5E", "name": "Phantom Weekday", "priority": 0, "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 },
+    "dayparts": [
+      {
+        "id": "01JDAYPARTPHANT0M44FS7F2XX",
+        "schedule_id": "01JSCHEDPHANT0MGXJVZ9CJD33",
+        "scope_node": "01JGRPNDE1PG2X7R5JQC42EJ5E",
+        "name": "Overnight On A Day That Does Not Exist",
+        "days_of_week": [9],
+        "start_time": "22:00:00",
+        "end_time": "06:00:00",
+        "display_power": "on",
+        "playlist_id": null,
+        "preset_batch_id": null,
+        "revision": 1,
+        "created_at": 1752537600000,
+        "updated_at": 1752537600000
+      }
+    ]
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      { "field": "days_of_week", "code": "DAYPART_DAYS_INVALID", "message": "days_of_week member 9 is outside 0-6 (0 = Sunday) (DAT-071)" }
+    ]
+  }
+}

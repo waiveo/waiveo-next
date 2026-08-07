@@ -1,0 +1,32 @@
+{
+  "case_id": "DAT-071-invalid-daypart-empty-days",
+  "contract": "data-model/1",
+  "req_ids": ["DAT-071"],
+  "description": "A daypart whose days_of_week is empty is refused DAYPART_DAYS_INVALID at authoring time. This is the shape that fails SILENT if stored: the row expands to no segments, DAT-073's overlap check vacuously passes it, and the schedule looks configured while scheduling nothing -- no error surfaces anywhere until an operator asks why a screen never entered the window they authored.",
+  "input": {
+    "schedule": { "id": "01JSCHEDEMPTYDAYSJVZ9CJD33", "scope_node": "01JGRPNDE1PG2X7R5JQC42EJ5E", "name": "Empty Days", "priority": 0, "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 },
+    "dayparts": [
+      {
+        "id": "01JDAYPARTEMPTYDAYS4FS7F2X",
+        "schedule_id": "01JSCHEDEMPTYDAYSJVZ9CJD33",
+        "scope_node": "01JGRPNDE1PG2X7R5JQC42EJ5E",
+        "name": "Covers Nothing",
+        "days_of_week": [],
+        "start_time": "09:00:00",
+        "end_time": "17:00:00",
+        "display_power": "on",
+        "playlist_id": null,
+        "preset_batch_id": null,
+        "revision": 1,
+        "created_at": 1752537600000,
+        "updated_at": 1752537600000
+      }
+    ]
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      { "field": "days_of_week", "code": "DAYPART_DAYS_INVALID", "message": "days_of_week must be a non-empty array of unique integers 0-6 (0 = Sunday); an empty array stores a daypart that covers nothing (DAT-071)" }
+    ]
+  }
+}

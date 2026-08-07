@@ -65,6 +65,15 @@ func daypartSegments(d Daypart) (segs []segment, ok bool) {
 		return nil, false
 	}
 	for _, day := range d.DaysOfWeek {
+		// A weekday outside 0–6 contributes NO coverage (DAT-071, fail-closed
+		// like an unparseable time). Without this, the wrap tail below lands on
+		// (day+1) mod 7 — a REAL weekday — so a phantom day would fail open:
+		// coverage the author never declared, on a day they never named. The
+		// write gate (checkDaysOfWeek) makes such a row unstorable; this is the
+		// runtime's own refusal to expand one however it arrives.
+		if day < 0 || day > 6 {
+			continue
+		}
 		if end > start {
 			// Non-wrapping: a single same-day half-open range.
 			segs = append(segs, segment{weekday: day, from: start, until: end})

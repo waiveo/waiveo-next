@@ -2,6 +2,7 @@ package datamodel
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/maaxton/waiveo-next/internal/shared/ulid"
@@ -65,7 +66,8 @@ var validMisfire = map[string]bool{"catch_up_once": true, "skip": true, "fire_ea
 //   - platform ownership (DAT-100/101): no row carries a row-level pack field;
 //   - closed vocabularies (DAT-074 display_power, DAT-120 misfire);
 //   - row-shape MUSTs (DAT-061 validity range, DAT-071 daypart time-of-day
-//     format and ranges via DAYPART_TIME_INVALID, DAT-091 non-empty commands);
+//     format and ranges via DAYPART_TIME_INVALID and days_of_week grammar via
+//     DAYPART_DAYS_INVALID, DAT-091 non-empty commands);
 //   - within-schedule daypart partition (DAT-073, DAYPART_OVERLAP via
 //     ValidateNoOverlap): a schedule's dayparts MUST NOT overlap;
 //   - referential integrity: a daypart/validity-window scope_node equals its
@@ -99,6 +101,29 @@ func checkRowPlacement(scopeNode, kind string) *Error {
 		Code:    "ROW_SCOPE_NODE_MISSING",
 		Message: "a " + kind + " row MUST carry the id of the scope node it is placed under (DAT-005/DAT-006)",
 	}
+}
+
+// checkDaysOfWeek enforces DAT-071's days_of_week grammar: a non-empty array
+// of unique integers 0–6. One error names the first violation found — the
+// remedy is the same (fix the array) whichever member is at fault.
+func checkDaysOfWeek(days []int) *Error {
+	if len(days) == 0 {
+		return &Error{Field: "days_of_week", Code: "DAYPART_DAYS_INVALID",
+			Message: "days_of_week must be a non-empty array of unique integers 0-6 (0 = Sunday); an empty array stores a daypart that covers nothing (DAT-071)"}
+	}
+	seen := [7]bool{}
+	for _, d := range days {
+		if d < 0 || d > 6 {
+			return &Error{Field: "days_of_week", Code: "DAYPART_DAYS_INVALID",
+				Message: fmt.Sprintf("days_of_week member %d is outside 0-6 (0 = Sunday) (DAT-071)", d)}
+		}
+		if seen[d] {
+			return &Error{Field: "days_of_week", Code: "DAYPART_DAYS_INVALID",
+				Message: fmt.Sprintf("days_of_week member %d appears more than once; members must be unique (DAT-071)", d)}
+		}
+		seen[d] = true
+	}
+	return nil
 }
 
 func ValidateRows(raw RawRows) (RowSet, []Error) {
@@ -190,6 +215,14 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 		}
 		if _, err := parseTimeOfDay(v.EndTime); err != nil {
 			errs = append(errs, Error{Field: "end_time", Code: "DAYPART_TIME_INVALID", Message: err.Error() + "; end_time must be HH:MM:SS with HH 00-23 and MM/SS 00-59 (DAT-071)"})
+		}
+		// DAT-071's days_of_week grammar, refused at write time with the failure
+		// directions in mind: an out-of-range weekday fails OPEN (the wrap
+		// expansion's (day+1) mod 7 tail lands real coverage on a real weekday
+		// the author never named), and an empty array fails SILENT (a daypart
+		// covering nothing, on a schedule that looks configured).
+		if e := checkDaysOfWeek(v.DaysOfWeek); e != nil {
+			errs = append(errs, *e)
 		}
 		if e := checkRowPlacement(v.ScopeNode, "daypart"); e != nil {
 			errs = append(errs, *e)

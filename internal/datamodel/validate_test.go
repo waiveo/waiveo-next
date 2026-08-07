@@ -299,3 +299,54 @@ func TestDaypartTimesAreRefusedAtTheWriteGate(t *testing.T) {
 		}
 	}
 }
+
+// TestDaypartDaysOfWeekAreRefusedAtTheWriteGate pins DAT-071's days_of_week
+// grammar (DAYPART_DAYS_INVALID) through ValidateRows. The two corpus shapes
+// fail in OPPOSITE directions — the phantom weekday fails open (the wrap
+// expansion's (day+1) mod 7 tail lands real coverage on a real weekday the
+// author never named) and the empty array fails silent (a stored daypart that
+// covers nothing) — and the table adds the shapes between: a negative member,
+// a duplicate, and a phantom day hidden among real ones.
+func TestDaypartDaysOfWeekAreRefusedAtTheWriteGate(t *testing.T) {
+	daypartRow := func(days string) json.RawMessage {
+		return json.RawMessage(`{"id":"01JDAYPARTVVR1TEGATE4FS7F2","schedule_id":"01JSCHEDWR1TEGATEXJVZ9CJD3",` +
+			`"scope_node":"01JGRPNDE1PG2X7R5JQC42EJ5E","name":"Days Gate","days_of_week":` + days + `,` +
+			`"start_time":"22:00:00","end_time":"06:00:00","display_power":"on",` +
+			`"playlist_id":null,"preset_batch_id":null,"revision":1,"created_at":1752537600000,"updated_at":1752537600000}`)
+	}
+	schedule := json.RawMessage(`{"id":"01JSCHEDWR1TEGATEXJVZ9CJD3","scope_node":"01JGRPNDE1PG2X7R5JQC42EJ5E",` +
+		`"name":"Days Gate","priority":0,"revision":1,"created_at":1752537600000,"updated_at":1752537600000}`)
+
+	for _, tc := range []struct {
+		name, days string
+	}{
+		{"empty", "[]"},
+		{"phantom weekday", "[9]"},
+		{"phantom among real days", "[1,2,9]"},
+		{"negative member", "[-1]"},
+		{"duplicate member", "[1,1]"},
+		{"seven is not a weekday", "[7]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, errs := ValidateRows(RawRows{
+				Schedules: []json.RawMessage{schedule},
+				Dayparts:  []json.RawMessage{daypartRow(tc.days)},
+			})
+			if !hasErr(errs, "DAYPART_DAYS_INVALID", "days_of_week") {
+				t.Errorf("days_of_week %s was not refused DAYPART_DAYS_INVALID; errs=%v", tc.days, errs)
+			}
+		})
+	}
+
+	// The controls: the full week, a single day, and the boundary members 0 and
+	// 6 all pass — the refusals are about the grammar, not about days generally.
+	for _, days := range []string{"[0,1,2,3,4,5,6]", "[3]", "[0,6]"} {
+		_, errs := ValidateRows(RawRows{
+			Schedules: []json.RawMessage{schedule},
+			Dayparts:  []json.RawMessage{daypartRow(days)},
+		})
+		if hasErr(errs, "DAYPART_DAYS_INVALID", "") {
+			t.Errorf("days_of_week %s was refused: %v", days, errs)
+		}
+	}
+}

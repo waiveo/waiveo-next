@@ -261,3 +261,50 @@ func TestKindOfReportsAnUnknownNodeAsNotFound(t *testing.T) {
 		t.Errorf("KindOf(site) = (%q, %v), want (site, true)", kind, ok)
 	}
 }
+
+// TestAPhantomWeekdayContributesNoCoverage pins the runtime half of DAT-071's
+// days_of_week rule: a member outside 0–6 expands to NOTHING, exactly as an
+// unparseable time does (the test above).
+//
+// The direction of this failure is what makes it worth its own pin. A phantom
+// weekday's HEAD matches no real weekday, so it fails silent — but a WRAPPING
+// daypart's tail is placed on (day+1) mod 7, which for a phantom 9 is 3, a
+// real Wednesday. Without the guard the row fails OPEN: real coverage, on a
+// real day, during hours whose author named neither. The write gate refuses
+// such a row at authoring; this is the evaluator's own refusal to expand one
+// however it arrives.
+func TestAPhantomWeekdayContributesNoCoverage(t *testing.T) {
+	loc := mustLoadNY(t)
+	dp := Daypart{
+		ID: "01JDP", ScheduleID: "01JS", DaysOfWeek: []int{9},
+		StartTime: "22:00:00", EndTime: "06:00:00", DisplayPower: "on",
+	}
+	// Wednesday 2026-08-05 01:00 local — squarely inside where the phantom
+	// day's wrap tail would land ((9+1) mod 7 = 3).
+	at := mustUTCms(t, "2026-08-05T05:00:00Z")
+	if Holds(dp, loc, at) {
+		t.Error("a daypart declared only on phantom weekday 9 held on a real Wednesday — " +
+			"the (day+1) mod 7 wrap tail turned an invalid weekday into real coverage")
+	}
+
+	// A phantom day mixed with a real one: the real day's coverage stands, the
+	// phantom contributes nothing. Tuesday 23:00 local is inside day-2's head;
+	// Wednesday 01:00 local is inside day-2's tail (real, (2+1) mod 7 = 3) —
+	// so the tail assertion above is about day 9's phantom tail, not wrapping
+	// generally.
+	mixed := Daypart{
+		ID: "01JDP", ScheduleID: "01JS", DaysOfWeek: []int{2, 9},
+		StartTime: "22:00:00", EndTime: "06:00:00", DisplayPower: "on",
+	}
+	if !Holds(mixed, loc, mustUTCms(t, "2026-08-05T03:00:00Z")) { // Tue 23:00 local
+		t.Error("the real day-2 head did not hold at Tuesday 23:00 local")
+	}
+	if !Holds(mixed, loc, at) { // Wed 01:00 local, day-2's REAL tail
+		t.Error("the real day-2 wrap tail did not hold at Wednesday 01:00 local")
+	}
+	// Friday 01:00 local: only phantom 9's tail could have put coverage here
+	// ((9+1) mod 7 = 3 is Wednesday, so nothing should hold Friday).
+	if Holds(mixed, loc, mustUTCms(t, "2026-08-07T05:00:00Z")) {
+		t.Error("coverage appeared on Friday — only a phantom-day expansion could put it there")
+	}
+}
