@@ -428,3 +428,55 @@ func TestUpdatePackRowRefusesOrphanPack(t *testing.T) {
 		t.Fatalf("UpdatePackRow(uninstalled) = %v; want ErrNotFound", err)
 	}
 }
+
+// TestPackRowLabelsSurviveTheScan pins the labels leg of the pack-row scan: a
+// stored row's labels come back on every read path. The scanner's guard on the
+// empty column is the survivor a mutation sweep flagged — with the guard
+// disabled every stored label list silently reads back empty, and nothing in
+// the tree noticed because no test ever round-tripped a labeled row. The API
+// serves row.Labels directly (packs data reads), so a silent empty here is
+// user-visible data loss, not an internal detail.
+func TestPackRowLabelsSurviveTheScan(t *testing.T) {
+	st := openMem(t)
+	seedPlacementNode(t, st, testScopeNode)
+	ctx := context.Background()
+	if _, _, err := st.InstallPack(ctx, packSpec("acme/menu-board", "1.0.0", 1)); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	in := rowIn(testScopeNode, "", `{"name":"Burger"}`)
+	in.Labels = []string{"featured", "seasonal"}
+	row, err := st.CreatePackRow(ctx, "acme/menu-board", "menu_items", in)
+	if err != nil {
+		t.Fatalf("CreatePackRow: %v", err)
+	}
+
+	got, found, err := st.GetPackRow(ctx, "acme/menu-board", "menu_items", row.EntityID)
+	if err != nil || !found {
+		t.Fatalf("GetPackRow: found=%v err=%v", found, err)
+	}
+	if len(got.Labels) != 2 || got.Labels[0] != "featured" || got.Labels[1] != "seasonal" {
+		t.Fatalf("labels after Get = %v, want [featured seasonal]", got.Labels)
+	}
+	rows, err := st.ListPackRows(ctx, "acme/menu-board", "menu_items")
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("ListPackRows: %d rows, err=%v", len(rows), err)
+	}
+	if len(rows[0].Labels) != 2 {
+		t.Fatalf("labels after List = %v, want both", rows[0].Labels)
+	}
+
+	// The other side of the guard: a row stored with NO labels reads back as
+	// the empty list, never nil — the wire shape packs data serves is [].
+	plain, err := st.CreatePackRow(ctx, "acme/menu-board", "menu_items", rowIn(testScopeNode, "", `{"name":"Fries"}`))
+	if err != nil {
+		t.Fatalf("CreatePackRow (no labels): %v", err)
+	}
+	got2, _, err := st.GetPackRow(ctx, "acme/menu-board", "menu_items", plain.EntityID)
+	if err != nil {
+		t.Fatalf("GetPackRow (no labels): %v", err)
+	}
+	if got2.Labels == nil || len(got2.Labels) != 0 {
+		t.Fatalf("labels of an unlabeled row = %#v, want the empty list", got2.Labels)
+	}
+}

@@ -250,3 +250,63 @@ func TestPointerMarkRefusesBelowTheMarkInsideTheTransaction(t *testing.T) {
 		t.Fatalf("mark = %q, want it held at 2.0.0", mark)
 	}
 }
+
+// TestChannelMarkAdvanceRefusesAnIncompleteAdvance pins advanceChannelMark's
+// boundary checks through the public install contract. ChannelMarkAdvance is
+// the store's own API surface: the packs resolver happens to always fill it
+// today, but the store must not COMMIT a mark it cannot compare or key.
+//
+// The stakes are per-field. A nil Higher is the MKT-050a rule at the store
+// boundary — the mark is meaningless without the caller's version order, and
+// the store inventing a fallback order is exactly what MKT-050a forbids. An
+// empty trust channel or version would commit a mark row keyed on "" — a
+// phantom (pack, channel) pair no later MKT-050 comparison ever reads, so the
+// anti-rollback floor the install claims to raise would not exist.
+//
+// The refusal must also abort the WHOLE install: the advance rides the install
+// transaction, and a pack landing while its mark did not is the torn state the
+// transaction exists to prevent.
+func TestChannelMarkAdvanceRefusesAnIncompleteAdvance(t *testing.T) {
+	st := openMem(t)
+	ctx := context.Background()
+	higher := func(candidate, current string) bool { return candidate > current }
+
+	for _, tc := range []struct {
+		name string
+		adv  *store.ChannelMarkAdvance
+	}{
+		{"no version order", &store.ChannelMarkAdvance{TrustChannel: "community", Version: "1.0.0"}},
+		{"no trust channel", &store.ChannelMarkAdvance{Version: "1.0.0", Higher: higher}},
+		{"no version", &store.ChannelMarkAdvance{TrustChannel: "community", Higher: higher}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := packSpec("acme/menu-board", "1.0.0", 1)
+			spec.Record.ResolvedVersion = "1.0.0"
+			spec.Record.TrustChannel = "community"
+			spec.ChannelMark = tc.adv
+			if _, _, err := st.InstallPack(ctx, spec); err == nil {
+				t.Fatal("InstallPack committed with an incomplete channel-mark advance")
+			}
+			if _, found, _ := st.GetPack(ctx, "acme/menu-board"); found {
+				t.Fatal("the refused install left the pack installed — the advance must abort the transaction, not just skip the mark")
+			}
+			if _, found, _ := st.PackChannelMark(ctx, "acme/menu-board", "community"); found {
+				t.Fatal("the refused install left a channel mark")
+			}
+		})
+	}
+
+	// The control: the same spec with a complete advance commits, and the mark
+	// exists — so the refusals above are about the missing fields, not about
+	// marked installs generally.
+	spec := packSpec("acme/menu-board", "1.0.0", 1)
+	spec.Record.ResolvedVersion = "1.0.0"
+	spec.Record.TrustChannel = "community"
+	spec.ChannelMark = &store.ChannelMarkAdvance{TrustChannel: "community", Version: "1.0.0", Higher: higher}
+	if _, _, err := st.InstallPack(ctx, spec); err != nil {
+		t.Fatalf("a complete channel-mark advance failed: %v", err)
+	}
+	if mark, found, _ := st.PackChannelMark(ctx, "acme/menu-board", "community"); !found || mark != "1.0.0" {
+		t.Fatalf("mark = %q found=%v, want 1.0.0", mark, found)
+	}
+}
