@@ -731,7 +731,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * List the assets in the content origin
+         * @description Every asset the content origin currently serves, each carrying the same `{asset_ref, url}` an upload returns plus `size_bytes` and `stored_at`. Upload is otherwise write-only, so an authoring surface that did not keep an upload's `asset_ref` has no other way to rediscover it; this is the read half a media browser and an editor's image picker resolve against.
+         */
+        get: operations["listContent"];
         put?: never;
         /**
          * Upload an asset to the content origin
@@ -3744,6 +3748,28 @@ export interface operations {
             412: components["responses"]["PreconditionFailed"];
             422: components["responses"]["UnprocessableContent"];
             428: components["responses"]["PreconditionRequired"];
+        };
+    };
+    listContent: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The content origin's current listing. Shape stub — the response schema is a later minor. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
         };
     };
     uploadContent: {
