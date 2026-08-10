@@ -253,7 +253,7 @@ func TestObserveAliveMatchingNT(t *testing.T) {
 		t.Fatalf("New() error: %v", err)
 	}
 
-	d.observeAlive("urn:roku-com:device:player:1", "uuid:device:1")
+	d.observeAlive(context.Background(), aliveNotice{NT: "urn:roku-com:device:player:1", USN: "uuid:device:1"})
 
 	cands := store.Report().Body.Candidates
 	if len(cands) != 1 {
@@ -279,7 +279,7 @@ func TestObserveAliveNonMatchingNTIgnored(t *testing.T) {
 		t.Fatalf("New() error: %v", err)
 	}
 
-	d.observeAlive("urn:some-other:device:1", "uuid:device:1")
+	d.observeAlive(context.Background(), aliveNotice{NT: "urn:some-other:device:1", USN: "uuid:device:1"})
 
 	if cands := store.Report().Body.Candidates; len(cands) != 0 {
 		t.Fatalf("got %d candidates, want 0: %+v", len(cands), cands)
@@ -307,7 +307,7 @@ func TestRunStopsPromptlyOnContextCancel(t *testing.T) {
 	}
 
 	mon := &fakeMonitor{}
-	d.newMonitor = func(onAlive func(string, string)) ssdpMonitor { return mon }
+	d.newMonitor = func(onAlive func(aliveNotice)) ssdpMonitor { return mon }
 	d.search = func(st string, wait int) ([]foundService, error) { return nil, nil }
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -356,7 +356,7 @@ func TestRunStopsPromptlyDuringSlowSearch(t *testing.T) {
 	}
 
 	mon := &fakeMonitor{}
-	d.newMonitor = func(onAlive func(string, string)) ssdpMonitor { return mon }
+	d.newMonitor = func(onAlive func(aliveNotice)) ssdpMonitor { return mon }
 
 	searchStarted := make(chan struct{})
 	releaseSearch := make(chan struct{})
@@ -496,7 +496,7 @@ func TestResponseWithoutUSNIsNotObserved(t *testing.T) {
 	if n := len(store.Report().Body.Candidates); n != 0 {
 		t.Fatalf("got %d candidate(s) from a response with no USN, want 0", n)
 	}
-	d.observeAlive("urn:roku-com:device:player:1", "")
+	d.observeAlive(context.Background(), aliveNotice{NT: "urn:roku-com:device:player:1"})
 	if n := len(store.Report().Body.Candidates); n != 0 {
 		t.Fatalf("got %d candidate(s) from an alive NOTIFY with no USN, want 0", n)
 	}

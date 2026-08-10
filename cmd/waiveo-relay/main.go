@@ -119,19 +119,20 @@ type config struct {
 	// (WAIVEO_RELAY_ECP_TARGETS="entity=host[:port],..."). pollInterval is
 	// the ECP state-poll period (WAIVEO_RELAY_POLL_MS, default 5000).
 	// discoveryOn enables the SSDP client sweep feeding the candidate store
-	// (WAIVEO_RELAY_DISCOVERY=1, REL-110/111). mdnsPatterns enables the mDNS
-	// listener feeding the SAME candidate store (WAIVEO_RELAY_MDNS_PATTERNS,
-	// comma-separated MAN-071 service-type strings e.g. "_waiveo._tcp";
-	// empty/unset is off, internal/relay/mdns). ssdpAnnounce enables the
-	// SSDP RESPONDER — answering a player's own M-SEARCH for this relay's
-	// player/1 pairing surface (WAIVEO_RELAY_SSDP_ANNOUNCE=1, PLY-021/022).
-	// keepaliveOn enables the screen keep-alive capability
-	// (WAIVEO_RELAY_KEEPALIVE=1, internal/relay/keepalive, player/1
-	// PLY-150-154): a second ECP poller over the SAME ecpTargets that
-	// re-launches a screen's player channel once it safely idles at Home.
-	// All four default off: CI and loopback dev runs must never multicast,
-	// and must not dispatch an unrequested launch, so dev/CI stay
-	// byte-identical to today.
+	// (REL-110/111). It defaults ON — see parseConfig for why this one is the
+	// exception — and is switched off with WAIVEO_RELAY_DISCOVERY=0.
+	// mdnsPatterns enables the mDNS listener feeding the SAME candidate store
+	// (WAIVEO_RELAY_MDNS_PATTERNS, comma-separated MAN-071 service-type
+	// strings e.g. "_waiveo._tcp"; empty/unset is off, internal/relay/mdns).
+	// ssdpAnnounce enables the SSDP RESPONDER — answering a player's own
+	// M-SEARCH for this relay's player/1 pairing surface
+	// (WAIVEO_RELAY_SSDP_ANNOUNCE=1, PLY-021/022). keepaliveOn enables the
+	// screen keep-alive capability (WAIVEO_RELAY_KEEPALIVE=1,
+	// internal/relay/keepalive, player/1 PLY-150-154): a second ECP poller
+	// over the SAME ecpTargets that re-launches a screen's player channel
+	// once it safely idles at Home. The last three default off: a loopback
+	// dev run must not announce itself, and must not dispatch an unrequested
+	// launch.
 	ecpTargets   map[string]ecp.Target
 	pollInterval time.Duration
 	discoveryOn  bool
@@ -224,11 +225,38 @@ func loadConfig(env func(string) string) (config, error) {
 		pairPort:     port,
 		ecpTargets:   targets,
 		pollInterval: time.Duration(pollMS) * time.Millisecond,
-		discoveryOn:  env("WAIVEO_RELAY_DISCOVERY") == "1" || env("WAIVEO_RELAY_DISCOVERY") == "true",
+		discoveryOn:  discoveryEnabled(env("WAIVEO_RELAY_DISCOVERY")),
 		mdnsPatterns: parseMDNSPatterns(env("WAIVEO_RELAY_MDNS_PATTERNS")),
 		ssdpAnnounce: env("WAIVEO_RELAY_SSDP_ANNOUNCE") == "1" || env("WAIVEO_RELAY_SSDP_ANNOUNCE") == "true",
 		keepaliveOn:  env("WAIVEO_RELAY_KEEPALIVE") == "1" || env("WAIVEO_RELAY_KEEPALIVE") == "true",
 	}, nil
+}
+
+// discoveryEnabled reads WAIVEO_RELAY_DISCOVERY as an OPT-OUT: unset or anything
+// other than an explicit off value enables the SSDP client sweep.
+//
+// This is the one lane in this binary whose default is on, and the asymmetry is
+// deliberate. The other multicast switches (the SSDP RESPONDER, the mDNS
+// listener) make this box ANNOUNCE itself or bind a well-known multicast port,
+// which is intrusive on a network that did not ask and, in mDNS's case,
+// collides outright with the host's own avahi daemon. An M-SEARCH is neither:
+// it is a control point ASKING who is out there, which is the entire job of a
+// signage appliance that has to find the TVs it drives. Leaving it off by
+// default meant a fresh box discovered nothing at all until somebody knew to set
+// an environment variable — the appliance shipped unable to see its own
+// hardware, and the legacy system it replaces swept always-on.
+//
+// The off values are the exact spellings an operator or a unit-test harness
+// would reach for; anything else (including a typo) leaves discovery on, which
+// is the safe direction for a default that exists so the box works out of the
+// box.
+func discoveryEnabled(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "0", "false", "off", "no":
+		return false
+	default:
+		return true
+	}
 }
 
 // parseMDNSPatterns parses "svc1,svc2" into the mdns package's Config.Patterns
@@ -852,15 +880,31 @@ func main() {
 	// a discovery response could state.
 	if cfg.discoveryOn || len(cfg.mdnsPatterns) > 0 {
 		if cfg.discoveryOn {
+			// One HTTP client for every identification probe: connections to a
+			// device are pooled and reused across sweeps instead of being dialed
+			// fresh each time (see ecp.NewIdentifyClient for the timeout).
+			identifyClient := ecp.NewIdentifyClient()
 			disc, err := discovery.New(discovery.Config{
 				Watches: []discovery.Watch{{
 					Match:       deviceplane.Match{SSDP: rokuSearchTarget},
 					Driver:      rokuDriver,
 					DeviceClass: mediaPlayerClass,
+					DefaultPort: rokuECPPort,
 					Entities:    []deviceplane.CandidateEntity{{Key: mainEntityKey, DeviceClass: mediaPlayerClass}},
 				}},
 				Store:     candStore,
 				NowMillis: func() int64 { return time.Now().UnixMilli() },
+				// The identification probe: a discovered address that answers
+				// Roku's ECP device-info query IS a Roku, and says which one.
+				// Without it a sweep reports opaque USNs an operator cannot map
+				// onto the TVs in front of them (internal/relay/ecp).
+				Identify: func(ctx context.Context, address string) (discovery.Identity, bool) {
+					info, err := ecp.QueryDeviceInfo(ctx, identifyClient, address)
+					if err != nil {
+						return discovery.Identity{}, false
+					}
+					return discovery.Identity{Name: info.Name, Model: info.Model, Serial: info.SerialNumber}, true
+				},
 			})
 			if err != nil {
 				log.Fatalf("waiveo-relay: configure SSDP discovery: %v", err)
@@ -1764,6 +1808,12 @@ const (
 	mdnsDriver       = "mdns"
 	mediaPlayerClass = "media-player"
 	mainEntityKey    = "main"
+	// rokuECPPort is Roku's well-known ECP port, declared on the watch so a
+	// NOTIFY whose LOCATION header is missing or malformed can still be turned
+	// into a dialable address from the packet's own source IP
+	// (internal/relay/discovery/address.go). A Roku's LOCATION normally names
+	// this port itself; this is the fallback, not the usual path.
+	rokuECPPort = 8060
 )
 
 // candidateReportInterval is how often the relay re-reports its full candidate
@@ -1877,6 +1927,9 @@ func toWireCandidates(cands []deviceplane.Candidate) []wire.DeviceCandidate {
 			NativeID:     c.NativeID,
 			DeviceClass:  c.DeviceClass,
 			Name:         c.Name,
+			Address:      c.Address,
+			Model:        c.Model,
+			Serial:       c.Serial,
 			Entities:     ents,
 		})
 	}

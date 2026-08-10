@@ -229,8 +229,9 @@ func TestLoadConfigECPTargetsAndPolling(t *testing.T) {
 }
 
 func TestLoadConfigDeviceDefaultsOff(t *testing.T) {
-	// No hardware env → nil targets, discovery off, loopback stand-ins stay in
-	// (byte-identical dev/CI behavior).
+	// No hardware env → nil targets and the loopback stand-ins stay in. The
+	// ANNOUNCING/acting lanes stay off; the SSDP client sweep does not (see
+	// discoveryEnabled and TestDiscoveryDefaultsOnAndOptsOut).
 	cfg, err := loadConfig(func(string) string { return "" })
 	if err != nil {
 		t.Fatalf("loadConfig(defaults): %v", err)
@@ -238,8 +239,9 @@ func TestLoadConfigDeviceDefaultsOff(t *testing.T) {
 	if cfg.ecpTargets != nil {
 		t.Errorf("ecpTargets = %v, want nil", cfg.ecpTargets)
 	}
-	if cfg.discoveryOn {
-		t.Error("discoveryOn = true, want false by default")
+	if !cfg.discoveryOn {
+		t.Error("discoveryOn = false, want true by default — a signage appliance that cannot see its own TVs " +
+			"until an operator sets an environment variable ships broken")
 	}
 	if cfg.mdnsPatterns != nil {
 		t.Errorf("mdnsPatterns = %v, want nil by default (CI/dev loopback must not multicast)", cfg.mdnsPatterns)
@@ -252,6 +254,40 @@ func TestLoadConfigDeviceDefaultsOff(t *testing.T) {
 	}
 	if cfg.pollInterval != 5*time.Second {
 		t.Errorf("pollInterval = %s, want the 5s default", cfg.pollInterval)
+	}
+}
+
+// TestDiscoveryDefaultsOnAndOptsOut pins the one multicast lane whose default is
+// ON, and the exact spellings that turn it off.
+//
+// Both halves matter. If the default silently flipped back to off, a fresh box
+// would discover nothing and the failure would look like "there are no devices"
+// rather than like a configuration gap. If the opt-out stopped working, a
+// deployment that must not sweep (a shared lab network, a conformance run) would
+// have no way to stop it.
+func TestDiscoveryDefaultsOnAndOptsOut(t *testing.T) {
+	on := []string{"", "1", "true", "yes", "anything-at-all", " "}
+	off := []string{"0", "false", "off", "no", "FALSE", " Off "}
+
+	for _, raw := range on {
+		env := map[string]string{"WAIVEO_RELAY_DISCOVERY": raw}
+		cfg, err := loadConfig(func(k string) string { return env[k] })
+		if err != nil {
+			t.Fatalf("loadConfig(WAIVEO_RELAY_DISCOVERY=%q): %v", raw, err)
+		}
+		if !cfg.discoveryOn {
+			t.Errorf("WAIVEO_RELAY_DISCOVERY=%q → discoveryOn false, want true (only an explicit off value disables it)", raw)
+		}
+	}
+	for _, raw := range off {
+		env := map[string]string{"WAIVEO_RELAY_DISCOVERY": raw}
+		cfg, err := loadConfig(func(k string) string { return env[k] })
+		if err != nil {
+			t.Fatalf("loadConfig(WAIVEO_RELAY_DISCOVERY=%q): %v", raw, err)
+		}
+		if cfg.discoveryOn {
+			t.Errorf("WAIVEO_RELAY_DISCOVERY=%q → discoveryOn true, want false", raw)
+		}
 	}
 }
 
