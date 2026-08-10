@@ -142,7 +142,8 @@ type config struct {
 	// # Which of these default on, and why they split the way they do
 	//
 	// TWO of the four default ON and are switched off explicitly:
-	// discoveryOn (WAIVEO_RELAY_DISCOVERY=0) and keepaliveOn
+	// discoveryOn (WAIVEO_RELAY_DISCOVERY=0, and only for a LAN-bound
+	// deployment — see discoveryEnabled) and keepaliveOn
 	// (WAIVEO_RELAY_KEEPALIVE=0). The other two — mdnsPatterns and
 	// ssdpAnnounce — default OFF and are switched on explicitly.
 	//
@@ -159,7 +160,13 @@ type config struct {
 	//     appliance that has to find the TVs it drives. Off by default meant a
 	//     fresh box discovered nothing at all until somebody knew to set an
 	//     environment variable — the appliance shipped unable to see its own
-	//     hardware, and the legacy system it replaces swept always-on.
+	//     hardware, and the legacy system it replaces swept always-on. It is
+	//     nonetheless bound by the SAME invariant as the two above: CI and
+	//     loopback dev runs must never multicast. Both hold at once because
+	//     the default is read off the LISTEN address rather than being a
+	//     constant — a loopback-bound relay serves no screen on any LAN and so
+	//     has no fleet to discover, and does not sweep. discoveryEnabled has
+	//     the full reasoning.
 	//   - keepaliveOn drives an ADOPTED screen back to its channel. A screen
 	//     sitting at Home is a screen showing nothing, and it stays that way
 	//     until somebody notices — which, on an unattended wall, is the next
@@ -172,9 +179,10 @@ type config struct {
 	//     relay that can reach a Roku the legacy stack still owns does nothing
 	//     to it.
 	//
-	// Dev/CI behavior is unchanged by either flip: a loopback dev run
-	// configures no ecpTargets, and keepalive needs at least one to watch,
-	// while a sweep that finds nothing configures nothing.
+	// Dev/CI behavior is unchanged by either flip: a loopback dev run does not
+	// sweep at all (discoveryEnabled), and with nothing discovered and no
+	// override configured the adoption gate is empty, so keepalive watches
+	// nothing.
 	ecpTargets   map[string]ecp.Target
 	pollInterval time.Duration
 	discoveryOn  bool
@@ -260,14 +268,15 @@ func loadConfig(env func(string) string) (config, error) {
 	if err != nil || pollMS <= 0 {
 		return config{}, fmt.Errorf("WAIVEO_RELAY_POLL_MS %q is not a positive integer", pollMSStr)
 	}
+	listen := envOr(env, "WAIVEO_RELAY_LISTEN", "127.0.0.1:7421")
 	return config{
-		listen:       envOr(env, "WAIVEO_RELAY_LISTEN", "127.0.0.1:7421"),
+		listen:       listen,
 		feederURL:    envOr(env, "WAIVEO_FEEDER_URL", "https://127.0.0.1:7420"),
 		pairHost:     envOr(env, "WAIVEO_RELAY_PAIR_HOST", "127.0.0.1"),
 		pairPort:     port,
 		ecpTargets:   targets,
 		pollInterval: time.Duration(pollMS) * time.Millisecond,
-		discoveryOn:  discoveryEnabled(env("WAIVEO_RELAY_DISCOVERY")),
+		discoveryOn:  discoveryEnabled(env("WAIVEO_RELAY_DISCOVERY"), listen),
 		mdnsPatterns: parseMDNSPatterns(env("WAIVEO_RELAY_MDNS_PATTERNS")),
 		ssdpAnnounce: env("WAIVEO_RELAY_SSDP_ANNOUNCE") == "1" || env("WAIVEO_RELAY_SSDP_ANNOUNCE") == "true",
 		keepaliveOn:  keepaliveEnabled(env("WAIVEO_RELAY_KEEPALIVE")),
@@ -301,10 +310,42 @@ func offValue(raw string) bool {
 	}
 }
 
-// discoveryEnabled reads WAIVEO_RELAY_DISCOVERY as an OPT-OUT: unset or
-// anything other than an explicit off value enables the SSDP client sweep
-// (see config.discoveryOn's own doc for why the default is on).
-func discoveryEnabled(raw string) bool {
+// discoveryEnabled decides whether this process sweeps, from
+// WAIVEO_RELAY_DISCOVERY and — when that says nothing — from the deployment
+// posture the listen address states.
+//
+// A STATED value wins in both directions: any explicit off value disables the
+// sweep anywhere, and any other explicit value enables it anywhere (including
+// on a loopback-bound run, which is how a developer deliberately sweeps a real
+// LAN from a laptop).
+//
+// UNSET is where the two invariants this function has to satisfy at once meet:
+//
+//   - A deployed appliance must sweep. Off-by-default meant a fresh box
+//     discovered nothing until somebody knew to set an environment variable —
+//     it shipped unable to see the TVs it exists to drive, while the legacy
+//     stack it replaces swept always-on.
+//   - CI and loopback dev runs must never multicast. `make dev` on a laptop
+//     on an office or café LAN must not M-SEARCH strangers and then HTTP-GET
+//     /query/device-info on everything that answers, and a CI runner must not
+//     either.
+//
+// The listen address separates them, and it is the honest discriminator rather
+// than a proxy for one: a relay bound to loopback is by construction serving
+// nothing but this machine — no screen on any LAN can reach it — so there is
+// no fleet for it to discover. A relay bound anywhere else is reachable by the
+// devices it is supposed to find.
+//
+// Deriving it from the binary's own configuration is deliberate, and is the
+// second half of this fix. The invariant previously lived in a
+// WAIVEO_RELAY_DISCOVERY=0 on one line of one make target, which is a guard
+// rail that protects exactly the one command someone remembered to edit; the
+// dev target it was supposed to protect had already lost it. A rule the
+// process enforces about itself cannot be left off a launcher.
+func discoveryEnabled(raw, listen string) bool {
+	if strings.TrimSpace(raw) == "" {
+		return !isLoopbackHost(hostOf(listen))
+	}
 	return !offValue(raw)
 }
 

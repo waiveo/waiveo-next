@@ -45,6 +45,11 @@ dev-up: dev-down
 	@# exactly as it is. See scripts/devcred's package doc.
 	@$(MAKE) --no-print-directory dev-key
 	@{ $(FEEDER_BIN) >$(RUNDIR)/feeder.log 2>&1 & echo $$! > $(RUNDIR)/feeder.pid; }
+	@# This relay binds loopback (the WAIVEO_RELAY_LISTEN default), which is what
+	@# keeps `make dev` from multicasting: discovery reads its default off the
+	@# listen address, so a dev run does not M-SEARCH the LAN the laptop is on and
+	@# does not probe whatever answers. There is deliberately no opt-out flag here
+	@# to forget — see discoveryEnabled in cmd/waiveo-relay/main.go.
 	@# WAIVEO_RELAY_DEMO_OBSERVE drives one synthetic screen-on at boot so the demo
 	@# edge rule fires end to end (its automation.run rides the telemetry channel to
 	@# the app event log) — the live input the observability probe reads back. The
