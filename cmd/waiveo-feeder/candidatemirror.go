@@ -166,6 +166,30 @@ func (m candidateMirror) rowsFor(relayID string, candidates []wire.DeviceCandida
 // applied afterwards from the adopted-device rows, which are the durable
 // authority for it — the mirror deliberately records no adoption flag of its own.
 //
+// # A REVOKED relay's rows are dropped, not replayed
+//
+// Revocation is the mechanism that ends a relay's authority to describe this
+// site (API-140/142). Before this file, a restart enforced it for free: the
+// view was in memory and died with the process. The durable mirror inverted
+// that, and closed only the ONLINE half of the gap — candidateMirror.Forget is
+// called by relayconn's per-connection revocation watcher, which fires only
+// while the relay is CONNECTED. Revoke a relay that is offline (the usual case:
+// it is being revoked because it was stolen, decommissioned or compromised),
+// or have the feeder down when the watcher would have fired, and the rows
+// simply stayed — and came back in GET /devices and GET /entities on every
+// subsequent boot, still adoptable. The same held after a transient
+// ForgetDiscoveredDevices error, which is logged and never retried, on a relay
+// that will never report again to re-converge.
+//
+// So the restore asks the durable question itself, at the moment it would
+// otherwise resurrect the rows: is this relay revoked? A revoked relay's rows
+// are DELETED here rather than merely skipped, which makes the answer
+// self-healing — the offline-revocation and failed-delete cases both converge
+// on the next boot instead of being re-decided forever. A delete that itself
+// fails is logged and the rows are still withheld from the registry: the
+// revocation is enforced this boot regardless, and the delete is retried the
+// next one.
+//
 // A failure here is reported to the caller but is NOT fatal at the call site: a
 // feeder that cannot pre-populate its device list still serves correctly the
 // moment its relays report, and refusing to boot over a cache would turn a
@@ -205,10 +229,25 @@ func restoreDeviceRegistry(ctx context.Context, st *store.Store, registry *devic
 		relayIDs = append(relayIDs, id)
 	}
 	sort.Strings(relayIDs)
+	restored := 0
 	for _, id := range relayIDs {
+		revoked, err := st.IsRevoked(ctx, store.RevocationSubjectRelay, id)
+		if err != nil {
+			return 0, err
+		}
+		if revoked {
+			log.Printf("waiveo-feeder: relay %s is revoked; dropping its %d mirrored device(s) rather than restoring them",
+				id, len(byRelay[id]))
+			if err := st.ForgetDiscoveredDevices(ctx, id); err != nil {
+				log.Printf("waiveo-feeder: clearing revoked relay %s's mirrored devices failed (they stay out of the "+
+					"device list this boot; retried on the next): %v", id, err)
+			}
+			continue
+		}
 		if err := registry.ApplyCandidates(id, byRelay[id]); err != nil {
 			return 0, err
 		}
+		restored += len(byRelay[id])
 	}
 
 	adopted, err := st.List(ctx, store.KindAdoptedDevice, store.ListFilter{})
@@ -218,5 +257,5 @@ func restoreDeviceRegistry(ctx context.Context, st *store.Store, registry *devic
 	for _, row := range adopted {
 		registry.MarkAdopted(row.ID)
 	}
-	return len(mirrored), nil
+	return restored, nil
 }
