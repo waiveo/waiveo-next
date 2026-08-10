@@ -23,18 +23,28 @@ sub init()
     m.composedLayers = m.top.findNode("composedLayers")
 
     ' slideLayers holds a "slide" item's positioned native children
-    ' (renderSlide); slideClockTimer refreshes every clock layer's Label once a
-    ' second. slideClocks pairs each live clock Label with its own Go-reference
-    ' time-format string so the one shared timer can refresh them all. The timer
-    ' is a fixed node (like castTimer) precisely so this scene always holds a
-    ' handle to STOP it on item change (clearSlide) and on shutdown — a per-slide
-    ' timer that outlives its slide is the leak class this player already fixed
-    ' for Task threads.
+    ' (renderSlide); slideClockTimer refreshes every SELF-TICKING layer's Label
+    ' once a second. slideTicking pairs each such live Label with what it needs
+    ' to recompute itself — its kind, its format string, and (for a countdown)
+    ' its target instant — so the ONE shared timer refreshes them all.
+    '
+    ' Self-ticking means the clock/date/countdown kinds, whose value is a
+    ' function of the current time and which the player therefore computes
+    ' itself. The weather/entity kinds are NOT here: their value is resolved on
+    ' the box and arrives on the layer, so they are drawn once and change only
+    ' when a new Lease brings a new value.
+    '
+    ' The timer is a fixed node (like castTimer) precisely so this scene always
+    ' holds a handle to STOP it on item change (clearSlide) and on shutdown — a
+    ' per-slide timer that outlives its slide is the leak class this player
+    ' already fixed for Task threads. One timer for every ticking layer, rather
+    ' than one per layer, is the same rule seen from the other side: N labels on
+    ' a slide must not mean N things to remember to stop.
     m.slideLayers = m.top.findNode("slideLayers")
     m.slideClockTimer = m.top.findNode("slideClockTimer")
     m.slideClockTimer.duration = 1
     m.slideClockTimer.observeField("fire", "onSlideClockTick")
-    m.slideClocks = []
+    m.slideTicking = []
 
     m.status = m.top.findNode("statusLabel")
     m.status.text = "Waiveo Player v3 — starting…"
@@ -188,10 +198,21 @@ function castSignature(items as Object) as String
         ' pin the screen on the first. castStr coerces the fields absent on a
         ' composed layer (kind/text/color/x…) to "" so this stays correct for
         ' both item kinds.
+        '
+        ' A slide layer also contributes its SERVER-RESOLVED `value` and its
+        ' countdown target/entity subject, and the value one is load-bearing:
+        ' the weather and entity widgets change ONLY by a new Lease carrying a
+        ' new value, on an otherwise byte-identical program. Leaving `value` out
+        ' of the signature would make every such Lease look like the program
+        ' already showing, so the screen would keep drawing the reading it first
+        ' booted with and the widget would be exactly the frozen picture this
+        ' whole native path exists to avoid. The cost is that a changed reading
+        ' restarts the cast at item 0 — acceptable, since a resolved value only
+        ' changes on the order of the box's own refresh cadence, not per poll.
         if it.layers <> invalid
             for j = 0 to it.layers.Count() - 1
                 ly = it.layers[j]
-                sig = sig + ";L" + castStr(ly.contentUri) + "," + castStr(ly.kind) + "," + castStr(ly.text) + "," + castStr(ly.color) + "," + castStr(ly.x) + "," + castStr(ly.y) + "," + castStr(ly.w) + "," + castStr(ly.h)
+                sig = sig + ";L" + castStr(ly.contentUri) + "," + castStr(ly.kind) + "," + castStr(ly.text) + "," + castStr(ly.color) + "," + castStr(ly.x) + "," + castStr(ly.y) + "," + castStr(ly.w) + "," + castStr(ly.h) + "," + castStr(ly.value) + "," + castStr(ly.target_ms) + "," + castStr(ly.entity_id)
             end for
         end if
     end for
@@ -473,24 +494,42 @@ end sub
 ' created in `layers` array order so index 0 is furthest back and later indices
 ' paint on top (the same z-order rule composed uses, but here each node is
 ' individually translated to its own [x,y] and sized to its own w×h in the fixed
-' 1920x1080 canvas rather than full-screen-stacked). The four v1 kinds:
+' 1920x1080 canvas rather than full-screen-stacked). The eight kinds fall into
+' three groups, and the grouping is the design — see the wire Layer doc.
+'
+' STATIC (drawn once from what the layer carries):
 '   text  -> Label (text; font size from font_px; color from color; horizAlign
 '            from align — each applied only when the layer carries it)
 '   rect  -> Rectangle filled with the layer's color
 '   image -> Poster of the already-fetched + asset_ref-verified local contentUri
 '            (Program.brs attached it; a slide image layer pays the identical
 '            integrity guarantee as a plain image item)
-'   clock -> a Label showing the current LOCAL time formatted through the layer's
-'            `text` Go-reference-layout format string, refreshed once a second by
-'            the shared slideClockTimer (the visible proof this is native, not a
-'            frozen PNG). Every clock Label is recorded in m.slideClocks with its
-'            format so the one timer refreshes them all.
+'
+' SELF-TICKING (a function of the current time, so this player computes them and
+' recomputes them once a second on the shared slideClockTimer — the visible proof
+' this is native and not a frozen PNG). Each is recorded in m.slideTicking with
+' what it needs to recompute itself, and each is SEEDED with its correct value at
+' creation so it is right immediately rather than blank until the first tick:
+'   clock     -> current LOCAL time through the layer's Go-reference-layout `text`
+'   date      -> current LOCAL date through the same formatter and the same
+'                layout convention — a date IS a time format, so there is one
+'                formatter here, not two that could disagree
+'   countdown -> the remaining time to the layer's absolute `target_ms`, rendered
+'                through the countdown grammar (D/H/M/S tokens, not a
+'                reference-time layout — a duration has no hour-of-day)
+'
+' SERVER-RESOLVED (drawn once, verbatim, from the `value` the box already
+' computed — the player does NO lookup, NO formatting and NO unit conversion for
+' these; the relay filled `value` as it issued this Lease):
+'   weather -> Label of layer.value
+'   entity  -> Label of layer.value
+'
 ' An unrecognized kind is skipped (forward-compatible with a future kind this
 ' player has not adopted) rather than aborting the whole slide — the relay
 ' already validated the stack against the closed kind set, so this only guards a
 ' non-conformant relay or a newer contract, and skipping one unknown decorative
 ' layer degrades better than a blank screen. renderSlide clears any prior slide
-' (children + clock timer) before building.
+' (children + tick timer) before building.
 sub renderSlide(layers as Object)
     clearSlide()
 
@@ -507,14 +546,40 @@ sub renderSlide(layers as Object)
             lbl = createSlideLabel(wvSlideStr(layer.text), layer, x, y, w, h)
             m.slideLayers.appendChild(lbl)
 
-        else if kind = "clock"
+        else if kind = "clock" or kind = "date"
+            ' One branch for both: a date is a time format, so it goes through
+            ' the same Go-reference-layout formatter. Splitting them would mean
+            ' two formatters that could disagree about what "Jan" means.
             fmt = wvSlideStr(layer.text)
             lbl = createSlideLabel(wvFormatClockTime(fmt), layer, x, y, w, h)
             m.slideLayers.appendChild(lbl)
             ' Record the live Label + its format so slideClockTimer can refresh
             ' it; its text was just seeded so it is correct even before the first
             ' tick a second from now.
-            m.slideClocks.Push({ label: lbl, format: fmt })
+            m.slideTicking.Push({ label: lbl, kind: kind, format: fmt, target: 0 })
+
+        else if kind = "countdown"
+            fmt = wvSlideStr(layer.text)
+            ' target_ms is an ABSOLUTE UTC epoch in MILLISECONDS, which does not
+            ' fit a 32-bit Integer — it is carried as a Double and reduced to
+            ' epoch SECONDS once, here, where it still fits comfortably. Every
+            ' subsequent tick then subtracts roDateTime's own epoch seconds, so
+            ' the countdown needs no timezone knowledge at all.
+            target = wvSlideEpochSeconds(layer.target_ms)
+            lbl = createSlideLabel(wvFormatCountdown(target - wvNowEpochSeconds(), fmt), layer, x, y, w, h)
+            m.slideLayers.appendChild(lbl)
+            m.slideTicking.Push({ label: lbl, kind: kind, format: fmt, target: target })
+
+        else if kind = "weather" or kind = "entity"
+            ' Server-resolved: the box already turned a forecast reading or an
+            ' observed entity state into display text and put it in `value`
+            ' (internal/slidelive, at Lease issuance). Draw it verbatim — this
+            ' player deliberately performs no lookup, no formatting and no unit
+            ' conversion for these, so there is exactly one place those decisions
+            ' are made. No tick record either: the value changes only when a new
+            ' Lease brings a new one, which re-renders the slide outright.
+            lbl = createSlideLabel(wvSlideStr(layer.value), layer, x, y, w, h)
+            m.slideLayers.appendChild(lbl)
 
         else if kind = "rect"
             rect = CreateObject("roSGNode", "Rectangle")
@@ -542,12 +607,13 @@ sub renderSlide(layers as Object)
 
     m.slideLayers.visible = true
 
-    ' Start the once-a-second refresh only if the slide actually carries a clock
-    ' layer — an all-static slide needs no ticking timer running behind it.
-    if m.slideClocks.Count() > 0
+    ' Start the once-a-second refresh only if the slide actually carries a
+    ' self-ticking layer — a slide of static text, images and server-resolved
+    ' widgets needs no timer running behind it at all.
+    if m.slideTicking.Count() > 0
         m.slideClockTimer.duration = 1
         m.slideClockTimer.control = "start"
-        print "[player-v3] slide clock started (" + m.slideClocks.Count().toStr() + " clock layer(s), 1s tick)"
+        print "[player-v3] slide tick started (" + m.slideTicking.Count().toStr() + " live layer(s), 1s tick)"
     end if
 end sub
 
@@ -585,44 +651,166 @@ function createSlideLabel(text as String, layer as Object, x as Integer, y as In
     return lbl
 end function
 
-' clearSlide tears a slide down completely: it STOPS the clock timer first (so it
-' can never fire against a Label about to be removed), drops the clock records,
-' then removes every dynamically created slide child. Called before rendering a
-' new slide, on switching to any other item kind, on a program-result error, and
-' at scene shutdown — the same total-teardown discipline clearComposed applies.
+' clearSlide tears a slide down completely: it STOPS the tick timer first (so it
+' can never fire against a Label about to be removed), drops the tick records,
+' then removes every dynamically created slide child. The ORDER is the whole
+' point — stopping after the children were removed would leave one already-queued
+' fire able to touch a torn-down node. Called before rendering a new slide, on
+' switching to any other item kind, on a program-result error, and at scene
+' shutdown — the same total-teardown discipline clearComposed applies.
 sub clearSlide()
     stopSlideClock()
-    m.slideClocks = []
+    m.slideTicking = []
     m.slideLayers.removeChildrenIndex(m.slideLayers.getChildCount(), 0)
     m.slideLayers.visible = false
 end sub
 
-' stopSlideClock halts the repeating clock timer. Split out so shutdown and
+' stopSlideClock halts the repeating slide tick timer. Split out so shutdown and
 ' clearSlide share one guarded stop.
 sub stopSlideClock()
     if m.slideClockTimer <> invalid then m.slideClockTimer.control = "stop"
 end sub
 
 ' onSlideClockTick is slideClockTimer's "fire" handler — once a second it
-' refreshes every live clock Label with the current local time reformatted
-' through that layer's own format string. This is what makes the clock visibly
-' tick on-device. It reads m.slideClocks, which clearSlide empties (and stops
-' the timer) on teardown, so it can never touch a removed node.
+' recomputes every SELF-TICKING Label on the current slide: a clock or date from
+' the current local time through its own layout, a countdown from the remaining
+' seconds to its own target. This is what makes those widgets visibly live
+' on-device rather than a picture of when the Lease arrived.
+'
+' The weather and entity widgets are deliberately absent: their value came from
+' the box on the Lease, so there is nothing for this player to recompute — they
+' change when a new Lease arrives, which re-renders the slide.
+'
+' It reads m.slideTicking, which clearSlide empties (and stops the timer) on
+' teardown, so it can never touch a removed node.
 sub onSlideClockTick()
-    for each c in m.slideClocks
-        c.label.text = wvFormatClockTime(c.format)
+    nowSec = wvNowEpochSeconds()
+    for each c in m.slideTicking
+        if c.kind = "countdown"
+            c.label.text = wvFormatCountdown(c.target - nowSec, c.format)
+        else
+            c.label.text = wvFormatClockTime(c.format)
+        end if
     end for
 end sub
 
+' wvNowEpochSeconds is the current UTC instant in Unix epoch SECONDS — the unit a
+' countdown's target is reduced to. roDateTime is UTC unless told otherwise, and
+' a countdown deliberately stays in UTC on both sides: the target is an absolute
+' instant, so converting either end to local time could only introduce an error.
+function wvNowEpochSeconds() as Integer
+    dt = CreateObject("roDateTime")
+    return dt.AsSeconds()
+end function
+
+' wvSlideEpochSeconds reduces a layer's `target_ms` (absolute UTC epoch
+' MILLISECONDS) to epoch seconds. The millisecond value exceeds the 32-bit
+' Integer range, so it is read as a Double and divided BEFORE being narrowed —
+' narrowing first would overflow and produce a nonsense target.
+function wvSlideEpochSeconds(v as Dynamic) as Integer
+    if v = invalid then return 0
+    ms# = 0.0
+    ms# = ms# + v
+    return Int(ms# / 1000.0)
+end function
+
+' wvFormatCountdown renders a remaining-time span through the countdown layout
+' grammar the wire Layer doc fixes: `DD`/`D` days, `HH`/`H` hours, `MM`/`M`
+' minutes, `SS`/`S` seconds, longest match first, everything else literal. An
+' empty layout means "HH:MM:SS".
+'
+' A larger unit's remainder is only taken out when that larger unit APPEARS in
+' the layout: "HH:MM:SS" on a two-day span shows 48 hours rather than silently
+' dropping the days, which is the failure a fixed hours-mod-24 would produce on
+' exactly the slides (a multi-day countdown) most likely to be authored.
+'
+' A span that has passed clamps to zero rather than counting up: a finished
+' countdown reads "00:00:00", and negative numbers on a wall read as a bug.
+function wvFormatCountdown(remainSec as Integer, format as String) as String
+    fmt = format
+    if fmt = "" then fmt = "HH:MM:SS"
+
+    secs = remainSec
+    if secs < 0 then secs = 0
+
+    days = 0
+    hours = 0
+    mins = 0
+    if Instr(1, fmt, "D") > 0
+        days = Int(secs / 86400)
+        secs = secs - days * 86400
+    end if
+    if Instr(1, fmt, "H") > 0
+        hours = Int(secs / 3600)
+        secs = secs - hours * 3600
+    end if
+    if Instr(1, fmt, "M") > 0
+        mins = Int(secs / 60)
+        secs = secs - mins * 60
+    end if
+
+    ' Doubled tokens before single ones so the walk takes the longest match at
+    ' each position — "DD" must never be read as two "D"s.
+    tokens = [
+        { t: "DD", v: wvPad2(days) },
+        { t: "HH", v: wvPad2(hours) },
+        { t: "MM", v: wvPad2(mins) },
+        { t: "SS", v: wvPad2(secs) },
+        { t: "D", v: days.toStr() },
+        { t: "H", v: hours.toStr() },
+        { t: "M", v: mins.toStr() },
+        { t: "S", v: secs.toStr() }
+    ]
+    return wvApplyFormatTokens(fmt, tokens)
+end function
+
+' wvApplyFormatTokens walks a format string left to right, replacing the FIRST
+' matching token from `tokens` at each position and copying any unmatched
+' character through literally. The caller is responsible for ordering `tokens`
+' longest-first, which is what makes "first match" mean "longest match".
+'
+' It is shared by the two format grammars (reference-time and countdown) rather
+' than written twice: the walk is identical and only the token table differs, and
+' two copies of a string walk is two places for an off-by-one to hide.
+function wvApplyFormatTokens(format as String, tokens as Object) as String
+    result = ""
+    n = Len(format)
+    i = 0
+    while i < n
+        matched = false
+        for each tok in tokens
+            tl = Len(tok.t)
+            if i + tl <= n
+                if Mid(format, i + 1, tl) = tok.t   ' Mid is 1-indexed
+                    result = result + tok.v
+                    i = i + tl
+                    matched = true
+                    exit for
+                end if
+            end if
+        end for
+        if not matched
+            result = result + Mid(format, i + 1, 1)
+            i = i + 1
+        end if
+    end while
+    return result
+end function
+
 ' wvFormatClockTime renders the current LOCAL time through a Go-reference-time
-' layout string (the convention the producer's clock format uses — the wire
-' tests seed "15:04", "15:04:05", "3:04 PM"). It walks the format left to right,
-' at each position replacing the longest recognized reference token with the
-' corresponding current-time value and copying any unrecognized character
-' (":", " ", etc.) through literally. Supported tokens are the common date/time
-' ones; a token this does not recognize (e.g. a timezone form) simply passes
-' through as literal text rather than erroring — a slide with an exotic format
-' still draws, just with that piece uninterpreted.
+' layout string (the convention the producer's clock AND date formats both use —
+' the wire tests seed "15:04", "15:04:05", "3:04 PM", "Monday, January 2"). It
+' walks the format left to right (wvApplyFormatTokens), at each position
+' replacing the longest recognized reference token with the corresponding
+' current-time value and copying any unrecognized character (":", " ", etc.)
+' through literally. Supported tokens are the common date/time ones; a token this
+' does not recognize (e.g. a timezone form) simply passes through as literal text
+' rather than erroring — a slide with an exotic format still draws, just with
+' that piece uninterpreted.
+'
+' It serves the `date` kind as well as the `clock` kind, unchanged: a date is a
+' time format, and the whole point of fixing ONE layout convention on the wire is
+' that one formatter can answer both.
 function wvFormatClockTime(format as String) as String
     if format = "" then return ""
 
@@ -687,28 +875,7 @@ function wvFormatClockTime(format as String) as String
         { t: "2", v: day.toStr() }
     ]
 
-    result = ""
-    n = Len(format)
-    i = 0
-    while i < n
-        matched = false
-        for each tok in tokens
-            tl = Len(tok.t)
-            if i + tl <= n
-                if Mid(format, i + 1, tl) = tok.t   ' Mid is 1-indexed
-                    result = result + tok.v
-                    i = i + tl
-                    matched = true
-                    exit for
-                end if
-            end if
-        end for
-        if not matched
-            result = result + Mid(format, i + 1, 1)
-            i = i + 1
-        end if
-    end while
-    return result
+    return wvApplyFormatTokens(format, tokens)
 end function
 
 ' wvPad2 zero-pads a non-negative integer to at least two digits.

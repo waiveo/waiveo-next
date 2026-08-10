@@ -221,9 +221,20 @@ func (s *Store) SeedDemo(ctx context.Context, assetRefs ...string) error {
 	return nil
 }
 
+// demoCountdownTargetMS is the instant the demo slide's countdown widget counts
+// down to: a fixed, far-future absolute epoch-ms (2027-01-01T00:00:00Z).
+//
+// FIXED, not "now + an hour", for the same reason DeriveScreenPrograms takes
+// nowMs as a parameter: a seed that read the wall clock would write a different
+// row on every `make dev`, so two boxes seeded a minute apart would hold
+// different authored data and no seeded fixture would be reproducible. A far
+// target also keeps the demo showing a counting-down widget rather than a
+// permanently-zeroed one.
+const demoCountdownTargetMS int64 = 1798761600000
+
 // demoSlide builds the make-dev demo's one native slide (native slide rendering,
-// parity milestone 2): the four v1 layer kinds, positioned within the fixed
-// 1920×1080 slide canvas (wire.SlideCanvasWidth×Height), back-to-front —
+// parity milestone 2), positioned within the fixed 1920×1080 slide canvas
+// (wire.SlideCanvasWidth×Height), back-to-front —
 //
 //  1. a full-canvas dark rect background,
 //  2. a centered white title, "Waiveo",
@@ -231,11 +242,27 @@ func (s *Store) SeedDemo(ctx context.Context, assetRefs ...string) error {
 //     so the slide needs no content of its own and its asset_ref resolves in the
 //     origin exactly as the plain asset item does, DAT-041), its fetch url left
 //     empty for the producer to derive from the content origin at projection,
-//  4. a live ticking clock in "15:04:05" (hh:mm:ss) form, drawn top-right.
+//  4. a live ticking clock in "15:04:05" (hh:mm:ss) form, drawn top-right,
+//  5. the matching date beneath it ("Monday, January 2" — a Go reference-time
+//     layout, the same convention the clock's format uses),
+//  6. a countdown to demoCountdownTargetMS in the countdown grammar's own
+//     "DD:HH:MM:SS" form,
+//  7. the current weather at the site, "{temp}° {cond}",
+//  8. the demo edge rule's own subject entity (seedRuleEntityID) as a labelled
+//     state readout.
 //
-// Every layer sits inside the canvas and carries its required per-kind fields, so
-// the stack passes wire.ValidateSlideLayers once its image url is derived — which
-// is what makes the demo screen actually render a slide, clock and all.
+// It seeds ALL EIGHT layer kinds deliberately: these are the widgets the legacy
+// system drew on essentially every slide, and a demo that exercised only the
+// static four would let the whole live half — the player's tick loop, and the
+// relay's Lease-time resolution of weather and entity state — ship unexercised
+// on a real box.
+//
+// The last two carry no `value`: that is filled SERVER-side as a Lease is issued
+// (internal/slidelive, from internal/relay/playerserver), so an authored row
+// never holds one — the same split as the image layer's derived url two lines
+// up. Every layer sits inside the canvas and carries its required per-kind
+// fields, so the stack passes wire.ValidateSlideLayers once its image url is
+// derived.
 func demoSlide(imageAssetRef string) *datamodel.Slide {
 	return &datamodel.Slide{
 		Layers: []wire.Layer{
@@ -243,6 +270,10 @@ func demoSlide(imageAssetRef string) *datamodel.Slide {
 			{Kind: wire.LayerKindText, X: 120, Y: 100, W: 1680, H: 180, Text: "Waiveo", FontPx: 128, Color: "#FFFFFF", Align: "center"},
 			{Kind: wire.LayerKindImage, X: 660, Y: 340, W: 600, H: 400, AssetRef: imageAssetRef},
 			{Kind: wire.LayerKindClock, X: 1400, Y: 40, W: 480, H: 120, Text: "15:04:05", FontPx: 80, Color: "#9DE1FF"},
+			{Kind: wire.LayerKindDate, X: 1400, Y: 160, W: 480, H: 60, Text: "Monday, January 2", FontPx: 40, Color: "#9DE1FF", Align: "right"},
+			{Kind: wire.LayerKindCountdown, X: 120, Y: 880, W: 700, H: 100, Text: "DD:HH:MM:SS", TargetMS: demoCountdownTargetMS, FontPx: 72, Color: "#FFD166"},
+			{Kind: wire.LayerKindWeather, X: 120, Y: 40, W: 700, H: 120, Text: "{temp}° {cond}", FontPx: 72, Color: "#B7F0AD"},
+			{Kind: wire.LayerKindEntity, X: 1100, Y: 900, W: 780, H: 80, Text: "Screen: {state}", EntityID: seedRuleEntityID, FontPx: 48, Color: "#C9CFDA", Align: "right"},
 		},
 	}
 }

@@ -77,6 +77,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/rules/state"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
+	"github.com/maaxton/waiveo-next/internal/slidelive"
 )
 
 // buildVersion/buildChannel are this binary's channel-index/1 identity
@@ -708,6 +709,33 @@ func main() {
 	// role; see playerserver.Server.EnablePersistence's own doc). Must happen
 	// before pairingSrv.Register mounts routes onto mux below.
 	pairingSrv.EnablePersistence(store)
+
+	// Install the live data a native slide's server-resolved widgets are filled
+	// from as this relay signs each Lease (internal/slidelive):
+	//
+	//   - Weather comes from the keyless Open-Meteo source, asked at the site's
+	//     OWN coordinates — the app peer's authoritative site_binding (REL-036),
+	//     which is the site scope node's DAT-033 effective geo already resolved
+	//     by the app. That is the same value bootAutomationStack adopts into the
+	//     engine for sun/schedule triggers, so a slide's weather and a rule's
+	//     sunset agree about where this relay is by construction.
+	//   - Entity state comes from the automation host, which records every
+	//     device-plane observation that flows through it (Host.EntityState). A
+	//     relay with no polled devices simply never populates it and every
+	//     entity widget shows the unavailable placeholder.
+	//
+	// Both are installed unconditionally, including on a relay whose
+	// site_binding carried no coordinates (0,0): the weather source caches per
+	// location and an implausible one simply returns whatever that point's
+	// forecast is, which is no worse than the placeholder and needs no special
+	// case here. The pull itself is background and never blocks a Lease.
+	pairingSrv.SetSlideLive(slidelive.Sources{
+		Weather: slidelive.NewOpenMeteo(slidelive.OpenMeteoConfig{}),
+		Entity:  slidelive.EntitySourceFunc(host.EntityState),
+		Lat:     site.Lat,
+		Long:    site.Long,
+	})
+
 	logPairingCodes(cfg, applied, certDER, relayID.RelayID)
 
 	// Configure the serving surface from the relay's OWN durable last-applied

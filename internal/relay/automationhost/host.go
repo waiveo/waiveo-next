@@ -108,6 +108,43 @@ type Host struct {
 	// the engine (app-class and uncompilable rules in the section are skipped),
 	// for the binary's "automation engine loaded: N edge rule(s)" log line.
 	loadedEdge int
+
+	// entityStates is the last canonical state string observed for each entity —
+	// the relay's live device-plane view, read by EntityState.
+	//
+	// It is maintained HERE, in Observe, rather than read out of the engine,
+	// even though the engine keeps a snapshot of its own. Two reasons, both
+	// structural. The engine's snapshot exists to evaluate rules and only ever
+	// sees what rules subject: an entity no loaded rule mentions is still a real
+	// device whose state a slide may display, and a relay with zero edge rules
+	// would otherwise know nothing at all. And exposing the engine's internal
+	// map would put a reader on state that must be advanced serially, whereas
+	// this one is written on the same already-serialized path and read under the
+	// same mutex.
+	//
+	// It is process-lifetime only: nothing persists it, so after a relay restart
+	// an entity reads as unknown until its next observation arrives — which, for
+	// a polled device, is within one poll interval. A slide widget shows its
+	// unavailable placeholder for that window rather than a value the relay
+	// cannot currently vouch for.
+	entityStates map[string]string
+}
+
+// EntityState returns the last canonical state observed for entityID
+// (rules/1 state.Entity.State — "on", "off", "playing", …) and whether this relay
+// has ever observed it. It satisfies internal/slidelive.EntitySource, which is
+// what lets a native slide's `entity` widget show live device state: the relay
+// resolves the value onto the layer as it issues a Lease, so the player draws
+// text rather than needing device-plane access of its own.
+//
+// ok=false means "never observed", which is deliberately distinct from an
+// observed empty state — the caller renders both as its unavailable placeholder,
+// but only one of them is a device that has actually reported.
+func (h *Host) EntityState(entityID string) (string, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	st, ok := h.entityStates[entityID]
+	return st, ok
 }
 
 // New builds the relay's edge-automation stack over the operational store and
@@ -149,7 +186,7 @@ func New(store *identity.Store, dc deviceclass.Registry, controller deviceplane.
 	reg := registry.FromDeviceClass(dc, registry.Overlay{})
 	eng := engine.New(reg, clk, sink, nil)
 
-	return &Host{engine: eng, buf: buf, clk: clk, surface: surface}, nil
+	return &Host{engine: eng, buf: buf, clk: clk, surface: surface, entityStates: map[string]string{}}, nil
 }
 
 // ApplyEdgeRules compiles the desired-state generation's edge_rules and loads

@@ -3,6 +3,7 @@ package wire
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // LeaseContent is one player/1 Lease `content` array entry for a plain
@@ -53,17 +54,65 @@ const (
 	SlideCanvasHeight = 1080
 )
 
-// The four v1 `slide` layer kinds (native slide rendering, parity milestone 2).
-// This is a CLOSED set: ValidateSlideLayers rejects any other kind, so a
-// producer cannot ship a layer a player has no draw path for. Later kinds
-// (video, date) are added here — and to the validator's per-kind rules —
-// deliberately, one at a time, once a player advertises a renderer for them.
+// The `slide` layer kinds. This is a CLOSED set: ValidateSlideLayers rejects
+// any other kind, so a producer cannot ship a layer a player has no draw path
+// for. A new kind is added here — and to the validator's per-kind rules, and to
+// a player's renderer — deliberately, one at a time.
+//
+// The first four are the v1 kinds (native slide rendering, parity milestone 2).
+// The last four are the LIVE WIDGETS the legacy system drew on essentially every
+// slide, and they are the whole reason this path is native rather than a
+// server-rasterized PNG: a flat image freezes them. They split by WHERE the
+// value that makes them live comes from, and that split is the design:
+//
+//   - date and countdown are derived from the CLOCK, so a player computes them
+//     itself and re-computes them on its own tick. Nothing about them needs the
+//     box, and routing them through the box would make them as stale as the last
+//     Lease.
+//   - weather and entity are derived from data only the BOX has (an upstream
+//     forecast service; the device plane's observed entity state). Those are
+//     resolved SERVER-side onto Layer.Value at Lease issuance
+//     (internal/slidelive, called from internal/relay/playerserver) and the
+//     player simply draws the text it is handed. A player that fetched weather
+//     itself would need outbound internet per screen, a credential per screen,
+//     and a second implementation of every unit and format decision.
+//
+// Forward compatibility is by SKIPPING, not by refusal: a player that predates
+// one of these kinds draws the layers it knows and silently skips the rest, so a
+// slide authored with a countdown still shows its title and image on an older
+// player. That is why an unknown kind is a producer-side error (rejected here)
+// but a player-side no-op.
 const (
 	LayerKindText  = "text"  // a literal string drawn as a Label
 	LayerKindRect  = "rect"  // a filled rectangle
 	LayerKindImage = "image" // a content-addressed image drawn as a Poster
 	LayerKindClock = "clock" // a Label refreshed with the formatted current time
+
+	LayerKindDate      = "date"      // a Label showing the formatted current date
+	LayerKindCountdown = "countdown" // a Label counting down to TargetMS
+	LayerKindWeather   = "weather"   // a Label showing server-resolved current conditions
+	LayerKindEntity    = "entity"    // a Label showing a platform entity's server-resolved state
 )
+
+// slideLayerKinds is the closed kind set above as a slice, in declaration
+// order — the ONE enumeration ValidateSlideLayers both tests membership against
+// and names in its rejection message, so a kind added to the constants above and
+// forgotten here cannot pass validation while claiming the message lists every
+// legal value.
+var slideLayerKinds = []string{
+	LayerKindText, LayerKindRect, LayerKindImage, LayerKindClock,
+	LayerKindDate, LayerKindCountdown, LayerKindWeather, LayerKindEntity,
+}
+
+// isSlideLayerKind reports whether kind is one of the closed set.
+func isSlideLayerKind(kind string) bool {
+	for _, k := range slideLayerKinds {
+		if k == kind {
+			return true
+		}
+	}
+	return false
+}
 
 // Layer is one positioned native element of a `slide` content item (native
 // slide rendering, parity milestone 2). Layers are drawn in ARRAY ORDER — the
@@ -85,13 +134,35 @@ type Layer struct {
 	W    int    `json:"w"`
 	H    int    `json:"h"`
 
-	// Text is the literal string for a `text` layer, and the time-format
-	// string for a `clock` layer (the format the player renders the current
-	// LOCAL time through, refreshed every second). A clock format is a Go
-	// reference-time layout — `"15:04:05"`, `"3:04 PM"`, `"Mon 15:04"` — NOT a
-	// strftime string: the producer authors it and the player interprets it
-	// under that one convention, so it is fixed HERE rather than left for the
-	// two ends to each guess (a mismatch renders a clock as literal garbage).
+	// Text is the literal string for a `text` layer, and a FORMAT for every
+	// kind whose content is generated rather than authored:
+	//
+	//   - `clock`: the layout the player renders the current LOCAL time
+	//     through, refreshed every second.
+	//   - `date`: the layout the player renders the current LOCAL date through.
+	//     Same convention, same formatter, different cadence — a date changes
+	//     once a day, so nothing about it needs to come from the box.
+	//   - `countdown`: an OPTIONAL remaining-time layout (see below); an empty
+	//     Text means the player's default `HH:MM:SS`.
+	//   - `weather` / `entity`: a template the SERVER substitutes into (see
+	//     Value); the player never interprets it.
+	//
+	// A clock/date format is a Go reference-time layout — `"15:04:05"`,
+	// `"3:04 PM"`, `"Monday, January 2"` — NOT a strftime string: the producer
+	// authors it and the player interprets it under that one convention, so it
+	// is fixed HERE rather than left for the two ends to each guess (a mismatch
+	// renders a clock as literal garbage).
+	//
+	// A countdown layout is deliberately NOT a Go reference-time layout: Go has
+	// no reference DURATION, and reusing the time layout would make `15` mean
+	// "hour of day" on a value that has no hour of day. Its grammar is its own
+	// tiny closed token set, longest match first, everything else literal:
+	// `DD`/`D` days, `HH`/`H` hours, `MM`/`M` minutes, `SS`/`S` seconds — the
+	// doubled form zero-padded to two digits, the single form unpadded. Hours,
+	// minutes and seconds are the remainder within the next larger unit ONLY
+	// when that larger unit appears in the layout; a layout of just `"HH:MM:SS"`
+	// therefore counts total hours rather than silently dropping whole days.
+	//
 	// Unused by `rect`/`image`.
 	Text string `json:"text,omitempty"`
 	// AssetRef and URL address an `image` layer's bytes exactly as a plain
@@ -114,6 +185,40 @@ type Layer struct {
 	// optional — an unset align renders at the player's own default. Unused by
 	// the other kinds.
 	Align string `json:"align,omitempty"`
+	// TargetMS is a `countdown` layer's target instant: Unix epoch
+	// MILLISECONDS, UTC — the same absolute-instant unit every other time on
+	// this wire uses (Lease.IssuedAt/ValidUntil), NOT a local wall time and NOT
+	// seconds. An absolute instant is what lets the player count down without
+	// knowing the authoring timezone: it subtracts its own clock and formats the
+	// remainder. Required (and strictly positive) for `countdown`, unused
+	// elsewhere. A target already in the past renders as all zeroes rather than
+	// as a negative — a finished countdown reads "00:00:00", and validation does
+	// NOT reject a past target, because a slide outliving its own event is a
+	// scheduling matter, not a malformed layer.
+	TargetMS int64 `json:"target_ms,omitempty"`
+	// EntityID names the platform entity an `entity` layer displays the current
+	// state of — a data-model/1 entity id, the same identifier a device
+	// inventory entry's `entities[].entity_id` (REL-063) and a rules/1 state
+	// trigger's subject carry. Required for `entity`, unused elsewhere. It is
+	// the AUTHORED half of an entity layer; the displayed half is Value.
+	EntityID string `json:"entity_id,omitempty"`
+	// Value is the SERVER-RESOLVED display text of a `weather` or `entity`
+	// layer: the string the player draws verbatim, with no interpretation at
+	// all. It is the counterpart of an `image` layer's URL — a field the
+	// AUTHORED row never carries and a projection fills in (there, from the
+	// content origin; here, from the box's live data). See internal/slidelive,
+	// which is the one place that fills it, and internal/relay/playerserver,
+	// which calls it at Lease issuance so every poll carries a fresh value.
+	//
+	// It is deliberately NOT required by ValidateSlideLayers. The authored layer
+	// legitimately has none, the projections that carry a slide through
+	// (feeder/snapshot, relay/schedulehost) pass it through unresolved, and
+	// requiring it would mean a forecast service being unreachable BLANKS THE
+	// WHOLE SLIDE — losing the title, the image and the clock to fix nothing.
+	// The resolver instead guarantees a non-empty value (its own unavailable
+	// placeholder) so the widget degrades to a dash while the rest of the slide
+	// keeps drawing.
+	Value string `json:"value,omitempty"`
 }
 
 // ValidateSlideLayers is the ONE gate a `slide` content item's layers pass
@@ -133,8 +238,8 @@ type Layer struct {
 //
 //   - The layer stack is non-empty. A `slide` with no layers is nothing to
 //     draw, and an empty stack is a producer bug, not a blank slide.
-//   - Every layer's Kind is one of the four v1 kinds (LayerKindText/Rect/
-//     Image/Clock) — the closed set above.
+//   - Every layer's Kind is one of the kinds in slideLayerKinds — the closed
+//     set above.
 //   - Every layer's geometry fits the canvas: W and H are strictly positive
 //     (a zero-area layer draws nothing), X and Y are non-negative, and the
 //     layer's far edge (X+W, Y+H) stays within SlideCanvasWidth×
@@ -143,7 +248,16 @@ type Layer struct {
 //   - The required fields for the layer's own kind are present: `text` needs
 //     Text; `image` needs BOTH AssetRef and URL (an image with one but not
 //     the other cannot be both verified and fetched, DAT-041); `clock` needs
-//     a non-empty format in Text; `rect` needs Color.
+//     a non-empty format in Text; `rect` needs Color; `date` needs a non-empty
+//     date layout in Text (same reason a clock does — an empty layout draws
+//     nothing, which is a producer bug, not a blank widget); `countdown` needs
+//     a strictly positive TargetMS (its layout in Text is optional, and a
+//     missing target has no default that could be anything but wrong);
+//     `weather` needs a non-empty template in Text; and `entity` needs an
+//     EntityID naming its subject. What is deliberately NOT required is Value
+//     on a `weather`/`entity` layer — see Value's own doc: it is filled at
+//     Lease issuance, an authored layer never carries one, and demanding it
+//     here would let an unreachable forecast service drop an entire slide.
 //   - Any Color that is present — the required `rect` fill, or an optional
 //     `text`/`clock` foreground — is a well-formed `#RRGGBB` hex string. This
 //     is validated wherever a color appears, not only where it is required:
@@ -196,12 +310,9 @@ func validateSlideLayers(layers []Layer, requireImageURL bool) error {
 		return fmt.Errorf("wire: slide has no layers")
 	}
 	for i, l := range layers {
-		switch l.Kind {
-		case LayerKindText, LayerKindRect, LayerKindImage, LayerKindClock:
-			// A recognized kind; per-kind required fields checked below.
-		default:
-			return fmt.Errorf("wire: slide layer %d: unknown kind %q (want one of %q/%q/%q/%q)",
-				i, l.Kind, LayerKindText, LayerKindRect, LayerKindImage, LayerKindClock)
+		if !isSlideLayerKind(l.Kind) {
+			return fmt.Errorf("wire: slide layer %d: unknown kind %q (want one of %s)",
+				i, l.Kind, strings.Join(slideLayerKinds, "/"))
 		}
 
 		if l.W <= 0 || l.H <= 0 {
@@ -234,6 +345,25 @@ func validateSlideLayers(layers []Layer, requireImageURL bool) error {
 		case LayerKindRect:
 			if l.Color == "" {
 				return fmt.Errorf("wire: slide layer %d (rect): color is required", i)
+			}
+		case LayerKindDate:
+			if l.Text == "" {
+				return fmt.Errorf("wire: slide layer %d (date): a non-empty date format (text) is required", i)
+			}
+		case LayerKindCountdown:
+			// Strictly positive: 0 is the zero value of an absent field, not the
+			// Unix epoch as an authored target, and a countdown to "unset" would
+			// silently render as a finished one (all zeroes) forever.
+			if l.TargetMS <= 0 {
+				return fmt.Errorf("wire: slide layer %d (countdown): a positive target_ms (Unix epoch ms) is required, got %d", i, l.TargetMS)
+			}
+		case LayerKindWeather:
+			if l.Text == "" {
+				return fmt.Errorf("wire: slide layer %d (weather): a non-empty display template (text) is required", i)
+			}
+		case LayerKindEntity:
+			if l.EntityID == "" {
+				return fmt.Errorf("wire: slide layer %d (entity): entity_id is required", i)
 			}
 		}
 

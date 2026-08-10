@@ -38,15 +38,21 @@
     <Group id="slideLayers" visible="false" />
     <Label id="statusLabel" text="Waiveo Player v3" translation="[80,960]" width="1760" />
     <Timer id="castTimer" repeat="false" />
-    <!-- slideClockTimer refreshes every "clock" layer's Label with the current
-         local time once a second while a slide with a clock is showing. It is a
-         fixed node (like castTimer) rather than one created per slide, so this
-         scene always holds a handle to STOP it on item change and on shutdown —
-         a per-slide timer left running past its slide is exactly the
-         outlives-its-owner leak this player already fixed for Task threads. It
-         is started only for a slide that actually carries a clock layer, and is
-         stopped whenever the slide is torn down (clearSlide) or the scene shuts
-         down. -->
+    <!-- slideClockTimer refreshes every SELF-TICKING layer of the showing slide
+         once a second: a "clock" and a "date" from the current local time
+         through their own layout, a "countdown" from the seconds remaining to
+         its target. The "weather" and "entity" kinds are not refreshed here —
+         their text is resolved on the box and arrives on the Lease, so a new
+         value comes with a new render rather than with a tick.
+
+         It is ONE fixed node (like castTimer) rather than one created per slide
+         or per layer, so this scene always holds a handle to STOP it on item
+         change and on shutdown — a per-slide timer left running past its slide
+         is exactly the outlives-its-owner leak this player already fixed for
+         Task threads, and N ticking labels must not mean N things to remember
+         to stop. It is started only for a slide that actually carries a
+         self-ticking layer, and is stopped whenever the slide is torn down
+         (clearSlide) or the scene shuts down. -->
     <Timer id="slideClockTimer" repeat="true" />
     <!-- PLY-158's idle defeat does its actual work on IdleDefeatTask (the
          platform call it makes cannot be made on this thread at all). This
