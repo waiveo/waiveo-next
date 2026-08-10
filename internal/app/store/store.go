@@ -39,8 +39,15 @@ import (
 type Kind string
 
 const (
-	KindScopeNode      Kind = "scope_nodes"
-	KindPlaylist       Kind = "playlists"
+	KindScopeNode Kind = "scope_nodes"
+	KindPlaylist  Kind = "playlists"
+	// KindCast is the authored slidecast (data-model/1 DAT-043): a named,
+	// ordered set of slides an operator builds once and references from a
+	// playlist item (`source: "cast"`). It is validated with the scheduling-core
+	// kinds (schedulingKinds, below) through datamodel.ValidateRows, which is
+	// also what makes deleting a cast a playlist still plays a refusal rather
+	// than a silently shortened rotation.
+	KindCast           Kind = "casts"
 	KindSchedule       Kind = "schedules"
 	KindDaypart        Kind = "dayparts"
 	KindValidityWindow Kind = "validity_windows"
@@ -78,13 +85,13 @@ const (
 )
 
 // allKinds is every resource table in schema order (scope_nodes first, then the
-// six scheduling-core kinds, then automations, webhook endpoints, and the two
-// identity kinds). schedulingKinds is the subset validated through
-// datamodel.ValidateRows; identityKinds the subset validated through
-// datamodel.ValidateIdentityRows; automations are compile-gated
+// six scheduling-core kinds and the cast rows they reference, then automations,
+// webhook endpoints, and the two identity kinds). schedulingKinds is the subset
+// validated through datamodel.ValidateRows; identityKinds the subset validated
+// through datamodel.ValidateIdentityRows; automations are compile-gated
 // (compile.Compile) instead — see automations.go.
 var allKinds = []Kind{
-	KindScopeNode, KindPlaylist, KindSchedule, KindDaypart,
+	KindScopeNode, KindPlaylist, KindCast, KindSchedule, KindDaypart,
 	KindValidityWindow, KindFallback, KindPresetBatch, KindAutomation,
 	KindWebhookEndpoint, KindScreen, KindAdoptedDevice,
 }

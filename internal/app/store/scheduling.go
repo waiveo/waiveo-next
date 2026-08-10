@@ -11,10 +11,18 @@ import (
 )
 
 // schedulingKinds is the subset of resource kinds whose writes are validated
-// through datamodel.ValidateRows (the six data-model/1 scheduling-core kinds).
+// through datamodel.ValidateRows (the six data-model/1 scheduling-core kinds,
+// plus the cast rows a playlist item references — DAT-043).
 // A scope-node write is validated separately, through BuildFullScopeTree.
+//
+// A cast is here rather than in a validator of its own for the reason every
+// entry on this list is: ValidateRows judges the RESULTING FULL row-set, so a
+// cast write is checked against the playlists that reference it and — the half a
+// per-row validator could never see — a cast DELETE is refused while a playlist
+// still names it, exactly as deleting a playlist a daypart points at is.
 var schedulingKinds = map[Kind]bool{
 	KindPlaylist:       true,
+	KindCast:           true,
 	KindSchedule:       true,
 	KindDaypart:        true,
 	KindValidityWindow: true,
@@ -183,6 +191,9 @@ func readRawRows(ctx context.Context, q queryer) (datamodel.RawRows, error) {
 	var rr datamodel.RawRows
 	var err error
 	if rr.Playlists, err = readBodies(ctx, q, string(KindPlaylist)); err != nil {
+		return rr, err
+	}
+	if rr.Casts, err = readBodies(ctx, q, string(KindCast)); err != nil {
 		return rr, err
 	}
 	if rr.Schedules, err = readBodies(ctx, q, string(KindSchedule)); err != nil {
