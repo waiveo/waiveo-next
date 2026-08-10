@@ -122,6 +122,30 @@ func ackErrorCode(err error) string {
 	}
 }
 
+// relayDialConfig is the ONE relay/1 connection configuration this binary
+// dials with — the boot dial and every supervisor redial alike. It is a named
+// function rather than a literal inside run() for a reason the device plane
+// paid for: a Config assembled inline can silently omit a callback, and
+// omitting OnDeviceCommand meant every operator command the app peer dispatched
+// was answered "this relay has no device plane wired" by a relay that had one.
+// Assembled here, the set of callbacks a dial carries is a thing a test can
+// hold and assert on (conn_test.go), and adding a callback to the connection is
+// a change to one function rather than to a literal in the middle of boot.
+//
+// Both callbacks are indirection sinks rather than the handlers themselves,
+// because both handlers are built AFTER the first dial: nudges routes REL-057's
+// state.changed to the live apply path, and commands routes REL-112's
+// device.command to the automation host's command surface.
+func relayDialConfig(cfg config, store *identity.Store, nudges *nudgeSink, commands *deviceCommandSink) relayconn.Config {
+	return relayconn.Config{
+		URL:                 cfg.feederURL,
+		Store:               store,
+		Declaration:         relayHelloDeclaration(cfg),
+		OnGenerationAdvance: nudges.deliver,
+		OnDeviceCommand:     commands.execute,
+	}
+}
+
 // connHolder hands the reconnect supervisor's CURRENT live connection to the
 // pull path: OnConnected stores each freshly authenticated client here, and
 // rePuller's pull closure reads whatever is stored at pull time — nil while
@@ -170,4 +194,53 @@ func (n *nudgeSink) deliver(generation int64) {
 	if fn != nil {
 		fn(generation)
 	}
+}
+
+// deviceCommandSink is the nudgeSink of the device plane: it decouples the
+// connection's inbound `device.command` handler (REL-112, wired into
+// relayconn.Config at dial time) from the automation host that executes one,
+// which is built later in boot — after enrollment, after the first pull, and
+// after the operational store is open.
+//
+// It exists because that ordering is exactly what left OnDeviceCommand nil in
+// the shipped binary while every test wired it: at the one place Config is
+// built there is no host to point at yet, and a callback that cannot be written
+// at construction is a callback that quietly never gets written. The seam turns
+// "wire it later" from a thing a reader has to notice into a thing the type
+// system asks for — Dial always gets a non-nil handler, and `set` is the only
+// way anything ever answers a command.
+//
+// Handing the connection this sink rather than the host directly has a second
+// payoff: every redial reuses the SAME sink, so a reconnect cannot lose the
+// device plane the way it would if each Dial had to re-close over the host.
+type deviceCommandSink struct {
+	mu sync.Mutex
+	fn func(wire.DeviceCommandBody) wire.DeviceCommandResultBody
+}
+
+func (d *deviceCommandSink) set(fn func(wire.DeviceCommandBody) wire.DeviceCommandResultBody) {
+	d.mu.Lock()
+	d.fn = fn
+	d.mu.Unlock()
+}
+
+// execute is the relayconn.Config.OnDeviceCommand callback. It runs on the
+// connection's own per-command goroutine (never the read loop), so a handler
+// that waits on a physical device cannot stall the connection.
+//
+// A command that arrives before the host is up — the boot window between the
+// first Dial and bootAutomationStack, and the whole of a boot whose automation
+// stack failed — is answered with a typed refusal rather than dropped. REL-112
+// requires a result for every command, and "the device plane is not up yet" is
+// a true, retryable thing to say; silence would leave the app peer's own
+// operation hanging until its timeout with nothing to report.
+func (d *deviceCommandSink) execute(body wire.DeviceCommandBody) wire.DeviceCommandResultBody {
+	d.mu.Lock()
+	fn := d.fn
+	d.mu.Unlock()
+	if fn == nil {
+		return wire.NewDeviceCommandError("INTERNAL",
+			"this relay's device plane is not up yet; retry once it has finished starting")
+	}
+	return fn(body)
 }

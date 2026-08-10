@@ -57,6 +57,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/clocktrust"
 	"github.com/maaxton/waiveo-next/internal/relay/desiredstate"
 	"github.com/maaxton/waiveo-next/internal/relay/deviceplane"
+	"github.com/maaxton/waiveo-next/internal/relay/devicetargets"
 	"github.com/maaxton/waiveo-next/internal/relay/discovery"
 	"github.com/maaxton/waiveo-next/internal/relay/ecp"
 	"github.com/maaxton/waiveo-next/internal/relay/ecppoll"
@@ -114,10 +115,18 @@ type config struct {
 	pairHost  string // dial host a formed pairing code encodes
 	pairPort  int    // dial port a formed pairing code encodes
 
-	// Hardware device plane (all optional; absent → the loopback stand-ins,
-	// byte-identical dev/CI behavior). ecpTargets maps entity_id → the LAN
-	// Roku its device_commands dispatch to AND its state is polled from
-	// (WAIVEO_RELAY_ECP_TARGETS="entity=host[:port],..."). pollInterval is
+	// Hardware device plane (all optional). ecpTargets is the deployment
+	// OVERRIDE map, entity_id → the LAN Roku its device_commands dispatch to
+	// AND its state is polled from
+	// (WAIVEO_RELAY_ECP_TARGETS="entity=host[:port],...").
+	//
+	// It is no longer what turns device control on. The drivable set is the
+	// adoption gate's (internal/relay/devicetargets): what the app peer adopted
+	// in `device_inventory` intersected with what this relay's discovery can
+	// locate. These entries are the out-of-band escape hatch on top of it — a
+	// device on a subnet SSDP does not cross, one whose LOCATION is wrong, or a
+	// bring-up before any adoption record exists. An empty map is the normal
+	// deployment, not a disabled device plane. pollInterval is
 	// the ECP state-poll period (WAIVEO_RELAY_POLL_MS, default 5000).
 	// discoveryOn enables the SSDP client sweep feeding the candidate store
 	// (REL-110/111). It defaults ON — see parseConfig for why this one is the
@@ -519,14 +528,15 @@ func main() {
 	// nudges decouples the connection's state.changed dispatcher (wired into
 	// every Dial, including redials) from the live apply path installed further
 	// down — see nudgeSink's own doc.
+	// commands is the same decoupling for the device plane: relayconn.Config's
+	// OnDeviceCommand has to be supplied at dial time, and the automation host
+	// that executes a command does not exist until several boot steps later —
+	// see deviceCommandSink's own doc for why that ordering is what left the
+	// callback nil in the shipped binary.
 	nudges := &nudgeSink{}
+	commands := &deviceCommandSink{}
 	dialConn := func() (*relayconn.Client, error) {
-		return relayconn.Dial(relayconn.Config{
-			URL:                 cfg.feederURL,
-			Store:               store,
-			Declaration:         relayHelloDeclaration(cfg),
-			OnGenerationAdvance: nudges.deliver,
-		})
+		return relayconn.Dial(relayDialConfig(cfg, store, nudges, commands))
 	}
 	client, err := dialWithRetry(dialConn)
 	helloOK := err == nil
@@ -613,57 +623,16 @@ func main() {
 	// comparison against values this relay derived itself.
 	candStore := deviceplane.NewStore(relayID.RelayID)
 
-	// Select the device plane's controller + resolver pair ONCE and use it for
-	// BOTH dispatch paths (edge rules via bootAutomationStack, preset batches
-	// via scheduleSink below), so a fired command resolves and dispatches
-	// identically regardless of which engine fired it (REL-112/113/115).
-	// Configured ECP targets swap in the real hardware adapter; otherwise the
-	// loopback stand-ins keep dev/CI behavior byte-identical.
-	var (
-		devController  deviceplane.DeviceController = loopbackController{}
-		baseController deviceplane.DeviceController = loopbackController{}
-		devResolver    deviceplane.EntityResolver   = loopbackResolver
-	)
-	if len(cfg.ecpTargets) > 0 {
-		baseController = ecp.New(cfg.ecpTargets)
-		devController = loggingController{inner: baseController, source: "automation"}
-		targets := cfg.ecpTargets
-		devResolver = func(entityID string) (deviceID, deviceClass string, ok bool) {
-			// Wave-1 bridge resolver: a configured ECP target IS the adopted
-			// entity (device_id = entity_id, class media-player). The real
-			// adopted-entity records arrive with the app peer (data-model/1).
-			if _, present := targets[entityID]; present {
-				return entityID, "media-player", true
-			}
-			return "", "", false
-		}
-	}
-	// Discovered-but-unadopted entities resolve too, and are tried FIRST: a
-	// configured ECP target is a deployment-time assertion about one entity id,
-	// while the candidate store is what this relay actually observed, so a
-	// discovered device never has its own command silently answered by an
-	// unrelated bridge entry. Falling through keeps the bridge working for the
-	// ids it does name.
-	{
-		bridge := devResolver
-		devResolver = func(entityID string) (string, string, bool) {
-			if deviceID, deviceClass, ok := candStore.ResolveEntity(entityID); ok {
-				return deviceID, deviceClass, true
-			}
-			return bridge(entityID)
-		}
-		// Name what is actually installed. This line said "ECP controller live"
-		// unconditionally, including on the default path where the controller is
-		// the loopback stand-in and no command reaches hardware — an operator
-		// reading the boot log had every reason to believe otherwise.
-		if len(cfg.ecpTargets) > 0 {
-			log.Printf("waiveo-relay device plane: ECP controller live (%d target(s))", len(cfg.ecpTargets))
-		} else {
-			log.Printf("waiveo-relay device plane: NO device adapter configured — discovered entities resolve, but every command is refused (set WAIVEO_RELAY_ECP_TARGETS)")
-		}
-	}
+	// The relay's device plane: the adoption gate, the ECP controller reading
+	// its targets through it, and the entity resolver behind both dispatch paths
+	// (edge rules and preset batches). Built by newDevicePlane so the wiring the
+	// binary runs is the wiring a test can hold — see its own doc.
+	plane := newDevicePlane(cfg.ecpTargets, candStore)
+	deviceTargets, devController, baseController, devResolver := plane.targets, plane.controller, plane.base, plane.resolve
+	log.Printf("waiveo-relay device plane: ECP controller live, adoption-gated (%d configured override(s); adopted devices resolve from device_inventory)",
+		len(cfg.ecpTargets))
 
-	host, err := bootAutomationStack(store, relayID, applied, site, deviceRegistry, devController, devResolver)
+	host, err := bootAutomationStack(store, relayID, applied, site, deviceRegistry, devController, devResolver, commands)
 	if err != nil {
 		log.Fatalf("waiveo-relay: boot automation stack: %v", err)
 	}
@@ -817,20 +786,75 @@ func main() {
 	// trigger baselines incl. attributes, fires nothing — RUL-300/304/330);
 	// real transitions follow on the same stream, so no separate seeding step
 	// exists. Host.Run pulls until the poller's stream closes on ctx cancel.
-	if len(cfg.ecpTargets) > 0 {
-		pollTargets := make(map[string]ecppoll.Target, len(cfg.ecpTargets))
-		for entityID, t := range cfg.ecpTargets {
-			pollTargets[entityID] = ecppoll.Target{Host: t.Host, Port: t.Port}
-		}
-		poller := ecppoll.New(pollTargets, cfg.pollInterval)
-		go poller.Run(rootCtx)
-		go func() {
-			if err := host.Run(rootCtx, poller); err != nil && !errors.Is(err, context.Canceled) {
-				log.Printf("waiveo-relay: device-state drive loop ended: %v", err)
-			}
-		}()
-		log.Printf("waiveo-relay device polling live (%d target(s), every %s)", len(pollTargets), cfg.pollInterval)
+	//
+	// The poller runs UNCONDITIONALLY and takes its target set from the same
+	// adoption gate the controller dispatches through, refreshed on every
+	// generation apply (installInventory below). It used to start only when
+	// WAIVEO_RELAY_ECP_TARGETS was set, which meant the default deployment
+	// observed nothing: no rule could fire on a real device, and no entity ever
+	// reported a state. With zero targets the loop is a no-op tick, so starting
+	// it always costs nothing and removes the "polling exists but only for the
+	// env-var deployment" split.
+	poller := ecppoll.New(nil, cfg.pollInterval)
+
+	// installInventory is the ONE place a generation's adopted-device set
+	// (REL-063) becomes drivable: it replaces the gate's adopted set and
+	// re-points the poller at the resulting target set, so "what this relay
+	// commands" and "what this relay observes" can never be two different lists.
+	// It runs once here for the boot generation and then on every live apply
+	// (rePuller.applyInventory).
+	installInventory := func(inv wire.DeviceInventory) {
+		adopted := deviceTargets.SetInventory(inv.Devices)
+		targets := pollTargetsFor(deviceTargets)
+		poller.SetTargets(targets)
+		log.Printf("waiveo-relay device plane: %d adopted+enabled entit(ies) in device_inventory, %d currently drivable (adopted and locatable, plus overrides)",
+			adopted, len(targets))
 	}
+	installInventory(applied.DeviceInventory)
+
+	go poller.Run(rootCtx)
+	go func() {
+		if err := host.Run(rootCtx, poller); err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("waiveo-relay: device-state drive loop ended: %v", err)
+		}
+	}()
+	log.Printf("waiveo-relay device polling live (every %s; targets follow the adopted set)", cfg.pollInterval)
+
+	// The state the poller derives is worth exactly as much as an operator's
+	// ability to see it. REL-110a gives each reported entity a `state` member
+	// "present only once the relay has observed one", and the whole chain behind
+	// it — candidate store, `device.candidates`, the app's entity registry, GET
+	// /api/v1/entities — was already built and permanently empty, because
+	// nothing ever wrote the relay's own observations into the store the report
+	// is built from. This loop is that write: it copies each polled entity's
+	// derived media-player state (which IS the answer to "what app is it on, is
+	// it powered" — ecppoll derives State from /query/active-app and
+	// /query/device-info) onto the candidate the id belongs to, so the next
+	// full-set report carries it upward.
+	go func() {
+		tick := time.NewTicker(cfg.pollInterval)
+		defer tick.Stop()
+		for {
+			select {
+			case <-rootCtx.Done():
+				return
+			case <-tick.C:
+				// Re-derive the target set as well. Adoption arrives on a
+				// generation apply, but the other half of the gate — whether
+				// this relay can LOCATE the adopted device — changes on
+				// discovery's own clock: a device adopted before it was ever
+				// swept for becomes drivable when the sweep finds it, and a
+				// device that took a new DHCP lease becomes drivable again at
+				// the new address. Neither event has a generation attached, so
+				// without this refresh an adopted screen would stay
+				// uncontrollable until the next authoring change.
+				poller.SetTargets(pollTargetsFor(deviceTargets))
+				for entityID, entity := range poller.Snapshot() {
+					candStore.SetEntityState(entityID, entity.State)
+				}
+			}
+		}
+	}()
 
 	// Screen keep-alive (internal/relay/keepalive, player/1 PLY-150-157): a
 	// second, independent ECP poller over the SAME cfg.ecpTargets that
@@ -840,6 +864,15 @@ func main() {
 	// see keepalive's own package doc for why this needs its OWN Poller
 	// rather than sharing the one host.Run above already exclusively
 	// consumes. Off by default (WAIVEO_RELAY_KEEPALIVE unset).
+	//
+	// Its target set is deliberately still the explicit override map rather than
+	// the adoption gate's live set: keepalive.Config.Targets is fixed at
+	// construction, and a boot-time snapshot of the gate would be empty on the
+	// discovered path (no sweep has landed yet) — an adoption-following
+	// keep-alive needs keepalive itself to grow a SetTargets the way the state
+	// poller just did. Until then, "keep-alive drives explicitly configured
+	// targets" is coherent and, more importantly, cannot silently start
+	// relaunching channels on screens the legacy stack still owns.
 	if cfg.keepaliveOn && len(cfg.ecpTargets) > 0 {
 		kaTargets := make(map[string]keepalive.Target, len(cfg.ecpTargets))
 		for entityID, t := range cfg.ecpTargets {
@@ -1050,11 +1083,12 @@ func main() {
 	// here: an unaccepted relay serves its persisted last-applied snapshot
 	// offline and nothing more, until a redial is accepted.
 	puller := &rePuller{
-		nowFn:    func() int64 { return time.Now().UnixMilli() },
-		driver:   driver,
-		host:     host,
-		lastGen:  applied.Generation,
-		lastHash: applied.Hash,
+		nowFn:          func() int64 { return time.Now().UnixMilli() },
+		driver:         driver,
+		host:           host,
+		lastGen:        applied.Generation,
+		lastHash:       applied.Hash,
+		applyInventory: installInventory,
 	}
 	puller.pull = func(since int64) (desiredstate.Applied, error) {
 		c := liveConn.get()
@@ -1371,16 +1405,28 @@ func enrollWithRetry(feederURL string, store *identity.Store) error {
 // bootAutomationStack builds the relay's edge-automation Host over the
 // operational store and loads the verified desired-state generation's signed
 // edge_rules into it (REL-062), logging how many edge rules loaded. The caller
-// selects the DeviceController + EntityResolver pair (real ECP when targets are
-// configured, loopback stand-ins otherwise) so both dispatch paths share it. dc
-// is the relay's ONE canonical device-class registry (device-class-registry/1's
-// own built-in, REG-060-066) — automationhost.New wires it directly into the
-// device plane's CommandVocab and, adapted, into the engine's registry.Registry.
-func bootAutomationStack(store *identity.Store, relayID identity.RelayIdentity, applied desiredstate.Applied, site hello.SiteBinding, dc deviceclass.Registry, controller deviceplane.DeviceController, resolveEntity deviceplane.EntityResolver) (*automationhost.Host, error) {
+// selects the DeviceController + EntityResolver pair (newDevicePlane) so both
+// dispatch paths share it. dc is the relay's ONE canonical device-class registry
+// (device-class-registry/1's own built-in, REG-060-066) — automationhost.New
+// wires it directly into the device plane's CommandVocab and, adapted, into the
+// engine's registry.Registry.
+//
+// commands is the connection's inbound `device.command` sink, and this function
+// ARMS it with the host it just built (REL-112). That is deliberately not the
+// caller's job: this is the only function in the binary that produces a Host, so
+// arming here makes "the wire can reach the device plane" a property of building
+// the device plane at all, rather than a separate line a boot sequence can omit
+// — which is exactly what it did omit, leaving every app-issued command answered
+// "this relay has no device plane wired" for the life of the process.
+func bootAutomationStack(store *identity.Store, relayID identity.RelayIdentity, applied desiredstate.Applied, site hello.SiteBinding, dc deviceclass.Registry, controller deviceplane.DeviceController, resolveEntity deviceplane.EntityResolver, commands *deviceCommandSink) (*automationhost.Host, error) {
 	host, err := automationhost.New(store, dc, controller, resolveEntity, relayID.RelayID)
 	if err != nil {
 		return nil, err
 	}
+	// Armed BEFORE the rule load below, not after: ApplyEdgeRules can take a
+	// moment on a large generation, and a command arriving in that window should
+	// execute rather than be told the device plane is not up.
+	commands.set(host.DeviceCommand)
 	// Adopt the app peer's authoritative site_binding (REL-036) into the engine
 	// before loading rules, so the edge engine's schedule/sun triggers evaluate
 	// against the site's real timezone and coordinates from the first tick.
@@ -1762,10 +1808,30 @@ func relayHelloDeclaration(cfg config) hello.Declaration {
 	}
 }
 
-// loopbackController is the Wave-1 stand-in DeviceController: it accepts every
-// resolved device command and logs it, standing in for the real ECP/Roku adapter
-// (hardware, deferred) so the wired automation stack can be exercised without a
-// physical device. It never fails, so a fired rule's dispatch always succeeds.
+// pollTargetsFor projects the drivable-device gate's current answer onto the
+// ECP poller's own Target type. The two packages deliberately declare separate
+// address types (ecp.Target, ecppoll.Target) so neither driver depends on the
+// other; this is the one place the gate's answer is adapted for the poller, so
+// the poll set is BY CONSTRUCTION the command set and no drift is possible.
+func pollTargetsFor(targets *devicetargets.Registry) map[string]ecppoll.Target {
+	resolved := targets.Targets()
+	out := make(map[string]ecppoll.Target, len(resolved))
+	for entityID, ep := range resolved {
+		out[entityID] = ecppoll.Target{Host: ep.Host, Port: ep.Port}
+	}
+	return out
+}
+
+// loopbackController is a TEST-ONLY stand-in DeviceController: it refuses every
+// dispatch with a typed error, so a test can exercise the automation stack's
+// wiring (rules load, fire, and reach the device plane) with no hardware and no
+// ECP server.
+//
+// It is no longer the production default and no longer stands in for anything
+// deferred. The relay now installs the real ECP adapter unconditionally and
+// gates it on adoption (deviceplane.go's newDevicePlane); this remains only as
+// the double the serving-side tests hand to bootAutomationStack when the device
+// plane is not what they are testing.
 type loopbackController struct{}
 
 // Dispatch REFUSES rather than reporting success.
@@ -1964,11 +2030,16 @@ func toWireCandidates(cands []deviceplane.Candidate) []wire.DeviceCandidate {
 	return out
 }
 
-// loopbackResolver is the Wave-1 stand-in entity resolver: it maps every
+// loopbackResolver is a TEST-ONLY stand-in entity resolver: it maps every
 // entity_id to a single media-player loopback device so a loaded edge rule's
-// device_command resolves against the fixture registry's vocabulary (REL-112/113).
-// The real resolver reads the device plane's adopted-entity records (data-model/1)
-// and is a later concern.
+// device_command resolves against the fixture registry's vocabulary
+// (REL-112/113) without a candidate store or an adopted inventory.
+//
+// It is deliberately NOT wired in production, and the reason is the whole point
+// of this track: resolving every id to one device means every id is a device
+// this relay claims, which is a blanket claim over a shared LAN. The production
+// resolver (deviceplane.go) resolves only what this relay discovered or what the
+// app peer adopted.
 func loopbackResolver(entityID string) (deviceID, deviceClass string, ok bool) {
 	return "01J8Z3K4N5P6Q7R8S9T0V1DEVA", "media-player", true
 }

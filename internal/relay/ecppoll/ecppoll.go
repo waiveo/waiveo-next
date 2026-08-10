@@ -208,7 +208,6 @@ func WithRegistry(reg registry.Registry) Option {
 // that polls a fixed set of Roku ECP targets on an interval. See the package
 // doc for state derivation and first-observation semantics.
 type Poller struct {
-	targets  map[string]Target
 	interval time.Duration
 	client   *http.Client
 	reg      registry.Registry
@@ -217,8 +216,9 @@ type Poller struct {
 	ch      chan state.Observation
 	dropped atomic.Uint64
 
-	mu   sync.Mutex
-	prev map[string]state.Entity // latest known snapshot per entity ID
+	mu      sync.Mutex
+	targets map[string]Target       // the set polled, replaced by SetTargets
+	prev    map[string]state.Entity // latest known snapshot per entity ID
 }
 
 // New builds a Poller over targets (entityID -> ECP address), polling every
@@ -289,8 +289,19 @@ func (p *Poller) Dropped() uint64 {
 // (ctx already canceled) and enqueue a spurious "unavailable" transition
 // right at shutdown.
 func (p *Poller) pollAll(ctx context.Context) {
-	ids := make([]string, 0, len(p.targets))
-	for id := range p.targets {
+	// Snapshot the target set once per cycle rather than reading it per entity:
+	// SetTargets can land mid-cycle (the desired-state re-pull loop calls it),
+	// and a cycle that half-used the old set and half the new would poll a
+	// device that was just un-adopted while skipping one that was just adopted.
+	p.mu.Lock()
+	targets := make(map[string]Target, len(p.targets))
+	for id, t := range p.targets {
+		targets[id] = t
+	}
+	p.mu.Unlock()
+
+	ids := make([]string, 0, len(targets))
+	for id := range targets {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
@@ -300,9 +311,66 @@ func (p *Poller) pollAll(ctx context.Context) {
 			return
 		default:
 		}
-		curr := p.fetchEntity(ctx, id, p.targets[id])
+		curr := p.fetchEntity(ctx, id, targets[id])
 		p.observe(id, curr)
 	}
+}
+
+// SetTargets replaces the polled set (entityID → ECP address) while Run is
+// live, so the devices whose state this relay reads track the devices it is
+// allowed to command — one adoption gate, applied once, rather than a poll set
+// and a command set that can drift apart.
+//
+// A target that DISAPPEARS also has its remembered snapshot dropped, which is
+// what makes a re-adoption behave like a first sighting: the next poll emits a
+// self-transition seed Observation (the package doc's first-observation
+// contract) and re-seeds the engine's baselines, instead of classifying a
+// transition against a snapshot from before the device left the set — which
+// could be arbitrarily stale and would fire triggers on a change that happened
+// while nobody was watching.
+func (p *Poller) SetTargets(targets map[string]Target) {
+	cp := make(map[string]Target, len(targets))
+	for id, t := range targets {
+		cp[id] = t
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.targets = cp
+	for id := range p.prev {
+		if _, still := cp[id]; !still {
+			delete(p.prev, id)
+		}
+	}
+}
+
+// Snapshot is the poller's latest derived state per polled entity — the answer
+// to "what is this device doing right now?" without issuing a second round of
+// ECP requests to ask.
+//
+// It is the read side of the polling this relay already performs: the derived
+// state.Entity carries the media-player State (REG-061) plus every REG-064
+// attribute the two ECP queries produced (active_app, active_app_id, app_type,
+// power_mode, is_screensaver, app_version). The relay reports the State half
+// upward on its `device.candidates` report (REL-110a's per-entity `state`,
+// "present only once the relay has observed one"), which is how an operator's
+// entity list shows what a screen is actually doing.
+//
+// An entity that has never completed a poll is absent — never present with a
+// fabricated state. The returned map and its attribute maps are copies, so a
+// caller cannot mutate the poller's own record.
+func (p *Poller) Snapshot() map[string]state.Entity {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make(map[string]state.Entity, len(p.prev))
+	for id, e := range p.prev {
+		attrs := make(map[string]any, len(e.Attributes))
+		for k, v := range e.Attributes {
+			attrs[k] = v
+		}
+		e.Attributes = attrs
+		out[id] = e
+	}
+	return out
 }
 
 // observe folds one freshly-fetched snapshot into id's prior state and emits

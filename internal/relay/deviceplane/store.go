@@ -279,7 +279,28 @@ func (s *Store) Observe(o Observation, atMs int64) {
 		}
 		c.Match = o.Match
 		c.DeviceClass = o.DeviceClass
+		// Entity STATE is carried across a re-sighting, for exactly the reason
+		// the learned facts below are: a discovery sighting never observes state
+		// (an SSDP NOTIFY says a device exists, not that it is playing), so the
+		// incoming entity list has a blank State for every entity. Replacing the
+		// slice wholesale would therefore delete what the POLLER observed
+		// (SetEntityState) on every multicast packet — and since a live LAN
+		// announces constantly, an operator would watch the state an entity just
+		// reported blink back to empty. The state a sighting does not carry is
+		// "not learned here", never "no longer true", so a surviving entity keeps
+		// the state already held unless this sighting states a new one.
+		prevState := make(map[string]string, len(c.Entities))
+		for _, e := range c.Entities {
+			if e.State != "" {
+				prevState[e.Key] = e.State
+			}
+		}
 		c.Entities = append([]CandidateEntity(nil), o.Entities...)
+		for i := range c.Entities {
+			if c.Entities[i].State == "" {
+				c.Entities[i].State = prevState[c.Entities[i].Key]
+			}
+		}
 		// The four LEARNED facts are refreshed only when the new sighting
 		// actually carries one, unlike the declaration-side facts above which
 		// every sighting states in full.
@@ -323,6 +344,69 @@ func orKeep(next, held string) string {
 		return next
 	}
 	return held
+}
+
+// SetEntityState records the state a driver has OBSERVED for one entity of one
+// candidate device (REL-110a: `state` present only once the relay has observed
+// one), so it rides the next full-set `device.candidates` report upward and
+// becomes the `state` an operator reads off the app peer's entity list.
+//
+// entityID is the app-peer-visible id, resolved the same way ResolveEntity
+// resolves a command's target: by re-deriving every id this relay's own
+// candidates could have (REL-110b) and matching. Nothing here trusts an
+// identifier off the wire — the caller is this relay's own poller, and the
+// derivation is the check.
+//
+// It reports false when no candidate of this relay derives to entityID (or no
+// site has been adopted yet, so nothing derives at all). An IGNORED candidate
+// is deliberately NOT excluded: suppression is an instruction not to ACT on a
+// device, and continuing to report what a suppressed device is doing is
+// exactly what lets an operator decide to un-suppress it.
+func (s *Store) SetEntityState(entityID, entityState string) bool {
+	if !observationFieldOK(entityState) {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.site == "" || entityID == "" {
+		return false
+	}
+	for _, key := range s.order {
+		c := s.byKey[key]
+		for i, e := range c.Entities {
+			if deviceid.Entity(s.site, c.Driver, c.NativeID, e.Key) == entityID {
+				c.Entities[i].State = entityState
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// AddressFor is the relay-local address book behind an adopted device: it
+// returns the last observed LAN address of the candidate with this REL-153
+// identity, if this relay has seen one.
+//
+// It is the join that makes adoption actionable. The app peer adopts a device
+// by its `(driver, native_id)` identity and ships that decision down in
+// `device_inventory` (REL-063); nothing in that section is dialable, because
+// nothing in it could be — the app peer has never been on this LAN. This relay
+// HAS, so it is the only party that can turn the adopted identity back into an
+// endpoint, and this is the lookup that does it.
+//
+// It reports ok=false for an unknown identity, for one this relay has an entry
+// for but no address (a lane that cannot see one), and — deliberately — for an
+// IGNORED candidate, for the same reason ResolveEntity refuses one: suppressing
+// a device is an instruction not to act on it, and handing out its address
+// would make the suppression cosmetic.
+func (s *Store) AddressFor(driver, nativeID string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.byKey[identityKeyOf(driver, nativeID)]
+	if !ok || c.Status == StatusIgnored || c.Address == "" {
+		return "", false
+	}
+	return c.Address, true
 }
 
 // Key returns the store key for one REL-153 identity — what Adopt and Ignore

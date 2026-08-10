@@ -189,6 +189,22 @@ type Applied struct {
 	// discipline requires. An empty-but-typed schedule (today's first-photon
 	// state) carries all seven arrays present and empty.
 	Schedule wire.ScheduleSection
+
+	// DeviceInventory is the verified snapshot's sections.device_inventory
+	// (REL-063/064), carried unmodified — the app peer's ADOPTED device set
+	// (`devices`) and the pack-declared discovery patterns (`pack_match_patterns`),
+	// each entry raw JSON for the same byte-identical-remarshal reason every
+	// other opaque section is.
+	//
+	// `devices` is the relay's ONLY authority for what it may drive. The
+	// candidate store knows what is on the LAN; only this section says which of
+	// those an operator adopted, which of their entities are enabled, and under
+	// what identity — which is why it has to reach the process rather than stop
+	// at the verify boundary. It rode the signed snapshot to the store and was
+	// then dropped on the way out, so the layer that gates device control had
+	// nothing to gate on and the gate degenerated to an env var
+	// (internal/relay/devicetargets).
+	DeviceInventory wire.DeviceInventory
 }
 
 // ServedProgram returns the relay's persisted last-applied screen_programs
@@ -300,6 +316,7 @@ func extractApplied(generation int64, hash string, sections wire.Sections) (Appl
 		ContentOrigin:   sections.RevocationAndSite.ContentOrigin,
 		ContentURLKey:   decodeContentURLKey(sections.RevocationAndSite.ContentURLKey),
 		Schedule:        sections.Schedule,
+		DeviceInventory: sections.DeviceInventory,
 	}, nil
 }
 

@@ -13,6 +13,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/hello"
 	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
 	"github.com/maaxton/waiveo-next/internal/relay/schedulehost"
+	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
 // pullFunc pulls one verified desired-state generation, given the caller's
@@ -179,6 +180,17 @@ type rePuller struct {
 	driver *scheduleDriver
 	host   *automationhost.Host
 
+	// applyInventory installs a newly applied generation's `device_inventory`
+	// (REL-063) — the app peer's adopted-device set — into the relay's
+	// drivable-device gate and the pollers configured from it. It rides the
+	// generation apply rather than a clock of its own because adoption IS
+	// desired state: a device adopted in the console is drivable the moment the
+	// generation carrying that decision applies, and one un-adopted stops being
+	// drivable at the same instant, with no window where the two disagree.
+	//
+	// Optional (nil in tests that drive only the serving side).
+	applyInventory func(wire.DeviceInventory)
+
 	lastGen int64
 	// lastHash is the section hash of the last snapshot whose apply-time effects
 	// actually ran — REL-070's comparison value. Empty until the first apply,
@@ -273,6 +285,14 @@ func (p *rePuller) tick(ctx context.Context) bool {
 	// process's life — a screen needing a grant this live pull just carried
 	// would never see it become redeemable.
 	p.driver.srv.SetPairingGrants(applied.Generation, applied.PairingGrants)
+
+	// Install this generation's adopted-device set (REL-063) before the edge
+	// rules reload below: a reloaded rule can fire a device_command on the very
+	// next observation, and it must resolve against the adoption decision of the
+	// generation that carries it, not the previous one's.
+	if p.applyInventory != nil {
+		p.applyInventory(applied.DeviceInventory)
+	}
 
 	if err := p.host.ApplyEdgeRules(applied.EdgeRules, int(applied.Generation)); err != nil {
 		// ApplyEdgeRules is fail-closed per rule (a bad rule is skipped, not fatal);
