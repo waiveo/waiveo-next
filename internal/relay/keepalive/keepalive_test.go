@@ -681,3 +681,124 @@ func TestRunCancelsPromptlyUnderConcurrentDispatchLoad(t *testing.T) {
 		t.Fatal("Run did not return promptly after cancellation with many dispatches still in flight (under load) — evaluateAll's per-screen dispatch must never block ctx cancellation, however many screens are outstanding")
 	}
 }
+
+// TestSetTargetsReplacesTheWatchedSet is the API the binary needs to make this
+// capability follow ADOPTION rather than a set frozen at boot. Without it the
+// keep-alive was on by default over cmd/waiveo-relay's deployment-override map
+// — an out-of-band escape hatch that is empty in the normal deployment — so it
+// watched nothing in the very scenario it was switched on for.
+func TestSetTargetsReplacesTheWatchedSet(t *testing.T) {
+	k := New(Config{Adopted: adoptEverything, Controller: &fakeController{}})
+
+	k.SetTargets(map[string]Target{"scr1": {Host: "192.168.50.31", Port: 8060}})
+	k.mu.Lock()
+	got := len(k.targets)
+	host := k.targets["scr1"].Host
+	k.mu.Unlock()
+	if got != 1 || host != "192.168.50.31" {
+		t.Fatalf("targets after SetTargets = %d entr(ies) host %q, want 1 / 192.168.50.31", got, host)
+	}
+
+	// A caller's map is copied, not aliased: the adoption gate rebuilds its own
+	// map every tick and must not be able to mutate this one behind our back.
+	src := map[string]Target{"scr2": {Host: "192.168.50.32"}}
+	k.SetTargets(src)
+	delete(src, "scr2")
+	k.mu.Lock()
+	_, still := k.targets["scr2"]
+	k.mu.Unlock()
+	if !still {
+		t.Error("mutating the caller's map after SetTargets changed the watched set")
+	}
+}
+
+// TestARemovedTargetStopsBeingEvaluated is the half that matters for safety.
+// evaluateAll walks the CACHE, not the target map, so a screen dropped from the
+// set would keep being re-evaluated from its last reading — and could fire a
+// recovery launch at a screen the app peer has just un-adopted, which is
+// exactly what the adoption gate exists to prevent.
+func TestARemovedTargetStopsBeingEvaluated(t *testing.T) {
+	fc := &fakeController{}
+	k := New(Config{Adopted: adoptEverything, LaunchDelay: time.Millisecond, Controller: fc})
+	k.SetTargets(map[string]Target{"scr1": {Host: "192.168.50.31"}})
+	t0 := time.Unix(1700000000, 0)
+
+	// One qualifying Home poll: the streak is at 1, one short of firing.
+	k.recordObservation(obsFor("scr1", "PowerOn", "app"), t0)
+	k.recordObservation(obsFor("scr1", "PowerOn", "home"), t0.Add(time.Second))
+	if got := fc.callCount(); got != 0 {
+		t.Fatalf("launch calls after one Home poll = %d, want 0", got)
+	}
+
+	// The screen leaves the watched set — un-adopted, or no longer locatable.
+	k.SetTargets(map[string]Target{})
+
+	// The re-evaluation ticker keeps running. It must find nothing to act on.
+	k.evaluateAll(t0.Add(2 * time.Second))
+	k.evaluateAll(t0.Add(3 * time.Second))
+	k.dispatchWG.Wait()
+	if got := fc.callCount(); got != 0 {
+		t.Fatalf("launch calls for a screen removed from the watched set = %d, want 0 (%+v)", got, fc.calls)
+	}
+
+	// And it comes back re-confirmed from scratch rather than resuming the
+	// streak it had accumulated before it left. Dropping the per-screen state
+	// means the first poll after it returns reads as a fresh entry into PowerOn,
+	// so it serves the settle delay again and then needs its own two
+	// consecutive Home polls.
+	k.SetTargets(map[string]Target{"scr1": {Host: "192.168.50.31"}})
+	k.recordObservation(obsFor("scr1", "PowerOn", "home"), t0.Add(4*time.Second))
+	if got := fc.callCount(); got != 0 {
+		t.Fatalf("a returning screen fired on its FIRST Home poll (%d call(s)); its pre-removal progress must not "+
+			"be resumed", got)
+	}
+	k.recordObservation(obsFor("scr1", "PowerOn", "home"), t0.Add(5*time.Second))
+	if got := fc.callCount(); got != 0 {
+		t.Fatalf("a returning screen fired after one confirming poll (%d call(s)), want its own full streak", got)
+	}
+	k.recordObservation(obsFor("scr1", "PowerOn", "home"), t0.Add(6*time.Second))
+	if got := fc.callCount(); got != 1 {
+		t.Fatalf("launch calls after a fresh, fully confirmed streak = %d, want 1", got)
+	}
+}
+
+// TestSetTargetsWhileRunningStartsPollingTheNewScreen is the half of SetTargets
+// that reaches the network, and it is the whole point of the API: a relay boots
+// before its first sweep has found anything, so the set it starts Run with is
+// routinely EMPTY and every screen it ever watches arrives afterwards. Updating
+// only this package's own map would leave the poller pointed at that empty set
+// forever — switched on, watching nothing, exactly the defect this closes.
+func TestSetTargetsWhileRunningStartsPollingTheNewScreen(t *testing.T) {
+	target := newECPFixture(t)
+	fc := &fakeController{}
+	k := New(Config{
+		Adopted:      adoptEverything,
+		PollInterval: 20 * time.Millisecond,
+		LaunchDelay:  time.Millisecond,
+		Controller:   fc,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Started with NO targets — the boot shape, before discovery has found
+	// anything and before a generation has been applied.
+	go func() { _ = k.Run(ctx) }()
+
+	time.Sleep(60 * time.Millisecond)
+	if got := fc.callCount(); got != 0 {
+		t.Fatalf("keep-alive dispatched %d launch(es) with no targets, want 0", got)
+	}
+
+	// The device becomes adopted and locatable; the binary's sync tick hands it
+	// over.
+	k.SetTargets(map[string]Target{"scr1": target})
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && fc.callCount() < 1 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := fc.callsFor("scr1"); len(got) < 1 {
+		t.Fatal("a screen added by SetTargets while Run was already running was never polled — the running poller " +
+			"must be re-pointed, not just this package's own map")
+	}
+}

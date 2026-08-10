@@ -907,65 +907,29 @@ func main() {
 	}()
 	log.Printf("waiveo-relay device polling live (every %s; targets follow the adopted set)", cfg.pollInterval)
 
-	// The state the poller derives is worth exactly as much as an operator's
-	// ability to see it. REL-110a gives each reported entity a `state` member
-	// "present only once the relay has observed one", and the whole chain behind
-	// it — candidate store, `device.candidates`, the app's entity registry, GET
-	// /api/v1/entities — was already built and permanently empty, because
-	// nothing ever wrote the relay's own observations into the store the report
-	// is built from. This loop is that write: it copies each polled entity's
-	// derived media-player state (which IS the answer to "what app is it on, is
-	// it powered" — ecppoll derives State from /query/active-app and
-	// /query/device-info) onto the candidate the id belongs to, so the next
-	// full-set report carries it upward.
-	go func() {
-		tick := time.NewTicker(cfg.pollInterval)
-		defer tick.Stop()
-		for {
-			select {
-			case <-rootCtx.Done():
-				return
-			case <-tick.C:
-				// Re-derive the target set as well. Adoption arrives on a
-				// generation apply, but the other half of the gate — whether
-				// this relay can LOCATE the adopted device — changes on
-				// discovery's own clock: a device adopted before it was ever
-				// swept for becomes drivable when the sweep finds it, and a
-				// device that took a new DHCP lease becomes drivable again at
-				// the new address. Neither event has a generation attached, so
-				// without this refresh an adopted screen would stay
-				// uncontrollable until the next authoring change.
-				poller.SetTargets(pollTargetsFor(deviceTargets))
-				for entityID, entity := range poller.Snapshot() {
-					candStore.SetEntityState(entityID, entity.State)
-				}
-			}
-		}
-	}()
-
 	// Screen keep-alive (internal/relay/keepalive, player/1 PLY-150-157): a
-	// second, independent ECP poller over the SAME cfg.ecpTargets that
-	// re-launches a screen's player channel once it safely idles at Home
-	// (power-on settle delay, ≥2-consecutive-poll Home confirmation, never
-	// while standby, never while the screen's own active Lease is blank) —
-	// see keepalive's own package doc for why this needs its OWN Poller
-	// rather than sharing the one host.Run above already exclusively
-	// consumes. ON by default (WAIVEO_RELAY_KEEPALIVE=0 disables it) — see
-	// config.keepaliveOn's own doc.
+	// second, independent ECP poller over the adopted set that re-launches a
+	// screen's player channel once it safely idles at Home (power-on settle
+	// delay, ≥2-consecutive-poll Home confirmation, never while standby, never
+	// while the screen's own active Lease is blank) — see keepalive's own
+	// package doc for why this needs its OWN Poller rather than sharing the one
+	// host.Run above already exclusively consumes. ON by default
+	// (WAIVEO_RELAY_KEEPALIVE=0 disables it) — see config.keepaliveOn's own doc.
 	//
-	// Its target set is deliberately still the explicit override map
-	// (cfg.ecpTargets) rather than the adoption gate's live set:
-	// keepalive.Config.Targets is fixed at construction, and a boot-time
-	// snapshot of the gate would be empty on the DISCOVERED path (no sweep has
-	// landed yet) — an adoption-following keep-alive needs keepalive itself to
-	// grow a SetTargets the way the state poller above just did. So the
-	// capability being on by default widens the set it WATCHES to nothing that
-	// was not already explicitly configured; what it does not do is leave the
-	// configured screens dark.
+	// Its target set is the ADOPTION GATE's, refreshed on every devicePlaneSync
+	// tick like the state poller's, and that is what makes the on-by-default
+	// flip mean anything. It used to be cfg.ecpTargets, fixed at construction —
+	// and cfg.ecpTargets is, since the device-control track, an out-of-band
+	// escape hatch rather than the normal path. So the capability was switched
+	// on in a deployment where the map it watched was empty: it self-healed
+	// nothing, silently, in exactly the power-cut scenario it was turned on for.
+	// It is started whenever the capability is on, with whatever the gate
+	// resolves at boot (possibly nothing), because the set it watches is now
+	// something that arrives later rather than something known here.
 	//
-	// That is also why the on-by-default flip is not the same decision as
-	// "drive whatever we can reach". Adoption is enforced separately, per
-	// dispatch, by the Adopted gate wired below.
+	// Widening what it WATCHES does not widen what it may drive: adoption is
+	// enforced separately, per dispatch, by the Adopted gate wired below, and
+	// the target set is itself already the adopted-and-locatable intersection.
 	//
 	// keepaliveAdoption is declared out here, above the block, because two
 	// places need it: this wiring reads it on every poll, and the live
@@ -973,10 +937,11 @@ func main() {
 	// generation. It stays nil when the capability is off, which is the
 	// signal the puller uses to skip refreshing a set nothing consults.
 	var keepaliveAdoption *keepalive.AdoptionSet
-	if cfg.keepaliveOn && len(cfg.ecpTargets) > 0 {
-		kaTargets := make(map[string]keepalive.Target, len(cfg.ecpTargets))
-		for entityID, t := range cfg.ecpTargets {
-			kaTargets[entityID] = keepalive.Target{Host: t.Host, Port: t.Port}
+	var keepaliveTargetSink keepaliveTargets
+	if cfg.keepaliveOn {
+		kaTargets := make(map[string]keepalive.Target)
+		for entityID, ep := range deviceTargets.Targets() {
+			kaTargets[entityID] = keepalive.Target{Host: ep.Host, Port: ep.Port}
 		}
 
 		// The adoption gate, seeded from the generation this boot applied and
@@ -1035,13 +1000,29 @@ func main() {
 			// `device_inventory` marks adopted + enabled are driven.
 			Adopted: keepaliveAdoption.IsAdopted,
 		})
+		keepaliveTargetSink = ka
 		go func() {
 			if err := ka.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
 				log.Printf("waiveo-relay: screen keep-alive ended: %v", err)
 			}
 		}()
-		log.Printf("waiveo-relay screen keep-alive live (%d target(s), every %s)", len(kaTargets), cfg.pollInterval)
+		log.Printf("waiveo-relay screen keep-alive live (%d target(s) at boot, following the adopted set, every %s)",
+			len(kaTargets), cfg.pollInterval)
 	}
+
+	// The periodic join across the device plane: re-derive the drivable set,
+	// re-point both pollers at it, and copy what the state poller has observed
+	// onto the candidates the device.candidates report is built from. It is a
+	// named unit (deviceplanesync.go) rather than a closure here because it is
+	// the sole mechanism behind two user-facing behaviours and, as a closure,
+	// could be deleted whole with every gate still green.
+	deviceSync := devicePlaneSync{
+		gate:      deviceTargets,
+		poller:    poller,
+		states:    candStore,
+		keepalive: keepaliveTargetSink,
+	}
+	go deviceSync.run(rootCtx, cfg.pollInterval)
 
 	// Discovery (REL-110/111): SSDP client sweep + mDNS listener each mint
 	// per-DEVICE candidates into ONE SHARED candidate store when both lanes
