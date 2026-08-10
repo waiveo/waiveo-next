@@ -336,6 +336,21 @@ func Open(dsn string, nowMs func() int64) (*Store, error) {
 	// serialization; this bounds the driver.
 	db.SetMaxOpenConns(1)
 
+	// ARC-041/104: decide the newer-epoch refusal from the file's own recorded
+	// epoch BEFORE any migration runs. Running this build's (older) DDL over a
+	// file a newer build wrote is exactly the downgrade-open the refusal forbids,
+	// so the check is the first thing that touches the database. A pre-marker
+	// file reads 0 and is upgraded below rather than refused.
+	onDiskEpoch, err := readSchemaEpoch(db)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if onDiskEpoch > PlatformSchemaEpoch {
+		_ = db.Close()
+		return nil, &EpochTooNewError{OnDisk: onDiskEpoch, Understood: PlatformSchemaEpoch}
+	}
+
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: migrate meta: %w", err)
@@ -415,6 +430,16 @@ func Open(dsn string, nowMs func() int64) (*Store, error) {
 			_ = db.Close()
 			return nil, fmt.Errorf("store: migrate %s: %w", k, err)
 		}
+	}
+
+	// Every migration above has run, so the file now holds this build's shape:
+	// stamp its epoch. A fresh file (read 0) and a pre-marker legacy file (also
+	// 0) both advance to the current epoch here; a file already at this epoch is
+	// re-stamped idempotently. A file at a NEWER epoch never reaches this line —
+	// it was refused before any migration.
+	if err := writeSchemaEpoch(db, PlatformSchemaEpoch); err != nil {
+		_ = db.Close()
+		return nil, err
 	}
 
 	// This database is secret material at rest, and was sitting at the umask
