@@ -129,20 +129,52 @@ type config struct {
 	// deployment, not a disabled device plane. pollInterval is
 	// the ECP state-poll period (WAIVEO_RELAY_POLL_MS, default 5000).
 	// discoveryOn enables the SSDP client sweep feeding the candidate store
-	// (REL-110/111). It defaults ON — see parseConfig for why this one is the
-	// exception — and is switched off with WAIVEO_RELAY_DISCOVERY=0.
-	// mdnsPatterns enables the mDNS listener feeding the SAME candidate store
-	// (WAIVEO_RELAY_MDNS_PATTERNS, comma-separated MAN-071 service-type
-	// strings e.g. "_waiveo._tcp"; empty/unset is off, internal/relay/mdns).
-	// ssdpAnnounce enables the SSDP RESPONDER — answering a player's own
-	// M-SEARCH for this relay's player/1 pairing surface
-	// (WAIVEO_RELAY_SSDP_ANNOUNCE=1, PLY-021/022). keepaliveOn enables the
-	// screen keep-alive capability (WAIVEO_RELAY_KEEPALIVE=1,
-	// internal/relay/keepalive, player/1 PLY-150-154): a second ECP poller
-	// over the SAME ecpTargets that re-launches a screen's player channel
-	// once it safely idles at Home. The last three default off: a loopback
-	// dev run must not announce itself, and must not dispatch an unrequested
-	// launch.
+	// (REL-110/111). mdnsPatterns enables the mDNS listener feeding the SAME
+	// candidate store (WAIVEO_RELAY_MDNS_PATTERNS, comma-separated MAN-071
+	// service-type strings e.g. "_waiveo._tcp"; empty/unset is off,
+	// internal/relay/mdns). ssdpAnnounce enables the SSDP RESPONDER —
+	// answering a player's own M-SEARCH for this relay's player/1 pairing
+	// surface (WAIVEO_RELAY_SSDP_ANNOUNCE=1, PLY-021/022). keepaliveOn enables
+	// the screen keep-alive capability (internal/relay/keepalive, player/1
+	// PLY-150-154): a second ECP poller over the SAME ecpTargets that
+	// re-launches a screen's player channel once it safely idles at Home.
+	//
+	// # Which of these default on, and why they split the way they do
+	//
+	// TWO of the four default ON and are switched off explicitly:
+	// discoveryOn (WAIVEO_RELAY_DISCOVERY=0) and keepaliveOn
+	// (WAIVEO_RELAY_KEEPALIVE=0). The other two — mdnsPatterns and
+	// ssdpAnnounce — default OFF and are switched on explicitly.
+	//
+	// The line between them is not "safe vs. unsafe", it is what the box does
+	// to a network or a device that did not ask for it:
+	//
+	//   - mdnsPatterns and ssdpAnnounce make this box ANNOUNCE itself or bind
+	//     a well-known multicast port. That is intrusive on a network that did
+	//     not ask and, in mDNS's case, collides outright with the host's own
+	//     avahi daemon. CI and loopback dev runs must never multicast, so both
+	//     stay off until a deployment states otherwise.
+	//   - discoveryOn is the opposite posture: an M-SEARCH is a control point
+	//     ASKING who is out there, which is the entire job of a signage
+	//     appliance that has to find the TVs it drives. Off by default meant a
+	//     fresh box discovered nothing at all until somebody knew to set an
+	//     environment variable — the appliance shipped unable to see its own
+	//     hardware, and the legacy system it replaces swept always-on.
+	//   - keepaliveOn drives an ADOPTED screen back to its channel. A screen
+	//     sitting at Home is a screen showing nothing, and it stays that way
+	//     until somebody notices — which, on an unattended wall, is the next
+	//     time a human walks past. The legacy stack ran its equivalent
+	//     unconditionally for exactly that reason, and shipping the capability
+	//     switched off reproduced the outage it exists to end. What makes
+	//     on-by-default safe is the ADOPTION GATE it carries
+	//     (keepalive.AdoptionSet): the relay drives only screens the app peer's
+	//     signed `device_inventory` says this deployment has adopted, so a
+	//     relay that can reach a Roku the legacy stack still owns does nothing
+	//     to it.
+	//
+	// Dev/CI behavior is unchanged by either flip: a loopback dev run
+	// configures no ecpTargets, and keepalive needs at least one to watch,
+	// while a sweep that finds nothing configures nothing.
 	ecpTargets   map[string]ecp.Target
 	pollInterval time.Duration
 	discoveryOn  bool
@@ -238,35 +270,49 @@ func loadConfig(env func(string) string) (config, error) {
 		discoveryOn:  discoveryEnabled(env("WAIVEO_RELAY_DISCOVERY")),
 		mdnsPatterns: parseMDNSPatterns(env("WAIVEO_RELAY_MDNS_PATTERNS")),
 		ssdpAnnounce: env("WAIVEO_RELAY_SSDP_ANNOUNCE") == "1" || env("WAIVEO_RELAY_SSDP_ANNOUNCE") == "true",
-		keepaliveOn:  env("WAIVEO_RELAY_KEEPALIVE") == "1" || env("WAIVEO_RELAY_KEEPALIVE") == "true",
+		keepaliveOn:  keepaliveEnabled(env("WAIVEO_RELAY_KEEPALIVE")),
 	}, nil
 }
 
-// discoveryEnabled reads WAIVEO_RELAY_DISCOVERY as an OPT-OUT: unset or anything
-// other than an explicit off value enables the SSDP client sweep.
+// offValue reports whether raw spells an explicit "off" for one of this
+// binary's two OPT-OUT switches (WAIVEO_RELAY_DISCOVERY, WAIVEO_RELAY_KEEPALIVE
+// — see config's own doc for why those two default on and the multicast
+// announce switches do not).
 //
-// This is the one lane in this binary whose default is on, and the asymmetry is
-// deliberate. The other multicast switches (the SSDP RESPONDER, the mDNS
-// listener) make this box ANNOUNCE itself or bind a well-known multicast port,
-// which is intrusive on a network that did not ask and, in mDNS's case,
-// collides outright with the host's own avahi daemon. An M-SEARCH is neither:
-// it is a control point ASKING who is out there, which is the entire job of a
-// signage appliance that has to find the TVs it drives. Leaving it off by
-// default meant a fresh box discovered nothing at all until somebody knew to set
-// an environment variable — the appliance shipped unable to see its own
-// hardware, and the legacy system it replaces swept always-on.
+// Written as an explicit off-list rather than as `!= "0"` so a typo — the
+// classic `=disabled` — does not silently mean "on" for an operator who plainly
+// intended otherwise. Anything NOT on the list (including a typo the list does
+// not anticipate) leaves the capability on, which is the safe direction for a
+// default that exists so the box works out of the box.
 //
-// The off values are the exact spellings an operator or a unit-test harness
-// would reach for; anything else (including a typo) leaves discovery on, which
-// is the safe direction for a default that exists so the box works out of the
-// box.
-func discoveryEnabled(raw string) bool {
+// One shared list rather than one per switch, deliberately: the two flags are
+// spelled the same way in the same deployment file, and an operator who learns
+// that WAIVEO_RELAY_KEEPALIVE=disabled works is entitled to expect
+// WAIVEO_RELAY_DISCOVERY=disabled to work too. The tracks that introduced these
+// two switches independently arrived at off-lists differing by exactly that one
+// spelling; unifying on the LONGER list keeps every spelling either track
+// already honored.
+func offValue(raw string) bool {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "0", "false", "off", "no":
-		return false
-	default:
+	case "0", "false", "off", "no", "disabled":
 		return true
+	default:
+		return false
 	}
+}
+
+// discoveryEnabled reads WAIVEO_RELAY_DISCOVERY as an OPT-OUT: unset or
+// anything other than an explicit off value enables the SSDP client sweep
+// (see config.discoveryOn's own doc for why the default is on).
+func discoveryEnabled(raw string) bool {
+	return !offValue(raw)
+}
+
+// keepaliveEnabled reads WAIVEO_RELAY_KEEPALIVE as an OPT-OUT: unset, or any
+// value other than an explicit off, leaves the screen keep-alive capability
+// running (see config.keepaliveOn's own doc for why the default is on).
+func keepaliveEnabled(raw string) bool {
+	return !offValue(raw)
 }
 
 // parseMDNSPatterns parses "svc1,svc2" into the mdns package's Config.Patterns
@@ -863,21 +909,45 @@ func main() {
 	// while standby, never while the screen's own active Lease is blank) —
 	// see keepalive's own package doc for why this needs its OWN Poller
 	// rather than sharing the one host.Run above already exclusively
-	// consumes. Off by default (WAIVEO_RELAY_KEEPALIVE unset).
+	// consumes. ON by default (WAIVEO_RELAY_KEEPALIVE=0 disables it) — see
+	// config.keepaliveOn's own doc.
 	//
-	// Its target set is deliberately still the explicit override map rather than
-	// the adoption gate's live set: keepalive.Config.Targets is fixed at
-	// construction, and a boot-time snapshot of the gate would be empty on the
-	// discovered path (no sweep has landed yet) — an adoption-following
-	// keep-alive needs keepalive itself to grow a SetTargets the way the state
-	// poller just did. Until then, "keep-alive drives explicitly configured
-	// targets" is coherent and, more importantly, cannot silently start
-	// relaunching channels on screens the legacy stack still owns.
+	// Its target set is deliberately still the explicit override map
+	// (cfg.ecpTargets) rather than the adoption gate's live set:
+	// keepalive.Config.Targets is fixed at construction, and a boot-time
+	// snapshot of the gate would be empty on the DISCOVERED path (no sweep has
+	// landed yet) — an adoption-following keep-alive needs keepalive itself to
+	// grow a SetTargets the way the state poller above just did. So the
+	// capability being on by default widens the set it WATCHES to nothing that
+	// was not already explicitly configured; what it does not do is leave the
+	// configured screens dark.
+	//
+	// That is also why the on-by-default flip is not the same decision as
+	// "drive whatever we can reach". Adoption is enforced separately, per
+	// dispatch, by the Adopted gate wired below.
+	//
+	// keepaliveAdoption is declared out here, above the block, because two
+	// places need it: this wiring reads it on every poll, and the live
+	// re-pull path (rePuller, livepull.go) REFRESHES it on every applied
+	// generation. It stays nil when the capability is off, which is the
+	// signal the puller uses to skip refreshing a set nothing consults.
+	var keepaliveAdoption *keepalive.AdoptionSet
 	if cfg.keepaliveOn && len(cfg.ecpTargets) > 0 {
 		kaTargets := make(map[string]keepalive.Target, len(cfg.ecpTargets))
 		for entityID, t := range cfg.ecpTargets {
 			kaTargets[entityID] = keepalive.Target{Host: t.Host, Port: t.Port}
 		}
+
+		// The adoption gate, seeded from the generation this boot applied and
+		// refreshed by every later one. Seeding here rather than leaving it
+		// empty until the first live pull matters on the path this whole
+		// capability exists for: after a power cut the relay boots, applies
+		// its persisted or freshly-pulled generation, and the screens are
+		// already sitting at Home — waiting for a nudge that may be minutes
+		// away would be waiting through exactly the outage.
+		keepaliveAdoption = keepalive.NewAdoptionSet()
+		keepaliveAdoption.Apply(applied.Generation, applied.DeviceInventory)
+
 		ka := keepalive.New(keepalive.Config{
 			Targets:      kaTargets,
 			PollInterval: cfg.pollInterval,
@@ -916,6 +986,13 @@ func main() {
 			// both suppress recovery on a live screen and relaunch an
 			// intentionally blanked one.
 			ActiveDisplay: blankSuppressionReader(pairingSrv),
+			// The adoption gate (keepalive.AdoptionSet): reachability is not
+			// permission. This relay can reach every Roku on the LAN,
+			// including the ones the legacy stack is still watchdogging
+			// during coexistence, and two controllers re-launching one Roku
+			// makes it flap. Only entities the app peer's signed
+			// `device_inventory` marks adopted + enabled are driven.
+			Adopted: keepaliveAdoption.IsAdopted,
 		})
 		go func() {
 			if err := ka.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
@@ -1089,6 +1166,7 @@ func main() {
 		lastGen:        applied.Generation,
 		lastHash:       applied.Hash,
 		applyInventory: installInventory,
+		adoption:       keepaliveAdoption,
 	}
 	puller.pull = func(since int64) (desiredstate.Applied, error) {
 		c := liveConn.get()

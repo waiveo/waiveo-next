@@ -204,6 +204,25 @@ type Applied struct {
 	// then dropped on the way out, so the layer that gates device control had
 	// nothing to gate on and the gate degenerated to an env var
 	// (internal/relay/devicetargets).
+	//
+	// (REL-063/064), carried unmodified — the app peer's ADOPTED set, which
+	// REL-063 is explicit is "the adoption decision the app authors and ships
+	// down, never a copy of what a relay discovered".
+	//
+	// It is carried because adoption is the only signal in a snapshot that
+	// answers "may this relay drive this entity?", and something has to ask.
+	// internal/relay/keepalive is the first caller: it re-launches a screen's
+	// channel, and doing that to a screen this deployment has NOT adopted is
+	// not a harmless no-op — during coexistence the legacy stack is
+	// watchdogging its own screens, and two controllers relaunching one Roku
+	// is a known, observed flapping failure. `enabled` on the entity is part
+	// of the same statement, so a device adopted but deliberately switched off
+	// is not driven either.
+	//
+	// Carried as the snapshot decoded it, raw arrays included, for the same
+	// reason `edge_rules` is: a consumer decodes the members it needs, and a
+	// member a future minor adds survives here untouched rather than being
+	// dropped by a typed re-marshal.
 	DeviceInventory wire.DeviceInventory
 }
 
