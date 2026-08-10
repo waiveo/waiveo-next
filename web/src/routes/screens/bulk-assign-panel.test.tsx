@@ -1,12 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
 import { render, screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { http, HttpResponse } from "msw";
+import { delay, http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { ThemeProvider } from "@/components/theme/theme-provider";
 import { Toaster } from "@/components/kit/toaster";
 import { BulkAssignPanel, composeSelector } from "./bulk-assign-panel";
 import { createApi, type Schedule, type ScopeNode, type Screen } from "@/api";
+import { selectOptionWhenReady } from "@/test/select";
 import { TEST_BASE, TRACE_ID, ULID_A, ULID_B, ULID_ROOT, ok, problem, scopeNode } from "@/api/test-support";
 
 // The daily fleet gesture, clicked through. Two things these tests hold:
@@ -106,7 +107,7 @@ describe("composeSelector", () => {
 describe("BulkAssignPanel — matching the target set", () => {
   it("sends the composed selector to the server and reports the match", async () => {
     const { user, selectors } = renderPanel([screenRow(), screenRow({ id: SCREEN_2, name: "Cafe board" })]);
-    await user.selectOptions(await screen.findByLabelText("To screens in"), GROUP);
+    await selectOptionWhenReady(user, "To screens in", GROUP);
     await user.type(screen.getByLabelText(/matching labels/), "zone=lobby");
     expect(screen.getByTestId("bulk-selector")).toHaveTextContent(
       `scope_node subtree ${GROUP},zone=lobby`,
@@ -138,6 +139,39 @@ describe("BulkAssignPanel — matching the target set", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(/unexpected token/);
   });
 
+  // The schedule picker paints on mount carrying only its placeholder option;
+  // its real options arrive when `collectPages(api.schedules.list)` resolves.
+  // Every test here drives that control, so a test that assumes the option is
+  // there the moment the SELECT is there passes or fails on fetch timing alone
+  // — green on a warm cache, "Unable to find an option" on cold CI. This case
+  // makes that ordering the explicit subject: the fetch is delayed past the
+  // first paint, and the panel must still end up assignable.
+  it("can assign against a schedule list that arrives after the first paint", async () => {
+    server.use(
+      http.get(`${TEST_BASE}/schedules`, async () => {
+        await delay(50);
+        return page([schedule()]);
+      }),
+      http.get(`${TEST_BASE}/screens`, () => page([screenRow()])),
+    );
+    const api = createApi({ baseUrl: TEST_BASE });
+    render(
+      <ThemeProvider>
+        <BulkAssignPanel api={api} nodes={[site, group]} onChanged={vi.fn(async () => {})} />
+        <Toaster />
+      </ThemeProvider>,
+    );
+    const user = userEvent.setup();
+
+    // The control exists immediately and is EMPTY of real options — the exact
+    // window the racy spelling used to fall into.
+    const picker = (await screen.findByLabelText("Assign this schedule")) as HTMLSelectElement;
+    expect(Array.from(picker.options).map((o) => o.value)).toEqual([""]);
+
+    await selectOptionWhenReady(user, "Assign this schedule", SCHEDULE_ID);
+    expect(picker.value).toBe(SCHEDULE_ID);
+  });
+
   it("will not assign before a schedule is chosen and a match previewed", async () => {
     const { user } = renderPanel();
     const assign = await screen.findByRole("button", { name: "Assign to matched screens" });
@@ -146,7 +180,7 @@ describe("BulkAssignPanel — matching the target set", () => {
     await screen.findByText("1 screen matched.");
     // Matched, but no destination yet — there is nowhere to move them to.
     expect(assign).toBeDisabled();
-    await user.selectOptions(screen.getByLabelText("Assign this schedule"), SCHEDULE_ID);
+    await selectOptionWhenReady(user, "Assign this schedule", SCHEDULE_ID);
     await waitFor(() => expect(assign).toBeEnabled());
   });
 });
@@ -169,7 +203,7 @@ describe("BulkAssignPanel — the fan-out", () => {
       }),
     );
 
-    await user.selectOptions(await screen.findByLabelText("Assign this schedule"), SCHEDULE_ID);
+    await selectOptionWhenReady(user, "Assign this schedule", SCHEDULE_ID);
     await user.click(screen.getByRole("button", { name: "Preview matches" }));
     await screen.findByText("2 screens matched.");
     await user.click(screen.getByRole("button", { name: "Assign to matched screens" }));
@@ -196,7 +230,7 @@ describe("BulkAssignPanel — the fan-out", () => {
         return ok(screenRow({ scope_node: GROUP, revision: 4 }), { revision: 4 });
       }),
     );
-    await user.selectOptions(await screen.findByLabelText("Assign this schedule"), SCHEDULE_ID);
+    await selectOptionWhenReady(user, "Assign this schedule", SCHEDULE_ID);
     await user.click(screen.getByRole("button", { name: "Preview matches" }));
     await screen.findByText("2 screens matched.");
     await user.click(screen.getByRole("button", { name: "Assign to matched screens" }));
@@ -221,7 +255,7 @@ describe("BulkAssignPanel — the fan-out", () => {
         ok(screenRow({ id: SCREEN_2, scope_node: GROUP, revision: 10 }), { revision: 10 }),
       ),
     );
-    await user.selectOptions(await screen.findByLabelText("Assign this schedule"), SCHEDULE_ID);
+    await selectOptionWhenReady(user, "Assign this schedule", SCHEDULE_ID);
     await user.click(screen.getByRole("button", { name: "Preview matches" }));
     await screen.findByText("2 screens matched.");
     await user.click(screen.getByRole("button", { name: "Assign to matched screens" }));

@@ -263,6 +263,37 @@ describe("Devices — adopting, clicked through", () => {
     expect(within(table).getByText("Discovered")).toBeInTheDocument();
     expect(within(table).getByRole("button", { name: "Adopt" })).toBeEnabled();
   });
+
+  // Pressing a DEVICE ROW narrows the entities table; pressing the Adopt button
+  // INSIDE that row must not do both. The button sits inside the row's own
+  // click target, so without a guard the operator gets an entities filter they
+  // never asked for — and cancelling the modal leaves it applied with nothing
+  // on screen to explain it.
+  it("does not narrow the entities table when Adopt is pressed inside a row", async () => {
+    seed({
+      devices: [device(), device({ id: OTHER_DEVICE_ID, name: "Cafe TV" })],
+      entities: [
+        entity(),
+        entity({ id: OTHER_ENTITY_ID, device_id: OTHER_DEVICE_ID, name: "Cafe TV main" }),
+      ],
+    });
+    const user = renderRoute();
+    const devices = await screen.findByRole("table", { name: "Discovered devices" });
+    const hangerRow = within(devices).getByText("Hanger TV").closest("tr")!;
+    await user.click(within(hangerRow).getByRole("button", { name: "Adopt" }));
+
+    // The dialog opened — the button did its own job…
+    const dialog = await screen.findByRole("dialog", { name: /Adopt Hanger TV/ });
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    // …and nothing else: no selection was made, so both devices' entities are
+    // still listed and there is no filter to release.
+    expect(screen.queryByRole("button", { name: "Show all entities" })).toBeNull();
+    const entitiesTable = screen.getByRole("table", { name: "Entities" });
+    expect(within(entitiesTable).getByText("Cafe TV main")).toBeInTheDocument();
+    expect(within(entitiesTable).getByText("Hanger TV main")).toBeInTheDocument();
+  });
 });
 
 describe("Devices — entities and the remote", () => {
