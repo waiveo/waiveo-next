@@ -1800,6 +1800,12 @@ type RunAutomationParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// ListContentParams defines parameters for ListContent.
+type ListContentParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // UploadContentParams defines parameters for UploadContent.
 type UploadContentParams struct {
 	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
@@ -2570,6 +2576,9 @@ type ClientInterface interface {
 
 	RunAutomation(ctx context.Context, automationId Ulid, params *RunAutomationParams, body RunAutomationJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// ListContent request
+	ListContent(ctx context.Context, params *ListContentParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// UploadContentWithBody request with any body
 	UploadContentWithBody(ctx context.Context, params *UploadContentParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -3139,6 +3148,18 @@ func (c *Client) RunAutomationWithBody(ctx context.Context, automationId Ulid, p
 
 func (c *Client) RunAutomation(ctx context.Context, automationId Ulid, params *RunAutomationParams, body RunAutomationJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewRunAutomationRequest(c.Server, automationId, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListContent(ctx context.Context, params *ListContentParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListContentRequest(c.Server, params)
 	if err != nil {
 		return nil, err
 	}
@@ -5256,6 +5277,48 @@ func NewRunAutomationRequestWithBody(server string, automationId Ulid, params *R
 			}
 
 			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewListContentRequest generates requests for ListContent
+func NewListContentRequest(server string, params *ListContentParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/content")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
 		}
 
 	}
@@ -9239,6 +9302,9 @@ type ClientWithResponsesInterface interface {
 
 	RunAutomationWithResponse(ctx context.Context, automationId Ulid, params *RunAutomationParams, body RunAutomationJSONRequestBody, reqEditors ...RequestEditorFn) (*RunAutomationResponse, error)
 
+	// ListContentWithResponse request
+	ListContentWithResponse(ctx context.Context, params *ListContentParams, reqEditors ...RequestEditorFn) (*ListContentResponse, error)
+
 	// UploadContentWithBodyWithResponse request with any body
 	UploadContentWithBodyWithResponse(ctx context.Context, params *UploadContentParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UploadContentResponse, error)
 
@@ -10119,6 +10185,36 @@ func (r RunAutomationResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r RunAutomationResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ListContentResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+}
+
+// Status returns HTTPResponse.Status
+func (r ListContentResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListContentResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ListContentResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -12274,6 +12370,15 @@ func (c *ClientWithResponses) RunAutomationWithResponse(ctx context.Context, aut
 	return ParseRunAutomationResponse(rsp)
 }
 
+// ListContentWithResponse request returning *ListContentResponse
+func (c *ClientWithResponses) ListContentWithResponse(ctx context.Context, params *ListContentParams, reqEditors ...RequestEditorFn) (*ListContentResponse, error) {
+	rsp, err := c.ListContent(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListContentResponse(rsp)
+}
+
 // UploadContentWithBodyWithResponse request with arbitrary body returning *UploadContentResponse
 func (c *ClientWithResponses) UploadContentWithBodyWithResponse(ctx context.Context, params *UploadContentParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UploadContentResponse, error) {
 	rsp, err := c.UploadContentWithBody(ctx, params, contentType, body, reqEditors...)
@@ -13997,6 +14102,32 @@ func ParseRunAutomationResponse(rsp *http.Response) (*RunAutomationResponse, err
 			return nil, err
 		}
 		response.ApplicationproblemJSON429 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListContentResponse parses an HTTP response from a ListContentWithResponse call
+func ParseListContentResponse(rsp *http.Response) (*ListContentResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListContentResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
 
 	}
 
