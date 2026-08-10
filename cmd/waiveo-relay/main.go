@@ -767,17 +767,23 @@ func main() {
 	//     relay with no polled devices simply never populates it and every
 	//     entity widget shows the unavailable placeholder.
 	//
-	// Both are installed unconditionally, including on a relay whose
-	// site_binding carried no coordinates (0,0): the weather source caches per
-	// location and an implausible one simply returns whatever that point's
-	// forecast is, which is no worse than the placeholder and needs no special
-	// case here. The pull itself is background and never blocks a Lease.
-	pairingSrv.SetSlideLive(slidelive.Sources{
-		Weather: slidelive.NewOpenMeteo(slidelive.OpenMeteoConfig{}),
-		Entity:  slidelive.EntitySourceFunc(host.EntityState),
-		Lat:     site.Lat,
-		Long:    site.Long,
-	})
+	// Installed through siteGeo rather than written here once, because `site` is
+	// the zero binding on an offline boot (REL-055/061) and this relay must
+	// self-correct when the real one arrives on a later hello-ack instead of
+	// asking the weather at (0,0) until someone restarts the process — see
+	// siteGeo's own doc, and slidelive.Sources.HasGeo for why (0,0) draws a dash
+	// rather than the Gulf of Guinea's forecast. The same value is adopted into
+	// the automation engine's location, so a slide's weather and a rule's sunset
+	// agree about where this relay is by construction, on every adoption and not
+	// just the first. The forecast pull itself is background and never blocks a
+	// Lease.
+	geo := &siteGeo{
+		setSlideLive: pairingSrv.SetSlideLive,
+		setLocation:  host.SetLocation,
+		weather:      slidelive.NewOpenMeteo(slidelive.OpenMeteoConfig{}),
+		entity:       slidelive.EntitySourceFunc(host.EntityState),
+	}
+	geo.adopt(site)
 
 	logPairingCodes(cfg, applied, certDER, relayID.RelayID)
 
@@ -1167,6 +1173,7 @@ func main() {
 		lastHash:       applied.Hash,
 		applyInventory: installInventory,
 		adoption:       keepaliveAdoption,
+		geo:            geo,
 	}
 	puller.pull = func(since int64) (desiredstate.Applied, error) {
 		c := liveConn.get()

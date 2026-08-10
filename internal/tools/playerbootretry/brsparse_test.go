@@ -203,6 +203,66 @@ func ifChain(t *testing.T, body []line, needle string) []branch {
 	return nil
 }
 
+// loopExit is one statement that ends the enclosing loop — or the whole task.
+type loopExit struct {
+	at   line
+	kind string // "return", "exit while", "exit for", "halt"
+}
+
+// loopExits reports every statement in these lines that stops going round.
+//
+// It exists because the two loop guards in this file each used to decide that
+// for themselves, differently, and the program-loop one decided it wrong: it
+// asked whether a statement BEGAN with `return`, which sees
+//
+//	return
+//
+// but not
+//
+//	if not everSucceeded then return
+//
+// — BrightScript's ordinary spelling, used twice in PlayerTask.brs itself for
+// the stop check, and therefore the exact form a developer re-introducing the
+// one-shot boot defect would reach for. One shared definition, applied to
+// tokens rather than prefixes, is the fix; `exit while` and a bare `end` are
+// included because they end the retry every bit as terminally as a return.
+//
+// Tokenizing (rather than substring-matching, which the pairing guard used) is
+// what keeps `returnCode = 1` and a log line containing the word "return" from
+// reading as exits.
+func loopExits(stmts []line) []loopExit {
+	var out []loopExit
+	for _, l := range stmts {
+		toks := tokenize(l.text)
+		for i, tk := range toks {
+			switch {
+			case strings.EqualFold(tk, "return"):
+				out = append(out, loopExit{at: l, kind: "return"})
+			case strings.EqualFold(tk, "exit") && i+1 < len(toks) && strings.EqualFold(toks[i+1], "while"):
+				out = append(out, loopExit{at: l, kind: "exit while"})
+			case strings.EqualFold(tk, "exit") && i+1 < len(toks) && strings.EqualFold(toks[i+1], "for"):
+				out = append(out, loopExit{at: l, kind: "exit for"})
+			case len(toks) == 1 && (strings.EqualFold(tk, "end") || strings.EqualFold(tk, "stop")):
+				out = append(out, loopExit{at: l, kind: "halt"})
+			}
+		}
+	}
+	return out
+}
+
+// leavesTheTask reports the exits that end the whole task rather than just the
+// enclosing loop — the only kind the pairing loop forbids, since it leaves
+// legitimately (into the program poll) via `exit while`.
+func leavesTheTask(stmts []line) []loopExit {
+	var out []loopExit
+	for _, e := range loopExits(stmts) {
+		if e.kind == "return" || e.kind == "halt" {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // containsStatement reports whether any statement in the branch is (or begins
 // with) stmt.
 func (b branch) containsStatement(stmt string) bool {
@@ -251,14 +311,20 @@ func intFunc(t *testing.T, lines []line, name string) int {
 	return 0
 }
 
-// THE regression guard. A screen that fails its FIRST program pull must retry
-// forever: the failure branch may not leave the loop, and it must wait on the
-// backoff before going round again.
+// The structural half of the regression guard: of the program loop's failure
+// arms, exactly ONE may leave the loop, and it must be the dead-credential one.
 //
-// Stated as "the only branch that returns is the dead-credential one" rather
-// than as "the first-pull branch does not return", because the one-shot defect
-// can be re-introduced in any arm — and because a NEW terminal branch is
-// exactly as bad as the old one, whatever it is called.
+// Stated as "the only branch that exits is the dead-credential one" rather than
+// as "the first-pull branch does not return", because the one-shot defect can
+// be re-introduced in any arm — and because a NEW terminal branch is exactly as
+// bad as the old one, whatever it is called.
+//
+// The behavioural guard in behavior_test.go is the stronger statement of the
+// same property (it walks the loop under a stated scenario, so it sees an exit
+// wherever it is nested and whatever it is spelled). This one survives beside
+// it because it says something the walk does not: WHICH arm the one legal exit
+// belongs to. A player that retried a revoked credential forever would satisfy
+// every scenario and still be wrong.
 func TestProgramLoopOnlyTerminalExitIsTheDeadCredential(t *testing.T) {
 	body := subBody(t, readPlayerTask(t), "runPhoton")
 	loops := whileBlocks(t, body)
@@ -269,7 +335,10 @@ func TestProgramLoopOnlyTerminalExitIsTheDeadCredential(t *testing.T) {
 
 	var returning []branch
 	for _, b := range ifChain(t, program, "prog.ok") {
-		if b.containsStatement("return") {
+		// Any spelling of leaving: `return`, `exit while`, a bare `end` — and
+		// at any depth inside the arm, not just as its first word. See
+		// loopExits for why that breadth is the whole point.
+		if len(loopExits(b.stmts)) > 0 {
 			returning = append(returning, b)
 		}
 	}
@@ -277,10 +346,12 @@ func TestProgramLoopOnlyTerminalExitIsTheDeadCredential(t *testing.T) {
 	if len(returning) != 1 {
 		var where []string
 		for _, b := range returning {
-			where = append(where, "line "+strconv.Itoa(b.cond.n)+": "+b.cond.text)
+			for _, e := range loopExits(b.stmts) {
+				where = append(where, "branch at line "+strconv.Itoa(b.cond.n)+" ("+b.cond.text+") exits at line "+strconv.Itoa(e.at.n)+": "+e.at.text)
+			}
 		}
-		t.Fatalf("the program loop has %d branch(es) that RETURN, want exactly 1 (the needsRepair dead-credential exit).\n"+
-			"A branch that returns is a screen that gives up. This is the one-shot boot-retry defect:\n  %s",
+		t.Fatalf("the program loop has %d branch(es) that LEAVE THE LOOP, want exactly 1 (the needsRepair dead-credential exit).\n"+
+			"A branch that leaves is a screen that gives up. This is the one-shot boot-retry defect:\n  %s",
 			len(returning), strings.Join(where, "\n  "))
 	}
 	if !strings.Contains(returning[0].cond.text, "needsRepair") {
@@ -381,13 +452,13 @@ func TestPairingLoopRetriesAndNeverGivesUp(t *testing.T) {
 	body := subBody(t, readPlayerTask(t), "runPhoton")
 	pairing := whileBlocks(t, body)[0]
 
-	for _, l := range pairing {
-		if !strings.Contains(l.text, "return") {
-			continue
-		}
-		if !strings.Contains(l.text, "wvTaskShouldKeepRunning") {
-			t.Errorf("line %d returns out of the pairing loop (%q); the only legal exit is the owner's stop request — "+
-				"a pairing failure with no persisted state must retry, not strand the screen", l.n, l.text)
+	// `exit while` is legal here (a successful pairing, and the never-wipe
+	// fallback to a persisted one, both leave this loop for the program poll),
+	// so only the exits that end the TASK are forbidden.
+	for _, e := range leavesTheTask(pairing) {
+		if !strings.Contains(e.at.text, "wvTaskShouldKeepRunning") {
+			t.Errorf("line %d leaves the task from inside the pairing loop (%q, %s); the only legal exit is the owner's stop request — "+
+				"a pairing failure with no persisted state must retry, not strand the screen", e.at.n, e.at.text, e.kind)
 		}
 	}
 

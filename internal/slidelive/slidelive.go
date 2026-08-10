@@ -51,6 +51,7 @@ package slidelive
 
 import (
 	"context"
+	"math"
 	"strconv"
 	"strings"
 
@@ -149,11 +150,67 @@ func (f EntitySourceFunc) EntityState(entityID string) (string, bool) { return f
 // A zero Sources (both interfaces nil) is valid and resolves every live widget
 // to Unavailable, which is what a relay with no configured weather and no device
 // plane should show.
+//
+// # Coordinates a relay does not have
+//
+// Lat/Long are the ONE input here that can be silently, plausibly wrong, and the
+// wrong value is the zero value. A relay boots into offline-serve (REL-055/061)
+// whenever the app peer is unreachable — an app restart, a feeder outage, a WAN
+// partition to the app alone — and adopts NO site_binding on that path, so the
+// coordinates it would ask the weather at are (0, 0). Open-Meteo answers that
+// point (the Gulf of Guinea) as happily as any other, so the widget would paint
+// a confident, plausible, wrong temperature instead of the placeholder the whole
+// degrade path exists for. Nobody notices a wrong temperature on a wall; that is
+// exactly what makes it worse than a dash. See HasGeo.
 type Sources struct {
 	Weather WeatherSource
 	Entity  EntitySource
 	Lat     float64
 	Long    float64
+}
+
+// HasGeo reports whether Lat/Long name a location this relay may actually ask
+// the weather at — i.e. whether the site's DAT-033 effective geo has been
+// adopted at all.
+//
+// Three things disqualify a coordinate pair, and each is a value that reaches
+// here only because something upstream had no answer:
+//
+//   - (0, 0), the zero value of an unadopted hello.SiteBinding. It is also a
+//     real point in the ocean, which is the trap: it is not rejected because it
+//     is invalid, it is rejected because a site is never there and an unadopted
+//     binding always is. A genuine Null Island deployment would see the
+//     unavailable placeholder — a trade taken knowingly, and the only one of the
+//     three with any cost at all.
+//   - Out of range (|lat| > 90, |long| > 180): not a location, so no answer
+//     about it can be right.
+//   - NaN or ±Inf: the same, and they would additionally poison OpenMeteo's
+//     cache key.
+//
+// It is exported because a deployment wants to SAY so at boot — a relay that
+// will show dashes until its app peer comes up should log that once, rather than
+// leave an operator inspecting a blank widget.
+func (s Sources) HasGeo() bool {
+	if math.IsNaN(s.Lat) || math.IsNaN(s.Long) || math.IsInf(s.Lat, 0) || math.IsInf(s.Long, 0) {
+		return false
+	}
+	if s.Lat == 0 && s.Long == 0 {
+		return false
+	}
+	return math.Abs(s.Lat) <= 90 && math.Abs(s.Long) <= 180
+}
+
+// weatherLookup returns the coordinates a weather lookup may be performed at,
+// and whether one may be performed at all.
+//
+// It is the single place the two reasons NOT to ask — no source configured, and
+// no location to ask about — are decided, so a caller cannot honor one and
+// forget the other.
+func (s Sources) weatherLookup() (lat, long float64, ok bool) {
+	if s.Weather == nil || !s.HasGeo() {
+		return 0, 0, false
+	}
+	return s.Lat, s.Long, true
 }
 
 // ResolveContent returns content with every `slide` item's `weather`/`entity`
@@ -205,8 +262,13 @@ func ResolveLayers(layers []wire.Layer, src Sources) []wire.Layer {
 		case wire.LayerKindWeather:
 			if !condsRead {
 				condsRead = true
-				if src.Weather != nil {
-					conds, condsOK = src.Weather.Current(context.Background(), src.Lat, src.Long)
+				// A relay with no adopted coordinates asks NOTHING rather than
+				// asking about (0,0): see Sources.HasGeo. condsOK stays false,
+				// so the widget degrades to Unavailable exactly as it does for a
+				// source that cannot answer — which is the honest report, since
+				// this relay genuinely does not know where it is yet.
+				if lat, long, ok := src.weatherLookup(); ok {
+					conds, condsOK = src.Weather.Current(context.Background(), lat, long)
 				}
 			}
 			out[i].Value = weatherValue(out[i].Text, conds, condsOK)

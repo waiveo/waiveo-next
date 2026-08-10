@@ -34,6 +34,16 @@ func (f fixedEntities) EntityState(id string) (string, bool) {
 	return v, ok
 }
 
+// siteLat/siteLong are the coordinates a real hello.SiteBinding (REL-036)
+// carries. Every case that expects a weather value has to configure them:
+// slidelive deliberately asks NOTHING when the relay holds no adopted geo, so a
+// Sources left at (0,0) resolves the placeholder no matter what the source
+// would have said.
+const (
+	siteLat  = 39.7392
+	siteLong = -104.9903
+)
+
 // liveWidgetLayers is a slide carrying one of each server-resolved kind
 // alongside a static text layer, so a case can assert that only the live ones
 // are touched.
@@ -50,8 +60,8 @@ func TestLeaseResolvesLiveWidgetValuesAtIssuance(t *testing.T) {
 	srv.SetSlideLive(slidelive.Sources{
 		Weather: fixedWeather{conds: slidelive.Conditions{TempF: 84, TempC: 29, Text: "Clear"}, ok: true},
 		Entity:  fixedEntities{"01J8Z3K4N5P6Q7R8S9T0V1SCRN": "playing"},
-		Lat:     39.7392,
-		Long:    -104.9903,
+		Lat:     siteLat,
+		Long:    siteLong,
 	})
 
 	resp, body := doProgram(t, srv, token, []string{"image", "video", "slide"})
@@ -89,6 +99,8 @@ func TestLeaseResolvesLiveWidgetsFreshOnEveryPull(t *testing.T) {
 	srv.SetSlideLive(slidelive.Sources{
 		Weather: fixedWeather{conds: slidelive.Conditions{TempF: 84, Text: "Clear"}, ok: true},
 		Entity:  fixedEntities{"01J8Z3K4N5P6Q7R8S9T0V1SCRN": "off"},
+		Lat:     siteLat,
+		Long:    siteLong,
 	})
 	_, first := doProgram(t, srv, token, []string{"slide"})
 	var leaseA LeaseResponse
@@ -97,6 +109,8 @@ func TestLeaseResolvesLiveWidgetsFreshOnEveryPull(t *testing.T) {
 	srv.SetSlideLive(slidelive.Sources{
 		Weather: fixedWeather{conds: slidelive.Conditions{TempF: 61, Text: "Light rain"}, ok: true},
 		Entity:  fixedEntities{"01J8Z3K4N5P6Q7R8S9T0V1SCRN": "playing"},
+		Lat:     siteLat,
+		Long:    siteLong,
 	})
 	_, second := doProgram(t, srv, token, []string{"slide"})
 	var leaseB LeaseResponse
@@ -126,6 +140,8 @@ func TestLeaseIssuanceDoesNotMutateTheServedProgram(t *testing.T) {
 	srv, token := newSlideServer(t, liveWidgetLayers())
 	srv.SetSlideLive(slidelive.Sources{
 		Weather: fixedWeather{conds: slidelive.Conditions{TempF: 84, Text: "Clear"}, ok: true},
+		Lat:     siteLat,
+		Long:    siteLong,
 	})
 	doProgram(t, srv, token, []string{"slide"})
 
@@ -193,6 +209,8 @@ func TestLiveResolutionCoversTheScheduleResolvedPathToo(t *testing.T) {
 	srv.SetSlideLive(slidelive.Sources{
 		Weather: fixedWeather{conds: slidelive.Conditions{TempF: 47, Text: "Fog"}, ok: true},
 		Entity:  fixedEntities{"01J8Z3K4N5P6Q7R8S9T0V1SCRN": "off"},
+		Lat:     siteLat,
+		Long:    siteLong,
 	})
 
 	// A schedulehost-shaped write: Lease content directly, not a ContentRef.
