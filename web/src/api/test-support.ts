@@ -190,3 +190,44 @@ export function automation(over: Record<string, unknown> = {}) {
     ...over,
   };
 }
+
+// ── Cast + content-origin fixtures (the Studio's two data sources) ───────────
+
+/** A fixture cast: one slide carrying the three most load-bearing layer kinds —
+ * a background rect, a title, and a live clock. Deliberately NOT a bare
+ * single-layer stub: the Studio's z-order, selection and geometry behaviour are
+ * only meaningfully exercised against a real stack. */
+export function cast(over: Record<string, unknown> = {}) {
+  return {
+    id: ULID_A,
+    scope_node: ULID_ROOT,
+    name: "Lobby loop",
+    slides: [
+      {
+        id: "slide-1",
+        duration_ms: 10_000,
+        layers: [
+          { kind: "rect", x: 0, y: 0, w: 1920, h: 1080, color: "#101020" },
+          { kind: "text", x: 120, y: 200, w: 900, h: 160, text: "Welcome", font_px: 96, color: "#ffffff" },
+          { kind: "clock", x: 1400, y: 80, w: 420, h: 120, text: "3:04 PM", font_px: 72, color: "#f368c4" },
+        ],
+      },
+    ],
+    labels: {},
+    revision: 1,
+    created_at: 1_753_142_400_000,
+    updated_at: 1_753_142_400_000,
+    ...over,
+  };
+}
+
+/** A fixture content-origin listing row (GET /api/v1/content's `content[]`). */
+export function contentAsset(over: Record<string, unknown> = {}) {
+  return {
+    asset_ref: "sha256:aa11bb22cc33",
+    url: "/content/aa11bb22cc33",
+    size_bytes: 24_576,
+    stored_at: 1_753_142_400_000,
+    ...over,
+  };
+}

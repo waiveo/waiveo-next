@@ -9,6 +9,9 @@ import ScreensRoute from "@/routes/screens/screens-route";
 import DevicesRoute from "@/routes/devices/devices-route";
 import SchedulesRoute from "@/routes/schedules/schedules-route";
 import ContentRoute from "@/routes/content/content-route";
+import MediaRoute from "@/routes/media/media-route";
+import CastsRoute from "@/routes/casts/casts-route";
+import StudioRoute from "@/routes/studio/studio-route";
 import AutomationsRoute from "@/routes/automations/automations-route";
 import ActivityRoute from "@/routes/activity/activity-route";
 import DesignRoute from "@/routes/design/design-route";
@@ -63,6 +66,16 @@ export default function App() {
             <Route path="/devices" element={<DevicesRoute />} />
             <Route path="/schedules" element={<SchedulesRoute />} />
             <Route path="/content" element={<ContentRoute />} />
+            {/* The authoring pair: the cast library lists the slide documents,
+                and the Studio edits ONE of them — addressed by `?id=` rather
+                than a path segment because the Studio is a tool applied to a
+                cast, not a sub-resource of one, and the same editor opens with
+                no cast at all (it says so, and links back to the library). */}
+            <Route path="/casts" element={<CastsRoute />} />
+            <Route path="/studio" element={<StudioRoute />} />
+            {/* The content origin's READ half. /content uploads and shows this
+                session's uploads; this browses everything already on the box. */}
+            <Route path="/media" element={<MediaRoute />} />
             <Route path="/automations" element={<AutomationsRoute />} />
             <Route path="/activity" element={<ActivityRoute />} />
             <Route path="/pages" element={<PagesRoute />} />

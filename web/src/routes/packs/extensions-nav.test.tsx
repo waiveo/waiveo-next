@@ -56,9 +56,19 @@ describe("Extensions nav", () => {
       "/p/acme/menu-board/settings",
     );
 
-    // The core Primary nav is untouched (the nine console destinations).
+    // The core Primary nav is untouched. What that MEANS is the assertion
+    // below: no pack page leaked out of the Extensions landmark into Primary.
+    // The count is the weaker proxy — it is the union of every route track's
+    // destinations (11 = the original 8, plus Devices, Casts and Media), and it
+    // has to be re-agreed every time a track adds a console route, which is why
+    // it is no longer the only thing checked here.
     const primary = screen.getAllByRole("navigation", { name: /primary/i })[0];
-    expect(within(primary).getAllByRole("link")).toHaveLength(9);
+    expect(within(primary).getAllByRole("link")).toHaveLength(11);
+    expect(
+      within(primary)
+        .getAllByRole("link")
+        .filter((a) => a.getAttribute("href")?.startsWith("/p/")),
+    ).toHaveLength(0);
   });
 
   it("drops a page whose manifest path would traverse out of /p/{pack}/ — no nav landmark escapes the pack", async () => {

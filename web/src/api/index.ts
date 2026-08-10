@@ -70,6 +70,7 @@ export {
   type PlaylistUpdate,
   type PlaylistItem,
   type ContentUploadResult,
+  type ContentAsset,
   type Screen,
   type ScreenCreate,
   type ScreenUpdate,
@@ -95,6 +96,24 @@ export {
   type AdoptedDeviceUpdate,
   type AdoptedDeviceEntity,
 } from "./devices";
+
+export {
+  createCastsModule,
+  validateSlide,
+  validateCastSlides,
+  SLIDE_CANVAS_WIDTH,
+  SLIDE_CANVAS_HEIGHT,
+  LAYER_KINDS,
+  type CastsModule,
+  type Cast,
+  type CastCreate,
+  type CastUpdate,
+  type CastSlide,
+  type SlideLayer,
+  type LayerKind,
+  type LayerAlign,
+  type SlideProblem,
+} from "./casts";
 
 export {
   createPacksModule,
