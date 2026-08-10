@@ -84,6 +84,7 @@ export {
   type DevicePlaneModules,
   type DeviceFacts,
   type ListOnlyModule,
+  type DevicesModule,
   type EntitiesModule,
   type Device,
   type Entity,

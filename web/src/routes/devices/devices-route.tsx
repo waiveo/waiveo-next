@@ -2,10 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Cpu, MonitorPlay, Network, RefreshCw, Radio } from "lucide-react";
 import {
   Button,
-  ConfirmModal,
   DataTable,
   EmptyState,
-  FormField,
   Modal,
   PageHeader,
   StatCard,
@@ -19,13 +17,9 @@ import {
   collectPages,
   createApi,
   deviceFacts,
-  etagForRevision,
   launchableApps,
-  type AdoptedDevice,
-  type AdoptedDeviceEntity,
   type Device,
   type Entity,
-  type ScopeNode,
   type WaiveoApi,
 } from "@/api";
 import { RokuRemote } from "./roku-remote";
@@ -40,28 +34,37 @@ import { RokuRemote } from "./roku-remote";
  * Discovery and adoption are different facts with different owners, and legacy
  * blurred them into a single "devices" list. Here they stay apart:
  *
- *   - `GET /devices` is a READ MODEL a relay owns. A row means "a relay reported
+ *   - DISCOVERY is a READ MODEL a relay owns. A row means "a relay reported
  *     seeing this on its LAN" (relay/1 REL-110/111) and nothing more. There is
  *     no write path — this console cannot create, rename, or delete one.
- *   - `GET /adopted-devices` is what THIS deployment decided. Adopting is
- *     therefore a CREATE of an adoption record keyed by REL-153's
- *     `(site, driver, native_id)`, and "Adopted" in the table below is a JOIN
- *     this page computes over that tuple — never a flag it wrote on a device.
+ *   - ADOPTION is what THIS deployment decided: a durable record keyed by
+ *     REL-153's `(site, driver, native_id)`, compiled into the signed
+ *     `device_inventory` the device's relay is sent (REL-063).
  *
  * The consequence worth stating: a device can be adopted while its relay is
  * offline (the record is durable; the discovered row is not), and a device can
  * be discovered forever without being adopted. Both states are normal and both
  * are legible in the status column.
  *
- * # Why Adopt can be disabled with a device sitting right there
+ * # Adopting is one call, and this page does not compose the record
  *
- * The identity tuple an adoption record needs is `driver` + `native_id`, and the
- * current `Device` representation publishes neither — `device_id` is a one-way
- * derivation of them (internal/shared/deviceid), so it cannot be run backwards
- * in a browser. Where a deployment surfaces the tuple (a top-level member on a
- * widened schema, or the `labels` map today) Adopt is live; where it does not,
- * the button is disabled and says why, because the alternative is a create body
- * built out of guesses that would adopt the wrong device under a plausible name.
+ * `POST /devices/{id}/adopt` is the whole operation. It takes no body: the
+ * identity tuple the record is keyed by is NOT on the discovered row — the
+ * server derives `device_id` from it one-way (internal/shared/deviceid), and
+ * `labels` is authored data discovery never writes into — so the server builds
+ * the record from its own durable mirror, which does hold the tuple.
+ *
+ * That is also why the status column reads `device.adopted` straight off the
+ * row rather than joining `/adopted-devices` onto it. The join has no key: the
+ * two resources share no member, by design. A console that joined on the tuple
+ * would find it absent on every row and report a fully-adopted fleet as
+ * entirely un-adopted, which is worse than not showing the column.
+ *
+ * Placement, poll cadence and per-entity policy are NOT asked for here. The
+ * server adopts with the device's own reported entities enabled and primary,
+ * and those are refined afterwards through the `adopted-devices` family — as is
+ * releasing a device, which needs the record's own id and revision and so
+ * belongs on a page that lists records, not discovered devices.
  *
  * # Control is entity-addressed
  *
@@ -77,31 +80,17 @@ import { RokuRemote } from "./roku-remote";
  * only rather than for every entity with a state. */
 const REMOTE_CLASS = "media-player";
 
-/** The scope-node kinds an adopted device may be placed under. A device is
- * adopted INTO a place in the tree — its identity is scoped to the site
- * (REL-153) — and sites and groups are the kinds an operator recognises as
- * "where the hardware is". */
-const PLACEMENT_SELECTOR = "kind in (site,group)";
-
 function problemMessage(err: unknown): string {
   if (err instanceof ApiError) return err.detail ?? err.code;
   return "the service is unreachable.";
 }
 
-/** The adoption-record key REL-153 fixes: `(driver, native_id)` within a site.
- * Length-prefixed rather than joined on a separator for the same reason the
- * server's own derivation is (internal/shared/deviceid): a separator can appear
- * inside a native_id — an SSDP USN is arbitrary text — and a joined key would
- * let two different devices collide onto one entry, showing one of them as
- * adopted because the other is. */
-function identityKey(driver: string, nativeId: string): string {
-  return `${driver.length}:${driver}${nativeId.length}:${nativeId}`;
-}
-
-/** A discovered device paired with the adoption record that claims it, if any. */
+/** A discovered device, flattened with the facts it reported and the entities
+ * it exposes. `adopted` is the row's own flag, not a computed join — see the
+ * module header. */
 interface DeviceRow {
   device: Device;
-  adopted: AdoptedDevice | null;
+  adopted: boolean;
   address: string | null;
   model: string | null;
   driver: string | null;
@@ -119,42 +108,27 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
   const client = useMemo(() => api ?? createApi(), [api]);
   const [devices, setDevices] = useState<Device[] | null>(null);
   const [entities, setEntities] = useState<Entity[]>([]);
-  const [adopted, setAdopted] = useState<AdoptedDevice[]>([]);
-  const [placements, setPlacements] = useState<ScopeNode[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Dialog>({ kind: "closed" });
-  const [forgetting, setForgetting] = useState<AdoptedDevice | null>(null);
   const [busy, setBusy] = useState(false);
   // The device whose entities the lower table is narrowed to; null shows every
   // entity in the deployment. Selection is a filter, not navigation — the two
   // tables are one page because a device is only interesting through what it
   // exposes.
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
-  // Adopt-form state, seeded when the dialog opens.
-  const [adoptName, setAdoptName] = useState("");
-  const [adoptPlacement, setAdoptPlacement] = useState("");
-  const [adoptCadence, setAdoptCadence] = useState("");
 
   const load = useCallback(async () => {
     try {
-      const [deviceRows, entityRows, adoptedRows, placementRows] = await Promise.all([
+      const [deviceRows, entityRows] = await Promise.all([
         collectPages<Device>((cursor) => client.devices.list({ cursor })),
         collectPages<Entity>((cursor) => client.entities.list({ cursor })),
-        collectPages<AdoptedDevice>((cursor) => client.adoptedDevices.list({ cursor })),
-        collectPages<ScopeNode>((cursor) =>
-          client.scopeNodes.list({ selector: PLACEMENT_SELECTOR, cursor }),
-        ),
       ]);
       setDevices(deviceRows);
       setEntities(entityRows);
-      setAdopted(adoptedRows);
-      setPlacements(placementRows);
       setLoadError(null);
     } catch (err) {
       setDevices([]);
       setEntities([]);
-      setAdopted([]);
-      setPlacements([]);
       setLoadError(problemMessage(err));
     }
   }, [client]);
@@ -164,19 +138,11 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
   }, [load]);
 
   const rows = useMemo<DeviceRow[]>(() => {
-    const byIdentity = new Map<string, AdoptedDevice>();
-    for (const record of adopted) {
-      byIdentity.set(identityKey(record.driver, record.native_id), record);
-    }
     return (devices ?? []).map((device) => {
       const facts = deviceFacts(device);
-      const claim =
-        facts.driver && facts.nativeId
-          ? (byIdentity.get(identityKey(facts.driver, facts.nativeId)) ?? null)
-          : null;
       return {
         device,
-        adopted: claim,
+        adopted: device.adopted,
         address: facts.address,
         model: facts.model,
         driver: facts.driver,
@@ -184,100 +150,45 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
         entities: entities.filter((e) => e.device_id === device.id),
       };
     });
-  }, [adopted, devices, entities]);
+  }, [devices, entities]);
 
   const relayCount = useMemo(
     () => new Set((devices ?? []).map((d) => d.relay_id)).size,
     [devices],
   );
-  const adoptedCount = useMemo(() => rows.filter((r) => r.adopted !== null).length, [rows]);
+  const adoptedCount = useMemo(() => rows.filter((r) => r.adopted).length, [rows]);
 
   const deviceNames = useMemo(
     () => new Map((devices ?? []).map((d) => [d.id, d.name] as [string, string])),
     [devices],
   );
-  const openAdopt = useCallback(
-    (row: DeviceRow) => {
-      setAdoptName(row.device.name);
-      // Default the placement to the device's own scope node — the relay already
-      // said where it is, so asking again is asking the operator to re-enter a
-      // fact the system has. Only when that node is one the picker OFFERS,
-      // though: a value with no matching <option> would leave the control
-      // showing the "choose…" placeholder while the state said otherwise, and
-      // the operator would submit a placement they never saw.
-      const known = placements.some((p) => p.id === row.device.scope_node);
-      setAdoptPlacement(known ? row.device.scope_node : "");
-      setAdoptCadence("");
-      setDialog({ kind: "adopt", row });
-    },
-    [placements],
-  );
+  const openAdopt = useCallback((row: DeviceRow) => {
+    setDialog({ kind: "adopt", row });
+  }, []);
 
   const confirmAdopt = useCallback(async () => {
     if (dialog.kind !== "adopt" || busy) return;
     const { row } = dialog;
-    if (!row.driver || !row.nativeId) return;
-    const name = adoptName.trim();
-    if (name === "") {
-      toast.error("Name the device before adopting it.");
-      return;
-    }
-    if (adoptPlacement === "") {
-      toast.error("Choose the site or group this device is adopted into.");
-      return;
-    }
-    // A blank cadence is "this deployment states no cadence" — REL-063 fixes no
-    // default, so the field is omitted rather than sent as some number the
-    // console invented.
-    const cadence = adoptCadence.trim() === "" ? null : Number(adoptCadence);
-    if (cadence !== null && (!Number.isInteger(cadence) || cadence < 1)) {
-      toast.error("Poll cadence must be a whole number of seconds, or blank.");
-      return;
-    }
-    // Every discovered entity is adopted enabled, visible, primary, under the
-    // name the device itself reports. These are POLICY (REL-063), which is why
-    // they can only be authored here — but an adoption that enabled nothing
-    // would ship a device_inventory entry no relay would ever poll.
-    const policy: AdoptedDeviceEntity[] = row.entities.map((e) => ({
-      entity_id: e.id,
-      device_class: e.device_class,
-      enabled: true,
-      hidden: false,
-      display_name: e.name,
-      category: "primary",
-    }));
     setBusy(true);
     try {
-      await client.adoptedDevices.create({
-        name,
-        scope_node: adoptPlacement,
-        driver: row.driver,
-        native_id: row.nativeId,
-        ...(cadence === null ? {} : { poll_cadence_seconds: cadence }),
-        entities: policy,
-      });
-      toast.success(`Adopted ${name}`);
+      const updated = await client.devices.adopt(row.device.id);
+      toast.success(`Adopted ${updated.name}`);
       setDialog({ kind: "closed" });
+      // The answer IS the adopted row, so the table can be corrected from it
+      // directly. The reload that follows is for the ENTITIES the adoption
+      // enabled, which this response does not carry — but patching the device
+      // first means the status column flips immediately rather than after a
+      // second round trip, and stays correct even if that reload fails.
+      setDevices((current) =>
+        (current ?? []).map((d) => (d.id === updated.id ? updated : d)),
+      );
       await load();
     } catch (err) {
       toast.error(`Couldn't adopt the device: ${problemMessage(err)}`);
     } finally {
       setBusy(false);
     }
-  }, [adoptCadence, adoptName, adoptPlacement, busy, client, dialog, load]);
-
-  const confirmForget = useCallback(async () => {
-    if (!forgetting) return;
-    try {
-      await client.adoptedDevices.remove(forgetting.id, etagForRevision(forgetting.revision));
-      toast.success(`Released ${forgetting.name}`);
-      await load();
-    } catch (err) {
-      toast.error(`Couldn't release the device: ${problemMessage(err)}`);
-    } finally {
-      setForgetting(null);
-    }
-  }, [client, forgetting, load]);
+  }, [busy, client, dialog, load]);
 
   const deviceColumns = useMemo<ColumnDef<DeviceRow>[]>(
     () => [
@@ -397,28 +308,15 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
                 icon={Radio}
               />
             }
-            rowActions={(row) => (
-              <div className="flex justify-end gap-2">
-                {row.adopted ? (
-                  <Button size="sm" variant="ghost" onClick={() => setForgetting(row.adopted)}>
-                    Release
-                  </Button>
-                ) : row.driver && row.nativeId ? (
+            rowActions={(row) =>
+              row.adopted ? null : (
+                <div className="flex justify-end gap-2">
                   <Button size="sm" variant="outline" onClick={() => openAdopt(row)}>
                     Adopt
                   </Button>
-                ) : (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled
-                    title="This relay did not report the device's driver and native id, so there is no identity to adopt against."
-                  >
-                    Adopt
-                  </Button>
-                )}
-              </div>
-            )}
+                </div>
+              )
+            }
           />
         </section>
 
@@ -492,53 +390,22 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
         }
       >
         {dialog.kind === "adopt" ? (
-          <div className="flex flex-col gap-4">
-            <FormField label="Name">
-              {(field) => (
-                <input
-                  {...field}
-                  className="flex min-h-[44px] w-full min-w-0 rounded-input border border-border bg-transparent px-3 py-1 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  value={adoptName}
-                  onChange={(e) => setAdoptName(e.target.value)}
-                />
-              )}
-            </FormField>
-            <FormField label="Adopt into">
-              {(field) => (
-                <select
-                  {...field}
-                  className="flex min-h-[44px] w-full min-w-0 rounded-input border border-border bg-transparent px-3 py-1 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  value={adoptPlacement}
-                  onChange={(e) => setAdoptPlacement(e.target.value)}
-                >
-                  <option value="">Choose a site or group…</option>
-                  {placements.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              )}
-            </FormField>
-            <FormField
-              label="Poll cadence (seconds)"
-              help="Leave blank to state no cadence — the platform fixes no default."
-            >
-              {(field) => (
-                <input
-                  {...field}
-                  type="number"
-                  min={1}
-                  className="flex min-h-[44px] w-full min-w-0 rounded-input border border-border bg-transparent px-3 py-1 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  value={adoptCadence}
-                  onChange={(e) => setAdoptCadence(e.target.value)}
-                />
-              )}
-            </FormField>
+          <div className="flex flex-col gap-3 text-sm">
+            <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-muted-foreground">
+              <dt>Class</dt>
+              <dd className="text-foreground">{dialog.row.device.device_class}</dd>
+              <dt>Address</dt>
+              <dd className="text-foreground">{dialog.row.address ?? "not reported"}</dd>
+              <dt>Model</dt>
+              <dd className="text-foreground">{dialog.row.model ?? "not reported"}</dd>
+              <dt>Reported by</dt>
+              <dd className="text-foreground">{dialog.row.device.relay_id}</dd>
+            </dl>
             <p className="text-xs text-muted-foreground">
-              Identity: {dialog.row.driver} / {dialog.row.nativeId}. {dialog.row.entities.length}{" "}
-              entit{dialog.row.entities.length === 1 ? "y" : "ies"} will be adopted enabled and
-              visible.
+              {dialog.row.entities.length} entit
+              {dialog.row.entities.length === 1 ? "y" : "ies"} will be adopted enabled and visible,
+              placed where its relay reports it. Poll cadence and per-entity policy are refined
+              afterwards on the adopted device.
             </p>
           </div>
         ) : null}
@@ -562,18 +429,6 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
           </div>
         ) : null}
       </Modal>
-
-      <ConfirmModal
-        title={forgetting ? `Release ${forgetting.name}?` : "Release device?"}
-        description="The adoption record is deleted, so the relay stops polling it and it drops out of the delivered device inventory. The device itself stays on the network and will be reported again as discovered."
-        open={forgetting !== null}
-        onOpenChange={(open) => {
-          if (!open) setForgetting(null);
-        }}
-        confirmLabel="Release"
-        destructive
-        onConfirm={() => void confirmForget()}
-      />
 
       <Toaster />
     </div>

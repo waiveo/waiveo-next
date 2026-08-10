@@ -8,10 +8,12 @@
 //     answers 200 with a typed error, and a client that threw there would turn
 //     "the TV is unplugged" into "the console is broken" — losing the one code
 //     that says which it is.
-//   - `deviceFacts` must not invent an identity. Adoption writes REL-153's
-//     `(driver, native_id)` tuple, and a reader that returned "" for a fact
-//     nobody reported would let the UI offer Adopt on a device it cannot
-//     correctly adopt.
+//   - `deviceFacts` must not invent a fact. A reader that returned "" for a
+//     fact nobody reported would have the UI render an empty address as though
+//     a relay had stated one, and an operator cannot tell those apart.
+//   - `adopt` must send the device id and NOTHING else. The adoption record's
+//     identity tuple lives only on the server; a client that grew a request
+//     body here would be inventing one.
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { http, HttpResponse } from "msw";
@@ -40,6 +42,7 @@ function device(over: Partial<Device> = {}): Device {
     name: "Hanger TV",
     scope_node: ULID_C,
     labels: {},
+    adopted: false,
     ...over,
   };
 }
@@ -134,6 +137,49 @@ describe("sendCommand — the entity-addressed dispatch", () => {
   });
 });
 
+describe("adopt — the one decision this API makes about a discovered device", () => {
+  it("POSTs the device's own path with no body, under an Idempotency-Key", async () => {
+    let seen: { path: string; body: string; key: string | null; contentType: string | null } | null =
+      null;
+    server.use(
+      http.post(`${TEST_BASE}/devices/${ULID_A}/adopt`, async ({ request }) => {
+        seen = {
+          path: new URL(request.url).pathname,
+          body: await request.text(),
+          key: request.headers.get("Idempotency-Key"),
+          contentType: request.headers.get("Content-Type"),
+        };
+        return ok(device({ id: ULID_A, adopted: true }));
+      }),
+    );
+    const adopted = await api().devices.adopt(ULID_A);
+
+    expect(seen!.path).toBe(`/api/v1/devices/${ULID_A}/adopt`);
+    // No body, and therefore no Content-Type claiming one. The operation
+    // declares no request schema; the identity the record is keyed by is the
+    // server's to supply, not this client's to guess.
+    expect(seen!.body).toBe("");
+    expect(seen!.contentType).toBeNull();
+    // API-050/052: a retry-on-timeout must replay, not adopt a second time.
+    expect(seen!.key).toBeTruthy();
+    // The answer is the device as it now reads, so a caller can correct one row
+    // without re-listing the fleet.
+    expect(adopted.adopted).toBe(true);
+  });
+
+  it("percent-encodes the id rather than splicing it into the path raw", async () => {
+    let path: string | null = null;
+    server.use(
+      http.post(`${TEST_BASE}/devices/:id/adopt`, ({ request }) => {
+        path = new URL(request.url).pathname;
+        return ok(device({ adopted: true }));
+      }),
+    );
+    await api().devices.adopt("a/b");
+    expect(path).toBe("/api/v1/devices/a%2Fb/adopt");
+  });
+});
+
 describe("adopted devices — the authored half", () => {
   it("creates an adoption record under an Idempotency-Key and deletes under If-Match", async () => {
     let created: Record<string, unknown> = {};
@@ -163,12 +209,12 @@ describe("adopted devices — the authored half", () => {
 
 describe("deviceFacts — reading a discovery report honestly", () => {
   it("prefers a top-level member over the same-named label", () => {
-    const widened = {
-      ...device({ labels: { address: "192.0.2.9", model: "old" } }),
+    const both = device({
+      labels: { address: "192.0.2.9", model: "old" },
       address: "192.0.2.10",
       model: "Roku Ultra",
-    } as unknown as Device;
-    expect(deviceFacts(widened)).toMatchObject({ address: "192.0.2.10", model: "Roku Ultra" });
+    });
+    expect(deviceFacts(both)).toMatchObject({ address: "192.0.2.10", model: "Roku Ultra" });
   });
 
   it("falls back to labels when the schema carries nothing", () => {

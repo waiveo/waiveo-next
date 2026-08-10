@@ -18,32 +18,51 @@
 // makes a device THIS deployment's is an adopted-device row keyed by REL-153's
 // `(site, driver, native_id)` identity — poll cadence and per-entity
 // enabled/hidden/display-name/category are decisions no discovery sweep can
-// make. So `adopt` here is a CREATE against `/adopted-devices`, never a mutation
-// of the discovered row (which has no write path at all), and "adopted" is a
-// JOIN the console computes, never a flag it sets.
+// make.
+//
+// # Adoption is a SERVER operation, not a create body this console assembles
+//
+// The distinction above is real, but the console cannot act on it by writing an
+// adoption record itself, and it must not pretend otherwise. An adoption record
+// is keyed by `(site, driver, native_id)`, and `Device` publishes NEITHER half
+// of that tuple: `device_id` is a one-way derivation of it on the server
+// (internal/shared/deviceid) and cannot be run backwards in a browser, and
+// `labels` is api/1 AUTHORED data that discovery never writes into (the server
+// mints every discovered device with an empty label map). A console that tried
+// to compose the create body would be composing it out of nothing.
+//
+// So adoption goes through `adopt` below — `POST /devices/{id}/adopt`, keyed by
+// the one identifier the row does carry. The server already holds the identity
+// tuple in its durable discovered-device mirror and builds the record from it,
+// returning the device as it now reads. Correspondingly, `adopted` is a FLAG
+// THE ROW CARRIES (`Device.adopted`), read straight off the device — not a join
+// this console computes, which is a join it has no key to perform.
+//
+// `/adopted-devices` remains an ordinary CRUD family for REFINING that record
+// afterwards (cadence, per-entity policy) and for releasing it. What it is not
+// is the way a device gets adopted in the first place.
 //
 // # Why `deviceFacts` reads two places for the same fact
 //
-// A Device carries `{id, relay_id, device_class, name, scope_node, labels}` and
-// nothing else — the openapi schema is `additionalProperties: false`, and this
-// minor deliberately publishes no address, no model, and no identity tuple. Two
-// things follow, and `deviceFacts` exists because of both:
+// `address`, `model` and `serial` ARE top-level members of Device. They are
+// also, historically, the kind of fact a deployment surfaced through `labels`
+// before the schema carried them. Two things follow, and `deviceFacts` exists
+// because of both:
 //
-//   - The identity tuple an adoption NEEDS (`driver` + `native_id`) is not on
-//     the row today. `device_id` is DERIVED from it by a one-way hash on the
-//     server (internal/shared/deviceid), so it cannot be recovered client-side.
-//     A console that assumed the tuple was there would build a create body out
-//     of guesses; this one reports the tuple as unknown and disables Adopt with
-//     a reason instead.
+//   - A deployment on the widened schema serves the top-level member.
 //   - `labels` is the one member of the row that IS open-ended, and it is the
-//     additive-safe place a richer discovery report can surface an address or a
-//     model without a schema bump.
+//     additive-safe place a richer discovery report can surface a fact the
+//     schema does not carry yet.
 //
-// So the reader prefers a top-level member (what a later minor that widens the
-// schema will serve) and falls back to the same-named label (what an
-// unwidened deployment can surface today), and returns null rather than "" for
-// a fact nobody reported — a UI must be able to tell "no address" from "the
-// empty string", because only the first is honest.
+// So the reader prefers a top-level member and falls back to the same-named
+// label, and returns null rather than "" for a fact nobody reported — a UI must
+// be able to tell "no address" from "the empty string", because only the first
+// is honest.
+//
+// It still reports `driver`/`nativeId`, which no schema member carries, because
+// they are worth SHOWING an operator where a deployment surfaces them as
+// labels. Nothing gates on them any more: adoption no longer needs them
+// client-side.
 
 import { ApiClient } from "./client";
 import { crud } from "./crud";
@@ -102,6 +121,43 @@ function listOnly<T>(client: ApiClient, path: string): ListOnlyModule<T> {
   return mod;
 }
 
+// ── Devices: list + the one mutating operation ──────────────────────────────
+
+export interface DevicesModule extends ListOnlyModule<Device> {
+  /** Adopt ONE discovered device — put it under this platform's control by
+   * creating the durable adoption record its relay is then sent in signed
+   * desired state (relay/1 REL-063).
+   *
+   * Takes a device id and NOTHING else, and that is the whole point: the
+   * identity tuple the record is keyed by is not on the row (see this module's
+   * header), so the server derives it from its own discovered-device mirror.
+   * There is no request body to get wrong, and no placement or cadence to ask
+   * an operator for at this moment — the record is created with the device's
+   * own reported entities enabled and primary, and that policy is refined
+   * afterwards through `adoptedDevices`.
+   *
+   * Returns the device as it now reads, with `adopted` true — so a caller can
+   * update one row from the answer rather than re-listing the fleet.
+   *
+   * Idempotent twice over: adopting an already-adopted device succeeds and
+   * changes nothing, and the POST additionally carries an Idempotency-Key (the
+   * ApiClient's `action` convention) so a retry-on-timeout replays the recorded
+   * outcome. A double-click is not an error. */
+  adopt(deviceId: string): Promise<Device>;
+}
+
+function devicesModule(client: ApiClient): DevicesModule {
+  const base = listOnly<Device>(client, "/devices");
+  return {
+    ...base,
+    adopt(deviceId) {
+      // No body: the operation declares none, and `action` omits Content-Type
+      // entirely when given none, which is what a bodyless POST should send.
+      return client.action<Device>(`/devices/${encodeURIComponent(deviceId)}/adopt`);
+    },
+  };
+}
+
 // ── Entities: list + the one mutating operation ─────────────────────────────
 
 export interface EntitiesModule extends ListOnlyModule<Entity> {
@@ -149,8 +205,9 @@ function entitiesModule(client: ApiClient): EntitiesModule {
 // ── The device plane, composed ──────────────────────────────────────────────
 
 export interface DevicePlaneModules {
-  /** Discovered devices (read-only; a relay owns this view). */
-  devices: ListOnlyModule<Device>;
+  /** Discovered devices (a relay owns this view) + the one operation that
+   * decides something about one: `adopt`. */
+  devices: DevicesModule;
   /** Entities + the entity-addressed command operation. */
   entities: EntitiesModule;
   /** The authored adoption records — a full api/1 CRUD family. */
@@ -159,7 +216,7 @@ export interface DevicePlaneModules {
 
 export function createDevicePlaneModules(client: ApiClient): DevicePlaneModules {
   return {
-    devices: listOnly<Device>(client, "/devices"),
+    devices: devicesModule(client),
     entities: entitiesModule(client),
     adoptedDevices: crud<AdoptedDevice, AdoptedDeviceCreate, AdoptedDeviceUpdate>(
       client,

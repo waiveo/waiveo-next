@@ -22,9 +22,8 @@ import {
   type AdoptedDevice,
   type AdoptedDeviceCreate,
   type AdoptedDeviceUpdate,
-  type Device,
+  type DevicesModule,
   type EntitiesModule,
-  type ListOnlyModule,
 } from "./devices";
 import {
   createPacksModule,
@@ -285,8 +284,9 @@ export interface WaiveoApi {
   automations: AutomationsModule;
   content: ContentModule;
   /** Devices a relay has DISCOVERED behind it — a read model the relay owns, so
-   * list-only (api/devices.ts explains why it is not a ResourceModule). */
-  devices: ListOnlyModule<Device>;
+   * list plus the single `adopt` operation and nothing else (api/devices.ts
+   * explains why it is not a ResourceModule). */
+  devices: DevicesModule;
   /** The entities those devices expose, plus the entity-addressed command
    * operation the virtual remote and rules/1 both dispatch through. */
   entities: EntitiesModule;
