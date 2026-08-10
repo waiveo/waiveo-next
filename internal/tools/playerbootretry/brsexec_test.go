@@ -173,7 +173,7 @@ func parseStatement(t *testing.T, lines []line, i int) ([]stmt, int) {
 		var out []stmt
 		for _, p := range parts {
 			sub, _ := parseStatement(t, []line{{n: l.n, text: p}}, 0)
-			out = append(out, sub...)
+			out = append(out, atLine(sub, l)...)
 		}
 		return out, i + 1
 	}
@@ -214,12 +214,26 @@ func singleLineIfStmt(t *testing.T, l line, cond, tail string) stmt {
 	t.Helper()
 	thenPart, elsePart := splitSingleLineElse(tail)
 	thenStmts, _ := parseStatement(t, []line{{n: l.n, text: thenPart}}, 0)
-	s := stmt{kind: stmtIf, at: l, arms: []arm{{cond: cond, body: thenStmts}}}
+	s := stmt{kind: stmtIf, at: l, arms: []arm{{cond: cond, body: atLine(thenStmts, l)}}}
 	if elsePart != "" {
 		elseStmts, _ := parseStatement(t, []line{{n: l.n, text: elsePart}}, 0)
-		s.arms = append(s.arms, arm{cond: "", body: elseStmts})
+		s.arms = append(s.arms, arm{cond: "", body: atLine(elseStmts, l)})
 	}
 	return s
+}
+
+// atLine re-attaches statements split out of one source line to that WHOLE
+// line, so a failure quotes `if not everSucceeded then return` rather than the
+// bare `return` a reader would then have to go find.
+func atLine(stmts []stmt, l line) []stmt {
+	for i := range stmts {
+		stmts[i].at = l
+		stmts[i].body = atLine(stmts[i].body, l)
+		for j := range stmts[i].arms {
+			stmts[i].arms[j].body = atLine(stmts[i].arms[j].body, l)
+		}
+	}
+	return stmts
 }
 
 func parseIfChain(t *testing.T, lines []line, i int) ([]stmt, int) {
