@@ -107,8 +107,9 @@ func TestStateSnapshotBodyFieldNames(t *testing.T) {
 	}
 
 	// schedule is the newly-typed ScheduleSection (REL-065): an object
-	// carrying exactly the seven scheduling-core row arrays, each `[]` when
-	// empty — never null, never an omitted array (REL-060).
+	// carrying exactly the eight scheduling-core row arrays (the six DAT-005
+	// kinds, the scope nodes, and the cast rows a playlist item references),
+	// each `[]` when empty — never null, never an omitted array (REL-060).
 	var sched map[string]json.RawMessage
 	if err := json.Unmarshal(sections["schedule"], &sched); err != nil {
 		t.Fatalf("Unmarshal schedule section: %v; got %s", err, sections["schedule"])
@@ -116,6 +117,7 @@ func TestStateSnapshotBodyFieldNames(t *testing.T) {
 	schedKeys := []string{
 		"scope_nodes",
 		"playlists",
+		"casts",
 		"schedules",
 		"validity_windows",
 		"dayparts",
@@ -214,6 +216,7 @@ func TestScheduleSectionNormalizesNilToEmptyArrays(t *testing.T) {
 	wantKeys := []string{
 		"scope_nodes",
 		"playlists",
+		"casts",
 		"schedules",
 		"validity_windows",
 		"dayparts",

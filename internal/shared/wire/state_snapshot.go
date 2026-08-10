@@ -78,15 +78,27 @@ type Sections struct {
 // unmarshals these arrays into data-model/1's own row types and resolves them
 // through internal/datamodel; this package never interprets them.
 //
-// Every one of the seven arrays is present and non-null in a well-formed
+// Every one of the eight arrays is present and non-null in a well-formed
 // snapshot (REL-060): call Normalized before hashing/signing so each empty
 // array marshals as `[]`, never `null`. Field declaration order IS the
 // canonical marshal order (encoding/json marshals struct fields in Go
 // declaration order), so byte-identical content always hashes identically —
 // the REL-053 byte-identical-marshaling → hash invariant.
+//
+// Casts is the authored slidecast rows (data-model/1 DAT-043) a playlist item
+// with `source: "cast"` references. It is carried for the SAME reason the
+// playlists it is referenced from are: the relay re-resolves a screen's program
+// per instant at a daypart boundary (internal/relay/schedulehost), and a
+// reference it cannot dereference is a reference it would silently drop. The
+// alternative — expanding every cast into its slides app-side before carrying
+// the playlists — would make the relay's re-resolution a projection of
+// already-flattened content and leave the two sides describing different rows,
+// which is exactly the divergence the feeder/relay parity test exists to
+// forbid.
 type ScheduleSection struct {
 	ScopeNodes      []json.RawMessage `json:"scope_nodes"`
 	Playlists       []json.RawMessage `json:"playlists"`
+	Casts           []json.RawMessage `json:"casts"`
 	Schedules       []json.RawMessage `json:"schedules"`
 	ValidityWindows []json.RawMessage `json:"validity_windows"`
 	Dayparts        []json.RawMessage `json:"dayparts"`
@@ -95,7 +107,7 @@ type ScheduleSection struct {
 }
 
 // Normalized returns a copy of sec with every nil row array replaced by a
-// non-nil empty slice, so each of the seven scheduling-core arrays marshals
+// non-nil empty slice, so each of the eight scheduling-core arrays marshals
 // as `[]` rather than `null` (REL-060: sections carry an empty array, never
 // an omitted key or a null placeholder). The feeder calls this before
 // hashing/signing so the schedule section satisfies the REL-060 no-null
@@ -112,6 +124,7 @@ func (sec ScheduleSection) Normalized() ScheduleSection {
 	return ScheduleSection{
 		ScopeNodes:      norm(sec.ScopeNodes),
 		Playlists:       norm(sec.Playlists),
+		Casts:           norm(sec.Casts),
 		Schedules:       norm(sec.Schedules),
 		ValidityWindows: norm(sec.ValidityWindows),
 		Dayparts:        norm(sec.Dayparts),

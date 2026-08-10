@@ -157,6 +157,41 @@ type Layer struct {
 // dropped by encoding/json before a Layer value ever reaches this function.
 // The scope of this gate is the semantic validity of the typed layers.
 func ValidateSlideLayers(layers []Layer) error {
+	return validateSlideLayers(layers, true)
+}
+
+// ValidateAuthoredSlideLayers is the SAME gate applied one step earlier: to
+// layers as an OPERATOR authored them, before any producer has projected them
+// onto the wire.
+//
+// Exactly one rule differs, and it differs because of when it is asked. An
+// image layer's `url` is not authored — it is DERIVED at projection time from
+// the content origin the snapshot was built against (internal/feeder/snapshot
+// and internal/relay/schedulehost both mint it from the layer's own asset_ref),
+// so at authoring time there is no url to require and demanding one would make
+// every image layer unstorable. Everything else — the closed kind set, the
+// canvas geometry, the other per-kind required fields, the `#RRGGBB` colors —
+// is asked identically, because those ARE authored and a slide that would not
+// draw should be refused by the operator's own create rather than silently
+// dropped from a screen's program hours later.
+//
+// The two entry points share ONE implementation (validateSlideLayers below)
+// rather than restating the rules, which is the whole reason this lives here
+// beside ValidateSlideLayers: a second copy of the geometry or the per-kind
+// required fields is exactly the drift the exported gate was introduced to
+// remove, and it would drift in the direction that hurts most — an authoring
+// gate that accepts what the serving gate later drops shows an operator a
+// stored slide that never reaches a screen, with nothing anywhere saying why.
+func ValidateAuthoredSlideLayers(layers []Layer) error {
+	return validateSlideLayers(layers, false)
+}
+
+// validateSlideLayers is the one implementation behind both exported gates.
+// requireImageURL distinguishes the SERVE-time caller (a url has been minted
+// and an image layer without one cannot be fetched) from the AUTHORING-time
+// caller (the url is derived later, so only the content-addressed asset_ref is
+// authored) — see ValidateAuthoredSlideLayers.
+func validateSlideLayers(layers []Layer, requireImageURL bool) error {
 	if len(layers) == 0 {
 		return fmt.Errorf("wire: slide has no layers")
 	}
@@ -190,7 +225,10 @@ func ValidateSlideLayers(layers []Layer) error {
 				return fmt.Errorf("wire: slide layer %d (clock): a non-empty time format (text) is required", i)
 			}
 		case LayerKindImage:
-			if l.AssetRef == "" || l.URL == "" {
+			if l.AssetRef == "" {
+				return fmt.Errorf("wire: slide layer %d (image): asset_ref is required", i)
+			}
+			if requireImageURL && l.URL == "" {
 				return fmt.Errorf("wire: slide layer %d (image): both asset_ref and url are required, got asset_ref=%q url=%q", i, l.AssetRef, l.URL)
 			}
 		case LayerKindRect:
