@@ -2,6 +2,7 @@ package api
 
 import (
 	"github.com/maaxton/waiveo-next/internal/app/store"
+	"github.com/maaxton/waiveo-next/internal/datamodel"
 )
 
 // casts.go mounts the authored slidecast (data-model/1 DAT-043) as an ORDINARY
@@ -46,11 +47,31 @@ import (
 // still answered as API-013's multi-field `errors[]` with every failing slide
 // named at once (datamodel.checkCastSlides).
 //
-// That is also why no `validate` hook appears below. The layer rules are
-// wire.ValidateAuthoredSlideLayers's, applied by datamodel.ValidateRows over the
-// resulting full row-set — the SAME gate the two content projections re-apply
-// before serving a slide — so there is exactly one copy of them and an accepted
-// cast is by construction a cast a screen can be served.
+// That is also why the layer SHAPE rules do not appear as a hook below. They
+// are wire.ValidateAuthoredSlideLayers's, applied by datamodel.ValidateRows over
+// the resulting full row-set — the SAME gate the two content projections re-apply
+// before serving a slide — so there is exactly one copy of them.
+//
+// # Why the asset hook DOES appear
+//
+// "An accepted cast is by construction a cast a screen can be served" is the
+// claim this family makes, and the layer gate alone does not buy it. An image
+// layer's `asset_ref` names content-addressed bytes in the shared content
+// origin, and whether those bytes EXIST is not a property of the row set — it is
+// a property of the origin, which no datamodel validator can see. Without the
+// hook, POST /casts with an image layer naming an asset nobody ever uploaded was
+// 201 while the identical digest in a playlist item was 422; both projections
+// then minted a fetch URL for it, so the slide passed the serve-time gate and
+// reached the screen pointing at bytes the origin 404s.
+//
+// So the cast kind mounts the same two halves every asset-bearing kind does —
+// the pre-write check and the in-transaction guard that closes the
+// check-then-write race against the content retention sweep — from the one
+// shared implementation in assetrefs.go, over the one shared projection in
+// store.RowAssetReferences. Sharing rather than copying is the whole point: a
+// cast's images are also what the retention sweep must not reclaim and what the
+// workspace export must carry, and those three answers are only guaranteed equal
+// if they are one answer.
 
 // castsConfig is the resource configuration for the cast kind. Its own
 // scope_node is its placement, its external_id grouping, and the node a write of
@@ -76,5 +97,21 @@ func castsConfig() resourceConfig {
 		placement:    func(f resourceFields) string { return f.ScopeNode },
 		extScope:     func(f resourceFields) string { return f.ScopeNode },
 		writeScope:   func(f resourceFields) string { return f.ScopeNode },
+		validate:     validateCastAssets,
+		writeGuards:  castAssetGuards,
 	}
+}
+
+// validateCastAssets and castAssetGuards are the cast kind's mounting of the ONE
+// asset-reference rule (assetrefs.go): every asset_ref any slide's layers name
+// must be present in the content origin, checked before the write and again
+// inside the write transaction. store.RowAssetReferences is what knows that a
+// cast's references live at `slides[i].layers[j].asset_ref`; nothing here
+// restates it.
+func validateCastAssets(srv *server, body []byte) []datamodel.Error {
+	return validateRowAssets(srv, store.KindCast, body)
+}
+
+func castAssetGuards(srv *server, body []byte) []store.WriteGuard {
+	return rowAssetGuards(srv, store.KindCast, body)
 }
