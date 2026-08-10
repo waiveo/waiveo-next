@@ -5,7 +5,7 @@
 // reorder that scrambles the stack, a delete that strands the selection.
 
 import { describe, expect, it } from "vitest";
-import type { Cast, CastSlide, SlideLayer } from "@/api";
+import { validateSlide, type Cast, type CastSlide, type SlideLayer } from "@/api";
 import {
   EMPTY_STUDIO_STATE,
   MIN_LAYER_SIZE,
@@ -13,6 +13,7 @@ import {
   currentSlide,
   defaultLayer,
   moveLayerBy,
+  newSlide,
   reorder,
   resizeLayerBy,
   selectedLayer,
@@ -140,6 +141,22 @@ describe("studioReducer — slides", () => {
     expect(next.slides.map((s) => s.id)).toEqual(["s1", "s2", "s3"]);
     expect(next.slideIndex).toBe(2);
     expect(next.dirty).toBe(true);
+    // The seeded layer is selected, so the properties panel opens on the thing
+    // the operator is about to change.
+    expect(next.layerIndex).toBe(0);
+  });
+
+  // The reason this matters is atomicity, not tidiness: a PATCH carries the
+  // WHOLE slides array and the server refuses the whole body if any member is
+  // undrawable (openapi CastSlide.layers minItems 1, then checkCastSlides →
+  // wire.ValidateAuthoredSlideLayers). A zero-layer add therefore made the next
+  // save fail for every OTHER slide too.
+  it("mints a slide that is VALID by construction — add-then-save is savable", () => {
+    const fresh = newSlide("s9");
+    expect(fresh.layers.length).toBeGreaterThan(0);
+    expect(validateSlide(fresh)).toEqual([]);
+    const next = run(base, { type: "addSlide", id: "s3" });
+    expect(validateSlide(next.slides[2]!)).toEqual([]);
   });
 
   it("duplicates a slide by VALUE — editing the copy leaves the original alone", () => {
@@ -234,6 +251,30 @@ describe("studioReducer — layers", () => {
   it("refuses to select a layer index that does not exist", () => {
     expect(studioReducer(base, { type: "selectLayer", index: 9 })).toBe(base);
   });
+
+  // Every optional member of wire.Layer is `omitempty`, so "no image chosen" is
+  // the ABSENCE of asset_ref/url, not a present key holding nothing. A patch
+  // that wrote `undefined` would serialise a key the server's strict decoder
+  // does not expect — and clearing only `asset_ref` would leave a url pointing
+  // at bytes the layer no longer names.
+  it("an undefined patch value REMOVES the key from the saved body", () => {
+    const withImage = studioStateFromCast(
+      castOf([
+        {
+          id: "s1",
+          layers: [{ kind: "image", x: 0, y: 0, w: 640, h: 360, asset_ref: "sha256:aa11", url: "/content/aa11" }],
+        },
+      ]),
+    );
+    const cleared = run(withImage, {
+      type: "patchLayer",
+      index: 0,
+      patch: { asset_ref: undefined, url: undefined },
+    });
+    const layer = studioStateToUpdate(cleared).slides?.[0]?.layers?.[0] ?? {};
+    expect("asset_ref" in layer).toBe(false);
+    expect("url" in layer).toBe(false);
+  });
 });
 
 describe("save body + dirty tracking", () => {
@@ -251,11 +292,10 @@ describe("save body + dirty tracking", () => {
   });
 
   it("a save adopts the server copy, clears dirty, and keeps the operator in place", () => {
-    const edited = run(
-      base,
-      { type: "addSlide", id: "s2" },
-      { type: "insertLayer", layer: defaultLayer("text") },
-    );
+    // One action, not two: adding a slide already lands a selected text layer
+    // on it, so this is the same "added a slide and typed on it" state the test
+    // has always described.
+    const edited = run(base, { type: "addSlide", id: "s2" });
     expect(edited).toMatchObject({ slideIndex: 1, layerIndex: 0, dirty: true });
     const saved = studioReducer(edited, {
       type: "saved",

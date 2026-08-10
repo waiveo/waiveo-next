@@ -6,6 +6,7 @@ import { setupServer } from "msw/node";
 import { MemoryRouter, Route, Routes, useSearchParams } from "react-router";
 import { ThemeProvider } from "@/components/theme/theme-provider";
 import CastsRoute from "./casts-route";
+import { validateSlide, type CastSlide } from "@/api";
 import { TRACE_ID, ULID_A, ULID_B, ULID_ROOT, cast, problem, scopeNode } from "@/api/test-support";
 
 /**
@@ -100,7 +101,7 @@ describe("Casts library", () => {
     expect(await screen.findByRole("heading", { name: `Studio for ${ULID_A}` })).toBeInTheDocument();
   });
 
-  it("creates a cast with one empty slide and goes straight into the Studio", async () => {
+  it("creates a cast with one DRAWABLE slide and goes straight into the Studio", async () => {
     const seen: { body?: Record<string, unknown>; key?: string | null } = {};
     server.use(
       ...listing([]),
@@ -123,10 +124,17 @@ describe("Casts library", () => {
     expect(await screen.findByRole("heading", { name: `Studio for ${ULID_B}` })).toBeInTheDocument();
     expect(seen.key).toBeTruthy();
     expect(seen.body).toMatchObject({ name: "Front window", scope_node: ULID_ROOT });
-    // One empty slide, so the Studio opens on a canvas rather than on nothing.
-    const slides = seen.body?.slides as Array<{ layers: unknown[] }>;
+    // One slide, so the Studio opens on a canvas rather than on nothing — and
+    // that slide carries a layer. `CastSlide.layers` is `minItems: 1` in
+    // api/openapi.yaml and the store gate refuses an empty stack again
+    // (CAST_SLIDE_LAYERS_INVALID), so a zero-layer body makes the page's PRIMARY
+    // action fail outright: a red toast and no cast. The body is asserted
+    // against validateSlide — the console's own mirror of the server rule — so
+    // this cannot pass on a stack that merely exists.
+    const slides = seen.body?.slides as CastSlide[];
     expect(slides).toHaveLength(1);
-    expect(slides[0]?.layers).toEqual([]);
+    expect(slides[0]!.layers.length).toBeGreaterThan(0);
+    expect(validateSlide(slides[0]!)).toEqual([]);
   });
 
   it("refuses to invent a scope when the box has no site yet", async () => {

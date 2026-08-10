@@ -24,6 +24,7 @@ import {
   type ScopeNode,
   type WaiveoApi,
 } from "@/api";
+import { newSlide } from "@/routes/studio/cast-model";
 
 /**
  * The cast library — every authored slide document on this box, and the door
@@ -101,13 +102,17 @@ export default function CastsRoute({ api }: { api?: WaiveoApi }) {
     }
     setBusy(true);
     try {
-      // A cast starts with ONE empty slide rather than none: the Studio's canvas
-      // needs a slide to draw, and "create, then find the add-slide button" is a
-      // step with no decision in it.
+      // A cast starts with ONE slide rather than none: the Studio's canvas needs
+      // a slide to draw, and "create, then find the add-slide button" is a step
+      // with no decision in it. That slide comes from the SAME `newSlide` the
+      // Studio's own add-slide uses, so the two can never disagree about what a
+      // new slide is — and it carries a layer, because `CastSlide.layers` is
+      // `minItems: 1` and a zero-layer slide is refused at the door (the primary
+      // action of this whole page would fail with a red toast and no cast).
       const created = await client.casts.create({
         scope_node: scope,
         name: newName.trim() || "Untitled cast",
-        slides: [{ id: crypto.randomUUID(), layers: [] }],
+        slides: [newSlide(crypto.randomUUID())],
       });
       setNewOpen(false);
       setNewName("");

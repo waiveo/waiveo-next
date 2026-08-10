@@ -130,10 +130,26 @@ function applyPatch(layer: SlideLayer, patch: LayerPatch): SlideLayer {
   return next;
 }
 
-/** An empty slide. Ids are supplied by the caller rather than minted here so the
- * reducer stays pure (and a test can assert an exact model). */
+/**
+ * A brand-new slide — VALID as authored, never an empty stack.
+ *
+ * A zero-layer slide is not a neutral starting point, it is a slide the whole
+ * stack refuses: `CastSlide.layers` is `minItems: 1` in api/openapi.yaml and
+ * request bodies are schema-checked at the door, the store gate refuses it
+ * again (`wire.ValidateAuthoredSlideLayers`, CAST_SLIDE_LAYERS_INVALID), and a
+ * PATCH is atomic — so one empty slide makes the save of every OTHER slide in
+ * the cast fail too. Seeding one text layer costs the operator one edit (the
+ * text is placeholder and selected) and removes an entire failure mode.
+ *
+ * `text` rather than `rect` because it is the layer that says what the slide
+ * is for, and because an operator who wanted a shape will replace it in one
+ * gesture either way.
+ *
+ * Ids are supplied by the caller rather than minted here so the reducer stays
+ * pure (and a test can assert an exact model).
+ */
 export function newSlide(id: string): CastSlide {
-  return { id, layers: [] };
+  return { id, layers: [defaultLayer("text")] };
 }
 
 /** Move `from` to `to` in a copy of the list. Out-of-range indices are a no-op
@@ -271,7 +287,10 @@ export function studioReducer(state: StudioState, action: StudioAction): StudioS
 
     case "addSlide": {
       const slides = [...state.slides, newSlide(action.id)];
-      return { ...state, slides, slideIndex: slides.length - 1, layerIndex: null, dirty: true };
+      // The seeded layer is SELECTED: a new slide's placeholder text is the
+      // first thing anyone changes, and landing with the properties panel
+      // already on it saves a click that has no decision in it.
+      return { ...state, slides, slideIndex: slides.length - 1, layerIndex: 0, dirty: true };
     }
 
     case "duplicateSlide": {
