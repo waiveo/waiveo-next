@@ -97,6 +97,20 @@ type CandidateEntity struct {
 // tuple and together key the store (REL-111a). Match is the declared pattern
 // that produced the sighting (MAN-071). Entities are the addressable handles
 // the driver exposes for a device of this class.
+// Address, Model and Serial are the REACHABILITY-and-identification half a
+// sighting can carry, and all three are optional in the same way and for the
+// same reason: they are learned, not asserted by the identity tuple.
+//
+// Address is the dialable "host:port" the responder pointed at (an SSDP
+// LOCATION, or the packet's source paired with the watch's declared control
+// port). Without it a candidate can be listed and adopted and then never
+// commanded — an adopted device with nowhere to send a command is the defect
+// this field exists to close.
+//
+// Model and Serial come from probing that address over the driver's own
+// protocol (for Roku, ECP's `/query/device-info`). A device that answers is
+// confirmed to speak the driver the watch declared; one that does not is still
+// a real sighting, reported with these empty rather than dropped.
 type Observation struct {
 	Match       Match
 	Provenance  Provenance
@@ -104,6 +118,9 @@ type Observation struct {
 	NativeID    string
 	DeviceClass string
 	Name        string
+	Address     string
+	Model       string
+	Serial      string
 	Entities    []CandidateEntity
 }
 
@@ -145,6 +162,9 @@ type Candidate struct {
 	NativeID     string            `json:"native_id"`
 	DeviceClass  string            `json:"device_class"`
 	Name         string            `json:"name,omitempty"`
+	Address      string            `json:"address,omitempty"`
+	Model        string            `json:"model,omitempty"`
+	Serial       string            `json:"serial,omitempty"`
 	Entities     []CandidateEntity `json:"entities"`
 }
 
@@ -228,7 +248,8 @@ func (s *Store) Observe(o Observation, atMs int64) {
 	// candidate. A per-device problem must not become a site-wide outage, and the
 	// place to stop it is before the poison is ever stored.
 	if !observationFieldOK(o.Driver) || !observationFieldOK(o.NativeID) ||
-		!observationFieldOK(o.DeviceClass) || !observationFieldOK(o.Name) {
+		!observationFieldOK(o.DeviceClass) || !observationFieldOK(o.Name) ||
+		!observationFieldOK(o.Address) || !observationFieldOK(o.Model) || !observationFieldOK(o.Serial) {
 		return
 	}
 	if len(o.Entities) > maxObservedEntities {
@@ -258,8 +279,23 @@ func (s *Store) Observe(o Observation, atMs int64) {
 		}
 		c.Match = o.Match
 		c.DeviceClass = o.DeviceClass
-		c.Name = o.Name
 		c.Entities = append([]CandidateEntity(nil), o.Entities...)
+		// The four LEARNED facts are refreshed only when the new sighting
+		// actually carries one, unlike the declaration-side facts above which
+		// every sighting states in full.
+		//
+		// An empty value here means "this sighting did not learn it", never
+		// "the device no longer has one": a NOTIFY whose LOCATION header is
+		// absent or malformed, or an identification probe that timed out while
+		// the device was mid-reboot, both arrive as blanks. Overwriting with
+		// them would delete a working address — and with it the ability to
+		// command an adopted device — because one packet out of hundreds was
+		// thin. A genuinely changed address (DHCP moved the device) is non-empty
+		// and does overwrite, which is the case that has to keep working.
+		c.Name = orKeep(o.Name, c.Name)
+		c.Address = orKeep(o.Address, c.Address)
+		c.Model = orKeep(o.Model, c.Model)
+		c.Serial = orKeep(o.Serial, c.Serial)
 		return
 	}
 	s.byKey[key] = &Candidate{
@@ -272,9 +308,21 @@ func (s *Store) Observe(o Observation, atMs int64) {
 		NativeID:    o.NativeID,
 		DeviceClass: o.DeviceClass,
 		Name:        o.Name,
+		Address:     o.Address,
+		Model:       o.Model,
+		Serial:      o.Serial,
 		Entities:    append([]CandidateEntity(nil), o.Entities...),
 	}
 	s.order = append(s.order, key)
+}
+
+// orKeep returns next when it carries a value, else the value already held.
+// See Observe's re-observation branch for why a blank never overwrites.
+func orKeep(next, held string) string {
+	if next != "" {
+		return next
+	}
+	return held
 }
 
 // Key returns the store key for one REL-153 identity — what Adopt and Ignore

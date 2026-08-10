@@ -162,6 +162,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/devices/{device_id}/adopt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                device_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Adopt a discovered device
+         * @description Puts a device this deployment's relays have discovered under this platform's control, by creating the durable adoption record its relay is then sent in signed desired state (`relay/1` REL-063). Discovery finds devices; adoption is the decision to use one, and this operation is that decision.
+         *
+         *     The record is created with the device's own reported entities enabled and primary — the policy an operator refines afterwards through the `adopted-devices` family. Adopting a device that is already adopted succeeds and changes nothing, so a double-click or a retry-after-timeout is not an error.
+         *
+         *     A mutating POST tagged `mcp:act`, so it accepts `Idempotency-Key`.
+         */
+        post: operations["adoptDevice"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/entities": {
         parameters: {
             query?: never;
@@ -1785,7 +1811,7 @@ export interface components {
         LabelMap: {
             [key: string]: string;
         };
-        /** @description One adopted physical device behind a relay. Read-only on this API: a device is discovered and adopted by its own relay's device plane (`relay/1` Device plane), so this resource carries no `revision` and no optimistic-concurrency envelope — there is no write here to condition on. A device exposes one or more entities; commands are addressed to those entities, never to the device. */
+        /** @description One physical device a relay has found on its own LAN. Its descriptive members are read-only on this API — a device is DISCOVERED by its relay's device plane (`relay/1` Device plane), not authored here, so this resource carries no `revision` and no optimistic-concurrency envelope. The one decision this API does make about a device is `adopted`, taken through the `adoptDevice` operation. A device exposes one or more entities; commands are addressed to those entities, never to the device. */
         Device: {
             id: components["schemas"]["Ulid"];
             /** @description Client-assigned identifier (contracts/api-1.md#client-assignable-external_id). */
@@ -1796,6 +1822,14 @@ export interface components {
             name: string;
             scope_node: components["schemas"]["Ulid"];
             labels: components["schemas"]["LabelMap"];
+            /** @description Where the reporting relay can reach this device on its LAN, as a dialable `host:port` authority. Absent when discovery found the device but no usable address for it — the device was genuinely seen, and no command can be delivered to it until an address is. */
+            address?: string;
+            /** @description The model the device reported when the relay probed it over the driver's own protocol. Absent when the probe did not answer. */
+            model?: string;
+            /** @description The serial number of the physical unit, as the device reported it. Absent when the probe did not answer. */
+            serial?: string;
+            /** @description Whether an adoption record exists for this device — that is, whether it is under this platform's control and carried in the desired state its relay is sent (`relay/1` REL-063). Discovery alone never sets this; `adoptDevice` does. */
+            adopted: boolean;
         };
         DeviceListResponse: {
             items: components["schemas"]["Device"][];
@@ -2521,6 +2555,41 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             429: components["responses"]["TooManyRequests"];
+        };
+    };
+    adoptDevice: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                device_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The device is adopted. The body is the device as it now reads, with `adopted` true. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Device"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     listEntities: {

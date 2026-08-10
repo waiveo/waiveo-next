@@ -52,6 +52,7 @@ package api_test
 // vacuous check the guards above exist to prevent.
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
@@ -325,11 +326,15 @@ type probe func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte)
 // RelayId). They are distinct from every other fixture in the package so a probe
 // here is never satisfied by a row another test wrote.
 const (
-	rsRelayID     = "relay-fixture-a"
-	rsScopeNode   = "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5"
-	rsDeviceID    = "01J8ZRESP0DEV1CEF1XTVRE001"
-	rsEntityID    = "01J8ZRESP0ENT1TYF1XTVRE001"
-	rsWorkspaceID = "01J8ZRESP0WSKEYF1XTVRE0001"
+	rsRelayID   = "relay-fixture-a"
+	rsScopeNode = "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5"
+	rsDeviceID  = "01J8ZRESP0DEV1CEF1XTVRE001"
+	rsEntityID  = "01J8ZRESP0ENT1TYF1XTVRE001"
+	// rsAdoptDeviceID is the adopt probe's OWN device, distinct from rsDeviceID:
+	// that one is placed at a fixture node the tree does not contain, which is
+	// fine for a read but not for a write the placement is validated against.
+	rsAdoptDeviceID = "01J8ZRESP0AD0PTDEV1CE00001"
+	rsWorkspaceID   = "01J8ZRESP0WSKEYF1XTVRE0001"
 	// rsIdentifier / rsPassword are the credential the claim probe establishes
 	// and the login probe then presents. Fixture values for an in-memory store
 	// that lives for one test; they protect nothing.
@@ -349,6 +354,11 @@ const (
 type schemaProbeEnv struct {
 	*testEnv
 	authStore *auth.Store
+	// registry is the same read model the handler serves from, kept so a probe
+	// can place a device at a scope node it minted itself — the adopt probe
+	// needs one, because adoption writes an authored row and a row's placement
+	// must be a node that actually exists in the tree.
+	registry *devices.Registry
 }
 
 func newSchemaProbeEnv(t *testing.T) *schemaProbeEnv {
@@ -407,6 +417,7 @@ func newSchemaProbeEnv(t *testing.T) *schemaProbeEnv {
 	return &schemaProbeEnv{
 		testEnv:   &testEnv{ts: ts, store: st, content: content, contentBase: testContentBase, auth: fixture, jobs: jobs},
 		authStore: fixture.Store,
+		registry:  registry,
 	}
 }
 
@@ -767,6 +778,27 @@ var probes = map[string]probe{
 	"sendEntityCommand": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
 		return e.do(t, http.MethodPost, "/api/v1/entities/"+rsEntityID+"/commands",
 			mustJSON(t, map[string]any{"command": "launch"}), nil)
+	},
+	"adoptDevice": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		// A real adoption end to end: a device the read model reports, mirrored
+		// durably, placed at a node that exists — because the operation writes an
+		// authored row and a row's placement is validated against the tree.
+		org := e.mintOrg(t)
+		mustPutDevice(t, e.registry, devices.Device{
+			ID: rsAdoptDeviceID, RelayID: rsRelayID, DeviceClass: "media-player",
+			Name: "Back Bar TV", ScopeNode: org, Labels: map[string]string{},
+			Address: "192.0.2.44:8060", Model: "Roku Ultra", Serial: "X00500ADOPT1",
+		})
+		if err := e.store.ReplaceDiscoveredDevices(context.Background(), rsRelayID, []store.DiscoveredDevice{{
+			DeviceID: rsAdoptDeviceID, RelayID: rsRelayID, ScopeNode: org,
+			Driver: "roku-ecp", NativeID: "uuid:roku:ecp:X00500ADOPT1", DeviceClass: "media-player",
+			Name: "Back Bar TV", Address: "192.0.2.44:8060", Model: "Roku Ultra", Serial: "X00500ADOPT1",
+			FirstSeen: 1000, LastSeen: 2000,
+			Entities: []wire.CandidateEntity{{Key: "main", DeviceClass: "media-player"}},
+		}}); err != nil {
+			t.Fatalf("mirror the device the adopt probe adopts: %v", err)
+		}
+		return e.do(t, http.MethodPost, "/api/v1/devices/"+rsAdoptDeviceID+"/adopt", nil, nil)
 	},
 
 	// --- workspace --------------------------------------------------------

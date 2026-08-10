@@ -108,6 +108,21 @@ import (
 // by it (openapi RelayId). Per REL-153 it records which relay MOST RECENTLY
 // reported this device, and is not part of the device's identity — two relays
 // serving one site that both see one device hold one row between them.
+//
+// Address, Model and Serial are the discovered REACHABILITY-and-identification
+// facts (relay/1 REL-110a plus the relay's own identification probe): where the
+// relay found the device on its LAN, and what the device said it is when asked.
+// They are omitempty because a sighting can legitimately carry none of them —
+// but a device with no address is one nothing can command, which is why the
+// field is served rather than dropped: an operator can SEE that the relay found
+// a device it cannot reach.
+//
+// Adopted is the app's own decision, not a discovered fact, and it is the one
+// member of this row a relay has no influence over at all. It reports whether an
+// adopted-device row exists for this device (the durable adoption record the
+// desired-state `device_inventory` section compiles from, REL-063) — the answer
+// to "is this device under our control", which is the question an operator
+// looking at a discovered-device list is actually asking.
 type Device struct {
 	ID          string            `json:"id"`
 	ExternalID  *string           `json:"external_id"`
@@ -116,6 +131,10 @@ type Device struct {
 	Name        string            `json:"name"`
 	ScopeNode   string            `json:"scope_node"`
 	Labels      map[string]string `json:"labels"`
+	Address     string            `json:"address,omitempty"`
+	Model       string            `json:"model,omitempty"`
+	Serial      string            `json:"serial,omitempty"`
+	Adopted     bool              `json:"adopted"`
 }
 
 // Entity is one addressable object a device exposes — the openapi Entity schema,
@@ -185,6 +204,15 @@ type Registry struct {
 	// instead of sleeping through it.
 	nowMs func() int64
 
+	// adopted is the set of device ids an adoption record exists for. It is held
+	// BESIDE the relay views rather than on the rows themselves, for exactly the
+	// reason incumbency is: a relay's report replaces its whole view, so anything
+	// stored inside a view is erased by the next report. Adoption is the app's
+	// own decision and must survive every report — including one that no longer
+	// mentions the device at all, which is a device temporarily off the network,
+	// not a device un-adopted.
+	adopted map[string]bool
+
 	// Merged view, rebuilt from views on every write. Reads never touch views.
 	devices  map[string]Device
 	entities map[string]Entity
@@ -221,8 +249,31 @@ func New(siteScopeNode string, nowMs func() int64) *Registry {
 		devices:    map[string]Device{},
 		entities:   map[string]Entity{},
 		incumbency: map[string]incumbent{},
+		adopted:    map[string]bool{},
 		nowMs:      nowMs,
 	}
+}
+
+// MarkAdopted records that an adoption record exists for deviceID, so every
+// later listing of that device reports it (see Registry.adopted).
+//
+// It is a PROJECTION of the durable adopted-device row, never the adoption
+// itself: the row is written first, in the store, and this only teaches the
+// in-memory read model what the store already committed. Called on the adopt
+// operation and again for every existing row at boot, which is what makes the
+// flag survive a restart even though the rows around it do not.
+//
+// Marking a device this registry has never heard of is deliberately allowed and
+// remembered: an adopted device that is currently powered off will be reported
+// again eventually, and the flag has to be waiting for it when it is.
+func (r *Registry) MarkAdopted(deviceID string) {
+	if deviceID == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.adopted[deviceID] = true
+	r.rematerialize()
 }
 
 // now reads the injected clock, or 0 when there is none.
@@ -378,6 +429,10 @@ func (r *Registry) rematerialize() {
 			if held, ok := r.incumbency[id]; ok && held.relayID != d.RelayID {
 				continue
 			}
+			// Stamped here rather than carried on the view's row: the merged row
+			// is rebuilt from scratch on every write, so this is the only place
+			// a fact that outlives a report can be attached to one.
+			d.Adopted = r.adopted[id]
 			devs[id] = d
 		}
 		for id, e := range v.entities {
@@ -416,6 +471,17 @@ func (r *Registry) Entities() []Entity {
 	r.mu.RUnlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
+}
+
+// Device resolves one device by id, reporting whether it is known. It is the
+// lookup the adopt operation runs first: adopting a device no relay has ever
+// reported would file an adoption record against a device that may not exist,
+// so the operation is refused here rather than writing one on a client's word.
+func (r *Registry) Device(id string) (Device, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	d, ok := r.devices[id]
+	return d, ok
 }
 
 // Entity resolves one entity by id, reporting whether it is known. This is the
