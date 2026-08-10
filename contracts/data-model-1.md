@@ -116,9 +116,27 @@ An implementation MUST NOT read this as licence to resolve a `screen_id` without
 
 **[DAT-040]** A playlist row MUST be `{id, scope_node, name, items, external_id?, labels?, revision, created_at, updated_at}` (Playlist, Wire shapes) — the Resource-row baseline (DAT-005–008) plus `name` (string) and `items`.
 
-**[DAT-041]** `items` MUST be an array (possibly empty) of `{source, asset_ref?, pack_id?, content_id?, duration_seconds?}`, in play order. `source` MUST be exactly one of `asset` or `playable`. When `source` is `asset`, `asset_ref` MUST be present (a content-addressed `sha256:` URI, the same form `player/1`'s own Content reference uses, `player/1` PLY-083); when `source` is `playable`, `pack_id` and `content_id` MUST both be present, `content_id` naming one pack's own `contributes.playable` entry (`manifest/1` MAN-080). An item MUST NOT declare both an `asset_ref` and a `pack_id`/`content_id` pair, and MUST NOT declare neither.
+**[DAT-041]** `items` MUST be an array (possibly empty) of `{source, asset_ref?, pack_id?, content_id?, cast_id?, duration_seconds?}`, in play order. `source` MUST be exactly one of `asset`, `playable`, or `cast`. When `source` is `asset`, `asset_ref` MUST be present (a content-addressed `sha256:` URI, the same form `player/1`'s own Content reference uses, `player/1` PLY-083); when `source` is `playable`, `pack_id` and `content_id` MUST both be present, `content_id` naming one pack's own `contributes.playable` entry (`manifest/1` MAN-080); when `source` is `cast`, `cast_id` MUST be present and MUST reference an existing Cast row's own `id` (DAT-043, `REFERENCE_INVALID`). An item MUST declare exactly one of those three content shapes — never two, and never none.
 
-**[DAT-042]** `duration_seconds`, when present on an `items` entry, overrides whatever duration that item would otherwise resolve to; when absent, an `asset` item's duration is source-driven and a `playable` item's duration follows its own declared `durationSemantics` (`manifest/1` MAN-080) — this contract does not itself resolve either, only defines the override column.
+An item's projection onto delivered content is one-to-one for `asset` and `playable`. It is NOT for `cast`: a cast item MUST project to one content item per slide of the referenced cast, in that cast's own slide order, spliced into the playlist's own order at the position the item occupies. This is what lets an operator schedule an authored slidecast as a single playlist entry.
+
+**[DAT-042]** `duration_seconds`, when present on an `items` entry, overrides whatever duration that item would otherwise resolve to; when absent, an `asset` item's duration is source-driven and a `playable` item's duration follows its own declared `durationSemantics` (`manifest/1` MAN-080) — this contract does not itself resolve either, only defines the override column. For a `cast` item the override applies per PROJECTED SLIDE and is the weaker of the two statements: a slide that declares its own `duration_ms` (DAT-043) keeps it, and only a slide that declares none takes the item's `duration_seconds`.
+
+### Scheduling core: cast
+
+**[DAT-043]** A cast row MUST be `{id, scope_node, name, slides, external_id?, labels?, revision, created_at, updated_at}` (Cast, Wire shapes) — the Resource-row baseline (DAT-005–008) plus a non-empty `name` (`CAST_NAME_MISSING`) and `slides`.
+
+A cast is the authored unit an operator builds and schedules: an ordered set of slides, each a positioned stack of native layers. It is a row rather than a shape inlined into a playlist item precisely so that one cast may be referenced from several playlists (DAT-041) and one edit reaches every screen playing it.
+
+`slides` MUST be a non-empty array (`CAST_SLIDES_EMPTY`) of `{id, duration_ms?, layers}`, in play order:
+
+- `id` MUST be a non-empty string, unique within its own cast (`CAST_SLIDE_ID_INVALID`). It names a position in one authored document — what a reorder or an undo addresses — and is deliberately NOT required to be a ULID, because nothing outside the cast ever references it.
+- `duration_ms`, when present, MUST be a positive integer (`CAST_SLIDE_DURATION_INVALID`) and is that slide's dwell time. When absent, the slide inherits the referencing playlist item's `duration_seconds` (DAT-042); when neither is stated, the player applies its own default.
+- `layers` MUST be a non-empty ordered stack of positioned native elements — the same layer shape `player/1` renders (`player/1` PLY-083's `slide` content type) — and MUST satisfy that shape's own validity rules: a layer kind from the closed set, geometry wholly inside the fixed canvas, and the required fields of each kind. A stack that does not satisfy them MUST be rejected (`CAST_SLIDE_LAYERS_INVALID`), because a slide that cannot be drawn is dropped silently at serve time and an operator would have no way to learn why their screen is short a slide.
+
+An `image` layer inside a slide names its bytes by content-addressed `asset_ref` alone, exactly as an `asset` playlist item does (DAT-041); its fetch URL is derived by the producer that projects the slide onto delivered content, never authored. Validation at authoring time therefore requires the `asset_ref` and MUST NOT require the derived URL.
+
+A cast row that is referenced by any playlist item MUST NOT be deleted (`REFERENCE_INVALID`) — the reference would otherwise survive as a playlist entry that contributes nothing, and the screen would play a shorter rotation than the playlist states.
 
 ### Scheduling core: schedule
 
@@ -303,9 +321,39 @@ This is the **window** analog of, and is deliberately distinct from, `rules/1`'s
   "name": "Lobby Rotation",
   "items": [
     { "source": "asset", "asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "duration_seconds": 10 },
-    { "source": "playable", "pack_id": "acme-weather", "content_id": "forecast-strip" }
+    { "source": "playable", "pack_id": "acme-weather", "content_id": "forecast-strip" },
+    { "source": "cast", "cast_id": "01JCAST0LUNCHMENU00000000X", "duration_seconds": 8 }
   ],
   "revision": 2,
+  "created_at": 1752537600000,
+  "updated_at": 1752537600000
+}
+```
+
+```json
+// Cast — an authored slidecast; the third playlist item above references this row
+{
+  "id": "01JCAST0LUNCHMENU00000000X",
+  "scope_node": "01JGRPNDE1PG2X7R5JQC42EJ5E",
+  "name": "Lunch Menu",
+  "slides": [
+    {
+      "id": "title",
+      "duration_ms": 6000,
+      "layers": [
+        { "kind": "rect", "x": 0, "y": 0, "w": 1920, "h": 1080, "color": "#101828" },
+        { "kind": "text", "x": 120, "y": 120, "w": 1200, "h": 160, "text": "Today's Special", "font_px": 96, "color": "#FFFFFF", "align": "left" },
+        { "kind": "clock", "x": 1400, "y": 60, "w": 460, "h": 120, "text": "15:04", "font_px": 72 }
+      ]
+    },
+    {
+      "id": "photo",
+      "layers": [
+        { "kind": "image", "x": 200, "y": 200, "w": 800, "h": 600, "asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" }
+      ]
+    }
+  ],
+  "revision": 1,
   "created_at": 1752537600000,
   "updated_at": 1752537600000
 }
@@ -475,6 +523,11 @@ These are per-field codes only. They never appear as a Problem's top-level
 | `VARIABLE_NAME_INVALID` | A variable's `name` is absent or outside the `^[a-z][a-z0-9_]{0,63}$` grammar (DAT-131a). The charset is narrower than a label key's because the name is compiled into a rule closure and read from pack text, where quoting it would be a second grammar. | no — rename the variable |
 | `VARIABLE_NAME_DUPLICATE` | Another variable row under the same `scope_node` already carries this `name` (DAT-131). | no — the name is taken at this node |
 | `VARIABLE_VALUE_INVALID` | A variable's `value` is an object, an array, or `null` — DAT-132 admits only a string, number, or boolean, and DAT-133 reserves `null` to `events/1`'s "unset" meaning rather than making it settable. | no — send a scalar, or delete the row to unset |
+| `CAST_NAME_MISSING` | A cast row carries no `name` (DAT-043). Given its own code rather than reusing `ROW_NAME_INVALID` because a cast is the row an operator PICKS from a list — an unnamed one is unreachable in the only interface that reaches it — and the remedy names the surface, not the column. | no — name the cast |
+| `CAST_SLIDES_EMPTY` | A cast row's `slides` array is empty (DAT-043). A cast with no slides plays nothing, and a playlist item referencing it would contribute no content at all — a screen quietly playing less than its playlist states. | no — add at least one slide |
+| `CAST_SLIDE_ID_INVALID` | A slide's `id` is absent, or repeats another slide's within the same cast (DAT-043). A duplicate makes "the slide the operator moved" ambiguous to any editor that addresses slides by id. | no — give every slide a distinct id |
+| `CAST_SLIDE_DURATION_INVALID` | A slide's stated `duration_ms` is not positive (DAT-043). Omitting it is the sanctioned way to inherit the playlist item's own `duration_seconds`; a non-positive value is a dwell time nothing can honour. | no — state a positive duration or omit it |
+| `CAST_SLIDE_LAYERS_INVALID` | A slide's `layers` stack is empty or violates the layer shape's own rules — an unknown kind, a zero-area or off-canvas geometry, a missing per-kind required field, an unparseable color (DAT-043). Refused at authoring time rather than dropped at serve time, so an operator learns which slide is wrong instead of finding their screen a slide short. | no — fix the named slide's layers |
 
 ## Conformance notes
 
