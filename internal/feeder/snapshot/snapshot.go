@@ -507,9 +507,15 @@ func deliverablePairingGrants(rows store.DesiredStateResult, nowMs int64) []wire
 // scheduleSectionFromStore assembles the REL-065 `schedule` section from a store
 // desired-state read: the scope nodes marshaled back to raw JSON (the relay
 // re-parses them through data-model/1, so a typed round-trip is fine) and the six
-// scheduling-core row-kind arrays carried verbatim as the store holds them. The
-// result is Normalized so every one of the seven arrays marshals as `[]` rather
-// than `null` (REL-060), exactly as buildDemoScheduleSection does.
+// scheduling-core row-kind arrays — plus the cast rows a playlist item references
+// (DAT-043) — carried verbatim as the store holds them. The result is Normalized
+// so every one of the eight arrays marshals as `[]` rather than `null`
+// (REL-060), exactly as buildDemoScheduleSection does.
+//
+// The casts are carried rather than pre-expanded into their slides on the way
+// out. Expanding here would flatten a reference the relay's own re-resolution
+// still needs: at a daypart boundary the relay re-derives a screen's program
+// from THESE rows, so a cast it cannot see is a cast it cannot play.
 func scheduleSectionFromStore(rows store.DesiredStateResult) (wire.ScheduleSection, error) {
 	scopeNodesRaw := make([]json.RawMessage, 0, len(rows.ScopeNodes))
 	for _, n := range rows.ScopeNodes {
@@ -522,6 +528,7 @@ func scheduleSectionFromStore(rows store.DesiredStateResult) (wire.ScheduleSecti
 	return wire.ScheduleSection{
 		ScopeNodes:      scopeNodesRaw,
 		Playlists:       rows.Rows.Playlists,
+		Casts:           rows.Rows.Casts,
 		Schedules:       rows.Rows.Schedules,
 		ValidityWindows: rows.Rows.ValidityWindows,
 		Dayparts:        rows.Rows.Dayparts,

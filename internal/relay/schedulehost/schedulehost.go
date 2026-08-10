@@ -112,6 +112,7 @@ func BuildStore(sec wire.ScheduleSection) (datamodel.RowStore, []datamodel.Error
 
 	raw := datamodel.RawRows{
 		Playlists:       sec.Playlists,
+		Casts:           sec.Casts,
 		Schedules:       sec.Schedules,
 		ValidityWindows: sec.ValidityWindows,
 		Dayparts:        sec.Dayparts,
@@ -238,8 +239,10 @@ func programRevisionFor(state datamodel.EffectiveState) string {
 // to a plain `image` content item; a `slide` item (native slide rendering,
 // parity milestone 2) projects to a `type:"slide"` item carrying the authored
 // layer stack (resolveSlideLayers, which drops a slide whose layers do not pass
-// wire.ValidateSlideLayers). A `playable` (pack) item has no direct Lease
-// content ref and is skipped. An empty or unknown playlist id yields no content.
+// wire.ValidateSlideLayers); a `cast` item (DAT-043) projects to ONE such item
+// PER SLIDE of the referenced cast, in authored order (castContent). A
+// `playable` (pack) item has no direct Lease content ref and is skipped. An
+// empty or unknown playlist id yields no content.
 //
 // A slide projects here IDENTICALLY to the app-signed baseline
 // (snapshot.playlistContent): both derive image-layer URLs from the same origin
@@ -287,6 +290,10 @@ func playlistContent(store datamodel.RowStore, playlistID string, sign contentSi
 			var durationMS int64
 			if item.DurationSeconds != nil && *item.DurationSeconds != 0 {
 				durationMS = int64(*item.DurationSeconds) * 1000
+			}
+			if item.Source == datamodel.PlaylistSourceCast {
+				content = append(content, castContent(store, item.CastID, durationMS, sign)...)
+				continue
 			}
 			if item.Source == sourceSlide {
 				// A slide re-resolved on the relay must project IDENTICALLY to the
@@ -337,8 +344,17 @@ func resolveSlideLayers(slide *datamodel.Slide, sign contentSigner) ([]wire.Laye
 	if slide == nil {
 		return nil, false
 	}
-	layers := make([]wire.Layer, len(slide.Layers))
-	for i, l := range slide.Layers {
+	return resolveLayers(slide.Layers, sign)
+}
+
+// resolveLayers is the layer-level half of that job, shared with the cast
+// expansion (castContent) for the same reason snapshot.resolveLayers is: a
+// cast's slides carry the same wire.Layer stack an inline `slide` item does and
+// must reach a Lease through the identical URL minting and the identical
+// validation gate.
+func resolveLayers(authored []wire.Layer, sign contentSigner) ([]wire.Layer, bool) {
+	layers := make([]wire.Layer, len(authored))
+	for i, l := range authored {
 		if l.Kind == wire.LayerKindImage {
 			l.URL = sign.urlFor(l.AssetRef)
 		}
@@ -348,6 +364,67 @@ func resolveSlideLayers(slide *datamodel.Slide, sign contentSigner) ([]wire.Laye
 		return nil, false
 	}
 	return layers, true
+}
+
+// castContent expands ONE `source: "cast"` playlist item (DAT-041) into the
+// player/1 Lease content items its cast's slides project to: one `type:"slide"`
+// item per slide, in authored order, each carrying that slide's own layer stack.
+//
+// It is the relay-side twin of snapshot.castContent and MUST stay its twin —
+// same order, same per-slide dwell-time resolution, same drop of a slide whose
+// layers do not validate — because these two functions are the two answers a
+// screen can receive for the same authored cast: the app-signed baseline it is
+// handed on a generation, and the relay's own re-resolution the moment a daypart
+// boundary passes. A divergence between them is a screen whose content changes
+// at a boundary for no authored reason. TestDerivedContentMatchesRelaySideProjection
+// pins the two together.
+//
+// itemDurationMS is the referencing playlist item's own `duration_seconds`
+// override already converted to ms (0 when it stated none); a slide's own
+// `duration_ms` wins over it, and with neither the item carries no `duration_ms`
+// at all (omitempty) and the player applies its own default.
+//
+// An unknown cast id contributes nothing: a carried schedule section that does
+// not resolve is a degraded input, and the honest projection of absent content
+// is no content rather than a placeholder a screen would stall on.
+func castContent(store datamodel.RowStore, castID string, itemDurationMS int64, sign contentSigner) []wire.LeaseContent {
+	var out []wire.LeaseContent
+	if castID == "" {
+		return out
+	}
+	for i := range store.Rows.Casts {
+		c := store.Rows.Casts[i]
+		if c.ID != castID {
+			continue
+		}
+		for _, slide := range c.Slides {
+			layers, ok := resolveLayers(slide.Layers, sign)
+			if !ok {
+				continue
+			}
+			out = append(out, wire.LeaseContent{
+				Type:       leaseContentTypeSlide,
+				Layers:     layers,
+				DurationMS: slideDurationMS(slide, itemDurationMS),
+			})
+		}
+		return out
+	}
+	return out
+}
+
+// slideDurationMS resolves one cast slide's dwell time: the slide's own
+// `duration_ms` when it states one, otherwise the referencing playlist item's
+// already-converted `duration_seconds` override, otherwise 0 (no `duration_ms`
+// key at all). Deliberately spelled as its own named rule on both sides —
+// snapshot.slideDurationMS is byte-for-byte this function — so a reader
+// comparing the two projections compares one rule rather than two inlined
+// expressions, and so a change to it is visibly a change that must be made twice.
+func slideDurationMS(slide datamodel.CastSlide, itemDurationMS int64) int64 {
+	if slide.DurationMS > 0 {
+		return slide.DurationMS
+	}
+	return itemDurationMS
 }
 
 // contentURL builds a schedule-resolved content item's Lease `url` from the

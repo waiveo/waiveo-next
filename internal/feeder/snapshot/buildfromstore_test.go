@@ -33,6 +33,7 @@ func seededStore(t *testing.T, assetRef string) *store.Store {
 func rawRowsFromSection(sec wire.ScheduleSection) datamodel.RawRows {
 	return datamodel.RawRows{
 		Playlists:       sec.Playlists,
+		Casts:           sec.Casts,
 		Schedules:       sec.Schedules,
 		ValidityWindows: sec.ValidityWindows,
 		Dayparts:        sec.Dayparts,
