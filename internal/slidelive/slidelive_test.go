@@ -2,6 +2,7 @@ package slidelive
 
 import (
 	"context"
+	"math"
 	"reflect"
 	"testing"
 
@@ -38,6 +39,16 @@ func layer(kind string) wire.Layer {
 	return wire.Layer{Kind: kind, X: 0, Y: 0, W: 100, H: 50}
 }
 
+// siteLat/siteLong are a real site's coordinates. Every case that expects a
+// weather lookup to HAPPEN has to carry them, because a Sources with no adopted
+// geo deliberately performs no lookup at all (Sources.HasGeo) — so a fixture
+// that left them at zero would be testing the degrade path while claiming to
+// test the resolution path.
+const (
+	siteLat  = 39.7392
+	siteLong = -104.9903
+)
+
 func TestResolveLayersFillsWeatherFromTheTemplate(t *testing.T) {
 	w := &stubWeather{conds: Conditions{TempF: 72, TempC: 22, Text: "Partly cloudy"}, ok: true}
 	l := layer(wire.LayerKindWeather)
@@ -63,7 +74,7 @@ func TestResolveLayersAsksWeatherOnceForTheWholeSlide(t *testing.T) {
 	cond := layer(wire.LayerKindWeather)
 	cond.Text = "{cond}"
 
-	out := ResolveLayers([]wire.Layer{temp, cond}, Sources{Weather: w})
+	out := ResolveLayers([]wire.Layer{temp, cond}, Sources{Weather: w, Lat: siteLat, Long: siteLong})
 
 	if w.calls != 1 {
 		t.Fatalf("weather must be looked up once per slide, got %d calls", w.calls)
@@ -79,7 +90,12 @@ func TestResolveLayersDegradesWeatherWithoutLosingLayout(t *testing.T) {
 	// recognizable and stays in its authored position.
 	cases := map[string]Sources{
 		"no source configured": {},
-		"source has no answer": {Weather: &stubWeather{ok: false}},
+		"source has no answer": {Weather: &stubWeather{ok: false}, Lat: siteLat, Long: siteLong},
+		// The relay booted with no app peer, so no site_binding was adopted and
+		// the coordinates are still (0,0). The source COULD answer about that
+		// point — Open-Meteo answers about the Gulf of Guinea like anywhere
+		// else — which is precisely why nothing may be asked.
+		"no coordinates adopted": {Weather: &stubWeather{conds: Conditions{TempF: 84, TempC: 29, Text: "Clear"}, ok: true}},
 	}
 	for name, src := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -157,6 +173,8 @@ func TestResolveLayersLeavesEveryOtherKindAlone(t *testing.T) {
 	out := ResolveLayers(in, Sources{
 		Weather: &stubWeather{conds: Conditions{TempF: 1, Text: "Clear"}, ok: true},
 		Entity:  stubEntities{"E": "on"},
+		Lat:     siteLat,
+		Long:    siteLong,
 	})
 
 	for i := range out {
@@ -183,6 +201,8 @@ func TestResolveContentDoesNotMutateTheServedProgram(t *testing.T) {
 
 	out := ResolveContent(content, Sources{
 		Weather: &stubWeather{conds: Conditions{TempF: 81}, ok: true},
+		Lat:     siteLat,
+		Long:    siteLong,
 	})
 
 	if content[1].Layers[0].Value != "" {
@@ -212,8 +232,60 @@ func TestUnknownTemplateTokenStaysLiteral(t *testing.T) {
 	l.Text = "{tmp} {temp}"
 	out := ResolveLayers([]wire.Layer{l}, Sources{
 		Weather: &stubWeather{conds: Conditions{TempF: 55}, ok: true},
+		Lat:     siteLat,
+		Long:    siteLong,
 	})
 	if got, want := out[0].Value, "{tmp} 55"; got != want {
 		t.Fatalf("value = %q, want %q", got, want)
+	}
+}
+
+// THE regression guard for the "weather at (0,0)" defect. A wrong-but-plausible
+// temperature on a wall is worse than a dash, because nobody notices it is
+// wrong — so the source is not merely IGNORED when the relay has no location,
+// it is never ASKED, which is also what keeps a boot with no app peer from
+// pointing a public weather API at a coordinate the site never authored.
+func TestWeatherIsNeverAskedAtCoordinatesTheRelayDoesNotHave(t *testing.T) {
+	cases := map[string]struct{ lat, long float64 }{
+		// The zero hello.SiteBinding: what a relay that booted into
+		// offline-serve (REL-055/061) holds until an app peer answers.
+		"no site_binding adopted": {0, 0},
+		"latitude out of range":   {91, 10},
+		"longitude out of range":  {10, 181},
+		"latitude NaN":            {math.NaN(), 10},
+		"longitude infinite":      {10, math.Inf(1)},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			w := &stubWeather{conds: Conditions{TempF: 84, TempC: 29, Text: "Clear"}, ok: true}
+			l := layer(wire.LayerKindWeather)
+			l.Text = "{temp}° {cond}"
+
+			out := ResolveLayers([]wire.Layer{l}, Sources{Weather: w, Lat: c.lat, Long: c.long})
+
+			if w.calls != 0 {
+				t.Errorf("the weather source was asked at (%v,%v); a relay that does not know where it is must ask nobody", c.lat, c.long)
+			}
+			if got, want := out[0].Value, Unavailable+"° "+Unavailable; got != want {
+				t.Errorf("value = %q, want the unavailable placeholder %q — a plausible reading for the wrong place is worse than a dash", got, want)
+			}
+		})
+	}
+}
+
+func TestHasGeoAcceptsRealSites(t *testing.T) {
+	// The range checks must not reject legitimate sites, including the extremes
+	// and the axes: a site ON the equator or the prime meridian (but not both)
+	// is a real place and keeps its weather.
+	for _, s := range []Sources{
+		{Lat: siteLat, Long: siteLong},
+		{Lat: 0, Long: -104.9903}, // on the equator
+		{Lat: 39.7392, Long: 0},   // on the prime meridian
+		{Lat: -90, Long: 180},     // the corners of the range are valid
+		{Lat: 90, Long: -180},
+	} {
+		if !s.HasGeo() {
+			t.Errorf("(%v,%v) is a real location and must keep its weather", s.Lat, s.Long)
+		}
 	}
 }

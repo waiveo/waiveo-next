@@ -204,6 +204,17 @@ type rePuller struct {
 	// consults the set then, and applying to it would only log.
 	adoption *keepalive.AdoptionSet
 
+	// geo re-points the live consumers of the site's effective geo — the
+	// automation engine's location and a native slide's weather coordinates —
+	// at each freshly adopted site_binding (see siteGeo). Unlike everything
+	// above it is driven from adoptSite, not from an apply: the site arrives on
+	// the hello-ack, one handshake BEFORE the pull, and an offline boot's
+	// missing coordinates must be corrected the moment a connection exists
+	// rather than waiting for the next authored generation.
+	//
+	// Optional (nil in tests that drive only the serving side).
+	geo *siteGeo
+
 	lastGen int64
 	// lastHash is the section hash of the last snapshot whose apply-time effects
 	// actually ran — REL-070's comparison value. Empty until the first apply,
@@ -213,15 +224,29 @@ type rePuller struct {
 	lastHash string
 }
 
-// adoptSite adopts the app peer's authoritative site_binding (REL-036) for
-// every FUTURE schedule-resolver apply — the reconnect supervisor calls this
-// with each fresh connection's hello-ack site before its pull-on-reconnect,
-// so a site rebound while the relay was offline takes effect on the very
-// next apply. Serialized under the same lock every tick applies under.
+// adoptSite adopts the app peer's authoritative site_binding (REL-036) — the
+// reconnect supervisor calls this with each fresh connection's hello-ack site
+// before its pull-on-reconnect, so a site rebound while the relay was offline
+// takes effect on the very next apply. Serialized under the same lock every
+// tick applies under.
+//
+// It adopts the binding into BOTH of its consumers, and that pairing is the
+// point rather than a convenience. The schedule-resolver site (driver.site) was
+// re-adopted here from the start; the site's GEO — the engine's location and a
+// slide's weather coordinates — was installed once at boot and never again, so
+// a relay that booted with no app peer (offline-serve, REL-055/061) kept asking
+// the weather at the zero binding's (0,0) forever, correcting itself only on a
+// restart. There is exactly one moment a fresh authoritative site exists, and
+// this is it: everything derived from the site is re-derived here, together, or
+// the next consumer added will inherit the same staleness bug.
 func (p *rePuller) adoptSite(site hello.SiteBinding) {
 	p.mu.Lock()
 	p.driver.site = site
 	p.mu.Unlock()
+	// Outside p.mu: geo's own consumers take their own locks (the player
+	// server's, the automation host's), and nothing in adoptSite's own critical
+	// section is read by them.
+	p.geo.adopt(site)
 }
 
 // tick performs one live pull and returns whether it applied a new generation.

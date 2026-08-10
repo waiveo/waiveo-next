@@ -303,11 +303,16 @@ type Server struct {
 // (internal/slidelive — see that package's doc for why resolution happens at
 // issuance rather than in either upstream projection).
 //
-// A deployment calls it once, after the app peer's authoritative site_binding
-// (REL-036) has supplied the coordinates weather is asked for. Until then — and
-// forever, on a relay with neither source configured — every live widget shows
-// slidelive.Unavailable, which is the correct thing for a relay that genuinely
-// cannot answer.
+// A deployment calls it at boot and AGAIN on every site adoption, because the
+// coordinates it carries come from the app peer's authoritative site_binding
+// (REL-036) and a relay that booted into offline-serve (REL-055/061) has not
+// been told them yet. Re-calling is the supported way to correct that: this is
+// a wholesale install under the lock, so the newest call wins and the next
+// Lease resolves against it. Until a site with real coordinates is adopted —
+// and forever, on a relay with neither source configured — every live widget
+// shows slidelive.Unavailable, which is the correct thing for a relay that
+// genuinely cannot answer (slidelive.Sources.HasGeo: coordinates it does not
+// have are not a location it may guess at).
 func (s *Server) SetSlideLive(src slidelive.Sources) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
