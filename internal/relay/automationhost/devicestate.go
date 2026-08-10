@@ -76,7 +76,16 @@ func (h *Host) Observe(obs state.Observation) ([]engine.RunDisposition, error) {
 	// when obs.StateChanged: the poller's first snapshot per entity arrives as a
 	// self-transition seed with StateChanged false, and that seed is precisely
 	// the reading that first populates a slide's entity widget after boot.
+	//
+	// Under stateMu, held for this assignment alone and released before the
+	// engine advances: everything below this line can dispatch a device command
+	// and block on a wedged TV, and a Lease being issued on another goroutine
+	// must never wait behind that (stateMu's doc). Doing it FIRST also means the
+	// reading is visible to a reader for the whole duration of the dispatch it
+	// may have caused, rather than only after it completes.
+	h.stateMu.Lock()
 	h.entityStates[obs.Entity.ID] = obs.Entity.State
+	h.stateMu.Unlock()
 
 	disps := h.engine.Observe(obs)
 	atMs := h.clk.WallMillis()
