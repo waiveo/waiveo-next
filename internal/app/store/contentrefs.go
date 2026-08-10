@@ -2,24 +2,28 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"strings"
-
-	"github.com/maaxton/waiveo-next/internal/datamodel"
 )
 
 // ContentReferences is the store's answer to "which content is this workspace
 // actually using, and as of when": the set of content hashes every persisted
-// playlist row names, and the generation that set was read at.
+// asset-bearing row names, and the generation that set was read at.
+//
+// "Asset-bearing" is AssetBearingKinds and the projection is RowAssetReferences
+// (assetrefs.go) — the SAME one the api's authoring guard and the workspace
+// export use. It covers a playlist item's `asset_ref`, the image layers of an
+// inline `source: "slide"` item, and the image layers of every slide of a cast.
+// Reading only playlist items' `asset_ref` here — which is what this did — made
+// the sweep blind to the images a cast plays, so a scheduled cast's content was
+// reclaimable while a screen was showing it.
 //
 // Digests are HEX, with the `sha256:` prefix stripped — the content origin's own
 // key (origin.Store.Has/Serve), not the `asset_ref` grammar the row carries — so
 // the caller never re-derives the mapping between the two and cannot get it
 // subtly wrong in one of the two places.
 //
-// PlaylistRows is the number of playlist rows the set was derived from. It is
-// reported because "no content is referenced" and "no playlist row was read" look
+// SourceRows is the number of asset-bearing rows the set was derived from. It is
+// reported because "no content is referenced" and "no row was read" look
 // identical in Digests and are entirely different facts: the first is a workspace
 // with nothing scheduled, the second is a read that saw nothing it should have.
 //
@@ -31,19 +35,19 @@ import (
 //
 // What it can do is make the difference visible AT THE MOMENT IT STOPS BEING
 // recoverable. Reclamation is permanent, so a sweep that deletes content while
-// its reference set came from zero playlist rows is the one combination where a
-// silent read fault and an empty workspace produce the same irreversible outcome.
+// its reference set came from zero rows is the one combination where a silent
+// read fault and an empty workspace produce the same irreversible outcome.
 // The feeder logs precisely that pair (cmd/waiveo-feeder/contentsweep.go), which
 // is the only place the two can be told apart — by a human who knows whether that
-// workspace had playlists.
+// workspace had anything scheduled.
 //
 // The other half of that fault is already closed at the source rather than here:
 // a body that will not decode ABORTS the read (see the failure posture below), so
 // the residue this number covers is a read that returned no rows without error.
 type ContentReferences struct {
-	Digests      map[string]bool
-	Generation   int64
-	PlaylistRows int
+	Digests    map[string]bool
+	Generation int64
+	SourceRows int
 }
 
 // WithContentReferences runs use with the workspace's content-reference set,
@@ -81,9 +85,9 @@ type ContentReferences struct {
 //
 // # Failure posture
 //
-// A playlist body that will not decode ABORTS with an error and never reaches
-// use. It is tempting to skip it — the workspace export does exactly that, and
-// for an export it is right — but here a skipped row is a row whose references
+// An asset-bearing row body (a playlist or a cast) that will not decode ABORTS
+// with an error and never reaches use. It is tempting to skip it — the workspace
+// export does exactly that, and for an export it is right — but here a skipped row is a row whose references
 // are silently treated as absent, which is how a sweep deletes content that is
 // very much in use. A reference set this store cannot vouch for is not a
 // reference set.
@@ -95,23 +99,26 @@ func (s *Store) WithContentReferences(ctx context.Context, use func(ContentRefer
 	if err != nil {
 		return err
 	}
-	bodies, err := readBodies(ctx, s.db, string(KindPlaylist))
-	if err != nil {
-		return err
-	}
-	refs := ContentReferences{Digests: map[string]bool{}, Generation: gen, PlaylistRows: len(bodies)}
-	for i, body := range bodies {
-		var pl struct {
-			Items []datamodel.PlaylistItem `json:"items"`
+	refs := ContentReferences{Digests: map[string]bool{}, Generation: gen}
+	// Every kind that can name content, through the one shared projection —
+	// never a hand-written per-kind reader here. A kind read by the export or
+	// guarded on write but not swept is content this deletes while a screen is
+	// playing it, and that asymmetry is only avoidable if all three read the
+	// same list.
+	for _, kind := range AssetBearingKinds {
+		bodies, err := readBodies(ctx, s.db, string(kind))
+		if err != nil {
+			return err
 		}
-		if err := json.Unmarshal(body, &pl); err != nil {
-			return fmt.Errorf("store: decode playlist body %d for its content references: %w", i, err)
-		}
-		for _, it := range pl.Items {
-			if it.AssetRef == "" {
-				continue // a pack `playable` item resolves in the pack, not the origin.
+		refs.SourceRows += len(bodies)
+		for i, body := range bodies {
+			rowRefs, err := RowAssetReferences(kind, body)
+			if err != nil {
+				return fmt.Errorf("store: %s row %d: %w", kind, i, err)
 			}
-			refs.Digests[strings.TrimPrefix(it.AssetRef, "sha256:")] = true
+			for _, r := range rowRefs {
+				refs.Digests[r.HexDigest()] = true
+			}
 		}
 	}
 	return use(refs)

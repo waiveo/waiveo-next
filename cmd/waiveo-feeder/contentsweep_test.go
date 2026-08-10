@@ -249,7 +249,7 @@ type zeroRowRefs struct{}
 func (zeroRowRefs) Generation(context.Context) (int64, error) { return 7, nil }
 
 func (zeroRowRefs) WithContentReferences(_ context.Context, use func(store.ContentReferences) error) error {
-	return use(store.ContentReferences{Digests: map[string]bool{}, Generation: 7, PlaylistRows: 0})
+	return use(store.ContentReferences{Digests: map[string]bool{}, Generation: 7, SourceRows: 0})
 }
 
 // oneRowRefs reports a playlist row and still references nothing — a workspace
@@ -260,7 +260,7 @@ type oneRowRefs struct{}
 func (oneRowRefs) Generation(context.Context) (int64, error) { return 7, nil }
 
 func (oneRowRefs) WithContentReferences(_ context.Context, use func(store.ContentReferences) error) error {
-	return use(store.ContentReferences{Digests: map[string]bool{}, Generation: 7, PlaylistRows: 1})
+	return use(store.ContentReferences{Digests: map[string]bool{}, Generation: 7, SourceRows: 1})
 }
 
 // reclaimAllSweeper builds a sweeper over one unreferenced, fully-aged asset, so
@@ -306,13 +306,14 @@ func captureLog(t *testing.T, fn func()) string {
 }
 
 // TestReclaimingFromAZeroRowReferenceSetIsReported is the whole point of
-// carrying PlaylistRows out of the pass.
+// carrying SourceRows out of the pass.
 //
 // Reclamation is permanent. A sweep that deletes content while its reference set
-// came from zero playlist rows is the one combination where a silent read fault
-// and an empty workspace produce the same irreversible outcome, and no rule
-// inside the sweeper can distinguish them — both are legitimate. An operator who
-// knows whether that workspace had playlists can, but only if this is said.
+// came from zero asset-bearing rows (playlists AND casts — store.AssetBearingKinds)
+// is the one combination where a silent read fault and an empty workspace produce
+// the same irreversible outcome, and no rule inside the sweeper can distinguish
+// them — both are legitimate. An operator who knows whether that workspace had
+// anything scheduled can, but only if this is said.
 func TestReclaimingFromAZeroRowReferenceSetIsReported(t *testing.T) {
 	sweeper, age := reclaimAllSweeper(t, zeroRowRefs{})
 	out := captureLog(t, func() {
@@ -324,8 +325,8 @@ func TestReclaimingFromAZeroRowReferenceSetIsReported(t *testing.T) {
 	if !strings.Contains(out, "reclaimed") {
 		t.Fatalf("the fixture never reclaimed anything, so this test proves nothing about the note; log was:\n%s", out)
 	}
-	if !strings.Contains(out, "zero playlist rows") {
-		t.Errorf("content was reclaimed from a reference set derived from zero playlist rows and nothing said so.\n"+
+	if !strings.Contains(out, "zero playlist or cast rows") {
+		t.Errorf("content was reclaimed from a reference set derived from zero asset-bearing rows and nothing said so.\n"+
 			"That is the one case where a broken read and an empty workspace are indistinguishable AND the outcome "+
 			"is permanent — an operator who could tell them apart never gets the chance.\nlog was:\n%s", out)
 	}

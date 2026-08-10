@@ -30,6 +30,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/datamodel"
 	"github.com/maaxton/waiveo-next/internal/feeder/contentgc"
 	"github.com/maaxton/waiveo-next/internal/feeder/origin"
+	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
 // gcTestNow is the instant the reclamation cases run at. Every window in the
@@ -278,6 +279,63 @@ func TestContentReferencedByALaggingRelayGenerationIsNotReclaimed(t *testing.T) 
 	}
 	if gcOnDisk(t, dir, assetRef) {
 		t.Error("the asset survived a converged sweep; nothing would ever reclaim it")
+	}
+}
+
+// TestContentACastReferencesIsNotReclaimed is the data-loss regression, and it
+// is the one case in this file whose failure is irreversible.
+//
+// The retention sweep's reference set read ONLY playlist rows' item.asset_ref,
+// so an image whose only reference is a cast's slide layer came back
+// unreferenced. Past the age floors, the sweep PERMANENTLY DELETED it — while a
+// schedule was playing that cast, and with no way to get the bytes back.
+//
+// The two assets are uploaded together and differ in exactly one respect: one is
+// named by the authored cast. Reclaiming the other in the same sweep is what
+// makes this a test of the reference projection rather than of a sweep that
+// happened not to fire.
+func TestContentACastReferencesIsNotReclaimed(t *testing.T) {
+	e, content, dir := gcOriginEnv(t)
+
+	siteID := e.createNode(t, siteNode(""))
+	screenID := e.createNode(t, screenNode("", siteID, ""))
+
+	played := []byte("waiveo-next retention: the image a scheduled cast is showing")
+	orphan := []byte("waiveo-next retention: an image no row names")
+	playedRef := e.uploadContent(t, played).AssetRef
+	orphanRef := e.uploadContent(t, orphan).AssetRef
+
+	// The cast, and a playlist that schedules it — the whole point being that a
+	// screen is playing this content while the sweep runs.
+	castID := decodeID(t, e.createOK(t, "/api/v1/casts", rowCreateBody(t, datamodel.Cast{
+		ScopeNode: screenID, Name: "Lunch Menu",
+		Slides: []datamodel.CastSlide{{ID: "photo", Layers: []wire.Layer{
+			{Kind: wire.LayerKindImage, X: 0, Y: 0, W: 1920, H: 1080, AssetRef: playedRef},
+		}}},
+	})))
+	e.createOK(t, "/api/v1/playlists", rowCreateBody(t, datamodel.Playlist{
+		ScopeNode: screenID, Name: "Cast Playlist",
+		Items: []datamodel.PlaylistItem{{Source: datamodel.PlaylistSourceCast, CastID: castID}},
+	}))
+
+	clock := gcTestNow + contentgc.DefaultMinAssetAgeMs
+	sw := gcSweeper(t, e, content, func() int64 { return clock })
+	res := gcSweepTwice(t, sw, &clock, contentgc.DefaultMinUnreferencedAgeMs)
+
+	if !gcOnDisk(t, dir, playedRef) {
+		t.Fatal("the content retention sweep PERMANENTLY DELETED the image a scheduled cast is playing: " +
+			"the bytes are unrecoverable and every screen on that cast shows nothing")
+	}
+	if got := gcServed(t, content, playedRef); got != http.StatusOK {
+		t.Errorf("the cast's image serves %d, want 200", got)
+	}
+	// The sweep must still do its job in the same pass, or the assertion above
+	// would pass on a sweep that reclaims nothing at all.
+	if res.Reclaimed != 1 {
+		t.Fatalf("reclaimed %d asset(s), want exactly 1 (the orphan; retained: %v)", res.Reclaimed, res.Retained)
+	}
+	if gcOnDisk(t, dir, orphanRef) {
+		t.Error("the genuinely unreferenced asset survived; this case is not exercising reclamation")
 	}
 }
 

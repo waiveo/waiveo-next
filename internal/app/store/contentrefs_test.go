@@ -10,6 +10,7 @@ import (
 
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/datamodel"
+	"github.com/maaxton/waiveo-next/internal/shared/wire"
 	_ "modernc.org/sqlite"
 )
 
@@ -17,6 +18,7 @@ const (
 	refsScopeNode = "01J8ZJ000000000000000000S1"
 	refsPlaylistA = "01J8ZJ000000000000000000A1"
 	refsPlaylistB = "01J8ZJ000000000000000000B2"
+	refsCastA     = "01J8ZJ000000000000000000C1"
 )
 
 func refsPlaylist(t *testing.T, id string, items ...datamodel.PlaylistItem) []byte {
@@ -75,9 +77,65 @@ func TestWithContentReferencesProjectsEveryPlaylistItem(t *testing.T) {
 	if got.Generation != wantGen {
 		t.Fatalf("generation = %d, want %d", got.Generation, wantGen)
 	}
-	if got.PlaylistRows != 2 {
-		t.Fatalf("playlist rows = %d, want 2 — a reader cannot tell an empty workspace "+
-			"from an unread table without this", got.PlaylistRows)
+	if got.SourceRows != 2 {
+		t.Fatalf("source rows = %d, want 2 — a reader cannot tell an empty workspace "+
+			"from an unread table without this", got.SourceRows)
+	}
+}
+
+// TestWithContentReferencesCountsACastsSlideImages is the store half of the
+// data-loss defect: the reference set the retention sweep acts on read ONLY
+// playlist rows' item.asset_ref, so an asset whose only reference is a cast's
+// image layer came back unreferenced and was permanently deleted while every
+// screen playing that cast went blank.
+//
+// The inline `source: "slide"` item in the same playlist is the identical hole
+// on the playlist side — its content is its layer stack, so it carries no
+// item-level asset_ref for the old projection to find.
+func TestWithContentReferencesCountsACastsSlideImages(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(":memory:", store.WallClockMs)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer st.Close()
+	seedPlacementNode(t, st, refsScopeNode)
+
+	if _, err := st.Create(ctx, store.KindPlaylist, refsPlaylist(t, refsPlaylistA,
+		datamodel.PlaylistItem{Source: "asset", AssetRef: "sha256:aa11"},
+		datamodel.PlaylistItem{Source: "slide", Slide: &datamodel.Slide{
+			Layers: []wire.Layer{imageLayer("sha256:bb22")},
+		}},
+	)); err != nil {
+		t.Fatalf("create the playlist: %v", err)
+	}
+	castBody, err := json.Marshal(datamodel.Cast{
+		ID: refsCastA, ScopeNode: refsScopeNode, Name: "Lunch Menu",
+		Slides: []datamodel.CastSlide{{ID: "photo", Layers: []wire.Layer{imageLayer("sha256:cc33")}}},
+	})
+	if err != nil {
+		t.Fatalf("marshal the cast: %v", err)
+	}
+	if _, err := st.Create(ctx, store.KindCast, castBody); err != nil {
+		t.Fatalf("create the cast: %v", err)
+	}
+
+	var got store.ContentReferences
+	if err := st.WithContentReferences(ctx, func(refs store.ContentReferences) error {
+		got = refs
+		return nil
+	}); err != nil {
+		t.Fatalf("WithContentReferences: %v", err)
+	}
+
+	for _, want := range []string{"aa11", "bb22", "cc33"} {
+		if !got.Digests[want] {
+			t.Errorf("digest %q is missing from the reference set %v — the sweep would reclaim content a screen is playing", want, got.Digests)
+		}
+	}
+	if got.SourceRows != 2 {
+		t.Errorf("source rows = %d, want 2 (one playlist + one cast); a cast row the sweep never read is a cast whose "+
+			"images it cannot see", got.SourceRows)
 	}
 }
 
