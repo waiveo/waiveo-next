@@ -88,6 +88,13 @@ tags:
       The scheduling core's playlist rows (`data-model/1`) — the ordered item
       list a daypart plays, whose `asset_ref`s must resolve in the content
       origin. Served end to end; the resource schema is a later minor.
+  - name: casts
+    description: >-
+      Authored slidecasts (`data-model/1` DAT-043) — a named, ordered set of
+      slides, each a positioned stack of native layers, built once and
+      referenced from a playlist item (`source: "cast"`). This is the unit an
+      operator authors and assigns to a screen; scheduling reaches it through a
+      playlist, never directly. Worked fully.
   - name: content
     description: >-
       The content-addressed asset origin — the upload that puts bytes behind an
@@ -1621,6 +1628,191 @@ paths:
           $ref: "#/components/responses/NotFound"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
+
+  # ---------------------------------------------------------------------
+  # casts — the authored slidecast (data-model/1 DAT-043).
+  #
+  # The family an operator spends their day in: a cast is the document they
+  # build, and everything else (a playlist item, a daypart, a schedule) is
+  # how it reaches a screen. Unlike the three scheduling-core families above,
+  # this one declares its FULL row schema in both directions — a Studio
+  # editor is generated against these types, so "the row schema is a later
+  # minor" would leave the one family that most needs a contract without one.
+  # ---------------------------------------------------------------------
+  /casts:
+    get:
+      operationId: listCasts
+      summary: List casts
+      description: Returns a keyset-paginated, selector-filterable page of cast rows.
+      tags: [casts, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/CursorParam"
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/SelectorParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: A page of casts.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CastListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createCast
+      summary: Create a cast
+      description: >-
+        The `slides` array MUST be non-empty and every slide's `layers` MUST
+        satisfy the shared slide-layer rules (`data-model/1` DAT-043): a closed
+        set of layer kinds, geometry inside the 1920x1080 canvas, and the
+        required fields of each kind. An image layer names only its
+        content-addressed `asset_ref` here — its fetch `url` is derived from
+        the content origin when the slide is projected onto a screen's program,
+        never authored. A cast that would not draw is a 422, and nothing is
+        stored.
+      tags: [casts, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CastCreate"
+      responses:
+        "201":
+          description: The created cast.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cast"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+  /casts/{cast_id}:
+    parameters:
+      - name: cast_id
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/Ulid"
+    get:
+      operationId: getCast
+      summary: Read a cast
+      tags: [casts, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The cast.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cast"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateCast
+      summary: Update a cast
+      description: >-
+        Partial update. Requires If-Match against the cast's current
+        ETag/revision. `slides` is replaced wholesale when present — a slide
+        list is an ordered document, and a member-wise merge of one has no
+        meaning — and the POST-MERGE effective row is re-validated in full, so
+        a patch can no more introduce an undrawable slide than a create can.
+      tags: [casts, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IfMatchParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CastUpdate"
+      responses:
+        "200":
+          description: The updated cast.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cast"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
+    delete:
+      operationId: deleteCast
+      summary: Delete a cast
+      description: >-
+        Requires If-Match against the cast's current ETag/revision. A cast a
+        playlist item still references is refused (422) rather than removed:
+        the reference would otherwise survive as a playlist entry that
+        contributes nothing, and the screen would quietly play a shorter
+        rotation than the playlist says.
+      tags: [casts, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IfMatchParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "204":
+          description: Deleted. No content.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
         "428":
           $ref: "#/components/responses/PreconditionRequired"
 
@@ -3519,25 +3711,218 @@ components:
         updated_at:
           $ref: "#/components/schemas/Timestamp"
 
+    SlideLayer:
+      type: object
+      description: >-
+        One positioned native element of a slide (`data-model/1` DAT-043). Layers
+        are drawn in ARRAY ORDER — the index IS the z-order — inside a fixed
+        1920x1080 top-left-origin canvas a player scales to its panel, so
+        geometry is authored against those bounds whatever the real resolution
+        is. Every member beyond `kind` and the geometry is kind-specific.
+      required: [kind, x, y, w, h]
+      additionalProperties: false
+      properties:
+        kind:
+          type: string
+          enum: [text, rect, image, clock]
+        x:
+          type: integer
+          minimum: 0
+          maximum: 1920
+        y:
+          type: integer
+          minimum: 0
+          maximum: 1080
+        w:
+          type: integer
+          minimum: 1
+          maximum: 1920
+        h:
+          type: integer
+          minimum: 1
+          maximum: 1080
+        text:
+          type: string
+          description: >-
+            The literal string for a `text` layer; for a `clock` layer, the Go
+            reference-time layout (`15:04:05`, `3:04 PM`) the player renders the
+            current LOCAL time through, refreshed every second. Required for
+            both of those kinds, unused by `rect`/`image`.
+        asset_ref:
+          type: string
+          description: >-
+            An `image` layer's content-addressed `sha256:` reference — the only
+            half of an image layer that is AUTHORED. Its fetch `url` is derived
+            from the content origin at projection time.
+        url:
+          type: string
+          description: >-
+            An `image` layer's direct content-origin fetch target, derived at
+            projection time and present on a SERVED slide. A create/update need
+            not supply it.
+        font_px:
+          type: integer
+          minimum: 1
+          description: Pixel font size for a `text`/`clock` layer. Optional — an omitted size renders at the player's own default.
+        color:
+          type: string
+          pattern: "^#[0-9a-fA-F]{6}$"
+          description: A `rect`'s fill (required) or a `text`/`clock`'s foreground (optional). `#RRGGBB` wherever present.
+        align:
+          type: string
+          enum: [left, center, right]
+          description: A `text` layer's horizontal alignment. Optional.
+    CastSlide:
+      type: object
+      description: >-
+        One slide of a cast (`data-model/1` DAT-043): an id unique within its own
+        cast, an optional dwell time, and the ordered layer stack a player draws.
+        The id names a position in one authored document — what a reorder or an
+        undo operates on — and is deliberately not a ULID, because nothing
+        outside the cast ever references it.
+      required: [id, layers]
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          minLength: 1
+          maxLength: 64
+        duration_ms:
+          type: integer
+          minimum: 1
+          description: >-
+            This slide's dwell time. When omitted the projected content item
+            falls back to the referencing playlist item's own
+            `duration_seconds` (DAT-042), and when neither is stated the player
+            applies its own default.
+        layers:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/SlideLayer"
+    Cast:
+      type: object
+      description: >-
+        An authored slidecast (`data-model/1` DAT-043) — the ordered set of
+        slides an operator builds once and schedules onto screens by referencing
+        it from a playlist item (`source: "cast"`). One cast edit changes every
+        screen playing it, which is the whole reason it is a row rather than a
+        shape inlined into a playlist.
+      required: [id, scope_node, name, slides, labels, revision, created_at, updated_at]
+      additionalProperties: false
+      properties:
+        id:
+          $ref: "#/components/schemas/Ulid"
+        external_id:
+          type: ["string", "null"]
+          description: Client-assigned identifier (contracts/api-1.md#client-assignable-external_id).
+          x-go-type: "*string"
+        scope_node:
+          $ref: "#/components/schemas/Ulid"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        slides:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/CastSlide"
+        labels:
+          $ref: "#/components/schemas/LabelMap"
+        revision:
+          type: integer
+          minimum: 1
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        updated_at:
+          $ref: "#/components/schemas/Timestamp"
+    CastCreate:
+      type: object
+      required: [scope_node, name, slides]
+      additionalProperties: false
+      properties:
+        external_id:
+          type: ["string", "null"]
+          x-go-type: "*string"
+        scope_node:
+          $ref: "#/components/schemas/Ulid"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        slides:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/CastSlide"
+        labels:
+          $ref: "#/components/schemas/LabelMap"
+    CastUpdate:
+      type: object
+      description: >-
+        Partial update — every member optional, at least one present. `slides`
+        replaces the whole ordered list; there is no per-slide patch.
+      minProperties: 1
+      additionalProperties: false
+      properties:
+        external_id:
+          type: ["string", "null"]
+          x-go-type: "*string"
+        scope_node:
+          $ref: "#/components/schemas/Ulid"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        slides:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/CastSlide"
+        labels:
+          $ref: "#/components/schemas/LabelMap"
+    CastListResponse:
+      type: object
+      required: [items, cursor]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Cast"
+        cursor:
+          $ref: "#/components/schemas/Cursor"
+
     PlaylistItem:
       type: object
       description: >-
-        One entry of a playlist's `items` (DAT-041). `source` selects which of the
-        two content shapes the entry uses — `asset` carries `asset_ref`, `playable`
-        carries `pack_id` + `content_id` — and data-model/1 enforces that pairing
-        with its own per-field codes.
+        One entry of a playlist's `items` (DAT-041). `source` selects which
+        content shape the entry uses — `asset` carries `asset_ref`, `playable`
+        carries `pack_id` + `content_id`, `cast` carries `cast_id` — and
+        data-model/1 enforces that pairing with its own per-field codes.
+        A `cast` entry is the one source that is not one-to-one with a played
+        item: it expands, at projection time, into one slide content item per
+        slide of the referenced cast, in authored order.
       required: [source]
       additionalProperties: false
       properties:
         source:
           type: string
-          enum: [asset, playable]
+          enum: [asset, playable, cast]
         asset_ref:
           type: string
         pack_id:
           type: string
         content_id:
           type: string
+        cast_id:
+          type: string
+          pattern: "^[0-9A-HJKMNP-TV-Z]{26}$"
+          description: >-
+            The cast this entry plays, required when `source` is `cast`. It MUST
+            name an existing cast row, and that cast cannot be deleted while
+            this reference stands (DAT-043).
         duration_seconds:
           type: integer
           x-go-type: "*int"

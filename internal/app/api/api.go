@@ -309,6 +309,10 @@ func (srv *server) mountAll(rt, rootRT *router, authHandlers *auth.Handlers) {
 	srv.mount(rt, schedulesConfig())
 	srv.mount(rt, daypartsConfig())
 	srv.mount(rt, playlistsConfig())
+	// The authored slidecast a playlist item references (casts.go). It is a
+	// scheduling-content row like the three above, but the one an operator
+	// actually authors in, and it declares its full request/response schema.
+	srv.mount(rt, castsConfig())
 	srv.mount(rt, automationsConfig())
 	// The two data-model/1 identity kinds (identityrows.go). They are ordinary
 	// resourceConfig mounts on purpose: a screen and an adopted device are

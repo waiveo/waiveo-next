@@ -176,6 +176,7 @@ func mountedResourceConfigs() []resourceConfig {
 		schedulesConfig(),
 		daypartsConfig(),
 		playlistsConfig(),
+		castsConfig(),
 		automationsConfig(),
 		screensConfig(),
 		adoptedDevicesConfig(),

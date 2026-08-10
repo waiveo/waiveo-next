@@ -524,6 +524,38 @@ func (e *schemaProbeEnv) mintScreen(t *testing.T, scopeNode string) string {
 	return decodeID(t, raw)
 }
 
+// castSlides is the one authored slide stack every cast probe writes: one text
+// layer and one rect, both well inside the 1920x1080 canvas. It deliberately
+// carries no image layer — an image layer's asset_ref must resolve in the
+// content origin at projection time, and this env uploads no bytes, so a slide
+// naming one would be exercising the content origin rather than the cast's own
+// response shape.
+func castSlides() []map[string]any {
+	return []map[string]any{{
+		"id":          "s1",
+		"duration_ms": 8000,
+		"layers": []map[string]any{
+			{"kind": "text", "x": 100, "y": 100, "w": 900, "h": 120, "text": "Fixture Cast", "font_px": 96, "color": "#ffffff"},
+			{"kind": "rect", "x": 0, "y": 980, "w": 1920, "h": 100, "color": "#101820"},
+		},
+	}}
+}
+
+// mintCast creates a cast row under scopeNode and returns its id.
+func (e *schemaProbeEnv) mintCast(t *testing.T, scopeNode string) string {
+	t.Helper()
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/casts", mustJSON(t, map[string]any{
+		"name":       "Fixture Cast",
+		"scope_node": scopeNode,
+		"slides":     castSlides(),
+		"labels":     map[string]string{"env": "prod"},
+	}), nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("mint cast: %d %s", resp.StatusCode, raw)
+	}
+	return decodeID(t, raw)
+}
+
 // mintAdoptedDevice creates an adopted-device row under scopeNode and returns its
 // id. driver/nativeID are parameters because REL-153 makes that pair the row's
 // identity: a probe that minted two rows from one literal pair would collide.
@@ -666,6 +698,32 @@ var probes = map[string]probe{
 	"issueScreenPairingCode": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
 		id := e.mintScreen(t, e.mintOrg(t))
 		return e.do(t, http.MethodPost, "/api/v1/screens/"+id+"/pairing-code", nil, nil)
+	},
+
+	// --- casts ------------------------------------------------------------
+	"createCast": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		// The MINIMAL create: exactly CastCreate's own required members and
+		// nothing more. `labels` is declared required on the RESPONSE and named
+		// by neither — the drift class this check exists for.
+		return e.do(t, http.MethodPost, "/api/v1/casts", mustJSON(t, map[string]any{
+			"name":       "Minimal Cast",
+			"scope_node": e.mintOrg(t),
+			"slides":     castSlides(),
+		}), nil)
+	},
+	"getCast": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		id := e.mintCast(t, e.mintOrg(t))
+		return e.do(t, http.MethodGet, "/api/v1/casts/"+id, nil, nil)
+	},
+	"updateCast": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		id := e.mintCast(t, e.mintOrg(t))
+		return e.do(t, http.MethodPatch, "/api/v1/casts/"+id,
+			mustJSON(t, map[string]any{"name": "Renamed Cast"}),
+			map[string]string{"If-Match": e.etagOf(t, "/api/v1/casts/"+id)})
+	},
+	"listCasts": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		e.mintCast(t, e.mintOrg(t))
+		return e.do(t, http.MethodGet, "/api/v1/casts", nil, nil)
 	},
 
 	// --- adopted-devices --------------------------------------------------
