@@ -406,6 +406,15 @@ func Open(dsn string, nowMs func() int64) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: migrate pairing grants: %w", err)
 	}
+	// The durable mirror of the relays' device.candidates reports
+	// (discovered_devices). Its own table rather than a resource Kind: nothing
+	// authors a sighting, it carries no revision to condition a write on, and a
+	// relay's report replaces its rows wholesale — none of which the generic CRUD
+	// machinery models (discovereddevices.go).
+	if _, err := db.Exec(discoveredDevicesSchema); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("store: migrate discovered devices: %w", err)
+	}
 	// Revoked screens and relay certificates (api/1 API-140, revocations.go).
 	// Their own table rather than a column, so a revocation outlives the row it
 	// concerns — the store hard-deletes, and a revocation lost to a tidy-up is

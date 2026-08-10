@@ -587,6 +587,62 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+  /devices/{device_id}/adopt:
+    parameters:
+      - name: device_id
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/Ulid"
+    post:
+      operationId: adoptDevice
+      summary: Adopt a discovered device
+      description: >-
+        Puts a device this deployment's relays have discovered under this
+        platform's control, by creating the durable adoption record its
+        relay is then sent in signed desired state (`relay/1` REL-063).
+        Discovery finds devices; adoption is the decision to use one, and
+        this operation is that decision.
+
+
+        The record is created with the device's own reported entities
+        enabled and primary — the policy an operator refines afterwards
+        through the `adopted-devices` family. Adopting a device that is
+        already adopted succeeds and changes nothing, so a double-click or a
+        retry-after-timeout is not an error.
+
+
+        A mutating POST tagged `mcp:act`, so it accepts `Idempotency-Key`.
+      tags: [devices, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: >-
+            The device is adopted. The body is the device as it now reads,
+            with `adopted` true.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Device"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
   /entities:
     get:
       operationId: listEntities
@@ -4338,13 +4394,15 @@ components:
     Device:
       type: object
       description: >-
-        One adopted physical device behind a relay. Read-only on this API:
-        a device is discovered and adopted by its own relay's device plane
-        (`relay/1` Device plane), so this resource carries no `revision`
-        and no optimistic-concurrency envelope — there is no write here to
-        condition on. A device exposes one or more entities; commands are
+        One physical device a relay has found on its own LAN. Its
+        descriptive members are read-only on this API — a device is
+        DISCOVERED by its relay's device plane (`relay/1` Device plane), not
+        authored here, so this resource carries no `revision` and no
+        optimistic-concurrency envelope. The one decision this API does make
+        about a device is `adopted`, taken through the `adoptDevice`
+        operation. A device exposes one or more entities; commands are
         addressed to those entities, never to the device.
-      required: [id, relay_id, device_class, name, scope_node, labels]
+      required: [id, relay_id, device_class, name, scope_node, labels, adopted]
       additionalProperties: false
       properties:
         id:
@@ -4364,6 +4422,30 @@ components:
           $ref: "#/components/schemas/Ulid"
         labels:
           $ref: "#/components/schemas/LabelMap"
+        address:
+          type: string
+          description: >-
+            Where the reporting relay can reach this device on its LAN, as a
+            dialable `host:port` authority. Absent when discovery found the
+            device but no usable address for it — the device was genuinely
+            seen, and no command can be delivered to it until an address is.
+        model:
+          type: string
+          description: >-
+            The model the device reported when the relay probed it over the
+            driver's own protocol. Absent when the probe did not answer.
+        serial:
+          type: string
+          description: >-
+            The serial number of the physical unit, as the device reported
+            it. Absent when the probe did not answer.
+        adopted:
+          type: boolean
+          description: >-
+            Whether an adoption record exists for this device — that is,
+            whether it is under this platform's control and carried in the
+            desired state its relay is sent (`relay/1` REL-063). Discovery
+            alone never sets this; `adoptDevice` does.
 
     DeviceListResponse:
       type: object

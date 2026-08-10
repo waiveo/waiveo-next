@@ -877,8 +877,14 @@ type DaypartUpdate struct {
 	StartTime *string `json:"start_time,omitempty"`
 }
 
-// Device One adopted physical device behind a relay. Read-only on this API: a device is discovered and adopted by its own relay's device plane (`relay/1` Device plane), so this resource carries no `revision` and no optimistic-concurrency envelope — there is no write here to condition on. A device exposes one or more entities; commands are addressed to those entities, never to the device.
+// Device One physical device a relay has found on its own LAN. Its descriptive members are read-only on this API — a device is DISCOVERED by its relay's device plane (`relay/1` Device plane), not authored here, so this resource carries no `revision` and no optimistic-concurrency envelope. The one decision this API does make about a device is `adopted`, taken through the `adoptDevice` operation. A device exposes one or more entities; commands are addressed to those entities, never to the device.
 type Device struct {
+	// Address Where the reporting relay can reach this device on its LAN, as a dialable `host:port` authority. Absent when discovery found the device but no usable address for it — the device was genuinely seen, and no command can be delivered to it until an address is.
+	Address *string `json:"address,omitempty"`
+
+	// Adopted Whether an adoption record exists for this device — that is, whether it is under this platform's control and carried in the desired state its relay is sent (`relay/1` REL-063). Discovery alone never sets this; `adoptDevice` does.
+	Adopted bool `json:"adopted"`
+
 	// DeviceClass The device class whose state, attribute, and command vocabulary governs this device (`device-class-registry/1`).
 	DeviceClass string `json:"device_class"`
 
@@ -890,13 +896,19 @@ type Device struct {
 
 	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
 	Labels LabelMap `json:"labels"`
-	Name   string   `json:"name"`
+
+	// Model The model the device reported when the relay probed it over the driver's own protocol. Absent when the probe did not answer.
+	Model *string `json:"model,omitempty"`
+	Name  string  `json:"name"`
 
 	// RelayId A relay's permanent identity, assigned to it by enrollment and unchanged across every later certificate renewal or re-enrollment (`relay/1` REL-012/014). Deliberately NOT typed as a ULID: unlike a resource this API mints, a relay id is issued by the enrollment path and is opaque here — this API reads it, routes a command by it, and never constructs or parses one.
 	RelayId RelayId `json:"relay_id"`
 
 	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
 	ScopeNode Ulid `json:"scope_node"`
+
+	// Serial The serial number of the physical unit, as the device reported it. Absent when the probe did not answer.
+	Serial *string `json:"serial,omitempty"`
 }
 
 // DeviceListResponse defines model for DeviceListResponse.
@@ -1878,6 +1890,15 @@ type ListDevicesParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// AdoptDeviceParams defines parameters for AdoptDevice.
+type AdoptDeviceParams struct {
+	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
+	IdempotencyKey *IdempotencyKeyParam `json:"Idempotency-Key,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // ListEntitiesParams defines parameters for ListEntities.
 type ListEntitiesParams struct {
 	// Cursor Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client.
@@ -2604,6 +2625,9 @@ type ClientInterface interface {
 	// ListDevices request
 	ListDevices(ctx context.Context, params *ListDevicesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// AdoptDevice request
+	AdoptDevice(ctx context.Context, deviceId Ulid, params *AdoptDeviceParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ListEntities request
 	ListEntities(ctx context.Context, params *ListEntitiesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -3268,6 +3292,18 @@ func (c *Client) UpdateDaypart(ctx context.Context, daypartId Ulid, params *Upda
 
 func (c *Client) ListDevices(ctx context.Context, params *ListDevicesParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListDevicesRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) AdoptDevice(ctx context.Context, deviceId Ulid, params *AdoptDeviceParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAdoptDeviceRequest(c.Server, deviceId, params)
 	if err != nil {
 		return nil, err
 	}
@@ -5804,6 +5840,66 @@ func NewListDevicesRequest(server string, params *ListDevicesParams) (*http.Requ
 			}
 
 			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewAdoptDeviceRequest generates requests for AdoptDevice
+func NewAdoptDeviceRequest(server string, deviceId Ulid, params *AdoptDeviceParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "device_id", deviceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/devices/%s/adopt", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.IdempotencyKey != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Idempotency-Key", *params.IdempotencyKey, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Idempotency-Key", headerParam0)
+		}
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
 		}
 
 	}
@@ -9330,6 +9426,9 @@ type ClientWithResponsesInterface interface {
 	// ListDevicesWithResponse request
 	ListDevicesWithResponse(ctx context.Context, params *ListDevicesParams, reqEditors ...RequestEditorFn) (*ListDevicesResponse, error)
 
+	// AdoptDeviceWithResponse request
+	AdoptDeviceWithResponse(ctx context.Context, deviceId Ulid, params *AdoptDeviceParams, reqEditors ...RequestEditorFn) (*AdoptDeviceResponse, error)
+
 	// ListEntitiesWithResponse request
 	ListEntitiesWithResponse(ctx context.Context, params *ListEntitiesParams, reqEditors ...RequestEditorFn) (*ListEntitiesResponse, error)
 
@@ -10445,6 +10544,43 @@ func (r ListDevicesResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r ListDevicesResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type AdoptDeviceResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *Device
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON409 *Conflict
+	ApplicationproblemJSON422 *UnprocessableContent
+	ApplicationproblemJSON429 *TooManyRequests
+	ApplicationproblemJSON503 *ServiceUnavailable
+}
+
+// Status returns HTTPResponse.Status
+func (r AdoptDeviceResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r AdoptDeviceResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r AdoptDeviceResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -12458,6 +12594,15 @@ func (c *ClientWithResponses) ListDevicesWithResponse(ctx context.Context, param
 	return ParseListDevicesResponse(rsp)
 }
 
+// AdoptDeviceWithResponse request returning *AdoptDeviceResponse
+func (c *ClientWithResponses) AdoptDeviceWithResponse(ctx context.Context, deviceId Ulid, params *AdoptDeviceParams, reqEditors ...RequestEditorFn) (*AdoptDeviceResponse, error) {
+	rsp, err := c.AdoptDevice(ctx, deviceId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAdoptDeviceResponse(rsp)
+}
+
 // ListEntitiesWithResponse request returning *ListEntitiesResponse
 func (c *ClientWithResponses) ListEntitiesWithResponse(ctx context.Context, params *ListEntitiesParams, reqEditors ...RequestEditorFn) (*ListEntitiesResponse, error) {
 	rsp, err := c.ListEntities(ctx, params, reqEditors...)
@@ -14450,6 +14595,81 @@ func ParseListDevicesResponse(rsp *http.Response) (*ListDevicesResponse, error) 
 			return nil, err
 		}
 		response.ApplicationproblemJSON429 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseAdoptDeviceResponse parses an HTTP response from a AdoptDeviceWithResponse call
+func ParseAdoptDeviceResponse(rsp *http.Response) (*AdoptDeviceResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &AdoptDeviceResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest Device
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest ServiceUnavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
 
 	}
 
