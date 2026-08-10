@@ -305,6 +305,17 @@ func (s *Server) SetSigningKey(key ed25519.PrivateKey) {
 // the array carries no entry for is served data-model/1's terminal default
 // (DAT-118, terminalDefault), never a sibling screen's program.
 //
+// A `slide` content item (native slide rendering, parity milestone 2) is the
+// one item kind whose layers this conversion carries through — and the one it
+// can REFUSE. Its ContentRef.Layers are validated by wire.ValidateSlideLayers
+// before the item becomes a Lease content item; a slide whose layers do not
+// validate is DROPPED from the converted content rather than served, because a
+// player has no defined behavior for a malformed layer and a slide that would
+// not draw cleanly must never reach the wire. Every non-slide item is
+// unaffected: its Layers is empty, so it is carried through exactly as before
+// and marshals byte-identically. This method is the single production caller of
+// wire.ValidateSlideLayers.
+//
 // generation is the persisted last-applied generation this served program
 // belongs to (relay/1 REL-052/056), carried into SetProgram's own generation
 // fence: it is the boot-time baseline a same-generation schedule resolver then
@@ -319,12 +330,25 @@ func (s *Server) SetServedProgram(generation int64, sp wire.ScreenProgram) {
 			// historical implicit value from before the field existed.
 			contentType = "image"
 		}
+		var layers []wire.Layer
+		if contentType == leaseContentTypeSlide {
+			// A slide's layers are validated before they are ever served: a
+			// malformed slide is dropped, not handed to a player (native slide
+			// rendering, parity milestone 2). Only a slide item carries layers
+			// onto the Lease; every other kind leaves the field nil, so it
+			// marshals with no `layers` key, byte-identical to before.
+			if err := wire.ValidateSlideLayers(c.Layers); err != nil {
+				continue
+			}
+			layers = c.Layers
+		}
 		content = append(content, wire.LeaseContent{
 			Type:       contentType,
 			AssetRef:   c.AssetRef,
 			URL:        c.URL,
 			ExpiresAt:  c.ExpiresAt,
 			DurationMS: c.DurationMS,
+			Layers:     layers,
 		})
 	}
 	s.SetProgram(generation, sp.ScreenID, sp.ProgramRevision, sp.Priority, sp.Display, content)
@@ -843,11 +867,31 @@ func (s *Server) RenderEnds() []RenderEndRequest {
 	return append([]RenderEndRequest(nil), s.renderEnds...)
 }
 
+// leaseContentTypeSlide is the player/1 content `type` (PLY-083) of a native
+// slide item (native slide rendering, parity milestone 2) — the one item kind
+// whose Lease content carries positioned layers rather than a single asset.
+// SetServedProgram matches on it to decide which items to run through
+// wire.ValidateSlideLayers, and it is the value a slide-capable player declares
+// in its `content_types` so filterContentTypes serves it one; a player that
+// does not declare it is transparently never served a slide (see
+// filterContentTypes). It is a local const, mirroring schedulehost's own
+// leaseContentTypeImage, so the string lives in one place rather than as a
+// literal spread across the match, the filter tests, and any producer.
+const leaseContentTypeSlide = "slide"
+
 // filterContentTypes returns only the content items whose Type is present
 // in declaredTypes (PLY-013/PLY-096): a relay MUST NOT hand back a content
 // item of a type the player hasn't most-recently declared support for. An
 // empty or nil declaredTypes excludes every item, never included by
 // default.
+//
+// This gate is deliberately GENERIC over the item's Type, and that is what
+// makes the additive `slide` content type (native slide rendering, parity
+// milestone 2) capability-gated for free: a `type:"slide"` item is served
+// only to a player whose declared `content_types` include "slide", and an
+// older player that declares only `image`/`video` transparently never receives
+// one — no per-type branch here, because a new content type must be gated the
+// SAME way `image`/`video` already are, not by a special case that could drift.
 // leaseContentMinDurationMS is the floor this relay enforces on a Lease
 // content item's own `duration_ms` (PLY-083b) before it ever reaches a
 // player. `duration_ms` rides this codebase's wire.LeaseContent/ContentRef

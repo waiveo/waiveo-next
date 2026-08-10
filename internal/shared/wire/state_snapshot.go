@@ -158,17 +158,30 @@ type ScreenProgram struct {
 //     `hash`/`signature` (REL-053) exactly like every other field, so a
 //     later per-item-timing consumer can trust it as much as the rest of the
 //     snapshot.
+//   - Layers carries the `slide` content type's positioned native elements
+//     (native slide rendering, parity milestone 2) feeder→relay, so a
+//     `content_type:"slide"` item survives desired-state projection with its
+//     authored layer stack intact. It is the ContentRef counterpart of
+//     LeaseContent.Layers: a relay carries these layers onto the player/1
+//     Lease content item's own `layers` field as it converts a persisted
+//     screen_programs entry (internal/relay/playerserver.SetServedProgram),
+//     after wire.ValidateSlideLayers accepts them — the SAME layer shape the
+//     player ultimately draws, not a re-encoding of it. Only a `slide` item
+//     ever populates it.
 //
-// Both fields marshal `omitempty` so a ContentRef built without them (every
-// call site that predates this pair) marshals byte-identically to before
-// their introduction — no new JSON keys appear, and no snapshot hash changes,
-// unless a caller actually populates one.
+// All three additive fields marshal `omitempty` so a ContentRef built without
+// them (every call site that predates each) marshals byte-identically to
+// before its introduction — no new JSON keys appear, and no snapshot hash
+// changes, unless a caller actually populates one. A slice `omitempty` omits
+// on len 0, so a nil or empty Layers is absent from the wire exactly as an
+// unset scalar is.
 type ContentRef struct {
-	AssetRef    string `json:"asset_ref"`
-	URL         string `json:"url"`
-	ExpiresAt   int64  `json:"expires_at"`
-	ContentType string `json:"content_type,omitempty"`
-	DurationMS  int64  `json:"duration_ms,omitempty"`
+	AssetRef    string  `json:"asset_ref"`
+	URL         string  `json:"url"`
+	ExpiresAt   int64   `json:"expires_at"`
+	ContentType string  `json:"content_type,omitempty"`
+	DurationMS  int64   `json:"duration_ms,omitempty"`
+	Layers      []Layer `json:"layers,omitempty"`
 }
 
 // EdgeRules is the relay/1 `edge_rules` section (REL-062): a
