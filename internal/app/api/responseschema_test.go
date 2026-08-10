@@ -326,15 +326,15 @@ type probe func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte)
 // RelayId). They are distinct from every other fixture in the package so a probe
 // here is never satisfied by a row another test wrote.
 const (
-	rsRelayID     = "relay-fixture-a"
-	rsScopeNode   = "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5"
-	rsDeviceID    = "01J8ZRESP0DEV1CEF1XTVRE001"
-	rsEntityID    = "01J8ZRESP0ENT1TYF1XTVRE001"
+	rsRelayID   = "relay-fixture-a"
+	rsScopeNode = "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5"
+	rsDeviceID  = "01J8ZRESP0DEV1CEF1XTVRE001"
+	rsEntityID  = "01J8ZRESP0ENT1TYF1XTVRE001"
 	// rsAdoptDeviceID is the adopt probe's OWN device, distinct from rsDeviceID:
 	// that one is placed at a fixture node the tree does not contain, which is
 	// fine for a read but not for a write the placement is validated against.
 	rsAdoptDeviceID = "01J8ZRESP0AD0PTDEV1CE00001"
-	rsWorkspaceID = "01J8ZRESP0WSKEYF1XTVRE0001"
+	rsWorkspaceID   = "01J8ZRESP0WSKEYF1XTVRE0001"
 	// rsIdentifier / rsPassword are the credential the claim probe establishes
 	// and the login probe then presents. Fixture values for an in-memory store
 	// that lives for one test; they protect nothing.
