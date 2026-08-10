@@ -21,6 +21,21 @@ sub init()
     ' (an image cast plays nothing); see IdleDefeat.brs.
     m.video.disableScreenSaver = true
     m.composedLayers = m.top.findNode("composedLayers")
+
+    ' slideLayers holds a "slide" item's positioned native children
+    ' (renderSlide); slideClockTimer refreshes every clock layer's Label once a
+    ' second. slideClocks pairs each live clock Label with its own Go-reference
+    ' time-format string so the one shared timer can refresh them all. The timer
+    ' is a fixed node (like castTimer) precisely so this scene always holds a
+    ' handle to STOP it on item change (clearSlide) and on shutdown — a per-slide
+    ' timer that outlives its slide is the leak class this player already fixed
+    ' for Task threads.
+    m.slideLayers = m.top.findNode("slideLayers")
+    m.slideClockTimer = m.top.findNode("slideClockTimer")
+    m.slideClockTimer.duration = 1
+    m.slideClockTimer.observeField("fire", "onSlideClockTick")
+    m.slideClocks = []
+
     m.status = m.top.findNode("statusLabel")
     m.status.text = "Waiveo Player v3 — starting…"
 
@@ -132,6 +147,7 @@ sub onPhotonResult()
         ' status line, so stop holding the platform awake.
         setIdleDefeat(false)
         clearComposed()
+        clearSlide()
         m.video.control = "stop"
         m.video.visible = false
         m.poster.visible = false
@@ -163,9 +179,19 @@ function castSignature(items as Object) as String
         it = items[i]
         sig = sig + "|" + castStr(it.contentType) + ";" + castStr(it.contentUri) + ";"
         if it.durationMs <> invalid then sig = sig + it.durationMs.toStr()
+        ' A composed layer contributes only its resolved contentUri; a slide
+        ' layer additionally contributes its kind, text, color, and geometry —
+        ' two slides that share the same image bytes but differ in a text/clock
+        ' string, a color, or a position are genuinely different programs and
+        ' MUST re-render, so keying a slide's signature on contentUri alone
+        ' (invalid for every non-image layer) would collapse them into one and
+        ' pin the screen on the first. castStr coerces the fields absent on a
+        ' composed layer (kind/text/color/x…) to "" so this stays correct for
+        ' both item kinds.
         if it.layers <> invalid
             for j = 0 to it.layers.Count() - 1
-                sig = sig + ";L" + castStr(it.layers[j].contentUri)
+                ly = it.layers[j]
+                sig = sig + ";L" + castStr(ly.contentUri) + "," + castStr(ly.kind) + "," + castStr(ly.text) + "," + castStr(ly.color) + "," + castStr(ly.x) + "," + castStr(ly.y) + "," + castStr(ly.w) + "," + castStr(ly.h)
             end for
         end if
     end for
@@ -176,6 +202,7 @@ end function
 ' composed-layer rendering, resets to item 0, and renders it.
 sub startCast(items as Object)
     clearComposed()
+    clearSlide()
     m.castItems = items
     m.castIndex = 0
     if m.castItems = invalid or m.castItems.Count() = 0
@@ -207,6 +234,7 @@ sub renderCastItem()
     stopCastTimer()
 
     if item.contentType = "composed"
+        clearSlide()
         m.poster.visible = false
         m.video.control = "stop"
         m.video.visible = false
@@ -219,8 +247,28 @@ sub renderCastItem()
         if item.layers <> invalid then layerCount = item.layers.Count()
         print "[player-v3] cast item " + m.castIndex.toStr() + "/" + m.castItems.Count().toStr() + " (composed, " + layerCount.toStr() + " layers, " + durationMs.toStr() + "ms dwell — this player's own default advance signal, PLY-083a defines none for composed): advancing on timer"
 
+    else if item.contentType = "slide"
+        ' A "slide" item (native slide rendering): tear down the other three
+        ' render surfaces and draw each positioned layer. renderSlide clears any
+        ' prior slide children AND stops the clock timer itself before rebuilding,
+        ' then arms castTimer for this slide's own dwell (a slide advances like an
+        ' image — it has no natural end).
+        clearComposed()
+        m.poster.visible = false
+        m.video.control = "stop"
+        m.video.visible = false
+        renderSlide(item.layers)
+
+        durationMs = wvClampCastDurationMs(item.durationMs)
+        m.castTimer.duration = durationMs / 1000.0
+        m.castTimer.control = "start"
+        layerCount = 0
+        if item.layers <> invalid then layerCount = item.layers.Count()
+        print "[player-v3] cast item " + m.castIndex.toStr() + "/" + m.castItems.Count().toStr() + " (slide, " + layerCount.toStr() + " layers, " + durationMs.toStr() + "ms dwell): rendered natively"
+
     else if item.contentType = "video"
         clearComposed()
+        clearSlide()
         m.poster.visible = false
         format = item.streamFormat
         if format = "" then format = "mp4"
@@ -243,6 +291,7 @@ sub renderCastItem()
 
     else
         clearComposed()
+        clearSlide()
         m.video.control = "stop"
         m.video.visible = false
         m.poster.uri = item.contentUri
@@ -338,6 +387,9 @@ function shutdown() as Boolean
     if m.idleDefeatHeartbeat <> invalid then m.idleDefeatHeartbeat.control = "stop"
     if m.task <> invalid then m.task.control = "STOP"
     if m.castTimer <> invalid then m.castTimer.control = "stop"
+    ' A slide's clock timer is a repeating Timer; like castTimer it must be
+    ' stopped on teardown so it never fires against a torn-down slide.
+    if m.slideClockTimer <> invalid then m.slideClockTimer.control = "stop"
     print "[player-v3] scene shutdown — idle-defeat and player tasks stopped"
     return true
 end function
@@ -415,6 +467,287 @@ sub clearComposed()
     m.composedLayers.removeChildrenIndex(m.composedLayers.getChildCount(), 0)
     m.composedLayers.visible = false
 end sub
+
+' renderSlide presents a "slide" content item's layers (native slide rendering,
+' PLY-012's "slide" type): each layer becomes ONE positioned SceneGraph node,
+' created in `layers` array order so index 0 is furthest back and later indices
+' paint on top (the same z-order rule composed uses, but here each node is
+' individually translated to its own [x,y] and sized to its own w×h in the fixed
+' 1920x1080 canvas rather than full-screen-stacked). The four v1 kinds:
+'   text  -> Label (text; font size from font_px; color from color; horizAlign
+'            from align — each applied only when the layer carries it)
+'   rect  -> Rectangle filled with the layer's color
+'   image -> Poster of the already-fetched + asset_ref-verified local contentUri
+'            (Program.brs attached it; a slide image layer pays the identical
+'            integrity guarantee as a plain image item)
+'   clock -> a Label showing the current LOCAL time formatted through the layer's
+'            `text` Go-reference-layout format string, refreshed once a second by
+'            the shared slideClockTimer (the visible proof this is native, not a
+'            frozen PNG). Every clock Label is recorded in m.slideClocks with its
+'            format so the one timer refreshes them all.
+' An unrecognized kind is skipped (forward-compatible with a future kind this
+' player has not adopted) rather than aborting the whole slide — the relay
+' already validated the stack against the closed kind set, so this only guards a
+' non-conformant relay or a newer contract, and skipping one unknown decorative
+' layer degrades better than a blank screen. renderSlide clears any prior slide
+' (children + clock timer) before building.
+sub renderSlide(layers as Object)
+    clearSlide()
+
+    if layers = invalid then return
+
+    for each layer in layers
+        kind = wvSlideStr(layer.kind)
+        x = wvSlideInt(layer.x)
+        y = wvSlideInt(layer.y)
+        w = wvSlideInt(layer.w)
+        h = wvSlideInt(layer.h)
+
+        if kind = "text"
+            lbl = createSlideLabel(wvSlideStr(layer.text), layer, x, y, w, h)
+            m.slideLayers.appendChild(lbl)
+
+        else if kind = "clock"
+            fmt = wvSlideStr(layer.text)
+            lbl = createSlideLabel(wvFormatClockTime(fmt), layer, x, y, w, h)
+            m.slideLayers.appendChild(lbl)
+            ' Record the live Label + its format so slideClockTimer can refresh
+            ' it; its text was just seeded so it is correct even before the first
+            ' tick a second from now.
+            m.slideClocks.Push({ label: lbl, format: fmt })
+
+        else if kind = "rect"
+            rect = CreateObject("roSGNode", "Rectangle")
+            rect.translation = [x, y]
+            rect.width = w
+            rect.height = h
+            col = wvSlideColor(wvSlideStr(layer.color))
+            if col <> "" then rect.color = col
+            m.slideLayers.appendChild(rect)
+
+        else if kind = "image"
+            p = CreateObject("roSGNode", "Poster")
+            p.translation = [x, y]
+            p.width = w
+            p.height = h
+            p.loadDisplayMode = "scaleToFill"
+            p.uri = wvSlideStr(layer.contentUri)
+            m.slideLayers.appendChild(p)
+
+        else
+            ' Unknown kind — skip (see this sub's doc). Nothing is drawn for it.
+            print "[player-v3] slide layer with unsupported kind '" + kind + "' skipped"
+        end if
+    end for
+
+    m.slideLayers.visible = true
+
+    ' Start the once-a-second refresh only if the slide actually carries a clock
+    ' layer — an all-static slide needs no ticking timer running behind it.
+    if m.slideClocks.Count() > 0
+        m.slideClockTimer.duration = 1
+        m.slideClockTimer.control = "start"
+        print "[player-v3] slide clock started (" + m.slideClocks.Count().toStr() + " clock layer(s), 1s tick)"
+    end if
+end sub
+
+' createSlideLabel builds a positioned Label for a text/clock layer, applying
+' font_px (via a sizable system-font file), color, and align only when the layer
+' carries them — an absent style falls back to the Label's own default (PLY-012
+' fixes none, mirroring the wire validator treating font_px/color/align as
+' optional). width/height are set so horizAlign has a box to align within.
+function createSlideLabel(text as String, layer as Object, x as Integer, y as Integer, w as Integer, h as Integer) as Object
+    lbl = CreateObject("roSGNode", "Label")
+    lbl.translation = [x, y]
+    lbl.width = w
+    lbl.height = h
+    lbl.text = text
+
+    fontPx = wvSlideInt(layer.font_px)
+    if fontPx > 0
+        font = CreateObject("roSGNode", "Font")
+        ' "font:SystemFontFile" is the built-in system font-FILE URI whose size
+        ' is settable (the fixed-size "font:MediumSystemFont" registry nodes are
+        ' not resizable), so an authored font_px maps to a real pixel size.
+        font.uri = "font:SystemFontFile"
+        font.size = fontPx
+        lbl.font = font
+    end if
+
+    col = wvSlideColor(wvSlideStr(layer.color))
+    if col <> "" then lbl.color = col
+
+    align = wvSlideStr(layer.align)
+    if align = "left" or align = "center" or align = "right"
+        lbl.horizAlign = align
+    end if
+
+    return lbl
+end function
+
+' clearSlide tears a slide down completely: it STOPS the clock timer first (so it
+' can never fire against a Label about to be removed), drops the clock records,
+' then removes every dynamically created slide child. Called before rendering a
+' new slide, on switching to any other item kind, on a program-result error, and
+' at scene shutdown — the same total-teardown discipline clearComposed applies.
+sub clearSlide()
+    stopSlideClock()
+    m.slideClocks = []
+    m.slideLayers.removeChildrenIndex(m.slideLayers.getChildCount(), 0)
+    m.slideLayers.visible = false
+end sub
+
+' stopSlideClock halts the repeating clock timer. Split out so shutdown and
+' clearSlide share one guarded stop.
+sub stopSlideClock()
+    if m.slideClockTimer <> invalid then m.slideClockTimer.control = "stop"
+end sub
+
+' onSlideClockTick is slideClockTimer's "fire" handler — once a second it
+' refreshes every live clock Label with the current local time reformatted
+' through that layer's own format string. This is what makes the clock visibly
+' tick on-device. It reads m.slideClocks, which clearSlide empties (and stops
+' the timer) on teardown, so it can never touch a removed node.
+sub onSlideClockTick()
+    for each c in m.slideClocks
+        c.label.text = wvFormatClockTime(c.format)
+    end for
+end sub
+
+' wvFormatClockTime renders the current LOCAL time through a Go-reference-time
+' layout string (the convention the producer's clock format uses — the wire
+' tests seed "15:04", "15:04:05", "3:04 PM"). It walks the format left to right,
+' at each position replacing the longest recognized reference token with the
+' corresponding current-time value and copying any unrecognized character
+' (":", " ", etc.) through literally. Supported tokens are the common date/time
+' ones; a token this does not recognize (e.g. a timezone form) simply passes
+' through as literal text rather than erroring — a slide with an exotic format
+' still draws, just with that piece uninterpreted.
+function wvFormatClockTime(format as String) as String
+    if format = "" then return ""
+
+    dt = CreateObject("roDateTime")
+    dt.ToLocalTime()   ' device-timezone local time (roDateTime is UTC otherwise)
+    year = dt.GetYear()
+    month = dt.GetMonth()          ' 1-12
+    day = dt.GetDayOfMonth()
+    hour24 = dt.GetHours()         ' 0-23
+    minute = dt.GetMinutes()
+    second = dt.GetSeconds()
+    weekday = dt.GetDayOfWeek()    ' 0=Sunday .. 6=Saturday
+
+    hour12 = hour24 mod 12
+    if hour12 = 0 then hour12 = 12
+    ampmUpper = "AM"
+    ampmLower = "am"
+    if hour24 >= 12
+        ampmUpper = "PM"
+        ampmLower = "pm"
+    end if
+
+    monthsShort = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    monthsLong = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+    daysShort = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    daysLong = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+
+    ' Month/weekday are 1-based / 0-based; guard the index defensively in case a
+    ' platform ever returns an out-of-range value.
+    monShort = "" : monLong = "" : monNum = month.toStr() : monPad = wvPad2(month)
+    if month >= 1 and month <= 12
+        monShort = monthsShort[month - 1]
+        monLong = monthsLong[month - 1]
+    end if
+    dayShort = "" : dayLong = ""
+    if weekday >= 0 and weekday <= 6
+        dayShort = daysShort[weekday]
+        dayLong = daysLong[weekday]
+    end if
+
+    ' Reference tokens ordered LONGEST-first so the walk below takes the longest
+    ' match at each position ("2006" before "06"/"2", "15" before "1"/"5").
+    tokens = [
+        { t: "January", v: monLong },
+        { t: "Monday", v: dayLong },
+        { t: "2006", v: year.toStr() },
+        { t: "Jan", v: monShort },
+        { t: "Mon", v: dayShort },
+        { t: "15", v: wvPad2(hour24) },
+        { t: "03", v: wvPad2(hour12) },
+        { t: "04", v: wvPad2(minute) },
+        { t: "05", v: wvPad2(second) },
+        { t: "01", v: monPad },
+        { t: "02", v: wvPad2(day) },
+        { t: "06", v: wvPad2(year mod 100) },
+        { t: "PM", v: ampmUpper },
+        { t: "pm", v: ampmLower },
+        { t: "3", v: hour12.toStr() },
+        { t: "4", v: minute.toStr() },
+        { t: "5", v: second.toStr() },
+        { t: "1", v: monNum },
+        { t: "2", v: day.toStr() }
+    ]
+
+    result = ""
+    n = Len(format)
+    i = 0
+    while i < n
+        matched = false
+        for each tok in tokens
+            tl = Len(tok.t)
+            if i + tl <= n
+                if Mid(format, i + 1, tl) = tok.t   ' Mid is 1-indexed
+                    result = result + tok.v
+                    i = i + tl
+                    matched = true
+                    exit for
+                end if
+            end if
+        end for
+        if not matched
+            result = result + Mid(format, i + 1, 1)
+            i = i + 1
+        end if
+    end while
+    return result
+end function
+
+' wvPad2 zero-pads a non-negative integer to at least two digits.
+function wvPad2(n as Integer) as String
+    s = n.toStr()
+    if Len(s) < 2 then s = "0" + s
+    return s
+end function
+
+' wvSlideColor converts a wire "#RRGGBB" color to the "0xRRGGBBAA" string a
+' SceneGraph color field accepts (opaque alpha appended). Returns "" for an
+' absent or malformed value so the caller can fall back to the node's own
+' default color rather than forcing black. The relay already validated every
+' color as #RRGGBB (wire.isHexColor), so this is belt-and-suspenders.
+function wvSlideColor(hex as String) as String
+    if hex = "" then return ""
+    h = hex
+    if Left(h, 1) = "#" then h = Mid(h, 2)   ' strip leading '#'
+    if Len(h) <> 6 then return ""
+    return "0x" + h + "FF"
+end function
+
+' wvSlideStr coerces a possibly-invalid layer field to a string. Local to this
+' component because a SceneGraph component's scope does not inherit pkg:/source
+' globals (only the scripts its own XML includes), so Pairing.brs's wvStr is not
+' in scope here.
+function wvSlideStr(v as Dynamic) as String
+    if v = invalid then return ""
+    if type(v) = "roString" or type(v) = "String" then return v
+    return v.toStr()
+end function
+
+' wvSlideInt coerces a possibly-invalid numeric layer field to an integer,
+' defaulting to 0 (a real canvas coordinate — a layer always states geometry, so
+' this only guards a malformed wire value).
+function wvSlideInt(v as Dynamic) as Integer
+    if v = invalid then return 0
+    return Int(v)
+end function
 
 ' onVideoStateChange handles the plain content Video node's end-of-stream and
 ' error states. A "finished" video cast item advances to the next cast item

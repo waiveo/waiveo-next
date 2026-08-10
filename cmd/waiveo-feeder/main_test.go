@@ -564,8 +564,11 @@ func TestDesiredStateSourceMultiItemCastOrderedAndVerifiable(t *testing.T) {
 		t.Fatalf("len(ScreenPrograms) = %d, want 1 (the one seeded screen row)", len(snap.Sections.ScreenPrograms))
 	}
 	content := snap.Sections.ScreenPrograms[0].Content
-	if len(content) != len(items) {
-		t.Fatalf("len(Content) = %d, want %d", len(content), len(items))
+	// The seeded demo playlist is the cast's N asset items IN ORDER, then one
+	// native slide the seed appends last (native slide rendering, parity
+	// milestone 2) — so N+1 content refs, the assets first.
+	if len(content) != len(items)+1 {
+		t.Fatalf("len(Content) = %d, want %d (the cast's %d assets then the seeded slide)", len(content), len(items)+1, len(items))
 	}
 	for i, item := range items {
 		wantAssetRef := signhash.ContentID(item.Bytes)
@@ -576,6 +579,10 @@ func TestDesiredStateSourceMultiItemCastOrderedAndVerifiable(t *testing.T) {
 		if content[i].URL != wantURL {
 			t.Errorf("item %d: url = %q, want %q", i, content[i].URL, wantURL)
 		}
+	}
+	slide := content[len(items)]
+	if slide.ContentType != "slide" || len(slide.Layers) == 0 {
+		t.Errorf("last content ref = %+v, want the seeded slide (content_type slide, non-empty layers)", slide)
 	}
 }
 

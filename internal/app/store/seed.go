@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/maaxton/waiveo-next/internal/datamodel"
+	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
 // Demo scope-node + scheduling-core identities the make-dev seed inserts. They
@@ -133,10 +134,19 @@ func (s *Store) SeedDemo(ctx context.Context, assetRefs ...string) error {
 	if len(assetRefs) == 0 {
 		return fmt.Errorf("store: seed demo: at least one asset ref is required")
 	}
-	items := make([]datamodel.PlaylistItem, 0, len(assetRefs))
+	items := make([]datamodel.PlaylistItem, 0, len(assetRefs)+1)
 	for _, ref := range assetRefs {
 		items = append(items, datamodel.PlaylistItem{Source: "asset", AssetRef: ref})
 	}
+	// One authored native slide (native slide rendering, parity milestone 2),
+	// appended LAST so the demo screen cycles its plain asset(s) and then a slide.
+	// The slide reuses the first seeded asset for its image layer, so the demo
+	// needs no extra content in the origin and the layer's asset_ref already
+	// resolves exactly as the plain asset item does (DAT-041). Its image layer
+	// carries NO url here — that is derived from the content origin at projection
+	// (snapshot/schedulehost.resolveSlideLayers), the same discipline a plain
+	// asset item follows. The stack is authored to pass wire.ValidateSlideLayers.
+	items = append(items, datamodel.PlaylistItem{Source: "slide", Slide: demoSlide(assetRefs[0])})
 
 	orgParent := seedOrgAncestorScopeNodeID
 	siteParent := seedSiteScopeNodeID
@@ -209,4 +219,30 @@ func (s *Store) SeedDemo(ctx context.Context, assetRefs ...string) error {
 		}
 	}
 	return nil
+}
+
+// demoSlide builds the make-dev demo's one native slide (native slide rendering,
+// parity milestone 2): the four v1 layer kinds, positioned within the fixed
+// 1920×1080 slide canvas (wire.SlideCanvasWidth×Height), back-to-front —
+//
+//  1. a full-canvas dark rect background,
+//  2. a centered white title, "Waiveo",
+//  3. the demo's own seeded image (imageAssetRef, the playlist's first asset —
+//     so the slide needs no content of its own and its asset_ref resolves in the
+//     origin exactly as the plain asset item does, DAT-041), its fetch url left
+//     empty for the producer to derive from the content origin at projection,
+//  4. a live ticking clock in "15:04:05" (hh:mm:ss) form, drawn top-right.
+//
+// Every layer sits inside the canvas and carries its required per-kind fields, so
+// the stack passes wire.ValidateSlideLayers once its image url is derived — which
+// is what makes the demo screen actually render a slide, clock and all.
+func demoSlide(imageAssetRef string) *datamodel.Slide {
+	return &datamodel.Slide{
+		Layers: []wire.Layer{
+			{Kind: wire.LayerKindRect, X: 0, Y: 0, W: 1920, H: 1080, Color: "#101828"},
+			{Kind: wire.LayerKindText, X: 120, Y: 100, W: 1680, H: 180, Text: "Waiveo", FontPx: 128, Color: "#FFFFFF", Align: "center"},
+			{Kind: wire.LayerKindImage, X: 660, Y: 340, W: 600, H: 400, AssetRef: imageAssetRef},
+			{Kind: wire.LayerKindClock, X: 1400, Y: 40, W: 480, H: 120, Text: "15:04:05", FontPx: 80, Color: "#9DE1FF"},
+		},
+	}
 }

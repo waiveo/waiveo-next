@@ -168,26 +168,34 @@ const displayContent = "content"
 // playlistContent projects the playlist named by playlistID — the effective
 // daypart's or fallback's own `playlist_id`, already resolved onto
 // state.PlaylistID by the engine — into REL-061 content references, one per
-// asset item, IN AUTHORED ORDER (DAT-041). An unknown or empty playlist id, and
-// a playlist with no asset items, both yield an empty array.
+// projectable item, IN AUTHORED ORDER (DAT-041). An unknown or empty playlist
+// id, and a playlist with no projectable items, both yield an empty array.
 //
-// Only an `asset` item projects: a `playable` (pack) item names content this
-// contract has no direct reference form for and is skipped, not faked.
+// An `asset` item projects to a content-addressed reference; a `slide` item
+// (native slide rendering, parity milestone 2) projects to a `content_type:
+// "slide"` reference carrying the authored layer stack. A `playable` (pack)
+// item names content this contract has no direct reference form for and is
+// skipped, not faked — and a `slide` whose layers do not validate
+// (wire.ValidateSlideLayers, applied in resolveSlideLayers) is likewise skipped
+// rather than emitted malformed.
 //
 // An item's own `duration_seconds` override (DAT-042) rides onto `duration_ms`
 // as seconds*1000 when present and non-zero (REL-061a); an item with no override
 // carries no `duration_ms` key at all, per that field's `omitempty`.
 //
-// `content_type` is deliberately left UNSET. REL-061a defines an absent
-// content_type as meaning `image` — this codebase's own historical implicit
-// value, applied by internal/relay/playerserver.SetServedProgram — and a
-// data-model/1 asset playlist item carries no content-type column to source a
-// better answer from, so stating one here would be inventing a fact the authored
-// row does not contain.
+// For an `asset` item `content_type` is deliberately left UNSET: REL-061a
+// defines an absent content_type as meaning `image` — this codebase's own
+// historical implicit value, applied by internal/relay/playerserver.
+// SetServedProgram — and a data-model/1 asset playlist item carries no
+// content-type column to source a better answer from. A `slide` item, by
+// contrast, is a distinct item KIND, so it states `content_type: "slide"`
+// explicitly — a fact its authored `source` field does contain.
 //
 // The `url` grammar (`<base>/content/<hex>`) and the empty-origin degrade are the
 // same ones every content-serving path in this codebase uses (REL-061/140): with
-// no content origin there is no URL to state, and none is fabricated.
+// no content origin there is no URL to state, and none is fabricated — an image
+// layer whose URL cannot be stated fails validation, so a slide referencing
+// unfetchable content is dropped rather than shipped with a dead image.
 func playlistContent(rowStore datamodel.RowStore, playlistID string, contentBaseURL string) []wire.ContentRef {
 	content := []wire.ContentRef{}
 	if playlistID == "" {
@@ -199,12 +207,30 @@ func playlistContent(rowStore datamodel.RowStore, playlistID string, contentBase
 			continue
 		}
 		for _, item := range p.Items {
-			if item.AssetRef == "" {
-				continue // a pack `playable` has no direct content reference.
-			}
 			var durationMS int64
 			if item.DurationSeconds != nil && *item.DurationSeconds != 0 {
 				durationMS = int64(*item.DurationSeconds) * 1000
+			}
+			if item.Source == sourceSlide {
+				layers, ok := resolveSlideLayers(item.Slide, contentBaseURL)
+				if !ok {
+					// A slide whose layers do not validate (wire.ValidateSlideLayers)
+					// is SKIPPED, not emitted malformed: a player has no defined
+					// behavior for a bad layer, so a slide that would not draw cleanly
+					// never reaches the wire — the same discipline the relay applies
+					// when it re-validates on the way to a Lease (playerserver).
+					continue
+				}
+				content = append(content, wire.ContentRef{
+					ContentType: contentTypeSlide,
+					Layers:      layers,
+					ExpiresAt:   contentURLExpiresAt,
+					DurationMS:  durationMS,
+				})
+				continue
+			}
+			if item.AssetRef == "" {
+				continue // a pack `playable` has no direct content reference.
 			}
 			content = append(content, wire.ContentRef{
 				AssetRef:   item.AssetRef,
@@ -216,6 +242,51 @@ func playlistContent(rowStore datamodel.RowStore, playlistID string, contentBase
 		return content
 	}
 	return content
+}
+
+// sourceSlide is the data-model/1 playlist-item `source` value (DAT-041) whose
+// content is an authored layer stack rather than a content-addressed asset —
+// the native-slide item kind (native slide rendering, parity milestone 2).
+const sourceSlide = "slide"
+
+// contentTypeSlide is the REL-061a `content_type` a slide screen-program entry
+// carries, matching the player/1 content `type` (PLY-083) the relay stamps onto
+// the Lease item it converts this reference into (internal/relay/playerserver's
+// own leaseContentTypeSlide). A relay routes an entry through wire.
+// ValidateSlideLayers, and onto a slide Lease item, off exactly this value.
+const contentTypeSlide = "slide"
+
+// resolveSlideLayers projects an authored slide item's layer stack into the
+// wire.Layer slice a REL-061 slide reference carries, or reports that it is not
+// projectable. It is the ONE place the feeder side turns authored slide data
+// into servable layers, so both halves of that job live together: derive each
+// image layer's fetch URL from the content origin (the authored row stores only
+// the content-addressed asset_ref, DAT-041, exactly as a plain asset item does),
+// then admit the stack ONLY if wire.ValidateSlideLayers accepts it — the single,
+// shared gate a relay re-applies (playerserver.SetServedProgram) and the
+// schedulehost re-resolver applies too, so no drifting second copy of the rules
+// exists. A nil slide, or one whose layers do not validate, is not projectable
+// (ok=false) and the caller drops the item.
+func resolveSlideLayers(slide *datamodel.Slide, contentBaseURL string) ([]wire.Layer, bool) {
+	if slide == nil {
+		return nil, false
+	}
+	layers := make([]wire.Layer, len(slide.Layers))
+	for i, l := range slide.Layers {
+		if l.Kind == wire.LayerKindImage {
+			// An image layer's URL is derived from the content origin, never
+			// authored — the same content-URL grammar and empty-origin degrade a
+			// plain asset item uses (contentURL). An empty origin leaves the URL
+			// empty, which ValidateSlideLayers then rejects, so a slide that could
+			// not fetch its image is dropped rather than served with a dead URL.
+			l.URL = contentURL(contentBaseURL, l.AssetRef)
+		}
+		layers[i] = l
+	}
+	if err := wire.ValidateSlideLayers(layers); err != nil {
+		return nil, false
+	}
+	return layers, true
 }
 
 // contentURL builds a derived content item's fetch URL from the content-origin

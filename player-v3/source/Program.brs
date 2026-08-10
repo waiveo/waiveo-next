@@ -87,7 +87,19 @@ function wvDoProgram(state as Object) as Object
     ' is the point in time to re-add this member, not before. Keep this
     ' declaration in lockstep with what a relay could ever actually assign —
     ' PLY-013 filters program assignment against it.
-    reqBody = FormatJson({ capabilities: { content_types: ["image", "video"], player_version: "3.0.0" } })
+    '
+    ' "slide" IS declared: this player carries a native slide renderer
+    ' (PhotonScene.renderSlide draws each text/rect/image/clock layer as a
+    ' positioned SceneGraph node, with the clock Label live-refreshed once a
+    ' second) and the Go stack CAN construct a slide item (wire.LeaseContent
+    ' carries `layers`, populated for a `type:"slide"` item). Unlike "composed"
+    ' this is a real capability backed by both a producer and a renderer, so it
+    ' is a true declaration, not an over-claim. PLY-013 lets the relay serve a
+    ' slide only to a player that declares it, so an older player is
+    ' transparently never served one. This array MUST stay byte-identical to
+    ' Pairing.brs's declaration (PLY-012) — a mismatch between the pair-time and
+    ' poll-time capability sets is a real bug.
+    reqBody = FormatJson({ capabilities: { content_types: ["image", "video", "slide"], player_version: "3.0.0" } })
     resp = wvHttpJson({
         method: "GET",
         url: base + "/player/v1/program",
@@ -230,6 +242,49 @@ function wvDoProgram(state as Object) as Object
             ' wvDefaultImageDurationMs) as its advance signal — a documented
             ' implementation choice, not a contract requirement.
             castOut.Push({ contentType: "composed", layers: outLayers, durationMs: 0 })
+
+        else if itemType = "slide"
+            ' A "slide" content item (PLY-012's "slide" type; native slide
+            ' rendering, parity milestone 2) carries an ordered `layers` array
+            ' of positioned native elements — kind text/rect/image/clock in a
+            ' fixed 1920x1080 canvas. Only an `image` layer references external
+            ' bytes, and it pays the IDENTICAL asset_ref-verified-before-
+            ' presented guarantee (wvFetchAndVerifyItem) a plain image item or a
+            ' composed image layer pays: the verified local path is attached to
+            ' the layer as `contentUri` before the layer is handed to
+            ' PhotonScene. text/rect/clock layers are pure declarative draw data
+            ' (no external bytes) and are passed through untouched. The relay
+            ' has already validated the whole layer stack (wire.ValidateSlide
+            ' Layers — closed kind set, geometry within canvas, per-kind required
+            ' fields) and drops a slide it cannot validate, so this player does
+            ' not re-validate kinds here; an image layer missing url/asset_ref
+            ' still fails the fetch below rather than presenting unverified
+            ' bytes. Layers ride through in array order (z-order = index).
+            layers = item.layers
+            if layers = invalid or layers.Count() = 0
+                r.error = "cast item " + i.toStr() + " (slide) carried no layers"
+                return r
+            end if
+
+            for j = 0 to layers.Count() - 1
+                layer = layers[j]
+                if wvStr(layer.kind) = "image"
+                    localPath = wvLocalPathForCastItem("image", "slide_" + i.toStr() + "_" + j.toStr())
+                    fv = wvFetchAndVerifyItem(layer, localPath)
+                    if not fv.ok
+                        r.error = "cast item " + i.toStr() + " slide layer " + j.toStr() + " (image): " + fv.error
+                        return r
+                    end if
+                    layer.contentUri = localPath
+                end if
+            end for
+
+            ' A slide has no natural end (a clock ticks forever), so it advances
+            ' on its own dwell time exactly like an image item: its own
+            ' duration_ms when it carries one (PLY-083b), else this player's
+            ' default dwell. A single-slide Lease simply re-renders itself each
+            ' cycle (the clock timer is torn down and restarted cleanly).
+            castOut.Push({ contentType: "slide", layers: layers, durationMs: wvItemDurationMs(item) })
 
         else if itemType = "image" or itemType = "video"
             localPath = wvLocalPathForCastItem(itemType, i.toStr())

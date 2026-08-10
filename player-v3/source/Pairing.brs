@@ -29,10 +29,14 @@ function wvDoPairing(pairingCode as String) as Object
     ' comment for why "composed" is deliberately absent (no Go producer can
     ' construct one, so declaring it would be a pure over-claim) while
     ' "video" stays declared (PLY-014's content-type floor, unconditional).
+    ' "slide" is declared here too (native slide rendering) — this MUST stay
+    ' byte-identical to Program.brs's program-poll declaration (PLY-012): the
+    ' pair-time and every-poll capability sets are the same set, and a mismatch
+    ' is a real bug (PLY-013 filters program assignment against the poll set).
     reqBody = FormatJson({
         hardware_id: wvHardwareId(),
         grant_selector: dec.grantSelector,
-        capabilities: { content_types: ["image", "video"], player_version: "3.0.0" }
+        capabilities: { content_types: ["image", "video", "slide"], player_version: "3.0.0" }
     })
 
     resp = wvHttpJson({

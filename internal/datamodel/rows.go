@@ -11,7 +11,11 @@
 // one-shot event); the resolution engine treats them accordingly.
 package datamodel
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/maaxton/waiveo-next/internal/shared/wire"
+)
 
 // Playlist is a playlist row (DAT-040): the resource-row baseline (DAT-005–008)
 // plus name and an ordered items array.
@@ -28,15 +32,39 @@ type Playlist struct {
 }
 
 // PlaylistItem is one entry of a playlist's items array (DAT-041). `source` is
-// `asset` (asset_ref present) or `playable` (pack_id + content_id present). A
-// nested pack_id here names the item's content pack and is NOT a row-level
-// pack-ownership field (DAT-101 bars only the latter).
+// `asset` (asset_ref present), `playable` (pack_id + content_id present), or
+// `slide` (a `slide` object carrying the authored layer stack — native slide
+// rendering, parity milestone 2). A nested pack_id here names the item's content
+// pack and is NOT a row-level pack-ownership field (DAT-101 bars only the latter).
+//
+// Slide is set ONLY for a `source: "slide"` item and is `omitempty`, so every
+// pre-existing `asset`/`playable` item — which never populates it — marshals
+// with no `slide` key at all, byte-identical to before this field existed. A
+// slide item carries no asset_ref of its own: its content is the layer stack,
+// and an image layer inside it names content-addressed bytes exactly as a plain
+// asset item's asset_ref does (DAT-041 discipline), resolved to a fetch URL at
+// projection time (internal/feeder/snapshot and internal/relay/schedulehost).
 type PlaylistItem struct {
 	Source          string `json:"source"`
 	AssetRef        string `json:"asset_ref,omitempty"`
 	PackID          string `json:"pack_id,omitempty"`
 	ContentID       string `json:"content_id,omitempty"`
 	DurationSeconds *int   `json:"duration_seconds,omitempty"`
+	Slide           *Slide `json:"slide,omitempty"`
+}
+
+// Slide is a `source: "slide"` playlist item's authored content (DAT-041; native
+// slide rendering, parity milestone 2): the ordered stack of positioned native
+// layers a player draws directly, its shape single-sourced from wire.Layer (the
+// player/1 Lease `layers` shape) so an authored slide and the served slide are
+// the SAME layer type end-to-end, never a re-encoding. Layers are back-to-front
+// (array index is z-order). The stack is not validated at authoring time — an
+// image layer's fetch URL is derived from the content origin at projection, so
+// wire.ValidateSlideLayers is applied by the producer that projects it (feeder
+// snapshot / relay schedulehost), which drops a slide whose layers do not
+// validate rather than serving it malformed.
+type Slide struct {
+	Layers []wire.Layer `json:"layers"`
 }
 
 // Schedule is a schedule row (DAT-050): baseline plus name, an optional

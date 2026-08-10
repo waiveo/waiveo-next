@@ -52,6 +52,17 @@ const (
 	// later concern.
 	leaseContentTypeImage = "image"
 
+	// leaseContentTypeSlide is the player/1 content `type` (PLY-083) of a native
+	// slide item (native slide rendering, parity milestone 2), matching
+	// playerserver.SetServedProgram's own leaseContentTypeSlide. A slide item's
+	// content is its `layers`, not an asset_ref/url.
+	leaseContentTypeSlide = "slide"
+
+	// sourceSlide is the data-model/1 playlist-item `source` value (DAT-041) of a
+	// native-slide item — the same value the app-side projection keys on
+	// (snapshot.sourceSlide), so both sides recognize a slide identically.
+	sourceSlide = "slide"
+
 	// terminalProgramRevision is the stable programRevision for the DAT-118
 	// terminal default (a governing schedule holds nothing): a fixed sentinel,
 	// so a screen parked at the terminal blank never spuriously re-swaps.
@@ -221,12 +232,20 @@ func programRevisionFor(state datamodel.EffectiveState) string {
 
 // playlistContent projects the playlist named by playlistID (the effective
 // daypart's or fallback's playlist_id, already resolved onto state.PlaylistID)
-// into player/1 Lease content refs, one per asset item (DAT-041), IN ORDER —
-// an N-item playlist therefore yields an N-item Lease `content` array a
-// player cycles per PLY-083a, not just its first item. Only items carrying
-// an asset_ref project to a plain image content item; a `playable` (pack)
-// item has no direct Lease content ref and is skipped. An empty or unknown
-// playlist id yields no content.
+// into player/1 Lease content refs, one per projectable item (DAT-041), IN
+// ORDER — an N-item playlist therefore yields an N-item Lease `content` array a
+// player cycles per PLY-083a, not just its first item. An `asset` item projects
+// to a plain `image` content item; a `slide` item (native slide rendering,
+// parity milestone 2) projects to a `type:"slide"` item carrying the authored
+// layer stack (resolveSlideLayers, which drops a slide whose layers do not pass
+// wire.ValidateSlideLayers). A `playable` (pack) item has no direct Lease
+// content ref and is skipped. An empty or unknown playlist id yields no content.
+//
+// A slide projects here IDENTICALLY to the app-signed baseline
+// (snapshot.playlistContent): both derive image-layer URLs from the same origin
+// and gate on the same wire.ValidateSlideLayers, so a screen sees the same slide
+// whether it is playing the signed baseline or the relay's re-resolution of a
+// daypart boundary. TestDerivedContentMatchesRelaySideProjection pins that.
 //
 // An item's own `duration_seconds` override (DAT-042), when present and
 // non-zero, is carried onto the projected content item's `duration_ms`
@@ -265,12 +284,31 @@ func playlistContent(store datamodel.RowStore, playlistID string, sign contentSi
 		}
 		content := make([]wire.LeaseContent, 0, len(p.Items))
 		for _, item := range p.Items {
-			if item.AssetRef == "" {
-				continue // a pack `playable` has no direct Lease content ref.
-			}
 			var durationMS int64
 			if item.DurationSeconds != nil && *item.DurationSeconds != 0 {
 				durationMS = int64(*item.DurationSeconds) * 1000
+			}
+			if item.Source == sourceSlide {
+				// A slide re-resolved on the relay must project IDENTICALLY to the
+				// app-signed baseline (snapshot.playlistContent), or a screen would
+				// see one thing in its signed program and another the moment a
+				// daypart boundary made the relay re-resolve. So the same rule holds
+				// here: derive each image layer's URL from the origin, admit the
+				// stack only if wire.ValidateSlideLayers accepts it, and DROP a slide
+				// that does not validate rather than serve a player a malformed layer.
+				layers, ok := resolveSlideLayers(item.Slide, sign)
+				if !ok {
+					continue
+				}
+				content = append(content, wire.LeaseContent{
+					Type:       leaseContentTypeSlide,
+					Layers:     layers,
+					DurationMS: durationMS,
+				})
+				continue
+			}
+			if item.AssetRef == "" {
+				continue // a pack `playable` has no direct Lease content ref.
 			}
 			content = append(content, wire.LeaseContent{
 				Type:       leaseContentTypeImage,
@@ -285,6 +323,31 @@ func playlistContent(store datamodel.RowStore, playlistID string, sign contentSi
 		return content
 	}
 	return nil
+}
+
+// resolveSlideLayers projects an authored slide item's layer stack into the
+// wire.Layer slice a slide Lease item carries, or reports it is not projectable.
+// It mirrors snapshot.resolveSlideLayers exactly: each image layer's fetch URL
+// is minted from the relay's own content signer (the same urlFor a plain asset
+// item uses, so the two content-URL grammars stay single-sourced), and the
+// stack is admitted only if wire.ValidateSlideLayers accepts it. A nil slide, or
+// one whose layers do not validate, is not projectable (ok=false) and the caller
+// drops the item — a player is never handed a malformed layer.
+func resolveSlideLayers(slide *datamodel.Slide, sign contentSigner) ([]wire.Layer, bool) {
+	if slide == nil {
+		return nil, false
+	}
+	layers := make([]wire.Layer, len(slide.Layers))
+	for i, l := range slide.Layers {
+		if l.Kind == wire.LayerKindImage {
+			l.URL = sign.urlFor(l.AssetRef)
+		}
+		layers[i] = l
+	}
+	if err := wire.ValidateSlideLayers(layers); err != nil {
+		return nil, false
+	}
+	return layers, true
 }
 
 // contentURL builds a schedule-resolved content item's Lease `url` from the

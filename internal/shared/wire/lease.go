@@ -87,7 +87,12 @@ type Layer struct {
 
 	// Text is the literal string for a `text` layer, and the time-format
 	// string for a `clock` layer (the format the player renders the current
-	// time through, refreshed every second). Unused by `rect`/`image`.
+	// LOCAL time through, refreshed every second). A clock format is a Go
+	// reference-time layout — `"15:04:05"`, `"3:04 PM"`, `"Mon 15:04"` — NOT a
+	// strftime string: the producer authors it and the player interprets it
+	// under that one convention, so it is fixed HERE rather than left for the
+	// two ends to each guess (a mismatch renders a clock as literal garbage).
+	// Unused by `rect`/`image`.
 	Text string `json:"text,omitempty"`
 	// AssetRef and URL address an `image` layer's bytes exactly as a plain
 	// `image` content item does (DAT-041 discipline): AssetRef is the

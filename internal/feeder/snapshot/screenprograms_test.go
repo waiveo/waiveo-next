@@ -3,6 +3,7 @@ package snapshot
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
@@ -68,6 +69,25 @@ func programForScreen(t *testing.T, programs []wire.ScreenProgram, screenID stri
 	return wire.ScreenProgram{}
 }
 
+// wantSeededAssetThenSlide asserts a derived content array is exactly what the
+// demo seed (store.SeedDemo) produces for a single-asset seed: the plain asset
+// item first, then the seeded native slide (native slide rendering, parity
+// milestone 2). The slide is validated at projection, so its presence here also
+// proves the seeded stack passed wire.ValidateSlideLayers; its layers are
+// asserted in depth by TestSeededDemoSlideValidatesAndDerives.
+func wantSeededAssetThenSlide(t *testing.T, content []wire.ContentRef, assetRef string) {
+	t.Helper()
+	if len(content) != 2 {
+		t.Fatalf("content = %+v, want the seeded asset then the seeded slide (2 items)", content)
+	}
+	if content[0].AssetRef != assetRef {
+		t.Errorf("content[0].asset_ref = %q, want the seeded asset %q", content[0].AssetRef, assetRef)
+	}
+	if content[1].ContentType != "slide" || len(content[1].Layers) == 0 {
+		t.Errorf("content[1] = %+v, want the seeded slide (content_type slide, non-empty layers)", content[1])
+	}
+}
+
 // createRow marshals and Creates a row, failing the test on rejection.
 func createRow(t *testing.T, s *store.Store, kind store.Kind, row any) {
 	t.Helper()
@@ -101,9 +121,7 @@ func TestEditingAPlaylistChangesTheDeliveredProgram(t *testing.T) {
 		t.Fatalf("BuildFromStore before the edit: %v", err)
 	}
 	beforeProgram := programForScreen(t, before.Sections.ScreenPrograms, store.SeedScreenID)
-	if len(beforeProgram.Content) != 1 || beforeProgram.Content[0].AssetRef != originalAsset {
-		t.Fatalf("pre-edit content = %+v, want the one seeded asset %q", beforeProgram.Content, originalAsset)
-	}
+	wantSeededAssetThenSlide(t, beforeProgram.Content, originalAsset)
 
 	// The operator's edit: the playlist now plays a DIFFERENT asset, and a second
 	// one after it, with a per-item dwell override on the second.
@@ -277,9 +295,7 @@ func TestTwoScreensUnderDifferentPlacementsGetDifferentPrograms(t *testing.T) {
 	progB := programForScreen(t, snap.Sections.ScreenPrograms, screenB)
 	progMate := programForScreen(t, snap.Sections.ScreenPrograms, screenAMate)
 
-	if len(progA.Content) != 1 || progA.Content[0].AssetRef != assetA {
-		t.Errorf("screen A content = %+v, want the schedule on ITS node (asset %q)", progA.Content, assetA)
-	}
+	wantSeededAssetThenSlide(t, progA.Content, assetA) // A plays the seeded playlist (asset + the seeded slide)
 	if len(progB.Content) != 1 || progB.Content[0].AssetRef != assetB {
 		t.Errorf("screen B content = %+v, want the schedule on ITS node (asset %q)", progB.Content, assetB)
 	}
@@ -292,9 +308,7 @@ func TestTwoScreensUnderDifferentPlacementsGetDifferentPrograms(t *testing.T) {
 	if progMate.ProgramRevision != progA.ProgramRevision {
 		t.Errorf("node-mate revision %q != %q; two screens on one node resolve the same placement", progMate.ProgramRevision, progA.ProgramRevision)
 	}
-	if len(progMate.Content) != 1 || progMate.Content[0].AssetRef != assetA {
-		t.Errorf("node-mate content = %+v, want screen A's own (asset %q)", progMate.Content, assetA)
-	}
+	wantSeededAssetThenSlide(t, progMate.Content, assetA) // the node-mate resolves the same seeded playlist as A
 }
 
 // TestSiteScheduleCascadesToAScreenPlacedOnTheSiteNode proves applicability is
@@ -357,9 +371,7 @@ func TestSiteScheduleCascadesToAScreenPlacedOnTheSiteNode(t *testing.T) {
 	// The seeded screen, one level down, still sees its own nearer schedule win
 	// over the site-wide one — the DAT-053 specificity key.
 	seeded := programForScreen(t, snap.Sections.ScreenPrograms, store.SeedScreenID)
-	if len(seeded.Content) != 1 || seeded.Content[0].AssetRef != assetScreen {
-		t.Errorf("seeded screen content = %+v, want its own nearer schedule's asset %q", seeded.Content, assetScreen)
-	}
+	wantSeededAssetThenSlide(t, seeded.Content, assetScreen) // its own nearer schedule's seeded playlist
 }
 
 // TestScreenWithNoApplicableScheduleGetsTheTerminalDefault: a screen row placed
@@ -446,9 +458,10 @@ func TestBlankDaypartYieldsABlankProgramAtTheSameGeneration(t *testing.T) {
 	dayProg := programForScreen(t, day.Sections.ScreenPrograms, store.SeedScreenID)
 	nightProg := programForScreen(t, night.Sections.ScreenPrograms, store.SeedScreenID)
 
-	if dayProg.Display != "content" || len(dayProg.Content) != 1 {
-		t.Errorf("midday program = %+v, want display:content with the seeded asset", dayProg)
+	if dayProg.Display != "content" {
+		t.Errorf("midday program = %+v, want display:content with the seeded content", dayProg)
 	}
+	wantSeededAssetThenSlide(t, dayProg.Content, asset)
 	if nightProg.Display != "blank" {
 		t.Errorf("overnight display = %q, want blank (DAT-114)", nightProg.Display)
 	}
@@ -597,6 +610,186 @@ func TestDerivedContentMatchesRelaySideProjection(t *testing.T) {
 		}
 		if derived.Content[i].DurationMS != content[i].DurationMS {
 			t.Errorf("content[%d].duration_ms: app-derived %d != relay-projected %d", i, derived.Content[i].DurationMS, content[i].DurationMS)
+		}
+		// A slide item's substance is its layers, not an asset_ref/url — so the
+		// two projections must agree on the whole layer stack too (the seeded
+		// demo's last item is a slide, native slide rendering, parity milestone
+		// 2). Both derive image-layer URLs from the same origin through the same
+		// wire.ValidateSlideLayers gate, so a mismatch here is exactly the silent
+		// drift this test exists to catch.
+		if !reflect.DeepEqual(derived.Content[i].Layers, content[i].Layers) {
+			t.Errorf("content[%d].layers: app-derived %+v != relay-projected %+v", i, derived.Content[i].Layers, content[i].Layers)
+		}
+	}
+}
+
+// TestSlidePlaylistItemDerivesToASlideContentRef proves the producer side of the
+// native slide type end to end (native slide rendering, parity milestone 2): an
+// authored `source:"slide"` playlist item, resolved through the store and the
+// snapshot builder, becomes a REL-061 content ref of content_type "slide"
+// carrying its layer stack — the image layer's fetch URL derived from the content
+// origin (DAT-041), the whole stack accepted by wire.ValidateSlideLayers, and no
+// item-level asset_ref/url invented for a slide.
+func TestSlidePlaylistItemDerivesToASlideContentRef(t *testing.T) {
+	ctx := context.Background()
+	id := testIdentity(t)
+	const asset = "sha256:51de51de51de51de51de51de51de51de51de51de51de51de51de51de51de51de"
+	s := seededStore(t, asset)
+
+	// Replace the seeded playlist with a single authored slide — the four v1
+	// layer kinds, all inside the 1920x1080 canvas, the image reusing the seeded
+	// asset (so it resolves in the origin exactly as a plain asset item does).
+	pls, err := s.List(ctx, store.KindPlaylist, store.ListFilter{})
+	if err != nil || len(pls) != 1 {
+		t.Fatalf("list playlists: %v (got %d)", err, len(pls))
+	}
+	authored := []wire.Layer{
+		{Kind: wire.LayerKindRect, X: 0, Y: 0, W: 1920, H: 1080, Color: "#101828"},
+		{Kind: wire.LayerKindText, X: 100, Y: 80, W: 800, H: 120, Text: "Hello", FontPx: 96, Color: "#FFFFFF", Align: "left"},
+		{Kind: wire.LayerKindImage, X: 200, Y: 300, W: 600, H: 400, AssetRef: asset},
+		{Kind: wire.LayerKindClock, X: 1500, Y: 40, W: 360, H: 100, Text: "15:04:05", FontPx: 72},
+	}
+	edited := datamodel.Playlist{
+		ID: pls[0].ID, ScopeNode: "01J8Z4DEM0SCREENF1RSTPH0TN", Name: "Slide Playlist",
+		Items: []datamodel.PlaylistItem{{Source: "slide", Slide: &datamodel.Slide{Layers: authored}}},
+	}
+	body, err := json.Marshal(edited)
+	if err != nil {
+		t.Fatalf("marshal edited playlist: %v", err)
+	}
+	if _, err := s.Update(ctx, store.KindPlaylist, pls[0].ID, pls[0].Revision, body); err != nil {
+		t.Fatalf("update playlist to a slide: %v", err)
+	}
+
+	snap, _, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t), nil)
+	if err != nil {
+		t.Fatalf("BuildFromStore: %v", err)
+	}
+	prog := programForScreen(t, snap.Sections.ScreenPrograms, store.SeedScreenID)
+	if len(prog.Content) != 1 {
+		t.Fatalf("content = %+v, want the one authored slide", prog.Content)
+	}
+	ref := prog.Content[0]
+	if ref.ContentType != "slide" {
+		t.Errorf("content_type = %q, want slide", ref.ContentType)
+	}
+	if ref.AssetRef != "" || ref.URL != "" {
+		t.Errorf("slide ref carries item-level asset_ref=%q url=%q, want neither (a slide's content is its layers)", ref.AssetRef, ref.URL)
+	}
+	if err := wire.ValidateSlideLayers(ref.Layers); err != nil {
+		t.Errorf("derived slide layers do not validate: %v", err)
+	}
+	if len(ref.Layers) != len(authored) {
+		t.Fatalf("derived %d layers, want %d", len(ref.Layers), len(authored))
+	}
+	img := ref.Layers[2]
+	if img.Kind != wire.LayerKindImage || img.AssetRef != asset {
+		t.Errorf("layer[2] = %+v, want the authored image layer referencing %q", img, asset)
+	}
+	wantURL := "https://origin.example/content/" + asset[len("sha256:"):]
+	if img.URL != wantURL {
+		t.Errorf("image layer url = %q, want the origin-derived %q", img.URL, wantURL)
+	}
+	if ref.Layers[1].Text != "Hello" || ref.Layers[1].Align != "left" || ref.Layers[3].Kind != wire.LayerKindClock || ref.Layers[3].Text != "15:04:05" {
+		t.Errorf("text/clock layers did not survive derivation: %+v", ref.Layers)
+	}
+}
+
+// TestSeededDemoSlideValidatesAndDerives pins the make-dev proof slice: the demo
+// the feeder seeds (store.SeedDemo) carries one native slide, and it derives to a
+// valid slide content ref — the four v1 kinds present, its image layer reusing
+// the seeded asset with an origin-derived URL, the whole stack passing
+// wire.ValidateSlideLayers. This is what makes a fresh box actually show a slide.
+func TestSeededDemoSlideValidatesAndDerives(t *testing.T) {
+	id := testIdentity(t)
+	const asset = "sha256:5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5e"
+	s := seededStore(t, asset)
+
+	snap, _, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t), nil)
+	if err != nil {
+		t.Fatalf("BuildFromStore: %v", err)
+	}
+	prog := programForScreen(t, snap.Sections.ScreenPrograms, store.SeedScreenID)
+	if len(prog.Content) == 0 {
+		t.Fatalf("seeded program has no content")
+	}
+	slide := prog.Content[len(prog.Content)-1] // the seed appends the slide last
+	if slide.ContentType != "slide" {
+		t.Fatalf("last content ref content_type = %q, want the seeded slide", slide.ContentType)
+	}
+	if err := wire.ValidateSlideLayers(slide.Layers); err != nil {
+		t.Fatalf("seeded slide layers do not validate: %v", err)
+	}
+
+	kinds := map[string]bool{}
+	var image wire.Layer
+	for _, l := range slide.Layers {
+		kinds[l.Kind] = true
+		if l.Kind == wire.LayerKindImage {
+			image = l
+		}
+	}
+	for _, want := range []string{wire.LayerKindRect, wire.LayerKindText, wire.LayerKindImage, wire.LayerKindClock} {
+		if !kinds[want] {
+			t.Errorf("seeded slide is missing a %q layer; got kinds %v", want, kinds)
+		}
+	}
+	if image.AssetRef != asset {
+		t.Errorf("seeded slide image asset_ref = %q, want the reused seeded asset %q", image.AssetRef, asset)
+	}
+	if want := "https://origin.example/content/" + asset[len("sha256:"):]; image.URL != want {
+		t.Errorf("seeded slide image url = %q, want the origin-derived %q", image.URL, want)
+	}
+}
+
+// TestInvalidSlideItemIsSkipped: a slide whose layers do not pass
+// wire.ValidateSlideLayers is DROPPED from the derived program, never emitted
+// malformed — the producer half of the same refuse-don't-serve discipline the
+// relay applies. A valid asset item alongside it is unaffected.
+func TestInvalidSlideItemIsSkipped(t *testing.T) {
+	ctx := context.Background()
+	id := testIdentity(t)
+	const asset = "sha256:badc0debadc0debadc0debadc0debadc0debadc0debadc0debadc0debadc0deba"
+	s := seededStore(t, asset)
+
+	pls, err := s.List(ctx, store.KindPlaylist, store.ListFilter{})
+	if err != nil || len(pls) != 1 {
+		t.Fatalf("list playlists: %v (got %d)", err, len(pls))
+	}
+	// A rect whose far edge runs past the canvas width — ValidateSlideLayers
+	// rejects it, so this slide item must not survive derivation.
+	badSlide := &datamodel.Slide{Layers: []wire.Layer{
+		{Kind: wire.LayerKindRect, X: 1900, Y: 0, W: 100, H: 100, Color: "#ffffff"},
+	}}
+	edited := datamodel.Playlist{
+		ID: pls[0].ID, ScopeNode: "01J8Z4DEM0SCREENF1RSTPH0TN", Name: "Playlist With A Bad Slide",
+		Items: []datamodel.PlaylistItem{
+			{Source: "asset", AssetRef: asset},
+			{Source: "slide", Slide: badSlide},
+		},
+	}
+	body, err := json.Marshal(edited)
+	if err != nil {
+		t.Fatalf("marshal playlist: %v", err)
+	}
+	if _, err := s.Update(ctx, store.KindPlaylist, pls[0].ID, pls[0].Revision, body); err != nil {
+		t.Fatalf("update playlist: %v", err)
+	}
+
+	snap, _, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t), nil)
+	if err != nil {
+		t.Fatalf("BuildFromStore: %v", err)
+	}
+	prog := programForScreen(t, snap.Sections.ScreenPrograms, store.SeedScreenID)
+	if len(prog.Content) != 1 {
+		t.Fatalf("content = %+v, want only the valid asset item (the invalid slide dropped)", prog.Content)
+	}
+	if prog.Content[0].AssetRef != asset {
+		t.Errorf("surviving item = %+v, want the valid asset %q", prog.Content[0], asset)
+	}
+	for _, c := range prog.Content {
+		if c.ContentType == "slide" {
+			t.Errorf("an invalid slide was emitted anyway: %+v", c)
 		}
 	}
 }
