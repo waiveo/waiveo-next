@@ -13,12 +13,22 @@ import (
 	"github.com/maaxton/waiveo-next/internal/app/api"
 	"github.com/maaxton/waiveo-next/internal/app/auth"
 	"github.com/maaxton/waiveo-next/internal/app/auth/authtest"
+	"github.com/maaxton/waiveo-next/internal/app/devices"
 	"github.com/maaxton/waiveo-next/internal/app/eventsse"
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/events"
 	"github.com/maaxton/waiveo-next/internal/feeder/origin"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/ulid"
+	"github.com/maaxton/waiveo-next/internal/shared/wire"
+)
+
+// The device-plane fixture the adopt cases below drive. Its ids are distinct
+// from every other fixture's so a stray row from one cannot satisfy another.
+const (
+	auditDeviceID   = "01J8Z3AD1TDEV1CE0000000AA2"
+	auditRelayID    = "relay-audit-fixture"
+	auditDeviceSite = "01J8Z3AD1TS1TE00000000000A"
 )
 
 // audit_e2e_test.go drives the api/1 surface's audit trail end to end, through
@@ -43,7 +53,7 @@ type auditEnv struct {
 // newAuditEnv builds the whole loop. It deliberately does NOT reuse newEnv: that
 // harness seeds an auth fixture with a nil sink (its auditor is silent), and a
 // silent auditor is exactly what these cases must not be handed.
-func newAuditEnv(t *testing.T) *auditEnv {
+func newAuditEnv(t *testing.T, opts ...api.Option) *auditEnv {
 	t.Helper()
 
 	st, err := store.Open(":memory:", store.WallClockMs)
@@ -65,7 +75,7 @@ func newAuditEnv(t *testing.T) *auditEnv {
 	jobs := api.NewJobRunner()
 	content := origin.New()
 	apiTS := httptest.NewServer(api.New(st, apihttp.NewIdempotencyStore(clock, 0), clock,
-		ulid.Monotonic(), content, testContentBase, fixture.Auth, api.WithJobRunner(jobs)))
+		ulid.Monotonic(), content, testContentBase, fixture.Auth, append([]api.Option{api.WithJobRunner(jobs)}, opts...)...))
 	t.Cleanup(apiTS.Close)
 
 	// The SSE server resolves each subscriber's visible set against the SAME
@@ -488,5 +498,108 @@ func TestAudit_AuthFlowRecordsStillEmit(t *testing.T) {
 	}
 	if next.Actor != seeder.PrincipalID {
 		t.Fatalf("follow-up record actor = %q, want the seeding principal %q", next.Actor, seeder.PrincipalID)
+	}
+}
+
+// TestAudit_AdoptRecordsTheDeviceAndItsPlacement is the audit half of the one
+// operation that puts a physical device under this platform's control.
+//
+// It failed on all three counts before the route was classified: `devices` is
+// not a mounted CRUD family, so the request fell to the generic fallback, whose
+// id was the LAST path segment. Every adoption of every device therefore
+// recorded as `devices.create` against the literal target `devices:adopt`, with
+// no scope-node placement at all — so the record could not say what was
+// adopted, called it a create, and filed at the deployment fallback rather than
+// at the device's own node, which is what EVT-012/EVT-120 stream visibility is
+// decided by. The subscriber below is the site's own operator, and that is the
+// assertion that would have caught the placement half: a record about her
+// fleet that she cannot see is not an audit trail.
+func TestAudit_AdoptRecordsTheDeviceAndItsPlacement(t *testing.T) {
+	registry := devices.New(auditDeviceSite, func() int64 { return 0 })
+	e := newAuditEnv(t, api.WithDevicePlane(registry, nil))
+	tr := seedScopedTree(t, e.testEnv)
+	alice := e.principalAt(t, tr.siteA)
+
+	node := tr.screensA[0]
+	mustPutDevice(t, registry, devices.Device{
+		ID: auditDeviceID, RelayID: auditRelayID, DeviceClass: "media-player",
+		Name: "Audited TV", ScopeNode: node, Labels: map[string]string{},
+		Address: "192.168.50.31:8060",
+	})
+	if err := e.store.ReplaceDiscoveredDevices(context.Background(), auditRelayID, []store.DiscoveredDevice{{
+		DeviceID: auditDeviceID, RelayID: auditRelayID, ScopeNode: node,
+		Driver: "roku-ecp", NativeID: "uuid:roku:ecp:AUDIT1", DeviceClass: "media-player",
+		Name: "Audited TV", Address: "192.168.50.31:8060", FirstSeen: 1000, LastSeen: 2000,
+		Entities: []wire.CandidateEntity{{Key: "main", DeviceClass: "media-player"}},
+	}}); err != nil {
+		t.Fatalf("mirror the discovered device: %v", err)
+	}
+
+	// Subscribed as the operator whose site the device sits at, not as the
+	// unrestricted fixture: the placement is only observable through someone
+	// whose visible set it has to fall inside.
+	br, closeConn := e.subscribe(t, alice)
+	defer closeConn()
+
+	resp, raw := e.as(t, alice, http.MethodPost, "/api/v1/devices/"+auditDeviceID+"/adopt", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST adopt = %d, want 200 (body %s)", resp.StatusCode, raw)
+	}
+
+	rec := readAudit(t, br)
+	if rec.Action != "devices.adopt" {
+		t.Errorf("action = %q, want \"devices.adopt\" — an adoption is not a create", rec.Action)
+	}
+	if want := "devices:" + auditDeviceID; rec.Target != want {
+		t.Errorf("target = %q, want %q — the record must name WHICH device was adopted", rec.Target, want)
+	}
+	if rec.scopeNode != node {
+		t.Errorf("record filed at %q, want the device's own placement %q — EVT-012 placement is what decides which "+
+			"operators can see the record (EVT-120/123)", rec.scopeNode, node)
+	}
+	if rec.Actor != alice.PrincipalID {
+		t.Errorf("actor = %q, want %q", rec.Actor, alice.PrincipalID)
+	}
+	if rec.Result != events.AuditResultSuccess {
+		t.Errorf("result = %q, want success", rec.Result)
+	}
+}
+
+// TestAudit_ARefusedAdoptIsRecordedAgainstTheSameSubject: EVT-083 makes a
+// refusal exactly as auditable as a success, and an adoption someone was not
+// allowed to make is the more interesting of the two. The subject must still be
+// the device — a refusal recorded against `devices:adopt` tells an investigator
+// nothing about what was attempted.
+func TestAudit_ARefusedAdoptIsRecordedAgainstTheSameSubject(t *testing.T) {
+	registry := devices.New(auditDeviceSite, func() int64 { return 0 })
+	e := newAuditEnv(t, api.WithDevicePlane(registry, nil))
+	tr := seedScopedTree(t, e.testEnv)
+
+	node := tr.screensA[0]
+	mustPutDevice(t, registry, devices.Device{
+		ID: auditDeviceID, RelayID: auditRelayID, DeviceClass: "media-player",
+		Name: "Audited TV", ScopeNode: node, Labels: map[string]string{},
+	})
+	// Viewer where the device is, operator elsewhere: clears the method's role
+	// floor, refused by the per-node write check.
+	mixed := e.principalWith(t, roleAt{tr.siteA, auth.RoleViewer}, roleAt{tr.siteB, auth.RoleOperator})
+
+	br, closeConn := e.subscribe(t, e.auth.Credential())
+	defer closeConn()
+
+	resp, raw := e.as(t, mixed, http.MethodPost, "/api/v1/devices/"+auditDeviceID+"/adopt", nil, nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST adopt as a read-only principal = %d, want 403 (body %s)", resp.StatusCode, raw)
+	}
+
+	rec := readAudit(t, br)
+	if rec.Action != "devices.adopt" {
+		t.Errorf("action = %q, want \"devices.adopt\"", rec.Action)
+	}
+	if want := "devices:" + auditDeviceID; rec.Target != want {
+		t.Errorf("target = %q, want %q", rec.Target, want)
+	}
+	if rec.Result != events.AuditResultFailure {
+		t.Errorf("result = %q, want failure — a refused mutation is recorded in full (EVT-083)", rec.Result)
 	}
 }
