@@ -194,7 +194,13 @@ test("core navigation — each nav item routes to its page heading", async ({ pa
   const destinations: Array<[label: string, heading: string]> = [
     ["Screens", "Screens"],
     ["Schedules", "Schedules"],
+    // The cast library renders its heading whether or not the /casts routes are
+    // live yet (a failed list shows an inline banner under the same header), so
+    // this walk proves the destination is wired without depending on the
+    // authoring API landing first.
+    ["Casts", "Casts"],
     ["Content", "Content"],
+    ["Media", "Media"],
     ["Automations", "Automations"],
     ["Activity", "Activity"],
     ["Pages", "Declarative pages"],
