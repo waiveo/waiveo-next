@@ -69,6 +69,15 @@ func (s *SyntheticSource) Next() (state.Observation, bool) {
 func (h *Host) Observe(obs state.Observation) ([]engine.RunDisposition, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+
+	// Record the observed state before advancing the engine, so EntityState
+	// reflects what the relay has SEEN even for an entity no loaded rule
+	// subjects (see the field's doc). It is recorded unconditionally, not only
+	// when obs.StateChanged: the poller's first snapshot per entity arrives as a
+	// self-transition seed with StateChanged false, and that seed is precisely
+	// the reading that first populates a slide's entity widget after boot.
+	h.entityStates[obs.Entity.ID] = obs.Entity.State
+
 	disps := h.engine.Observe(obs)
 	atMs := h.clk.WallMillis()
 	for _, d := range disps {

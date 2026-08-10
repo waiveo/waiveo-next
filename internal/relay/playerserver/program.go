@@ -25,6 +25,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/shared/signhash"
 	"github.com/maaxton/waiveo-next/internal/shared/ulid"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
+	"github.com/maaxton/waiveo-next/internal/slidelive"
 )
 
 // leaseValidity bounds how long a freshly issued Lease remains valid
@@ -479,6 +480,7 @@ func (s *Server) handleProgram(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	prog := s.programForLocked(screenID)
 	signingKey := s.signingKey
+	live := s.slideLive
 	s.mu.Unlock()
 
 	// No signing key at all — the deployment never called SetSigningKey, so this
@@ -511,9 +513,18 @@ func (s *Server) handleProgram(w http.ResponseWriter, r *http.Request) {
 		ProgramRevision: prog.ProgramRevision,
 		Priority:        prog.Priority,
 		Display:         prog.Display,
-		Content:         clampContentDurations(filterContentTypes(prog.Content, req.Capabilities.ContentTypes)),
-		IssuedAt:        nowMs,
-		ValidUntil:      nowMs + leaseValidity.Milliseconds(),
+		// Live-widget resolution runs LAST, over exactly the items that survived
+		// the capability filter and the duration clamp — so a slide a player
+		// cannot draw costs no weather lookup, and the resolved values are the
+		// freshest the relay has at the instant it signs (internal/slidelive's
+		// doc explains why this issuance point, and not either projection, is
+		// where a `weather`/`entity` layer gets its value). It resolves onto a
+		// COPY: prog.Content is the served program's own retained state, and a
+		// value written into it would outlive this Lease and overwrite the
+		// authored layer permanently.
+		Content:    slidelive.ResolveContent(clampContentDurations(filterContentTypes(prog.Content, req.Capabilities.ContentTypes)), live),
+		IssuedAt:   nowMs,
+		ValidUntil: nowMs + leaseValidity.Milliseconds(),
 	}
 
 	canon, err := wire.LeaseSignedBytes(lease)
