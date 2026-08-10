@@ -78,6 +78,24 @@ export {
 } from "./resources";
 
 export {
+  createDevicePlaneModules,
+  deviceFacts,
+  launchableApps,
+  type DevicePlaneModules,
+  type DeviceFacts,
+  type ListOnlyModule,
+  type EntitiesModule,
+  type Device,
+  type Entity,
+  type EntityCommandRequest,
+  type EntityCommandResult,
+  type AdoptedDevice,
+  type AdoptedDeviceCreate,
+  type AdoptedDeviceUpdate,
+  type AdoptedDeviceEntity,
+} from "./devices";
+
+export {
   createPacksModule,
   packData,
   encodePackPagePath,

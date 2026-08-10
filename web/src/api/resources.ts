@@ -18,6 +18,15 @@ import { type Page } from "./pagination";
 import { crud } from "./crud";
 import { createAuthModule, type AuthModule } from "./auth";
 import {
+  createDevicePlaneModules,
+  type AdoptedDevice,
+  type AdoptedDeviceCreate,
+  type AdoptedDeviceUpdate,
+  type Device,
+  type EntitiesModule,
+  type ListOnlyModule,
+} from "./devices";
+import {
   createPacksModule,
   packData,
   type PackRow,
@@ -275,6 +284,15 @@ export interface WaiveoApi {
   playlists: ResourceModule<Playlist, PlaylistCreate, PlaylistUpdate>;
   automations: AutomationsModule;
   content: ContentModule;
+  /** Devices a relay has DISCOVERED behind it — a read model the relay owns, so
+   * list-only (api/devices.ts explains why it is not a ResourceModule). */
+  devices: ListOnlyModule<Device>;
+  /** The entities those devices expose, plus the entity-addressed command
+   * operation the virtual remote and rules/1 both dispatch through. */
+  entities: EntitiesModule;
+  /** The AUTHORED adoption records (DAT-004a). Discovery lists a device;
+   * creating one of these rows is what adopts it. */
+  adoptedDevices: ResourceModule<AdoptedDevice, AdoptedDeviceCreate, AdoptedDeviceUpdate>;
   /** Installed declarative packs — list/get/install/uninstall + page docs and
    * locale catalogs (manifest/1). */
   packs: PacksModule;
@@ -290,6 +308,7 @@ export function createApi(opts?: ApiClientOptions): WaiveoApi {
   const client = new ApiClient(opts);
   return {
     client,
+    ...createDevicePlaneModules(client),
     auth: createAuthModule(client),
     scopeNodes: crud<ScopeNode, ScopeNodeCreate, ScopeNodeUpdate>(client, "/scope-nodes"),
     screens: screensModule(client),

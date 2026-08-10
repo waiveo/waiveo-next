@@ -73,6 +73,7 @@ describe("AppShell — locked-left responsive shell", () => {
     expect(labels).toEqual([
       "Overview",
       "Screens",
+      "Devices",
       "Schedules",
       "Content",
       "Automations",
