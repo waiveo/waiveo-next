@@ -638,6 +638,13 @@ func main() {
 	}
 	st, err := store.Open(cfg.storePath, nowMs)
 	if err != nil {
+		// A workspace at a newer schema epoch than this build understands is not
+		// a crash — the box stays up in maintenance mode so an operator can see
+		// why it will not serve (archive/1 ARC-041/104), instead of flapping
+		// under a supervisor. Every other open failure remains fatal.
+		if maintenanceOnStoreOpenError(cfg, id, err) {
+			return
+		}
 		log.Fatalf("waiveo-feeder: open store: %v", err)
 	}
 	defer st.Close()
