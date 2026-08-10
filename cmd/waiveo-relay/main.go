@@ -126,12 +126,25 @@ type config struct {
 	// SSDP RESPONDER — answering a player's own M-SEARCH for this relay's
 	// player/1 pairing surface (WAIVEO_RELAY_SSDP_ANNOUNCE=1, PLY-021/022).
 	// keepaliveOn enables the screen keep-alive capability
-	// (WAIVEO_RELAY_KEEPALIVE=1, internal/relay/keepalive, player/1
-	// PLY-150-154): a second ECP poller over the SAME ecpTargets that
-	// re-launches a screen's player channel once it safely idles at Home.
-	// All four default off: CI and loopback dev runs must never multicast,
-	// and must not dispatch an unrequested launch, so dev/CI stay
-	// byte-identical to today.
+	// (internal/relay/keepalive, player/1 PLY-150-154): a second ECP poller
+	// over the SAME ecpTargets that re-launches a screen's player channel once
+	// it safely idles at Home.
+	//
+	// Unlike the three above, this one defaults ON (set
+	// WAIVEO_RELAY_KEEPALIVE=0 to disable it). A screen sitting at Home is a
+	// screen showing nothing, and it stays that way until somebody notices —
+	// which, on an unattended wall, is the next time a human walks past. The
+	// legacy stack ran its equivalent unconditionally for exactly that reason,
+	// and shipping the capability switched off reproduced the outage it exists
+	// to end. What makes on-by-default safe is the ADOPTION GATE it now
+	// carries (keepalive.AdoptionSet): the relay drives only screens the app
+	// peer's signed `device_inventory` says this deployment has adopted, so a
+	// relay that can reach a Roku the legacy stack still owns does nothing to
+	// it. The first three still default off: CI and loopback dev runs must
+	// never multicast.
+	//
+	// Dev/CI stay byte-identical anyway — a dev run configures no ecpTargets,
+	// and keepalive needs at least one to watch.
 	ecpTargets   map[string]ecp.Target
 	pollInterval time.Duration
 	discoveryOn  bool
@@ -227,8 +240,25 @@ func loadConfig(env func(string) string) (config, error) {
 		discoveryOn:  env("WAIVEO_RELAY_DISCOVERY") == "1" || env("WAIVEO_RELAY_DISCOVERY") == "true",
 		mdnsPatterns: parseMDNSPatterns(env("WAIVEO_RELAY_MDNS_PATTERNS")),
 		ssdpAnnounce: env("WAIVEO_RELAY_SSDP_ANNOUNCE") == "1" || env("WAIVEO_RELAY_SSDP_ANNOUNCE") == "true",
-		keepaliveOn:  env("WAIVEO_RELAY_KEEPALIVE") == "1" || env("WAIVEO_RELAY_KEEPALIVE") == "true",
+		keepaliveOn:  keepaliveEnabled(env("WAIVEO_RELAY_KEEPALIVE")),
 	}, nil
+}
+
+// keepaliveEnabled reads WAIVEO_RELAY_KEEPALIVE as an OPT-OUT: unset, or any
+// value other than an explicit off, leaves the screen keep-alive capability
+// running (see config.keepaliveOn's own doc for why the default flipped).
+//
+// Written as an explicit off-list rather than as `!= "0"` so a typo — the
+// classic `WAIVEO_RELAY_KEEPALIVE=disabled` — does not silently mean "on" for
+// an operator who plainly intended otherwise. The recognized off values are
+// the ones the rest of this file's flags already accept in their on form.
+func keepaliveEnabled(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "0", "false", "off", "no", "disabled":
+		return false
+	default:
+		return true
+	}
 }
 
 // parseMDNSPatterns parses "svc1,svc2" into the mdns package's Config.Patterns
@@ -783,12 +813,31 @@ func main() {
 	// while standby, never while the screen's own active Lease is blank) —
 	// see keepalive's own package doc for why this needs its OWN Poller
 	// rather than sharing the one host.Run above already exclusively
-	// consumes. Off by default (WAIVEO_RELAY_KEEPALIVE unset).
+	// consumes. ON by default (WAIVEO_RELAY_KEEPALIVE=0 disables it) — see
+	// config.keepaliveOn's own doc.
+	//
+	// keepaliveAdoption is declared out here, above the block, because two
+	// places need it: this wiring reads it on every poll, and the live
+	// re-pull path (rePuller, livepull.go) REFRESHES it on every applied
+	// generation. It stays nil when the capability is off, which is the
+	// signal the puller uses to skip refreshing a set nothing consults.
+	var keepaliveAdoption *keepalive.AdoptionSet
 	if cfg.keepaliveOn && len(cfg.ecpTargets) > 0 {
 		kaTargets := make(map[string]keepalive.Target, len(cfg.ecpTargets))
 		for entityID, t := range cfg.ecpTargets {
 			kaTargets[entityID] = keepalive.Target{Host: t.Host, Port: t.Port}
 		}
+
+		// The adoption gate, seeded from the generation this boot applied and
+		// refreshed by every later one. Seeding here rather than leaving it
+		// empty until the first live pull matters on the path this whole
+		// capability exists for: after a power cut the relay boots, applies
+		// its persisted or freshly-pulled generation, and the screens are
+		// already sitting at Home — waiting for a nudge that may be minutes
+		// away would be waiting through exactly the outage.
+		keepaliveAdoption = keepalive.NewAdoptionSet()
+		keepaliveAdoption.Apply(applied.Generation, applied.DeviceInventory)
+
 		ka := keepalive.New(keepalive.Config{
 			Targets:      kaTargets,
 			PollInterval: cfg.pollInterval,
@@ -827,6 +876,13 @@ func main() {
 			// both suppress recovery on a live screen and relaunch an
 			// intentionally blanked one.
 			ActiveDisplay: blankSuppressionReader(pairingSrv),
+			// The adoption gate (keepalive.AdoptionSet): reachability is not
+			// permission. This relay can reach every Roku on the LAN,
+			// including the ones the legacy stack is still watchdogging
+			// during coexistence, and two controllers re-launching one Roku
+			// makes it flap. Only entities the app peer's signed
+			// `device_inventory` marks adopted + enabled are driven.
+			Adopted: keepaliveAdoption.IsAdopted,
 		})
 		go func() {
 			if err := ka.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
@@ -981,6 +1037,7 @@ func main() {
 		nowFn:    func() int64 { return time.Now().UnixMilli() },
 		driver:   driver,
 		host:     host,
+		adoption: keepaliveAdoption,
 		lastGen:  applied.Generation,
 		lastHash: applied.Hash,
 	}

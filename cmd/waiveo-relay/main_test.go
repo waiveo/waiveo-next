@@ -33,6 +33,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/deviceplane"
 	"github.com/maaxton/waiveo-next/internal/relay/hello"
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
+	"github.com/maaxton/waiveo-next/internal/relay/keepalive"
 	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
 	"github.com/maaxton/waiveo-next/internal/relay/telemetry"
 	"github.com/maaxton/waiveo-next/internal/relay/telemetryhttp"
@@ -247,11 +248,46 @@ func TestLoadConfigDeviceDefaultsOff(t *testing.T) {
 	if cfg.ssdpAnnounce {
 		t.Error("ssdpAnnounce = true, want false by default (CI/dev loopback must not multicast)")
 	}
-	if cfg.keepaliveOn {
-		t.Error("keepaliveOn = true, want false by default (must not dispatch an unrequested launch)")
+	// keepaliveOn is the one device-plane flag that defaults ON — see
+	// config.keepaliveOn's own doc, and TestLoadConfigKeepaliveDefaultsOn
+	// below. It is inert here regardless: with no ecpTargets there is nothing
+	// to watch, which is what keeps dev/CI byte-identical.
+	if !cfg.keepaliveOn {
+		t.Error("keepaliveOn = false, want true by default (a screen stuck at Home must self-heal)")
 	}
 	if cfg.pollInterval != 5*time.Second {
 		t.Errorf("pollInterval = %s, want the 5s default", cfg.pollInterval)
+	}
+}
+
+// The screen keep-alive capability is an OPT-OUT, and the on/off decision is
+// pinned here because getting it wrong is invisible: a relay with the flag
+// silently off looks completely healthy right up until a screen sits at Home
+// for a weekend. The legacy stack ran its equivalent unconditionally, and
+// shipping this switched off reproduced the outage it exists to end.
+func TestLoadConfigKeepaliveDefaultsOnAndOptsOut(t *testing.T) {
+	for raw, want := range map[string]bool{
+		"":         true, // unset — the default that matters
+		"1":        true,
+		"true":     true,
+		"0":        false,
+		"false":    false,
+		"off":      false,
+		"no":       false,
+		"disabled": false,
+		"DISABLED": false, // case-insensitive: an operator's intent is not a spelling test
+		// A value that means nothing keeps the capability running rather than
+		// silently disabling self-healing on a typo.
+		"yes-please": true,
+	} {
+		env := map[string]string{"WAIVEO_RELAY_KEEPALIVE": raw}
+		cfg, err := loadConfig(func(k string) string { return env[k] })
+		if err != nil {
+			t.Fatalf("loadConfig(WAIVEO_RELAY_KEEPALIVE=%q): %v", raw, err)
+		}
+		if cfg.keepaliveOn != want {
+			t.Errorf("WAIVEO_RELAY_KEEPALIVE=%q → keepaliveOn = %v, want %v", raw, cfg.keepaliveOn, want)
+		}
 	}
 }
 
@@ -975,6 +1011,103 @@ func TestRePullSameGenerationIsNoOp(t *testing.T) {
 	lease := pairAndPull(t, srv, grantID)
 	if len(lease.Content) != 1 || lease.Content[0].AssetRef != rePullAssetB {
 		t.Fatalf("served content after a no-op = %+v, want unchanged asset %s", lease.Content, rePullAssetB)
+	}
+}
+
+// TestRePullRefreshesTheKeepaliveAdoptionGate pins the LIVE half of the screen
+// keep-alive adoption gate: an operator who adopts a screen this afternoon
+// gets it kept alive this afternoon.
+//
+// The failure this guards is quiet in the worst way. Adoption wired only at
+// boot leaves the relay serving the new generation's content perfectly while
+// refusing to re-launch the very screen the operator just adopted — no error,
+// no log, nothing to notice until that screen sits at Home. The inverse
+// matters just as much: a screen REMOVED from the inventory must stop being
+// driven live, because that is how a screen is handed back to the legacy
+// stack, and a relay that kept driving it is one half of the two-controller
+// flapping failure.
+func TestRePullRefreshesTheKeepaliveAdoptionGate(t *testing.T) {
+	driver, host, _, _, nowMs := newRePullFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const (
+		adoptedScreen = "screen.hanger"
+		laterScreen   = "screen.lobby"
+	)
+	inventoryWith := func(entityIDs ...string) wire.DeviceInventory {
+		inv := wire.DeviceInventory{Devices: []json.RawMessage{}, PackMatchPatterns: []json.RawMessage{}}
+		for _, id := range entityIDs {
+			raw, err := json.Marshal(wire.DeviceEntry{
+				DeviceID: "device." + id,
+				Driver:   "roku",
+				NativeID: id,
+				Entities: []wire.DeviceEntity{{EntityID: id, DeviceClass: "media-player", Enabled: true, Category: "primary"}},
+			})
+			if err != nil {
+				t.Fatalf("marshal device entry: %v", err)
+			}
+			inv.Devices = append(inv.Devices, raw)
+		}
+		return inv
+	}
+
+	appliedA := buildRePullContentApplied(t, 7, rePullAssetA)
+	appliedA.DeviceInventory = inventoryWith(adoptedScreen)
+	appliedB := buildRePullContentApplied(t, 8, rePullAssetB)
+	appliedB.DeviceInventory = inventoryWith(laterScreen)
+
+	adoption := keepalive.NewAdoptionSet()
+	adoption.Apply(appliedA.Generation, appliedA.DeviceInventory) // the boot seed main.go performs
+	driver.apply(ctx, appliedA, nowMs)
+
+	if !adoption.IsAdopted(adoptedScreen) {
+		t.Fatalf("the boot generation's adopted screen %q is not adopted", adoptedScreen)
+	}
+	if adoption.IsAdopted(laterScreen) {
+		t.Fatalf("%q is adopted before the generation that adopts it was applied", laterScreen)
+	}
+
+	puller := &rePuller{
+		pull:     func(int64) (desiredstate.Applied, error) { return appliedB, nil },
+		driver:   driver,
+		host:     host,
+		adoption: adoption,
+		nowFn:    func() int64 { return nowMs },
+		lastGen:  appliedA.Generation,
+	}
+	if applied := puller.tick(ctx); !applied {
+		t.Fatal("re-pull tick of a higher generation returned applied=false")
+	}
+
+	if !adoption.IsAdopted(laterScreen) {
+		t.Errorf("%q was adopted by the applied generation but the live path never refreshed the gate — it would stay un-driven until a restart", laterScreen)
+	}
+	if adoption.IsAdopted(adoptedScreen) {
+		t.Errorf("%q was dropped from the applied generation's inventory but is still driven — un-adoption must take effect live", adoptedScreen)
+	}
+}
+
+// A relay with keep-alive disabled has no adoption set at all, and the live
+// path must tolerate that rather than panic on the first applied generation.
+func TestRePullToleratesNoAdoptionSet(t *testing.T) {
+	driver, host, _, _, nowMs := newRePullFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	appliedA := buildRePullContentApplied(t, 7, rePullAssetA)
+	appliedB := buildRePullContentApplied(t, 8, rePullAssetB)
+	driver.apply(ctx, appliedA, nowMs)
+
+	puller := &rePuller{
+		pull:    func(int64) (desiredstate.Applied, error) { return appliedB, nil },
+		driver:  driver,
+		host:    host,
+		nowFn:   func() int64 { return nowMs },
+		lastGen: appliedA.Generation,
+	} // adoption deliberately nil
+	if applied := puller.tick(ctx); !applied {
+		t.Fatal("re-pull tick with no adoption set returned applied=false")
 	}
 }
 

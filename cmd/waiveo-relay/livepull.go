@@ -11,6 +11,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/automationhost"
 	"github.com/maaxton/waiveo-next/internal/relay/desiredstate"
 	"github.com/maaxton/waiveo-next/internal/relay/hello"
+	"github.com/maaxton/waiveo-next/internal/relay/keepalive"
 	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
 	"github.com/maaxton/waiveo-next/internal/relay/schedulehost"
 )
@@ -179,6 +180,19 @@ type rePuller struct {
 	driver *scheduleDriver
 	host   *automationhost.Host
 
+	// adoption is the screen keep-alive capability's adoption gate
+	// (internal/relay/keepalive), refreshed from every applied generation's
+	// `device_inventory` (REL-063). nil when keep-alive is disabled — nothing
+	// consults the set then, and applying to it would only log.
+	//
+	// Refreshed HERE, not only at boot, for the same reason the served
+	// baseline is: adoption is an authored decision. An operator who adopts a
+	// screen this afternoon expects the relay to start keeping it alive this
+	// afternoon, and a boot-only set would leave that screen un-driven until
+	// the process next restarted — the exact staleness class this live-apply
+	// path exists to close.
+	adoption *keepalive.AdoptionSet
+
 	lastGen int64
 	// lastHash is the section hash of the last snapshot whose apply-time effects
 	// actually ran — REL-070's comparison value. Empty until the first apply,
@@ -273,6 +287,15 @@ func (p *rePuller) tick(ctx context.Context) bool {
 	// process's life — a screen needing a grant this live pull just carried
 	// would never see it become redeemable.
 	p.driver.srv.SetPairingGrants(applied.Generation, applied.PairingGrants)
+
+	// Refresh the screen keep-alive adoption gate from this SAME verified
+	// generation (see the field's own doc). Ordered after the serving state
+	// deliberately: adopting a screen is permission to DRIVE it, and driving
+	// it before this generation's program is installed would re-launch a
+	// channel into the previous generation's content.
+	if p.adoption != nil {
+		p.adoption.Apply(applied.Generation, applied.DeviceInventory)
+	}
 
 	if err := p.host.ApplyEdgeRules(applied.EdgeRules, int(applied.Generation)); err != nil {
 		// ApplyEdgeRules is fail-closed per rule (a bad rule is skipped, not fatal);

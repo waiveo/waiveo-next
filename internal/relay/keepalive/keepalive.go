@@ -8,9 +8,20 @@
 // corpus-validated decision function conformance/drivers/player1's own driver
 // already exercises for PLY-150-157 — rather than re-derived here a second,
 // independent way (evaluate calls it directly). On top of that shared
-// decision, this package layers three ADDITIONAL pieces of engineering
+// decision, this package layers four ADDITIONAL pieces of engineering
 // policy, paid for against real hardware, that the contract itself does NOT
 // require but that a real relay needs:
+//
+//  0. THE ADOPTION GATE (Config.Adopted, adoption.go). Nothing here fires for
+//     a screen this deployment has not adopted, whatever its device state.
+//     This is listed first because it is checked first and because it is the
+//     one gate that is about OWNERSHIP rather than timing: the target list is
+//     an addressing fact, adoption is the app peer's signed policy statement,
+//     and during coexistence with the legacy stack the two sets are
+//     deliberately different. It is fail-closed — an unwired Adopted adopts
+//     nothing — which is what makes it safe for this capability to be ON by
+//     default (cmd/waiveo-relay/main.go). See AdoptionSet's own doc for why
+//     driving an un-adopted screen is an active failure and not a redundancy.
 //
 //  1. POWER-ON DELAY SIZING (PLY-154 requires SOME bounded settle wait; this
 //     package picks and times one). When a screen transitions from a
@@ -262,6 +273,21 @@ type Config struct {
 	// device-state gates alone; PLY-155 has NO effect in a relay that leaves
 	// this unwired.
 	ActiveDisplay func(entityID string) string
+
+	// Adopted reports whether entityID is a screen this deployment has
+	// ADOPTED and may therefore drive — the gate that keeps this capability
+	// from re-launching a channel on a Roku that is still the legacy stack's
+	// to manage. In production it is AdoptionSet.IsAdopted, fed from the
+	// signed snapshot's `device_inventory` on every applied generation
+	// (cmd/waiveo-relay/main.go).
+	//
+	// REQUIRED, and fail-closed: nil means NO screen is adopted and evaluate
+	// never fires for anything. That is the opposite of every other optional
+	// field in this Config, and deliberately so — this capability is now on by
+	// default, so an unwired Adopted must mean "drive nothing", never "drive
+	// every reachable Roku". A test exercising the state machine alone opts in
+	// explicitly by supplying a func.
+	Adopted func(entityID string) bool
 }
 
 // pollSnapshot is keepalive's own cached view of one screen's two
@@ -296,6 +322,7 @@ type Keepalive struct {
 	channel       string
 	controller    deviceplane.DeviceController
 	activeDisplay func(entityID string) string
+	adopted       func(entityID string) bool
 
 	mu      sync.Mutex
 	known   map[string]pollSnapshot
@@ -337,6 +364,7 @@ func New(cfg Config) *Keepalive {
 		channel:       channel,
 		controller:    cfg.Controller,
 		activeDisplay: cfg.ActiveDisplay,
+		adopted:       cfg.Adopted,
 		known:         make(map[string]pollSnapshot, len(targets)),
 		screens:       make(map[string]*screenState, len(targets)),
 	}
@@ -496,6 +524,23 @@ func (k *Keepalive) evaluate(entityID, powerMode, appType string, now time.Time)
 	if !ok {
 		s = &screenState{}
 		k.screens[entityID] = s
+	}
+
+	if k.adopted == nil || !k.adopted(entityID) {
+		// The adoption gate (Config.Adopted, AdoptionSet's own doc): this
+		// relay can REACH this Roku — that is what put it in the target list —
+		// but reachability is not permission, and during coexistence the
+		// legacy stack is still watchdogging screens on this same LAN.
+		//
+		// Checked FIRST, before any state is folded in, and the screen's state
+		// is reset while it is un-adopted: a screen that is adopted mid-streak
+		// must start its confirmation fresh rather than fire immediately on
+		// progress accumulated while it was somebody else's to manage.
+		s.wasPoweredOn = false
+		s.poweredOnAt = time.Time{}
+		s.homeStreak = 0
+		s.launched = false
+		return false
 	}
 
 	if powerMode != poweredOnRawValue {

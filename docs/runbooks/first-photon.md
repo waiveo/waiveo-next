@@ -105,6 +105,12 @@ Sideload `player-v3` and launch the console-only self-check — no screen needed
 read the result from the debug console:
 
 ```
+# `make player-sideload` does the packaging + digest upload below for one
+# device or the whole fleet, reading the dev password from the dev-lab env file
+# (scripts/fleetsideload). Start with -dry-run:
+#   make player-sideload SIDELOAD_ARGS="-dry-run -devices dev=<dev-roku-ip>"
+#   make player-sideload SIDELOAD_ARGS="-devices dev=<dev-roku-ip>"
+# The by-hand equivalent, for reference:
 # zip MUST include testdata/ (the self-check reads pkg:/testdata golden vectors)
 cd player-v3 && zip -r /tmp/player-v3.zip manifest source components testdata
 # the form needs BOTH mysubmit and archive, or it 400s with "mysubmit Field Not Found"
@@ -135,7 +141,14 @@ the primitive, do not pair.
    over the authenticated web API —
    `PUT /api/extensions/slidecast/screens/<serial> {"watchdog_enabled": false}`
    (serial like `roku:X0290...`; reverse with `true` on rollback).
-2. Sideload `player-v3` to the screen.
+
+   The other half of that fight is closed on the new side too: the relay's own
+   screen keep-alive (`internal/relay/keepalive`) runs by default but acts ONLY
+   on entities the app peer's signed `device_inventory` marks adopted and
+   enabled. A Roku this relay can reach but has not adopted is never
+   re-launched by it, so step 4.1 and this gate cover the two directions of the
+   same flapping failure. Set `WAIVEO_RELAY_KEEPALIVE=0` to disable it outright.
+2. Sideload `player-v3` to the screen (`make player-sideload`, above).
 3. Hand it the pairing code from step 2:
    ```
    curl -d '' "http://<screen-ip>:8060/launch/dev?pairingCode=<CODE-FROM-RELAY-LOG>"
