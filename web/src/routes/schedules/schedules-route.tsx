@@ -18,13 +18,16 @@ import {
   collectPages,
   createApi,
   etagForRevision,
+  normalizePlaylistItem,
   updateWithReview,
+  type Cast,
   type Daypart,
   type DaypartCreate,
   type DaypartUpdate,
   type FieldErrors,
   type Playlist,
   type PlaylistCreate,
+  type PlaylistItem,
   type PlaylistUpdate,
   type Schedule,
   type ScheduleCreate,
@@ -95,11 +98,22 @@ const messages: Record<string, string> = {
   "msg:pl.detail.empty": "Select a playlist to edit it, or add a new one.",
   "msg:pl.name": "Playlist name",
   "msg:pl.items.empty": "No items yet — add the content this playlist plays.",
+  "msg:pl.item.source": "Plays",
+  "msg:pl.item.source.asset": "An uploaded file",
+  "msg:pl.item.source.cast": "A cast (slides you authored)",
+  "msg:pl.item.source.playable": "Content from a pack",
   "msg:pl.item.ref": "Content reference",
   "msg:pl.item.refPh": "sha256:…",
+  "msg:pl.item.cast": "Cast",
+  "msg:pl.item.castPh": "Choose a cast",
+  "msg:pl.item.castNote":
+    "Every slide of the cast plays here, in the order the Studio shows them. Editing the cast changes every playlist that references it.",
+  "msg:pl.item.pack": "Pack id",
+  "msg:pl.item.content": "Content id",
   "msg:pl.item.dur": "Duration",
   "msg:pl.item.remove": "Remove item",
-  "msg:pl.item.add": "Add item",
+  "msg:pl.item.add": "Add a file",
+  "msg:pl.item.addCast": "Add a cast",
   "msg:pl.save": "Save playlist",
   "msg:pl.delete": "Delete playlist",
 };
@@ -669,6 +683,12 @@ function SchedulesSection({ client }: { client: WaiveoApi }) {
 
 function PlaylistsSection({ client }: { client: WaiveoApi }) {
   const [playlists, setPlaylists] = useState<Playlist[] | null>(null);
+  // The cast library, fed to the document as a `$context` collection so a
+  // playlist item can REFERENCE one. Without this the Studio is a dead end: an
+  // operator can author a cast and never put it on a screen, because a screen's
+  // program is resolved from dayparts → playlist → items and `cast` is the only
+  // item source that names one.
+  const [casts, setCasts] = useState<Cast[]>([]);
   const [scopeNodes, setScopeNodes] = useState<ScopeNode[]>([]);
   const [targetScopeId, setTargetScopeId] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
@@ -687,12 +707,14 @@ function PlaylistsSection({ client }: { client: WaiveoApi }) {
 
   const load = useCallback(async () => {
     try {
-      const [rows, scopeRows] = await Promise.all([
+      const [rows, scopeRows, castRows] = await Promise.all([
         collectPages<Playlist>((cursor) => client.playlists.list({ cursor })),
         collectPages<ScopeNode>((cursor) => client.scopeNodes.list({ cursor })),
+        collectPages<Cast>((cursor) => client.casts.list({ cursor })),
       ]);
       setPlaylists(rows);
       setScopeNodes(scopeRows);
+      setCasts(castRows);
       setLoadError(null);
     } catch (err) {
       setPlaylists([]);
@@ -757,7 +779,14 @@ function PlaylistsSection({ client }: { client: WaiveoApi }) {
         setFieldErrors({});
         setConflict(false);
         const r = resource as Playlist;
-        const patch: PlaylistUpdate = { name: r.name, items: Array.isArray(r.items) ? r.items : [] };
+        // Normalised per item: switching an item's source in the editor leaves
+        // the old source's members on the object (an asset flipped to a cast
+        // still carries `asset_ref: ""`), and the server validates an item
+        // against the source it declares.
+        const items = (Array.isArray(r.items) ? r.items : []).map((item) =>
+          normalizePlaylistItem(item as PlaylistItem),
+        );
+        const patch: PlaylistUpdate = { name: r.name, items };
         try {
           const outcome = await updateWithReview(client.playlists, meta.id, patch, etagForRevision(meta.revision));
           if (outcome.status === "conflict") {
@@ -848,7 +877,7 @@ function PlaylistsSection({ client }: { client: WaiveoApi }) {
           <PageRenderer
             key={version}
             doc={playlistDoc}
-            data={{ playlists }}
+            data={{ playlists, casts }}
             initialUi={{ selected: selectedId }}
             messages={messages}
             handler={handler}

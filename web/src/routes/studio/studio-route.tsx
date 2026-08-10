@@ -84,6 +84,22 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
   const problemsBySlide = useMemo(() => validateCastSlides(state.slides), [state.slides]);
   const slideProblems = problemsBySlide.get(state.slideIndex) ?? [];
 
+  // A PATCH of the slides array is ATOMIC: the server validates every slide and
+  // refuses the whole body if ONE of them will not draw (openapi CastSlide, then
+  // datamodel checkCastSlides → wire.ValidateAuthoredSlideLayers). So a Save
+  // offered while any slide is invalid is a button that discards an hour of work
+  // on nine good slides because of a tenth — reported as one opaque toast from
+  // the server, at the moment the operator was told the work was safe.
+  //
+  // New slides now land VALID (cast-model.newSlide), which removes the common
+  // way in; this gate is the other half, because validity can still be DESTROYED
+  // by ordinary editing — clearing a text layer, deleting the last layer, or
+  // inserting an image layer before choosing its bytes. The filmstrip already
+  // badges which slides, and the reason is stated next to the button rather than
+  // left as an inert control.
+  const invalidSlideCount = problemsBySlide.size;
+  const blocked = invalidSlideCount > 0;
+
   // ── Load ──────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!castId) return;
@@ -224,9 +240,9 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
                   server would refuse with a message about preconditions. */}
               <Button
                 icon={Save}
-                disabled={!state.dirty || saving || etag === null}
+                disabled={!state.dirty || saving || etag === null || blocked}
                 onClick={() => {
-                  if (etag !== null) void save(etag);
+                  if (etag !== null && !blocked) void save(etag);
                 }}
               >
                 {saving ? "Saving…" : state.dirty ? "Save changes" : "Saved"}
@@ -234,6 +250,15 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
             </>
           }
         />
+
+        {blocked ? (
+          <p role="status" className="text-sm text-[color:var(--wv-warn)]">
+            {invalidSlideCount === 1
+              ? "One slide won't draw yet, so saving is held: the server refuses the whole cast if any slide is invalid."
+              : `${invalidSlideCount} slides won't draw yet, so saving is held: the server refuses the whole cast if any slide is invalid.`}{" "}
+            The filmstrip marks them — open each and fix what the panel flags.
+          </p>
+        ) : null}
 
         <div className="max-w-sm">
           <FormField label="Cast name">
@@ -271,7 +296,16 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
               >
                 Load the current version (discards yours)
               </Button>
-              <Button variant="destructive" onClick={() => void save(conflict.etag)}>
+              {/* Same gate as Save: overwriting is still a PATCH of the whole
+                  slides array, so an invalid draft would lose the conflict
+                  review AND the write. */}
+              <Button
+                variant="destructive"
+                disabled={saving || blocked}
+                onClick={() => {
+                  if (!blocked) void save(conflict.etag);
+                }}
+              >
                 Overwrite with my version
               </Button>
             </div>

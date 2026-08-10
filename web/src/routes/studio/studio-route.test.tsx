@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from "vitest";
-import { render, screen, fireEvent, within } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
@@ -351,6 +351,46 @@ describe("Studio — moving and resizing on the canvas", () => {
   });
 });
 
+describe("Studio — the save gate", () => {
+  // The PATCH ships the WHOLE slides array and the server validates every
+  // member, so ONE undrawable slide loses the edits to all the others. The gate
+  // must therefore be on the DOCUMENT, not on the slide being looked at: an
+  // operator who broke slide 1, moved on, and polished slide 2 for an hour must
+  // not be allowed to press a button that discards both.
+  it("holds the save for a slide the operator is not even looking at, and says why", async () => {
+    const saved: { body?: SavedBody } = {};
+    const two = cast({
+      slides: [
+        { id: "slide-1", layers: [{ kind: "text", x: 0, y: 0, w: 600, h: 200, text: "Front", font_px: 96 }] },
+        { id: "slide-2", layers: [{ kind: "text", x: 0, y: 0, w: 600, h: 200, text: "Back", font_px: 96 }] },
+      ],
+    });
+    server.use(...serveCast(two, saved));
+    const user = userEvent.setup();
+    renderStudio();
+
+    // Break slide 1 by emptying its only text layer…
+    await user.click(await screen.findByRole("button", { name: /Layer 1: Text/ }));
+    await user.clear(screen.getByLabelText("Text"));
+    expect(saveButton()).toBeDisabled();
+    expect(screen.getByText(/one slide won't draw yet/i)).toBeInTheDocument();
+
+    // …then go and edit slide 2. The save is STILL held — the body would carry
+    // the broken slide 1 and be refused whole.
+    await user.click(screen.getByRole("button", { name: "Slide 2" }));
+    expect(saveButton()).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Slide 1 — needs attention" }));
+    await user.click(screen.getByRole("button", { name: /Layer 1: Text/ }));
+    await user.type(screen.getByLabelText("Text"), "Fixed");
+    await waitFor(() => expect(saveButton()).toBeEnabled());
+    expect(screen.queryByText(/won't draw yet/i)).toBeNull();
+
+    await user.click(saveButton());
+    expect((await waitForSave(saved)).slides?.[0]?.layers?.[0]?.text).toBe("Fixed");
+  });
+});
+
 describe("Studio — the image layer and the media picker", () => {
   it("picks an asset from the content origin and sets asset_ref AND url together", async () => {
     const saved: { body?: SavedBody } = {};
@@ -379,7 +419,14 @@ describe("Studio — the image layer and the media picker", () => {
     expect(layers[3]).toMatchObject({ kind: "image", asset_ref: "sha256:ff99", url: "/content/ff99" });
   });
 
-  it("clearing an image removes BOTH fields, never leaves a half-referenced layer", async () => {
+  // Clearing leaves an image layer naming no bytes, which the SERVER refuses at
+  // authoring time (wire.validateSlideLayers: "image: asset_ref is required")
+  // — and it refuses the whole cast, not that one slide. So the console holds
+  // the save and says why, instead of sending a body it knows will 422 and
+  // losing every other edit in the document with it. (That the patch removes
+  // BOTH keys rather than writing `undefined` is pinned on the model, in
+  // cast-model.test.ts, where it can be asserted without a save.)
+  it("holds the save after an image is cleared, rather than sending a cast the server refuses", async () => {
     const saved: { body?: SavedBody } = {};
     const withImage = cast({
       slides: [
@@ -389,17 +436,32 @@ describe("Studio — the image layer and the media picker", () => {
         },
       ],
     });
-    server.use(...serveCast(withImage, saved));
+    server.use(
+      ...serveCast(withImage, saved),
+      http.get("*/api/v1/content", () =>
+        HttpResponse.json({ content: [contentAsset({ asset_ref: "sha256:ff99", url: "/content/ff99" })] }),
+      ),
+    );
     const user = userEvent.setup();
     renderStudio();
 
     await user.click(await screen.findByRole("button", { name: /Layer 1: Image/ }));
     await user.click(screen.getByRole("button", { name: /clear/i }));
-    await user.click(saveButton());
 
+    expect(saveButton()).toBeDisabled();
+    expect(screen.getByText(/won't draw yet/i)).toBeInTheDocument();
+    // Held, not silently swallowed: nothing was sent.
+    expect(saved.body).toBeUndefined();
+
+    // …and choosing bytes again releases it, so the gate is a gate and not a
+    // dead end.
+    await user.click(screen.getByRole("button", { name: /choose image/i }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(await within(dialog).findByRole("button", { name: "Use sha256:ff99" }));
+    await waitFor(() => expect(saveButton()).toBeEnabled());
+    await user.click(saveButton());
     const layer = (await waitForSave(saved)).slides?.[0]?.layers?.[0] ?? {};
-    expect("asset_ref" in layer).toBe(false);
-    expect("url" in layer).toBe(false);
+    expect(layer).toMatchObject({ asset_ref: "sha256:ff99", url: "/content/ff99" });
   });
 });
 
@@ -412,17 +474,21 @@ describe("Studio — slides", () => {
     await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
 
     await user.click(screen.getByRole("button", { name: /add slide/i }));
-    // A brand-new slide has no layers, so it is legitimately flagged — the
-    // filmstrip says so in the very accessible name.
-    expect(screen.getByRole("button", { name: "Slide 2 — needs attention" })).toBeInTheDocument();
+    // A brand-new slide is DRAWABLE, so the filmstrip does not flag it and the
+    // save is not held: the operator can add a slide and keep working. (A
+    // zero-layer slide would have been flagged here — and would have made the
+    // save below fail for slide 1 as well, because the PATCH is atomic.)
+    expect(screen.getByRole("button", { name: "Slide 2" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Slide 2 — needs attention" })).toBeNull();
+    expect(saveButton()).toBeEnabled();
 
-    // The new (empty) slide is selected and the canvas follows it.
-    expect(screen.getByText(/this slide is empty/i)).toBeInTheDocument();
+    // The new slide is selected and the canvas follows it — onto its seeded text.
+    expect(screen.getByLabelText("Text")).toHaveValue("New text");
 
     await user.click(screen.getByRole("button", { name: "Move slide 2 earlier" }));
     await user.click(saveButton());
     let slides = (await waitForSave(saved)).slides ?? [];
-    expect(slides[0]?.layers).toHaveLength(0);
+    expect(slides[0]?.layers).toHaveLength(1);
     expect(slides[1]?.layers).toHaveLength(3);
 
     await user.click(screen.getByRole("button", { name: "Delete slide 1" }));

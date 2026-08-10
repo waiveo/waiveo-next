@@ -1,5 +1,6 @@
 {
   "pageType": "list-detail",
+  "context": { "casts": { "collection": "casts" } },
   "list": {
     "source": "playlists",
     "display": {
@@ -37,9 +38,57 @@
               "type": "section",
               "children": [
                 {
+                  "type": "select",
+                  "bind": "item.source",
+                  "props": {
+                    "labelMsg": "msg:pl.item.source",
+                    "options": {
+                      "kind": "literal",
+                      "items": [
+                        { "value": "asset", "labelMsg": "msg:pl.item.source.asset" },
+                        { "value": "cast", "labelMsg": "msg:pl.item.source.cast" },
+                        { "value": "playable", "labelMsg": "msg:pl.item.source.playable" }
+                      ]
+                    }
+                  }
+                },
+                {
                   "type": "text-input",
                   "bind": "item.asset_ref",
+                  "visibleIf": { "compute": "eq", "args": ["item.source", { "lit": "asset" }] },
                   "props": { "labelMsg": "msg:pl.item.ref", "placeholderMsg": "msg:pl.item.refPh" }
+                },
+                {
+                  "type": "select",
+                  "bind": "item.cast_id",
+                  "visibleIf": { "compute": "eq", "args": ["item.source", { "lit": "cast" }] },
+                  "props": {
+                    "labelMsg": "msg:pl.item.cast",
+                    "placeholderMsg": "msg:pl.item.castPh",
+                    "options": {
+                      "kind": "data",
+                      "source": "$context.casts",
+                      "valuePath": "id",
+                      "labelPath": "name"
+                    }
+                  }
+                },
+                {
+                  "type": "text",
+                  "visibleIf": { "compute": "eq", "args": ["item.source", { "lit": "cast" }] },
+                  "props": { "value": { "compute": "msg", "args": ["msg:pl.item.castNote"] } }
+                },
+                {
+                  "type": "text-input",
+                  "bind": "item.pack_id",
+                  "visibleIf": { "compute": "eq", "args": ["item.source", { "lit": "playable" }] },
+                  "props": { "labelMsg": "msg:pl.item.pack" }
+                },
+                {
+                  "type": "text-input",
+                  "bind": "item.content_id",
+                  "visibleIf": { "compute": "eq", "args": ["item.source", { "lit": "playable" }] },
+                  "props": { "labelMsg": "msg:pl.item.content" }
                 },
                 {
                   "type": "duration-input",
@@ -63,6 +112,17 @@
               "verb": "repeat-add",
               "target": "items",
               "itemDefault": { "source": "asset", "asset_ref": "", "duration_seconds": 10 }
+            }
+          }
+        },
+        {
+          "type": "button",
+          "props": { "labelMsg": "msg:pl.item.addCast" },
+          "on": {
+            "press": {
+              "verb": "repeat-add",
+              "target": "items",
+              "itemDefault": { "source": "cast", "cast_id": "", "duration_seconds": 10 }
             }
           }
         },

@@ -9,7 +9,7 @@ import scheduleDoc from "./schedule.uis.json";
 import daypartDoc from "./daypart.uis.json";
 import playlistDoc from "./playlist.uis.json";
 import { validatePage } from "@/renderer/validate";
-import { TRACE_ID, ULID_ROOT, scopeNode, ok, problem } from "@/api/test-support";
+import { TRACE_ID, ULID_A, ULID_ROOT, cast, scopeNode, ok, problem } from "@/api/test-support";
 
 // Schedules authors two DOGFOODED ui-schema collections (schedules + playlists as
 // list-detail documents) and a DOGFOODED daypart editor (a settings-form): each
@@ -116,12 +116,16 @@ function useLists(opts: {
   playlists?: () => unknown[];
   dayparts?: () => unknown[];
   scopeNodes?: () => unknown[];
+  casts?: () => unknown[];
 }) {
   server.use(
     http.get("*/api/v1/schedules", () => page(opts.schedules?.() ?? [])),
     http.get("*/api/v1/playlists", () => page(opts.playlists?.() ?? [])),
     http.get("*/api/v1/dayparts", () => page(opts.dayparts?.() ?? [])),
     http.get("*/api/v1/scope-nodes", () => page(opts.scopeNodes?.() ?? [])),
+    // The playlist editor offers a CAST as an item source, so the library it
+    // picks from is a fifth read every render of this route makes.
+    http.get("*/api/v1/casts", () => page(opts.casts?.() ?? [])),
   );
 }
 
@@ -172,6 +176,7 @@ describe("Schedules — the paginated list over api/1", () => {
       }),
       http.get("*/api/v1/playlists", () => page([])),
       http.get("*/api/v1/dayparts", () => page([])),
+      http.get("*/api/v1/casts", () => page([cast()])),
       http.get("*/api/v1/scope-nodes", () => page([site()])),
     );
     renderSchedules();
@@ -188,6 +193,7 @@ describe("Schedules — the paginated list over api/1", () => {
       http.get("*/api/v1/schedules", () => page(state.schedules)),
       http.get("*/api/v1/playlists", () => page([])),
       http.get("*/api/v1/dayparts", () => page([])),
+      http.get("*/api/v1/casts", () => page([cast()])),
       http.get("*/api/v1/scope-nodes", () => page([site()])),
       http.post("*/api/v1/schedules", async ({ request }) => {
         idempotencyKey = request.headers.get("Idempotency-Key");
@@ -222,6 +228,7 @@ describe("Schedules — the paginated list over api/1", () => {
       http.get("*/api/v1/schedules", () => page(state.schedules)),
       http.get("*/api/v1/playlists", () => page([])),
       http.get("*/api/v1/dayparts", () => page([])),
+      http.get("*/api/v1/casts", () => page([cast()])),
       http.get("*/api/v1/scope-nodes", () => page([site()])),
       http.patch("*/api/v1/schedules/:id", async ({ request }) => {
         ifMatch = request.headers.get("If-Match");
@@ -255,6 +262,7 @@ describe("Schedules — the paginated list over api/1", () => {
       http.get("*/api/v1/schedules", () => page(state.schedules)),
       http.get("*/api/v1/playlists", () => page([])),
       http.get("*/api/v1/dayparts", () => page([])),
+      http.get("*/api/v1/casts", () => page([cast()])),
       http.get("*/api/v1/scope-nodes", () => page([site()])),
       http.delete("*/api/v1/schedules/:id", ({ request }) => {
         ifMatch = request.headers.get("If-Match");
@@ -308,6 +316,7 @@ describe("Schedules — the daypart editor", () => {
       http.get("*/api/v1/schedules", () => page([schedule()])),
       http.get("*/api/v1/playlists", () => page([playlist()])),
       http.get("*/api/v1/dayparts", () => page(state.dayparts)),
+      http.get("*/api/v1/casts", () => page([cast()])),
       http.get("*/api/v1/scope-nodes", () => page([site()])),
       http.post("*/api/v1/dayparts", async ({ request }) => {
         idempotencyKey = request.headers.get("Idempotency-Key");
@@ -357,6 +366,7 @@ describe("Schedules — the daypart editor's conflict + validation UX", () => {
       http.get("*/api/v1/schedules", () => page([schedule()])),
       http.get("*/api/v1/playlists", () => page([playlist()])),
       http.get("*/api/v1/dayparts", () => page([daypart({ revision: 3 })])),
+      http.get("*/api/v1/casts", () => page([cast()])),
       http.get("*/api/v1/scope-nodes", () => page([site()])),
       http.get("*/api/v1/dayparts/:id", () => ok(changed, { revision: 9 })),
       http.patch("*/api/v1/dayparts/:id", () => {
@@ -387,6 +397,7 @@ describe("Schedules — the daypart editor's conflict + validation UX", () => {
       http.get("*/api/v1/schedules", () => page([schedule()])),
       http.get("*/api/v1/playlists", () => page([playlist()])),
       http.get("*/api/v1/dayparts", () => page([daypart({ revision: 3 })])),
+      http.get("*/api/v1/casts", () => page([cast()])),
       http.get("*/api/v1/scope-nodes", () => page([site()])),
       http.patch("*/api/v1/dayparts/:id", () => {
         patchCount += 1;
@@ -425,6 +436,7 @@ describe("Playlists — dogfooded management over api/1", () => {
       http.get("*/api/v1/schedules", () => page([])),
       http.get("*/api/v1/playlists", () => page(state.playlists)),
       http.get("*/api/v1/dayparts", () => page([])),
+      http.get("*/api/v1/casts", () => page([cast()])),
       http.get("*/api/v1/scope-nodes", () => page([site()])),
       http.post("*/api/v1/playlists", async ({ request }) => {
         idempotencyKey = request.headers.get("Idempotency-Key");
@@ -455,6 +467,7 @@ describe("Playlists — dogfooded management over api/1", () => {
       http.get("*/api/v1/schedules", () => page([])),
       http.get("*/api/v1/playlists", () => page(state.playlists)),
       http.get("*/api/v1/dayparts", () => page([])),
+      http.get("*/api/v1/casts", () => page([cast()])),
       http.get("*/api/v1/scope-nodes", () => page([site()])),
       http.patch("*/api/v1/playlists/:id", async ({ request }) => {
         ifMatch = request.headers.get("If-Match");
@@ -471,13 +484,91 @@ describe("Playlists — dogfooded management over api/1", () => {
     await screen.findByRole("table", { name: "Playlists" });
     await user.click(screen.getByText("Daytime loop").closest("tr") as HTMLElement);
 
-    await user.click(await screen.findByRole("button", { name: "Add item" }));
+    await user.click(await screen.findByRole("button", { name: "Add a file" }));
     // The added item's fields render (the repeat grew by one).
     expect(await screen.findByLabelText("Content reference")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Save playlist" }));
     await waitFor(() => expect(ifMatch).toBe('"2"'));
     expect(savedItemCount).toBe(1);
+  });
+
+  // THE path from the Studio to a TV. A screen's program is resolved from where
+  // the screen sits: daypart → playlist → items. `cast` is the only item source
+  // that names an authored cast, so without this control an operator can build a
+  // cast, validate it, save it — and never put a pixel of it on a screen.
+  it("puts an AUTHORED CAST on a playlist, by reference", async () => {
+    const state = { playlists: [playlist({ revision: 2 })] };
+    let body: { items?: Record<string, unknown>[] } | null = null;
+    server.use(
+      http.get("*/api/v1/schedules", () => page([])),
+      http.get("*/api/v1/playlists", () => page(state.playlists)),
+      http.get("*/api/v1/dayparts", () => page([])),
+      http.get("*/api/v1/scope-nodes", () => page([site()])),
+      http.get("*/api/v1/casts", () => page([cast({ name: "Lobby loop" })])),
+      http.patch("*/api/v1/playlists/:id", async ({ request }) => {
+        body = (await request.json()) as { items?: Record<string, unknown>[] };
+        const updated = playlist({ items: body.items ?? [], revision: 3 });
+        state.playlists = [updated];
+        return ok(updated, { revision: 3 });
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderSchedules();
+    await screen.findByRole("table", { name: "Playlists" });
+    await user.click(screen.getByText("Daytime loop").closest("tr") as HTMLElement);
+
+    await user.click(await screen.findByRole("button", { name: "Add a cast" }));
+    // The cast library is offered BY NAME — an operator picks "Lobby loop", not
+    // a ULID they would have to copy out of another page.
+    const picker = (await screen.findByLabelText("Cast")) as HTMLSelectElement;
+    await waitFor(() => expect(within(picker).getByRole("option", { name: "Lobby loop" })).toBeInTheDocument());
+    await user.selectOptions(picker, ULID_A);
+    // One playlist item, several played items: the editor says so, because a
+    // count of "1 item" that plays for five minutes is otherwise a surprise.
+    expect(screen.getByText(/every slide of the cast plays here/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Save playlist" }));
+    await waitFor(() => expect(body).not.toBeNull());
+    // A REFERENCE, not an inlined copy: editing the cast has to change every
+    // playlist that plays it (DAT-043), which a copy could never do.
+    expect(body!.items).toEqual([{ source: "cast", cast_id: ULID_A, duration_seconds: 10 }]);
+  });
+
+  it("drops the previous source's fields when an item is switched to a cast", async () => {
+    const state = { playlists: [playlist({ revision: 2 })] };
+    let body: { items?: Record<string, unknown>[] } | null = null;
+    server.use(
+      http.get("*/api/v1/schedules", () => page([])),
+      http.get("*/api/v1/playlists", () => page(state.playlists)),
+      http.get("*/api/v1/dayparts", () => page([])),
+      http.get("*/api/v1/scope-nodes", () => page([site()])),
+      http.get("*/api/v1/casts", () => page([cast()])),
+      http.patch("*/api/v1/playlists/:id", async ({ request }) => {
+        body = (await request.json()) as { items?: Record<string, unknown>[] };
+        return ok(playlist({ items: body.items ?? [], revision: 3 }), { revision: 3 });
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderSchedules();
+    await screen.findByRole("table", { name: "Playlists" });
+    await user.click(screen.getByText("Daytime loop").closest("tr") as HTMLElement);
+
+    // Start as a file item, then change the operator's mind.
+    await user.click(await screen.findByRole("button", { name: "Add a file" }));
+    await user.type(await screen.findByLabelText("Content reference"), "sha256:aa11");
+    await user.selectOptions(screen.getByLabelText("Plays"), "cast");
+    await user.selectOptions(await screen.findByLabelText("Cast"), ULID_A);
+    // The asset field is gone from the form, so it must be gone from the body:
+    // `asset_ref` is reference-checked against the content origin, and a
+    // leftover is a claim about content this entry no longer plays.
+    expect(screen.queryByLabelText("Content reference")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Save playlist" }));
+    await waitFor(() => expect(body).not.toBeNull());
+    expect(body!.items).toEqual([{ source: "cast", cast_id: ULID_A, duration_seconds: 10 }]);
   });
 });
 

@@ -64,6 +64,58 @@ describe("DataTable", () => {
     expect(screen.getByRole("button", { name: "Edit The Hangar TV" })).toBeInTheDocument();
   });
 
+  // A row action is nested inside the pressable row, so the row's own onClick is
+  // an ancestor of the button's. Without a guard in the actions cell, pressing
+  // "Adopt" also presses the ROW — an invisible state change the operator never
+  // asked for (the Devices page silently re-filtered its entities table).
+  it("does not press the row when a row ACTION is clicked", async () => {
+    const user = userEvent.setup();
+    const pressed: string[] = [];
+    const acted: string[] = [];
+    render(
+      <DataTable
+        columns={columns}
+        data={rows}
+        label="Screens"
+        onRowPress={(row) => pressed.push(row.name)}
+        rowActions={(row) => (
+          <button type="button" onClick={() => acted.push(row.name)}>{`Adopt ${row.name}`}</button>
+        )}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Adopt Cafe Board" }));
+    expect(acted).toEqual(["Cafe Board"]);
+    expect(pressed).toEqual([]);
+
+    // …and the row itself is still pressable, so the guard is scoped to the
+    // actions cell rather than disabling row press outright.
+    await user.click(screen.getByText("Cafe Board"));
+    expect(pressed).toEqual(["Cafe Board"]);
+  });
+
+  it("does not press the row when a row action is activated from the KEYBOARD", async () => {
+    const user = userEvent.setup();
+    const pressed: string[] = [];
+    const acted: string[] = [];
+    render(
+      <DataTable
+        columns={columns}
+        data={rows}
+        label="Screens"
+        onRowPress={(row) => pressed.push(row.name)}
+        rowActions={(row) => (
+          <button type="button" onClick={() => acted.push(row.name)}>{`Adopt ${row.name}`}</button>
+        )}
+      />,
+    );
+
+    screen.getByRole("button", { name: "Adopt Cafe Board" }).focus();
+    await user.keyboard("{Enter}");
+    expect(acted).toEqual(["Cafe Board"]);
+    expect(pressed).toEqual([]);
+  });
+
   it("sets numeric cells in the mono tabular face", () => {
     render(<DataTable columns={columns} data={rows} label="Screens" />);
     const cell = screen.getByText("3").closest("td")!;

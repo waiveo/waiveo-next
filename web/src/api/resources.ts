@@ -52,13 +52,60 @@ export type PairingCodeResult = components["schemas"]["PairingCodeResult"];
 
 // ── Scheduling-core Wire shapes (data-model/1; not yet in the OpenAPI) ───────
 
-/** A playlist item (DAT-041): `asset` (asset_ref present) or `playable` (pack). */
+/** Which content shape one playlist entry carries (DAT-041). `asset` names
+ * content-addressed bytes, `playable` names a pack's content, and `cast` names
+ * an AUTHORED cast row by id — the source that makes the Studio reach a TV.
+ *
+ * A `cast` entry is the one source that is not one-to-one with a played item:
+ * at projection time it expands into one slide content item per slide of the
+ * referenced cast, in authored order (internal/feeder/snapshot and
+ * internal/relay/schedulehost both do this), which is exactly why the reference
+ * is by id and not an inlined copy — editing the cast changes every screen
+ * playing it. */
+export const PLAYLIST_ITEM_SOURCES = ["asset", "playable", "cast"] as const;
+export type PlaylistItemSource = (typeof PLAYLIST_ITEM_SOURCES)[number];
+
+/** A playlist item (DAT-041): `asset` (asset_ref), `playable` (pack_id +
+ * content_id) or `cast` (cast_id). */
 export interface PlaylistItem {
-  source: "asset" | "playable";
+  source: PlaylistItemSource;
   asset_ref?: string;
   pack_id?: string;
   content_id?: string;
+  cast_id?: string;
   duration_seconds?: number;
+}
+
+/** The members that belong to each `source`, and nothing else. */
+const ITEM_FIELDS_BY_SOURCE: Record<PlaylistItemSource, readonly (keyof PlaylistItem)[]> = {
+  asset: ["asset_ref"],
+  playable: ["pack_id", "content_id"],
+  cast: ["cast_id"],
+};
+
+/**
+ * Drop the members that do not belong to an item's `source` before it is sent.
+ *
+ * An editor that lets an operator SWITCH an item's source leaves the previous
+ * source's members behind on the object — flip an asset item to a cast and it
+ * still carries `asset_ref: ""`. That matters twice over: the server validates
+ * an item against its declared source, and `asset_ref` in particular is
+ * reference-checked against the content origin (`validatePlaylistAssets`), so a
+ * leftover from a source the item no longer declares is a stale claim about
+ * content this entry does not play.
+ *
+ * Lives here, beside the type, rather than in the one page that edits playlists
+ * today: any surface that writes an item has the same obligation, and a second
+ * copy of this list is how the two drift.
+ */
+export function normalizePlaylistItem(item: PlaylistItem): PlaylistItem {
+  const out: PlaylistItem = { source: item.source };
+  for (const field of ITEM_FIELDS_BY_SOURCE[item.source] ?? []) {
+    const value = item[field];
+    if (value !== undefined) Object.assign(out, { [field]: value });
+  }
+  if (item.duration_seconds !== undefined) out.duration_seconds = item.duration_seconds;
+  return out;
 }
 
 export interface Playlist {
