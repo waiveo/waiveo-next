@@ -76,3 +76,41 @@ func (srv *server) uploadContentExec(w http.ResponseWriter, r *http.Request, bod
 		"url":       srv.contentBase + "/content/" + hexDigest,
 	})
 }
+
+// contentEntry is one row of the content-origin listing: the same
+// {asset_ref, url} an upload returns, plus the size and store time a media
+// browser needs to show and sort the library. It is deliberately the upload
+// response shape widened, not a new vocabulary — an authoring UI pastes an
+// asset_ref from either surface interchangeably.
+type contentEntry struct {
+	AssetRef  string `json:"asset_ref"`
+	URL       string `json:"url"`
+	SizeBytes int64  `json:"size_bytes"`
+	StoredAt  int64  `json:"stored_at"`
+}
+
+// listContent handles GET /api/v1/content: the content-origin's own listing.
+//
+// Upload was write-only — a client that did not keep the asset_ref an upload
+// returned had no way to rediscover it, so an authoring surface could reference
+// bytes only within the session that uploaded them. This is the read half: every
+// asset the origin currently serves, so a media browser can show the library and
+// an editor's image picker can offer it.
+//
+// It reads the SAME origin.Store the feeder serves GET /content/<hex> from, so
+// the listing and the servable bytes cannot disagree — an entry here is fetchable
+// now, and a swept asset is absent from both. Entries are digest-ordered
+// (origin.Store.Entries), a stable order independent of upload time.
+func (srv *server) listContent(w http.ResponseWriter, r *http.Request) {
+	entries := srv.content.Entries()
+	out := make([]contentEntry, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, contentEntry{
+			AssetRef:  "sha256:" + e.HexDigest,
+			URL:       srv.contentBase + "/content/" + e.HexDigest,
+			SizeBytes: int64(e.SizeBytes),
+			StoredAt:  e.StoredAtMs,
+		})
+	}
+	writeJSONValue(w, http.StatusOK, map[string]any{"content": out})
+}

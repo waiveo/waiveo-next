@@ -177,3 +177,83 @@ func (e *testEnv) uploadContent(t *testing.T, asset []byte) contentUploadRespons
 	}
 	return out
 }
+
+// contentListResponse is the GET /api/v1/content body: every asset the origin
+// currently serves, each carrying the same asset_ref/url an upload returns plus
+// the size and store time a media browser sorts on.
+type contentListResponse struct {
+	Content []struct {
+		AssetRef  string `json:"asset_ref"`
+		URL       string `json:"url"`
+		SizeBytes int64  `json:"size_bytes"`
+		StoredAt  int64  `json:"stored_at"`
+	} `json:"content"`
+}
+
+// TestContentListReturnsUploadedAssets proves the read half of the content
+// pipeline: GET /api/v1/content is empty on a fresh box, and after uploads it
+// returns each asset with the SAME asset_ref/url the upload minted (so an
+// authoring surface can rediscover bytes it did not keep the ref for) plus a
+// correct size. Without this, upload was write-only and the media library was
+// only ever the current session's own uploads.
+func TestContentListReturnsUploadedAssets(t *testing.T) {
+	e := newEnv(t)
+
+	// Empty on a fresh box.
+	resp, raw := e.do(t, http.MethodGet, "/api/v1/content", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list status = %d, want 200 (body %s)", resp.StatusCode, raw)
+	}
+	var empty contentListResponse
+	if err := json.Unmarshal(raw, &empty); err != nil {
+		t.Fatalf("decode empty list: %v (body %s)", err, raw)
+	}
+	if len(empty.Content) != 0 {
+		t.Fatalf("fresh box listed %d asset(s), want 0", len(empty.Content))
+	}
+
+	assets := [][]byte{
+		[]byte("first asset — a slide background"),
+		[]byte("second asset \x00\x01 the quick brown fox jumps"),
+	}
+	want := map[string]int64{} // asset_ref -> size
+	for _, a := range assets {
+		up, upRaw := e.do(t, http.MethodPost, "/api/v1/content", a, nil)
+		if up.StatusCode != http.StatusCreated {
+			t.Fatalf("upload status = %d, want 201 (body %s)", up.StatusCode, upRaw)
+		}
+		want[signhash.ContentID(a)] = int64(len(a))
+	}
+
+	resp, raw = e.do(t, http.MethodGet, "/api/v1/content", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list status = %d, want 200 (body %s)", resp.StatusCode, raw)
+	}
+	var got contentListResponse
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("decode list: %v (body %s)", err, raw)
+	}
+	if len(got.Content) != len(assets) {
+		t.Fatalf("listed %d asset(s), want %d", len(got.Content), len(assets))
+	}
+	for _, row := range got.Content {
+		wantSize, ok := want[row.AssetRef]
+		if !ok {
+			t.Fatalf("listed an unexpected asset_ref %q", row.AssetRef)
+		}
+		if row.SizeBytes != wantSize {
+			t.Fatalf("asset %q size = %d, want %d", row.AssetRef, row.SizeBytes, wantSize)
+		}
+		wantHex := strings.TrimPrefix(row.AssetRef, "sha256:")
+		if row.URL != e.contentBase+"/content/"+wantHex {
+			t.Fatalf("asset %q url = %q, want %q", row.AssetRef, row.URL, e.contentBase+"/content/"+wantHex)
+		}
+		if row.StoredAt == 0 {
+			t.Fatalf("asset %q stored_at is zero", row.AssetRef)
+		}
+		delete(want, row.AssetRef)
+	}
+	if len(want) != 0 {
+		t.Fatalf("%d uploaded asset(s) missing from the listing", len(want))
+	}
+}

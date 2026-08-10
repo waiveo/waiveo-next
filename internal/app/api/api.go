@@ -335,6 +335,7 @@ func (srv *server) mountAll(rt, rootRT *router, authHandlers *auth.Handlers) {
 	// two-segment per-row action shape `{id}/run` has.
 	rt.HandleFunc("POST "+apiPrefix+"/screens/{screen_id}/pairing-code", srv.issuePairingCode)
 	rt.HandleFunc("POST "+apiPrefix+"/content", srv.uploadContent)
+	rt.HandleFunc("GET "+apiPrefix+"/content", srv.listContent)
 	// The read half of the async convention: a Job returned by 202 is polled
 	// here until its state is terminal (API-112, openapi getJob). It is not a
 	// resourceConfig mount — a Job carries no revision to condition a write on,

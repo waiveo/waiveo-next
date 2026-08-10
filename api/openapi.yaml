@@ -2000,6 +2000,23 @@ paths:
         "428":
           $ref: "#/components/responses/PreconditionRequired"
   /content:
+    get:
+      operationId: listContent
+      summary: List the assets in the content origin
+      description: >-
+        Every asset the content origin currently serves, each carrying the same
+        `{asset_ref, url}` an upload returns plus `size_bytes` and `stored_at`.
+        Upload is otherwise write-only, so an authoring surface that did not keep
+        an upload's `asset_ref` has no other way to rediscover it; this is the
+        read half a media browser and an editor's image picker resolve against.
+      tags: [content]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The content origin's current listing. Shape stub — the response schema is a later minor.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
     post:
       operationId: uploadContent
       summary: Upload an asset to the content origin
