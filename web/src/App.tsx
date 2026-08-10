@@ -6,6 +6,7 @@ import LoginRoute from "@/routes/login/login-route";
 import SetupRoute from "@/routes/setup/setup-route";
 import OverviewRoute from "@/routes/overview/overview-route";
 import ScreensRoute from "@/routes/screens/screens-route";
+import DevicesRoute from "@/routes/devices/devices-route";
 import SchedulesRoute from "@/routes/schedules/schedules-route";
 import ContentRoute from "@/routes/content/content-route";
 import AutomationsRoute from "@/routes/automations/automations-route";
@@ -55,6 +56,11 @@ export default function App() {
           >
             <Route path="/" element={<OverviewRoute />} />
             <Route path="/screens" element={<ScreensRoute />} />
+            {/* The device plane: what the relays have discovered, what has been
+                adopted, and the virtual remote. Distinct from /screens, which
+                is about displays content is scheduled against — a device is a
+                separate row with a separate owner (the relay). */}
+            <Route path="/devices" element={<DevicesRoute />} />
             <Route path="/schedules" element={<SchedulesRoute />} />
             <Route path="/content" element={<ContentRoute />} />
             <Route path="/automations" element={<AutomationsRoute />} />

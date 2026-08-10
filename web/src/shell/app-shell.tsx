@@ -14,6 +14,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Puzzle,
+  Radio,
   Workflow,
   type LucideIcon,
 } from "lucide-react";
@@ -49,6 +50,7 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
   { to: "/screens", label: "Screens", icon: MonitorPlay },
+  { to: "/devices", label: "Devices", icon: Radio },
   { to: "/schedules", label: "Schedules", icon: CalendarClock },
   { to: "/content", label: "Content", icon: Images },
   { to: "/automations", label: "Automations", icon: Workflow },

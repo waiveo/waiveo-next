@@ -56,9 +56,9 @@ describe("Extensions nav", () => {
       "/p/acme/menu-board/settings",
     );
 
-    // The core Primary nav is untouched (the eight console destinations).
+    // The core Primary nav is untouched (the nine console destinations).
     const primary = screen.getAllByRole("navigation", { name: /primary/i })[0];
-    expect(within(primary).getAllByRole("link")).toHaveLength(8);
+    expect(within(primary).getAllByRole("link")).toHaveLength(9);
   });
 
   it("drops a page whose manifest path would traverse out of /p/{pack}/ — no nav landmark escapes the pack", async () => {
