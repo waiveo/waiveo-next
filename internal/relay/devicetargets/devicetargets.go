@@ -37,12 +37,9 @@ package devicetargets
 
 import (
 	"encoding/json"
-	"net"
-	"net/url"
-	"strconv"
-	"strings"
 	"sync"
 
+	"github.com/maaxton/waiveo-next/internal/relay/lanaddr"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
@@ -167,6 +164,19 @@ func (r *Registry) SetInventory(devices []json.RawMessage) int {
 // (SetInventory) AND currently locatable by this relay's discovery
 // (AddressSource), and an address that does not parse into a host resolves to
 // nothing rather than to a half-formed endpoint.
+//
+// A DISCOVERED address must additionally be one this relay may dial
+// (internal/relay/lanaddr). This is the last line before a dial and it is
+// checked here as well as where the address was parsed and where it was
+// stored, because this is the function whose answer becomes an HTTP request:
+// an address that reached the store through some lane added later, or through
+// a store this Registry did not build, still cannot make this relay talk to a
+// host off its own network.
+//
+// The OVERRIDE is deliberately exempt. It is not a value anything observed —
+// an operator typed it into this relay's own configuration, which is the same
+// authority that decides what this process may do at all, and it exists
+// precisely for the addresses discovery structurally cannot serve.
 func (r *Registry) Target(entityID string) (Endpoint, bool) {
 	r.mu.Lock()
 	if ep, ok := r.overrides[entityID]; ok {
@@ -184,7 +194,11 @@ func (r *Registry) Target(entityID string) (Endpoint, bool) {
 	if !ok {
 		return Endpoint{}, false
 	}
-	return ParseEndpoint(addr)
+	ep, ok := ParseEndpoint(addr)
+	if !ok || !lanaddr.Host(ep.Host) {
+		return Endpoint{}, false
+	}
+	return ep, true
 }
 
 // Targets is the whole currently drivable set, entity_id → Endpoint: every
@@ -251,41 +265,16 @@ func (r *Registry) ResolveEntity(entityID string) (deviceID, deviceClass string,
 //
 // It reports ok=false for anything with no host at all, so an unparseable
 // address fails closed at resolution rather than producing a request to "http://:8060".
+//
+// The reading itself lives in internal/relay/lanaddr, beside the policy that
+// decides whether the host it yields may be dialed. Two parsers would be two
+// answers to "what host is this", and the whole point of the policy is that
+// the string that gets checked is the string that gets dialed. This function
+// applies no policy of its own — Target does, on the discovered path only.
 func ParseEndpoint(addr string) (Endpoint, bool) {
-	addr = strings.TrimSpace(addr)
-	if addr == "" {
+	host, port, ok := lanaddr.Split(addr)
+	if !ok {
 		return Endpoint{}, false
 	}
-
-	if strings.Contains(addr, "://") {
-		u, err := url.Parse(addr)
-		if err != nil || u.Hostname() == "" {
-			return Endpoint{}, false
-		}
-		port := 0
-		if p := u.Port(); p != "" {
-			n, err := strconv.Atoi(p)
-			if err != nil || n <= 0 {
-				return Endpoint{}, false
-			}
-			port = n
-		}
-		return Endpoint{Host: u.Hostname(), Port: port}, true
-	}
-
-	host, portStr, err := net.SplitHostPort(addr)
-	if err != nil {
-		// No port present: the whole string is the host. An IPv6 literal
-		// without brackets lands here too and is used as-is — net.JoinHostPort
-		// at dial time re-brackets it correctly.
-		return Endpoint{Host: strings.Trim(addr, "[]")}, true
-	}
-	if host == "" {
-		return Endpoint{}, false
-	}
-	n, err := strconv.Atoi(portStr)
-	if err != nil || n <= 0 {
-		return Endpoint{}, false
-	}
-	return Endpoint{Host: host, Port: n}, true
+	return Endpoint{Host: host, Port: port}, true
 }
