@@ -60,6 +60,20 @@ const (
 	// host that answers the search target but speaks no ECP — a non-Roku, or a
 	// spoofer — from drawing a probe on every single sighting.
 	identifyRetryAfter = 2 * time.Minute
+
+	// maxCachedIdentities bounds the identity cache, which is keyed by USN —
+	// a string chosen by whoever sent the packet, on a lane nothing
+	// authenticates. Unbounded, one LAN host emitting NOTIFYs with a fresh USN
+	// each time grows this map forever AND draws one outbound HTTP probe per
+	// new USN, because identityOf runs BEFORE Store.Observe and so is not
+	// covered by the candidate store's own cap.
+	//
+	// The value matches deviceplane's maxStoredCandidates deliberately: a USN
+	// maps to a candidate, so a cache larger than the store it feeds could only
+	// ever hold entries for devices the store has already refused, and a
+	// smaller one would starve real devices the store is still willing to hold.
+	// The admission RULE matches it too — see admitLocked.
+	maxCachedIdentities = 1024
 )
 
 // Identity is what an identification probe learned about the device at a
@@ -267,7 +281,8 @@ type Discoverer struct {
 	// is probed on first sight and then only after its entry ages out. Guarded
 	// because both lanes reach it concurrently: the sweep runs each pattern's
 	// search in its own goroutine, and go-ssdp delivers NOTIFYs from per-packet
-	// goroutines of its own.
+	// goroutines of its own. Bounded at maxCachedIdentities, because the key is
+	// attacker-chosen — see that constant and admitLocked.
 	idMu       sync.Mutex
 	identities map[string]identityEntry
 }
@@ -505,6 +520,17 @@ func (d *Discoverer) identityOf(ctx context.Context, usn, address string) Identi
 		}
 	}
 
+	// Nothing usable is cached, so this USN is about to cost an outbound HTTP
+	// request. Ask the cap first: a probe and a cache entry are the same
+	// admission decision, and gating only the WRITE would leave the request
+	// itself unbounded, which is the half that reaches the network.
+	d.idMu.Lock()
+	admitted := d.admitLocked(usn, now)
+	d.idMu.Unlock()
+	if !admitted {
+		return Identity{}
+	}
+
 	// Probed OUTSIDE the lock on purpose: this is network I/O against a device
 	// that may be wedged, and holding the cache mutex across it would stall
 	// every other lane's lookup — including sightings of devices that are
@@ -515,8 +541,49 @@ func (d *Discoverer) identityOf(ctx context.Context, usn, address string) Identi
 		id = Identity{}
 	}
 
+	// Re-asked rather than assumed: the cache was unlocked across the probe, so
+	// another lane may have filled the last slot meanwhile. Refusing to record
+	// the result costs one re-probe later; recording it past the cap is the
+	// unbounded growth this is here to stop.
 	d.idMu.Lock()
-	d.identities[usn] = identityEntry{address: address, atMs: now, ok: ok, id: id}
+	if d.admitLocked(usn, now) {
+		d.identities[usn] = identityEntry{address: address, atMs: now, ok: ok, id: id}
+	}
 	d.idMu.Unlock()
 	return id
+}
+
+// admitLocked reports whether this USN may occupy a cache slot at nowMs,
+// evicting entries that have nothing left to offer to make room. The caller
+// holds idMu.
+//
+// The rule is deviceplane.Store.Observe's, for the same reason: when the cache
+// is full, a USN already in it is always admitted and a NEW one is REFUSED
+// rather than displacing someone. Evicting the oldest would let a flood of
+// fresh USNs push out the real devices found first — turning a bounded cache
+// into an unbounded probe rate against the actual TVs, which is worse than the
+// growth it was meant to stop.
+//
+// The eviction it does perform costs nothing: an entry past its own freshness
+// window (identifyTTL for a success, identifyRetryAfter for a failure) would be
+// re-probed on its next sighting anyway, so dropping it discards no knowledge
+// and is what lets a relay that once saw a flood recover as those entries age
+// out, instead of staying full forever.
+func (d *Discoverer) admitLocked(usn string, nowMs int64) bool {
+	if _, known := d.identities[usn]; known {
+		return true
+	}
+	if len(d.identities) < maxCachedIdentities {
+		return true
+	}
+	for key, e := range d.identities {
+		window := identifyRetryAfter
+		if e.ok {
+			window = identifyTTL
+		}
+		if nowMs-e.atMs >= window.Milliseconds() {
+			delete(d.identities, key)
+		}
+	}
+	return len(d.identities) < maxCachedIdentities
 }
