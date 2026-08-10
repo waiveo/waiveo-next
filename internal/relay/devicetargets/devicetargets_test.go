@@ -323,3 +323,44 @@ func TestUnparseableAddressRefuses(t *testing.T) {
 		t.Fatalf("Target(ent-1) = %+v, ok for an address with no host", ep)
 	}
 }
+
+// TestDiscoveredAddressOffTheLANIsRefused: resolution is the last thing that
+// happens before a dial, so it re-asks the question the discovery lane and the
+// candidate store already asked — is this a host this relay may talk to at all?
+// A discovered address is the app peer's adoption decision joined to a value
+// that came off unauthenticated multicast; the join must not be able to produce
+// an HTTP request to a host of a spoofer's choosing (internal/relay/lanaddr).
+func TestDiscoveredAddressOffTheLANIsRefused(t *testing.T) {
+	for _, addr := range []string{
+		"http://attacker.example:8060/",
+		"http://93.184.216.34:8060/",
+		"http://169.254.169.254/",
+		"attacker.example:8060",
+	} {
+		addrs := fakeAddresses{}
+		addrs.put("roku-ecp", "uuid:roku:ecp:AA", addr)
+		r := New(nil, addrs)
+		r.SetInventory(inventory(t, rokuEntry("dev-1", "uuid:roku:ecp:AA", "ent-1", true)))
+
+		if ep, ok := r.Target("ent-1"); ok {
+			t.Errorf("Target(ent-1) = %+v for discovered address %q, want refused", ep, addr)
+		}
+		if got := len(r.Targets()); got != 0 {
+			t.Errorf("Targets() has %d entries for discovered address %q, want 0 — the poller must not poll it either", got, addr)
+		}
+	}
+}
+
+// TestAnOverrideIsNotSubjectToTheDialPolicy: the escape hatch stays an escape
+// hatch. An override is a fact an operator typed into this relay's own
+// configuration — the same authority that decides whether this process runs at
+// all — and it exists for exactly the addresses discovery cannot serve, which
+// on some sites means a name or a routed subnet.
+func TestAnOverrideIsNotSubjectToTheDialPolicy(t *testing.T) {
+	r := New(map[string]Endpoint{"ent-pinned": {Host: "roku-lobby.example.com", Port: 8060}}, fakeAddresses{})
+
+	ep, ok := r.Target("ent-pinned")
+	if !ok || ep.Host != "roku-lobby.example.com" {
+		t.Fatalf("Target(ent-pinned) = (%+v, %v), want the operator's stated host", ep, ok)
+	}
+}

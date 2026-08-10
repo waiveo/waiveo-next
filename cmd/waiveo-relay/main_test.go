@@ -230,9 +230,10 @@ func TestLoadConfigECPTargetsAndPolling(t *testing.T) {
 }
 
 func TestLoadConfigDeviceDefaultsOff(t *testing.T) {
-	// No hardware env → nil targets and the loopback stand-ins stay in. The
-	// ANNOUNCING/acting lanes stay off; the SSDP client sweep does not (see
-	// discoveryEnabled and TestDiscoveryDefaultsOnAndOptsOut).
+	// No hardware env → nil targets and the loopback stand-ins stay in, and
+	// NOTHING on this box touches the network: not the announcing lanes, and
+	// not the SSDP client sweep either. This is the plain `make dev` / CI shape
+	// (see discoveryEnabled and TestDiscoveryFollowsTheDeploymentPosture).
 	cfg, err := loadConfig(func(string) string { return "" })
 	if err != nil {
 		t.Fatalf("loadConfig(defaults): %v", err)
@@ -240,9 +241,9 @@ func TestLoadConfigDeviceDefaultsOff(t *testing.T) {
 	if cfg.ecpTargets != nil {
 		t.Errorf("ecpTargets = %v, want nil", cfg.ecpTargets)
 	}
-	if !cfg.discoveryOn {
-		t.Error("discoveryOn = false, want true by default — a signage appliance that cannot see its own TVs " +
-			"until an operator sets an environment variable ships broken")
+	if cfg.discoveryOn {
+		t.Error("discoveryOn = true for a loopback-bound relay, want false — CI and loopback dev runs must never " +
+			"multicast, and a relay no screen can reach has no fleet to discover")
 	}
 	if cfg.mdnsPatterns != nil {
 		t.Errorf("mdnsPatterns = %v, want nil by default (CI/dev loopback must not multicast)", cfg.mdnsPatterns)
@@ -262,37 +263,62 @@ func TestLoadConfigDeviceDefaultsOff(t *testing.T) {
 	}
 }
 
-// TestDiscoveryDefaultsOnAndOptsOut pins the SSDP client sweep's default (ON)
-// and the exact spellings that turn it off.
+// TestDiscoveryFollowsTheDeploymentPosture pins BOTH invariants the SSDP client
+// sweep has to satisfy at once, and they pull in opposite directions:
 //
-// Both halves matter. If the default silently flipped back to off, a fresh box
-// would discover nothing and the failure would look like "there are no devices"
-// rather than like a configuration gap. If the opt-out stopped working, a
-// deployment that must not sweep (a shared lab network, a conformance run) would
-// have no way to stop it.
-func TestDiscoveryDefaultsOnAndOptsOut(t *testing.T) {
-	on := []string{"", "1", "true", "yes", "anything-at-all", " "}
-	off := []string{"0", "false", "off", "no", "FALSE", " Off ", "disabled"}
+//   - A deployed appliance sweeps without being told to. Off-by-default meant a
+//     fresh box discovered nothing until somebody set an environment variable,
+//     and the failure looked like "there are no devices" rather than like a
+//     configuration gap.
+//   - CI and loopback dev runs never multicast. `make dev` on a laptop on an
+//     office LAN must not M-SEARCH strangers and then probe everything that
+//     answers.
+//
+// The listen address is what separates them, so the table below is keyed by it.
+// If either half regresses this is where it shows: a constant default cannot
+// satisfy both, and the previous attempt at "on by default" satisfied only the
+// first while deleting the second from the comment that carried it.
+func TestDiscoveryFollowsTheDeploymentPosture(t *testing.T) {
+	const lan = "0.0.0.0:7421"
+	const loopback = "127.0.0.1:7421"
 
-	for _, raw := range on {
-		env := map[string]string{"WAIVEO_RELAY_DISCOVERY": raw}
-		cfg, err := loadConfig(func(k string) string { return env[k] })
-		if err != nil {
-			t.Fatalf("loadConfig(WAIVEO_RELAY_DISCOVERY=%q): %v", raw, err)
-		}
-		if !cfg.discoveryOn {
-			t.Errorf("WAIVEO_RELAY_DISCOVERY=%q → discoveryOn false, want true (only an explicit off value disables it)", raw)
-		}
+	cases := []struct {
+		name   string
+		listen string
+		raw    string
+		want   bool
+	}{
+		// Unset: the posture decides.
+		{"deployed appliance, unset", lan, "", true},
+		{"deployed appliance on a LAN IP, unset", "192.168.50.12:7421", "", true},
+		{"loopback dev/CI, unset", loopback, "", false},
+		{"loopback by name, unset", "localhost:7421", "", false},
+		{"whitespace is not a value", loopback, "   ", false},
+		{"whitespace is not a value, LAN", lan, "   ", true},
+
+		// Stated: the operator decides, in both directions.
+		{"explicitly on from a laptop, sweeping a real LAN", loopback, "1", true},
+		{"explicitly on, any truthy spelling", loopback, "yes", true},
+		{"an unrecognized value is not an off value", loopback, "anything-at-all", true},
+		{"explicitly off on a deployed box", lan, "0", false},
+		{"off spellings, all of them", lan, "false", false},
+		{"off spellings, case-insensitive", lan, "FALSE", false},
+		{"off spellings, padded", lan, " Off ", false},
+		{"off spellings, no", lan, "no", false},
+		{"off spellings, disabled", lan, "disabled", false},
 	}
-	for _, raw := range off {
-		env := map[string]string{"WAIVEO_RELAY_DISCOVERY": raw}
-		cfg, err := loadConfig(func(k string) string { return env[k] })
-		if err != nil {
-			t.Fatalf("loadConfig(WAIVEO_RELAY_DISCOVERY=%q): %v", raw, err)
-		}
-		if cfg.discoveryOn {
-			t.Errorf("WAIVEO_RELAY_DISCOVERY=%q → discoveryOn true, want false", raw)
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := map[string]string{"WAIVEO_RELAY_LISTEN": tc.listen, "WAIVEO_RELAY_DISCOVERY": tc.raw}
+			cfg, err := loadConfig(func(k string) string { return env[k] })
+			if err != nil {
+				t.Fatalf("loadConfig: %v", err)
+			}
+			if cfg.discoveryOn != tc.want {
+				t.Errorf("listen=%q WAIVEO_RELAY_DISCOVERY=%q → discoveryOn = %v, want %v",
+					tc.listen, tc.raw, cfg.discoveryOn, tc.want)
+			}
+		})
 	}
 }
 

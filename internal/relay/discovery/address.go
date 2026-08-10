@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/maaxton/waiveo-next/internal/relay/lanaddr"
 )
 
 // address.go turns an SSDP response into somewhere the relay can actually DIAL.
@@ -30,10 +32,18 @@ import (
 //     declaration side supplies (Watch.DefaultPort).
 //
 // Both are attacker-influenced (anything on the LAN can answer a multicast
-// search), so both are parsed defensively and a value that does not resolve to
-// a dialable host/port pair yields no address at all rather than a guess. A
-// candidate with no address is still reported: the device WAS seen, and saying
-// "seen, not reachable" is honest where inventing a port is not.
+// search, and nothing authenticates a NOTIFY), so both are parsed defensively
+// and a value that does not resolve to a dialable host/port pair yields no
+// address at all rather than a guess. A candidate with no address is still
+// reported: the device WAS seen, and saying "seen, not reachable" is honest
+// where inventing a port is not.
+//
+// Parsing is only half of defensive. A perfectly well-formed
+// "http://attacker.example:80/" parses; the question that matters is whether
+// the relay may DIAL what it names, and that question is answered by
+// internal/relay/lanaddr for every lane at once (see joinIfSane). Both
+// functions below therefore refuse a syntactically valid address whose host is
+// a DNS name or is off this box's own network.
 
 // Default ports for the two URL schemes a LOCATION may omit a port from. A
 // LOCATION with any other scheme and no explicit port has no defensible default
@@ -64,6 +74,11 @@ const maxAddressBytes = 256
 //   - no host — "http:///desc.xml" names a path on nowhere;
 //   - a port that is not a number in 1-65535 — url.Parse accepts a port that
 //     dialing cannot;
+//   - a host this relay may not dial — a DNS name (including one smuggled past
+//     a plausible-looking prefix, "http://192.168.1.5@attacker.example/",
+//     whose actual host IS attacker.example), a globally routable address,
+//     link-local, multicast, broadcast, or the unspecified address. See
+//     internal/relay/lanaddr;
 //   - an authority over the byte cap — see maxAddressBytes.
 //
 // An IPv6 literal is returned bracketed (net.JoinHostPort's own doing), so the
@@ -125,8 +140,21 @@ func addressFromSource(from net.Addr, defaultPort int) (string, bool) {
 	return joinIfSane(host, defaultPort)
 }
 
-// joinIfSane renders host/port as an authority, refusing one over the byte cap.
+// joinIfSane renders host/port as an authority, refusing one this relay must
+// not dial and one over the byte cap.
+//
+// The host check is the load-bearing half and it is HERE, on the one line both
+// lanes pass through, rather than in each of them: LOCATION and the packet
+// source are two spellings of the same hostile input, and a policy applied to
+// one of them is a policy an attacker chooses the other spelling to avoid.
+// internal/relay/lanaddr states what "may dial" means and why — in short, an
+// IP literal on this box's own network, never a name and never a globally
+// routable address, so a spoofed sighting cannot aim this relay's HTTP client
+// at a host of the sender's choosing.
 func joinIfSane(host string, port int) (string, bool) {
+	if !lanaddr.Host(host) {
+		return "", false
+	}
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	if len(addr) > maxAddressBytes {
 		return "", false

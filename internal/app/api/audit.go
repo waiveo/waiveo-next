@@ -127,9 +127,10 @@ type auditRoute struct {
 	// created marks an operation whose subject does not exist until the handler
 	// has run: its id and placement come from the RESPONSE, not the path.
 	created bool
-	// entity marks POST /entities/{id}/commands, whose subject's placement lives
-	// in the device registry rather than the store.
-	entity bool
+	// registry names the device-registry family a subject's placement is read
+	// from, for the two families that are not store rows. The zero value means
+	// the subject is not a device-plane row.
+	registry registryFamily
 	// packID and collection identify a pack-collection row's subject, which is
 	// keyed by a (pack, collection, entity_id) triple rather than a store Kind.
 	packID     string
@@ -137,6 +138,20 @@ type auditRoute struct {
 	// packRow marks that triple as present.
 	packRow bool
 }
+
+// registryFamily names one of the two device-plane read families whose rows
+// carry a scope-node placement that lives in the device registry rather than in
+// the store. It is a small closed enum rather than a bool per family because
+// there are exactly two and a third would otherwise arrive as a third boolean
+// that auditSubjectNode's switch could silently not handle — which is the shape
+// of the defect this type was introduced to fix.
+type registryFamily string
+
+const (
+	registryNone     registryFamily = ""
+	registryEntities registryFamily = "entities"
+	registryDevices  registryFamily = "devices"
+)
 
 // auditMutations wraps next so every mutating request through it records one
 // `audit.event`. Non-mutating requests, and the excluded families documented at
@@ -279,7 +294,22 @@ func (srv *server) auditRouteOf(r *http.Request) (auditRoute, bool) {
 	// POST /entities/{id}/commands — a command dispatched at a physical device.
 	case family == "entities" && len(segs) == 3 && segs[2] == "commands":
 		return auditRoute{
-			action: "entities.command", resourceType: "entities", id: segs[1], entity: true,
+			action: "entities.command", resourceType: "entities", id: segs[1], registry: registryEntities,
+		}, true
+
+	// POST /devices/{id}/adopt — the one operation that puts a physical device
+	// under this platform's control and changes signed desired state. The path
+	// shape is read by the fallback below (an action POST on a family this file
+	// does not enumerate), so the only thing stated here is what the fallback
+	// structurally cannot know: WHERE the subject is placed. A device's
+	// placement lives in the device registry, not the store, and EVT-012's
+	// filing is what decides which operators see the record at all
+	// (EVT-120/123) — a record about a device at Site A that files at the
+	// deployment fallback is invisible to the Site A operator whose own fleet
+	// it changed.
+	case family == "devices" && len(segs) == 3 && segs[2] == "adopt":
+		return auditRoute{
+			action: "devices.adopt", resourceType: "devices", id: segs[1], registry: registryDevices,
 		}, true
 
 	case family == "packs":
@@ -291,11 +321,55 @@ func (srv *server) auditRouteOf(r *http.Request) (auditRoute, bool) {
 		return crudAuditRoute(r, cfg, segs)
 	}
 
-	return auditRoute{
-		action:       family + "." + auditVerbOf(r.Method),
-		resourceType: family,
-		id:           pathID(segs),
-	}, true
+	return unmountedAuditRoute(r, family, segs)
+}
+
+// unmountedAuditRoute derives the route for a mutating path whose family this
+// file does not enumerate and `mount` did not register — a device-plane action,
+// a future surface, anything.
+//
+// It reads the path STRUCTURALLY, by the same rules crudAuditRoute applies to a
+// mounted family, rather than falling back to "the method's CRUD verb plus the
+// last segment". That fallback is what recorded every adoption of every device
+// as `devices.create` against the literal target `devices:adopt`: pathID takes
+// the LAST segment, so the subject named was the verb and the act named was a
+// create. A route arriving without a thought for auditing should degrade to a
+// coarser record, which was the design; it must not degrade to a WRONG one,
+// where the id belongs to no resource and the verb describes something that did
+// not happen.
+//
+// It deliberately does not mark a create. Recovering a server-minted id from
+// the response is a per-family judgement (a Location header, an `id`, an
+// `asset_ref`), and guessing it for a family nothing here knows would put an
+// invented subject on the record — the same class of mistake, one layer along.
+func unmountedAuditRoute(r *http.Request, family string, segs []string) (auditRoute, bool) {
+	rt := auditRoute{resourceType: family}
+	switch {
+	// POST /<family> — a create against the collection.
+	case len(segs) == 1 && r.Method == http.MethodPost:
+		rt.action = family + "." + auditVerbCreate
+
+	// POST /<family>/<verb> — a collection-wide action; no single row is its
+	// subject, so the bare resource type stays the target.
+	case len(segs) == 2 && r.Method == http.MethodPost:
+		rt.action = family + "." + segs[1]
+
+	// PATCH|DELETE /<family>/{id} — a mutation of one row.
+	case len(segs) == 2:
+		rt.action = family + "." + auditVerbOf(r.Method)
+		rt.id = segs[1]
+
+	// POST /<family>/{id}/<verb> — a per-row action. This is the shape
+	// /devices/{id}/adopt has, and the one the old fallback read backwards.
+	case len(segs) == 3 && r.Method == http.MethodPost:
+		rt.action = family + "." + segs[2]
+		rt.id = segs[1]
+
+	default:
+		rt.action = family + "." + auditVerbOf(r.Method)
+		rt.id = pathID(segs)
+	}
+	return rt, true
 }
 
 // crudAuditRoute derives the route for one of the families mounted by
@@ -418,15 +492,25 @@ func (srv *server) auditSubjectNode(r *http.Request, rt auditRoute, id string) s
 		return ""
 	}
 	switch {
-	case rt.entity:
+	case rt.registry != registryNone:
 		if srv.devices == nil {
 			return ""
 		}
-		entity, found := srv.devices.Entity(id)
-		if !found {
-			return ""
+		switch rt.registry {
+		case registryEntities:
+			entity, found := srv.devices.Entity(id)
+			if !found {
+				return ""
+			}
+			return entity.ScopeNode
+		case registryDevices:
+			device, found := srv.devices.Device(id)
+			if !found {
+				return ""
+			}
+			return device.ScopeNode
 		}
-		return entity.ScopeNode
+		return ""
 
 	case rt.packRow:
 		row, found, err := srv.store.GetPackRow(r.Context(), rt.packID, rt.collection, id)

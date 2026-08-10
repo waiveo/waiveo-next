@@ -142,7 +142,8 @@ type config struct {
 	// # Which of these default on, and why they split the way they do
 	//
 	// TWO of the four default ON and are switched off explicitly:
-	// discoveryOn (WAIVEO_RELAY_DISCOVERY=0) and keepaliveOn
+	// discoveryOn (WAIVEO_RELAY_DISCOVERY=0, and only for a LAN-bound
+	// deployment — see discoveryEnabled) and keepaliveOn
 	// (WAIVEO_RELAY_KEEPALIVE=0). The other two — mdnsPatterns and
 	// ssdpAnnounce — default OFF and are switched on explicitly.
 	//
@@ -159,7 +160,13 @@ type config struct {
 	//     appliance that has to find the TVs it drives. Off by default meant a
 	//     fresh box discovered nothing at all until somebody knew to set an
 	//     environment variable — the appliance shipped unable to see its own
-	//     hardware, and the legacy system it replaces swept always-on.
+	//     hardware, and the legacy system it replaces swept always-on. It is
+	//     nonetheless bound by the SAME invariant as the two above: CI and
+	//     loopback dev runs must never multicast. Both hold at once because
+	//     the default is read off the LISTEN address rather than being a
+	//     constant — a loopback-bound relay serves no screen on any LAN and so
+	//     has no fleet to discover, and does not sweep. discoveryEnabled has
+	//     the full reasoning.
 	//   - keepaliveOn drives an ADOPTED screen back to its channel. A screen
 	//     sitting at Home is a screen showing nothing, and it stays that way
 	//     until somebody notices — which, on an unattended wall, is the next
@@ -172,9 +179,10 @@ type config struct {
 	//     relay that can reach a Roku the legacy stack still owns does nothing
 	//     to it.
 	//
-	// Dev/CI behavior is unchanged by either flip: a loopback dev run
-	// configures no ecpTargets, and keepalive needs at least one to watch,
-	// while a sweep that finds nothing configures nothing.
+	// Dev/CI behavior is unchanged by either flip: a loopback dev run does not
+	// sweep at all (discoveryEnabled), and with nothing discovered and no
+	// override configured the adoption gate is empty, so keepalive watches
+	// nothing.
 	ecpTargets   map[string]ecp.Target
 	pollInterval time.Duration
 	discoveryOn  bool
@@ -260,14 +268,15 @@ func loadConfig(env func(string) string) (config, error) {
 	if err != nil || pollMS <= 0 {
 		return config{}, fmt.Errorf("WAIVEO_RELAY_POLL_MS %q is not a positive integer", pollMSStr)
 	}
+	listen := envOr(env, "WAIVEO_RELAY_LISTEN", "127.0.0.1:7421")
 	return config{
-		listen:       envOr(env, "WAIVEO_RELAY_LISTEN", "127.0.0.1:7421"),
+		listen:       listen,
 		feederURL:    envOr(env, "WAIVEO_FEEDER_URL", "https://127.0.0.1:7420"),
 		pairHost:     envOr(env, "WAIVEO_RELAY_PAIR_HOST", "127.0.0.1"),
 		pairPort:     port,
 		ecpTargets:   targets,
 		pollInterval: time.Duration(pollMS) * time.Millisecond,
-		discoveryOn:  discoveryEnabled(env("WAIVEO_RELAY_DISCOVERY")),
+		discoveryOn:  discoveryEnabled(env("WAIVEO_RELAY_DISCOVERY"), listen),
 		mdnsPatterns: parseMDNSPatterns(env("WAIVEO_RELAY_MDNS_PATTERNS")),
 		ssdpAnnounce: env("WAIVEO_RELAY_SSDP_ANNOUNCE") == "1" || env("WAIVEO_RELAY_SSDP_ANNOUNCE") == "true",
 		keepaliveOn:  keepaliveEnabled(env("WAIVEO_RELAY_KEEPALIVE")),
@@ -301,10 +310,42 @@ func offValue(raw string) bool {
 	}
 }
 
-// discoveryEnabled reads WAIVEO_RELAY_DISCOVERY as an OPT-OUT: unset or
-// anything other than an explicit off value enables the SSDP client sweep
-// (see config.discoveryOn's own doc for why the default is on).
-func discoveryEnabled(raw string) bool {
+// discoveryEnabled decides whether this process sweeps, from
+// WAIVEO_RELAY_DISCOVERY and — when that says nothing — from the deployment
+// posture the listen address states.
+//
+// A STATED value wins in both directions: any explicit off value disables the
+// sweep anywhere, and any other explicit value enables it anywhere (including
+// on a loopback-bound run, which is how a developer deliberately sweeps a real
+// LAN from a laptop).
+//
+// UNSET is where the two invariants this function has to satisfy at once meet:
+//
+//   - A deployed appliance must sweep. Off-by-default meant a fresh box
+//     discovered nothing until somebody knew to set an environment variable —
+//     it shipped unable to see the TVs it exists to drive, while the legacy
+//     stack it replaces swept always-on.
+//   - CI and loopback dev runs must never multicast. `make dev` on a laptop
+//     on an office or café LAN must not M-SEARCH strangers and then HTTP-GET
+//     /query/device-info on everything that answers, and a CI runner must not
+//     either.
+//
+// The listen address separates them, and it is the honest discriminator rather
+// than a proxy for one: a relay bound to loopback is by construction serving
+// nothing but this machine — no screen on any LAN can reach it — so there is
+// no fleet for it to discover. A relay bound anywhere else is reachable by the
+// devices it is supposed to find.
+//
+// Deriving it from the binary's own configuration is deliberate, and is the
+// second half of this fix. The invariant previously lived in a
+// WAIVEO_RELAY_DISCOVERY=0 on one line of one make target, which is a guard
+// rail that protects exactly the one command someone remembered to edit; the
+// dev target it was supposed to protect had already lost it. A rule the
+// process enforces about itself cannot be left off a launcher.
+func discoveryEnabled(raw, listen string) bool {
+	if strings.TrimSpace(raw) == "" {
+		return !isLoopbackHost(hostOf(listen))
+	}
 	return !offValue(raw)
 }
 
@@ -872,65 +913,29 @@ func main() {
 	}()
 	log.Printf("waiveo-relay device polling live (every %s; targets follow the adopted set)", cfg.pollInterval)
 
-	// The state the poller derives is worth exactly as much as an operator's
-	// ability to see it. REL-110a gives each reported entity a `state` member
-	// "present only once the relay has observed one", and the whole chain behind
-	// it — candidate store, `device.candidates`, the app's entity registry, GET
-	// /api/v1/entities — was already built and permanently empty, because
-	// nothing ever wrote the relay's own observations into the store the report
-	// is built from. This loop is that write: it copies each polled entity's
-	// derived media-player state (which IS the answer to "what app is it on, is
-	// it powered" — ecppoll derives State from /query/active-app and
-	// /query/device-info) onto the candidate the id belongs to, so the next
-	// full-set report carries it upward.
-	go func() {
-		tick := time.NewTicker(cfg.pollInterval)
-		defer tick.Stop()
-		for {
-			select {
-			case <-rootCtx.Done():
-				return
-			case <-tick.C:
-				// Re-derive the target set as well. Adoption arrives on a
-				// generation apply, but the other half of the gate — whether
-				// this relay can LOCATE the adopted device — changes on
-				// discovery's own clock: a device adopted before it was ever
-				// swept for becomes drivable when the sweep finds it, and a
-				// device that took a new DHCP lease becomes drivable again at
-				// the new address. Neither event has a generation attached, so
-				// without this refresh an adopted screen would stay
-				// uncontrollable until the next authoring change.
-				poller.SetTargets(pollTargetsFor(deviceTargets))
-				for entityID, entity := range poller.Snapshot() {
-					candStore.SetEntityState(entityID, entity.State)
-				}
-			}
-		}
-	}()
-
 	// Screen keep-alive (internal/relay/keepalive, player/1 PLY-150-157): a
-	// second, independent ECP poller over the SAME cfg.ecpTargets that
-	// re-launches a screen's player channel once it safely idles at Home
-	// (power-on settle delay, ≥2-consecutive-poll Home confirmation, never
-	// while standby, never while the screen's own active Lease is blank) —
-	// see keepalive's own package doc for why this needs its OWN Poller
-	// rather than sharing the one host.Run above already exclusively
-	// consumes. ON by default (WAIVEO_RELAY_KEEPALIVE=0 disables it) — see
-	// config.keepaliveOn's own doc.
+	// second, independent ECP poller over the adopted set that re-launches a
+	// screen's player channel once it safely idles at Home (power-on settle
+	// delay, ≥2-consecutive-poll Home confirmation, never while standby, never
+	// while the screen's own active Lease is blank) — see keepalive's own
+	// package doc for why this needs its OWN Poller rather than sharing the one
+	// host.Run above already exclusively consumes. ON by default
+	// (WAIVEO_RELAY_KEEPALIVE=0 disables it) — see config.keepaliveOn's own doc.
 	//
-	// Its target set is deliberately still the explicit override map
-	// (cfg.ecpTargets) rather than the adoption gate's live set:
-	// keepalive.Config.Targets is fixed at construction, and a boot-time
-	// snapshot of the gate would be empty on the DISCOVERED path (no sweep has
-	// landed yet) — an adoption-following keep-alive needs keepalive itself to
-	// grow a SetTargets the way the state poller above just did. So the
-	// capability being on by default widens the set it WATCHES to nothing that
-	// was not already explicitly configured; what it does not do is leave the
-	// configured screens dark.
+	// Its target set is the ADOPTION GATE's, refreshed on every devicePlaneSync
+	// tick like the state poller's, and that is what makes the on-by-default
+	// flip mean anything. It used to be cfg.ecpTargets, fixed at construction —
+	// and cfg.ecpTargets is, since the device-control track, an out-of-band
+	// escape hatch rather than the normal path. So the capability was switched
+	// on in a deployment where the map it watched was empty: it self-healed
+	// nothing, silently, in exactly the power-cut scenario it was turned on for.
+	// It is started whenever the capability is on, with whatever the gate
+	// resolves at boot (possibly nothing), because the set it watches is now
+	// something that arrives later rather than something known here.
 	//
-	// That is also why the on-by-default flip is not the same decision as
-	// "drive whatever we can reach". Adoption is enforced separately, per
-	// dispatch, by the Adopted gate wired below.
+	// Widening what it WATCHES does not widen what it may drive: adoption is
+	// enforced separately, per dispatch, by the Adopted gate wired below, and
+	// the target set is itself already the adopted-and-locatable intersection.
 	//
 	// keepaliveAdoption is declared out here, above the block, because two
 	// places need it: this wiring reads it on every poll, and the live
@@ -938,10 +943,11 @@ func main() {
 	// generation. It stays nil when the capability is off, which is the
 	// signal the puller uses to skip refreshing a set nothing consults.
 	var keepaliveAdoption *keepalive.AdoptionSet
-	if cfg.keepaliveOn && len(cfg.ecpTargets) > 0 {
-		kaTargets := make(map[string]keepalive.Target, len(cfg.ecpTargets))
-		for entityID, t := range cfg.ecpTargets {
-			kaTargets[entityID] = keepalive.Target{Host: t.Host, Port: t.Port}
+	var keepaliveTargetSink keepaliveTargets
+	if cfg.keepaliveOn {
+		kaTargets := make(map[string]keepalive.Target)
+		for entityID, ep := range deviceTargets.Targets() {
+			kaTargets[entityID] = keepalive.Target{Host: ep.Host, Port: ep.Port}
 		}
 
 		// The adoption gate, seeded from the generation this boot applied and
@@ -1000,13 +1006,29 @@ func main() {
 			// `device_inventory` marks adopted + enabled are driven.
 			Adopted: keepaliveAdoption.IsAdopted,
 		})
+		keepaliveTargetSink = ka
 		go func() {
 			if err := ka.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
 				log.Printf("waiveo-relay: screen keep-alive ended: %v", err)
 			}
 		}()
-		log.Printf("waiveo-relay screen keep-alive live (%d target(s), every %s)", len(kaTargets), cfg.pollInterval)
+		log.Printf("waiveo-relay screen keep-alive live (%d target(s) at boot, following the adopted set, every %s)",
+			len(kaTargets), cfg.pollInterval)
 	}
+
+	// The periodic join across the device plane: re-derive the drivable set,
+	// re-point both pollers at it, and copy what the state poller has observed
+	// onto the candidates the device.candidates report is built from. It is a
+	// named unit (deviceplanesync.go) rather than a closure here because it is
+	// the sole mechanism behind two user-facing behaviours and, as a closure,
+	// could be deleted whole with every gate still green.
+	deviceSync := devicePlaneSync{
+		gate:      deviceTargets,
+		poller:    poller,
+		states:    candStore,
+		keepalive: keepaliveTargetSink,
+	}
+	go deviceSync.run(rootCtx, cfg.pollInterval)
 
 	// Discovery (REL-110/111): SSDP client sweep + mDNS listener each mint
 	// per-DEVICE candidates into ONE SHARED candidate store when both lanes

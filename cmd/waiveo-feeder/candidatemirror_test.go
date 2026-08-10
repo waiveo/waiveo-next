@@ -281,3 +281,69 @@ func mustMarshal(t *testing.T, v any) json.RawMessage {
 	}
 	return b
 }
+
+// TestRestoreDropsARevokedRelaysDevices is the offline half of revocation, and
+// it is the half the durable mirror broke. candidateMirror.Forget is driven by
+// the per-connection revocation watcher, so it fires only while the relay is
+// CONNECTED — and a relay is usually revoked precisely because it is not
+// (stolen, decommissioned, compromised). Before this check the rows survived
+// every restart and the revoked relay's devices came back in GET /devices,
+// still adoptable, forever.
+//
+// The rows are also DELETED, not merely skipped, so the next boot has nothing
+// left to re-decide.
+func TestRestoreDropsARevokedRelaysDevices(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "app.db")
+
+	first := cmOpenStore(t, path)
+	registry := devices.New(cmSite, func() int64 { return 10_000 })
+	sink := candidateMirror{registry: registry, st: first}
+	if err := sink.ApplyCandidates(cmRelayA, []wire.DeviceCandidate{cmCandidate(cmNativeA, "Lobby TV", "192.168.50.31:8060")}); err != nil {
+		t.Fatalf("seed relay A's report: %v", err)
+	}
+	if err := sink.ApplyCandidates(cmRelayB, []wire.DeviceCandidate{cmCandidate(cmNativeB, "Cafe TV", "192.168.50.32:8060")}); err != nil {
+		t.Fatalf("seed relay B's report: %v", err)
+	}
+	// Relay A is revoked while DISCONNECTED — the connection watcher never runs,
+	// so this is the only record of the decision anywhere.
+	if err := first.RevokeSubject(ctx, store.RevocationSubjectRelay, cmRelayA, "operator"); err != nil {
+		t.Fatalf("RevokeSubject: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	second := cmOpenStore(t, path)
+	t.Cleanup(func() { _ = second.Close() })
+	restoredRegistry := devices.New(cmSite, func() int64 { return 20_000 })
+	n, err := restoreDeviceRegistry(ctx, second, restoredRegistry)
+	if err != nil {
+		t.Fatalf("restoreDeviceRegistry: %v", err)
+	}
+
+	revokedDeviceID := deviceid.Device(cmSite, cmDriver, cmNativeA)
+	if _, ok := restoredRegistry.Device(revokedDeviceID); ok {
+		t.Error("a revoked relay's device came back after a restart — revocation ends a relay's authority to describe " +
+			"the site, and a restart must not hand it back")
+	}
+	// The un-revoked relay is untouched: a revocation is about one relay.
+	if _, ok := restoredRegistry.Device(deviceid.Device(cmSite, cmDriver, cmNativeB)); !ok {
+		t.Errorf("the un-revoked relay's device was dropped too (registry has %v)", ids(restoredRegistry.Devices()))
+	}
+	if n != 1 {
+		t.Errorf("restoreDeviceRegistry reported %d restored device(s), want 1 — the count must not include rows it refused", n)
+	}
+
+	// And the rows are gone from the mirror, so this is decided once rather than
+	// on every boot for the life of the deployment.
+	mirrored, err := second.DiscoveredDevices(ctx)
+	if err != nil {
+		t.Fatalf("DiscoveredDevices: %v", err)
+	}
+	for _, d := range mirrored {
+		if d.RelayID == cmRelayA {
+			t.Errorf("the revoked relay's row %s is still in the mirror; the restore must purge it, not just skip it", d.DeviceID)
+		}
+	}
+}

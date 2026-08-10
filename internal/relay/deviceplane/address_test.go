@@ -120,6 +120,50 @@ func TestOverlongAddressDropsTheSighting(t *testing.T) {
 	}
 }
 
+// TestAnUndialableAddressIsBlankedNotStored: the address is the only observed
+// field this relay ACTS on, so a sighting naming somewhere it must not dial
+// keeps the device (it really was seen) and loses the address. Storing it would
+// put the host into AddressFor, out of the adoption gate, and into an HTTP
+// request — see internal/relay/lanaddr.
+func TestAnUndialableAddressIsBlankedNotStored(t *testing.T) {
+	for _, address := range []string{
+		"http://attacker.example:8060/", // a name, resolved by whoever owns it
+		"http://93.184.216.34:8060/",    // off this LAN entirely
+		"http://169.254.169.254/",       // the cloud metadata endpoint
+		"239.255.255.250:8060",          // multicast
+	} {
+		s := NewStore("relay-1")
+		s.Observe(rokuSighting(address), 1000)
+
+		cands := s.Report().Body.Candidates
+		if len(cands) != 1 {
+			t.Fatalf("store holds %d candidate(s) after a sighting with address %q, want 1 — the device was seen", len(cands), address)
+		}
+		if cands[0].Address != "" {
+			t.Errorf("candidate address = %q for %q, want blank — this relay must never dial it", cands[0].Address, address)
+		}
+		if addr, ok := s.AddressFor(testDriver, testNativeID); ok {
+			t.Errorf("AddressFor = (%q, true) for %q, want not ok", addr, address)
+		}
+	}
+}
+
+// TestAHostileSightingCannotStealAnAdoptedDevicesAddress is the attack the
+// blanking rule closes, in the shape that actually costs something: the device
+// is already known at a good address, and one spoofed packet reusing its USN
+// tries to move it. Blanking (rather than storing) means orKeep leaves the real
+// address in place, so the screen keeps being driven.
+func TestAHostileSightingCannotStealAnAdoptedDevicesAddress(t *testing.T) {
+	s := NewStore("relay-1")
+	s.Observe(rokuSighting("http://192.168.50.31:8060/"), 1000)
+	s.Observe(rokuSighting("http://attacker.example:80/"), 2000)
+
+	addr, ok := s.AddressFor(testDriver, testNativeID)
+	if !ok || addr != "http://192.168.50.31:8060/" {
+		t.Fatalf("AddressFor = (%q, %v), want the real device's address retained", addr, ok)
+	}
+}
+
 // TestSetEntityStateRidesTheReport is the state surface end to end on the relay
 // side: a driver's observation lands on the candidate whose derived entity id
 // it names (REL-110b), and the next full-set report carries it as REL-110a's

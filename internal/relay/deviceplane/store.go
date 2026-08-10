@@ -4,6 +4,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/maaxton/waiveo-next/internal/relay/lanaddr"
 	"github.com/maaxton/waiveo-next/internal/shared/deviceid"
 )
 
@@ -259,6 +260,24 @@ func (s *Store) Observe(o Observation, atMs int64) {
 		if !observationFieldOK(e.Key) || !observationFieldOK(e.DeviceClass) || !observationFieldOK(e.State) {
 			return
 		}
+	}
+	// The address gets a second, stronger check than the other fields, because
+	// it is the only one this relay ACTS on: AddressFor hands it to the
+	// adoption gate, and every command and every state poll for an adopted
+	// device is dispatched at whatever it says. A sighting is the one input a
+	// spoofer fully controls, so an address that does not name a host on this
+	// box's own network is refused here as well as at the lane that parsed it
+	// (internal/relay/lanaddr says what that means and why) — this store is
+	// where every lane converges, so it is where a lane added later inherits
+	// the policy instead of having to remember it.
+	//
+	// BLANKED rather than dropped, unlike the poison cases above. Those are
+	// values that would break the app peer's whole report; this one is a device
+	// that genuinely was seen and merely cannot be reached at what it claimed.
+	// Blanking also means orKeep below leaves an already-known good address in
+	// place, so a spoofed sighting cannot cost a real device its reachability.
+	if o.Address != "" && !lanaddr.Dialable(o.Address) {
+		o.Address = ""
 	}
 	if len(s.byKey) >= maxStoredCandidates {
 		if _, known := s.byKey[o.identityKey()]; !known {

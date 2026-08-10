@@ -215,8 +215,9 @@ type Target struct {
 	Port int
 }
 
-// Config configures a Keepalive. Targets, at minimum, must be non-empty for
-// Run to watch anything. PollInterval, LaunchDelay, and Channel each default
+// Config configures a Keepalive. Targets is the STARTING set — SetTargets
+// replaces it while Run is running, which is how the binary keeps the watched
+// set equal to the adopted-and-locatable set. PollInterval, LaunchDelay, and Channel each default
 // (defaultPollInterval, defaultLaunchDelay, defaultChannel) when left at
 // their zero value. Controller is required — a nil Controller means Run
 // silently never dispatches a launch (see dispatchLaunch), which is never
@@ -224,7 +225,8 @@ type Target struct {
 // test that only wants to exercise the state machine.
 type Config struct {
 	// Targets maps entity_id -> the ECP address keepalive polls for that
-	// screen. Every key here is one screen this capability watches.
+	// screen. Every key here is one screen this capability watches at the
+	// moment Run starts; SetTargets replaces the set afterwards.
 	Targets map[string]Target
 
 	// PollInterval is how often keepalive's own second Poller (see the
@@ -328,6 +330,11 @@ type Keepalive struct {
 	known   map[string]pollSnapshot
 	screens map[string]*screenState
 
+	// poller is the second Poller Run owns, held so SetTargets can re-point it
+	// mid-flight. nil until Run starts, which is why SetTargets is safe to call
+	// before it (the set is stored and Run picks it up).
+	poller *ecppoll.Poller
+
 	// dispatchWG tracks evaluateAll's own per-screen dispatch goroutines (see
 	// its doc). Run never waits on it — a slow dispatch must never delay ctx
 	// cancellation — it exists so this package's own tests can wait for a
@@ -380,11 +387,10 @@ func New(cfg Config) *Keepalive {
 // changes at all (see the package doc's "Poll cadence" section). It returns
 // ctx.Err() once ctx is done.
 func (k *Keepalive) Run(ctx context.Context) error {
-	pollTargets := make(map[string]ecppoll.Target, len(k.targets))
-	for id, t := range k.targets {
-		pollTargets[id] = ecppoll.Target{Host: t.Host, Port: t.Port}
-	}
-	poller := ecppoll.New(pollTargets, k.pollInterval)
+	k.mu.Lock()
+	poller := ecppoll.New(pollTargetsOf(k.targets), k.pollInterval)
+	k.poller = poller
+	k.mu.Unlock()
 	go poller.Run(ctx)
 
 	// Drain loop: this goroutine is keepalive's own sole Next() caller (the
@@ -412,6 +418,59 @@ func (k *Keepalive) Run(ctx context.Context) error {
 			k.evaluateAll(now)
 		}
 	}
+}
+
+// SetTargets replaces the watched set while Run is running, and is how this
+// capability follows ADOPTION instead of a set frozen at boot.
+//
+// Without it the capability was on by default and watched a map fixed at
+// construction — in the deployment it was turned on FOR, the deployment-override
+// map, which since the device-control track is an escape hatch rather than the
+// normal path. A relay whose screens are adopted and discovered normally
+// therefore ran a keep-alive over an empty set: switched on, self-healing
+// nothing, and silent about it. The binary now feeds it the same
+// adopted-and-locatable set the state poller follows (cmd/waiveo-relay's
+// devicePlaneSync), so "what this relay keeps alive" cannot drift from "what
+// this relay drives".
+//
+// A screen that LEAVES the set has its cached snapshot and its per-screen
+// progress dropped, not merely stopped being polled. evaluateAll walks the
+// cache, not the target map, so a retained entry would keep re-evaluating a
+// stale reading — and could fire a recovery launch at a screen this relay has
+// just been told it may no longer drive, which is the exact failure the
+// adoption gate exists to prevent. Dropping the progress also means a screen
+// that comes back is re-confirmed from scratch rather than resuming a streak
+// accumulated before it left.
+func (k *Keepalive) SetTargets(targets map[string]Target) {
+	next := make(map[string]Target, len(targets))
+	for id, t := range targets {
+		next[id] = t
+	}
+
+	k.mu.Lock()
+	k.targets = next
+	for id := range k.known {
+		if _, still := next[id]; !still {
+			delete(k.known, id)
+			delete(k.screens, id)
+		}
+	}
+	poller := k.poller
+	k.mu.Unlock()
+
+	if poller != nil {
+		poller.SetTargets(pollTargetsOf(next))
+	}
+}
+
+// pollTargetsOf projects this package's Target onto the poller's own, the one
+// place the two shapes are adapted.
+func pollTargetsOf(targets map[string]Target) map[string]ecppoll.Target {
+	out := make(map[string]ecppoll.Target, len(targets))
+	for id, t := range targets {
+		out[id] = ecppoll.Target{Host: t.Host, Port: t.Port}
+	}
+	return out
 }
 
 // recordObservation updates obs.Entity's cached (power_mode, app_type)
