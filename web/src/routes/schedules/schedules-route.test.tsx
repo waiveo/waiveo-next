@@ -525,6 +525,9 @@ describe("Playlists — dogfooded management over api/1", () => {
     const picker = (await screen.findByLabelText("Cast")) as HTMLSelectElement;
     await waitFor(() => expect(within(picker).getByRole("option", { name: "Lobby loop" })).toBeInTheDocument());
     await user.selectOptions(picker, ULID_A);
+    // One playlist item, several played items: the editor says so, because a
+    // count of "1 item" that plays for five minutes is otherwise a surprise.
+    expect(screen.getByText(/every slide of the cast plays here/i)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Save playlist" }));
     await waitFor(() => expect(body).not.toBeNull());
