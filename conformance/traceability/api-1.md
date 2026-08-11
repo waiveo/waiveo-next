@@ -61,6 +61,26 @@ requirement today", so claiming it without a corpus case would be exactly the
 overclaim this column exists to prevent. API-124 is the section's own explicit
 deferral of a fuller data-subject-request workflow and has nothing to cover.
 
+**Application-server restart (API-150–API-157):** every row is `TBD-wave1` and,
+as with API-122 above, that is a statement about the FROZEN CORPUS and not about
+the implementation. The operation is built and mounted
+(`internal/app/api/restart.go`, `POST /api/v1/system/restart`), and all eight
+requirements are exercised end to end against the live mux in
+`internal/app/api/restart_test.go` — the owner floor, the 202-not-200 acceptance
+shape and its instance identifier, all three refusals with their published
+codes, the audit record on the accepted path AND on each refusal, and the
+graceful-drain trigger. No case in the frozen corpus drives any of it, and
+`covered` means "a listed case exercises this requirement today", so claiming it
+would be the overclaim this column exists to prevent.
+
+One row will stay harder to cover than the rest, worth saying before a later
+`covered` is read as more than it means. API-157's "the same graceful shutdown
+the ordinary termination signal runs" is a statement about which code path the
+stop takes, and a case that observes only the response cannot distinguish a
+graceful drain from an abrupt exit — the two are identical on the wire. It is
+asserted where it can be: the process-side test drives the SAME drain the signal
+path drives, from the same seam, so the two cannot diverge without failing.
+
 | req-id | contract §anchor | case-id(s) | status |
 |---|---|---|---|
 | API-001 | `contracts/api-1.md#versioning--surface` | - | TBD-wave1 |
@@ -151,3 +171,11 @@ deferral of a fuller data-subject-request workflow and has nothing to cover.
 | API-142 | `contracts/api-1.md#revocation` | - | TBD-wave1 |
 | API-143 | `contracts/api-1.md#revocation` | - | TBD-wave1 |
 | API-144 | `contracts/api-1.md#revocation` | - | TBD-wave1 |
+| API-150 | `contracts/api-1.md#application-server-restart` | - | TBD-wave1 |
+| API-151 | `contracts/api-1.md#application-server-restart` | - | TBD-wave1 |
+| API-152 | `contracts/api-1.md#application-server-restart` | - | TBD-wave1 |
+| API-153 | `contracts/api-1.md#application-server-restart` | - | TBD-wave1 |
+| API-154 | `contracts/api-1.md#application-server-restart` | - | TBD-wave1 |
+| API-155 | `contracts/api-1.md#application-server-restart` | - | TBD-wave1 |
+| API-156 | `contracts/api-1.md#application-server-restart` | - | TBD-wave1 |
+| API-157 | `contracts/api-1.md#application-server-restart` | - | TBD-wave1 |

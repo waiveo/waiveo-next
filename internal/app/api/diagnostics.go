@@ -334,10 +334,25 @@ type systemHealth struct {
 	// would be the one line an operator trusts and the one line that is wrong.
 	Status      string `json:"status"`
 	CheckedAtMs int64  `json:"checked_at_ms"`
-	// UptimeMs is -1 when the deployment wired no start time, matching the
-	// never-observed sentinel /screen-status uses for an age nobody measured.
-	UptimeMs int64  `json:"uptime_ms"`
-	Version  string `json:"version"`
+	// StartedAtMs is THIS process instance's start instant, and it is the
+	// restart operation's completion signal (API-153, restart.go): a client
+	// holds the value the acceptance echoed and learns the restart finished when
+	// a successful read here returns a DIFFERENT one.
+	//
+	// It is published ALONGSIDE UptimeMs rather than left to be derived from it,
+	// because the derivation is not sound for that purpose. UptimeMs is
+	// `checked_at_ms - started_at_ms` recomputed per request and clamped at zero,
+	// so a clock stepping backwards — which an appliance's does before NTP
+	// settles — makes it fall without any restart having happened, and a client
+	// watching for a drop would report one that did not occur. This value is
+	// captured once at boot and never recomputed, so it moves if and only if the
+	// process did.
+	//
+	// -1 when the deployment wired no start time, matching the never-observed
+	// sentinel /screen-status uses for an age nobody measured.
+	StartedAtMs int64  `json:"started_at_ms"`
+	UptimeMs    int64  `json:"uptime_ms"`
+	Version     string `json:"version"`
 
 	Services []serviceHealth `json:"services"`
 	Storage  storageHealth   `json:"storage"`
@@ -352,6 +367,7 @@ func (srv *server) getSystemHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	out := systemHealth{
 		CheckedAtMs: srv.nowMs(),
+		StartedAtMs: srv.processStartedAtMs(),
 		UptimeMs:    screens.NeverObserved,
 		Version:     healthUnknown,
 		Services:    []serviceHealth{},

@@ -15,6 +15,7 @@ func wellFormedHealth() map[string]any {
 	return map[string]any{
 		"status":        "ok",
 		"checked_at_ms": 1754870000000,
+		"started_at_ms": 1754869876544,
 		"uptime_ms":     123456,
 		"version":       "dev",
 		"services": []any{

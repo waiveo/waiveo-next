@@ -1,17 +1,22 @@
-// api/1 — the OPERATOR DIAGNOSTICS surface: the running box's own log and its
-// health summary (the legacy stack's `/logs` and `/system` pages).
+// api/1 — the OPERATOR DIAGNOSTICS surface: the running box's own log, its
+// health summary (the legacy stack's `/logs` and `/system` pages), and the one
+// thing an operator can DO about what those two tell them — restart the
+// application server.
 //
-// Two reads, no writes, no ids, no ETags — so this is not a ResourceModule and
-// could not be one. Neither answer is authored state: one is a window over what
-// the process has logged, the other is a measurement taken at request time.
+// No ids, no ETags, no authored state — so this is not a ResourceModule and
+// could not be one. Two of the three are measurements (a window over what the
+// process has logged; a reading taken at request time), and the third acts on
+// the process itself rather than on anything stored in it.
 //
-// # Both are `owner`, and a page must be ready for that
+// # All three are `owner`, and a page must be ready for that
 //
-// The server reserves both to the workspace's owner (a log line names relay
+// The server reserves all three to the workspace's owner (a log line names relay
 // ids, LAN addresses and file paths; a health summary names every relay's
-// advertised address). An admin bound at one site gets 403 from both. A console
-// page therefore has to render that refusal as an explanation rather than as a
-// blank panel — the module surfaces the ApiError unchanged so it can.
+// advertised address; a restart takes the whole deployment's surface away, and
+// there is no scope node to narrow it to). An admin bound at one site gets 403
+// from every one of them. A console page therefore has to render that refusal as
+// an explanation rather than as a blank panel — the module surfaces the ApiError
+// unchanged so it can.
 //
 // # The log is NOT the audit trail, and the UI must not blur them
 //
@@ -37,6 +42,8 @@ export type ServiceHealth = components["schemas"]["ServiceHealth"];
 export type StorageHealth = components["schemas"]["StorageHealth"];
 export type RelayHealth = components["schemas"]["RelayHealth"];
 export type ScreenHealth = components["schemas"]["ScreenHealth"];
+/** What a restart request was accepted AS — never a claim that it happened. */
+export type RestartAcceptance = components["schemas"]["RestartAcceptance"];
 
 /** The closed level set, in descending severity — the order a filter lists in. */
 export const LOG_LEVELS = ["error", "warn", "info"] as const;
@@ -61,6 +68,21 @@ export interface DiagnosticsModule {
   logs(query?: PlatformLogQuery): Promise<PlatformLogPage>;
   /** The health summary, measured at request time. */
   health(): Promise<SystemHealth>;
+  /** Ask this box to restart its application server (API-150).
+   *
+   * It resolves with an ACCEPTANCE, not a completion — the process is still
+   * running when it answers, so nothing else is knowable yet. Learn that the
+   * restart finished by polling `health()` until `started_at_ms` differs from
+   * the value this acceptance echoed; a caller that instead waits for the API to
+   * become reachable again cannot tell "came back" from "never went", which is
+   * exactly the case a late refusal produces.
+   *
+   * Rejects with an `ApiError` whose `code` is one of `RESTART_UNSUPPORTED` (no
+   * supervisor is declared on this deployment, so nothing would start a
+   * replacement), `RESTART_IN_PROGRESS`, or `RESTART_BLOCKED` (work is running
+   * that a restart cannot resume — the `detail` names it). Each is a different
+   * sentence for an operator and none of them is "something went wrong". */
+  restart(): Promise<RestartAcceptance>;
 }
 
 export function createDiagnosticsModule(client: ApiClient): DiagnosticsModule {
@@ -85,6 +107,18 @@ export function createDiagnosticsModule(client: ApiClient): DiagnosticsModule {
     async health() {
       const { data } = await client.read<SystemHealth>("/system-health");
       return data;
+    },
+    async restart() {
+      // `action` carries an Idempotency-Key, which matters more here than
+      // anywhere else on this surface: the connection dies as part of this
+      // operation succeeding, so a retry is the expected case rather than an
+      // edge, and the key is what makes the retry replay the original acceptance
+      // instead of colliding with it.
+      //
+      // `confirm` is sent explicitly rather than defaulted server-side: the
+      // server refuses a body without it, so a future caller that forgets the
+      // dialog gets a 422 rather than a restarted box.
+      return client.action<RestartAcceptance>("/system/restart", { confirm: true });
     },
   };
 }

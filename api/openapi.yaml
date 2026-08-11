@@ -2647,6 +2647,76 @@ paths:
           $ref: "#/components/responses/NotFound"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+  /system/restart:
+    post:
+      operationId: restartApplicationServer
+      summary: Restart the application server
+      description: >-
+        Stops THIS application-server process so its supervisor starts a
+        replacement (API-150). Its subject is the process, never the host: it
+        does not reboot the machine, and the relay, the content origin and every
+        other LAN service on the box are untouched. Screens keep playing what
+        their relay already handed them; the console and `/api/v1` are away for
+        seconds.
+
+
+        The answer is `202 Accepted`, never `200 restarted` (API-152). The
+        process is still running when the response is written — it must be, or
+        the bytes could not be sent — so the only true statement a 2xx can carry
+        is that the request was accepted. Learn that it completed by reading
+        `getSystemHealth` until `started_at_ms` differs from the value this
+        response echoes; polling for reachability alone cannot distinguish
+        "came back" from "never went".
+
+
+        Three refusals, each with its own code and each naming what to do about
+        it: `RESTART_UNSUPPORTED` (501) when the deployment has not declared a
+        supervisor, so nothing would start a replacement and stopping would take
+        the box down for good; `RESTART_IN_PROGRESS` (409) when one has already
+        been accepted; `RESTART_BLOCKED` (409) while accepted work is in flight
+        that a restart cannot be resumed from (API-116) — the Problem's `detail`
+        names the job. Owner-at-root only (API-151).
+
+
+        A mutating POST tagged `mcp:act`, so it accepts `Idempotency-Key`: a
+        retry-on-timeout replays the original acceptance rather than queueing a
+        second restart.
+      tags: [diagnostics, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RestartRequest"
+      responses:
+        "202":
+          description: >-
+            The restart was accepted. The process goes on serving for
+            `stopping_in_ms`, then drains and exits.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RestartAcceptance"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
   # ---------------------------------------------------------------------
   # adopted-devices — the rows relay/1 REL-063's device_inventory is compiled from.
   # ---------------------------------------------------------------------
@@ -3740,6 +3810,17 @@ components:
         application/problem+json:
           schema:
             $ref: "#/components/schemas/Problem"
+    NotImplemented:
+      description: >-
+        This deployment cannot perform the operation at all — a CAPABILITY
+        refusal, not a temporary one. Deliberately distinct from `503`
+        (`UNAVAILABLE`), which invites a retry: nothing about waiting changes
+        the answer, and the `code` names what the deployment would have to
+        declare or provide for the operation to become possible.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
 
   schemas:
     Ulid:
@@ -3881,6 +3962,9 @@ components:
         - RATE_LIMITED
         - INTERNAL
         - UNAVAILABLE
+        - RESTART_UNSUPPORTED
+        - RESTART_IN_PROGRESS
+        - RESTART_BLOCKED
         - CREDENTIAL_LOCKED
         - GRANT_EXPIRED
         - GRANT_ALREADY_REDEEMED
@@ -5866,7 +5950,7 @@ components:
 
     SystemHealth:
       type: object
-      required: [status, checked_at_ms, uptime_ms, version, services, storage, relays, screens]
+      required: [status, checked_at_ms, started_at_ms, uptime_ms, version, services, storage, relays, screens]
       additionalProperties: false
       properties:
         status:
@@ -5876,6 +5960,22 @@ components:
         checked_at_ms:
           type: integer
           format: int64
+        started_at_ms:
+          type: integer
+          format: int64
+          description: >-
+            When THIS process instance began serving, or `-1` when the
+            deployment publishes no start time (the same never-observed sentinel
+            `uptime_ms` uses).
+
+
+            It is the process-instance identifier API-153 requires, and it is
+            stable for that instance's whole life: it is captured once at boot,
+            so a clock step moves `checked_at_ms` and leaves this alone. A
+            client that accepted a restart holds the value this field had
+            BEFORE, and learns the restart completed when a successful read
+            returns a different one — never by polling for reachability, which
+            cannot tell "came back" from "never went".
         uptime_ms:
           type: integer
           format: int64
@@ -5900,6 +6000,69 @@ components:
             $ref: "#/components/schemas/RelayHealth"
         screens:
           $ref: "#/components/schemas/ScreenHealth"
+
+    RestartRequest:
+      type: object
+      required: [confirm]
+      additionalProperties: false
+      properties:
+        confirm:
+          type: boolean
+          description: >-
+            MUST be `true`. The field exists so a restart cannot be the
+            accidental outcome of an empty body — an MCP tool call or a `curl`
+            with no payload refuses `422` instead of taking the console away.
+            The console's confirm dialog is the human gate; this is the wire
+            one, and neither substitutes for the other.
+
+    RestartAcceptance:
+      type: object
+      description: >-
+        What was accepted, and what a client can observe about it (API-152/153).
+        Every member is present: a client deciding how long to wait cannot be
+        handed a document where the number it needs is sometimes absent.
+      required: [accepted_at_ms, stopping_in_ms, drain_budget_ms, started_at_ms, supervisor]
+      additionalProperties: false
+      properties:
+        accepted_at_ms:
+          type: integer
+          format: int64
+          description: When this request was accepted.
+        stopping_in_ms:
+          type: integer
+          format: int64
+          description: >-
+            How long the process goes on serving after this response before it
+            begins to stop. It is published rather than assumed because it is
+            the window in which the response bytes must reach the client — a
+            client that guessed it would either give up too early or wait on a
+            process that has already gone.
+        drain_budget_ms:
+          type: integer
+          format: int64
+          description: >-
+            The upper bound on the graceful drain that follows (connections,
+            accepted work, durable state). `stopping_in_ms + drain_budget_ms` is
+            the worst case before the process is gone; the supervisor's own
+            restart delay is added on top of that and is not this surface's to
+            report.
+        started_at_ms:
+          type: integer
+          format: int64
+          description: >-
+            THIS process instance's start instant — the same value
+            `getSystemHealth` reports — echoed here so a client holds the
+            "before" to compare against. A successful health read returning a
+            DIFFERENT value is the restart completing; `-1` means the deployment
+            publishes no start time, and a client has nothing to compare and
+            must fall back to reachability.
+        supervisor:
+          type: string
+          description: >-
+            The supervisor this deployment DECLARED will start the replacement
+            (`systemd`, `docker`, a wrapper's own name). Reported so the
+            acceptance says who is responsible for the process coming back,
+            rather than leaving the operator to infer it.
 
     PairingCodeResult:
       type: object

@@ -95,7 +95,32 @@ Environment=WAIVEO_FEEDER_REQUIRED_PACKS=/etc/waiveo/required-packs.json
 # resolution is marked stale_source (MKT-063); that is derived from the scheme
 # and cannot be declared away.
 Environment=WAIVEO_FEEDER_PACK_SOURCES=/etc/waiveo/pack-sources.json
-Restart=on-failure
+# Who will start a replacement when this process exits (api/1 API-154). It is
+# DECLARED here and never detected by the process, for one reason: every systemd
+# unit's processes carry INVOCATION_ID, including a unit written `Restart=no`, so
+# a process that sniffed its environment would answer "supervised" with total
+# confidence on exactly the deployment where being wrong means an operator presses
+# Restart in the console and the box never comes back. Only whoever wrote this
+# file knows the answer, so this is where it is written.
+#
+# THIS LINE AND `Restart=always` BELOW ARE ONE STATEMENT. Changing either without
+# the other is the bug: dropping the variable makes a working restart refuse
+# RESTART_UNSUPPORTED (annoying, safe); dropping `Restart=always` makes an
+# accepted restart stop the box for good (quiet, not safe). Unset it deliberately
+# — and only alongside `Restart=no`/`on-failure` — if this deployment must not be
+# restartable from the console.
+Environment=WAIVEO_FEEDER_SUPERVISOR=systemd
+# `always`, not `on-failure`, and that is what makes the restart operation work.
+# An operator-requested restart drains gracefully and exits 0 — a CLEAN exit,
+# which `on-failure` deliberately does not restart. The alternative was to exit
+# non-zero so `on-failure` would catch it, which would file every intentional
+# restart in the journal as a service failure and make a real failure
+# indistinguishable from a button press.
+#
+# It does not make `systemctl stop` sticky: systemd does not re-start a unit it
+# stopped by an explicit stop job, whatever `Restart=` says. The only clean exit
+# this binary has that is NOT an explicit stop is the restart operation.
+Restart=always
 RestartSec=2
 NoNewPrivileges=true
 ProtectSystem=strict

@@ -176,6 +176,7 @@ export {
   type StorageHealth,
   type RelayHealth,
   type ScreenHealth,
+  type RestartAcceptance,
 } from "./diagnostics";
 
 export {
