@@ -890,7 +890,7 @@ export interface paths {
         };
         /**
          * List the slide layers waiting to be rasterized
-         * @description Every `derive` layer in a cast this caller can read whose PNG has not been produced yet (`pending`) or was produced from a spec or geometry the operator has since changed (`stale`), each as a complete work order. The listing is computed from the authored casts themselves — there is no queue table to drift out of step with what is authored, so a layer disappears from here the moment its `asset_ref` and `derived_from` are written back, and reappears the moment its spec is edited.
+         * @description Every `derive` layer this caller can read whose PNG has not been produced yet (`pending`) or was produced from a spec or geometry the operator has since changed (`stale`), each as a complete work order. BOTH authored shapes that carry a layer stack are scanned — a cast's slides and a `source: "slide"` playlist item's inline slide — because both are rewritten into an ordinary `image` by the same projection and so both really do reach a screen. The listing is computed from those authored rows themselves — there is no queue table to drift out of step with what is authored, so a layer disappears from here the moment its `asset_ref` and `derived_from` are written back, and reappears the moment its spec is edited.
          */
         get: operations["listPendingDerives"];
         put?: never;
@@ -1544,11 +1544,14 @@ export interface components {
             ec_level?: "L" | "M" | "Q" | "H";
             /** @description The LITERAL string a `text` spec draws — never a format. A rasterized layer is a frozen picture, so a clock or a countdown must stay a native live layer and there is deliberately no way to ask for one here. */
             text?: string;
-            /** @description Text size in canvas pixels. Optional; the default is 64. */
+            /** @description Text size in canvas pixels. `text` only; the default is 64. Rejected on `qr` and `rect` for the same reason `align` is — the renderer writes it into the text rule and nowhere else, so a size there would be a control that silently does nothing. */
             font_px?: number;
-            /** @description The family name the text is drawn in. With `font_asset_ref` it is the name the embedded face registers under; without one it must be a family the rendering host already has. */
+            /** @description The family name the text is drawn in. With `font_asset_ref` it is the name the embedded face registers under; without one it must be a family the rendering host already has. `text` only, rejected on `qr` and `rect`. */
             font_family?: string;
-            /** @description CUSTOM TYPOGRAPHY — a content-addressed reference to a font file (TTF/OTF/WOFF2) in the content origin, which the renderer fetches and embeds before drawing. It is a real content reference: it is checked to exist when the cast is written, and it is protected from the content retention sweep for as long as a cast names it. */
+            /**
+             * @description CUSTOM TYPOGRAPHY — a content-addressed reference to a font file (TTF/OTF/WOFF2) in the content origin, which the renderer fetches and embeds before drawing. It is a real content reference: it is checked to exist when the cast is written, and it is protected from the content retention sweep for as long as a cast names it.
+             *     `text` only, and rejected on `qr` and `rect` more firmly than the other two typography members: the embedded face can only be drawn in by a text run, so a face named on either of those would be inert AND would pin a font file against the retention sweep for a layer that never uses it.
+             */
             font_asset_ref?: string;
             /**
              * @description Horizontal alignment of a `text` spec inside the layer box. Optional; default `left`. Rejected on `qr` and `rect` — a symbol is always centred and a rect fills its box, so an alignment there would be a control that silently does nothing.
@@ -1560,7 +1563,7 @@ export interface components {
              * @enum {string}
              */
             valign?: "top" | "middle" | "bottom";
-            /** @description The foreground: text colour for `text`, DARK MODULE colour for `qr`. Optional; the default is `#FFFFFF`. */
+            /** @description The foreground: text colour for `text`, DARK MODULE colour for `qr`. Optional; the default is `#FFFFFF`. Rejected on `rect`, which has no foreground — its picture is its `fill`, `border` and `shadow`. */
             color?: string;
             fill?: components["schemas"]["DeriveFill"];
             shadow?: components["schemas"]["DeriveShadow"];
@@ -1597,11 +1600,24 @@ export interface components {
             color?: string;
             radius?: number;
         };
-        /** @description One outstanding rasterization: a complete work order for `waiveo-derive`. It carries WHAT to draw (`spec`, at `w`x`h`) and WHERE the result goes (`cast_id`, `slide_id`, `layer_index`), so the tool needs no second read to act on it. */
+        /**
+         * @description One outstanding rasterization: a complete work order for `waiveo-derive`. It carries WHAT to draw (`spec`, at `w`x`h`) and WHERE the result goes (`source` + `resource_id`, then `slide_id` or `item_index`, then `layer_index`), so the tool needs no second read to act on it.
+         *     A `derive` layer lives in either of the two shapes that carry an authored layer stack — a cast slide, or a playlist item's inline `slide` — and both are rewritten into an ordinary `image` by the same projection, so both are reported here. `source` says which shape this job is in, and exactly one of the two locators is present with it.
+         */
         DerivePendingLayer: {
-            cast_id: string;
-            cast_name?: string;
-            slide_id: string;
+            /**
+             * @description Which authored shape carries the layer. `cast` — a cast slide, located by `slide_id`. `playlist` — a `source: "slide"` playlist item's inline slide, located by `item_index` (an inline slide has no id of its own).
+             * @enum {string}
+             */
+            source: "cast" | "playlist";
+            /** @description The id of the cast or playlist row the layer is authored in. */
+            resource_id: string;
+            /** @description That row's name, for a human reading the queue. */
+            resource_name?: string;
+            /** @description The cast slide's document-local id. Present when `source` is `cast` and absent otherwise. */
+            slide_id?: string;
+            /** @description The index of the playlist item whose inline slide carries the layer. Present when `source` is `playlist` and absent otherwise. */
+            item_index?: number;
             layer_index: number;
             /**
              * @description `pending` — no PNG has ever been produced, so the projection omits the layer and the rest of the slide still draws. `stale` — a PNG exists but the spec or the geometry has changed since; the OLD picture keeps being served until the tool catches up, because an edit nobody has rendered yet must never blank a screen.
@@ -4601,7 +4617,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The outstanding rasterizations, in cast then slide then layer order. */
+            /** @description The outstanding rasterizations: every cast's, then every playlist's, in row then slide then layer order within each. */
             200: {
                 headers: {
                     [name: string]: unknown;

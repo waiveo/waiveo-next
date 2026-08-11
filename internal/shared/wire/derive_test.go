@@ -261,6 +261,25 @@ func TestValidateDeriveSpecIsAClosedVocabulary(t *testing.T) {
 		{"text negative size", &DeriveSpec{Kind: DeriveKindText, Text: "hi", FontPx: -1}, true},
 		{"ec on a text spec", &DeriveSpec{Kind: DeriveKindText, Text: "hi", ECLevel: "M"}, true},
 		{"bad font ref", &DeriveSpec{Kind: DeriveKindText, Text: "hi", FontAssetRef: "not-a-ref"}, true},
+		// TYPOGRAPHY on a spec that draws no text. The page builder writes
+		// font-size and font-family into the `#txt` rule only and embeds the
+		// @font-face for a text run only, so each of these is a control an
+		// operator would set, save, re-render for, and never see — and the face
+		// is worse than inert, because accepting it also pins a font file against
+		// the content retention sweep for a layer that will never draw with it.
+		{"font size on a qr spec", &DeriveSpec{Kind: DeriveKindQR, Data: "x", FontPx: 40}, true},
+		{"font family on a qr spec", &DeriveSpec{Kind: DeriveKindQR, Data: "x", FontFamily: "Oswald"}, true},
+		{"custom face on a qr spec", &DeriveSpec{Kind: DeriveKindQR, Data: "x",
+			FontAssetRef: "sha256:" + strings.Repeat("a", 64)}, true},
+		{"custom face on a rect spec", &DeriveSpec{Kind: DeriveKindRect,
+			Fill:         &DeriveFill{Kind: DeriveFillSolid, From: "#FFFFFF"},
+			FontAssetRef: "sha256:" + strings.Repeat("a", 64)}, true},
+		{"custom face on a text spec", ok(&DeriveSpec{Kind: DeriveKindText, Text: "hi", FontFamily: "Oswald",
+			FontAssetRef: "sha256:" + strings.Repeat("a", 64)}), false},
+		// A rect's picture is its fill, border and shadow — there is no
+		// foreground for a colour to paint.
+		{"colour on a rect spec", &DeriveSpec{Kind: DeriveKindRect,
+			Fill: &DeriveFill{Kind: DeriveFillSolid, From: "#FFFFFF"}, Color: "#112233"}, true},
 		{"rect with no fill", &DeriveSpec{Kind: DeriveKindRect}, true},
 		{"rect minimal", ok(&DeriveSpec{Kind: DeriveKindRect, Fill: &DeriveFill{Kind: DeriveFillSolid, From: "#FFFFFF"}}), false},
 		{"solid with a second stop", &DeriveSpec{Kind: DeriveKindRect,

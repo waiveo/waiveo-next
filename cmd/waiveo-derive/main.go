@@ -246,8 +246,10 @@ func cmdPending(ctx context.Context, args []string) error {
 		if j.Spec != nil {
 			kind = j.Spec.Kind
 		}
-		fmt.Printf("%-7s %s / slide %s / layer %d — %s %dx%d\n",
-			j.State, j.CastID, j.SlideID, j.LayerIndex, kind, j.W, j.H)
+		// The row's NAME as well as its id: an operator scanning the queue knows
+		// "Lobby loop", not 01J8CAST0000000000000000AA.
+		fmt.Printf("%-7s %s %s (%s) / %s / layer %d — %s %dx%d\n",
+			j.State, j.Source, j.ResourceID, j.ResourceName, j.Where(), j.LayerIndex, kind, j.W, j.H)
 	}
 	fmt.Printf("%d outstanding\n", len(jobs))
 	return nil
@@ -277,20 +279,24 @@ func cmdSync(ctx context.Context, args []string) error {
 		return err
 	}
 	for _, o := range rep.Rendered {
-		fmt.Printf("ok    %s / slide %s / layer %d -> %s (%d bytes)\n", o.CastID, o.SlideID, o.LayerIndex, o.AssetRef, o.Bytes)
+		fmt.Printf("ok    %s %s (%s) / %s / layer %d -> %s (%d bytes)\n",
+			o.Source, o.ResourceID, o.ResourceName, o.Where, o.LayerIndex, o.AssetRef, o.Bytes)
 	}
 	for _, o := range rep.Failed {
-		fmt.Printf("FAIL  %s / slide %s / layer %d: %v\n", o.CastID, o.SlideID, o.LayerIndex, o.Err)
+		fmt.Printf("FAIL  %s %s (%s) / %s / layer %d: %v\n",
+			o.Source, o.ResourceID, o.ResourceName, o.Where, o.LayerIndex, o.Err)
 	}
-	for castID, perr := range rep.PatchErrs {
-		fmt.Printf("FAIL  cast %s write-back: %v\n", castID, perr)
+	// A row-level failure is a read that failed or a write-back that was refused
+	// — never named as one when it was the other.
+	for _, re := range rep.RowErrs {
+		fmt.Printf("FAIL  %s %s: %v\n", re.Source, re.ResourceID, re.Err)
 	}
-	fmt.Printf("%d listed, %d rendered, %d failed, %d write-backs failed\n",
-		rep.Listed, len(rep.Rendered), len(rep.Failed), len(rep.PatchErrs))
+	fmt.Printf("%d listed across %d row(s) read, %d rendered, %d layer(s) failed, %d row(s) failed\n",
+		rep.Listed, rep.RowsRead, len(rep.Rendered), len(rep.Failed), len(rep.RowErrs))
 	// A non-zero exit on any failure is what makes this usable from a script:
 	// a run that rendered nothing must not look like a run with nothing to do.
-	if len(rep.Failed) > 0 || len(rep.PatchErrs) > 0 {
-		return fmt.Errorf("%d layer(s) and %d cast write-back(s) failed", len(rep.Failed), len(rep.PatchErrs))
+	if len(rep.Failed) > 0 || len(rep.RowErrs) > 0 {
+		return fmt.Errorf("%d layer(s) and %d row(s) failed", len(rep.Failed), len(rep.RowErrs))
 	}
 	return nil
 }

@@ -8,6 +8,7 @@ import (
 
 	apiv1 "github.com/maaxton/waiveo-next/api/gen/go"
 
+	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/datamodel"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
@@ -129,6 +130,19 @@ func TestACastDeriveLayerIsValidatedAtTheSurface(t *testing.T) {
 			"derive": map[string]any{"kind": "rect", "fill": map[string]any{"kind": "solid", "from": "#ffffff", "to": "#000000"}}}},
 		{"derive spec on a text layer", map[string]any{"kind": "text", "x": 0, "y": 0, "w": 400, "h": 400, "text": "hi",
 			"derive": map[string]any{"kind": "rect", "fill": map[string]any{"kind": "solid", "from": "#ffffff"}}}},
+		// TYPOGRAPHY on a spec that draws no text. Refused rather than ignored,
+		// exactly as an alignment on a qr is: the renderer writes the size and
+		// family into the text rule only and embeds the face for a text run only.
+		// The FACE is the one that costs something beyond confusion — it is a real
+		// content reference, so an accepted inert one pins a font file against the
+		// retention sweep on behalf of a layer that will never draw with it.
+		{"font size on a qr spec", map[string]any{"kind": "derive", "x": 0, "y": 0, "w": 400, "h": 400,
+			"derive": map[string]any{"kind": "qr", "data": "x", "font_px": 40}}},
+		{"custom face on a qr spec", map[string]any{"kind": "derive", "x": 0, "y": 0, "w": 400, "h": 400,
+			"derive": map[string]any{"kind": "qr", "data": "x", "font_asset_ref": "sha256:" + strings.Repeat("a", 64)}}},
+		{"colour on a rect spec", map[string]any{"kind": "derive", "x": 0, "y": 0, "w": 400, "h": 400,
+			"derive": map[string]any{"kind": "rect", "color": "#112233",
+				"fill": map[string]any{"kind": "solid", "from": "#ffffff"}}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -206,8 +220,11 @@ func TestPendingDerivesAreReportedAndClearedByAWriteBack(t *testing.T) {
 		t.Fatalf("the queue reports %d job(s), want 1: %+v", len(jobs), jobs)
 	}
 	job := jobs[0]
-	if job["cast_id"] != stored.ID || job["slide_id"] != "poster" {
+	if job["source"] != "cast" || job["resource_id"] != stored.ID || job["slide_id"] != "poster" {
 		t.Errorf("the work order does not locate the layer: %+v", job)
+	}
+	if _, ok := job["item_index"]; ok {
+		t.Errorf("a cast job carries an item_index, which addresses nothing: %+v", job)
 	}
 	if job["state"] != "pending" {
 		t.Errorf("state = %v, want pending", job["state"])
@@ -303,15 +320,169 @@ func TestTheDeclaredSurfaceCarriesTheDeriveVocabulary(t *testing.T) {
 	}
 
 	// And the work queue's own response type, so the tool and the console are
-	// built from a declared shape rather than from an untyped map.
+	// built from a declared shape rather than from an untyped map. BOTH authored
+	// shapes must be expressible: a queue that could only name a cast is a queue
+	// an inline slide's layer can never appear in.
 	var list apiv1.DerivePendingList
 	list.DeriveJobs = []apiv1.DerivePendingLayer{{
-		CastId: "c", SlideId: "s", LayerIndex: 0, W: 400, H: 400,
+		Source: apiv1.DerivePendingLayerSourceCast, ResourceId: "c", SlideId: ptrTo("s"),
+		LayerIndex: 0, W: 400, H: 400,
 		State: apiv1.DerivePendingLayerStatePending, SpecDigest: "d",
 		Spec: apiv1.DeriveSpec{Kind: apiv1.DeriveSpecKindQr, Data: ptrTo("x")},
+	}, {
+		Source: apiv1.DerivePendingLayerSourcePlaylist, ResourceId: "p", ItemIndex: ptrTo(2),
+		LayerIndex: 1, W: 360, H: 360,
+		State: apiv1.DerivePendingLayerStateStale, SpecDigest: "d2",
+		Spec: apiv1.DeriveSpec{Kind: apiv1.DeriveSpecKindQr, Data: ptrTo("y")},
 	}}
 	if !apiv1.DerivePendingLayerStateStale.Valid() {
 		t.Error("the generated pending-state enum does not accept `stale`")
+	}
+	if !apiv1.DerivePendingLayerSourcePlaylist.Valid() {
+		t.Error("the generated pending-source enum does not accept `playlist`")
+	}
+	if apiv1.DerivePendingLayerSource("cast_group").Valid() {
+		t.Error("the generated pending-source enum accepts a value outside the closed set")
+	}
+}
+
+// TestADeriveLayerInsideAnInlinePlaylistSlideIsQueued is the SECOND authored
+// shape, and it is the one the queue could not see.
+//
+// A `source: "slide"` playlist item carries its layer stack inline. That stack
+// is accepted by the surface, rewritten into an ordinary `image` by BOTH content
+// projections (the feeder's resolveSlideLayers and the relay's, through the one
+// shared wire.DeriveProjection), and its custom font is held against the content
+// retention sweep by store.RowAssetReferences. Every half of the mechanism was
+// built for it except the queue that reports the work — so the layer was
+// accepted, protected, and never once drawn.
+func TestADeriveLayerInsideAnInlinePlaylistSlideIsQueued(t *testing.T) {
+	e := newEnv(t)
+	screenID := seedSchedulingScope(t, e)
+
+	layer := wire.Layer{Kind: wire.LayerKindDerive, X: 1400, Y: 80, W: 360, H: 360, Derive: &wire.DeriveSpec{
+		Kind: wire.DeriveKindQR, Data: "https://waiveo.local/pair/INLINE-1",
+	}}
+	pl := datamodel.Playlist{
+		ScopeNode: screenID, Name: "Foyer loop",
+		Items: []datamodel.PlaylistItem{
+			{Source: "slide", Slide: &datamodel.Slide{Layers: []wire.Layer{
+				{Kind: wire.LayerKindText, X: 0, Y: 0, W: 800, H: 100, Text: "Scan to pair"},
+			}}},
+			{Source: "slide", Slide: &datamodel.Slide{Layers: []wire.Layer{
+				{Kind: wire.LayerKindText, X: 0, Y: 0, W: 800, H: 100, Text: "Scan to pair"},
+				layer,
+			}}},
+		},
+	}
+	created := e.createOK(t, "/api/v1/playlists", rowCreateBody(t, pl))
+	id := decodeID(t, created)
+
+	jobs := derivePendingList(t, e)
+	if len(jobs) != 1 {
+		t.Fatalf("the queue reports %d job(s) for an inline-slide derive layer, want 1: %+v", len(jobs), jobs)
+	}
+	job := jobs[0]
+	if job["source"] != "playlist" || job["resource_id"] != id {
+		t.Errorf("the work order does not name the playlist that carries the layer: %+v", job)
+	}
+	// The ITEM index, not the first item — an inline slide has no id of its own,
+	// so this is the only thing that says where the raster goes back.
+	if job["item_index"] != float64(1) || job["layer_index"] != float64(1) {
+		t.Errorf("the work order does not locate the layer inside the playlist: %+v", job)
+	}
+	if _, ok := job["slide_id"]; ok {
+		t.Errorf("an inline-slide job carries a slide_id, which no inline slide has: %+v", job)
+	}
+	if job["w"] != float64(360) || job["h"] != float64(360) || job["state"] != "pending" {
+		t.Errorf("the work order is not a complete instruction: %+v", job)
+	}
+
+	// And the write-back clears it, exactly as a cast's does — the queue is
+	// computed from the authored rows, so it stops matching with nothing told.
+	assetRef := e.uploadContent(t, []byte("\x89PNG\r\n\x1a\n inline derived pixels")).AssetRef
+	digest, _ := job["spec_digest"].(string)
+	pl.Items[1].Slide.Layers[1].AssetRef = assetRef
+	pl.Items[1].Slide.Layers[1].DerivedFrom = digest
+
+	etag := e.etagOfDefault(t, "/api/v1/playlists/"+id)
+	resp, raw := e.do(t, http.MethodPatch, "/api/v1/playlists/"+id,
+		mustJSON(t, map[string]any{"items": pl.Items}),
+		map[string]string{"If-Match": etag})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH the rendered reference back onto the inline slide: %d %s", resp.StatusCode, raw)
+	}
+	if jobs := derivePendingList(t, e); len(jobs) != 0 {
+		t.Fatalf("the queue still reports %d job(s) after the inline write-back: %+v", len(jobs), jobs)
+	}
+}
+
+// TestBothAuthoredShapesAreQueuedAndProtectedTogether is the MIRROR check, and
+// it is the one that keeps this fixed.
+//
+// Two projections read the same authored layer stacks: the retention/write-time
+// projection (store.RowAssetReferences) and this work queue. They disagreed once
+// — the sweep protected an inline slide's derive font while the queue could not
+// see the layer at all — and the fix is only durable if the reverse is caught
+// too. Both shapes, both projections, one test.
+func TestBothAuthoredShapesAreQueuedAndProtectedTogether(t *testing.T) {
+	e := newEnv(t)
+	screenID := seedSchedulingScope(t, e)
+	fontRef := e.uploadContent(t, []byte("waiveo-next: not really a TTF, but real bytes in the origin")).AssetRef
+
+	spec := func(text string) *wire.DeriveSpec {
+		return &wire.DeriveSpec{Kind: wire.DeriveKindText, Text: text, FontFamily: "Oswald", FontAssetRef: fontRef}
+	}
+	castID := decodeID(t, e.createOK(t, "/api/v1/casts", rowCreateBody(t, datamodel.Cast{
+		ScopeNode: screenID, Name: "Custom Face Cast",
+		Slides: []datamodel.CastSlide{{ID: "s1", Layers: []wire.Layer{
+			{Kind: wire.LayerKindDerive, X: 0, Y: 0, W: 900, H: 300, Derive: spec("IN A CAST")},
+		}}},
+	})))
+	listID := decodeID(t, e.createOK(t, "/api/v1/playlists", rowCreateBody(t, datamodel.Playlist{
+		ScopeNode: screenID, Name: "Custom Face Playlist",
+		Items: []datamodel.PlaylistItem{{Source: "slide", Slide: &datamodel.Slide{Layers: []wire.Layer{
+			{Kind: wire.LayerKindDerive, X: 0, Y: 0, W: 900, H: 300, Derive: spec("IN A PLAYLIST")},
+		}}}},
+	})))
+
+	// The QUEUE sees both.
+	jobs := derivePendingList(t, e)
+	byResource := map[string]map[string]any{}
+	for _, j := range jobs {
+		id, _ := j["resource_id"].(string)
+		byResource[id] = j
+	}
+	if _, ok := byResource[castID]; !ok {
+		t.Errorf("the cast's derive layer is not in the queue: %+v", jobs)
+	}
+	if _, ok := byResource[listID]; !ok {
+		t.Errorf("the inline slide's derive layer is not in the queue: %+v", jobs)
+	}
+
+	// …and the RETENTION projection holds the font for both. store.RowLayerStacks
+	// is the single enumeration behind each answer, which is what makes the two
+	// impossible to fix on one side only.
+	for _, kind := range []store.Kind{store.KindCast, store.KindPlaylist} {
+		rows, err := e.store.List(t.Context(), kind, store.ListFilter{})
+		if err != nil {
+			t.Fatalf("list %s: %v", kind, err)
+		}
+		var found bool
+		for _, row := range rows {
+			refs, err := store.RowAssetReferences(kind, row.Body)
+			if err != nil {
+				t.Fatalf("project %s asset references: %v", kind, err)
+			}
+			for _, ref := range refs {
+				if ref.Ref == fontRef {
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Errorf("no %s row reports the derive font — the sweep would reclaim bytes a screen is drawing", kind)
+		}
 	}
 }
 

@@ -154,6 +154,24 @@ func (e DeriveFillKind) Valid() bool {
 	}
 }
 
+// Defines values for DerivePendingLayerSource.
+const (
+	DerivePendingLayerSourceCast     DerivePendingLayerSource = "cast"
+	DerivePendingLayerSourcePlaylist DerivePendingLayerSource = "playlist"
+)
+
+// Valid indicates whether the value is a known member of the DerivePendingLayerSource enum.
+func (e DerivePendingLayerSource) Valid() bool {
+	switch e {
+	case DerivePendingLayerSourceCast:
+		return true
+	case DerivePendingLayerSourcePlaylist:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for DerivePendingLayerState.
 const (
 	DerivePendingLayerStatePending DerivePendingLayerState = "pending"
@@ -1392,13 +1410,26 @@ type DeriveFill struct {
 // DeriveFillKind `solid` exists beside the two gradients so a spec can state a flat backing under a shadow or a rounded border without pretending to be a gradient with two equal stops.
 type DeriveFillKind string
 
-// DerivePendingLayer One outstanding rasterization: a complete work order for `waiveo-derive`. It carries WHAT to draw (`spec`, at `w`x`h`) and WHERE the result goes (`cast_id`, `slide_id`, `layer_index`), so the tool needs no second read to act on it.
+// DerivePendingLayer One outstanding rasterization: a complete work order for `waiveo-derive`. It carries WHAT to draw (`spec`, at `w`x`h`) and WHERE the result goes (`source` + `resource_id`, then `slide_id` or `item_index`, then `layer_index`), so the tool needs no second read to act on it.
+// A `derive` layer lives in either of the two shapes that carry an authored layer stack — a cast slide, or a playlist item's inline `slide` — and both are rewritten into an ordinary `image` by the same projection, so both are reported here. `source` says which shape this job is in, and exactly one of the two locators is present with it.
 type DerivePendingLayer struct {
-	CastId     string  `json:"cast_id"`
-	CastName   *string `json:"cast_name,omitempty"`
-	H          int     `json:"h"`
-	LayerIndex int     `json:"layer_index"`
-	SlideId    string  `json:"slide_id"`
+	H int `json:"h"`
+
+	// ItemIndex The index of the playlist item whose inline slide carries the layer. Present when `source` is `playlist` and absent otherwise.
+	ItemIndex  *int `json:"item_index,omitempty"`
+	LayerIndex int  `json:"layer_index"`
+
+	// ResourceId The id of the cast or playlist row the layer is authored in.
+	ResourceId string `json:"resource_id"`
+
+	// ResourceName That row's name, for a human reading the queue.
+	ResourceName *string `json:"resource_name,omitempty"`
+
+	// SlideId The cast slide's document-local id. Present when `source` is `cast` and absent otherwise.
+	SlideId *string `json:"slide_id,omitempty"`
+
+	// Source Which authored shape carries the layer. `cast` — a cast slide, located by `slide_id`. `playlist` — a `source: "slide"` playlist item's inline slide, located by `item_index` (an inline slide has no id of its own).
+	Source DerivePendingLayerSource `json:"source"`
 
 	// Spec What the off-appliance rasterizer must draw for one `derive` layer. It is a CLOSED, declarative vocabulary rather than CSS or HTML on purpose: the renderer drives a real browser, so a spec that could carry markup would make an authored cast a script-injection vector into whichever machine runs the derive tool. Every member here is a scalar the renderer validates and then formats into markup it wrote itself.
 	Spec DeriveSpec `json:"spec"`
@@ -1410,6 +1441,9 @@ type DerivePendingLayer struct {
 	State DerivePendingLayerState `json:"state"`
 	W     int                     `json:"w"`
 }
+
+// DerivePendingLayerSource Which authored shape carries the layer. `cast` — a cast slide, located by `slide_id`. `playlist` — a `source: "slide"` playlist item's inline slide, located by `item_index` (an inline slide has no id of its own).
+type DerivePendingLayerSource string
 
 // DerivePendingLayerState `pending` — no PNG has ever been produced, so the projection omits the layer and the rest of the slide still draws. `stale` — a PNG exists but the spec or the geometry has changed since; the OLD picture keeps being served until the tool catches up, because an edit nobody has rendered yet must never blank a screen.
 type DerivePendingLayerState string
@@ -1440,7 +1474,7 @@ type DeriveSpec struct {
 	// Border A stroked and/or rounded outline. A radius with a zero width is legal and useful — it rounds the FILL without stroking an edge.
 	Border *DeriveBorder `json:"border,omitempty"`
 
-	// Color The foreground: text colour for `text`, DARK MODULE colour for `qr`. Optional; the default is `#FFFFFF`.
+	// Color The foreground: text colour for `text`, DARK MODULE colour for `qr`. Optional; the default is `#FFFFFF`. Rejected on `rect`, which has no foreground — its picture is its `fill`, `border` and `shadow`.
 	Color *string `json:"color,omitempty"`
 
 	// Data The payload a `qr` spec encodes. The cap is well below the format's theoretical ceiling: a denser symbol is unreadable across a room, so accepting one would mean authoring a sign that cannot work.
@@ -1453,12 +1487,13 @@ type DeriveSpec struct {
 	Fill *DeriveFill `json:"fill,omitempty"`
 
 	// FontAssetRef CUSTOM TYPOGRAPHY — a content-addressed reference to a font file (TTF/OTF/WOFF2) in the content origin, which the renderer fetches and embeds before drawing. It is a real content reference: it is checked to exist when the cast is written, and it is protected from the content retention sweep for as long as a cast names it.
+	// `text` only, and rejected on `qr` and `rect` more firmly than the other two typography members: the embedded face can only be drawn in by a text run, so a face named on either of those would be inert AND would pin a font file against the retention sweep for a layer that never uses it.
 	FontAssetRef *string `json:"font_asset_ref,omitempty"`
 
-	// FontFamily The family name the text is drawn in. With `font_asset_ref` it is the name the embedded face registers under; without one it must be a family the rendering host already has.
+	// FontFamily The family name the text is drawn in. With `font_asset_ref` it is the name the embedded face registers under; without one it must be a family the rendering host already has. `text` only, rejected on `qr` and `rect`.
 	FontFamily *string `json:"font_family,omitempty"`
 
-	// FontPx Text size in canvas pixels. Optional; the default is 64.
+	// FontPx Text size in canvas pixels. `text` only; the default is 64. Rejected on `qr` and `rect` for the same reason `align` is — the renderer writes it into the text rule and nowhere else, so a size there would be a control that silently does nothing.
 	FontPx *int `json:"font_px,omitempty"`
 
 	// Kind What to draw. `qr` is a scannable symbol — there is no player node that makes one, so this is the only way a slide can carry a QR code at all. `text` and `rect` are the STYLED forms of the two native kinds: use them only when the layer needs a gradient, a shadow, a rounded border or a custom face, because a native `text`/`rect` layer costs no content, needs no render, and re-styles instantly.

@@ -245,6 +245,26 @@ describe("validateSlide — the console-side mirror of wire.ValidateSlideLayers"
     ).toMatch(/border with a width needs a colour/i);
     expect(derive({ kind: "text", text: "hi", color: "red" }).join(" ")).toMatch(/not a #RRGGBB/i);
 
+    // TYPOGRAPHY is text-only and the server REFUSES it elsewhere rather than
+    // ignoring it: the renderer writes the size and family into the text rule
+    // only, and embeds the uploaded face for a text run only. A mirror that
+    // stayed silent here would let the console send a body it knows will 422,
+    // losing every other edit in the document with it.
+    expect(derive({ kind: "text", text: "hi", font_px: 40, font_family: "Oswald",
+      font_asset_ref: `sha256:${"a".repeat(64)}` })).toEqual([]);
+    expect(derive({ kind: "qr", data: "x", font_px: 40 }).join(" ")).toMatch(/font size only applies/i);
+    expect(derive({ kind: "qr", data: "x", font_family: "Oswald" }).join(" ")).toMatch(/font family only applies/i);
+    expect(derive({ kind: "qr", data: "x", font_asset_ref: `sha256:${"a".repeat(64)}` }).join(" ")).toMatch(
+      /custom font file only applies/i,
+    );
+    expect(derive({ kind: "rect", fill: { kind: "solid", from: "#FFFFFF" },
+      font_asset_ref: `sha256:${"a".repeat(64)}` }).join(" ")).toMatch(/custom font file only applies/i);
+    // …and a rect has no foreground for a colour to paint: its picture is its
+    // fill, border and shadow.
+    expect(derive({ kind: "rect", fill: { kind: "solid", from: "#FFFFFF" }, color: "#112233" }).join(" ")).toMatch(
+      /no foreground colour/i,
+    );
+
     // A layer with no spec at all, and a spec on a kind that does not take one —
     // the mirror direction, which the server also refuses.
     expect(validateSlide({ id: "s", layers: [{ kind: "derive", ...geo }] }).map((p) => p.message).join(" ")).toMatch(

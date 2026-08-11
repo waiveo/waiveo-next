@@ -74,6 +74,93 @@ func (r AssetReference) HexDigest() string { return strings.TrimPrefix(r.Ref, "s
 // be reclaimable while a screen was playing them.
 var AssetBearingKinds = []Kind{KindPlaylist, KindCast}
 
+// LayerStack is ONE authored stack of slide layers found inside a stored row,
+// together with enough of its location to write back into it.
+//
+// It exists because a layer stack is not a cast-only shape and never was: a
+// `source: "slide"` playlist item carries one inline (datamodel.Slide), the two
+// content projections run BOTH through the identical resolveLayers, and every
+// consumer that walks layers has to walk both or silently ignore half the
+// authored layers in a workspace. That silence is what shipped: the retention
+// sweep and the write-time guard read the inline shape (layerAssetReferences,
+// via RowAssetReferences) while GET /derive/pending scanned casts only — so a
+// `derive` layer in an inline slide was accepted, projected and protected from
+// the sweep, and could never be reported to the renderer that would draw it.
+//
+// One enumeration serves both now. A new row kind, or a new nesting of a layer
+// stack inside an existing one, is added HERE and every consumer sees it.
+type LayerStack struct {
+	// Field is the JSON path of the object that owns the stack, within the row
+	// body: `slides[3]` for a cast slide, `items[2].slide` for a playlist item's
+	// inline slide. It is the prefix every reference path under the stack is
+	// built from, and it is what an error message points an operator at.
+	Field string
+	// SlideID is a cast slide's document-local id. It is EMPTY for an inline
+	// playlist slide, which carries no id at all (datamodel.Slide is layers and
+	// nothing else) — a caller that needs to address one uses ItemIndex.
+	SlideID string
+	// ItemIndex is the index of the owning playlist item, or -1 when the stack
+	// is a cast slide's. Together with SlideID it says which of the two shapes
+	// this is, without a second discriminator to keep in step.
+	ItemIndex int
+	// Layers is the authored stack itself, in z-order.
+	Layers []wire.Layer
+}
+
+// castSlideStack is the ItemIndex a cast slide's stack carries: a cast slide
+// belongs to no playlist item, and -1 is an index no items array can produce.
+const castSlideStack = -1
+
+// RowLayerStacks returns, in document order, every authored slide-layer stack
+// the body of a row of the given kind carries. A kind that carries none returns
+// nothing, with no error, for the same reason RowAssetReferences does.
+//
+// A body that will not decode is an ERROR rather than an empty answer — see
+// RowAssetReferences, whose callers make that decision deliberately and
+// differently.
+func RowLayerStacks(kind Kind, body []byte) ([]LayerStack, error) {
+	switch kind {
+	case KindPlaylist:
+		var pl struct {
+			Items []datamodel.PlaylistItem `json:"items"`
+		}
+		if err := json.Unmarshal(body, &pl); err != nil {
+			return nil, fmt.Errorf("store: decode a %s row for its layer stacks: %w", kind, err)
+		}
+		var out []LayerStack
+		for i, it := range pl.Items {
+			if it.Slide == nil {
+				continue
+			}
+			out = append(out, LayerStack{
+				Field:     fmt.Sprintf("items[%d].slide", i),
+				ItemIndex: i,
+				Layers:    it.Slide.Layers,
+			})
+		}
+		return out, nil
+	case KindCast:
+		var c struct {
+			Slides []datamodel.CastSlide `json:"slides"`
+		}
+		if err := json.Unmarshal(body, &c); err != nil {
+			return nil, fmt.Errorf("store: decode a %s row for its layer stacks: %w", kind, err)
+		}
+		var out []LayerStack
+		for i, s := range c.Slides {
+			out = append(out, LayerStack{
+				Field:     fmt.Sprintf("slides[%d]", i),
+				SlideID:   s.ID,
+				ItemIndex: castSlideStack,
+				Layers:    s.Layers,
+			})
+		}
+		return out, nil
+	default:
+		return nil, nil
+	}
+}
+
 // RowAssetReferences returns, in document order, every content-origin asset the
 // body of a row of the given kind names. A kind that cannot carry assets
 // returns nothing, with no error: asking is legitimate (a caller iterating
@@ -87,49 +174,45 @@ var AssetBearingKinds = []Kind{KindPlaylist, KindCast}
 // and every one of those is a decision the CALLER has to make deliberately. An
 // empty slice would make the dangerous choice for all three, silently.
 func RowAssetReferences(kind Kind, body []byte) ([]AssetReference, error) {
-	switch kind {
-	case KindPlaylist:
-		var pl struct {
-			Items []datamodel.PlaylistItem `json:"items"`
-		}
-		if err := json.Unmarshal(body, &pl); err != nil {
-			return nil, fmt.Errorf("store: decode a %s row for its asset references: %w", kind, err)
-		}
-		var refs []AssetReference
-		for i, it := range pl.Items {
-			if it.AssetRef != "" {
-				refs = append(refs, AssetReference{
-					Field: fmt.Sprintf("items[%d].asset_ref", i),
-					Ref:   it.AssetRef,
-				})
-			}
-			// A `source: "slide"` item's content IS its layer stack, and an
-			// image layer inside it names origin bytes exactly as a plain
-			// asset item's asset_ref does (DAT-041 discipline). It carries no
-			// item-level asset_ref, so a projection that reads only that field
-			// sees an inline slide as referencing nothing at all.
-			if it.Slide != nil {
-				refs = append(refs, layerAssetReferences(
-					fmt.Sprintf("items[%d].slide", i), it.Slide.Layers)...)
-			}
-		}
-		return refs, nil
-	case KindCast:
-		var c struct {
-			Slides []datamodel.CastSlide `json:"slides"`
-		}
-		if err := json.Unmarshal(body, &c); err != nil {
-			return nil, fmt.Errorf("store: decode a %s row for its asset references: %w", kind, err)
-		}
-		var refs []AssetReference
-		for i, s := range c.Slides {
-			refs = append(refs, layerAssetReferences(
-				fmt.Sprintf("slides[%d]", i), s.Layers)...)
-		}
-		return refs, nil
-	default:
-		return nil, nil
+	// Every LAYER reference — a cast slide's, and a `source: "slide"` playlist
+	// item's inline stack — comes from the one shared enumeration (RowLayerStacks),
+	// so the two shapes cannot be projected here and forgotten by the derive
+	// queue, or the reverse. That reverse is exactly what shipped once.
+	stacks, err := RowLayerStacks(kind, body)
+	if err != nil {
+		return nil, err
 	}
+	if kind != KindPlaylist {
+		var refs []AssetReference
+		for _, st := range stacks {
+			refs = append(refs, layerAssetReferences(st.Field, st.Layers)...)
+		}
+		return refs, nil
+	}
+
+	// A playlist carries BOTH shapes, and they are emitted interleaved in
+	// document order: an item's own asset_ref, then that item's inline layers.
+	var pl struct {
+		Items []datamodel.PlaylistItem `json:"items"`
+	}
+	if err := json.Unmarshal(body, &pl); err != nil {
+		return nil, fmt.Errorf("store: decode a %s row for its asset references: %w", kind, err)
+	}
+	var refs []AssetReference
+	next := 0
+	for i, it := range pl.Items {
+		if it.AssetRef != "" {
+			refs = append(refs, AssetReference{
+				Field: fmt.Sprintf("items[%d].asset_ref", i),
+				Ref:   it.AssetRef,
+			})
+		}
+		for next < len(stacks) && stacks[next].ItemIndex == i {
+			refs = append(refs, layerAssetReferences(stacks[next].Field, stacks[next].Layers)...)
+			next++
+		}
+	}
+	return refs, nil
 }
 
 // layerAssetReferences projects one authored layer stack, prefixing each path

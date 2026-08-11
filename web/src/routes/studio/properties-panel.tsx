@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, FileVideo, ImagePlus, X } from "lucide-react";
+import { AlertTriangle, FileVideo, ImagePlus, Type, X } from "lucide-react";
 import { Button, FormField, KitIcon } from "@/components/kit";
 import {
   ENTITY_STATE_TOKEN,
@@ -58,6 +58,10 @@ export interface PropertiesPanelProps {
    * (`image` or `video` — one picker, because the origin holds one kind of
    * thing: bytes with a digest). */
   onPickAsset: () => void;
+  /** Open that same picker for a rasterized TEXT layer's embedded face
+   * (`derive.font_asset_ref`). A font file is content in the same origin, so it
+   * is chosen the same way — see DeriveFields' custom-face control. */
+  onPickFont: () => void;
   /** The current slide's hold time, and how to change it. */
   durationMs: number | undefined;
   onDurationChange: (durationMs: number | null) => void;
@@ -74,6 +78,7 @@ export function PropertiesPanel({
   layerIndex,
   onPatch,
   onPickAsset,
+  onPickFont,
   durationMs,
   onDurationChange,
   entities,
@@ -269,6 +274,7 @@ export function PropertiesPanel({
             <DeriveFields
               spec={layer.derive}
               rendered={Boolean(layer.asset_ref)}
+              onPickFont={onPickFont}
               onSpec={(patch) => {
                 const spec = layer.derive;
                 if (!spec) return;
@@ -354,10 +360,13 @@ function DeriveFields({
   spec,
   rendered,
   onSpec,
+  onPickFont,
 }: {
   spec: DeriveSpec;
   rendered: boolean;
   onSpec: (patch: DeriveSpecPatch) => void;
+  /** Open the content picker for the embedded face. */
+  onPickFont: () => void;
 }) {
   const fill = spec.fill;
   const shadow = spec.shadow;
@@ -471,6 +480,52 @@ function DeriveFields({
               />
             )}
           </FormField>
+
+          {/* CUSTOM TYPOGRAPHY — the whole reason "a font the device does not
+              ship" is one of the five things this layer kind exists for.
+              Everything downstream of it was already built: the write-time check
+              that the face is really in the origin, the retention hold that
+              stops the sweep reclaiming it while a cast names it, and the
+              renderer's fetch-and-@font-face embed. Without a control the member
+              was reachable only by hand-rolled JSON — an operator could upload a
+              TTF on the Content page and then had no way at all to attach it,
+              which is the half-built shape this panel's own doc promises not to
+              ship. */}
+          <div className="flex flex-col gap-2">
+            <span className="text-sm font-medium">Custom font file</span>
+            {spec.font_asset_ref ? (
+              <code
+                data-slot="derive-font-ref"
+                className="min-w-0 truncate rounded-input bg-[color:var(--wv-surface-2)] px-2 py-1 font-mono text-[12px] text-muted-foreground"
+              >
+                {spec.font_asset_ref}
+              </code>
+            ) : (
+              <p className="text-[13px] text-muted-foreground">
+                None — the renderer draws with whatever face its own machine has for that family. Attach an
+                uploaded TTF/OTF/WOFF2 to pin it.
+              </p>
+            )}
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" variant="secondary" icon={Type} onClick={onPickFont}>
+                {spec.font_asset_ref ? "Replace font file" : "Choose font file"}
+              </Button>
+              {spec.font_asset_ref ? (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon={X}
+                  // Only the REF is dropped. `font_family` stays, because
+                  // without a file it is still meaningful — the family the
+                  // rendering host must already have — and clearing a control
+                  // the operator did not touch is its own surprise.
+                  onClick={() => onSpec({ font_asset_ref: undefined })}
+                >
+                  Clear
+                </Button>
+              ) : null}
+            </div>
+          </div>
         </>
       ) : null}
 

@@ -28,17 +28,36 @@ import (
 // be a second way for content to enter the system, with a second set of rules to
 // keep in step with the first.
 
+// The two authored shapes a derive layer can live in, as GET /derive/pending
+// names them. A cast slide is located by its document-local id; a playlist
+// item's inline slide has no id of its own and is located by the item's index.
+const (
+	SourceCast     = "cast"
+	SourcePlaylist = "playlist"
+)
+
 // PendingJob is one work order as GET /derive/pending returns it.
 type PendingJob struct {
-	CastID     string           `json:"cast_id"`
-	CastName   string           `json:"cast_name"`
-	SlideID    string           `json:"slide_id"`
-	LayerIndex int              `json:"layer_index"`
-	State      string           `json:"state"`
-	SpecDigest string           `json:"spec_digest"`
-	W          int              `json:"w"`
-	H          int              `json:"h"`
-	Spec       *wire.DeriveSpec `json:"spec"`
+	Source       string           `json:"source"`
+	ResourceID   string           `json:"resource_id"`
+	ResourceName string           `json:"resource_name"`
+	SlideID      string           `json:"slide_id"`
+	ItemIndex    *int             `json:"item_index"`
+	LayerIndex   int              `json:"layer_index"`
+	State        string           `json:"state"`
+	SpecDigest   string           `json:"spec_digest"`
+	W            int              `json:"w"`
+	H            int              `json:"h"`
+	Spec         *wire.DeriveSpec `json:"spec"`
+}
+
+// Where names the layer's place inside its row, in one grammar for both shapes,
+// so a report line and an error message do not each invent their own.
+func (j PendingJob) Where() string {
+	if j.Source == SourcePlaylist && j.ItemIndex != nil {
+		return fmt.Sprintf("item %d", *j.ItemIndex)
+	}
+	return "slide " + j.SlideID
 }
 
 // Client talks to a waiveo-next feeder's api/1 surface.
@@ -217,28 +236,63 @@ func (c *Client) GetCast(ctx context.Context, id string) (datamodel.Cast, string
 	return cast, resp.Header.Get("ETag"), nil
 }
 
+// GetPlaylist reads a playlist and its ETag. A `source: "slide"` item carries an
+// inline layer stack, which is the second place a derive layer lives.
+func (c *Client) GetPlaylist(ctx context.Context, id string) (datamodel.Playlist, string, error) {
+	resp, raw, err := c.do(ctx, http.MethodGet, "/api/v1/playlists/"+url.PathEscape(id), nil, nil)
+	if err != nil {
+		return datamodel.Playlist{}, "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return datamodel.Playlist{}, "", fmt.Errorf("derive: GET /playlists/%s: %d %s", id, resp.StatusCode, snippet(raw))
+	}
+	var pl datamodel.Playlist
+	if err := json.Unmarshal(raw, &pl); err != nil {
+		return datamodel.Playlist{}, "", fmt.Errorf("derive: decode playlist %s: %w", id, err)
+	}
+	return pl, resp.Header.Get("ETag"), nil
+}
+
 // PatchCastSlides replaces a cast's slide list under an If-Match precondition.
+func (c *Client) PatchCastSlides(ctx context.Context, id string, slides []datamodel.CastSlide, etag string) error {
+	return c.patchRow(ctx, "/api/v1/casts/", id, map[string]any{"slides": slides}, etag)
+}
+
+// PatchPlaylistItems replaces a playlist's item list under an If-Match
+// precondition — the write-back for a derive layer authored in an item's inline
+// slide, through the same ordinary PATCH an operator's own edit uses.
+func (c *Client) PatchPlaylistItems(ctx context.Context, id string, items []datamodel.PlaylistItem, etag string) error {
+	return c.patchRow(ctx, "/api/v1/playlists/", id, map[string]any{"items": items}, etag)
+}
+
+// patchRow is the conditional write both write-backs share.
 //
 // The precondition is not optional and it is not decoration: a derive run reads
-// a cast, spends seconds in a browser, and then writes back. If an operator
-// edited the cast in between, an unconditional write would silently discard
+// a row, spends seconds in a browser, and then writes back. If an operator
+// edited that row in between, an unconditional write would silently discard
 // their edit and replace it with the pre-render snapshot. A 409 is the correct
 // outcome — the run reports it and the next pass picks up the new spec.
-func (c *Client) PatchCastSlides(ctx context.Context, id string, slides []datamodel.CastSlide, etag string) error {
-	body, err := json.Marshal(map[string]any{"slides": slides})
+//
+// A MISSING ETag is refused rather than downgraded to an unconditional write.
+// The read that produced the row is the same read that produced the ETag, so an
+// empty one means the precondition this function exists to enforce cannot be
+// stated — and "send it anyway" is exactly the silent clobber the paragraph
+// above forbids.
+func (c *Client) patchRow(ctx context.Context, prefix, id string, patch map[string]any, etag string) error {
+	if etag == "" {
+		return fmt.Errorf("derive: PATCH %s%s: the read returned no ETag, so the write cannot be conditioned on it — refusing rather than overwriting whatever is there now", prefix, id)
+	}
+	body, err := json.Marshal(patch)
 	if err != nil {
 		return err
 	}
-	hdr := map[string]string{"Content-Type": "application/json"}
-	if etag != "" {
-		hdr["If-Match"] = etag
-	}
-	resp, raw, err := c.do(ctx, http.MethodPatch, "/api/v1/casts/"+url.PathEscape(id), body, hdr)
+	hdr := map[string]string{"Content-Type": "application/json", "If-Match": etag}
+	resp, raw, err := c.do(ctx, http.MethodPatch, prefix+url.PathEscape(id), body, hdr)
 	if err != nil {
 		return err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("derive: PATCH /casts/%s: %d %s", id, resp.StatusCode, snippet(raw))
+		return fmt.Errorf("derive: PATCH %s%s: %d %s", prefix, id, resp.StatusCode, snippet(raw))
 	}
 	return nil
 }

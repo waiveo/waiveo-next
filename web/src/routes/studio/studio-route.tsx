@@ -16,9 +16,10 @@ import {
   type SlideLayer,
   type WaiveoApi,
 } from "@/api";
-import { MediaPickerModal } from "@/routes/media/media-library";
+import { MediaPickerModal, useContentLibrary } from "@/routes/media/media-library";
 import {
   EMPTY_STUDIO_STATE,
+  applyDerivePatch,
   currentSlide,
   defaultLayer,
   deriveLayer,
@@ -84,10 +85,37 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
   const [saving, setSaving] = useState(false);
   /** Set when a save hit a 412; holds the server's current cast for review. */
   const [conflict, setConflict] = useState<{ cast: Cast; etag: string } | null>(null);
-  const [pickerOpen, setPickerOpen] = useState(false);
+  /**
+   * What the content picker is choosing FOR, or null when it is closed.
+   *
+   * `layer` places bytes on an `image`/`video` layer; `font` attaches a face to
+   * a rasterized text layer's `derive.font_asset_ref`. One picker with a target
+   * rather than two dialogs: the origin holds one kind of thing (bytes with a
+   * digest), and a second copy of the same modal is a second place to forget a
+   * rule about it.
+   */
+  const [pickerFor, setPickerFor] = useState<"layer" | "font" | null>(null);
   const [leaveOpen, setLeaveOpen] = useState(false);
   /** Every entity the box knows, for an `entity` widget's subject picker. */
   const [entities, setEntities] = useState<Entity[]>([]);
+
+  // The content origin's listing, read ONCE for the whole editor and used for
+  // two things that must not disagree: resolving every layer's `asset_ref` into
+  // a url the canvas can draw, and stocking the picker. `url` is a DERIVED
+  // member — producers mint it at projection time and only this console's picker
+  // ever writes one onto an authored layer — so a canvas that waited for an
+  // authored url drew nothing for every cast written by anything else,
+  // `waiveo-derive`'s rasters first among them.
+  //
+  // A failure is NOT surfaced as an editor error, for the same reason the entity
+  // read is not: it degrades the picker to an explanatory empty state and leaves
+  // affected layers drawn as unresolved, which is honest, rather than taking a
+  // text-layout session down because the origin is briefly unreachable.
+  const { assets: contentAssets, error: contentError, reload: reloadContent } = useContentLibrary(client);
+  const assetUrls = useMemo(() => {
+    if (contentAssets === null) return null;
+    return new Map(contentAssets.map((a) => [a.asset_ref, a.url]));
+  }, [contentAssets]);
 
   const slide = currentSlide(state);
   const layer = selectedLayer(state);
@@ -401,6 +429,7 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
           slides={state.slides}
           activeIndex={state.slideIndex}
           problemsBySlide={problemsBySlide}
+          assetUrls={assetUrls}
           onSelect={(index) => dispatch({ type: "selectSlide", index })}
           onAdd={() => dispatch({ type: "addSlide", id: newSlideId() })}
           onDuplicate={(index) => dispatch({ type: "duplicateSlide", index, id: newSlideId() })}
@@ -415,6 +444,7 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
               <SlideCanvas
                 slide={slide}
                 selectedIndex={state.layerIndex}
+                assetUrls={assetUrls}
                 onSelect={onSelectLayer}
                 onGeometry={onGeometry}
                 onNudge={onNudge}
@@ -444,7 +474,8 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
                   if (state.layerIndex === null) return;
                   dispatch({ type: "patchLayer", index: state.layerIndex, patch });
                 }}
-                onPickAsset={() => setPickerOpen(true)}
+                onPickAsset={() => setPickerFor("layer")}
+                onPickFont={() => setPickerFor("font")}
                 durationMs={slide.duration_ms}
                 onDurationChange={(durationMs) =>
                   dispatch({ type: "setSlideDuration", index: state.slideIndex, durationMs })
@@ -460,16 +491,36 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
       </div>
 
       <MediaPickerModal
-        open={pickerOpen}
-        onOpenChange={setPickerOpen}
-        api={client}
+        open={pickerFor !== null}
+        onOpenChange={(open) => setPickerFor(open ? (pickerFor ?? "layer") : null)}
+        assets={contentAssets}
+        error={contentError}
+        // Passed straight through, NOT wrapped: the picker re-reads on open,
+        // and a closure minted per render would make that read re-fire on every
+        // render the read itself triggers.
+        onReload={reloadContent}
         // The origin holds one kind of thing (bytes with a digest), so the same
-        // picker serves an image layer and a video layer; only the wording
-        // follows the selected layer's kind.
-        kind={layer?.kind === "video" ? "video" : "image"}
-        selectedRef={layer?.asset_ref}
+        // picker serves an image layer, a video layer and a rasterized text
+        // layer's embedded face; only the wording follows what it is choosing
+        // for.
+        kind={pickerFor === "font" ? "font" : layer?.kind === "video" ? "video" : "image"}
+        selectedRef={pickerFor === "font" ? layer?.derive?.font_asset_ref : layer?.asset_ref}
         onPick={(asset) => {
           if (state.layerIndex === null) return;
+          if (pickerFor === "font") {
+            // The FACE goes on the spec, not the layer: `font_asset_ref` is part
+            // of what the rasterizer draws, so it belongs to the digest — which
+            // is what makes attaching a font mark the raster stale and get it
+            // re-rendered rather than silently keeping the old picture.
+            const spec = layer?.derive;
+            if (!spec) return;
+            dispatch({
+              type: "patchLayer",
+              index: state.layerIndex,
+              patch: { derive: applyDerivePatch(spec, { font_asset_ref: asset.asset_ref }) },
+            });
+            return;
+          }
           dispatch({
             type: "patchLayer",
             index: state.layerIndex,

@@ -395,6 +395,19 @@ export function validateSlide(slide: CastSlide): SlideProblem[] {
         if (d.kind === "qr" && !d.data) at("A QR code needs a link or text to encode.");
         if (d.kind === "text" && !d.text) at("Text is required.");
         if (d.kind === "rect" && !d.fill) at("A styled panel needs a fill.");
+        // TYPOGRAPHY is text-only, and the server REFUSES it elsewhere rather
+        // than ignoring it (`wire.ValidateDeriveSpec`): the renderer writes the
+        // size and family into the text rule only and embeds the face for a text
+        // run only. This mirror exists because the console's own controls cannot
+        // produce the violation — a spec's kind is fixed at insert — but a cast
+        // authored through the API or shipped in a pack can, and then Save would
+        // send a body the server answers with an opaque 422.
+        if (d.kind !== "text") {
+          if (d.font_px) at("Font size only applies to rasterized text.");
+          if (d.font_family) at("Font family only applies to rasterized text.");
+          if (d.font_asset_ref) at("A custom font file only applies to rasterized text.");
+        }
+        if (d.kind === "rect" && d.color) at("A styled panel has no foreground colour — set its fill instead.");
         if (d.fill && d.fill.kind !== "solid" && !d.fill.to) at("A gradient needs a second colour.");
         if (d.fill && d.fill.kind === "solid" && d.fill.to) at("A solid fill has no second colour.");
         if (d.border && d.border.width && !d.border.color) at("A border with a width needs a colour.");

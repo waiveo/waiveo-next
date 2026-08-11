@@ -26,7 +26,15 @@ import { TRACE_ID, ULID_A, ULID_B, ULID_C, cast, contentAsset, problem } from "@
  * deterministic gesture.
  */
 
-const server = setupServer();
+// The editor reads the content origin's listing ON MOUNT, not only when the
+// picker is opened: a layer's fetch `url` is DERIVED, so this listing is how an
+// authored `asset_ref` becomes something the canvas can draw. An EMPTY listing
+// is the base handler — a case that needs bytes to resolve says so with its own
+// `server.use`, which takes precedence — so a case about text layers never has
+// to know about the content origin, and no case reaches the network unhandled.
+const server = setupServer(
+  http.get("*/api/v1/content", () => HttpResponse.json({ content: [] })),
+);
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => {
   server.resetHandlers();
@@ -433,6 +441,37 @@ describe("Studio — the image layer and the media picker", () => {
     await user.click(saveButton());
     const layers = (await waitForSave(saved)).slides?.[0]?.layers ?? [];
     expect(layers[3]).toMatchObject({ kind: "image", asset_ref: "sha256:ff99", url: "/content/ff99" });
+  });
+
+  it("draws an image layer that carries only an asset_ref", async () => {
+    // The MIRROR of the derive defect, and the same root cause. `asset_ref` is
+    // the only AUTHORED half of a content-bearing layer — the wire says so, and
+    // `validateSlide` deliberately does not demand a url — so a cast written by
+    // a pack import, a workspace restore or a plain API call carries the ref
+    // alone. Keyed off `url`, the canvas drew every one of those as the "no
+    // bytes chosen yet" outline: a lie about a layer that is finished.
+    const withImage = cast({
+      slides: [{
+        id: "slide-1",
+        layers: [{ kind: "image", x: 0, y: 0, w: 640, h: 360, asset_ref: "sha256:aa11" }],
+      }],
+    });
+    const saved: { body?: SavedBody } = {};
+    server.use(
+      ...serveCast(withImage, saved),
+      http.get("*/api/v1/content", () =>
+        HttpResponse.json({ content: [contentAsset({ asset_ref: "sha256:aa11", url: "/content/aa11" })] }),
+      ),
+    );
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Image/ });
+
+    await waitFor(() => {
+      const imgs = document.querySelectorAll('[data-slot="layer-image"]');
+      expect(imgs).toHaveLength(2);
+      expect(imgs[0]).toHaveAttribute("src", "/content/aa11");
+    });
+    expect(document.querySelectorAll('[data-slot="layer-image-empty"]')).toHaveLength(0);
   });
 
   // Clearing leaves an image layer naming no bytes, which the SERVER refuses at
@@ -1053,15 +1092,57 @@ describe("Studio — rasterized (derive) layers", () => {
   });
 
   it("draws the real picture, and stops warning, once a raster exists", async () => {
-    // A cast whose derive layer has already been through waiveo-derive: the
-    // canvas must show the PNG rather than its own approximation, because the
-    // approximation is a browser that has neither the embedded font nor a QR
-    // encoder — and it is the last thing an operator sees before shipping.
+    // A cast whose derive layer has already been through waiveo-derive — and the
+    // layer is written EXACTLY as that tool writes it: `asset_ref` and
+    // `derived_from`, and nothing else. There is deliberately no `url` here,
+    // because no run of the rasterizer has ever produced one: `url` is a DERIVED
+    // member that producers mint at projection time, and the only reason any
+    // authored cast carries one is that this console's media picker writes it.
+    // A fixture that invented one would let a canvas that waits for an authored
+    // url pass this test while showing every real raster as unrendered forever.
+    //
+    // So the url comes from where the real one comes from: the content origin's
+    // own listing, which the editor already reads.
     const rendered = cast();
     rendered.slides[0]!.layers.push({
       kind: "derive", x: 1400, y: 120, w: 400, h: 400,
-      asset_ref: "sha256:aa11", url: "https://origin.example/content/aa11",
+      asset_ref: "sha256:aa11",
       derived_from: "digest-1",
+      derive: { kind: "qr", data: "https://waiveo.local/pair" },
+    } as never);
+    const saved: { body?: SavedBody } = {};
+    server.use(
+      ...serveCast(rendered, saved),
+      http.get("*/api/v1/content", () =>
+        HttpResponse.json({
+          content: [contentAsset({ asset_ref: "sha256:aa11", url: "https://origin.example/content/aa11" })],
+        }),
+      ),
+    );
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await waitFor(() => {
+      // Twice: the canvas and the filmstrip thumbnail are the same renderer, so
+      // a fix applied to one of them is not a fix.
+      const imgs = document.querySelectorAll('[data-slot="layer-derive"]');
+      expect(imgs).toHaveLength(2);
+      expect(imgs[0]).toHaveAttribute("src", "https://origin.example/content/aa11");
+    });
+    expect(screen.queryAllByText("NEEDS RENDER")).toHaveLength(0);
+    expect(screen.queryAllByText("BYTES MISSING")).toHaveLength(0);
+  });
+
+  it("says the raster is missing, not unrendered, when the origin has no such bytes", async () => {
+    // A layer that HAS been through the tool but whose PNG the origin is no
+    // longer serving — swept, or restored from an export without its assets.
+    // "NEEDS RENDER" would send an operator to run a tool that has already run,
+    // and running it again changes nothing, because the layer still reads
+    // CURRENT to the queue.
+    const rendered = cast();
+    rendered.slides[0]!.layers.push({
+      kind: "derive", x: 1400, y: 120, w: 400, h: 400,
+      asset_ref: "sha256:gone", derived_from: "digest-1",
       derive: { kind: "qr", data: "https://waiveo.local/pair" },
     } as never);
     const saved: { body?: SavedBody } = {};
@@ -1069,12 +1150,49 @@ describe("Studio — rasterized (derive) layers", () => {
     renderStudio();
     await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
 
+    await waitFor(() => expect(screen.getAllByText("BYTES MISSING")).toHaveLength(2));
     expect(screen.queryAllByText("NEEDS RENDER")).toHaveLength(0);
-    await waitFor(() => {
-      const imgs = document.querySelectorAll('[data-slot="layer-derive"]');
-      expect(imgs.length).toBeGreaterThan(0);
-      expect(imgs[0]).toHaveAttribute("src", "https://origin.example/content/aa11");
-    });
+  });
+
+  it("attaches an uploaded font file to a rasterized text layer", async () => {
+    // CUSTOM TYPOGRAPHY — one of the five things this layer kind exists for, and
+    // the one whose enforcement shipped without its authoring half: the
+    // write-time existence check, the retention hold and the renderer's
+    // @font-face embed were all built while `font_asset_ref` had no control
+    // anywhere in the console, so an operator could upload a TTF and had no way
+    // to attach it.
+    const saved: { body?: SavedBody } = {};
+    server.use(
+      ...serveCast(cast(), saved),
+      http.get("*/api/v1/content", () =>
+        HttpResponse.json({ content: [contentAsset({ asset_ref: "sha256:f0nt", url: "/content/f0nt" })] }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await insertDerive(user, "Styled text");
+    expect(screen.getByText(/None — the renderer draws with whatever face/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /choose font file/i }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/choose a font file/i)).toBeInTheDocument();
+    await user.click(await within(dialog).findByRole("button", { name: "Use sha256:f0nt" }));
+
+    // It is shown on the layer it belongs to…
+    expect(await screen.findByText("sha256:f0nt")).toBeInTheDocument();
+    // …and it reaches the SERVER, inside the spec, which is the only thing that
+    // makes the face reach the renderer.
+    await user.click(saveButton());
+    const layer = (await waitForSave(saved)).slides?.[0]?.layers?.[3] as Record<string, unknown>;
+    expect(layer.derive).toMatchObject({ kind: "text", font_asset_ref: "sha256:f0nt" });
+
+    // And it can be taken off again, without taking the family with it.
+    await user.click(screen.getByRole("button", { name: /^clear$/i }));
+    await user.click(saveButton());
+    const after = (await waitForSave(saved)).slides?.[0]?.layers?.[3] as Record<string, unknown>;
+    expect(after.derive).not.toHaveProperty("font_asset_ref");
   });
 
   it("keeps derived_from across an unrelated edit", async () => {
@@ -1082,9 +1200,10 @@ describe("Studio — rasterized (derive) layers", () => {
     // dropped it on save would report every layer as never rendered, and its
     // picture would come off the wall until somebody ran the tool again.
     const rendered = cast();
+    // Written the way waiveo-derive writes it: the pair, and nothing else.
     rendered.slides[0]!.layers.push({
       kind: "derive", x: 1400, y: 120, w: 400, h: 400,
-      asset_ref: "sha256:aa11", url: "https://origin.example/content/aa11",
+      asset_ref: "sha256:aa11",
       derived_from: "digest-1",
       derive: { kind: "qr", data: "https://waiveo.local/pair" },
     } as never);

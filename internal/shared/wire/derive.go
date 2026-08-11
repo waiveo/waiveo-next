@@ -124,13 +124,13 @@ type DeriveSpec struct {
 	// must stay a native live layer and there is deliberately no way to ask for
 	// one here. Required for `text`, unused elsewhere.
 	Text string `json:"text,omitempty"`
-	// FontPx is the text size in canvas pixels. Optional; an empty value means
+	// FontPx is the text size in canvas pixels. `text` only; an empty value means
 	// DeriveDefaultFontPx.
 	FontPx int `json:"font_px,omitempty"`
 	// FontFamily is the CSS family name the renderer draws the text in. When
 	// FontAssetRef is set this is the name the embedded face is registered
 	// under; when it is not, it is a family the rendering host must already
-	// have. Optional.
+	// have. `text` only, optional.
 	FontFamily string `json:"font_family,omitempty"`
 	// FontAssetRef is CUSTOM TYPOGRAPHY: a content-addressed `sha256:` reference
 	// to a font file (TTF/OTF/WOFF2) in the content origin, which the renderer
@@ -139,6 +139,11 @@ type DeriveSpec struct {
 	// layerAssetReferences projects it — an authored font must be checked to
 	// exist at write time and must not be reclaimed by the content sweep while a
 	// cast still names it.
+	//
+	// `text` only, like the other two typography members: the embedded face can
+	// only be drawn in by a text run, so a face named on a qr or a rect spec
+	// would pin a font file against the retention sweep for a layer that never
+	// uses it.
 	FontAssetRef string `json:"font_asset_ref,omitempty"`
 	// Align is horizontal alignment within the layer box: "left", "center" or
 	// "right". Optional; empty means "left".
@@ -149,7 +154,9 @@ type DeriveSpec struct {
 	// is no larger canvas to centre against later.
 	VAlign string `json:"valign,omitempty"`
 	// Color is the foreground: the text colour for `text`, the DARK MODULE colour
-	// for `qr`. `#RRGGBB`. Optional; empty means DeriveDefaultForeground.
+	// for `qr`. `#RRGGBB`. Optional; empty means DeriveDefaultForeground. A
+	// `rect` has no foreground — its picture is Fill, Border and Shadow — so a
+	// colour on one is refused rather than ignored.
 	Color string `json:"color,omitempty"`
 
 	// Fill is the backing behind the foreground — the gradient the native
@@ -283,6 +290,27 @@ func ValidateDeriveSpec(s *DeriveSpec) error {
 	if s.FontPx < 0 {
 		return fmt.Errorf("wire: derive %s: font_px must not be negative, got %d", s.Kind, s.FontPx)
 	}
+	// TYPOGRAPHY is text-only, and it is refused elsewhere for exactly the reason
+	// align and valign are, one paragraph down. The page builder writes font-size
+	// and font-family into the `#txt` rule and nowhere else, and it embeds an
+	// @font-face only a text run can be drawn in — so a size, a family or an
+	// uploaded FACE on a qr or a rect spec is a control an operator sets, saves,
+	// re-renders for, and never sees applied. Worse for the face than for the
+	// other two: font_asset_ref is a real content reference, so accepting an inert
+	// one also pins a font file against the retention sweep on behalf of a layer
+	// that will never draw with it.
+	for _, m := range []struct {
+		name string
+		set  bool
+	}{
+		{"font_px", s.FontPx != 0},
+		{"font_family", s.FontFamily != ""},
+		{"font_asset_ref", s.FontAssetRef != ""},
+	} {
+		if m.set && s.Kind != DeriveKindText {
+			return fmt.Errorf("wire: derive %s: %s is only used by a text spec", s.Kind, m.name)
+		}
+	}
 	// Alignment places TEXT inside the layer box. A QR symbol is always centred
 	// (it is a square with a mandatory quiet zone; nothing else is a sensible
 	// placement) and a rect fills its box entirely, so on either of those an
@@ -304,8 +332,16 @@ func ValidateDeriveSpec(s *DeriveSpec) error {
 			return fmt.Errorf("wire: derive %s: valign %q is unknown (want top, middle or bottom)", s.Kind, s.VAlign)
 		}
 	}
-	if s.Color != "" && !isHexColor(s.Color) {
-		return fmt.Errorf("wire: derive %s: color %q is not a #RRGGBB hex string", s.Kind, s.Color)
+	if s.Color != "" {
+		// A rect's picture is its FILL, its border and its shadow; the builder has
+		// no foreground to paint with a colour, so `color` on a rect is the same
+		// silently-ignored control as an alignment on a QR.
+		if s.Kind == DeriveKindRect {
+			return fmt.Errorf("wire: derive rect: color is not used by a rect spec (its picture is its fill, border and shadow)")
+		}
+		if !isHexColor(s.Color) {
+			return fmt.Errorf("wire: derive %s: color %q is not a #RRGGBB hex string", s.Kind, s.Color)
+		}
 	}
 	if s.FontAssetRef != "" && !isAssetRef(s.FontAssetRef) {
 		return fmt.Errorf("wire: derive %s: font_asset_ref %q is not a sha256:<64 hex> reference", s.Kind, s.FontAssetRef)

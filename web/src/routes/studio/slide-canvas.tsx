@@ -48,6 +48,48 @@ const NUDGE = 8;
 /** …and with Alt held, for placing something precisely. */
 const NUDGE_FINE = 1;
 
+/**
+ * The content origin's `asset_ref` → fetch-`url` map, or `null` while the
+ * listing is still in flight.
+ *
+ * The Studio needs it because `url` is DERIVED, not authored: the wire calls it
+ * "present on a SERVED slide", producers mint it at projection time, and the
+ * only reason an authored cast ever carries one is that this console writes it
+ * alongside the ref when an operator picks from the media library. Every other
+ * producer writes the ref alone — `waiveo-derive` writes `asset_ref` +
+ * `derived_from` and nothing else, a pack import writes what the pack declared,
+ * an API caller writes what it likes — and a canvas that keyed off `url` showed
+ * every one of those as if it had no bytes at all. For a derive layer that
+ * meant the fake approximation and a NEEDS RENDER badge on a layer that HAD
+ * been rendered, forever.
+ *
+ * `null` (not loaded yet) is deliberately distinct from an empty map (loaded,
+ * and these bytes are genuinely not in the origin): the first must not draw a
+ * "missing" state that a moment later turns out to be false.
+ */
+export type AssetUrls = ReadonlyMap<string, string> | null;
+
+/** What the canvas can draw for one layer's bytes. */
+interface ResolvedAsset {
+  /** The URL to fetch, when there is one. */
+  url: string | undefined;
+  /** True only when the origin's listing HAS loaded and does not carry the
+   * layer's ref — the bytes were swept, or never uploaded. Never true while the
+   * listing is still loading. */
+  missing: boolean;
+}
+
+/** Resolve a layer's bytes: the authored `url` if a producer minted one, else
+ * the content origin's own listing, which is the answer for every layer written
+ * by anything but this console's media picker. */
+function resolveLayerAsset(layer: SlideLayer, urls: AssetUrls): ResolvedAsset {
+  if (layer.url) return { url: layer.url, missing: false };
+  if (!layer.asset_ref) return { url: undefined, missing: false };
+  if (urls === null) return { url: undefined, missing: false };
+  const url = urls.get(layer.asset_ref);
+  return { url, missing: url === undefined };
+}
+
 /** A ticking clock, shared by every clock layer on the stage (one timer, not one
  * per layer). The preview ticks for the same reason the player does: a frozen
  * clock is the single most common way a slide looks right in an editor and wrong
@@ -174,7 +216,7 @@ function liveWidgetPreview(layer: SlideLayer, now: Date): string {
 const TICKING_KINDS = ["clock", "date", "countdown"];
 
 /** One layer, drawn the way the player draws it. Canvas-space coordinates. */
-export function LayerView({ layer, now }: { layer: SlideLayer; now: Date }) {
+export function LayerView({ layer, now, assetUrls = null }: { layer: SlideLayer; now: Date; assetUrls?: AssetUrls }) {
   const box: CSSProperties = {
     position: "absolute",
     left: layer.x,
@@ -187,16 +229,29 @@ export function LayerView({ layer, now }: { layer: SlideLayer; now: Date }) {
     return <div data-slot="layer-rect" aria-hidden="true" style={{ ...box, backgroundColor: layer.color }} />;
   }
 
+  const asset = resolveLayerAsset(layer, assetUrls);
+
   if (layer.kind === "derive") {
     // A RENDERED derive layer is drawn as exactly what it becomes on the wire —
     // an image — so the canvas stops approximating the moment the real pixels
     // exist. That is not a nicety: the whole point of the rasterizer is styling
     // this browser cannot reproduce, so an approximation that never gave way to
     // the truth would be the last thing an operator saw before shipping.
-    if (layer.url) {
-      return <img data-slot="layer-derive" src={layer.url} alt="" style={{ ...box, objectFit: "contain" }} />;
+    //
+    // The URL is RESOLVED, never assumed: `waiveo-derive` writes the asset_ref
+    // and its digest and nothing else, so a canvas that waited for an authored
+    // `url` waited for something no rasterizer run has ever produced.
+    if (asset.url) {
+      return <img data-slot="layer-derive" src={asset.url} alt="" style={{ ...box, objectFit: "contain" }} />;
     }
     const spec = layer.derive;
+    // The badge states which of the two truths this is. NEEDS RENDER means no
+    // raster has ever been produced (deriveNeedsRender — the same predicate the
+    // layer list and the properties panel read). BYTES MISSING means one WAS
+    // produced and the content origin is not serving it: swept, or never
+    // uploaded. Reporting the second as the first would send an operator to run
+    // a tool that has already run.
+    const missing = asset.missing;
     return (
       <div data-slot="layer-derive-preview" aria-hidden="true" style={{ ...box, ...deriveApproxStyle(spec) }}
         className="flex items-center justify-center overflow-hidden">
@@ -219,23 +274,27 @@ export function LayerView({ layer, now }: { layer: SlideLayer; now: Date }) {
             <KitIcon icon={QrCode} decorative className="size-32" />
           </span>
         ) : null}
-        <span
-          data-slot="layer-derive-badge"
-          className="absolute left-2 top-2 rounded bg-black/70 px-2 py-1 text-white"
-          style={{ fontSize: 28 }}
-        >
-          NEEDS RENDER
-        </span>
+        {deriveNeedsRender(layer) || missing ? (
+          <span
+            data-slot="layer-derive-badge"
+            className="absolute left-2 top-2 rounded bg-black/70 px-2 py-1 text-white"
+            style={{ fontSize: 28 }}
+          >
+            {missing ? "BYTES MISSING" : "NEEDS RENDER"}
+          </span>
+        ) : null}
       </div>
     );
   }
 
   if (isContentKind(layer.kind)) {
-    // A content-bearing layer with no bytes chosen yet is drawn as a labelled
+    // A content-bearing layer with no bytes CHOSEN yet is drawn as a labelled
     // outline rather than nothing: it is a placed, selectable, movable object
     // that simply is not finished, and an invisible one could not be found
-    // again.
-    if (!layer.url) {
+    // again. A layer that names bytes the origin cannot serve gets the same
+    // outline — it is equally undrawable — but never while the listing is still
+    // loading, which resolveLayerAsset keeps separate.
+    if (!asset.url) {
       return (
         <div
           data-slot={`layer-${layer.kind}-empty`}
@@ -257,7 +316,7 @@ export function LayerView({ layer, now }: { layer: SlideLayer; now: Date }) {
       return (
         <video
           data-slot="layer-video"
-          src={layer.url}
+          src={asset.url}
           muted
           playsInline
           preload="metadata"
@@ -268,7 +327,7 @@ export function LayerView({ layer, now }: { layer: SlideLayer; now: Date }) {
     return (
       <img
         data-slot="layer-image"
-        src={layer.url}
+        src={asset.url}
         alt=""
         style={{ ...box, objectFit: "contain" }}
       />
@@ -309,10 +368,14 @@ export function SlideStage({
   slide,
   scale,
   className,
+  assetUrls = null,
 }: {
   slide: CastSlide;
   scale: number;
   className?: string;
+  /** The content origin's ref→url listing, so a layer that names bytes without
+   * an authored url still draws. See AssetUrls. */
+  assetUrls?: AssetUrls;
 }) {
   const ticking = slide.layers.some((l) => TICKING_KINDS.includes(l.kind));
   const now = useNow(ticking);
@@ -331,7 +394,7 @@ export function SlideStage({
         }}
       >
         {slide.layers.map((layer, i) => (
-          <LayerView key={i} layer={layer} now={now} />
+          <LayerView key={i} layer={layer} now={now} assetUrls={assetUrls} />
         ))}
       </div>
     </div>
@@ -372,6 +435,8 @@ export interface SlideCanvasProps {
   /** A keyboard resize, by a canvas-space delta on one grip. */
   onResizeBy: (index: number, handle: ResizeHandle, dx: number, dy: number) => void;
   onDelete: (index: number) => void;
+  /** The content origin's ref→url listing (see AssetUrls). */
+  assetUrls?: AssetUrls;
 }
 
 /** What a drag in progress is holding: which layer, which grip (null = move),
@@ -392,6 +457,7 @@ export function SlideCanvas({
   onNudge,
   onResizeBy,
   onDelete,
+  assetUrls = null,
 }: SlideCanvasProps) {
   const frameRef = useRef<HTMLDivElement>(null);
   const [scale, setScale] = useState(1);
@@ -497,7 +563,7 @@ export function SlideCanvas({
         onPointerDown={() => onSelect(null)}
       >
         {/* The artwork, at 1:1 inside the scale transform. */}
-        <SlideStage slide={slide} scale={scale} className="pointer-events-none absolute left-0 top-0" />
+        <SlideStage slide={slide} scale={scale} assetUrls={assetUrls} className="pointer-events-none absolute left-0 top-0" />
 
         {/* The chrome, in screen pixels. One hit target per layer, topmost last
             so the z-order the operator sees is the z-order they click. */}

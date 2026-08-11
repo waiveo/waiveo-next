@@ -25,8 +25,9 @@ a Pi is a non-starter. So:
 - the appliance's entire share of the loop is **one read-only listing**,
   `GET /api/v1/derive/pending`;
 - results come back through operations that already existed —
-  `POST /api/v1/content` for the bytes, `PATCH /api/v1/casts/{id}` for the
-  reference — so there is no second content path to keep in step with the first.
+  `POST /api/v1/content` for the bytes, then `PATCH /api/v1/casts/{id}` or
+  `PATCH /api/v1/playlists/{id}` for the reference — so there is no second
+  content path to keep in step with the first.
 
 `cmd/waiveo-feeder/offappliance_test.go` asserts this from the real import graph:
 neither shipped binary may reach `internal/derive`, and `cmd/waiveo-derive` must.
@@ -45,6 +46,21 @@ waiveo-derive sync -api https://192.168.50.12:7420 -insecure-tls
 ```
 
 `sync` is **one pass, not a daemon**: run it after authoring, or from a CI step.
+It renders `-concurrency` layers at a time across the WHOLE pass — one pool sized
+by the Runner's own clamp, not one per row, so a workspace of single-layer casts
+parallelises exactly as one many-layered cast does.
+
+### Both authored shapes
+
+A `derive` layer lives in either shape that carries an authored layer stack: a
+**cast slide**, or a **`source: "slide"` playlist item's inline slide**. Both are
+rewritten into an ordinary `image` by the same projection, so both really do
+reach a screen — and the queue reports both. A job says which with `source`
+(`cast`/`playlist`) plus `resource_id`, then locates the layer with `slide_id`
+(a cast slide's document-local id) or `item_index` (an inline slide has no id of
+its own). `store.RowLayerStacks` is the single enumeration behind the queue AND
+behind the retention/write-time projection, so the two cannot know about
+different shapes.
 
 The credential is read from the dev key file (`make dev-key`) or from
 `-token-file`, never from a flag — an argument is visible in `ps` and lands in
@@ -72,6 +88,25 @@ has run. Over the API it is an ordinary `derive` slide layer:
 The spec vocabulary is **closed and declarative** — there is deliberately no way
 to send the renderer markup, because it drives a real browser on somebody's
 machine over content that may have been authored by somebody else.
+
+Every member is refused on a kind that would IGNORE it, never quietly dropped:
+`align`/`valign` on a `qr` or `rect`, `font_px`/`font_family`/`font_asset_ref` on
+anything but `text`, `color` on a `rect`, a second stop on a `solid` fill. A
+control an operator sets, saves and re-renders for, and never sees applied, is
+the defect shape this codebase keeps producing.
+
+### Custom typography
+
+`font_asset_ref` is a content-addressed reference to a font file (TTF/OTF/WOFF2)
+that the renderer fetches and embeds as an `@font-face` before drawing — the
+member that makes "a font the device does not ship" possible at all. Upload the
+file on the Content page, then attach it in the Studio: select a rasterized text
+layer and use **Custom font file** in the properties panel. `font_family` is the
+name the embedded face registers under.
+
+Because it is a real content reference, it is checked to exist when the row is
+written and it is held against the content retention sweep for as long as a row
+names it.
 
 ## Pending, stale, current
 
@@ -133,7 +168,7 @@ picture**, never as an error.
 | per-job wall-clock timeout + **process-tree kill** | `browser.go` | a wedged Chromium does not exit when its parent gives up; `Process.Kill` reaches only the launcher, so renderer/GPU/zygote children survive, hold the profile dir, and accumulate until the host is out of memory |
 | **two-rAF idle-frame force** (+ `document.fonts.ready`) | `browser.go` | a loaded, idle headless page may never commit another compositor frame, and `captureScreenshot` then blocks for its **full** timeout waiting for one — legacy's #1154, where the immediate retry succeeded in ~35 ms |
 | **per-element circuit breaker**, 60 s doubling to a 10 min ceiling | `runner.go` | one layer that cannot render is retried every pass forever and starves the layers that can |
-| **bounded concurrency clamp** (default 2, legacy's pool size) | `runner.go` | each concurrent job is a whole browser; unbounded is how a render host is taken down by its own queue |
+| **bounded concurrency clamp** (default 2, legacy's pool size) | `runner.go` (the clamp) + `sync.go` (the pool that pushes against it) | each concurrent job is a whole browser; unbounded is how a render host is taken down by its own queue. The clamp is only a clamp if something concurrent meets it, so `sync` runs the whole pass through a pool sized by `Runner.Concurrency()` — a clamp nothing ever reaches is a flag that reads as a setting and changes nothing |
 
 Plus one legacy could not afford: a **blank-capture recapture**. A fully
 transparent PNG at the correct dimensions is what a capture taken during a font
