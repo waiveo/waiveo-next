@@ -2,7 +2,8 @@
 // desired-state movement (REL-050–056): VERIFYING a received
 // `state.snapshot` against the relay's persisted, enrollment-anchored
 // trust anchor (REL-071, `#28`), enforcing generation monotonicity
-// (REL-052), and persisting `{generation, hash, screen_programs}` as
+// (REL-052), and persisting
+// `{generation, hash, screen_programs, revoked, device_inventory}` as
 // last-applied (REL-055, internal/relay/identity). The bytes arrive over
 // the persistent connection (internal/relay/relayconn's state.pull —
 // relayconn.SnapshotFromFrame hands VerifyAndApply exactly the pair it
@@ -283,6 +284,45 @@ func ServedRevocation(store *identity.Store) ([]string, error) {
 		return nil, fmt.Errorf("desiredstate: ServedRevocation: decode persisted revoked: %w", err)
 	}
 	return revoked, nil
+}
+
+// ServedDeviceInventory returns the relay's persisted last-applied
+// `device_inventory` section (REL-063/064) from store, decoded — the
+// adopted-set counterpart of ServedProgram and ServedRevocation, read on the
+// same OFFLINE boot path for the same reason, and completing the set of things
+// the last-applied row can restate without an app peer.
+//
+// Its sole input is the durable operational store: no network I/O, no app peer.
+// That is what makes the relay's device plane — command dispatch, ECP state
+// polling, and screen keep-alive alike — come up on the adopted set it last
+// synced rather than on nothing, after a restart it did not choose.
+//
+// The asymmetry with the other two is worth stating, because it is why this
+// read is load-bearing rather than tidy. An unrestored screen_programs shows a
+// screen the terminal default, and an unrestored revoked set is caught by the
+// app peer the moment it reconnects. An unrestored ADOPTED set is silent in
+// both directions: every consumer of it is fail-closed, so the relay drives
+// nothing, reports nothing wrong, and looks healthy — while the screens whose
+// channel keep-alive exists to relaunch (player/1 PLY-150-157) sit at the Roku
+// Home screen showing nothing. The boot where that matters most is precisely a
+// power outage, which is also the boot where the app peer is least likely to be
+// up first.
+//
+// The returned inventory is Normalized, so a caller ranging over its arrays
+// sees the section's own empty-array shape rather than a nil (REL-060).
+func ServedDeviceInventory(store *identity.Store) (wire.DeviceInventory, error) {
+	if store == nil {
+		return wire.DeviceInventory{}, fmt.Errorf("desiredstate: ServedDeviceInventory: store must not be nil")
+	}
+	raw, err := store.LastAppliedDeviceInventory()
+	if err != nil {
+		return wire.DeviceInventory{}, fmt.Errorf("desiredstate: ServedDeviceInventory: read persisted device_inventory: %w", err)
+	}
+	var inv wire.DeviceInventory
+	if err := json.Unmarshal(raw, &inv); err != nil {
+		return wire.DeviceInventory{}, fmt.Errorf("desiredstate: ServedDeviceInventory: decode persisted device_inventory: %w", err)
+	}
+	return inv.Normalized(), nil
 }
 
 // extractApplied builds VerifyAndApply's returned Applied from a verified

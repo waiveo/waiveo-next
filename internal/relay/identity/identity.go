@@ -7,7 +7,9 @@
 // cycle and remain usable for offline verification without contacting the
 // app peer) — including that generation's own `revocation_and_site.revoked`
 // set, which REL-123 requires the relay enforce from its last-synced copy
-// "regardless of connectivity", a restart included.
+// "regardless of connectivity", a restart included, and its `device_inventory`
+// adopted set (REL-063/064), which is the only statement of what the relay may
+// drive and is therefore needed on exactly the boot that cannot ask for one.
 //
 // This is deliberately a narrow, operational store — relay/1 REL-142 scopes
 // a relay's durable local state to exactly this identity/trust/progress
@@ -84,6 +86,20 @@ type Store struct {
 	floorOK     bool
 }
 
+// emptyDeviceInventoryJSON is the REL-060 empty placeholder for the
+// last-applied row's `device_inventory` facet — the `[]` of an object-shaped
+// section. `device_inventory` is not an array but a two-array object
+// (`{devices, pack_match_patterns}`, REL-063/064), so its "present and empty"
+// form is both arrays present and empty, which is exactly what
+// wire.DeviceInventory.Normalized marshals to. Storing `{}` would decode to the
+// same zero value, but would leave the durable row saying something the signed
+// section never says.
+//
+// It is spelled out here rather than derived from the wire package because this
+// value is embedded in DDL (a column DEFAULT, in `schema` and in the migration),
+// where a runtime marshal cannot reach.
+const emptyDeviceInventoryJSON = `{"devices":[],"pack_match_patterns":[]}`
+
 // schema creates the five singleton operational tables REL-142/REL-130/REL-011
 // scope a relay's durable local state to (the bounded telemetry queue is created
 // separately by telemetrySchema, see telemetrystore.go). Each is a singleton
@@ -102,11 +118,12 @@ CREATE TABLE IF NOT EXISTS desired_state_verification_key (
 	public_key  BLOB NOT NULL
 );
 CREATE TABLE IF NOT EXISTS last_applied_generation (
-	id              INTEGER PRIMARY KEY CHECK (id = 1),
-	generation      INTEGER NOT NULL,
-	hash            TEXT NOT NULL,
-	screen_programs BLOB NOT NULL DEFAULT '[]',
-	revoked         BLOB NOT NULL DEFAULT '[]'
+	id               INTEGER PRIMARY KEY CHECK (id = 1),
+	generation       INTEGER NOT NULL,
+	hash             TEXT NOT NULL,
+	screen_programs  BLOB NOT NULL DEFAULT '[]',
+	revoked          BLOB NOT NULL DEFAULT '[]',
+	device_inventory BLOB NOT NULL DEFAULT '` + emptyDeviceInventoryJSON + `'
 );
 CREATE TABLE IF NOT EXISTS clock_floor (
 	id          INTEGER PRIMARY KEY CHECK (id = 1),
@@ -237,14 +254,14 @@ func verifyWriteDiscipline(db *sql.DB) error {
 // every ApplyGeneration on it — no generation applying at all, which is a harder
 // outage than the one the column exists to fix.
 //
-// BOTH columns added since the table's original {id, generation, hash} shape are
+// EVERY column added since the table's original {id, generation, hash} shape is
 // migrated, in the order they were introduced. `screen_programs` is not a
 // hypothetical: the build that added it created the table with it, which makes
 // the CREATE a no-op for every store older than that build, and those stores
 // then fail `ApplyGeneration` on `no such column: screen_programs`. `revoked`
-// has exactly the same exposure one column later, and the two are indexed
-// independently — a store predating both needs both, a store predating only the
-// second needs only the second.
+// has exactly the same exposure one column later, and `device_inventory` one
+// later again; the three are indexed independently — a store predating all
+// three needs all three, a store predating only the last needs only the last.
 //
 // Each added column defaults to the REL-060 empty placeholder, so a relay
 // upgraded mid-life comes up serving nothing and revoking nothing until its next
@@ -278,6 +295,7 @@ func migrateLastAppliedSchema(db *sql.DB) error {
 	for _, col := range []struct{ name, ddl string }{
 		{"screen_programs", `ALTER TABLE last_applied_generation ADD COLUMN screen_programs BLOB NOT NULL DEFAULT '[]'`},
 		{"revoked", `ALTER TABLE last_applied_generation ADD COLUMN revoked BLOB NOT NULL DEFAULT '[]'`},
+		{"device_inventory", `ALTER TABLE last_applied_generation ADD COLUMN device_inventory BLOB NOT NULL DEFAULT '` + emptyDeviceInventoryJSON + `'`},
 	} {
 		has, err := hasColumn(db, "last_applied_generation", col.name)
 		if err != nil {
@@ -469,13 +487,14 @@ func (s *Store) SetLastAppliedGeneration(generation int64, hash string) error {
 }
 
 // ApplyGeneration persists the relay's last-applied desired-state generation
-// number, section hash, the applied screen_programs array AND that generation's
-// `revocation_and_site.revoked` set as ONE atomic row write (REL-055/056): the
-// generation swap completes entirely against either the prior or the new
-// generation, never a torn cross-generation mix where last-applied reports the
-// new {generation, hash} while the served screen_programs — or the revocation
-// set enforced against every credential decision — are still the prior
-// generation's.
+// number, section hash, the applied screen_programs array, that generation's
+// `revocation_and_site.revoked` set AND its `device_inventory` section as ONE
+// atomic row write (REL-055/056): the generation swap completes entirely
+// against either the prior or the new generation, never a torn cross-generation
+// mix where last-applied reports the new {generation, hash} while the served
+// screen_programs — or the revocation set enforced against every credential
+// decision, or the adopted set every device the relay may drive is gated on —
+// are still the prior generation's.
 //
 // This is the single apply-unit primitive the desired-state apply path
 // (internal/relay/desiredstate.VerifyAndApply) MUST use instead of a separate
@@ -484,12 +503,12 @@ func (s *Store) SetLastAppliedGeneration(generation int64, hash string) error {
 // commits (a power-pull) surfaces exactly the torn state REL-056 forbids — the
 // relay believing itself caught up on the new generation while still serving
 // the old generation's screen_programs, silently never applying an emergency
-// preempt/blank the new generation carried. Because all four fields ride a
+// preempt/blank the new generation carried. Because all five fields ride a
 // single INSERT … ON CONFLICT statement against the singleton row, SQLite's
 // own statement-level atomicity (under the store's WAL + synchronous=FULL write
 // discipline) guarantees they commit together or not at all — there is no
-// intermediate row state where generation, screen_programs and revoked
-// disagree.
+// intermediate row state where generation, screen_programs, revoked and
+// device_inventory disagree.
 //
 // # Why `revoked` rides this same row
 //
@@ -506,9 +525,30 @@ func (s *Store) SetLastAppliedGeneration(generation int64, hash string) error {
 // the generation says N while the revocation set is still N-1's is the same
 // torn cross-generation mix, one credential decision wide.
 //
+// # Why `device_inventory` rides it too
+//
+// For the same reason, one power cut wide. `device_inventory` (REL-063/064) is
+// the app peer's ADOPTED set — the relay's only authority for which devices it
+// may drive at all — and a relay that boots with no app peer reachable has, by
+// REL-055/061's own design, exactly one source for it: this row. Held only in
+// memory, the adopted set is empty on every offline boot, which does not fail
+// safe in the way the fail-CLOSED gate reading it looks like it does: screen
+// keep-alive (player/1 PLY-150-157) then relaunches nothing, so a wall of
+// screens sitting at the Roku Home screen after a power outage stays there,
+// silently, showing nothing until a human walks past. That is the exact
+// scenario keep-alive exists for, and it is the one where the app peer is least
+// likely to be up first.
+//
+// And it belongs in THIS write rather than one of its own for the third time
+// for the same reason: a row whose generation says N while the adopted set is
+// N-1's is the torn cross-generation mix again, one dispatch wide — a device an
+// operator un-adopted in generation N driven under generation N's programs.
+//
 // An empty or nil screenProgramsJSON or revokedJSON is stored as the REL-060
-// empty placeholder (`[]`), matching SetServedScreenPrograms.
-func (s *Store) ApplyGeneration(generation int64, hash string, screenProgramsJSON, revokedJSON []byte) error {
+// empty placeholder (`[]`), matching SetServedScreenPrograms;
+// deviceInventoryJSON's counterpart placeholder is the object-shaped
+// emptyDeviceInventoryJSON.
+func (s *Store) ApplyGeneration(generation int64, hash string, screenProgramsJSON, revokedJSON, deviceInventoryJSON []byte) error {
 	if len(screenProgramsJSON) == 0 {
 		screenProgramsJSON = []byte("[]")
 	}
@@ -519,10 +559,13 @@ func (s *Store) ApplyGeneration(generation int64, hash string, screenProgramsJSO
 	if len(revokedJSON) == 0 || string(revokedJSON) == "null" {
 		revokedJSON = []byte("[]")
 	}
+	if len(deviceInventoryJSON) == 0 || string(deviceInventoryJSON) == "null" {
+		deviceInventoryJSON = []byte(emptyDeviceInventoryJSON)
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO last_applied_generation (id, generation, hash, screen_programs, revoked) VALUES (1, ?, ?, ?, ?)
-		 ON CONFLICT (id) DO UPDATE SET generation = excluded.generation, hash = excluded.hash, screen_programs = excluded.screen_programs, revoked = excluded.revoked`,
-		generation, hash, screenProgramsJSON, revokedJSON,
+		`INSERT INTO last_applied_generation (id, generation, hash, screen_programs, revoked, device_inventory) VALUES (1, ?, ?, ?, ?, ?)
+		 ON CONFLICT (id) DO UPDATE SET generation = excluded.generation, hash = excluded.hash, screen_programs = excluded.screen_programs, revoked = excluded.revoked, device_inventory = excluded.device_inventory`,
+		generation, hash, screenProgramsJSON, revokedJSON, deviceInventoryJSON,
 	)
 	if err != nil {
 		return fmt.Errorf("identity: ApplyGeneration: %w", err)
@@ -623,6 +666,40 @@ func (s *Store) LastAppliedRevokedScreens() ([]byte, error) {
 	}
 	if len(raw) == 0 {
 		return []byte("[]"), nil
+	}
+	return raw, nil
+}
+
+// LastAppliedDeviceInventory returns the persisted last-applied
+// `device_inventory` section as its raw JSON bytes (REL-063/064) — the third
+// read half of the durable state ApplyGeneration commits, and the exact
+// counterpart of LastAppliedScreenPrograms and LastAppliedRevokedScreens. A
+// store that has never applied a generation — or one whose applied generation
+// adopted nothing — returns the REL-060 empty placeholder
+// (`{"devices":[],"pack_match_patterns":[]}`), never a nil and never an error,
+// so the offline boot path (internal/relay/desiredstate.ServedDeviceInventory)
+// decodes cleanly to an empty inventory rather than failing.
+//
+// The same caution LastAppliedRevokedScreens carries applies, pointing the
+// other way. An empty result here is the app peer positively stating that this
+// relay has adopted nothing, and the consumers of the adopted set are
+// fail-CLOSED (keepalive.AdoptionSet, internal/relay/devicetargets) — so a
+// caller that reaches this read on a store which has never applied a generation
+// gets "drive nothing", which is correct for a relay that has synced nothing.
+// What it must NOT do is skip this read on a boot that HAS a persisted
+// generation, because the fail-closed default is then indistinguishable from a
+// real un-adoption, and the relay drives nothing while believing it was told to.
+func (s *Store) LastAppliedDeviceInventory() ([]byte, error) {
+	var raw []byte
+	err := s.db.QueryRow(`SELECT device_inventory FROM last_applied_generation WHERE id = 1`).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return []byte(emptyDeviceInventoryJSON), nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("identity: LastAppliedDeviceInventory: %w", err)
+	}
+	if len(raw) == 0 {
+		return []byte(emptyDeviceInventoryJSON), nil
 	}
 	return raw, nil
 }

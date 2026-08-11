@@ -957,6 +957,16 @@ func main() {
 		// its persisted or freshly-pulled generation, and the screens are
 		// already sitting at Home — waiting for a nudge that may be minutes
 		// away would be waiting through exactly the outage.
+		//
+		// "Its persisted OR freshly-pulled generation" is load-bearing, and was
+		// for a while simply false. A boot whose pull fails leaves `applied`
+		// the zero value (see the pull site above), so this line seeded the
+		// gate with an EMPTY device_inventory and keep-alive relaunched
+		// nothing — on the offline boot, which is the power-cut boot, which is
+		// the scenario. It is true now because `device_inventory` is persisted
+		// in the last-applied row beside screen_programs and revoked, and
+		// installPersistedServingState restores it onto `applied` before this
+		// point (REL-055/061/063).
 		keepaliveAdoption = keepalive.NewAdoptionSet()
 		keepaliveAdoption.Apply(applied.Generation, applied.DeviceInventory)
 
@@ -1762,12 +1772,13 @@ func serveAppAuthoredPrograms(srv *playerserver.Server, generation int64, served
 }
 
 // installPersistedServingState configures srv from the relay's OWN durable
-// last-applied row — the app-authored per-screen programs (REL-055/061) and the
-// generation's `revocation_and_site.revoked` set (REL-066) — and returns applied
-// with its Revoked filled from that same row. It performs no network I/O and
-// contacts no app peer: its sole input is the operational store, so a boot
-// during an app-peer outage installs exactly what a boot with a live connection
-// does (Offline continuity).
+// last-applied row — the app-authored per-screen programs (REL-055/061), the
+// generation's `revocation_and_site.revoked` set (REL-066) and its
+// `device_inventory` adopted set (REL-063/064) — and returns applied with its
+// Revoked and DeviceInventory filled from that same row. It performs no network
+// I/O and contacts no app peer: its sole input is the operational store, so a
+// boot during an app-peer outage installs exactly what a boot with a live
+// connection does (Offline continuity).
 //
 // # The programs
 //
@@ -1803,6 +1814,25 @@ func serveAppAuthoredPrograms(srv *playerserver.Server, generation int64, served
 // exactly the set it returned, in that same row write, so the durable copy and
 // applied.Revoked are the same list — and reading the durable one keeps both
 // boot paths on a single source of truth rather than two that can drift.
+//
+// # The adopted set, and why it is read here at all
+//
+// `device_inventory` is returned the same way and for a strictly worse failure
+// than the revocation set's. It is the ONLY statement of which devices this
+// relay may drive; every consumer of it fails CLOSED (keepalive.AdoptionSet
+// adopts nothing on an empty set, devicetargets makes nothing drivable). So a
+// boot that left it at the zero value's empty section did not degrade loudly —
+// it came up healthy, connected to nothing, driving nothing, and keeping no
+// screen alive.
+//
+// Which is the power-cut boot. Both the app peer and the relay come back at
+// once, the relay's pull loses that race, and the ONE capability whose entire
+// job is "a screen idling at Home shows NOTHING until a human walks past"
+// (screen keep-alive, PLY-150-157) had an empty gate to consult. It relaunched
+// nothing, in the exact scenario it exists for. Reading the adopted set from
+// the same durable row as the programs it applies to is what makes this
+// function's own claim — that an offline boot installs what an online one does
+// — true of the device plane and not only of the serve path.
 func installPersistedServingState(store *identity.Store, srv *playerserver.Server, applied desiredstate.Applied) (desiredstate.Applied, error) {
 	served, err := desiredstate.ServedProgram(store)
 	if err != nil {
@@ -1825,6 +1855,14 @@ func installPersistedServingState(store *identity.Store, srv *playerserver.Serve
 	if len(revoked) > 0 {
 		log.Printf("waiveo-relay: persisted last-applied snapshot revokes %d screen(s); enforced from boot against every credential decision, app peer reachable or not (REL-123)", len(revoked))
 	}
+
+	inventory, err := desiredstate.ServedDeviceInventory(store)
+	if err != nil {
+		return applied, fmt.Errorf("read persisted device_inventory for offline device plane: %w", err)
+	}
+	applied.DeviceInventory = inventory
+	log.Printf("waiveo-relay: persisted last-applied snapshot adopts %d device(s); the device plane and screen keep-alive come up on that set with no app peer needed (REL-055/061/063)", len(inventory.Devices))
+
 	return applied, nil
 }
 

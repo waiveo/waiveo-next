@@ -79,10 +79,10 @@ func TestApplyGenerationSwapsGenerationAndProgramsTogether(t *testing.T) {
 	progs50 := []byte(`[{"screen_id":"S1","program_revision":"rev-50","priority":"scheduled","display":"content"}]`)
 	progs51 := []byte(`[{"screen_id":"S1","program_revision":"rev-51","priority":"preempt","display":"blank"}]`)
 
-	if err := store.ApplyGeneration(50, "sha256:50", progs50, nil); err != nil {
+	if err := store.ApplyGeneration(50, "sha256:50", progs50, nil, nil); err != nil {
 		t.Fatalf("ApplyGeneration(50): %v", err)
 	}
-	if err := store.ApplyGeneration(51, "sha256:51", progs51, nil); err != nil {
+	if err := store.ApplyGeneration(51, "sha256:51", progs51, nil, nil); err != nil {
 		t.Fatalf("ApplyGeneration(51): %v", err)
 	}
 
@@ -115,7 +115,7 @@ func TestApplyGenerationEmptyPlaceholder(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	if err := store.ApplyGeneration(7, "sha256:7", nil, nil); err != nil {
+	if err := store.ApplyGeneration(7, "sha256:7", nil, nil, nil); err != nil {
 		t.Fatalf("ApplyGeneration(nil programs): %v", err)
 	}
 	got, err := store.LastAppliedScreenPrograms()
@@ -233,7 +233,7 @@ func TestOpenMigratesPreScreenProgramsLastAppliedRow(t *testing.T) {
 
 	// And the migrated table accepts a full apply — the operation a store stuck
 	// on the old shape fails outright, taking every later generation with it.
-	if err := store.ApplyGeneration(5, "sha256:new", []byte(`[{"screen_id":"s1"}]`), []byte(`["s1"]`)); err != nil {
+	if err := store.ApplyGeneration(5, "sha256:new", []byte(`[{"screen_id":"s1"}]`), []byte(`["s1"]`), nil); err != nil {
 		t.Fatalf("ApplyGeneration over a migrated store: %v", err)
 	}
 	programs, err = store.LastAppliedScreenPrograms()

@@ -47,7 +47,7 @@ func TestApplyGenerationPersistsRevokedAcrossReopen(t *testing.T) {
 
 	programs := []byte(`[{"screen_id":"01J8Z3K4N5P6Q7R8S9T0V1W2X6","program_revision":"rev-99"}]`)
 	revoked := []byte(`["01J8Z3K4N5P6Q7R8S9T0V1W2X6","01J8Z3K4N5P6Q7R8S9T0V1W2X7"]`)
-	if err := store.ApplyGeneration(42, "sha256:beef", programs, revoked); err != nil {
+	if err := store.ApplyGeneration(42, "sha256:beef", programs, revoked, nil); err != nil {
 		t.Fatalf("ApplyGeneration: %v", err)
 	}
 	if err := store.Close(); err != nil {
@@ -100,10 +100,10 @@ func TestApplyGenerationReplacesRevokedWholesale(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	if err := store.ApplyGeneration(1, "sha256:aa", nil, []byte(`["screen-a"]`)); err != nil {
+	if err := store.ApplyGeneration(1, "sha256:aa", nil, []byte(`["screen-a"]`), nil); err != nil {
 		t.Fatalf("ApplyGeneration(1): %v", err)
 	}
-	if err := store.ApplyGeneration(2, "sha256:bb", nil, nil); err != nil {
+	if err := store.ApplyGeneration(2, "sha256:bb", nil, nil, nil); err != nil {
 		t.Fatalf("ApplyGeneration(2): %v", err)
 	}
 
@@ -170,7 +170,7 @@ func TestOpenMigratesPreRevokedLastAppliedRow(t *testing.T) {
 	}
 
 	// And the migrated table accepts a new apply carrying a revocation.
-	if err := store.ApplyGeneration(10, "sha256:new", nil, []byte(`["s1"]`)); err != nil {
+	if err := store.ApplyGeneration(10, "sha256:new", nil, []byte(`["s1"]`), nil); err != nil {
 		t.Fatalf("ApplyGeneration over a migrated store: %v", err)
 	}
 	got, err = store.LastAppliedRevokedScreens()
