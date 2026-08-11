@@ -50,7 +50,7 @@ describe("App", () => {
     // The primary nav rail carries the brand and the console destinations.
     const nav = screen.getAllByRole("navigation", { name: /primary/i })[0];
     expect(within(nav).getByRole("link", { name: "Screens" })).toBeInTheDocument();
-    expect(within(nav).getByRole("link", { name: "Content" })).toBeInTheDocument();
+    expect(within(nav).getByRole("link", { name: "Upload" })).toBeInTheDocument();
   });
 
   it("sends an unauthenticated visitor to the sign-in page instead of the console", async () => {

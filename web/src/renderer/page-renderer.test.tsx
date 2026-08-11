@@ -295,3 +295,86 @@ describe("PageRenderer — a non-conformant document never renders (UIS-200)", (
     expect(errors[0].code).toBe("UNKNOWN_WIDGET_TYPE");
   });
 });
+
+describe("PageRenderer — context feeds track the host, not the mount-time seed (UIS-105/150/152)", () => {
+  // A page's context feeds and its editable resource arrive on the SAME `data`
+  // prop but have opposite lifetimes: the resource is seeded once and then owned
+  // by the operator's edits (UIS-065), while a feed is read-only reference data
+  // the host keeps supplying (UIS-152). Resolving feeds out of the seeded store
+  // froze them at their mount-time value, so a host that fetches its feed in a
+  // second round trip — which is the ordinary shape, and the shape the
+  // Automations page uses so an unreachable relay cannot fail the page — got a
+  // picker that offered nothing, permanently, with no error anywhere.
+  const doc = {
+    pageType: "settings-form",
+    source: "draft",
+    context: { presets: { collection: "presets" } },
+    sections: [
+      {
+        fields: [
+          {
+            type: "select",
+            bind: "preset",
+            props: {
+              labelMsg: "msg:pick",
+              options: { kind: "data", source: "$context.presets", valuePath: "id", labelPath: "name" },
+            },
+          },
+        ],
+      },
+    ],
+    actions: [{ type: "button", props: { labelMsg: "msg:save" }, on: { press: { verb: "submit" } } }],
+  };
+  const msgs = { "msg:pick": "Preset", "msg:save": "Save" };
+
+  it("fills the options when the feed lands AFTER the first paint", () => {
+    const { rerender } = render(
+      <PageRenderer doc={doc} data={{ draft: {}, presets: [] }} messages={msgs} handler={{ submit: vi.fn() }} />,
+    );
+    // Nothing to offer yet — the placeholder alone.
+    expect(within(screen.getByLabelText("Preset")).queryByRole("option", { name: "Morning open" })).toBeNull();
+
+    rerender(
+      <PageRenderer
+        doc={doc}
+        data={{ draft: {}, presets: [{ id: "p1", name: "Morning open" }] }}
+        messages={msgs}
+        handler={{ submit: vi.fn() }}
+      />,
+    );
+    expect(within(screen.getByLabelText("Preset")).getByRole("option", { name: "Morning open" })).toBeInTheDocument();
+  });
+
+  it("keeps the operator's in-progress edit while the feed moves under it", async () => {
+    const user = userEvent.setup();
+    const view = render(
+      <PageRenderer
+        doc={doc}
+        data={{ draft: {}, presets: [{ id: "p1", name: "Morning open" }] }}
+        messages={msgs}
+        handler={{ submit: vi.fn() }}
+      />,
+    );
+    await user.selectOptions(screen.getByLabelText("Preset"), "p1");
+    expect(screen.getByLabelText("Preset")).toHaveValue("p1");
+
+    // A later feed (a second page of the read model) must not reset the edit —
+    // the resource tree stays the store's, only the feed is re-read.
+    view.rerender(
+      <PageRenderer
+        doc={doc}
+        data={{
+          draft: {},
+          presets: [
+            { id: "p1", name: "Morning open" },
+            { id: "p2", name: "Evening wind-down" },
+          ],
+        }}
+        messages={msgs}
+        handler={{ submit: vi.fn() }}
+      />,
+    );
+    expect(within(screen.getByLabelText("Preset")).getByRole("option", { name: "Evening wind-down" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Preset")).toHaveValue("p1");
+  });
+});

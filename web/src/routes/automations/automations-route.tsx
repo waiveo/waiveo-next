@@ -370,7 +370,10 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
   const client = useMemo(() => api ?? createApi(), [api]);
   const [automations, setAutomations] = useState<Automation[] | null>(null);
   const [scopeNodes, setScopeNodes] = useState<ScopeNode[]>([]);
-  const [entities, setEntities] = useState<Entity[]>([]);
+  // `null` until the read model has been asked for the first time — an empty
+  // ARRAY is a real answer ("nothing adopted"), and the two must not look alike
+  // while the second round trip is still in flight.
+  const [entities, setEntities] = useState<Entity[] | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selectedIdRef = useRef<string | null>(null);
   // Whether a create draft was open on the last `$ui` we saw, so a fresh draft
@@ -380,6 +383,12 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [conflictReview, setConflictReview] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Why the entity pickers have nothing to offer, when they have nothing to offer.
+  // "No device has been adopted yet" and "the device list could not be read" are
+  // different facts with different remedies, and an empty <select> renders them
+  // identically — which is how a wiring bug spent a release looking like an empty
+  // fleet. `null` = the read succeeded.
+  const [entitiesError, setEntitiesError] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
 
   // First-party panel state (out of band of the renderer).
@@ -456,10 +465,14 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
     // deployment with nothing adopted yet) leaves the picker empty and the
     // "Entity ID (advanced)" field still accepts an id, so this load failing is
     // degraded, not fatal: it gets its own try rather than joining the one above.
+    // Degraded is not the same as SILENT, though: the failure is recorded so the
+    // page can say which empty this is.
     try {
       setEntities(await collectPages<Entity>((cursor) => client.entities.list({ cursor })));
-    } catch {
+      setEntitiesError(null);
+    } catch (err) {
       setEntities([]);
+      setEntitiesError(err instanceof ApiError ? (err.detail ?? err.code) : "The service is unreachable.");
     }
   }, [client]);
 
@@ -827,6 +840,30 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
           </p>
         ) : null}
 
+        {/* Why the entity pickers are empty, when they are — and only then. An
+            empty `<select>` is the same shape for "no device has been adopted"
+            and for "the device list could not be read", and those are different
+            problems with different remedies (adopt one, versus go look at the
+            relay). Neither is fatal — the advanced id field authors a rule
+            either way — so this is an explanation, not a failure. Nothing is
+            said while the read model is still in flight (`entities === null`),
+            and nothing is said once there is something to pick. */}
+        {entitiesError !== null ? (
+          <p
+            role="alert"
+            data-testid="entities-unavailable"
+            className="rounded-card border border-[color:var(--wv-warn)] bg-[color:var(--wv-warn-bg)] p-4 text-sm text-[color:var(--wv-warn)]"
+          >
+            Couldn&apos;t load the device list — {entitiesError} The entity pickers are empty for that reason,
+            not because nothing is adopted. Name a device by its id in &ldquo;Entity ID (advanced)&rdquo; meanwhile.
+          </p>
+        ) : entities !== null && entities.length === 0 ? (
+          <p role="status" data-testid="entities-empty" className="text-sm text-muted-foreground">
+            No devices adopted yet, so the entity pickers have nothing to offer. Adopt one on the Devices page —
+            or name it by its id in &ldquo;Entity ID (advanced)&rdquo;.
+          </p>
+        ) : null}
+
         <main className="min-w-0">
           {automations === null ? (
             <p className="text-sm text-muted-foreground">Loading automations…</p>
@@ -834,7 +871,7 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
             <PageRenderer
               key={version}
               doc={automationsPageDoc}
-              data={{ automations: boundAutomations, entities }}
+              data={{ automations: boundAutomations, entities: entities ?? [] }}
               initialUi={{ selected: selectedId }}
               messages={messages}
               handler={handler}

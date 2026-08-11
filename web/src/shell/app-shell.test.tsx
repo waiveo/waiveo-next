@@ -76,7 +76,7 @@ describe("AppShell — locked-left responsive shell", () => {
       "Devices",
       "Schedules",
       "Casts",
-      "Content",
+      "Upload",
       "Media",
       "Automations",
       "Activity",

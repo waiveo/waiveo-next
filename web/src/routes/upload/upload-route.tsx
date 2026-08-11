@@ -5,8 +5,24 @@ import { ApiError, createApi, type ContentUploadResult, type WaiveoApi } from "@
 import { cn } from "@/lib/utils";
 
 /**
- * The Content route — upload media, then see it in a library with its
+ * The Upload route — upload media, then see it in a library with its
  * content-addressed reference ready to drop into a playlist.
+ *
+ * # Why `/upload` and not `/content`
+ *
+ * The feeder mounts the content ORIGIN at `/content/` (contenturl.PathPrefix) on
+ * the SAME mux that serves this SPA, and Go's ServeMux answers a subtree pattern
+ * by redirecting `/content` → `/content/`. So a console route at `/content` never
+ * reached React at all: clicking it in the rail landed the operator on the
+ * origin's raw 403 Problem document, with no chrome and no way back. The origin's
+ * path is on the wire inside signed urls and in relay/1 REL-061's url grammar, so
+ * the CONSOLE is the half that moves. `/upload` also names what actually
+ * distinguishes this page from /media, which browses the same assets read-only:
+ * this is the one that puts bytes on the box.
+ *
+ * The collision is now a gate, not a memory —
+ * cmd/waiveo-feeder/consoleroutes_test.go derives both lists from source and
+ * resolves every console route against a real ServeMux.
  *
  * // grammar-gap: file upload widget. ui-schema/1 has no input widget that takes
  * bytes from a drag-drop / file-picker gesture (its input catalog is
@@ -32,7 +48,7 @@ interface LibraryAsset extends ContentUploadResult {
   deck: number;
 }
 
-export default function ContentRoute({ api }: { api?: WaiveoApi }) {
+export default function UploadRoute({ api }: { api?: WaiveoApi }) {
   const client = useMemo(() => api ?? createApi(), [api]);
   const inputRef = useRef<HTMLInputElement>(null);
   const [assets, setAssets] = useState<LibraryAsset[]>([]);
@@ -105,8 +121,8 @@ export default function ContentRoute({ api }: { api?: WaiveoApi }) {
       <div className="mx-auto flex max-w-[1200px] flex-col gap-6 px-4 py-6 lg:px-8">
         <PageHeader
           variant="hero"
-          title="Content"
-          description="Upload the media your screens play. Each file is stored by its content hash — copy the reference into a playlist to schedule it."
+          title="Upload"
+          description="Add the media your screens play. Each file is stored by its content hash — copy the reference into a playlist to schedule it, or browse everything already on the box under Media."
         />
 
         {/* The drop zone + picker — the sanctioned first-party upload affordance. */}

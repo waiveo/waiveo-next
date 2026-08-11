@@ -4,18 +4,18 @@ import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { ThemeProvider } from "@/components/theme/theme-provider";
-import ContentRoute from "./content-route";
+import UploadRoute from "./upload-route";
 import { TRACE_ID, problem } from "@/api/test-support";
 
-function renderContent() {
+function renderUpload() {
   return render(
     <ThemeProvider>
-      <ContentRoute />
+      <UploadRoute />
     </ThemeProvider>,
   );
 }
 
-// Content is a first-party page (the sanctioned file-upload grammar gap): a
+// Upload is a first-party page (the sanctioned file-upload grammar gap): a
 // drop-zone / picker POSTs bytes to /api/v1/content and the returned
 // content-addressed ref lands in a session library with a copy action. These
 // tests drive the picker and the drop path, the copy affordance, and the Problem
@@ -53,9 +53,9 @@ function uploadOk(assetRef: string) {
   );
 }
 
-describe("ContentRoute — upload + library", () => {
+describe("UploadRoute — upload + library", () => {
   it("shows an empty state before anything is uploaded", () => {
-    renderContent();
+    renderUpload();
     expect(screen.getByText(/nothing uploaded yet/i)).toBeInTheDocument();
   });
 
@@ -72,7 +72,7 @@ describe("ContentRoute — upload + library", () => {
     );
 
     const user = userEvent.setup();
-    renderContent();
+    renderUpload();
     const input = screen.getByLabelText("Choose files");
     await user.upload(input, new File(["hello"], "poster.png", { type: "image/png" }));
 
@@ -85,7 +85,7 @@ describe("ContentRoute — upload + library", () => {
 
   it("uploads a dropped file", async () => {
     server.use(uploadOk("sha256:dropped"));
-    renderContent();
+    renderUpload();
     const dropzone = screen.getByRole("button", { name: /upload content/i });
     const file = new File(["x"], "banner.jpg", { type: "image/jpeg" });
     fireEvent.drop(dropzone, { dataTransfer: { files: [file], types: ["Files"] } });
@@ -96,7 +96,7 @@ describe("ContentRoute — upload + library", () => {
   it("copies an asset's content reference to the clipboard", async () => {
     server.use(uploadOk("sha256:copyme"));
     const user = userEvent.setup();
-    renderContent();
+    renderUpload();
     await user.upload(screen.getByLabelText("Choose files"), new File(["x"], "clip.png", { type: "image/png" }));
     await screen.findByText("clip.png");
 
@@ -114,7 +114,7 @@ describe("ContentRoute — upload + library", () => {
       ),
     );
     const user = userEvent.setup();
-    renderContent();
+    renderUpload();
     await user.upload(screen.getByLabelText("Choose files"), new File(["x"], "bad.exe", { type: "" }));
 
     const alert = await screen.findByRole("alert");
@@ -124,11 +124,11 @@ describe("ContentRoute — upload + library", () => {
   });
 });
 
-describe("ContentRoute — responsive at 360px", () => {
+describe("UploadRoute — responsive at 360px", () => {
   it("keeps the upload control a >=44px touch target and renders a card without a wide table", async () => {
     setViewport(true);
     server.use(uploadOk("sha256:narrow"));
-    renderContent();
+    renderUpload();
 
     const dropzone = screen.getByRole("button", { name: /upload content/i });
     expect(dropzone.className).toContain("wv-touch");

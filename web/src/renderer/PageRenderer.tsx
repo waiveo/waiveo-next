@@ -136,23 +136,42 @@ export function PageRenderer({
         onUiChange={onUiChange}
         onResourceChange={onResourceChange}
       >
-        <PageBody page={page} />
+        <PageBody page={page} hostData={data} />
       </RendererProvider>
     </LiveProvider>
   );
 }
 
-function PageBody({ page }: { page: PageDoc }) {
+function PageBody({ page, hostData }: { page: PageDoc; hostData: Record<string, unknown> | undefined }) {
   const ctx = useRenderer();
+  // Context feeds (UIS-105/150) are resolved from the HOST'S `data` prop on every
+  // render, NOT from the renderer's `resource` store. They are read-only (UIS-152)
+  // and, as state.tsx says, "ride in through the render environment, not this
+  // store" — so the store is the wrong source twice over:
+  //
+  //   • The store SEEDS from `data` once, at mount, and is thereafter owned by the
+  //     operator's edits. A host whose feed lands in a second round trip (the
+  //     Automations page fetches /entities separately from /automations, exactly so
+  //     an unreachable relay cannot fail the page) mounted the renderer with the
+  //     feed still empty, and the seed never moved again. Both entity pickers then
+  //     offered only their placeholder, forever, while the list beside them — read
+  //     from the same seed, but populated at mount — rendered fine. That is the
+  //     defect: the fetch half and the schema half were both correct and the
+  //     binding between them resolved against a frozen copy.
+  //   • Reading a read-only feed out of the EDITABLE tree also lets an unrelated
+  //     write reshape it, which nothing in the grammar sanctions.
+  //
+  // Feeding from the prop makes a feed's arrival a re-render, which is what every
+  // other host-owned input to this renderer already is.
   const contextFeeds = useMemo(() => {
     const feeds: Record<string, unknown> = {};
     const cmap = page.context && typeof page.context === "object" ? (page.context as Record<string, { collection?: string }>) : {};
     for (const [name, ref] of Object.entries(cmap)) {
       const coll = ref?.collection;
-      feeds[name] = coll ? (ctx.resource as Record<string, unknown>)?.[coll] : undefined;
+      feeds[name] = coll ? hostData?.[coll] : undefined;
     }
     return feeds;
-  }, [page, ctx.resource]);
+  }, [page, hostData]);
 
   const base: RenderScope = {
     root: ctx.resource,

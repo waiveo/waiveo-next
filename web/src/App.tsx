@@ -8,7 +8,7 @@ import OverviewRoute from "@/routes/overview/overview-route";
 import ScreensRoute from "@/routes/screens/screens-route";
 import DevicesRoute from "@/routes/devices/devices-route";
 import SchedulesRoute from "@/routes/schedules/schedules-route";
-import ContentRoute from "@/routes/content/content-route";
+import UploadRoute from "@/routes/upload/upload-route";
 import MediaRoute from "@/routes/media/media-route";
 import CastsRoute from "@/routes/casts/casts-route";
 import StudioRoute from "@/routes/studio/studio-route";
@@ -67,7 +67,14 @@ export default function App() {
                 separate row with a separate owner (the relay). */}
             <Route path="/devices" element={<DevicesRoute />} />
             <Route path="/schedules" element={<SchedulesRoute />} />
-            <Route path="/content" element={<ContentRoute />} />
+            {/* Upload, NOT `/content`: the feeder mounts the content origin at
+                `/content/` on this same mux, and ServeMux redirects `/content` to
+                it — so a console route there was answered by the origin's 403
+                Problem document and the SPA never saw the request. The origin's
+                path is on the wire (signed urls, REL-061), so the console moved.
+                cmd/waiveo-feeder/consoleroutes_test.go now derives both lists and
+                resolves every route below against a real ServeMux. */}
+            <Route path="/upload" element={<UploadRoute />} />
             {/* The authoring pair: the cast library lists the slide documents,
                 and the Studio edits ONE of them — addressed by `?id=` rather
                 than a path segment because the Studio is a tool applied to a
@@ -75,8 +82,9 @@ export default function App() {
                 no cast at all (it says so, and links back to the library). */}
             <Route path="/casts" element={<CastsRoute />} />
             <Route path="/studio" element={<StudioRoute />} />
-            {/* The content origin's READ half. /content uploads and shows this
-                session's uploads; this browses everything already on the box. */}
+            {/* The content origin's READ half. /upload puts bytes on the box and
+                shows this session's uploads by filename; this browses everything
+                already stored, addressed by digest. */}
             <Route path="/media" element={<MediaRoute />} />
             <Route path="/automations" element={<AutomationsRoute />} />
             <Route path="/activity" element={<ActivityRoute />} />

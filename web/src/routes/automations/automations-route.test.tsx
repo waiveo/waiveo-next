@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
 import { fireEvent, render, screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { http, HttpResponse } from "msw";
+import { delay, http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { ThemeProvider } from "@/components/theme/theme-provider";
 import AutomationsRoute from "./automations-route";
@@ -211,6 +211,70 @@ describe("Automations — the ui-schema rule-builder document", () => {
     }
     // And each shows the id the record already carries.
     expect(pickers[0]).toHaveValue(ULID_B);
+  });
+
+  it("fills the pickers with entities that land AFTER the first paint", async () => {
+    // The load is deliberately two round trips: /automations + /scope-nodes
+    // together, then /entities on its own so an unreachable relay cannot fail the
+    // page. On a real box the second lands well after the builder has painted —
+    // the case the other tests here never reach, because msw answers all three
+    // inside one tick. A 120ms delay is what a network is.
+    //
+    // This is the HV-9-shaped defect in miniature: both halves were correct alone.
+    // The fetch ran and returned the entity, `page.uis.json` bound the select to
+    // `$context.entities`, and the binding resolved against the renderer's
+    // MOUNT-TIME seed — so both pickers offered their placeholder and nothing
+    // else, for as long as the page was open, with no error anywhere. The exact
+    // measured signature on the box was nine selects with option counts
+    // 4, 9, 1, 9, 9, 10, 1, 5, 5 — the two 1s being these two pickers.
+    server.use(
+      http.get("*/api/v1/automations", () => page([automation({ id: ULID_A, name: "Open the doors" })])),
+      http.get("*/api/v1/scope-nodes", () => page(HQ)),
+      http.get("*/api/v1/entities", async () => {
+        await delay(120);
+        return page([LOBBY_TV, BAR_TV]);
+      }),
+    );
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+
+    const named = async (name: string) =>
+      waitFor(() => {
+        for (const picker of screen.getAllByLabelText("Entity")) {
+          expect(within(picker).getByRole("option", { name })).toBeInTheDocument();
+        }
+      });
+    await named("Lobby TV");
+    await named("Bar TV");
+    // Both pickers, not just the trigger's — the action side is what names the
+    // device a rule acts ON, and it was empty too.
+    expect(screen.getAllByLabelText("Entity")).toHaveLength(2);
+  });
+
+  it("says WHICH empty it is — nothing adopted reads differently from a failed read", async () => {
+    // An empty <select> is the same shape for both, and they are different
+    // problems: adopt a device, versus go and look at the relay. Rendering them
+    // identically is what let a wiring bug pass for an empty fleet.
+    server.use(...liveLists([automation({ id: ULID_A, name: "Open the doors" })], HQ, []));
+    const { unmount } = renderRoute();
+    await screen.findByRole("table", { name: "Automations" });
+    expect(await screen.findByTestId("entities-empty")).toHaveTextContent(/No devices adopted yet/);
+    expect(screen.queryByTestId("entities-unavailable")).toBeNull();
+    unmount();
+
+    server.resetHandlers();
+    server.use(
+      http.get("*/api/v1/automations", () => page([automation({ id: ULID_A, name: "Open the doors" })])),
+      http.get("*/api/v1/scope-nodes", () => page(HQ)),
+      http.get("*/api/v1/entities", () => problem(500, "INTERNAL", "No relay is connected.")),
+    );
+    renderRoute();
+    await screen.findByRole("table", { name: "Automations" });
+    const failed = await screen.findByTestId("entities-unavailable");
+    expect(failed).toHaveTextContent(/Couldn't load the device list/);
+    expect(failed).toHaveTextContent(/No relay is connected/);
+    expect(screen.queryByTestId("entities-empty")).toBeNull();
   });
 
   it("refuses no page when /entities is unavailable — the picker degrades, the builder still paints", async () => {
