@@ -47,6 +47,54 @@ Environment=WAIVEO_FEEDER_PACK_TRUST=/etc/waiveo/pack-trust/anchors.json
 #     ]
 #   }
 Environment=WAIVEO_FEEDER_REQUIRED_PACKS=/etc/waiveo/required-packs.json
+# Registry sources: the ORDERED list of registries this box resolves a pack
+# install by marketplace reference against, and — per source — which of
+# marketplace/1 MKT-062's reserved publisher namespaces the HOST authorizes that
+# source to serve. Same posture and the same reasons as the two above: outside
+# ReadWritePaths, provisioned as root 0644, and refused if it or any directory
+# holding it is group- or world-writable. Whoever can write this file names a
+# registry this box fetches code from.
+#
+# It grants NO trust. A resolved artifact is verified by the same signature
+# envelope, against the same anchors above, as one uploaded by hand — a registry
+# says where bytes live, never that they may be run.
+#
+# ABSENT ⇒ no registry source: installing a pack FILE works exactly as before,
+# and installing by marketplace reference refuses with MARKETPLACE_REF_UNRESOLVED.
+# This is the default and needs no file. UNUSABLE (unreadable, unparseable, wrong
+# format, bad permissions, one invalid source) ⇒ the box still BOOTS and still
+# installs pack files, with NO source configured and the reason logged. It loads
+# whole or not at all: a partly-read list would silently reorder the resolution
+# preference MKT-061 makes the operator's to declare.
+#
+# The document — order is the resolution preference, and `reserved_namespaces`
+# defaults to NONE, so a source not listed for `waiveo` cannot serve a
+# `waiveo/...` pack (REGISTRY_SOURCE_NOT_DELEGATED):
+#   {
+#     "format": "registry-sources/1",
+#     "sources": [
+#       {
+#         "id": "local",
+#         "channel": "marketplace/stable",
+#         "index_url": "file:///var/lib/waiveo/registry/index.json",
+#         "reserved_namespaces": ["waiveo"]
+#       },
+#       {
+#         "id": "upstream",
+#         "channel": "marketplace/stable",
+#         "index_url": "https://registry.example/marketplace/index.json"
+#       }
+#     ]
+#   }
+#
+# index_url takes file:/// (an absolute path on this box — the directory holding
+# it becomes the root every fetch from that source is confined to, so the index
+# and its artifacts live in one tree) or https:// (confined to that one origin,
+# no redirects, capped and timed out). Plaintext http:// is refused: an index in
+# the clear is rewritable in flight, including to hide a yank. Every file://
+# resolution is marked stale_source (MKT-063); that is derived from the scheme
+# and cannot be declared away.
+Environment=WAIVEO_FEEDER_PACK_SOURCES=/etc/waiveo/pack-sources.json
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=true

@@ -127,6 +127,12 @@ type config struct {
 	// declares its floors in (marketplace/1 MKT-093a). Absent ⇒ no pack is
 	// required; unreadable/malformed ⇒ the feeder refuses to start.
 	requiredPacksPath string
+	// packSourcesPath is the registry sources document this deployment declares
+	// the marketplace it resolves pack installs against in (marketplace/1
+	// MKT-060/061). Absent OR unreadable ⇒ no registry source, and installing a
+	// pack by marketplace reference refuses; a pack file upload is unaffected
+	// either way. Deliberately not fatal — see the load site in main.
+	packSourcesPath string
 }
 
 // demoCastModeMulti is loadConfig's WAIVEO_FEEDER_DEMO_CAST value that swaps
@@ -250,8 +256,30 @@ const defaultPackTrustPath = ".dev/pack-trust/anchors.json"
 // who is trusted.
 const defaultRequiredPacksPath = ".dev/feeder-required-packs.json"
 
+// defaultPackSourcesPath is the make-dev-local registry sources document
+// (marketplace/1 MKT-060/061): the ordered list of registries this deployment
+// resolves a marketplace reference against, and — per source — which of
+// MKT-062's reserved publisher namespaces the HOST authorizes that source to
+// serve.
+//
+// Like the roster and unlike every other .dev path here, NOTHING creates it. An
+// absent document means no registry source, which is what every dev checkout,
+// every CI run, and every unprovisioned box already is: a marketplace reference
+// refuses with MARKETPLACE_REF_UNRESOLVED and a pack file upload is unaffected.
+// A deployment opts IN by authoring the document.
+//
+// It is a SEPARATE file from the trust anchors, for the reason the roster is.
+// The anchors answer "who may sign a pack" — a trust root. This answers "where
+// does this box look for packs" — a locator. They fail in opposite directions
+// (an empty anchor set refuses every install; an empty source list refuses only
+// the resolution path), and folding them together would mean editing where the
+// box shops inside the file that decides whom it trusts.
+const defaultPackSourcesPath = ".dev/feeder-pack-sources.json"
+
 // absHostFilePath pins a host-provisioned file's path to an absolute one, ONCE,
-// at config load. Used for both the trust anchors and the required-pack roster.
+// at config load. Used for all three host-provisioned pack-configuration
+// documents: the trust anchors, the required-pack roster, and the registry
+// source list.
 //
 // The anchors file is read per verification so that provisioning and
 // revocation take effect without a restart. Resolved per read, a relative path
@@ -292,6 +320,7 @@ func loadConfig(env func(string) string) config {
 		packTrustPath:  absHostFilePath(envOr(env, "WAIVEO_FEEDER_PACK_TRUST", defaultPackTrustPath)),
 
 		requiredPacksPath: absHostFilePath(envOr(env, "WAIVEO_FEEDER_REQUIRED_PACKS", defaultRequiredPacksPath)),
+		packSourcesPath:   absHostFilePath(envOr(env, "WAIVEO_FEEDER_PACK_SOURCES", defaultPackSourcesPath)),
 	}
 }
 
@@ -503,6 +532,42 @@ func main() {
 		log.Printf("waiveo-feeder: required-pack roster %s declares no required pack — no pack is protected from uninstall or downgrade (marketplace/1 MKT-093a)", cfg.requiredPacksPath)
 	default:
 		log.Printf("waiveo-feeder: required-pack roster %s declares %d required pack(s): %v", cfg.requiredPacksPath, len(declared), declared)
+	}
+
+	// The registry sources this deployment resolves a marketplace reference
+	// against (marketplace/1 MKT-060/061/062), read beside the roster because
+	// they are the same kind of thing: host-provisioned pack configuration, read
+	// once, from a path pinned absolute at config load.
+	//
+	// NOT fatal, and deliberately unlike the roster two blocks up. A roster
+	// withholds a RESTRICTION, so a host that fails to read one and carries on
+	// runs with floors the deployment declared silently lifted. A source list
+	// withholds a CAPABILITY: a box that fails to read one installs nothing it
+	// could not install before, refuses every marketplace reference with the same
+	// MARKETPLACE_REF_UNRESOLVED an unprovisioned box gives, and stays up for the
+	// operator to fix the file. Taking a screen fleet offline over a JSON comma
+	// would be the wrong trade — but going quiet about it would be worse, so the
+	// refusal is logged at the same volume a fatal would have been.
+	packSources, err := packs.LoadSources(cfg.packSourcesPath)
+	if err != nil {
+		log.Printf("waiveo-feeder: %v\n"+
+			"    NO registry source is configured: installing a pack BY MARKETPLACE REFERENCE will refuse, exactly as on a box that never authored the document.\n"+
+			"    Installing a pack FILE is unaffected. The list loads whole or not at all — a partly-read list would silently reorder the resolution preference (MKT-061).\n"+
+			"    Fix or remove %s.", err, cfg.packSourcesPath)
+		packSources = nil
+	}
+	// Absent and authored-empty are both "no marketplace" and are NOT the same
+	// event to an operator, for the reason the roster report distinguishes them.
+	switch {
+	case len(packSources) > 0:
+		for i, s := range packSources {
+			log.Printf("waiveo-feeder: registry source %d/%d: id=%s channel=%s index=%s reserved-namespaces=%v stale_source=%v",
+				i+1, len(packSources), s.ID, s.Channel, s.IndexURL, s.ReservedNamespaces, s.StaleSource)
+		}
+	case packs.SourcesAbsent(cfg.packSourcesPath):
+		log.Printf("waiveo-feeder: NO registry sources document at %s — a pack installs from an uploaded file only; a marketplace reference refuses. If this deployment authored one, it is not being read (marketplace/1 MKT-060)", cfg.packSourcesPath)
+	default:
+		log.Printf("waiveo-feeder: registry sources document %s configures no source — a marketplace reference refuses (marketplace/1 MKT-060)", cfg.packSourcesPath)
 	}
 
 	id, err := signing.LoadOrCreate(signing.DefaultDir)
@@ -1150,12 +1215,39 @@ func main() {
 	// pipeline. Absent/empty ⇒ every pack install refuses (fail closed).
 	log.Printf("waiveo-feeder: pack install trust anchors: %s", cfg.packTrustPath)
 
+	// The marketplace half of the install pipeline, over the sources the document
+	// read at boot declared (marketplace/1 MKT-060/061). Built HERE rather than
+	// at the load site because a Market needs the clock: hold_hours eligibility
+	// is a resolution-time decision (MKT-042, channel-index/1 CHI-029/030), and
+	// nowMs — the persisted-floor-aware reading, not the host clock — is what an
+	// appliance whose RTC may have been rolled back must judge it against
+	// (security-model SEC-066-068).
+	//
+	// nil when nothing was declared, which is the option's own documented
+	// no-marketplace state: InstallRef answers MARKETPLACE_REF_UNRESOLVED and a
+	// pack file upload is untouched. Passed unconditionally rather than through a
+	// second, option-omitting call site, so there is exactly one place this
+	// binary decides what its marketplace is.
+	var market *packs.Market
+	if len(packSources) > 0 {
+		market = packs.NewMarket(nowMs, packSources...)
+	}
+
 	apiHandler := api.New(st, idem, nowMs, ulid.New, contentStore, contentBaseURL, authn,
 		api.WithDevicePlane(deviceRegistry, relayConnSrv), api.WithJobRunner(jobRunner),
 		// GET /screen-status joins the authored screen rows to what the relays
 		// have observed of them (parity row 5.8, api/screenstatus.go).
 		api.WithScreenStatus(screenRegistry),
 		api.WithPackTrust(packsig.FileAnchors{Path: cfg.packTrustPath}),
+		// The marketplace's ONE wiring seam (MKT-060/060a). Without this option
+		// srv.market stays nil, the installer is built with no registry, and every
+		// marketplace reference the console can submit answers "this deployment
+		// has no registry sources configured" — for a resolver that is complete,
+		// tested and simply never mounted. That was this binary's actual state
+		// before this line. It adds a way to LOCATE an artifact and no trust
+		// whatever: what it resolves is verified by the packsig path above,
+		// against the same anchors, as a hand-uploaded artifact.
+		api.WithMarketplace(market),
 		// The required-pack floor's ONE wiring seam (MKT-093a/MKT-093b). Without
 		// this option the store's roster stays nil, the in-transaction floor check
 		// returns nil on every call, and the whole floor — implemented, tested,
