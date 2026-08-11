@@ -62,6 +62,33 @@ const (
 	// silently change size when it gained a window.
 	telemetryStandardMaxRows = 4096
 
+	// configChangeWindow is the configuration-change tier: how long a record of
+	// the platform's own authored state changing is kept. Ninety days — a
+	// quarter, so "what changed since last quarter's review" is answerable —
+	// and deliberately BETWEEN the other two tiers rather than joining either.
+	//
+	// It is longer than telemetry because the record is not observational: a
+	// variable.changed carries `old_value`, and since a variable row holds one
+	// value at a time and this platform keeps no second history table, that
+	// field is the ONLY surviving record of what a variable used to be.
+	// Expiring it on the telemetry window would mean "what retargeted this
+	// rule's behaviour last month" is unanswerable by construction.
+	//
+	// It is strictly SHORTER than the audit tier, and that is a requirement
+	// rather than a preference: EVT-082 makes audit.event long-lived RELATIVE to
+	// every other registered schema, so any tier that matched auditLongWindow
+	// would break that relation for every schema placed on it. A configuration
+	// change is also not a security-relevant flow in SEC-150's sense — nobody
+	// authenticated, nothing was granted — so it does not belong on the tier
+	// that exists to hold those.
+	configChangeWindow = 90 * 24 * time.Hour
+	// configChangeMaxRows is the disk backstop for the configuration tier. It is
+	// CAPPED, unlike the audit tier: a runaway rule writing a variable on every
+	// evaluation is an ordinary misconfiguration and must not be able to fill
+	// the box's disk, whereas an audit record has no such producer and evicting
+	// one would rewrite a security trail.
+	configChangeMaxRows = 16384
+
 	// auditLongWindow is the audit tier: long-lived relative to the operational
 	// telemetry recorded alongside it (EVT-082). Just over a year, so a full
 	// annual review period is still readable.
@@ -109,6 +136,13 @@ func DefaultRetentionPolicy() RetentionPolicy {
 			// device.heartbeat and box.vitals all carry this one class.
 			automationRunRetentionClass: {Window: telemetryStandardWindow, MaxRows: telemetryStandardMaxRows},
 			auditEventRetentionClass:    {Window: auditLongWindow, MaxRows: auditLongMaxRows},
+			// variable.changed carries this one class (DAT-137's committed-write
+			// record). It is configured EXPLICITLY rather than left to fall
+			// through to the unknown-class answer: that fallback keeps a record
+			// for auditLongWindow, which would put this schema level with
+			// audit.event and break the EVT-082 relation the tier exists to
+			// preserve.
+			variableChangedRetentionClass: {Window: configChangeWindow, MaxRows: configChangeMaxRows},
 		},
 		// An unrecognized class — a pack-declared schema whose class this build
 		// does not pin (EVT-021/022), or a record written by a build that knew a

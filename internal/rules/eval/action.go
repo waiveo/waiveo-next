@@ -153,6 +153,61 @@ type SignageSink interface {
 	DismissAlert(ref ScreenRef) SignageOutcome
 }
 
+// VariableOutcome is one `variable_write` action's result (RUL-220): the name it
+// targeted, the value actually written, and whether the write landed.
+//
+// It exists for the same reason SignageOutcome does, and the absence of it is
+// the same defect: before this type there was no channel at all for what a
+// variable write did, so a rule whose write was refused — an unknown name
+// grammar, a value the store will not hold — reported `{"disposition":"ran"}`
+// with an unchanged variable, indistinguishable from a write that worked.
+//
+// Value is the evaluated value on success and nil on failure; a reader should
+// branch on OK, never on Value being nil, because nil is not a settable
+// variable value at all (data-model/1 DAT-133) and so can never be a successful
+// write's result.
+type VariableOutcome struct {
+	Action   string `json:"action"`
+	Variable string `json:"variable"`
+	Value    any    `json:"value,omitempty"`
+	OK       bool   `json:"ok"`
+	Error    string `json:"error,omitempty"`
+}
+
+// failedVariableOutcome reports a `variable_write` that failed AS AN ACTION: the
+// store was never asked, because the action itself could not be carried out.
+func failedVariableOutcome(name, reason string) VariableOutcome {
+	return VariableOutcome{Action: "variable_write", Variable: name, OK: false, Error: reason}
+}
+
+// VariableSink performs the RUL-220 `variable_write` action against the app
+// peer's variable rows (data-model/1 DAT-130): it writes `name`'s value at the
+// scope node the run is authorized at, creating the row when the name is not yet
+// declared there and updating it when it is, and emits `variable.changed`
+// (DAT-137 / events/1 EVT-085) for the committed write.
+//
+// It lives as an injected seam for the same reason CommandSink and SignageSink
+// do — this package never knows how a write is carried out, only what was asked
+// and what came back. Like SignageSink and unlike CommandSink, no EDGE
+// deployment ever wires one: `variable_write` is app-class unconditionally
+// (vocab, RUL-220), so a rule containing it is never edge-classified and the
+// relay's engine is never handed one. A nil sink is therefore the normal edge
+// posture, not a misconfiguration, and the action is skipped exactly as an
+// out-of-scope app action is.
+//
+// This is what moved the boundary the `default:` arm of RunActions used to
+// describe, and it moved it by exactly one notch: the evaluation core still
+// performs no write and holds no store. What changed is that "out of this
+// evaluation core's scope" is now expressed as an unwired seam rather than as a
+// silent no-op, which is the difference between an action the edge engine
+// correctly declines and an action nothing anywhere performs.
+//
+// A sink MUST return an outcome for every call — never a bare error — so that a
+// refusal reaches the run report rather than the log.
+type VariableSink interface {
+	WriteVariable(name string, value any) VariableOutcome
+}
+
 // LogEntry is one `log` action's recorded output (RUL-200): a level plus the
 // message an Expression evaluated to (runLog / ctx.EvalExpr).
 type LogEntry struct {
@@ -218,6 +273,22 @@ type ActionContext struct {
 	Signage         SignageSink
 	SignageOutcomes *[]SignageOutcome
 
+	// Variables performs the app-class `variable_write` action (RUL-220); nil on
+	// every edge context, where such a rule never arrives. VariableOutcomes is
+	// the caller's optional recorder for what each write did, exactly as
+	// SignageOutcomes is for a signage action.
+	//
+	// Note the asymmetry with Vars above, and that it is deliberate: Vars is what
+	// a `variable` CONDITION reads, and RUL-150 makes that a frozen compile-time
+	// value the evaluator never looks up live. Writing through this sink does NOT
+	// update Vars, and must not: a rule that wrote `guest_mode` and then tested it
+	// in a later condition of the same run would otherwise see the new value on
+	// the app side and the frozen one on the edge side, from the same rule text.
+	// RUL-392 is how a write becomes visible — it compiles a NEW generation — and
+	// a mid-run mutation of Vars would be a second, contradictory answer.
+	Variables        VariableSink
+	VariableOutcomes *[]VariableOutcome
+
 	// EvalExpr live-evaluates a `log` message (RUL-200) and each `params` value
 	// (RUL-393) at dispatch. The engine supplies the closed-grammar evaluator with
 	// the firing trigger's subject entity as the edge scope (RUL-282). When nil —
@@ -269,10 +340,22 @@ func RunActions(ctx ActionContext, actions []model.Member) error {
 			runLog(ctx, m)
 		case vocab.ActionPlayCast, vocab.ActionShowAlert, vocab.ActionDismissAlert:
 			runSignage(ctx, m)
+		case vocab.ActionVariableWrite:
+			runVariableWrite(ctx, m)
 		default:
-			// An app-coupled or later-part action type (notify,
-			// variable_write, workflow_start, pack_action) is out of this
-			// evaluation core's scope; no-op rather than error.
+			// An app-coupled or later-part action type (notify, workflow_start,
+			// pack_action) is out of this evaluation core's scope; no-op rather
+			// than error.
+			//
+			// `variable_write` was in this list and is no longer: it is still
+			// app-class (RUL-220) and the edge engine still never performs it,
+			// but "app-class" is now expressed as an unwired VariableSink rather
+			// than as an unnamed default arm — so the APP peer, which does hold
+			// the store, performs it instead of silently dropping it. The two
+			// remaining names are the ones with no sink and no implementor
+			// anywhere, and they reach an operator as a run that reports success
+			// and does nothing. That is the same defect one notch along, and it
+			// is recorded here rather than left to be rediscovered.
 		}
 	}
 	return nil
@@ -516,6 +599,82 @@ func recordSignage(ctx ActionContext, out SignageOutcome) {
 		return
 	}
 	*ctx.SignageOutcomes = append(*ctx.SignageOutcomes, out)
+}
+
+// runVariableWrite executes one `variable_write` action (RUL-220): it evaluates
+// the declared `value` Expression at dispatch and hands the name and the
+// resulting value to ctx.Variables.
+//
+// `value` is live-evaluated, not frozen. RUL-390 enumerates exactly three things
+// a compiled generation freezes — a `variable` condition's comparison value, an
+// EntityRef's matched set, a preset_batch's command list — and this is none of
+// them; RUL-393 makes the same point for an action's `params`. The action is
+// app-class anyway (RUL-220), so it is only ever dispatched where a live
+// evaluator exists.
+//
+// Every refusal here is REPORTED rather than skipped, for the reason runSignage
+// gives at length: a rule that answered `ran` with an empty effect report and an
+// unchanged variable is indistinguishable from one that worked, and that
+// silence is the whole defect this action's implementation exists to remove.
+func runVariableWrite(ctx ActionContext, m model.Member) {
+	if ctx.Variables == nil {
+		return // the normal edge posture — no app peer wired (see VariableSink).
+	}
+
+	// Decoded member-by-member rather than into a struct of Go values, so a
+	// `variable` written as a number is refused NAMING ITSELF instead of
+	// arriving as the empty string. The struct decode would fail whole and
+	// return, running the action as a silent no-op — the exact shape
+	// model.DecodeSignage was introduced to remove for the signage actions.
+	var spec struct {
+		Variable json.RawMessage `json:"variable"`
+		Value    json.RawMessage `json:"value"`
+	}
+	if err := json.Unmarshal(m.Raw, &spec); err != nil {
+		recordVariable(ctx, failedVariableOutcome("",
+			"a variable_write action must be a JSON object (rules/1 RUL-220): "+err.Error()))
+		return
+	}
+
+	var name string
+	if len(spec.Variable) == 0 {
+		recordVariable(ctx, failedVariableOutcome("",
+			"a variable_write action MUST declare variable (rules/1 RUL-220); this action declares none"))
+		return
+	}
+	if err := json.Unmarshal(spec.Variable, &name); err != nil {
+		recordVariable(ctx, failedVariableOutcome("",
+			"a variable_write action's variable MUST be a string (rules/1 RUL-220); it is written at another type"))
+		return
+	}
+
+	if len(spec.Value) == 0 {
+		recordVariable(ctx, failedVariableOutcome(name,
+			"a variable_write action MUST declare value (rules/1 RUL-220); this action declares none"))
+		return
+	}
+	v, ok := evalParam(ctx, spec.Value)
+	if !ok {
+		// The Expression failed closed (RUL-284). Unlike a `log` message, which
+		// simply records nothing, this is reported: a write that did not happen
+		// because its value could not be computed is a fact about the rule, and
+		// RUL-284 requires the failure be recorded for operator visibility rather
+		// than silently discarded.
+		recordVariable(ctx, failedVariableOutcome(name,
+			"a variable_write action's value Expression failed to evaluate (rules/1 RUL-284); nothing was written"))
+		return
+	}
+
+	recordVariable(ctx, ctx.Variables.WriteVariable(name, v))
+}
+
+// recordVariable appends one variable_write outcome to the caller's recorder,
+// when it supplied one.
+func recordVariable(ctx ActionContext, out VariableOutcome) {
+	if ctx.VariableOutcomes == nil {
+		return
+	}
+	*ctx.VariableOutcomes = append(*ctx.VariableOutcomes, out)
 }
 
 // SignageOutcomeFor computes RUL-236's three-value outcome from a per-screen

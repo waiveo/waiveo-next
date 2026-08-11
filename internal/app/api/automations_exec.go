@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -73,6 +74,7 @@ type runReport struct {
 	DryRun          bool
 	Commands        []runCommand
 	Signage         []eval.SignageOutcome
+	Variables       []eval.VariableOutcome
 	Logs            []runLog
 	DelaysCollapsed int
 }
@@ -113,17 +115,49 @@ const maxCollapsedDelays = 64
 // on its own and, when refused, reported as a failed target — never silently
 // dropped, and never allowed to fail the whole run (RUL-171/236's independence
 // rule, which is the same rule for the same reason).
-func (srv *server) runAutomationNow(ctx context.Context, traceID string, rule model.Rule, view scopeView, dryRun bool) runReport {
+// scopeNode is the AUTOMATION ROW's own placement (DAT-006). It is a separate
+// argument from view even though view is derived from it on the event-fired
+// path, because the two answer different questions and a run needs both: view
+// bounds what this run may touch, while scopeNode is the concrete node the
+// variable environment resolves at (DAT-134) and the node a `variable_write`
+// declares its row at. Deriving one from the other is not possible in either
+// direction — a scopeView is a pair of predicates, and a manual run's view comes
+// from the CALLER's bindings rather than from the rule's placement at all.
+func (srv *server) runAutomationNow(ctx context.Context, traceID string, rule model.Rule, view scopeView, scopeNode string, dryRun bool) runReport {
 	rep := runReport{
-		DryRun:   dryRun,
-		Commands: []runCommand{},
-		Signage:  []eval.SignageOutcome{},
-		Logs:     []runLog{},
+		DryRun:    dryRun,
+		Commands:  []runCommand{},
+		Signage:   []eval.SignageOutcome{},
+		Logs:      []runLog{},
+		Variables: []eval.VariableOutcome{},
 	}
 
 	reg := registry.FromDeviceClass(deviceclass.Builtin(), registry.Overlay{})
 	snap := srv.entitySnapshot()
 	clk := appClock{nowMs: srv.nowMs}
+
+	// The variable environment a `variable` condition reads (RUL-150), resolved
+	// at the rule's own scope node by DAT-134's nearest-ancestor walk, per name
+	// (DAT-135).
+	//
+	// This used to be `map[string]any{}` — an empty map, with a comment saying a
+	// manual run "is not a compiled generation, so there is no closure to read
+	// from". That premise was true and the conclusion did not follow: the reason
+	// RUL-150 closes a variable over at compile time is that the EDGE engine
+	// holds no variable store, and the app peer does. Reading it live here is
+	// what the edge engine is forbidden from doing precisely because only this
+	// side can. With the empty map, a rule guarded by a `variable` condition
+	// evaluated false forever and reported `skipped` — a control the builder
+	// offers that can never be satisfied.
+	//
+	// A read failure yields an EMPTY environment rather than aborting the run,
+	// which keeps the fail-closed direction RUL-150 already fixes for an absent
+	// variable: a condition that cannot resolve its variable does not pass.
+	vars, verr := srv.store.EffectiveVariables(ctx, scopeNode)
+	if verr != nil {
+		log.Printf("api: automation run %s: variable environment unreadable, evaluating with none: %v", traceID, verr)
+		vars = map[string]any{}
+	}
 
 	// RUL-004: the conditions array is an implicit AND, and a rule whose
 	// conditions do not hold does not run its actions. That is `skipped` — the
@@ -132,11 +166,7 @@ func (srv *server) runAutomationNow(ctx context.Context, traceID string, rule mo
 	// operator their request was malformed when in fact their rule said "not
 	// now").
 	for _, c := range rule.Conditions {
-		// Variables are the empty map rather than a frozen closure: a manual run
-		// is not a compiled generation, so there is no closure to read from, and
-		// a `variable` condition fails closed against an absent value exactly as
-		// it would against an unresolvable one.
-		if !eval.EvalConditionAt(reg, snap, clk, defaultRunLocation(), map[string]any{}, c) {
+		if !eval.EvalConditionAt(reg, snap, clk, defaultRunLocation(), vars, c) {
 			rep.Disposition = "skipped"
 			return rep
 		}
@@ -145,20 +175,31 @@ func (srv *server) runAutomationNow(ctx context.Context, traceID string, rule mo
 
 	cmds := &relayCommandSink{srv: srv, ctx: ctx, traceID: traceID, view: view, dry: dryRun}
 	sign := &screenOverrideSink{srv: srv, ctx: ctx, view: view, dry: dryRun}
+	varsink := &variableWriteSink{srv: srv, ctx: ctx, traceID: traceID, view: view, node: scopeNode, dry: dryRun}
 
 	var logs []eval.LogEntry
 	var rejected []eval.CommandResult
 	actx := eval.ActionContext{
-		Reg:             reg,
-		Snap:            snap,
-		Clk:             clk,
-		Loc:             defaultRunLocation(),
-		Vars:            map[string]any{},
+		Reg:  reg,
+		Snap: snap,
+		Clk:  clk,
+		Loc:  defaultRunLocation(),
+		// The SAME environment the conditions were evaluated against, not a
+		// fresh empty one. A rule whose `choose` branch is guarded by the very
+		// variable its top-level condition tested must see one answer, and
+		// handing the guard an empty map here while the condition read the real
+		// values is how one rule text gets two readings in one run.
+		Vars:            vars,
 		Sink:            cmds,
 		Resolve:         srv.resolveEntityRef(view),
 		Signage:         sign,
 		SignageOutcomes: &rep.Signage,
-		Logs:            &logs,
+		// The RUL-220 write seam. Nil on the edge engine; here it is the whole
+		// point — a `variable_write` used to fall through RunActions' default arm
+		// and do nothing at all.
+		Variables:        varsink,
+		VariableOutcomes: &rep.Variables,
+		Logs:             &logs,
 		// Pre-dispatch refusals — an entity this app peer has never been told
 		// about, or a command outside its device class's vocabulary — are
 		// REPORTED rather than absorbed. Without this the single most likely
@@ -644,4 +685,185 @@ func (s *screenOverrideSink) castExists(castID string) error {
 		return fmt.Errorf("no cast exists with this identifier")
 	}
 	return nil
+}
+
+// variableWriteSink is eval.VariableSink over the authored variable rows: a
+// RUL-220 `variable_write` action declares `name` and a value, and this writes
+// it as a data-model/1 variable row (DAT-130) at the RULE'S OWN scope node.
+//
+// # Which node, and why not the one the value currently resolves at
+//
+// The write always lands at `node` — the automation row's own placement — and
+// never at whichever ancestor a read of that name currently resolves through
+// (DAT-134). The alternative is a privilege widening with no gate on it: a rule
+// authored at one group could mutate a value set at the site and thereby
+// retarget every other group's rules, while the same operator writing the same
+// name by hand at the site would be refused by placement authority. Writing at
+// the rule's own node produces an OVERRIDE instead, which is exactly the shape
+// DAT-134/136 already define — visible to that node's subtree, leaving the
+// ancestor's value intact, and re-exposing it if the override is later deleted.
+//
+// # The create/update decision, and the race in it
+//
+// A write is an update when a row of that name already exists AT THAT NODE, and
+// a create otherwise. That read-then-write is not atomic, and it does not need
+// to be: the create path carries the same DAT-131 uniqueness guard the HTTP
+// surface does (store.VariableNameUniqueGuard), evaluated inside the write
+// transaction, so a lost race becomes a refusal reported in this action's
+// outcome rather than a second row with the same name at the same node. Two
+// rules writing the same variable in the same tick therefore serialize, both
+// commit in some order, both emit, and the last one is the value — see
+// store/variables.go, where that is stated once for every writer.
+type variableWriteSink struct {
+	srv     *server
+	ctx     context.Context
+	traceID string
+	view    scopeView
+	node    string
+	dry     bool
+}
+
+func (s *variableWriteSink) WriteVariable(name string, value any) eval.VariableOutcome {
+	out := eval.VariableOutcome{Action: "variable_write", Variable: name}
+
+	// The row rules (DAT-131a name grammar, DAT-132/133 scalar value) are applied
+	// HERE as well as at the HTTP surface, and that is not redundancy: this
+	// writer calls store.Create/Update directly, so the api layer's per-kind
+	// `validate` hook never runs for it. Without this, a rule could write a row
+	// no operator could have written by hand.
+	probe, merr := json.Marshal(map[string]any{"name": name, "value": value})
+	if merr != nil {
+		out.Error = "the value could not be encoded"
+		return out
+	}
+	if errs := datamodel.ValidateVariableBody(probe); len(errs) > 0 {
+		msgs := make([]string, 0, len(errs))
+		for _, e := range errs {
+			msgs = append(msgs, e.Code+": "+e.Message)
+		}
+		out.Error = strings.Join(msgs, "; ")
+		return out
+	}
+
+	// Placement authorization. UNREACHABLE AS CURRENTLY CALLED, and recorded as
+	// such rather than left to look load-bearing: both call sites hand this sink
+	// the automation's OWN scope node, and both have already authorized a write
+	// there — the manual run through runAutomationExec's canWrite(node) 403, the
+	// event-fired run through automationScopeView, whose canWrite is the
+	// automation's own subtree. Mutating this condition to `false &&` breaks no
+	// test, and no test is claimed for it.
+	//
+	// It is kept rather than deleted because it is the one line that makes the
+	// sink safe to call with a node other than the one it was built with, and the
+	// signage sink beside it needs exactly that (a screen sits at an unrelated
+	// node, so its per-target check DOES fire). A future caller that resolves a
+	// write to an ancestor, or a `variable_write` that grows an explicit
+	// `scope_node` member, makes this reachable on its first day; without it,
+	// that change would ship an unauthorized write and no gate would notice.
+	if !s.view.canWrite(s.node) {
+		out.Error = "not authorized to write a variable at this automation's scope node"
+		return out
+	}
+
+	existing, found, err := s.existingRow(name)
+	if err != nil {
+		out.Error = "the variable rows could not be read"
+		return out
+	}
+
+	if s.dry {
+		// A dry run resolves the target and withholds the effect, exactly as the
+		// signage sink does: the value is reported as the one that WOULD be
+		// written, and nothing is stored and nothing is published.
+		out.OK, out.Value = true, value
+		return out
+	}
+
+	var before, after json.RawMessage
+	if found {
+		patch, perr := json.Marshal(map[string]any{"value": value})
+		if perr != nil {
+			out.Error = "the value could not be encoded"
+			return out
+		}
+		before = existing.Body
+		res, uerr := s.srv.store.Update(s.ctx, store.KindVariable, existing.ID, existing.Revision, patch,
+			store.VariableNameUniqueGuard(name, s.node, existing.ID))
+		if uerr != nil {
+			out.Error = variableWriteError(uerr)
+			return out
+		}
+		after = res.Body
+	} else {
+		body, berr := json.Marshal(map[string]any{
+			"id": s.srv.newID(), "name": name, "value": value, "scope_node": s.node,
+		})
+		if berr != nil {
+			out.Error = "the variable could not be encoded"
+			return out
+		}
+		res, cerr := s.srv.store.Create(s.ctx, store.KindVariable, body,
+			store.VariableNameUniqueGuard(name, s.node, ""))
+		if cerr != nil {
+			out.Error = variableWriteError(cerr)
+			return out
+		}
+		after = res.Body
+	}
+
+	// DAT-137: once per COMMITTED write, through the same emitter the HTTP
+	// handlers use. Emitted after the store call returns, so a refused write
+	// publishes nothing — the event says a value changed, and one that did not
+	// change must not say so.
+	s.srv.publishVariableChange(s.traceID, before, after)
+
+	out.OK, out.Value = true, value
+	return out
+}
+
+// existingRow finds the variable row named name AT THIS SINK'S NODE, if one
+// exists. It matches on the node's OWN rows only — never on an ancestor's —
+// because that is the row a write at this node would replace; an ancestor's row
+// is a different row at a different placement, and updating it is the widening
+// this sink's doc refuses.
+func (s *variableWriteSink) existingRow(name string) (store.Resource, bool, error) {
+	rows, err := s.srv.store.List(s.ctx, store.KindVariable, store.ListFilter{ScopeNode: s.node})
+	if err != nil {
+		return store.Resource{}, false, err
+	}
+	for _, res := range rows {
+		var row struct {
+			Name string `json:"name"`
+		}
+		if uerr := json.Unmarshal(res.Body, &row); uerr != nil {
+			continue
+		}
+		if row.Name == name {
+			return res, true, nil
+		}
+	}
+	return store.Resource{}, false, nil
+}
+
+// variableWriteError renders a store failure as a reason an operator can act on,
+// mirroring overrideWriteError above: a lost revision race says it is
+// retryable, a field-level refusal names its own code and message (which is how
+// VARIABLE_NAME_DUPLICATE from the uniqueness guard reaches this report), and
+// anything else is an unspecified refusal rather than a silent success.
+func variableWriteError(err error) string {
+	var verr *store.ValidationError
+	switch {
+	case errors.Is(err, store.ErrRevisionMismatch):
+		return "the variable was changed by another writer during this run; retry the run"
+	case errors.Is(err, store.ErrNotFound):
+		return "the variable was deleted during this run"
+	case errors.As(err, &verr):
+		msgs := make([]string, 0, len(verr.Errors))
+		for _, e := range verr.Errors {
+			msgs = append(msgs, e.Code+": "+e.Message)
+		}
+		return strings.Join(msgs, "; ")
+	default:
+		return "the variable could not be written"
+	}
 }

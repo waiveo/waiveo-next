@@ -1294,6 +1294,18 @@ func main() {
 		// longer contains — are a screen that did not change and a log line on the
 		// box, which is not evidence an operator can reach.
 		api.WithRunEvents(eventHub),
+		// …and publish every COMMITTED VARIABLE WRITE to the same log as an
+		// events/1 variable.changed (EVT-084/085, data-model/1 DAT-137) —
+		// whether it came from the console, the CLI, or a rule's own
+		// `variable_write` action (rules/1 RUL-220).
+		//
+		// It is the same hub for a structural reason, not for convenience:
+		// variable.changed is the durable event an `event`-kind trigger fires a
+		// rule ON (RUL-080), so a write published anywhere else could never wake
+		// the rule that is waiting for it. Wired to eventHub, a variable write
+		// re-enters this same process's ingest path and fires those rules, which
+		// is the loop the contract describes.
+		api.WithVariableEvents(eventHub),
 		api.WithWebhookSecrets(webhookSecrets, webhookRotationOverlapMs),
 		api.WithWorkspaceArchive(&api.WorkspaceArchive{Dir: cfg.archiveDir, Key: wsKey}),
 		// The live store a restore stages beside (archive/1, the offline swap).

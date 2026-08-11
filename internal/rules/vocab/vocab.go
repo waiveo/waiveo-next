@@ -57,7 +57,7 @@ var conditions = map[string]Class{
 
 var actions = map[string]Class{
 	"device_command": Edge, "preset_batch": Edge, "choose": Edge, "delay": Edge, "log": Edge,
-	"notify": App, "variable_write": App, "workflow_start": App,
+	"notify": App, ActionVariableWrite: App, "workflow_start": App,
 	// The signage actions (RUL-234/235). App-class unconditionally, and for a
 	// structural reason rather than a policy one: each writes a screen row's
 	// authored program override (data-model/1 DAT-004c), which is app-peer state
@@ -96,6 +96,14 @@ const (
 	ActionShowAlert    = "show_alert"
 	ActionDismissAlert = "dismiss_alert"
 )
+
+// ActionVariableWrite is the RUL-220 action type: the one action that targets
+// neither an entity nor a screen but a data-model/1 variable row (DAT-130), and
+// so carries a `variable` name in place of any Ref at all. It is named here,
+// beside the signage constants and for the same reason, so the evaluator's
+// dispatch arm and the `actions` class table above cannot drift apart on the
+// spelling of a member one of them dispatches.
+const ActionVariableWrite = "variable_write"
 
 // IsSignageAction reports whether typ is one of the three RUL-233 ScreenRef-
 // carrying action types. It is the ONE definition of that set: the compiler

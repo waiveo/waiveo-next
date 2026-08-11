@@ -14,6 +14,7 @@ import {
   Server,
   Tv,
   Upload,
+  Variable,
   Workflow,
   type LucideIcon,
   Puzzle,
@@ -169,6 +170,14 @@ export const NAV_TREE: NavNode[] = [
   // device and its action is usually a screen, so filing it under either one
   // hides it from the other half of its own job.
   { kind: "leaf", to: "/automations", label: "Automations", icon: Workflow },
+
+  // Variables sit BESIDE Automations rather than under Platform, and that is a
+  // placement decision rather than a default. A variable exists for exactly one
+  // reason — a rule reads it in a condition (RUL-150) and writes it in an action
+  // (RUL-220) — so an operator reaches for it while they are holding a rule, not
+  // while they are doing housekeeping. Filing it with Backup and Design kit would
+  // put it where nobody looking for it would go.
+  { kind: "leaf", to: "/variables", label: "Variables", icon: Variable },
 
   // Extensions is its own GROUP, not a leaf and not a Platform child.
   //

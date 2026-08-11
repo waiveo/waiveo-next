@@ -1281,7 +1281,7 @@ type AutomationRunRequest struct {
 	DryRun *bool `json:"dry_run,omitempty"`
 }
 
-// AutomationRunResult What the run actually did. `disposition` is the mode-evaluation outcome; the three effect arrays are the report the operator needs to tell "it ran" from "it ran and changed something".
+// AutomationRunResult What the run actually did. `disposition` is the mode-evaluation outcome; the four effect arrays are the report the operator needs to tell "it ran" from "it ran and changed something".
 type AutomationRunResult struct {
 	// Commands Every `device_command` target this run dispatched to, in dispatch order.
 	Commands []AutomationRunCommand `json:"commands"`
@@ -1307,6 +1307,9 @@ type AutomationRunResult struct {
 
 	// Signage Every signage action this run performed, in action order.
 	Signage []AutomationRunSignage `json:"signage"`
+
+	// Variables Every `variable_write` action this run performed (`rules/1` RUL-220), in action order. Present for the same reason the arrays above are: without it a rule whose write was refused — an invalid name, a value the store will not hold, a scope node this run may not write — answered `disposition: "ran"` with an unchanged variable, indistinguishable from a write that worked.
+	Variables []AutomationRunVariable `json:"variables"`
 }
 
 // AutomationRunResultDisposition rules/1's closed RunDisposition set. `skipped` here means the rule's own conditions did not hold, so its actions were not run — not an error, and not a failure of the request.
@@ -1333,6 +1336,22 @@ type AutomationRunSignage struct {
 	// Outcome One of `complete`, `partial`, `failed` — `rules/1` RUL-172's own three-value outcome, reused by RUL-236. A plain string for the reason `action` above gives.
 	Outcome string                `json:"outcome"`
 	Screens []AutomationRunScreen `json:"screens"`
+}
+
+// AutomationRunVariable One `variable_write` action's outcome (`rules/1` RUL-220): the name it targeted, the value actually written, and whether the write landed.
+type AutomationRunVariable struct {
+	// Action Always `variable_write`. A plain string rather than an `enum` for the reason `AutomationRunSignage.action` gives at length.
+	Action string `json:"action"`
+
+	// Error Present only when `ok` is false — why the write did not happen: an absent or wrongly-typed member (RUL-220), a value Expression that failed closed (RUL-284), a name or value the data model refuses (`data-model/1` DAT-131a/132/133), a name already taken at this scope node (DAT-131), or a placement this run may not write.
+	Error *string `json:"error,omitempty"`
+	Ok    bool    `json:"ok"`
+
+	// Value A variable's value: a JSON scalar — a string, a number, or a boolean (`data-model/1` DAT-132). An object or an array is refused (`VARIABLE_VALUE_INVALID`): a rule compares a variable against a literal, and a structured value would make that comparison a path expression this platform has deliberately not defined a grammar for. `null` is NOT settable (DAT-133) — `events/1` EVT-084 already assigns null the meaning "unset" in `old_value`/`new_value`, so admitting it here would make `new_value: null` ambiguous between a variable set to null and a variable deleted. To unset a variable, delete the row.
+	Value *VariableValue `json:"value,omitempty"`
+
+	// Variable The variable name the action declared. NOT constrained to `VariableName`'s grammar here: an action naming `Store Open` is exactly the case this report exists to surface, and refusing to serialize the report because the authored name was invalid would withhold the one message that explains the refusal.
+	Variable string `json:"variable"`
 }
 
 // AutomationUpdate Partial update — every field optional, at least one required.
@@ -2683,6 +2702,83 @@ type ValidationFieldError struct {
 	Message string `json:"message"`
 }
 
+// Variable A named, scope-placed scalar (`data-model/1` DAT-130): the shared state a `rules/1` `variable` condition reads (RUL-150) and a `variable_write` action writes (RUL-220). Its `name` — not its `id` — is how a rule, a pack and a person refer to it (DAT-131); the ULID remains the row's identity for revision, If-Match and audit, and the two coexist because they answer different questions. Secret material MUST NOT be stored here (DAT-138).
+type Variable struct {
+	// CreatedAt A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC 3339 string. The store stamps `created_at`/`updated_at` on every row it writes as an integer millisecond count and returns that value unchanged, so this is what a client reads and what an export/apply round trip carries back. Deliberately not `format: date-time`: the two are not interchangeable, and a client that parsed one as the other would silently read 1970 for every resource on this surface.
+	// The `Job` resource is the one exception on this API and says so at its own `created_at`: a Job's timestamp is minted in Go as a `time.Time` and serialized RFC 3339, because a Job is not a stored row of this baseline.
+	CreatedAt Timestamp `json:"created_at"`
+
+	// ExternalId Client-assigned identifier (contracts/api-1.md#client-assignable-external_id).
+	ExternalId **string `json:"external_id,omitempty"`
+
+	// Id A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	Id Ulid `json:"id"`
+
+	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
+	Labels LabelMap `json:"labels"`
+
+	// Name A variable's name (`data-model/1` DAT-131a). Deliberately narrower than a label key's grammar (API-042): the name is compiled into a rule's closure and read from pack-authored text, so it MUST NOT require quoting or escaping in either. A violating name is refused `VARIABLE_NAME_INVALID`; one already taken at the same scope node is refused `VARIABLE_NAME_DUPLICATE`.
+	Name     VariableName `json:"name"`
+	Revision int          `json:"revision"`
+
+	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScopeNode Ulid `json:"scope_node"`
+
+	// UpdatedAt A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC 3339 string. The store stamps `created_at`/`updated_at` on every row it writes as an integer millisecond count and returns that value unchanged, so this is what a client reads and what an export/apply round trip carries back. Deliberately not `format: date-time`: the two are not interchangeable, and a client that parsed one as the other would silently read 1970 for every resource on this surface.
+	// The `Job` resource is the one exception on this API and says so at its own `created_at`: a Job's timestamp is minted in Go as a `time.Time` and serialized RFC 3339, because a Job is not a stored row of this baseline.
+	UpdatedAt Timestamp `json:"updated_at"`
+
+	// Value A variable's value: a JSON scalar — a string, a number, or a boolean (`data-model/1` DAT-132). An object or an array is refused (`VARIABLE_VALUE_INVALID`): a rule compares a variable against a literal, and a structured value would make that comparison a path expression this platform has deliberately not defined a grammar for. `null` is NOT settable (DAT-133) — `events/1` EVT-084 already assigns null the meaning "unset" in `old_value`/`new_value`, so admitting it here would make `new_value: null` ambiguous between a variable set to null and a variable deleted. To unset a variable, delete the row.
+	Value VariableValue `json:"value"`
+}
+
+// VariableCreate defines model for VariableCreate.
+type VariableCreate struct {
+	ExternalId **string `json:"external_id,omitempty"`
+
+	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
+	Labels *LabelMap `json:"labels,omitempty"`
+
+	// Name A variable's name (`data-model/1` DAT-131a). Deliberately narrower than a label key's grammar (API-042): the name is compiled into a rule's closure and read from pack-authored text, so it MUST NOT require quoting or escaping in either. A violating name is refused `VARIABLE_NAME_INVALID`; one already taken at the same scope node is refused `VARIABLE_NAME_DUPLICATE`.
+	Name VariableName `json:"name"`
+
+	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScopeNode Ulid `json:"scope_node"`
+
+	// Value A variable's value: a JSON scalar — a string, a number, or a boolean (`data-model/1` DAT-132). An object or an array is refused (`VARIABLE_VALUE_INVALID`): a rule compares a variable against a literal, and a structured value would make that comparison a path expression this platform has deliberately not defined a grammar for. `null` is NOT settable (DAT-133) — `events/1` EVT-084 already assigns null the meaning "unset" in `old_value`/`new_value`, so admitting it here would make `new_value: null` ambiguous between a variable set to null and a variable deleted. To unset a variable, delete the row.
+	Value VariableValue `json:"value"`
+}
+
+// VariableListResponse defines model for VariableListResponse.
+type VariableListResponse struct {
+	// Cursor An opaque, URL-safe continuation token. `null` signals no further rows. Never constructed, parsed, or compared for meaning by a client.
+	Cursor Cursor     `json:"cursor"`
+	Items  []Variable `json:"items"`
+}
+
+// VariableName A variable's name (`data-model/1` DAT-131a). Deliberately narrower than a label key's grammar (API-042): the name is compiled into a rule's closure and read from pack-authored text, so it MUST NOT require quoting or escaping in either. A violating name is refused `VARIABLE_NAME_INVALID`; one already taken at the same scope node is refused `VARIABLE_NAME_DUPLICATE`.
+type VariableName = string
+
+// VariableUpdate Partial update — every field optional, at least one required.
+type VariableUpdate struct {
+	ExternalId **string `json:"external_id,omitempty"`
+
+	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
+	Labels *LabelMap `json:"labels,omitempty"`
+
+	// Name A variable's name (`data-model/1` DAT-131a). Deliberately narrower than a label key's grammar (API-042): the name is compiled into a rule's closure and read from pack-authored text, so it MUST NOT require quoting or escaping in either. A violating name is refused `VARIABLE_NAME_INVALID`; one already taken at the same scope node is refused `VARIABLE_NAME_DUPLICATE`.
+	Name *VariableName `json:"name,omitempty"`
+
+	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScopeNode *Ulid `json:"scope_node,omitempty"`
+
+	// Value A variable's value: a JSON scalar — a string, a number, or a boolean (`data-model/1` DAT-132). An object or an array is refused (`VARIABLE_VALUE_INVALID`): a rule compares a variable against a literal, and a structured value would make that comparison a path expression this platform has deliberately not defined a grammar for. `null` is NOT settable (DAT-133) — `events/1` EVT-084 already assigns null the meaning "unset" in `old_value`/`new_value`, so admitting it here would make `new_value: null` ambiguous between a variable set to null and a variable deleted. To unset a variable, delete the row.
+	Value *VariableValue `json:"value,omitempty"`
+}
+
+// VariableValue A variable's value: a JSON scalar — a string, a number, or a boolean (`data-model/1` DAT-132). An object or an array is refused (`VARIABLE_VALUE_INVALID`): a rule compares a variable against a literal, and a structured value would make that comparison a path expression this platform has deliberately not defined a grammar for. `null` is NOT settable (DAT-133) — `events/1` EVT-084 already assigns null the meaning "unset" in `old_value`/`new_value`, so admitting it here would make `new_value: null` ambiguous between a variable set to null and a variable deleted. To unset a variable, delete the row.
+type VariableValue = interface{}
+
 // WebhookDeliveryState An endpoint's delivery state: platform-owned execution state about the registration, not part of the registration itself. It carries no revision and no If-Match surface — a stale conditional write must not be able to revert an auto-disable the platform had just decided on.
 type WebhookDeliveryState struct {
 	// ConsecutiveFailures The current unbroken run of deliveries that exhausted their whole retry budget (EVT-153). Counted per exhausted delivery, not per attempt, and reset by any success.
@@ -3632,6 +3728,54 @@ type RestartApplicationServerParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// ListVariablesParams defines parameters for ListVariables.
+type ListVariablesParams struct {
+	// Cursor Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client.
+	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Limit Maximum rows to return in this page.
+	Limit *LimitParam `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Selector A label-selector string: comma-separated, ANDed terms (equality, inequality, set-membership, set-exclusion, existence, non-existence, or a `scope_node subtree <ulid>` term). See `contracts/api-1.md#label-selector-grammar` for the full grammar.
+	Selector *SelectorParam `form:"selector,omitempty" json:"selector,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// CreateVariableParams defines parameters for CreateVariable.
+type CreateVariableParams struct {
+	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
+	IdempotencyKey *IdempotencyKeyParam `json:"Idempotency-Key,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// DeleteVariableParams defines parameters for DeleteVariable.
+type DeleteVariableParams struct {
+	// IfMatch The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists.
+	IfMatch IfMatchParam `json:"If-Match"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// GetVariableParams defines parameters for GetVariable.
+type GetVariableParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// UpdateVariableParams defines parameters for UpdateVariable.
+type UpdateVariableParams struct {
+	// IfMatch The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists.
+	IfMatch IfMatchParam `json:"If-Match"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // ListWebhookEndpointsParams defines parameters for ListWebhookEndpoints.
 type ListWebhookEndpointsParams struct {
 	// Cursor Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client.
@@ -3826,6 +3970,12 @@ type SetScreenNowJSONRequestBody = ScreenNowRequest
 
 // RestartApplicationServerJSONRequestBody defines body for RestartApplicationServer for application/json ContentType.
 type RestartApplicationServerJSONRequestBody = RestartRequest
+
+// CreateVariableJSONRequestBody defines body for CreateVariable for application/json ContentType.
+type CreateVariableJSONRequestBody = VariableCreate
+
+// UpdateVariableJSONRequestBody defines body for UpdateVariable for application/json ContentType.
+type UpdateVariableJSONRequestBody = VariableUpdate
 
 // CreateWebhookEndpointJSONRequestBody defines body for CreateWebhookEndpoint for application/json ContentType.
 type CreateWebhookEndpointJSONRequestBody = WebhookEndpointCreate
@@ -4216,6 +4366,25 @@ type ClientInterface interface {
 	RestartApplicationServerWithBody(ctx context.Context, params *RestartApplicationServerParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	RestartApplicationServer(ctx context.Context, params *RestartApplicationServerParams, body RestartApplicationServerJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListVariables request
+	ListVariables(ctx context.Context, params *ListVariablesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CreateVariableWithBody request with any body
+	CreateVariableWithBody(ctx context.Context, params *CreateVariableParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	CreateVariable(ctx context.Context, params *CreateVariableParams, body CreateVariableJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteVariable request
+	DeleteVariable(ctx context.Context, variableId Ulid, params *DeleteVariableParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetVariable request
+	GetVariable(ctx context.Context, variableId Ulid, params *GetVariableParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// UpdateVariableWithBody request with any body
+	UpdateVariableWithBody(ctx context.Context, variableId Ulid, params *UpdateVariableParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	UpdateVariable(ctx context.Context, variableId Ulid, params *UpdateVariableParams, body UpdateVariableJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListWebhookEndpoints request
 	ListWebhookEndpoints(ctx context.Context, params *ListWebhookEndpointsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -5567,6 +5736,90 @@ func (c *Client) RestartApplicationServerWithBody(ctx context.Context, params *R
 
 func (c *Client) RestartApplicationServer(ctx context.Context, params *RestartApplicationServerParams, body RestartApplicationServerJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewRestartApplicationServerRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListVariables(ctx context.Context, params *ListVariablesParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListVariablesRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateVariableWithBody(ctx context.Context, params *CreateVariableParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateVariableRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateVariable(ctx context.Context, params *CreateVariableParams, body CreateVariableJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateVariableRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) DeleteVariable(ctx context.Context, variableId Ulid, params *DeleteVariableParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteVariableRequest(c.Server, variableId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetVariable(ctx context.Context, variableId Ulid, params *GetVariableParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetVariableRequest(c.Server, variableId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) UpdateVariableWithBody(ctx context.Context, variableId Ulid, params *UpdateVariableParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUpdateVariableRequestWithBody(c.Server, variableId, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) UpdateVariable(ctx context.Context, variableId Ulid, params *UpdateVariableParams, body UpdateVariableJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUpdateVariableRequest(c.Server, variableId, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -11190,6 +11443,343 @@ func NewRestartApplicationServerRequestWithBody(server string, params *RestartAp
 	return req, nil
 }
 
+// NewListVariablesRequest generates requests for ListVariables
+func NewListVariablesRequest(server string, params *ListVariablesParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/variables")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.Cursor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "cursor", *params.Cursor, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "limit", *params.Limit, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Selector != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "selector", *params.Selector, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewCreateVariableRequest calls the generic CreateVariable builder with application/json body
+func NewCreateVariableRequest(server string, params *CreateVariableParams, body CreateVariableJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewCreateVariableRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewCreateVariableRequestWithBody generates requests for CreateVariable with any type of body
+func NewCreateVariableRequestWithBody(server string, params *CreateVariableParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/variables")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.IdempotencyKey != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Idempotency-Key", *params.IdempotencyKey, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Idempotency-Key", headerParam0)
+		}
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewDeleteVariableRequest generates requests for DeleteVariable
+func NewDeleteVariableRequest(server string, variableId Ulid, params *DeleteVariableParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "variable_id", variableId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/variables/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("If-Match", headerParam0)
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewGetVariableRequest generates requests for GetVariable
+func NewGetVariableRequest(server string, variableId Ulid, params *GetVariableParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "variable_id", variableId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/variables/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewUpdateVariableRequest calls the generic UpdateVariable builder with application/json body
+func NewUpdateVariableRequest(server string, variableId Ulid, params *UpdateVariableParams, body UpdateVariableJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewUpdateVariableRequestWithBody(server, variableId, params, "application/json", bodyReader)
+}
+
+// NewUpdateVariableRequestWithBody generates requests for UpdateVariable with any type of body
+func NewUpdateVariableRequestWithBody(server string, variableId Ulid, params *UpdateVariableParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "variable_id", variableId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/variables/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("If-Match", headerParam0)
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
 // NewListWebhookEndpointsRequest generates requests for ListWebhookEndpoints
 func NewListWebhookEndpointsRequest(server string, params *ListWebhookEndpointsParams) (*http.Request, error) {
 	var err error
@@ -12339,6 +12929,25 @@ type ClientWithResponsesInterface interface {
 	RestartApplicationServerWithBodyWithResponse(ctx context.Context, params *RestartApplicationServerParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RestartApplicationServerResponse, error)
 
 	RestartApplicationServerWithResponse(ctx context.Context, params *RestartApplicationServerParams, body RestartApplicationServerJSONRequestBody, reqEditors ...RequestEditorFn) (*RestartApplicationServerResponse, error)
+
+	// ListVariablesWithResponse request
+	ListVariablesWithResponse(ctx context.Context, params *ListVariablesParams, reqEditors ...RequestEditorFn) (*ListVariablesResponse, error)
+
+	// CreateVariableWithBodyWithResponse request with any body
+	CreateVariableWithBodyWithResponse(ctx context.Context, params *CreateVariableParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateVariableResponse, error)
+
+	CreateVariableWithResponse(ctx context.Context, params *CreateVariableParams, body CreateVariableJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateVariableResponse, error)
+
+	// DeleteVariableWithResponse request
+	DeleteVariableWithResponse(ctx context.Context, variableId Ulid, params *DeleteVariableParams, reqEditors ...RequestEditorFn) (*DeleteVariableResponse, error)
+
+	// GetVariableWithResponse request
+	GetVariableWithResponse(ctx context.Context, variableId Ulid, params *GetVariableParams, reqEditors ...RequestEditorFn) (*GetVariableResponse, error)
+
+	// UpdateVariableWithBodyWithResponse request with any body
+	UpdateVariableWithBodyWithResponse(ctx context.Context, variableId Ulid, params *UpdateVariableParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateVariableResponse, error)
+
+	UpdateVariableWithResponse(ctx context.Context, variableId Ulid, params *UpdateVariableParams, body UpdateVariableJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateVariableResponse, error)
 
 	// ListWebhookEndpointsWithResponse request
 	ListWebhookEndpointsWithResponse(ctx context.Context, params *ListWebhookEndpointsParams, reqEditors ...RequestEditorFn) (*ListWebhookEndpointsResponse, error)
@@ -15118,6 +15727,177 @@ func (r RestartApplicationServerResponse) ContentType() string {
 	return ""
 }
 
+type ListVariablesResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *VariableListResponse
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON429 *TooManyRequests
+}
+
+// Status returns HTTPResponse.Status
+func (r ListVariablesResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListVariablesResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ListVariablesResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type CreateVariableResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON201                   *Variable
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON409 *Conflict
+	ApplicationproblemJSON422 *UnprocessableContent
+}
+
+// Status returns HTTPResponse.Status
+func (r CreateVariableResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r CreateVariableResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r CreateVariableResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type DeleteVariableResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON412 *PreconditionFailed
+	ApplicationproblemJSON428 *PreconditionRequired
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteVariableResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteVariableResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r DeleteVariableResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetVariableResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *Variable
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON404 *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r GetVariableResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetVariableResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetVariableResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type UpdateVariableResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *Variable
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON412 *PreconditionFailed
+	ApplicationproblemJSON422 *UnprocessableContent
+	ApplicationproblemJSON428 *PreconditionRequired
+}
+
+// Status returns HTTPResponse.Status
+func (r UpdateVariableResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r UpdateVariableResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r UpdateVariableResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type ListWebhookEndpointsResponse struct {
 	Body                      []byte
 	HTTPResponse              *http.Response
@@ -16517,6 +17297,67 @@ func (c *ClientWithResponses) RestartApplicationServerWithResponse(ctx context.C
 		return nil, err
 	}
 	return ParseRestartApplicationServerResponse(rsp)
+}
+
+// ListVariablesWithResponse request returning *ListVariablesResponse
+func (c *ClientWithResponses) ListVariablesWithResponse(ctx context.Context, params *ListVariablesParams, reqEditors ...RequestEditorFn) (*ListVariablesResponse, error) {
+	rsp, err := c.ListVariables(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListVariablesResponse(rsp)
+}
+
+// CreateVariableWithBodyWithResponse request with arbitrary body returning *CreateVariableResponse
+func (c *ClientWithResponses) CreateVariableWithBodyWithResponse(ctx context.Context, params *CreateVariableParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateVariableResponse, error) {
+	rsp, err := c.CreateVariableWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateVariableResponse(rsp)
+}
+
+func (c *ClientWithResponses) CreateVariableWithResponse(ctx context.Context, params *CreateVariableParams, body CreateVariableJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateVariableResponse, error) {
+	rsp, err := c.CreateVariable(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateVariableResponse(rsp)
+}
+
+// DeleteVariableWithResponse request returning *DeleteVariableResponse
+func (c *ClientWithResponses) DeleteVariableWithResponse(ctx context.Context, variableId Ulid, params *DeleteVariableParams, reqEditors ...RequestEditorFn) (*DeleteVariableResponse, error) {
+	rsp, err := c.DeleteVariable(ctx, variableId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteVariableResponse(rsp)
+}
+
+// GetVariableWithResponse request returning *GetVariableResponse
+func (c *ClientWithResponses) GetVariableWithResponse(ctx context.Context, variableId Ulid, params *GetVariableParams, reqEditors ...RequestEditorFn) (*GetVariableResponse, error) {
+	rsp, err := c.GetVariable(ctx, variableId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetVariableResponse(rsp)
+}
+
+// UpdateVariableWithBodyWithResponse request with arbitrary body returning *UpdateVariableResponse
+func (c *ClientWithResponses) UpdateVariableWithBodyWithResponse(ctx context.Context, variableId Ulid, params *UpdateVariableParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateVariableResponse, error) {
+	rsp, err := c.UpdateVariableWithBody(ctx, variableId, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUpdateVariableResponse(rsp)
+}
+
+func (c *ClientWithResponses) UpdateVariableWithResponse(ctx context.Context, variableId Ulid, params *UpdateVariableParams, body UpdateVariableJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateVariableResponse, error) {
+	rsp, err := c.UpdateVariable(ctx, variableId, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUpdateVariableResponse(rsp)
 }
 
 // ListWebhookEndpointsWithResponse request returning *ListWebhookEndpointsResponse
@@ -20856,6 +21697,283 @@ func ParseRestartApplicationServerResponse(rsp *http.Response) (*RestartApplicat
 			return nil, err
 		}
 		response.ApplicationproblemJSON501 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListVariablesResponse parses an HTTP response from a ListVariablesWithResponse call
+func ParseListVariablesResponse(rsp *http.Response) (*ListVariablesResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListVariablesResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest VariableListResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseCreateVariableResponse parses an HTTP response from a CreateVariableWithResponse call
+func ParseCreateVariableResponse(rsp *http.Response) (*CreateVariableResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &CreateVariableResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest Variable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseDeleteVariableResponse parses an HTTP response from a DeleteVariableWithResponse call
+func ParseDeleteVariableResponse(rsp *http.Response) (*DeleteVariableResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteVariableResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 412:
+		var dest PreconditionFailed
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON412 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 428:
+		var dest PreconditionRequired
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON428 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetVariableResponse parses an HTTP response from a GetVariableWithResponse call
+func ParseGetVariableResponse(rsp *http.Response) (*GetVariableResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetVariableResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest Variable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseUpdateVariableResponse parses an HTTP response from a UpdateVariableWithResponse call
+func ParseUpdateVariableResponse(rsp *http.Response) (*UpdateVariableResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &UpdateVariableResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest Variable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 412:
+		var dest PreconditionFailed
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON412 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 428:
+		var dest PreconditionRequired
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON428 = &dest
 
 	}
 

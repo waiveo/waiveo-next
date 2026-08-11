@@ -144,15 +144,6 @@
       ]
     },
     {
-      "contract": "data-model-1.md",
-      "reason": "The three variables field-level refusals, published ahead of the surface that raises them and on purpose. data-model/1's Variables section (DAT-130-138) is NEW normative text written against a recorded decision on its four parameters, and it is up for review AS TEXT before anything is built against it \u2014 so the codes exist and nothing emits them yet. They go away in one piece when the variables resource family lands: VARIABLE_NAME_INVALID and VARIABLE_NAME_DUPLICATE are raised by the row validator (DAT-131/131a), VARIABLE_VALUE_INVALID by the scalar check DAT-132 fixes. This is a declared-ahead group, not a capability whose caller was forgotten, and the distinction is exactly what this file exists to record.",
-      "codes": [
-        "VARIABLE_NAME_INVALID",
-        "VARIABLE_NAME_DUPLICATE",
-        "VARIABLE_VALUE_INVALID"
-      ]
-    },
-    {
       "contract": "repairs-1.md",
       "reason": "repairs/1 is published as TEXT ahead of its implementation, deliberately: its four shape questions were decided and the contract is up for review before anything is built against it, so there is no Repairs surface yet and neither refusal has a site. ISSUE_RESOLVED answers a remediation invoked against an already-resolved issue (REP-022's idempotence) and REMEDIATION_UNKNOWN answers one naming an action the issue's type does not declare (REP-020); both belong to the api/1 operation that invokes a remediation, which is itself out of this contract's scope and lands with the implementation. This is a declared-ahead group and the whole of it goes away in one piece when the Repairs surface is built.",
       "codes": [

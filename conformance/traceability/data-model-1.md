@@ -2,21 +2,53 @@
 
 One row per requirement ID `contracts/data-model-1.md` defines. Format: `conformance/traceability/README.md`.
 
-**Variables (DAT-130–DAT-138):** every row is `TBD-wave1`. The section is a NEW
-normative surface written against a recorded decision on its four parameters
-(value type, identity, resolution, and that secrets do not ride it), and it is
-published as text ahead of its implementation so the model is reviewed rather
-than presented already built. There is no case to list yet, and naming one would
-be the overclaim this column exists to prevent.
+**Variables (DAT-130–DAT-138):** every row is still `TBD-wave1`, and the reason
+has CHANGED — read it before assuming this section is unbuilt.
 
-Two of these will want a driver rather than a corpus case. DAT-135 — resolution
-is per NAME, not as a unit — is a statement about what a lookup does NOT do, and
-the case for it is two variables set at different depths, which proves today's
-implementation separates them rather than that no future one couples them.
-DAT-138 forbids storing secrets as variables and no case can observe a rule
-about what an operator ought not to put in a field; it is enforceable only by a
-review of what the platform itself writes there, and it is stated so that a
-reader finds the prohibition where the surface is defined.
+The section is no longer text ahead of its implementation. The variables
+resource family has landed: a `variables` store kind and table, the api/1 CRUD
+family (`api/openapi.yaml` `/variables`), the DAT-134/135 resolution
+(`internal/datamodel/variable.go`), the DAT-137 event
+(`internal/events/variable_changed.go` +
+`internal/app/api/variables.go`), and the two `rules/1` halves it exists to
+serve — the `variable` condition's environment and the `variable_write` action's
+sink (`internal/app/api/automations_exec.go`). All three published field-level
+codes are emitted, and their group has been deleted from
+`conformance/unimplemented-error-codes.json`.
+
+What is still absent is a CORPUS CASE, which is what this column measures. The
+rules are exercised by Go tests instead — `internal/datamodel/variable_test.go`
+(DAT-131a/132/133/134/135/136 including the per-name and delete-re-exposes
+cases), `internal/app/api/variables_e2e_test.go` (the same rules over real HTTP,
+plus DAT-137's three events) — and a Go test is deliberately NOT a corpus case,
+so naming one here would be the overclaim this column exists to prevent. These
+rows go to `covered` when the data-model/1 driver grows cases for them.
+
+Two of these will want a driver rather than a corpus case even then. DAT-135 —
+resolution is per NAME, not as a unit — is a statement about what a lookup does
+NOT do, and the case for it is two variables set at different depths, which
+proves today's implementation separates them rather than that no future one
+couples them. DAT-138 forbids storing secrets as variables and no case can
+observe a rule about what an operator ought not to put in a field; it is
+enforceable only by a review of what the platform itself writes there, plus the
+warning the Variables console page carries where an operator would type one
+(`web/src/routes/variables/variables-route.tsx`).
+
+**Where the three VARIABLE_* codes are raised, and where they are not.** Same
+shape as the DEVICE_IDENTITY_INCOMPLETE note below, and recorded for the same
+reason. `VariableCreate` declares `name` with DAT-131a's `pattern` and `value`
+as a three-scalar `oneOf`, so the request-body schema refuses a bad name or a
+non-scalar value before the row validator runs: over HTTP those two arrive as a
+422 VALIDATION_FAILED naming the field, not as `VARIABLE_NAME_INVALID` /
+`VARIABLE_VALUE_INVALID`. The codes are what the row validator raises on the
+path a request body does not pass through — and unlike DEVICE_IDENTITY_INCOMPLETE
+that path is a LIVE one rather than a seed or a migration: a rule's
+`variable_write` action (RUL-220) writes straight to the store, and its refusal
+carries the code into the run report an operator reads
+(`TestVariableWriteRefusalsCarryTheirPublishedCodes`).
+`VARIABLE_NAME_DUPLICATE` is the one of the three that DOES reach an api/1
+response with its published code, because the uniqueness rule is decided inside
+the write transaction, past every schema check.
 
 **Where DEVICE_IDENTITY_INCOMPLETE is raised, and where it is not.** A reader
 tracing this code from data-model/1's Field-level error register should not go

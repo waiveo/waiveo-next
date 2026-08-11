@@ -48,6 +48,18 @@ tags:
       placed under: DAT-004 lets a screen row hang off a node of any kind, so
       two screens may share one node and a screen may sit directly under a
       site. Worked fully.
+  - name: variables
+    description: >-
+      Named, scope-placed scalars (`data-model/1` DAT-130–138): the shared state
+      a `rules/1` `variable` condition reads (RUL-150), a `variable_write`
+      action writes (RUL-220), and whose every committed change emits
+      `variable.changed` (`events/1` EVT-084/085). A variable is addressed by
+      `name` within a scope node, resolved at a descendant node by walking
+      `parent_id` to the nearest ancestor declaring that name — independently
+      per name (DAT-134/135). Secret material MUST NOT be stored here
+      (DAT-138): a variable is rule-readable, emitted in full on every change,
+      and returned to any principal whose visible set covers its placement.
+      Worked fully.
   - name: screen-status
     description: >-
       What the site's relays have OBSERVED each screen doing — when it last
@@ -584,6 +596,202 @@ paths:
           $ref: "#/components/responses/UnprocessableContent"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+
+  # ---------------------------------------------------------------------
+  # variables — named, scope-placed scalars (data-model/1 DAT-130-138): the
+  # shared state a rules/1 `variable` condition reads (RUL-150) and a
+  # `variable_write` action writes (RUL-220).
+  #
+  # A variable is addressed by `name` within a scope node, and the two
+  # identifiers coexist on purpose (DAT-131): `id` is the row's identity for
+  # revision, If-Match and audit, while `name` is how a rule, a pack and a
+  # person refer to the value — a rule authored against `store_open` must keep
+  # resolving after the row is deleted and recreated, which a server-minted
+  # ULID cannot survive. So the path parameter is the ULID, exactly as every
+  # other resource family's is, and the name is a member of the body.
+  #
+  # There is deliberately no `/variables/{name}` addressing and no
+  # `/variables/{id}/value` sub-resource. A name is unique only WITHIN a scope
+  # node (DAT-131), so a name alone does not identify a row; and a
+  # value-only write would be a second mutation path with its own concurrency
+  # story beside the PATCH that already exists.
+  # ---------------------------------------------------------------------
+  /variables:
+    get:
+      operationId: listVariables
+      summary: List variables
+      description: >-
+        Returns a keyset-paginated, selector-filterable page of variable rows.
+        Rows are returned AS STORED, each at its own placement — this is not
+        the effective view resolved at some node (DAT-134), which would have to
+        name a node to resolve at and would hide the overriding structure an
+        operator is here to see.
+      tags: [variables, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/CursorParam"
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/SelectorParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: A page of variables.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VariableListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+    post:
+      operationId: createVariable
+      summary: Create a variable
+      description: >-
+        Declares a variable at a scope node. `name` must match
+        `^[a-z][a-z0-9_]{0,63}$` (DAT-131a) and be unused at that node
+        (DAT-131); `value` must be a string, number, or boolean (DAT-132) —
+        `null` is not settable, and the way to unset a variable is to delete
+        the row (DAT-133). A committed create emits `variable.changed` with
+        `old_value: null` (DAT-137, `events/1` EVT-084).
+      tags: [variables, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VariableCreate"
+      responses:
+        "201":
+          description: The created variable.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Variable"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+  /variables/{variable_id}:
+    parameters:
+      - name: variable_id
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/Ulid"
+    get:
+      operationId: getVariable
+      summary: Read a variable
+      tags: [variables, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The variable.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Variable"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateVariable
+      summary: Update a variable
+      description: >-
+        Partial update. Requires If-Match against the variable's current
+        ETag/revision. A committed update emits `variable.changed` carrying both
+        the previous and the new value (DAT-137, `events/1` EVT-084).
+      tags: [variables, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IfMatchParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VariableUpdate"
+      responses:
+        "200":
+          description: The updated variable.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Variable"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
+    delete:
+      operationId: deleteVariable
+      summary: Delete a variable
+      description: >-
+        Requires If-Match against the variable's current ETag/revision.
+        Deleting a variable removes an OVERRIDE, it does not unset the name
+        throughout the subtree: the nearest ancestor's row of the same name, if
+        one exists, is re-exposed at every descendant that resolved through the
+        deleted row (DAT-136). A committed delete emits `variable.changed` with
+        `new_value: null` (DAT-137, `events/1` EVT-084).
+      tags: [variables, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IfMatchParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "204":
+          description: Deleted. No content.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
 
   # ---------------------------------------------------------------------
   # devices + entities — the device plane's read surface and its one
@@ -6124,6 +6332,118 @@ components:
         cursor:
           $ref: "#/components/schemas/Cursor"
 
+    VariableName:
+      type: string
+      description: >-
+        A variable's name (`data-model/1` DAT-131a). Deliberately narrower than
+        a label key's grammar (API-042): the name is compiled into a rule's
+        closure and read from pack-authored text, so it MUST NOT require
+        quoting or escaping in either. A violating name is refused
+        `VARIABLE_NAME_INVALID`; one already taken at the same scope node is
+        refused `VARIABLE_NAME_DUPLICATE`.
+      pattern: "^[a-z][a-z0-9_]{0,63}$"
+      minLength: 1
+      maxLength: 64
+
+    VariableValue:
+      description: >-
+        A variable's value: a JSON scalar — a string, a number, or a boolean
+        (`data-model/1` DAT-132). An object or an array is refused
+        (`VARIABLE_VALUE_INVALID`): a rule compares a variable against a
+        literal, and a structured value would make that comparison a path
+        expression this platform has deliberately not defined a grammar for.
+        `null` is NOT settable (DAT-133) — `events/1` EVT-084 already assigns
+        null the meaning "unset" in `old_value`/`new_value`, so admitting it
+        here would make `new_value: null` ambiguous between a variable set to
+        null and a variable deleted. To unset a variable, delete the row.
+      oneOf:
+        - type: string
+        - type: number
+        - type: boolean
+      x-go-type: "interface{}"
+
+    Variable:
+      type: object
+      description: >-
+        A named, scope-placed scalar (`data-model/1` DAT-130): the shared state
+        a `rules/1` `variable` condition reads (RUL-150) and a `variable_write`
+        action writes (RUL-220). Its `name` — not its `id` — is how a rule, a
+        pack and a person refer to it (DAT-131); the ULID remains the row's
+        identity for revision, If-Match and audit, and the two coexist because
+        they answer different questions.
+        Secret material MUST NOT be stored here (DAT-138).
+      required: [id, name, value, scope_node, labels, revision, created_at, updated_at]
+      additionalProperties: false
+      properties:
+        id:
+          $ref: "#/components/schemas/Ulid"
+        external_id:
+          type: ["string", "null"]
+          description: Client-assigned identifier (contracts/api-1.md#client-assignable-external_id).
+          x-go-type: "*string"
+        name:
+          $ref: "#/components/schemas/VariableName"
+        value:
+          $ref: "#/components/schemas/VariableValue"
+        scope_node:
+          $ref: "#/components/schemas/Ulid"
+        labels:
+          $ref: "#/components/schemas/LabelMap"
+        revision:
+          type: integer
+          minimum: 1
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        updated_at:
+          $ref: "#/components/schemas/Timestamp"
+
+    VariableCreate:
+      type: object
+      required: [name, value, scope_node]
+      additionalProperties: false
+      properties:
+        external_id:
+          type: ["string", "null"]
+          x-go-type: "*string"
+        name:
+          $ref: "#/components/schemas/VariableName"
+        value:
+          $ref: "#/components/schemas/VariableValue"
+        scope_node:
+          $ref: "#/components/schemas/Ulid"
+        labels:
+          $ref: "#/components/schemas/LabelMap"
+
+    VariableUpdate:
+      type: object
+      description: Partial update — every field optional, at least one required.
+      minProperties: 1
+      additionalProperties: false
+      properties:
+        external_id:
+          type: ["string", "null"]
+          x-go-type: "*string"
+        name:
+          $ref: "#/components/schemas/VariableName"
+        value:
+          $ref: "#/components/schemas/VariableValue"
+        scope_node:
+          $ref: "#/components/schemas/Ulid"
+        labels:
+          $ref: "#/components/schemas/LabelMap"
+
+    VariableListResponse:
+      type: object
+      required: [items, cursor]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Variable"
+        cursor:
+          $ref: "#/components/schemas/Cursor"
+
     AdoptedDeviceEntity:
       type: object
       description: >-
@@ -6508,6 +6828,40 @@ components:
           type: string
           description: Present only when `ok` is false.
 
+    AutomationRunVariable:
+      type: object
+      description: >-
+        One `variable_write` action's outcome (`rules/1` RUL-220): the name it
+        targeted, the value actually written, and whether the write landed.
+      required: [action, variable, ok]
+      additionalProperties: false
+      properties:
+        action:
+          type: string
+          description: >-
+            Always `variable_write`. A plain string rather than an `enum` for
+            the reason `AutomationRunSignage.action` gives at length.
+        variable:
+          type: string
+          description: >-
+            The variable name the action declared. NOT constrained to
+            `VariableName`'s grammar here: an action naming `Store Open` is
+            exactly the case this report exists to surface, and refusing to
+            serialize the report because the authored name was invalid would
+            withhold the one message that explains the refusal.
+        value:
+          $ref: "#/components/schemas/VariableValue"
+        ok:
+          type: boolean
+        error:
+          type: string
+          description: >-
+            Present only when `ok` is false — why the write did not happen:
+            an absent or wrongly-typed member (RUL-220), a value Expression
+            that failed closed (RUL-284), a name or value the data model
+            refuses (`data-model/1` DAT-131a/132/133), a name already taken at
+            this scope node (DAT-131), or a placement this run may not write.
+
     AutomationRunSignage:
       type: object
       description: >-
@@ -6553,9 +6907,9 @@ components:
       type: object
       description: >-
         What the run actually did. `disposition` is the mode-evaluation
-        outcome; the three effect arrays are the report the operator needs to
+        outcome; the four effect arrays are the report the operator needs to
         tell "it ran" from "it ran and changed something".
-      required: [run_id, disposition, dry_run, commands, signage, logs]
+      required: [run_id, disposition, dry_run, commands, signage, variables, logs]
       additionalProperties: false
       properties:
         run_id:
@@ -6580,6 +6934,17 @@ components:
           description: Every signage action this run performed, in action order.
           items:
             $ref: "#/components/schemas/AutomationRunSignage"
+        variables:
+          type: array
+          description: >-
+            Every `variable_write` action this run performed (`rules/1`
+            RUL-220), in action order. Present for the same reason the arrays
+            above are: without it a rule whose write was refused — an invalid
+            name, a value the store will not hold, a scope node this run may
+            not write — answered `disposition: "ran"` with an unchanged
+            variable, indistinguishable from a write that worked.
+          items:
+            $ref: "#/components/schemas/AutomationRunVariable"
         logs:
           type: array
           description: Every `log` action's evaluated message (`rules/1` RUL-200), in order.

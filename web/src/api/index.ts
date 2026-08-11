@@ -84,6 +84,10 @@ export {
   type ScreenNowRequest,
   type ScreenStatus,
   type ScreenStatusModule,
+  type Variable,
+  type VariableCreate,
+  type VariableUpdate,
+  type VariableValue,
 } from "./resources";
 
 export {

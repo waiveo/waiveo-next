@@ -116,6 +116,12 @@ describe("AppShell — locked-left responsive shell", () => {
       },
       { group: "Devices", expanded: true, children: ["All devices", "Roku"] },
       { leaf: "Automations" },
+      // Variables is the automations plane's other half — a rule reads one in a
+      // condition (RUL-150) and writes one in an action (RUL-220) — so it sits
+      // beside Automations at the top level for the same reason Automations
+      // itself does: it belongs to no product AREA, and filing it under Platform
+      // would rank shared rule state as housekeeping.
+      { leaf: "Variables" },
       { group: "Extensions", expanded: true, children: ["Installed"] },
       {
         group: "Platform",
@@ -134,7 +140,9 @@ describe("AppShell — locked-left responsive shell", () => {
     const topLevelLeaves = readRailTree(sidebar)
       .map((n) => ("leaf" in n ? n.leaf : undefined))
       .filter((l): l is string => l !== undefined);
-    expect(topLevelLeaves).toEqual(["Overview", "Automations"]);
+    // Overview belongs to no area, and the two automations-plane pages belong to
+    // no PRODUCT area — those are the only three admitted at the top level.
+    expect(topLevelLeaves).toEqual(["Overview", "Automations", "Variables"]);
     for (const scattered of ["Casts", "Screens", "Media", "Upload", "System", "Backup"]) {
       expect(topLevelLeaves).not.toContain(scattered);
     }

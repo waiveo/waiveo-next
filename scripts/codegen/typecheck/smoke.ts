@@ -74,10 +74,10 @@ const runHeaders: NonNullable<operations["runAutomation"]["parameters"]["header"
 };
 
 // A run's response is an EFFECT REPORT, not just a disposition: `dry_run` says
-// whether anything was actually dispatched, and the three arrays say what the
-// run did to devices, to screens, and what it logged. They are required
-// precisely so a caller cannot read "ran" and assume "worked" — a run whose
-// every command was refused is still `disposition: "ran"`. This fixture
+// whether anything was actually dispatched, and the four arrays say what the
+// run did to devices, to screens, to variables, and what it logged. They are
+// required precisely so a caller cannot read "ran" and assume "worked" — a run
+// whose every command was refused is still `disposition: "ran"`. This fixture
 // therefore constructs the whole shape; when it did not, the omission compiled
 // here while the console was busy painting exactly that false success.
 const runResult: operations["runAutomation"]["responses"][200]["content"]["application/json"] = {
@@ -93,6 +93,19 @@ const runResult: operations["runAutomation"]["responses"][200]["content"]["appli
       action: "play_cast",
       outcome: "applied",
       screens: [{ screen_id: "01J8Z9DEM0SCREENR0WF1RSTPH", ok: true }],
+    },
+  ],
+  // Both directions of a `variable_write` (rules/1 RUL-220), for the same
+  // reason `commands` carries a refused entry: a run that wrote one variable
+  // and was refused another is still `disposition: "ran"`, and the difference
+  // is only readable here.
+  variables: [
+    { action: "variable_write", variable: "guest_mode", value: true, ok: true },
+    {
+      action: "variable_write",
+      variable: "store_open",
+      ok: false,
+      error: "another variable named store_open already exists at this scope node (data-model/1 DAT-131)",
     },
   ],
   logs: [{ level: "info", message: "1 of 2 commands dispatched" }],

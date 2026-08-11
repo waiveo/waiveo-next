@@ -186,7 +186,7 @@ func (srv *server) runAutomationExec(w http.ResponseWriter, r *http.Request, raw
 	// app-class rule (as this handler used to) meant every rule carrying a
 	// signage action, which is every rule that changes what a screen shows, could
 	// not be run by hand at all.
-	rep := srv.runAutomationNow(r.Context(), apihttp.TraceID(r), rule, view, dryRun)
+	rep := srv.runAutomationNow(r.Context(), apihttp.TraceID(r), rule, view, res.ScopeNode, dryRun)
 
 	writeJSONValue(w, http.StatusOK, automationRunResponse{
 		RunID:           srv.newID(),
@@ -194,6 +194,7 @@ func (srv *server) runAutomationExec(w http.ResponseWriter, r *http.Request, raw
 		DryRun:          rep.DryRun,
 		Commands:        rep.Commands,
 		Signage:         rep.Signage,
+		Variables:       rep.Variables,
 		Logs:            rep.Logs,
 		DelaysCollapsed: rep.DelaysCollapsed,
 	})
@@ -203,13 +204,14 @@ func (srv *server) runAutomationExec(w http.ResponseWriter, r *http.Request, raw
 // mode disposition, plus the effect report that is the difference between this
 // operation acting and merely claiming to.
 type automationRunResponse struct {
-	RunID           string                `json:"run_id"`
-	Disposition     string                `json:"disposition"`
-	DryRun          bool                  `json:"dry_run"`
-	Commands        []runCommand          `json:"commands"`
-	Signage         []eval.SignageOutcome `json:"signage"`
-	Logs            []runLog              `json:"logs"`
-	DelaysCollapsed int                   `json:"delays_collapsed,omitempty"`
+	RunID           string                 `json:"run_id"`
+	Disposition     string                 `json:"disposition"`
+	DryRun          bool                   `json:"dry_run"`
+	Commands        []runCommand           `json:"commands"`
+	Signage         []eval.SignageOutcome  `json:"signage"`
+	Variables       []eval.VariableOutcome `json:"variables"`
+	Logs            []runLog               `json:"logs"`
+	DelaysCollapsed int                    `json:"delays_collapsed,omitempty"`
 }
 
 // bulkEnableRequest is the AutomationBulkEnableRequest body: a label-selector

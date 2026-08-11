@@ -82,18 +82,31 @@ const (
 	// a durable, authored resource here while the relay's own current report stays
 	// the in-memory read model internal/app/devices serves.
 	KindAdoptedDevice Kind = "adopted_devices"
+	// KindVariable is the data-model/1 Variables kind (DAT-130): a named,
+	// scope-placed JSON scalar. It is the api/1 resource baseline plus `name`
+	// and `value`, and it is the row a `rules/1` `variable` condition reads
+	// (RUL-150) and a `variable_write` action writes (RUL-220).
+	//
+	// Its writes are validated neither through datamodel.ValidateRows (it is not
+	// a scheduling-core row and participates in no cascade) nor through
+	// ValidateIdentityRows (it names nothing and nothing references it by id) —
+	// they run the per-kind `validate` hook for the name grammar and the scalar
+	// rule (DAT-131a/132/133) plus one WriteGuard for name uniqueness within a
+	// scope node (DAT-131). See variables.go.
+	KindVariable Kind = "variables"
 )
 
 // allKinds is every resource table in schema order (scope_nodes first, then the
 // six scheduling-core kinds and the cast rows they reference, then automations,
-// webhook endpoints, and the two identity kinds). schedulingKinds is the subset
-// validated through datamodel.ValidateRows; identityKinds the subset validated
-// through datamodel.ValidateIdentityRows; automations are compile-gated
-// (compile.Compile) instead — see automations.go.
+// webhook endpoints, the two identity kinds, and variables). schedulingKinds is
+// the subset validated through datamodel.ValidateRows; identityKinds the subset
+// validated through datamodel.ValidateIdentityRows; automations are compile-gated
+// (compile.Compile) instead — see automations.go; variables run their own
+// per-kind validate hook and name-uniqueness guard — see variables.go.
 var allKinds = []Kind{
 	KindScopeNode, KindPlaylist, KindCast, KindSchedule, KindDaypart,
 	KindValidityWindow, KindFallback, KindPresetBatch, KindAutomation,
-	KindWebhookEndpoint, KindScreen, KindAdoptedDevice,
+	KindWebhookEndpoint, KindScreen, KindAdoptedDevice, KindVariable,
 }
 
 var kindSet = func() map[Kind]bool {

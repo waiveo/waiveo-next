@@ -1,0 +1,128 @@
+{
+  "pageType": "list-detail",
+  "context": {
+    "nodes": { "collection": "nodes" }
+  },
+  "list": {
+    "source": "variables",
+    "display": {
+      "type": "table",
+      "id": "Variables",
+      "props": {
+        "source": "variables",
+        "columns": [
+          { "headerMsg": "msg:variables.col.name", "cell": "item.name" },
+          { "headerMsg": "msg:variables.col.value", "cell": "item.value_display" },
+          { "headerMsg": "msg:variables.col.kind", "cell": "item.value_kind" },
+          { "headerMsg": "msg:variables.col.scope", "cell": "item.scope_name" }
+        ]
+      },
+      "on": { "rowPress": { "verb": "set", "target": "$ui.selected", "value": "item.id" } }
+    }
+  },
+  "detail": {
+    "source": "variables[id=$ui.selected]",
+    "emptyMsg": "msg:variables.detail.empty",
+    "root": {
+      "type": "section",
+      "props": { "titleMsg": "msg:variables.detail.title" },
+      "children": [
+        {
+          "type": "text-input",
+          "bind": "name",
+          "props": {
+            "labelMsg": "msg:variables.detail.name",
+            "placeholderMsg": "msg:variables.detail.namePlaceholder",
+            "maxLength": 64
+          }
+        },
+        {
+          "type": "select",
+          "bind": "scope_node",
+          "props": {
+            "labelMsg": "msg:variables.detail.scope",
+            "options": {
+              "kind": "data",
+              "source": "$context.nodes",
+              "valuePath": "id",
+              "labelPath": "name"
+            }
+          }
+        },
+        {
+          "type": "select",
+          "bind": "value_kind",
+          "props": {
+            "labelMsg": "msg:variables.detail.kind",
+            "options": {
+              "kind": "literal",
+              "items": [
+                { "value": "string", "labelMsg": "msg:variables.kind.string" },
+                { "value": "number", "labelMsg": "msg:variables.kind.number" },
+                { "value": "boolean", "labelMsg": "msg:variables.kind.boolean" }
+              ]
+            }
+          }
+        },
+        {
+          "type": "switch",
+          "props": {
+            "discriminant": "value_kind",
+            "cases": [
+              {
+                "when": "string",
+                "render": {
+                  "type": "text-input",
+                  "bind": "value_text",
+                  "props": { "labelMsg": "msg:variables.detail.valueText" }
+                }
+              },
+              {
+                "when": "number",
+                "render": {
+                  "type": "number-input",
+                  "bind": "value_number",
+                  "props": { "labelMsg": "msg:variables.detail.valueNumber" }
+                }
+              },
+              {
+                "when": "boolean",
+                "render": {
+                  "type": "toggle",
+                  "bind": "value_boolean",
+                  "props": {
+                    "labelMsg": "msg:variables.detail.valueBoolean",
+                    "onLabelMsg": "msg:variables.detail.on",
+                    "offLabelMsg": "msg:variables.detail.off"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "button",
+          "props": { "labelMsg": "msg:variables.detail.save", "style": "primary" },
+          "on": { "press": { "verb": "submit" } }
+        },
+        {
+          "type": "button",
+          "props": { "labelMsg": "msg:variables.detail.delete", "style": "destructive" },
+          "on": { "press": { "verb": "delete", "target": "$root" } }
+        }
+      ]
+    }
+  },
+  "newAction": {
+    "verb": "create",
+    "target": "variables",
+    "itemDefault": {
+      "name": "new_variable",
+      "value_kind": "string",
+      "value_text": "",
+      "value_display": "",
+      "value_number": 0,
+      "value_boolean": false
+    }
+  }
+}

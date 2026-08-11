@@ -24,8 +24,13 @@ type schemaClass struct {
 // lacking a class. audit.event is classed here too, though relay/1 does not
 // relay it: it has an app-side producer (internal/app/auth emits one per
 // security-model/1 SEC-150 flow), and its class is deliberately the long-lived
-// one EVT-082 requires rather than the telemetry tier. variable.changed has no
-// producer yet and so stays unclassed, as does any pack-namespaced schema
+// one EVT-082 requires rather than the telemetry tier. variable.changed is
+// classed here for the same reason and on the same tier: it now HAS an app-side
+// producer (internal/app/api/variables.go emits one per committed variable
+// write, data-model/1 DAT-137), and because its old_value makes this log the
+// only surviving record of a variable's previous value — the row holds one
+// value at a time and there is deliberately no second history table. A
+// pack-namespaced schema stays unclassed
 // (EVT-021/022). For an absent schema ClassFor reports ok=false, so a producer
 // drops+logs a record it cannot class rather than minting an envelope with an
 // empty, un-validatable class (EVT-013).
@@ -37,6 +42,7 @@ var classBySchema = map[string]schemaClass{
 	SchemaDeviceHeartbeat:    {cost: deviceHeartbeatCostClass, retention: deviceHeartbeatRetentionClass},
 	SchemaBoxVitals:          {cost: boxVitalsCostClass, retention: boxVitalsRetentionClass},
 	SchemaAuditEvent:         {cost: auditEventCostClass, retention: auditEventRetentionClass},
+	SchemaVariableChanged:    {cost: variableChangedCostClass, retention: variableChangedRetentionClass},
 }
 
 // ClassFor returns the cost_class and retention_class the platform assigns an

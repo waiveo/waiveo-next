@@ -142,6 +142,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/variables": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List variables
+         * @description Returns a keyset-paginated, selector-filterable page of variable rows. Rows are returned AS STORED, each at its own placement — this is not the effective view resolved at some node (DAT-134), which would have to name a node to resolve at and would hide the overriding structure an operator is here to see.
+         */
+        get: operations["listVariables"];
+        put?: never;
+        /**
+         * Create a variable
+         * @description Declares a variable at a scope node. `name` must match `^[a-z][a-z0-9_]{0,63}$` (DAT-131a) and be unused at that node (DAT-131); `value` must be a string, number, or boolean (DAT-132) — `null` is not settable, and the way to unset a variable is to delete the row (DAT-133). A committed create emits `variable.changed` with `old_value: null` (DAT-137, `events/1` EVT-084).
+         */
+        post: operations["createVariable"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/variables/{variable_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                variable_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        /** Read a variable */
+        get: operations["getVariable"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete a variable
+         * @description Requires If-Match against the variable's current ETag/revision. Deleting a variable removes an OVERRIDE, it does not unset the name throughout the subtree: the nearest ancestor's row of the same name, if one exists, is re-exposed at every descendant that resolved through the deleted row (DAT-136). A committed delete emits `variable.changed` with `new_value: null` (DAT-137, `events/1` EVT-084).
+         */
+        delete: operations["deleteVariable"];
+        options?: never;
+        head?: never;
+        /**
+         * Update a variable
+         * @description Partial update. Requires If-Match against the variable's current ETag/revision. A committed update emits `variable.changed` carrying both the previous and the new value (DAT-137, `events/1` EVT-084).
+         */
+        patch: operations["updateVariable"];
+        trace?: never;
+    };
     "/devices": {
         parameters: {
             query?: never;
@@ -2295,6 +2346,42 @@ export interface components {
             items: components["schemas"]["Screen"][];
             cursor: components["schemas"]["Cursor"];
         };
+        /** @description A variable's name (`data-model/1` DAT-131a). Deliberately narrower than a label key's grammar (API-042): the name is compiled into a rule's closure and read from pack-authored text, so it MUST NOT require quoting or escaping in either. A violating name is refused `VARIABLE_NAME_INVALID`; one already taken at the same scope node is refused `VARIABLE_NAME_DUPLICATE`. */
+        VariableName: string;
+        /** @description A variable's value: a JSON scalar — a string, a number, or a boolean (`data-model/1` DAT-132). An object or an array is refused (`VARIABLE_VALUE_INVALID`): a rule compares a variable against a literal, and a structured value would make that comparison a path expression this platform has deliberately not defined a grammar for. `null` is NOT settable (DAT-133) — `events/1` EVT-084 already assigns null the meaning "unset" in `old_value`/`new_value`, so admitting it here would make `new_value: null` ambiguous between a variable set to null and a variable deleted. To unset a variable, delete the row. */
+        VariableValue: string | number | boolean;
+        /** @description A named, scope-placed scalar (`data-model/1` DAT-130): the shared state a `rules/1` `variable` condition reads (RUL-150) and a `variable_write` action writes (RUL-220). Its `name` — not its `id` — is how a rule, a pack and a person refer to it (DAT-131); the ULID remains the row's identity for revision, If-Match and audit, and the two coexist because they answer different questions. Secret material MUST NOT be stored here (DAT-138). */
+        Variable: {
+            id: components["schemas"]["Ulid"];
+            /** @description Client-assigned identifier (contracts/api-1.md#client-assignable-external_id). */
+            external_id?: string | null;
+            name: components["schemas"]["VariableName"];
+            value: components["schemas"]["VariableValue"];
+            scope_node: components["schemas"]["Ulid"];
+            labels: components["schemas"]["LabelMap"];
+            revision: number;
+            created_at: components["schemas"]["Timestamp"];
+            updated_at: components["schemas"]["Timestamp"];
+        };
+        VariableCreate: {
+            external_id?: string | null;
+            name: components["schemas"]["VariableName"];
+            value: components["schemas"]["VariableValue"];
+            scope_node: components["schemas"]["Ulid"];
+            labels?: components["schemas"]["LabelMap"];
+        };
+        /** @description Partial update — every field optional, at least one required. */
+        VariableUpdate: {
+            external_id?: string | null;
+            name?: components["schemas"]["VariableName"];
+            value?: components["schemas"]["VariableValue"];
+            scope_node?: components["schemas"]["Ulid"];
+            labels?: components["schemas"]["LabelMap"];
+        };
+        VariableListResponse: {
+            items: components["schemas"]["Variable"][];
+            cursor: components["schemas"]["Cursor"];
+        };
         /** @description One entity a device exposes, with the policy authored over it — exactly `relay/1` REL-063's `{entity_id, device_class, enabled, hidden, display_name, category}`. Every member is a DECISION rather than a discovered fact, which is why these live on an authored row and not in the relay's own report. */
         AdoptedDeviceEntity: {
             entity_id: components["schemas"]["Ulid"];
@@ -2454,6 +2541,17 @@ export interface components {
             /** @description Present only when `ok` is false. */
             error?: string;
         };
+        /** @description One `variable_write` action's outcome (`rules/1` RUL-220): the name it targeted, the value actually written, and whether the write landed. */
+        AutomationRunVariable: {
+            /** @description Always `variable_write`. A plain string rather than an `enum` for the reason `AutomationRunSignage.action` gives at length. */
+            action: string;
+            /** @description The variable name the action declared. NOT constrained to `VariableName`'s grammar here: an action naming `Store Open` is exactly the case this report exists to surface, and refusing to serialize the report because the authored name was invalid would withhold the one message that explains the refusal. */
+            variable: string;
+            value?: components["schemas"]["VariableValue"];
+            ok: boolean;
+            /** @description Present only when `ok` is false — why the write did not happen: an absent or wrongly-typed member (RUL-220), a value Expression that failed closed (RUL-284), a name or value the data model refuses (`data-model/1` DAT-131a/132/133), a name already taken at this scope node (DAT-131), or a placement this run may not write. */
+            error?: string;
+        };
         /** @description One signage action's outcome (`rules/1` RUL-236), in the same three-value shape a preset batch reports (RUL-172). */
         AutomationRunSignage: {
             /** @description The signage action type — one of `play_cast`, `show_alert`, `dismiss_alert` (`rules/1` RUL-234/RUL-235). Left as a plain string rather than an `enum` deliberately: an `enum` here mints package-level Go constants named after its VALUES, and two of them (`failed` on `outcome` below) collide with an existing enum's, which silently renames that other enum's constants across the whole generated package. The closed set is stated here and enforced by the one place that can produce it. */
@@ -2464,7 +2562,7 @@ export interface components {
             /** @description Present only when the ACTION failed as a whole and no screen was attempted — its required members are not declared (`rules/1` RUL-234/RUL-235) or its ScreenRef resolved to nothing. Such a failure belongs to no screen, so it is reported here with an empty `screens` list rather than as a fabricated per-screen result: an entry invented for it would have to carry an empty `screen_id`, which is not a `Ulid` and would hand a generated client an invalid id on the one path it exists to describe. */
             error?: string;
         };
-        /** @description What the run actually did. `disposition` is the mode-evaluation outcome; the three effect arrays are the report the operator needs to tell "it ran" from "it ran and changed something". */
+        /** @description What the run actually did. `disposition` is the mode-evaluation outcome; the four effect arrays are the report the operator needs to tell "it ran" from "it ran and changed something". */
         AutomationRunResult: {
             run_id: components["schemas"]["Ulid"];
             /**
@@ -2478,6 +2576,8 @@ export interface components {
             commands: components["schemas"]["AutomationRunCommand"][];
             /** @description Every signage action this run performed, in action order. */
             signage: components["schemas"]["AutomationRunSignage"][];
+            /** @description Every `variable_write` action this run performed (`rules/1` RUL-220), in action order. Present for the same reason the arrays above are: without it a rule whose write was refused — an invalid name, a value the store will not hold, a scope node this run may not write — answered `disposition: "ran"` with an unchanged variable, indistinguishable from a write that worked. */
+            variables: components["schemas"]["AutomationRunVariable"][];
             /** @description Every `log` action's evaluated message (`rules/1` RUL-200), in order. */
             logs: {
                 /** @description One of `info`, `warning`, `error` (`rules/1` RUL-200). A plain string for the reason `AutomationRunSignage.action` gives. */
@@ -3288,6 +3388,176 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             422: components["responses"]["UnprocessableContent"];
             429: components["responses"]["TooManyRequests"];
+        };
+    };
+    listVariables: {
+        parameters: {
+            query?: {
+                /** @description Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client. */
+                cursor?: components["parameters"]["CursorParam"];
+                /** @description Maximum rows to return in this page. */
+                limit?: components["parameters"]["LimitParam"];
+                /** @description A label-selector string: comma-separated, ANDed terms (equality, inequality, set-membership, set-exclusion, existence, non-existence, or a `scope_node subtree <ulid>` term). See `contracts/api-1.md#label-selector-grammar` for the full grammar. */
+                selector?: components["parameters"]["SelectorParam"];
+            };
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of variables. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VariableListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    createVariable: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VariableCreate"];
+            };
+        };
+        responses: {
+            /** @description The created variable. */
+            201: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Variable"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableContent"];
+        };
+    };
+    getVariable: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                variable_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The variable. */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Variable"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    deleteVariable: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists. */
+                "If-Match": components["parameters"]["IfMatchParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                variable_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted. No content. */
+            204: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            412: components["responses"]["PreconditionFailed"];
+            428: components["responses"]["PreconditionRequired"];
+        };
+    };
+    updateVariable: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists. */
+                "If-Match": components["parameters"]["IfMatchParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                variable_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VariableUpdate"];
+            };
+        };
+        responses: {
+            /** @description The updated variable. */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Variable"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            412: components["responses"]["PreconditionFailed"];
+            422: components["responses"]["UnprocessableContent"];
+            428: components["responses"]["PreconditionRequired"];
         };
     };
     listDevices: {

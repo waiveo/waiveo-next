@@ -76,6 +76,29 @@ func WithRunEvents(sink RunEventSink) Option {
 	}
 }
 
+// WithVariableEvents publishes every committed variable write to sink as an
+// events/1 `variable.changed` record (EVT-084/085, data-model/1 DAT-137).
+//
+// It is a separate option from WithRunEvents rather than a second use of the
+// same field because the two publish different schemas for different reasons,
+// and a deployment must be able to see, at the call site, that it wired both. A
+// deployment passes the same hub to each.
+//
+// Omitting it leaves a variable write unrecorded. That is a legitimate state for
+// a bare handler in a test, and it is NOT a legitimate state for a deployment:
+// `variable.changed` is the durable event an `event`-kind trigger fires a rule
+// on (RUL-080/EVT-085), so without it a rule authored to run WHEN a variable
+// changes never runs — and it carries old_value, which is the only surviving
+// record of what a variable used to be.
+func WithVariableEvents(sink RunEventSink) Option {
+	return func(srv *server) {
+		if sink == nil {
+			return
+		}
+		srv.variableEvents = sink
+	}
+}
+
 // publishRunReport records one event-fired run as an events/1 automation.run
 // (EVT-040), and logs a line that separates the outcomes rather than counting
 // them together.
@@ -149,7 +172,7 @@ type runActionOutcome struct {
 // It always returns a non-nil slice so the payload's required `action_outcomes`
 // member marshals as `[]` rather than `null` (EVT-040 requires an array).
 func runActionOutcomes(rep runReport) []runActionOutcome {
-	out := make([]runActionOutcome, 0, len(rep.Commands)+len(rep.Signage))
+	out := make([]runActionOutcome, 0, len(rep.Commands)+len(rep.Signage)+len(rep.Variables))
 	for _, c := range rep.Commands {
 		out = append(out, runActionOutcome{
 			Action: "device_command", Target: c.Command, EntityID: c.EntityID, OK: c.OK, Error: c.Error,
@@ -167,6 +190,21 @@ func runActionOutcomes(rep runReport) []runActionOutcome {
 		for _, sc := range s.Screens {
 			out = append(out, runActionOutcome{Action: s.Action, ScreenID: sc.ScreenID, OK: sc.OK, Error: sc.Error})
 		}
+	}
+	for _, v := range rep.Variables {
+		// A variable write's "target" is the variable NAME, carried in Target
+		// rather than in EntityID or ScreenID: it names neither an entity nor a
+		// screen, and putting a variable name in a member the schema declares as
+		// a ULID is the same defect SignageOutcome.Error's own doc describes.
+		//
+		// It is included for the reason the two loops above exist at all: an
+		// event-fired run has no caller to answer, so this record is the ONLY
+		// place its refusals can be read. A rule firing on a screen press to flip
+		// `guest_mode` and being refused would otherwise be a variable that did
+		// not change and nothing anywhere saying why.
+		out = append(out, runActionOutcome{
+			Action: v.Action, Target: v.Variable, OK: v.OK, Error: v.Error,
+		})
 	}
 	return out
 }
