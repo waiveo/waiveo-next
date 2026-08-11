@@ -74,6 +74,10 @@ describe("AppShell — locked-left responsive shell", () => {
       "Overview",
       "Screens",
       "Devices",
+      // Beside Devices, not inside it: discovering/adopting a device and
+      // OPERATING one are different jobs, and the second is the one an operator
+      // returns to daily.
+      "Roku",
       "Schedules",
       "Casts",
       "Upload",

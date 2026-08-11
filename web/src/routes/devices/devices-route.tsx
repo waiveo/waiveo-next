@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Cpu, MonitorPlay, Network, RefreshCw, Radio } from "lucide-react";
+import { Link } from "react-router";
+import { Cpu, RefreshCw, Radio } from "lucide-react";
 import {
   Button,
   DataTable,
   EmptyState,
   Modal,
   PageHeader,
-  StatCard,
   StatusBadge,
   Toaster,
   toast,
@@ -20,9 +20,12 @@ import {
   launchableApps,
   type Device,
   type Entity,
+  type RelayHealth,
   type WaiveoApi,
 } from "@/api";
 import { RokuRemote } from "./roku-remote";
+import { describeDiscovery, type BlindReason } from "./discovery";
+import { DiscoveryPanel } from "./discovery-panel";
 
 /**
  * The Devices route — the device plane as an operator sees it: what the relays
@@ -59,6 +62,21 @@ import { RokuRemote } from "./roku-remote";
  * two resources share no member, by design. A console that joined on the tuple
  * would find it absent on every row and report a fully-adopted fleet as
  * entirely un-adopted, which is worse than not showing the column.
+ *
+ * # Discovery has a STATE, and this page reports which one
+ *
+ * The list alone cannot say whether discovery is running. An empty table reads
+ * identically for "no relay is connected", "a relay swept and the network is
+ * empty", "everything found is already adopted", and "this console was refused
+ * relay health and does not know" — four situations with four different
+ * remedies. So the page reads `/system-health` alongside `/devices` and renders
+ * the classification in `./discovery`, which keeps all seven apart.
+ *
+ * `SystemHealth.relays` is the substrate because a relay that is not connected
+ * does not appear in it, and a relay that is not connected is not discovering.
+ * That read is OWNER-ONLY, and a 403 is rendered as its own state ("blind")
+ * rather than silently collapsed into "found nothing" — stating what is not
+ * known is the entire job of this panel.
  *
  * Placement, poll cadence and per-entity policy are NOT asked for here. The
  * server adopts with the device's own reported entities enabled and primary,
@@ -109,6 +127,11 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
   const [devices, setDevices] = useState<Device[] | null>(null);
   const [entities, setEntities] = useState<Entity[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // The connected relays, or null when health could not be read at all — the
+  // two are DIFFERENT facts and an empty array must never stand in for the
+  // unknown one. `blind` names which refusal produced the null.
+  const [relays, setRelays] = useState<RelayHealth[] | null>(null);
+  const [blind, setBlind] = useState<BlindReason | null>(null);
   const [dialog, setDialog] = useState<Dialog>({ kind: "closed" });
   const [busy, setBusy] = useState(false);
   // The device whose entities the lower table is narrowed to; null shows every
@@ -118,6 +141,21 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    // Health is read SEPARATELY from the device plane, and its failure never
+    // fails the page: it is owner-only (a 403 for a site admin is routine), and
+    // folding it into the same try would turn "you may not read relay health"
+    // into "the device plane could not be read" — hiding a fleet the caller is
+    // perfectly entitled to see.
+    void client.diagnostics
+      .health()
+      .then((health) => {
+        setRelays(health.relays);
+        setBlind(null);
+      })
+      .catch((err: unknown) => {
+        setRelays(null);
+        setBlind(err instanceof ApiError && err.code === "FORBIDDEN" ? "forbidden" : "unreachable");
+      });
     try {
       const [deviceRows, entityRows] = await Promise.all([
         collectPages<Device>((cursor) => client.devices.list({ cursor })),
@@ -152,11 +190,31 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
     });
   }, [devices, entities]);
 
-  const relayCount = useMemo(
-    () => new Set((devices ?? []).map((d) => d.relay_id)).size,
+  const discovery = useMemo(
+    () => describeDiscovery({ devices, devicesError: loadError, relays, blind }),
+    [devices, loadError, relays, blind],
+  );
+
+  /** How many devices each relay is currently accounting for — the answer to
+   * "which relay found this one", rolled up. Built from the DEVICE rows rather
+   * than from health, because health's own `screen_count` counts screens. */
+  const devicesByRelay = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const device of devices ?? []) {
+      counts.set(device.relay_id, (counts.get(device.relay_id) ?? 0) + 1);
+    }
+    return counts;
+  }, [devices]);
+
+  /** Whether any media player has been DISCOVERED — adopted or not. The link is
+   * offered for an unadopted one too, because the Roku console is where the
+   * reason it cannot be driven yet is spelled out. It is withheld only when the
+   * page has nothing of that class at all, since a link to an empty surface is
+   * the same dead-end this work exists to remove. */
+  const hasMediaPlayer = useMemo(
+    () => (devices ?? []).some((d) => d.device_class === REMOTE_CLASS),
     [devices],
   );
-  const adoptedCount = useMemo(() => rows.filter((r) => r.adopted).length, [rows]);
 
   const deviceNames = useMemo(
     () => new Map((devices ?? []).map((d) => [d.id, d.name] as [string, string])),
@@ -260,9 +318,21 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
           title="Devices"
           description="Everything the relays can see on their networks, what this deployment has adopted, and a remote for the ones it can drive."
           actions={
-            <Button variant="outline" icon={RefreshCw} onClick={() => void load()}>
-              Refresh
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              {/* The dialog remote below drives ONE entity and closes. The Roku
+                  console is the surface for actually operating a media player:
+                  its live attributes, whether it is drivable at all, and every
+                  dispatch's outcome kept on screen. Linked from here because
+                  this is where an operator arrives first. */}
+              {hasMediaPlayer ? (
+                <Button variant="outline" asChild>
+                  <Link to="/roku">Roku console</Link>
+                </Button>
+              ) : null}
+              <Button variant="outline" icon={RefreshCw} onClick={() => void load()}>
+                Refresh
+              </Button>
+            </div>
           }
         />
 
@@ -272,22 +342,12 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
           </p>
         ) : null}
 
-        <section aria-label="Discovery status" className="flex flex-col gap-3">
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <StatCard label="Discovered" value={String(devices?.length ?? 0)} icon={Radio} />
-            <StatCard label="Adopted" value={String(adoptedCount)} icon={MonitorPlay} />
-            <StatCard label="Relays reporting" value={String(relayCount)} icon={Network} />
-            <StatCard label="Entities" value={String(entities.length)} icon={Cpu} />
-          </div>
-          {/* Said plainly because the absence of a "Scan" button is otherwise
-              read as a missing feature: the console cannot start a sweep. Each
-              relay discovers its own LAN and pushes its full current view
-              upward, so Refresh re-reads what the relays have already said. */}
-          <p className="text-sm text-muted-foreground">
-            Each relay discovers its own network and reports what it finds; this console reads that
-            report. Refresh re-reads it — there is no scan to start from here.
-          </p>
-        </section>
+        <DiscoveryPanel
+          discovery={discovery}
+          relays={relays}
+          devicesByRelay={devicesByRelay}
+          entityCount={entities.length}
+        />
 
         <section aria-label="Discovered devices" className="flex flex-col gap-3">
           <h2 className="text-lg font-semibold">Discovered devices</h2>
@@ -302,11 +362,11 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
               )
             }
             emptyState={
-              <EmptyState
-                title="No devices reported"
-                description="No relay has reported a device on its network yet. A relay reports its full view when it connects."
-                icon={Radio}
-              />
+              /* The empty state IS the classification. "No devices reported"
+                 was the same sentence for "no relay is connected" and "a relay
+                 swept and found nothing" and "health could not be read" — three
+                 different problems wearing one message. It now says which. */
+              <EmptyState title={discovery.headline} description={discovery.detail} icon={Radio} />
             }
             rowActions={(row) =>
               row.adopted ? null : (

@@ -61,9 +61,10 @@ describe("Extensions nav", () => {
     // The count is the weaker proxy — it is the union of every route track's
     // destinations (11 = the original 8, plus Devices, Casts and Media), and it
     // has to be re-agreed every time a track adds a console route, which is why
-    // it is no longer the only thing checked here (13 = plus System and Backup).
+    // it is no longer the only thing checked here (14 = plus System, Backup and
+    // Roku).
     const primary = screen.getAllByRole("navigation", { name: /primary/i })[0];
-    expect(within(primary).getAllByRole("link")).toHaveLength(13);
+    expect(within(primary).getAllByRole("link")).toHaveLength(14);
     expect(
       within(primary)
         .getAllByRole("link")

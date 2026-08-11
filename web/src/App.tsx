@@ -7,6 +7,7 @@ import SetupRoute from "@/routes/setup/setup-route";
 import OverviewRoute from "@/routes/overview/overview-route";
 import ScreensRoute from "@/routes/screens/screens-route";
 import DevicesRoute from "@/routes/devices/devices-route";
+import RokuRoute from "@/routes/roku/roku-route";
 import SchedulesRoute from "@/routes/schedules/schedules-route";
 import UploadRoute from "@/routes/upload/upload-route";
 import MediaRoute from "@/routes/media/media-route";
@@ -66,6 +67,12 @@ export default function App() {
                 is about displays content is scheduled against — a device is a
                 separate row with a separate owner (the relay). */}
             <Route path="/devices" element={<DevicesRoute />} />
+            {/* Operating an adopted media player, as distinct from discovering
+                and adopting one: live state, the remote, and every dispatch's
+                outcome kept on screen. Separate from /devices because the two
+                are different jobs — one is a decision, the other is a sequence
+                of actions whose results have to stay readable. */}
+            <Route path="/roku" element={<RokuRoute />} />
             <Route path="/schedules" element={<SchedulesRoute />} />
             {/* Upload, NOT `/content`: the feeder mounts the content origin at
                 `/content/` on this same mux, and ServeMux redirects `/content` to
