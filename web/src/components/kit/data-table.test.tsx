@@ -46,6 +46,28 @@ describe("DataTable", () => {
     expect(screen.queryByText("The Hangar TV")).not.toBeInTheDocument();
   });
 
+  it("does NOT answer to the loaded table's accessible name while it is still loading", () => {
+    // A skeleton renders the same <Table> with the same header — only the body
+    // swaps — so a busy table that kept the loaded name made
+    // `findByRole("table", {name})` resolve on the SKELETON. Every synchronous
+    // assertion after such an await then races the fetch, which is an await
+    // waiting for the wrong thing rather than a slow machine. That shape flaked
+    // live-screens-panel.test.tsx about one run in four, and 18 tests in that
+    // one file are written that way.
+    const { rerender } = render(
+      <DataTable columns={columns} data={[]} label="Screens" loading skeletonRows={3} />,
+    );
+    expect(screen.queryByRole("table", { name: "Screens" })).not.toBeInTheDocument();
+    const busy = screen.getByRole("table", { name: "Screens (loading)" });
+    expect(busy).toHaveAttribute("aria-busy", "true");
+
+    // ...and it takes the name the moment the data is really there.
+    rerender(<DataTable columns={columns} data={rows} label="Screens" />);
+    const loaded = screen.getByRole("table", { name: "Screens" });
+    expect(loaded).not.toHaveAttribute("aria-busy", "true");
+    expect(within(loaded).getByText("The Hangar TV")).toBeInTheDocument();
+  });
+
   it("renders the empty state when there are no rows", () => {
     render(<DataTable columns={columns} data={[]} label="Screens" />);
     expect(screen.getByText("Nothing here yet")).toBeInTheDocument();

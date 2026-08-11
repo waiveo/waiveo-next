@@ -702,7 +702,25 @@ export function DataTable<TData, TValue = unknown>({
       className={cn("overflow-hidden rounded-card border border-border bg-card", className)}
     >
       <div className="wv-table-region">
-        <Table aria-label={label}>
+        {/* While loading, the table answers to a DIFFERENT accessible name and
+            reports aria-busy. Both halves matter.
+
+            For a screen reader it is simply the truth: a grid of skeleton cells
+            announced as "Live screens" claims the fleet is on screen when none
+            of it has arrived.
+
+            For tests it closes a whole class of race. The skeleton renders the
+            same <Table> with the same header — only the body swaps — so
+            `findByRole("table", {name: "Live screens"})` used to resolve on the
+            SKELETON, and the synchronous `within(table).getByText(…)` after it
+            was free to run before the fetch resolved. That is not a slow
+            machine; it is an await that waits for the wrong thing, and it is why
+            live-screens-panel.test.tsx flaked roughly one run in four. Eighteen
+            tests in that file share the shape, and every one of the 14 call
+            sites could grow more. Renaming the busy state fixes all of them at
+            the source: the query now cannot match until the data is really
+            there, with no test edited. */}
+        <Table aria-label={loading ? `${label} (loading)` : label} aria-busy={loading}>
           <TableHeader>
             {table.getHeaderGroups().map((group) => (
               <TableRow key={group.id}>
