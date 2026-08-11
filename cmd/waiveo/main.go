@@ -1,98 +1,146 @@
-// Command waiveo is the operator CLI.
+// Command waiveo is the operator CLI and MCP server for a waiveo deployment.
 //
-// It starts with the one thing that needs no running deployment and no
-// credential: printing the curated MCP tool surface. That surface is DERIVED from
-// the OpenAPI document's own `mcp:read`/`mcp:act` tags (API-071 makes those tags
-// "the sole input to MCP tool generation"), so this command reports what the
-// document currently says rather than a list anybody maintains.
+// It exists so a person — or an agent — can drive and check a running box from a
+// terminal, with no browser and without hand-writing a single curl.
 //
-// It is deliberately the first subcommand: the credential flows this CLI
-// eventually performs all talk to a running app, and a command that can be run
-// and checked with nothing installed is what makes the surface reviewable before
-// any of that exists.
+//	waiveo ls                        what this deployment can be asked to do
+//	waiveo describe <operationId>    one operation's arguments, in full
+//	waiveo call <operationId> ...    invoke it
+//	waiveo health                    is it reachable, answering, and answering the declared shape
+//	waiveo mcp tools                 the curated MCP tool surface
+//	waiveo mcp serve                 serve those tools over MCP's stdio transport
+//	waiveo relay status              a relay's own state, read locally
+//
+// # One engine, two front ends
+//
+// Every operation above is built by internal/app/apiop from the SAME api/1
+// document the server serves and the generated clients are produced from. There
+// is no switch over operationIds anywhere in this binary: adding an operation to
+// the document makes it listable, describable, callable and MCP-exposed with no
+// change here. `waiveo call` and `waiveo mcp serve` are two front ends onto that
+// one engine, which is what keeps a shell session and an agent session from
+// being able to disagree about what the platform does.
+//
+// # What it will and will not reach
+//
+// The callable set is the CURATED set — the operations carrying `mcp:read` or
+// `mcp:act` (API-070/071). That is deliberate rather than incidental: the
+// uncurated remainder is credential exchange and second-factor enrolment, flows
+// whose safety comes from a human being in front of them, and a CLI that could
+// drive them is a CLI whose stolen token can rewrite an owner's credentials.
 package main
 
 import (
-	"encoding/json"
-	"flag"
+	"context"
 	"fmt"
 	"io"
 	"os"
-	"text/tabwriter"
-
-	"github.com/maaxton/waiveo-next/internal/app/mcp"
+	"os/signal"
+	"syscall"
 )
 
-func main() {
-	if err := run(os.Args[1:], os.Stdout); err != nil {
-		fmt.Fprintln(os.Stderr, "waiveo:", err)
-		os.Exit(1)
-	}
+// buildVersion is this binary's channel-index/1 identity, matching
+// cmd/waiveo-relay's convention: "dev" for an ordinary `go build`, overridden
+// via -ldflags for a released build.
+var buildVersion = "dev"
+
+// Exit codes. `waiveo health` uses all three; every other command uses 0 and 1.
+// They are distinct because a degraded box and an unreachable one send an
+// operator to different places, and a script that cannot tell them apart treats
+// both as an outage.
+const (
+	exitOK       = 0
+	exitFailure  = 1
+	exitDegraded = 2
+)
+
+type env struct {
+	out io.Writer
+	err io.Writer
+	in  io.Reader
 }
 
-func run(args []string, out io.Writer) error {
+func main() {
+	// SIGINT/SIGTERM cancels in-flight work: an interrupted `mcp serve` should
+	// stop reading rather than be killed mid-frame.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	e := env{out: os.Stdout, err: os.Stderr, in: os.Stdin}
+	code, err := run(ctx, os.Args[1:], e)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "waiveo:", err)
+		if code == exitOK {
+			code = exitFailure
+		}
+	}
+	os.Exit(code)
+}
+
+// run is the whole CLI, taking its streams as arguments so the tests drive the
+// real dispatch rather than a re-implementation of it.
+func run(ctx context.Context, args []string, e env) (int, error) {
 	if len(args) == 0 {
-		usage(out)
-		return nil
+		usage(e.out)
+		return exitOK, nil
 	}
 	switch args[0] {
+	case "ls":
+		return exitOK, cmdLs(args[1:], e)
+	case "describe":
+		return exitOK, cmdDescribe(args[1:], e)
+	case "call":
+		return cmdCall(ctx, args[1:], e)
+	case "health":
+		return cmdHealth(ctx, args[1:], e)
 	case "mcp":
-		return runMCP(args[1:], out)
+		return cmdMCP(ctx, args[1:], e)
+	case "relay":
+		return cmdRelay(ctx, args[1:], e)
+	case "version", "--version", "-version":
+		fmt.Fprintf(e.out, "waiveo %s\n", buildVersion)
+		return exitOK, nil
 	case "-h", "--help", "help":
-		usage(out)
-		return nil
+		usage(e.out)
+		return exitOK, nil
 	default:
-		return fmt.Errorf("unknown command %q (try: waiveo help)", args[0])
+		return exitFailure, fmt.Errorf("unknown command %q (try: waiveo help)", args[0])
 	}
 }
 
 func usage(out io.Writer) {
-	fmt.Fprint(out, `waiveo — operator CLI
+	fmt.Fprintf(out, `waiveo — operator CLI and MCP server for one deployment
 
-Commands:
-  mcp tools    List the curated MCP tool surface
-`)
-}
+Discover
+  ls [family]                 resource families, or one family's operations
+  describe <operationId>      an operation's parameters, body and responses
 
-func runMCP(args []string, out io.Writer) error {
-	if len(args) == 0 || args[0] != "tools" {
-		return fmt.Errorf("usage: waiveo mcp tools [--json]")
-	}
-	fs := flag.NewFlagSet("mcp tools", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	asJSON := fs.Bool("json", false, "emit the surface as JSON")
-	if err := fs.Parse(args[1:]); err != nil {
-		return err
-	}
+Drive
+  call <operationId> [...]    invoke a curated operation
+  health                      reachable + answering + answering the declared shape
 
-	tools, err := mcp.Tools()
-	if err != nil {
-		return err
-	}
-	if *asJSON {
-		enc := json.NewEncoder(out)
-		enc.SetIndent("", "  ")
-		return enc.Encode(tools)
-	}
+Serve
+  mcp tools [--json]          the curated MCP tool surface
+  mcp serve                   serve those tools over MCP's stdio transport
 
-	// The mutating flag is shown per tool rather than by grouping, because an
-	// operator scanning for "what can this change" reads down one column; grouping
-	// would hide it behind a heading they might not scroll to.
-	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "TOOL\tKIND\tMETHOD\tPATH")
-	for _, t := range tools {
-		kind := "read"
-		if t.Mutating {
-			kind = "act"
-			if t.RequiresIdempotencyKey {
-				kind = "act (idempotency-key)"
-			}
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", t.Name, kind, t.Method, t.Path)
-	}
-	if err := w.Flush(); err != nil {
-		return err
-	}
-	fmt.Fprintf(out, "\n%d curated operation(s).\n", len(tools))
-	return nil
+Relay
+  relay status                a relay's own operational state, read locally
+
+Connection (flag beats environment beats config file)
+  --api URL                   $%s              base_url
+  --token-file PATH           $%s       token_file
+  --ca-file PATH              $%s          ca_file
+  --insecure-tls              $%s  insecure_tls
+  --config PATH               $%s           (default %s)
+
+The token is read from a FILE, never from a flag or an environment variable: an
+argument is visible in `+"`ps`"+` and lands in shell history. The file must be mode
+0600 or tighter.
+
+Examples
+  waiveo --api https://box:7420 ls
+  waiveo call listScopeNodes --param limit=5 --json
+  waiveo call createScopeNode --body '{"kind":"site","name":"Hangar"}'
+  waiveo call updateScopeNode --param scope_node_id=01J... --param If-Match='"3"' --body @patch.json
+`, envAPI, envTokenFil, envCAFile, envInsecure, envConfig, defaultConfigPathForHelp())
 }

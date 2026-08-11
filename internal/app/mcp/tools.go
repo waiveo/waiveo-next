@@ -1,5 +1,5 @@
 // Package mcp derives the curated MCP tool surface from the OpenAPI document's
-// own `mcp:read`/`mcp:act` tags.
+// own `mcp:read`/`mcp:act` tags, and serves it over the MCP stdio transport.
 //
 // API-071 makes those tags "the sole input to MCP tool generation; no separate
 // allowlist or denylist exists" — so this package holds no list of operations,
@@ -12,6 +12,13 @@
 // stale between the change and the regeneration, and a reviewer cannot tell by
 // looking. Reading the embedded document at call time cannot drift from it at
 // all.
+//
+// The same reasoning is why the tools this package SERVES execute through
+// internal/app/apiop rather than through anything written per operation: the
+// request an MCP tool call makes is built from the document that declares it,
+// so a tool cannot advertise one shape and send another, and `waiveo call`
+// reaches the same operations through the same engine. A CLI and an MCP server
+// that were two implementations would eventually be two different platforms.
 //
 // # What this does not decide
 //
@@ -27,9 +34,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/getkin/kin-openapi/openapi3"
-
-	apispec "github.com/maaxton/waiveo-next/api"
+	"github.com/maaxton/waiveo-next/internal/app/apiop"
 )
 
 // Curation tags, exactly as API-070 spells them.
@@ -59,78 +64,59 @@ type Tool struct {
 	// MCP client's own retry-on-timeout cannot double-apply the call. Reported so a
 	// tool caller can supply one rather than having to know the rule.
 	RequiresIdempotencyKey bool
+
+	// Op is the callable declaration behind the tool. It is excluded from the JSON
+	// rendering deliberately: `waiveo mcp tools --json` is a REPORT of the curated
+	// surface, and folding a few thousand lines of inlined request schema into it
+	// would bury the report. A caller that wants the schema asks for it by name.
+	Op apiop.Operation `json:"-"`
 }
 
-// Tools returns every curated operation, ordered by name so two runs of the same
-// document produce the same surface — a tool list whose order drifted would show
-// up as a diff in anything that records it.
+// Tools returns every curated operation for the embedded document.
 func Tools() ([]Tool, error) {
-	doc, err := openapi3.NewLoader().LoadFromData(apispec.OpenAPIYAML)
+	s, err := apiop.Load()
 	if err != nil {
-		return nil, fmt.Errorf("mcp: parse the embedded api surface: %w", err)
+		return nil, err
 	}
+	return ToolsFrom(s)
+}
 
+// ToolsFrom returns every curated operation on s, ordered by name so two runs of
+// the same document produce the same surface — a tool list whose order drifted
+// would show up as a diff in anything that records it.
+func ToolsFrom(s *apiop.Surface) ([]Tool, error) {
+	if s == nil {
+		return nil, fmt.Errorf("mcp: no surface")
+	}
 	var tools []Tool
-	for path, item := range doc.Paths.Map() {
-		for method, op := range item.Operations() {
-			read, act := hasTag(op, TagRead), hasTag(op, TagAct)
-			// Neither tag: API-070 says it "MUST NOT be exposed as an MCP tool".
-			// Both: a violation validate-mcp-tags refuses, and this declines to guess
-			// which one was meant rather than picking the safer-looking answer and
-			// hiding the fault.
-			if read == act {
-				continue
-			}
-			tools = append(tools, Tool{
-				Name:                   op.OperationID,
-				Description:            describe(op),
-				Mutating:               act,
-				Method:                 method,
-				Path:                   path,
-				RequiresIdempotencyKey: act && method == "POST" && acceptsIdempotencyKey(item, op),
-			})
+	for _, op := range s.Operations() {
+		read, act := op.HasTag(TagRead), op.HasTag(TagAct)
+		// Neither tag: API-070 says it "MUST NOT be exposed as an MCP tool".
+		// Both: a violation validate-mcp-tags refuses, and this declines to guess
+		// which one was meant rather than picking the safer-looking answer and
+		// hiding the fault.
+		if read == act {
+			continue
 		}
+		_, acceptsKey := op.Param("Idempotency-Key")
+		tools = append(tools, Tool{
+			Name:                   op.ID,
+			Description:            describe(op),
+			Mutating:               act,
+			Method:                 op.Method,
+			Path:                   op.Path,
+			RequiresIdempotencyKey: act && op.Method == "POST" && acceptsKey,
+			Op:                     op,
+		})
 	}
 	sort.Slice(tools, func(i, j int) bool { return tools[i].Name < tools[j].Name })
 	return tools, nil
 }
 
-func hasTag(op *openapi3.Operation, tag string) bool {
-	for _, t := range op.Tags {
-		if t == tag {
-			return true
-		}
-	}
-	return false
-}
-
 // describe prefers the operation's description and falls back to its summary.
-func describe(op *openapi3.Operation) string {
+func describe(op apiop.Operation) string {
 	if d := strings.TrimSpace(op.Description); d != "" {
 		return d
 	}
 	return strings.TrimSpace(op.Summary)
-}
-
-// acceptsIdempotencyKey reports whether the operation accepts the header, counting
-// a parameter declared once for the whole PATH — one declared at the path item
-// applies to every operation on it, and an operation that inherits the header does
-// accept it. Missing that inheritance is how a checker concludes a conformant
-// document is in violation.
-//
-// No path item in this document declares the header that way TODAY, so that half
-// is defensive rather than exercised — measured, not assumed, and stated because a
-// mutation that removes it currently fails no test. It is kept because
-// scripts/validate-mcp-tags.mjs counts the same inheritance for the same
-// requirement: dropping it here would make the two disagree the first time anyone
-// hoists a parameter to a path item, and they would disagree silently.
-func acceptsIdempotencyKey(item *openapi3.PathItem, op *openapi3.Operation) bool {
-	for _, set := range []openapi3.Parameters{item.Parameters, op.Parameters} {
-		for _, ref := range set {
-			if ref.Value != nil && ref.Value.In == "header" && ref.Value.Name == "Idempotency-Key" {
-				return true
-			}
-		}
-	}
-	return false
 }
