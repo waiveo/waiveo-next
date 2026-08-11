@@ -77,19 +77,79 @@ const (
 	assetPrefix  = "assets/"
 )
 
-// MaxAssets and MaxBundleBytes bound what a reader will accept.
+// The size limits, which are ONE set of numbers for both directions.
 //
-// These are decompression-bomb guards, not policy: a zip is an attacker-supplied
-// file and a reader that trusted its declared sizes could be made to allocate
-// arbitrarily. The limits are generous relative to a real design (a slidecast is
-// a handful of images) and small relative to memory on any box this runs on.
+// # Why they are declared together, here
+//
+// They started apart, and that is the defect: the reader advertised 512 MiB, the
+// import route capped the request body at the content-upload ceiling of 64 MiB,
+// and the export was bounded by nothing at all. So this box could produce a
+// bundle — two video layers is enough — that this box would then refuse to
+// import, permanently, with a message about a limit the reader claimed not to
+// have. A `.cast` file whose whole purpose is to move between boxes has to have
+// ONE size it can be, and every surface that touches it has to use that number:
+// the reader below, the export's refusal and the import route's body limit
+// (internal/app/api/castbundles.go, pinned equal by a test there).
+//
+// # Where the number comes from
+//
+// It is derived, not picked. Every asset in a bundle got onto its source box
+// through `POST /content`, so no legitimate asset exceeds that route's ceiling —
+// MaxAssetBytes mirrors it. A slidecast is a DESIGN and not a media library: its
+// images are a handful, and the only layers that approach the per-asset ceiling
+// are video. Two of those at full size, plus room for the manifest describing
+// them, is the whole bundle.
+//
+// The ceiling is low for a reason that is not aesthetic. An import holds the
+// request body, the decompressed assets AND the content origin's own resident
+// copy simultaneously (origin.Store keeps every asset in memory), so the real
+// cost on a Pi-class appliance is roughly three times this number. As with
+// maxContentUploadBytes, the honest reading is that moving genuinely large media
+// wants a streaming ingest rather than a bigger constant; until then this bounds
+// the buffer instead of leaving it to whoever mailed the file.
 const (
-	MaxAssets      = 512
-	MaxBundleBytes = 512 << 20 // 512 MiB of decompressed content
+	// MaxAssets bounds how many entries a bundle may carry, independently of
+	// their size: a decompression-bomb guard on entry COUNT, which the total
+	// alone would not catch (a million empty entries).
+	MaxAssets = 512
+	// MaxAssetBytes bounds ONE asset, and equals this platform's per-upload
+	// ceiling — see the api layer's TestTheCastBundleLimitsMatchTheUploadCeiling.
+	MaxAssetBytes = 64 << 20
+	// MaxBundleContentBytes bounds what the ASSETS may total. It is what the
+	// export refuses against, because it is the part an export controls.
+	MaxBundleContentBytes = 2 * MaxAssetBytes
+	// MaxBundleOverheadBytes is the room reserved for everything that is not
+	// asset bytes: the manifest and the zip's own framing. It exists so that a
+	// bundle whose assets are exactly at MaxBundleContentBytes still fits under
+	// MaxBundleBytes — i.e. so an export this box permits is always an import
+	// this box permits. TestTheOverheadReserveCoversTheWorstManifestAndFraming
+	// checks the arithmetic rather than trusting it.
+	MaxBundleOverheadBytes = 8 << 20
+	// MaxBundleBytes bounds the whole file: what the import route accepts and
+	// what the reader's running total is checked against.
+	MaxBundleBytes = MaxBundleContentBytes + MaxBundleOverheadBytes
 	// MaxManifestBytes bounds cast.json alone. A manifest is JSON describing a
-	// few dozen layers; anything approaching this is not one.
-	MaxManifestBytes = 8 << 20
+	// few dozen layers; anything approaching this is not one. It is HALF the
+	// overhead reserve so that the manifest plus the zip framing for a maximal
+	// entry count both fit inside it.
+	MaxManifestBytes = MaxBundleOverheadBytes / 2
 )
+
+// zipFramingBytesFor bounds the zip container's own overhead for n entries: a
+// local file header and a central-directory record per entry, each carrying the
+// entry name, plus the end-of-central-directory record.
+//
+// It is deliberately an over-estimate. Its only job is to prove the overhead
+// reserve is big enough, and a bound that is too generous fails safe (a reserve
+// larger than it needs to be) while one that is too tight reopens the exact
+// export/import disagreement this whole block exists to close.
+func zipFramingBytesFor(entries int) int64 {
+	// 30-byte local header + 46-byte central record + a data descriptor, and an
+	// entry name that is `assets/` plus a 64-character hex digest.
+	const perEntry = 30 + 46 + 24 + 2*(len(assetPrefix)+64)
+	const endOfCentralDirectory = 22
+	return int64(entries)*int64(perEntry) + endOfCentralDirectory
+}
 
 // Manifest is cast.json.
 type Manifest struct {
@@ -162,13 +222,24 @@ func entryNameOf(assetRef string) string {
 	return assetPrefix + strings.TrimPrefix(assetRef, "sha256:")
 }
 
-// Write writes a bundle to w.
+// Write STREAMS a bundle to w.
 //
 // assets maps each `sha256:<hex>` the slides reference to its bytes. Every
 // reference must be present: a bundle missing one of its own images is a bundle
 // that imports as a cast with a hole in it, and the caller (which has the
 // content origin) is the only layer that can tell the difference between "this
 // asset is missing" and "this asset was never referenced".
+//
+// Streaming is the point of the signature. The export handler passes the
+// http.ResponseWriter directly, so the only whole copy of a bundle that ever
+// exists on the exporting box is the one going out over the socket — an earlier
+// version assembled the zip in a bytes.Buffer first, which put a second copy of
+// every asset in memory on a box that already holds them all resident.
+//
+// It refuses rather than truncates on the two limits it can see: a manifest
+// larger than a reader would accept, and an asset larger than one entry may be.
+// Producing a file this package's own Read would reject is the export/import
+// disagreement the size block above exists to make impossible.
 func Write(w io.Writer, m Manifest, assets map[string][]byte) error {
 	m.Format = Format
 	// The asset list is DERIVED from the slides rather than taken from the
@@ -176,13 +247,42 @@ func Write(w io.Writer, m Manifest, assets map[string][]byte) error {
 	// a manifest listing an asset no layer names, or omitting one that is named,
 	// is the failure mode a hand-assembled list has.
 	refs := ReferencedAssets(m.Cast.Slides)
+	if len(refs) > MaxAssets {
+		return fmt.Errorf("%w: the cast references %d assets, more than a bundle may carry (%d)", ErrTooLarge, len(refs), MaxAssets)
+	}
 	m.Assets = make([]AssetEntry, 0, len(refs))
 	for _, ref := range refs {
 		body, ok := assets[ref]
 		if !ok {
 			return fmt.Errorf("castbundle: the cast references %s but no bytes were supplied for it", ref)
 		}
+		if int64(len(body)) > MaxAssetBytes {
+			return fmt.Errorf("%w: %s is %d bytes, more than one bundle entry may be (%d)", ErrTooLarge, ref, len(body), int64(MaxAssetBytes))
+		}
 		m.Assets = append(m.Assets, AssetEntry{AssetRef: ref, SizeBytes: int64(len(body))})
+	}
+
+	// The manifest is encoded to memory first, because its SIZE has to be
+	// checked before it is committed to the stream: a manifest over
+	// MaxManifestBytes is one Read refuses, and discovering that halfway through
+	// a response is discovering it too late. It is JSON describing slides, so
+	// this buffer is kilobytes.
+	var manifest bytes.Buffer
+	enc := json.NewEncoder(&manifest)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(m); err != nil {
+		return fmt.Errorf("castbundle: encode the manifest: %w", err)
+	}
+	if int64(manifest.Len()) > MaxManifestBytes {
+		return fmt.Errorf("%w: the manifest is %d bytes, more than a reader will accept (%d)", ErrTooLarge, manifest.Len(), int64(MaxManifestBytes))
+	}
+	// The other half of "an export this box permits is an import this box
+	// permits": the caller bounds the ASSET total (it is the one that knows
+	// them before they are read), and this bounds everything else, so the two
+	// together cannot add up past MaxBundleBytes.
+	if overhead := int64(manifest.Len()) + zipFramingBytesFor(len(m.Assets)); overhead > MaxBundleOverheadBytes {
+		return fmt.Errorf("%w: the manifest and container framing come to %d bytes, past the %d reserved for them, so this bundle could exceed the %d-byte limit a reader accepts",
+			ErrTooLarge, overhead, int64(MaxBundleOverheadBytes), int64(MaxBundleBytes))
 	}
 
 	zw := zip.NewWriter(w)
@@ -190,13 +290,16 @@ func Write(w io.Writer, m Manifest, assets map[string][]byte) error {
 	if err != nil {
 		return fmt.Errorf("castbundle: create the manifest entry: %w", err)
 	}
-	enc := json.NewEncoder(mf)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(m); err != nil {
+	if _, err := mf.Write(manifest.Bytes()); err != nil {
 		return fmt.Errorf("castbundle: write the manifest: %w", err)
 	}
 	for _, a := range m.Assets {
-		ew, err := zw.Create(entryNameOf(a.AssetRef))
+		// STORED, not deflated. A bundle's assets are already-compressed media —
+		// JPEG, PNG, H.264 — so deflate spends a Pi's CPU on every export to
+		// achieve nothing, and it makes the file's size unpredictable from the
+		// content's, which is exactly the property the export's own size refusal
+		// needs. The manifest above stays deflated: that one is JSON.
+		ew, err := zw.CreateHeader(&zip.FileHeader{Name: entryNameOf(a.AssetRef), Method: zip.Store})
 		if err != nil {
 			return fmt.Errorf("castbundle: create the entry for %s: %w", a.AssetRef, err)
 		}
@@ -312,7 +415,11 @@ func Read(raw []byte) (Bundle, error) {
 			return Bundle{}, fmt.Errorf("%w: the manifest declares %s but the bundle carries no %s", ErrDamaged, a.AssetRef, name)
 		}
 		delete(assetFiles, name)
-		body, err := readEntry(f, MaxBundleBytes)
+		// Bounded by the PER-ASSET ceiling, not by the whole-bundle one: an
+		// entry larger than any upload this platform accepts is not an asset
+		// that could have come from a box, however much room the bundle has
+		// left.
+		body, err := readEntry(f, MaxAssetBytes)
 		if err != nil {
 			return Bundle{}, fmt.Errorf("%w: %s: %v", ErrDamaged, name, err)
 		}

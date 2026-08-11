@@ -13,7 +13,9 @@ package api_test
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -393,4 +395,208 @@ func castCount(t *testing.T, e *testEnv) int {
 		t.Fatalf("list casts: %v", err)
 	}
 	return len(rows)
+}
+
+// ── Size: the round trip has to close for a cast this platform can hold ─────
+
+// bigAsset returns distinct, incompressible-in-practice-irrelevant bytes of the
+// given size. The asset entries in a bundle are STORED rather than deflated, so
+// a run of zeros is as large on the wire as any photograph — which is what keeps
+// these tests affordable.
+func bigAsset(size int, marker byte) []byte {
+	b := make([]byte, size)
+	b[0] = marker
+	b[size-1] = marker
+	return b
+}
+
+// seedCastWithAssets authors a one-slide cast whose layers reference bytes put
+// straight into the origin, bypassing POST /content — a 64 MiB upload through
+// the HTTP layer would cost another whole copy and prove nothing this does not.
+func seedCastWithAssets(t *testing.T, e *testEnv, content *origin.Store, name string, bodies [][]byte) (castID, scopeNode string) {
+	t.Helper()
+	scopeNode = seedSchedulingScope(t, e)
+	var layers []wire.Layer
+	for _, body := range bodies {
+		ref, err := content.Add(body)
+		if err != nil {
+			t.Fatalf("seed the origin: %v", err)
+		}
+		layers = append(layers, wire.Layer{Kind: wire.LayerKindImage, X: 0, Y: 0, W: 1920, H: 1080, AssetRef: ref})
+	}
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/casts", rowCreateBody(t, datamodel.Cast{
+		ScopeNode: scopeNode, Name: name,
+		Slides: []datamodel.CastSlide{{ID: "s1", Layers: layers}},
+	}), nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("seed cast: %d %s", resp.StatusCode, raw)
+	}
+	return decodeID(t, raw), scopeNode
+}
+
+// TestABundleBiggerThanASingleUploadStillImports is the finding, driven end to
+// end: a `.cast` this box produced must be a `.cast` this box accepts.
+//
+// The import route used to cap the request body at the SINGLE-ASSET upload
+// ceiling (64 MiB) while the reader advertised 512 MiB and the export was
+// bounded by nothing. A cast with video layers — one asset at the platform's own
+// upload ceiling is enough — exported cleanly and then hit
+// `http.MaxBytesReader` on arrival: 400 VALIDATION_FAILED, permanently, about a
+// limit the reader claimed not to have. The operator's whole stated workflow
+// ("build it on the office box, put it on the shop's box") failed for a
+// supported cast shape.
+//
+// The asset is exactly at the upload ceiling, which is the smallest size that
+// proves the old cap is gone: the bundle around it is necessarily larger.
+func TestABundleBiggerThanASingleUploadStillImports(t *testing.T) {
+	sourceContent := origin.New()
+	source := newEnvWithContent(t, sourceContent)
+	video := bigAsset(castbundle.MaxAssetBytes, 0xA1)
+	castID, _ := seedCastWithAssets(t, source, sourceContent, "Shop loop", [][]byte{video})
+
+	bundle := exportBundle(t, source, castID)
+	if len(bundle) <= castbundle.MaxAssetBytes {
+		t.Fatalf("the exported bundle is %d bytes, not larger than one upload (%d) — this test would pass under the old cap and prove nothing",
+			len(bundle), int64(castbundle.MaxAssetBytes))
+	}
+
+	destContent := origin.New()
+	dest := newEnvWithContent(t, destContent)
+	destNode := seedSchedulingScope(t, dest)
+
+	resp, raw := importBundle(t, dest, bundle, destNode, "")
+	if resp.StatusCode != http.StatusCreated {
+		detail := raw
+		if len(detail) > 400 {
+			detail = detail[:400]
+		}
+		t.Fatalf("importing a %d-byte bundle THIS PLATFORM just produced = %d, want 201 (body %s)",
+			len(bundle), resp.StatusCode, detail)
+	}
+	if !destContent.Has(hexOf(video)) {
+		t.Fatal("the destination did not receive the video layer's bytes; the imported cast references an asset this box cannot serve")
+	}
+}
+
+// TestAnExportTooLargeToImportIsRefusedRatherThanProduced is the other half of
+// the same agreement, and the availability half of the finding.
+//
+// Before, the export was bounded by nothing at all: MaxAssets entries at the
+// per-upload ceiling is 32 GiB, and an authenticated caller could ask a
+// Pi-class appliance to marshal that with one GET. Refusing here is also the
+// only honest answer — a bundle over the limit could not be imported anywhere,
+// so producing one would hand an operator a file with no destination.
+func TestAnExportTooLargeToImportIsRefusedRatherThanProduced(t *testing.T) {
+	content := origin.New()
+	e := newEnvWithContent(t, content)
+	// Three assets at the per-asset ceiling: past MaxBundleContentBytes, which
+	// is two.
+	bodies := [][]byte{
+		bigAsset(castbundle.MaxAssetBytes, 0xB1),
+		bigAsset(castbundle.MaxAssetBytes, 0xB2),
+		bigAsset(castbundle.MaxAssetBytes, 0xB3),
+	}
+	castID, _ := seedCastWithAssets(t, e, content, "A media library, not a design", bodies)
+
+	resp, raw := e.do(t, http.MethodGet, "/api/v1/casts/"+castID+"/export", nil, nil)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("export of a cast past the bundle limit = %d, want 409 (first bytes %q)", resp.StatusCode, raw[:min(len(raw), 200)])
+	}
+	assertProblem(t, resp, raw, "CONFLICT")
+	var p map[string]any
+	mustUnmarshal(t, raw, &p)
+	if detail, _ := p["detail"].(string); !strings.Contains(detail, "limit a cast bundle carries") {
+		t.Errorf("detail = %q, want it to name the limit the operator has hit", detail)
+	}
+}
+
+// TestExportAndImportAgreeOnOneBundleLimit is the pin that stops the two halves
+// drifting apart again, and it is deliberately behavioural rather than a
+// comparison of constants: it proves the IMPORT ROUTE accepts a body larger than
+// the single-upload ceiling, which is the specific number it used to be capped
+// at.
+//
+// A bundle at that size is refused for being the wrong FILE, not for being too
+// big — which is the whole distinction the old behaviour collapsed.
+func TestExportAndImportAgreeOnOneBundleLimit(t *testing.T) {
+	e := newEnv(t)
+	node := seedSchedulingScope(t, e)
+
+	// Not a zip, and one byte past the old cap.
+	body := bigAsset(castbundle.MaxAssetBytes+1, 0xC1)
+	resp, raw := importBundle(t, e, body, node, "")
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("a %d-byte body was answered %d; want 422 (refused as not-a-bundle). A 400 here means the route is still capped at the single-upload ceiling.",
+			len(body), resp.StatusCode)
+	}
+	var p map[string]any
+	mustUnmarshal(t, raw, &p)
+	detail, _ := p["detail"].(string)
+	if strings.Contains(detail, "exceeds the") {
+		t.Fatalf("detail = %q — the import refused a bundle-sized body on SIZE. Export and import must bound the same number, or a bundle this box produced is one it cannot read.", detail)
+	}
+	if !strings.Contains(detail, "not a cast bundle") {
+		t.Errorf("detail = %q, want the not-a-bundle refusal", detail)
+	}
+}
+
+// TestExportingACastDoesNotHoldTheWholeBundleInMemory is the availability half
+// of the size finding, and it is measured rather than asserted in a comment.
+//
+// The export used to assemble the whole zip in a bytes.Buffer and then write it
+// out, so a bundle at the content ceiling cost a second full copy of every asset
+// on a box whose content origin already holds them all resident — and
+// bytes.Buffer's growth doubling makes the transient cost larger still. On a
+// Pi-class appliance that is an OOM an authenticated caller can trigger with one
+// GET.
+//
+// The response is DISCARDED as it arrives rather than read into a slice: this
+// test runs the client in the same process as the server, so a client that
+// buffered the body would swamp the very measurement being taken.
+func TestExportingACastDoesNotHoldTheWholeBundleInMemory(t *testing.T) {
+	content := origin.New()
+	e := newEnvWithContent(t, content)
+	// A cast at the content ceiling — the largest export this box will produce.
+	bodies := [][]byte{
+		bigAsset(castbundle.MaxAssetBytes, 0xD1),
+		bigAsset(castbundle.MaxAssetBytes, 0xD2),
+	}
+	castID, _ := seedCastWithAssets(t, e, content, "Two full-size layers", bodies)
+
+	req, err := http.NewRequest(http.MethodGet, e.ts.URL+"/api/v1/casts/"+castID+"/export", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	e.auth.Authorize(req)
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	written, err := io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		t.Fatalf("stream the export: %v", err)
+	}
+
+	runtime.ReadMemStats(&after)
+	allocated := after.TotalAlloc - before.TotalAlloc
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("export = %d, want 200", resp.StatusCode)
+	}
+	if written <= castbundle.MaxAssetBytes {
+		t.Fatalf("the export was only %d bytes; this test needs a bundle larger than one asset to mean anything", written)
+	}
+	// Generous by design: the point is the ORDER OF MAGNITUDE. Streaming
+	// allocates copy buffers; buffering allocates the bundle, twice over as the
+	// buffer grows.
+	if budget := uint64(castbundle.MaxAssetBytes); allocated > budget {
+		t.Fatalf("streaming a %d-byte export allocated %d bytes (budget %d): the handler is holding the bundle in memory instead of writing it to the socket",
+			written, allocated, budget)
+	}
 }

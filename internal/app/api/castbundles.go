@@ -1,10 +1,11 @@
 package api
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/maaxton/waiveo-next/internal/app/store"
@@ -114,7 +115,17 @@ func (srv *server) exportCast(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
 		return
 	}
+	// Resolve every asset BEFORE a byte of response is written. Everything that
+	// can refuse this export has to refuse it here, while a Problem document is
+	// still possible: once the 200 and the zip's first bytes are out, the only
+	// way to report a failure is to truncate the stream, and a truncated zip
+	// reaches the destination as "this bundle is damaged" — a sentence that
+	// sends an operator to the wrong box.
+	//
+	// Holding the map is free: origin.Store.Serve returns the resident slice it
+	// already holds, so this is slice headers, not copies.
 	assets := map[string][]byte{}
+	var contentBytes int64
 	for _, ref := range refs {
 		if srv.content == nil {
 			writeProblem(w, r, http.StatusServiceUnavailable, "UNAVAILABLE", "Service Unavailable",
@@ -132,10 +143,34 @@ func (srv *server) exportCast(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		assets[ref.Ref] = body
+		contentBytes += int64(len(body))
+	}
+	// The size refusal, against the SAME limit the import route accepts and the
+	// reader enforces — castbundle's size block, which is the one place all
+	// three numbers come from. TestExportAndImportAgreeOnOneBundleLimit drives
+	// the agreement through the routes rather than comparing the constants, so
+	// it catches a route that stops using them at all.
+	//
+	// This is the export half of "a bundle this box produced must be a bundle
+	// this box can import". Without it an export is bounded by nothing at all:
+	// MaxAssets assets at the per-upload ceiling is 32 GiB, and an authenticated
+	// caller could ask a Pi-class appliance to marshal that with one GET.
+	if contentBytes > castbundle.MaxBundleContentBytes {
+		writeProblem(w, r, http.StatusConflict, "CONFLICT", "Conflict",
+			"This cast's images total "+strconv.FormatInt(contentBytes, 10)+" bytes, more than the "+
+				strconv.FormatInt(castbundle.MaxBundleContentBytes, 10)+"-byte limit a cast bundle carries. "+
+				"A bundle larger than that could not be imported anywhere, so it is refused here rather than "+
+				"produced and rejected on arrival. Move this design with a workspace archive instead.")
+		return
 	}
 
-	var buf bytes.Buffer
-	err = castbundle.Write(&buf, castbundle.Manifest{
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+castbundle.FileName(row.Name)+`"`)
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	// Straight to the socket. Every failure mode that could still occur from
+	// here is the connection itself, and there is nothing to report it to.
+	if err := castbundle.Write(w, castbundle.Manifest{
 		ExportedAtMs: srv.nowMs(),
 		SourceCastID: row.ID,
 		Cast: castbundle.CastPayload{
@@ -145,17 +180,9 @@ func (srv *server) exportCast(w http.ResponseWriter, r *http.Request) {
 			Template:          row.Template,
 			Labels:            row.Labels,
 		},
-	}, assets)
-	if err != nil {
-		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "The cast bundle could not be assembled.")
-		return
+	}, assets); err != nil {
+		log.Printf("api: cast export %s failed mid-stream: %v", row.ID, err)
 	}
-
-	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+castbundle.FileName(row.Name)+`"`)
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(buf.Bytes())
 }
 
 // importCast handles POST /api/v1/casts/import: the bundle's bytes as the
@@ -167,7 +194,13 @@ func (srv *server) exportCast(w http.ResponseWriter, r *http.Request) {
 // workspace root, the caller's first binding) would put an operator's design at
 // a node they did not choose and, half the time, cannot see.
 func (srv *server) importCast(w http.ResponseWriter, r *http.Request) {
-	body, ok := readBodyLimit(w, r, maxContentUploadBytes)
+	// castbundle.MaxBundleBytes, not maxContentUploadBytes. A bundle is not an
+	// upload of one asset: it is a design plus every image it draws, and capping
+	// it at the single-asset ceiling is what made a bundle THIS BOX had just
+	// produced permanently un-importable — two video layers was enough. The
+	// reader enforces the same number, and TestExportAndImportAgreeOnOneBundleLimit
+	// drives a bundle-sized body through this route to prove it.
+	body, ok := readBodyLimit(w, r, castbundle.MaxBundleBytes)
 	if !ok {
 		return
 	}

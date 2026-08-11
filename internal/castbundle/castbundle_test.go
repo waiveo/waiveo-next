@@ -369,3 +369,108 @@ func rebuildDropping(t *testing.T, raw []byte, drop func(name string) bool) []by
 	}
 	return zipOf(t, entries)
 }
+
+// ── The size limits ─────────────────────────────────────────────────────────
+//
+// These pin the arithmetic that makes "a bundle this box wrote is a bundle this
+// box reads" true by construction rather than by luck. The defect they close:
+// the reader used to advertise 512 MiB while the import route capped a request
+// body at 64 MiB and the export was bounded by nothing, so this box could
+// produce a file it would then refuse forever.
+
+// TestTheOverheadReserveCoversTheWorstManifestAndFraming: the room set aside for
+// everything that is not asset bytes must actually cover the worst case, or a
+// bundle whose assets are exactly at the content ceiling would overflow the
+// whole-bundle limit and be un-importable — the original defect, one layer down.
+func TestTheOverheadReserveCoversTheWorstManifestAndFraming(t *testing.T) {
+	worst := int64(MaxManifestBytes) + zipFramingBytesFor(MaxAssets)
+	if worst > MaxBundleOverheadBytes {
+		t.Fatalf("the worst manifest (%d) plus the framing for %d entries (%d) is %d bytes, past the %d reserved: a bundle at the content ceiling would exceed MaxBundleBytes and could not be imported",
+			int64(MaxManifestBytes), MaxAssets, zipFramingBytesFor(MaxAssets), worst, int64(MaxBundleOverheadBytes))
+	}
+	if MaxBundleBytes != MaxBundleContentBytes+MaxBundleOverheadBytes {
+		t.Fatalf("MaxBundleBytes = %d, want content %d + overhead %d — the whole-file limit must be DERIVED from the two parts, or the export's refusal and the reader's stop bounding the same thing",
+			int64(MaxBundleBytes), int64(MaxBundleContentBytes), int64(MaxBundleOverheadBytes))
+	}
+}
+
+// TestABundleAtTheContentCeilingIsReadable is the round trip at the size that
+// matters, in this package: Write a bundle whose asset total is exactly what the
+// export permits, and Read it back.
+//
+// It is the unit-level half of the api layer's end-to-end proof. If this passes
+// and that one fails, the disagreement is in the HTTP limits; if both fail, it
+// is here.
+func TestABundleAtTheContentCeilingIsReadable(t *testing.T) {
+	// Two assets at the per-asset ceiling — the shape the limit is derived from.
+	// Zero-filled: the asset entries are STORED, so the bundle is genuinely this
+	// big on the wire, which is the property under test.
+	assets := map[string][]byte{}
+	var layers []wire.Layer
+	for i := range 2 {
+		body := make([]byte, MaxAssetBytes)
+		body[0] = byte(i + 1) // distinct content, therefore distinct refs
+		ref := AssetRefOf(body)
+		assets[ref] = body
+		layers = append(layers, wire.Layer{Kind: wire.LayerKindImage, X: 0, Y: 0, W: 1920, H: 1080, AssetRef: ref})
+	}
+
+	var buf bytes.Buffer
+	m := Manifest{Cast: CastPayload{
+		Name:   "Two video layers",
+		Slides: []datamodel.CastSlide{{ID: "s1", Layers: layers}},
+	}}
+	if err := Write(&buf, m, assets); err != nil {
+		t.Fatalf("Write a bundle at the content ceiling: %v", err)
+	}
+	if int64(buf.Len()) > MaxBundleBytes {
+		t.Fatalf("a bundle at the content ceiling is %d bytes, past the %d-byte limit its own reader enforces — an export nobody could import",
+			buf.Len(), int64(MaxBundleBytes))
+	}
+	if int64(buf.Len()) <= MaxAssetBytes {
+		t.Fatalf("the bundle is only %d bytes; the assets must be STORED for this test to exercise anything (a deflated run of zeros would prove nothing)", buf.Len())
+	}
+	got, err := Read(buf.Bytes())
+	if err != nil {
+		t.Fatalf("Read a bundle this package just wrote: %v", err)
+	}
+	if len(got.Assets) != 2 {
+		t.Fatalf("read back %d asset(s), want 2", len(got.Assets))
+	}
+}
+
+// TestWriteRefusesAnAssetLargerThanOneEntryMayBe: the write side of the
+// per-asset ceiling. Producing an entry Read rejects is the export/import
+// disagreement in miniature.
+func TestWriteRefusesAnAssetLargerThanOneEntryMayBe(t *testing.T) {
+	body := make([]byte, MaxAssetBytes+1)
+	ref := AssetRefOf(body)
+	err := Write(&bytes.Buffer{}, Manifest{Cast: CastPayload{
+		Name:   "One impossible image",
+		Slides: []datamodel.CastSlide{{ID: "s1", Layers: []wire.Layer{{Kind: wire.LayerKindImage, W: 1, H: 1, AssetRef: ref}}}},
+	}}, map[string][]byte{ref: body})
+	if !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("Write of an oversize asset returned %v, want ErrTooLarge", err)
+	}
+}
+
+// TestReadRefusesAnEntryLargerThanOneAssetMayBe is the same ceiling on the read
+// side, and it is the one that has to hold against a hostile file rather than
+// against this package's own writer.
+func TestReadRefusesAnEntryLargerThanOneAssetMayBe(t *testing.T) {
+	body := make([]byte, MaxAssetBytes+1)
+	ref := AssetRefOf(body)
+	m := Manifest{
+		Format: Format,
+		Cast:   CastPayload{Name: "Hand-made", Slides: []datamodel.CastSlide{{ID: "s1", Layers: []wire.Layer{{Kind: wire.LayerKindImage, W: 1, H: 1, AssetRef: ref}}}}},
+		Assets: []AssetEntry{{AssetRef: ref, SizeBytes: int64(len(body))}},
+	}
+	mf, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	raw := zipOf(t, map[string][]byte{ManifestName: mf, entryNameOf(ref): body})
+	if _, err := Read(raw); !errors.Is(err, ErrDamaged) && !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("Read of an oversize entry returned %v, want a refusal", err)
+	}
+}

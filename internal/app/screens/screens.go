@@ -87,17 +87,20 @@ const (
 // LiveWindowMs is the staleness threshold separating Live from Stale.
 //
 // It is not a number chosen here. It is wire.ScreenLiveWindowMs, COMPUTED from
-// the player's measured pull-to-pull cadence and declared next to that cadence
-// and to the relay's report interval, so the threshold and the two rates it has
-// to exceed cannot drift apart — see internal/shared/wire/screencadence.go for
-// the derivation, the field measurement it rests on, and the pins that hold it.
+// the player's own two timings — its poll wait and its program-request timeout,
+// both mirrored against the shipped BrightScript under test — and declared next
+// to the relay's report interval, so the threshold and the rates it has to
+// exceed cannot drift apart. See internal/shared/wire/screencadence.go for the
+// derivation and the pins that hold it.
 //
 // This used to be a hand-written 45_000, justified against PLY-082's nominal
-// 10-second poll. A real player's pull-to-pull cadence is ~60s (the wait plus
-// one iteration's work), so a perfectly healthy screen crossed that line for
-// about a quarter of every cycle and the console flapped. Widening the literal
-// would have re-created the same defect with a later expiry date; deriving it
-// is what fixes the class.
+// 10-second poll: a number in one file and a justification in another, with
+// nothing able to tell anyone when they stopped matching. Deriving it is what
+// fixes the class, and the derivation is deliberately a BOUND on what a healthy
+// screen can do rather than a measurement of one — read that file's "correction
+// of 2026-08" before changing any of it, because the first attempt at this fix
+// derived the window from a measurement that turned out to be a broken screen's
+// retry backoff, and widened the window to 180 000 ms on the strength of it.
 //
 // Exported so the API layer can publish the threshold alongside the judgement:
 // a consumer that disagrees with this line can draw its own from the raw age,

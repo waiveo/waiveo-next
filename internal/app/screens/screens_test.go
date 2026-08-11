@@ -346,42 +346,31 @@ func TestNewRegistryRequiresAClock(t *testing.T) {
 	}
 }
 
-// TestAHealthyScreensMeasuredSawtoothNeverReadsStale is W2-18's regression
-// test, and it is a REPLAY rather than a boundary check: it drives the read
-// model exactly as the field drives it — a player pulling on its real cadence,
-// a relay reporting on its own unsynchronised cadence, and a console reading at
-// instants that line up with neither — and asserts that a screen which never
-// misses a pull never once reads `stale`.
+// replayAHealthyScreen drives the read model exactly as the field drives it — a
+// player pulling on pullCadenceMs, a relay reporting on its own unsynchronised
+// cadence, and a console reading at instants that line up with neither — and
+// returns the worst `last_pull_age_ms` the console ever saw.
 //
-// The numbers are the ones measured on real hardware: `last_pull_age_ms` on a
-// perfectly healthy screen is a clean sawtooth climbing to ~57 600 ms and
-// resetting to ~2 500 ms, a period of ~55 100 ms. Against the old hand-written
-// 45 000 ms window this test fails on roughly a quarter of its reads, which is
-// precisely what an operator saw: a healthy wall flapping.
-//
-// It is deliberately not written as `age <= LiveWindowMs`, which would pass
-// with any pair of numbers, but as "this screen is HEALTHY, therefore the
-// console must say so".
-func TestAHealthyScreensMeasuredSawtoothNeverReadsStale(t *testing.T) {
+// It fails the test the moment a screen that has NEVER missed a pull reads
+// `stale`, which is the property, rather than checking `age <= LiveWindowMs`,
+// which would pass for any pair of numbers.
+func replayAHealthyScreen(t *testing.T, pullCadenceMs int64) int64 {
+	t.Helper()
 	const (
-		// The measured pull-to-pull period on The Hanger.
-		pullCadenceMs = 55_100
-		// The relay's report cadence, offset from the pull cadence by a prime-ish
-		// amount so the two never fall into phase: in the field they are two free
-		// -running tickers, and the worst case this test has to cover is the read
-		// that lands just before a report which lands just before a pull.
-		reportCadenceMs = wire.ScreenStatusReportIntervalMs
-		// Long enough to walk the whole beat pattern several times over.
+		// Long enough to walk the whole beat pattern several times over: the two
+		// tickers are free-running in the field, and the case that matters is the
+		// read that lands just before a report which lands just before a pull.
 		horizonMs = 15 * 60 * 1_000
 		readEvery = 1_000
 		start     = int64(1_752_537_600_000)
 	)
+	reportCadenceMs := wire.ScreenStatusReportIntervalMs
 
 	now, set := clockAt(start)
 	r := mustRegistry(t, now)
 
 	var (
-		lastPullAt   = start
+		lastPullAt   = int64(start)
 		lastReportAt = int64(0)
 		worstAge     int64
 	)
@@ -419,8 +408,8 @@ func TestAHealthyScreensMeasuredSawtoothNeverReadsStale(t *testing.T) {
 			worstAge = got.LastPullAgeMs
 		}
 		if got.Reachability != ReachabilityLive {
-			t.Fatalf("at +%dms a screen that has NEVER missed a pull reads %q (last_pull_age_ms = %d, window = %d).\nThis is W2-18: the window must be derived from the real pull cadence, not from the player's nominal poll interval.",
-				t0, got.Reachability, got.LastPullAgeMs, LiveWindowMs)
+			t.Fatalf("at +%dms a screen pulling every %d ms — one that has NEVER missed a pull — reads %q (last_pull_age_ms = %d, window = %d).\nThe window must cover a healthy screen's worst honest age; see internal/shared/wire/screencadence.go.",
+				t0, pullCadenceMs, got.Reachability, got.LastPullAgeMs, LiveWindowMs)
 		}
 	}
 
@@ -429,6 +418,59 @@ func TestAHealthyScreensMeasuredSawtoothNeverReadsStale(t *testing.T) {
 	// without ever testing anything.
 	if worstAge < pullCadenceMs {
 		t.Fatalf("the replay's worst observed age was %d ms, below one pull cadence (%d ms) — it never reached the top of the sawtooth and proves nothing", worstAge, pullCadenceMs)
+	}
+	return worstAge
+}
+
+// TestAScreenAtTheDERIVEDCADENCEBOUNDNeverReadsStale drives the replay at the
+// worst cadence the derivation admits: the player's poll wait plus the whole of
+// its program-request timeout. A screen slower than this is not on the healthy
+// path at all — its pull failed and it is in retry backoff.
+//
+// This is the derivation's own claim, driven rather than asserted. The cadence
+// comes from wire, never from a literal here: the previous version of this test
+// hardcoded 55_100 to match a constant that was itself hand-entered, so the two
+// agreed with each other and with nothing else (see screencadence.go's
+// "correction of 2026-08").
+func TestAScreenAtTheDERIVEDCADENCEBOUNDNeverReadsStale(t *testing.T) {
+	worstAge := replayAHealthyScreen(t, wire.HealthyProgramPullCadenceMs)
+
+	// And the window is not merely survived, it is survived with the margin the
+	// derivation promises — a whole further pull cycle before stale.
+	if headroom := LiveWindowMs - worstAge; headroom < wire.HealthyProgramPullCadenceMs {
+		t.Fatalf("the worst age at the cadence bound was %d ms against a %d ms window: %d ms of headroom, less than the one whole missed pull cycle (%d ms) the window is supposed to absorb",
+			worstAge, LiveWindowMs, headroom, wire.HealthyProgramPullCadenceMs)
+	}
+}
+
+// TestTheFIELDMEASUREDSawtoothNeverReadsStale is the same replay at what a real
+// screen actually does, so the model is checked against hardware and not only
+// against itself.
+//
+// Measured on The Hanger, 2026-08, after the content-URL 403 that had that
+// screen stuck in retry backoff was fixed: `last_pull_age_ms` sawtooths between
+// ~9 400 ms and ~19 500 ms — a 10 s poll plus LAN latency. The assertions are
+// two-sided on purpose. Never stale is the operator-visible property; the upper
+// bound on the observed peak is what keeps this test honest, because a replay
+// that silently stopped reproducing the measurement would otherwise go on
+// passing forever.
+func TestTheFIELDMEASUREDSawtoothNeverReadsStale(t *testing.T) {
+	// A 10 s wait plus ~100 ms of real work per iteration on a LAN — the cadence
+	// that produces the measured sawtooth against a 10 s report interval.
+	const fieldPullCadenceMs = 10_100
+	// The measured peak, with room for the replay's 1 s read granularity.
+	const measuredPeakMs = 19_500
+	const tolerance = 2_000
+
+	worstAge := replayAHealthyScreen(t, fieldPullCadenceMs)
+
+	if worstAge > measuredPeakMs+tolerance {
+		t.Fatalf("the replay's worst age was %d ms, above the ~%d ms peak measured on real hardware (+%d tolerance); this replay no longer reproduces the field and its never-stale result proves less than it looks",
+			worstAge, measuredPeakMs, tolerance)
+	}
+	if worstAge > LiveWindowMs/2 {
+		t.Fatalf("a real healthy screen's worst age (%d ms) is more than half the live window (%d ms); the window has been tightened past what hardware actually presents and the console will flap",
+			worstAge, LiveWindowMs)
 	}
 }
 
