@@ -292,7 +292,7 @@ func readEntries(tr *tar.Reader) (Manifest, []Entry, error) {
 			}
 			seenSnaphot = true
 		default:
-			ref, ok := assetRefFromEntryName(hdr.Name)
+			ref, ok := AssetRefFromEntryName(hdr.Name)
 			if !ok {
 				return Manifest{}, nil, codedf(CodeManifestInvalid,
 					"tar entry %q is neither %q nor a well-formed %s<hex> asset entry (ARC-061)", hdr.Name, SnapshotEntryName, assetEntryPrefix)

@@ -82,6 +82,7 @@ describe("AppShell — locked-left responsive shell", () => {
       "Activity",
       "Pages",
       "System",
+      "Backup",
       "Design kit",
     ]);
   });

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -193,12 +194,78 @@ func (srv *server) stageRestore(ctx context.Context, name, passphrase string) (s
 	if !ok {
 		return "VALIDATION_FAILED", "The archive carries no workspace snapshot."
 	}
+
+	// The EMBEDDED ASSETS go back into the content origin, before the snapshot
+	// is staged.
+	//
+	// This was the hole in the restore. The snapshot carries the authored rows —
+	// casts, playlists, screens — and every image layer in them names an
+	// `asset_ref`. On a FRESH box (the whole point of a restore: new hardware,
+	// a wiped appliance, a migration) those bytes are not present, so a restore
+	// that staged only the snapshot brought back a workspace whose every slide
+	// referenced an image the origin had never heard of. Nothing failed: the
+	// restore reported success, the console listed the casts, and the screens
+	// rendered blanks. That is exactly the shape this codebase keeps having to
+	// remove — a surface that accepts work it does not perform.
+	//
+	// Written NOW rather than staged for the swap, because the content origin is
+	// content-addressed and append-only: adding bytes under their own hash
+	// cannot disturb the live workspace (nothing in it names those refs) and is
+	// idempotent if the restore is retried. It is also safe against the content
+	// sweep, whose first guard is a minimum asset age measured from arrival
+	// (internal/feeder/contentgc) — freshly written bytes are not reclaimable
+	// for days, far longer than the reboot this restore is waiting for.
+	//
+	// Every asset's hash was already verified against its `asset_ref` by
+	// archive.Open, and origin.Add re-derives the ref from the bytes, so a
+	// mismatch is impossible to store rather than merely unlikely.
+	restored, code, detail := srv.restoreAssets(entries)
+	if code != "" {
+		return code, detail
+	}
+
 	if err := restoreswap.Stage(srv.storePath, func(staged string) error {
 		return os.WriteFile(staged, snapshot, 0o600)
 	}); err != nil {
 		return "INTERNAL", "The restored store could not be staged."
 	}
+	if restored > 0 {
+		log.Printf("waiveo-feeder: restore staged %d byte snapshot and returned %d asset(s) to the content origin",
+			len(snapshot), restored)
+	}
 	return "", ""
+}
+
+// restoreAssets writes every embedded asset entry into the content origin,
+// returning how many were written.
+//
+// A destination with NO content origin is refused rather than skipped. Skipping
+// would produce the exact silent half-restore this exists to end: a staged
+// store full of rows naming bytes that will never arrive.
+func (srv *server) restoreAssets(entries []archive.Entry) (int, string, string) {
+	assets := 0
+	for _, e := range entries {
+		ref, ok := archive.AssetRefFromEntryName(e.Name)
+		if !ok {
+			continue
+		}
+		assets++
+		if srv.content == nil {
+			return 0, "UNAVAILABLE", "This archive carries assets but this deployment has no content origin to restore them into; nothing was staged."
+		}
+		got, err := srv.content.Add(e.Body)
+		if err != nil {
+			return 0, "INTERNAL", "An asset in this archive could not be written to the content origin; nothing was staged."
+		}
+		if got != ref {
+			// Unreachable via archive.Open, which verifies each embedded asset's
+			// hash against its ref before returning it. Checked anyway, because
+			// the cost of being wrong is a workspace whose rows point at bytes
+			// that are not the bytes they name.
+			return 0, "INTERNAL", "An asset in this archive did not hash to the reference it was carried under; nothing was staged."
+		}
+	}
+	return assets, "", ""
 }
 
 // snapshotEntry finds the relational snapshot among a container's entries.

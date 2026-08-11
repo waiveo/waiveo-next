@@ -132,6 +132,19 @@ export {
 } from "./casts";
 
 export {
+  createBackupModule,
+  createJobsModule,
+  jobIsTerminal,
+  jobFailureDetail,
+  TERMINAL_JOB_STATES,
+  type BackupModule,
+  type JobsModule,
+  type Job,
+  type WorkspaceArchive,
+  type WorkspaceArchiveList,
+} from "./backup";
+
+export {
   createDiagnosticsModule,
   LOG_LEVELS,
   type DiagnosticsModule,

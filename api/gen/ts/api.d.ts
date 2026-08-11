@@ -299,6 +299,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/workspace/archives": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the archive containers on this box
+         * @description The containers `POST /workspace/export` has written into this deployment's archive directory, newest first.
+         *
+         *     It exists because `POST /workspace/restore` names an archive by FILE NAME, and before this the only way to learn a name was to know that an export writes `workspace-{job id}.waiveo-archive` and to have kept the job id. An operation whose one required argument cannot be discovered through the API is one no console can offer.
+         *
+         *     Only files carrying the archive suffix are listed: a scratch snapshot or a partial write must never be offered as a restorable backup. A deployment that has never exported answers an empty list, not an error — "no backups yet" is the truth about a fresh box.
+         */
+        get: operations["listWorkspaceArchives"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workspace/archives/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download one archive container
+         * @description The container's bytes, as an attachment, so a backup can leave the box it backs up. A backup that only ever exists on the machine it backs up protects against a bad edit and against nothing else — the one failure an operator buys a backup for is losing the box.
+         *
+         *     The bytes are the `archive/1` container: encrypted under the passphrase supplied at export (ARC-010) and signed by the workspace key, so they are opaque without that passphrase even to this process.
+         *
+         *     `name` must be a BARE file name carrying the archive suffix, never a path. Anything else is `404`, not a traversal.
+         */
+        get: operations["downloadWorkspaceArchive"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/workspace/export": {
         parameters: {
             query?: never;
@@ -1788,6 +1836,22 @@ export interface components {
             items: components["schemas"]["ScreenStatus"][];
             cursor: components["schemas"]["Cursor"];
         };
+        /** @description One archive/1 container present in this deployment's archive directory. */
+        WorkspaceArchive: {
+            /** @description The file name — and the exact value `POST /workspace/restore` takes as its `archive`. */
+            name: string;
+            /** Format: int64 */
+            size_bytes: number;
+            /** Format: int64 */
+            created_at_ms: number;
+            /** @description Where this container's bytes are served from, published rather than left for a client to compose: a client building the URL itself would be re-encoding a file name into a path, which is the one part of this family with a traversal question attached. */
+            download_path: string;
+        };
+        WorkspaceArchiveList: {
+            items: components["schemas"]["WorkspaceArchive"][];
+            /** @description Where the containers live on the box. Published because the real disaster-recovery path is an operator copying a container BACK from off-box storage and then restoring it by name, which requires knowing where to put it. */
+            directory: string;
+        };
         /** @description One captured log line. `level` and `source` are DERIVED by reading the text — the process's log output is lines, not structured events — so `raw` always carries the whole line and a reader can judge the classification against what was actually written. */
         PlatformLogRecord: {
             /**
@@ -3155,6 +3219,67 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listWorkspaceArchives: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The containers present, newest first. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceArchiveList"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    downloadWorkspaceArchive: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                /** @description The container's file name, exactly as `listWorkspaceArchives` published it. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The container's bytes, as an attachment. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["ServiceUnavailable"];
         };

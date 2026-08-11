@@ -246,9 +246,9 @@ func TestAssetEntryNameRoundTrip(t *testing.T) {
 	if got := assetEntryName(ref); got != want {
 		t.Errorf("assetEntryName(%q) = %q, want %q", ref, got, want)
 	}
-	got, ok := assetRefFromEntryName(want)
+	got, ok := AssetRefFromEntryName(want)
 	if !ok || got != ref {
-		t.Errorf("assetRefFromEntryName(%q) = (%q, %v), want (%q, true)", want, got, ok, ref)
+		t.Errorf("AssetRefFromEntryName(%q) = (%q, %v), want (%q, true)", want, got, ok, ref)
 	}
 
 	rejected := []string{
@@ -258,8 +258,8 @@ func TestAssetEntryNameRoundTrip(t *testing.T) {
 		"assets/9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08/extra",
 	}
 	for _, name := range rejected {
-		if _, ok := assetRefFromEntryName(name); ok {
-			t.Errorf("assetRefFromEntryName(%q) = ok, want not ok", name)
+		if _, ok := AssetRefFromEntryName(name); ok {
+			t.Errorf("AssetRefFromEntryName(%q) = ok, want not ok", name)
 		}
 	}
 }

@@ -19,6 +19,7 @@ import PagesRoute from "@/routes/pages/pages-route";
 import PackPageRoute from "@/routes/packs/pack-page-route";
 import SecurityRoute from "@/routes/security/security-route";
 import SystemRoute from "@/routes/system/system-route";
+import BackupRoute from "@/routes/backup/backup-route";
 
 // The application root. The ThemeProvider owns the Dusk/Daybreak theme for the
 // whole app (default Dusk, persisted, reflected as data-theme on <html>). The
@@ -95,6 +96,11 @@ export default function App() {
                 the page renders that refusal as an explanation rather than as a
                 blank panel. */}
             <Route path="/system" element={<SystemRoute />} />
+            {/* Workspace backup (parity row 7.5): export to one encrypted
+                portable container, get it OFF the box, and restore from it.
+                Separate from /system because it is an act on the workspace, not
+                a reading of the machine. */}
+            <Route path="/backup" element={<BackupRoute />} />
             <Route path="/design" element={<DesignRoute />} />
           </Route>
         </Routes>

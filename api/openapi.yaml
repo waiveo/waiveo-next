@@ -914,6 +914,97 @@ paths:
           $ref: "#/components/responses/TooManyRequests"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /workspace/archives:
+    get:
+      operationId: listWorkspaceArchives
+      summary: List the archive containers on this box
+      description: >-
+        The containers `POST /workspace/export` has written into this
+        deployment's archive directory, newest first.
+
+
+        It exists because `POST /workspace/restore` names an archive by FILE
+        NAME, and before this the only way to learn a name was to know that an
+        export writes `workspace-{job id}.waiveo-archive` and to have kept the
+        job id. An operation whose one required argument cannot be discovered
+        through the API is one no console can offer.
+
+
+        Only files carrying the archive suffix are listed: a scratch snapshot or
+        a partial write must never be offered as a restorable backup. A
+        deployment that has never exported answers an empty list, not an error —
+        "no backups yet" is the truth about a fresh box.
+      tags: [workspace, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The containers present, newest first.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceArchiveList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /workspace/archives/{name}:
+    get:
+      operationId: downloadWorkspaceArchive
+      summary: Download one archive container
+      description: >-
+        The container's bytes, as an attachment, so a backup can leave the box it
+        backs up. A backup that only ever exists on the machine it backs up
+        protects against a bad edit and against nothing else — the one failure an
+        operator buys a backup for is losing the box.
+
+
+        The bytes are the `archive/1` container: encrypted under the passphrase
+        supplied at export (ARC-010) and signed by the workspace key, so they are
+        opaque without that passphrase even to this process.
+
+
+        `name` must be a BARE file name carrying the archive suffix, never a
+        path. Anything else is `404`, not a traversal.
+      tags: [workspace, "mcp:read"]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The container's file name, exactly as `listWorkspaceArchives` published it.
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The container's bytes, as an attachment.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
   /workspace/export:
     post:
       operationId: exportWorkspace
@@ -4800,6 +4891,46 @@ components:
             $ref: "#/components/schemas/ScreenStatus"
         cursor:
           $ref: "#/components/schemas/Cursor"
+
+    WorkspaceArchive:
+      type: object
+      description: One archive/1 container present in this deployment's archive directory.
+      required: [name, size_bytes, created_at_ms, download_path]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          description: The file name — and the exact value `POST /workspace/restore` takes as its `archive`.
+        size_bytes:
+          type: integer
+          format: int64
+        created_at_ms:
+          type: integer
+          format: int64
+        download_path:
+          type: string
+          description: >-
+            Where this container's bytes are served from, published rather than
+            left for a client to compose: a client building the URL itself would
+            be re-encoding a file name into a path, which is the one part of this
+            family with a traversal question attached.
+
+    WorkspaceArchiveList:
+      type: object
+      required: [items, directory]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkspaceArchive"
+        directory:
+          type: string
+          description: >-
+            Where the containers live on the box. Published because the real
+            disaster-recovery path is an operator copying a container BACK from
+            off-box storage and then restoring it by name, which requires knowing
+            where to put it.
 
     PlatformLogRecord:
       type: object

@@ -375,6 +375,11 @@ func (srv *server) mountAll(rt, rootRT *router, authHandlers *auth.Handlers) {
 	// revision to condition a write on, and no collection to list (workspace.go).
 	rt.HandleFunc("POST "+apiPrefix+"/workspace/export", srv.exportWorkspace)
 	rt.HandleFunc("POST "+apiPrefix+"/workspace/restore", srv.restoreWorkspace)
+	// The two reads that make the backup loop usable by an operator rather than
+	// by someone with a shell: which containers exist, and their bytes (parity
+	// row 7.5, workspacearchives.go). A backup that cannot be discovered cannot
+	// be restored, and one that cannot leave the box is not a backup.
+	srv.mountWorkspaceArchives(rt)
 	rt.HandleFunc("POST "+apiPrefix+"/revocations", srv.revokeSubject)
 	rt.HandleFunc("POST "+apiPrefix+"/workspace/delete", srv.deleteWorkspace)
 	// The device plane's two read families and its one mutating operation. They

@@ -4,6 +4,7 @@ import {
   Activity,
   AudioWaveform,
   CalendarClock,
+  DatabaseBackup,
   FileText,
   Film,
   HeartPulse,
@@ -61,6 +62,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/activity", label: "Activity", icon: Activity },
   { to: "/pages", label: "Pages", icon: LayoutTemplate },
   { to: "/system", label: "System", icon: HeartPulse },
+  { to: "/backup", label: "Backup", icon: DatabaseBackup },
   { to: "/design", label: "Design kit", icon: Palette },
 ];
 

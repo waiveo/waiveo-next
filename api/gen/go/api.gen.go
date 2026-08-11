@@ -2361,6 +2361,25 @@ type WebhookSigningSecretRotation struct {
 	RotatedAtMs Timestamp `json:"rotated_at_ms"`
 }
 
+// WorkspaceArchive One archive/1 container present in this deployment's archive directory.
+type WorkspaceArchive struct {
+	CreatedAtMs int64 `json:"created_at_ms"`
+
+	// DownloadPath Where this container's bytes are served from, published rather than left for a client to compose: a client building the URL itself would be re-encoding a file name into a path, which is the one part of this family with a traversal question attached.
+	DownloadPath string `json:"download_path"`
+
+	// Name The file name — and the exact value `POST /workspace/restore` takes as its `archive`.
+	Name      string `json:"name"`
+	SizeBytes int64  `json:"size_bytes"`
+}
+
+// WorkspaceArchiveList defines model for WorkspaceArchiveList.
+type WorkspaceArchiveList struct {
+	// Directory Where the containers live on the box. Published because the real disaster-recovery path is an operator copying a container BACK from off-box storage and then restoring it by name, which requires knowing where to put it.
+	Directory string             `json:"directory"`
+	Items     []WorkspaceArchive `json:"items"`
+}
+
 // WorkspaceDeleteRequest The request body for the data-subject delete operation (API-120/122). The confirmation is the only member: the operation's target is the workspace itself, implicit in the path (API-123).
 type WorkspaceDeleteRequest struct {
 	// ConfirmWorkspaceId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
@@ -3220,6 +3239,18 @@ type RotateWebhookSigningSecretParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// ListWorkspaceArchivesParams defines parameters for ListWorkspaceArchives.
+type ListWorkspaceArchivesParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// DownloadWorkspaceArchiveParams defines parameters for DownloadWorkspaceArchive.
+type DownloadWorkspaceArchiveParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // DeleteWorkspaceParams defines parameters for DeleteWorkspace.
 type DeleteWorkspaceParams struct {
 	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
@@ -3733,6 +3764,12 @@ type ClientInterface interface {
 	RotateWebhookSigningSecretWithBody(ctx context.Context, webhookEndpointId Ulid, params *RotateWebhookSigningSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	RotateWebhookSigningSecret(ctx context.Context, webhookEndpointId Ulid, params *RotateWebhookSigningSecretParams, body RotateWebhookSigningSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListWorkspaceArchives request
+	ListWorkspaceArchives(ctx context.Context, params *ListWorkspaceArchivesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DownloadWorkspaceArchive request
+	DownloadWorkspaceArchive(ctx context.Context, name string, params *DownloadWorkspaceArchiveParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// DeleteWorkspaceWithBody request with any body
 	DeleteWorkspaceWithBody(ctx context.Context, params *DeleteWorkspaceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -5120,6 +5157,30 @@ func (c *Client) RotateWebhookSigningSecretWithBody(ctx context.Context, webhook
 
 func (c *Client) RotateWebhookSigningSecret(ctx context.Context, webhookEndpointId Ulid, params *RotateWebhookSigningSecretParams, body RotateWebhookSigningSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewRotateWebhookSigningSecretRequest(c.Server, webhookEndpointId, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListWorkspaceArchives(ctx context.Context, params *ListWorkspaceArchivesParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListWorkspaceArchivesRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) DownloadWorkspaceArchive(ctx context.Context, name string, params *DownloadWorkspaceArchiveParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDownloadWorkspaceArchiveRequest(c.Server, name, params)
 	if err != nil {
 		return nil, err
 	}
@@ -10859,6 +10920,97 @@ func NewRotateWebhookSigningSecretRequestWithBody(server string, webhookEndpoint
 	return req, nil
 }
 
+// NewListWorkspaceArchivesRequest generates requests for ListWorkspaceArchives
+func NewListWorkspaceArchivesRequest(server string, params *ListWorkspaceArchivesParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/workspace/archives")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewDownloadWorkspaceArchiveRequest generates requests for DownloadWorkspaceArchive
+func NewDownloadWorkspaceArchiveRequest(server string, name string, params *DownloadWorkspaceArchiveParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/workspace/archives/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
 // NewDeleteWorkspaceRequest calls the generic DeleteWorkspace builder with application/json body
 func NewDeleteWorkspaceRequest(server string, params *DeleteWorkspaceParams, body DeleteWorkspaceJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
@@ -11414,6 +11566,12 @@ type ClientWithResponsesInterface interface {
 	RotateWebhookSigningSecretWithBodyWithResponse(ctx context.Context, webhookEndpointId Ulid, params *RotateWebhookSigningSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RotateWebhookSigningSecretResponse, error)
 
 	RotateWebhookSigningSecretWithResponse(ctx context.Context, webhookEndpointId Ulid, params *RotateWebhookSigningSecretParams, body RotateWebhookSigningSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*RotateWebhookSigningSecretResponse, error)
+
+	// ListWorkspaceArchivesWithResponse request
+	ListWorkspaceArchivesWithResponse(ctx context.Context, params *ListWorkspaceArchivesParams, reqEditors ...RequestEditorFn) (*ListWorkspaceArchivesResponse, error)
+
+	// DownloadWorkspaceArchiveWithResponse request
+	DownloadWorkspaceArchiveWithResponse(ctx context.Context, name string, params *DownloadWorkspaceArchiveParams, reqEditors ...RequestEditorFn) (*DownloadWorkspaceArchiveResponse, error)
 
 	// DeleteWorkspaceWithBodyWithResponse request with any body
 	DeleteWorkspaceWithBodyWithResponse(ctx context.Context, params *DeleteWorkspaceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*DeleteWorkspaceResponse, error)
@@ -14292,6 +14450,75 @@ func (r RotateWebhookSigningSecretResponse) ContentType() string {
 	return ""
 }
 
+type ListWorkspaceArchivesResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *WorkspaceArchiveList
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON429 *TooManyRequests
+	ApplicationproblemJSON503 *ServiceUnavailable
+}
+
+// Status returns HTTPResponse.Status
+func (r ListWorkspaceArchivesResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListWorkspaceArchivesResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ListWorkspaceArchivesResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type DownloadWorkspaceArchiveResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON429 *TooManyRequests
+	ApplicationproblemJSON503 *ServiceUnavailable
+}
+
+// Status returns HTTPResponse.Status
+func (r DownloadWorkspaceArchiveResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DownloadWorkspaceArchiveResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r DownloadWorkspaceArchiveResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type DeleteWorkspaceResponse struct {
 	Body                      []byte
 	HTTPResponse              *http.Response
@@ -15401,6 +15628,24 @@ func (c *ClientWithResponses) RotateWebhookSigningSecretWithResponse(ctx context
 		return nil, err
 	}
 	return ParseRotateWebhookSigningSecretResponse(rsp)
+}
+
+// ListWorkspaceArchivesWithResponse request returning *ListWorkspaceArchivesResponse
+func (c *ClientWithResponses) ListWorkspaceArchivesWithResponse(ctx context.Context, params *ListWorkspaceArchivesParams, reqEditors ...RequestEditorFn) (*ListWorkspaceArchivesResponse, error) {
+	rsp, err := c.ListWorkspaceArchives(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListWorkspaceArchivesResponse(rsp)
+}
+
+// DownloadWorkspaceArchiveWithResponse request returning *DownloadWorkspaceArchiveResponse
+func (c *ClientWithResponses) DownloadWorkspaceArchiveWithResponse(ctx context.Context, name string, params *DownloadWorkspaceArchiveParams, reqEditors ...RequestEditorFn) (*DownloadWorkspaceArchiveResponse, error) {
+	rsp, err := c.DownloadWorkspaceArchive(ctx, name, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDownloadWorkspaceArchiveResponse(rsp)
 }
 
 // DeleteWorkspaceWithBodyWithResponse request with arbitrary body returning *DeleteWorkspaceResponse
@@ -19828,6 +20073,121 @@ func ParseRotateWebhookSigningSecretResponse(rsp *http.Response) (*RotateWebhook
 			return nil, err
 		}
 		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest ServiceUnavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListWorkspaceArchivesResponse parses an HTTP response from a ListWorkspaceArchivesWithResponse call
+func ParseListWorkspaceArchivesResponse(rsp *http.Response) (*ListWorkspaceArchivesResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListWorkspaceArchivesResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest WorkspaceArchiveList
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest ServiceUnavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseDownloadWorkspaceArchiveResponse parses an HTTP response from a DownloadWorkspaceArchiveWithResponse call
+func ParseDownloadWorkspaceArchiveResponse(rsp *http.Response) (*DownloadWorkspaceArchiveResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DownloadWorkspaceArchiveResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
 		var dest ServiceUnavailable

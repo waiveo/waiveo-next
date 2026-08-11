@@ -879,6 +879,20 @@ var probes = map[string]probe{
 		return e.do(t, http.MethodPost, "/api/v1/workspace/export",
 			mustJSON(t, map[string]any{"passphrase": testExportPassphrase}), nil)
 	},
+	"listWorkspaceArchives": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		// A REAL export first, run to completion, so the probed list carries an
+		// item and WorkspaceArchive's required members are actually checked. An
+		// empty directory would validate trivially — the vacuous probe this
+		// file's guards exist to refuse.
+		e.mintOrg(t)
+		resp, raw := e.do(t, http.MethodPost, "/api/v1/workspace/export",
+			mustJSON(t, map[string]any{"passphrase": testExportPassphrase}), nil)
+		if resp.StatusCode != http.StatusAccepted {
+			t.Fatalf("seed export: %d %s", resp.StatusCode, raw)
+		}
+		e.runJobs()
+		return e.do(t, http.MethodGet, "/api/v1/workspace/archives", nil, nil)
+	},
 	"revokeSubject": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
 		// Unconfirmed: the radius query changes nothing, and is the response
 		// shape this probe exists to verify. The confirmed path is driven by
