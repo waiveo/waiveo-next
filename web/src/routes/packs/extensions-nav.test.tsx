@@ -6,8 +6,8 @@ import { setupServer } from "msw/node";
 import { MemoryRouter } from "react-router";
 import { ThemeProvider } from "@/components/theme/theme-provider";
 import { AppShell } from "@/shell/app-shell";
-import { navLeaves } from "@/shell/nav-tree";
 import { TRACE_ID, pack, packManifest, PACK_EN_CATALOG } from "@/api/test-support";
+import { navLeaves } from "@/shell/nav-tree";
 
 // The shell's Extensions nav lists installed packs' pages, titled from each pack's
 // own locale catalog (MAN-060/111) and linking to `/p/{pack}/{path}`. It is a
@@ -59,13 +59,12 @@ describe("Extensions nav", () => {
 
     // The core Primary nav is untouched. What that MEANS is the assertion
     // below: no pack page leaked out of the Extensions landmark into Primary.
-    //
-    // The count is the weaker proxy, and it used to be a literal that had to be
-    // re-agreed every time any track added a console route — it was re-agreed
-    // three times before this. It is now DERIVED from the nav tree, which makes
-    // it both self-maintaining and strictly stronger: Primary must carry exactly
-    // the tree's leaves, no more and no fewer. (Every group ships expanded, so
-    // every leaf is rendered.)
+    // The count is the weaker proxy — it is the union of every route track's
+    // destinations (11 = the original 8, plus Devices, Casts and Media), and it
+    // has to be re-agreed every time a track adds a console route, which is why
+    // it is no longer the only thing checked here (14 = plus System, Backup and
+    // the Extensions MANAGEMENT page — which is a core destination in Primary,
+    // distinct from this Extensions landmark listing pack pages).
     const primary = screen.getAllByRole("navigation", { name: /primary/i })[0];
     expect(within(primary).getAllByRole("link")).toHaveLength(navLeaves().length);
     expect(

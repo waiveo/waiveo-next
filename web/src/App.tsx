@@ -18,6 +18,7 @@ import ActivityRoute from "@/routes/activity/activity-route";
 import DesignRoute from "@/routes/design/design-route";
 import PagesRoute from "@/routes/pages/pages-route";
 import PackPageRoute from "@/routes/packs/pack-page-route";
+import ExtensionsRoute from "@/routes/extensions/extensions-route";
 import SecurityRoute from "@/routes/security/security-route";
 import SystemRoute from "@/routes/system/system-route";
 import BackupRoute from "@/routes/backup/backup-route";
@@ -97,6 +98,11 @@ export default function App() {
             <Route path="/automations" element={<AutomationsRoute />} />
             <Route path="/activity" element={<ActivityRoute />} />
             <Route path="/pages" element={<PagesRoute />} />
+            {/* The pack lifecycle: what is installed, install/update/uninstall,
+                and each pack's install-record provenance. Distinct from the
+                `/p/...` routes below, which OPEN an installed pack's own page —
+                this one manages the packs themselves. */}
+            <Route path="/extensions" element={<ExtensionsRoute />} />
             {/* An installed pack's page: `/p/{publisher}/{name}/{path}` — the
                 pack id is two path segments, the page path a trailing splat. */}
             <Route path="/p/:publisher/:name/*" element={<PackPageRoute />} />

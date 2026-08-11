@@ -116,6 +116,7 @@ describe("AppShell — locked-left responsive shell", () => {
       },
       { group: "Devices", expanded: true, children: ["All devices"] },
       { leaf: "Automations" },
+      { group: "Extensions", expanded: true, children: ["Installed"] },
       {
         group: "Platform",
         expanded: true,
@@ -161,13 +162,22 @@ describe("AppShell — locked-left responsive shell", () => {
       "Automations",
       "Activity",
       "Pages",
+      "Extensions",
       "System",
       "Backup",
       "Design kit",
     ]) {
-      // "Devices" now reads "All devices" — the legacy label, and the one that
-      // reads correctly beside the Discovery and Roku entries that join it.
-      const expected = had === "Devices" ? "All devices" : had;
+      // Two destinations kept their route and changed their LABEL, because both
+      // became groups with siblings coming: "Devices" now reads "All devices"
+      // (the legacy label, and the one that reads correctly beside the Discovery
+      // and Roku entries joining it), and "Extensions" now reads "Installed"
+      // under an Extensions group — a catalogue browse and a registry-source
+      // list are both recorded ABSENT and will land beside it.
+      const renamed: Record<string, string> = {
+        Devices: "All devices",
+        Extensions: "Installed",
+      };
+      const expected = renamed[had] ?? had;
       expect(labels).toContain(expected);
     }
     // ...plus the destination the flat rail never had at all (parity row 8.4).
@@ -185,7 +195,7 @@ describe("AppShell — locked-left responsive shell", () => {
     expect(railNav.tagName).toBe("NAV");
 
     const toggles = within(railNav).getAllByRole("button");
-    expect(toggles.map((b) => b.textContent?.trim())).toEqual(["Slidecast", "Devices", "Platform"]);
+    expect(toggles.map((b) => b.textContent?.trim())).toEqual(["Slidecast", "Devices", "Extensions", "Platform"]);
     for (const toggle of toggles) {
       expect(toggle).toHaveAttribute("type", "button");
       expect(toggle).toHaveAttribute("aria-expanded", "true");

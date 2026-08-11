@@ -15,6 +15,7 @@ import {
   Upload,
   Workflow,
   type LucideIcon,
+  Puzzle,
 } from "lucide-react";
 
 /**
@@ -156,6 +157,27 @@ export const NAV_TREE: NavNode[] = [
   // device and its action is usually a screen, so filing it under either one
   // hides it from the other half of its own job.
   { kind: "leaf", to: "/automations", label: "Automations", icon: Workflow },
+
+  // Extensions is its own GROUP, not a leaf and not a Platform child.
+  //
+  // Not a Platform child: the owner calls the extension platform a core pillar —
+  // "as much as we can, everything should be in an extension, edited in its
+  // extension, and updated through its extension marketplace". Filing it beside
+  // Backup and Design kit would rank it as housekeeping, and legacy gave the
+  // marketplace its own section for the same reason.
+  //
+  // Not a top-level leaf: this rail reserves those for pages belonging to no
+  // area (Overview, Automations). A group keeps that rule intact and gives the
+  // two known-missing siblings — a catalogue browse and a registry-source list,
+  // both recorded as ABSENT with no route today — a home to land in rather than
+  // forcing another restructure when they arrive.
+  {
+    kind: "group",
+    id: "extensions",
+    label: "Extensions",
+    icon: Puzzle,
+    children: [{ kind: "leaf", to: "/extensions", label: "Installed", icon: Puzzle }],
+  },
 
   // ── Platform: the box itself, not the product ───────────────────────────
   // These answer "is the box healthy", "what just happened", "is my work safe"
