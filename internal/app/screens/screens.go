@@ -84,22 +84,25 @@ const (
 	ReachabilityNeverSeen Reachability = "never_seen"
 )
 
-// LiveWindowMs is the staleness threshold separating Live from Stale, and the
-// number is derived rather than picked: a player polls its program about every
-// 10 seconds (player/1 PLY-082), so 45s is four missed polls plus slack for a
-// slow request and the reporting interval's own granularity.
+// LiveWindowMs is the staleness threshold separating Live from Stale.
 //
-// It is deliberately generous. The cost of calling a healthy screen stale is an
-// operator chasing a screen that is fine, repeatedly, until they stop trusting
-// the column at all — which destroys the surface. The cost of calling a
-// just-failed screen live is that they learn about it 45 seconds later than
-// they might have, on a wall nobody was watching anyway. Those are not
-// symmetric.
+// It is not a number chosen here. It is wire.ScreenLiveWindowMs, COMPUTED from
+// the player's measured pull-to-pull cadence and declared next to that cadence
+// and to the relay's report interval, so the threshold and the two rates it has
+// to exceed cannot drift apart — see internal/shared/wire/screencadence.go for
+// the derivation, the field measurement it rests on, and the pins that hold it.
+//
+// This used to be a hand-written 45_000, justified against PLY-082's nominal
+// 10-second poll. A real player's pull-to-pull cadence is ~60s (the wait plus
+// one iteration's work), so a perfectly healthy screen crossed that line for
+// about a quarter of every cycle and the console flapped. Widening the literal
+// would have re-created the same defect with a later expiry date; deriving it
+// is what fixes the class.
 //
 // Exported so the API layer can publish the threshold alongside the judgement:
 // a consumer that disagrees with this line can draw its own from the raw age,
 // which every response also carries.
-const LiveWindowMs int64 = 45_000
+const LiveWindowMs int64 = wire.ScreenLiveWindowMs
 
 // Status is one screen's merged live status as this app peer currently knows it.
 // Every *AgeMs is milliseconds before the read, INCLUDING the report's own age

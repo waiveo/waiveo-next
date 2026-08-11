@@ -219,15 +219,23 @@ func TestTheAppPeersViewOfAScreenAgesWhileTheRelayIsSilent(t *testing.T) {
 		t.Fatalf("fixture: reachability right after a report = %q, want live", got)
 	}
 
-	// Two minutes pass with no further report — a disconnected relay, a wedged
-	// reporter, a dead box. The app has stopped learning anything, and says so.
-	s.setNow(1_700_000_000_000 + 120_000)
+	// A silence longer than the live window passes with no further report — a
+	// disconnected relay, a wedged reporter, a dead box. The app has stopped
+	// learning anything, and says so.
+	//
+	// The silence is expressed relative to screens.LiveWindowMs, not as a
+	// literal two minutes: the window is DERIVED from the player's measured pull
+	// cadence (internal/shared/wire/screencadence.go), so a literal here would
+	// silently become an assertion that a screen inside the window is stale the
+	// next time that cadence is re-measured.
+	const silence = screens.LiveWindowMs + 60_000
+	s.setNow(1_700_000_000_000 + silence)
 	got := s.registry.Statuses()[0]
 	if got.Reachability != screens.ReachabilityStale {
-		t.Errorf("reachability two minutes after the last report = %q, want stale — a view that never ages reports a dead fleet as healthy forever", got.Reachability)
+		t.Errorf("reachability %dms after the last report = %q, want stale — a view that never ages reports a dead fleet as healthy forever", silence, got.Reachability)
 	}
-	if got.ReportAgeMs < 120_000 {
-		t.Errorf("report_age = %d, want at least 120000 — the field that tells an operator the RELAY went quiet rather than the screen", got.ReportAgeMs)
+	if got.ReportAgeMs < silence {
+		t.Errorf("report_age = %d, want at least %d — the field that tells an operator the RELAY went quiet rather than the screen", got.ReportAgeMs, silence)
 	}
 }
 

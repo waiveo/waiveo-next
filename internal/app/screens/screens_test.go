@@ -67,21 +67,30 @@ func TestAgesGrowWithTheReportEvenWithNoNewReport(t *testing.T) {
 		t.Fatalf("reachability at 3s stale = %q, want live", got.Reachability)
 	}
 
-	// Two minutes later, with no new report. Every age has grown by two minutes
-	// and the screen has crossed the live window.
-	set(1_000_000 + 120_000)
+	// A long silence, with no new report. Every age has grown by exactly that
+	// silence and the screen has crossed the live window.
+	//
+	// The silence is expressed RELATIVE to LiveWindowMs rather than as a literal
+	// two minutes, which is what this test used to say. That literal was fine
+	// against a 45s window and became wrong the moment the window was derived
+	// from the player's real pull cadence — a test asserting "stale" after a
+	// silence shorter than the window is asserting a bug. Written this way it
+	// stays a test of the ARITHMETIC (ages grow; the judgement follows them)
+	// under any window the derivation produces.
+	const silence = LiveWindowMs + 60_000
+	set(1_000_000 + silence)
 	got = statusFor(t, r, "screen-a")
-	if got.LastPullAgeMs != 123_000 {
-		t.Errorf("last_pull age two minutes later = %d, want 123000 — a status that does not age reports a dead fleet as healthy forever", got.LastPullAgeMs)
+	if got.LastPullAgeMs != 3_000+silence {
+		t.Errorf("last_pull age after %dms of silence = %d, want %d — a status that does not age reports a dead fleet as healthy forever", silence, got.LastPullAgeMs, 3_000+silence)
 	}
-	if got.LastAckAgeMs != 123_500 || got.LastRenderStartAgeMs != 124_000 {
-		t.Errorf("ack/render ages = %d/%d, want 123500/124000", got.LastAckAgeMs, got.LastRenderStartAgeMs)
+	if got.LastAckAgeMs != 3_500+silence || got.LastRenderStartAgeMs != 4_000+silence {
+		t.Errorf("ack/render ages = %d/%d, want %d/%d", got.LastAckAgeMs, got.LastRenderStartAgeMs, 3_500+silence, 4_000+silence)
 	}
-	if got.ReportAgeMs != 120_000 {
-		t.Errorf("report_age = %d, want 120000 — the field that distinguishes a dead screen from a dead relay", got.ReportAgeMs)
+	if got.ReportAgeMs != silence {
+		t.Errorf("report_age = %d, want %d — the field that distinguishes a dead screen from a dead relay", got.ReportAgeMs, silence)
 	}
 	if got.Reachability != ReachabilityStale {
-		t.Errorf("reachability at 123s stale = %q, want stale", got.Reachability)
+		t.Errorf("reachability after %dms of silence = %q, want stale", silence, got.Reachability)
 	}
 }
 
@@ -334,5 +343,101 @@ func TestANegativeReportedAgeIsTreatedAsNeverObserved(t *testing.T) {
 func TestNewRegistryRequiresAClock(t *testing.T) {
 	if _, err := NewRegistry(nil); err == nil {
 		t.Fatal("NewRegistry(nil) succeeded, want a refusal")
+	}
+}
+
+// TestAHealthyScreensMeasuredSawtoothNeverReadsStale is W2-18's regression
+// test, and it is a REPLAY rather than a boundary check: it drives the read
+// model exactly as the field drives it — a player pulling on its real cadence,
+// a relay reporting on its own unsynchronised cadence, and a console reading at
+// instants that line up with neither — and asserts that a screen which never
+// misses a pull never once reads `stale`.
+//
+// The numbers are the ones measured on real hardware: `last_pull_age_ms` on a
+// perfectly healthy screen is a clean sawtooth climbing to ~57 600 ms and
+// resetting to ~2 500 ms, a period of ~55 100 ms. Against the old hand-written
+// 45 000 ms window this test fails on roughly a quarter of its reads, which is
+// precisely what an operator saw: a healthy wall flapping.
+//
+// It is deliberately not written as `age <= LiveWindowMs`, which would pass
+// with any pair of numbers, but as "this screen is HEALTHY, therefore the
+// console must say so".
+func TestAHealthyScreensMeasuredSawtoothNeverReadsStale(t *testing.T) {
+	const (
+		// The measured pull-to-pull period on The Hanger.
+		pullCadenceMs = 55_100
+		// The relay's report cadence, offset from the pull cadence by a prime-ish
+		// amount so the two never fall into phase: in the field they are two free
+		// -running tickers, and the worst case this test has to cover is the read
+		// that lands just before a report which lands just before a pull.
+		reportCadenceMs = wire.ScreenStatusReportIntervalMs
+		// Long enough to walk the whole beat pattern several times over.
+		horizonMs = 15 * 60 * 1_000
+		readEvery = 1_000
+		start     = int64(1_752_537_600_000)
+	)
+
+	now, set := clockAt(start)
+	r := mustRegistry(t, now)
+
+	var (
+		lastPullAt   = start
+		lastReportAt = int64(0)
+		worstAge     int64
+	)
+	for t0 := int64(0); t0 <= horizonMs; t0 += readEvery {
+		clock := start + t0
+
+		// The player pulls on its own cadence, forever. This screen is HEALTHY:
+		// it never misses one.
+		if clock-lastPullAt >= pullCadenceMs {
+			lastPullAt = clock
+		}
+		// The relay reports on its cadence, carrying the age IT measured.
+		if lastReportAt == 0 || clock-lastReportAt >= reportCadenceMs {
+			lastReportAt = clock
+			if err := r.ApplyScreenStatus("relay-1", clock, []wire.ScreenStatusEntry{{
+				ScreenID:      "screen-hanger",
+				Paired:        true,
+				LastPullAgeMs: clock - lastPullAt,
+				// A slide cast: acked, rendering, nothing unusual.
+				LastAckAgeMs:         clock - lastPullAt,
+				LastRenderStartAgeMs: clock - lastPullAt,
+				ProgramRevision:      "rev-7",
+				Priority:             "scheduled",
+				Display:              "content",
+				ContentCount:         4,
+			}}); err != nil {
+				t.Fatalf("ApplyScreenStatus at +%dms: %v", t0, err)
+			}
+		}
+
+		// The console reads, at an instant that lines up with neither ticker.
+		set(clock)
+		got := statusFor(t, r, "screen-hanger")
+		if got.LastPullAgeMs > worstAge {
+			worstAge = got.LastPullAgeMs
+		}
+		if got.Reachability != ReachabilityLive {
+			t.Fatalf("at +%dms a screen that has NEVER missed a pull reads %q (last_pull_age_ms = %d, window = %d).\nThis is W2-18: the window must be derived from the real pull cadence, not from the player's nominal poll interval.",
+				t0, got.Reachability, got.LastPullAgeMs, LiveWindowMs)
+		}
+	}
+
+	// The replay must actually have exercised the top of the sawtooth, or a
+	// future edit that quietly shrinks the horizon would leave this test passing
+	// without ever testing anything.
+	if worstAge < pullCadenceMs {
+		t.Fatalf("the replay's worst observed age was %d ms, below one pull cadence (%d ms) — it never reached the top of the sawtooth and proves nothing", worstAge, pullCadenceMs)
+	}
+}
+
+// TestLiveWindowIsTheSharedDerivedConstant: this package must not re-declare the
+// threshold. It publishes wire's, so that changing the measured cadence in one
+// place moves the console's line with it.
+func TestLiveWindowIsTheSharedDerivedConstant(t *testing.T) {
+	if LiveWindowMs != wire.ScreenLiveWindowMs {
+		t.Fatalf("screens.LiveWindowMs = %d but wire.ScreenLiveWindowMs = %d; the read model has grown a second, independently-drifting threshold",
+			LiveWindowMs, wire.ScreenLiveWindowMs)
 	}
 }

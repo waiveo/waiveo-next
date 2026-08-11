@@ -37,7 +37,9 @@ function statusRow(over: Partial<ScreenStatus> = {}): ScreenStatus {
     scope_node: "01J8ZS1TE0000000000000001",
     relay_id: "relay-1",
     reachability: "live",
-    live_window_ms: 45_000,
+    // The window the server actually publishes: derived from the player's
+    // measured ~60s pull-to-pull cadence, not the old hand-written 45s.
+    live_window_ms: 180_000,
     paired: true,
     last_pull_age_ms: 4_000,
     last_ack_age_ms: 4_100,
