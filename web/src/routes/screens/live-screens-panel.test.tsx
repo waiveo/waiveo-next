@@ -66,6 +66,17 @@ function castRow(over: Partial<Cast> = {}): Cast {
   } as Cast;
 }
 
+/** A status row with NO `render_asset_ref` — a screen that has been sent content
+ * but has never reported putting any of it on screen. The key is DELETED rather
+ * than set to undefined, because `exactOptionalPropertyTypes` distinguishes the
+ * two and only the absent form is what the server actually sends (the Go field
+ * is `omitempty`). */
+function withoutRender(over: Partial<ScreenStatus> = {}): ScreenStatus {
+  const row = statusRow(over);
+  delete row.render_asset_ref;
+  return row;
+}
+
 function page(items: unknown[]) {
   return HttpResponse.json({ items, cursor: null }, { headers: { "Trace-Id": TRACE_ID } });
 }
@@ -126,9 +137,7 @@ describe("nowPlayingLabel", () => {
     expect(nowPlayingLabel(statusRow({ render_asset_ref: "sha256:aa", content_count: 3 }))).toBe(
       "Rendering 3 items",
     );
-    expect(nowPlayingLabel(statusRow({ render_asset_ref: undefined, content_count: 3 }))).toBe(
-      "Sent 3 items",
-    );
+    expect(nowPlayingLabel(withoutRender({ content_count: 3 }))).toBe("Sent 3 items");
   });
 
   it("names an intentional blank rather than reporting it as a fault", () => {
@@ -172,14 +181,13 @@ describe("LiveScreensPanel — status", () => {
 
   it("renders a never-seen screen with a dash, not with a plausible time", async () => {
     renderPanel([
-      statusRow({
+      withoutRender({
         reachability: "never_seen",
         paired: false,
         last_pull_age_ms: -1,
         last_ack_age_ms: -1,
         last_render_start_age_ms: -1,
         report_age_ms: -1,
-        render_asset_ref: undefined,
       }),
     ]);
     const table = await screen.findByRole("table", { name: "Live screens" });
