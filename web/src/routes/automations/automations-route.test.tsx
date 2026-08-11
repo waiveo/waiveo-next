@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
-import { render, screen, within, waitFor } from "@testing-library/react";
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
+import { fireEvent, render, screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
@@ -7,15 +7,28 @@ import { ThemeProvider } from "@/components/theme/theme-provider";
 import AutomationsRoute from "./automations-route";
 import automationsPageDoc from "./page.uis.json";
 import { validatePage } from "@/renderer/validate";
-import { TRACE_ID, ULID_A, ULID_B, ULID_ROOT, automation, scopeNode, ok, problem } from "@/api/test-support";
+import { TRACE_ID, ULID_A, ULID_B, ULID_C, ULID_ROOT, automation, scopeNode, ok, problem } from "@/api/test-support";
 
-// Automations is a DOGFOODED ui-schema/1 list-detail (name, execution mode + state
-// badges) rendered through the SAME PageRenderer an extension page takes, plus the
-// three sanctioned first-party affordances the grammar genuinely lacks: the raw
-// rule-body code editor, the Run button (its disposition via StatusBadge), and the
-// enable/disable + create flows where a server 422 compile error surfaces the
-// compiler's message on the body field. These tests prove the document conforms,
-// the renderer paints it, and every mutation carries the api/1 conventions.
+// The Automations route is a RULE BUILDER, not a JSON textarea: `page.uis.json`
+// declares the whole trigger/condition/action editor and the shared PageRenderer
+// paints it, with this route as the host seam onto the api/1 client.
+//
+// These tests are written to the rule this codebase learned the hard way — a
+// surface that ACCEPTS work it never performs ships green when tests only assert
+// rendering. So almost every case here BUILDS a rule by clicking (add a trigger,
+// pick its kind, pick an entity, set a time, nest a condition group, choose a
+// command and fill its parameter) and then asserts the EXACT JSON the PATCH
+// carried. If a control were bound to a path that cannot be written, the assertion
+// on the saved body fails — the click alone would not.
+
+// An explicit budget rather than the 5s default. The cases below drive fifteen-odd
+// real user-event interactions each (every one of which flushes React and awaits a
+// timer), and the suite runs its files in a shared worker pool alongside one that
+// spawns a real ESLint process — under that contention a case that takes ~0.7s
+// alone crosses 5s and times out. That is the same cascade the virtual-device
+// flake turned out to be: nothing wrong with the test, a budget sized for an
+// uncontended machine. Sized generously; a genuine hang still fails.
+vi.setConfig({ testTimeout: 30_000 });
 
 function renderRoute() {
   return render(
@@ -52,17 +65,74 @@ function page(items: unknown[]) {
   return HttpResponse.json({ items, cursor: null }, { headers: { "Trace-Id": TRACE_ID } });
 }
 
-/** Both live lists the page loads: the automations, and the scope-nodes a new
- * automation is placed on. A real server filters by selector; the mock branches so
- * the two are distinct. */
-function liveLists(automations: unknown[], scopeNodes: unknown[]) {
+/** Two entities the picker's `data` OptionSource draws its options from — the
+ * relay-owned `/entities` read model, fed into the document as `$context.entities`. */
+const LOBBY_TV = {
+  id: ULID_B,
+  device_id: ULID_C,
+  relay_id: "relay-1",
+  device_class: "media-player",
+  name: "Lobby TV",
+  scope_node: ULID_ROOT,
+  labels: {},
+  state: "off",
+};
+const BAR_TV = {
+  id: ULID_C,
+  device_id: ULID_C,
+  relay_id: "relay-1",
+  device_class: "media-player",
+  name: "Bar TV",
+  scope_node: ULID_ROOT,
+  labels: {},
+  state: "on",
+};
+
+/** Every live list the page loads: the automations, the scope-nodes a new
+ * automation is placed on, and the entities the pickers offer. */
+function liveLists(automations: unknown[], scopeNodes: unknown[], entities: unknown[] = [LOBBY_TV, BAR_TV]) {
   return [
     http.get("*/api/v1/automations", () => page(automations)),
     http.get("*/api/v1/scope-nodes", () => page(scopeNodes)),
+    http.get("*/api/v1/entities", () => page(entities)),
   ];
 }
 
-describe("Automations — the ui-schema dogfood", () => {
+const HQ = [scopeNode({ id: ULID_ROOT, kind: "site", name: "HQ" })];
+
+/** Set an `<input type="time">`. user-event drives segmented time inputs
+ * unreliably under jsdom (typing "06:45:00" lands on 06:59), so the control's own
+ * change event is dispatched directly — the same event React binds. */
+function setTime(el: HTMLElement, value: string) {
+  fireEvent.change(el, { target: { value } });
+}
+
+/** The `section` a group heading titles — the scope its own add/remove buttons
+ * live in, so a nested group's controls are addressed by the group they belong to
+ * rather than by a document-order index. */
+function group(name: string): HTMLElement {
+  return screen.getByRole("heading", { name }).closest("section") as HTMLElement;
+}
+
+/** Select the one automation in the list and wait for the builder to paint. */
+async function openBuilder(user: ReturnType<typeof userEvent.setup>, name: string) {
+  await screen.findByRole("table", { name: "Automations" });
+  await user.click(screen.getByText(name).closest("tr") as HTMLElement);
+  return screen.findByRole("region", { name: "Detail" });
+}
+
+/** Capture every PATCH this test's server saw, with its If-Match. */
+function patchRecorder(next: (body: Record<string, unknown>) => Record<string, unknown>) {
+  const seen: { body: Record<string, unknown>; ifMatch: string | null }[] = [];
+  const handler = http.patch("*/api/v1/automations/:id", async ({ request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    seen.push({ body, ifMatch: request.headers.get("If-Match") });
+    return ok(next(body), { revision: 99 });
+  });
+  return { seen, handler };
+}
+
+describe("Automations — the ui-schema rule-builder document", () => {
   it("its page.uis.json passes validatePage (the same gate an extension page clears)", () => {
     const result = validatePage(automationsPageDoc);
     expect(result.ok).toBe(true);
@@ -76,72 +146,680 @@ describe("Automations — the ui-schema dogfood", () => {
           automation({ id: ULID_A, name: "Open the doors", mode: "single" }),
           automation({ id: ULID_B, name: "Close at dusk", mode: "restart" }),
         ],
-        [scopeNode({ id: ULID_ROOT, kind: "site", name: "HQ" })],
+        HQ,
       ),
     );
     renderRoute();
     const table = await screen.findByRole("table", { name: "Automations" });
     expect(within(table).getByText("Open the doors")).toBeInTheDocument();
     expect(within(table).getByText("Close at dusk")).toBeInTheDocument();
-    // The wire-available execution mode is shown per row.
     expect(within(table).getByText("restart")).toBeInTheDocument();
   });
 
-  it("shows the selected automation's mode and enabled-state badges in the detail", async () => {
+  it("paints one editor per trigger and per action, each already on its own kind", async () => {
     server.use(
       ...liveLists(
-        [automation({ id: ULID_A, name: "Open the doors", mode: "queued", enabled: false })],
-        [scopeNode({ id: ULID_ROOT, kind: "site", name: "HQ" })],
+        [
+          automation({
+            id: ULID_A,
+            name: "Open the doors",
+            triggers: [
+              { type: "state", entity_id: ULID_B, to: ["on"] },
+              { type: "time", at: "07:30:00" },
+            ],
+            actions: [
+              { type: "device_command", entity_id: ULID_B, command: "launch", params: { channel: "dev" } },
+              { type: "delay", duration_seconds: 5 },
+            ],
+          }),
+        ],
+        HQ,
       ),
     );
     const user = userEvent.setup();
     renderRoute();
-    await screen.findByRole("table", { name: "Automations" });
-    await user.click(screen.getByText("Open the doors").closest("tr") as HTMLElement);
-    // The dogfooded detail badges the mode and the (disabled) state.
-    const detail = screen.getByRole("region", { name: "Detail" });
-    expect(within(detail).getByText("queued")).toBeInTheDocument();
-    expect(within(detail).getByText("Disabled")).toBeInTheDocument();
+    await openBuilder(user, "Open the doors");
+
+    const triggerKinds = screen.getAllByLabelText("Trigger type");
+    expect(triggerKinds.map((s) => (s as HTMLSelectElement).value)).toEqual(["state", "time"]);
+    // The `switch` painted each trigger's OWN fields: only the time trigger has an
+    // "At", only the state trigger has a "To state" group.
+    expect(screen.getByLabelText("At")).toHaveValue("07:30:00");
+    // The state trigger's `to` is the ARRAY form on the wire, so it gets the
+    // exact-membership multi-select (RUL-021) — see the scalar/array case below.
+    expect(screen.getAllByRole("group", { name: "To exactly one of" })).toHaveLength(1);
+
+    const actionKinds = screen.getAllByLabelText("Action type");
+    expect(actionKinds.map((s) => (s as HTMLSelectElement).value)).toEqual(["device_command", "delay"]);
+    expect(screen.getByLabelText("Command")).toHaveValue("launch");
+    expect(screen.getByLabelText("Channel")).toHaveValue("dev");
+    expect(screen.getByLabelText("Delay (sec)")).toHaveValue(5);
+  });
+
+  it("offers the live entities as the entity picker's options, labelled by name", async () => {
+    server.use(...liveLists([automation({ id: ULID_A, name: "Open the doors" })], HQ));
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+
+    // The trigger's picker and the action's picker are both fed from /entities.
+    const pickers = screen.getAllByLabelText("Entity");
+    expect(pickers).toHaveLength(2);
+    for (const picker of pickers) {
+      expect(within(picker).getByRole("option", { name: "Lobby TV" })).toBeInTheDocument();
+      expect(within(picker).getByRole("option", { name: "Bar TV" })).toBeInTheDocument();
+    }
+    // And each shows the id the record already carries.
+    expect(pickers[0]).toHaveValue(ULID_B);
+  });
+
+  it("refuses no page when /entities is unavailable — the picker degrades, the builder still paints", async () => {
+    server.use(
+      http.get("*/api/v1/automations", () => page([automation({ id: ULID_A, name: "Open the doors" })])),
+      http.get("*/api/v1/scope-nodes", () => page(HQ)),
+      // The relay read model is not reachable — a 500 the client surfaces as an
+      // ApiError, which this page must absorb rather than fail the whole load on.
+      http.get("*/api/v1/entities", () => problem(500, "INTERNAL", "No relay is connected.")),
+    );
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+    // No options to pick from, but the advanced id field still carries the value.
+    expect(within(screen.getAllByLabelText("Entity")[0]).queryByRole("option", { name: "Lobby TV" })).toBeNull();
+    expect(screen.getAllByLabelText("Entity ID (advanced)")[0]).toHaveValue(ULID_B);
   });
 });
 
-describe("Automations — edit / enable / delete over api/1", () => {
-  it("edits an automation name under its If-Match", async () => {
-    const state = { rows: [automation({ id: ULID_A, name: "Open the doors", revision: 3 })] };
-    let ifMatch: string | null = null;
-    server.use(
-      http.get("*/api/v1/scope-nodes", () => page([scopeNode({ id: ULID_ROOT, kind: "site", name: "HQ" })])),
-      http.get("*/api/v1/automations", () => page(state.rows)),
-      http.patch("*/api/v1/automations/:id", async ({ request }) => {
-        ifMatch = request.headers.get("If-Match");
-        const body = (await request.json()) as { name?: string };
-        const updated = automation({ id: ULID_A, name: body.name ?? "Open the doors", revision: 4 });
-        state.rows = [updated];
-        return ok(updated, { revision: 4 });
-      }),
-    );
+describe("Automations — building a rule by clicking", () => {
+  it("adds a trigger, a condition group with a leaf, and an action — and saves the exact rule it built", async () => {
+    const state = {
+      rows: [
+        automation({
+          id: ULID_A,
+          name: "Open the doors",
+          revision: 4,
+          triggers: [{ type: "state", entity_id: ULID_B, to: ["on"] }],
+          conditions: [],
+          actions: [{ type: "device_command", entity_id: ULID_B, command: "home" }],
+        }),
+      ],
+    };
+    const rec = patchRecorder((body) => ({ ...state.rows[0], ...body, revision: 5 }));
+    server.use(...liveLists(state.rows, HQ), rec.handler);
 
     const user = userEvent.setup();
     renderRoute();
-    await screen.findByRole("table", { name: "Automations" });
-    await user.click(screen.getByText("Open the doors").closest("tr") as HTMLElement);
-    const nameInput = await screen.findByLabelText("Name");
-    await user.clear(nameInput);
-    await user.type(nameInput, "Open at dawn");
+    await openBuilder(user, "Open the doors");
+
+    // ── a second trigger: at 06:45 every day ────────────────────────────────
+    await user.click(screen.getByRole("button", { name: "Add trigger" }));
+    const triggerKinds = screen.getAllByLabelText("Trigger type");
+    expect(triggerKinds).toHaveLength(2);
+    await user.selectOptions(triggerKinds[1], "time");
+    // The switch swapped the second trigger's fields to the `time` arm.
+    setTime(screen.getByLabelText("At"), "06:45:00");
+    await user.selectOptions(screen.getByLabelText("If a firing is missed"), "skip");
+
+    // ── an ALL-of condition group holding one state leaf ────────────────────
+    await user.click(screen.getByRole("button", { name: "Add ALL-of group" }));
+    expect(screen.getByRole("heading", { name: "All of" })).toBeInTheDocument();
+    await user.click(within(group("All of")).getByRole("button", { name: "Add condition here" }));
+    await user.selectOptions(screen.getByLabelText("Condition type"), "state");
+    // Entity pickers in document order: the state trigger's, then the condition's,
+    // then the device-command action's.
+    await user.selectOptions(screen.getAllByLabelText("Entity")[1], ULID_C);
+    // A fresh leaf carries no `state`, so the builder offers the scalar (semantic
+    // group) form — the friendly default, and what it saves.
+    await user.selectOptions(screen.getByLabelText("State is (or its group)"), "playing");
+
+    // ── a second action: wait 30 seconds ────────────────────────────────────
+    await user.click(screen.getByRole("button", { name: "Add action" }));
+    const actionKinds = screen.getAllByLabelText("Action type");
+    expect(actionKinds).toHaveLength(2);
+    await user.selectOptions(actionKinds[1], "delay");
+    await user.type(screen.getByLabelText("Delay (sec)"), "30");
+
     await user.click(screen.getByRole("button", { name: "Save changes" }));
 
-    await waitFor(() =>
-      expect(within(screen.getByRole("table", { name: "Automations" })).getByText("Open at dawn")).toBeInTheDocument(),
-    );
-    expect(ifMatch).toBe('"3"');
+    await waitFor(() => expect(rec.seen).toHaveLength(1));
+    // The EXACT rule the clicks built — every field, and nothing the builder
+    // scaffolded to make its nested binds writable.
+    expect(rec.seen[0].body).toEqual({
+      name: "Open the doors",
+      mode: "single",
+      max: null,
+      triggers: [
+        { type: "state", entity_id: ULID_B, to: ["on"] },
+        { type: "time", at: "06:45:00", misfire: "skip" },
+      ],
+      conditions: [{ and: [{ type: "state", entity_id: ULID_C, state: "playing" }] }],
+      actions: [
+        { type: "device_command", entity_id: ULID_B, command: "home" },
+        { type: "delay", duration_seconds: 30 },
+      ],
+    });
+    // Under the record's own revision — never an unconditional overwrite (API-020).
+    expect(rec.seen[0].ifMatch).toBe('"4"');
   });
 
-  it("enable/disable toggles `enabled` under the record's If-Match (never an unconditional overwrite)", async () => {
+  it("writes a device command's own parameter through its nested params container", async () => {
+    // The regression this case exists for: `item.params.channel` cannot be written
+    // when the action carries no `params` key — a ui-schema write resolves to a
+    // null location and is dropped, so the Channel field would accept typing and
+    // save nothing. The action below deliberately has NO params on the wire.
+    const state = {
+      rows: [
+        automation({
+          id: ULID_A,
+          name: "Open the doors",
+          triggers: [{ type: "state", entity_id: ULID_B, to: ["on"] }],
+          actions: [{ type: "log", message: "hello" }],
+        }),
+      ],
+    };
+    const rec = patchRecorder((body) => ({ ...state.rows[0], ...body, revision: 2 }));
+    server.use(...liveLists(state.rows, HQ), rec.handler);
+
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+
+    // Re-type the existing `log` action as a device command, then fill it in.
+    await user.selectOptions(screen.getByLabelText("Action type"), "device_command");
+    // [0] is the state trigger's picker; [1] is the action's, just painted.
+    await user.selectOptions(screen.getAllByLabelText("Entity")[1], ULID_C);
+    await user.selectOptions(screen.getByLabelText("Command"), "launch");
+    await user.type(screen.getByLabelText("Channel"), "waiveo");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(rec.seen).toHaveLength(1));
+    expect(rec.seen[0].body.actions).toEqual([
+      // `message` is the member the operator did not clear — carried through, as
+      // everything the builder does not rewrite is.
+      { type: "device_command", message: "hello", entity_id: ULID_C, command: "launch", params: { channel: "waiveo" } },
+    ]);
+  });
+
+  // rules/1 RUL-021: a SCALAR `to`/`from`/`state` matches through the device
+  // class's semantic groups ("on" also matches playing/paused/idle/buffering,
+  // REG-063); an ARRAY matches exact literals only. One control cannot serve both,
+  // and the failure would be silent: a multi-select painted over a scalar shows
+  // nothing selected, and the operator's first click rewrites a group match into a
+  // literal one without ever saying so. The builder shows the form the rule holds.
+  it("shows a scalar state bound as a scalar, and saves it as one (RUL-021 group form)", async () => {
+    const state = {
+      rows: [
+        automation({
+          id: ULID_A,
+          name: "Open the doors",
+          // The scalar form — the semantic-group match.
+          triggers: [{ type: "state", entity_id: ULID_B, to: "on" }],
+        }),
+      ],
+    };
+    const rec = patchRecorder((body) => ({ ...state.rows[0], ...body, revision: 2 }));
+    server.use(...liveLists(state.rows, HQ), rec.handler);
+
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+
+    // It is painted as a single select showing the value — NOT an all-unchecked
+    // multi-select that hides the bound entirely.
+    const scalar = screen.getByLabelText("To state (or its group)");
+    expect(scalar).toHaveValue("on");
+    expect(screen.queryByRole("group", { name: "To exactly one of" })).toBeNull();
+
+    await user.selectOptions(scalar, "playing");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(rec.seen).toHaveLength(1));
+    // Still a scalar: editing a group match never silently narrows it to a literal.
+    expect(rec.seen[0].body.triggers).toEqual([{ type: "state", entity_id: ULID_B, to: "playing" }]);
+  });
+
+  it("shows an array state bound as an exact-membership multi-select, and keeps it an array", async () => {
+    const state = {
+      rows: [
+        automation({
+          id: ULID_A,
+          name: "Open the doors",
+          triggers: [{ type: "state", entity_id: ULID_B, to: ["on", "playing"] }],
+        }),
+      ],
+    };
+    const rec = patchRecorder((body) => ({ ...state.rows[0], ...body, revision: 2 }));
+    server.use(...liveLists(state.rows, HQ), rec.handler);
+
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+
+    const exact = screen.getByRole("group", { name: "To exactly one of" });
+    expect(within(exact).getByRole("checkbox", { name: "on" })).toBeChecked();
+    expect(within(exact).getByRole("checkbox", { name: "playing" })).toBeChecked();
+    expect(within(exact).getByRole("checkbox", { name: "off" })).not.toBeChecked();
+    expect(screen.queryByLabelText("To state (or its group)")).toBeNull();
+
+    await user.click(within(exact).getByRole("checkbox", { name: "playing" }));
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(rec.seen).toHaveLength(1));
+    expect(rec.seen[0].body.triggers).toEqual([{ type: "state", entity_id: ULID_B, to: ["on"] }]);
+  });
+
+  it("removes a trigger and an action through their own remove buttons", async () => {
+    const state = {
+      rows: [
+        automation({
+          id: ULID_A,
+          name: "Open the doors",
+          triggers: [
+            { type: "state", entity_id: ULID_B, to: ["on"] },
+            { type: "time", at: "07:30:00" },
+          ],
+          actions: [
+            { type: "log", message: "first" },
+            { type: "log", message: "second" },
+          ],
+        }),
+      ],
+    };
+    const rec = patchRecorder((body) => ({ ...state.rows[0], ...body, revision: 2 }));
+    server.use(...liveLists(state.rows, HQ), rec.handler);
+
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+
+    await user.click(screen.getAllByRole("button", { name: "Remove trigger" })[0]);
+    await user.click(screen.getAllByRole("button", { name: "Remove action" })[1]);
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(rec.seen).toHaveLength(1));
+    expect(rec.seen[0].body.triggers).toEqual([{ type: "time", at: "07:30:00" }]);
+    expect(rec.seen[0].body.actions).toEqual([{ type: "log", message: "first" }]);
+  });
+
+  it("nests a condition inside an existing group and paints the whole and/or/not tree", async () => {
+    const state = {
+      rows: [
+        automation({
+          id: ULID_A,
+          name: "Open the doors",
+          conditions: [
+            {
+              and: [
+                { type: "state", entity_id: ULID_B, state: ["on"] },
+                { or: [{ not: { type: "state", entity_id: ULID_C, state: ["off"] } }] },
+              ],
+            },
+          ],
+        }),
+      ],
+    };
+    const rec = patchRecorder((body) => ({ ...state.rows[0], ...body, revision: 2 }));
+    server.use(...liveLists(state.rows, HQ), rec.handler);
+
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+
+    // The self-referential fragment descended the whole tree: one group heading
+    // per composition node, and a kind select for each of the two leaves.
+    expect(screen.getAllByRole("heading", { name: "All of" })).toHaveLength(1);
+    expect(screen.getAllByRole("heading", { name: "Any of" })).toHaveLength(1);
+    expect(screen.getAllByRole("heading", { name: "Not" })).toHaveLength(1);
+    expect(screen.getAllByLabelText("Condition type")).toHaveLength(2);
+    // …and never tripped the recursion ceiling.
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    // Add a numeric leaf INSIDE the inner "Any of" group (the second such button
+    // in document order belongs to the nested group).
+    expect(screen.getAllByRole("button", { name: "Add condition here" })).toHaveLength(2);
+    await user.click(within(group("Any of")).getByRole("button", { name: "Add condition here" }));
+    const kinds = screen.getAllByLabelText("Condition type");
+    expect(kinds).toHaveLength(3);
+    await user.selectOptions(kinds[2], "numeric");
+    await user.type(screen.getByLabelText("Above"), "40");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(rec.seen).toHaveLength(1));
+    expect(rec.seen[0].body.conditions).toEqual([
+      {
+        and: [
+          { type: "state", entity_id: ULID_B, state: ["on"] },
+          { or: [{ not: { type: "state", entity_id: ULID_C, state: ["off"] } }, { type: "numeric", above: 40 }] },
+        ],
+      },
+    ]);
+  });
+
+  it("couples mode and max the way the compiler requires (RUL-244)", async () => {
+    const state = {
+      rows: [automation({ id: ULID_A, name: "Open the doors", mode: "parallel", max: 3 })],
+    };
+    const rec = patchRecorder((body) => ({ ...state.rows[0], ...body, revision: 2 }));
+    server.use(...liveLists(state.rows, HQ), rec.handler);
+
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+
+    // `max` is visible only under parallel…
+    expect(screen.getByLabelText("Max parallel runs")).toHaveValue(3);
+    await user.selectOptions(screen.getByLabelText("Mode"), "single");
+    // …and gone the moment the mode changes.
+    expect(screen.queryByLabelText("Max parallel runs")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(rec.seen).toHaveLength(1));
+    // The stale 3 is cleared rather than sent — the compiler rejects a max under
+    // any non-parallel mode (MODE_MAX_NOT_APPLICABLE).
+    expect(rec.seen[0].body.mode).toBe("single");
+    expect(rec.seen[0].body.max).toBeNull();
+  });
+
+  it("tells the operator plainly that pack_action is not implemented, and offers no field to fill", async () => {
+    server.use(...liveLists([automation({ id: ULID_A, name: "Open the doors" })], HQ));
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+
+    await user.selectOptions(screen.getByLabelText("Action type"), "pack_action");
+    expect(screen.getByText(/does not implement it yet/i)).toBeInTheDocument();
+    // No input is offered for a kind whose save the compiler refuses — a field
+    // here would be a surface accepting work it never performs. (The one entity
+    // picker still on the page is the state trigger's, not the action's.)
+    expect(screen.queryByLabelText("Command")).toBeNull();
+    expect(screen.getAllByLabelText("Entity")).toHaveLength(1);
+  });
+});
+
+describe("Automations — round-trip fidelity", () => {
+  it("carries members the builder has no editor for through an edit, byte for byte", async () => {
+    // Two shapes the builder deliberately does not model: a `choose` action's
+    // branch tree (RUL-180) and an `event` trigger's `match` map (RUL-081), plus a
+    // key from no rules/1 version this console knows.
+    const choose = {
+      type: "choose",
+      branches: [
+        {
+          condition: { type: "state", entity_id: ULID_B, state: ["playing"] },
+          actions: [{ type: "log", message: "already playing" }],
+        },
+      ],
+      default: [{ type: "device_command", entity_id: ULID_B, command: "home" }],
+    };
+    const eventTrigger = { type: "event", event: "pack.menu.updated", match: { section: "Coffee" } };
+    const state = {
+      rows: [
+        automation({
+          id: ULID_A,
+          name: "Open the doors",
+          triggers: [eventTrigger],
+          conditions: [],
+          actions: [choose, { type: "log", message: "done", from_the_future: { nested: true } }],
+        }),
+      ],
+    };
+    const rec = patchRecorder((body) => ({ ...state.rows[0], ...body, revision: 2 }));
+    server.use(...liveLists(state.rows, HQ), rec.handler);
+
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+
+    // The builder is honest about what it cannot paint…
+    expect(screen.getByText(/choose action nests conditions and actions/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("Event name")).toHaveValue("pack.menu.updated");
+    // …and an ordinary edit elsewhere leaves all of it exactly as it was.
+    const name = screen.getByLabelText("Name");
+    await user.clear(name);
+    await user.type(name, "Open at dawn");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(rec.seen).toHaveLength(1));
+    expect(rec.seen[0].body.name).toBe("Open at dawn");
+    expect(rec.seen[0].body.triggers).toEqual([eventTrigger]);
+    expect(rec.seen[0].body.actions).toEqual([choose, { type: "log", message: "done", from_the_future: { nested: true } }]);
+  });
+
+  it("does not invent members: a rule saved without touching it is the rule that was loaded", async () => {
+    const loaded = automation({
+      id: ULID_A,
+      name: "Open the doors",
+      triggers: [{ type: "sun", event: "sunset", offset: -600 }],
+      conditions: [{ type: "time", after: "18:00:00", before: "23:00:00" }],
+      actions: [{ type: "device_command", entity_id: ULID_B, command: "power", params: { state: "on" } }],
+    });
+    const rec = patchRecorder((body) => ({ ...loaded, ...body, revision: 2 }));
+    server.use(...liveLists([loaded], HQ), rec.handler);
+
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+    // The sun / time / power arms all painted their own values.
+    expect(screen.getByLabelText("Sun event")).toHaveValue("sunset");
+    expect(screen.getByLabelText("Offset (seconds)")).toHaveValue(-600);
+    expect(screen.getByLabelText("After")).toHaveValue("18:00:00");
+    expect(screen.getByLabelText("Power state")).toHaveValue("on");
+
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(rec.seen).toHaveLength(1));
+    expect(rec.seen[0].body).toEqual({
+      name: loaded.name,
+      mode: loaded.mode,
+      max: loaded.max,
+      triggers: loaded.triggers,
+      conditions: loaded.conditions,
+      actions: loaded.actions,
+    });
+  });
+});
+
+describe("Automations — the raw-JSON escape hatch", () => {
+  it("applies pasted JSON into the builder, and the builder's Save persists it", async () => {
+    const state = { rows: [automation({ id: ULID_A, name: "Open the doors", revision: 7 })] };
+    const rec = patchRecorder((body) => ({ ...state.rows[0], ...body, revision: 8 }));
+    server.use(...liveLists(state.rows, HQ), rec.handler);
+
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+
+    // The hatch is closed until asked for — the builder is the primary surface.
+    expect(screen.queryByLabelText("Rule body (JSON)")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Edit as JSON" }));
+    const editor = screen.getByLabelText("Rule body (JSON)");
+    expect((editor as HTMLTextAreaElement).value).toContain('"triggers"');
+
+    const pasted = {
+      mode: "restart",
+      max: null,
+      triggers: [{ type: "time_pattern", minutes: "/15" }],
+      conditions: [],
+      actions: [
+        {
+          type: "choose",
+          branches: [{ condition: { type: "state", entity_id: ULID_B, state: ["off"] }, actions: [{ type: "log", message: "was off" }] }],
+        },
+      ],
+    };
+    await user.clear(editor);
+    await user.click(editor);
+    await user.paste(JSON.stringify(pasted));
+    await user.click(screen.getByRole("button", { name: "Apply to builder" }));
+
+    // Applying writes nothing: it re-seeds the BUILDER, which now shows the pasted
+    // rule — the cron-pattern trigger's own field, and the honest note for choose.
+    expect(rec.seen).toHaveLength(0);
+    expect(await screen.findByLabelText("Minutes")).toHaveValue("/15");
+    expect(screen.getByLabelText("Mode")).toHaveValue("restart");
+    expect(screen.getByText(/choose action nests conditions and actions/i)).toBeInTheDocument();
+
+    // One save path: the builder's. It carries the applied rule verbatim.
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(rec.seen).toHaveLength(1));
+    expect(rec.seen[0].body).toEqual({ name: "Open the doors", ...pasted });
+    expect(rec.seen[0].ifMatch).toBe('"7"');
+  });
+
+  it("rejects invalid JSON inline, without touching the builder or the server", async () => {
+    const rec = patchRecorder((body) => body);
+    server.use(...liveLists([automation({ id: ULID_A, name: "Open the doors" })], HQ), rec.handler);
+
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+    await user.click(screen.getByRole("button", { name: "Edit as JSON" }));
+    const editor = screen.getByLabelText("Rule body (JSON)");
+    await user.clear(editor);
+    await user.click(editor);
+    await user.paste("{ not valid json ");
+    await user.click(screen.getByRole("button", { name: "Apply to builder" }));
+
+    expect(await screen.findByText(/isn't valid json/i)).toBeInTheDocument();
+    expect(rec.seen).toHaveLength(0);
+    // The builder still shows the record it was loaded with.
+    expect(screen.getAllByLabelText("Trigger type")[0]).toHaveValue("state");
+  });
+
+  it("applies only the rule keys the pasted object carries, leaving the rest alone", async () => {
+    const state = { rows: [automation({ id: ULID_A, name: "Open the doors", mode: "queued" })] };
+    const rec = patchRecorder((body) => ({ ...state.rows[0], ...body, revision: 2 }));
+    server.use(...liveLists(state.rows, HQ), rec.handler);
+
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+    await user.click(screen.getByRole("button", { name: "Edit as JSON" }));
+    const editor = screen.getByLabelText("Rule body (JSON)");
+    await user.clear(editor);
+    await user.click(editor);
+    await user.paste(JSON.stringify({ actions: [{ type: "log", message: "only the actions" }] }));
+    await user.click(screen.getByRole("button", { name: "Apply to builder" }));
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(rec.seen).toHaveLength(1));
+    expect(rec.seen[0].body.actions).toEqual([{ type: "log", message: "only the actions" }]);
+    // The untouched half of the rule survived the apply.
+    expect(rec.seen[0].body.mode).toBe("queued");
+    expect(rec.seen[0].body.triggers).toEqual(state.rows[0].triggers);
+  });
+});
+
+describe("Automations — save conventions over api/1", () => {
+  it("on a 422, surfaces the compiler's message naming the rule member it rejected", async () => {
+    server.use(
+      ...liveLists([automation({ id: ULID_A, name: "Open the doors" })], HQ),
+      http.patch("*/api/v1/automations/:id", () =>
+        problem(422, "VALIDATION_FAILED", "The rule did not compile.", {
+          errors: [
+            {
+              field: "actions[0].type",
+              code: "UNKNOWN_VOCABULARY_MEMBER",
+              message: '"pack_action" is not a member of the closed action vocabulary',
+            },
+          ],
+        }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+    await user.selectOptions(screen.getByLabelText("Action type"), "pack_action");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    const alert = await screen.findByTestId("compile-error");
+    expect(alert).toHaveTextContent("actions[0].type");
+    expect(alert).toHaveTextContent('"pack_action" is not a member of the closed action vocabulary');
+  });
+
+  it("on a 422 naming a field the builder binds, surfaces it on that field", async () => {
+    server.use(
+      ...liveLists([automation({ id: ULID_A, name: "Open the doors" })], HQ),
+      http.patch("*/api/v1/automations/:id", () =>
+        problem(422, "VALIDATION_FAILED", "Invalid.", {
+          errors: [{ field: "name", code: "VALIDATION_FAILED", message: "name must not be blank" }],
+        }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    expect(await screen.findByText("name must not be blank")).toBeInTheDocument();
+    expect(screen.getByLabelText("Name")).toHaveAttribute("aria-invalid", "true");
+  });
+
+  it("on a 412, re-reads and shows the review banner — never a silent retry-overwrite", async () => {
+    const changed = automation({ id: ULID_A, name: "Changed elsewhere", revision: 9 });
+    const state = { rows: [automation({ id: ULID_A, name: "Open the doors", revision: 3 })] };
+    let patchCount = 0;
+    server.use(
+      http.get("*/api/v1/scope-nodes", () => page(HQ)),
+      http.get("*/api/v1/entities", () => page([LOBBY_TV, BAR_TV])),
+      http.get("*/api/v1/automations", () => page(state.rows)),
+      http.get("*/api/v1/automations/:id", () => ok(changed, { revision: 9 })),
+      http.patch("*/api/v1/automations/:id", () => {
+        patchCount++;
+        state.rows = [changed];
+        return problem(412, "REVISION_CONFLICT", "The automation changed.");
+      }),
+    );
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent(/changed elsewhere while you were editing/i);
+    // Exactly one write attempt: the conflict is surfaced, never retried over.
+    expect(patchCount).toBe(1);
+  });
+
+  it("deletes an automation under its If-Match", async () => {
+    const state = { rows: [automation({ id: ULID_A, name: "Open the doors", revision: 6 })] };
+    let ifMatch: string | null = null;
+    server.use(
+      ...liveLists(state.rows, HQ),
+      http.delete("*/api/v1/automations/:id", ({ request }) => {
+        ifMatch = request.headers.get("If-Match");
+        state.rows = [];
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+    await user.click(screen.getByRole("button", { name: "Delete automation" }));
+    await waitFor(() => expect(ifMatch).toBe('"6"'));
+  });
+});
+
+describe("Automations — run / enable / create", () => {
+  it("Run now dispatches and badges the run's disposition", async () => {
+    server.use(
+      ...liveLists([automation({ id: ULID_A, name: "Open the doors" })], HQ),
+      http.post("*/api/v1/automations/:id/run", () =>
+        HttpResponse.json({ run_id: ULID_C, disposition: "ran" }, { headers: { "Trace-Id": TRACE_ID } }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+    await user.click(screen.getByRole("button", { name: "Run now" }));
+    const badge = await screen.findByTestId("run-disposition");
+    expect(badge).toHaveAttribute("data-status", "ok");
+    expect(badge).toHaveTextContent("Ran");
+  });
+
+  it("enable/disable toggles `enabled` under the record's If-Match", async () => {
     const state = { rows: [automation({ id: ULID_A, name: "Open the doors", enabled: true, revision: 5 })] };
     let ifMatch: string | null = null;
     let patchedEnabled: unknown = "unset";
     server.use(
-      http.get("*/api/v1/scope-nodes", () => page([scopeNode({ id: ULID_ROOT, kind: "site", name: "HQ" })])),
+      http.get("*/api/v1/scope-nodes", () => page(HQ)),
+      http.get("*/api/v1/entities", () => page([LOBBY_TV, BAR_TV])),
       http.get("*/api/v1/automations", () => page(state.rows)),
       http.patch("*/api/v1/automations/:id", async ({ request }) => {
         ifMatch = request.headers.get("If-Match");
@@ -152,289 +830,53 @@ describe("Automations — edit / enable / delete over api/1", () => {
         return ok(updated, { revision: 6 });
       }),
     );
-
     const user = userEvent.setup();
     renderRoute();
-    await screen.findByRole("table", { name: "Automations" });
-    await user.click(screen.getByText("Open the doors").closest("tr") as HTMLElement);
+    await openBuilder(user, "Open the doors");
     await user.click(await screen.findByRole("button", { name: "Disable" }));
 
     await waitFor(() => expect(patchedEnabled).toBe(false));
-    // The disable carried the If-Match derived from the record's revision (API-020).
     expect(ifMatch).toBe('"5"');
-    // The dogfooded state badge now reads Disabled.
     await waitFor(() =>
       expect(within(screen.getByRole("region", { name: "Detail" })).getByText("Disabled")).toBeInTheDocument(),
     );
   });
 
-  // Regression (Fix 1): a 412 on the enable/disable toggle must surface the same
-  // standard conflict UX as the name-save and rule-save flows — a persistent
-  // role=status review banner alongside the toast, never only a fading toast, and
-  // never a silent retry-overwrite (exactly one write attempt).
-  it("on a toggle 412, surfaces the persistent review banner (not only a toast) and re-reads — never a silent overwrite", async () => {
-    const changed = automation({ id: ULID_A, name: "Open the doors", enabled: true, revision: 9 });
-    const state = { rows: [automation({ id: ULID_A, name: "Open the doors", enabled: true, revision: 5 })] };
-    let patchCount = 0;
+  // A create that the compiler refuses has NO selected record to hang the message
+  // on — only the draft form is on screen. The refusal must still be visible, or
+  // the operator presses Save on a rule that will never save and is told nothing
+  // but a toast that fades.
+  it("shows the compiler's refusal for a CREATE, where there is no selection to hang it on", async () => {
     server.use(
-      http.get("*/api/v1/scope-nodes", () => page([scopeNode({ id: ULID_ROOT, kind: "site", name: "HQ" })])),
-      http.get("*/api/v1/automations", () => page(state.rows)),
-      http.get("*/api/v1/automations/:id", () => ok(changed, { revision: 9 })),
-      http.patch("*/api/v1/automations/:id", () => {
-        patchCount += 1;
-        state.rows = [changed];
-        return problem(412, "REVISION_CONFLICT", "The resource was modified concurrently.", {
-          current_revision: 9,
-        });
-      }),
-    );
-
-    const user = userEvent.setup();
-    renderRoute();
-    await screen.findByRole("table", { name: "Automations" });
-    await user.click(screen.getByText("Open the doors").closest("tr") as HTMLElement);
-    await user.click(await screen.findByRole("button", { name: "Disable" }));
-
-    // A persistent review banner is rendered (role=status), the same as the two
-    // sibling mutations — not just a toast that fades.
-    const banner = await screen.findByText(/enabled state was changed elsewhere/i);
-    expect(banner).toBeInTheDocument();
-    expect(banner).toHaveAttribute("role", "status");
-    // Exactly one write was attempted; the client re-read for review, never retried.
-    expect(patchCount).toBe(1);
-  });
-
-  it("deletes an automation under its If-Match", async () => {
-    const state = { rows: [automation({ id: ULID_A, name: "Open the doors", revision: 2 })] };
-    let ifMatch: string | null = null;
-    server.use(
-      http.get("*/api/v1/scope-nodes", () => page([scopeNode({ id: ULID_ROOT, kind: "site", name: "HQ" })])),
-      http.get("*/api/v1/automations", () => page(state.rows)),
-      http.delete("*/api/v1/automations/:id", ({ request }) => {
-        ifMatch = request.headers.get("If-Match");
-        state.rows = [];
-        return new HttpResponse(null, { status: 204, headers: { "Trace-Id": TRACE_ID } });
-      }),
-    );
-
-    const user = userEvent.setup();
-    renderRoute();
-    await screen.findByRole("table", { name: "Automations" });
-    await user.click(screen.getByText("Open the doors").closest("tr") as HTMLElement);
-    await user.click(await screen.findByRole("button", { name: "Delete automation" }));
-
-    await waitFor(() => expect(screen.queryByText("Open the doors")).not.toBeInTheDocument());
-    expect(ifMatch).toBe('"2"');
-  });
-
-  it("on a 412 re-reads the current state for review — never a silent overwrite", async () => {
-    const changed = automation({ id: ULID_A, name: "Changed elsewhere", revision: 9 });
-    const state = { rows: [automation({ id: ULID_A, name: "Open the doors", revision: 3 })] };
-    let patchCount = 0;
-    server.use(
-      http.get("*/api/v1/scope-nodes", () => page([scopeNode({ id: ULID_ROOT, kind: "site", name: "HQ" })])),
-      http.get("*/api/v1/automations", () => page(state.rows)),
-      http.get("*/api/v1/automations/:id", () => ok(changed, { revision: 9 })),
-      http.patch("*/api/v1/automations/:id", () => {
-        patchCount += 1;
-        state.rows = [changed];
-        return problem(412, "REVISION_CONFLICT", "The resource was modified concurrently.", {
-          current_revision: 9,
-        });
-      }),
-    );
-
-    const user = userEvent.setup();
-    renderRoute();
-    await screen.findByRole("table", { name: "Automations" });
-    await user.click(screen.getByText("Open the doors").closest("tr") as HTMLElement);
-    const nameInput = await screen.findByLabelText("Name");
-    await user.clear(nameInput);
-    await user.type(nameInput, "My rename");
-    await user.click(screen.getByRole("button", { name: "Save changes" }));
-
-    const banner = await screen.findByRole("status");
-    expect(banner).toHaveTextContent(/changed elsewhere/i);
-    expect(screen.queryByText("My rename")).not.toBeInTheDocument();
-    expect(patchCount).toBe(1);
-  });
-});
-
-describe("Automations — Run surfaces its mode-evaluation disposition", () => {
-  it("runs the selected automation and shows the disposition via a StatusBadge, carrying an Idempotency-Key", async () => {
-    let idempotencyKey: string | null = null;
-    server.use(
-      ...liveLists(
-        [automation({ id: ULID_A, name: "Open the doors" })],
-        [scopeNode({ id: ULID_ROOT, kind: "site", name: "HQ" })],
-      ),
-      http.post("*/api/v1/automations/:id/run", ({ request }) => {
-        idempotencyKey = request.headers.get("Idempotency-Key");
-        return HttpResponse.json(
-          { run_id: ULID_B, disposition: "ran" },
-          { headers: { "Trace-Id": TRACE_ID } },
-        );
-      }),
-    );
-
-    const user = userEvent.setup();
-    renderRoute();
-    await screen.findByRole("table", { name: "Automations" });
-    await user.click(screen.getByText("Open the doors").closest("tr") as HTMLElement);
-    await user.click(await screen.findByRole("button", { name: "Run now" }));
-
-    // The disposition lands on a status chip.
-    const chip = await screen.findByTestId("run-disposition");
-    expect(chip).toHaveAttribute("data-status", "ok");
-    expect(chip).toHaveTextContent(/ran/i);
-    expect(idempotencyKey).toMatch(/^[0-9a-f-]{36}$/i);
-  });
-
-  it("surfaces the Problem when a run is refused (app-class / no synthesizable trigger)", async () => {
-    server.use(
-      ...liveLists(
-        [automation({ id: ULID_A, name: "Open the doors" })],
-        [scopeNode({ id: ULID_ROOT, kind: "site", name: "HQ" })],
-      ),
-      http.post("*/api/v1/automations/:id/run", () =>
-        problem(400, "VALIDATION_FAILED", "This automation is app-class; a synchronous run is limited to edge automations."),
-      ),
-    );
-
-    const user = userEvent.setup();
-    renderRoute();
-    await screen.findByRole("table", { name: "Automations" });
-    await user.click(screen.getByText("Open the doors").closest("tr") as HTMLElement);
-    await user.click(await screen.findByRole("button", { name: "Run now" }));
-
-    expect(await screen.findByText(/app-class/i)).toBeInTheDocument();
-    // No fabricated disposition chip on a refused run.
-    expect(screen.queryByTestId("run-disposition")).not.toBeInTheDocument();
-  });
-});
-
-describe("Automations — the rule-body code editor (grammar-gap)", () => {
-  it("saves an edited rule body under its If-Match", async () => {
-    const state = { rows: [automation({ id: ULID_A, name: "Open the doors", revision: 4 })] };
-    let ifMatch: string | null = null;
-    let patchedActions: unknown = "unset";
-    server.use(
-      http.get("*/api/v1/scope-nodes", () => page([scopeNode({ id: ULID_ROOT, kind: "site", name: "HQ" })])),
-      http.get("*/api/v1/automations", () => page(state.rows)),
-      http.patch("*/api/v1/automations/:id", async ({ request }) => {
-        ifMatch = request.headers.get("If-Match");
-        const body = (await request.json()) as { actions?: unknown };
-        patchedActions = body.actions;
-        const updated = automation({ id: ULID_A, name: "Open the doors", revision: 5 });
-        state.rows = [updated];
-        return ok(updated, { revision: 5 });
-      }),
-    );
-
-    const user = userEvent.setup();
-    renderRoute();
-    await screen.findByRole("table", { name: "Automations" });
-    await user.click(screen.getByText("Open the doors").closest("tr") as HTMLElement);
-
-    const editor = await screen.findByLabelText("Rule body (JSON)");
-    const nextRule = JSON.stringify({
-      mode: "single",
-      max: null,
-      triggers: [{ type: "state", entity_id: ULID_B, to: ["on"] }],
-      conditions: [],
-      actions: [{ type: "device_command", entity_id: ULID_B, command: "power_off", params: {} }],
-    });
-    // Typing raw JSON through userEvent is brittle around braces; paste the whole
-    // rule into the mono editor instead.
-    await user.clear(editor);
-    await user.click(editor);
-    await user.paste(nextRule);
-    await user.click(screen.getByRole("button", { name: "Save rule" }));
-
-    await waitFor(() => expect(ifMatch).toBe('"4"'));
-    expect(patchedActions).toEqual([
-      { type: "device_command", entity_id: ULID_B, command: "power_off", params: {} },
-    ]);
-  });
-
-  it("rejects invalid JSON inline without hitting the server", async () => {
-    let patchCount = 0;
-    server.use(
-      ...liveLists(
-        [automation({ id: ULID_A, name: "Open the doors" })],
-        [scopeNode({ id: ULID_ROOT, kind: "site", name: "HQ" })],
-      ),
-      http.patch("*/api/v1/automations/:id", () => {
-        patchCount += 1;
-        return ok(automation({ id: ULID_A }), { revision: 2 });
-      }),
-    );
-
-    const user = userEvent.setup();
-    renderRoute();
-    await screen.findByRole("table", { name: "Automations" });
-    await user.click(screen.getByText("Open the doors").closest("tr") as HTMLElement);
-    const editor = await screen.findByLabelText("Rule body (JSON)");
-    await user.clear(editor);
-    await user.click(editor);
-    await user.paste("{ not valid json ");
-    await user.click(screen.getByRole("button", { name: "Save rule" }));
-
-    expect(await screen.findByText(/isn't valid json/i)).toBeInTheDocument();
-    expect(patchCount).toBe(0);
-  });
-
-  it("on a rule-save 422, surfaces the compiler's message on the body field", async () => {
-    server.use(
-      ...liveLists(
-        [automation({ id: ULID_A, name: "Open the doors" })],
-        [scopeNode({ id: ULID_ROOT, kind: "site", name: "HQ" })],
-      ),
-      http.patch("*/api/v1/automations/:id", () =>
+      http.get("*/api/v1/scope-nodes", () => page(HQ)),
+      http.get("*/api/v1/entities", () => page([LOBBY_TV, BAR_TV])),
+      http.get("*/api/v1/automations", () => page([])),
+      http.post("*/api/v1/automations", () =>
         problem(422, "VALIDATION_FAILED", "The rule did not compile.", {
           errors: [
-            {
-              field: "actions[0].type",
-              code: "UNKNOWN_VOCABULARY_MEMBER",
-              message: '"not_a_real_action" is not a member of the closed action vocabulary',
-            },
+            { field: "triggers[0].type", code: "UNKNOWN_VOCABULARY_MEMBER", message: "not a trigger" },
           ],
         }),
       ),
     );
-
     const user = userEvent.setup();
     renderRoute();
     await screen.findByRole("table", { name: "Automations" });
-    await user.click(screen.getByText("Open the doors").closest("tr") as HTMLElement);
-    const editor = await screen.findByLabelText("Rule body (JSON)");
-    await user.clear(editor);
-    await user.click(editor);
-    await user.paste(JSON.stringify({ mode: "single", triggers: [], conditions: [], actions: [{ type: "not_a_real_action" }] }));
-    await user.click(screen.getByRole("button", { name: "Save rule" }));
+    await user.click(await screen.findByRole("button", { name: "New" }));
+    await user.click(await screen.findByRole("button", { name: "Save changes" }));
 
-    // The compiler's own message lands on the body field, not only a toast.
-    expect(
-      await screen.findByText('"not_a_real_action" is not a member of the closed action vocabulary'),
-    ).toBeInTheDocument();
-    const editorAfter = screen.getByLabelText("Rule body (JSON)");
-    expect(editorAfter).toHaveAttribute("aria-invalid", "true");
+    const alert = await screen.findByTestId("compile-error");
+    expect(alert).toHaveTextContent("triggers[0].type");
+    expect(alert).toHaveTextContent("not a trigger");
   });
-});
 
-describe("Automations — create via the dogfood newAction", () => {
-  // Creation lives in the ui-schema `newAction` verb + a first-party scope picker —
-  // the SAME minimal pattern Screens and Schedules use — not a separate first-party
-  // create modal that duplicates the ui-schema-expressible Name/scope fields. The
-  // "New" affordance the renderer paints from `newAction` POSTs the starter rule
-  // placed on the chosen scope, and the operator authors the real rule in the detail
-  // pane (where a 422 compile error surfaces on the body field, proven above).
-  it("the renderer's New verb creates from the starter template on the chosen scope, carrying an Idempotency-Key", async () => {
+  it("New opens a blank builder draft and creates from what was built in it", async () => {
     const state = { rows: [] as unknown[] };
     let idempotencyKey: string | null = null;
     let postedBody: Record<string, unknown> = {};
     server.use(
-      http.get("*/api/v1/scope-nodes", () => page([scopeNode({ id: ULID_ROOT, kind: "site", name: "HQ" })])),
+      http.get("*/api/v1/scope-nodes", () => page(HQ)),
+      http.get("*/api/v1/entities", () => page([LOBBY_TV, BAR_TV])),
       http.get("*/api/v1/automations", () => page(state.rows)),
       http.post("*/api/v1/automations", async ({ request }) => {
         idempotencyKey = request.headers.get("Idempotency-Key");
@@ -444,80 +886,34 @@ describe("Automations — create via the dogfood newAction", () => {
         return ok(created, { status: 201, revision: 1 });
       }),
     );
-
     const user = userEvent.setup();
     renderRoute();
     await screen.findByRole("table", { name: "Automations" });
-    // New opens a create draft (the starter template); Save commits it (UIS-021).
     await user.click(await screen.findByRole("button", { name: "New" }));
-    await user.click(await screen.findByRole("button", { name: "Save changes" }));
+
+    // The draft is the SAME builder — author the rule before it is ever created.
+    await user.selectOptions(await screen.findByLabelText("Trigger type"), "sun");
+    await user.selectOptions(screen.getByLabelText("Sun event"), "sunset");
+    await user.selectOptions(screen.getByLabelText("Action type"), "log");
+    await user.type(screen.getByLabelText("Message"), "dusk");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
 
     await waitFor(() =>
       expect(within(screen.getByRole("table", { name: "Automations" })).getByText("New automation")).toBeInTheDocument(),
     );
-    // The create carried an Idempotency-Key (the client owns that convention) and
-    // placed the starter rule on the chosen scope node — no separate create modal.
     expect(idempotencyKey).toMatch(/^[0-9a-f-]{36}$/i);
     expect(postedBody.scope_node).toBe(ULID_ROOT);
     expect(postedBody.name).toBe("New automation");
-    expect(postedBody.mode).toBe("single");
-    expect(Array.isArray(postedBody.triggers)).toBe(true);
-    expect(Array.isArray(postedBody.actions)).toBe(true);
+    expect(postedBody.triggers).toEqual([{ type: "sun", event: "sunset" }]);
+    expect(postedBody.actions).toEqual([{ type: "log", message: "dusk" }]);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-  });
-
-  // Regression (Fix 2): with an automation selected, the dogfooded detail pane
-  // already mounts a "Name" text-input and the "Rule body (JSON)" editor. Creation
-  // must NOT open a second first-party modal duplicating those — there was a bug
-  // where "New automation" opened a modal with its own Name input + Rule-body
-  // editor, putting two elements of each accessible name on the page at once.
-  it("opening New with an automation selected does not duplicate the Name/Rule-body affordances (no create modal)", async () => {
-    const state = { rows: [automation({ id: ULID_A, name: "Open the doors" })] as unknown[] };
-    server.use(
-      http.get("*/api/v1/scope-nodes", () => page([scopeNode({ id: ULID_ROOT, kind: "site", name: "HQ" })])),
-      http.get("*/api/v1/automations", () => page(state.rows)),
-      http.post("*/api/v1/automations", async () => {
-        const created = automation({ id: ULID_B, name: "New automation", revision: 1 });
-        state.rows = [automation({ id: ULID_A, name: "Open the doors" }), created];
-        return ok(created, { status: 201, revision: 1 });
-      }),
-    );
-
-    const user = userEvent.setup();
-    renderRoute();
-    await screen.findByRole("table", { name: "Automations" });
-    await user.click(screen.getByText("Open the doors").closest("tr") as HTMLElement);
-    // Baseline: exactly one Name field and one Rule-body editor (the detail pane).
-    expect(screen.getAllByLabelText("Rule body (JSON)")).toHaveLength(1);
-    expect(screen.getAllByRole("textbox", { name: "Name" })).toHaveLength(1);
-
-    // New replaces the selected row's detail with a blank create draft (never a
-    // second, duplicating surface): still exactly one Name field, and the
-    // selected-row-only Rule-body editor is absent until a row is selected again.
-    await user.click(screen.getByRole("button", { name: "New" }));
-    expect(screen.getAllByRole("textbox", { name: "Name" })).toHaveLength(1);
-    expect(screen.queryByLabelText("Rule body (JSON)")).not.toBeInTheDocument();
-    // Save commits the draft; the fresh row becomes the selection, reopening the
-    // single detail form + its Rule-body editor — no duplication, no create dialog.
-    await user.click(await screen.findByRole("button", { name: "Save changes" }));
-    await waitFor(() =>
-      expect(within(screen.getByRole("table", { name: "Automations" })).getByText("New automation")).toBeInTheDocument(),
-    );
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(screen.getAllByLabelText("Rule body (JSON)")).toHaveLength(1);
-    expect(screen.getAllByRole("textbox", { name: "Name" })).toHaveLength(1);
   });
 });
 
 describe("Automations — responsive at 360px", () => {
   it("switches the list to stacked cards (no wide table to overflow the page)", async () => {
     setViewport(true);
-    server.use(
-      ...liveLists(
-        [automation({ id: ULID_A, name: "Open the doors" })],
-        [scopeNode({ id: ULID_ROOT, kind: "site", name: "HQ" })],
-      ),
-    );
+    server.use(...liveLists([automation({ id: ULID_A, name: "Open the doors" })], HQ));
     renderRoute();
     await waitFor(() =>
       expect(document.querySelector('[data-slot="data-table"][data-layout="stacked"]')).not.toBeNull(),
