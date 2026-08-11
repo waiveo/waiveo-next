@@ -18,6 +18,7 @@ import CastsRoute from "@/routes/casts/casts-route";
 import StudioRoute from "@/routes/studio/studio-route";
 import WidgetsRoute from "@/routes/widgets/widgets-route";
 import AutomationsRoute from "@/routes/automations/automations-route";
+import VariablesRoute from "@/routes/variables/variables-route";
 import ActivityRoute from "@/routes/activity/activity-route";
 import DesignRoute from "@/routes/design/design-route";
 import PagesRoute from "@/routes/pages/pages-route";
@@ -106,6 +107,7 @@ export default function App() {
                 made. Sits under Slidecast in the rail, where legacy had it. */}
             <Route path="/widgets" element={<WidgetsRoute />} />
             <Route path="/automations" element={<AutomationsRoute />} />
+            <Route path="/variables" element={<VariablesRoute />} />
             <Route path="/activity" element={<ActivityRoute />} />
             <Route path="/pages" element={<PagesRoute />} />
             {/* The pack lifecycle: what is installed, install/update/uninstall,

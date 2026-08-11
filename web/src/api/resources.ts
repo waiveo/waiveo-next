@@ -58,6 +58,16 @@ export type ScreenCreate = components["schemas"]["ScreenCreate"];
 export type ScreenUpdate = components["schemas"]["ScreenUpdate"];
 export type PairingCodeResult = components["schemas"]["PairingCodeResult"];
 
+/** A named, scope-placed scalar (`data-model/1` DAT-130): the shared state a
+ * `rules/1` `variable` condition reads (RUL-150) and a `variable_write` action
+ * writes (RUL-220). Its `name` — not its `id` — is how a rule refers to it. */
+export type Variable = components["schemas"]["Variable"];
+export type VariableCreate = components["schemas"]["VariableCreate"];
+export type VariableUpdate = components["schemas"]["VariableUpdate"];
+/** A variable's value: a JSON scalar. `null` is NOT settable (DAT-133) — the way
+ * to unset a variable is to delete the row. */
+export type VariableValue = components["schemas"]["VariableValue"];
+
 // ── Scheduling-core Wire shapes (data-model/1; not yet in the OpenAPI) ───────
 
 /** Which content shape one playlist entry carries (DAT-041). `asset` names
@@ -485,6 +495,12 @@ export interface WaiveoApi {
   dayparts: ResourceModule<Daypart, DaypartCreate, DaypartUpdate>;
   playlists: ResourceModule<Playlist, PlaylistCreate, PlaylistUpdate>;
   automations: AutomationsModule;
+  /** Named, scope-placed scalars (`data-model/1` DAT-130–138) — the shared state
+   * a rule's `variable` condition reads and its `variable_write` action writes.
+   * Plain CRUD: a variable has no operation beyond the resource envelope, and
+   * deliberately no value-only write path (see the `/variables` note in
+   * `api/openapi.yaml`). */
+  variables: ResourceModule<Variable, VariableCreate, VariableUpdate>;
   content: ContentModule;
   /** Devices a relay has DISCOVERED behind it — a read model the relay owns, so
    * list plus the single `adopt` operation and nothing else (api/devices.ts
@@ -537,6 +553,7 @@ export function createApi(opts?: ApiClientOptions): WaiveoApi {
     dayparts: crud<Daypart, DaypartCreate, DaypartUpdate>(client, "/dayparts"),
     playlists: crud<Playlist, PlaylistCreate, PlaylistUpdate>(client, "/playlists"),
     automations: automationsModule(client),
+    variables: crud<Variable, VariableCreate, VariableUpdate>(client, "/variables"),
     content: contentModule(client),
     casts: createCastsModule(client),
     packs: createPacksModule(client),

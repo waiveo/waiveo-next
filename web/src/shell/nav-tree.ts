@@ -14,6 +14,7 @@ import {
   Server,
   Tv,
   Upload,
+  Variable,
   Workflow,
   type LucideIcon,
   Puzzle,
@@ -168,7 +169,37 @@ export const NAV_TREE: NavNode[] = [
   // Automations sit at the top level on purpose. A rule's trigger is usually a
   // device and its action is usually a screen, so filing it under either one
   // hides it from the other half of its own job.
-  { kind: "leaf", to: "/automations", label: "Automations", icon: Workflow },
+  // ── Automations: rules and the state they share ─────────────────────────
+  // This was a top-level leaf while it was one page, and became a GROUP the
+  // moment a second page belonged with it — the same move Devices made when the
+  // Roku surface landed beside All devices, and for the same stated reason.
+  //
+  // The variables track argued for leaving Variables loose at the top level, on
+  // the grounds that it belongs to no *product* area. The adjacency half of that
+  // is right and is why it sits here: a variable exists for exactly one reason —
+  // a rule reads it in a condition (RUL-150) and writes it in an action
+  // (RUL-220) — so an operator reaches for it holding a rule, not doing
+  // housekeeping, and filing it under Platform beside Backup and Design kit
+  // would rank shared rule state as chores. But two pages that belong together
+  // ARE an area; that is the only thing a group means here. Admitting a second
+  // top-level leaf would have made "top level" mean "no obvious home", which is
+  // the flat rail this tree replaced.
+  //
+  // The children are "Rules" and "Variables" rather than "Automations" and
+  // "Variables" deliberately: a group whose label repeats its first child's is
+  // the exact stutter this file documents as a legacy bug. "Rules" is also what
+  // the resource is called everywhere else — the contract is `rules/1`, the page
+  // builds a rule, and the engine evaluates one.
+  {
+    kind: "group",
+    id: "automations",
+    label: "Automations",
+    icon: Workflow,
+    children: [
+      { kind: "leaf", to: "/automations", label: "Rules", icon: Workflow },
+      { kind: "leaf", to: "/variables", label: "Variables", icon: Variable },
+    ],
+  },
 
   // Extensions is its own GROUP, not a leaf and not a Platform child.
   //

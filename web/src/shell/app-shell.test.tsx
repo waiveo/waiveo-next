@@ -115,7 +115,11 @@ describe("AppShell — locked-left responsive shell", () => {
         children: ["Casts", "Screens", "Schedules", "Media", "Upload", "Widgets"],
       },
       { group: "Devices", expanded: true, children: ["All devices", "Roku"] },
-      { leaf: "Automations" },
+      // Automations became a GROUP when Variables landed beside it — the same
+      // move Devices made for Roku. Two pages that belong together are an area;
+      // admitting a second top-level leaf would make "top level" mean "no
+      // obvious home", which is the flat rail this tree replaced.
+      { group: "Automations", expanded: true, children: ["Rules", "Variables"] },
       { group: "Extensions", expanded: true, children: ["Installed"] },
       {
         group: "Platform",
@@ -134,7 +138,9 @@ describe("AppShell — locked-left responsive shell", () => {
     const topLevelLeaves = readRailTree(sidebar)
       .map((n) => ("leaf" in n ? n.leaf : undefined))
       .filter((l): l is string => l !== undefined);
-    expect(topLevelLeaves).toEqual(["Overview", "Automations"]);
+    // Overview alone. It is the only page that belongs to no area — it
+    // summarizes all of them.
+    expect(topLevelLeaves).toEqual(["Overview"]);
     for (const scattered of ["Casts", "Screens", "Media", "Upload", "System", "Backup"]) {
       expect(topLevelLeaves).not.toContain(scattered);
     }
@@ -176,9 +182,15 @@ describe("AppShell — locked-left responsive shell", () => {
       // and Roku entries joining it), and "Extensions" now reads "Installed"
       // under an Extensions group — a catalogue browse and a registry-source
       // list are both recorded ABSENT and will land beside it.
+      // Each of these is a page that KEPT existing but whose rail label changed
+      // when its area gained a sibling — the group took the old name and the page
+      // took a more specific one. "Automations" now names the group; its page is
+      // "Rules", which is what the resource is called in the contract, the
+      // builder and the engine.
       const renamed: Record<string, string> = {
         Devices: "All devices",
         Extensions: "Installed",
+        Automations: "Rules",
       };
       const expected = renamed[had] ?? had;
       expect(labels).toContain(expected);
@@ -198,7 +210,7 @@ describe("AppShell — locked-left responsive shell", () => {
     expect(railNav.tagName).toBe("NAV");
 
     const toggles = within(railNav).getAllByRole("button");
-    expect(toggles.map((b) => b.textContent?.trim())).toEqual(["Slidecast", "Devices", "Extensions", "Platform"]);
+    expect(toggles.map((b) => b.textContent?.trim())).toEqual(["Slidecast", "Devices", "Automations", "Extensions", "Platform"]);
     for (const toggle of toggles) {
       expect(toggle).toHaveAttribute("type", "button");
       expect(toggle).toHaveAttribute("aria-expanded", "true");

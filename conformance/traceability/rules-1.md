@@ -2,6 +2,27 @@
 
 One row per requirement ID `contracts/rules-1.md` defines. Format: `conformance/traceability/README.md`.
 
+**RUL-220 (`variable_write`) is implemented but still `TBD-wave1`.** The action
+is no longer the `default:`-arm no-op it was: `eval.RunActions` dispatches it
+through an injected `eval.VariableSink` (`internal/rules/eval/action.go`), whose
+production implementor writes a `data-model/1` variable row and emits
+`variable.changed` (`internal/app/api/automations_exec.go`'s
+`variableWriteSink`). It stays app-class exactly as the requirement says — no
+edge context wires the sink, so the relay's engine skips it as before. The row
+is `TBD-wave1` because the bar for `covered` is a CORPUS CASE the rules/1 driver
+executes, and the behaviour is currently exercised by Go tests instead
+(`internal/rules/eval/variablewrite_test.go` for the dispatch and its refusals,
+`internal/app/api/variables_e2e_test.go` for the write reaching the store).
+
+**RUL-150 (`variable` condition) reads `covered`, and the case it names proves
+less than the name suggests.** `RUL-150-variable-condition-constant-folded`
+exercises the CONSTANT FOLDING — that a value observed at compile time is frozen
+into the generation — with the value supplied by the fixture. It does not prove
+any production caller supplies one, and until this change none did: the app
+peer's run path passed a hardcoded empty map and the relay's
+`closure.Compute(rule, closure.Env{})` still does. The app half is now fixed and
+tested; the relay half is not. See the note in `internal/relay/automationhost/host.go`.
+
 | req-id | contract §anchor | case-id(s) | status |
 |---|---|---|---|
 | RUL-001 | `contracts/rules-1.md#rule-classification` | `RUL-001-unknown-vocabulary-member-rejected` | covered |

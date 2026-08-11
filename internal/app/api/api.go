@@ -158,6 +158,13 @@ type server struct {
 	// has no caller to answer, so this record is the only place its per-target
 	// refusals can be read.
 	runEvents RunEventSink
+	// variableEvents publishes a committed variable write as an events/1
+	// `variable.changed` record (variables.go), wired by WithVariableEvents. Nil
+	// leaves the write unrecorded — a legitimate state for a bare handler, and
+	// not one for a deployment: this event is what an `event`-kind trigger fires
+	// a rule on when a variable changes (rules/1 RUL-080, events/1 EVT-085), and
+	// its old_value is the only surviving record of the previous value.
+	variableEvents RunEventSink
 	// families is the CRUD resource registry the audit middleware reads a
 	// request's subject metadata out of, keyed by URL path segment. It is
 	// populated by mount() itself, so a family's audit identity and its routes
@@ -357,6 +364,9 @@ func (srv *server) mountAll(rt, rootRT *router, authHandlers *auth.Handlers) {
 	// live device/entity read model below.
 	srv.mount(rt, screensConfig())
 	srv.mount(rt, adoptedDevicesConfig())
+	// The variables family (variables.go, data-model/1 DAT-130-138): the shared
+	// state a `variable` condition reads and a `variable_write` action writes.
+	srv.mount(rt, variablesConfig())
 	// The outbound-webhook registration family plus the three operations a
 	// registered endpoint needs that plain CRUD does not express — installing or
 	// rotating its signing secret, re-enabling it after an auto-disable, and
@@ -576,6 +586,29 @@ type resourceConfig struct {
 	// the scope-node kind sets it: DAT-020's child nodes and DAT-021's placed rows
 	// (scopenodes.go).
 	deleteGuards func(srv *server, id string) []store.DeleteGuard
+	// afterCommit, when non-nil, is called once per COMMITTED write of this kind
+	// — create, update, or delete — with the row's body immediately before and
+	// immediately after. It runs after the store transaction has committed and
+	// before the response is written.
+	//
+	// before is nil on a create, after is nil on a delete, and both are the
+	// stored bytes rather than the request's: a create's `after` therefore
+	// carries the server-minted id and the materialized declared members, and a
+	// patch's `after` is the merged row rather than the sparse patch.
+	//
+	// Only the variables kind sets it, for data-model/1 DAT-137: a committed
+	// variable write MUST emit `variable.changed` (`events/1` EVT-084/085),
+	// carrying the value on BOTH sides of the write. That is why it is a hook
+	// here and not a store OnCommit callback — Store.OnCommit takes no
+	// arguments, so it can say a write happened but not what it changed, and
+	// old_value is the whole reason this event is worth emitting.
+	//
+	// It deliberately CANNOT fail the write. By the time it runs the row is
+	// committed and the generation is bumped; returning an error would leave the
+	// caller with a 5xx describing a write that in fact succeeded, which is a
+	// worse lie than a missing event. A hook that cannot publish says so on the
+	// platform log instead.
+	afterCommit func(srv *server, r *http.Request, before, after json.RawMessage)
 }
 
 // deleteRefused is a per-kind delete rule's typed refusal: the HTTP Status, the
@@ -796,9 +829,21 @@ func (rs *resource) createExec(w http.ResponseWriter, r *http.Request, raw []byt
 		return
 	}
 
+	rs.afterCommit(r, nil, res.Body)
+
 	w.Header().Set("ETag", apihttp.ETag(res.Revision))
 	w.Header().Set("Location", apiPrefix+"/"+rs.cfg.path+"/"+id)
 	writeJSON(w, http.StatusCreated, res.Body)
+}
+
+// afterCommit fires the kind's committed-write hook, if it declares one. It is
+// a method rather than three inline nil checks so the "only after a successful
+// commit, never on an error path" rule is stated in exactly one place.
+func (rs *resource) afterCommit(r *http.Request, before, after json.RawMessage) {
+	if rs.cfg.afterCommit == nil {
+		return
+	}
+	rs.cfg.afterCommit(rs.srv, r, before, after)
 }
 
 // rejectClientSuppliedID writes a 422 / ID_SERVER_ASSIGNED Problem, naming the
@@ -1126,6 +1171,8 @@ func (rs *resource) patch(w http.ResponseWriter, r *http.Request) {
 		rs.writeStoreError(w, r, err)
 		return
 	}
+	rs.afterCommit(r, current.Body, res.Body)
+
 	w.Header().Set("ETag", apihttp.ETag(res.Revision))
 	writeJSON(w, http.StatusOK, res.Body)
 }
@@ -1205,6 +1252,9 @@ func (rs *resource) delete(w http.ResponseWriter, r *http.Request) {
 		rs.writeStoreError(w, r, err)
 		return
 	}
+
+	rs.afterCommit(r, current.Body, nil)
+
 	w.WriteHeader(http.StatusNoContent)
 }
 

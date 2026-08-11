@@ -1,0 +1,368 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { PageRenderer, isCreateDraftUi, type ActionHandler } from "@/renderer";
+import { PageHeader, Toaster, toast } from "@/components/kit";
+import {
+  ApiError,
+  collectPages,
+  createApi,
+  etagForRevision,
+  updateWithReview,
+  type FieldErrors,
+  type ScopeNode,
+  type Variable,
+  type VariableCreate,
+  type VariableUpdate,
+  type WaiveoApi,
+} from "@/api";
+import variablesPageDoc from "./page.uis.json";
+
+/**
+ * The Variables route — the operator surface over `data-model/1`'s Variables
+ * (DAT-130–138): the shared state a `rules/1` `variable` condition reads
+ * (RUL-150) and a `variable_write` action writes (RUL-220).
+ *
+ * Authored as a ui-schema/1 `list-detail` document rendered through the SAME
+ * PageRenderer an extension page goes through (parity-loop Step 1.5). This file
+ * is only the host seam: it feeds the rows in as the page's bound data and wires
+ * the closed action verbs onto the typed api/1 client.
+ *
+ * # The one thing the document cannot express, and how it is worked around
+ *
+ * A variable's `value` is a POLYMORPHIC SCALAR — string, number, or boolean
+ * (DAT-132) — and the closed widget catalog has no widget that binds one. Its
+ * three input widgets each bind one type (`text-input` a string, `number-input` a
+ * number, `toggle` a boolean), and `switch` discriminates on a BOUND SIBLING
+ * FIELD, never on the runtime type of the value it is about to render.
+ *
+ * grammar-gap: the renderer needs either (a) a `scalar-input` widget kind that
+ * binds a string|number|boolean and carries its own type affordance, or (b) a
+ * `switch` discriminant that can name a value's runtime JSON type. Recorded per
+ * Step 1.5 rather than added — web/src/renderer/** is another track's.
+ *
+ * The workaround keeps the DOCUMENT honest and puts the cost in the host: the
+ * rows handed to the renderer are PROJECTED (toViewRow) into an explicit
+ * `value_kind` plus one field per type, which the document's `select` +
+ * `switch` then bind ordinarily; the reverse projection (valueFromView)
+ * reassembles the single wire scalar on the way out. Nothing about the page's
+ * grammar is bent — it is a plain discriminated form over fields that exist.
+ */
+
+const messages: Record<string, string> = {
+  "msg:variables.col.name": "Name",
+  "msg:variables.col.value": "Value",
+  "msg:variables.col.kind": "Type",
+  "msg:variables.col.scope": "Scope",
+  "msg:variables.detail.title": "Variable",
+  "msg:variables.detail.empty": "Select a variable to edit it, or add a new one.",
+  "msg:variables.detail.name": "Name",
+  "msg:variables.detail.namePlaceholder": "lowercase_with_underscores",
+  "msg:variables.detail.scope": "Scope node",
+  "msg:variables.detail.kind": "Type",
+  "msg:variables.kind.string": "Text",
+  "msg:variables.kind.number": "Number",
+  "msg:variables.kind.boolean": "True / false",
+  "msg:variables.detail.valueText": "Value",
+  "msg:variables.detail.valueNumber": "Value",
+  "msg:variables.detail.valueBoolean": "Value",
+  "msg:variables.detail.on": "True",
+  "msg:variables.detail.off": "False",
+  "msg:variables.detail.save": "Save changes",
+  "msg:variables.detail.delete": "Delete variable",
+};
+
+/** The three value types DAT-132 admits. */
+type ValueKind = "string" | "number" | "boolean";
+
+/** One variable projected into the fields the document binds. See the file's
+ * own grammar-gap note for why the projection exists. */
+type VariableViewRow = Variable & {
+  value_kind: ValueKind;
+  value_text: string;
+  value_number: number | null;
+  value_boolean: boolean;
+  /** The value rendered for the LIST column, as a string. A table cell binds one
+   * path, and the three typed fields would need three columns. */
+  value_display: string;
+  /** The placement's human name, so the list column reads "Demo Site" rather
+   * than a ULID. Falls back to the id when the node is not readable. */
+  scope_name: string;
+};
+
+/** Which of DAT-132's three scalars a stored value is. Anything else — which the
+ * server refuses to store — is shown as text so an unexpected row is still
+ * editable rather than blank. */
+function kindOf(value: unknown): ValueKind {
+  if (typeof value === "number") return "number";
+  if (typeof value === "boolean") return "boolean";
+  return "string";
+}
+
+/** Render a scalar for the list column. */
+function displayOf(value: unknown): string {
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (value === null || value === undefined) return "";
+  return String(value);
+}
+
+function toViewRow(v: Variable, nodeNames: Map<string, string>): VariableViewRow {
+  const kind = kindOf(v.value);
+  return {
+    ...v,
+    value_kind: kind,
+    value_text: kind === "string" ? String(v.value ?? "") : "",
+    value_number: kind === "number" ? (v.value as number) : null,
+    value_boolean: kind === "boolean" ? (v.value as boolean) : false,
+    value_display: displayOf(v.value),
+    scope_name: nodeNames.get(v.scope_node) ?? v.scope_node,
+  };
+}
+
+/** The inverse projection: the single wire scalar this edited row means.
+ *
+ * A cleared `number-input` binds `null` (UIS-072), and `null` is NOT a settable
+ * variable value (DAT-133) — so it is reported as unsendable here rather than
+ * sent and refused at the server with a message about a member the operator
+ * never typed. */
+function valueFromView(row: VariableViewRow): { value: Variable["value"] } | { error: string } {
+  switch (row.value_kind) {
+    case "number":
+      if (typeof row.value_number !== "number" || Number.isNaN(row.value_number)) {
+        return { error: "Enter a number — a variable cannot be left unset. To unset one, delete it." };
+      }
+      return { value: row.value_number };
+    case "boolean":
+      return { value: Boolean(row.value_boolean) };
+    default:
+      return { value: String(row.value_text ?? "") };
+  }
+}
+
+function fieldErrorsOf(err: unknown): FieldErrors | null {
+  if (err instanceof ApiError && err.status === 422 && Object.keys(err.fieldErrors).length > 0) {
+    return err.fieldErrors;
+  }
+  return null;
+}
+
+function reportProblem(context: string, err: unknown): void {
+  if (err instanceof ApiError) {
+    const fieldMsg = Object.values(err.fieldErrors)[0];
+    toast.error(`${context}: ${fieldMsg ?? err.detail ?? err.code}`);
+  } else {
+    toast.error(`${context}: the service is unreachable.`);
+  }
+}
+
+function idRev(resource: unknown): { id: string; revision: number } | null {
+  if (resource && typeof resource === "object") {
+    const r = resource as Partial<Variable>;
+    if (typeof r.id === "string" && typeof r.revision === "number") {
+      return { id: r.id, revision: r.revision };
+    }
+  }
+  return null;
+}
+
+export default function VariablesRoute({ api }: { api?: WaiveoApi }) {
+  const client = useMemo(() => api ?? createApi(), [api]);
+  const [variables, setVariables] = useState<Variable[] | null>(null);
+  const [nodes, setNodes] = useState<ScopeNode[]>([]);
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selectedIdRef = useRef<string | null>(null);
+  const draftOpenRef = useRef(false);
+  const [conflictReview, setConflictReview] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [version, setVersion] = useState(0);
+
+  // The node a new variable is placed under. Defaults to the first readable
+  // node; a variable MUST carry a placement (DAT-006/DAT-130) and the
+  // `newAction` grammar cannot carry a chosen one, so the detail form's own
+  // scope-node select is where it is changed after the row exists.
+  const nodesRef = useRef<ScopeNode[]>([]);
+  nodesRef.current = nodes;
+
+  const load = useCallback(async () => {
+    try {
+      const [rows, nodeRows] = await Promise.all([
+        collectPages<Variable>((cursor) => client.variables.list({ cursor })),
+        collectPages<ScopeNode>((cursor) => client.scopeNodes.list({ cursor })),
+      ]);
+      setVariables(rows);
+      setNodes(nodeRows);
+      setLoadError(null);
+    } catch (err) {
+      setVariables([]);
+      setNodes([]);
+      setLoadError(err instanceof ApiError ? (err.detail ?? err.code) : "The service is unreachable.");
+    }
+  }, [client]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const reload = useCallback(async () => {
+    setFieldErrors({});
+    await load();
+    setVersion((v) => v + 1);
+  }, [load]);
+
+  const onUiChange = useCallback((ui: Record<string, unknown>) => {
+    const next = typeof ui.selected === "string" ? ui.selected : null;
+    const draftOpen = isCreateDraftUi(ui);
+    const enteringDraft = draftOpen && !draftOpenRef.current;
+    draftOpenRef.current = draftOpen;
+    if (next === selectedIdRef.current && !enteringDraft) return;
+    selectedIdRef.current = next;
+    setSelectedId(next);
+    setFieldErrors({});
+    setConflictReview(false);
+  }, []);
+
+  const handler: ActionHandler = useMemo(
+    () => ({
+      create: async (_target, itemDefault) => {
+        setFieldErrors({});
+        setConflictReview(false);
+        const placement = nodesRef.current[0]?.id;
+        if (!placement) {
+          toast.error("Add a scope node before adding a variable — a variable is placed at one.");
+          return;
+        }
+        const body: VariableCreate = {
+          name: typeof itemDefault.name === "string" ? itemDefault.name : "new_variable",
+          // A create's value is the empty string rather than a chosen type: the
+          // `newAction` grammar carries a static itemDefault, and the type is what
+          // the operator picks next in the detail form.
+          value: "",
+          scope_node: placement,
+        };
+        try {
+          const created = await client.variables.create(body);
+          toast.success(`Added ${created.data.name}`);
+          selectedIdRef.current = created.data.id;
+          setSelectedId(created.data.id);
+          await reload();
+        } catch (err) {
+          reportProblem("Couldn't add the variable", err);
+        }
+      },
+      submit: async (_target, resource) => {
+        const meta = idRev(resource);
+        if (!meta) return;
+        setFieldErrors({});
+        setConflictReview(false);
+        const row = resource as VariableViewRow;
+        const projected = valueFromView(row);
+        if ("error" in projected) {
+          setFieldErrors({ value_number: projected.error });
+          toast.error("Couldn't save the variable — please fix the highlighted field.");
+          return;
+        }
+        const patch: VariableUpdate = {
+          name: row.name,
+          value: projected.value,
+          scope_node: row.scope_node,
+        };
+        try {
+          const outcome = await updateWithReview(
+            client.variables,
+            meta.id,
+            patch,
+            etagForRevision(meta.revision),
+          );
+          if (outcome.status === "conflict") {
+            toast.error("This variable changed elsewhere. Review the current values and try again.");
+            setConflictReview(true);
+          } else {
+            toast.success("Saved changes");
+          }
+          await reload();
+        } catch (err) {
+          const fields = fieldErrorsOf(err);
+          if (fields) {
+            setFieldErrors(fields);
+            toast.error("Couldn't save the variable — please fix the highlighted fields.");
+          } else {
+            reportProblem("Couldn't save the variable", err);
+          }
+        }
+      },
+      remove: async (_target, resource) => {
+        const meta = idRev(resource);
+        if (!meta) return;
+        setConflictReview(false);
+        try {
+          await client.variables.remove(meta.id, etagForRevision(meta.revision));
+          toast.success("Deleted variable");
+          await reload();
+        } catch (err) {
+          reportProblem("Couldn't delete this variable", err);
+        }
+      },
+    }),
+    [client, reload],
+  );
+
+  const nodeNames = useMemo(
+    () => new Map(nodes.map((n) => [n.id, n.name] as [string, string])),
+    [nodes],
+  );
+  const viewRows = useMemo(
+    () => (variables ?? []).map((v) => toViewRow(v, nodeNames)),
+    [variables, nodeNames],
+  );
+
+  return (
+    <div className="min-h-screen bg-background text-foreground">
+      <div className="mx-auto flex max-w-[1200px] flex-col gap-6 px-4 py-6 lg:px-8">
+        <PageHeader
+          variant="hero"
+          title="Variables"
+          description="Shared values your automations read and write. A rule can test a variable in a condition and set it in an action; a value set at a site is visible to every group and screen beneath it, unless one of them overrides it."
+        />
+        {/* DAT-138, said where an operator is standing when they would get it
+            wrong. A variable is rule-readable, published on every change, and
+            returned to anyone who can see its placement — so the prohibition
+            belongs on the surface, not only in the contract. */}
+        <p className="rounded-card border border-border bg-surface-2 p-4 text-sm text-muted-foreground">
+          Don't put passwords, API keys or tokens here. A variable is readable by every automation, is
+          published in full on the activity feed each time it changes, and is visible to anyone who can see
+          the scope node it sits at.
+        </p>
+        {loadError ? (
+          <p role="alert" className="text-sm text-[color:var(--wv-err)]">
+            Couldn't load variables — {loadError}
+          </p>
+        ) : null}
+        {conflictReview ? (
+          <p
+            role="status"
+            className="rounded-card border border-[color:var(--wv-warn)] bg-[color:var(--wv-warn-bg)] p-4 text-sm text-[color:var(--wv-warn)]"
+          >
+            This variable was changed elsewhere while you were editing. The current values are shown below —
+            review them, then save again to apply your change.
+          </p>
+        ) : null}
+        <main className="min-w-0">
+          {variables === null ? (
+            <p className="text-sm text-muted-foreground">Loading variables…</p>
+          ) : (
+            <PageRenderer
+              key={version}
+              doc={variablesPageDoc}
+              data={{ variables: viewRows, nodes }}
+              initialUi={{ selected: selectedId }}
+              messages={messages}
+              handler={handler}
+              fieldErrors={fieldErrors}
+              onUiChange={onUiChange}
+            />
+          )}
+        </main>
+      </div>
+      <Toaster />
+    </div>
+  );
+}

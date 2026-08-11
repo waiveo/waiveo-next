@@ -240,6 +240,26 @@ func rowSetFaults(ctx context.Context, tx *sql.Tx, kind Kind) ([]datamodel.Error
 		// writer that bypasses the HTTP layer must not be able to persist a
 		// non-ULID id that cursor pagination would then refuse to page past.
 		return rowIDFaults(ctx, tx, KindWebhookEndpoint)
+	case kind == KindVariable:
+		// A variable's own members are validated by the api layer's per-kind
+		// check before the write (the name grammar DAT-131a and the scalar rule
+		// DAT-132/133, both 422s naming the field) and its name uniqueness by a
+		// WriteGuard inside this very transaction (VariableNameUniqueGuard,
+		// DAT-131). What is enforced HERE is the DAT-005a identity rule the
+		// automations and webhook-endpoint arms enforce, for the same reason: an
+		// in-process writer that bypasses the HTTP layer — a seed, a pack
+		// pipeline, a `variable_write` action's sink — must not be able to
+		// persist a non-ULID id that cursor pagination would then refuse to page
+		// past.
+		//
+		// The name/scalar rules are deliberately NOT re-run here as a whole-table
+		// revalidation the way the scheduling kinds' are. That pattern exists to
+		// catch a write that breaks an invariant SPANNING rows (a playlist item
+		// pointing at a cast this delete removed); a variable's members constrain
+		// only its own row, so re-validating every other row on every write would
+		// make one operator's bad row block every subsequent write to the family
+		// with an error about a row they did not touch.
+		return rowIDFaults(ctx, tx, KindVariable)
 	default:
 		return nil, fmt.Errorf("store: no validator for kind %q", kind)
 	}

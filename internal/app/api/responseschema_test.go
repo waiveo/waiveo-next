@@ -581,6 +581,21 @@ func (e *schemaProbeEnv) mintScreen(t *testing.T, scopeNode string) string {
 	return decodeID(t, raw)
 }
 
+// mintVariable creates one variable row at scopeNode and returns its id.
+func (e *schemaProbeEnv) mintVariable(t *testing.T, scopeNode, name string, value any) string {
+	t.Helper()
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/variables", mustJSON(t, map[string]any{
+		"name":       name,
+		"value":      value,
+		"scope_node": scopeNode,
+		"labels":     map[string]string{"env": "prod"},
+	}), nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("mint variable: %d %s", resp.StatusCode, raw)
+	}
+	return decodeID(t, raw)
+}
+
 // castSlides is the one authored slide stack every cast probe writes: a text
 // layer, a rect and a `derive` layer, all well inside the 1920x1080 canvas. It
 // deliberately carries no image layer — an image layer's asset_ref must resolve
@@ -732,10 +747,10 @@ var probes = map[string]probe{
 		// The probe drives a rule that produces at least one entry in EVERY
 		// effect array the response declares — a device command (refused,
 		// because no device plane is wired in this env, which is still a
-		// reported target), a signage action against a real screen and cast,
-		// and a log. An empty array proves nothing about its item schema, and
-		// this operation's arrays are the half of the response that says the
-		// run actually did something.
+		// reported target), a signage action against a real screen and cast, a
+		// variable write, and a log. An empty array proves nothing about its
+		// item schema, and this operation's arrays are the half of the response
+		// that says the run actually did something.
 		node := e.mintOrg(t)
 		screenID := e.mintScreen(t, node)
 		castID := e.mintCast(t, node)
@@ -748,6 +763,7 @@ var probes = map[string]probe{
 			"actions": []any{
 				map[string]any{"type": "device_command", "entity_id": autoScreenEntity, "command": "launch"},
 				map[string]any{"type": "play_cast", "screen_id": screenID, "cast_id": castID},
+				map[string]any{"type": "variable_write", "variable": "run_probe_flag", "value": true},
 				map[string]any{"type": "log", "message": "run probe"},
 			},
 		}), nil)
@@ -786,6 +802,35 @@ var probes = map[string]probe{
 	"listScreens": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
 		e.mintScreen(t, e.mintOrg(t))
 		return e.do(t, http.MethodGet, "/api/v1/screens", nil, nil)
+	},
+
+	// --- variables (data-model/1 DAT-130-138) ------------------------------
+	"createVariable": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		// The MINIMAL create: exactly VariableCreate's own required members.
+		// `labels` is declared required on the RESPONSE and named here by
+		// nothing — the drift class this check exists for.
+		return e.do(t, http.MethodPost, "/api/v1/variables", mustJSON(t, map[string]any{
+			"name":       "minimal_variable",
+			"value":      "open",
+			"scope_node": e.mintOrg(t),
+		}), nil)
+	},
+	"getVariable": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		id := e.mintVariable(t, e.mintOrg(t), "guest_mode", false)
+		return e.do(t, http.MethodGet, "/api/v1/variables/"+id, nil, nil)
+	},
+	"updateVariable": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		// Patched to a NUMBER from a boolean, so the probe exercises the
+		// VariableValue union at a second member rather than only at the one the
+		// row was created with.
+		id := e.mintVariable(t, e.mintOrg(t), "guest_mode", false)
+		return e.do(t, http.MethodPatch, "/api/v1/variables/"+id,
+			mustJSON(t, map[string]any{"value": 42}),
+			map[string]string{"If-Match": e.etagOf(t, "/api/v1/variables/"+id)})
+	},
+	"listVariables": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		e.mintVariable(t, e.mintOrg(t), "guest_mode", true)
+		return e.do(t, http.MethodGet, "/api/v1/variables", nil, nil)
 	},
 	"issueScreenPairingCode": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
 		id := e.mintScreen(t, e.mintOrg(t))

@@ -230,7 +230,7 @@ func (srv *server) fireEventTriggers(ctx context.Context, env events.Envelope) {
 		// surface makes.
 		node := parseFields(row.Body).ScopeNode
 		view := automationScopeView(tree, node)
-		rep := srv.runAutomationNow(ctx, env.TraceID, rule, view, false)
+		rep := srv.runAutomationNow(ctx, env.TraceID, rule, view, node, false)
 		// A fired run has no caller to answer, so its effect report — above all
 		// the targets it REFUSED — is published as an events/1 automation.run
 		// (eventtriggers_report.go). Without it a refusal is a screen that did not

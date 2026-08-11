@@ -264,6 +264,31 @@ func (h *Host) ApplyEdgeRules(edgeRules []json.RawMessage, generation int) error
 			log.Printf("automationhost: skipping edge_rules[%d]: parse after compile: %v", i, err)
 			continue
 		}
+		// KNOWN GAP, recorded rather than left to be rediscovered: the Env is
+		// EMPTY, so every `variable` condition in an edge-classified rule freezes
+		// to "absent" and evaluates false forever (RUL-150 fails closed), and
+		// every `selector`/`device_class` EntityRef and `preset_batch` resolves to
+		// nothing.
+		//
+		// The variables track fixed the APP side of this — internal/app/api's
+		// runAutomationNow now resolves the environment from the store at the
+		// rule's own scope node (DAT-134), which is what makes a `variable`
+		// condition true for a manual run and for an event-fired one. It did NOT
+		// fix this side, and the reason is that the fix here is a WIRE change
+		// rather than a lookup: this relay holds no variable rows and no scope
+		// tree, so the values have to arrive in the signed snapshot.
+		//
+		// The shape the contract already points at: relay/1 REL-062 says
+		// `edge_rules.rules` is an array of `rules/1` CompiledRuleEntry objects,
+		// and a CompiledRuleEntry carries `closed_over` (rules/1 Wire shapes).
+		// The feeder ships raw rule bodies instead and this recomputes the
+		// closure locally, which is where the emptiness comes from. Making the
+		// FEEDER compute the closure — it holds the store — and carrying it in
+		// each entry closes this and moves the wire toward REL-062 at the same
+		// time. It is out of the variables track's scope because it changes the
+		// signed snapshot's bytes and touches relay/1 conformance, and because
+		// `variable_write` is app-class (RUL-220) so no rule that WRITES a
+		// variable is ever loaded here anyway.
 		cl, cerr := closure.Compute(rule, closure.Env{})
 		if cerr != nil {
 			log.Printf("automationhost: skipping edge_rules[%d] (rule %s): closure: %s: %s", i, entry.RuleID, cerr.Code, cerr.Message)
