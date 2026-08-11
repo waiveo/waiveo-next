@@ -38,16 +38,21 @@ import (
 // deriveLayerKinds are the row kinds a derive layer can be authored into, and
 // therefore the complete set this queue must scan.
 //
-// It is BOTH shapes that carry an authored layer stack, and it must stay that
-// way: store.RowLayerStacks projects a cast's slides and a `source: "slide"`
-// playlist item's inline slide identically, both content projections resolve
-// them through the identical resolveLayers (so both really do reach a screen as
-// pictures), and store.RowAssetReferences holds a custom font in either against
-// the retention sweep. A queue narrower than that set is a surface that ACCEPTS
-// work it never performs — an inline-slide derive layer was accepted, projected,
-// and protected from the sweep while never once being reported to the tool that
-// would draw it, which is the shape this file's own header calls out.
-var deriveLayerKinds = []store.Kind{store.KindCast, store.KindPlaylist}
+// It is not a list this file maintains. It is store.LayerStackKinds — the same
+// enumeration store.RowLayerStacks' own switch is guarded against — ALIASED here
+// only so the read below says what it is scanning and why.
+//
+// The alias, rather than a second literal, is the whole point. A queue narrower
+// than the set of shapes that carry an authored layer stack is a surface that
+// ACCEPTS work it never performs: an inline-slide derive layer was accepted,
+// projected by both content projections through the identical resolveLayers, and
+// held against the retention sweep by store.RowAssetReferences, while never once
+// being reported to the tool that would draw it. That was fixed by making
+// RowLayerStacks the one enumeration — and then re-opened, in this file, by
+// spelling the kinds again by hand. A hand-maintained copy of a single source of
+// truth is not a single source of truth; adding a kind to RowLayerStacks and
+// forgetting it here would reproduce the original defect verbatim.
+var deriveLayerKinds = store.LayerStackKinds
 
 // deriveSourceFor names the kind on the wire. The kinds' own storage names
 // (`casts`, `playlists`) are not the vocabulary the api publishes, so the
@@ -124,6 +129,22 @@ func (srv *server) listPendingDerives(w http.ResponseWriter, r *http.Request) {
 				for i, l := range stack.Layers {
 					state := wire.LayerDeriveState(l)
 					if state == wire.DeriveCurrent {
+						continue
+					}
+					if l.Derive == nil {
+						// A work order with no spec is not a work order: this schema
+						// declares `spec` REQUIRED and non-nullable precisely because a
+						// renderer cannot draw "nothing", and answering with `spec: null`
+						// would be this surface violating its own contract and handing
+						// the tool a job whose only possible outcome is a crash.
+						//
+						// It cannot be authored any more — wire.ValidateAuthoredSlideLayers
+						// requires the spec, and BOTH shapes now pass through it
+						// (datamodel.checkCastSlides and checkPlaylistItems) — so the only
+						// row that can reach here is one stored before the inline gate
+						// existed. Omitting it is honest about what this queue is for:
+						// nothing this tool can do makes that layer draw, and the fix is an
+						// edit to the row, not a render.
 						continue
 					}
 					job := derivePendingLayer{

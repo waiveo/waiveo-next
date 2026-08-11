@@ -50,6 +50,19 @@ It renders `-concurrency` layers at a time across the WHOLE pass — one pool si
 by the Runner's own clamp, not one per row, so a workspace of single-layer casts
 parallelises exactly as one many-layered cast does.
 
+Each **distinct picture** is rendered once, not each layer: `DeriveDigest` is the
+identity of a layer's pixels, so layers sharing one are one render whose answer
+every one of them receives. That is not only a saved browser launch — the digest
+is also the circuit breaker's key, so N concurrent renders of one key charged the
+backoff N times per pass and made the report depend on which browser finished
+first.
+
+A per-layer failure never costs another layer. That includes a **panic**: the
+pass holds every finished PNG in memory until its serial upload/apply/write-back
+phase, so a crash in one unit used to discard the completed work of every other
+row. Each unit renders under a `recover()` and a panic becomes that layer's
+error.
+
 ### Both authored shapes
 
 A `derive` layer lives in either shape that carries an authored layer stack: a
@@ -59,8 +72,18 @@ reach a screen — and the queue reports both. A job says which with `source`
 (`cast`/`playlist`) plus `resource_id`, then locates the layer with `slide_id`
 (a cast slide's document-local id) or `item_index` (an inline slide has no id of
 its own). `store.RowLayerStacks` is the single enumeration behind the queue AND
-behind the retention/write-time projection, so the two cannot know about
-different shapes.
+behind the retention/write-time projection, and `store.LayerStackKinds` — which
+the queue *aliases* rather than copies — is the single list of kinds either one
+scans, so the two cannot know about different shapes.
+
+Both shapes are also held to the **same authoring gate**: an inline slide's
+layers pass `wire.ValidateAuthoredSlideLayers` exactly as a cast slide's do
+(`PLAYLIST_ITEM_SLIDE_LAYERS_INVALID`). They once did not, and the gap was not a
+looser rule but the absence of one — a `derive` layer with no spec was a 422 in a
+cast and a 201 inline, and this tool then dereferenced the nil mid-pass. A job
+whose layer carries no spec is refused by the renderer with a reason, and the
+queue does not emit one at all: `DerivePendingLayer.spec` is declared required
+and non-nullable, and a work order with nothing to draw is not a work order.
 
 The credential is read from the dev key file (`make dev-key`) or from
 `-token-file`, never from a flag — an argument is visible in `ps` and lands in
@@ -141,8 +164,9 @@ rather than rendering a zero-size box that captures as a blank PNG.
 ## Determinism
 
 Same spec + same geometry → **byte-identical PNG**, which is what makes
-content-addressing dedupe and what makes a second `sync` pass over a rendered
-workspace cost nothing. It is held up by:
+content-addressing dedupe, what makes a second `sync` pass over a rendered
+workspace cost nothing, and what lets duplicate layers collapse to one render. It
+is held up by:
 
 - a pure-Go, deterministic QR encoder (`internal/derive/qr`, golden-tested
   against an independent implementation across all forty versions);

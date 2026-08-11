@@ -504,3 +504,149 @@ func (e *testEnv) etagOfDefault(t *testing.T, path string) string {
 	}
 	return etag
 }
+
+// ── The authoring gate, over HTTP, for BOTH authored shapes ─────────────────
+//
+// Everything below drives the defect the way it was measured: the same layer
+// stack, POSTed as a cast and as a `source: "slide"` playlist item, must get the
+// same answer. It did not. A cast refused a spec-less `derive` layer with a 422;
+// the inline shape answered 201, queued the layer, and handed waiveo-derive a
+// work order it crashed on — taking every other layer's finished PNG in that
+// pass with it.
+
+// inlineSlidePlaylist wraps one layer stack in a `source: "slide"` playlist item.
+func inlineSlidePlaylist(scopeNode, name string, layers []wire.Layer) datamodel.Playlist {
+	return datamodel.Playlist{
+		ScopeNode: scopeNode, Name: name,
+		Items: []datamodel.PlaylistItem{{Source: "slide", Slide: &datamodel.Slide{Layers: layers}}},
+	}
+}
+
+// TestAnInlineSlideIsHeldToTheSameLayerRulesAsACastSlide is the api-level parity
+// check: one stack, two shapes, one answer. The four stacks are the four
+// measured symptoms, and every one of them was 422/201 before this.
+func TestAnInlineSlideIsHeldToTheSameLayerRulesAsACastSlide(t *testing.T) {
+	e := newEnv(t)
+	screenID := seedSchedulingScope(t, e)
+
+	cases := []struct {
+		name   string
+		layers []wire.Layer
+	}{
+		{"a derive layer with no spec", []wire.Layer{
+			{Kind: wire.LayerKindDerive, X: 0, Y: 0, W: 400, H: 400},
+		}},
+		{"font_px on a qr spec", []wire.Layer{
+			{Kind: wire.LayerKindDerive, X: 0, Y: 0, W: 400, H: 400, Derive: &wire.DeriveSpec{
+				Kind: wire.DeriveKindQR, Data: "https://waiveo.local/x", FontPx: 64,
+			}},
+		}},
+		{"geometry off the canvas", []wire.Layer{
+			{Kind: wire.LayerKindRect, X: 1900, Y: 0, W: 100, H: 100, Color: "#ffffff"},
+		}},
+		{"an unknown layer kind", []wire.Layer{
+			{Kind: "hologram", X: 0, Y: 0, W: 100, H: 100},
+		}},
+		{"a zero-layer slide", []wire.Layer{}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			castResp, castRaw := e.do(t, http.MethodPost, "/api/v1/casts", rowCreateBody(t, datamodel.Cast{
+				ScopeNode: screenID, Name: "Parity Cast",
+				Slides: []datamodel.CastSlide{{ID: "s1", Layers: tc.layers}},
+			}), nil)
+			if castResp.StatusCode != http.StatusUnprocessableEntity {
+				t.Errorf("POST the cast = %d, want 422 (body %s)", castResp.StatusCode, castRaw)
+			}
+
+			listResp, listRaw := e.do(t, http.MethodPost, "/api/v1/playlists",
+				rowCreateBody(t, inlineSlidePlaylist(screenID, "Parity Playlist", tc.layers)), nil)
+			if listResp.StatusCode != http.StatusUnprocessableEntity {
+				t.Fatalf("POST the SAME stack as an inline playlist slide = %d, want 422 — "+
+					"the two authored shapes are projected, swept and queued identically, so an "+
+					"authoring gate that reads only one of them does not make the other more "+
+					"permissive, it leaves it unvalidated (body %s)", listResp.StatusCode, listRaw)
+			}
+			p := assertProblem(t, listResp, listRaw, "VALIDATION_FAILED")
+			errorsHasFieldCode(t, p, "items[0].slide.layers", "PLAYLIST_ITEM_SLIDE_LAYERS_INVALID")
+		})
+	}
+}
+
+// TestAWellFormedInlineDeriveLayerIsStillAccepted is the other half, and it is
+// the half a validation fix breaks if nobody drives it: a derive layer with a
+// valid spec and NO asset yet is the normal first state of one — the
+// off-appliance rasterizer has not run — so refusing it would make the thing the
+// renderer exists to find unauthorable.
+func TestAWellFormedInlineDeriveLayerIsStillAccepted(t *testing.T) {
+	e := newEnv(t)
+	screenID := seedSchedulingScope(t, e)
+
+	listID := decodeID(t, e.createOK(t, "/api/v1/playlists", rowCreateBody(t,
+		inlineSlidePlaylist(screenID, "Pending Inline", []wire.Layer{
+			{Kind: wire.LayerKindDerive, X: 0, Y: 0, W: 400, H: 400, Derive: &wire.DeriveSpec{
+				Kind: wire.DeriveKindQR, Data: "https://waiveo.local/pair/INLINE",
+			}},
+		}))))
+
+	var found bool
+	for _, j := range derivePendingList(t, e) {
+		if j["resource_id"] == listID {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the accepted inline derive layer is not in the work queue")
+	}
+}
+
+// TestThePendingQueueConformsToItsDeclaredSchema validates the queue's own
+// response against the schema api/openapi.yaml declares for it — not a
+// transcription of it, the embedded document the server ships.
+//
+// `DerivePendingLayer` declares `spec` REQUIRED and non-nullable, and the queue
+// served `"spec": null` for a layer that carried none: a work order the contract
+// says cannot exist, handed to a tool whose only possible response to it is a
+// crash. Nothing compared the two, because the drift sweep
+// (responseschema_test.go) checks the members a happy-path probe returns and
+// this queue is empty on a happy-path probe.
+func TestThePendingQueueConformsToItsDeclaredSchema(t *testing.T) {
+	e := newEnv(t)
+	screenID := seedSchedulingScope(t, e)
+
+	e.createOK(t, "/api/v1/casts", rowCreateBody(t, datamodel.Cast{
+		ScopeNode: screenID, Name: "Queue Shape Cast",
+		Slides: []datamodel.CastSlide{{ID: "s1", Layers: []wire.Layer{
+			{Kind: wire.LayerKindDerive, X: 0, Y: 0, W: 400, H: 400, Derive: &wire.DeriveSpec{
+				Kind: wire.DeriveKindQR, Data: "https://waiveo.local/pair/CAST",
+			}},
+		}}},
+	}))
+	e.createOK(t, "/api/v1/playlists", rowCreateBody(t,
+		inlineSlidePlaylist(screenID, "Queue Shape Playlist", []wire.Layer{
+			{Kind: wire.LayerKindDerive, X: 0, Y: 0, W: 900, H: 300, Derive: &wire.DeriveSpec{
+				Kind: wire.DeriveKindText, Text: "SCAN TO PAIR", FontPx: 96,
+			}},
+		})))
+
+	resp, raw := e.do(t, http.MethodGet, "/api/v1/derive/pending", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /derive/pending: %d %s", resp.StatusCode, raw)
+	}
+	assertMatchesDeclaredSchema(t, "DerivePendingList", raw)
+
+	jobs := derivePendingList(t, e)
+	if len(jobs) != 2 {
+		t.Fatalf("queue = %d job(s), want one per authored shape: %+v", len(jobs), jobs)
+	}
+	for _, j := range jobs {
+		// Stated separately from the schema check because this is the member the
+		// renderer dereferences: a null here is a nil pointer in waiveo-derive,
+		// and the schema's `required` is only as load-bearing as the assertion
+		// that reads it.
+		if spec, ok := j["spec"]; !ok || spec == nil {
+			t.Errorf("job %+v carries no spec; a work order with nothing to draw is not a work order", j)
+		}
+	}
+}

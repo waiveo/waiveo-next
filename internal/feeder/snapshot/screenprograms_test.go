@@ -915,6 +915,17 @@ func TestSeededDemoSlideValidatesAndDerives(t *testing.T) {
 // wire.ValidateSlideLayers is DROPPED from the derived program, never emitted
 // malformed — the producer half of the same refuse-don't-serve discipline the
 // relay applies. A valid asset item alongside it is unaffected.
+//
+// The shape driven here is one the AUTHORING gate accepts and the SERVE gate
+// cannot: a single, un-rendered `derive` layer. It used to be an off-canvas
+// rect, which the write itself now refuses — an inline slide's layer stack is
+// validated at authoring time by the same wire.ValidateAuthoredSlideLayers a
+// cast slide's is (datamodel.checkPlaylistItems), so that stack can no longer be
+// stored at all. This one still can, and must be: an operator authors a derive
+// layer BEFORE the off-appliance rasterizer has ever run, so "accepted, and not
+// yet projectable" is its normal first state. DeriveProjection omits the layer
+// (no PNG exists), which leaves the slide with no layers, which the serve-time
+// gate refuses — so the item is dropped rather than emitted empty.
 func TestInvalidSlideItemIsSkipped(t *testing.T) {
 	ctx := context.Background()
 	id := testIdentity(t)
@@ -925,10 +936,10 @@ func TestInvalidSlideItemIsSkipped(t *testing.T) {
 	if err != nil || len(pls) != 1 {
 		t.Fatalf("list playlists: %v (got %d)", err, len(pls))
 	}
-	// A rect whose far edge runs past the canvas width — ValidateSlideLayers
-	// rejects it, so this slide item must not survive derivation.
 	badSlide := &datamodel.Slide{Layers: []wire.Layer{
-		{Kind: wire.LayerKindRect, X: 1900, Y: 0, W: 100, H: 100, Color: "#ffffff"},
+		{Kind: wire.LayerKindDerive, X: 0, Y: 0, W: 400, H: 400, Derive: &wire.DeriveSpec{
+			Kind: wire.DeriveKindQR, Data: "https://waiveo.local/pair/NOT-RENDERED-YET",
+		}},
 	}}
 	edited := datamodel.Playlist{
 		ID: pls[0].ID, ScopeNode: "01J8Z4DEM0SCREENF1RSTPH0TN", Name: "Playlist With A Bad Slide",

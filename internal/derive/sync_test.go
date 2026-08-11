@@ -758,3 +758,218 @@ func TestApplyRenderedRefusesHalfAPair(t *testing.T) {
 		t.Errorf("the pair was not written into the inline slide: %+v", inline[1])
 	}
 }
+
+// ── The pass survives one bad row ───────────────────────────────────────────
+
+// TestASpeclessLayerFailsItsOwnJobAndNothingElse is the regression test for the
+// defect that took down whole passes.
+//
+// A `derive` layer with NO SPEC was authorable — the inline playlist path ran no
+// layer validation at all — so it reached the queue, and the queue reached
+// renderOne, which dereferenced the nil. Because a pass renders EVERYTHING
+// before it uploads, applies and writes anything back, the process died holding
+// every other layer's finished PNG: one malformed row in one playlist discarded
+// the completed work of every other row in the workspace.
+//
+// The authoring gate now refuses that layer (datamodel.checkPlaylistItems), so
+// this fixture is a row stored before that gate existed. Both halves are
+// asserted: the bad layer FAILS with a reason, and every other layer in the same
+// pass is rendered, uploaded and written back.
+func TestASpeclessLayerFailsItsOwnJobAndNothingElse(t *testing.T) {
+	ff, c, r, pr := newSyncEnv(t)
+	// Slide 1 keeps the two good derive layers; a second slide carries the
+	// malformed one, so the failure is in a different stack from the successes.
+	ff.cast.Slides = append(ff.cast.Slides, datamodel.CastSlide{
+		ID: "s2",
+		Layers: []wire.Layer{
+			{Kind: wire.LayerKindDerive, X: 0, Y: 0, W: 400, H: 400},
+		},
+	})
+
+	rep, err := Sync(context.Background(), c, r)
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if len(rep.Rendered) != 2 {
+		t.Errorf("rendered = %d, want the 2 good layers (failed: %+v)", len(rep.Rendered), rep.Failed)
+	}
+	if len(rep.Failed) != 1 {
+		t.Fatalf("failed = %d, want exactly the spec-less layer: %+v", len(rep.Failed), rep.Failed)
+	}
+	if got := rep.Failed[0].Err; got == nil || !strings.Contains(got.Error(), "no spec") {
+		t.Errorf("the spec-less layer failed with %v, want a reason naming the missing spec", got)
+	}
+	if pr.calls() != 2 {
+		t.Errorf("the renderer was called %d time(s), want 2 — the spec-less layer must never reach it", pr.calls())
+	}
+	// The good layers really were written back: the whole point is that the bad
+	// row costs its own layer and NOTHING else.
+	for _, li := range []int{1, 2} {
+		if ff.cast.Slides[0].Layers[li].AssetRef == "" {
+			t.Errorf("slide 1 layer %d was not written back; a malformed row in another slide discarded it", li)
+		}
+	}
+	if ff.cast.Slides[1].Layers[0].AssetRef != "" {
+		t.Error("the spec-less layer was written back anyway")
+	}
+}
+
+// TestAPanickingRenderCostsOneLayer is the CLASS the guard above is one instance
+// of. A renderer is a browser driver over third-party bytes; a panic anywhere
+// under it — the page builder, an image encoder, the driver itself — must cost
+// the unit that provoked it and nothing else, because the pass holds every other
+// unit's finished work in memory until the serial phase runs.
+func TestAPanickingRenderCostsOneLayer(t *testing.T) {
+	ff, c, _, _ := newSyncEnv(t)
+	r := NewRunner(&panicRenderer{on: "<svg"}, RunnerOptions{Concurrency: 2, JobTimeout: 10 * time.Second})
+
+	rep, err := Sync(context.Background(), c, r)
+	if err != nil {
+		t.Fatalf("Sync returned an error rather than a report: %v", err)
+	}
+	if len(rep.Rendered) != 1 || len(rep.Failed) != 1 {
+		t.Fatalf("report = %d rendered / %d failed, want 1/1: %+v %+v", len(rep.Rendered), len(rep.Failed), rep.Rendered, rep.Failed)
+	}
+	if got := rep.Failed[0].Err; got == nil || !strings.Contains(got.Error(), "panicked") {
+		t.Errorf("the panicking layer failed with %v, want a reason naming the panic", got)
+	}
+	if ff.cast.Slides[0].Layers[2].AssetRef == "" {
+		t.Error("the layer that rendered was not written back — a panic in one unit discarded a finished PNG in another")
+	}
+}
+
+// panicRenderer panics on any page whose HTML contains `on`, and renders
+// everything else.
+type panicRenderer struct{ on string }
+
+func (p *panicRenderer) Render(_ context.Context, page Page) ([]byte, error) {
+	if strings.Contains(page.HTML, p.on) {
+		panic("simulated renderer panic")
+	}
+	img := image.NewNRGBA(image.Rect(0, 0, page.ClipW, page.ClipH))
+	img.SetNRGBA(0, 0, color.NRGBA{G: 200, A: 255})
+	return mustPNG(img), nil
+}
+
+// ── One picture, one render ─────────────────────────────────────────────────
+
+// TestDuplicateLayersRenderOnceAndReportTheSame pins the determinism this loop
+// claims, on the input that broke it.
+//
+// wire.DeriveDigest is the identity of a layer's PIXELS, and it is ALSO
+// Runner.breaker's key. Four layers sharing one digest were four units: with a
+// failing renderer at concurrency 2 they each charged the breaker, so a failing
+// layer backed off twice as fast as the published schedule, and which error each
+// unit reported depended on which browser finished first — 40 runs of that
+// arrangement produced three different reports.
+//
+// Rendering each distinct digest once and fanning the answer out makes the
+// report a function of the input alone. Both halves are asserted, because the
+// count is what makes the determinism structural rather than lucky.
+func TestDuplicateLayersRenderOnceAndReportTheSame(t *testing.T) {
+	const duplicates = 4
+	var reports []string
+	for run := range 20 {
+		ff, c, _, _ := newSyncEnv(t)
+		ff.cast = duplicateLayerCastFixture(duplicates)
+		fr := &failingRenderer{}
+		r := NewRunner(fr, RunnerOptions{Concurrency: 2, JobTimeout: 10 * time.Second})
+
+		rep, err := Sync(context.Background(), c, r)
+		if err != nil {
+			t.Fatalf("Sync: %v", err)
+		}
+		if len(rep.Failed) != duplicates {
+			t.Fatalf("run %d: failed = %d, want one outcome per authored layer", run, len(rep.Failed))
+		}
+		if got := fr.calls(); got != 1 {
+			t.Fatalf("run %d: the renderer ran %d time(s) for %d layers that share one digest — "+
+				"one picture is one render, and the digest is also the circuit breaker's key, "+
+				"so N attempts advance the backoff N times per pass", run, got, duplicates)
+		}
+		var sb strings.Builder
+		for _, o := range rep.Failed {
+			fmt.Fprintf(&sb, "%s/%s/%d: %v\n", o.ResourceID, o.Where, o.LayerIndex, o.Err)
+		}
+		reports = append(reports, sb.String())
+	}
+	for i, rep := range reports {
+		if rep != reports[0] {
+			t.Fatalf("run %d reported\n%s\nrun 0 reported\n%s\nthe same workspace must produce the same report", i, rep, reports[0])
+		}
+	}
+}
+
+// duplicateLayerCastFixture is one slide carrying n layers with the IDENTICAL
+// spec and geometry — the same picture placed n times, which is an ordinary
+// thing to author (a repeated badge, a QR on every panel) and which gives every
+// one of them the same DeriveDigest. They sit at different x/y on purpose:
+// position is deliberately NOT in the digest, so moving a copy must not make it
+// a second picture.
+func duplicateLayerCastFixture(n int) datamodel.Cast {
+	c := datamodel.Cast{ID: "01J8CAST0000000000000000AA", Name: "Lobby",
+		Slides: []datamodel.CastSlide{{ID: "s1"}}}
+	for i := range n {
+		c.Slides[0].Layers = append(c.Slides[0].Layers, wire.Layer{
+			Kind: wire.LayerKindDerive, X: i * 220, Y: 0, W: 200, H: 200,
+			Derive: &wire.DeriveSpec{Kind: wire.DeriveKindQR, Data: "https://waiveo.local/same"},
+		})
+	}
+	return c
+}
+
+// failingRenderer fails every page and counts its attempts.
+type failingRenderer struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (f *failingRenderer) Render(_ context.Context, _ Page) ([]byte, error) {
+	f.mu.Lock()
+	f.n++
+	f.mu.Unlock()
+	return nil, errors.New("simulated render failure")
+}
+
+func (f *failingRenderer) calls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.n
+}
+
+// TestOnePoolSpansTheWholePassNotOneRow is the case the concurrency argument is
+// actually about, and it had no test.
+//
+// TestRendersRunConcurrentlyUpToTheClamp uses four layers in ONE slide of ONE
+// row, so it cannot distinguish "one pool for the pass" from "one pool per row":
+// both give that fixture a pool of four. The distinguishing workspace is the one
+// the design comment names — rows carrying a SINGLE layer each — where a
+// per-row pool is a pool of one and the whole pass runs serially no matter what
+// -concurrency says.
+//
+// Two rows of one pending layer each, a barrier that only opens when two renders
+// are in flight, and a clamp of two: with one pass-wide pool the barrier opens;
+// with a pool per row neither render ever sees the other and both die on the
+// per-job deadline.
+func TestOnePoolSpansTheWholePassNotOneRow(t *testing.T) {
+	ff, c, _, _ := newSyncEnv(t)
+	ff.cast = manyLayerCastFixture(1)
+	ff.playlist = derivePlaylistFixture()
+
+	bar := &barrierRenderer{want: 2, release: make(chan struct{})}
+	r := NewRunner(bar, RunnerOptions{Concurrency: 2, JobTimeout: 3 * time.Second})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	rep, err := Sync(ctx, c, r)
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if len(rep.Rendered) != 2 {
+		t.Fatalf("rendered = %d, want the one layer in each of the two rows (failed: %+v)", len(rep.Rendered), rep.Failed)
+	}
+	if got := bar.max(); got != 2 {
+		t.Errorf("at most %d render(s) ran at once across two single-layer rows — "+
+			"a pool per row leaves a workspace of single-layer casts serial however -concurrency is set", got)
+	}
+}

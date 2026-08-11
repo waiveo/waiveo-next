@@ -47,6 +47,21 @@ import (
 // obeys. Every outstanding layer in the whole pass goes through ONE pool sized
 // by the Runner's own clamp (r.Concurrency()) — not a pool per row, which would
 // leave a workspace of single-layer casts serial for the same reason.
+//
+// # Why identical layers are rendered ONCE
+//
+// wire.DeriveDigest is the identity of a layer's PIXELS: same spec, same
+// geometry, same picture. Two layers that share one are therefore two requests
+// for the same PNG — and the digest is also Runner.breaker's key, so rendering
+// them as two units made the pass non-deterministic in a way that mattered.
+// Two concurrent renders of one key each recorded a failure, so a failing layer
+// backed off twice as fast as the schedule says; and which of the two errors a
+// unit reported depended on which browser finished first, so the same workspace
+// produced different reports run to run. Rendering each distinct digest once and
+// fanning the one answer out to every unit that named it makes the report a
+// function of the input alone, charges the breaker once per attempt as designed,
+// and — incidentally, not as the reason — does not launch a browser twice for
+// one picture.
 
 // JobOutcome is what happened to one layer.
 type JobOutcome struct {
@@ -259,13 +274,28 @@ func Sync(ctx context.Context, c *Client, r *Runner) (SyncReport, error) {
 	// Serial and ordered on purpose: two units in the same row write into the
 	// same slice, and a report whose order depended on which browser finished
 	// first would be a different answer every run.
+	//
+	// Identical pictures upload once, for the same reason they render once: the
+	// origin is content-addressed, so the second POST of the same bytes can only
+	// mint the same reference, and a per-unit attempt would additionally let two
+	// units that named ONE picture disagree about whether it uploaded.
+	type uploaded struct {
+		ref string
+		err error
+	}
+	uploads := map[string]uploaded{}
 	for _, u := range units {
 		if u.err != nil {
 			u.outcome.Err = u.err
 			rep.Failed = append(rep.Failed, u.outcome)
 			continue
 		}
-		ref, err := c.UploadContent(ctx, u.png)
+		up, done := uploads[u.outcome.Digest]
+		if !done {
+			up.ref, up.err = c.UploadContent(ctx, u.png)
+			uploads[u.outcome.Digest] = up
+		}
+		ref, err := up.ref, up.err
 		if err != nil {
 			u.outcome.Err = err
 			rep.Failed = append(rep.Failed, u.outcome)
@@ -348,45 +378,103 @@ type fontResult struct {
 	err  error
 }
 
-// renderUnits runs every unit through the Runner, r.Concurrency() at a time.
+// renderUnits renders every DISTINCT picture the pass needs, r.Concurrency() at
+// a time, and hands each answer to every unit that asked for it.
 //
 // The pool is sized from the Runner rather than from a second setting, so
 // -concurrency has exactly ONE meaning: the Runner's clamp still bounds any
 // other caller, and this pool never asks for more than that clamp would grant.
+//
+// The unit of work is the DIGEST, not the unit — see the file header. Groups are
+// built in first-appearance order so the pool is fed in the order the rows were
+// listed, which is what makes two runs over an unchanged workspace schedule the
+// same work in the same order.
 func renderUnits(ctx context.Context, r *Runner, units []*renderUnit, fonts map[string]fontResult) {
 	if len(units) == 0 {
 		return
 	}
+
+	// Distinct digests, in first-appearance order, each with the units waiting
+	// on it.
+	var keys []string
+	groups := map[string][]*renderUnit{}
+	for _, u := range units {
+		k := u.outcome.Digest
+		if _, seen := groups[k]; !seen {
+			keys = append(keys, k)
+		}
+		groups[k] = append(groups[k], u)
+	}
+
 	workers := r.Concurrency()
 	if workers < 1 {
 		workers = 1
 	}
-	if workers > len(units) {
-		workers = len(units)
+	if workers > len(keys) {
+		workers = len(keys)
 	}
 
-	queue := make(chan *renderUnit)
+	queue := make(chan string)
 	var wg sync.WaitGroup
 	for range workers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for u := range queue {
-				u.png, u.err = renderOne(ctx, r, u.layers[u.index], u.outcome.Digest, fonts)
+			for k := range queue {
+				group := groups[k]
+				png, err := renderGuarded(ctx, r, group[0].layers[group[0].index], k, fonts)
+				for _, u := range group {
+					u.png, u.err = png, err
+				}
 			}
 		}()
 	}
-	for _, u := range units {
-		queue <- u
+	for _, k := range keys {
+		queue <- k
 	}
 	close(queue)
 	wg.Wait()
+}
+
+// renderGuarded is renderOne with a recover() around it, and it is the reason a
+// malformed row cannot cost this pass anything but its own layer.
+//
+// The panic that earned it was real and its blast radius was the whole run: a
+// `derive` layer with no spec (accepted by the inline authoring path, which ran
+// no layer validation at all) reached renderOne, which dereferenced the nil spec
+// — and because the pass renders EVERYTHING before it uploads, applies and
+// writes back, the process died holding every other layer's finished PNG. One
+// bad row in one playlist discarded the completed work of every other row.
+//
+// renderOne now refuses that layer outright, so this guard is not the fix for
+// it; it is the answer to the class. A renderer is a browser driver over
+// third-party bytes, and a panic anywhere under it — here, in the page builder,
+// in an image encoder — must cost the one unit that provoked it and nothing
+// else. A per-unit failure is already a shape this loop reports and continues
+// past, so the recover simply routes into it.
+func renderGuarded(ctx context.Context, r *Runner, layer wire.Layer, digest string, fonts map[string]fontResult) (png []byte, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			png = nil
+			err = fmt.Errorf("derive: rendering %s panicked: %v", digest, p)
+		}
+	}()
+	return renderOne(ctx, r, layer, digest, fonts)
 }
 
 // renderOne renders one layer to PNG bytes. It does NOT upload: the upload is a
 // write against the server and belongs in the serial phase, where its order and
 // its errors are the same on every run.
 func renderOne(ctx context.Context, r *Runner, layer wire.Layer, digest string, fonts map[string]fontResult) ([]byte, error) {
+	// A derive layer with no spec names nothing to draw. It is refused here
+	// rather than dereferenced, and rather than being quietly skipped: the layer
+	// IS outstanding, an operator asked for something, and reporting the row and
+	// the reason is the only way they learn the layer is malformed. fetchFonts
+	// five lines up already made exactly this check — the guard was written on
+	// one side of a pair, which is how the nil reached the deref at all.
+	if layer.Derive == nil {
+		return nil, fmt.Errorf("derive: layer carries no spec, so there is nothing to render (digest %q)", digest)
+	}
 	job := Job{Key: digest, W: layer.W, H: layer.H, Spec: layer.Derive}
 	if ref := layer.Derive.FontAssetRef; ref != "" {
 		f, ok := fonts[ref]

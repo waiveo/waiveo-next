@@ -94,10 +94,17 @@ describe("the canvas preview of each LIVE widget kind", () => {
 
   it("draws rect and image without a text branch, and marks an unfinished image", () => {
     expect(draw(layer({ kind: "rect", color: "#101020" }))).toHaveStyle({ backgroundColor: "#101020" });
-    expect(draw(layer({ kind: "image", url: "blob:asset" }))).toHaveAttribute("src", "blob:asset");
+    // ASSET_REF is the authored half; the url is derived. With no listing passed
+    // (the origin's answer unknown) an authored url is the fallback, which is
+    // what these unit renders exercise — a layer carrying a url and NO ref is
+    // not a layer with bytes, it is a layer the server would refuse, and the
+    // canvas draws it as unfinished for the same reason describeLayer calls it
+    // "(none chosen)".
+    expect(draw(layer({ kind: "image", asset_ref: "sha256:aa", url: "blob:asset" }))).toHaveAttribute("src", "blob:asset");
     // No bytes chosen yet: a labelled outline, not nothing — an invisible object
     // could not be found again on the canvas.
     expect(draw(layer({ kind: "image" }), "layer-image-empty")).not.toBeNull();
+    expect(draw(layer({ kind: "image", url: "blob:asset" }), "layer-image-empty")).not.toBeNull();
   });
 
   // ── video ────────────────────────────────────────────────────────────────
@@ -108,7 +115,7 @@ describe("the canvas preview of each LIVE widget kind", () => {
   // the whole suite green. What a WYSIWYG canvas DRAWS is the thing the editor
   // exists for, so it is asserted here for video exactly as it is for image.
   it("draws a video layer as a real video element, never as a Label or an <img>", () => {
-    const el = draw(layer({ kind: "video", url: "blob:clip" }));
+    const el = draw(layer({ kind: "video", asset_ref: "sha256:cc", url: "blob:clip" }));
     expect(el).not.toBeNull();
     expect(el.tagName).toBe("VIDEO");
     expect(el).toHaveAttribute("src", "blob:clip");
@@ -122,7 +129,7 @@ describe("the canvas preview of each LIVE widget kind", () => {
 
     // …and it is NOT drawn through either of the two branches that would swallow
     // it silently: the image element, or the Label branch's own div.
-    const { container } = render(<LayerView layer={layer({ kind: "video", url: "blob:clip" })} now={NOW} />);
+    const { container } = render(<LayerView layer={layer({ kind: "video", asset_ref: "sha256:cc", url: "blob:clip" })} now={NOW} />);
     expect(container.querySelector('[data-slot="layer-image"]')).toBeNull();
     expect(container.querySelector("div[data-slot='layer-video']")).toBeNull();
   });

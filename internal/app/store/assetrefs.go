@@ -74,6 +74,22 @@ func (r AssetReference) HexDigest() string { return strings.TrimPrefix(r.Ref, "s
 // be reclaimable while a screen was playing them.
 var AssetBearingKinds = []Kind{KindPlaylist, KindCast}
 
+// LayerStackKinds are the row kinds whose bodies can carry an authored SLIDE
+// LAYER STACK, and therefore the complete set every whole-workspace consumer of
+// layers (the derive work queue, first among them) must scan.
+//
+// It is the companion to AssetBearingKinds and it exists for the same reason,
+// paid for the same way. RowLayerStacks was introduced as "the ONE enumeration"
+// of the two authored layer shapes — and then GET /derive/pending spelled its
+// own hand-maintained list of kinds to call it with, which is a SECOND
+// enumeration bound to nothing. Two lists is how one blind spot stays one blind
+// spot in two places, which is the defect this whole file was written to end.
+//
+// Adding a kind to RowLayerStacks' switch and forgetting this list is caught by
+// TestEveryLayerStackKindIsEnumerated, which drives the switch itself rather
+// than trusting either list.
+var LayerStackKinds = []Kind{KindCast, KindPlaylist}
+
 // LayerStack is ONE authored stack of slide layers found inside a stored row,
 // together with enough of its location to write back into it.
 //

@@ -24,6 +24,7 @@ import {
   defaultLayer,
   deriveLayer,
   selectedLayer,
+  staleRasterKeys,
   studioReducer,
   studioStateToUpdate,
   type ResizeHandle,
@@ -102,20 +103,38 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
   // The content origin's listing, read ONCE for the whole editor and used for
   // two things that must not disagree: resolving every layer's `asset_ref` into
   // a url the canvas can draw, and stocking the picker. `url` is a DERIVED
-  // member — producers mint it at projection time and only this console's picker
-  // ever writes one onto an authored layer — so a canvas that waited for an
-  // authored url drew nothing for every cast written by anything else,
-  // `waiveo-derive`'s rasters first among them.
+  // member — producers mint it at projection time and nothing should write one
+  // onto an authored layer — so a canvas that waited for an authored url drew
+  // nothing for every cast written by anything else, `waiveo-derive`'s rasters
+  // first among them.
   //
   // A failure is NOT surfaced as an editor error, for the same reason the entity
-  // read is not: it degrades the picker to an explanatory empty state and leaves
-  // affected layers drawn as unresolved, which is honest, rather than taking a
-  // text-layout session down because the origin is briefly unreachable.
+  // read is not: taking a text-layout session down because the origin is briefly
+  // unreachable is a worse answer than degrading. But it IS surfaced, twice, and
+  // that is the correction: the origin has THREE states (in flight, answered,
+  // failed) and the canvas models two, so a failed read used to be
+  // indistinguishable from "answered, and the origin holds nothing" — which the
+  // canvas renders as BYTES MISSING on every finished layer in the cast. An
+  // operator who reads that goes and re-uploads or re-renders assets that were
+  // never gone.
+  //
+  // So a failure leaves `assetUrls` NULL — the origin's answer is unknown, and
+  // nothing may be reported missing on the strength of a listing we do not have
+  // — and says so once, in a status line, rather than as a per-layer badge that
+  // states something false about each one.
   const { assets: contentAssets, error: contentError, reload: reloadContent } = useContentLibrary(client);
   const assetUrls = useMemo(() => {
-    if (contentAssets === null) return null;
+    if (contentError !== null || contentAssets === null) return null;
     return new Map(contentAssets.map((a) => [a.asset_ref, a.url]));
-  }, [contentAssets]);
+  }, [contentAssets, contentError]);
+
+  // Which drawn rasters this editing session has already invalidated. Computed
+  // against the cast AS READ, so it survives every edit without a round trip —
+  // see cast-model.staleRasterKeys for why it is not a recomputed digest.
+  const staleRasters = useMemo(
+    () => (loaded ? staleRasterKeys(loaded.slides, state.slides) : null),
+    [loaded, state.slides],
+  );
 
   const slide = currentSlide(state);
   const layer = selectedLayer(state);
@@ -339,6 +358,20 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
           </p>
         ) : null}
 
+        {/* The origin's listing failed. Said ONCE, here, rather than as a
+            per-layer badge: the canvas cannot tell "the origin has no such
+            digest" from "we could not ask", and badging every finished layer
+            BYTES MISSING because the box blinked is what sends an operator to
+            re-upload assets that were never gone. Layout, text and widget
+            editing all still work, so this is a status line and not an error
+            page. */}
+        {contentError !== null ? (
+          <p role="status" className="text-sm text-[color:var(--wv-warn)]">
+            Couldn't read the content library ({contentError}). Images, video and rendered layers can't be drawn
+            until it answers — nothing has gone missing, and your edits still save.
+          </p>
+        ) : null}
+
         {/* Cast-level settings: what the whole document is called, and how long
             its slides hold by default. Both belong beside each other and above
             the filmstrip because both are properties of the CAST — the
@@ -430,6 +463,7 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
           activeIndex={state.slideIndex}
           problemsBySlide={problemsBySlide}
           assetUrls={assetUrls}
+          staleRasters={staleRasters}
           onSelect={(index) => dispatch({ type: "selectSlide", index })}
           onAdd={() => dispatch({ type: "addSlide", id: newSlideId() })}
           onDuplicate={(index) => dispatch({ type: "duplicateSlide", index, id: newSlideId() })}
@@ -445,6 +479,7 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
                 slide={slide}
                 selectedIndex={state.layerIndex}
                 assetUrls={assetUrls}
+                staleRasters={staleRasters}
                 onSelect={onSelectLayer}
                 onGeometry={onGeometry}
                 onNudge={onNudge}
@@ -521,10 +556,18 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
             });
             return;
           }
+          // The REF is authored; the url is NOT, and this is the one writer that
+          // ever put one on a layer. `url` is DERIVED — producers mint it at
+          // projection time — so an authored one is a value nothing re-checks:
+          // it survives an export/restore, it outlives a signed url's expiry,
+          // and on any canvas that trusts it over the origin's listing it draws
+          // dead bytes while reporting nothing missing. The explicit `undefined`
+          // REMOVES the key (applyPatch deletes rather than serialising a null),
+          // so re-picking on a layer that carries a legacy url clears it.
           dispatch({
             type: "patchLayer",
             index: state.layerIndex,
-            patch: { asset_ref: asset.asset_ref, url: asset.url },
+            patch: { asset_ref: asset.asset_ref, url: undefined },
           });
         }}
       />

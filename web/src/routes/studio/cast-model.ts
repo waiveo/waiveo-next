@@ -378,6 +378,63 @@ export function selectedLayer(state: StudioState): SlideLayer | undefined {
   return slide.layers[state.layerIndex];
 }
 
+/** The key a stale raster is addressed by: the slide's document-local id and
+ * the layer's index within it. One function so the producer below and the
+ * consumer (slide-canvas SlideStage) cannot spell it differently. */
+export function staleRasterKey(slideId: string, layerIndex: number): string {
+  return `${slideId}#${layerIndex}`;
+}
+
+/**
+ * Which drawn rasters the DRAFT has invalidated: every `derive` layer that
+ * carries a PNG and whose spec or geometry no longer matches the cast as it was
+ * read.
+ *
+ * A derive layer's picture is rendered at its exact spec and its exact pixel
+ * size, so nudging a font size or dragging a corner makes the PNG on the canvas
+ * a picture of the previous design. The layer keeps drawing it — the projection
+ * serves a stale raster rather than blanking a screen over an edit nobody has
+ * rendered yet, and an editor that blanked it would be worse — but drawing it
+ * with nothing said is the "lie about a finished layer" the badges exist to end.
+ *
+ * It compares against the READ cast rather than recomputing `derived_from`,
+ * deliberately. That digest is a hash of the server's own canonical encoding,
+ * and a second implementation of that encoding in TypeScript is exactly the
+ * drifting copy this codebase keeps paying for: it would agree until the day a
+ * member was added, and then quietly stop reporting anything. What this
+ * comparison sees instead is the operator's own edit — which is the case they
+ * hit constantly, and the one no server round trip has told them about yet. A
+ * layer the SERVER already considers stale (edited in a previous session, or by
+ * another writer) is not visible here and is reported by GET /derive/pending;
+ * this closes the authoring-time half, and says so rather than claiming both.
+ *
+ * Slides are matched by their document-local id, not by position, so reordering
+ * or inserting slides does not make every raster in the cast look stale.
+ */
+export function staleRasterKeys(loaded: CastSlide[], draft: CastSlide[]): ReadonlySet<string> {
+  const before = new Map(loaded.map((s) => [s.id, s]));
+  const stale = new Set<string>();
+  for (const slide of draft) {
+    const original = before.get(slide.id);
+    if (!original) continue;
+    slide.layers.forEach((layer, i) => {
+      // Only a layer that HAS a raster can have a stale one. A pending layer is
+      // already badged NEEDS RENDER by the canvas, from the layer alone.
+      if (layer.kind !== "derive" || !layer.asset_ref) return;
+      const was = original.layers[i];
+      // A layer that has moved index is not the same layer to compare against;
+      // reporting it stale on that basis would badge a raster that is fine.
+      if (!was || was.kind !== "derive" || was.asset_ref !== layer.asset_ref) return;
+      const changed =
+        was.w !== layer.w ||
+        was.h !== layer.h ||
+        JSON.stringify(was.derive ?? null) !== JSON.stringify(layer.derive ?? null);
+      if (changed) stale.add(staleRasterKey(slide.id, i));
+    });
+  }
+  return stale;
+}
+
 /** The PATCH body a save sends. The editor never hand-builds this — the one
  * place the draft becomes a wire body, so what the tests assert on is what the
  * server would receive. */
