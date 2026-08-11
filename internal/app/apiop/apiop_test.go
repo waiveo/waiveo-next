@@ -367,7 +367,7 @@ func TestResponseValidationCatchesAWrongShape(t *testing.T) {
 	s := loadT(t)
 	op, _ := s.Lookup("getSystemHealth")
 
-	good := `{"status":"ok","checked_at_ms":1,"uptime_ms":1,"version":"dev","services":[],` +
+	good := `{"status":"ok","checked_at_ms":1,"started_at_ms":0,"uptime_ms":1,"version":"dev","services":[],` +
 		`"storage":{"path":"/","status":"ok","detail":"fine"},"relays":[],` +
 		`"screens":{"total":0,"live":0,"fetching":0,"rejected":0,"stale":0,"never_seen":0,"paired":0,` +
 		`"overridden":0,"live_window_ms":1,"content_transfer_window_ms":1,"fetching_max_unacked_pulls":1}}`

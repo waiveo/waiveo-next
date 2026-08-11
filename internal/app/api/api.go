@@ -179,6 +179,11 @@ type server struct {
 	// the summary still reports services, relays and screens, with uptime and
 	// disk `unknown` rather than zero.
 	health *SystemHealthConfig
+	// restart is the process-lifecycle seam the restart operation drives
+	// (restart.go), wired by WithRestart. Nil means this deployment declared no
+	// supervisor, and the operation refuses RESTART_UNSUPPORTED rather than
+	// stopping a process nothing would start again.
+	restart *RestartConfig
 }
 
 // authExemptPaths are the api/1 operations that declare their own
@@ -413,6 +418,14 @@ func (srv *server) mountAll(rt, rootRT *router, authHandlers *auth.Handlers) {
 	// id, a revision or a collection; both are a read of what IS rather than of
 	// what was authored.
 	srv.mountDiagnostics(rt)
+	// The one operator control that ACTS on the box itself rather than on
+	// anything authored in it (api/1 API-150-157, restart.go): stop this process
+	// so its supervisor starts a replacement. Mounted beside the diagnostics
+	// reads because it is the other half of the same page — what is wrong with
+	// this box, and the one thing an operator can do about it without an SSH
+	// session — and it is not a resourceConfig mount for the same reasons they
+	// are not: no id, no revision, no collection.
+	srv.mountRestart(rt)
 
 	// The session-management half of the auth family rides the AUTHENTICATED
 	// mux: both operations act on the caller's own live session, so neither has

@@ -372,6 +372,13 @@ type schemaProbeEnv struct {
 	// a probe can assert the storage members were populated from a real statfs
 	// rather than left at the unmeasured degrade.
 	dataDir string
+	// restartOrders records what the restart operation armed. The seam is wired
+	// REAL in the sense that matters here — it declares a supervisor, so the
+	// operation reaches its 202 rather than the RESTART_UNSUPPORTED degrade,
+	// which would leave RestartAcceptance's required members unchecked — and it
+	// records rather than stops, because a probe that actually ended the test
+	// binary would be the last probe ever to run.
+	restartOrders *[]api.RestartOrder
 }
 
 func newSchemaProbeEnv(t *testing.T) *schemaProbeEnv {
@@ -411,6 +418,7 @@ func newSchemaProbeEnv(t *testing.T) *schemaProbeEnv {
 	jobs := api.NewJobRunner()
 	logs := platformlog.New(64, clock)
 	dataDir := t.TempDir()
+	restartOrders := &[]api.RestartOrder{}
 	ts := httptest.NewServer(api.New(st, apihttp.NewIdempotencyStore(clock, 0), clock, ulid.Monotonic(),
 		content, testContentBase, fixture.Auth,
 		api.WithJobRunner(jobs),
@@ -437,6 +445,14 @@ func newSchemaProbeEnv(t *testing.T) *schemaProbeEnv {
 			StartedAtMs: fixedNowMs - 60_000,
 			Version:     "test-build",
 			DataDir:     dataDir,
+		}),
+		api.WithRestart(api.RestartConfig{
+			Supervisor:    "probe-supervisor",
+			DrainBudgetMs: 5_000,
+			Arm: func(o api.RestartOrder) bool {
+				*restartOrders = append(*restartOrders, o)
+				return true
+			},
 		})))
 	t.Cleanup(ts.Close)
 
@@ -446,6 +462,8 @@ func newSchemaProbeEnv(t *testing.T) *schemaProbeEnv {
 		registry:  registry,
 		logs:      logs,
 		dataDir:   dataDir,
+
+		restartOrders: restartOrders,
 	}
 }
 
@@ -1059,6 +1077,13 @@ var probes = map[string]probe{
 	"getSystemHealth": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
 		e.mintOrg(t)
 		return e.do(t, http.MethodGet, "/api/v1/system-health", nil, nil)
+	},
+	"restartApplicationServer": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		// Owner-at-root, like both diagnostics reads, so the org must exist
+		// before the operation can answer anything but 404.
+		e.mintOrg(t)
+		return e.do(t, http.MethodPost, "/api/v1/system/restart",
+			mustJSON(t, map[string]any{"confirm": true}), nil)
 	},
 	"getWebhookDeliveryState": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
 		id := e.mintWebhookEndpoint(t, e.mintOrg(t))

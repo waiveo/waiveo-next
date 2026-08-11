@@ -316,6 +316,9 @@ const (
 	ErrorCodeNOTFOUND                 ErrorCode = "NOT_FOUND"
 	ErrorCodeRATELIMITED              ErrorCode = "RATE_LIMITED"
 	ErrorCodeREQUIREDPACKFLOOR        ErrorCode = "REQUIRED_PACK_FLOOR"
+	ErrorCodeRESTARTBLOCKED           ErrorCode = "RESTART_BLOCKED"
+	ErrorCodeRESTARTINPROGRESS        ErrorCode = "RESTART_IN_PROGRESS"
+	ErrorCodeRESTARTUNSUPPORTED       ErrorCode = "RESTART_UNSUPPORTED"
 	ErrorCodeREVISIONCONFLICT         ErrorCode = "REVISION_CONFLICT"
 	ErrorCodeSCOPENODEINUSE           ErrorCode = "SCOPE_NODE_IN_USE"
 	ErrorCodeSCOPENODENOTEMPTY        ErrorCode = "SCOPE_NODE_NOT_EMPTY"
@@ -360,6 +363,12 @@ func (e ErrorCode) Valid() bool {
 	case ErrorCodeRATELIMITED:
 		return true
 	case ErrorCodeREQUIREDPACKFLOOR:
+		return true
+	case ErrorCodeRESTARTBLOCKED:
+		return true
+	case ErrorCodeRESTARTINPROGRESS:
+		return true
+	case ErrorCodeRESTARTUNSUPPORTED:
 		return true
 	case ErrorCodeREVISIONCONFLICT:
 		return true
@@ -2040,6 +2049,30 @@ type RelayHealth struct {
 // RelayId A relay's permanent identity, assigned to it by enrollment and unchanged across every later certificate renewal or re-enrollment (`relay/1` REL-012/014). Deliberately NOT typed as a ULID: unlike a resource this API mints, a relay id is issued by the enrollment path and is opaque here — this API reads it, routes a command by it, and never constructs or parses one.
 type RelayId = string
 
+// RestartAcceptance What was accepted, and what a client can observe about it (API-152/153). Every member is present: a client deciding how long to wait cannot be handed a document where the number it needs is sometimes absent.
+type RestartAcceptance struct {
+	// AcceptedAtMs When this request was accepted.
+	AcceptedAtMs int64 `json:"accepted_at_ms"`
+
+	// DrainBudgetMs The upper bound on the graceful drain that follows (connections, accepted work, durable state). `stopping_in_ms + drain_budget_ms` is the worst case before the process is gone; the supervisor's own restart delay is added on top of that and is not this surface's to report.
+	DrainBudgetMs int64 `json:"drain_budget_ms"`
+
+	// StartedAtMs THIS process instance's start instant — the same value `getSystemHealth` reports — echoed here so a client holds the "before" to compare against. A successful health read returning a DIFFERENT value is the restart completing; `-1` means the deployment publishes no start time, and a client has nothing to compare and must fall back to reachability.
+	StartedAtMs int64 `json:"started_at_ms"`
+
+	// StoppingInMs How long the process goes on serving after this response before it begins to stop. It is published rather than assumed because it is the window in which the response bytes must reach the client — a client that guessed it would either give up too early or wait on a process that has already gone.
+	StoppingInMs int64 `json:"stopping_in_ms"`
+
+	// Supervisor The supervisor this deployment DECLARED will start the replacement (`systemd`, `docker`, a wrapper's own name). Reported so the acceptance says who is responsible for the process coming back, rather than leaving the operator to infer it.
+	Supervisor string `json:"supervisor"`
+}
+
+// RestartRequest defines model for RestartRequest.
+type RestartRequest struct {
+	// Confirm MUST be `true`. The field exists so a restart cannot be the accidental outcome of an empty body — an MCP tool call or a `curl` with no payload refuses `422` instead of taking the console away. The console's confirm dialog is the human gate; this is the wire one, and neither substitutes for the other.
+	Confirm bool `json:"confirm"`
+}
+
 // RevocationRequest Names the identity to revoke. `confirm` is API-143's second half — its absence makes this a radius query that changes nothing.
 type RevocationRequest struct {
 	Confirm     *bool                        `json:"confirm,omitempty"`
@@ -2575,6 +2608,11 @@ type SystemHealth struct {
 	Screens  ScreenHealth    `json:"screens"`
 	Services []ServiceHealth `json:"services"`
 
+	// StartedAtMs When THIS process instance began serving, or `-1` when the deployment publishes no start time (the same never-observed sentinel `uptime_ms` uses).
+	//
+	// It is the process-instance identifier API-153 requires, and it is stable for that instance's whole life: it is captured once at boot, so a clock step moves `checked_at_ms` and leaves this alone. A client that accepted a restart holds the value this field had BEFORE, and learns the restart completed when a successful read returns a different one — never by polling for reachability, which cannot tell "came back" from "never went".
+	StartedAtMs int64 `json:"started_at_ms"`
+
 	// Status The WORST grade any component carries. Derived, never asserted — a summary that could read `ok` while a component reads `down` would be the one line an operator trusts and the one line that is wrong.
 	Status SystemHealthStatus `json:"status"`
 
@@ -2825,6 +2863,9 @@ type Forbidden = Problem
 
 // NotFound RFC 9457 problem+json, extended with `code` (this contract's machine-readable error registry) and `trace_id`. `code` is the discriminant a client asserts on; `title`/`detail` are for humans.
 type NotFound = Problem
+
+// NotImplemented RFC 9457 problem+json, extended with `code` (this contract's machine-readable error registry) and `trace_id`. `code` is the discriminant a client asserts on; `title`/`detail` are for humans.
+type NotImplemented = Problem
 
 // PreconditionFailed RFC 9457 problem+json, extended with `code` (this contract's machine-readable error registry) and `trace_id`. `code` is the discriminant a client asserts on; `title`/`detail` are for humans.
 type PreconditionFailed = Problem
@@ -3582,6 +3623,15 @@ type GetSystemHealthParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// RestartApplicationServerParams defines parameters for RestartApplicationServer.
+type RestartApplicationServerParams struct {
+	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
+	IdempotencyKey *IdempotencyKeyParam `json:"Idempotency-Key,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // ListWebhookEndpointsParams defines parameters for ListWebhookEndpoints.
 type ListWebhookEndpointsParams struct {
 	// Cursor Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client.
@@ -3773,6 +3823,9 @@ type UpdateScreenJSONRequestBody = ScreenUpdate
 
 // SetScreenNowJSONRequestBody defines body for SetScreenNow for application/json ContentType.
 type SetScreenNowJSONRequestBody = ScreenNowRequest
+
+// RestartApplicationServerJSONRequestBody defines body for RestartApplicationServer for application/json ContentType.
+type RestartApplicationServerJSONRequestBody = RestartRequest
 
 // CreateWebhookEndpointJSONRequestBody defines body for CreateWebhookEndpoint for application/json ContentType.
 type CreateWebhookEndpointJSONRequestBody = WebhookEndpointCreate
@@ -4158,6 +4211,11 @@ type ClientInterface interface {
 
 	// GetSystemHealth request
 	GetSystemHealth(ctx context.Context, params *GetSystemHealthParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RestartApplicationServerWithBody request with any body
+	RestartApplicationServerWithBody(ctx context.Context, params *RestartApplicationServerParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	RestartApplicationServer(ctx context.Context, params *RestartApplicationServerParams, body RestartApplicationServerJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListWebhookEndpoints request
 	ListWebhookEndpoints(ctx context.Context, params *ListWebhookEndpointsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -5485,6 +5543,30 @@ func (c *Client) IssueScreenPairingCode(ctx context.Context, screenId Ulid, para
 
 func (c *Client) GetSystemHealth(ctx context.Context, params *GetSystemHealthParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetSystemHealthRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RestartApplicationServerWithBody(ctx context.Context, params *RestartApplicationServerParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRestartApplicationServerRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RestartApplicationServer(ctx context.Context, params *RestartApplicationServerParams, body RestartApplicationServerJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRestartApplicationServerRequest(c.Server, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -11042,6 +11124,72 @@ func NewGetSystemHealthRequest(server string, params *GetSystemHealthParams) (*h
 	return req, nil
 }
 
+// NewRestartApplicationServerRequest calls the generic RestartApplicationServer builder with application/json body
+func NewRestartApplicationServerRequest(server string, params *RestartApplicationServerParams, body RestartApplicationServerJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewRestartApplicationServerRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewRestartApplicationServerRequestWithBody generates requests for RestartApplicationServer with any type of body
+func NewRestartApplicationServerRequestWithBody(server string, params *RestartApplicationServerParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/system/restart")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.IdempotencyKey != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Idempotency-Key", *params.IdempotencyKey, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Idempotency-Key", headerParam0)
+		}
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
 // NewListWebhookEndpointsRequest generates requests for ListWebhookEndpoints
 func NewListWebhookEndpointsRequest(server string, params *ListWebhookEndpointsParams) (*http.Request, error) {
 	var err error
@@ -12186,6 +12334,11 @@ type ClientWithResponsesInterface interface {
 
 	// GetSystemHealthWithResponse request
 	GetSystemHealthWithResponse(ctx context.Context, params *GetSystemHealthParams, reqEditors ...RequestEditorFn) (*GetSystemHealthResponse, error)
+
+	// RestartApplicationServerWithBodyWithResponse request with any body
+	RestartApplicationServerWithBodyWithResponse(ctx context.Context, params *RestartApplicationServerParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RestartApplicationServerResponse, error)
+
+	RestartApplicationServerWithResponse(ctx context.Context, params *RestartApplicationServerParams, body RestartApplicationServerJSONRequestBody, reqEditors ...RequestEditorFn) (*RestartApplicationServerResponse, error)
 
 	// ListWebhookEndpointsWithResponse request
 	ListWebhookEndpointsWithResponse(ctx context.Context, params *ListWebhookEndpointsParams, reqEditors ...RequestEditorFn) (*ListWebhookEndpointsResponse, error)
@@ -14928,6 +15081,43 @@ func (r GetSystemHealthResponse) ContentType() string {
 	return ""
 }
 
+type RestartApplicationServerResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON202                   *RestartAcceptance
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON409 *Conflict
+	ApplicationproblemJSON422 *UnprocessableContent
+	ApplicationproblemJSON429 *TooManyRequests
+	ApplicationproblemJSON501 *NotImplemented
+}
+
+// Status returns HTTPResponse.Status
+func (r RestartApplicationServerResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r RestartApplicationServerResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r RestartApplicationServerResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type ListWebhookEndpointsResponse struct {
 	Body                      []byte
 	HTTPResponse              *http.Response
@@ -16310,6 +16500,23 @@ func (c *ClientWithResponses) GetSystemHealthWithResponse(ctx context.Context, p
 		return nil, err
 	}
 	return ParseGetSystemHealthResponse(rsp)
+}
+
+// RestartApplicationServerWithBodyWithResponse request with arbitrary body returning *RestartApplicationServerResponse
+func (c *ClientWithResponses) RestartApplicationServerWithBodyWithResponse(ctx context.Context, params *RestartApplicationServerParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RestartApplicationServerResponse, error) {
+	rsp, err := c.RestartApplicationServerWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRestartApplicationServerResponse(rsp)
+}
+
+func (c *ClientWithResponses) RestartApplicationServerWithResponse(ctx context.Context, params *RestartApplicationServerParams, body RestartApplicationServerJSONRequestBody, reqEditors ...RequestEditorFn) (*RestartApplicationServerResponse, error) {
+	rsp, err := c.RestartApplicationServer(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRestartApplicationServerResponse(rsp)
 }
 
 // ListWebhookEndpointsWithResponse request returning *ListWebhookEndpointsResponse
@@ -20574,6 +20781,81 @@ func ParseGetSystemHealthResponse(rsp *http.Response) (*GetSystemHealthResponse,
 			return nil, err
 		}
 		response.ApplicationproblemJSON429 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseRestartApplicationServerResponse parses an HTTP response from a RestartApplicationServerWithResponse call
+func ParseRestartApplicationServerResponse(rsp *http.Response) (*RestartApplicationServerResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &RestartApplicationServerResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 202:
+		var dest RestartAcceptance
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON202 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 501:
+		var dest NotImplemented
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON501 = &dest
 
 	}
 

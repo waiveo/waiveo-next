@@ -83,6 +83,7 @@ function health(over: Partial<SystemHealth> = {}): SystemHealth {
   return {
     status: "ok",
     checked_at_ms: 1_753_142_400_000,
+    started_at_ms: 1_753_142_400_000 - 3_600_000,
     uptime_ms: 3_600_000,
     version: "test",
     services: [],

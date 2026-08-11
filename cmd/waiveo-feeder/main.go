@@ -28,6 +28,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -133,6 +134,12 @@ type config struct {
 	// pack by marketplace reference refuses; a pack file upload is unaffected
 	// either way. Deliberately not fatal — see the load site in main.
 	packSourcesPath string
+	// supervisor names whatever will start a replacement process when this one
+	// exits (api/1 API-154, restart.go). It is DECLARED by the deployment, never
+	// detected: empty means nothing will, and the restart operation refuses
+	// rather than stopping a process that would stay stopped. See restart.go for
+	// why detection was rejected outright.
+	supervisor string
 }
 
 // demoCastModeMulti is loadConfig's WAIVEO_FEEDER_DEMO_CAST value that swaps
@@ -321,6 +328,12 @@ func loadConfig(env func(string) string) config {
 
 		requiredPacksPath: absHostFilePath(envOr(env, "WAIVEO_FEEDER_REQUIRED_PACKS", defaultRequiredPacksPath)),
 		packSourcesPath:   absHostFilePath(envOr(env, "WAIVEO_FEEDER_PACK_SOURCES", defaultPackSourcesPath)),
+		// No default, and deliberately so: the safe answer for a deployment that
+		// has not said anything is "nobody will restart me", and the cost of
+		// guessing wrong is a box that goes down on a button press and stays
+		// down. A dev run therefore refuses a restart, which is correct — `make
+		// dev` has nothing behind the binary.
+		supervisor: strings.TrimSpace(env("WAIVEO_FEEDER_SUPERVISOR")),
 	}
 }
 
@@ -1233,6 +1246,20 @@ func main() {
 		market = packs.NewMarket(nowMs, packSources...)
 	}
 
+	// This process's restart seam (restart.go). Built before the api handler so
+	// the operation is wired at construction rather than patched in afterwards,
+	// and so the DECLARED supervisor — or its absence — is decided in exactly one
+	// place, at config load.
+	restarter := newRestarter(cfg.supervisor)
+	if restarter.supervisor == "" {
+		// Said out loud at boot, because the alternative is an operator
+		// discovering it from a refused restart during an incident. A dev run
+		// prints this every time and that is fine: it is true every time.
+		log.Printf("waiveo-feeder: no supervisor declared (WAIVEO_FEEDER_SUPERVISOR unset) — the restart operation will refuse RESTART_UNSUPPORTED; nothing would start a replacement if this process exited")
+	} else {
+		log.Printf("waiveo-feeder: supervisor %q declared — the restart operation will stop this process for it to start a replacement", restarter.supervisor)
+	}
+
 	apiHandler := api.New(st, idem, nowMs, ulid.New, contentStore, contentBaseURL, authn,
 		api.WithDevicePlane(deviceRegistry, relayConnSrv), api.WithJobRunner(jobRunner),
 		// GET /screen-status joins the authored screen rows to what the relays
@@ -1299,6 +1326,12 @@ func main() {
 			Version:     buildVersion + " (" + buildChannel + ")",
 			DataDir:     filepath.Dir(cfg.storePath),
 		}),
+		// The restart operation's process seam (API-150-157). Without this option
+		// the route still mounts and still authorizes, and refuses
+		// RESTART_UNSUPPORTED — which is the honest answer for a deployment whose
+		// process nothing would restart, and is what this binary answered before
+		// this line existed.
+		api.WithRestart(restarter.config()),
 		api.WithPairing(api.PairingRelayDirectory{
 			ConnectedRelays: func() []api.PairingRelay {
 				conns := relayConnSrv.ConnectedRelays()
@@ -1489,6 +1522,15 @@ func main() {
 	// to it. Hub.Close is what ends both — the WS binding closes naming
 	// UNAVAILABLE, so a client reconnects with backoff rather than treating a
 	// restart as a protocol failure.
+	//
+	// A console-requested restart (API-150-157) arrives on the SAME select and
+	// falls into the SAME drain below. That is the whole of how API-157's "the
+	// same graceful shutdown the ordinary termination signal runs" is made true:
+	// there is one drain, and a restart is a second way to reach it, never a
+	// second copy of it that could quietly diverge as each is maintained. The
+	// process then simply returns from main and exits 0; the supervisor the
+	// deployment DECLARED (restart.go) is what starts the replacement, which is
+	// why the operation refuses when none was declared.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	select {
@@ -1496,45 +1538,52 @@ func main() {
 		log.Fatal(err)
 	case sig := <-sigCh:
 		log.Printf("waiveo-feeder: %s — shutting down", sig)
-		retentionSweep.Stop()
-		relayConnSrv.CloseAll()
-		eventHub.Close()
-		// The console binding closes first among the credential surfaces, and
-		// unlinks its socket as it goes, so the next boot's stale-socket check has
-		// nothing to reason about after a clean stop.
-		if err := consoleLn.Close(); err != nil {
-			log.Printf("waiveo-feeder: close the console binding: %v", err)
-		}
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			log.Printf("waiveo-feeder: shutdown: %v", err)
-		}
-		// Accepted-but-unfinished Job execution drains after the listener stops,
-		// so no new job is accepted while it does. A target left `running` by an
-		// expired drain window is exactly the state API-116's resume is defined
-		// over — the record is committed either way, never lost.
-		if err := jobRunner.Shutdown(shutdownCtx); err != nil {
-			log.Printf("waiveo-feeder: job runner shutdown: %v", err)
-		}
-		// Ingested telemetry whose app-side delivery (an `event`-triggered rule
-		// run) is still in flight drains on the same budget. Missing it costs
-		// nothing durable: an entry whose delivery did not conclude was never
-		// acked, so the relay still holds it and pushes it again after the
-		// restart (eventingest's durability contract).
-		if err := telemetryIngest.Drain(shutdownCtx); err != nil {
-			log.Printf("waiveo-feeder: telemetry delivery drain: %v (an in-flight rule run was abandoned; its event was never acked and the relay re-pushes it)", err)
-		}
-		// Webhook delivery drains last and on the SAME budget: it talks to a
-		// third party this process does not control, so it is the one drain
-		// whose slowest case is somebody else's server. Missing the budget
-		// abandons the attempt in flight rather than holding the process open —
-		// at-least-once (EVT-156) means the receiver sees that delivery again
-		// after the restart, under the same delivery id, never not at all.
-		if err := webhookLoop.Shutdown(shutdownCtx); err != nil {
-			log.Printf("waiveo-feeder: webhook delivery shutdown: %v (an in-flight delivery was abandoned; it redelivers on the next boot)", err)
-		}
+	case order := <-restarter.requests:
+		log.Printf("waiveo-feeder: restart requested by principal %s (trace %s) — draining, then exiting for %s to start a replacement",
+			order.Actor, order.TraceID, restarter.supervisor)
 	}
+	retentionSweep.Stop()
+	relayConnSrv.CloseAll()
+	eventHub.Close()
+	// The console binding closes first among the credential surfaces, and
+	// unlinks its socket as it goes, so the next boot's stale-socket check has
+	// nothing to reason about after a clean stop.
+	if err := consoleLn.Close(); err != nil {
+		log.Printf("waiveo-feeder: close the console binding: %v", err)
+	}
+	// The SAME budget the restart acceptance publishes as `drain_budget_ms`
+	// (restart.go). One constant, so the window this box tells a client to
+	// expect is the window it actually keeps.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), restartDrainBudget)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("waiveo-feeder: shutdown: %v", err)
+	}
+	// Accepted-but-unfinished Job execution drains after the listener stops,
+	// so no new job is accepted while it does. A target left `running` by an
+	// expired drain window is exactly the state API-116's resume is defined
+	// over — the record is committed either way, never lost.
+	if err := jobRunner.Shutdown(shutdownCtx); err != nil {
+		log.Printf("waiveo-feeder: job runner shutdown: %v", err)
+	}
+	// Ingested telemetry whose app-side delivery (an `event`-triggered rule
+	// run) is still in flight drains on the same budget. Missing it costs
+	// nothing durable: an entry whose delivery did not conclude was never
+	// acked, so the relay still holds it and pushes it again after the
+	// restart (eventingest's durability contract).
+	if err := telemetryIngest.Drain(shutdownCtx); err != nil {
+		log.Printf("waiveo-feeder: telemetry delivery drain: %v (an in-flight rule run was abandoned; its event was never acked and the relay re-pushes it)", err)
+	}
+	// Webhook delivery drains last and on the SAME budget: it talks to a
+	// third party this process does not control, so it is the one drain
+	// whose slowest case is somebody else's server. Missing the budget
+	// abandons the attempt in flight rather than holding the process open —
+	// at-least-once (EVT-156) means the receiver sees that delivery again
+	// after the restart, under the same delivery id, never not at all.
+	if err := webhookLoop.Shutdown(shutdownCtx); err != nil {
+		log.Printf("waiveo-feeder: webhook delivery shutdown: %v (an in-flight delivery was abandoned; it redelivers on the next boot)", err)
+	}
+	log.Printf("waiveo-feeder: stopped")
 }
 
 // startConsoleBinding builds and starts this deployment's console binding

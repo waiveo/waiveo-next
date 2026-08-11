@@ -3,7 +3,7 @@ import { render, screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
-import SystemRoute, { formatBytes, formatUptime } from "./system-route";
+import SystemRoute, { formatBytes, formatUptime, RESTART_GIVEUP_MS } from "./system-route";
 import { TRACE_ID, problem } from "@/api/test-support";
 import type { PlatformLogPage, PlatformLogRecord, SystemHealth } from "@/api";
 
@@ -50,6 +50,7 @@ function healthBody(over: Partial<SystemHealth> = {}): SystemHealth {
   return {
     status: "ok",
     checked_at_ms: 1_752_537_600_000,
+    started_at_ms: 1_752_537_600_000 - 3_723_000,
     uptime_ms: 3_723_000,
     version: "1.2.3 (stable)",
     services: [
@@ -332,4 +333,182 @@ describe("SystemRoute — formatters", () => {
     expect(formatUptime(3_723_000)).toBe("1h 2m");
     expect(formatUptime(90_000_000)).toBe("1d 1h");
   });
+});
+
+// ── Restart ──────────────────────────────────────────────────────────────────
+//
+// These cases DRIVE the control rather than assert it rendered. The console has
+// shipped a dead button before — one that painted correctly and did nothing —
+// past tests that only checked the markup, so every case here clicks through the
+// confirm dialog to the request the server actually receives.
+//
+// The property they are built around is the one the panel exists to get right:
+// a 202 is an ACCEPTANCE, and the page must not report a restart until it has
+// evidence of a different process answering.
+
+/** Serve the two reads plus a restart endpoint, recording each POST and each
+ * health probe. The probe COUNT is load-bearing: "the page kept watching" can
+ * only be asserted against evidence that it went on probing, and a negative
+ * assertion taken immediately after the click passes before the first poll has
+ * even run — which is exactly how the too-eager version of this page slipped
+ * through a mutation. */
+function serveRestart(opts: {
+  health?: SystemHealth | (() => SystemHealth | Response);
+  onRestart: () => Response;
+  restarts?: number[];
+  probes?: { n: number };
+}) {
+  server.use(
+    http.get("*/api/v1/system-health", () => {
+      if (opts.probes) opts.probes.n += 1;
+      const h = typeof opts.health === "function" ? opts.health() : (opts.health ?? healthBody());
+      if (h instanceof Response) return h;
+      return HttpResponse.json(h, { headers: { "Trace-Id": TRACE_ID } });
+    }),
+    http.get("*/api/v1/platform-logs", () =>
+      HttpResponse.json(logPage(), { headers: { "Trace-Id": TRACE_ID } }),
+    ),
+    http.post("*/api/v1/system/restart", () => {
+      opts.restarts?.push(1);
+      return opts.onRestart();
+    }),
+  );
+}
+
+/** The acceptance body the server answers a fresh restart with. */
+function acceptance(startedAtMs: number) {
+  return HttpResponse.json(
+    {
+      accepted_at_ms: 1_752_537_600_000,
+      stopping_in_ms: 250,
+      drain_budget_ms: 5_000,
+      started_at_ms: startedAtMs,
+      supervisor: "systemd",
+    },
+    { status: 202, headers: { "Trace-Id": TRACE_ID } },
+  );
+}
+
+/** Click Restart and confirm in the dialog. Deliberately two steps: the point of
+ * the dialog is that the first click does NOT restart anything. */
+async function clickRestartAndConfirm() {
+  await userEvent.click(screen.getByRole("button", { name: /restart this box/i }));
+  await userEvent.click(await screen.findByRole("button", { name: /restart now/i }));
+}
+
+describe("SystemRoute — restart", () => {
+  it("does not restart until the confirm dialog is confirmed", async () => {
+    const restarts: number[] = [];
+    serveRestart({ onRestart: () => acceptance(1), restarts });
+    render(<SystemRoute />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /restart this box/i }));
+    // The dialog is open and NOTHING has been sent.
+    expect(await screen.findByRole("button", { name: /restart now/i })).toBeInTheDocument();
+    expect(restarts).toHaveLength(0);
+
+    // Backing out sends nothing either. A confirm an operator can dismiss and
+    // still have acted is not a confirm.
+    await userEvent.click(screen.getByRole("button", { name: /not now/i }));
+    expect(restarts).toHaveLength(0);
+  });
+
+  it("says ACCEPTED and keeps watching — it does not claim the box restarted", async () => {
+    const started = 1_752_537_600_000 - 3_723_000;
+    const probes = { n: 0 };
+    // Health keeps answering with the SAME instance: the process has not stopped
+    // yet, which is exactly the state inside the acceptance's grace window.
+    serveRestart({ health: () => healthBody({ started_at_ms: started }), onRestart: () => acceptance(started), probes });
+    render(<SystemRoute />);
+    await screen.findByRole("button", { name: /restart this box/i });
+
+    const before = probes.n;
+    await clickRestartAndConfirm();
+
+    const status = await screen.findByRole("status");
+    expect(status).toHaveTextContent(/Restarting/);
+    expect(status).toHaveTextContent(/systemd will start it again/i);
+
+    // Wait for EVIDENCE that the page went on watching — two probes answered by
+    // the same instance — and only then assert it has not claimed a restart.
+    // A page that treats a reachable API as proof stops probing at the first
+    // one, so this waits out rather than passing vacuously.
+    await waitFor(() => expect(probes.n).toBeGreaterThanOrEqual(before + 2), { timeout: 8_000 });
+    expect(screen.queryByText(/Back up/)).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(/Restarting/);
+  }, 15_000);
+
+  it("reports BACK UP only once a DIFFERENT process instance answers", async () => {
+    const before = 1_752_537_600_000 - 3_723_000;
+    const after = 1_752_537_600_000 - 2_000;
+    let restarted = false;
+    serveRestart({
+      health: () => healthBody({ started_at_ms: restarted ? after : before }),
+      onRestart: () => {
+        restarted = true;
+        return acceptance(before);
+      },
+    });
+    render(<SystemRoute />);
+    await screen.findByRole("button", { name: /restart this box/i });
+
+    await clickRestartAndConfirm();
+
+    expect(await screen.findByText(/Back up/, {}, { timeout: 5_000 })).toBeInTheDocument();
+    expect(screen.getByText(/restarted and is answering again/i)).toBeInTheDocument();
+  }, 10_000);
+
+  it("renders each published refusal as its own sentence, and stays idle", async () => {
+    for (const [code, status, needle] of [
+      ["RESTART_UNSUPPORTED", 501, /nothing is configured to start it again/i],
+      ["RESTART_IN_PROGRESS", 409, /already under way/i],
+      ["RESTART_BLOCKED", 409, /busy with work a restart would break/i],
+      ["FORBIDDEN", 403, /only the workspace owner can restart/i],
+    ] as const) {
+      serveRestart({
+        onRestart: () => problem(status, code, `server detail for ${code}`),
+      });
+      const view = render(<SystemRoute />);
+      await screen.findByRole("button", { name: /restart this box/i });
+
+      await clickRestartAndConfirm();
+
+      const alert = await screen.findByRole("alert");
+      expect(alert, code).toHaveTextContent(needle);
+      // Never left mid-flight: a refusal returns the control to the operator.
+      expect(screen.getByRole("button", { name: /restart this box/i })).toBeEnabled();
+      view.unmount();
+      server.resetHandlers();
+    }
+  }, 20_000);
+
+  it("gives up out loud rather than spinning forever", async () => {
+    const started = 1_752_537_600_000 - 3_723_000;
+    // The box accepted and never came back: every later probe fails.
+    serveRestart({
+      health: () => HttpResponse.error(),
+      onRestart: () => acceptance(started),
+    });
+    render(<SystemRoute />);
+    await screen.findByRole("button", { name: /restart this box/i });
+    await clickRestartAndConfirm();
+    await screen.findByRole("status");
+
+    // The give-up bound is 90s of WALL time, which no test should wait out. The
+    // clock is moved instead of the test — `Date.now` is what the watcher
+    // measures the wait against, and the poll interval keeps running for real,
+    // so the very next probe crosses the bound. Faking the whole timer set
+    // instead would also stop msw's own fetch machinery, which is how the
+    // straightforward version of this test hung.
+    const realNow = Date.now;
+    try {
+      const jumped = realNow() + RESTART_GIVEUP_MS + 1_000;
+      vi.spyOn(Date, "now").mockImplementation(() => jumped);
+      const alert = await screen.findByRole("alert", {}, { timeout: 5_000 });
+      expect(alert).toHaveTextContent(/has not come back in 90s/i);
+      expect(alert).toHaveTextContent(/systemctl status waiveo-feeder/);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  }, 20_000);
 });

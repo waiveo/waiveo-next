@@ -963,6 +963,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/system/restart": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restart the application server
+         * @description Stops THIS application-server process so its supervisor starts a replacement (API-150). Its subject is the process, never the host: it does not reboot the machine, and the relay, the content origin and every other LAN service on the box are untouched. Screens keep playing what their relay already handed them; the console and `/api/v1` are away for seconds.
+         *
+         *     The answer is `202 Accepted`, never `200 restarted` (API-152). The process is still running when the response is written — it must be, or the bytes could not be sent — so the only true statement a 2xx can carry is that the request was accepted. Learn that it completed by reading `getSystemHealth` until `started_at_ms` differs from the value this response echoes; polling for reachability alone cannot distinguish "came back" from "never went".
+         *
+         *     Three refusals, each with its own code and each naming what to do about it: `RESTART_UNSUPPORTED` (501) when the deployment has not declared a supervisor, so nothing would start a replacement and stopping would take the box down for good; `RESTART_IN_PROGRESS` (409) when one has already been accepted; `RESTART_BLOCKED` (409) while accepted work is in flight that a restart cannot be resumed from (API-116) — the Problem's `detail` names the job. Owner-at-root only (API-151).
+         *
+         *     A mutating POST tagged `mcp:act`, so it accepts `Idempotency-Key`: a retry-on-timeout replays the original acceptance rather than queueing a second restart.
+         */
+        post: operations["restartApplicationServer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/adopted-devices": {
         parameters: {
             query?: never;
@@ -1452,7 +1478,7 @@ export interface components {
          * @description The stable, additive-only machine-readable error registry (`contracts/api-1.md#error-taxonomy`), plus the codes a sibling contract owns for operations that ride this same `/api/v1` binding. api/1's own registry governs API-011 for api/1's own rules; a sibling contract's Problem carries a `code` from ITS registry, by name — the same reuse-by-name discipline `player/1` PLY-007 applies. The trailing values below belong to sibling contracts: four to `security-model.md`'s Error taxonomy, appearing only on the `auth` operations; three to `data-model-1.md`'s, appearing only on the scope-node delete; and two to `marketplace-1.md`'s, appearing on the pack operations.
          * @enum {string}
          */
-        ErrorCode: "VALIDATION_FAILED" | "UNAUTHENTICATED" | "FORBIDDEN" | "NOT_FOUND" | "REVISION_CONFLICT" | "IF_MATCH_REQUIRED" | "CURSOR_INVALID" | "SELECTOR_INVALID" | "IDEMPOTENCY_KEY_REUSED" | "IDEMPOTENCY_KEY_IN_PROGRESS" | "EXTERNAL_ID_CONFLICT" | "ID_SERVER_ASSIGNED" | "RATE_LIMITED" | "INTERNAL" | "UNAVAILABLE" | "CREDENTIAL_LOCKED" | "GRANT_EXPIRED" | "GRANT_ALREADY_REDEEMED" | "GRANT_PURPOSE_MISMATCH" | "SCOPE_NODE_NOT_EMPTY" | "SCOPE_NODE_IN_USE" | "SCOPE_NODE_ORG_UNDELETABLE" | "MARKETPLACE_REF_INVALID" | "REQUIRED_PACK_FLOOR";
+        ErrorCode: "VALIDATION_FAILED" | "UNAUTHENTICATED" | "FORBIDDEN" | "NOT_FOUND" | "REVISION_CONFLICT" | "IF_MATCH_REQUIRED" | "CURSOR_INVALID" | "SELECTOR_INVALID" | "IDEMPOTENCY_KEY_REUSED" | "IDEMPOTENCY_KEY_IN_PROGRESS" | "EXTERNAL_ID_CONFLICT" | "ID_SERVER_ASSIGNED" | "RATE_LIMITED" | "INTERNAL" | "UNAVAILABLE" | "RESTART_UNSUPPORTED" | "RESTART_IN_PROGRESS" | "RESTART_BLOCKED" | "CREDENTIAL_LOCKED" | "GRANT_EXPIRED" | "GRANT_ALREADY_REDEEMED" | "GRANT_PURPOSE_MISMATCH" | "SCOPE_NODE_NOT_EMPTY" | "SCOPE_NODE_IN_USE" | "SCOPE_NODE_ORG_UNDELETABLE" | "MARKETPLACE_REF_INVALID" | "REQUIRED_PACK_FLOOR";
         /** @description The credentials a login authenticates from (API-091 — carried in the BODY, never as a precondition session). */
         LoginRequest: {
             /** @description The login handle the `password` credential is registered under. */
@@ -2201,6 +2227,13 @@ export interface components {
             checked_at_ms: number;
             /**
              * Format: int64
+             * @description When THIS process instance began serving, or `-1` when the deployment publishes no start time (the same never-observed sentinel `uptime_ms` uses).
+             *
+             *     It is the process-instance identifier API-153 requires, and it is stable for that instance's whole life: it is captured once at boot, so a clock step moves `checked_at_ms` and leaves this alone. A client that accepted a restart holds the value this field had BEFORE, and learns the restart completed when a successful read returns a different one — never by polling for reachability, which cannot tell "came back" from "never went".
+             */
+            started_at_ms: number;
+            /**
+             * Format: int64
              * @description How long this process has been serving, or `-1` when the deployment publishes no start time — the same never-observed sentinel `/screen-status` uses. When a screen went dark five minutes ago, "this box restarted four minutes ago" is the single most useful number on the page.
              */
             uptime_ms: number;
@@ -2210,6 +2243,35 @@ export interface components {
             storage: components["schemas"]["StorageHealth"];
             relays: components["schemas"]["RelayHealth"][];
             screens: components["schemas"]["ScreenHealth"];
+        };
+        RestartRequest: {
+            /** @description MUST be `true`. The field exists so a restart cannot be the accidental outcome of an empty body — an MCP tool call or a `curl` with no payload refuses `422` instead of taking the console away. The console's confirm dialog is the human gate; this is the wire one, and neither substitutes for the other. */
+            confirm: boolean;
+        };
+        /** @description What was accepted, and what a client can observe about it (API-152/153). Every member is present: a client deciding how long to wait cannot be handed a document where the number it needs is sometimes absent. */
+        RestartAcceptance: {
+            /**
+             * Format: int64
+             * @description When this request was accepted.
+             */
+            accepted_at_ms: number;
+            /**
+             * Format: int64
+             * @description How long the process goes on serving after this response before it begins to stop. It is published rather than assumed because it is the window in which the response bytes must reach the client — a client that guessed it would either give up too early or wait on a process that has already gone.
+             */
+            stopping_in_ms: number;
+            /**
+             * Format: int64
+             * @description The upper bound on the graceful drain that follows (connections, accepted work, durable state). `stopping_in_ms + drain_budget_ms` is the worst case before the process is gone; the supervisor's own restart delay is added on top of that and is not this surface's to report.
+             */
+            drain_budget_ms: number;
+            /**
+             * Format: int64
+             * @description THIS process instance's start instant — the same value `getSystemHealth` reports — echoed here so a client holds the "before" to compare against. A successful health read returning a DIFFERENT value is the restart completing; `-1` means the deployment publishes no start time, and a client has nothing to compare and must fall back to reachability.
+             */
+            started_at_ms: number;
+            /** @description The supervisor this deployment DECLARED will start the replacement (`systemd`, `docker`, a wrapper's own name). Reported so the acceptance says who is responsible for the process coming back, rather than leaving the operator to infer it. */
+            supervisor: string;
         };
         /** @description A freshly minted pairing grant, bound to this screen row (`relay/1` REL-121a) and to the one relay that may redeem it (REL-121b), plus the human-enterable pairing code (`player/1` PLY-024) an operator reads onto the screen. Exactly one of `pairing_code` and `code_unavailable_reason` is present: the grant is minted, bound, and delivered either way, and the reason describes only why the code itself could not be formed for the relay it is bound to. A request with no relay to bind to at all is refused before anything is minted (`503`). */
         PairingCodeResult: {
@@ -2765,6 +2827,15 @@ export interface components {
         };
         /** @description The server or a dependency it needs is temporarily unable to serve the request (`code: UNAVAILABLE`) — for a device command, the target entity's relay has no live connection to carry it. Retryable. */
         ServiceUnavailable: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
+        /** @description This deployment cannot perform the operation at all — a CAPABILITY refusal, not a temporary one. Deliberately distinct from `503` (`UNAVAILABLE`), which invites a retry: nothing about waiting changes the answer, and the `code` names what the deployment would have to declare or provide for the operation to become possible. */
+        NotImplemented: {
             headers: {
                 [name: string]: unknown;
             };
@@ -4925,6 +4996,43 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             429: components["responses"]["TooManyRequests"];
+        };
+    };
+    restartApplicationServer: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RestartRequest"];
+            };
+        };
+        responses: {
+            /** @description The restart was accepted. The process goes on serving for `stopping_in_ms`, then drains and exits. */
+            202: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RestartAcceptance"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["TooManyRequests"];
+            501: components["responses"]["NotImplemented"];
         };
     };
     listAdoptedDevices: {
