@@ -150,3 +150,66 @@ describe("MISSING_DEVICE_REASONS", () => {
     expect(titles.join(" ")).toMatch(/whole report was refused/);
   });
 });
+
+describe("describeDiscovery — no relay DOMINATES, whatever the list length (HV-19)", () => {
+  // The regression this pins shipped and was found on the lab box. `no-relay`
+  // used to be nested inside the `found === 0` branch, so it was unreachable on
+  // any box that had ever discovered anything — every real deployment. A total
+  // relay outage fell through to `all-adopted` and headlined "Everything found
+  // is adopted… This is the steady state" while the counter beside it read
+  // RELAYS REPORTING 0.
+  //
+  // Every pre-existing case varied relayCount against an EMPTY list, which is why
+  // a tested state could still be unreachable. When a classifier has an ordering,
+  // the cross product is the thing to cover, not one axis.
+  it("reports no-relay even when devices were previously discovered and adopted", () => {
+    const d = describeDiscovery({
+      devices: [device({ adopted: true }), device({ id: "b", adopted: true })],
+      devicesError: null,
+      relays: [],
+      blind: null,
+    });
+    expect(d.kind).toBe("no-relay");
+    expect(d.relayCount).toBe(0);
+    // Emphatically NOT the reassuring one.
+    expect(d.kind).not.toBe("all-adopted");
+    expect(d.headline).not.toMatch(/steady state|no decisions waiting/i);
+    expect(d.headline).toBe("No relay is connected — the 2 devices below are a past report");
+  });
+
+  it("says the listed devices are a PAST report, and that the screens are not evidence", () => {
+    const d = describeDiscovery({
+      devices: [device({ adopted: true })],
+      devicesError: null,
+      relays: [],
+      blind: null,
+    });
+    // Singular AND plural, because the first version read "the 1 device below
+    // ARE a past report" — the noun was pluralised and the verb was not.
+    expect(d.headline).toBe("No relay is connected — the device below is a past report");
+    // Never-wipe keeps a wall rendering for hours after its relay dies, so "the
+    // screens look fine" must not be left available as a health signal.
+    expect(d.detail).toMatch(/Screens keep playing/);
+  });
+
+  it("still reports all-adopted when a relay IS connected — the fix must not swallow the steady state", () => {
+    const d = describeDiscovery({
+      devices: [device({ adopted: true })],
+      devicesError: null,
+      relays,
+      blind: null,
+    });
+    expect(d.kind).toBe("all-adopted");
+  });
+
+  it("leaves the unknown-relay-count case alone — 0 is a claim, null is an absence", () => {
+    const d = describeDiscovery({
+      devices: [device({ adopted: true })],
+      devicesError: null,
+      relays: null,
+      blind: null,
+    });
+    expect(d.kind).toBe("all-adopted");
+    expect(d.caveat).toMatch(/whether it is running NOW is not known/);
+  });
+});

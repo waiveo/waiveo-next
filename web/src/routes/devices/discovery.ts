@@ -132,17 +132,37 @@ export function describeDiscovery(input: DiscoveryInput): Discovery {
     };
   }
 
+  // NO RELAY dominates, whatever the list length. This check used to live INSIDE
+  // the `found === 0` branch below, which made it unreachable on any box that had
+  // ever discovered anything — i.e. every real deployment. A total relay outage
+  // then fell through to `all-adopted` and headlined "Everything found is
+  // adopted… This is the steady state", while the counter beside it read RELAYS
+  // REPORTING 0. The state was built and tested; the nesting made it unreachable.
+  //
+  // The devices below are HISTORY when no relay is connected — the last report,
+  // not a current one — and saying so matters more the longer the list is,
+  // because never-wipe keeps the screens themselves rendering. A wall can look
+  // perfectly healthy for hours after its relay dies (observed: five), so this
+  // page is where an operator has to be able to find out.
+  if (relayCount === 0) {
+    return {
+      ...base,
+      kind: "no-relay",
+      headline:
+        found === 0
+          ? "Discovery is not running — no relay is connected"
+          : found === 1
+            ? "No relay is connected — the device below is a past report"
+            : `No relay is connected — the ${found} devices below are a past report`,
+      detail:
+        found === 0
+          ? "A relay sweeps its own network and reports what it finds; this console only reads that report. With no relay connected nothing is looking, so an empty list here says nothing about what is on the network. Start or reconnect a relay, then refresh."
+          : "A relay sweeps its own network and reports what it finds; this console only reads that report. With no relay connected nothing is looking now, so this list is the last thing a relay said rather than what is on the network today — and a device that has since gone is still listed. Screens keep playing what they were already handed, so the walls are not evidence either. Start or reconnect a relay, then refresh.",
+      caveat: null,
+    };
+  }
+
   if (found === 0) {
-    if (relayCount === 0) {
-      return {
-        ...base,
-        kind: "no-relay",
-        headline: "Discovery is not running — no relay is connected",
-        detail:
-          "A relay sweeps its own network and reports what it finds; this console only reads that report. With no relay connected nothing is looking, so an empty list here says nothing about what is on the network. Start or reconnect a relay, then refresh.",
-        caveat: null,
-      };
-    }
     if (relayCount === null) {
       return {
         ...base,
