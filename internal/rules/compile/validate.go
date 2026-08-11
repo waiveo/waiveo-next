@@ -84,6 +84,19 @@ func validateMember(m model.Member, kind vocab.Kind, path string) *CompileError 
 		}
 	}
 
+	// A signage action (RUL-234/235) targets SCREENS, so it carries a ScreenRef
+	// (RUL-233) rather than an EntityRef and is held to that shape's own
+	// exactly-one rule. The EntityRef check above does not cover it: `screen_id`
+	// is not an EntityRef member at all, so an action naming BOTH a screen_id and
+	// a selector decodes as a perfectly well-formed selector-only EntityRef and
+	// passes — the exact ambiguity RUL-233 refuses, reaching the executor as a
+	// silent pick of one of the two targets the author named.
+	if kind == vocab.ActionKind && vocab.IsSignageAction(m.Type) {
+		if e := validateScreenRef(m, path); e != nil {
+			return e
+		}
+	}
+
 	// A schedule trigger (time/time_pattern/sun) may carry a `misfire` policy; a
 	// PRESENT value MUST be one of the closed set (RUL-350). An absent field is
 	// legal and defaults to skip (RUL-354). Only triggers carry misfire.
@@ -112,6 +125,42 @@ func validateMember(m model.Member, kind vocab.Kind, path string) *CompileError 
 		}
 	}
 	return nil
+}
+
+// validateScreenRef enforces SCREEN_REF_AMBIGUOUS (RUL-233): a signage action
+// MUST declare exactly one of `screen_id` or `selector`. Both is ambiguous —
+// nothing in the contract ranks one over the other, so an executor picking
+// either would be inventing a rule — and neither names no target at all, which
+// is an action that can never do anything rather than one that does nothing
+// today (a selector matching zero screens IS legal, and is the way to express
+// "whatever currently matches", RUL-233).
+//
+// The probe reads the action's raw JSON rather than model.Member.EntityRef
+// because `screen_id` is not an EntityRef member: the decoder never sees it, so
+// the EntityRef arity check cannot speak to this at all.
+func validateScreenRef(m model.Member, path string) *CompileError {
+	var probe struct {
+		ScreenID string `json:"screen_id"`
+		Selector string `json:"selector"`
+	}
+	if err := json.Unmarshal(m.Raw, &probe); err != nil {
+		return nil // malformed JSON is not this check's concern (parse handled it)
+	}
+	n := 0
+	if probe.ScreenID != "" {
+		n++
+	}
+	if probe.Selector != "" {
+		n++
+	}
+	if n == 1 {
+		return nil
+	}
+	return &CompileError{
+		Code:    codeScreenRefAmbiguous,
+		Field:   path,
+		Message: "a signage action's ScreenRef MUST declare exactly one of screen_id/selector (RUL-233)",
+	}
 }
 
 // validateMisfire enforces MISFIRE_INVALID (RUL-350): a schedule trigger's

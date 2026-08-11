@@ -46,6 +46,12 @@ export type AutomationUpdate = components["schemas"]["AutomationUpdate"];
 export type AutomationRunResult = components["schemas"]["AutomationRunResult"];
 
 export type Screen = components["schemas"]["Screen"];
+/** A screen's active push-now override — what an operator put on it out of band. */
+export type ScreenNow = components["schemas"]["ScreenNow"];
+/** The body naming what to push: exactly one of cast_id / playlist_id. */
+export type ScreenNowRequest = components["schemas"]["ScreenNowRequest"];
+/** One screen's authored identity joined to what the relays have observed of it. */
+export type ScreenStatus = components["schemas"]["ScreenStatus"];
 export type ScreenCreate = components["schemas"]["ScreenCreate"];
 export type ScreenUpdate = components["schemas"]["ScreenUpdate"];
 export type PairingCodeResult = components["schemas"]["PairingCodeResult"];
@@ -65,11 +71,25 @@ export type PairingCodeResult = components["schemas"]["PairingCodeResult"];
 export const PLAYLIST_ITEM_SOURCES = ["asset", "playable", "cast"] as const;
 export type PlaylistItemSource = (typeof PLAYLIST_ITEM_SOURCES)[number];
 
-/** A playlist item (DAT-041): `asset` (asset_ref), `playable` (pack_id +
- * content_id) or `cast` (cast_id). */
+/** What an `asset` item's bytes ARE, and therefore how a screen presents them
+ * (DAT-041 `content_type`): an `image` is drawn as a still for the item's dwell
+ * time, a `video` is played full-screen.
+ *
+ * It is the field that makes an uploaded video schedulable at all. Without it
+ * the projections had no authored answer to read, so every asset item was served
+ * as the wire's default `image` (REL-061a) and a scheduled MP4 reached the TV as
+ * a Poster showing nothing. It is optional on the wire — an item that omits it
+ * is still served as `image` — and only meaningful on `source: "asset"`; the
+ * server refuses it on any other source rather than storing an intent nothing
+ * honours, which is why it is listed under `asset` alone below. */
+export type PlaylistContentType = "image" | "video";
+
+/** A playlist item (DAT-041): `asset` (asset_ref + content_type), `playable`
+ * (pack_id + content_id) or `cast` (cast_id). */
 export interface PlaylistItem {
   source: PlaylistItemSource;
   asset_ref?: string;
+  content_type?: PlaylistContentType;
   pack_id?: string;
   content_id?: string;
   cast_id?: string;
@@ -78,7 +98,7 @@ export interface PlaylistItem {
 
 /** The members that belong to each `source`, and nothing else. */
 const ITEM_FIELDS_BY_SOURCE: Record<PlaylistItemSource, readonly (keyof PlaylistItem)[]> = {
-  asset: ["asset_ref"],
+  asset: ["asset_ref", "content_type"],
   playable: ["pack_id", "content_id"],
   cast: ["cast_id"],
 };
@@ -297,14 +317,71 @@ export interface ScreensModule extends ResourceModule<Screen, ScreenCreate, Scre
    * the relay, so this reports issuance, never a "paired" state the app has
    * no evidence for. */
   issuePairingCode(id: string): Promise<PairingCodeResult>;
+
+  /** PUSH NOW — impose this screen's program override (`data-model/1` DAT-004c):
+   * show this cast, or a generated slide bearing a literal `message`, instead of
+   * whatever its schedule resolves. `mode: "play"` is the everyday assignment;
+   * `mode: "alert"` is the takeover. `ttl_seconds` makes it self-clearing.
+   *
+   * This is the ONE surface that imposes an override — `screens.update()` has no
+   * `override` member, deliberately, because putting content on a wall is an
+   * imperative act and not a field of a resource edit.
+   *
+   * It reports INTENT, not delivery. The server persists the override as desired
+   * state and nudges the site's relays; the screen adopts it on its next
+   * program poll (~10s) and, under `alert`, interrupts what it is showing rather
+   * than waiting for it to finish. A console must not claim the screen IS
+   * showing it — read `screenStatus.list()` for what the fleet has actually
+   * observed. */
+  pushNow(id: string, target: ScreenNowRequest): Promise<ScreenNow>;
+
+  /** Clear this screen's push-now override; it returns to its schedule. Safe to
+   * repeat — clearing nothing succeeds. */
+  clearNow(id: string): Promise<void>;
 }
 
 function screensModule(client: ApiClient): ScreensModule {
   const base = crud<Screen, ScreenCreate, ScreenUpdate>(client, "/screens");
+  const nowPath = (id: string) => `/screens/${encodeURIComponent(id)}/now`;
   return {
     ...base,
     issuePairingCode(id) {
       return client.action<PairingCodeResult>(`/screens/${encodeURIComponent(id)}/pairing-code`);
+    },
+    pushNow(id, target) {
+      return client.replace<ScreenNow>(nowPath(id), target);
+    },
+    clearNow(id) {
+      return client.discard(nowPath(id));
+    },
+  };
+}
+
+// ── Screen status: what the relays have OBSERVED ─────────────────────────────
+
+export interface ScreenStatusModule {
+  /** Every authored screen, joined to what the relays have observed of it and to
+   * any push-now override on it. Paginated like every other list.
+   *
+   * Read the ages, not the words: each `*_age_ms` is milliseconds before the
+   * response and `-1` means NEVER observed, which is a different state from a
+   * large age. `reachability` is `live | stale | never_seen` and deliberately
+   * never "offline" — the platform cannot tell a screen that is switched off
+   * from one whose network dropped from one whose player crashed. */
+  list(params?: ListParams): Promise<Page<ScreenStatus>>;
+}
+
+function screenStatusModule(client: ApiClient): ScreenStatusModule {
+  return {
+    list(params = {}) {
+      // The same query assembly crud() performs, and for the same reason its own
+      // comment gives: an EMPTY cursor is not a keyset position and the server
+      // rejects it (API-035), so the first page omits the key entirely.
+      const query: Record<string, string | number | undefined> = {};
+      if (params.selector) query.selector = params.selector;
+      if (params.limit !== undefined) query.limit = params.limit;
+      if (params.cursor) query.cursor = params.cursor;
+      return client.list<ScreenStatus>("/screen-status", query);
     },
   };
 }
@@ -351,6 +428,11 @@ export interface WaiveoApi {
   /** Screen identity rows (the row a `screen_id` names) — CRUD plus the
    * pairing-code issuance the operator pairing flow drives. */
   screens: ScreensModule;
+  /** What the site's relays have OBSERVED each screen doing — a read model, not
+   * authored state, so list-only (api/screenstatus semantics live on the
+   * module). It is the honest half of the push-now flow: `screens.pushNow`
+   * states intent, this reports what the fleet actually did with it. */
+  screenStatus: ScreenStatusModule;
   schedules: ResourceModule<Schedule, ScheduleCreate, ScheduleUpdate>;
   dayparts: ResourceModule<Daypart, DaypartCreate, DaypartUpdate>;
   playlists: ResourceModule<Playlist, PlaylistCreate, PlaylistUpdate>;
@@ -389,6 +471,7 @@ export function createApi(opts?: ApiClientOptions): WaiveoApi {
     auth: createAuthModule(client),
     scopeNodes: crud<ScopeNode, ScopeNodeCreate, ScopeNodeUpdate>(client, "/scope-nodes"),
     screens: screensModule(client),
+    screenStatus: screenStatusModule(client),
     schedules: crud<Schedule, ScheduleCreate, ScheduleUpdate>(client, "/schedules"),
     dayparts: crud<Daypart, DaypartCreate, DaypartUpdate>(client, "/dayparts"),
     playlists: crud<Playlist, PlaylistCreate, PlaylistUpdate>(client, "/playlists"),

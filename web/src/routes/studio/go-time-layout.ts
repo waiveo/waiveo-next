@@ -96,3 +96,99 @@ export const CLOCK_PRESETS: Array<{ layout: string; label: string }> = [
   { layout: "Jan 2, 2006", label: "Jan 2, 2006" },
   { layout: "02/01/2006", label: "02/01/2006" },
 ];
+
+/** The date layouts the Studio offers as one-click presets for a `date` layer.
+ * A date IS a time format on this wire — the player runs `clock` and `date`
+ * through the SAME Go-reference-time formatter and differs only in how often it
+ * re-renders — so these are drawn from the same vocabulary as CLOCK_PRESETS and
+ * simply omit the time-of-day tokens. */
+export const DATE_PRESETS: Array<{ layout: string; label: string }> = [
+  { layout: "Monday, January 2", label: "Monday, January 2" },
+  { layout: "Mon, Jan 2", label: "Mon, Jan 2" },
+  { layout: "January 2, 2006", label: "January 2, 2006" },
+  { layout: "Jan 2, 2006", label: "Jan 2, 2006" },
+  { layout: "2006-01-02", label: "2006-01-02" },
+  { layout: "02/01/2006", label: "02/01/2006" },
+  { layout: "01/02/2006", label: "01/02/2006" },
+];
+
+/** The remaining-time layouts the Studio offers for a `countdown` layer. */
+export const COUNTDOWN_PRESETS: Array<{ layout: string; label: string }> = [
+  { layout: "HH:MM:SS", label: "HH:MM:SS" },
+  { layout: "DD:HH:MM:SS", label: "DD:HH:MM:SS" },
+  { layout: "D days, HH:MM", label: "D days, HH:MM" },
+  { layout: "D:HH:MM:SS", label: "D:HH:MM:SS" },
+  { layout: "HH hours MM minutes", label: "HH hours MM minutes" },
+];
+
+/** The layout a countdown with no authored `text` renders through — the
+ * player's own default, stated here so the preview shows what the wall will. */
+export const COUNTDOWN_DEFAULT_LAYOUT = "HH:MM:SS";
+
+/** One countdown token and the unit it draws from. Ordered longest-first for the
+ * same reason the reference-time table is: `DD` must never be read as two `D`s. */
+const COUNTDOWN_TOKENS: Array<{ layout: string; unit: "d" | "h" | "m" | "s"; pad: boolean }> = [
+  { layout: "DD", unit: "d", pad: true },
+  { layout: "HH", unit: "h", pad: true },
+  { layout: "MM", unit: "m", pad: true },
+  { layout: "SS", unit: "s", pad: true },
+  { layout: "D", unit: "d", pad: false },
+  { layout: "H", unit: "h", pad: false },
+  { layout: "M", unit: "m", pad: false },
+  { layout: "S", unit: "s", pad: false },
+];
+
+/**
+ * Render a remaining span (in milliseconds) through a countdown layout, the way
+ * the PLAYER will (`wvFormatCountdown` in player-v3/components/PhotonScene.brs).
+ *
+ * Two rules make this more than a division, and both are the player's:
+ *
+ *  1. A larger unit's remainder is taken out ONLY when that unit APPEARS in the
+ *     layout. `"HH:MM:SS"` on a two-day span therefore reads 48 hours rather
+ *     than silently dropping the days — a fixed hours-mod-24 would be wrong on
+ *     exactly the slides (a multi-day countdown) most likely to be authored.
+ *  2. A span that has passed clamps to zero. A finished countdown reads
+ *     `00:00:00`; negative numbers on a wall read as a rendering fault.
+ *
+ * The countdown grammar is deliberately NOT the reference-time one — Go has no
+ * reference DURATION, and `15` would mean "hour of day" on a value that has
+ * none — so this is a second small formatter rather than a reuse of
+ * `formatGoTimeLayout`.
+ */
+export function formatCountdownLayout(layout: string, remainingMs: number): string {
+  const fmt = layout === "" ? COUNTDOWN_DEFAULT_LAYOUT : layout;
+  let secs = Math.max(0, Math.floor(remainingMs / 1000));
+
+  let days = 0;
+  let hours = 0;
+  let mins = 0;
+  if (fmt.includes("D")) {
+    days = Math.floor(secs / 86400);
+    secs -= days * 86400;
+  }
+  if (fmt.includes("H")) {
+    hours = Math.floor(secs / 3600);
+    secs -= hours * 3600;
+  }
+  if (fmt.includes("M")) {
+    mins = Math.floor(secs / 60);
+    secs -= mins * 60;
+  }
+  const value: Record<"d" | "h" | "m" | "s", number> = { d: days, h: hours, m: mins, s: secs };
+
+  let out = "";
+  let i = 0;
+  while (i < fmt.length) {
+    const token = COUNTDOWN_TOKENS.find((t) => fmt.startsWith(t.layout, i));
+    if (token) {
+      const n = value[token.unit];
+      out += token.pad ? String(n).padStart(2, "0") : String(n);
+      i += token.layout.length;
+    } else {
+      out += fmt[i];
+      i += 1;
+    }
+  }
+  return out;
+}

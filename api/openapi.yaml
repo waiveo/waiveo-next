@@ -48,6 +48,14 @@ tags:
       placed under: DAT-004 lets a screen row hang off a node of any kind, so
       two screens may share one node and a screen may sit directly under a
       site. Worked fully.
+  - name: screen-status
+    description: >-
+      What the site's relays have OBSERVED each screen doing — when it last
+      pulled a program, acknowledged a Lease and reported a render, what it was
+      last handed, and whether an operator has pushed content to it out of band.
+      A read model of relay reports, not authored state: it has no revision, no
+      write operations, and it is not persisted, so it is empty until the relays
+      next report. Worked fully.
   - name: adopted-devices
     description: >-
       The adopted-device rows the app peer compiles into a relay's desired-state
@@ -474,10 +482,15 @@ paths:
       operationId: runAutomation
       summary: Run an automation now
       description: >-
-        Manually starts one run of the automation's action sequence, subject
-        to its declared mode's normal mode-evaluation rules. A mutating POST
-        outside plain resource creation — accepts Idempotency-Key so a
-        client's retry-on-timeout cannot double-fire the run.
+        Runs the automation's action sequence NOW, for real, subject to its
+        declared mode's normal mode-evaluation rules and to its own
+        conditions: a `device_command` reaches the physical device down the
+        owning relay's connection, and a signage action writes the targeted
+        screens' program override. The response reports what it did, target by
+        target. Pass `dry_run: true` to evaluate everything and withhold every
+        effect. A mutating POST outside plain resource creation — accepts
+        Idempotency-Key so a client's retry-on-timeout cannot double-fire the
+        run.
       tags: [automations, "mcp:act"]
       parameters:
         - $ref: "#/components/parameters/IdempotencyKeyParam"
@@ -490,7 +503,7 @@ paths:
               $ref: "#/components/schemas/AutomationRunRequest"
       responses:
         "200":
-          description: The run was accepted; the response carries its mode-evaluation disposition.
+          description: The run completed; the response carries its disposition and every effect it produced.
           headers:
             Trace-Id:
               $ref: "#/components/headers/TraceIdResponse"
@@ -2089,6 +2102,146 @@ paths:
           $ref: "#/components/responses/Conflict"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /screens/{screen_id}/now:
+    parameters:
+      - name: screen_id
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/Ulid"
+    put:
+      operationId: setScreenNow
+      summary: Show a cast or an alert on this screen now
+      description: >-
+        Imposes the screen's program override (`data-model/1` DAT-004c): it shows
+        the named cast, or a generated slide bearing the literal `message`,
+        instead of whatever its schedule resolves. The override is durable
+        desired state, not a live command — it is a member of the screen row, so
+        it rides the next signed snapshot to the site's relays as that screen's
+        program (`relay/1` REL-061), survives a relay restart or an app-peer
+        outage, and outranks the relay's own continuous schedule re-resolution
+        while it stands (the entry is marked `pinned`, and under `mode: "alert"`
+        also carries `preempt` priority, `player/1` PLY-108).
+
+
+        Delivery is prompt but not instantaneous, and this operation reports
+        INTENT rather than delivery: persisting the override nudges every
+        connected relay (REL-057), and the screen adopts the new Lease on its
+        next ordinary program poll (~10 seconds, PLY-082) — under `alert`
+        interrupting whatever it is showing rather than waiting for it to finish
+        (PLY-100/101). Read `/screen-status` for what the fleet has actually
+        observed.
+
+
+        Idempotent: pushing the same thing twice leaves one override, and pushing
+        something else replaces it. Exactly one of `cast_id`/`message` must be
+        set, and a `cast_id` naming no cast row is refused (`422`) rather than
+        pinning the screen to nothing.
+
+
+        This is the ONE surface that imposes an override; there is no `override`
+        member on the screen resource's own create or update bodies.
+      tags: [screens, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScreenNowRequest"
+      responses:
+        "200":
+          description: The override now in force.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScreenNow"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+    delete:
+      operationId: clearScreenNow
+      summary: Clear this screen's push-now override
+      description: >-
+        Removes the screen's push-now override, so it returns to whatever its
+        schedule resolves. Answers `204` whether or not an override was in force:
+        a DELETE's contract is the resulting state, and clearing twice reaches it
+        just as clearing once does.
+      tags: [screens, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "204":
+          description: No override is in force. No content.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  # ---------------------------------------------------------------------
+  # screen-status — what the relays have OBSERVED each screen doing.
+  # ---------------------------------------------------------------------
+  /screen-status:
+    get:
+      operationId: listScreenStatus
+      summary: List live screen status
+      description: >-
+        Returns one entry per authored screen row, joining what the row says with
+        what the site's relays have observed of it and whether an operator
+        currently has a push-now override on it.
+
+
+        Every age is milliseconds before this response, and `-1` means the
+        contact has NEVER been observed — a distinct state from a large age, and
+        the one a screen that was never switched on is in. `reachability` applies
+        a single threshold (`live_window_ms`) to `last_pull_age_ms`; the raw ages
+        are published so a consumer can draw its own line.
+
+
+        `reachability` is deliberately never "offline". This platform cannot
+        distinguish a screen that is switched off from one whose network dropped,
+        from one whose player crashed, from one that was never paired — and each
+        sends an operator somewhere different. `report_age_ms` is what separates
+        "this screen stopped talking to its relay" from "this relay stopped
+        talking to us": when a relay disconnects, every screen behind it ages
+        together and `report_age_ms` grows with them.
+      tags: [screen-status, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/CursorParam"
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/SelectorParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: A page of screen statuses.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScreenStatusListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
   # ---------------------------------------------------------------------
   # adopted-devices — the rows relay/1 REL-063's device_inventory is compiled from.
   # ---------------------------------------------------------------------
@@ -3759,6 +3912,8 @@ components:
           x-go-type: "*string"
         labels:
           $ref: "#/components/schemas/LabelMap"
+        override:
+          $ref: "#/components/schemas/ScreenOverride"
         revision:
           type: integer
           minimum: 1
@@ -3780,7 +3935,24 @@ components:
       properties:
         kind:
           type: string
-          enum: [text, rect, image, clock]
+          enum: [text, rect, image, clock, date, countdown, weather, entity, video]
+          description: >-
+            The closed layer-kind set, and it MUST stay equal to
+            `internal/shared/wire`'s own (`slideLayerKinds`) — same members, same
+            order. The four LIVE kinds beyond the static three plus `clock` are
+            the widgets: `date` and `countdown` are computed by the player from
+            its own clock, `weather` and `entity` are resolved by the box at
+            Lease issuance (`internal/slidelive`) and drawn verbatim. `video` is
+            image's twin — the second kind whose substance is bytes in the
+            content origin, authored as an `asset_ref` and fetched +
+            content-address-verified by the player before it is presented — and
+            the only moving element a slide can carry; a player draws it as a
+            positioned Video node looped for the slide's dwell time. They are
+            all listed here because this enum is the AUTHORING gate: a kind the
+            player renders and this enum omits is a widget nothing can ever
+            create — the shape of defect this repo keeps producing, and the one
+            that shipped in wave 1 (the four widget kinds landed on the wire and
+            the player, and `POST /casts` answered 422 for every one of them).
         x:
           type: integer
           minimum: 0
@@ -3800,34 +3972,69 @@ components:
         text:
           type: string
           description: >-
-            The literal string for a `text` layer; for a `clock` layer, the Go
-            reference-time layout (`15:04:05`, `3:04 PM`) the player renders the
-            current LOCAL time through, refreshed every second. Required for
-            both of those kinds, unused by `rect`/`image`.
+            The literal string for a `text` layer, and a FORMAT for every kind
+            whose content is generated rather than authored. For `clock` and
+            `date` it is the Go reference-time layout (`15:04:05`, `3:04 PM`,
+            `Monday, January 2`) the player renders the current LOCAL time or
+            date through — not a strftime string. For `countdown` it is an
+            OPTIONAL remaining-time layout in that kind's own tiny grammar
+            (`DD`/`D` days, `HH`/`H` hours, `MM`/`M` minutes, `SS`/`S` seconds;
+            an empty text means the player's `HH:MM:SS`) — deliberately not a
+            reference-time layout, because a duration has no hour-of-day. For
+            `weather` it is the required display template the BOX substitutes
+            into (`{temp}` °F, `{tempc}` °C, `{cond}`), and for `entity` the
+            optional one (`{state}`, the whole template when omitted). Required
+            for `text`, `clock`, `date` and `weather`; unused by `rect`/`image`.
         asset_ref:
           type: string
           description: >-
-            An `image` layer's content-addressed `sha256:` reference — the only
-            half of an image layer that is AUTHORED. Its fetch `url` is derived
-            from the content origin at projection time.
+            An `image` or `video` layer's content-addressed `sha256:` reference
+            — the only half of a content-bearing layer that is AUTHORED. Its
+            fetch `url` is derived from the content origin at projection time.
         url:
           type: string
           description: >-
-            An `image` layer's direct content-origin fetch target, derived at
-            projection time and present on a SERVED slide. A create/update need
-            not supply it.
+            An `image` or `video` layer's direct content-origin fetch target,
+            derived at projection time and present on a SERVED slide. A
+            create/update need not supply it.
+        target_ms:
+          type: integer
+          minimum: 1
+          description: >-
+            A `countdown` layer's target instant, in Unix epoch MILLISECONDS
+            (UTC) — the same absolute-instant unit every other time on this wire
+            uses, never a local wall time and never seconds. Absolute is what
+            lets the player count down without knowing the authoring timezone.
+            Required and strictly positive for `countdown`, unused elsewhere; a
+            target already past renders as all zeroes rather than as a negative,
+            so it is deliberately NOT rejected here.
+        entity_id:
+          type: string
+          description: >-
+            The platform entity an `entity` layer displays the current state of
+            — the same identifier a device's `entities[].entity_id` carries.
+            Required for `entity`, unused elsewhere. It is the AUTHORED half of
+            an entity widget; the resolved display string is filled by the box
+            at Lease issuance and never appears in an authored row (the same
+            authored/derived split an `image` layer's `asset_ref`/`url` has,
+            which is why there is no `value` member here).
         font_px:
           type: integer
           minimum: 1
-          description: Pixel font size for a `text`/`clock` layer. Optional — an omitted size renders at the player's own default.
+          description: >-
+            Pixel font size for any Label-drawn kind — `text`, `clock`, `date`,
+            `countdown`, `weather`, `entity`. Optional; an omitted size renders
+            at the player's own default.
         color:
           type: string
           pattern: "^#[0-9a-fA-F]{6}$"
-          description: A `rect`'s fill (required) or a `text`/`clock`'s foreground (optional). `#RRGGBB` wherever present.
+          description: >-
+            A `rect`'s fill (required) or a Label-drawn kind's foreground
+            (optional). `#RRGGBB` wherever present.
         align:
           type: string
           enum: [left, center, right]
-          description: A `text` layer's horizontal alignment. Optional.
+          description: A Label-drawn layer's horizontal alignment. Optional.
     CastSlide:
       type: object
       description: >-
@@ -3884,6 +4091,10 @@ components:
           minItems: 1
           items:
             $ref: "#/components/schemas/CastSlide"
+        default_duration_ms:
+          $ref: "#/components/schemas/CastDefaultDurationMs"
+        template:
+          $ref: "#/components/schemas/CastTemplateFlag"
         labels:
           $ref: "#/components/schemas/LabelMap"
         revision:
@@ -3893,6 +4104,36 @@ components:
           $ref: "#/components/schemas/Timestamp"
         updated_at:
           $ref: "#/components/schemas/Timestamp"
+    CastDefaultDurationMs:
+      type: ["integer", "null"]
+      minimum: 1
+      x-go-type: "*int"
+      description: >-
+        The cast's own default dwell time, applied to every slide of it that
+        states no `duration_ms` and whose referencing playlist item states no
+        `duration_seconds` (`data-model/1` DAT-042's full order is: slide →
+        item → cast default → the player's own default). Omit it for "no
+        cast-wide default"; zero is not a value, it is the absent field.
+
+        `null` is admitted for one concrete reason and is not decoration: a
+        PATCH shallow-merges over the stored body, so an UPDATE that wants to
+        REMOVE a cast-wide default has no other way to say so — omitting the
+        member means "leave it alone", and the minimum of 1 (correctly) refuses
+        the zero that would otherwise be the clear. A row cleared that way is
+        then SERVED carrying the member as null (the store persists the
+        post-merge bytes verbatim and normalizes only schema-REQUIRED members),
+        which is why the response schema admits null too: null and absent mean
+        the same thing to every reader of this field.
+    CastTemplateFlag:
+      type: boolean
+      description: >-
+        Marks this cast a TEMPLATE — a starting point new casts are created
+        from, not a document a screen plays (`data-model/1` DAT-043). A
+        playlist item referencing one is refused
+        (`CAST_TEMPLATE_NOT_SCHEDULABLE`), because a template exists to be
+        edited as the source of future casts and a screen playing it would
+        change every time someone improved the starting point. Omitted (and
+        absent from a served row) means an ordinary cast.
     CastCreate:
       type: object
       required: [scope_node, name, slides]
@@ -3912,6 +4153,10 @@ components:
           minItems: 1
           items:
             $ref: "#/components/schemas/CastSlide"
+        default_duration_ms:
+          $ref: "#/components/schemas/CastDefaultDurationMs"
+        template:
+          $ref: "#/components/schemas/CastTemplateFlag"
         labels:
           $ref: "#/components/schemas/LabelMap"
     CastUpdate:
@@ -3936,6 +4181,10 @@ components:
           minItems: 1
           items:
             $ref: "#/components/schemas/CastSlide"
+        default_duration_ms:
+          $ref: "#/components/schemas/CastDefaultDurationMs"
+        template:
+          $ref: "#/components/schemas/CastTemplateFlag"
         labels:
           $ref: "#/components/schemas/LabelMap"
     CastListResponse:
@@ -3968,6 +4217,19 @@ components:
           enum: [asset, playable, cast]
         asset_ref:
           type: string
+        content_type:
+          type: string
+          enum: [image, video]
+          description: >-
+            What this `asset` item's bytes ARE, and therefore how a screen
+            presents them: `image` is drawn as a still for the item's dwell
+            time, `video` is played. Optional; an item that states none is
+            served as `image` (`relay/1` REL-061a's stated default for an absent
+            content_type), so every playlist authored before this field existed
+            behaves exactly as it did. Only meaningful on `source: "asset"` — a
+            `cast` item's content type is decided by its source — and stating it
+            on any other source is refused, rather than stored as an intent
+            nothing will honour.
         pack_id:
           type: string
         content_id:
@@ -4117,6 +4379,54 @@ components:
           type: string
         name:
           type: string
+    ScreenOverride:
+      type: object
+      description: >-
+        A screen's program override (`data-model/1` DAT-004c): a per-screen
+        content pin that supersedes whatever the scheduling core resolves for
+        that screen, for as long as it applies. It is deliberately not a second
+        scheduling mechanism — no cascade, no priority order, no layering, no
+        recurrence — it is "show this here, now, until it is cleared or lapses",
+        which is what an operator's push-now gesture and an automation's
+        `play_cast`/`show_alert` action (`rules/1` RUL-234/RUL-235) both need
+        and what a schedule cannot express.
+      required: [mode]
+      additionalProperties: false
+      properties:
+        mode:
+          type: string
+          enum: [play, alert]
+          description: >-
+            `play` is the ordinary assignment and delivers at `scheduled`
+            priority; `alert` is the takeover and delivers at `preempt`, so a
+            player interrupts the item it is mid-way through (`player/1`
+            PLY-108).
+        cast_id:
+          allOf:
+            - $ref: "#/components/schemas/Ulid"
+          description: >-
+            The cast whose slides the screen plays. Exactly one of `cast_id`
+            and `message` is stated.
+        message:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: >-
+            A literal alert message, shown as one generated slide. Admissible
+            only under `mode: "alert"` — a `play` override names a cast.
+        expires_at:
+          allOf:
+            - $ref: "#/components/schemas/Timestamp"
+          description: >-
+            The instant the override lapses. Absent means no expiry. A lapsed
+            override is treated as absent at resolution time with no write
+            required to retire it (DAT-004d), so an alert self-limits even on a
+            relay that has lost its app peer.
+        set_at:
+          allOf:
+            - $ref: "#/components/schemas/Timestamp"
+          description: The instant the override was imposed. Informational.
+
     ScreenCreate:
       type: object
       required: [name, scope_node]
@@ -4137,6 +4447,9 @@ components:
           x-go-type: "*string"
         labels:
           $ref: "#/components/schemas/LabelMap"
+        # No `override` member, deliberately. An override is imposed and cleared
+        # through `PUT`/`DELETE /screens/{screen_id}/now`, never as a member of a
+        # resource create or edit — see ScreenNowRequest for why.
 
     ScreenUpdate:
       type: object
@@ -4159,6 +4472,184 @@ components:
           x-go-type: "*string"
         labels:
           $ref: "#/components/schemas/LabelMap"
+        # No `override` member, deliberately — see ScreenCreate's own note.
+
+    ScreenNowRequest:
+      type: object
+      description: >-
+        What to show on a screen right now: the body of the ONE surface that
+        imposes a screen's program override (`data-model/1` DAT-004c). Its
+        members are that override's, with one substitution — the row stores an
+        absolute `expires_at` and this body states a RELATIVE `ttl_seconds`,
+        because "show this for sixty seconds" is what an operator means and
+        because deriving the instant server-side keeps a caller's clock skew from
+        deciding when an alert ends.
+
+        There is deliberately no `override` member on `ScreenCreate` or
+        `ScreenUpdate`: imposing an override is an imperative act on a physical
+        display, and burying it inside a resource edit hides it from anything
+        reading the route — audit, rate limiting, authorization review — and
+        makes "clear it" an awkward explicit `null` rather than a `DELETE`.
+      required: [mode]
+      additionalProperties: false
+      properties:
+        mode:
+          type: string
+          enum: [play, alert]
+          description: >-
+            `play` is the ordinary assignment and delivers at `scheduled`
+            priority; `alert` is the takeover and delivers at `preempt`, so a
+            player interrupts the item it is mid-way through (`player/1`
+            PLY-108). DAT-004c admits a literal `message` only under `alert`.
+        cast_id:
+          allOf:
+            - $ref: "#/components/schemas/Ulid"
+          description: >-
+            The cast whose slides the screen plays. Exactly one of `cast_id` and
+            `message` is stated — a body naming neither says nothing to show, and
+            one naming both is two instructions with no rule ranking them, which
+            a server resolving by precedence would turn into the wrong content on
+            a wall. A `cast_id` naming no cast row is REFUSED here (DAT-004c):
+            accepting it would pin the screen to an empty content array with its
+            schedule suppressed — a dark screen with no error anywhere.
+        message:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: >-
+            A literal alert message, shown as one generated slide with no
+            authored cast needed. Admissible only under `mode: "alert"`.
+        ttl_seconds:
+          type: integer
+          minimum: 1
+          description: >-
+            How long the override lasts, in seconds from the moment it is
+            imposed; omitted means it lasts until it is explicitly cleared. The
+            server converts it to the row's absolute `expires_at`, after which
+            the override is treated as absent at resolution time with NO write
+            required to retire it (DAT-004d) — so an alert self-limits even on a
+            relay that has lost its app peer.
+
+    ScreenNow:
+      type: object
+      description: >-
+        A screen's active program override, as it now stands — the same override
+        the screen row carries (`ScreenOverride`), with the screen's own id and
+        under the operator-facing name the push-now surface uses. `source` names
+        which content member is populated, so a consumer switches on one closed
+        value rather than inferring intent from which string happens to be empty.
+      required: [screen_id, mode, source]
+      additionalProperties: false
+      properties:
+        screen_id:
+          $ref: "#/components/schemas/Ulid"
+        mode:
+          type: string
+          enum: [play, alert]
+        source:
+          type: string
+          enum: [cast, message]
+        cast_id:
+          $ref: "#/components/schemas/Ulid"
+        message:
+          type: string
+        expires_at:
+          allOf:
+            - $ref: "#/components/schemas/Timestamp"
+          description: >-
+            The instant the override lapses; absent means it lasts until cleared.
+        pushed_at:
+          allOf:
+            - $ref: "#/components/schemas/Timestamp"
+          description: The instant the override was imposed (the row's `set_at`).
+
+    ScreenStatus:
+      type: object
+      description: >-
+        One screen's authored identity joined to what the relays have observed of
+        it. See `listScreenStatus` for how the ages are to be read and why
+        `reachability` never says "offline".
+      required:
+        [screen_id, reachability, live_window_ms, paired, last_pull_age_ms,
+         last_ack_age_ms, last_render_start_age_ms, report_age_ms, content_count]
+      additionalProperties: false
+      properties:
+        screen_id:
+          $ref: "#/components/schemas/Ulid"
+        name:
+          type: string
+          description: The screen row's own display name.
+        scope_node:
+          $ref: "#/components/schemas/Ulid"
+        relay_id:
+          type: string
+          description: The relay whose report this status came from; absent when no relay has reported this screen.
+        reachability:
+          type: string
+          enum: [live, stale, never_seen]
+          description: >-
+            `live` — the relay heard from this screen within `live_window_ms`.
+            `stale` — contact was made at some point, but not recently.
+            `never_seen` — no relay has ever observed this screen pull a program.
+        live_window_ms:
+          type: integer
+          description: >-
+            The staleness threshold `reachability` was decided by, published so a
+            consumer that wants a different line can draw it from the raw ages.
+        paired:
+          type: boolean
+          description: Whether a relay currently holds a live channel-token session for this screen.
+        last_pull_age_ms:
+          type: integer
+          description: Milliseconds since this screen last pulled its program, or `-1` if it never has.
+        last_ack_age_ms:
+          type: integer
+          description: Milliseconds since this screen last acknowledged a Lease, or `-1` if it never has.
+        last_render_start_age_ms:
+          type: integer
+          description: >-
+            Milliseconds since this screen last reported beginning to present a
+            content item (`player/1` PLY-110) — the only field here that is
+            evidence of playback rather than of intent — or `-1` if it never has.
+        report_age_ms:
+          type: integer
+          description: >-
+            Milliseconds since the relay report this status came from arrived, or
+            `-1` when no report has. It is what distinguishes a screen that
+            stopped talking to its relay from a relay that stopped talking to
+            this app peer.
+        program_revision:
+          type: string
+          description: The `program_revision` this screen was last handed (or, if it has never pulled, the one waiting for it).
+        priority:
+          type: string
+          enum: [scheduled, preempt]
+          description: That program's `player/1` PLY-108 priority — `preempt` is an operator's push-now takeover.
+        display:
+          type: string
+          enum: [content, blank]
+        content_count:
+          type: integer
+          description: How many content items that program carried.
+        render_asset_ref:
+          type: string
+          description: The asset this screen last reported actually putting on screen.
+        now:
+          allOf:
+            - $ref: "#/components/schemas/ScreenNow"
+          description: The operator's active push-now override, absent when the screen is following its schedule.
+
+    ScreenStatusListResponse:
+      type: object
+      required: [items, cursor]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScreenStatus"
+        cursor:
+          $ref: "#/components/schemas/Cursor"
 
     PairingCodeResult:
       type: object
@@ -4564,18 +5055,129 @@ components:
         context:
           type: object
           additionalProperties: true
+        dry_run:
+          type: boolean
+          default: false
+          description: >-
+            When `true`, the run is evaluated to completion — conditions,
+            branch selection, target resolution — but every effect is WITHHELD:
+            no device command is dispatched and no screen override is written.
+            The response reports exactly what a real run would have done. The
+            default is `false`: run-now ACTS.
+
+    AutomationRunCommand:
+      type: object
+      description: One device command this run dispatched (or, under `dry_run`, would have).
+      required: [entity_id, command, ok]
+      additionalProperties: false
+      properties:
+        entity_id:
+          $ref: "#/components/schemas/Ulid"
+        command:
+          type: string
+        ok:
+          type: boolean
+        error:
+          type: string
+          description: Present only when `ok` is false — why this one target did not take the command.
+
+    AutomationRunScreen:
+      type: object
+      description: One screen a signage action wrote (or, under `dry_run`, would have).
+      required: [screen_id, ok]
+      additionalProperties: false
+      properties:
+        screen_id:
+          $ref: "#/components/schemas/Ulid"
+        ok:
+          type: boolean
+        error:
+          type: string
+          description: Present only when `ok` is false.
+
+    AutomationRunSignage:
+      type: object
+      description: >-
+        One signage action's outcome (`rules/1` RUL-236), in the same
+        three-value shape a preset batch reports (RUL-172).
+      required: [action, outcome, screens]
+      additionalProperties: false
+      properties:
+        action:
+          type: string
+          description: >-
+            The signage action type — one of `play_cast`, `show_alert`,
+            `dismiss_alert` (`rules/1` RUL-234/RUL-235). Left as a plain string
+            rather than an `enum` deliberately: an `enum` here mints
+            package-level Go constants named after its VALUES, and two of them
+            (`failed` on `outcome` below) collide with an existing enum's,
+            which silently renames that other enum's constants across the whole
+            generated package. The closed set is stated here and enforced by
+            the one place that can produce it.
+        outcome:
+          type: string
+          description: >-
+            One of `complete`, `partial`, `failed` — `rules/1` RUL-172's own
+            three-value outcome, reused by RUL-236. A plain string for the
+            reason `action` above gives.
+        screens:
+          type: array
+          items:
+            $ref: "#/components/schemas/AutomationRunScreen"
 
     AutomationRunResult:
       type: object
-      required: [run_id, disposition]
+      description: >-
+        What the run actually did. `disposition` is the mode-evaluation
+        outcome; the three effect arrays are the report the operator needs to
+        tell "it ran" from "it ran and changed something".
+      required: [run_id, disposition, dry_run, commands, signage, logs]
       additionalProperties: false
       properties:
         run_id:
           $ref: "#/components/schemas/Ulid"
         disposition:
           type: string
-          description: rules/1's closed RunDisposition set.
+          description: >-
+            rules/1's closed RunDisposition set. `skipped` here means the
+            rule's own conditions did not hold, so its actions were not run —
+            not an error, and not a failure of the request.
           enum: [ran, skipped, restarted]
+        dry_run:
+          type: boolean
+          description: Whether effects were withheld.
+        commands:
+          type: array
+          description: Every `device_command` target this run dispatched to, in dispatch order.
+          items:
+            $ref: "#/components/schemas/AutomationRunCommand"
+        signage:
+          type: array
+          description: Every signage action this run performed, in action order.
+          items:
+            $ref: "#/components/schemas/AutomationRunSignage"
+        logs:
+          type: array
+          description: Every `log` action's evaluated message (`rules/1` RUL-200), in order.
+          items:
+            type: object
+            required: [level, message]
+            additionalProperties: false
+            properties:
+              level:
+                type: string
+                description: One of `info`, `warning`, `error` (`rules/1` RUL-200). A plain string for the reason `AutomationRunSignage.action` gives.
+              message:
+                type: string
+        delays_collapsed:
+          type: integer
+          minimum: 1
+          description: >-
+            How many `delay` actions this run passed through WITHOUT waiting.
+            A synchronous manual run does not hold the request open for a
+            rule's own pacing, so the remaining actions run immediately; the
+            count is reported rather than hidden, because a rule whose timing
+            matters behaves differently here than it does on a trigger.
 
     AutomationBulkEnableRequest:
       type: object
@@ -4884,6 +5486,21 @@ components:
             The entity's last reported state, a value from its device
             class's own state vocabulary. Absent until the relay has
             reported one.
+        attributes:
+          type: object
+          additionalProperties:
+            type: string
+          description: >-
+            The driver-observed detail behind `state`
+            (`device-class-registry/1` REG-064; for a Roku `power_mode`,
+            `active_app`, `active_app_id`, `app_type`, `is_screensaver`,
+            `app_version`). `state` answers on/idle/standby/off; an operator
+            looking at a screen that is not showing what it should needs to
+            know it is sitting in another app, which `state` cannot say.
+            Values are strings even where the driver's own value is a boolean —
+            this is display detail crossing a trust boundary from a relay, and
+            a bounded string map is checkable at intake in a way an arbitrary
+            JSON value is not. Absent until the relay has reported some.
 
     EntityListResponse:
       type: object

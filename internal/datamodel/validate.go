@@ -148,6 +148,7 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 		if e := checkRowPlacement(v.ScopeNode, "playlist"); e != nil {
 			errs = append(errs, *e)
 		}
+		errs = append(errs, checkPlaylistItems(v.Items)...)
 		rs.Playlists = append(rs.Playlists, v)
 	}
 	for _, r := range raw.Casts {
@@ -175,6 +176,19 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 				Field:   "name",
 				Code:    "CAST_NAME_MISSING",
 				Message: "a cast row MUST carry a non-empty name (DAT-043)",
+			})
+		}
+		// A cast-wide default is the same rule as a slide's own dwell time, one
+		// level up: omitting it says "no default", and a non-positive value is a
+		// duration nothing can honour. It is checked beside the name rather than
+		// inside checkCastSlides because it is a property of the CAST, not of
+		// any slide — reporting it against `slides[0]` would send an operator to
+		// the wrong control.
+		if v.DefaultDurationMS < 0 {
+			errs = append(errs, Error{
+				Field:   "default_duration_ms",
+				Code:    "CAST_DEFAULT_DURATION_INVALID",
+				Message: "a cast's default_duration_ms, when stated, MUST be positive; omit it for no cast-wide default (DAT-043)",
 			})
 		}
 		errs = append(errs, checkCastSlides(v.Slides)...)
@@ -310,6 +324,62 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 	return rs, errs
 }
 
+// checkPlaylistItems enforces the DAT-041 rules that govern a playlist item's
+// own `content_type` — the field that decides whether an asset item PLAYS as a
+// video or is drawn as a still image (PlaylistItem.ContentType).
+//
+// It reports EVERY failing item rather than the first, for the same reason
+// checkCastSlides does: a playlist is a document an operator edits as a whole,
+// and an editor forced to re-submit once per bad item to discover the next one
+// is API-013's multi-field answer thrown away.
+//
+// Two rules, and both exist because the alternative is silence:
+//
+//   - a stated content_type is one of the closed vocabulary (image/video). An
+//     unrecognised value would ride, unaltered, all the way onto the Lease
+//     content item's `type`, where the relay's content-type filter (PLY-013,
+//     playerserver.filterContentTypes) would drop the item because no player
+//     declares that type — a screen showing nothing, with the only evidence
+//     buried in a Lease no operator reads. Refusing it at the write is the only
+//     place the operator is still holding the thing that is wrong.
+//   - content_type is stated only on an `asset` item. A `slide` or `cast`
+//     item's type is decided by its SOURCE (both project to `slide` items), and
+//     a `playable` has no direct content reference at all, so a content_type on
+//     any of those cannot change what the screen plays. Accepting it would
+//     store an operator's stated intent that nothing will ever honour — the
+//     accepts-work-it-never-performs shape — so it is refused instead.
+//
+// Nothing here re-validates `source` itself or the source/field pairing: those
+// belong to DAT-041's own rules and are not this function's business.
+func checkPlaylistItems(items []PlaylistItem) []Error {
+	var errs []Error
+	for i, item := range items {
+		if item.ContentType == "" {
+			continue
+		}
+		if item.ContentType != PlaylistContentTypeImage && item.ContentType != PlaylistContentTypeVideo {
+			errs = append(errs, Error{
+				Field: fmt.Sprintf("items[%d].content_type", i),
+				Code:  "PLAYLIST_ITEM_CONTENT_TYPE_INVALID",
+				Message: fmt.Sprintf(
+					"content_type %q is not one of %s/%s; a player switches its renderer on this value and would be served nothing for an unknown one (DAT-041)",
+					item.ContentType, PlaylistContentTypeImage, PlaylistContentTypeVideo),
+			})
+			continue
+		}
+		if item.Source != PlaylistSourceAsset {
+			errs = append(errs, Error{
+				Field: fmt.Sprintf("items[%d].content_type", i),
+				Code:  "PLAYLIST_ITEM_CONTENT_TYPE_INVALID",
+				Message: fmt.Sprintf(
+					"content_type is only meaningful on a %q item; a %q item's content type is decided by its source (DAT-041)",
+					PlaylistSourceAsset, item.Source),
+			})
+		}
+	}
+	return errs
+}
+
 // checkCastSlides enforces DAT-043's slide rules over one cast's slides, and
 // reports EVERY failing slide rather than the first — a cast is a document an
 // operator edits as a whole, so an editor that had to re-submit once per bad
@@ -442,9 +512,15 @@ func validateReferences(rs RowSet) []Error {
 	for _, p := range rs.PresetBatches {
 		presetIDs[p.PresetID] = true
 	}
+	// Two maps rather than one, because "the cast is not there" and "the cast is
+	// a template" are different refusals with different remedies (DAT-043).
 	castIDs := map[string]bool{}
+	templateCastIDs := map[string]bool{}
 	for _, c := range rs.Casts {
 		castIDs[c.ID] = true
+		if c.Template {
+			templateCastIDs[c.ID] = true
+		}
 	}
 
 	// A playlist item that names a cast (DAT-041 `source: "cast"`) MUST name one
@@ -466,6 +542,30 @@ func validateReferences(rs RowSet) []Error {
 					Message: fmt.Sprintf(
 						"playlist %s item %d declares source %q but its cast_id does not reference an existing cast row (DAT-041/DAT-043)",
 						p.ID, i, PlaylistSourceCast),
+				})
+				continue
+			}
+			// A TEMPLATE resolves perfectly well — the row is right there — so
+			// this is not a REFERENCE_INVALID and must not be reported as one:
+			// telling an operator the cast "does not exist" while it sits in
+			// their template gallery sends them looking for the wrong problem.
+			// The rule itself is DAT-043's: a template exists to be edited as
+			// the SOURCE of future casts, so a screen playing one would change
+			// every time somebody improved the starting point.
+			//
+			// Enforced HERE, in the whole-row-set validator, rather than as a
+			// create-time guard on the playlist family, for the reason every
+			// referential rule in this file is: ValidateRows re-runs over the
+			// row-set a write would LEAVE BEHIND, so this equally refuses
+			// flipping an already-scheduled cast to `template: true` — which a
+			// one-way check at playlist-write time would let straight through.
+			if templateCastIDs[item.CastID] {
+				errs = append(errs, Error{
+					Field: fmt.Sprintf("items[%d].cast_id", i),
+					Code:  "CAST_TEMPLATE_NOT_SCHEDULABLE",
+					Message: fmt.Sprintf(
+						"playlist %s item %d references cast %s, which is marked template: true; create a cast from the template and schedule that (DAT-043)",
+						p.ID, i, item.CastID),
 				})
 			}
 		}

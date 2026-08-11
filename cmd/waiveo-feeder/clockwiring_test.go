@@ -62,6 +62,7 @@ var mainClockArgs = []clockArg{
 	{"api.New", 2, "the api layer's own stamps"},
 	{"startWebhookDelivery", 4, "outbound webhook delivery timing and signature rotation overlap"},
 	{"newContentSweeper", 3, "the content retention sweep's age measurement"},
+	{"overrideExpiryLoop", 2, "when a screen override's TTL is judged to have lapsed (DAT-004d)"},
 }
 
 // TestMainWiresOneClockIntoEveryComponentThatTakesOne parses main.go and checks

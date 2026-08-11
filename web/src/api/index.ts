@@ -79,6 +79,10 @@ export {
   type ScreenUpdate,
   type PairingCodeResult,
   type ScreensModule,
+  type ScreenNow,
+  type ScreenNowRequest,
+  type ScreenStatus,
+  type ScreenStatusModule,
 } from "./resources";
 
 export {
@@ -107,6 +111,11 @@ export {
   SLIDE_CANVAS_WIDTH,
   SLIDE_CANVAS_HEIGHT,
   LAYER_KINDS,
+  WIDGET_LAYER_KINDS,
+  LABEL_LAYER_KINDS,
+  WEATHER_TOKENS,
+  ENTITY_STATE_TOKEN,
+  isLabelKind,
   type CastsModule,
   type Cast,
   type CastCreate,
@@ -114,6 +123,7 @@ export {
   type CastSlide,
   type SlideLayer,
   type LayerKind,
+  type WidgetLayerKind,
   type LayerAlign,
   type SlideProblem,
 } from "./casts";

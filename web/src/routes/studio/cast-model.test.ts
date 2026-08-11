@@ -5,7 +5,7 @@
 // reorder that scrambles the stack, a delete that strands the selection.
 
 import { describe, expect, it } from "vitest";
-import { validateSlide, type Cast, type CastSlide, type SlideLayer } from "@/api";
+import { LAYER_KINDS, validateSlide, type Cast, type CastSlide, type SlideLayer } from "@/api";
 import {
   EMPTY_STUDIO_STATE,
   MIN_LAYER_SIZE,
@@ -315,5 +315,47 @@ describe("save body + dirty tracking", () => {
   it("the empty start state holds nothing and is not dirty", () => {
     expect(EMPTY_STUDIO_STATE).toMatchObject({ slides: [], dirty: false });
     expect(currentSlide(EMPTY_STUDIO_STATE)).toBeUndefined();
+  });
+});
+
+/**
+ * What INSERTING each kind produces — asserted against the same rules the server
+ * and the projector apply (`validateSlide` mirrors
+ * `wire.ValidateAuthoredSlideLayers`).
+ *
+ * This is the guard on a specific, quiet failure: a default that is missing its
+ * kind's required field lands a layer that looks fine on the canvas, holds the
+ * save gate for a reason the operator did not cause, and — if it ever reached
+ * the wire — would be DROPPED at serve time with nothing anywhere saying why.
+ */
+describe("inserting a layer of each kind", () => {
+  const NOW = Date.parse("2026-08-10T09:15:00");
+
+  it("lands every kind DRAWABLE except the two that must name something first", () => {
+    for (const kind of LAYER_KINDS) {
+      const problems = validateSlide({ id: "s", layers: [defaultLayer(kind, NOW)] });
+      if (kind === "image" || kind === "entity") {
+        // Deliberately incomplete: an image's bytes come from the content
+        // origin and an entity's subject from the device plane, and inventing
+        // either would produce a layer that resolves to nothing on the wall.
+        expect(problems).toHaveLength(1);
+      } else {
+        expect(problems, `${kind} must insert ready to draw`).toHaveLength(0);
+      }
+    }
+  });
+
+  it("gives a countdown a target in the FUTURE of the instant it was inserted", () => {
+    const layer = defaultLayer("countdown", NOW);
+    // Midnight tonight: strictly ahead, so the widget counts visibly from the
+    // moment it lands rather than reading 00:00:00 like a broken one. Derived
+    // from the passed-in instant, which is what makes this assertable at all.
+    expect(layer.target_ms).toBe(Date.parse("2026-08-11T00:00:00"));
+  });
+
+  it("gives a weather widget a template the box can actually substitute into", () => {
+    // A template with no token would render as its own literal text forever —
+    // a widget that is, on the wall, indistinguishable from a text layer.
+    expect(defaultLayer("weather", NOW).text).toMatch(/\{temp\}/);
   });
 });

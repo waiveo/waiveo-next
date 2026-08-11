@@ -32,6 +32,32 @@
 //     package tracks the transition itself and feeds the result to
 //     EvaluateRecovery as LivenessSignal.JustEnteredOnGroup.
 //
+//     1b. POWER-ON AUTO-LAUNCH (Config.PowerOnLaunch, parity row 5.6 — the legacy
+//     stack's `routes/autoLaunch.js` + roku-integration's `#autolaunch-delay`
+//     launch param). One settle delay after a screen transitions into PowerOn,
+//     the player channel is foregrounded ONCE, whatever surface the screen
+//     resumed into. This is a DIFFERENT rule from item 2 below and neither
+//     subsumes the other: a Roku resumes the app it was last on, so a signage
+//     screen switched off inside somebody's Netflix session comes back up
+//     inside it — never at Home, so item 2's gate never fires, and the screen
+//     shows the wrong thing until a human intervenes. Legacy foregrounded the
+//     channel on the power-on EDGE precisely because of that, and this is that
+//     behaviour.
+//
+//     The two rules share one settle clock, one adoption gate, one dispatch
+//     path and one command, so they cannot fight: both issue the identical
+//     REG-066 `launch` of the same channel through the same
+//     CommandSurface-serialized per-device lock (REL-115). What rule 1b
+//     deliberately does NOT share is item 2's per-streak `launched` cooldown —
+//     see evaluate's own comment for why borrowing it would disable
+//     self-healing for a launch the device pended.
+//
+//     It IS suppressed by PLY-155's blank-Lease gate (below): a screen the
+//     schedule has deliberately blanked is not one to foreground a channel
+//     onto. That suppression CONSUMES the edge rather than deferring it —
+//     firing when the blank lifts hours later would steal a foreground a
+//     person may by then be using.
+//
 //  2. A HOME-CONFIRMATION STREAK — keepalive's OWN policy, NOT something
 //     PLY-152/153 themselves require. Before attempting a relaunch, this
 //     package additionally requires the screen be observed sitting on the
@@ -196,6 +222,21 @@ const (
 	channelParam  = "channel"
 )
 
+// launchReason* name WHICH of keepalive's two launch rules decided a dispatch,
+// carried from evaluate to dispatchLaunch and into the log line.
+//
+// An operator reading a relay's log has to be able to tell the two apart: one
+// says "this screen powered on and I put the channel back in front", the other
+// says "this screen was sitting at Home doing nothing and I recovered it". They
+// have different causes and different remedies, and a single shared message
+// (which is what the log said while only one rule existed) makes a fleet where
+// screens keep being switched off indistinguishable from one where the channel
+// keeps crashing back to Home.
+const (
+	launchReasonPowerOn      = "power-on auto-launch"
+	launchReasonHomeRecovery = "home-only recovery"
+)
+
 // poweredOnRawValue is the one raw ECP power_mode value rule 3 treats as
 // "genuinely on" — every other value (a recognized low-power reading, an
 // unrecognized one, or absent/empty) never issues a command (see the package
@@ -290,6 +331,22 @@ type Config struct {
 	// every reachable Roku". A test exercising the state machine alone opts in
 	// explicitly by supplying a func.
 	Adopted func(entityID string) bool
+
+	// PowerOnLaunch enables the POWER-ON AUTO-LAUNCH rule (rule 1b, parity row
+	// 5.6): a screen that transitions into PowerOn has the player channel
+	// foregrounded once, LaunchDelay after the transition, whatever surface it
+	// happens to have resumed into. See the package doc's item 1b for why this
+	// is a separate rule from the home-confirmation recovery and why the two
+	// cannot fight.
+	//
+	// It defaults OFF at the library boundary (the zero-value Config), like
+	// every other capability field here except the fail-closed Adopted gate, so
+	// a test constructing a Keepalive to exercise the home-recovery machine
+	// alone is not silently also exercising this one. Production turns it ON —
+	// cmd/waiveo-relay/main.go enables it by default, matching the legacy
+	// stack's own power-on auto-launch automation, with WAIVEO_RELAY_POWERON_LAUNCH
+	// to switch it off.
+	PowerOnLaunch bool
 }
 
 // pollSnapshot is keepalive's own cached view of one screen's two
@@ -312,6 +369,21 @@ type screenState struct {
 	poweredOnAt  time.Time
 	homeStreak   int
 	launched     bool
+
+	// powerOnConsumed records that the CURRENT power-on edge has already had
+	// rule 1b's auto-launch decided for it — whether that decision was to
+	// dispatch or to suppress. It is reset by the same rule-3 reset every other
+	// field here is, so the NEXT power-on edge gets its own decision and only
+	// its own.
+	//
+	// "Consumed", not "launched": a suppressed edge is consumed too. Leaving it
+	// unconsumed would arm a launch that fires whenever the suppression happens
+	// to lift — potentially hours later, at a screen a person is by then using —
+	// which is precisely the foreground theft rule 2's home gate exists to
+	// avoid. A power-on auto-launch is an EDGE-triggered action; if the edge was
+	// not a moment to foreground the channel, there is no later moment to
+	// re-try it at, only the next real power-on.
+	powerOnConsumed bool
 }
 
 // Keepalive watches Config.Targets over ECP and dispatches a recovery launch
@@ -325,6 +397,7 @@ type Keepalive struct {
 	controller    deviceplane.DeviceController
 	activeDisplay func(entityID string) string
 	adopted       func(entityID string) bool
+	powerOnLaunch bool
 
 	mu      sync.Mutex
 	known   map[string]pollSnapshot
@@ -372,6 +445,7 @@ func New(cfg Config) *Keepalive {
 		controller:    cfg.Controller,
 		activeDisplay: cfg.ActiveDisplay,
 		adopted:       cfg.Adopted,
+		powerOnLaunch: cfg.PowerOnLaunch,
 		known:         make(map[string]pollSnapshot, len(targets)),
 		screens:       make(map[string]*screenState, len(targets)),
 	}
@@ -487,8 +561,8 @@ func (k *Keepalive) recordObservation(obs state.Observation, now time.Time) {
 	k.known[id] = pollSnapshot{powerMode: powerMode, appType: appType}
 	k.mu.Unlock()
 
-	if k.evaluate(id, powerMode, appType, now) {
-		k.dispatchLaunch(id)
+	if reason, launch := k.evaluate(id, powerMode, appType, now); launch {
+		k.dispatchLaunch(id, reason)
 	}
 }
 
@@ -528,12 +602,12 @@ func (k *Keepalive) evaluateAll(now time.Time) {
 	sort.Strings(ids)
 	for _, id := range ids {
 		snap := snaps[id]
-		if k.evaluate(id, snap.powerMode, snap.appType, now) {
+		if reason, launch := k.evaluate(id, snap.powerMode, snap.appType, now); launch {
 			k.dispatchWG.Add(1)
-			go func(id string) {
+			go func(id, reason string) {
 				defer k.dispatchWG.Done()
-				k.dispatchLaunch(id)
-			}(id)
+				k.dispatchLaunch(id, reason)
+			}(id, reason)
 		}
 	}
 }
@@ -558,6 +632,11 @@ func (k *Keepalive) evaluateAll(now time.Time) {
 //     before keepalive started watching it) starts the delay clock; every
 //     poll before poweredOnAt+launchDelay elapses never dispatches, even one
 //     already reading Home.
+//   - Rule 1b (power-on auto-launch, Config.PowerOnLaunch — see the package
+//     doc's item 1b): once past that same delay, the FIRST qualifying poll of
+//     each power-on edge dispatches a launch regardless of appType, then
+//     consumes the edge so the same power-on can never fire twice. Suppressed
+//     — and the edge consumed anyway — by PLY-155's blank active Lease.
 //   - Rule 2 (home-confirmation streak, keepalive's OWN policy — see the
 //     package doc's item 2, NOT a PLY-152/153 requirement): once past the
 //     delay, appType other than the literal "home" or "menu" (a real foreign
@@ -575,7 +654,7 @@ func (k *Keepalive) evaluateAll(now time.Time) {
 //     already passed by construction here (isHome, below, is a narrower
 //     superset check) — a blank active Lease refuses the attempt and resets
 //     the streak, exactly as rule 2's own "not home" case does.
-func (k *Keepalive) evaluate(entityID, powerMode, appType string, now time.Time) bool {
+func (k *Keepalive) evaluate(entityID, powerMode, appType string, now time.Time) (reason string, launch bool) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 
@@ -599,7 +678,8 @@ func (k *Keepalive) evaluate(entityID, powerMode, appType string, now time.Time)
 		s.poweredOnAt = time.Time{}
 		s.homeStreak = 0
 		s.launched = false
-		return false
+		s.powerOnConsumed = false
+		return "", false
 	}
 
 	if powerMode != poweredOnRawValue {
@@ -609,7 +689,8 @@ func (k *Keepalive) evaluate(entityID, powerMode, appType string, now time.Time)
 		s.poweredOnAt = time.Time{}
 		s.homeStreak = 0
 		s.launched = false
-		return false
+		s.powerOnConsumed = false
+		return "", false
 	}
 
 	transitioned := !s.wasPoweredOn
@@ -621,6 +702,57 @@ func (k *Keepalive) evaluate(entityID, powerMode, appType string, now time.Time)
 		s.poweredOnAt = now
 		s.homeStreak = 0
 		s.launched = false
+		// Rule 1b arms on this SAME edge: a fresh power-on is a fresh
+		// auto-launch opportunity, whatever the previous one decided.
+		s.powerOnConsumed = false
+	}
+
+	// Rule 1b — POWER-ON AUTO-LAUNCH (parity row 5.6). Evaluated here, BEFORE
+	// the home gate below, because that is the whole difference between the two
+	// rules: this one fires whatever surface the screen resumed into, and a
+	// screen that powered back on straight into a foreign app is exactly the
+	// case an `isHome` early-return would drop on the floor.
+	//
+	// It waits out the SAME Config.LaunchDelay rule 1 imposes, from the SAME
+	// poweredOnAt instant — one settle clock, not two — because the field lesson
+	// the delay encodes is about the DEVICE (a launch issued into a
+	// still-booting Roku pends without rendering, legacy roku-integration's
+	// `#autolaunch-delay`), not about which rule issued it.
+	if k.powerOnLaunch && !s.powerOnConsumed {
+		if now.Sub(s.poweredOnAt) < k.launchDelay {
+			// Still settling. Fall through to nothing: rule 2 cannot fire inside
+			// this window either (it checks the same delay below), so returning
+			// here costs no other rule its poll.
+			return "", false
+		}
+		// The edge is decided NOW, once, whichever way it goes (see
+		// screenState.powerOnConsumed).
+		s.powerOnConsumed = true
+		// PLY-155 only. Not the whole EvaluateRecovery verdict: its PLY-152
+		// app_type gate is the very gate this rule deliberately does not apply,
+		// so reading `RecoveryAttempted` here would silently re-impose it and
+		// make rule 1b a duplicate of rule 2. `SuppressedDueToBlankDisplay` is
+		// evaluated independently of app_type by that same function, so this
+		// reads the one gate that is genuinely about intent rather than about
+		// the foreground surface: a screen whose active Lease is deliberately
+		// blank (a closed-hours daypart, DAT-116/PLY-155) must not have a channel
+		// foregrounded onto it just because someone flipped the TV on.
+		if k.recoveryEvaluationLocked(entityID, appType).SuppressedDueToBlankDisplay {
+			return "", false
+		}
+		// Deliberately does NOT set s.launched. That flag is rule 2's
+		// per-streak cooldown, and borrowing it here would disarm the
+		// home-confirmation recovery for the whole streak that follows — so a
+		// power-on launch that the device pended anyway (the exact failure the
+		// settle delay exists to reduce, not eliminate) would leave the screen
+		// stranded at Home with its self-healing switched off. Left alone, the
+		// two rules cost at most one duplicate launch a couple of polls apart,
+		// which is the strictly safer trade: both dispatch the IDENTICAL
+		// REG-066 launch of the SAME channel through the SAME
+		// CommandSurface-serialized per-device lock (REL-115), so they cannot
+		// interleave, contradict, or race each other — the worst case is a
+		// no-op relaunch of a channel already in the foreground.
+		return launchReasonPowerOn, true
 	}
 
 	isHome := appType == "home" || appType == "menu"
@@ -630,13 +762,13 @@ func (k *Keepalive) evaluate(entityID, powerMode, appType string, now time.Time)
 		// and a later return to Home starts counting fresh.
 		s.homeStreak = 0
 		s.launched = false
-		return false
+		return "", false
 	}
 
 	if now.Sub(s.poweredOnAt) < k.launchDelay {
 		// Rule 1: still inside the post-power-on settle window, even though
 		// this poll already reads Home — too soon to act.
-		return false
+		return "", false
 	}
 
 	// PLY-155/156 (see the package doc's own section): delegate to the SAME
@@ -649,24 +781,7 @@ func (k *Keepalive) evaluate(entityID, powerMode, appType string, now time.Time)
 	// (PLY-155) — PowerScheduleState is deliberately left at its zero value
 	// (see the package doc for why that already suffices for PLY-156 too in
 	// this codebase's data model).
-	activeDisplay := ""
-	if k.activeDisplay != nil {
-		activeDisplay = k.activeDisplay(entityID)
-	}
-	ev := playerserver.EvaluateRecovery(playerserver.LivenessSignal{
-		ActiveDisplay: activeDisplay,
-		DeviceStatus: playerserver.DeviceStatus{
-			// "on": a representative on-group member (device-class-registry/1
-			// REG-063). Rule 3 above has ALREADY independently confirmed
-			// on-group membership via the raw power_mode check (see the
-			// package doc's item 3) — this call's own PLY-151 gate is
-			// necessarily going to pass — but it is threaded through anyway
-			// rather than skipped, so a future change to REG-063's semantic
-			// grouping is honored here too.
-			State:   "on",
-			AppType: appType,
-		},
-	})
+	ev := k.recoveryEvaluationLocked(entityID, appType)
 	if !ev.RecoveryAttempted {
 		// PLY-155: an intentionally blank Lease suppresses recovery entirely,
 		// regardless of how far the streak has already progressed. Reset it
@@ -675,17 +790,46 @@ func (k *Keepalive) evaluate(entityID, powerMode, appType string, now time.Time)
 		// than firing immediately on stale pre-suppression progress.
 		s.homeStreak = 0
 		s.launched = false
-		return false
+		return "", false
 	}
 
 	s.homeStreak++
 	if s.homeStreak < homeStreakThreshold || s.launched {
 		// Not yet confirmed across homeStreakThreshold consecutive polls, or
 		// already dispatched once for this unbroken streak (cooldown).
-		return false
+		return "", false
 	}
 	s.launched = true
-	return true
+	return launchReasonHomeRecovery, true
+}
+
+// recoveryEvaluationLocked runs the shared PLY-150-157 decision for entityID at
+// this poll's appType reading — the ONE place either rule reaches
+// playerserver.EvaluateRecovery, so rule 1b's blank suppression and rule 2's
+// full verdict can never be evaluated against differently-assembled signals.
+// Which FIELDS of the returned evaluation a rule is entitled to read differs,
+// and each call site says which and why. The caller holds k.mu.
+//
+// Config.ActiveDisplay nil, or a "" reading, is "not blank": the safe degrade
+// for a test exercising the device-state gates alone (see Config.ActiveDisplay).
+func (k *Keepalive) recoveryEvaluationLocked(entityID, appType string) playerserver.RecoveryEvaluation {
+	activeDisplay := ""
+	if k.activeDisplay != nil {
+		activeDisplay = k.activeDisplay(entityID)
+	}
+	return playerserver.EvaluateRecovery(playerserver.LivenessSignal{
+		ActiveDisplay: activeDisplay,
+		DeviceStatus: playerserver.DeviceStatus{
+			// "on": a representative on-group member (device-class-registry/1
+			// REG-063). Rule 3 has ALREADY independently confirmed on-group
+			// membership via the raw power_mode check (see the package doc's
+			// item 3) — this call's own PLY-151 gate is necessarily going to
+			// pass — but it is threaded through anyway rather than skipped, so a
+			// future change to REG-063's semantic grouping is honored here too.
+			State:   "on",
+			AppType: appType,
+		},
+	})
 }
 
 // dispatchLaunch issues the recovery launch command (device-class-registry/1
@@ -697,15 +841,15 @@ func (k *Keepalive) evaluate(entityID, powerMode, appType string, now time.Time)
 // packages, e.g. automationhost's own log.Printf on a non-fatal problem) and
 // otherwise swallowed — keepalive's own next poll gets another chance, it is
 // never fatal to the running relay.
-func (k *Keepalive) dispatchLaunch(entityID string) {
+func (k *Keepalive) dispatchLaunch(entityID, reason string) {
 	if k.controller == nil {
 		return
 	}
 	if err := k.controller.Dispatch(entityID, launchCommand, map[string]any{channelParam: k.channel}); err != nil {
-		log.Printf("keepalive: launch dispatch to %s (channel %q) failed: %v", entityID, k.channel, err)
+		log.Printf("keepalive: %s launch dispatch to %s (channel %q) failed: %v", reason, entityID, k.channel, err)
 		return
 	}
-	log.Printf("keepalive: screen %s re-launched channel %q (home-only recovery)", entityID, k.channel)
+	log.Printf("keepalive: screen %s launched channel %q (%s)", entityID, k.channel, reason)
 }
 
 // attrString reads a device-class-registry/1 REG-064 nullable-string

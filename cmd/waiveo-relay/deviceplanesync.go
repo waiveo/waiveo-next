@@ -17,6 +17,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/relay/devicetargets"
@@ -34,10 +35,12 @@ type statePoller interface {
 	Snapshot() map[string]state.Entity
 }
 
-// entityStateSink is the candidate store's REL-110a per-entity `state` writer
-// (*deviceplane.Store.SetEntityState).
+// entityStateSink is the candidate store's REL-110a per-entity observation
+// writer (*deviceplane.Store.SetEntityObservation): the canonical state AND the
+// driver-level attributes behind it, written together because they are one
+// observation.
 type entityStateSink interface {
-	SetEntityState(entityID, entityState string) bool
+	SetEntityObservation(entityID, entityState string, attrs map[string]string) bool
 }
 
 // keepaliveTargets is the screen keep-alive's watched set
@@ -103,8 +106,37 @@ func (s devicePlaneSync) tick() {
 	}
 
 	for entityID, entity := range s.poller.Snapshot() {
-		s.states.SetEntityState(entityID, entity.State)
+		s.states.SetEntityObservation(entityID, entity.State, wireAttributes(entity.Attributes))
 	}
+}
+
+// wireAttributes projects a polled entity's typed attribute map onto the
+// string-valued map the `device.candidates` report carries
+// (wire.CandidateEntity.Attributes).
+//
+// Two rules, both deliberate. A nil value is DROPPED rather than rendered as
+// "<nil>": the driver's nil means "this poll did not learn it" (an ECP response
+// with no <app> element has no active_app), and an operator reading the literal
+// text "<nil>" beside "power_mode" learns nothing except that something is
+// broken. A bool or number is rendered with fmt.Sprint, which is what makes
+// is_screensaver arrive as "true"/"false" — the wire is string-valued on
+// purpose (wire.CandidateEntity's own doc explains why), and every consumer of
+// it draws text.
+func wireAttributes(attrs map[string]any) map[string]string {
+	if len(attrs) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(attrs))
+	for k, v := range attrs {
+		if v == nil {
+			continue
+		}
+		out[k] = fmt.Sprint(v)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // startDevicePlaneSync builds the join from the relay's real collaborators and

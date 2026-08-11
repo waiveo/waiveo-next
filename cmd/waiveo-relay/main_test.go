@@ -353,6 +353,53 @@ func TestLoadConfigKeepaliveDefaultsOnAndOptsOut(t *testing.T) {
 	}
 }
 
+// The POWER-ON AUTO-LAUNCH rule (parity row 5.6) is the third opt-out switch,
+// and its default is the whole point of the row: legacy foregrounded the
+// channel on every power-on, so a like-for-like relay must too, out of the box,
+// with no environment variable to remember. Pinned separately from
+// keepaliveOn's own default because they are separately switchable — a
+// deployment that shares its TVs with people has a real reason to keep the
+// home-only recovery and drop this one, and that combination must be reachable.
+func TestLoadConfigPowerOnLaunchDefaultsOnAndOptsOut(t *testing.T) {
+	for raw, want := range map[string]bool{
+		"":           true, // unset — the parity default
+		"1":          true,
+		"true":       true,
+		"0":          false,
+		"off":        false,
+		"disabled":   false,
+		"yes-please": true, // a typo never silently disables a parity behaviour
+	} {
+		env := map[string]string{"WAIVEO_RELAY_POWERON_LAUNCH": raw}
+		cfg, err := loadConfig(func(k string) string { return env[k] })
+		if err != nil {
+			t.Fatalf("loadConfig(WAIVEO_RELAY_POWERON_LAUNCH=%q): %v", raw, err)
+		}
+		if cfg.powerOnLaunchOn != want {
+			t.Errorf("WAIVEO_RELAY_POWERON_LAUNCH=%q → powerOnLaunchOn = %v, want %v", raw, cfg.powerOnLaunchOn, want)
+		}
+	}
+
+	// The two switches are independent in BOTH directions: switching the
+	// power-on launch off must leave the keep-alive running, and vice versa.
+	env := map[string]string{"WAIVEO_RELAY_POWERON_LAUNCH": "0"}
+	cfg, err := loadConfig(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if !cfg.keepaliveOn {
+		t.Error("keepaliveOn = false with only WAIVEO_RELAY_POWERON_LAUNCH=0 set, want true (the two switches are independent)")
+	}
+	env = map[string]string{"WAIVEO_RELAY_KEEPALIVE": "0"}
+	cfg, err = loadConfig(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if !cfg.powerOnLaunchOn {
+		t.Error("powerOnLaunchOn = false with only WAIVEO_RELAY_KEEPALIVE=0 set, want true (the config values are independent; the capability is unreachable anyway because keepalive itself is not constructed)")
+	}
+}
+
 func TestLoadConfigMDNSPatterns(t *testing.T) {
 	// Comma-separated service types, tolerating stray whitespace and empty
 	// entries from a trailing/doubled comma.

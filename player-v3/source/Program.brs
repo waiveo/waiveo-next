@@ -1,10 +1,11 @@
 ' Program.brs — the on-device player/1 program thread (PLY-080/084/090/091).
-' Pulls a signed Lease over the pinned relay connection, fetches EVERY
+' Pulls a signed Lease over the pinned relay connection, materializes EVERY
 ' content item the Lease's `content` array carries (PLY-014's content-type
-' floor), in order, DIRECT from its feeder content-origin URL, verifies each
-' item's (and each composed item's own layer's) fetched bytes against its own
-' asset_ref (content-addressed integrity) BEFORE returning anything to
-' render, and returns a single ordered `items` array (PLY-083a) for
+' floor), in order, DIRECT from its feeder content-origin URL — fetching only
+' what this device does not already hold (the content cache below) and
+' verifying each newly fetched item's (and each composed/slide layer's) bytes
+' against its own asset_ref (content-addressed integrity) BEFORE returning
+' anything to render — and returns a single ordered `items` array (PLY-083a) for
 ' PhotonScene to present — one entry per `content` array element, IN THAT
 ' ARRAY'S OWN ORDER, with NO type-based carve-out: a plain `image`/`video`
 ' item becomes a plain cast entry, and a `composed` item (PLY-015) becomes a
@@ -29,7 +30,28 @@
 ' tree) to preserve any equivalent guarantee without paying for a full
 ' pre-fetch; that does not exist yet, so streaming is out of scope here.
 ' A "composed" item's layers pay the IDENTICAL per-layer guarantee (see
-' wvFetchAndVerifyItem below) — composing layers never relaxes integrity.
+' wvEnsureContent below) — composing layers never relaxes integrity.
+'
+' Content cache (parity milestone 2.6): this poll loop runs every ~10s
+' (PlayerTask's wvProgramPollIntervalMs) and USED to re-download and re-hash
+' every content item on every single pass, whether or not anything had changed
+' — the scene's castSignature gated only the RE-RENDER, never the fetch. For a
+' wall of screens on one LAN that is a permanent, pointless load on the box; for
+' a video item it is the difference between an idle link and a saturated one,
+' plus a full-file sha256 every ten seconds on a Pi-class CPU.
+'
+' So a fetched asset is remembered, keyed on its own content-addressed
+' asset_ref, and a later poll that names the same asset_ref reuses the local
+' file with NO request and NO re-hash. Keying on the content address rather than
+' on a URL, a lease id or an ETag is what makes that sound rather than merely
+' fast: the key IS the sha256 of the bytes, so "the same key" and "the same
+' bytes" are the same statement — there is no version of an asset_ref whose
+' content differs from what was verified when it was first stored, and therefore
+' no staleness question to get wrong. (The origin serves a strong ETag and an
+' `immutable` lifetime for the same reason, internal/feeder/origin — this cache
+' is simply the client that needs no round trip at all to use them.)
+'
+' The cache is BOUNDED and cannot fill the device: see wvTrimContentCache.
 '
 ' Composed note (PLY-015/PLY-083): this contract restricts a composed item's
 ' `layers` to `image`/`video` members and reserves per-layer geometry/timing
@@ -71,10 +93,12 @@ function wvDoProgram(state as Object) as Object
     '     relay cert, host verification off (cert reached by IP, no SAN). ---
     ' content_types (PLY-012) declares exactly what this player can actually
     ' render: "image" and "video" are PLY-014's content-type floor — every
-    ' conformant player MUST declare both, regardless of whether this
-    ' deployment's Go stack currently has a producer that emits `video`
-    ' content (it does not yet; PLY-014 declares a player's capability, not a
-    ' claim about any particular deployment's authoring surface). "composed"
+    ' conformant player MUST declare both. Both are now genuinely produced by
+    ' this deployment's Go stack as well as declared here: a playlist item
+    ' states its own `content_type` (datamodel.PlaylistItem.ContentType) and
+    ' both content projections carry it onto the Lease item's `type`, so a
+    ' `video` declaration is what makes an operator's uploaded clip actually
+    ' reach this player instead of being filtered out. "composed"
     ' is deliberately NOT declared: it is PLY-014's optional ("MAY declare
     ' additionally") member, and unlike video there is today no way for ANY
     ' Go code in this repo to even construct one — wire.LeaseContent (the
@@ -172,26 +196,35 @@ function wvDoProgram(state as Object) as Object
         return r
     end if
 
-    ' --- ordered cast: fetch + verify EVERY content item, IN ARRAY ORDER
+    ' --- ordered cast: materialize + verify EVERY content item, IN ARRAY ORDER
     ' (PLY-083a) --- PLY-083a governs "every content item a Lease carries"
     ' with no type-based exception, so this loop makes exactly one pass over
     ' `content` and produces exactly one cast entry per item, in order —
     ' never a special first-item branch that can silently discard the rest
-    ' of the array. A plain `image`/`video` item pays the same
-    ' fetch-whole-file-then-verify pipeline as before (see the integrity note
-    ' at the top of this file for why video pays a full pre-fetch instead of
-    ' streaming); a `composed` item (PLY-015) fetches+verifies every one of
-    ' its own layers with the IDENTICAL per-item integrity guarantee and
-    ' becomes a cast entry of its own, cycled by PhotonScene exactly like any
-    ' plain entry (see PhotonScene.brs's renderCastItem). Any item whose type
-    ' is none of the three is skipped — forward-compatible with a future
-    ' content-type vocabulary this player has not adopted (mirroring
-    ' PLY-016's server-side rule, applied defensively here too) — but a
-    ' malformed `composed` item (no layers, or a layer outside image/video)
-    ' fails the WHOLE Lease rather than silently dropping just that one
-    ' entry: a half-presented cast is exactly the silent content loss
-    ' PLY-083a exists to prevent.
+    ' of the array. A plain `image`/`video` item goes through the same
+    ' cache-or-fetch-then-verify pipeline every other content-bearing thing does
+    ' (wvEnsureContent; see the integrity note at the top of this file for why
+    ' video pays a full pre-fetch instead of streaming); a `composed` item
+    ' (PLY-015) resolves every one of its own layers with the IDENTICAL
+    ' per-item integrity guarantee and becomes a cast entry of its own, cycled
+    ' by PhotonScene exactly like any plain entry (see PhotonScene.brs's
+    ' renderCastItem). Any item whose type is none of the three is skipped —
+    ' forward-compatible with a future content-type vocabulary this player has
+    ' not adopted (mirroring PLY-016's server-side rule, applied defensively
+    ' here too) — but a malformed `composed` item (no layers, or a layer
+    ' outside image/video) fails the WHOLE Lease rather than silently dropping
+    ' just that one entry: a half-presented cast is exactly the silent content
+    ' loss PLY-083a exists to prevent.
+    '
+    ' `keep` accumulates the cache key of every asset this Lease references, so
+    ' the trim at the bottom knows what is in use. It is built HERE, from the
+    ' same pass that resolves them, rather than by re-walking the Lease
+    ' afterwards: two walks that could disagree about what is referenced is how
+    ' a cache evicts something a screen is playing.
     castOut = []
+    keep = {}
+    fetched = 0
+    reused = 0
     for i = 0 to content.Count() - 1
         item = content[i]
         itemType = wvStr(item.type)
@@ -220,14 +253,15 @@ function wvDoProgram(state as Object) as Object
                     return r
                 end if
 
-                localPath = wvLocalPathForCastItem(layerType, i.toStr() + "_" + j.toStr())
-                fv = wvFetchAndVerifyItem(layer, localPath)
+                fv = wvEnsureContent(layer, layerType)
                 if not fv.ok
                     r.error = "cast item " + i.toStr() + " composed layer " + j.toStr() + ": " + fv.error
                     return r
                 end if
+                keep[layerType + ":" + wvAssetRefKey(wvStr(layer.asset_ref))] = true
+                if fv.cached then reused = reused + 1 else fetched = fetched + 1
 
-                lr = { contentUri: localPath, contentType: layerType, streamFormat: "" }
+                lr = { contentUri: fv.path, contentType: layerType, streamFormat: "" }
                 if layerType = "video" then lr.streamFormat = wvVideoStreamFormat()
                 outLayers.Push(lr)
             end for
@@ -246,18 +280,19 @@ function wvDoProgram(state as Object) as Object
         else if itemType = "slide"
             ' A "slide" content item (PLY-012's "slide" type; native slide
             ' rendering, parity milestone 2) carries an ordered `layers` array
-            ' of positioned native elements — kind text/rect/image/clock in a
-            ' fixed 1920x1080 canvas. Only an `image` layer references external
-            ' bytes, and it pays the IDENTICAL asset_ref-verified-before-
-            ' presented guarantee (wvFetchAndVerifyItem) a plain image item or a
-            ' composed image layer pays: the verified local path is attached to
-            ' the layer as `contentUri` before the layer is handed to
-            ' PhotonScene. text/rect/clock layers are pure declarative draw data
-            ' (no external bytes) and are passed through untouched. The relay
+            ' of positioned native elements in a fixed 1920x1080 canvas. Exactly
+            ' two of its kinds reference external bytes — `image` and `video`
+            ' (wvLayerFetchesContent, mirroring wire.LayerFetchesContent, which
+            ' is the producer side of the same pair) — and both pay the IDENTICAL
+            ' asset_ref-verified-before-presented guarantee (wvEnsureContent) a
+            ' plain image/video item or a composed layer pays: the verified local
+            ' path is attached to the layer as `contentUri` before the layer is
+            ' handed to PhotonScene. Every other kind is pure declarative draw
+            ' data (no external bytes) and is passed through untouched. The relay
             ' has already validated the whole layer stack (wire.ValidateSlide
             ' Layers — closed kind set, geometry within canvas, per-kind required
             ' fields) and drops a slide it cannot validate, so this player does
-            ' not re-validate kinds here; an image layer missing url/asset_ref
+            ' not re-validate kinds here; a content layer missing url/asset_ref
             ' still fails the fetch below rather than presenting unverified
             ' bytes. Layers ride through in array order (z-order = index).
             layers = item.layers
@@ -268,14 +303,23 @@ function wvDoProgram(state as Object) as Object
 
             for j = 0 to layers.Count() - 1
                 layer = layers[j]
-                if wvStr(layer.kind) = "image"
-                    localPath = wvLocalPathForCastItem("image", "slide_" + i.toStr() + "_" + j.toStr())
-                    fv = wvFetchAndVerifyItem(layer, localPath)
+                layerKind = wvStr(layer.kind)
+                if wvLayerFetchesContent(layerKind)
+                    fv = wvEnsureContent(layer, layerKind)
                     if not fv.ok
-                        r.error = "cast item " + i.toStr() + " slide layer " + j.toStr() + " (image): " + fv.error
+                        r.error = "cast item " + i.toStr() + " slide layer " + j.toStr() + " (" + layerKind + "): " + fv.error
                         return r
                     end if
-                    layer.contentUri = localPath
+                    keep[layerKind + ":" + wvAssetRefKey(wvStr(layer.asset_ref))] = true
+                    if fv.cached then reused = reused + 1 else fetched = fetched + 1
+                    layer.contentUri = fv.path
+                    ' A video layer additionally carries the ContentNode
+                    ' streamFormat its Video node needs, decided HERE for the same
+                    ' reason a composed video layer's is (this file owns the
+                    ' fetch strategy, and the format follows from it — see
+                    ' wvVideoStreamFormat). PhotonScene then never has to know
+                    ' anything about how the bytes arrived.
+                    if layerKind = "video" then layer.streamFormat = wvVideoStreamFormat()
                 end if
             end for
 
@@ -287,14 +331,15 @@ function wvDoProgram(state as Object) as Object
             castOut.Push({ contentType: "slide", layers: layers, durationMs: wvItemDurationMs(item) })
 
         else if itemType = "image" or itemType = "video"
-            localPath = wvLocalPathForCastItem(itemType, i.toStr())
-            fv = wvFetchAndVerifyItem(item, localPath)
+            fv = wvEnsureContent(item, itemType)
             if not fv.ok
                 r.error = "cast item " + i.toStr() + ": " + fv.error
                 return r
             end if
+            keep[itemType + ":" + wvAssetRefKey(wvStr(item.asset_ref))] = true
+            if fv.cached then reused = reused + 1 else fetched = fetched + 1
 
-            ci = { contentType: itemType, contentUri: localPath, streamFormat: "", durationMs: wvItemDurationMs(item) }
+            ci = { contentType: itemType, contentUri: fv.path, streamFormat: "", durationMs: wvItemDurationMs(item) }
             if itemType = "video" then ci.streamFormat = wvVideoStreamFormat()
             castOut.Push(ci)
         end if
@@ -304,6 +349,17 @@ function wvDoProgram(state as Object) as Object
         r.error = "lease carried no image/video/composed content item (content-type gate or empty program)"
         return r
     end if
+
+    ' The whole Lease resolved, so the cache now knows exactly what is in use and
+    ' can drop what is not. Trimming HERE — after the last item, before anything
+    ' is published — is deliberate: trimming per item could evict an asset a
+    ' later item in the SAME Lease is about to reuse, and trimming after
+    ' publishing would race the scene's own teardown of the outgoing program.
+    ' On a failed Lease this is never reached, so a poll that errors out leaves
+    ' the cache exactly as it was and the screen keeps whatever it is showing
+    ' (the same never-wipe discipline PlayerTask applies to the program itself).
+    wvTrimContentCache(keep)
+    print "[player-v3] content: " + fetched.toStr() + " fetched, " + reused.toStr() + " reused from cache"
 
     ' --- best-effort lease ack (PLY-091), over the pinned connection ---
     wvAckLease(base, state.channelToken, pinFile, r.leaseId)
@@ -343,38 +399,333 @@ function wvMinCastDurationMs() as Integer
     return 500
 end function
 
-' wvLocalPathForCastItem returns a stable, per-tag local cache path so a
-' cast's items (or a composed item's layers, which call this same helper
-' with a compound "<itemIndex>_<layerIndex>" tag) never collide with each
-' other on disk.
-function wvLocalPathForCastItem(itemType as String, tag as String) as String
+' wvLocalPathForContent returns the local file an asset's bytes live at. The
+' path is derived from the asset's own CONTENT ADDRESS, not from its position in
+' the Lease, and that is the whole design of the cache: the same bytes always
+' land at the same path, so "have I already got this?" is answerable by key
+' alone and a playlist reorder does not invalidate a single byte on disk. (The
+' previous scheme named files by cast index — "item0", "item1_2" — under which
+' swapping two items made both files wrong, so both had to be refetched to be
+' safe. Nothing could cache under that naming.)
+'
+' hexKey is the asset_ref's hex digest (wvAssetRefKey). itemType only picks the
+' extension, so an image and a video that somehow shared a digest would still
+' land in separate files.
+'
+' An asset with no usable content address ("" hexKey — an absent or malformed
+' asset_ref) gets ONE shared scratch path and is never cached: it cannot pass
+' the integrity check that follows, so it is about to be rejected anyway, and
+' giving it a stable name would be caching a failure.
+function wvLocalPathForContent(itemType as String, hexKey as String) as String
     ext = ".img"
     if itemType = "video" then ext = ".mp4"
-    return "cachefs:/waiveo_player_v3_item" + tag + ext
+    if hexKey = "" then return "cachefs:/" + wvContentCachePrefix() + "unverifiable" + ext
+    return "cachefs:/" + wvContentCachePrefix() + itemType + "_" + hexKey + ext
 end function
 
-' wvFetchAndVerifyItem fetches a single Content reference's `url` to
-' localPath and verifies the fetched bytes against its `asset_ref`
-' (PLY-084/PLY-014 integrity). Shared by the plain image/video path and each
-' layer of a "composed" item (PLY-015) so every layer pays the identical
-' asset_ref-verified-before-presented guarantee as a plain item.
-function wvFetchAndVerifyItem(item as Object, localPath as String) as Object
-    r = { ok: false, error: "" }
+' wvContentCachePrefix is the filename prefix EVERY file this player writes to
+' cachefs carries. Sweeping is done by prefix (wvSweepContentCacheDir), so this
+' one string is what separates "files this player owns and may delete" from
+' anything else sharing that filesystem.
+function wvContentCachePrefix() as String
+    return "wvc_"
+end function
 
-    fetch = wvHttpGetToFile(wvStr(item.url), localPath, 15000)
+' wvLegacyContentCachePrefix is the prefix an OLDER build of this player wrote
+' its per-index item files under. Nothing writes it any more, but a device
+' upgraded in place still has those files, and no code would ever have removed
+' them — they would sit on cachefs forever. The startup sweep deletes them too,
+' which is the only chance this player gets to reclaim that space.
+function wvLegacyContentCachePrefix() as String
+    return "waiveo_player_v3_item"
+end function
+
+' wvAssetRefKey reduces an `asset_ref` ("sha256:<hex>") to its hex digest — the
+' cache key. Returns "" for anything that is not in that grammar, which is
+' exactly the set of refs the integrity check will reject anyway, so an
+' unusable ref can never become a cache key.
+function wvAssetRefKey(assetRef as String) as String
+    prefix = "sha256:"
+    if assetRef = "" then return ""
+    if assetRef.Instr(prefix) <> 0 then return ""
+    return LCase(assetRef.Mid(prefix.Len()))
+end function
+
+' wvContentCache returns this thread's content cache, creating it on first use
+' and SWEEPING the cache directory at that moment.
+'
+' The sweep is the cold-start half of the boundedness guarantee. In-run, the
+' cache knows every file it wrote and trims them (wvTrimContentCache); across a
+' restart it knows nothing, so anything already on disk under this player's
+' prefix is unaccounted-for and is deleted. The cost is that a rebooted screen
+' refetches its current program once, which is exactly what it did on EVERY poll
+' before this existed; the benefit is that files can never accumulate across
+' reboots, which is the only way an unattended fleet fills a device.
+'
+' Adopting those files instead (re-hashing each to confirm it still matches its
+' filename) was considered and rejected: it would re-pay, at every boot, the
+' whole-file hash this cache exists to stop paying, and trusting them WITHOUT
+' re-hashing would present bytes this run has never verified — the one property
+' the fetch path guarantees unconditionally.
+'
+' It lives on `m`, the Task thread's own scope, so it persists across polls for
+' as long as the thread does and dies with it. A re-provisioned player
+' (PhotonScene.maybeStart creating a fresh PlayerTask) therefore starts cold,
+' which is correct: that path exists for a screen being pointed at a different
+' relay entirely.
+function wvContentCache() as Object
+    if m.wvContentCacheState = invalid
+        m.wvContentCacheState = { entries: {}, tick: 0, keepPrev: {} }
+        wvSweepContentCacheDir()
+    end if
+    return m.wvContentCacheState
+end function
+
+' wvSweepContentCacheDir deletes every file on cachefs this player owns — its
+' current prefix and the legacy one. Best-effort throughout: cachefs is a
+' platform-managed filesystem the OS may itself clear, so a listing or a delete
+' that fails is not a reason to fail a poll (the worst case is a file that stays
+' until the next sweep, and the trim below still bounds what THIS run adds).
+sub wvSweepContentCacheDir()
+    fs = invalid
+    try
+        fs = CreateObject("roFileSystem")
+    catch e
+        return
+    end try
+    if fs = invalid then return
+
+    names = invalid
+    try
+        names = fs.GetDirectoryListing("cachefs:/")
+    catch e
+        return
+    end try
+    if names = invalid then return
+
+    removed = 0
+    for each name in names
+        n = wvStr(name)
+        if n.Instr(wvContentCachePrefix()) = 0 or n.Instr(wvLegacyContentCachePrefix()) = 0
+            try
+                if fs.Delete("cachefs:/" + n) then removed = removed + 1
+            catch e
+                ' Best-effort: see this sub's own doc.
+            end try
+        end if
+    end for
+    if removed > 0
+        print "[player-v3] content cache: swept " + removed.toStr() + " file(s) left by a previous run"
+    end if
+end sub
+
+' wvEnsureContent makes a single Content reference's bytes available locally and
+' returns the path they are at — fetching and verifying them only if this device
+' does not already hold that exact asset.
+'
+' This is the ONE place content becomes a local file, shared by the plain
+' image/video item path, every layer of a "composed" item (PLY-015), and every
+' content-bearing layer of a "slide" item. Sharing it is what makes the
+' asset_ref-verified-before-presented guarantee (PLY-084/PLY-014) and the cache
+' the same mechanism for all of them, rather than three that could diverge.
+'
+' Returns { ok, path, error, cached }. `cached` is reported so the caller can say
+' on the console which items cost a transfer and which did not — the evidence
+' that the cache is actually working, which is otherwise invisible.
+'
+' The cache HIT path deliberately performs no re-hash. That is the entire saving,
+' and it is sound for one reason: the key is the content address. These bytes
+' were hashed and matched against this exact digest when they were stored, in
+' this same process, and nothing but this player writes that path. Re-hashing
+' would be re-asking a question whose answer cannot have changed, at the cost of
+' a full file read every ten seconds — which is the defect being fixed.
+function wvEnsureContent(item as Object, itemType as String) as Object
+    r = { ok: false, path: "", error: "", cached: false }
+
+    assetRef = wvStr(item.asset_ref)
+    hexKey = wvAssetRefKey(assetRef)
+    cache = wvContentCache()
+    key = itemType + ":" + hexKey
+    localPath = wvLocalPathForContent(itemType, hexKey)
+
+    if hexKey <> ""
+        entry = cache.entries[key]
+        if entry <> invalid
+            cache.tick = cache.tick + 1
+            entry.used = cache.tick
+            r.ok = true
+            r.path = entry.path
+            r.cached = true
+            return r
+        end if
+    end if
+
+    fetch = wvHttpGetToFile(wvStr(item.url), localPath, wvContentFetchTimeoutMs())
     if not fetch.ok
         r.error = "content fetch failed: HTTP " + fetch.code.toStr() + " " + fetch.failureReason
         return r
     end if
 
-    ok = wvVerifyAssetRef(localPath, wvStr(item.asset_ref))
-    if not ok
-        r.error = "content integrity check FAILED (fetched bytes do not match asset_ref " + wvStr(item.asset_ref) + ")"
+    verified = wvVerifyStoredBytes(localPath, assetRef)
+    if not verified.ok
+        r.error = "content integrity check FAILED (fetched bytes do not match asset_ref " + assetRef + ")"
         return r
     end if
 
+    if hexKey <> ""
+        cache.tick = cache.tick + 1
+        cache.entries[key] = { path: localPath, sizeBytes: verified.sizeBytes, used: cache.tick }
+    end if
+
     r.ok = true
+    r.path = localPath
     return r
+end function
+
+' wvContentFetchTimeoutMs is the per-asset transfer timeout. It is generous
+' because a video is a whole file on a shared LAN and this player has no
+' progressive-start path (see the integrity note at the top of this file); a
+' timeout tuned for a PNG would make video permanently unfetchable rather than
+' merely slow, and a failed fetch costs the whole Lease.
+function wvContentFetchTimeoutMs() as Integer
+    return 120000
+end function
+
+' wvTrimContentCache bounds the cache after a Lease has been materialized.
+'
+' `keep` is the set of keys THIS Lease referenced. Those are never evicted for
+' the obvious reason (a file the screen is about to play must exist), and
+' neither is the set the PREVIOUS Lease referenced: the scene may still be
+' rendering the outgoing program at the instant this runs — a Video node
+' decoding from a file — so a program change grants one generation of grace
+' rather than deleting under a node that is still reading. Everything older is
+' unreferenced by anything on screen and is evicted, least-recently-used first,
+' until the cache is within BOTH caps.
+'
+' That makes the true bound "whatever the current and immediately preceding
+' programs actually reference, plus at most the caps' worth of recent history" —
+' which is bounded by the fleet's own scheduled content and cannot grow without
+' limit no matter how long a screen runs or how many distinct assets pass
+' through it. The caps alone could not promise that (a single program larger
+' than the byte cap must still play), and the keep-sets alone could not either
+' (a screen cycling through hundreds of assets would keep every one).
+sub wvTrimContentCache(keep as Object)
+    cache = wvContentCache()
+
+    protectedKeys = {}
+    for each k in keep
+        protectedKeys[k] = true
+    end for
+    for each k in cache.keepPrev
+        if cache.entries[k] <> invalid then protectedKeys[k] = true
+    end for
+
+    ' Count what the evictable set holds, then drop the least recently used
+    ' until it fits. Recomputed from the entries themselves rather than carried
+    ' as a running total, so a miscount can never accumulate.
+    while true
+        totalEntries = 0
+        totalBytes = 0
+        oldestKey = ""
+        oldestUsed = 0
+        for each k in cache.entries
+            e = cache.entries[k]
+            totalEntries = totalEntries + 1
+            totalBytes = totalBytes + e.sizeBytes
+            if protectedKeys[k] = invalid
+                if oldestKey = "" or e.used < oldestUsed
+                    oldestKey = k
+                    oldestUsed = e.used
+                end if
+            end if
+        end for
+
+        if totalEntries <= wvContentCacheMaxEntries() and totalBytes <= wvContentCacheMaxBytes() then exit while
+        if oldestKey = "" then exit while ' over budget, but everything left is in use.
+
+        victim = cache.entries[oldestKey]
+        wvDeleteCachedFile(victim.path)
+        cache.entries.Delete(oldestKey)
+        print "[player-v3] content cache: evicted " + victim.path + " (" + victim.sizeBytes.toStr() + " bytes)"
+    end while
+
+    cache.keepPrev = protectedKeys
+end sub
+
+' wvContentCacheMaxEntries and wvContentCacheMaxBytes are the cache's two caps.
+' Both are needed and neither implies the other: a hundred small posters blow
+' the entry count while using almost no space, and two long videos blow the byte
+' budget as two entries. The byte cap is sized for a signage box's worth of
+' clips on the smallest supported hardware rather than for the largest — the
+' penalty for being under-sized is a refetch, and the penalty for being
+' over-sized is a device with no room left for the platform itself.
+function wvContentCacheMaxEntries() as Integer
+    return 16
+end function
+
+function wvContentCacheMaxBytes() as Integer
+    return 96 * 1024 * 1024
+end function
+
+' wvDeleteCachedFile removes one cached file, best-effort — a delete that fails
+' leaves a file the next startup sweep will collect, which is strictly better
+' than failing a poll over housekeeping.
+sub wvDeleteCachedFile(path as String)
+    try
+        fs = CreateObject("roFileSystem")
+        fs.Delete(path)
+    catch e
+        ' Best-effort: see this sub's own doc.
+    end try
+end sub
+
+' wvVerifyStoredBytes reports whether the bytes at path content-address to
+' assetRef ("sha256:<hex>"), and how many bytes there are. This is first-photon's
+' integrity guarantee for the direct content fetch (PLY-084), standing in for TLS
+' trust on the content channel.
+'
+' It returns the size alongside the verdict because the caller needs both and the
+' file is already fully in memory to be hashed: asking a separate helper for the
+' size would read the whole file a second time, which on a video is the most
+' expensive thing this player does.
+function wvVerifyStoredBytes(path as String, assetRef as String) as Object
+    r = { ok: false, sizeBytes: 0 }
+
+    wantHex = wvAssetRefKey(assetRef)
+    if wantHex = "" then return r
+
+    ba = CreateObject("roByteArray")
+    ok = false
+    try
+        ok = ba.ReadFile(path)
+    catch e
+        return r
+    end try
+    if not ok then return r
+    if ba.Count() = 0 then return r
+
+    gotHex = wvSha256Hex(ba)
+    if not wvHexEqualConstant(gotHex, wantHex) then return r
+
+    r.ok = true
+    r.sizeBytes = ba.Count()
+    return r
+end function
+
+' wvLayerFetchesContent reports whether a SLIDE layer of this kind names bytes
+' in the content origin — i.e. whether it carries an asset_ref this player must
+' fetch and content-address-verify before the layer can be drawn.
+'
+' It is the on-device mirror of wire.LayerFetchesContent (internal/shared/wire/
+' lease.go), and it exists for the same reason: the pair of content-bearing
+' kinds (image, video) is asked about in more than one place, and a consumer
+' that knows about one but not the other fails SILENTLY. Here the failure is
+' precise — a video layer whose bytes were never fetched reaches PhotonScene
+' with no contentUri, so the slide draws with a blank hole where the video is,
+' and nothing anywhere reports an error. Naming the pair once is what stops that
+' being possible.
+function wvLayerFetchesContent(kind as String) as Boolean
+    return kind = "image" or kind = "video"
 end function
 
 ' wvVideoStreamFormat is the Video node ContentNode.streamFormat this player
@@ -389,29 +740,6 @@ end function
 ' shape and a different (non-full-file) fetch strategy — not implemented here.
 function wvVideoStreamFormat() as String
     return "mp4"
-end function
-
-' wvVerifyAssetRef reports whether the bytes at path content-address to assetRef
-' ("sha256:<hex>"). This is first-photon's integrity guarantee for the direct
-' content fetch (PLY-084), standing in for TLS trust on the content channel.
-function wvVerifyAssetRef(path as String, assetRef as String) as Boolean
-    if assetRef = "" then return false
-    prefix = "sha256:"
-    if assetRef.Instr(prefix) <> 0 then return false   ' must start with sha256:
-    wantHex = LCase(assetRef.Mid(prefix.Len()))
-
-    ba = CreateObject("roByteArray")
-    ok = false
-    try
-        ok = ba.ReadFile(path)
-    catch e
-        return false
-    end try
-    if not ok then return false
-    if ba.Count() = 0 then return false
-
-    gotHex = wvSha256Hex(ba)
-    return wvHexEqualConstant(gotHex, wantHex)
 end function
 
 ' wvAckLease POSTs a lease acknowledgement (PLY-091), best-effort — a failure

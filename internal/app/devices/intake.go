@@ -49,6 +49,14 @@ const (
 	maxIdentityFieldBytes  = 256
 	maxNameBytes           = 1024
 	maxStateBytes          = 256
+	// A driver reports a small, fixed set of attributes behind an entity's
+	// state (device-class-registry/1 REG-064 names six for a media player).
+	// This cap is an order of magnitude above that, and it exists for the same
+	// reason every other cap in this file does: the map arrives from a relay,
+	// is copied into a row, and is rendered into every entity list read.
+	maxEntityAttributes    = 64
+	maxAttributeKeyBytes   = 128
+	maxAttributeValueBytes = 512
 )
 
 // ApplyCandidates replaces the app peer's whole view of relayID with the
@@ -135,6 +143,9 @@ func (r *Registry) ApplyCandidates(relayID string, candidates []wire.DeviceCandi
 				ScopeNode:   r.site,
 				Labels:      map[string]string{},
 				State:       e.State,
+				// Copied, never aliased: the decoded report is the caller's and
+				// this row outlives the call.
+				Attributes: copyAttributes(e.Attributes),
 			}
 		}
 	}
@@ -230,6 +241,21 @@ func validateCandidate(c wire.DeviceCandidate) error {
 		if err := checkField(fmt.Sprintf("entities[%d].state", j), e.State, maxStateBytes, false); err != nil {
 			return err
 		}
+		if len(e.Attributes) > maxEntityAttributes {
+			return fmt.Errorf("entities[%d] reports %d attributes, over the %d cap", j, len(e.Attributes), maxEntityAttributes)
+		}
+		for k, v := range e.Attributes {
+			// Keys are checked as strictly as values: an attribute NAME is
+			// rendered beside its value in an operator's entity list and is a
+			// JSON object key in the response, so an unbounded or non-UTF-8 one
+			// is the same hazard as an unbounded value.
+			if err := checkField(fmt.Sprintf("entities[%d].attributes key", j), k, maxAttributeKeyBytes, true); err != nil {
+				return err
+			}
+			if err := checkField(fmt.Sprintf("entities[%d].attributes[%q]", j, k), v, maxAttributeValueBytes, false); err != nil {
+				return err
+			}
+		}
 		if seenKey[e.Key] {
 			// Two entities under one key derive to one entity_id, so the second
 			// would silently overwrite the first and one of the device's
@@ -239,6 +265,21 @@ func validateCandidate(c wire.DeviceCandidate) error {
 		seenKey[e.Key] = true
 	}
 	return nil
+}
+
+// copyAttributes returns an independent copy of a reported attribute map, or
+// nil for an empty one — so a row never aliases the decoded report, and an
+// entity whose driver reported nothing carries no `attributes` member at all
+// rather than an empty object an operator would read as "it has none".
+func copyAttributes(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // checkField applies the three checks every string off this wire gets: present

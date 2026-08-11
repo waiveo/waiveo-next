@@ -66,16 +66,72 @@ import (
 // empty string: PLY-124 makes the reference optional, and "no device is bound to
 // this screen" is a different statement from "a device is bound and its id is
 // blank" — only the first is representable, and the second is rejected.
+// Override is a pointer for the same reason: an ABSENT override is the ordinary
+// state of a screen (it resolves through the scheduling core), and a present one
+// is a deliberate pin (DAT-004c).
 type Screen struct {
 	ID         string            `json:"id"`
 	ScopeNode  string            `json:"scope_node"`
 	Name       string            `json:"name"`
 	DeviceID   *string           `json:"device_id"`
+	Override   *ScreenOverride   `json:"override,omitempty"`
 	ExternalID string            `json:"external_id,omitempty"`
 	Labels     map[string]string `json:"labels,omitempty"`
 	Revision   int               `json:"revision"`
 	CreatedAt  int64             `json:"created_at"`
 	UpdatedAt  int64             `json:"updated_at"`
+}
+
+// ScreenOverride is a screen row's program pin (DAT-004c): the one place this
+// model admits a per-screen content assignment, superseding whatever the
+// scheduling core resolves for that screen while it applies.
+//
+// It is deliberately NOT a second scheduling mechanism — no cascade, no
+// priority, no layering, no recurrence. It is "show this here, now, until it is
+// cleared or lapses": the shape an operator's push-now gesture and an
+// automation's signage action (rules/1 RUL-234/235) both need, and the shape a
+// schedule cannot express because a schedule is authored at a scope node and
+// governs every screen beneath it.
+//
+// ExpiresAt is what makes an alert retire itself. DAT-004d makes a lapsed
+// override behave as absent at RESOLUTION time, with no write required — so a
+// relay that loses its app peer still stops showing an alert whose window
+// closed, and nothing has to be running to clear it.
+type ScreenOverride struct {
+	Mode      string `json:"mode"`
+	CastID    string `json:"cast_id,omitempty"`
+	Message   string `json:"message,omitempty"`
+	ExpiresAt int64  `json:"expires_at,omitempty"`
+	SetAt     int64  `json:"set_at,omitempty"`
+}
+
+// The two DAT-004c override modes. `play` is the daily assignment (legacy's
+// play_cast); `alert` is the takeover, which a delivered program carries as
+// player/1's `preempt` priority so a screen interrupts what it is showing
+// rather than waiting for a natural item boundary (DAT-004d).
+const (
+	ScreenOverrideModePlay  = "play"
+	ScreenOverrideModeAlert = "alert"
+)
+
+// maxOverrideMessageLen bounds an alert's literal `message` at the same 200
+// characters a row's name is bounded at (DAT-004c), counted in code points for
+// the same reason — it is drawn on a screen for a human to read.
+const maxOverrideMessageLen = 200
+
+// Applies reports whether this override governs a screen's program at tMs
+// (DAT-004d): it applies when it is set and either states no expiry or expires
+// strictly after tMs. A nil receiver is the absent case and never applies, so a
+// caller can ask the question without first testing for nil.
+//
+// Expiry is evaluated at RESOLUTION time rather than retired by a writer, which
+// is what makes an alert self-limiting on a relay with no app peer: nothing has
+// to be running for the window to close.
+func (o *ScreenOverride) Applies(tMs int64) bool {
+	if o == nil {
+		return false
+	}
+	return o.ExpiresAt == 0 || o.ExpiresAt > tMs
 }
 
 // Device is a device row (DAT-004/DAT-004a) — the adopted-device record whose
@@ -199,6 +255,7 @@ func ValidateIdentityRows(raw RawIdentityRows) (IdentitySet, []Error) {
 		// package is (DAT-050/070/075/080's REFERENCE_INVALID): it names a row
 		// that exists, or it is refused. A blank string is not "no link" — the
 		// absent pointer already spells that — so it is refused too.
+		errs = append(errs, ValidateScreenOverride(s.Override)...)
 		if s.DeviceID != nil && !deviceIDs[*s.DeviceID] {
 			errs = append(errs, Error{
 				Field: "device_id",
@@ -211,6 +268,60 @@ func ValidateIdentityRows(raw RawIdentityRows) (IdentitySet, []Error) {
 	}
 
 	return set, errs
+}
+
+// ValidateScreenOverride enforces DAT-004c's SHAPE on a screen row's program
+// override (SCREEN_OVERRIDE_INVALID). An absent override is the ordinary state
+// of a screen and is silent.
+//
+// Exported because the SURFACE that imposes an override (api's
+// PUT /screens/{id}/now) has to refuse a bad one with a 422 the operator can
+// read, BEFORE the write — and the only alternative is a second hand-written
+// copy of these rules in the api package. Two copies of a shape rule is how the
+// handler's idea of a legal override and the row validator's start to diverge,
+// and the row validator is the one that runs on the write, so a divergence
+// surfaces as a 500 for a body the handler had just approved.
+//
+// What it deliberately does NOT check is whether `cast_id` resolves to a cast
+// row. This validator judges the identity-row bundle (screens + devices); casts
+// live in the scheduling-core bundle, and the two are validated by different
+// passes over different inputs — so a check here would either be permanently
+// blind or would force every cast write to re-validate every screen. DAT-004c
+// therefore places that check on the surface IMPOSING the override, which holds
+// both families at once, and makes the projection contribute no content for an
+// unresolvable cast (the same degrade an unresolvable playlist cast reference
+// already has). Stating this here rather than leaving it as an omission is the
+// point: a reader looking for the reference check must find out where it lives,
+// not conclude there isn't one.
+func ValidateScreenOverride(o *ScreenOverride) []Error {
+	if o == nil {
+		return nil
+	}
+	invalid := func(msg string) []Error {
+		return []Error{{Field: "override", Code: "SCREEN_OVERRIDE_INVALID", Message: msg}}
+	}
+	switch o.Mode {
+	case ScreenOverrideModePlay, ScreenOverrideModeAlert:
+	default:
+		return invalid("a screen override's mode MUST be one of play, alert (DAT-004c)")
+	}
+	// Exactly one of cast_id/message: neither names nothing to show, both names
+	// two things with no rule ranking them.
+	if (strings.TrimSpace(o.CastID) == "") == (strings.TrimSpace(o.Message) == "") {
+		return invalid("a screen override MUST declare exactly one of cast_id, message (DAT-004c)")
+	}
+	if o.Message != "" {
+		if o.Mode != ScreenOverrideModeAlert {
+			return invalid("a screen override's literal message is admissible only under mode \"alert\"; a play override names a cast (DAT-004c)")
+		}
+		if utf8.RuneCountInString(o.Message) > maxOverrideMessageLen {
+			return invalid("a screen override's message MUST be at most 200 characters (DAT-004c)")
+		}
+	}
+	if o.ExpiresAt < 0 {
+		return invalid("a screen override's expires_at MUST be a non-negative Timestamp-ms; omit it for no expiry (DAT-004c)")
+	}
+	return nil
 }
 
 // checkPlacementAndName enforces the two baseline members an identity row shares

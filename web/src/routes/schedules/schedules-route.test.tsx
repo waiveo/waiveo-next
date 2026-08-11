@@ -536,6 +536,64 @@ describe("Playlists — dogfooded management over api/1", () => {
     expect(body!.items).toEqual([{ source: "cast", cast_id: ULID_A, duration_seconds: 10 }]);
   });
 
+  // Parity row 2.5, from the only end an operator has. The content origin is
+  // content-addressed and stores no MIME type, so nothing downstream can tell an
+  // MP4 from a PNG by looking at it — this control is where that fact is
+  // supplied, and without it a scheduled clip is delivered as `image` and drawn
+  // as a still, with no error anywhere.
+  it("schedules an uploaded file AS A VIDEO", async () => {
+    const state = { playlists: [playlist({ revision: 2 })] };
+    let body: { items?: Record<string, unknown>[] } | null = null;
+    server.use(
+      http.get("*/api/v1/schedules", () => page([])),
+      http.get("*/api/v1/playlists", () => page(state.playlists)),
+      http.get("*/api/v1/dayparts", () => page([])),
+      http.get("*/api/v1/scope-nodes", () => page([site()])),
+      http.get("*/api/v1/casts", () => page([cast()])),
+      http.patch("*/api/v1/playlists/:id", async ({ request }) => {
+        body = (await request.json()) as { items?: Record<string, unknown>[] };
+        return ok(playlist({ items: body.items ?? [], revision: 3 }), { revision: 3 });
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderSchedules();
+    await screen.findByRole("table", { name: "Playlists" });
+    await user.click(screen.getByText("Daytime loop").closest("tr") as HTMLElement);
+
+    await user.click(await screen.findByRole("button", { name: "Add a file" }));
+    await user.type(await screen.findByLabelText("Content reference"), "sha256:aa11");
+    await user.selectOptions(await screen.findByLabelText("File type"), "video");
+
+    await user.click(screen.getByRole("button", { name: "Save playlist" }));
+    await waitFor(() => expect(body).not.toBeNull());
+    expect(body!.items).toEqual([
+      { source: "asset", asset_ref: "sha256:aa11", content_type: "video", duration_seconds: 10 },
+    ]);
+  });
+
+  // The same control must NOT be offered where it cannot apply: the server
+  // refuses a content_type on a cast item, so showing the field there would be a
+  // setting that turns a save into a 422.
+  it("offers the file-type control only for a file item", async () => {
+    useLists({
+      schedules: () => [],
+      dayparts: () => [],
+      playlists: () => [playlist({ revision: 2 })],
+      scopeNodes: () => [site()],
+      casts: () => [cast()],
+    });
+
+    const user = userEvent.setup();
+    renderSchedules();
+    await screen.findByRole("table", { name: "Playlists" });
+    await user.click(screen.getByText("Daytime loop").closest("tr") as HTMLElement);
+
+    await user.click(await screen.findByRole("button", { name: "Add a cast" }));
+    expect(await screen.findByLabelText("Cast")).toBeInTheDocument();
+    expect(screen.queryByLabelText("File type")).toBeNull();
+  });
+
   it("drops the previous source's fields when an item is switched to a cast", async () => {
     const state = { playlists: [playlist({ revision: 2 })] };
     let body: { items?: Record<string, unknown>[] } | null = null;

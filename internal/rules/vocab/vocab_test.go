@@ -42,6 +42,16 @@ func TestActionAndModeClasses(t *testing.T) {
 	if ClassOf(ActionKind, "notify") != App || ClassOf(ActionKind, "workflow_start") != App || ClassOf(ActionKind, "variable_write") != App {
 		t.Error("notify/workflow_start/variable_write must be App")
 	}
+	// RUL-234/235: the signage actions write app-peer authored state (a screen
+	// row's program override, data-model/1 DAT-004c), so a rule carrying one is
+	// app-class and the edge engine never loads it. Edge here would ship the
+	// rule to a relay that cannot perform it — the "accepts work it never
+	// performs" shape, at the classification level.
+	for _, ty := range []string{"play_cast", "show_alert", "dismiss_alert"} {
+		if got := ClassOf(ActionKind, ty); got != App {
+			t.Errorf("signage action %q class = %v, want App", ty, got)
+		}
+	}
 	if ModeClass("") != Edge || ModeClass("single") != Edge || ModeClass("restart") != Edge {
 		t.Error("'', single, restart modes must be Edge")
 	}

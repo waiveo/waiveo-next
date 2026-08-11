@@ -9,6 +9,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/rules/registry"
 	"github.com/maaxton/waiveo-next/internal/rules/schedule"
 	"github.com/maaxton/waiveo-next/internal/rules/state"
+	"github.com/maaxton/waiveo-next/internal/rules/vocab"
 )
 
 // CommandSink is where a `device_command` or `preset_batch` action's
@@ -58,6 +59,69 @@ type PresetBatchOutcome struct {
 	Results []CommandResult `json:"results"`
 }
 
+// ScreenRef is a signage action's target (RUL-233): exactly one of a single
+// screen identity row (data-model/1 DAT-004a) or a label selector resolved
+// against SCREEN rows. It is deliberately a distinct type from model.EntityRef
+// rather than a reuse of it: the two name different row families, and a
+// selector that means "these entities" in a device_command means "these
+// screens" here. Sharing one type would make that difference invisible at every
+// call site, and the compiler's own arity checks for the two are different
+// (SCREEN_REF_AMBIGUOUS vs ENTITY_REF_AMBIGUOUS).
+//
+// The compile gate guarantees exactly one field is set (compile.validateScreenRef),
+// so a SignageSink receiving both, or neither, is looking at a rule that never
+// compiled.
+type ScreenRef struct {
+	ScreenID string
+	Selector string
+}
+
+// ScreenResult is one targeted screen's pass/fail within a SignageOutcome
+// (RUL-236) — the same per-target shape a device dispatch reports through
+// CommandResult, for the same reason: an operator needs to know WHICH screen
+// did not take the change, not merely that one did not.
+type ScreenResult struct {
+	ScreenID string `json:"screen_id"`
+	OK       bool   `json:"ok"`
+	Error    string `json:"error,omitempty"`
+}
+
+// SignageOutcome is one signage action's result (RUL-236): the action type, the
+// three-value outcome RUL-172 defines (reused verbatim rather than restated —
+// `complete`, `partial`, `failed`), and the per-screen result list.
+//
+// An action whose ScreenRef matched NO screen is `complete` with an empty
+// Screens list, not `failed`: RUL-233 makes an empty selector match a legal
+// no-op, and reporting it as a failure would make "no lobby screens are
+// currently placed here" indistinguishable from "the write was refused".
+type SignageOutcome struct {
+	Action  string         `json:"action"`
+	Outcome string         `json:"outcome"`
+	Screens []ScreenResult `json:"screens"`
+}
+
+// SignageSink performs the three RUL-234/235 signage actions against the app
+// peer's authored rows: each one writes (or clears) the targeted screens' own
+// program override (data-model/1 DAT-004c), which is what makes a fired rule
+// change what a screen actually shows.
+//
+// It lives as an injected seam for the same reason CommandSink does — this
+// package never knows how a change is carried out, only what was asked and what
+// came back. Unlike CommandSink, though, no EDGE deployment ever wires one: the
+// signage actions are app-class unconditionally (vocab), so the relay's engine
+// is never handed a rule containing one, and its ActionContext leaves this nil.
+// A nil sink is therefore the normal edge posture, not a misconfiguration, and
+// the action is skipped exactly as an out-of-scope app action is.
+//
+// TTLSeconds on ShowAlert is 0 when the author declared none (no expiry); the
+// sink converts it to an absolute DAT-004c `expires_at` against its own clock,
+// because this package has no authority over what "now" means on the app peer.
+type SignageSink interface {
+	PlayCast(ref ScreenRef, castID string) SignageOutcome
+	ShowAlert(ref ScreenRef, castID, message string, ttlSeconds int) SignageOutcome
+	DismissAlert(ref ScreenRef) SignageOutcome
+}
+
 // LogEntry is one `log` action's recorded output (RUL-200): a level plus the
 // message an Expression evaluated to (runLog / ctx.EvalExpr).
 type LogEntry struct {
@@ -97,6 +161,31 @@ type ActionContext struct {
 	Resolve  func(ref model.EntityRef) []string
 	Outcomes *[]PresetBatchOutcome
 	Logs     *[]LogEntry
+
+	// Rejected, when non-nil, receives every SINGLE-TARGET dispatch this context
+	// refused before it ever reached Sink — an unresolvable entity, or a command
+	// outside that entity's device-class vocabulary (RUL-160).
+	//
+	// It exists because RUL-161 makes a single-target dispatch atomic and
+	// unaggregated, so those refusals have no result channel at all: on the edge
+	// engine that is correct and deliberate (nothing is listening, and a rule
+	// firing on a device that has gone away must not become an error). On a
+	// MANUAL run it is not: the caller is a human who pressed a button and is
+	// owed the reason their command did not go out. A run that reported
+	// "disposition: ran" with an empty command list, because the one command it
+	// carried was silently absorbed here, is the same defect this whole track
+	// exists to close, one level down.
+	//
+	// Leaving it nil restores the exact prior behaviour, which is what every
+	// edge context does.
+	Rejected *[]CommandResult
+
+	// Signage performs the app-class signage actions (RUL-234/235); nil on every
+	// edge context, where such a rule never arrives. SignageOutcomes is the
+	// caller's optional recorder for what each one did (RUL-236), exactly as
+	// Outcomes is for a device dispatch.
+	Signage         SignageSink
+	SignageOutcomes *[]SignageOutcome
 
 	// EvalExpr live-evaluates a `log` message (RUL-200) and each `params` value
 	// (RUL-393) at dispatch. The engine supplies the closed-grammar evaluator with
@@ -147,6 +236,8 @@ func RunActions(ctx ActionContext, actions []model.Member) error {
 			}
 		case "log":
 			runLog(ctx, m)
+		case vocab.ActionPlayCast, vocab.ActionShowAlert, vocab.ActionDismissAlert:
+			runSignage(ctx, m)
 		default:
 			// An app-coupled or later-part action type (notify,
 			// variable_write, workflow_start, pack_action) is out of this
@@ -314,6 +405,77 @@ func runDeviceCommand(ctx ActionContext, m model.Member) {
 	recordOutcome(ctx, dispatchAll(ctx, targets, spec.Command, params))
 }
 
+// runSignage implements the three RUL-234/235 signage actions: decode the
+// action's ScreenRef and its own members, hand them to ctx.Signage, and record
+// the outcome (RUL-236).
+//
+// Like a failing preset-batch command, a failing signage write never halts the
+// rest of the rule's action sequence — the sink reports per-screen results and
+// RunActions simply continues. A nil sink (every edge context) or an
+// undecodable action body is a skip, never an error: an app-class action
+// reaching an edge evaluator is out of that evaluator's scope by construction,
+// which is the same posture the default branch takes for notify/variable_write.
+func runSignage(ctx ActionContext, m model.Member) {
+	if ctx.Signage == nil {
+		return
+	}
+	var spec struct {
+		ScreenID   string `json:"screen_id"`
+		Selector   string `json:"selector"`
+		CastID     string `json:"cast_id"`
+		Message    string `json:"message"`
+		TTLSeconds int    `json:"ttl_seconds"`
+	}
+	if err := json.Unmarshal(m.Raw, &spec); err != nil {
+		return
+	}
+	ref := ScreenRef{ScreenID: spec.ScreenID, Selector: spec.Selector}
+
+	var out SignageOutcome
+	switch m.Type {
+	case vocab.ActionPlayCast:
+		if spec.CastID == "" {
+			// RUL-234 requires cast_id. A play_cast with none names no content,
+			// so there is nothing to put on a screen; skipping is the fail-closed
+			// answer, and the compile gate is where an author is told.
+			return
+		}
+		out = ctx.Signage.PlayCast(ref, spec.CastID)
+	case vocab.ActionShowAlert:
+		if (spec.CastID == "") == (spec.Message == "") {
+			// RUL-235: exactly one of cast_id/message. Neither is nothing to show;
+			// both is two different things to show with no rule ranking them.
+			return
+		}
+		out = ctx.Signage.ShowAlert(ref, spec.CastID, spec.Message, spec.TTLSeconds)
+	case vocab.ActionDismissAlert:
+		out = ctx.Signage.DismissAlert(ref)
+	default:
+		return
+	}
+	if ctx.SignageOutcomes != nil {
+		*ctx.SignageOutcomes = append(*ctx.SignageOutcomes, out)
+	}
+}
+
+// SignageOutcomeFor computes RUL-236's three-value outcome from a per-screen
+// result list, reusing RUL-172's own definition (outcomeFor) rather than a
+// second copy of the same three-way count — the contract says "the same
+// three-value outcome", and two implementations of one rule is how they stop
+// being the same. An EMPTY list is `complete`: a selector matching no screen is
+// a legal no-op (RUL-233), not a failure.
+//
+// It is exported because the sink — which lives on the app peer, outside this
+// package — is what assembles the per-screen results, and it must classify them
+// by the same rule an aggregated device dispatch is classified by.
+func SignageOutcomeFor(action string, results []ScreenResult) SignageOutcome {
+	cmd := make([]CommandResult, 0, len(results))
+	for _, r := range results {
+		cmd = append(cmd, CommandResult{Target: r.ScreenID, OK: r.OK, Error: r.Error})
+	}
+	return SignageOutcome{Action: action, Outcome: outcomeFor(cmd), Screens: results}
+}
+
 // runPresetBatch implements RUL-170/171/172: every command in the referenced
 // preset's list is attempted independently — a failing command never
 // prevents the remaining commands in the same batch, and the batch's own
@@ -354,16 +516,35 @@ func resolveTargets(ctx ActionContext, ref model.EntityRef) []string {
 // dispatchOne performs a single-entity, atomic dispatch (RUL-161) — its
 // pass/fail is not recorded into ctx.Outcomes. A command not drawn from the
 // entity's device class's command vocabulary (RUL-160) is rejected the same
-// way a nil Sink is: no dispatch happens, and the rejection is silently
-// absorbed (single-entity dispatch has no result channel to report into).
+// way a nil Sink is: no dispatch happens, and the rejection is absorbed rather
+// than raised (single-entity dispatch has no OUTCOME channel to report into).
+//
+// "Absorbed" is not the same as invisible: a caller that supplied ctx.Rejected
+// is told what was refused and why, in the same CommandResult shape a
+// multi-target dispatch reports a failure in. See Rejected's own doc for why a
+// manual run needs that and the edge engine does not.
 func dispatchOne(ctx ActionContext, entityID, command string, params map[string]any) {
 	if ctx.Sink == nil {
+		recordRejected(ctx, entityID, command, "no command sink configured")
 		return
 	}
 	if !commandAllowed(ctx, entityID, command) {
+		recordRejected(ctx, entityID, command, "command not declared in entity's device class command vocabulary")
 		return
 	}
 	_ = ctx.Sink.Dispatch(entityID, command, params)
+}
+
+// recordRejected notes one pre-dispatch refusal into ctx.Rejected, when the
+// caller supplied a recorder. Reusing CommandResult rather than a second shape
+// is deliberate: to a reader of a run report, "this target was refused before
+// dispatch" and "this target failed at dispatch" are the same fact with
+// different reasons, and two shapes would make a consumer merge them by hand.
+func recordRejected(ctx ActionContext, entityID, command, reason string) {
+	if ctx.Rejected == nil {
+		return
+	}
+	*ctx.Rejected = append(*ctx.Rejected, CommandResult{Target: entityID, Command: command, OK: false, Error: reason})
 }
 
 // dispatchAll attempts command against every target independently (RUL-012),

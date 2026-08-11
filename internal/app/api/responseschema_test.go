@@ -673,7 +673,32 @@ var probes = map[string]probe{
 		return e.do(t, http.MethodGet, "/api/v1/automations", nil, nil)
 	},
 	"runAutomation": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
-		id := e.mintAutomation(t, e.mintOrg(t))
+		// The probe drives a rule that produces at least one entry in EVERY
+		// effect array the response declares — a device command (refused,
+		// because no device plane is wired in this env, which is still a
+		// reported target), a signage action against a real screen and cast,
+		// and a log. An empty array proves nothing about its item schema, and
+		// this operation's arrays are the half of the response that says the
+		// run actually did something.
+		node := e.mintOrg(t)
+		screenID := e.mintScreen(t, node)
+		castID := e.mintCast(t, node)
+		resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", mustJSON(t, map[string]any{
+			"name":       "Run Probe Automation",
+			"scope_node": node,
+			"enabled":    true,
+			"mode":       "single",
+			"triggers":   []any{map[string]any{"type": "state", "entity_id": autoScreenEntity, "to": []string{"on"}}},
+			"actions": []any{
+				map[string]any{"type": "device_command", "entity_id": autoScreenEntity, "command": "launch"},
+				map[string]any{"type": "play_cast", "screen_id": screenID, "cast_id": castID},
+				map[string]any{"type": "log", "message": "run probe"},
+			},
+		}), nil)
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("mint run-probe automation: %d %s", resp.StatusCode, raw)
+		}
+		id := decodeID(t, raw)
 		return e.do(t, http.MethodPost, "/api/v1/automations/"+id+"/run", []byte(`{}`), nil)
 	},
 	"bulkEnableAutomations": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
@@ -709,6 +734,28 @@ var probes = map[string]probe{
 	"issueScreenPairingCode": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
 		id := e.mintScreen(t, e.mintOrg(t))
 		return e.do(t, http.MethodPost, "/api/v1/screens/"+id+"/pairing-code", nil, nil)
+	},
+	"setScreenNow": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		node := e.mintOrg(t)
+		// `alert` with a TTL, so the probe exercises the two OPTIONAL response
+		// members (`expires_at`, and `mode` at its non-default value) rather than
+		// only the members a bare `play` push populates.
+		return e.do(t, http.MethodPut, "/api/v1/screens/"+e.mintScreen(t, node)+"/now",
+			mustJSON(t, map[string]any{"mode": "alert", "cast_id": e.mintCast(t, node), "ttl_seconds": 60}), nil)
+	},
+	"listScreenStatus": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		// A screen WITH an override, so the response exercises the optional
+		// `now` member as well as the never-observed defaults every field takes
+		// when no relay has reported — the shape a deployment sees on its first
+		// page load, which is the one most likely to drift unnoticed.
+		node := e.mintOrg(t)
+		id := e.mintScreen(t, node)
+		resp, raw := e.do(t, http.MethodPut, "/api/v1/screens/"+id+"/now",
+			mustJSON(t, map[string]any{"mode": "play", "cast_id": e.mintCast(t, node)}), nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("push now: %d %s", resp.StatusCode, raw)
+		}
+		return e.do(t, http.MethodGet, "/api/v1/screen-status", nil, nil)
 	},
 
 	// --- casts ------------------------------------------------------------

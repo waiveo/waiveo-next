@@ -328,6 +328,24 @@ func (e PairingCodeResultRedemptionMode) Valid() bool {
 	}
 }
 
+// Defines values for PlaylistItemContentType.
+const (
+	PlaylistItemContentTypeImage PlaylistItemContentType = "image"
+	PlaylistItemContentTypeVideo PlaylistItemContentType = "video"
+)
+
+// Valid indicates whether the value is a known member of the PlaylistItemContentType enum.
+func (e PlaylistItemContentType) Valid() bool {
+	switch e {
+	case PlaylistItemContentTypeImage:
+		return true
+	case PlaylistItemContentTypeVideo:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PlaylistItemSource.
 const (
 	PlaylistItemSourceAsset    PlaylistItemSource = "asset"
@@ -472,6 +490,135 @@ func (e ScopeNodeUpdateKind) Valid() bool {
 	}
 }
 
+// Defines values for ScreenNowMode.
+const (
+	ScreenNowModeAlert ScreenNowMode = "alert"
+	ScreenNowModePlay  ScreenNowMode = "play"
+)
+
+// Valid indicates whether the value is a known member of the ScreenNowMode enum.
+func (e ScreenNowMode) Valid() bool {
+	switch e {
+	case ScreenNowModeAlert:
+		return true
+	case ScreenNowModePlay:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ScreenNowSource.
+const (
+	ScreenNowSourceCast    ScreenNowSource = "cast"
+	ScreenNowSourceMessage ScreenNowSource = "message"
+)
+
+// Valid indicates whether the value is a known member of the ScreenNowSource enum.
+func (e ScreenNowSource) Valid() bool {
+	switch e {
+	case ScreenNowSourceCast:
+		return true
+	case ScreenNowSourceMessage:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ScreenNowRequestMode.
+const (
+	ScreenNowRequestModeAlert ScreenNowRequestMode = "alert"
+	ScreenNowRequestModePlay  ScreenNowRequestMode = "play"
+)
+
+// Valid indicates whether the value is a known member of the ScreenNowRequestMode enum.
+func (e ScreenNowRequestMode) Valid() bool {
+	switch e {
+	case ScreenNowRequestModeAlert:
+		return true
+	case ScreenNowRequestModePlay:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ScreenOverrideMode.
+const (
+	Alert ScreenOverrideMode = "alert"
+	Play  ScreenOverrideMode = "play"
+)
+
+// Valid indicates whether the value is a known member of the ScreenOverrideMode enum.
+func (e ScreenOverrideMode) Valid() bool {
+	switch e {
+	case Alert:
+		return true
+	case Play:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ScreenStatusDisplay.
+const (
+	Blank   ScreenStatusDisplay = "blank"
+	Content ScreenStatusDisplay = "content"
+)
+
+// Valid indicates whether the value is a known member of the ScreenStatusDisplay enum.
+func (e ScreenStatusDisplay) Valid() bool {
+	switch e {
+	case Blank:
+		return true
+	case Content:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ScreenStatusPriority.
+const (
+	Preempt   ScreenStatusPriority = "preempt"
+	Scheduled ScreenStatusPriority = "scheduled"
+)
+
+// Valid indicates whether the value is a known member of the ScreenStatusPriority enum.
+func (e ScreenStatusPriority) Valid() bool {
+	switch e {
+	case Preempt:
+		return true
+	case Scheduled:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ScreenStatusReachability.
+const (
+	Live      ScreenStatusReachability = "live"
+	NeverSeen ScreenStatusReachability = "never_seen"
+	Stale     ScreenStatusReachability = "stale"
+)
+
+// Valid indicates whether the value is a known member of the ScreenStatusReachability enum.
+func (e ScreenStatusReachability) Valid() bool {
+	switch e {
+	case Live:
+		return true
+	case NeverSeen:
+		return true
+	case Stale:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SessionSummaryAal.
 const (
 	Recovery SessionSummaryAal = "recovery"
@@ -567,22 +714,37 @@ func (e SlideLayerAlign) Valid() bool {
 
 // Defines values for SlideLayerKind.
 const (
-	Clock SlideLayerKind = "clock"
-	Image SlideLayerKind = "image"
-	Rect  SlideLayerKind = "rect"
-	Text  SlideLayerKind = "text"
+	SlideLayerKindClock     SlideLayerKind = "clock"
+	SlideLayerKindCountdown SlideLayerKind = "countdown"
+	SlideLayerKindDate      SlideLayerKind = "date"
+	SlideLayerKindEntity    SlideLayerKind = "entity"
+	SlideLayerKindImage     SlideLayerKind = "image"
+	SlideLayerKindRect      SlideLayerKind = "rect"
+	SlideLayerKindText      SlideLayerKind = "text"
+	SlideLayerKindVideo     SlideLayerKind = "video"
+	SlideLayerKindWeather   SlideLayerKind = "weather"
 )
 
 // Valid indicates whether the value is a known member of the SlideLayerKind enum.
 func (e SlideLayerKind) Valid() bool {
 	switch e {
-	case Clock:
+	case SlideLayerKindClock:
 		return true
-	case Image:
+	case SlideLayerKindCountdown:
 		return true
-	case Rect:
+	case SlideLayerKindDate:
 		return true
-	case Text:
+	case SlideLayerKindEntity:
+		return true
+	case SlideLayerKindImage:
+		return true
+	case SlideLayerKindRect:
+		return true
+	case SlideLayerKindText:
+		return true
+	case SlideLayerKindVideo:
+		return true
+	case SlideLayerKindWeather:
 		return true
 	default:
 		return false
@@ -796,22 +958,76 @@ type AutomationListResponse struct {
 	Items  []Automation `json:"items"`
 }
 
+// AutomationRunCommand One device command this run dispatched (or, under `dry_run`, would have).
+type AutomationRunCommand struct {
+	Command string `json:"command"`
+
+	// EntityId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	EntityId Ulid `json:"entity_id"`
+
+	// Error Present only when `ok` is false — why this one target did not take the command.
+	Error *string `json:"error,omitempty"`
+	Ok    bool    `json:"ok"`
+}
+
 // AutomationRunRequest Optional trigger-context override for this manual run.
 type AutomationRunRequest struct {
 	Context *map[string]interface{} `json:"context,omitempty"`
+
+	// DryRun When `true`, the run is evaluated to completion — conditions, branch selection, target resolution — but every effect is WITHHELD: no device command is dispatched and no screen override is written. The response reports exactly what a real run would have done. The default is `false`: run-now ACTS.
+	DryRun *bool `json:"dry_run,omitempty"`
 }
 
-// AutomationRunResult defines model for AutomationRunResult.
+// AutomationRunResult What the run actually did. `disposition` is the mode-evaluation outcome; the three effect arrays are the report the operator needs to tell "it ran" from "it ran and changed something".
 type AutomationRunResult struct {
-	// Disposition rules/1's closed RunDisposition set.
+	// Commands Every `device_command` target this run dispatched to, in dispatch order.
+	Commands []AutomationRunCommand `json:"commands"`
+
+	// DelaysCollapsed How many `delay` actions this run passed through WITHOUT waiting. A synchronous manual run does not hold the request open for a rule's own pacing, so the remaining actions run immediately; the count is reported rather than hidden, because a rule whose timing matters behaves differently here than it does on a trigger.
+	DelaysCollapsed *int `json:"delays_collapsed,omitempty"`
+
+	// Disposition rules/1's closed RunDisposition set. `skipped` here means the rule's own conditions did not hold, so its actions were not run — not an error, and not a failure of the request.
 	Disposition AutomationRunResultDisposition `json:"disposition"`
+
+	// DryRun Whether effects were withheld.
+	DryRun bool `json:"dry_run"`
+
+	// Logs Every `log` action's evaluated message (`rules/1` RUL-200), in order.
+	Logs []struct {
+		// Level One of `info`, `warning`, `error` (`rules/1` RUL-200). A plain string for the reason `AutomationRunSignage.action` gives.
+		Level   string `json:"level"`
+		Message string `json:"message"`
+	} `json:"logs"`
 
 	// RunId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
 	RunId Ulid `json:"run_id"`
+
+	// Signage Every signage action this run performed, in action order.
+	Signage []AutomationRunSignage `json:"signage"`
 }
 
-// AutomationRunResultDisposition rules/1's closed RunDisposition set.
+// AutomationRunResultDisposition rules/1's closed RunDisposition set. `skipped` here means the rule's own conditions did not hold, so its actions were not run — not an error, and not a failure of the request.
 type AutomationRunResultDisposition string
+
+// AutomationRunScreen One screen a signage action wrote (or, under `dry_run`, would have).
+type AutomationRunScreen struct {
+	// Error Present only when `ok` is false.
+	Error *string `json:"error,omitempty"`
+	Ok    bool    `json:"ok"`
+
+	// ScreenId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScreenId Ulid `json:"screen_id"`
+}
+
+// AutomationRunSignage One signage action's outcome (`rules/1` RUL-236), in the same three-value shape a preset batch reports (RUL-172).
+type AutomationRunSignage struct {
+	// Action The signage action type — one of `play_cast`, `show_alert`, `dismiss_alert` (`rules/1` RUL-234/RUL-235). Left as a plain string rather than an `enum` deliberately: an `enum` here mints package-level Go constants named after its VALUES, and two of them (`failed` on `outcome` below) collide with an existing enum's, which silently renames that other enum's constants across the whole generated package. The closed set is stated here and enforced by the one place that can produce it.
+	Action string `json:"action"`
+
+	// Outcome One of `complete`, `partial`, `failed` — `rules/1` RUL-172's own three-value outcome, reused by RUL-236. A plain string for the reason `action` above gives.
+	Outcome string                `json:"outcome"`
+	Screens []AutomationRunScreen `json:"screens"`
+}
 
 // AutomationUpdate Partial update — every field optional, at least one required.
 type AutomationUpdate struct {
@@ -842,6 +1058,10 @@ type Cast struct {
 	// The `Job` resource is the one exception on this API and says so at its own `created_at`: a Job's timestamp is minted in Go as a `time.Time` and serialized RFC 3339, because a Job is not a stored row of this baseline.
 	CreatedAt Timestamp `json:"created_at"`
 
+	// DefaultDurationMs The cast's own default dwell time, applied to every slide of it that states no `duration_ms` and whose referencing playlist item states no `duration_seconds` (`data-model/1` DAT-042's full order is: slide → item → cast default → the player's own default). Omit it for "no cast-wide default"; zero is not a value, it is the absent field.
+	// `null` is admitted for one concrete reason and is not decoration: a PATCH shallow-merges over the stored body, so an UPDATE that wants to REMOVE a cast-wide default has no other way to say so — omitting the member means "leave it alone", and the minimum of 1 (correctly) refuses the zero that would otherwise be the clear. A row cleared that way is then SERVED carrying the member as null (the store persists the post-merge bytes verbatim and normalizes only schema-REQUIRED members), which is why the response schema admits null too: null and absent mean the same thing to every reader of this field.
+	DefaultDurationMs *CastDefaultDurationMs `json:"default_duration_ms,omitempty"`
+
 	// ExternalId Client-assigned identifier (contracts/api-1.md#client-assignable-external_id).
 	ExternalId **string `json:"external_id,omitempty"`
 
@@ -857,6 +1077,9 @@ type Cast struct {
 	ScopeNode Ulid        `json:"scope_node"`
 	Slides    []CastSlide `json:"slides"`
 
+	// Template Marks this cast a TEMPLATE — a starting point new casts are created from, not a document a screen plays (`data-model/1` DAT-043). A playlist item referencing one is refused (`CAST_TEMPLATE_NOT_SCHEDULABLE`), because a template exists to be edited as the source of future casts and a screen playing it would change every time someone improved the starting point. Omitted (and absent from a served row) means an ordinary cast.
+	Template *CastTemplateFlag `json:"template,omitempty"`
+
 	// UpdatedAt A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC 3339 string. The store stamps `created_at`/`updated_at` on every row it writes as an integer millisecond count and returns that value unchanged, so this is what a client reads and what an export/apply round trip carries back. Deliberately not `format: date-time`: the two are not interchangeable, and a client that parsed one as the other would silently read 1970 for every resource on this surface.
 	// The `Job` resource is the one exception on this API and says so at its own `created_at`: a Job's timestamp is minted in Go as a `time.Time` and serialized RFC 3339, because a Job is not a stored row of this baseline.
 	UpdatedAt Timestamp `json:"updated_at"`
@@ -864,7 +1087,10 @@ type Cast struct {
 
 // CastCreate defines model for CastCreate.
 type CastCreate struct {
-	ExternalId **string `json:"external_id,omitempty"`
+	// DefaultDurationMs The cast's own default dwell time, applied to every slide of it that states no `duration_ms` and whose referencing playlist item states no `duration_seconds` (`data-model/1` DAT-042's full order is: slide → item → cast default → the player's own default). Omit it for "no cast-wide default"; zero is not a value, it is the absent field.
+	// `null` is admitted for one concrete reason and is not decoration: a PATCH shallow-merges over the stored body, so an UPDATE that wants to REMOVE a cast-wide default has no other way to say so — omitting the member means "leave it alone", and the minimum of 1 (correctly) refuses the zero that would otherwise be the clear. A row cleared that way is then SERVED carrying the member as null (the store persists the post-merge bytes verbatim and normalizes only schema-REQUIRED members), which is why the response schema admits null too: null and absent mean the same thing to every reader of this field.
+	DefaultDurationMs *CastDefaultDurationMs `json:"default_duration_ms,omitempty"`
+	ExternalId        **string               `json:"external_id,omitempty"`
 
 	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
 	Labels *LabelMap `json:"labels,omitempty"`
@@ -873,7 +1099,14 @@ type CastCreate struct {
 	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
 	ScopeNode Ulid        `json:"scope_node"`
 	Slides    []CastSlide `json:"slides"`
+
+	// Template Marks this cast a TEMPLATE — a starting point new casts are created from, not a document a screen plays (`data-model/1` DAT-043). A playlist item referencing one is refused (`CAST_TEMPLATE_NOT_SCHEDULABLE`), because a template exists to be edited as the source of future casts and a screen playing it would change every time someone improved the starting point. Omitted (and absent from a served row) means an ordinary cast.
+	Template *CastTemplateFlag `json:"template,omitempty"`
 }
+
+// CastDefaultDurationMs The cast's own default dwell time, applied to every slide of it that states no `duration_ms` and whose referencing playlist item states no `duration_seconds` (`data-model/1` DAT-042's full order is: slide → item → cast default → the player's own default). Omit it for "no cast-wide default"; zero is not a value, it is the absent field.
+// `null` is admitted for one concrete reason and is not decoration: a PATCH shallow-merges over the stored body, so an UPDATE that wants to REMOVE a cast-wide default has no other way to say so — omitting the member means "leave it alone", and the minimum of 1 (correctly) refuses the zero that would otherwise be the clear. A row cleared that way is then SERVED carrying the member as null (the store persists the post-merge bytes verbatim and normalizes only schema-REQUIRED members), which is why the response schema admits null too: null and absent mean the same thing to every reader of this field.
+type CastDefaultDurationMs = *int
 
 // CastListResponse defines model for CastListResponse.
 type CastListResponse struct {
@@ -890,9 +1123,15 @@ type CastSlide struct {
 	Layers     []SlideLayer `json:"layers"`
 }
 
+// CastTemplateFlag Marks this cast a TEMPLATE — a starting point new casts are created from, not a document a screen plays (`data-model/1` DAT-043). A playlist item referencing one is refused (`CAST_TEMPLATE_NOT_SCHEDULABLE`), because a template exists to be edited as the source of future casts and a screen playing it would change every time someone improved the starting point. Omitted (and absent from a served row) means an ordinary cast.
+type CastTemplateFlag = bool
+
 // CastUpdate Partial update — every member optional, at least one present. `slides` replaces the whole ordered list; there is no per-slide patch.
 type CastUpdate struct {
-	ExternalId **string `json:"external_id,omitempty"`
+	// DefaultDurationMs The cast's own default dwell time, applied to every slide of it that states no `duration_ms` and whose referencing playlist item states no `duration_seconds` (`data-model/1` DAT-042's full order is: slide → item → cast default → the player's own default). Omit it for "no cast-wide default"; zero is not a value, it is the absent field.
+	// `null` is admitted for one concrete reason and is not decoration: a PATCH shallow-merges over the stored body, so an UPDATE that wants to REMOVE a cast-wide default has no other way to say so — omitting the member means "leave it alone", and the minimum of 1 (correctly) refuses the zero that would otherwise be the clear. A row cleared that way is then SERVED carrying the member as null (the store persists the post-merge bytes verbatim and normalizes only schema-REQUIRED members), which is why the response schema admits null too: null and absent mean the same thing to every reader of this field.
+	DefaultDurationMs *CastDefaultDurationMs `json:"default_duration_ms,omitempty"`
+	ExternalId        **string               `json:"external_id,omitempty"`
 
 	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
 	Labels *LabelMap `json:"labels,omitempty"`
@@ -901,6 +1140,9 @@ type CastUpdate struct {
 	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
 	ScopeNode *Ulid        `json:"scope_node,omitempty"`
 	Slides    *[]CastSlide `json:"slides,omitempty"`
+
+	// Template Marks this cast a TEMPLATE — a starting point new casts are created from, not a document a screen plays (`data-model/1` DAT-043). A playlist item referencing one is refused (`CAST_TEMPLATE_NOT_SCHEDULABLE`), because a template exists to be edited as the source of future casts and a screen playing it would change every time someone improved the starting point. Omitted (and absent from a served row) means an ordinary cast.
+	Template *CastTemplateFlag `json:"template,omitempty"`
 }
 
 // ClaimRequest A first-boot claim (SEC-120): the one-time setup code, plus the credential the first owner is choosing.
@@ -1035,6 +1277,9 @@ type DeviceListResponse struct {
 
 // Entity One addressable object a device exposes — the unit `rules/1` entity references resolve to and the unit a device command is addressed to (`relay/1` REL-112). Read-only on this API for the same reason a Device is, and carries no `revision` for the same reason.
 type Entity struct {
+	// Attributes The driver-observed detail behind `state` (`device-class-registry/1` REG-064; for a Roku `power_mode`, `active_app`, `active_app_id`, `app_type`, `is_screensaver`, `app_version`). `state` answers on/idle/standby/off; an operator looking at a screen that is not showing what it should needs to know it is sitting in another app, which `state` cannot say. Values are strings even where the driver's own value is a boolean — this is display detail crossing a trust boundary from a relay, and a bounded string map is checkable at intake in a way an arbitrary JSON value is not. Absent until the relay has reported some.
+	Attributes *map[string]string `json:"attributes,omitempty"`
+
 	// DeviceClass The device class whose command vocabulary a command to this entity must resolve against (`device-class-registry/1` REG-052).
 	DeviceClass string `json:"device_class"`
 
@@ -1222,12 +1467,18 @@ type PlaylistItem struct {
 	AssetRef *string `json:"asset_ref,omitempty"`
 
 	// CastId The cast this entry plays, required when `source` is `cast`. It MUST name an existing cast row, and that cast cannot be deleted while this reference stands (DAT-043).
-	CastId          *string            `json:"cast_id,omitempty"`
-	ContentId       *string            `json:"content_id,omitempty"`
-	DurationSeconds **int              `json:"duration_seconds,omitempty"`
-	PackId          *string            `json:"pack_id,omitempty"`
-	Source          PlaylistItemSource `json:"source"`
+	CastId    *string `json:"cast_id,omitempty"`
+	ContentId *string `json:"content_id,omitempty"`
+
+	// ContentType What this `asset` item's bytes ARE, and therefore how a screen presents them: `image` is drawn as a still for the item's dwell time, `video` is played. Optional; an item that states none is served as `image` (`relay/1` REL-061a's stated default for an absent content_type), so every playlist authored before this field existed behaves exactly as it did. Only meaningful on `source: "asset"` — a `cast` item's content type is decided by its source — and stating it on any other source is refused, rather than stored as an intent nothing will honour.
+	ContentType     *PlaylistItemContentType `json:"content_type,omitempty"`
+	DurationSeconds **int                    `json:"duration_seconds,omitempty"`
+	PackId          *string                  `json:"pack_id,omitempty"`
+	Source          PlaylistItemSource       `json:"source"`
 }
+
+// PlaylistItemContentType What this `asset` item's bytes ARE, and therefore how a screen presents them: `image` is drawn as a still for the item's dwell time, `video` is played. Optional; an item that states none is served as `image` (`relay/1` REL-061a's stated default for an absent content_type), so every playlist authored before this field existed behaves exactly as it did. Only meaningful on `source: "asset"` — a `cast` item's content type is decided by its source — and stating it on any other source is refused, rather than stored as an intent nothing will honour.
+type PlaylistItemContentType string
 
 // PlaylistItemSource defines model for PlaylistItem.Source.
 type PlaylistItemSource string
@@ -1455,9 +1706,12 @@ type Screen struct {
 	Id Ulid `json:"id"`
 
 	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
-	Labels   LabelMap `json:"labels"`
-	Name     string   `json:"name"`
-	Revision int      `json:"revision"`
+	Labels LabelMap `json:"labels"`
+	Name   string   `json:"name"`
+
+	// Override A screen's program override (`data-model/1` DAT-004c): a per-screen content pin that supersedes whatever the scheduling core resolves for that screen, for as long as it applies. It is deliberately not a second scheduling mechanism — no cascade, no priority order, no layering, no recurrence — it is "show this here, now, until it is cleared or lapses", which is what an operator's push-now gesture and an automation's `play_cast`/`show_alert` action (`rules/1` RUL-234/RUL-235) both need and what a schedule cannot express.
+	Override *ScreenOverride `json:"override,omitempty"`
+	Revision int             `json:"revision"`
 
 	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
 	ScopeNode Ulid `json:"scope_node"`
@@ -1485,6 +1739,138 @@ type ScreenListResponse struct {
 	// Cursor An opaque, URL-safe continuation token. `null` signals no further rows. Never constructed, parsed, or compared for meaning by a client.
 	Cursor Cursor   `json:"cursor"`
 	Items  []Screen `json:"items"`
+}
+
+// ScreenNow A screen's active program override, as it now stands — the same override the screen row carries (`ScreenOverride`), with the screen's own id and under the operator-facing name the push-now surface uses. `source` names which content member is populated, so a consumer switches on one closed value rather than inferring intent from which string happens to be empty.
+type ScreenNow struct {
+	// CastId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	CastId *Ulid `json:"cast_id,omitempty"`
+
+	// ExpiresAt The instant the override lapses; absent means it lasts until cleared.
+	ExpiresAt *Timestamp    `json:"expires_at,omitempty"`
+	Message   *string       `json:"message,omitempty"`
+	Mode      ScreenNowMode `json:"mode"`
+
+	// PushedAt The instant the override was imposed (the row's `set_at`).
+	PushedAt *Timestamp `json:"pushed_at,omitempty"`
+
+	// ScreenId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScreenId Ulid            `json:"screen_id"`
+	Source   ScreenNowSource `json:"source"`
+}
+
+// ScreenNowMode defines model for ScreenNow.Mode.
+type ScreenNowMode string
+
+// ScreenNowSource defines model for ScreenNow.Source.
+type ScreenNowSource string
+
+// ScreenNowRequest What to show on a screen right now: the body of the ONE surface that imposes a screen's program override (`data-model/1` DAT-004c). Its members are that override's, with one substitution — the row stores an absolute `expires_at` and this body states a RELATIVE `ttl_seconds`, because "show this for sixty seconds" is what an operator means and because deriving the instant server-side keeps a caller's clock skew from deciding when an alert ends.
+// There is deliberately no `override` member on `ScreenCreate` or `ScreenUpdate`: imposing an override is an imperative act on a physical display, and burying it inside a resource edit hides it from anything reading the route — audit, rate limiting, authorization review — and makes "clear it" an awkward explicit `null` rather than a `DELETE`.
+type ScreenNowRequest struct {
+	// CastId The cast whose slides the screen plays. Exactly one of `cast_id` and `message` is stated — a body naming neither says nothing to show, and one naming both is two instructions with no rule ranking them, which a server resolving by precedence would turn into the wrong content on a wall. A `cast_id` naming no cast row is REFUSED here (DAT-004c): accepting it would pin the screen to an empty content array with its schedule suppressed — a dark screen with no error anywhere.
+	CastId *Ulid `json:"cast_id,omitempty"`
+
+	// Message A literal alert message, shown as one generated slide with no authored cast needed. Admissible only under `mode: "alert"`.
+	Message *string `json:"message,omitempty"`
+
+	// Mode `play` is the ordinary assignment and delivers at `scheduled` priority; `alert` is the takeover and delivers at `preempt`, so a player interrupts the item it is mid-way through (`player/1` PLY-108). DAT-004c admits a literal `message` only under `alert`.
+	Mode ScreenNowRequestMode `json:"mode"`
+
+	// TtlSeconds How long the override lasts, in seconds from the moment it is imposed; omitted means it lasts until it is explicitly cleared. The server converts it to the row's absolute `expires_at`, after which the override is treated as absent at resolution time with NO write required to retire it (DAT-004d) — so an alert self-limits even on a relay that has lost its app peer.
+	TtlSeconds *int `json:"ttl_seconds,omitempty"`
+}
+
+// ScreenNowRequestMode `play` is the ordinary assignment and delivers at `scheduled` priority; `alert` is the takeover and delivers at `preempt`, so a player interrupts the item it is mid-way through (`player/1` PLY-108). DAT-004c admits a literal `message` only under `alert`.
+type ScreenNowRequestMode string
+
+// ScreenOverride A screen's program override (`data-model/1` DAT-004c): a per-screen content pin that supersedes whatever the scheduling core resolves for that screen, for as long as it applies. It is deliberately not a second scheduling mechanism — no cascade, no priority order, no layering, no recurrence — it is "show this here, now, until it is cleared or lapses", which is what an operator's push-now gesture and an automation's `play_cast`/`show_alert` action (`rules/1` RUL-234/RUL-235) both need and what a schedule cannot express.
+type ScreenOverride struct {
+	// CastId The cast whose slides the screen plays. Exactly one of `cast_id` and `message` is stated.
+	CastId *Ulid `json:"cast_id,omitempty"`
+
+	// ExpiresAt The instant the override lapses. Absent means no expiry. A lapsed override is treated as absent at resolution time with no write required to retire it (DAT-004d), so an alert self-limits even on a relay that has lost its app peer.
+	ExpiresAt *Timestamp `json:"expires_at,omitempty"`
+
+	// Message A literal alert message, shown as one generated slide. Admissible only under `mode: "alert"` — a `play` override names a cast.
+	Message *string `json:"message,omitempty"`
+
+	// Mode `play` is the ordinary assignment and delivers at `scheduled` priority; `alert` is the takeover and delivers at `preempt`, so a player interrupts the item it is mid-way through (`player/1` PLY-108).
+	Mode ScreenOverrideMode `json:"mode"`
+
+	// SetAt The instant the override was imposed. Informational.
+	SetAt *Timestamp `json:"set_at,omitempty"`
+}
+
+// ScreenOverrideMode `play` is the ordinary assignment and delivers at `scheduled` priority; `alert` is the takeover and delivers at `preempt`, so a player interrupts the item it is mid-way through (`player/1` PLY-108).
+type ScreenOverrideMode string
+
+// ScreenStatus One screen's authored identity joined to what the relays have observed of it. See `listScreenStatus` for how the ages are to be read and why `reachability` never says "offline".
+type ScreenStatus struct {
+	// ContentCount How many content items that program carried.
+	ContentCount int                  `json:"content_count"`
+	Display      *ScreenStatusDisplay `json:"display,omitempty"`
+
+	// LastAckAgeMs Milliseconds since this screen last acknowledged a Lease, or `-1` if it never has.
+	LastAckAgeMs int `json:"last_ack_age_ms"`
+
+	// LastPullAgeMs Milliseconds since this screen last pulled its program, or `-1` if it never has.
+	LastPullAgeMs int `json:"last_pull_age_ms"`
+
+	// LastRenderStartAgeMs Milliseconds since this screen last reported beginning to present a content item (`player/1` PLY-110) — the only field here that is evidence of playback rather than of intent — or `-1` if it never has.
+	LastRenderStartAgeMs int `json:"last_render_start_age_ms"`
+
+	// LiveWindowMs The staleness threshold `reachability` was decided by, published so a consumer that wants a different line can draw it from the raw ages.
+	LiveWindowMs int `json:"live_window_ms"`
+
+	// Name The screen row's own display name.
+	Name *string `json:"name,omitempty"`
+
+	// Now The operator's active push-now override, absent when the screen is following its schedule.
+	Now *ScreenNow `json:"now,omitempty"`
+
+	// Paired Whether a relay currently holds a live channel-token session for this screen.
+	Paired bool `json:"paired"`
+
+	// Priority That program's `player/1` PLY-108 priority — `preempt` is an operator's push-now takeover.
+	Priority *ScreenStatusPriority `json:"priority,omitempty"`
+
+	// ProgramRevision The `program_revision` this screen was last handed (or, if it has never pulled, the one waiting for it).
+	ProgramRevision *string `json:"program_revision,omitempty"`
+
+	// Reachability `live` — the relay heard from this screen within `live_window_ms`. `stale` — contact was made at some point, but not recently. `never_seen` — no relay has ever observed this screen pull a program.
+	Reachability ScreenStatusReachability `json:"reachability"`
+
+	// RelayId The relay whose report this status came from; absent when no relay has reported this screen.
+	RelayId *string `json:"relay_id,omitempty"`
+
+	// RenderAssetRef The asset this screen last reported actually putting on screen.
+	RenderAssetRef *string `json:"render_asset_ref,omitempty"`
+
+	// ReportAgeMs Milliseconds since the relay report this status came from arrived, or `-1` when no report has. It is what distinguishes a screen that stopped talking to its relay from a relay that stopped talking to this app peer.
+	ReportAgeMs int `json:"report_age_ms"`
+
+	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScopeNode *Ulid `json:"scope_node,omitempty"`
+
+	// ScreenId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScreenId Ulid `json:"screen_id"`
+}
+
+// ScreenStatusDisplay defines model for ScreenStatus.Display.
+type ScreenStatusDisplay string
+
+// ScreenStatusPriority That program's `player/1` PLY-108 priority — `preempt` is an operator's push-now takeover.
+type ScreenStatusPriority string
+
+// ScreenStatusReachability `live` — the relay heard from this screen within `live_window_ms`. `stale` — contact was made at some point, but not recently. `never_seen` — no relay has ever observed this screen pull a program.
+type ScreenStatusReachability string
+
+// ScreenStatusListResponse defines model for ScreenStatusListResponse.
+type ScreenStatusListResponse struct {
+	// Cursor An opaque, URL-safe continuation token. `null` signals no further rows. Never constructed, parsed, or compared for meaning by a client.
+	Cursor Cursor         `json:"cursor"`
+	Items  []ScreenStatus `json:"items"`
 }
 
 // ScreenUpdate Partial update — every field optional, at least one required.
@@ -1532,34 +1918,42 @@ type SessionSummaryRole string
 
 // SlideLayer One positioned native element of a slide (`data-model/1` DAT-043). Layers are drawn in ARRAY ORDER — the index IS the z-order — inside a fixed 1920x1080 top-left-origin canvas a player scales to its panel, so geometry is authored against those bounds whatever the real resolution is. Every member beyond `kind` and the geometry is kind-specific.
 type SlideLayer struct {
-	// Align A `text` layer's horizontal alignment. Optional.
+	// Align A Label-drawn layer's horizontal alignment. Optional.
 	Align *SlideLayerAlign `json:"align,omitempty"`
 
-	// AssetRef An `image` layer's content-addressed `sha256:` reference — the only half of an image layer that is AUTHORED. Its fetch `url` is derived from the content origin at projection time.
+	// AssetRef An `image` or `video` layer's content-addressed `sha256:` reference — the only half of a content-bearing layer that is AUTHORED. Its fetch `url` is derived from the content origin at projection time.
 	AssetRef *string `json:"asset_ref,omitempty"`
 
-	// Color A `rect`'s fill (required) or a `text`/`clock`'s foreground (optional). `#RRGGBB` wherever present.
+	// Color A `rect`'s fill (required) or a Label-drawn kind's foreground (optional). `#RRGGBB` wherever present.
 	Color *string `json:"color,omitempty"`
 
-	// FontPx Pixel font size for a `text`/`clock` layer. Optional — an omitted size renders at the player's own default.
-	FontPx *int           `json:"font_px,omitempty"`
-	H      int            `json:"h"`
-	Kind   SlideLayerKind `json:"kind"`
+	// EntityId The platform entity an `entity` layer displays the current state of — the same identifier a device's `entities[].entity_id` carries. Required for `entity`, unused elsewhere. It is the AUTHORED half of an entity widget; the resolved display string is filled by the box at Lease issuance and never appears in an authored row (the same authored/derived split an `image` layer's `asset_ref`/`url` has, which is why there is no `value` member here).
+	EntityId *string `json:"entity_id,omitempty"`
 
-	// Text The literal string for a `text` layer; for a `clock` layer, the Go reference-time layout (`15:04:05`, `3:04 PM`) the player renders the current LOCAL time through, refreshed every second. Required for both of those kinds, unused by `rect`/`image`.
+	// FontPx Pixel font size for any Label-drawn kind — `text`, `clock`, `date`, `countdown`, `weather`, `entity`. Optional; an omitted size renders at the player's own default.
+	FontPx *int `json:"font_px,omitempty"`
+	H      int  `json:"h"`
+
+	// Kind The closed layer-kind set, and it MUST stay equal to `internal/shared/wire`'s own (`slideLayerKinds`) — same members, same order. The four LIVE kinds beyond the static three plus `clock` are the widgets: `date` and `countdown` are computed by the player from its own clock, `weather` and `entity` are resolved by the box at Lease issuance (`internal/slidelive`) and drawn verbatim. `video` is image's twin — the second kind whose substance is bytes in the content origin, authored as an `asset_ref` and fetched + content-address-verified by the player before it is presented — and the only moving element a slide can carry; a player draws it as a positioned Video node looped for the slide's dwell time. They are all listed here because this enum is the AUTHORING gate: a kind the player renders and this enum omits is a widget nothing can ever create — the shape of defect this repo keeps producing, and the one that shipped in wave 1 (the four widget kinds landed on the wire and the player, and `POST /casts` answered 422 for every one of them).
+	Kind SlideLayerKind `json:"kind"`
+
+	// TargetMs A `countdown` layer's target instant, in Unix epoch MILLISECONDS (UTC) — the same absolute-instant unit every other time on this wire uses, never a local wall time and never seconds. Absolute is what lets the player count down without knowing the authoring timezone. Required and strictly positive for `countdown`, unused elsewhere; a target already past renders as all zeroes rather than as a negative, so it is deliberately NOT rejected here.
+	TargetMs *int `json:"target_ms,omitempty"`
+
+	// Text The literal string for a `text` layer, and a FORMAT for every kind whose content is generated rather than authored. For `clock` and `date` it is the Go reference-time layout (`15:04:05`, `3:04 PM`, `Monday, January 2`) the player renders the current LOCAL time or date through — not a strftime string. For `countdown` it is an OPTIONAL remaining-time layout in that kind's own tiny grammar (`DD`/`D` days, `HH`/`H` hours, `MM`/`M` minutes, `SS`/`S` seconds; an empty text means the player's `HH:MM:SS`) — deliberately not a reference-time layout, because a duration has no hour-of-day. For `weather` it is the required display template the BOX substitutes into (`{temp}` °F, `{tempc}` °C, `{cond}`), and for `entity` the optional one (`{state}`, the whole template when omitted). Required for `text`, `clock`, `date` and `weather`; unused by `rect`/`image`.
 	Text *string `json:"text,omitempty"`
 
-	// Url An `image` layer's direct content-origin fetch target, derived at projection time and present on a SERVED slide. A create/update need not supply it.
+	// Url An `image` or `video` layer's direct content-origin fetch target, derived at projection time and present on a SERVED slide. A create/update need not supply it.
 	Url *string `json:"url,omitempty"`
 	W   int     `json:"w"`
 	X   int     `json:"x"`
 	Y   int     `json:"y"`
 }
 
-// SlideLayerAlign A `text` layer's horizontal alignment. Optional.
+// SlideLayerAlign A Label-drawn layer's horizontal alignment. Optional.
 type SlideLayerAlign string
 
-// SlideLayerKind defines model for SlideLayer.Kind.
+// SlideLayerKind The closed layer-kind set, and it MUST stay equal to `internal/shared/wire`'s own (`slideLayerKinds`) — same members, same order. The four LIVE kinds beyond the static three plus `clock` are the widgets: `date` and `countdown` are computed by the player from its own clock, `weather` and `entity` are resolved by the box at Lease issuance (`internal/slidelive`) and drawn verbatim. `video` is image's twin — the second kind whose substance is bytes in the content origin, authored as an `asset_ref` and fetched + content-address-verified by the player before it is presented — and the only moving element a slide can carry; a player draws it as a positioned Video node looped for the slide's dwell time. They are all listed here because this enum is the AUTHORING gate: a kind the player renders and this enum omits is a widget nothing can ever create — the shape of defect this repo keeps producing, and the one that shipped in wave 1 (the four widget kinds landed on the wire and the player, and `POST /casts` answered 422 for every one of them).
 type SlideLayerKind string
 
 // Timestamp A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC 3339 string. The store stamps `created_at`/`updated_at` on every row it writes as an integer millisecond count and returns that value unchanged, so this is what a client reads and what an export/apply round trip carries back. Deliberately not `format: date-time`: the two are not interchangeable, and a client that parsed one as the other would silently read 1970 for every resource on this surface.
@@ -2394,6 +2788,21 @@ type UpdateScopeNodeParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// ListScreenStatusParams defines parameters for ListScreenStatus.
+type ListScreenStatusParams struct {
+	// Cursor Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client.
+	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Limit Maximum rows to return in this page.
+	Limit *LimitParam `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Selector A label-selector string: comma-separated, ANDed terms (equality, inequality, set-membership, set-exclusion, existence, non-existence, or a `scope_node subtree <ulid>` term). See `contracts/api-1.md#label-selector-grammar` for the full grammar.
+	Selector *SelectorParam `form:"selector,omitempty" json:"selector,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // ListScreensParams defines parameters for ListScreens.
 type ListScreensParams struct {
 	// Cursor Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client.
@@ -2438,6 +2847,18 @@ type UpdateScreenParams struct {
 	// IfMatch The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists.
 	IfMatch IfMatchParam `json:"If-Match"`
 
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// ClearScreenNowParams defines parameters for ClearScreenNow.
+type ClearScreenNowParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// SetScreenNowParams defines parameters for SetScreenNow.
+type SetScreenNowParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
@@ -2627,6 +3048,9 @@ type CreateScreenJSONRequestBody = ScreenCreate
 
 // UpdateScreenJSONRequestBody defines body for UpdateScreen for application/json ContentType.
 type UpdateScreenJSONRequestBody = ScreenUpdate
+
+// SetScreenNowJSONRequestBody defines body for SetScreenNow for application/json ContentType.
+type SetScreenNowJSONRequestBody = ScreenNowRequest
 
 // CreateWebhookEndpointJSONRequestBody defines body for CreateWebhookEndpoint for application/json ContentType.
 type CreateWebhookEndpointJSONRequestBody = WebhookEndpointCreate
@@ -2965,6 +3389,9 @@ type ClientInterface interface {
 
 	UpdateScopeNode(ctx context.Context, scopeNodeId Ulid, params *UpdateScopeNodeParams, body UpdateScopeNodeJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// ListScreenStatus request
+	ListScreenStatus(ctx context.Context, params *ListScreenStatusParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ListScreens request
 	ListScreens(ctx context.Context, params *ListScreensParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -2983,6 +3410,14 @@ type ClientInterface interface {
 	UpdateScreenWithBody(ctx context.Context, screenId Ulid, params *UpdateScreenParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	UpdateScreen(ctx context.Context, screenId Ulid, params *UpdateScreenParams, body UpdateScreenJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ClearScreenNow request
+	ClearScreenNow(ctx context.Context, screenId Ulid, params *ClearScreenNowParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// SetScreenNowWithBody request with any body
+	SetScreenNowWithBody(ctx context.Context, screenId Ulid, params *SetScreenNowParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	SetScreenNow(ctx context.Context, screenId Ulid, params *SetScreenNowParams, body SetScreenNowJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// IssueScreenPairingCode request
 	IssueScreenPairingCode(ctx context.Context, screenId Ulid, params *IssueScreenPairingCodeParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -4113,6 +4548,18 @@ func (c *Client) UpdateScopeNode(ctx context.Context, scopeNodeId Ulid, params *
 	return c.Client.Do(req)
 }
 
+func (c *Client) ListScreenStatus(ctx context.Context, params *ListScreenStatusParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListScreenStatusRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) ListScreens(ctx context.Context, params *ListScreensParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListScreensRequest(c.Server, params)
 	if err != nil {
@@ -4187,6 +4634,42 @@ func (c *Client) UpdateScreenWithBody(ctx context.Context, screenId Ulid, params
 
 func (c *Client) UpdateScreen(ctx context.Context, screenId Ulid, params *UpdateScreenParams, body UpdateScreenJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewUpdateScreenRequest(c.Server, screenId, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ClearScreenNow(ctx context.Context, screenId Ulid, params *ClearScreenNowParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewClearScreenNowRequest(c.Server, screenId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) SetScreenNowWithBody(ctx context.Context, screenId Ulid, params *SetScreenNowParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSetScreenNowRequestWithBody(c.Server, screenId, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) SetScreenNow(ctx context.Context, screenId Ulid, params *SetScreenNowParams, body SetScreenNowJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSetScreenNowRequest(c.Server, screenId, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -8803,6 +9286,99 @@ func NewUpdateScopeNodeRequestWithBody(server string, scopeNodeId Ulid, params *
 	return req, nil
 }
 
+// NewListScreenStatusRequest generates requests for ListScreenStatus
+func NewListScreenStatusRequest(server string, params *ListScreenStatusParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/screen-status")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.Cursor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "cursor", *params.Cursor, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "limit", *params.Limit, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Selector != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "selector", *params.Selector, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
 // NewListScreensRequest generates requests for ListScreens
 func NewListScreensRequest(server string, params *ListScreensParams) (*http.Request, error) {
 	var err error
@@ -9133,6 +9709,117 @@ func NewUpdateScreenRequestWithBody(server string, screenId Ulid, params *Update
 			}
 
 			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewClearScreenNowRequest generates requests for ClearScreenNow
+func NewClearScreenNowRequest(server string, screenId Ulid, params *ClearScreenNowParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "screen_id", screenId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/screens/%s/now", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewSetScreenNowRequest calls the generic SetScreenNow builder with application/json body
+func NewSetScreenNowRequest(server string, screenId Ulid, params *SetScreenNowParams, body SetScreenNowJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewSetScreenNowRequestWithBody(server, screenId, params, "application/json", bodyReader)
+}
+
+// NewSetScreenNowRequestWithBody generates requests for SetScreenNow with any type of body
+func NewSetScreenNowRequestWithBody(server string, screenId Ulid, params *SetScreenNowParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "screen_id", screenId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/screens/%s/now", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPut, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
 		}
 
 	}
@@ -10206,6 +10893,9 @@ type ClientWithResponsesInterface interface {
 
 	UpdateScopeNodeWithResponse(ctx context.Context, scopeNodeId Ulid, params *UpdateScopeNodeParams, body UpdateScopeNodeJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateScopeNodeResponse, error)
 
+	// ListScreenStatusWithResponse request
+	ListScreenStatusWithResponse(ctx context.Context, params *ListScreenStatusParams, reqEditors ...RequestEditorFn) (*ListScreenStatusResponse, error)
+
 	// ListScreensWithResponse request
 	ListScreensWithResponse(ctx context.Context, params *ListScreensParams, reqEditors ...RequestEditorFn) (*ListScreensResponse, error)
 
@@ -10224,6 +10914,14 @@ type ClientWithResponsesInterface interface {
 	UpdateScreenWithBodyWithResponse(ctx context.Context, screenId Ulid, params *UpdateScreenParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateScreenResponse, error)
 
 	UpdateScreenWithResponse(ctx context.Context, screenId Ulid, params *UpdateScreenParams, body UpdateScreenJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateScreenResponse, error)
+
+	// ClearScreenNowWithResponse request
+	ClearScreenNowWithResponse(ctx context.Context, screenId Ulid, params *ClearScreenNowParams, reqEditors ...RequestEditorFn) (*ClearScreenNowResponse, error)
+
+	// SetScreenNowWithBodyWithResponse request with any body
+	SetScreenNowWithBodyWithResponse(ctx context.Context, screenId Ulid, params *SetScreenNowParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SetScreenNowResponse, error)
+
+	SetScreenNowWithResponse(ctx context.Context, screenId Ulid, params *SetScreenNowParams, body SetScreenNowJSONRequestBody, reqEditors ...RequestEditorFn) (*SetScreenNowResponse, error)
 
 	// IssueScreenPairingCodeWithResponse request
 	IssueScreenPairingCodeWithResponse(ctx context.Context, screenId Ulid, params *IssueScreenPairingCodeParams, reqEditors ...RequestEditorFn) (*IssueScreenPairingCodeResponse, error)
@@ -12487,6 +13185,39 @@ func (r UpdateScopeNodeResponse) ContentType() string {
 	return ""
 }
 
+type ListScreenStatusResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *ScreenStatusListResponse
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON429 *TooManyRequests
+}
+
+// Status returns HTTPResponse.Status
+func (r ListScreenStatusResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListScreenStatusResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ListScreenStatusResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type ListScreensResponse struct {
 	Body                      []byte
 	HTTPResponse              *http.Response
@@ -12652,6 +13383,73 @@ func (r UpdateScreenResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r UpdateScreenResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ClearScreenNowResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r ClearScreenNowResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ClearScreenNowResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ClearScreenNowResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type SetScreenNowResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *ScreenNow
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON422 *UnprocessableContent
+}
+
+// Status returns HTTPResponse.Status
+func (r SetScreenNowResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r SetScreenNowResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r SetScreenNowResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -13858,6 +14656,15 @@ func (c *ClientWithResponses) UpdateScopeNodeWithResponse(ctx context.Context, s
 	return ParseUpdateScopeNodeResponse(rsp)
 }
 
+// ListScreenStatusWithResponse request returning *ListScreenStatusResponse
+func (c *ClientWithResponses) ListScreenStatusWithResponse(ctx context.Context, params *ListScreenStatusParams, reqEditors ...RequestEditorFn) (*ListScreenStatusResponse, error) {
+	rsp, err := c.ListScreenStatus(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListScreenStatusResponse(rsp)
+}
+
 // ListScreensWithResponse request returning *ListScreensResponse
 func (c *ClientWithResponses) ListScreensWithResponse(ctx context.Context, params *ListScreensParams, reqEditors ...RequestEditorFn) (*ListScreensResponse, error) {
 	rsp, err := c.ListScreens(ctx, params, reqEditors...)
@@ -13917,6 +14724,32 @@ func (c *ClientWithResponses) UpdateScreenWithResponse(ctx context.Context, scre
 		return nil, err
 	}
 	return ParseUpdateScreenResponse(rsp)
+}
+
+// ClearScreenNowWithResponse request returning *ClearScreenNowResponse
+func (c *ClientWithResponses) ClearScreenNowWithResponse(ctx context.Context, screenId Ulid, params *ClearScreenNowParams, reqEditors ...RequestEditorFn) (*ClearScreenNowResponse, error) {
+	rsp, err := c.ClearScreenNow(ctx, screenId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseClearScreenNowResponse(rsp)
+}
+
+// SetScreenNowWithBodyWithResponse request with arbitrary body returning *SetScreenNowResponse
+func (c *ClientWithResponses) SetScreenNowWithBodyWithResponse(ctx context.Context, screenId Ulid, params *SetScreenNowParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SetScreenNowResponse, error) {
+	rsp, err := c.SetScreenNowWithBody(ctx, screenId, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSetScreenNowResponse(rsp)
+}
+
+func (c *ClientWithResponses) SetScreenNowWithResponse(ctx context.Context, screenId Ulid, params *SetScreenNowParams, body SetScreenNowJSONRequestBody, reqEditors ...RequestEditorFn) (*SetScreenNowResponse, error) {
+	rsp, err := c.SetScreenNow(ctx, screenId, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSetScreenNowResponse(rsp)
 }
 
 // IssueScreenPairingCodeWithResponse request returning *IssueScreenPairingCodeResponse
@@ -17422,6 +18255,53 @@ func ParseUpdateScopeNodeResponse(rsp *http.Response) (*UpdateScopeNodeResponse,
 	return response, nil
 }
 
+// ParseListScreenStatusResponse parses an HTTP response from a ListScreenStatusWithResponse call
+func ParseListScreenStatusResponse(rsp *http.Response) (*ListScreenStatusResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListScreenStatusResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ScreenStatusListResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseListScreensResponse parses an HTTP response from a ListScreensWithResponse call
 func ParseListScreensResponse(rsp *http.Response) (*ListScreensResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -17693,6 +18573,107 @@ func ParseUpdateScreenResponse(rsp *http.Response) (*UpdateScreenResponse, error
 			return nil, err
 		}
 		response.ApplicationproblemJSON428 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseClearScreenNowResponse parses an HTTP response from a ClearScreenNowWithResponse call
+func ParseClearScreenNowResponse(rsp *http.Response) (*ClearScreenNowResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ClearScreenNowResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseSetScreenNowResponse parses an HTTP response from a SetScreenNowWithResponse call
+func ParseSetScreenNowResponse(rsp *http.Response) (*SetScreenNowResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &SetScreenNowResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ScreenNow
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
 
 	}
 

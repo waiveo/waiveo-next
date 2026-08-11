@@ -154,6 +154,7 @@ func TestValidateSlideLayers(t *testing.T) {
 		{"text ok with optional hex color/font/align", []Layer{full(Layer{Kind: LayerKindText, Text: "hi", Color: "#abcdef", FontPx: 40, Align: "center"})}, false},
 		{"rect ok", []Layer{full(Layer{Kind: LayerKindRect, Color: "#00FF00"})}, false},
 		{"image ok", []Layer{full(Layer{Kind: LayerKindImage, AssetRef: "sha256:aa", URL: "https://o/x"})}, false},
+		{"video ok", []Layer{full(Layer{Kind: LayerKindVideo, AssetRef: "sha256:bb", URL: "https://o/clip"})}, false},
 		{"clock ok", []Layer{full(Layer{Kind: LayerKindClock, Text: "15:04:05"})}, false},
 		{"multi-layer all valid", []Layer{
 			full(Layer{Kind: LayerKindRect, Color: "#101020"}),
@@ -165,7 +166,12 @@ func TestValidateSlideLayers(t *testing.T) {
 		// ---- structural ----
 		{"empty layers", []Layer{}, true},
 		{"nil layers", nil, true},
-		{"unknown kind", []Layer{full(Layer{Kind: "video", Text: "hi"})}, true},
+		// `qr` is a kind the legacy system had and this wire deliberately does
+		// not yet: a real future candidate, so this case keeps meaning what it
+		// means. (It used to be spelled `video`, which stopped being an unknown
+		// kind the moment the video layer landed — a case that silently starts
+		// asserting the opposite of its name is worse than no case at all.)
+		{"unknown kind", []Layer{full(Layer{Kind: "qr", Text: "hi"})}, true},
 		{"empty kind", []Layer{full(Layer{Kind: "", Text: "hi"})}, true},
 
 		// ---- geometry ----
@@ -182,6 +188,12 @@ func TestValidateSlideLayers(t *testing.T) {
 		{"clock missing format", []Layer{full(Layer{Kind: LayerKindClock})}, true},
 		{"image missing asset_ref", []Layer{full(Layer{Kind: LayerKindImage, URL: "https://o/x"})}, true},
 		{"image missing url", []Layer{full(Layer{Kind: LayerKindImage, AssetRef: "sha256:aa"})}, true},
+		// Video is image's twin and pays the identical pair of rules — asserted
+		// rather than assumed, because "it shares a case arm" is a fact about
+		// today's implementation and these are the rules a producer relies on.
+		{"video missing asset_ref", []Layer{full(Layer{Kind: LayerKindVideo, URL: "https://o/clip"})}, true},
+		{"video missing url", []Layer{full(Layer{Kind: LayerKindVideo, AssetRef: "sha256:bb"})}, true},
+		{"video missing both", []Layer{full(Layer{Kind: LayerKindVideo})}, true},
 		{"rect missing color", []Layer{full(Layer{Kind: LayerKindRect})}, true},
 
 		// ---- color hex validation ----
@@ -242,9 +254,26 @@ func TestValidateAuthoredSlideLayersDiffersOnlyOnTheDerivedImageURL(t *testing.T
 		t.Error("the authoring gate accepted an image layer with no asset_ref")
 	}
 
+	// The SAME carve-out, and only that carve-out, applies to the other
+	// content-bearing kind. A video layer whose url is required at authoring
+	// time would be unstorable for exactly the reason an image layer would, and
+	// an authoring gate that let one through but not the other would be a rule
+	// that depends on which kind an operator picked.
+	videoNoURL := []Layer{{Kind: LayerKindVideo, X: 0, Y: 0, W: 100, H: 100, AssetRef: "sha256:bb"}}
+	if err := ValidateAuthoredSlideLayers(videoNoURL); err != nil {
+		t.Errorf("the authoring gate rejected a video layer with no derived url: %v", err)
+	}
+	if err := ValidateSlideLayers(videoNoURL); err == nil {
+		t.Error("the serving gate accepted a video layer with no url; a player could not fetch it")
+	}
+	videoNothing := []Layer{{Kind: LayerKindVideo, X: 0, Y: 0, W: 100, H: 100}}
+	if err := ValidateAuthoredSlideLayers(videoNothing); err == nil {
+		t.Error("the authoring gate accepted a video layer with no asset_ref")
+	}
+
 	shared := map[string][]Layer{
 		"empty stack":         {},
-		"unknown kind":        {{Kind: "video", X: 0, Y: 0, W: 10, H: 10}},
+		"unknown kind":        {{Kind: "qr", X: 0, Y: 0, W: 10, H: 10}},
 		"zero area":           {{Kind: LayerKindRect, X: 0, Y: 0, W: 0, H: 10, Color: "#ffffff"}},
 		"off canvas":          {{Kind: LayerKindRect, X: 1900, Y: 0, W: 100, H: 10, Color: "#ffffff"}},
 		"text with no text":   {{Kind: LayerKindText, X: 0, Y: 0, W: 10, H: 10}},
@@ -317,5 +346,47 @@ func TestContentRefWithoutLayersMarshalsByteIdentical(t *testing.T) {
 	}
 	if len(back.Layers) != 1 || back.Layers[0].Text != "hi" {
 		t.Errorf("slide ContentRef layers did not round-trip: got %+v", back.Layers)
+	}
+}
+
+// TestLayerFetchesContentNamesEveryAssetBearingKind pins the predicate the two
+// content projections branch on when they derive a layer's fetch url.
+//
+// It asserts the predicate against the CLOSED KIND SET rather than against a
+// hand-written list of kinds, so adding a tenth kind to slideLayerKinds and
+// forgetting this file cannot leave the new kind silently unclassified: the loop
+// below will visit it, and the expectation it is checked against is the one
+// place a reader has to state whether the new kind carries an asset_ref.
+//
+// The failure this guards is not hypothetical and it is silent: a kind that
+// validation requires an asset_ref for, but that LayerFetchesContent does not
+// name, is a layer whose url is never minted — so ValidateSlideLayers rejects
+// the whole stack at serve time and the slide is dropped, with the screen simply
+// showing the next item and nothing anywhere explaining why.
+func TestLayerFetchesContentNamesEveryAssetBearingKind(t *testing.T) {
+	// The kinds whose substance is bytes in the content origin. Everything else
+	// is drawn from what the layer itself carries.
+	wantContentBearing := map[string]bool{
+		LayerKindImage: true,
+		LayerKindVideo: true,
+	}
+
+	for _, kind := range slideLayerKinds {
+		if got := LayerFetchesContent(kind); got != wantContentBearing[kind] {
+			t.Errorf("LayerFetchesContent(%q) = %v, want %v — every kind in the closed set must be deliberately classified", kind, got, wantContentBearing[kind])
+		}
+	}
+
+	// Every kind this predicate names must actually BE in the closed set: a
+	// predicate naming a kind validation rejects would be dead in one direction
+	// and misleading in the other.
+	for kind := range wantContentBearing {
+		if !isSlideLayerKind(kind) {
+			t.Errorf("LayerFetchesContent names %q, which is not a legal layer kind", kind)
+		}
+	}
+
+	if LayerFetchesContent("qr") {
+		t.Error("LayerFetchesContent accepted a kind that is not in the closed set")
 	}
 }

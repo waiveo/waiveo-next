@@ -53,15 +53,69 @@ type Playlist struct {
 // inlined copy per playlist could never do. One cast item expands, at projection
 // time, into ONE CONTENT ITEM PER SLIDE in authored order — a playlist item and
 // a played item are not one-to-one for this source.
+//
+// ContentType is what an `asset` item's bytes ARE — `image` or `video` — and it
+// is the field that makes a video schedulable at all.
+//
+// # Why a field, and why on the item
+//
+// Before it existed, an asset item projected to a content reference with no
+// content_type, which every consumer resolves as `image` (REL-061a's stated
+// default, applied by internal/relay/playerserver.SetServedProgram). So an
+// operator could upload an MP4, reference it from a playlist, get a 201, and
+// watch a screen try to draw it as a still Poster: a surface that accepted the
+// work and never performed it. Nothing anywhere in the authored rows carried
+// the answer, so no projection could have derived one.
+//
+// The alternative — SNIFFING the stored bytes at projection time — was
+// rejected. The content origin is content-addressed and deliberately holds no
+// metadata (no filename, no MIME type: internal/feeder/origin), the relay's own
+// re-resolution never has the bytes at all (it holds only the schedule section,
+// internal/relay/schedulehost), and the two projections MUST agree item for
+// item. A field the operator states is the only answer both sides can read, and
+// it is also the honest one: whether an asset should PLAY as a video is an
+// authoring decision, not a property recoverable from a container header.
+//
+// It is `omitempty` and only meaningful for `source: "asset"`. An item that
+// states none marshals with no `content_type` key at all — byte-identical to
+// every playlist authored before this field existed — and is projected as
+// `image`, this codebase's own historical implicit value. A `slide` or `cast`
+// item's content type is decided by its SOURCE, not by this field, so stating
+// one on those is a validation error rather than a silently ignored member (see
+// checkPlaylistItems).
 type PlaylistItem struct {
 	Source          string `json:"source"`
 	AssetRef        string `json:"asset_ref,omitempty"`
+	ContentType     string `json:"content_type,omitempty"`
 	PackID          string `json:"pack_id,omitempty"`
 	ContentID       string `json:"content_id,omitempty"`
 	DurationSeconds *int   `json:"duration_seconds,omitempty"`
 	Slide           *Slide `json:"slide,omitempty"`
 	CastID          string `json:"cast_id,omitempty"`
 }
+
+// PlaylistSourceAsset is the DAT-041 playlist-item `source` value whose content
+// is a single content-addressed asset — the only source PlaylistItem.ContentType
+// applies to.
+//
+// PlaylistContentTypeImage and PlaylistContentTypeVideo are that field's CLOSED
+// vocabulary, and they are byte-identical to player/1's own content-type floor
+// (PLY-014: every conformant player declares at least `image` and `video`) —
+// the value rides unchanged from this row, through both content projections,
+// onto the Lease content item's `type` a player switches its renderer on. There
+// is deliberately no translation step anywhere along that path, so these three
+// constants are the whole vocabulary.
+//
+// They are exported here, on the contract's reference implementation, for the
+// same reason PlaylistSourceCast is: three independent components must agree on
+// these strings — the row validator and BOTH projections — and the consequence
+// of one disagreeing is not a compile error but a screen quietly showing a
+// frozen first frame instead of a playing video.
+const (
+	PlaylistSourceAsset      = "asset"
+	PlaylistContentTypeImage = "image"
+	PlaylistContentTypeVideo = "video"
+)
 
 // PlaylistSourceCast is the DAT-041 playlist-item `source` value whose content
 // is an authored Cast row referenced by `cast_id`.
@@ -92,16 +146,38 @@ const PlaylistSourceCast = "cast"
 // The slides are the row's whole content: unlike a playlist, a cast references
 // no other row, so a cast is complete on its own and a screen playing one needs
 // nothing but the row and the content origin its image layers resolve against.
+//
+// DefaultDurationMS is the cast's OWN default dwell time in milliseconds,
+// `omitempty`. A slidecast's slides overwhelmingly share one timing, so without
+// it "hold every slide for eight seconds" is an edit of every slide, and every
+// slide added later silently gets whatever the player defaults to rather than
+// what the rest of the deck does. It sits third in the per-slide resolution
+// (DAT-042): the slide's own `duration_ms`, then the referencing playlist item's
+// `duration_seconds`, then this, then the player's default. Below the item
+// override deliberately — `duration_seconds` is a statement about one PLACEMENT
+// and this is a statement about slides that said nothing, so a cast-wide default
+// that outranked the override would make the override unreachable for casts.
+//
+// Template marks the cast a starting point rather than a document a screen
+// plays, `omitempty` so an ordinary cast marshals byte-identically to before
+// this field existed. A template is a FLAVOR of cast rather than a resource of
+// its own because it is exactly a cast nothing has scheduled yet: a separate
+// kind would duplicate the slide shape, the layer gate, the asset-reference
+// projection (the retention sweep must not reclaim a template's images either)
+// and the Studio itself, and the two copies would drift. validateReferences
+// refuses a playlist item that names one — see CAST_TEMPLATE_NOT_SCHEDULABLE.
 type Cast struct {
-	ID         string            `json:"id"`
-	ScopeNode  string            `json:"scope_node"`
-	Name       string            `json:"name"`
-	Slides     []CastSlide       `json:"slides"`
-	ExternalID string            `json:"external_id,omitempty"`
-	Labels     map[string]string `json:"labels,omitempty"`
-	Revision   int               `json:"revision"`
-	CreatedAt  int64             `json:"created_at"`
-	UpdatedAt  int64             `json:"updated_at"`
+	ID                string            `json:"id"`
+	ScopeNode         string            `json:"scope_node"`
+	Name              string            `json:"name"`
+	Slides            []CastSlide       `json:"slides"`
+	DefaultDurationMS int64             `json:"default_duration_ms,omitempty"`
+	Template          bool              `json:"template,omitempty"`
+	ExternalID        string            `json:"external_id,omitempty"`
+	Labels            map[string]string `json:"labels,omitempty"`
+	Revision          int               `json:"revision"`
+	CreatedAt         int64             `json:"created_at"`
+	UpdatedAt         int64             `json:"updated_at"`
 }
 
 // CastSlide is one slide of a cast (DAT-043): an id unique within its own cast,
@@ -121,6 +197,33 @@ type Cast struct {
 // item's `duration_seconds` override (DAT-042), and when neither is stated the
 // item carries no duration at all and the player applies its own default —
 // the same three-step resolution on both projections.
+// # Slide GROUPS are deliberately absent — a recorded decision, not an oversight
+//
+// The legacy authoring tool let a slide belong to a named group (a "sub-deck")
+// so a NAV element on one slide could jump the deck to another group. Adding
+// `group string` here would be trivial and would fit this shape perfectly, and
+// that is exactly the trap: nothing in this system would read it.
+//
+// A group is only meaningful once something can SELECT by it, and both of the
+// consumers that would are absent:
+//
+//   - the nav layer kind (parity row 1.5) — there is no wire.Layer kind that
+//     jumps, and no player behavior for one; and
+//   - a way to schedule one group — a playlist item names a whole cast
+//     (PlaylistItem.CastID) and BOTH projections expand every slide of it.
+//
+// So a `group` field today would be a member an operator could set, that would
+// round-trip perfectly, and that would change nothing on any screen — the
+// precise defect shape this rebuild keeps producing. The honest state is: not
+// modelled.
+//
+// When it IS built, the smallest coherent design is a pair, not a single field:
+// `CastSlide.Group` (an optional name) plus `PlaylistItem.CastGroup` (an
+// optional filter), with datamodel refusing a CastGroup naming no slide of the
+// referenced cast, and both castContent projections expanding only the matching
+// slides. That gives groups a real consumer WITHOUT waiting on a nav layer —
+// "schedule just the Lunch group of the Menu cast" — and the nav kind can then
+// jump between them later as a second increment.
 type CastSlide struct {
 	ID         string       `json:"id"`
 	DurationMS int64        `json:"duration_ms,omitempty"`
@@ -275,4 +378,43 @@ type CommandResult struct {
 	Command string `json:"command"`
 	OK      bool   `json:"ok"`
 	Error   string `json:"error,omitempty"`
+}
+
+// SlideDwellMS resolves ONE cast slide's dwell time in milliseconds, and is the
+// single implementation of DAT-042's four-step order:
+//
+//	slide.duration_ms → item duration_seconds → cast.default_duration_ms → 0
+//
+// itemDurationMS is the referencing playlist item's own `duration_seconds`
+// override ALREADY converted to milliseconds (0 when the item stated none). A
+// returned 0 means "state no duration at all" — the projected content item omits
+// the key (its `omitempty`) and the player applies its own default.
+//
+// The item override sits ABOVE the cast default deliberately (DAT-042 says so in
+// the same words): `duration_seconds` is a statement about one PLACEMENT of the
+// cast, `default_duration_ms` a statement about slides that said nothing, so a
+// cast-wide default outranking the override would make the override unreachable
+// for every cast item that exists.
+//
+// It is EXPORTED and lives here, beside the Cast and CastSlide shapes, because
+// two independent projections have to agree on it — the app-signed baseline
+// (internal/feeder/snapshot) and the relay's daypart re-resolver
+// (internal/relay/schedulehost) — and a screen must see the same dwell times
+// whether it is playing one or the other. Both previously carried a private copy
+// whose own doc admitted it was "byte-for-byte" the other's and that "a change
+// to it is visibly a change that must be made twice"; adding the cast default
+// was exactly that change, so the copies became one function instead. This is
+// the same single-source discipline wire.ValidateSlideLayers documents for the
+// layer rules the two projections also share.
+func SlideDwellMS(slide CastSlide, cast Cast, itemDurationMS int64) int64 {
+	if slide.DurationMS > 0 {
+		return slide.DurationMS
+	}
+	if itemDurationMS > 0 {
+		return itemDurationMS
+	}
+	if cast.DefaultDurationMS > 0 {
+		return cast.DefaultDurationMS
+	}
+	return 0
 }

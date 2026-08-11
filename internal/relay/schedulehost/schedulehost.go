@@ -46,10 +46,13 @@ const (
 	// re-map display_power itself (data-model/1 line 391).
 	leaseDisplayContent = "content"
 
-	// leaseContentTypeImage is the single player/1 content `type` (PLY-083)
-	// the first-photon carries, matching playerserver.SetServedProgram's own
-	// constant `image` annotation. A real per-item content-type lookup is a
-	// later concern.
+	// leaseContentTypeImage is the player/1 content `type` (PLY-083) an asset
+	// item that states NO content_type of its own is served as — REL-061a's
+	// stated default and this codebase's own historical implicit value, exactly
+	// the default playerserver.SetServedProgram applies to the app-signed
+	// baseline. An item that DOES state one is served as that type
+	// (leaseContentTypeFor), which is how a scheduled video plays instead of
+	// being drawn as a still.
 	leaseContentTypeImage = "image"
 
 	// leaseContentTypeSlide is the player/1 content `type` (PLY-083) of a native
@@ -318,7 +321,7 @@ func playlistContent(store datamodel.RowStore, playlistID string, sign contentSi
 				continue // a pack `playable` has no direct Lease content ref.
 			}
 			content = append(content, wire.LeaseContent{
-				Type:       leaseContentTypeImage,
+				Type:       leaseContentTypeFor(item.ContentType),
 				AssetRef:   item.AssetRef,
 				URL:        sign.urlFor(item.AssetRef),
 				DurationMS: durationMS,
@@ -330,6 +333,27 @@ func playlistContent(store datamodel.RowStore, playlistID string, sign contentSi
 		return content
 	}
 	return nil
+}
+
+// leaseContentTypeFor resolves an asset playlist item's authored `content_type`
+// (datamodel.PlaylistItem.ContentType) to the player/1 Lease content `type`
+// (PLY-083) this projection stamps on it: the stated value when there is one,
+// `image` when there is not.
+//
+// A Lease content item's `type` is REQUIRED on the wire, so unlike the app-side
+// projection — which carries the authored value verbatim, empty string
+// included, because a REL-061 ContentRef's own content_type is optional — this
+// side must substitute the default itself. That asymmetry is deliberate and it
+// is the reason this is a named function on both sides of one rule rather than
+// an inline expression: playerserver.SetServedProgram applies the IDENTICAL
+// default when converting the app-signed baseline, so a screen sees the same
+// `type` whether it is playing the signed program or the relay's own
+// re-resolution of a daypart boundary.
+func leaseContentTypeFor(authored string) string {
+	if authored == "" {
+		return leaseContentTypeImage
+	}
+	return authored
 }
 
 // resolveSlideLayers projects an authored slide item's layer stack into the
@@ -355,7 +379,12 @@ func resolveSlideLayers(slide *datamodel.Slide, sign contentSigner) ([]wire.Laye
 func resolveLayers(authored []wire.Layer, sign contentSigner) ([]wire.Layer, bool) {
 	layers := make([]wire.Layer, len(authored))
 	for i, l := range authored {
-		if l.Kind == wire.LayerKindImage {
+		// wire.LayerFetchesContent, not an inline `== LayerKindImage`: it names
+		// the content-bearing kinds (image and video) in ONE place, shared with
+		// the validator and with snapshot.resolveLayers, so a kind cannot be
+		// admitted by validation on one side and left url-less by a projection
+		// on the other — which would drop the whole slide at serve time.
+		if wire.LayerFetchesContent(l.Kind) {
 			l.URL = sign.urlFor(l.AssetRef)
 		}
 		layers[i] = l
@@ -380,9 +409,13 @@ func resolveLayers(authored []wire.Layer, sign contentSigner) ([]wire.Layer, boo
 // pins the two together.
 //
 // itemDurationMS is the referencing playlist item's own `duration_seconds`
-// override already converted to ms (0 when it stated none); a slide's own
-// `duration_ms` wins over it, and with neither the item carries no `duration_ms`
-// at all (omitempty) and the player applies its own default.
+// override already converted to ms (0 when it stated none); the resolution from
+// there — slide `duration_ms`, that override, the CAST's `default_duration_ms`,
+// then nothing (omitempty, the player's own default) — is datamodel.SlideDwellMS,
+// the SAME function internal/feeder/snapshot's projection calls. It is one
+// function rather than a copy on each side precisely because these two
+// projections must agree: a divergence here is a screen whose slide timings
+// change at a daypart boundary for no authored reason.
 //
 // An unknown cast id contributes nothing: a carried schedule section that does
 // not resolve is a degraded input, and the honest projection of absent content
@@ -405,26 +438,12 @@ func castContent(store datamodel.RowStore, castID string, itemDurationMS int64, 
 			out = append(out, wire.LeaseContent{
 				Type:       leaseContentTypeSlide,
 				Layers:     layers,
-				DurationMS: slideDurationMS(slide, itemDurationMS),
+				DurationMS: datamodel.SlideDwellMS(slide, c, itemDurationMS),
 			})
 		}
 		return out
 	}
 	return out
-}
-
-// slideDurationMS resolves one cast slide's dwell time: the slide's own
-// `duration_ms` when it states one, otherwise the referencing playlist item's
-// already-converted `duration_seconds` override, otherwise 0 (no `duration_ms`
-// key at all). Deliberately spelled as its own named rule on both sides —
-// snapshot.slideDurationMS is byte-for-byte this function — so a reader
-// comparing the two projections compares one rule rather than two inlined
-// expressions, and so a change to it is visibly a change that must be made twice.
-func slideDurationMS(slide datamodel.CastSlide, itemDurationMS int64) int64 {
-	if slide.DurationMS > 0 {
-		return slide.DurationMS
-	}
-	return itemDurationMS
 }
 
 // contentURL builds a schedule-resolved content item's Lease `url` from the

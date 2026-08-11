@@ -504,6 +504,11 @@ end sub
 '   image -> Poster of the already-fetched + asset_ref-verified local contentUri
 '            (Program.brs attached it; a slide image layer pays the identical
 '            integrity guarantee as a plain image item)
+'   video -> Video node of the already-fetched + asset_ref-verified local
+'            contentUri, positioned and sized like every other layer and LOOPED
+'            (see renderSlideVideo). It is grouped with the static kinds because
+'            nothing on this thread has to keep it up to date: the platform
+'            decodes it, so unlike a clock it needs no tick record and no timer
 '
 ' SELF-TICKING (a function of the current time, so this player computes them and
 ' recomputes them once a second on the shared slideClockTimer — the visible proof
@@ -599,6 +604,9 @@ sub renderSlide(layers as Object)
             p.uri = wvSlideStr(layer.contentUri)
             m.slideLayers.appendChild(p)
 
+        else if kind = "video"
+            m.slideLayers.appendChild(renderSlideVideo(layer, x, y, w, h))
+
         else
             ' Unknown kind — skip (see this sub's doc). Nothing is drawn for it.
             print "[player-v3] slide layer with unsupported kind '" + kind + "' skipped"
@@ -616,6 +624,51 @@ sub renderSlide(layers as Object)
         print "[player-v3] slide tick started (" + m.slideTicking.Count().toStr() + " live layer(s), 1s tick)"
     end if
 end sub
+
+' renderSlideVideo builds the positioned, playing Video node for a slide's
+' `video` layer — the only moving element a slide can carry. The bytes were
+' already fetched and asset_ref-verified by Program.brs, which attached the
+' local path as `contentUri` and the container format as `streamFormat`, so this
+' function makes no decision about how the content arrived.
+'
+' Three choices are worth stating because they are not the obvious defaults:
+'
+'   - It LOOPS. A slide advances on its own dwell time (castTimer), not on the
+'     video's end of stream — unlike a plain `video` cast item, where the end of
+'     stream IS the advance signal. A slide's video is one element among several
+'     and cannot be allowed to decide when the whole slide ends; without loop it
+'     would simply freeze on its last frame for the remainder of the dwell,
+'     which reads on a wall as a crashed screen. Looping makes a 5s clip fill a
+'     30s slide, which is what a signage operator means by putting it there.
+'   - It does NOT observe `state`. Nothing about this node drives sequencing, so
+'     an observer would exist only to log — and an observer on a node this scene
+'     destroys on every item change is one more thing that must be unhooked
+'     correctly. clearSlide's job is already to stop it; giving it nothing else
+'     to unwind is deliberate.
+'   - disableScreenSaver, matching the plain content Video node and composed
+'     video layers: free, video-only PLY-158 coverage while it plays. It is not
+'     the mechanism (IdleDefeatTask is) — it just costs nothing here.
+'
+' The node is returned rather than appended, so renderSlide's own loop stays the
+' single place layers are added to the group in z-order.
+function renderSlideVideo(layer as Object, x as Integer, y as Integer, w as Integer, h as Integer) as Object
+    v = CreateObject("roSGNode", "Video")
+    v.translation = [x, y]
+    v.width = w
+    v.height = h
+    v.disableScreenSaver = true
+
+    format = wvSlideStr(layer.streamFormat)
+    if format = "" then format = "mp4"
+    content = CreateObject("roSGNode", "ContentNode")
+    content.url = wvSlideStr(layer.contentUri)
+    content.streamFormat = format
+    content.live = false
+    v.content = content
+    v.loop = true
+    v.control = "play"
+    return v
+end function
 
 ' createSlideLabel builds a positioned Label for a text/clock layer, applying
 ' font_px (via a sizable system-font file), color, and align only when the layer
@@ -651,16 +704,29 @@ function createSlideLabel(text as String, layer as Object, x as Integer, y as In
     return lbl
 end function
 
-' clearSlide tears a slide down completely: it STOPS the tick timer first (so it
-' can never fire against a Label about to be removed), drops the tick records,
-' then removes every dynamically created slide child. The ORDER is the whole
-' point — stopping after the children were removed would leave one already-queued
-' fire able to touch a torn-down node. Called before rendering a new slide, on
-' switching to any other item kind, on a program-result error, and at scene
-' shutdown — the same total-teardown discipline clearComposed applies.
+' clearSlide tears a slide down completely, in an order that is the whole point:
+'
+'  1. STOP the tick timer, so it can never fire against a Label about to be
+'     removed. Stopping after the children were removed would leave one
+'     already-queued fire able to touch a torn-down node.
+'  2. Drop the tick records, so nothing holds a reference to those Labels.
+'  3. STOP every Video child. Removing a Video node does NOT stop its playback —
+'     the same "a thing outlives the node that owned it" hazard this player
+'     already learned from Task threads and from composed video layers
+'     (clearComposed does exactly this, for exactly this reason). A slide's
+'     video left running would keep decoding, and keep its audio playing,
+'     underneath whatever replaced it.
+'  4. Remove every dynamically created slide child.
+'
+' Called before rendering a new slide, on switching to any other item kind, on a
+' program-result error, and at scene shutdown — the same total-teardown
+' discipline clearComposed applies, now covering the same two resource classes.
 sub clearSlide()
     stopSlideClock()
     m.slideTicking = []
+    for each child in m.slideLayers.getChildren(-1, 0)
+        if child.subtype() = "Video" then child.control = "stop"
+    end for
     m.slideLayers.removeChildrenIndex(m.slideLayers.getChildCount(), 0)
     m.slideLayers.visible = false
 end sub

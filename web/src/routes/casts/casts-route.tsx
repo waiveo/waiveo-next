@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import { Copy, LayoutTemplate, Pencil, Plus, Trash2 } from "lucide-react";
+import { BookmarkPlus, Copy, LayoutTemplate, Pencil, Plus, Trash2 } from "lucide-react";
 import {
   Button,
   ConfirmModal,
@@ -25,6 +25,7 @@ import {
   type WaiveoApi,
 } from "@/api";
 import { newSlide } from "@/routes/studio/cast-model";
+import { BUILT_IN_TEMPLATES } from "./cast-templates";
 
 /**
  * The cast library — every authored slide document on this box, and the door
@@ -40,15 +41,95 @@ import { newSlide } from "@/routes/studio/cast-model";
  * cast IS its slides, the list already carries them, and a POST of the same
  * document under a new name is exactly what duplication means. Doing it here
  * keeps the API surface to plain CRUD.
+ *
+ * ── Templates ───────────────────────────────────────────────────────────────
+ * A template is a cast carrying `template: true` (`data-model/1` DAT-043), not a
+ * resource of its own — so this page reads ONE list and splits it, and both
+ * halves get the same editor, the same validation and the same health column for
+ * free. The split matters in both directions: a template must not clutter the
+ * list of things you can schedule, and a cast must not appear as a starting
+ * point. The server enforces the half that counts (a playlist item naming a
+ * template is refused), so this is presentation over a real rule rather than a
+ * convention only the console honours.
+ *
+ * Creating FROM a template is a plain `POST /casts` of its slides. That is why
+ * the built-ins (cast-templates.ts) can be program data rather than seeded rows:
+ * from the moment of creation the result is an ordinary cast, and nothing
+ * downstream has a template case at all.
  */
 
 const SCOPE_SELECTOR = "kind in (org,site,group)";
+
+/** The "Start from" value meaning an empty one-slide cast. A sentinel string
+ * rather than null so the select has one value type; the two prefixes below keep
+ * a built-in and a saved template from ever colliding on an id. */
+const SOURCE_BLANK = "blank";
+const SOURCE_BUILT_IN = "builtin:";
+const SOURCE_SAVED = "cast:";
+
+/** What a chosen starting point contributes to the create body. `slides` is
+ * undefined for a blank cast, which is the caller's signal to seed one. */
+interface StartingPoint {
+  defaultName: string;
+  slides?: CastSlide[];
+  defaultDurationMs?: number;
+}
+
+/**
+ * Resolve a "Start from" selection into the parts of a create body.
+ *
+ * A pure function of the selection, the saved templates already in hand and the
+ * clock, so what "create from the Event countdown template" produces is a
+ * question with an exact answer a test can assert — including its countdown's
+ * target, which is the one part that depends on when the button was pressed.
+ *
+ * An unrecognised selection falls back to blank rather than throwing: the only
+ * way to reach one is a saved template deleted in another tab between the list
+ * read and the click, and losing a name is a better answer than losing the
+ * click.
+ */
+function startingPoint(source: string, saved: Cast[], nowMs: number): StartingPoint {
+  if (source.startsWith(SOURCE_BUILT_IN)) {
+    const tpl = BUILT_IN_TEMPLATES.find((t) => t.id === source.slice(SOURCE_BUILT_IN.length));
+    if (tpl) {
+      return { defaultName: tpl.name, slides: tpl.build(nowMs), defaultDurationMs: tpl.defaultDurationMs };
+    }
+  }
+  if (source.startsWith(SOURCE_SAVED)) {
+    const tpl = saved.find((c) => c.id === source.slice(SOURCE_SAVED.length));
+    if (tpl) {
+      return {
+        defaultName: tpl.name,
+        // Deep-copied with fresh slide ids: the new cast is its own document and
+        // must not share layer objects with the template row still in the list.
+        slides: tpl.slides.map((sl) => ({ ...sl, id: crypto.randomUUID(), layers: sl.layers.map((l) => ({ ...l })) })),
+        // Spread rather than `?? undefined`: under exactOptionalPropertyTypes an
+        // optional member holding undefined is not the same as an absent one,
+        // and "the template had no default" must be the absent one.
+        ...(tpl.default_duration_ms ? { defaultDurationMs: tpl.default_duration_ms } : {}),
+      };
+    }
+  }
+  return { defaultName: "Untitled cast" };
+}
 
 /** A cast's slide count and its health, for the list. A cast whose slides do not
  * validate is one the projector will DROP — silently, on the TV — so the library
  * is the first place that has to say so. */
 function castHealth(slides: CastSlide[]): { slides: number; problems: number } {
   return { slides: slides.length, problems: validateCastSlides(slides).size };
+}
+
+/** The shared class for this page's text/select inputs. */
+const fieldClass =
+  "flex min-h-[38px] w-full min-w-0 rounded-input border border-border bg-transparent px-2 py-1 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring";
+
+/** The one-line explanation of a built-in starting point, or "" when the
+ * selection is blank or a saved template (whose explanation is its own name and
+ * the slides the operator built). */
+function describeSource(source: string): string {
+  if (!source.startsWith(SOURCE_BUILT_IN)) return "";
+  return BUILT_IN_TEMPLATES.find((t) => t.id === source.slice(SOURCE_BUILT_IN.length))?.description ?? "";
 }
 
 function reportProblem(context: string, err: unknown): void {
@@ -70,8 +151,19 @@ export default function CastsRoute({ api }: { api?: WaiveoApi }) {
   const [newOpen, setNewOpen] = useState(false);
   const [newName, setNewName] = useState("");
   const [newScope, setNewScope] = useState<string>("");
+  /** Which starting point "New cast" builds from. See `SOURCE_BLANK`. */
+  const [newSource, setNewSource] = useState<string>(SOURCE_BLANK);
   const [busy, setBusy] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<Cast | null>(null);
+  /** The cast a "Save as template" is being named for, and the name so far. */
+  const [templateFrom, setTemplateFrom] = useState<Cast | null>(null);
+  const [templateName, setTemplateName] = useState("");
+
+  // ONE list, split. A template is a cast with the flag set, so reading them
+  // separately would be two round trips for one answer — and would let the two
+  // halves disagree about a row that changed between them.
+  const templates = useMemo(() => (casts ?? []).filter((c) => c.template === true), [casts]);
+  const schedulable = useMemo(() => (casts ?? []).filter((c) => c.template !== true), [casts]);
 
   const load = useCallback(async () => {
     try {
@@ -109,13 +201,22 @@ export default function CastsRoute({ api }: { api?: WaiveoApi }) {
       // new slide is — and it carries a layer, because `CastSlide.layers` is
       // `minItems: 1` and a zero-layer slide is refused at the door (the primary
       // action of this whole page would fail with a red toast and no cast).
+      //
+      // A template simply supplies different slides. The POST is the same one,
+      // which is the point: nothing downstream of creation knows a template was
+      // involved, and the result is an ordinary schedulable cast.
+      const start = startingPoint(newSource, templates, Date.now());
       const created = await client.casts.create({
         scope_node: scope,
-        name: newName.trim() || "Untitled cast",
-        slides: [newSlide(crypto.randomUUID())],
+        name: newName.trim() || start.defaultName,
+        slides: start.slides ?? [newSlide(crypto.randomUUID())],
+        // Sent only when the starting point states one — a blank cast has no
+        // opinion about dwell time and must not have one invented for it.
+        ...(start.defaultDurationMs ? { default_duration_ms: start.defaultDurationMs } : {}),
       });
       setNewOpen(false);
       setNewName("");
+      setNewSource(SOURCE_BLANK);
       toast.success(`Created ${created.data.name}`);
       navigate(`/studio?id=${encodeURIComponent(created.data.id)}`);
     } catch (err) {
@@ -123,7 +224,55 @@ export default function CastsRoute({ api }: { api?: WaiveoApi }) {
     } finally {
       setBusy(false);
     }
-  }, [client, navigate, newName, newScope, scopes]);
+  }, [client, navigate, newName, newScope, newSource, scopes, templates]);
+
+  /** Open the create modal already pointed at a starting point. */
+  const openNew = useCallback(
+    (source: string) => {
+      setNewScope(scopes[0]?.id ?? "");
+      setNewSource(source);
+      setNewOpen(true);
+    },
+    [scopes],
+  );
+
+  /**
+   * Save an existing cast AS a template: a new row carrying the same slides with
+   * `template: true`.
+   *
+   * A COPY rather than a flag flipped on the original, and that is the whole
+   * design. Flipping would take a cast that screens are playing out of service
+   * the instant it succeeded — the server refuses a playlist item referencing a
+   * template, so it would in fact fail with a 422 the operator could do nothing
+   * about. "Save as template" means "keep this shape for next time", not "stop
+   * showing this", so it leaves the original exactly where it was.
+   */
+  const saveAsTemplate = useCallback(
+    async (cast: Cast, name: string) => {
+      setBusy(true);
+      try {
+        const created = await client.casts.create({
+          scope_node: cast.scope_node,
+          name: name.trim() || `${cast.name} template`,
+          // Fresh slide ids: the copy is its own document, and ids are only
+          // required to be unique WITHIN a cast, so reusing them would be legal
+          // but would make the two look like the same slides to anything
+          // comparing them.
+          slides: cast.slides.map((sl) => ({ ...sl, id: crypto.randomUUID(), layers: sl.layers.map((l) => ({ ...l })) })),
+          ...(cast.default_duration_ms ? { default_duration_ms: cast.default_duration_ms } : {}),
+          template: true,
+        });
+        toast.success(`Saved ${created.data.name} as a template`);
+        setTemplateFrom(null);
+        await load();
+      } catch (err) {
+        reportProblem("Couldn't save the template", err);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [client, load],
+  );
 
   const duplicate = useCallback(
     async (cast: Cast) => {
@@ -193,17 +342,7 @@ export default function CastsRoute({ api }: { api?: WaiveoApi }) {
           variant="hero"
           title="Casts"
           description="The slide documents your screens play. Open one in the Studio to lay out text, shapes, images and a live clock on the 1920×1080 canvas."
-          actions={
-            <Button
-              icon={Plus}
-              onClick={() => {
-                setNewScope(scopes[0]?.id ?? "");
-                setNewOpen(true);
-              }}
-            >
-              New cast
-            </Button>
-          }
+          actions={<Button icon={Plus} onClick={() => openNew(SOURCE_BLANK)}>New cast</Button>}
         />
 
         {loadError ? (
@@ -215,25 +354,15 @@ export default function CastsRoute({ api }: { api?: WaiveoApi }) {
         <DataTable
           label="Casts"
           columns={columns}
-          data={casts ?? []}
+          data={schedulable}
           loading={casts === null}
           onRowPress={(cast) => openStudio(cast)}
           emptyState={
             <EmptyState
               icon={LayoutTemplate}
               title="No casts yet"
-              description="A cast holds the slides a screen plays. Create one to open the Studio."
-              action={
-                <Button
-                  icon={Plus}
-                  onClick={() => {
-                    setNewScope(scopes[0]?.id ?? "");
-                    setNewOpen(true);
-                  }}
-                >
-                  New cast
-                </Button>
-              }
+              description="A cast holds the slides a screen plays. Start from a template, or create a blank one to open the Studio."
+              action={<Button icon={Plus} onClick={() => openNew(SOURCE_BLANK)}>New cast</Button>}
             />
           }
           // The whole ROW is pressable (it opens the Studio), so every action
@@ -266,6 +395,17 @@ export default function CastsRoute({ api }: { api?: WaiveoApi }) {
               <Button
                 size="icon"
                 variant="ghost"
+                icon={BookmarkPlus}
+                aria-label={`Save ${cast.name} as a template`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setTemplateFrom(cast);
+                  setTemplateName(`${cast.name} template`);
+                }}
+              />
+              <Button
+                size="icon"
+                variant="ghost"
                 icon={Trash2}
                 aria-label={`Delete ${cast.name}`}
                 onClick={(e) => {
@@ -276,6 +416,71 @@ export default function CastsRoute({ api }: { api?: WaiveoApi }) {
             </div>
           )}
         />
+        {/* Templates. A second table rather than a filter toggle on the first:
+            these are not casts you are choosing between, they are the shapes you
+            START from, and the actions on them are different ones (create-from,
+            not schedule). The built-ins are listed inside the create modal
+            rather than here, because they are program data with no row to act
+            on — nothing to rename, nothing to delete, always present. */}
+        <section aria-label="Templates" className="flex flex-col gap-3">
+          <div>
+            <h2 className="text-base font-semibold">Your templates</h2>
+            <p className="text-sm text-muted-foreground">
+              Starting points saved from a cast. A template is never scheduled itself — create a cast from it and
+              schedule that, so improving the template never changes what a screen is already showing.
+            </p>
+          </div>
+          <DataTable
+            label="Templates"
+            columns={columns}
+            data={templates}
+            loading={casts === null}
+            onRowPress={(cast) => openStudio(cast)}
+            emptyState={
+              <EmptyState
+                icon={BookmarkPlus}
+                title="No saved templates"
+                description="Save any cast as a template from its row, and it becomes a starting point for new casts. Four built-in templates are always available in the New cast dialog."
+              />
+            }
+            rowActions={(cast) => (
+              <div className="flex items-center justify-end gap-1">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  icon={Plus}
+                  aria-label={`New cast from ${cast.name}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openNew(`${SOURCE_SAVED}${cast.id}`);
+                  }}
+                >
+                  New cast from this
+                </Button>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  icon={Pencil}
+                  aria-label={`Open ${cast.name} in the Studio`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openStudio(cast);
+                  }}
+                />
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  icon={Trash2}
+                  aria-label={`Delete ${cast.name}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setPendingDelete(cast);
+                  }}
+                />
+              </div>
+            )}
+          />
+        </section>
       </div>
 
       <Modal
@@ -295,13 +500,50 @@ export default function CastsRoute({ api }: { api?: WaiveoApi }) {
         }
       >
         <div className="flex flex-col gap-4">
+          <FormField
+            label="Start from"
+            help="A template supplies the slides. You can change everything about them afterwards — the new cast is an ordinary cast from the moment it is created."
+          >
+            {(field) => (
+              <select
+                {...field}
+                className={fieldClass}
+                value={newSource}
+                onChange={(e) => setNewSource(e.target.value)}
+              >
+                <option value={SOURCE_BLANK}>Blank cast (one empty slide)</option>
+                <optgroup label="Built-in templates">
+                  {BUILT_IN_TEMPLATES.map((t) => (
+                    <option key={t.id} value={`${SOURCE_BUILT_IN}${t.id}`}>
+                      {t.name}
+                    </option>
+                  ))}
+                </optgroup>
+                {templates.length > 0 ? (
+                  <optgroup label="Your templates">
+                    {templates.map((t) => (
+                      <option key={t.id} value={`${SOURCE_SAVED}${t.id}`}>
+                        {t.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                ) : null}
+              </select>
+            )}
+          </FormField>
+          {/* What the chosen template IS. The names alone do not distinguish a
+              menu board from a welcome board for anyone who has not seen them,
+              and this is the last moment before a row exists. */}
+          {describeSource(newSource) ? (
+            <p className="text-[13px] text-muted-foreground">{describeSource(newSource)}</p>
+          ) : null}
           <FormField label="Cast name">
             {(field) => (
               <input
                 {...field}
                 type="text"
                 placeholder="Lobby loop"
-                className="flex min-h-[38px] w-full min-w-0 rounded-input border border-border bg-transparent px-2 py-1 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className={fieldClass}
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
               />
@@ -316,7 +558,7 @@ export default function CastsRoute({ api }: { api?: WaiveoApi }) {
               {(field) => (
                 <select
                   {...field}
-                  className="flex min-h-[38px] w-full min-w-0 rounded-input border border-border bg-transparent px-2 py-1 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className={fieldClass}
                   value={newScope}
                   onChange={(e) => setNewScope(e.target.value)}
                 >
@@ -330,6 +572,42 @@ export default function CastsRoute({ api }: { api?: WaiveoApi }) {
             </FormField>
           )}
         </div>
+      </Modal>
+
+      <Modal
+        title={templateFrom ? `Save "${templateFrom.name}" as a template` : "Save as a template"}
+        description="This copies the cast's slides into a new template. The cast itself keeps playing exactly as it is."
+        open={templateFrom !== null}
+        onOpenChange={(open) => {
+          if (!open) setTemplateFrom(null);
+        }}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setTemplateFrom(null)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={busy}
+              onClick={() => {
+                if (templateFrom) void saveAsTemplate(templateFrom, templateName);
+              }}
+            >
+              {busy ? "Saving…" : "Save template"}
+            </Button>
+          </>
+        }
+      >
+        <FormField label="Template name">
+          {(field) => (
+            <input
+              {...field}
+              type="text"
+              className={fieldClass}
+              value={templateName}
+              onChange={(e) => setTemplateName(e.target.value)}
+            />
+          )}
+        </FormField>
       </Modal>
 
       <ConfirmModal

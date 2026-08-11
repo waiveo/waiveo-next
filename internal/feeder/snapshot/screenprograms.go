@@ -113,7 +113,7 @@ func DeriveScreenPrograms(rows store.DesiredStateResult, contentBaseURL string, 
 			}
 			continue
 		}
-		programs = append(programs, programFor(screen, state, rowStore, contentBaseURL))
+		programs = append(programs, programFor(screen, state, rowStore, contentBaseURL, nowMs))
 	}
 
 	return programs, errs
@@ -142,22 +142,121 @@ func resolutionStore(rows store.DesiredStateResult) (datamodel.RowStore, []datam
 //     by item and in order (playlistContent). A `blank` display carries an empty
 //     content array — a screen told to show nothing has nothing to fetch, and
 //     REL-060's no-null rule means that array is empty, not absent.
-//   - priority is always `scheduled` (leasePriorityScheduled).
+//   - priority is `scheduled` (leasePriorityScheduled) for everything schedule
+//     resolution produces; only an ALERT override raises it (overrideProgram).
 //   - program_revision is derived from the projected program itself
 //     (programRevisionFor).
-func programFor(screen datamodel.Screen, state datamodel.EffectiveState, rowStore datamodel.RowStore, contentBaseURL string) wire.ScreenProgram {
-	content := []wire.ContentRef{}
-	if state.Display == displayContent {
-		content = playlistContent(rowStore, state.PlaylistID, contentBaseURL)
-	}
-	prog := wire.ScreenProgram{
-		ScreenID: screen.ID,
-		Priority: leasePriorityScheduled,
-		Display:  state.Display,
-		Content:  content,
+//
+// A screen carrying an applicable program override (DAT-004c/DAT-004d) skips
+// scheduling resolution's answer entirely — that is what an override IS — and is
+// projected by overrideProgram instead. The resolve above still runs for it, for
+// three reasons: a lapsed or absent override must fall through to it; Resolve is
+// also what surfaces an unresolvable effective tz, and the per-screen DAT-034
+// degrade must stay uniform (a screen whose effective tz will not resolve is
+// omitted from the section whether it is overridden or not, because the reason
+// it is omitted — nothing on this side may substitute box-local state — has
+// nothing to do with what an operator pushed).
+func programFor(screen datamodel.Screen, state datamodel.EffectiveState, rowStore datamodel.RowStore, contentBaseURL string, nowMs int64) wire.ScreenProgram {
+	var prog wire.ScreenProgram
+	if screen.Override.Applies(nowMs) {
+		prog = overrideProgram(screen, rowStore, contentBaseURL)
+	} else {
+		content := []wire.ContentRef{}
+		if state.Display == displayContent {
+			content = playlistContent(rowStore, state.PlaylistID, contentBaseURL)
+		}
+		prog = wire.ScreenProgram{
+			ScreenID: screen.ID,
+			Priority: leasePriorityScheduled,
+			Display:  state.Display,
+			Content:  content,
+		}
 	}
 	prog.ProgramRevision = programRevisionFor(prog)
 	return prog
+}
+
+// leasePriorityPreempt is the REL-061/PLY-108 `priority` an ALERT override's
+// program carries: the deliberately-invoked takeover class, which is what makes
+// a player interrupt the item it is mid-way through instead of waiting for a
+// natural boundary. DAT-004d assigns it to `mode: "alert"` and only to that —
+// a `play` override is an ordinary content change and carries `scheduled`.
+//
+// It is the correct CLASSIFICATION rather than a convenient marker, and it does
+// real work at two places downstream. A player treats a preempt Lease as an
+// immediate interrupt rather than waiting for the current item to finish
+// (PLY-100/101), which is what makes "now" mean now on the screen and not at the
+// end of a five-minute slide. And the relay refuses to let a same-generation
+// schedule resolution overwrite a preempt program (playerserver.SetProgram's own
+// priority fence) — without which the relay's 30-second re-resolve tick would
+// quietly put the schedule back within half a minute of every alert.
+//
+// That fence is a SECOND guard, not the only one: Pinned below is what stops the
+// same reversion for a `play` override, which is deliberately `scheduled`
+// priority and therefore invisible to a priority comparison. The two guard
+// different moments and neither subsumes the other.
+const leasePriorityPreempt = "preempt"
+
+// overrideProgram projects a screen whose program override applies (DAT-004d).
+//
+// The override is the app peer's statement about ONE screen, so it produces a
+// complete program rather than a modifier on the resolved one: `display:
+// content`, the override's own content, and a priority set by its mode. It is
+// marked Pinned, which is the relay's signal not to replace it with a local
+// schedule re-resolution (DAT-004d, carried as wire.ScreenProgram.Pinned) —
+// without that, the one deployment shape
+// where the relay CAN attribute a scope node's resolution to a screen (a single
+// governed node, a single screen) would quietly revert every override at the
+// next resolver tick. That is precisely the "surface accepts work it never
+// performs" failure: the write lands, the projection is right, and the screen
+// still shows yesterday's playlist.
+//
+// display is unconditionally `content`, and that is the point of the operation:
+// an operator pushing a cast to a screen is saying "show this", which is not a
+// statement a daypart's display_power can be allowed to override — a screen the
+// schedule had blanked is precisely the screen someone needs to put an emergency
+// notice on. (What the SCREEN then does with a preempt Lease arriving over an
+// active blank is player/1's own PLY-104 question, decided there, not here.)
+//
+// A `cast_id` naming no cast contributes no content (castContent's own degrade,
+// DAT-004c), and the program is still marked as an override: the screen shows
+// nothing rather than silently reverting to its schedule, which is the honest
+// report of "you pinned content that is no longer there". Reaching that state at
+// all is meant to be impossible — the surface imposing the override refuses a
+// cast that does not exist (DAT-004c) — so it is a visible wrongness of last
+// resort, not a routine path.
+//
+// It takes no duration override: the item-level `duration_seconds` a playlist
+// item can carry (DAT-042) belongs to the playlist item, and an override names a
+// cast directly with no item to carry one — so each slide's own `duration_ms`
+// governs, falling back to the cast's `default_duration_ms` and then the
+// player's own default (slideDurationMS with a zero item duration).
+func overrideProgram(screen datamodel.Screen, rowStore datamodel.RowStore, contentBaseURL string) wire.ScreenProgram {
+	o := screen.Override
+	priority := leasePriorityScheduled
+	if o.Mode == datamodel.ScreenOverrideModeAlert {
+		priority = leasePriorityPreempt
+	}
+	content := []wire.ContentRef{}
+	switch {
+	case o.CastID != "":
+		content = castContent(rowStore, o.CastID, 0, contentBaseURL)
+	case o.Message != "":
+		if layers, ok := resolveLayers(wire.AlertSlideLayers(o.Message), contentBaseURL); ok {
+			content = append(content, wire.ContentRef{
+				ContentType: contentTypeSlide,
+				Layers:      layers,
+				ExpiresAt:   contentURLExpiresAt,
+			})
+		}
+	}
+	return wire.ScreenProgram{
+		ScreenID: screen.ID,
+		Priority: priority,
+		Display:  displayContent,
+		Content:  content,
+		Pinned:   true,
+	}
 }
 
 // displayContent is the REL-061/PLY-093 `display` value naming a powered screen
@@ -186,13 +285,15 @@ const displayContent = "content"
 // as seconds*1000 when present and non-zero (REL-061a); an item with no override
 // carries no `duration_ms` key at all, per that field's `omitempty`.
 //
-// For an `asset` item `content_type` is deliberately left UNSET: REL-061a
-// defines an absent content_type as meaning `image` — this codebase's own
-// historical implicit value, applied by internal/relay/playerserver.
-// SetServedProgram — and a data-model/1 asset playlist item carries no
-// content-type column to source a better answer from. A `slide` item, by
-// contrast, is a distinct item KIND, so it states `content_type: "slide"`
-// explicitly — a fact its authored `source` field does contain.
+// For an `asset` item `content_type` is the item's OWN authored value
+// (datamodel.PlaylistItem.ContentType), carried through unchanged — which is
+// what makes an uploaded video playable rather than a still frame. An item that
+// states none carries none, and REL-061a defines an absent content_type as
+// meaning `image` (this codebase's own historical implicit value, applied by
+// internal/relay/playerserver.SetServedProgram), so every playlist authored
+// before that field existed projects byte-identically to before. A `slide`
+// item, by contrast, is a distinct item KIND, so it states `content_type:
+// "slide"` explicitly — a fact its authored `source` field does contain.
 //
 // The `url` grammar (`<base>/content/<hex>`) and the empty-origin degrade are the
 // same ones every content-serving path in this codebase uses (REL-061/140): with
@@ -240,10 +341,20 @@ func playlistContent(rowStore datamodel.RowStore, playlistID string, contentBase
 				continue // a pack `playable` has no direct content reference.
 			}
 			content = append(content, wire.ContentRef{
-				AssetRef:   item.AssetRef,
-				URL:        contentURL(contentBaseURL, item.AssetRef),
-				ExpiresAt:  contentURLExpiresAt,
-				DurationMS: durationMS,
+				AssetRef: item.AssetRef,
+				URL:      contentURL(contentBaseURL, item.AssetRef),
+				// The item's own authored `content_type` (DAT-041), carried
+				// VERBATIM — including the empty string an item that states none
+				// leaves, which REL-061a defines as `image`. Carrying it rather
+				// than normalizing keeps this projection a pure function of the
+				// authored row: every playlist written before the field existed
+				// still marshals with no `content_type` key and therefore still
+				// hashes to the same snapshot, while a `video` item reaches the
+				// relay as a video and the player plays it instead of trying to
+				// draw an MP4 as a Poster.
+				ContentType: item.ContentType,
+				ExpiresAt:   contentURLExpiresAt,
+				DurationMS:  durationMS,
 			})
 		}
 		return content
@@ -259,14 +370,15 @@ func playlistContent(rowStore datamodel.RowStore, playlistID string, contentBase
 // point — an operator schedules one cast and a screen plays all of its slides.
 //
 // itemDurationMS is the referencing playlist item's own `duration_seconds`
-// override already converted to ms (0 when it stated none). Each slide's own
-// `duration_ms` wins over it, and when neither is stated the reference carries
-// no `duration_ms` at all (the field's omitempty) and the player applies its own
-// default. That three-step resolution is stated in ONE sentence in
-// datamodel.CastSlide's doc and implemented identically here and in
-// internal/relay/schedulehost, because a screen must see the same dwell times
-// whether it is playing the app-signed baseline or the relay's re-resolution of
-// a daypart boundary.
+// override already converted to ms (0 when it stated none). What each slide's
+// dwell time resolves to from there — slide `duration_ms`, then that override,
+// then the CAST's own `default_duration_ms`, then nothing at all (the field's
+// omitempty, and the player's own default) — is datamodel.SlideDwellMS's rule,
+// called rather than restated. This side and internal/relay/schedulehost used to
+// hold a private copy each, whose doc admitted they were byte-for-byte equal; a
+// screen must see the same dwell times whether it is playing the app-signed
+// baseline or the relay's re-resolution of a daypart boundary, and one function
+// is the only way that stays true.
 //
 // An unknown cast id contributes nothing rather than a placeholder. The store
 // refuses a playlist naming a cast that does not exist and refuses the deletion
@@ -297,26 +409,12 @@ func castContent(rowStore datamodel.RowStore, castID string, itemDurationMS int6
 				ContentType: contentTypeSlide,
 				Layers:      layers,
 				ExpiresAt:   contentURLExpiresAt,
-				DurationMS:  slideDurationMS(slide, itemDurationMS),
+				DurationMS:  datamodel.SlideDwellMS(slide, c, itemDurationMS),
 			})
 		}
 		return out
 	}
 	return out
-}
-
-// slideDurationMS resolves one cast slide's dwell time: the slide's own
-// `duration_ms` when it states one, otherwise the referencing playlist item's
-// already-converted `duration_seconds` override, otherwise 0 (no `duration_ms`
-// key at all — the player's own default). Shared by nothing on this side, but
-// spelled as its own function because internal/relay/schedulehost implements the
-// identical resolution and a reader comparing the two should be comparing one
-// named rule, not two inlined expressions.
-func slideDurationMS(slide datamodel.CastSlide, itemDurationMS int64) int64 {
-	if slide.DurationMS > 0 {
-		return slide.DurationMS
-	}
-	return itemDurationMS
 }
 
 // sourceSlide is the data-model/1 playlist-item `source` value (DAT-041) whose
@@ -358,12 +456,20 @@ func resolveSlideLayers(slide *datamodel.Slide, contentBaseURL string) ([]wire.L
 func resolveLayers(authored []wire.Layer, contentBaseURL string) ([]wire.Layer, bool) {
 	layers := make([]wire.Layer, len(authored))
 	for i, l := range authored {
-		if l.Kind == wire.LayerKindImage {
-			// An image layer's URL is derived from the content origin, never
-			// authored — the same content-URL grammar and empty-origin degrade a
-			// plain asset item uses (contentURL). An empty origin leaves the URL
-			// empty, which ValidateSlideLayers then rejects, so a slide that could
-			// not fetch its image is dropped rather than served with a dead URL.
+		if wire.LayerFetchesContent(l.Kind) {
+			// A content-bearing layer's URL — an image's or a video's,
+			// wire.LayerFetchesContent naming the pair once — is derived from the
+			// content origin, never authored: the same content-URL grammar and
+			// empty-origin degrade a plain asset item uses (contentURL). An empty
+			// origin leaves the URL empty, which ValidateSlideLayers then rejects,
+			// so a slide that could not fetch its bytes is dropped rather than
+			// served with a dead URL.
+			//
+			// Asking the shared predicate rather than testing for `image` inline
+			// is what makes adding a content-bearing kind a one-line change in
+			// wire instead of a change that has to be remembered here AND in
+			// internal/relay/schedulehost — the two projections a screen must
+			// never see disagree.
 			l.URL = contentURL(contentBaseURL, l.AssetRef)
 		}
 		layers[i] = l

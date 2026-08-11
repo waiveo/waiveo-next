@@ -1,10 +1,20 @@
 import { useEffect, useState } from "react";
 import { AlertTriangle, ImagePlus, X } from "lucide-react";
 import { Button, FormField, KitIcon } from "@/components/kit";
-import { SLIDE_CANVAS_HEIGHT, SLIDE_CANVAS_WIDTH, type LayerAlign, type SlideLayer, type SlideProblem } from "@/api";
+import {
+  ENTITY_STATE_TOKEN,
+  SLIDE_CANVAS_HEIGHT,
+  SLIDE_CANVAS_WIDTH,
+  WEATHER_TOKENS,
+  isLabelKind,
+  type Entity,
+  type LayerAlign,
+  type SlideLayer,
+  type SlideProblem,
+} from "@/api";
 import { cn } from "@/lib/utils";
 import type { LayerPatch } from "./cast-model";
-import { CLOCK_PRESETS } from "./go-time-layout";
+import { CLOCK_PRESETS, COUNTDOWN_PRESETS, DATE_PRESETS } from "./go-time-layout";
 import { describeLayer } from "./slide-canvas";
 
 /**
@@ -45,6 +55,11 @@ export interface PropertiesPanelProps {
   /** The current slide's hold time, and how to change it. */
   durationMs: number | undefined;
   onDurationChange: (durationMs: number | null) => void;
+  /** Every entity this box knows about, for an `entity` widget's subject picker.
+   * Read from GET /entities by the host route — REAL rows, because an entity id
+   * typed by hand is one typo away from a widget that shows a dash forever and
+   * never says why. Empty while the read is in flight, or if it failed. */
+  entities: Entity[];
 }
 
 export function PropertiesPanel({
@@ -55,6 +70,7 @@ export function PropertiesPanel({
   onPickImage,
   durationMs,
   onDurationChange,
+  entities,
 }: PropertiesPanelProps) {
   const slideProblems = problems.filter((p) => p.index === null);
   const layerProblems = layerIndex === null ? [] : problems.filter((p) => p.index === layerIndex);
@@ -160,7 +176,60 @@ export function PropertiesPanel({
             </>
           ) : null}
 
-          {layer.kind === "text" || layer.kind === "clock" ? (
+          {layer.kind === "date" ? (
+            <FormatField
+              label="Date format"
+              help="The same Go reference-time layout a clock uses — a date is a time format on this wire, so the screen runs both through one formatter."
+              value={layer.text ?? ""}
+              presets={DATE_PRESETS}
+              onCommit={(text) => onPatch({ text })}
+            />
+          ) : null}
+
+          {layer.kind === "countdown" ? (
+            <>
+              <CountdownTargetField
+                targetMs={layer.target_ms}
+                onCommit={(target_ms) => onPatch({ target_ms })}
+              />
+              <FormatField
+                label="Remaining-time format"
+                help="DD/D days, HH/H hours, MM/M minutes, SS/S seconds — the doubled form zero-padded. Anything else is drawn literally. This is NOT a clock layout: a duration has no hour of day."
+                value={layer.text ?? ""}
+                presets={COUNTDOWN_PRESETS}
+                onCommit={(text) => onPatch({ text })}
+              />
+            </>
+          ) : null}
+
+          {layer.kind === "weather" ? (
+            <TemplateField
+              label="Display template"
+              help={`The box substitutes ${WEATHER_TOKENS.join(", ")} and draws the rest exactly as typed. A token you misspell shows as itself rather than blanking the widget.`}
+              value={layer.text ?? ""}
+              tokens={WEATHER_TOKENS}
+              onCommit={(text) => onPatch({ text })}
+            />
+          ) : null}
+
+          {layer.kind === "entity" ? (
+            <>
+              <EntityPicker
+                entityId={layer.entity_id}
+                entities={entities}
+                onCommit={(entity_id) => onPatch({ entity_id })}
+              />
+              <TemplateField
+                label="Display template"
+                help={`The box substitutes ${ENTITY_STATE_TOKEN} with the entity's current state. Leave it as just the token to show the state alone.`}
+                value={layer.text ?? ""}
+                tokens={[ENTITY_STATE_TOKEN]}
+                onCommit={(text) => onPatch({ text })}
+              />
+            </>
+          ) : null}
+
+          {isLabelKind(layer.kind) ? (
             <>
               <NumberField
                 label="Font size (px)"
@@ -234,6 +303,248 @@ export function PropertiesPanel({
         </>
       )}
     </section>
+  );
+}
+
+/**
+ * A free-text FORMAT field with a preset dropdown beside it — the shape every
+ * generated kind's format control takes (`clock`, `date`, `countdown`).
+ *
+ * Both halves are needed and neither is redundant. The presets are what make the
+ * grammar discoverable: nobody guesses that a Go layout spells "the day" as `2`,
+ * or that a countdown spells hours `HH` and not `15`. The free field is what
+ * makes the grammar REACHABLE — the layouts are open sets, and a dropdown alone
+ * would cap the editor at whatever list happened to ship.
+ *
+ * The select shows "Custom…" whenever the current value is not one of the
+ * presets, so an operator can always see which of the two they are in.
+ */
+function FormatField({
+  label,
+  help,
+  value,
+  presets,
+  onCommit,
+}: {
+  label: string;
+  help: string;
+  value: string;
+  presets: ReadonlyArray<{ layout: string; label: string }>;
+  onCommit: (layout: string) => void;
+}) {
+  return (
+    <>
+      <FormField label={label} help={help}>
+        {(field) => (
+          <input
+            {...field}
+            type="text"
+            className={inputClass}
+            value={value}
+            onChange={(e) => onCommit(e.target.value)}
+          />
+        )}
+      </FormField>
+      <FormField label={`${label} preset`}>
+        {(field) => (
+          <select
+            {...field}
+            className={inputClass}
+            value={presets.some((p) => p.layout === value) ? value : ""}
+            onChange={(e) => {
+              if (e.target.value) onCommit(e.target.value);
+            }}
+          >
+            <option value="">Custom…</option>
+            {presets.map((p) => (
+              <option key={p.layout} value={p.layout}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+        )}
+      </FormField>
+    </>
+  );
+}
+
+/**
+ * A substitution TEMPLATE field (`weather`, `entity`) with one-click token
+ * insertion.
+ *
+ * A template is not a format string the operator picks from a list — it is
+ * prose with holes in it ("Now: {temp}° {cond}"), so the useful affordance is
+ * appending a token to whatever they are writing rather than replacing the
+ * whole value. The tokens are a closed set the BOX substitutes; anything else,
+ * including a misspelt token, is drawn literally, which is why the buttons
+ * matter: a widget showing "{tmp}" on a wall is a typo nobody sees for a week.
+ */
+function TemplateField({
+  label,
+  help,
+  value,
+  tokens,
+  onCommit,
+}: {
+  label: string;
+  help: string;
+  value: string;
+  tokens: readonly string[];
+  onCommit: (template: string) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <FormField label={label} help={help}>
+        {(field) => (
+          <input
+            {...field}
+            type="text"
+            className={inputClass}
+            value={value}
+            onChange={(e) => onCommit(e.target.value)}
+          />
+        )}
+      </FormField>
+      <div role="group" aria-label={`${label} tokens`} className="flex flex-wrap gap-1">
+        {tokens.map((token) => (
+          <Button
+            key={token}
+            size="sm"
+            variant="ghost"
+            aria-label={`Insert ${token}`}
+            onClick={() => onCommit(value + token)}
+          >
+            <span className="font-mono text-[12px]">{token}</span>
+          </Button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A countdown's target instant, edited as a LOCAL date and time and stored as
+ * Unix epoch milliseconds.
+ *
+ * The conversion is the whole job and it goes only one way safely.
+ * `<input type="datetime-local">` speaks a timezone-less wall time, which is
+ * what an operator means ("the doors open at 7pm"); the wire needs an ABSOLUTE
+ * instant, because the player subtracts its own clock from it and must not have
+ * to know the authoring timezone. `new Date("YYYY-MM-DDTHH:mm")` resolves such a
+ * string in the RUNTIME's local zone, which is the author's, so the round trip
+ * is faithful for anyone authoring in the site's own timezone — and any other
+ * reading of a wall time would be a guess.
+ *
+ * A value that does not parse commits NOTHING. Clearing the field mid-edit
+ * otherwise produces NaN, and NaN reaches the wire as a target of zero, which
+ * the server refuses and which renders as a countdown that has already finished.
+ */
+function CountdownTargetField({
+  targetMs,
+  onCommit,
+}: {
+  targetMs: number | undefined;
+  onCommit: (targetMs: number) => void;
+}) {
+  return (
+    <FormField
+      label="Counts down to"
+      help="Your local date and time. It is stored as an absolute instant, so the screen counts down correctly whatever clock it has."
+    >
+      {(field) => (
+        <input
+          {...field}
+          type="datetime-local"
+          className={inputClass}
+          value={targetMs ? toDatetimeLocal(targetMs) : ""}
+          onChange={(e) => {
+            const ms = Date.parse(e.target.value);
+            if (Number.isFinite(ms) && ms > 0) onCommit(ms);
+          }}
+        />
+      )}
+    </FormField>
+  );
+}
+
+/** Format an epoch-ms instant as the `YYYY-MM-DDTHH:mm` a datetime-local input
+ * reads — in LOCAL time, which is why this is hand-built rather than
+ * `toISOString().slice(0,16)` (that would silently shift the displayed time by
+ * the UTC offset and an operator would "correct" it into the wrong instant). */
+function toDatetimeLocal(ms: number): string {
+  const d = new Date(ms);
+  const p2 = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}T${p2(d.getHours())}:${p2(d.getMinutes())}`;
+}
+
+/**
+ * An `entity` widget's SUBJECT, chosen from the entities this box actually has.
+ *
+ * A select over real rows rather than a text field, because the failure of a
+ * wrong id is completely silent: the box resolves an unknown entity to an em
+ * dash, exactly as it resolves a known one whose state it has not observed yet,
+ * so a typo and a device that is merely quiet look identical on the wall. The
+ * only place that difference is visible is here, at the moment of choosing.
+ *
+ * When the list is empty the control degrades to a plain text input rather than
+ * to an empty select: an operator authoring a slide before their devices are
+ * adopted should still be able to write the id down, and an empty dropdown with
+ * no explanation is the worse dead end. The list also carries each entity's
+ * last-observed state, which is what tells an operator they picked the TV they
+ * meant rather than its neighbour.
+ */
+function EntityPicker({
+  entityId,
+  entities,
+  onCommit,
+}: {
+  entityId: string | undefined;
+  entities: Entity[];
+  onCommit: (entityId: string) => void;
+}) {
+  const known = entities.some((e) => e.id === entityId);
+  return (
+    <FormField
+      label="Entity"
+      help={
+        entities.length === 0
+          ? "No entities are known to this box yet — adopt a device on the Devices page, or type an id if you know it."
+          : "The device whose live state this widget shows."
+      }
+    >
+      {(field) =>
+        entities.length === 0 ? (
+          <input
+            {...field}
+            type="text"
+            className={inputClass}
+            placeholder="Entity id"
+            value={entityId ?? ""}
+            onChange={(e) => onCommit(e.target.value.trim())}
+          />
+        ) : (
+          <select
+            {...field}
+            className={inputClass}
+            value={entityId ?? ""}
+            onChange={(e) => onCommit(e.target.value)}
+          >
+            <option value="">Choose an entity…</option>
+            {/* An id the list does not contain is still shown as the selected
+                option — otherwise opening a slide authored before a device was
+                removed would silently reset the widget to "choose one" and the
+                operator would save that reset without noticing. */}
+            {entityId && !known ? <option value={entityId}>{entityId} (not on this box)</option> : null}
+            {entities.map((e) => (
+              <option key={e.id} value={e.id}>
+                {e.name}
+                {e.state ? ` — ${e.state}` : ""}
+              </option>
+            ))}
+          </select>
+        )
+      }
+    </FormField>
   );
 }
 

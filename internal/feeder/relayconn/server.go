@@ -173,6 +173,59 @@ func WithCandidateSink(sink CandidateSink) Option {
 	return func(s *Server) { s.candidates = sink }
 }
 
+// ScreenStatusSink receives one relay's full `screen.status` report — what each
+// screen behind that relay has been observed doing (parity row 5.8,
+// wire/screenstatus.go) — and takes it as REPLACING that relay's prior view.
+// internal/app/screens.Registry satisfies it directly via ApplyScreenStatus,
+// the identical method signature with no adapter, so this package depends on the
+// intake CAPABILITY rather than on the read model's concrete type.
+//
+// relayID is the connection's AUTHENTICATED identity (the mTLS
+// client-certificate identity, REL-041/150), never the `relay_id` the frame
+// asserts. It is the same rule CandidateSink states, for the same reason and
+// with the same stakes: a report is a full-set REPLACE, so a relay able to name
+// another relay here could blank that relay's whole screen view — making a live
+// wall read as never-checked-in, which is precisely the alarm this surface
+// exists to raise honestly.
+//
+// takenAtMs is the app peer's OWN clock reading at the instant the report was
+// received. It is supplied by the caller rather than read inside the sink so the
+// whole report is anchored to one instant, and so the sink can be driven from a
+// test with a fixed clock. Every age in the body is relative to the relay's own
+// clock at report time (wire/screenstatus.go); this is the anchor the read model
+// adds its own elapsed time to, which is what keeps the answer skew-free.
+//
+// An error means the report was refused; the connection layer answers the relay
+// with a typed refusal and the sink's prior view is expected to be intact.
+type ScreenStatusSink interface {
+	ApplyScreenStatus(relayID string, takenAtMs int64, screens []wire.ScreenStatusEntry) error
+
+	// ForgetScreens drops everything a relay reported, called when that relay's
+	// enrollment is REVOKED — not when its connection merely drops. Exactly
+	// CandidateSink.Forget's distinction and for exactly its reason: a relay that
+	// reconnects a second later must not have its screens blink out in between,
+	// while a REVOKED relay no longer speaks for the site at all and leaving its
+	// last report serving the console would leave it speaking for the site anyway.
+	ForgetScreens(relayID string)
+}
+
+// WithScreenStatusSink wires the intake a relay's `screen.status` reports are
+// applied to. Optional, with the same accepted-and-dropped degrade
+// WithCandidateSink documents: a deployment running no screen read model is
+// conformant, and gets REL-004's additive tolerance.
+//
+// nowMs is the app peer's clock, read once per report to anchor it (see
+// ScreenStatusSink). It is required alongside the sink rather than defaulted to
+// time.Now inside this package, because a package that silently reads the wall
+// clock cannot be tested for the one property this whole surface rests on —
+// that an age reported later is larger.
+func WithScreenStatusSink(sink ScreenStatusSink, nowMs func() int64) Option {
+	return func(s *Server) {
+		s.screenStatus = sink
+		s.screenStatusNow = nowMs
+	}
+}
+
 // RevocationCheck reports whether the certificate with this serial, issued
 // to relayID, has been revoked — enroll.Server.IsRevoked. REL-016: the
 // check runs at EVERY connection attempt, not only at issuance time; again
@@ -194,6 +247,8 @@ type Server struct {
 	revoked            RevocationCheck
 	candidates         CandidateSink
 	redemptions        RedemptionSink
+	screenStatus       ScreenStatusSink
+	screenStatusNow    func() int64
 	site               hello.SiteBinding
 	implementedMinors  []string
 	recognizedFeatures []string
@@ -822,6 +877,10 @@ func (s *Server) serve(req *http.Request, ws *websocket.Conn) {
 			if err := s.handleDeviceCandidates(conn, f, relayID); err != nil {
 				return
 			}
+		case wire.FrameTypeScreenStatus:
+			if err := s.handleScreenStatus(conn, f, relayID); err != nil {
+				return
+			}
 		case wire.FrameTypePairingRedeemed:
 			if err := s.handlePairingRedeemed(conn, f, relayID); err != nil {
 				return
@@ -878,6 +937,37 @@ func (s *Server) forgetCandidates(relayID string) {
 	if s.candidates != nil {
 		s.candidates.Forget(relayID)
 	}
+	// The screen view goes with it, and for the identical reason: a revoked
+	// relay's last screen report would otherwise keep a console reporting live
+	// screens on behalf of a relay this site has disowned. Both are dropped from
+	// the same call site so neither can be forgotten when the other is.
+	if s.screenStatus != nil {
+		s.screenStatus.ForgetScreens(relayID)
+	}
+}
+
+// handleScreenStatus applies one `screen.status` report to the wired intake
+// (parity row 5.8). It returns a non-nil error only when the connection itself
+// must end (a failed write); a refused report is answered with a typed error
+// frame and the connection continues — the same posture handleDeviceCandidates
+// takes, and for its reason: a bad report is not a protocol-ordering violation.
+//
+// relayID is the connection's AUTHENTICATED identity, never f.RelayID. See
+// ScreenStatusSink's own doc for why that is load-bearing here specifically.
+func (s *Server) handleScreenStatus(conn *serverConn, f wire.Frame, relayID string) error {
+	var body wire.ScreenStatusBody
+	if err := f.DecodeBody(&body); err != nil {
+		return conn.send(wire.NewErrorFrame(f.ID, f.TraceID, relayID,
+			"MALFORMED_MESSAGE", "screen.status body did not decode"))
+	}
+	if s.screenStatus == nil || s.screenStatusNow == nil {
+		return nil // no read model wired: accepted and dropped (REL-004)
+	}
+	if err := s.screenStatus.ApplyScreenStatus(relayID, s.screenStatusNow(), body.Screens); err != nil {
+		return conn.send(wire.NewErrorFrame(f.ID, f.TraceID, relayID,
+			"MALFORMED_MESSAGE", "screen.status report refused: "+err.Error()))
+	}
+	return nil
 }
 
 // handleDeviceCandidates applies one `device.candidates` report to the wired

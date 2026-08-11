@@ -202,6 +202,16 @@ rules/1 defines the complete automation vocabulary — every trigger, condition,
 
 **[RUL-232]** A `pack_action` whose referenced entry is `execution: relay-command` MUST be dispatched directly as a device command, never through the pack's runtime action handler (`ctx/1` CTX-112 states this same routing exception from the host side); one whose entry is `execution: app-service` MUST be dispatched through the pack's runtime action handler exactly as a management-API invocation of the same action would be (`ctx/1` CTX-110).
 
+### Actions: signage (app-coupled)
+
+**[RUL-233]** A signage action targets SCREENS, not entities, and therefore declares a **ScreenRef** (ScreenRef, Wire shapes) in place of an `EntityRef`: exactly one of `screen_id` (one screen identity row, `data-model/1` DAT-004a) or `selector` (the platform label-selector grammar, resolved against screen rows — the same grammar an `EntityRef` selector uses, applied to a different row family). Declaring both, or neither, MUST be refused at compile time with `SCREEN_REF_AMBIGUOUS`. A `selector` that matches no screen is not an error: the action performs no work and reports an empty target set.
+
+**[RUL-234]** A `play_cast` action MUST declare a ScreenRef (RUL-233) and `cast_id` (a reference to an authored cast row, `data-model/1` DAT-043). It replaces each targeted screen's **program override** (`data-model/1` DAT-004c) with that cast, so every targeted screen plays the cast's slides in authored order from the next program resolution onward. It is app-class unconditionally: the override is authored state the app peer owns, and an edge engine has neither the authored row set nor the authority to write one.
+
+**[RUL-235]** A `show_alert` action MUST declare a ScreenRef (RUL-233) and exactly one of `cast_id` or `message` (a literal string), and MAY declare `ttl_seconds` (a positive integer after which the alert lapses with no second action required). It sets each targeted screen's program override at ALERT urgency, which a delivered program carries as `priority: "preempt"` so a player interrupts what it is showing rather than waiting for a natural item boundary. A `dismiss_alert` action MUST declare a ScreenRef and clears each targeted screen's override, returning the screen to whatever its schedule resolves. Both are app-class unconditionally, for RUL-234's reason.
+
+**[RUL-236]** Every signage action MUST report a per-screen result list and the same three-value outcome a preset batch reports (`complete`/`partial`/`failed`, RUL-172) — one screen the caller may not write, or one naming a cast that does not resolve, MUST NOT prevent the remaining targeted screens from being written, and MUST NOT halt the rest of the rule's `actions` sequence.
+
 ### Modes
 
 **[RUL-240]** A rule's `mode` MUST be exactly one of `single`, `restart`, `queued`, or `parallel`. `single` and `restart` are edge-class; `queued` and `parallel` are app-only — a rule declaring either forces the whole rule app-class (RUL-002) regardless of how its triggers, conditions, and actions would otherwise classify, because only the app engine implements queued or concurrent run management.
@@ -400,6 +410,16 @@ rules/1 defines the complete automation vocabulary — every trigger, condition,
 ```
 
 ```json
+// ScreenRef (embedded in a signage action — exactly one of the two, RUL-233)
+{ "screen_id": "01J8Z3K4N5P6Q7R8S9T0V1W2S1" }
+```
+
+```json
+// ScreenRef (selector form — the same label-selector grammar an EntityRef selector names, resolved against SCREEN rows)
+{ "selector": "label==lobby-screens" }
+```
+
+```json
 // EntityRef (device-class filter form)
 { "device_class": "media-player" }
 ```
@@ -583,6 +603,7 @@ rules/1 has no live wire handshake of its own; it governs the authored rule shap
 | `UNKNOWN_FILTER` | An Expression pipeline references a filter not in RUL-290. | no |
 | `EDGE_EXPRESSION_CROSS_ENTITY_REFERENCE` | An edge-classified rule's Expression sources an entity other than its trigger's subject (RUL-282). | no |
 | `ENTITY_REF_AMBIGUOUS` | An `EntityRef` declares more than one of `entity_id`/`selector`/`device_class`, or none. | no |
+| `SCREEN_REF_AMBIGUOUS` | A signage action's ScreenRef declares both `screen_id` and `selector`, or neither (RUL-233). | no |
 | `CHOOSE_BRANCH_RECURSION` | A `choose` action's branch actions recurse into the same `choose` action (RUL-180). | no |
 | `TYPE_MISMATCH_STATIC` | A numeric or typed comparison is declared against an attribute whose registry-declared type cannot satisfy it (RUL-261). | no |
 | `TEMPLATE_PARAM_UNBOUND` | A rule-template instantiation leaves a declared parameter position unbound (RUL-250). | no |

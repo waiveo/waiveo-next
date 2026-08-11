@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
-	"strings"
 	"testing"
 )
 
@@ -370,43 +369,52 @@ func TestRunAutomationReturnsDisposition(t *testing.T) {
 	assertProblem(t, resp, raw, "NOT_FOUND")
 }
 
-// TestRunAppClassAutomationRefused: POST /automations/{id}/run REFUSES an
-// app-classified automation. Only edge rules ride live execution (REL-062); an
-// app-class rule is stored + validated but its execution is deferred, so a
-// synchronous run must not carry it into the engine.Observe/dispatch path a live
-// edge rule uses (the safety property: an app-classified rule must not leak into
-// live execution). appAutomationBody carries a well-formed state trigger
-// identical to the edge fixture's — it is only its notify action that classifies
-// it APP — so the refusal is the class guard's doing, not a malformed trigger.
+// TestRunAppClassAutomationExecutes: POST /automations/{id}/run RUNS an
+// app-classified automation rather than refusing it.
 //
-// The run is refused 400 / VALIDATION_FAILED naming the app-class reason. The
-// detail is asserted deliberately: engine.Load also defensively rejects a
-// non-edge rule, so a bare status+code check would still pass with the API-layer
-// class guard deleted (the run would 400 with the engine's message instead). The
-// detail substring is what pins the API guard specifically — so a future edit
-// that drops or inverts it (e.g. the documented app-side-execution fast-follow,
-// once engine.Load is relaxed to run app rules app-side) is caught here.
-func TestRunAppClassAutomationRefused(t *testing.T) {
+// This test replaces TestRunAppClassAutomationRefused, and the inversion is
+// deliberate rather than a relaxation. The old refusal read the execution class
+// as a permission to run, which it is not: `execution_class` decides which
+// engine watches a rule's TRIGGERS — the relay's for an edge rule, the app's for
+// an app rule — and a manual run has no trigger at all, because a human supplied
+// the firing. Under the old guard every rule carrying a signage action, which is
+// every rule that changes what a screen shows (RUL-234/235, app-class
+// unconditionally), was unrunnable by hand; the button existed and could never
+// work for the rules it most obviously exists for.
+//
+// The safety property the old test named — "an app-classified rule must not leak
+// into live EDGE execution" — is untouched and is enforced where it actually
+// lives: internal/relay/automationhost.ApplyEdgeRules skips a non-edge rule when
+// loading a signed generation, so no app rule is ever loaded into the edge
+// engine regardless of what this surface does.
+func TestRunAppClassAutomationExecutes(t *testing.T) {
 	e := newEnv(t)
 	e.placementNode(t)
 
 	// An app-classified automation (a notify action is app-class unconditionally,
-	// RUL-210) is stored + validated exactly like an edge rule — the compile gate
-	// accepts it; classification, not compilation, is what gates the run.
+	// RUL-210) is stored + validated exactly like an edge rule.
 	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", appAutomationBody("", autoScopeNode, nil), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create app-class automation status = %d, body %s", resp.StatusCode, raw)
 	}
 	automationAID := decodeID(t, raw)
 
-	// The synchronous run is refused before the rule reaches the engine.
 	resp, raw = e.do(t, http.MethodPost, "/api/v1/automations/"+automationAID+"/run", nil, nil)
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("run app-class status = %d, want 400 (body %s)", resp.StatusCode, raw)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("run app-class status = %d, want 200 (body %s)", resp.StatusCode, raw)
 	}
-	p := assertProblem(t, resp, raw, "VALIDATION_FAILED")
-	if detail, _ := p["detail"].(string); !strings.Contains(detail, "app-class") {
-		t.Fatalf("app-class refusal detail = %q, want it to name the app-class reason (body %s)", detail, raw)
+	var out struct {
+		Disposition string `json:"disposition"`
+		DryRun      bool   `json:"dry_run"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode run result: %v (body %s)", err, raw)
+	}
+	if out.Disposition != "ran" {
+		t.Fatalf("disposition = %q, want ran (body %s)", out.Disposition, raw)
+	}
+	if out.DryRun {
+		t.Fatalf("dry_run = true on a request that asked for none; run-now must ACT by default (body %s)", raw)
 	}
 }
 

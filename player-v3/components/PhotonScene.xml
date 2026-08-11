@@ -30,11 +30,17 @@
     <Video id="contentVideo" width="1920" height="1080" visible="false" />
     <Group id="composedLayers" visible="false" />
     <!-- slideLayers holds the dynamically created, individually positioned
-         Label/Rectangle/Poster children of a "slide" content item (native
+         Label/Rectangle/Poster/Video children of a "slide" content item (native
          slide rendering, PLY-012's "slide" content type). Unlike composedLayers
          (full-screen stacked), each child is translated to its own [x,y] and
          sized to its own w×h in the 1920×1080 canvas, in layers array order
-         (index 0 furthest back). -->
+         (index 0 furthest back).
+
+         A "video" layer's child is a real Video node, which is why clearSlide
+         stops every Video child before removing it: removing the node does not
+         stop playback, so a superseded slide would otherwise leave a video
+         decoding (and audible) behind whatever replaced it — the same rule
+         clearComposed applies to composed video layers. -->
     <Group id="slideLayers" visible="false" />
     <Label id="statusLabel" text="Waiveo Player v3" translation="[80,960]" width="1760" />
     <Timer id="castTimer" repeat="false" />

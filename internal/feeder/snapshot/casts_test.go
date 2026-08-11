@@ -218,3 +218,41 @@ func TestCastWithAnUndrawableSlideDropsOnlyThatSlide(t *testing.T) {
 		t.Errorf("the surviving slides are not the two drawable ones, in order: %+v", content)
 	}
 }
+
+// TestCastDefaultDurationReachesTheAppSignedBaseline is the app-side half of the
+// cast-level default dwell time (DAT-043 `default_duration_ms`), driven through
+// the REAL store write path and the real snapshot build rather than over a
+// hand-built row set — so it also proves the store ACCEPTS the field (an
+// authoring surface that took the setting and dropped it on the floor would
+// otherwise look identical from the console).
+//
+// The relay-side twin is schedulehost.TestCastDefaultDurationFillsSlidesThatStateNone.
+// They are separate because a screen must see the same dwell times whether it is
+// playing this baseline or the relay's re-resolution of a daypart boundary, and
+// a single test on either side cannot say that.
+func TestCastDefaultDurationReachesTheAppSignedBaseline(t *testing.T) {
+	const asset = "sha256:c0stc0stc0stc0stc0stc0stc0stc0stc0stc0stc0stc0stc0stc0stc0stc0st"
+	s := seededStore(t, asset)
+	cast := castWithThreeSlides(asset)
+	cast.DefaultDurationMS = 5000
+	id := writeCast(t, s, cast)
+	// No `duration_seconds` on the item: the cast's own default is what the
+	// third slide (which states none) must reach.
+	replaceSeedPlaylistItems(t, s, []datamodel.PlaylistItem{
+		{Source: datamodel.PlaylistSourceCast, CastID: id},
+	})
+
+	prog := programForScreen(t, buildSnapshot(t, s).Sections.ScreenPrograms, store.SeedScreenID)
+	if len(prog.Content) != 3 {
+		t.Fatalf("content = %d items, want one per cast slide", len(prog.Content))
+	}
+	// All three at once: the two slides that state their own dwell time must be
+	// untouched by the default, which is the mistake "apply the cast default"
+	// most easily becomes.
+	want := []int64{4000, 9000, 5000}
+	for i, ref := range prog.Content {
+		if ref.DurationMS != want[i] {
+			t.Errorf("content[%d].duration_ms = %d, want %d", i, ref.DurationMS, want[i])
+		}
+	}
+}
