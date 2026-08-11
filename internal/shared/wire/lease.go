@@ -432,3 +432,68 @@ func LeaseSignedBytes(lease Lease) ([]byte, error) {
 	}
 	return b, nil
 }
+
+// Alert-slide composition constants (data-model/1 DAT-004c's literal `message`
+// override). They are HERE, beside the Layer shape and the canvas bounds, and
+// not in the projection that calls AlertSlideLayers, because they are geometry
+// against SlideCanvasWidth×SlideCanvasHeight: a copy in the caller would be a
+// second place that has to be right about the canvas.
+const (
+	// alertBackgroundColor is the full-bleed backing an alert is drawn on. A
+	// deep red, because the one job of an alert override is to be visibly not
+	// the content the screen was showing a second ago.
+	alertBackgroundColor = "#8C1C13"
+	// alertTextColor is the message foreground: near-white for contrast against
+	// alertBackgroundColor at viewing distance.
+	alertTextColor = "#FFFFFF"
+	// alertTextFontPx is the message size. Sized for a wall panel read from
+	// across a room, not for a desk monitor.
+	alertTextFontPx = 96
+	// alertTextInsetX / alertTextBandY / alertTextBandH place the message as a
+	// centered band across the middle of the canvas, inset from both edges so a
+	// panel with overscan does not clip the first and last characters.
+	alertTextInsetX = 120
+	alertTextBandY  = 400
+	alertTextBandH  = 280
+)
+
+// AlertSlideLayers composes the ONE generated slide a literal-`message` screen
+// override is shown as (data-model/1 DAT-004c/DAT-004d): a full-canvas colored
+// backing with the message centered across it.
+//
+// It exists so that an alert needs no authored cast. The daily signage path is
+// "put this cast on that screen", but the emergency path an operator or an
+// automation reaches for — "the kitchen is closed", "evacuate via the east
+// door" — has no time for an authoring round trip, and legacy's `show_alert`
+// took a message string for exactly that reason. Generating the slide here, in
+// the package that owns the Layer shape and the validator, means the generated
+// stack passes ValidateSlideLayers by construction and reaches a player through
+// the identical slide path an authored one does — no second rendering route,
+// and no chance of a hand-built stack drifting out of the canvas.
+//
+// The message is used verbatim: it is authored operator text, and this is a
+// layer's Text field, which a player draws as a literal string (never a format
+// — see Layer.Text: only clock/date/countdown/weather/entity interpret theirs).
+func AlertSlideLayers(message string) []Layer {
+	return []Layer{
+		{
+			Kind:  LayerKindRect,
+			X:     0,
+			Y:     0,
+			W:     SlideCanvasWidth,
+			H:     SlideCanvasHeight,
+			Color: alertBackgroundColor,
+		},
+		{
+			Kind:   LayerKindText,
+			X:      alertTextInsetX,
+			Y:      alertTextBandY,
+			W:      SlideCanvasWidth - 2*alertTextInsetX,
+			H:      alertTextBandH,
+			Text:   message,
+			FontPx: alertTextFontPx,
+			Color:  alertTextColor,
+			Align:  "center",
+		},
+	}
+}

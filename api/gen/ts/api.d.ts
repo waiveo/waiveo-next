@@ -113,7 +113,7 @@ export interface paths {
         put?: never;
         /**
          * Run an automation now
-         * @description Manually starts one run of the automation's action sequence, subject to its declared mode's normal mode-evaluation rules. A mutating POST outside plain resource creation — accepts Idempotency-Key so a client's retry-on-timeout cannot double-fire the run.
+         * @description Runs the automation's action sequence NOW, for real, subject to its declared mode's normal mode-evaluation rules and to its own conditions: a `device_command` reaches the physical device down the owning relay's connection, and a signage action writes the targeted screens' program override. The response reports what it did, target by target. Pass `dry_run: true` to evaluate everything and withhold every effect. A mutating POST outside plain resource creation — accepts Idempotency-Key so a client's retry-on-timeout cannot double-fire the run.
          */
         post: operations["runAutomation"];
         delete?: never;
@@ -1412,6 +1412,7 @@ export interface components {
             /** @description The `device_id` of an adopted device representing the same physical display (`player/1` PLY-124). Optional — a screen and an adopted device remain distinct rows — but a stated value MUST name an existing adopted device. */
             device_id: string | null;
             labels: components["schemas"]["LabelMap"];
+            override?: components["schemas"]["ScreenOverride"];
             revision: number;
             created_at: components["schemas"]["Timestamp"];
             updated_at: components["schemas"]["Timestamp"];
@@ -1549,12 +1550,30 @@ export interface components {
             misfire?: string;
             name?: string;
         };
+        /** @description A screen's program override (`data-model/1` DAT-004c): a per-screen content pin that supersedes whatever the scheduling core resolves for that screen, for as long as it applies. It is deliberately not a second scheduling mechanism — no cascade, no priority order, no layering, no recurrence — it is "show this here, now, until it is cleared or lapses", which is what an operator's push-now gesture and an automation's `play_cast`/`show_alert` action (`rules/1` RUL-234/RUL-235) both need and what a schedule cannot express. */
+        ScreenOverride: {
+            /**
+             * @description `play` is the ordinary assignment and delivers at `scheduled` priority; `alert` is the takeover and delivers at `preempt`, so a player interrupts the item it is mid-way through (`player/1` PLY-108).
+             * @enum {string}
+             */
+            mode: "play" | "alert";
+            /** @description The cast whose slides the screen plays. Exactly one of `cast_id` and `message` is stated. */
+            cast_id?: components["schemas"]["Ulid"];
+            /** @description A literal alert message, shown as one generated slide. Admissible only under `mode: "alert"` — a `play` override names a cast. */
+            message?: string;
+            /** @description The instant the override lapses. Absent means no expiry. A lapsed override is treated as absent at resolution time with no write required to retire it (DAT-004d), so an alert self-limits even on a relay that has lost its app peer. */
+            expires_at?: components["schemas"]["Timestamp"];
+            /** @description The instant the override was imposed. Informational. */
+            set_at?: components["schemas"]["Timestamp"];
+        };
         ScreenCreate: {
             external_id?: string | null;
             name: string;
             scope_node: components["schemas"]["Ulid"];
             device_id?: string | null;
             labels?: components["schemas"]["LabelMap"];
+            /** @description The screen's program override (`data-model/1` DAT-004c) — the same members `ScreenOverride` declares — or `null` to clear it. Absent leaves whatever is set unchanged. It is spelled inline rather than as a `$ref` for one reason: this position must admit an explicit `null` (that is how an override is CLEARED, and `dismiss_alert` writes exactly that body), and a `$ref` cannot be made nullable in OpenAPI 3.1 without a `oneOf` the Go generator does not support. */
+            override?: Record<string, never> | null;
         };
         /** @description Partial update — every field optional, at least one required. */
         ScreenUpdate: {
@@ -1563,6 +1582,8 @@ export interface components {
             scope_node?: components["schemas"]["Ulid"];
             device_id?: string | null;
             labels?: components["schemas"]["LabelMap"];
+            /** @description The screen's program override (`data-model/1` DAT-004c) — the same members `ScreenOverride` declares — or `null` to clear it. Absent leaves whatever is set unchanged. It is spelled inline rather than as a `$ref` for one reason: this position must admit an explicit `null` (that is how an override is CLEARED, and `dismiss_alert` writes exactly that body), and a `$ref` cannot be made nullable in OpenAPI 3.1 without a `oneOf` the Go generator does not support. */
+            override?: Record<string, never> | null;
         };
         /** @description A freshly minted pairing grant, bound to this screen row (`relay/1` REL-121a) and to the one relay that may redeem it (REL-121b), plus the human-enterable pairing code (`player/1` PLY-024) an operator reads onto the screen. Exactly one of `pairing_code` and `code_unavailable_reason` is present: the grant is minted, bound, and delivered either way, and the reason describes only why the code itself could not be formed for the relay it is bound to. A request with no relay to bind to at all is refused before anything is minted (`503`). */
         PairingCodeResult: {
@@ -1724,14 +1745,57 @@ export interface components {
             context?: {
                 [key: string]: unknown;
             };
+            /**
+             * @description When `true`, the run is evaluated to completion — conditions, branch selection, target resolution — but every effect is WITHHELD: no device command is dispatched and no screen override is written. The response reports exactly what a real run would have done. The default is `false`: run-now ACTS.
+             * @default false
+             */
+            dry_run: boolean;
         };
+        /** @description One device command this run dispatched (or, under `dry_run`, would have). */
+        AutomationRunCommand: {
+            entity_id: components["schemas"]["Ulid"];
+            command: string;
+            ok: boolean;
+            /** @description Present only when `ok` is false — why this one target did not take the command. */
+            error?: string;
+        };
+        /** @description One screen a signage action wrote (or, under `dry_run`, would have). */
+        AutomationRunScreen: {
+            screen_id: components["schemas"]["Ulid"];
+            ok: boolean;
+            /** @description Present only when `ok` is false. */
+            error?: string;
+        };
+        /** @description One signage action's outcome (`rules/1` RUL-236), in the same three-value shape a preset batch reports (RUL-172). */
+        AutomationRunSignage: {
+            /** @description The signage action type — one of `play_cast`, `show_alert`, `dismiss_alert` (`rules/1` RUL-234/RUL-235). Left as a plain string rather than an `enum` deliberately: an `enum` here mints package-level Go constants named after its VALUES, and two of them (`failed` on `outcome` below) collide with an existing enum's, which silently renames that other enum's constants across the whole generated package. The closed set is stated here and enforced by the one place that can produce it. */
+            action: string;
+            /** @description One of `complete`, `partial`, `failed` — `rules/1` RUL-172's own three-value outcome, reused by RUL-236. A plain string for the reason `action` above gives. */
+            outcome: string;
+            screens: components["schemas"]["AutomationRunScreen"][];
+        };
+        /** @description What the run actually did. `disposition` is the mode-evaluation outcome; the three effect arrays are the report the operator needs to tell "it ran" from "it ran and changed something". */
         AutomationRunResult: {
             run_id: components["schemas"]["Ulid"];
             /**
-             * @description rules/1's closed RunDisposition set.
+             * @description rules/1's closed RunDisposition set. `skipped` here means the rule's own conditions did not hold, so its actions were not run — not an error, and not a failure of the request.
              * @enum {string}
              */
             disposition: "ran" | "skipped" | "restarted";
+            /** @description Whether effects were withheld. */
+            dry_run: boolean;
+            /** @description Every `device_command` target this run dispatched to, in dispatch order. */
+            commands: components["schemas"]["AutomationRunCommand"][];
+            /** @description Every signage action this run performed, in action order. */
+            signage: components["schemas"]["AutomationRunSignage"][];
+            /** @description Every `log` action's evaluated message (`rules/1` RUL-200), in order. */
+            logs: {
+                /** @description One of `info`, `warning`, `error` (`rules/1` RUL-200). A plain string for the reason `AutomationRunSignage.action` gives. */
+                level: string;
+                message: string;
+            }[];
+            /** @description How many `delay` actions this run passed through WITHOUT waiting. A synchronous manual run does not hold the request open for a rule's own pacing, so the remaining actions run immediately; the count is reported rather than hidden, because a rule whose timing matters behaves differently here than it does on a trigger. */
+            delays_collapsed?: number;
         };
         /** @description The request body for a fleet-mutating bulk enable/disable over a selector-matched set of automations. */
         AutomationBulkEnableRequest: {
@@ -1850,6 +1914,10 @@ export interface components {
             labels: components["schemas"]["LabelMap"];
             /** @description The entity's last reported state, a value from its device class's own state vocabulary. Absent until the relay has reported one. */
             state?: string;
+            /** @description The driver-observed detail behind `state` (`device-class-registry/1` REG-064; for a Roku `power_mode`, `active_app`, `active_app_id`, `app_type`, `is_screensaver`, `app_version`). `state` answers on/idle/standby/off; an operator looking at a screen that is not showing what it should needs to know it is sitting in another app, which `state` cannot say. Values are strings even where the driver's own value is a boolean — this is display detail crossing a trust boundary from a relay, and a bounded string map is checkable at intake in a way an arbitrary JSON value is not. Absent until the relay has reported some. */
+            attributes?: {
+                [key: string]: string;
+            };
         };
         EntityListResponse: {
             items: components["schemas"]["Entity"][];
@@ -2469,7 +2537,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description The run was accepted; the response carries its mode-evaluation disposition. */
+            /** @description The run completed; the response carries its disposition and every effect it produced. */
             200: {
                 headers: {
                     "Trace-Id": components["headers"]["TraceIdResponse"];

@@ -3,19 +3,15 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/app/auth"
 	"github.com/maaxton/waiveo-next/internal/app/store"
-	"github.com/maaxton/waiveo-next/internal/rules/clock"
 	"github.com/maaxton/waiveo-next/internal/rules/compile"
-	"github.com/maaxton/waiveo-next/internal/rules/engine"
+	"github.com/maaxton/waiveo-next/internal/rules/eval"
 	"github.com/maaxton/waiveo-next/internal/rules/model"
-	"github.com/maaxton/waiveo-next/internal/rules/registry"
-	"github.com/maaxton/waiveo-next/internal/rules/state"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/apijob"
 	"github.com/maaxton/waiveo-next/internal/shared/apiselector"
@@ -57,43 +53,34 @@ func compileErrorExtra(cerr *compile.CompileError) map[string]any {
 	}}}
 }
 
-// runDeviceClass is the device class the synchronous /run invoke stamps on the
-// synthesized observation's entity, so a `device_command` action resolves against
-// the fixture registry's media-player command vocabulary. The disposition the run
-// returns is a mode-evaluation outcome (RUL-246), independent of whether a command
-// dispatch succeeds — but stamping the class keeps a scalar-`to` group match
-// (RUL-021) resolvable too.
-const runDeviceClass = "media-player"
-
-// nopSink is the /run engine's command sink: a synchronous manual run in this
-// increment drives the rule end to end for its mode-evaluation disposition, but
-// dispatches to no real device (the relay owns the live device plane). It records
-// nothing — the returned RunDisposition is the invoke's whole result.
-type nopSink struct{}
-
-func (nopSink) Dispatch(entityID, command string, params map[string]any) error { return nil }
-
-// runAutomation handles POST /api/v1/automations/{id}/run — a synchronous "basic
-// invoke" of a stored edge automation. It loads the stored (already compile-gated)
-// rule into a throwaway engine, synthesizes the triggering transition of the rule's
-// first state trigger, and returns the firing's mode-evaluation disposition
-// (RUL-246) as the openapi AutomationRunResult ({run_id, disposition}).
+// runAutomation handles POST /api/v1/automations/{id}/run — a synchronous, REAL
+// invoke of a stored automation. It evaluates the rule's conditions and, when
+// they hold, executes its action sequence with actual effects: a
+// `device_command` reaches the physical device down its relay's connection, and
+// a signage action writes the targeted screens' program override. The response
+// (openapi AutomationRunResult) reports the mode disposition AND every effect,
+// target by target.
+//
+// `dry_run: true` evaluates everything and withholds every effect, which is a
+// deliberate OPT-IN: the default had to become "act", because the whole point of
+// a run-now button is that pressing it does something.
 //
 // It is a mutating POST tagged mcp:act, so it honors Idempotency-Key (API-050/072,
 // openapi runAutomation.IdempotencyKeyParam): a client's retry-on-timeout replays
 // the retained response verbatim rather than firing the run — and its device
-// dispatch — a second time. The key handling reuses the same idem store + response
-// capture the generic create() path uses (srv.idempotent), never a second mechanism.
+// dispatch and its screen writes — a second time. The key handling reuses the same
+// idem store + response capture the generic create() path uses (srv.idempotent),
+// never a second mechanism.
 //
-// Deferred (documented): the full trigger-snapshot / AutomationRunRequest.context
-// override semantics, and app-side execution of app-classified rules. This increment
-// supports a state-triggered edge automation; an app-class rule, a rule without a
-// synthesizable state trigger, or a firing whose conditions do not admit a run is
-// refused with a precise Problem rather than a fabricated disposition.
+// Deferred (documented): AutomationRunRequest.context's trigger-snapshot override.
+// A manual run evaluates conditions against the device plane's CURRENT reported
+// state, which is the state an operator pressing the button is looking at.
 func (srv *server) runAutomation(w http.ResponseWriter, r *http.Request) {
 	// The body is read up front so its content hash keys Idempotency-Key
-	// replay-vs-reuse (API-052) even though AutomationRunRequest.context is
-	// deferred; a keyed retry with the same body replays, a different body conflicts.
+	// replay-vs-reuse (API-052); a keyed retry with the same body replays, a
+	// different body conflicts — which matters more now than it did, since the
+	// body carries `dry_run` and a retry that flipped it would be a different
+	// operation.
 	// The members this operation declares, and nothing else. These action-style
 	// POSTs are not resource families, so they reach none of the resource
 	// pipeline; each guards the fields it needs by hand, and none bounded the ones
@@ -108,14 +95,22 @@ func (srv *server) runAutomation(w http.ResponseWriter, r *http.Request) {
 	if srv.undeclaredMemberRejected(w, r, "AutomationRunRequest", raw) {
 		return
 	}
-	srv.idempotent(w, r, raw, func(w http.ResponseWriter) { srv.runAutomationExec(w, r) })
+	srv.idempotent(w, r, raw, func(w http.ResponseWriter) { srv.runAutomationExec(w, r, raw) })
+}
+
+// automationRunRequest is the AutomationRunRequest body. DryRun is a pointer so
+// an ABSENT field is distinguishable from an explicit `false` — both mean the
+// same thing here (run for real), and keeping them distinguishable is what lets
+// the undeclared-member gate above stay the only thing that rejects a body.
+type automationRunRequest struct {
+	DryRun *bool `json:"dry_run"`
 }
 
 // runAutomationExec is the run's actual work, executed once per fresh (non-replayed)
 // request under the Idempotency-Key guard in runAutomation. It writes into the
 // response capture that guard owns, so a firing's exact response bytes are retained
 // for a later retry's verbatim replay.
-func (srv *server) runAutomationExec(w http.ResponseWriter, r *http.Request) {
+func (srv *server) runAutomationExec(w http.ResponseWriter, r *http.Request, raw []byte) {
 	id := r.PathValue("id")
 	res, found, err := srv.store.Get(r.Context(), store.KindAutomation, id)
 	if err != nil {
@@ -144,117 +139,67 @@ func (srv *server) runAutomationExec(w http.ResponseWriter, r *http.Request) {
 	// and is authorized as one (SEC-005). 403 rather than 404 here, exactly as
 	// on the resource families — the caller has just been shown they may read
 	// this row, so the refusal discloses nothing but their own authority.
+	//
+	// Authorizing HERE is necessary and not sufficient: the rule's own actions
+	// name entities and screens whose placement is unrelated to the rule's, and
+	// each of those is authorized separately, per target, inside the run
+	// (automations_exec.go's own doc).
 	if !view.canWrite(node) {
 		writeProblem(w, r, http.StatusForbidden, "FORBIDDEN", "Forbidden", unauthorizedWriteDetail)
 		return
 	}
 
-	// The stored body was compile-gated on write, so Compile/ParseRule are expected
-	// to succeed here; a failure is an internal inconsistency, not a client error.
-	entry, cerr := compile.Compile(res.Body)
-	if cerr != nil {
-		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "The stored automation no longer compiles.")
-		return
+	dryRun := false
+	if len(raw) > 0 {
+		var req automationRunRequest
+		if err := json.Unmarshal(raw, &req); err != nil {
+			// API-013a: a body validation failure is 422, never the 400 a
+			// query-parameter failure carries.
+			writeProblem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Validation Failed", "The request body could not be parsed.")
+			return
+		}
+		dryRun = req.DryRun != nil && *req.DryRun
 	}
+
+	// The stored body was compile-gated on write, so ParseRule is expected to
+	// succeed here; a failure is an internal inconsistency, not a client error.
 	rule, perr := model.ParseRule(res.Body)
 	if perr != nil {
 		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "The stored automation could not be parsed.")
 		return
 	}
 
-	if entry.ExecutionClass != "edge" {
-		writeProblem(w, r, http.StatusBadRequest, "VALIDATION_FAILED", "Bad Request",
-			"This automation is app-class; a synchronous run is limited to edge automations in this increment.")
-		return
-	}
+	// Both execution classes run here, and the class is deliberately NOT a gate.
+	// It decides which engine owns a rule's TRIGGERS — an edge rule's device
+	// observations are watched by the relay, an app rule's by the app — and a
+	// manual run has no trigger at all: a human supplied the firing. Refusing an
+	// app-class rule (as this handler used to) meant every rule carrying a
+	// signage action, which is every rule that changes what a screen shows, could
+	// not be run by hand at all.
+	rep := srv.runAutomationNow(r.Context(), apihttp.TraceID(r), rule, view, dryRun)
 
-	dispositions, runErr := synthesizeRun(entry, rule)
-	if runErr != nil {
-		writeProblem(w, r, http.StatusBadRequest, "VALIDATION_FAILED", "Bad Request", runErr.Error())
-		return
-	}
-	if len(dispositions) == 0 {
-		writeProblem(w, r, http.StatusBadRequest, "VALIDATION_FAILED", "Bad Request",
-			"The manual run did not start: the automation's conditions were not satisfied for the synthesized trigger context.")
-		return
-	}
-
-	writeJSONValue(w, http.StatusOK, map[string]string{
-		"run_id":      srv.newID(),
-		"disposition": string(dispositions[0].Disposition),
+	writeJSONValue(w, http.StatusOK, automationRunResponse{
+		RunID:           srv.newID(),
+		Disposition:     rep.Disposition,
+		DryRun:          rep.DryRun,
+		Commands:        rep.Commands,
+		Signage:         rep.Signage,
+		Logs:            rep.Logs,
+		DelaysCollapsed: rep.DelaysCollapsed,
 	})
 }
 
-// synthesizeRun drives a compiled edge rule through a throwaway engine and returns
-// the dispositions its first state trigger's firing produces. It seeds the trigger
-// subject's prior state, then observes the transition into the trigger's `to` state
-// so the rule genuinely fires (the same off→on transition the relay's real
-// observation feed would deliver), reusing the built engine/eval stack rather than
-// re-implementing rule evaluation. A rule with no synthesizable state trigger is a
-// documented limitation of this increment's basic invoke.
-func synthesizeRun(entry compile.CompiledRuleEntry, rule model.Rule) ([]engine.RunDisposition, error) {
-	var trigger *model.Member
-	for i := range rule.Triggers {
-		m := rule.Triggers[i]
-		if m.Type == "state" && m.EntityRef != nil && m.EntityRef.EntityID != "" {
-			trigger = &rule.Triggers[i]
-			break
-		}
-	}
-	if trigger == nil {
-		return nil, errors.New("a synchronous run in this increment supports a state-triggered automation; this automation has no state trigger with an entity subject")
-	}
-
-	var bounds struct {
-		To        json.RawMessage `json:"to"`
-		From      json.RawMessage `json:"from"`
-		Attribute string          `json:"attribute"`
-	}
-	_ = json.Unmarshal(trigger.Raw, &bounds)
-	toState, ok := firstState(bounds.To)
-	if !ok || bounds.Attribute != "" {
-		return nil, errors.New("a synchronous run in this increment supports a state trigger with a `to` state bound")
-	}
-	priorState := "waiveo-run-prior"
-	if fromState, ok := firstState(bounds.From); ok {
-		priorState = fromState
-	}
-	if priorState == toState {
-		// Guarantee a genuine state transition so the observation is classified as a
-		// change (RUL-330) and the `to`-bounded trigger can fire.
-		priorState += "-prev"
-	}
-
-	entityID := trigger.EntityRef.EntityID
-	reg := registry.FixtureRegistry{}
-	eng := engine.New(reg, clock.NewFakeClock(), nopSink{}, nil)
-	if err := eng.Load(entry, rule); err != nil {
-		return nil, err
-	}
-	eng.SeedEntityState(entityID, priorState)
-	obs := state.NewObservation(reg,
-		state.Entity{ID: entityID, DeviceClass: runDeviceClass, State: priorState},
-		state.Entity{ID: entityID, DeviceClass: runDeviceClass, State: toState},
-	)
-	return eng.Observe(obs), nil
-}
-
-// firstState decodes a state trigger's `from`/`to` bound — a scalar string or an
-// array of strings — into its first state value, reporting ok=false for an absent,
-// null, or empty bound.
-func firstState(raw json.RawMessage) (string, bool) {
-	if len(raw) == 0 || string(raw) == "null" {
-		return "", false
-	}
-	var s string
-	if json.Unmarshal(raw, &s) == nil && s != "" {
-		return s, true
-	}
-	var arr []string
-	if json.Unmarshal(raw, &arr) == nil && len(arr) > 0 {
-		return arr[0], true
-	}
-	return "", false
+// automationRunResponse is the openapi AutomationRunResult: the run's id and
+// mode disposition, plus the effect report that is the difference between this
+// operation acting and merely claiming to.
+type automationRunResponse struct {
+	RunID           string                `json:"run_id"`
+	Disposition     string                `json:"disposition"`
+	DryRun          bool                  `json:"dry_run"`
+	Commands        []runCommand          `json:"commands"`
+	Signage         []eval.SignageOutcome `json:"signage"`
+	Logs            []runLog              `json:"logs"`
+	DelaysCollapsed int                   `json:"delays_collapsed,omitempty"`
 }
 
 // bulkEnableRequest is the AutomationBulkEnableRequest body: a label-selector

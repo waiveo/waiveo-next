@@ -158,6 +158,12 @@ type Entity struct {
 	ScopeNode   string            `json:"scope_node"`
 	Labels      map[string]string `json:"labels"`
 	State       string            `json:"state,omitempty"`
+	// Attributes is the driver-observed detail behind State (relay/1 REL-110a,
+	// device-class-registry/1 REG-064): for a Roku, `power_mode`,
+	// `active_app`, `app_type` and the rest. Absent until the relay has
+	// reported some — an operator sees "this screen is on" from State and
+	// "…showing Netflix" only from here.
+	Attributes map[string]string `json:"attributes,omitempty"`
 }
 
 // relayView is one relay's CURRENT reported set, plus the sequence number of

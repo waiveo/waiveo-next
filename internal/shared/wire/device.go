@@ -83,13 +83,28 @@ type DeviceCandidate struct {
 // whose vocabulary governs commands to it (device-class-registry/1 REG-052),
 // and its last observed State when the relay has one.
 //
+// Attributes carries the DRIVER-OBSERVED detail behind that State — for a Roku,
+// device-class-registry/1 REG-064's `power_mode`, `active_app`, `active_app_id`,
+// `app_type`, `is_screensaver`, `app_version`. State alone answers "on/idle/
+// standby/off"; an operator looking at a screen that is not showing what it
+// should needs to know it is sitting in the Netflix app, which State cannot say.
+//
+// Values are STRINGS on this wire even where the driver's own value is a bool
+// (`is_screensaver`), and that is deliberate rather than lossy-by-accident:
+// this is display detail crossing a trust boundary from a relay, so a
+// fixed-shape map with bounded keys and values is checkable at intake in a way
+// an arbitrary JSON value is not, and every consumer of it renders text.
+//
+// Absent means the driver reported none — never that the device has none.
+//
 // Key is a relay-side addressing handle, not a platform id: the app peer
 // derives the entity_id from it (REL-110b) and never carries the key itself
 // into a resource representation.
 type CandidateEntity struct {
-	Key         string `json:"key"`
-	DeviceClass string `json:"device_class"`
-	State       string `json:"state,omitempty"`
+	Key         string            `json:"key"`
+	DeviceClass string            `json:"device_class"`
+	State       string            `json:"state,omitempty"`
+	Attributes  map[string]string `json:"attributes,omitempty"`
 }
 
 // Candidate status values (REL-110). A candidate is `pending` until something

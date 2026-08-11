@@ -62,6 +62,10 @@ One row per requirement ID `contracts/rules-1.md` defines. Format: `conformance/
 | RUL-230 | `contracts/rules-1.md#actions-workflow-start-app-coupled` | - | TBD-wave1 |
 | RUL-231 | `contracts/rules-1.md#actions-pack-action` | - | TBD-wave1 |
 | RUL-232 | `contracts/rules-1.md#actions-pack-action` | - | TBD-wave1 |
+| RUL-233 | `contracts/rules-1.md#actions-signage-app-coupled` | - | TBD-wave1 |
+| RUL-234 | `contracts/rules-1.md#actions-signage-app-coupled` | - | TBD-wave1 |
+| RUL-235 | `contracts/rules-1.md#actions-signage-app-coupled` | - | TBD-wave1 |
+| RUL-236 | `contracts/rules-1.md#actions-signage-app-coupled` | - | TBD-wave1 |
 | RUL-240 | `contracts/rules-1.md#modes` | `RUL-241-mode-single-drops-concurrent-fire` | covered |
 | RUL-241 | `contracts/rules-1.md#modes` | `RUL-241-mode-single-drops-concurrent-fire` | covered |
 | RUL-242 | `contracts/rules-1.md#modes` | `RUL-242-mode-restart-cancels-in-flight-delay` | covered |
