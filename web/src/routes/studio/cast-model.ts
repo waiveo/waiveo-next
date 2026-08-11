@@ -150,6 +150,33 @@ export function defaultLayer(kind: LayerKind, nowMs: number = Date.now()): Slide
       // No entity_id: see this function's doc. The template defaults to the
       // bare state token, which is also what the box assumes for an empty one.
       return { kind, x: 160, y: 860, w: 1200, h: 140, text: "{state}", font_px: 72, color: "#FFFFFF", align: "left" };
+    case "ping":
+      // A button lands COMPLETE — label and event name both set — so inserting
+      // one and saving produces a slide that renders AND a press that reaches an
+      // automation. The default name is a slug (wire.ValidPingName), because a
+      // default that failed its own grammar would put an error on the panel the
+      // instant the operator inserted it.
+      //
+      // Centered, and sized for a remote-driven button seen across a room rather
+      // than for a caption.
+      return {
+        kind, x: 660, y: 780, w: 600, h: 140,
+        text: "Press OK", ping_name: "button_1",
+        font_px: 72, color: "#FFFFFF", align: "center",
+      };
+    case "nav":
+      // A menu lands EMPTY of items on purpose — the one kind besides the
+      // content-bearing pair and `entity` that cannot land valid. An item's
+      // target must name a slide of this cast, and `defaultLayer` is a pure
+      // function of a kind and a clock: it does not know which cast it is being
+      // inserted into, let alone which slides that cast has. Inventing a target
+      // would produce exactly the dead-end menu item the whole nav design
+      // refuses. The panel asks for the items, with the cast's real slides in a
+      // dropdown, and the save gate holds until at least one is chosen.
+      //
+      // Wide rather than tall, so the default orientation is the horizontal row
+      // a signage menu almost always is (the layout axis follows the box).
+      return { kind, x: 260, y: 900, w: 1400, h: 120, items: [], font_px: 44, color: "#FFFFFF" };
   }
 }
 

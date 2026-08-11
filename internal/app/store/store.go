@@ -476,7 +476,14 @@ func Open(dsn string, nowMs func() int64) (*Store, error) {
 		}
 	}
 
-	return &Store{db: db, nowMs: nowMs}, nil
+	s := &Store{db: db, nowMs: nowMs}
+	// The store's own integrity report, once, at boot. A store carrying rows an
+	// older build accepted and this build's validators do not is a legitimate
+	// state — writes to it still work, because a write is judged on what IT
+	// introduced (priorfaults.go) — but it is not a state anyone should have to
+	// discover from a puzzling write refusal. A clean store logs nothing.
+	s.reportStoredFaults(context.Background())
+	return s, nil
 }
 
 // Close flushes the WAL (best-effort) and closes the database handle.
@@ -622,6 +629,13 @@ func (s *Store) Create(ctx context.Context, kind Kind, body json.RawMessage, gua
 	labelsJSON := marshalLabels(bf.Labels)
 
 	if err := s.writeTx(ctx, func(tx *sql.Tx) error {
+		// The faults the store ALREADY carries for this kind, read before the
+		// insert so the post-write validation can judge this create on what it
+		// introduced rather than on what it inherited (priorfaults.go).
+		prior, err := capturePriorFaults(ctx, tx, kind)
+		if err != nil {
+			return err
+		}
 		// The existing rows, read under the write lock this tx holds — the atomic
 		// snapshot the id-uniqueness check and every WriteGuard evaluate against, so
 		// a check-then-write invariant cannot be raced past by a concurrent writer.
@@ -660,7 +674,7 @@ func (s *Store) Create(ctx context.Context, kind Kind, body json.RawMessage, gua
 		if err := bumpGeneration(ctx, tx); err != nil {
 			return err
 		}
-		return validateAfterWrite(ctx, tx, kind, bf.ScopeNode)
+		return validateAfterWrite(ctx, tx, kind, bf.ScopeNode, prior)
 	}); err != nil {
 		return Resource{}, err
 	}
@@ -749,9 +763,16 @@ func (s *Store) Update(ctx context.Context, kind Kind, id string, rev int64, pat
 
 	var res Resource
 	if err := s.writeTx(ctx, func(tx *sql.Tx) error {
+		// Before anything is merged or written: the faults this kind's rows
+		// already carry, so the post-write validation judges this patch on what
+		// it introduced rather than on what it inherited (priorfaults.go).
+		prior, err := capturePriorFaults(ctx, tx, kind)
+		if err != nil {
+			return err
+		}
 		var curRev int64
 		var curBody string
-		err := tx.QueryRowContext(ctx, `SELECT revision, body FROM `+table+` WHERE id = ?`, id).Scan(&curRev, &curBody)
+		err = tx.QueryRowContext(ctx, `SELECT revision, body FROM `+table+` WHERE id = ?`, id).Scan(&curRev, &curBody)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -832,7 +853,7 @@ func (s *Store) Update(ctx context.Context, kind Kind, id string, rev int64, pat
 		if err := bumpGeneration(ctx, tx); err != nil {
 			return err
 		}
-		if err := validateAfterWrite(ctx, tx, kind, bf.ScopeNode); err != nil {
+		if err := validateAfterWrite(ctx, tx, kind, bf.ScopeNode, prior); err != nil {
 			return err
 		}
 		res = Resource{
@@ -876,8 +897,17 @@ func (s *Store) Delete(ctx context.Context, kind Kind, id string, rev int64, gua
 		return err
 	}
 	return s.writeTx(ctx, func(tx *sql.Tx) error {
+		// The faults already standing before this removal. A DELETE is the repair
+		// path — the ONE operation that must stay available on a store carrying a
+		// row no current validator accepts — so it is judged strictly on what
+		// removing this row breaks, never on what it leaves untouched
+		// (priorfaults.go).
+		prior, err := capturePriorFaults(ctx, tx, kind)
+		if err != nil {
+			return err
+		}
 		var curRev int64
-		err := tx.QueryRowContext(ctx, `SELECT revision FROM `+table+` WHERE id = ?`, id).Scan(&curRev)
+		err = tx.QueryRowContext(ctx, `SELECT revision FROM `+table+` WHERE id = ?`, id).Scan(&curRev)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -903,7 +933,7 @@ func (s *Store) Delete(ctx context.Context, kind Kind, id string, rev int64, gua
 			return err
 		}
 		// No placement to resolve: a delete removes a reference, never adds one.
-		return validateAfterWrite(ctx, tx, kind, "")
+		return validateAfterWrite(ctx, tx, kind, "", prior)
 	})
 }
 

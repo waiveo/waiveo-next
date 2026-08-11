@@ -126,7 +126,12 @@ const minSigningSecretLen = 32
 // A secret placed in a query string is exactly the leak the house rule names, so
 // a URL that carries one is refused at the door rather than being stored and
 // then carefully not logged.
-func validateWebhookEndpoint(_ *server, body []byte) []datamodel.Error {
+//
+// It discards the scopeView `validate` hands it: every judgement here is made
+// from the request body alone, so there is no stored row whose visibility could
+// decide the answer (see the `validate` field's doc for when the view is not
+// optional).
+func validateWebhookEndpoint(_ *server, _ scopeView, body []byte) []datamodel.Error {
 	var ep struct {
 		URL     string   `json:"url"`
 		Schemas []string `json:"schemas"`

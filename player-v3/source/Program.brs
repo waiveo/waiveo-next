@@ -328,7 +328,13 @@ function wvDoProgram(state as Object) as Object
             ' duration_ms when it carries one (PLY-083b), else this player's
             ' default dwell. A single-slide Lease simply re-renders itself each
             ' cycle (the clock timer is torn down and restarted cleanly).
-            castOut.Push({ contentType: "slide", layers: layers, durationMs: wvItemDurationMs(item) })
+            ' slideId is the item's CAST-LOCAL slide id (LeaseContent.slide_id),
+            ' carried through untouched. It is what a `nav` layer's items resolve
+            ' their jump target against, and what a press reports so the platform
+            ' can attribute an interaction to the slide that solicited it. An item
+            ' that carries none (an inline slide item, a generated alert slide)
+            ' yields "" and simply never matches a nav target.
+            castOut.Push({ contentType: "slide", layers: layers, durationMs: wvItemDurationMs(item), slideId: wvStr(item.slide_id) })
 
         else if itemType = "image" or itemType = "video"
             fv = wvEnsureContent(item, itemType)

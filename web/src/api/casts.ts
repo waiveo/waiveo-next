@@ -35,7 +35,7 @@ import type { ResourceModule } from "./resources";
 export const SLIDE_CANVAS_WIDTH = 1920;
 export const SLIDE_CANVAS_HEIGHT = 1080;
 
-/** The nine v1 layer kinds (`wire.LayerKind*`), in the order the openapi enum
+/** The eleven layer kinds (`wire.LayerKind*`), in the order the openapi enum
  * declares them. A closed set: the wire's validator refuses anything else, and
  * the projector DROPS a slide whose layers do not validate rather than serving
  * it malformed — so an editor that let an operator author a tenth kind would
@@ -52,7 +52,7 @@ export const SLIDE_CANVAS_HEIGHT = 1080;
  * that cast at all, for a reason the server did not agree with. A kind the
  * server accepts and this array omits is not a missing capability, it is a
  * broken editor. */
-export const LAYER_KINDS = ["text", "rect", "image", "clock", "date", "countdown", "weather", "entity", "video"] as const;
+export const LAYER_KINDS = ["text", "rect", "image", "clock", "date", "countdown", "weather", "entity", "video", "ping", "nav"] as const;
 export type LayerKind = (typeof LAYER_KINDS)[number];
 
 /** The four kinds whose content is LIVE — computed rather than typed in. Two are
@@ -66,8 +66,14 @@ export type WidgetLayerKind = (typeof WIDGET_LAYER_KINDS)[number];
 
 /** The kinds the player draws as a Label — everything but the two content-bearing
  * kinds and `rect`. These are the layers that carry `font_px`, `color` and
- * `align`, so the properties panel offers those three for exactly this set. */
-export const LABEL_LAYER_KINDS = ["text", "clock", "date", "countdown", "weather", "entity"] as const;
+ * `align`, so the properties panel offers those three for exactly this set.
+ *
+ * The two INTERACTIVE kinds are in it because the player draws them with the
+ * identical Label path: a `ping` is its label, and a `nav` draws one label per
+ * item through the same styling (PhotonScene.renderSlide). A button an operator
+ * cannot set the size or colour of is a button they cannot make readable across
+ * a room, which is the only place these are ever used. */
+export const LABEL_LAYER_KINDS = ["text", "clock", "date", "countdown", "weather", "entity", "ping", "nav"] as const;
 
 /** Whether a layer kind is drawn as a Label (and so carries text styling). */
 export function isLabelKind(kind: LayerKind): boolean {
@@ -86,6 +92,86 @@ export type ContentLayerKind = (typeof CONTENT_LAYER_KINDS)[number];
 /** Whether a layer kind's content is bytes the player must fetch. */
 export function isContentKind(kind: LayerKind): kind is ContentLayerKind {
   return (CONTENT_LAYER_KINDS as readonly string[]).includes(kind);
+}
+
+/** The two INTERACTIVE kinds — the first layers whose value flows from the
+ * screen back to the box. A `ping` is a button the viewer focuses with the
+ * remote and presses OK on, raising a durable `screen.interaction` event an
+ * automation can trigger on; a `nav` is a D-pad menu whose items jump to another
+ * slide of the same cast. */
+export const INTERACTIVE_LAYER_KINDS = ["ping", "nav"] as const;
+
+/** Whether a layer is FOCUSABLE on the player — the console-side mirror of
+ * `wire.LayerIsInteractive`, and it must mirror BOTH of its arms.
+ *
+ * A `nav` is focusable by kind (its items are the targets). Everything else is
+ * focusable exactly when it carries a `ping_name`, which is legal on ANY kind
+ * and is what turns an ordinary widget into an interactive one. Testing the KIND
+ * alone here would draw no focus affordance on the very layers an operator most
+ * needs to be told are now pressable — the entity reading they just made
+ * interactive — while the player happily focuses them. */
+export function isInteractiveLayer(layer: SlideLayer): boolean {
+  return layer.kind === "nav" || Boolean(layer.ping_name);
+}
+
+/** A ping name must be a slug: the value travels to a rules/1 `event` trigger's
+ * `match` constraint, where an automation author retypes it by hand and
+ * "Front Desk " would never match "front desk". Mirrors `wire.ValidPingName`. */
+export const PING_NAME_PATTERN = /^[a-z0-9][a-z0-9_.-]*$/;
+export const PING_NAME_MAX = 64;
+
+/** A nav layer's menu is bounded — the items share the layer's box, so past this
+ * many the per-item region is too small to read across a room. Mirrors
+ * `wire.maxNavItems`. */
+export const NAV_ITEMS_MAX = 8;
+
+/** The smallest side, in canvas pixels, a FOCUSABLE region may have — a
+ * pressable layer's own box, or one cell of a menu. Mirrors
+ * `wire.MinInteractiveSide`.
+ *
+ * It is a legibility floor: the canvas is shown on a wall and driven by a remote
+ * from across a room, and below roughly this size a focus outline cannot be told
+ * apart at viewing distance. The Studio's canvas is scaled DOWN, which is
+ * precisely what makes the mistake easy to make here and impossible to see. */
+export const MIN_INTERACTIVE_SIDE = 48;
+
+/** One entry of a `nav` layer's menu (`wire.NavItem`). Both members are
+ * required: a label-less item is an unreadable target, and a target-less one is
+ * a menu entry that accepts a press and performs nothing. */
+export interface NavItem {
+  label: string;
+  /** The cast-local id (`CastSlide.id`) of the slide pressing OK jumps to. */
+  target_slide_id: string;
+}
+
+/** Lay a nav layer's items out inside its own box: one `[x, y, w, h]` per item,
+ * in item order. The console-side mirror of `wire.NavItemRects`, which the
+ * PLAYER also transcribes (PhotonScene.wvNavItemRects) — the three must agree,
+ * because this one decides where the Studio DRAWS an item and the player's
+ * decides where it FOCUSES one, and a disagreement puts the focus ring somewhere
+ * other than the label it belongs to.
+ *
+ * The axis follows the box's own aspect (wider than tall is a row, otherwise a
+ * column), so the drawn geometry alone decides orientation and there is no
+ * second authored field to contradict it. The last item absorbs the
+ * integer-division remainder so the items exactly fill the box. */
+export function navItemRects(layer: SlideLayer): Array<[number, number, number, number]> {
+  const items = layer.items ?? [];
+  const n = items.length;
+  if (n <= 0) return [];
+  const out: Array<[number, number, number, number]> = [];
+  if (layer.w >= layer.h) {
+    const cell = Math.floor(layer.w / n);
+    for (let i = 0; i < n; i++) {
+      out.push([layer.x + cell * i, layer.y, i === n - 1 ? layer.w - cell * (n - 1) : cell, layer.h]);
+    }
+    return out;
+  }
+  const cell = Math.floor(layer.h / n);
+  for (let i = 0; i < n; i++) {
+    out.push([layer.x, layer.y + cell * i, layer.w, i === n - 1 ? layer.h - cell * (n - 1) : cell]);
+  }
+  return out;
 }
 
 /** The weather template tokens the BOX substitutes (`slidelive`'s closed set).
@@ -149,6 +235,13 @@ export interface SlideLayer {
   color?: string;
   /** A Label kind's horizontal alignment. Optional. */
   align?: LayerAlign;
+  /** The stable name a press on this layer reports. Required for `ping`, and
+   * OPTIONAL ON EVERY OTHER KIND — carrying one is what makes an ordinary widget
+   * focusable and pressable (`wire.LayerIsInteractive`). It is the value a
+   * rules/1 `event` trigger matches on. */
+  ping_name?: string;
+  /** `nav`: the ordered menu. Legal on no other kind. */
+  items?: NavItem[];
 }
 
 /** One slide of a cast: an ordered layer stack plus how long it holds the screen.
@@ -286,9 +379,87 @@ export function validateSlide(slide: CastSlide): SlideProblem[] {
     }
     if (l.kind === "weather" && !l.text) at("A weather widget needs a display template, e.g. \u007Btemp\u007D\u00B0 \u007Bcond\u007D.");
     if (l.kind === "entity" && !l.entity_id) at("Choose which entity this widget shows.");
+    // The two INTERACTIVE kinds.
+    if (l.kind === "ping") {
+      if (!l.text) at("A button needs a label people can read before pressing it.");
+      if (!l.ping_name) at("A button needs an event name, so an automation has something to trigger on.");
+    }
+    if (l.kind === "nav") {
+      if (!l.items || l.items.length === 0) at("A menu needs at least one item.");
+      if (l.items && l.items.length > NAV_ITEMS_MAX) at(`A menu holds at most ${NAV_ITEMS_MAX} items.`);
+      (l.items ?? []).forEach((item, n) => {
+        if (!item.label) at(`Menu item ${n + 1} needs a label.`);
+        if (!item.target_slide_id) at(`Menu item ${n + 1} needs a slide to jump to.`);
+      });
+    }
+    // The two interactive MEMBERS, checked on EVERY layer rather than inside
+    // the kind branches above — the same split `wire.validateSlideLayers`
+    // makes, and for the same reason. A `ping_name` is legal on any kind, so
+    // checking its grammar only under `ping` leaves every interactive widget
+    // ungated; `items` are legal only on `nav`, so their presence elsewhere can
+    // only be caught out here. Each is the MIRROR direction of the other, which
+    // is exactly the direction this repo's past half-fixes missed.
+    if (l.ping_name && (!PING_NAME_PATTERN.test(l.ping_name) || l.ping_name.length > PING_NAME_MAX)) {
+      at(`Event name "${l.ping_name}" must be lower-case letters, digits, "_", "-" or "." (up to ${PING_NAME_MAX}).`);
+    }
+    if (l.items && l.items.length > 0 && l.kind !== "nav") at("Only a menu layer can have menu items.");
+    // The legibility floor, over BOTH arms of "interactive" — the same rule and
+    // the same two definitions the wire applies (`wire.MinInteractiveSide` over
+    // `LayerIsInteractive`/`NavItemRects`). Mirrored here because the editor's
+    // canvas is scaled down: a region that looks perfectly clickable in a
+    // 600-pixel-wide editor is a thumbnail on the wall, and without this the
+    // first the operator hears of it is a 422 on save.
+    if (isInteractiveLayer(l)) {
+      if (l.kind === "nav") {
+        navItemRects(l).forEach(([, , iw, ih], n) => {
+          if (iw < MIN_INTERACTIVE_SIDE || ih < MIN_INTERACTIVE_SIDE) {
+            at(`Menu item ${n + 1} is ${iw}×${ih} — too small to see focus on across a room (minimum ${MIN_INTERACTIVE_SIDE}px). Make the menu bigger or carry fewer items.`);
+          }
+        });
+      } else if (l.w < MIN_INTERACTIVE_SIDE || l.h < MIN_INTERACTIVE_SIDE) {
+        at(`A pressable layer must be at least ${MIN_INTERACTIVE_SIDE}×${MIN_INTERACTIVE_SIDE} so a viewer can see focus on it and aim a remote at it.`);
+      }
+    }
     if (l.color && !HEX_COLOR.test(l.color)) at(`Colour "${l.color}" is not a #RRGGBB value.`);
   });
   return problems;
+}
+
+/**
+ * Every nav item in `slides` whose target names no slide of the SAME cast, as
+ * problems keyed by the slide the menu sits on.
+ *
+ * This rule cannot live in `validateSlide`: it sees one slide and has no idea
+ * what the other slides are called. It is the console mirror of
+ * `datamodel.checkNavTargets` (`CAST_NAV_TARGET_UNKNOWN`), which is the server's
+ * cast-level gate — and mirroring it here is what turns a 422 on save into a
+ * message beside the item while the operator is still building the menu.
+ *
+ * It matters most on the ordinary edit that breaks it: deleting a slide another
+ * slide's menu points at. Nothing about that deletion looks wrong, and without
+ * this the next save fails with a server error naming an item the operator has
+ * long since stopped thinking about.
+ */
+export function validateNavTargets(slides: CastSlide[]): Map<number, SlideProblem[]> {
+  const declared = new Set(slides.map((s) => s.id).filter((id) => id !== ""));
+  const out = new Map<number, SlideProblem[]>();
+  slides.forEach((slide, si) => {
+    slide.layers.forEach((l, li) => {
+      if (l.kind !== "nav") return;
+      (l.items ?? []).forEach((item, n) => {
+        // An EMPTY target is already reported by validateSlide; reporting it
+        // again here would show two messages for one mistake.
+        if (!item.target_slide_id || declared.has(item.target_slide_id)) return;
+        const list = out.get(si) ?? [];
+        list.push({
+          index: li,
+          message: `Menu item ${n + 1} jumps to a slide ("${item.target_slide_id}") this cast no longer has.`,
+        });
+        out.set(si, list);
+      });
+    });
+  });
+  return out;
 }
 
 /** Every problem across a whole cast, keyed by slide index — what the Studio's
@@ -299,5 +470,13 @@ export function validateCastSlides(slides: CastSlide[]): Map<number, SlideProble
     const problems = validateSlide(s);
     if (problems.length > 0) out.set(i, problems);
   });
+  // The CAST-level rules are merged in here rather than left for a caller to
+  // remember: every surface that gates on slide validity reads this one function
+  // (the save gate, the filmstrip badges, the properties panel), so a rule added
+  // beside it instead of into it would be enforced by whichever of them happened
+  // to be updated.
+  for (const [i, navProblems] of validateNavTargets(slides)) {
+    out.set(i, [...(out.get(i) ?? []), ...navProblems]);
+  }
   return out;
 }

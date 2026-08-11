@@ -1031,3 +1031,118 @@ describe("Studio — cast playback settings", () => {
     expect(body.slides?.[0]?.duration_ms).toBe(25_000);
   });
 });
+
+/**
+ * The two INTERACTIVE kinds (tracker rows 1.5 and 3.7), driven the way an
+ * operator drives them and asserted on the body that reaches the server.
+ *
+ * These matter more than most Studio cases because the thing being authored is
+ * BEHAVIOUR, not appearance: a button whose event name never reaches the save
+ * body looks identical on the canvas to one whose does, and the difference only
+ * shows up as an automation that never fires.
+ */
+describe("Studio — interactive layers", () => {
+  it("inserts a Button, names its event, and saves both halves", async () => {
+    const saved: { body?: SavedBody } = {};
+    server.use(...serveCast(cast(), saved));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await user.click(screen.getByRole("button", { name: "Button" }));
+
+    // It lands COMPLETE — label and event name both set — so it is drawable and
+    // pressable the moment it is inserted.
+    const label = screen.getByLabelText("Button label");
+    await user.clear(label);
+    await user.type(label, "Call for service");
+
+    const name = screen.getByLabelText("Event name");
+    await user.clear(name);
+    // Typed the way a person types it; the field normalises to the slug the
+    // wire enforces rather than reporting an error on every keystroke.
+    await user.type(name, "Call Service");
+    expect(name).toHaveValue("call_service");
+
+    await user.click(saveButton());
+    const layers = (await waitForSave(saved)).slides?.[0]?.layers ?? [];
+    expect(layers[3]).toMatchObject({
+      kind: "ping",
+      text: "Call for service",
+      ping_name: "call_service",
+    });
+  });
+
+  it("makes an ordinary widget pressable by giving it an event name (row 3.7)", async () => {
+    // The interactive-WIDGET half: no new kind, the same one field on a layer
+    // that already exists. Driven on the fixture's clock layer.
+    const saved: { body?: SavedBody } = {};
+    server.use(...serveCast(cast(), saved));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await user.click(canvasLayer(3, /Layer 3: Clock/));
+    await user.type(screen.getByLabelText(/Event name/), "clock_tapped");
+
+    await user.click(saveButton());
+    const layers = (await waitForSave(saved)).slides?.[0]?.layers ?? [];
+    expect(layers[2]).toMatchObject({ kind: "clock", ping_name: "clock_tapped" });
+  });
+
+  it("builds a Menu whose item jumps to another slide of the same cast", async () => {
+    const twoSlides = cast({
+      slides: [
+        {
+          id: "slide-1",
+          layers: [{ kind: "text", x: 120, y: 200, w: 900, h: 160, text: "Welcome" }],
+        },
+        {
+          id: "slide-2",
+          layers: [{ kind: "text", x: 120, y: 200, w: 900, h: 160, text: "Rooms" }],
+        },
+      ],
+    });
+    const saved: { body?: SavedBody } = {};
+    server.use(...serveCast(twoSlides, saved));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Text — Welcome/ });
+
+    await user.click(screen.getByRole("button", { name: "Menu" }));
+    // A menu lands EMPTY of items: its targets can only be slides of this cast,
+    // which the layer default cannot know.
+    expect(screen.getByText(/No items yet/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Add item/ }));
+    const itemLabel = screen.getByLabelText("Item 1 label");
+    await user.clear(itemLabel);
+    await user.type(itemLabel, "Rooms");
+    // The target is a SELECT over the cast's real slides, so a dead-end target
+    // is unreachable from this surface.
+    await user.selectOptions(screen.getByLabelText("Jumps to"), "slide-2");
+
+    await user.click(saveButton());
+    const layers = (await waitForSave(saved)).slides?.[0]?.layers ?? [];
+    expect(layers[1]).toMatchObject({
+      kind: "nav",
+      items: [{ label: "Rooms", target_slide_id: "slide-2" }],
+    });
+  });
+
+  it("holds the save when a menu item has no target yet", async () => {
+    // The gate the whole nav design rests on: a menu item that would accept a
+    // press and perform nothing must never reach the server.
+    const saved: { body?: SavedBody } = {};
+    server.use(...serveCast(cast(), saved));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await user.click(screen.getByRole("button", { name: "Menu" }));
+    await user.click(screen.getByRole("button", { name: /Add item/ }));
+
+    expect(saveButton()).toBeDisabled();
+    expect(screen.getByText(/needs a slide to jump to/i)).toBeInTheDocument();
+  });
+});

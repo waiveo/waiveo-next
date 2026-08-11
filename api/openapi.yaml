@@ -3922,6 +3922,30 @@ components:
         updated_at:
           $ref: "#/components/schemas/Timestamp"
 
+    SlideNavItem:
+      type: object
+      description: >-
+        One entry of a `nav` layer's menu (`data-model/1` DAT-043): the label the
+        viewer reads and the cast-local slide id pressing OK jumps to. Both
+        members are required — a label-less item is an unreadable target and a
+        target-less one is a menu entry that accepts a press and performs
+        nothing. The target names a slide by `CastSlide.id`, never by an index
+        into delivered content: a cast's slides are projected into the same
+        content array as whatever else the playlist carries, so an index authored
+        against the cast addresses the wrong item the moment an entry is inserted
+        before it. `POST/PATCH /casts` additionally refuses a target naming no
+        slide of the same cast (`CAST_NAV_TARGET_UNKNOWN`).
+      required: [label, target_slide_id]
+      additionalProperties: false
+      properties:
+        label:
+          type: string
+          minLength: 1
+          maxLength: 64
+        target_slide_id:
+          type: string
+          minLength: 1
+          maxLength: 64
     SlideLayer:
       type: object
       description: >-
@@ -3935,7 +3959,7 @@ components:
       properties:
         kind:
           type: string
-          enum: [text, rect, image, clock, date, countdown, weather, entity, video]
+          enum: [text, rect, image, clock, date, countdown, weather, entity, video, ping, nav]
           description: >-
             The closed layer-kind set, and it MUST stay equal to
             `internal/shared/wire`'s own (`slideLayerKinds`) — same members, same
@@ -3953,6 +3977,51 @@ components:
             create — the shape of defect this repo keeps producing, and the one
             that shipped in wave 1 (the four widget kinds landed on the wire and
             the player, and `POST /casts` answered 422 for every one of them).
+            `ping` and `nav` are the INTERACTIVE kinds — the first layers whose
+            value flows from the screen back to the box. A `ping` is a labelled
+            button the viewer focuses with the remote and presses OK on, raising
+            a durable `screen.interaction` event an automation can trigger on; a
+            `nav` is a D-pad menu whose items jump to another slide of the same
+            cast. A `qr` kind is deliberately ABSENT: a QR code's substance is a
+            raster, and the rasterizer that would mint its `asset_ref` does not
+            exist in this deployment yet — publishing the kind before its
+            producer is the same create-with-no-renderer defect wearing the
+            other face.
+        ping_name:
+          type: string
+          maxLength: 64
+          pattern: "^[a-z0-9][a-z0-9_.-]*$"
+          description: >-
+            The stable name a press on this layer reports. A layer carrying one
+            is FOCUSABLE: the player gives it a focus region the viewer can move
+            the remote onto, and OK posts the press back to the relay, which
+            raises a durable `screen.interaction` event carrying this exact
+            value — the value a `rules/1` `event` trigger matches on. Required
+            for `ping`, and OPTIONAL FOR EVERY OTHER KIND, which is what makes an
+            ordinary widget (an `entity` reading, an `image`, a `rect` used as an
+            invisible hotspot) an interactive one with no second mechanism. It is
+            a slug rather than free text because an automation author retypes it
+            into a trigger's match constraint, where "Front Desk " and
+            "front desk" would look identical and never match. A layer carrying
+            one must also be at least 48x48 canvas pixels: below that a focus
+            outline cannot be told apart at television viewing distance, so a
+            viewer cannot see what pressing OK would do.
+        items:
+          type: array
+          minItems: 1
+          maxItems: 8
+          description: >-
+            A `nav` layer's ordered menu, and legal on NO other kind. The items
+            are laid out inside the layer's own box along its longer axis — a
+            wide nav is a horizontal row, a tall one a vertical column — so the
+            drawn geometry alone decides the orientation and there is no second
+            `layout` member that could contradict it. Bounded at eight because
+            the items share the box: past that the per-item region is too small
+            to read at viewing distance or to show focus on. Each item's own
+            laid-out cell must likewise be at least 48x48 canvas pixels, which is
+            a joint constraint on the menu's size and its item count.
+          items:
+            $ref: "#/components/schemas/SlideNavItem"
         x:
           type: integer
           minimum: 0
@@ -4206,13 +4275,37 @@ components:
         cursor:
           $ref: "#/components/schemas/Cursor"
 
+    PlaylistInlineSlide:
+      type: object
+      description: >-
+        A `source: "slide"` playlist item's INLINE authored slide (`data-model/1`
+        DAT-041): one ordered layer stack, carried on the item itself rather than
+        referenced. It is the anonymous twin of a `CastSlide` — no `id`, because
+        nothing outside the item can address it, and no `duration_ms`, because
+        the item's own `duration_seconds` is its dwell time. Its layers pass the
+        SAME authoring gate a cast's slides do, with one difference that follows
+        from having no cast around it: a `nav` layer jumps by cast-local slide
+        id, and an inline slide has no sibling slides to target, so a `nav` layer
+        is refused here (`PLAYLIST_ITEM_SLIDE_LAYERS_INVALID`). A `ping` is
+        legal — pressing it raises a `screen.interaction` event, which needs no
+        slide id-space at all.
+      required: [layers]
+      additionalProperties: false
+      properties:
+        layers:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/SlideLayer"
+
     PlaylistItem:
       type: object
       description: >-
         One entry of a playlist's `items` (DAT-041). `source` selects which
         content shape the entry uses — `asset` carries `asset_ref`, `playable`
-        carries `pack_id` + `content_id`, `cast` carries `cast_id` — and
-        data-model/1 enforces that pairing with its own per-field codes.
+        carries `pack_id` + `content_id`, `slide` carries an inline `slide`,
+        `cast` carries `cast_id` — and data-model/1 enforces that pairing with
+        its own per-field codes.
         A `cast` entry is the one source that is not one-to-one with a played
         item: it expands, at projection time, into one slide content item per
         slide of the referenced cast, in authored order.
@@ -4221,7 +4314,17 @@ components:
       properties:
         source:
           type: string
-          enum: [asset, playable, cast]
+          enum: [asset, playable, slide, cast]
+          description: >-
+            The CLOSED source vocabulary (DAT-041). `slide` was shipped on the
+            wire and honoured by both content projections before it was declared
+            here, which made this document's `additionalProperties: false` +
+            enum an active lie: a generated client could not express a playlist
+            the server accepts, and the console's own round trip dropped the
+            inline slide. A value outside this set is refused
+            (`PLAYLIST_ITEM_SOURCE_INVALID`) rather than stored, because no
+            projection has an arm for one — the item would be kept and then
+            contribute nothing to the screen.
         asset_ref:
           type: string
         content_type:
@@ -4241,6 +4344,8 @@ components:
           type: string
         content_id:
           type: string
+        slide:
+          $ref: "#/components/schemas/PlaylistInlineSlide"
         cast_id:
           type: string
           pattern: "^[0-9A-HJKMNP-TV-Z]{26}$"

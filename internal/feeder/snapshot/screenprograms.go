@@ -429,6 +429,13 @@ func castContent(rowStore datamodel.RowStore, castID string, itemDurationMS int6
 				Layers:      layers,
 				ExpiresAt:   layersExpireAt,
 				DurationMS:  datamodel.SlideDwellMS(slide, c, itemDurationMS),
+				// The cast-local slide id rides onto the reference so a `nav`
+				// layer's items can name a jump target that survives projection
+				// (wire.ContentRef.SlideID -> wire.LeaseContent.SlideID). Only a
+				// CAST slide has one; an inline `slide` playlist item and a
+				// generated alert slide leave it empty, and their references
+				// marshal byte-identically to before this field existed.
+				SlideID: slide.ID,
 			})
 		}
 		return out

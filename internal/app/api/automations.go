@@ -22,10 +22,19 @@ import (
 // resource envelope around a rules/1 Rule; like a scheduling-core row, its OWN
 // scope_node is both its placement (what a selector's `scope_node`/`scope_node
 // subtree` term evaluates against) and its external_id uniqueness grouping
-// (API-101). It sets no per-kind `validate` hook: the compile-gate is enforced in
-// the store's Create/Update (compile.Compile), and the store's typed
-// *compile.CompileError is surfaced as 422 / VALIDATION_FAILED by writeStoreError
-// (api.go) — the compiler is the single validator, never re-run here.
+// (API-101).
+//
+// The rule DOCUMENT is validated by the compile gate in the store's Create/Update
+// (compile.Compile), whose typed *compile.CompileError writeStoreError (api.go)
+// surfaces as 422 / VALIDATION_FAILED — the compiler is the single validator of
+// rules/1 grammar and is never re-run here.
+//
+// The `validate` hook covers the one rule the compiler structurally cannot: an
+// action target's PLACEMENT. compile.Compile is a pure rules/1 package with no
+// scope tree and no store, so it can see that `screen_id` is a well-formed ULID
+// and not that the screen it names sits outside the automation's own subtree —
+// which is the difference between a rule that runs and a rule that fires and
+// refuses every time. See automationtargets.go.
 func automationsConfig() resourceConfig {
 	return resourceConfig{
 		kind:         store.KindAutomation,
@@ -38,6 +47,7 @@ func automationsConfig() resourceConfig {
 		placement:    func(f resourceFields) string { return f.ScopeNode },
 		extScope:     func(f resourceFields) string { return f.ScopeNode },
 		writeScope:   func(f resourceFields) string { return f.ScopeNode },
+		validate:     automationTargetsInScope,
 	}
 }
 

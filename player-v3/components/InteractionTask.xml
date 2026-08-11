@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!-- InteractionTask: the one thread on which this player POSTs a viewer's press
+     back to the relay (POST /player/v1/interaction — interactive slide layers,
+     parity milestones 1.5/3.7). An HTTP round trip cannot happen on the render
+     thread: roUrlTransfer's wait() would block every Label, every Video and the
+     D-pad itself for the duration, so a screen would visibly freeze each time
+     somebody pressed a button on it.
+
+     EXACTLY ONE of these exists, created once by PhotonScene and never
+     re-created — the same rule IdleDefeatTask states and for the same reason:
+     Task threads survive the removal of the node that owns them, and this fleet
+     has already halted a channel by hitting the firmware thread cap with
+     per-event Tasks. The legacy player created a fresh ApiTask per press, which
+     is precisely that shape; a wall panel somebody presses a few hundred times a
+     day would reach the cap on its own.
+
+     Fields:
+       press    — the scene writes one {lease_id, interaction, slide_id} press
+                  here. A field WRITE is the queue: this task observes the field
+                  through a message port, so a press posted while a previous one
+                  is still in flight is delivered by the port rather than lost.
+       stopFlag — cooperative shutdown; PhotonScene.shutdown() sets it and the
+                  loop returns at its next wake-up.
+
+     Storage/Http are included explicitly because SceneGraph component scopes do
+     not inherit pkg:/source globals. Pairing.brs is deliberately NOT included
+     even though Http.brs calls its wvStr: pulling it in would drag the whole
+     pairing/crypto chain (Base32, Asn1, PairCode, Commitment) into a thread that
+     posts one small JSON body. InteractionTask.brs defines wvStr itself instead,
+     which satisfies Http.brs from this component's own flat scope. The relay address, the channel token and
+     the pinned trust anchor are read from persisted state HERE rather than
+     passed down from the scene: they are credentials, the scene has no other use
+     for them, and reading them at press time means a re-paired player posts to
+     the relay it is paired to NOW. -->
+<component name="InteractionTask" extends="Task">
+  <interface>
+    <field id="press" type="assocarray" />
+    <field id="stopFlag" type="boolean" value="false" />
+  </interface>
+  <script type="text/brightscript" uri="pkg:/components/InteractionTask.brs" />
+  <script type="text/brightscript" uri="pkg:/source/Storage.brs" />
+  <script type="text/brightscript" uri="pkg:/source/Http.brs" />
+</component>

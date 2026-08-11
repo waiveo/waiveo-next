@@ -30,10 +30,14 @@ const (
 	LatestOnly
 )
 
-// The five events/1 registered schemas this channel carries (REL-095) —
-// exactly the ones REL-093/094 name. events/1's own catalog additionally
-// registers audit.event and variable.changed (EVT-020), but relay/1 does not
-// carry either over this channel, so ClassOf reports them unknown (ok=false).
+// The six events/1 registered schemas this channel carries (REL-095) — the
+// ones REL-093/094 name, plus screen.interaction, which is carried here for the
+// reason REL-095 exists at all: the relay is where a viewer's press is OBSERVED
+// (a player POSTs it to /player/v1/interaction), so the only way it reaches the
+// app's durable event log is up this channel. events/1's own catalog
+// additionally registers audit.event and variable.changed (EVT-020), but relay/1
+// does not carry either over this channel, so ClassOf reports them unknown
+// (ok=false).
 const (
 	// SchemaEntityStateChanged is events/1 EVT-030's schema name.
 	SchemaEntityStateChanged = "entity.state_changed"
@@ -41,16 +45,25 @@ const (
 	SchemaAutomationRun = "automation.run"
 	// SchemaContentPlayed is events/1 EVT-050's schema name.
 	SchemaContentPlayed = "content.played"
+	// SchemaScreenInteraction is events/1 EVT-055's schema name.
+	SchemaScreenInteraction = "screen.interaction"
 	// SchemaDeviceHeartbeat is events/1 EVT-060's schema name.
 	SchemaDeviceHeartbeat = "device.heartbeat"
 	// SchemaBoxVitals is events/1 EVT-070's schema name.
 	SchemaBoxVitals = "box.vitals"
 )
 
-// schemaClass is the REL-093/094 classification table for exactly the five
+// schemaClass is the REL-093/094 classification table for exactly the six
 // registered schemas this channel carries (REL-095).
+//
+// screen.interaction is DURABLE, and specifically not latest-only: EVT-056
+// forbids coalescing two presses, because they are two facts about what a person
+// did. A latest-only classing here would discard the earlier of two rapid
+// presses before it was ever delivered — silently, and counted as no loss at all
+// (REL-104) — which is precisely the under-report the event exists to prevent.
 var schemaClass = map[string]Class{
 	SchemaContentPlayed:      Durable,
+	SchemaScreenInteraction:  Durable,
 	SchemaAutomationRun:      Durable,
 	SchemaEntityStateChanged: Durable,
 	SchemaDeviceHeartbeat:    LatestOnly,
@@ -58,7 +71,7 @@ var schemaClass = map[string]Class{
 }
 
 // ClassOf reports schema's REL-093/094 retention Class. ok is false for any
-// schema outside the five this channel carries (REL-095) — including
+// schema outside the six this channel carries (REL-095) — including
 // events/1's own audit.event and variable.changed, and any pack-contributed
 // schema (events/1 EVT-021's namespaced `<publisher>/<name>.<local-name>`
 // form) — this channel defines no behavior for those.

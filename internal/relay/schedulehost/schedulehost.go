@@ -446,6 +446,14 @@ func castContent(store datamodel.RowStore, castID string, itemDurationMS int64, 
 				Type:       leaseContentTypeSlide,
 				Layers:     layers,
 				DurationMS: datamodel.SlideDwellMS(slide, c, itemDurationMS),
+				// The cast-local slide id, carried for `nav` jump targeting
+				// exactly as snapshot.castContent carries it onto its own
+				// ContentRef. This projection produces a LeaseContent directly
+				// (no ContentRef hop), so forgetting it here would make a nav
+				// menu work on the app-authored path and silently dead-end on the
+				// relay-resolved one — the two-projections-disagree failure this
+				// file's own twin note exists to prevent.
+				SlideID: slide.ID,
 			})
 		}
 		return out

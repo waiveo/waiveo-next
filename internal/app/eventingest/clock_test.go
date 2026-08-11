@@ -36,7 +36,7 @@ const ingestFloorClampedMs int64 = 64_060_588_800_000
 func TestIngestStampsTSFromTheInjectedClock(t *testing.T) {
 	reading := ingestFloorClampedMs
 	log := events.NewEventLog(0)
-	h := New(log, siteScope, seqIDs(), func() int64 { return reading }, testRelay().Authorizer())
+	h := New(log, siteScope, seqIDs(), func() int64 { return reading }, testRelay().Authorizer(), nil)
 
 	postBatch(t, h, pushBatch(autoEntry(1, validAutomationRunPayload())))
 	got := log.After("")
@@ -73,6 +73,6 @@ func TestNewRefusesWithoutAClock(t *testing.T) {
 			t.Fatal("New with a nil clock returned a handler; an ingest that can be built without naming its clock will eventually be built without one")
 		}
 	}()
-	var h http.Handler = New(events.NewEventLog(0), siteScope, seqIDs(), nil, testRelay().Authorizer())
+	var h http.Handler = New(events.NewEventLog(0), siteScope, seqIDs(), nil, testRelay().Authorizer(), nil)
 	_ = h
 }

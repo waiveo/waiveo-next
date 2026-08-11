@@ -32,12 +32,31 @@ import (
 // to the signed bytes of an item that carries no layers. A relay populates it
 // only after ValidateSlideLayers accepts the layers (a malformed slide is never
 // served, internal/relay/playerserver.SetServedProgram).
+//
+// SlideID is the CAST-LOCAL id of the authored slide a `slide` item was
+// projected from (data-model/1 DAT-043's CastSlide.id), carried onto the wire so
+// a `nav` layer's items can name a jump target that survives projection
+// (LayerKindNav): the player matches a NavItem.TargetSlideID against this field
+// to find which content item to present.
+//
+// It is `omitempty` and set ONLY for a slide item that came from a cast, so
+// every other item — and every slide from an inline playlist item or a generated
+// alert, neither of which has a cast-local id — marshals with no `slide_id` key,
+// byte-identical to every prior release and therefore covered by the same
+// LeaseSignedBytes signature it always was.
+//
+// Matching by id rather than by array position is the whole point: a cast's
+// slides are projected into the SAME content array as whatever else the playlist
+// carries, so an index authored against the cast addresses the wrong item the
+// moment an entry is inserted before it — the class of bug that shows a menu
+// working in the editor and jumping to the wrong slide on the wall.
 type LeaseContent struct {
 	Type       string  `json:"type"`
 	AssetRef   string  `json:"asset_ref"`
 	URL        string  `json:"url"`
 	ExpiresAt  int64   `json:"expires_at"`
 	DurationMS int64   `json:"duration_ms,omitempty"`
+	SlideID    string  `json:"slide_id,omitempty"`
 	Layers     []Layer `json:"layers,omitempty"`
 }
 
@@ -115,7 +134,64 @@ const (
 	// is what keeps the two content projections' URL derivation from drifting
 	// into deriving one and not the other.
 	LayerKindVideo = "video"
+
+	// LayerKindPing is a VIEWER-PRESSABLE BUTTON: a labelled region the viewer
+	// moves the remote's focus onto and presses OK on, at which point the player
+	// POSTs the press back to the platform (`POST /player/v1/interaction`) and
+	// the relay raises a durable `screen.interaction` event an automation can
+	// trigger on (internal/events/screen_interaction.go, rules/1 RUL-080).
+	//
+	// It is the FIRST layer kind whose value flows the other way. Every other
+	// kind is something the box tells a screen to draw; this one is something a
+	// screen tells the box. That direction is the whole capability class the
+	// legacy system had and this one lacked: a "call for service" button on a
+	// lobby panel, a "start the tour" button in a museum, a shift handover
+	// acknowledgement. Its authored half is PingName — the stable name an
+	// automation matches on — and its drawn half is Text, the label a human
+	// reads before pressing it.
+	//
+	// PingName is NOT exclusive to this kind, and that is deliberate: any layer
+	// may carry one, which makes any layer focusable and pressable (see
+	// LayerIsInteractive). `ping` is simply the kind that REQUIRES one and draws
+	// itself as a button — an `entity` widget or an `image` with a ping_name is
+	// an interactive widget, the same mechanism wearing a different face. One
+	// mechanism rather than two is what keeps "focusable" from meaning one thing
+	// for buttons and another for widgets.
+	LayerKindPing = "ping"
+
+	// LayerKindNav is an on-screen MENU the viewer drives with the remote's
+	// D-pad: an ordered set of items, each of which jumps to another slide of
+	// the same cast when OK is pressed on it.
+	//
+	// Its items are laid out inside the layer's own box along its longer axis
+	// (see NavItemRects) — a wide nav is a horizontal row, a tall one a vertical
+	// column — so the authored geometry alone decides the orientation and there
+	// is no second `layout` field for an author to set inconsistently with the
+	// box they drew.
+	//
+	// A nav item targets a slide by the cast-local slide id (NavItem.TargetSlideID
+	// -> LeaseContent.SlideID), never by an index into the Lease's content array:
+	// a cast's slides are projected into that array alongside whatever else the
+	// playlist carries, so an index authored against the cast would address the
+	// wrong item — or nothing — the moment a playlist gained an entry before it.
+	// The authoring gate additionally refuses a target naming no slide of the
+	// cast (datamodel.checkCastSlides), so a menu item that could only ever
+	// dead-end cannot be stored in the first place.
+	LayerKindNav = "nav"
 )
+
+// A `qr` layer kind is deliberately ABSENT from this set. A QR code's substance
+// is a raster — a module grid whose bytes must exist somewhere a player can
+// fetch and content-address-verify, exactly as an `image` layer's do — and this
+// deployment's rasterizer (waiveo-derive) is a separate track. The seam it lands
+// on is already the one `image`/`video` use: a `qr` kind would be a THIRD member
+// of LayerFetchesContent whose AssetRef/URL are minted by the derive service at
+// projection time (internal/feeder/snapshot.resolveLayers and
+// internal/relay/schedulehost.resolveLayers, the two call sites that predicate
+// already names) from the layer's authored payload. Adding the kind before that
+// producer exists would ship a kind an author can select, a validator accepts,
+// and no projection can ever give bytes to — this repo's signature defect. It is
+// left out until the rasterizer it needs is real.
 
 // LayerFetchesContent reports whether a layer of this kind names bytes in the
 // content origin — i.e. whether it carries an `asset_ref` a player must fetch
@@ -138,6 +214,165 @@ func LayerFetchesContent(kind string) bool {
 	return kind == LayerKindImage || kind == LayerKindVideo
 }
 
+// LayerIsInteractive reports whether a layer is FOCUSABLE — whether the player
+// gives it a focus region the viewer can move the remote's D-pad onto and press
+// OK on (interactive slide layers, parity milestones 1.5/3.7).
+//
+// Two things make a layer interactive, and they are different capabilities, not
+// two spellings of one:
+//
+//   - a non-empty PingName, on ANY kind. Pressing OK POSTs the press back to the
+//     platform, which raises a durable `screen.interaction` event. This is both
+//     the `ping` kind's own behavior and what makes an ordinary widget (an
+//     `entity` reading, an `image`, a `rect` used as a hotspot) an INTERACTIVE
+//     widget — tracker row 3.7 — with no second mechanism.
+//   - a `nav` kind, whose Items each get their own focus region within the
+//     layer's box and jump to another slide of the cast on OK.
+//
+// It is a shared predicate for the same reason LayerFetchesContent is one: the
+// question "is this layer focusable?" is asked by the validator (which layers may
+// carry which interactive fields), by the player's focus-target builder, and by
+// the Studio canvas that draws a focus affordance. Three inline spellings of it
+// is how a kind becomes focusable in one of them and inert in the others —
+// a button that highlights and does nothing, or one that works and shows no
+// focus at all.
+func LayerIsInteractive(l Layer) bool {
+	return l.PingName != "" || l.Kind == LayerKindNav
+}
+
+// NavItem is one entry of a `nav` layer's menu (LayerKindNav): the label the
+// viewer reads and the cast-local slide id pressing OK jumps to.
+//
+// Both members are required. A label-less item is an unreadable target, and a
+// target-less item is a menu entry that accepts a press and performs nothing —
+// the dead-end surface this repo keeps producing, refused here at the wire shape
+// rather than discovered on a wall.
+//
+// Launching ANOTHER Roku channel (legacy's `launch_app` nav action) is not
+// modelled: it needs a channel-id vocabulary, a launch capability declaration on
+// the player, and a return path back to this channel, none of which exist here
+// yet. A single-purpose `target_slide_id` is the honest subset — see the track
+// report; the field to add later is a discriminated `action` object, which is why
+// this shape names the target explicitly rather than calling it `to`.
+type NavItem struct {
+	Label         string `json:"label"`
+	TargetSlideID string `json:"target_slide_id"`
+}
+
+// MinInteractiveSide is the smallest side, in canvas pixels, a FOCUSABLE region
+// may have — a pressable layer's own box, or one cell of a nav's menu.
+//
+// It is a legibility floor, not a rendering limit. The canvas is 1920x1080 shown
+// on a wall and driven by a remote from across a room: below roughly this size a
+// focus outline is not distinguishable at viewing distance, so a viewer cannot
+// tell what pressing OK would do. The Studio's canvas is scaled DOWN, which is
+// what makes the mistake easy — a region that looks fine in a 600-pixel-wide
+// editor is a thumbnail on the wall.
+//
+// It is enforced at the wire, over both arms of LayerIsInteractive, so an
+// unusable control is refused at authoring time rather than discovered by
+// somebody standing in front of the screen.
+const MinInteractiveSide = 48
+
+// maxNavItems bounds a nav layer's menu. The items share the layer's own box
+// (NavItemRects), so every extra item shrinks all of them; past this count the
+// per-item region on a 1920×1080 canvas is too small to read at viewing distance
+// and too small to show focus on. Bounding it here — where the stack is
+// validated — means a player never has to decide what to do with a menu it
+// cannot draw.
+const maxNavItems = 8
+
+// NavItemRects lays a `nav` layer's items out inside the layer's own box and
+// returns one rect per item, in item order.
+//
+// The layout axis follows the box's own aspect: a box wider than it is tall is a
+// horizontal row of equal-width items, otherwise a vertical column of
+// equal-height items. Deriving the axis from the geometry rather than from a
+// separate authored `layout` field is what makes it impossible to author a tall
+// box declared "horizontal" — the two could disagree, and the drawn result would
+// be the geometry while the D-pad behaviour followed the declaration.
+//
+// It lives HERE, beside the Layer shape and the canvas constants, because two
+// consumers must compute the identical rects: the PLAYER (which draws the items
+// and hit-tests focus against them) and the STUDIO canvas (which shows the
+// author what the menu will look like). A second copy is how an author places a
+// menu that focuses somewhere other than where it draws. The player is
+// BrightScript and cannot call this function, so it carries its own transcription
+// (PhotonScene.wvNavItemRects) — pinned to this one by
+// TestNavItemRectsMatchesPlayerTranscription, which reads the .brs source, rather
+// than left to drift.
+//
+// Integer division leaves at most (n-1) pixels unallocated at the far edge; the
+// LAST item absorbs the remainder so the row exactly fills the box rather than
+// ending a few pixels short of it.
+func NavItemRects(l Layer) [][4]int {
+	n := len(l.Items)
+	if n <= 0 {
+		return nil
+	}
+	out := make([][4]int, n)
+	if l.W >= l.H {
+		step := l.W / n
+		for i := 0; i < n; i++ {
+			w := step
+			if i == n-1 {
+				w = l.W - step*(n-1)
+			}
+			out[i] = [4]int{l.X + step*i, l.Y, w, l.H}
+		}
+		return out
+	}
+	step := l.H / n
+	for i := 0; i < n; i++ {
+		h := step
+		if i == n-1 {
+			h = l.H - step*(n-1)
+		}
+		out[i] = [4]int{l.X, l.Y + step*i, l.W, h}
+	}
+	return out
+}
+
+// pingNameMaxLen bounds a ping name. It is an identifier an automation matches
+// on and a durable event payload field, not prose.
+const pingNameMaxLen = 64
+
+// navLabelMaxLen and navTargetMaxLen bound a nav item's two members. The target
+// bound matches the authored cast slide id's own maximum (api/openapi.yaml's
+// CastSlide.id maxLength) — a target longer than any id could be can only ever
+// name nothing.
+const (
+	navLabelMaxLen  = 64
+	navTargetMaxLen = 64
+)
+
+// ValidPingName reports whether s is a well-formed ping name: 1..64 characters
+// of lowercase ASCII letters, digits, `_`, `-` and `.`, starting with a letter or
+// digit.
+//
+// It is deliberately a SLUG rather than free text. The value travels three
+// places that all key on it — the interaction request body, the durable
+// `screen.interaction` event payload, and a rules/1 `event` trigger's `match`
+// constraint — and an automation author types it by hand into the third. Free
+// text would make "Front Desk " and "front desk" two names that look identical
+// in a console and never match, with nothing anywhere saying why the automation
+// did not fire.
+func ValidPingName(s string) bool {
+	if s == "" || len(s) > pingNameMaxLen {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+		case (c == '_' || c == '-' || c == '.') && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // slideLayerKinds is the closed kind set above as a slice, in declaration
 // order — the ONE enumeration ValidateSlideLayers both tests membership against
 // and names in its rejection message, so a kind added to the constants above and
@@ -147,6 +382,7 @@ var slideLayerKinds = []string{
 	LayerKindText, LayerKindRect, LayerKindImage, LayerKindClock,
 	LayerKindDate, LayerKindCountdown, LayerKindWeather, LayerKindEntity,
 	LayerKindVideo,
+	LayerKindPing, LayerKindNav,
 }
 
 // isSlideLayerKind reports whether kind is one of the closed set.
@@ -267,6 +503,20 @@ type Layer struct {
 	// placeholder) so the widget degrades to a dash while the rest of the slide
 	// keeps drawing.
 	Value string `json:"value,omitempty"`
+	// PingName is the stable name a press on this layer reports (interactive
+	// slide layers, parity milestones 1.5/3.7). A layer that carries one is
+	// FOCUSABLE (LayerIsInteractive): the player gives it a focus region, and OK
+	// POSTs `{ping_name, …}` to the relay, which raises a durable
+	// `screen.interaction` event carrying this exact value — the value a rules/1
+	// `event` trigger's `match` constrains on. Required for `ping`, OPTIONAL for
+	// every other kind (that is what makes an ordinary widget an interactive one),
+	// and a slug wherever present (ValidPingName).
+	PingName string `json:"ping_name,omitempty"`
+	// Items is a `nav` layer's ordered menu (NavItem). Required (1..8 entries)
+	// for `nav`, and REJECTED on every other kind — a stack that carries menu
+	// items on a `rect` is a producer that thinks it authored a menu, and
+	// silently drawing a rectangle instead is worse than refusing it.
+	Items []NavItem `json:"items,omitempty"`
 }
 
 // ValidateSlideLayers is the ONE gate a `slide` content item's layers pass
@@ -307,6 +557,14 @@ type Layer struct {
 //     on a `weather`/`entity` layer — see Value's own doc: it is filled at
 //     Lease issuance, an authored layer never carries one, and demanding it
 //     here would let an unreachable forecast service drop an entire slide.
+//     A `ping` needs BOTH a label in Text and a PingName; a `nav` needs 1..8
+//     Items, each with a label and a target_slide_id.
+//   - The two INTERACTIVE members are checked on EVERY layer, not only on the
+//     kind that requires them, because each can be wrong in the mirror
+//     direction a per-kind switch cannot see: a PingName is legal on any kind
+//     (that is what makes an ordinary widget interactive) so its grammar is
+//     enforced wherever it appears, and Items are legal ONLY on `nav` so their
+//     presence anywhere else is refused.
 //   - Any Color that is present — the required `rect` fill, or an optional
 //     `text`/`clock` foreground — is a well-formed `#RRGGBB` hex string. This
 //     is validated wherever a color appears, not only where it is required:
@@ -421,6 +679,78 @@ func validateSlideLayers(layers []Layer, requireContentURL bool) error {
 			if l.EntityID == "" {
 				return fmt.Errorf("wire: slide layer %d (entity): entity_id is required", i)
 			}
+		case LayerKindPing:
+			// A ping is a BUTTON: it needs a label a human can read before
+			// pressing it (Text) and the name the press reports (PingName). Both,
+			// because either one alone produces a surface that is exactly half a
+			// button — an unlabelled hotspot, or a labelled control that reports
+			// nothing.
+			if l.Text == "" {
+				return fmt.Errorf("wire: slide layer %d (ping): a button label (text) is required", i)
+			}
+			if l.PingName == "" {
+				return fmt.Errorf("wire: slide layer %d (ping): ping_name is required", i)
+			}
+		case LayerKindNav:
+			if len(l.Items) == 0 {
+				return fmt.Errorf("wire: slide layer %d (nav): at least one menu item is required", i)
+			}
+			if len(l.Items) > maxNavItems {
+				return fmt.Errorf("wire: slide layer %d (nav): %d items exceeds the maximum of %d", i, len(l.Items), maxNavItems)
+			}
+			for j, it := range l.Items {
+				if it.Label == "" || len(it.Label) > navLabelMaxLen {
+					return fmt.Errorf("wire: slide layer %d (nav): item %d needs a label of 1..%d characters", i, j, navLabelMaxLen)
+				}
+				if it.TargetSlideID == "" || len(it.TargetSlideID) > navTargetMaxLen {
+					return fmt.Errorf("wire: slide layer %d (nav): item %d needs a target_slide_id of 1..%d characters", i, j, navTargetMaxLen)
+				}
+			}
+		}
+
+		// The two INTERACTIVE members are checked outside the per-kind switch,
+		// on every layer, because that is where they can go wrong:
+		//
+		//   - `ping_name` is legal on ANY kind (LayerIsInteractive — an entity
+		//     widget with one is an interactive widget), so its grammar cannot be
+		//     enforced from the `ping` case alone. Checking it only there is the
+		//     exact half-fix this codebase has shipped before: the REQUIRED
+		//     direction covered and the OPTIONAL-on-other-kinds direction not, so
+		//     a malformed name reaches an automation's match constraint on every
+		//     kind but one.
+		//   - `items` is legal ONLY on `nav`, so its absence is checked in the
+		//     switch and its PRESENCE ELSEWHERE has to be checked here — the
+		//     mirror direction, which is the one a per-kind switch structurally
+		//     cannot see.
+		// An interactive region must be big enough to SEE FOCUS ON and to aim a
+		// remote at from across a room. This is where LayerIsInteractive and
+		// NavItemRects earn their place as shared definitions rather than as
+		// player-side details: the rule is one rule over "the regions a viewer can
+		// focus", and those two say what those regions are for both arms of the
+		// mechanism — the whole layer for anything carrying a ping name, each
+		// laid-out CELL for a nav's items. A 12-pixel menu cell (eight items in a
+		// hundred-pixel box) is authored in a second in an editor whose canvas is
+		// scaled down, and is unreadable and unhittable on the wall it ships to.
+		if LayerIsInteractive(l) {
+			if l.Kind == LayerKindNav {
+				for j, r := range NavItemRects(l) {
+					if r[2] < MinInteractiveSide || r[3] < MinInteractiveSide {
+						return fmt.Errorf("wire: slide layer %d (nav): item %d's region is %dx%d, below the %dpx minimum a viewer can focus and press; make the menu bigger or carry fewer items",
+							i, j, r[2], r[3], MinInteractiveSide)
+					}
+				}
+			} else if l.W < MinInteractiveSide || l.H < MinInteractiveSide {
+				return fmt.Errorf("wire: slide layer %d (%s): a pressable layer is %dx%d, below the %dpx minimum a viewer can focus and press",
+					i, l.Kind, l.W, l.H, MinInteractiveSide)
+			}
+		}
+
+		if l.PingName != "" && !ValidPingName(l.PingName) {
+			return fmt.Errorf("wire: slide layer %d (%s): ping_name %q must be 1..%d characters of lowercase a-z, 0-9, '_', '-' or '.', starting with a letter or digit",
+				i, l.Kind, l.PingName, pingNameMaxLen)
+		}
+		if len(l.Items) > 0 && l.Kind != LayerKindNav {
+			return fmt.Errorf("wire: slide layer %d (%s): only a nav layer may carry items", i, l.Kind)
 		}
 
 		// A color, wherever present, must be a renderable #RRGGBB — required

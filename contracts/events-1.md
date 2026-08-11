@@ -61,7 +61,7 @@ events/1 defines the platform's client push channel: the durable-event envelope,
 
 ### Registered-schema catalog — general
 
-**[EVT-020]** The catalog of platform-registered schemas — `entity.state_changed`, `automation.run`, `content.played`, `device.heartbeat`, `box.vitals`, `audit.event`, `variable.changed` — is additive-only: a new registered schema MAY be added by a later events/1 minor; a published schema's already-defined field MUST NOT change type or meaning, and MUST NOT be removed, within major version 1.
+**[EVT-020]** The catalog of platform-registered schemas — `entity.state_changed`, `automation.run`, `content.played`, `screen.interaction`, `device.heartbeat`, `box.vitals`, `audit.event`, `variable.changed` — is additive-only: a new registered schema MAY be added by a later events/1 minor; a published schema's already-defined field MUST NOT change type or meaning, and MUST NOT be removed, within major version 1.
 
 **[EVT-021]** A registered schema's `schema` value MUST be a bare `<domain>.<name>` string (lowercase, `.`-separated, no `/`). A pack-contributed schema's `schema` value is the pack-namespaced event name `manifest/1` MAN-090 defines (`<publisher>/<name>.<local-name>`), which always contains a `/` from its owning pack ID. These two forms are mutually exclusive by construction, so the registered and pack-contributed namespaces never collide.
 
@@ -124,6 +124,22 @@ events/1 defines the platform's client push channel: the durable-event envelope,
 **[EVT-051]** A `content.played` event MUST be emitted once `t_end` is known for a given playback occurrence — this schema reports completed (or definitively ended) playback windows, never an in-progress one; a still-playing asset has not yet produced its event.
 
 **[EVT-052]** `program_revision` MUST identify the exact compiled program revision in force at `t_start`, so a playback record remains attributable to a specific desired-state generation even after a later revision has since been applied.
+
+### `screen.interaction`
+
+**[EVT-055]** The `screen.interaction` schema publishes ONE viewer interaction with a screen: a press the person standing in front of the panel made on an interactive element of the content it is showing. It is the only registered schema whose subject is a human action rather than a machine observation, and the only one whose causal direction runs screen → platform. Its payload MUST validate against:
+
+| field | type | notes |
+|---|---|---|
+| `screen_id` | ULID | The screen the interaction happened on, resolved by the relay from the presented channel credential — never a self-asserted field of the request. |
+| `interaction` | string | The interactive element's authored name, as the content it is showing declared it (`data-model/1` DAT-043's slide-layer `ping_name`). This is the field an automation matches on. |
+| `lease_id` | string | The Lease the screen was presenting when the press happened, so an interaction is attributable to exactly what was on screen. |
+| `slide_id` | string, optional | The cast-local slide id of the item the pressed element belonged to, when the content carried one. |
+| `at` | Timestamp | When the relay observed the press. |
+
+**[EVT-056]** A `screen.interaction` event MUST be emitted once per accepted press, and MUST NOT be coalesced with another press of the same element: two presses are two facts about what a person did, and a schema that merged them would silently under-report the one thing this event exists to record. Its retention class is therefore the durable telemetry tier, never a latest-only one.
+
+**[EVT-057]** `interaction` MUST be carried verbatim from the authored element name, with no normalization, case folding, or trimming applied by any producer or consumer on the path. An automation matches this value exactly (`rules/1` RUL-081), so any hop that "helpfully" adjusts it makes a rule that looks correct never fire.
 
 ### `device.heartbeat`
 

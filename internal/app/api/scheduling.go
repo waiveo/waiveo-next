@@ -114,7 +114,7 @@ func playlistsConfig() resourceConfig {
 // `source: "slide"` item — an item whose content is its layer stack carries no
 // item-level asset_ref, so the hand-written check this replaced saw an inline
 // slide as referencing nothing at all and let its images through un-gated.
-func validatePlaylistAssets(srv *server, body []byte) []datamodel.Error {
+func validatePlaylistAssets(srv *server, _ scopeView, body []byte) []datamodel.Error {
 	return validateRowAssets(srv, store.KindPlaylist, body)
 }
 

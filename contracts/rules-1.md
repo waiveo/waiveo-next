@@ -614,6 +614,14 @@ rules/1 has no live wire handshake of its own; it governs the authored rule shap
 | `MISFIRE_INVALID` | A trigger's `misfire` is not one of `catch_up_once`, `skip`, or `fire_each` (RUL-350). | no |
 | `PRESET_NOT_FOUND` | A `preset_batch` action's `preset_id` does not resolve to an existing preset row at compile time. | no |
 
+## Field-level error register
+
+These appear as an `errors[].code` on a `422 VALIDATION_FAILED` (`api/1` API-013), never as a Problem's top-level `code`. They are the refusals a rule document's own compiler cannot make, because they depend on platform state a pure rules/1 implementation does not hold.
+
+| code | meaning | retryable |
+|---|---|---|
+| `ACTION_TARGET_OUT_OF_SCOPE` | An action names a target by id — a signage action's `screen_id` (RUL-233) or a device-affecting action's `entity_id` (RUL-010) — that resolves to a scope node outside the automation row's own placement subtree. A rule runs under the authority its author had to hold to write it (`security-model/1` SEC-005/SEC-010, inherited down the tree), so such a target is refused per target at every firing: accepting the write stores a rule that fires, does nothing, and reports nothing an operator reads. Refused at authoring instead, naming the offending member. The per-firing refusal is NOT thereby redundant — placement changes after authoring (a screen moved, a node re-parented or deleted), and the run's own record reports what it refused. A `selector` target is not covered: it resolves against what the rule may read, which the same subtree already bounds. | no — target something the rule's own subtree contains, or place the rule higher |
+
 ## Conformance notes
 
 - Traceability map: `conformance/traceability/rules-1.md` — maps every `RUL-NNN` above to the case(s) that exercise it.

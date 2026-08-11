@@ -42,6 +42,30 @@
          decoding (and audible) behind whatever replaced it — the same rule
          clearComposed applies to composed video layers. -->
     <Group id="slideLayers" visible="false" />
+    <!-- focusRing is the ONE visible focus affordance for interactive slide
+         layers (a `ping` button, a `nav` menu item — interactive slide layers,
+         parity milestones 1.5/3.7). It is four thin Rectangles forming an
+         outline, because a SceneGraph Rectangle has no border of its own and a
+         "highlight by recoloring the target" scheme would have to know how every
+         layer kind draws itself (a Label's color, a Poster's, a Video's — which
+         has none).
+
+         It is DECLARED here, once, rather than created per slide: the ring is
+         repositioned as focus moves and hidden when a slide carries nothing
+         focusable, so its four nodes are allocated exactly once for the life of
+         the app. A per-slide ring would be four more nodes to remember to remove
+         in clearSlide, on the same teardown path that already has to stop timers
+         and videos — and the one that got forgotten would be an outline drawn
+         around a layer that no longer exists.
+
+         It sits AFTER slideLayers so it paints on top of every layer, including
+         a full-canvas image or a video. -->
+    <Group id="focusRing" visible="false">
+      <Rectangle id="focusRingTop" color="0x8B5CF6FF" />
+      <Rectangle id="focusRingBottom" color="0x8B5CF6FF" />
+      <Rectangle id="focusRingLeft" color="0x8B5CF6FF" />
+      <Rectangle id="focusRingRight" color="0x8B5CF6FF" />
+    </Group>
     <Label id="statusLabel" text="Waiveo Player v3" translation="[80,960]" width="1760" />
     <Timer id="castTimer" repeat="false" />
     <!-- slideClockTimer refreshes every SELF-TICKING layer of the showing slide

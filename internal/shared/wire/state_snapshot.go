@@ -197,8 +197,15 @@ type ScreenProgram struct {
 //     after wire.ValidateSlideLayers accepts them — the SAME layer shape the
 //     player ultimately draws, not a re-encoding of it. Only a `slide` item
 //     ever populates it.
+//   - SlideID carries the CAST-LOCAL id of the authored slide a cast-projected
+//     `slide` item came from (DAT-043's CastSlide.id), feeder→relay→player, so a
+//     `nav` layer's items can name a jump target that survives projection. It is
+//     the ContentRef counterpart of LeaseContent.SlideID and, like Layers, a
+//     relay carries it onto the Lease content item unmodified. Only a slide
+//     projected FROM A CAST populates it: an inline `slide` playlist item and a
+//     generated alert slide have no cast-local id, so they leave it empty.
 //
-// All three additive fields marshal `omitempty` so a ContentRef built without
+// All four additive fields marshal `omitempty` so a ContentRef built without
 // them (every call site that predates each) marshals byte-identically to
 // before its introduction — no new JSON keys appear, and no snapshot hash
 // changes, unless a caller actually populates one. A slice `omitempty` omits
@@ -210,6 +217,7 @@ type ContentRef struct {
 	ExpiresAt   int64   `json:"expires_at"`
 	ContentType string  `json:"content_type,omitempty"`
 	DurationMS  int64   `json:"duration_ms,omitempty"`
+	SlideID     string  `json:"slide_id,omitempty"`
 	Layers      []Layer `json:"layers,omitempty"`
 }
 
