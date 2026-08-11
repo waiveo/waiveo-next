@@ -456,16 +456,21 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
           className="flex flex-col gap-2 rounded-card border border-border bg-card p-5 wv-elevation"
         >
           <h2 id="live-heading" className="text-lg font-semibold">
-            Installing does not restart anything
+            Installing happens live
           </h2>
           <p className="text-sm text-muted-foreground">
             An extension is a <strong>sealed, signed pack</strong>: a manifest, its pages, its
-            message catalogs and the data collections it declares. <strong>None of it runs</strong>{" "}
-            — a pack is data this box validates and renders, not code it executes. Installing one
-            writes those files and its collections in a single transaction, and the pack's pages
-            appear in the navigation immediately. There is no image rebuild, no service restart and
-            no reboot in that path. Removing one takes its pages, its authored rows and its install
-            records away in one transaction too.
+            message catalogs and the data collections it declares. Installing one writes those files
+            and its collections in a single transaction, and the pack's pages appear in the
+            navigation immediately. There is no image rebuild and no reboot in that path. Removing
+            one takes its pages, its authored rows and its install records away in one transaction
+            too.
+          </p>
+          <p className="text-sm text-muted-foreground">
+            Every pack installable today is <strong>declarative</strong> — data this box validates
+            and renders. Extensions that carry code install through this same signed pipeline; some
+            of those will need a quick restart of the application server to take effect, never a
+            reboot of the box.
           </p>
         </section>
 
