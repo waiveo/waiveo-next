@@ -512,6 +512,16 @@ func TestAScreenFetchingContentIsItsOwnRowAndItsOwnCount(t *testing.T) {
 		t.Errorf("roll-up content_transfer_window_ms = %d, want %d — the roll-up published a `fetching` COUNT and not the line it was counted at, so a consumer that wanted to treat those screens as stale had a number it could not reinterpret",
 			got, screens.ContentTransferWindowMs)
 	}
+	// ALL THREE lines, per row and in the roll-up. `fetching` is decided by an age
+	// AND a count, and this was the one still missing after the age line was
+	// added: two of three thresholds is the same defect one line along, because a
+	// consumer that has two believes it has the rule and reproduces a different
+	// one. The per-row surface publishes all three (asserted above); the fleet
+	// summary of the same judgement has to as well.
+	if got := int64(sc["fetching_max_unacked_pulls"].(float64)); got != screens.MaxFetchingUnackedPulls {
+		t.Errorf("roll-up fetching_max_unacked_pulls = %d, want %d — the PROGRESS bound is what expires `fetching` for a screen that keeps pulling and never acknowledges, which no age can, and a roll-up that withholds it cannot be re-derived by its reader",
+			got, screens.MaxFetchingUnackedPulls)
+	}
 	// And the fleet is not `down`: a transferring screen is still talking to its
 	// relay and still showing its previous program.
 	if got := serviceNamed(t, h, "screens")["status"]; got != "degraded" {

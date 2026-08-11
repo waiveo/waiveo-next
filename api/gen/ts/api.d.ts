@@ -2016,9 +2016,14 @@ export interface components {
             live_window_ms: number;
             /**
              * Format: int64
-             * @description The threshold fetching/stale was decided by, republished for the same reason. It was missing: this roll-up published a `fetching` COUNT and no way to redraw the line it was counted at, so a consumer that wanted to treat those screens as stale — a defensible reading, since nothing has been heard back from them — had a number it could not reinterpret. Both lines or neither.
+             * @description The AGE threshold fetching/stale was decided by, republished for the same reason. It was missing: this roll-up published a `fetching` COUNT and no way to redraw the line it was counted at, so a consumer that wanted to treat those screens as stale — a defensible reading, since nothing has been heard back from them — had a number it could not reinterpret.
              */
             content_transfer_window_ms: number;
+            /**
+             * Format: int64
+             * @description The PROGRESS threshold fetching/stale was decided by — the most outstanding pulls a screen may have and still be counted `fetching`. `fetching` rests on both bounds, and this is the one that does what the age bound cannot: a screen that answers every pull and never acknowledges re-stamps its own age forever and no window can expire it. Left out while the age line was published, which restates the same defect one line along — a consumer holding two of three thresholds believes it has the whole rule and reproduces a different one. All three lines, or none. `/screen-status` publishes the same three per row.
+             */
+            fetching_max_unacked_pulls: number;
         };
         SystemHealth: {
             /**

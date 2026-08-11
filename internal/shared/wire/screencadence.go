@@ -331,8 +331,9 @@ const ScreenFailedPullTolerance int64 = 1
 // `fetching` about a wall that had never fetched anything and never would.
 //
 // That was not a cosmetic mislabel. It disabled two things at once: the
-// operator-facing chip said "Collecting content" and "still showing the last"
-// about a screen that was doing neither, and the fleet roll-up
+// operator-facing chip said "Collecting content" — and, in the phrasing of the
+// day, that the previous program was still up — about a screen that was doing
+// neither, and the fleet roll-up
 // (internal/app/api/diagnostics.go) grades `down` on `Live == 0 && Fetching ==
 // 0`, so an entire site in this state read `degraded` forever and never `down`.
 // The fleet-dark alarm was switched off for exactly the failure it exists for.
@@ -363,9 +364,18 @@ const ScreenFailedPullTolerance int64 = 1
 // # The counter this is applied to
 //
 // internal/relay/playerserver keeps it: one `unackedPulls` per screen,
-// incremented when a program pull is served and reset to zero when an ack
-// arrives. It rides the `screen.status` frame as `unacked_pulls`. Note the same
-// caveat the age comparison has — noteLeaseAck correlates nothing, so ANY ack
-// resets the counter, and "N unacknowledged pulls" means "N pulls served since
-// the last ack of any kind".
+// incremented when a program pull is served a Lease WITH CONTENT and reset to
+// zero when an ack arrives. It rides the `screen.status` frame as
+// `unacked_pulls`. Two caveats, both of which change what a number here means:
+//
+//   - noteLeaseAck correlates nothing (the same caveat the age comparison has),
+//     so ANY ack resets the counter and "N unacknowledged pulls" means "N
+//     content-bearing pulls served since the last ack of any kind".
+//   - an EMPTY Lease is not counted. It carries nothing to fetch and gets no ack
+//     — the shipped player returns before wvAckLease on an empty content array,
+//     the same way it does on a failed fetch — so counting one would accumulate
+//     an obligation that can never be discharged. That is the ordinary state of
+//     a freshly paired screen (terminalDefault) and of every screen scheduled
+//     blank overnight, and while those counted, the first real program a box
+//     served read `stale` mid-download and a one-screen site graded `down`.
 const ScreenFetchingMaxUnackedPulls int64 = OutstandingPullsWhileTransferring + ScreenFailedPullTolerance

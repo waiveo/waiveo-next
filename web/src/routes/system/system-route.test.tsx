@@ -80,10 +80,12 @@ function healthBody(over: Partial<SystemHealth> = {}): SystemHealth {
       // fixture carrying a withdrawn number is a fixture that has stopped
       // describing the system it stands in for.
       live_window_ms: 52_000,
-      // The fetching/stale line, republished alongside the fetching COUNT. The
-      // roll-up carried the count and not the line for a round, which left a
-      // consumer no way to reinterpret it.
+      // The two fetching/stale lines, republished alongside the fetching COUNT.
+      // The roll-up carried the count and neither line for a round, then the age
+      // line and not the progress one — and two of three thresholds is the same
+      // defect, because a consumer that has two believes it has the rule.
       content_transfer_window_ms: 172_000,
+      fetching_max_unacked_pulls: 2,
     },
     ...over,
   };

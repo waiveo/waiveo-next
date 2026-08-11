@@ -5,7 +5,12 @@ import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { ThemeProvider } from "@/components/theme/theme-provider";
 import { Toaster } from "@/components/kit/toaster";
-import { LiveScreensPanel, formatAge, nowPlayingLabel } from "./live-screens-panel";
+import {
+  LiveScreensPanel,
+  formatAge,
+  nowPlayingLabel,
+  SCREEN_STATUS_FIELDS_WITH_NO_SHIPPED_PRODUCER,
+} from "./live-screens-panel";
 import { createApi, type Cast, type ScreenStatus } from "@/api";
 import { TEST_BASE, TRACE_ID, problem } from "@/api/test-support";
 
@@ -91,6 +96,27 @@ function withoutRender(over: Partial<ScreenStatus> = {}): ScreenStatus {
   return row;
 }
 
+/** A status row as REAL HARDWARE produces it: every render-evidence field pinned
+ * to its never value, because no shipped producer populates them.
+ *
+ * `statusRow` is a generous fixture — it carries a `render_asset_ref` and a
+ * five-second-old render start, neither of which any deployed screen has ever
+ * sent. That is fine for cases about a field's formatting, and fatal for cases
+ * about a BRANCH: two of round 3's tests proved a clause worked without proving
+ * it was reachable, and the clause was in fact dead on every real row.
+ *
+ * The pins are driven off the exported list rather than written out, so a player
+ * that implements PLY-110 shortens one list and this fixture stops lying in the
+ * other direction. */
+function asShippedPlayerSends(over: Partial<ScreenStatus> = {}): ScreenStatus {
+  const row = statusRow(over);
+  for (const field of SCREEN_STATUS_FIELDS_WITH_NO_SHIPPED_PRODUCER) {
+    if (field === "render_asset_ref") delete row.render_asset_ref;
+    else row.last_render_start_age_ms = -1;
+  }
+  return row;
+}
+
 function page(items: unknown[]) {
   return HttpResponse.json({ items, cursor: null }, { headers: { "Trace-Id": TRACE_ID } });
 }
@@ -166,38 +192,85 @@ describe("nowPlayingLabel", () => {
     ).toBe("Waiting to collect its program");
   });
 
-  it("does not claim a screen fetching its FIRST program is still showing the last", () => {
-    // Never rendered anything: `last_render_start_age_ms` is the never sentinel
-    // and there is no `render_asset_ref`. The wall is blank and the screen is
-    // collecting its first content — "still showing the last" describes a screen
-    // that does not exist, and sends an operator away from a genuinely blank TV.
+  it("says a transferring screen is downloading, and says nothing about the wall", () => {
+    // Both of these are rows the shipped player can actually produce: the render
+    // fields are at their never values, because player-v3 does not implement
+    // PLY-110 and so never posts /player/v1/render/start.
     //
-    // `content_count` is 3, deliberately: it is the count of the Lease being
-    // collected RIGHT NOW, so it is at its most positive exactly here. A guard
-    // that accepted it would still be wrong.
-    const firstEver = withoutRender({
-      reachability: "fetching",
-      last_render_start_age_ms: -1,
-      unacked_pulls: 1,
-      content_count: 3,
-    });
-    expect(nowPlayingLabel(firstEver)).toBe("Collecting its first content (nothing on screen yet)");
-  });
-
-  it("still says a screen that HAS rendered keeps showing it through a transfer", () => {
-    // The other side of the same guard — never-wipe means the outgoing program
-    // stays on the wall for the whole download, and saying so is the difference
-    // between an operator waiting and an operator driving to the site.
+    // A screen collecting its first-ever program and a screen picking up an
+    // update to one it has shown all week are INDISTINGUISHABLE in that row, and
+    // the label must therefore describe the transfer rather than the glass. It
+    // said "Collecting its first content (nothing on screen yet)" for both, which
+    // is a false claim about a physical wall on every ordinary update.
+    //
+    // `content_count` is 3 in the first case deliberately: it is the count of the
+    // Lease being collected RIGHT NOW, so it is at its most positive exactly when
+    // the wall may be blank. It is not evidence either.
     expect(
       nowPlayingLabel(
-        statusRow({
+        asShippedPlayerSends({ reachability: "fetching", unacked_pulls: 1, content_count: 3 }),
+      ),
+    ).toBe("Downloading new content");
+    expect(
+      nowPlayingLabel(
+        asShippedPlayerSends({
           reachability: "fetching",
           unacked_pulls: 1,
-          render_asset_ref: "sha256:previous",
-          last_render_start_age_ms: 90_000,
+          content_count: 3,
+          program_revision: "rev-week-old",
         }),
       ),
-    ).toBe("Downloading new content (still showing the last)");
+    ).toBe("Downloading new content");
+  });
+
+  it("never claims wall state on a row the shipped player can actually produce", () => {
+    // The defect class this whole case exists for: a UI branch keyed on a field
+    // that has no producer on real hardware. `last_render_start_age_ms` and
+    // `render_asset_ref` have exactly one producer between them — the relay's
+    // POST /player/v1/render/start — and player-v3 never calls it, so on every
+    // real row the "has it rendered?" question answers "nobody said", not "no".
+    //
+    // So: sweep the whole field space the shipped player CAN produce, and fail if
+    // any label asserts what is or is not on the glass. The two forbidden claims
+    // are the two the round-3 branch made.
+    //
+    // If the player ever implements PLY-110, re-arm this by shortening
+    // SCREEN_STATUS_FIELDS_WITH_NO_SHIPPED_PRODUCER — the assertion below reads
+    // that list, so the guard relaxes deliberately rather than by being deleted.
+    const wallClaims = ["still showing", "nothing on screen"];
+    const reachabilities: ScreenStatus["reachability"][] = [
+      "live",
+      "fetching",
+      "stale",
+      "never_seen",
+    ];
+    for (const reachability of reachabilities) {
+      for (const display of ["content", "blank"] as const) {
+        for (const content_count of [0, 1, 3]) {
+          for (const program_revision of ["", "rev-1"]) {
+            const row = asShippedPlayerSends({
+              reachability,
+              display,
+              content_count,
+              program_revision,
+              unacked_pulls: reachability === "fetching" ? 1 : 0,
+            });
+            const label = nowPlayingLabel(row);
+            for (const claim of wallClaims) {
+              expect(
+                label.toLowerCase().includes(claim),
+                `nowPlayingLabel said ${JSON.stringify(label)} for a row the shipped player can produce ` +
+                  `(${reachability}/${display}/${content_count} items). That asserts what is on the physical ` +
+                  `wall, and the only fields that could substantiate it — ` +
+                  `${SCREEN_STATUS_FIELDS_WITH_NO_SHIPPED_PRODUCER.join(", ")} — have no producer on real ` +
+                  `hardware (player-v3 does not implement PLY-110). A cell that guesses at the glass is worse ` +
+                  `than one that only reports the transfer.`,
+              ).toBe(false);
+            }
+          }
+        }
+      }
+    }
   });
 
   it("lets a scheduled blank outrank the transfer state", () => {
@@ -240,20 +313,21 @@ describe("LiveScreensPanel — status", () => {
     // the raw enum and an undefined chip variant, which is the half-of-a-pair
     // this case exists to prevent.
     renderPanel([
-      statusRow({
+      asShippedPlayerSends({
         reachability: "fetching",
         last_pull_age_ms: 72_000,
         last_ack_age_ms: 82_000,
-        render_asset_ref: "",
+        unacked_pulls: 1,
       }),
     ]);
     const table = await screen.findByRole("table", { name: "Live screens" });
     expect(within(table).getByText("Collecting content")).toBeInTheDocument();
     expect(within(table).queryByText("fetching")).not.toBeInTheDocument();
     expect(within(table).queryByText("Not heard from")).not.toBeInTheDocument();
-    expect(
-      within(table).getByText("Downloading new content (still showing the last)"),
-    ).toBeInTheDocument();
+    // Just the transfer, with no claim attached about what is on the glass —
+    // the row is exactly what real hardware sends, and on one of those the box
+    // has no render evidence in either direction.
+    expect(within(table).getByText("Downloading new content")).toBeInTheDocument();
   });
 
   it("never says OFFLINE — the platform cannot tell which failure it is", async () => {

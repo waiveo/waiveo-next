@@ -300,14 +300,23 @@ type screenHealth struct {
 	// for the same reason /screen-status publishes it: a roll-up without the
 	// line it was drawn at is a number nobody can check.
 	LiveWindowMs int64 `json:"live_window_ms"`
-	// ContentTransferWindowMs is the line Fetching/Stale was decided by, and it
-	// was missing: this roll-up published a `fetching` COUNT and no way to redraw
-	// the line it was counted at, so a consumer that wanted to treat those
+	// ContentTransferWindowMs is the AGE line Fetching/Stale was decided by, and
+	// it was missing: this roll-up published a `fetching` COUNT and no way to
+	// redraw the line it was counted at, so a consumer that wanted to treat those
 	// screens as stale — which is a defensible reading, since nothing has been
-	// heard back from them — had a number it could not reinterpret. Both lines
-	// or neither; publishing one of two is the shape that makes a reader think
-	// they have the whole rule.
+	// heard back from them — had a number it could not reinterpret.
 	ContentTransferWindowMs int64 `json:"content_transfer_window_ms"`
+	// FetchingMaxUnackedPulls is the PROGRESS line, and it was the third of three
+	// and the second to be left out. `fetching` is decided by both bounds — an
+	// age and a count — and the count is the one that does the work the age bound
+	// cannot (a screen that keeps pulling and never acknowledges never ages out).
+	// Publishing the age and withholding the count restates the same defect one
+	// line along: a reader with two of three thresholds believes they have the
+	// whole rule and reproduces a different one.
+	//
+	// /screen-status publishes all three per row; this is the fleet summary of
+	// the same judgement and must publish the same three.
+	FetchingMaxUnackedPulls int64 `json:"fetching_max_unacked_pulls"`
 }
 
 // systemHealth is the whole response (openapi SystemHealth).
@@ -486,7 +495,11 @@ func (srv *server) relayHealth() ([]relayHealth, serviceHealth) {
 // relay has ever mentioned is the most alarming row on the page and a count
 // built from reports is silent about exactly it.
 func (srv *server) screenRollup(r *http.Request) (screenHealth, serviceHealth) {
-	out := screenHealth{LiveWindowMs: screens.LiveWindowMs, ContentTransferWindowMs: screens.ContentTransferWindowMs}
+	out := screenHealth{
+		LiveWindowMs:            screens.LiveWindowMs,
+		ContentTransferWindowMs: screens.ContentTransferWindowMs,
+		FetchingMaxUnackedPulls: screens.MaxFetchingUnackedPulls,
+	}
 	rows, err := srv.store.List(r.Context(), store.KindScreen, store.ListFilter{})
 	if err != nil {
 		return out, serviceHealth{Name: "screens", Status: healthUnknown,

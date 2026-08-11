@@ -198,6 +198,91 @@ func TestLiveWindowStillDistinguishesAFailedScreen(t *testing.T) {
 	}
 }
 
+// TestOnePullIsOutstandingDuringATransfer DERIVES OutstandingPullsWhileTransferring
+// from the shipped player, which its doc comment claimed ("a FACT about the
+// shipped player's loop shape, not a tolerance") and nothing checked: changing
+// that constant from 1 to 5 left the entire suite green, so the claim was prose.
+// Its partner ScreenFailedPullTolerance is genuinely bracketed by two window
+// tests; this term was not, and the two are added together to make the bound the
+// whole `fetching` state turns on.
+//
+// The fact is the loop's SHAPE, and it takes three readings of the BrightScript
+// to establish, one per way a second pull could be in flight:
+//
+//   - wvDoProgram issues exactly ONE request to /player/v1/program. Two would
+//     mean two Leases per iteration and two unacknowledged pulls per transfer.
+//   - runPhoton's poll loop calls wvDoProgram exactly once per iteration. A
+//     second call is a second pull before the first is acknowledged.
+//   - the loop's wait is a single wvSleepInterruptible at the END, so an
+//     iteration cannot begin while the previous one is still fetching. This is
+//     the serialisation itself: BrightScript Task threads are single-threaded,
+//     and the loop's own structure is what keeps the fetch between the pull and
+//     the ack rather than beside them.
+//
+// Ordering — that the ack comes after the fetch — is the fourth leg, and it is
+// TestTheAckFollowsTheContentFetch's, above.
+//
+// If a future player pipelines pulls, this test fails and the constant moves
+// WITH it. That is the point: the number must not be picked.
+func TestOnePullIsOutstandingDuringATransfer(t *testing.T) {
+	program, err := os.ReadFile(programSrc)
+	if err != nil {
+		t.Fatalf("reading %s: %v", programSrc, err)
+	}
+	doProgram := regexp.MustCompile(`(?s)function wvDoProgram\(.*?\nend function`).Find(program)
+	if doProgram == nil {
+		t.Fatalf("could not find wvDoProgram in %s; OutstandingPullsWhileTransferring can no longer be derived and must not be left as an unchecked number", programSrc)
+	}
+	pullsPerCall := len(regexp.MustCompile(`/player/v1/program`).FindAll(doProgram, -1))
+	if pullsPerCall != 1 {
+		t.Fatalf("wvDoProgram issues %d requests to /player/v1/program per call, not 1.\n"+
+			"OutstandingPullsWhileTransferring = %d says a transferring screen has exactly one Lease in flight; that is only true while one "+
+			"call produces one pull. Re-derive the constant from the new loop shape — the relay counts pulls, so the bound moves with it.",
+			pullsPerCall, OutstandingPullsWhileTransferring)
+	}
+
+	task, err := os.ReadFile(playerTaskSrc)
+	if err != nil {
+		t.Fatalf("reading %s: %v", playerTaskSrc, err)
+	}
+	// The poll loop, not the pairing loop above it: scoped to the LAST
+	// `while true` in runPhoton, which is the one wvDoProgram is called from.
+	runPhoton := regexp.MustCompile(`(?s)\nsub runPhoton\(\).*?\nend sub`).Find(task)
+	if runPhoton == nil {
+		t.Fatalf("could not find runPhoton in %s; the poll loop's shape can no longer be read", playerTaskSrc)
+	}
+	loopStarts := regexp.MustCompile(`while true`).FindAllIndex(runPhoton, -1)
+	if len(loopStarts) == 0 {
+		t.Fatalf("runPhoton in %s has no `while true`; this test is no longer reading a poll loop", playerTaskSrc)
+	}
+	pollLoop := runPhoton[loopStarts[len(loopStarts)-1][0]:]
+
+	callsPerIteration := len(regexp.MustCompile(`wvDoProgram\(`).FindAll(pollLoop, -1))
+	if callsPerIteration != 1 {
+		t.Fatalf("runPhoton's poll loop calls wvDoProgram %d times per iteration, not 1.\n"+
+			"Each call is one pull the relay counts and one Lease awaiting an ack, so OutstandingPullsWhileTransferring (%d) is no longer "+
+			"what a healthy transferring screen presents — and the read model reads the surplus as failure.",
+			callsPerIteration, OutstandingPullsWhileTransferring)
+	}
+	waits := len(regexp.MustCompile(`wvSleepInterruptible\(`).FindAll(pollLoop, -1))
+	if waits != 1 {
+		t.Fatalf("runPhoton's poll loop contains %d wvSleepInterruptible call(s), want exactly 1 at the end of the iteration.\n"+
+			"One wait per iteration is what serialises the transfer: the next pull cannot start until this one has fetched and acked. "+
+			"More than one wait means the loop's shape has changed, and the outstanding-pull count has to be re-derived from the new one.", waits)
+	}
+
+	// The constant IS the count above, and this is the line that fails if it is
+	// picked rather than derived.
+	if OutstandingPullsWhileTransferring != int64(callsPerIteration) {
+		t.Fatalf("OutstandingPullsWhileTransferring = %d but the shipped player has %d program pull in flight per transfer.\n"+
+			"The constant is a mirror of the player's loop, not a tolerance to tune. Raising it widens `fetching` — which is exactly what "+
+			"hid the 2026-08 wall — and lowering it makes a screen downloading a video read stale.",
+			OutstandingPullsWhileTransferring, callsPerIteration)
+	}
+	t.Logf("derived from the player: 1 pull per wvDoProgram call, 1 call and 1 wait per poll iteration => OutstandingPullsWhileTransferring = %d",
+		OutstandingPullsWhileTransferring)
+}
+
 // TestTheFetchingBoundExpiresAScreenNoAgeBoundCanReach is the arithmetic behind
 // the progress bound, kept as a test so the "just widen the transfer window"
 // answer cannot be re-proposed without meeting it.

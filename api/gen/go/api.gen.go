@@ -1917,12 +1917,15 @@ type ScreenCreate struct {
 
 // ScreenHealth The fleet roll-up, built from the SAME join `/screen-status` serves — authored rows filled in by relay reports — rather than from the reports alone. A screen no relay has ever mentioned is the most alarming row there is, and a count built from reports is silent about exactly it.
 type ScreenHealth struct {
-	// ContentTransferWindowMs The threshold fetching/stale was decided by, republished for the same reason. It was missing: this roll-up published a `fetching` COUNT and no way to redraw the line it was counted at, so a consumer that wanted to treat those screens as stale — a defensible reading, since nothing has been heard back from them — had a number it could not reinterpret. Both lines or neither.
+	// ContentTransferWindowMs The AGE threshold fetching/stale was decided by, republished for the same reason. It was missing: this roll-up published a `fetching` COUNT and no way to redraw the line it was counted at, so a consumer that wanted to treat those screens as stale — a defensible reading, since nothing has been heard back from them — had a number it could not reinterpret.
 	ContentTransferWindowMs int64 `json:"content_transfer_window_ms"`
 
 	// Fetching How many screens were handed a Lease they have not yet acknowledged, recently enough that the player would still be transferring its content AND without having abandoned more Leases than a single transient failure explains. Counted apart from both neighbours: such a screen is still showing its previous program, so it is neither confirmed healthy nor a screen to go and look at. Both conditions matter to the grade this roll-up carries — a screen that answers every pull and never acknowledges is `stale`, and a whole site of them is `down`, which is what a count bounded on age alone could never reach.
 	Fetching int `json:"fetching"`
-	Live     int `json:"live"`
+
+	// FetchingMaxUnackedPulls The PROGRESS threshold fetching/stale was decided by — the most outstanding pulls a screen may have and still be counted `fetching`. `fetching` rests on both bounds, and this is the one that does what the age bound cannot: a screen that answers every pull and never acknowledges re-stamps its own age forever and no window can expire it. Left out while the age line was published, which restates the same defect one line along — a consumer holding two of three thresholds believes it has the whole rule and reproduces a different one. All three lines, or none. `/screen-status` publishes the same three per row.
+	FetchingMaxUnackedPulls int64 `json:"fetching_max_unacked_pulls"`
+	Live                    int   `json:"live"`
 
 	// LiveWindowMs The threshold live/stale was decided by, republished so the roll-up can be checked against the line it was drawn at.
 	LiveWindowMs int64 `json:"live_window_ms"`

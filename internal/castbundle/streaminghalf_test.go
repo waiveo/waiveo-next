@@ -45,10 +45,18 @@ import (
 //     a same-package helper — the most ordinary refactor there is — reopened
 //     the zero-byte `.cast` with both packages still testing `ok`.
 //
+// And a FOURTH, found in the re-review of the fix for the third: the widened
+// walk went one level and justified stopping there with "a helper that calls a
+// helper has to pass through it". It does — but this fence asks what a body
+// CONTAINS, not what it executes, and an intermediate that forwards contains
+// nothing. `Stream -> checkEntries -> entryCountRule{refuse(…)}` was green. Two
+// extract-method refactors in sequence is not an exotic shape, so the walk is
+// now transitive; the `seen` map that bounds it was already there.
+//
 // So nothing below is enumerated that can be derived. The refusal sentinels are
 // read out of this package's syntax tree, the error TYPES a refusal can be
 // constructed as are found by their `Error() string` method, and the walk
-// follows same-package calls out of Stream one level deep. The only names still
+// follows same-package calls out of Stream to any depth. The only names still
 // written down are `errors.New` and `fmt.Errorf`, which are facts about the
 // language rather than facts about this package: this package's own minter
 // (`refuse`) is reached by the call walk, and would still be reached if it were
@@ -78,11 +86,11 @@ var stdlibErrorMinters = []string{"Errorf", "New"}
 //   - NO NAMED RESULT on Stream. A named result turns `return` into a
 //     value-returning statement that the check above cannot see, which is half
 //     of how a refusal was smuggled past the previous version of this fence.
-//   - No refusal sentinel, anywhere Stream can reach in one call. A refusal
+//   - No refusal sentinel, anywhere Stream can reach, at any depth. A refusal
 //     expressed by wrapping ErrTooLarge is the exact shape all six of NewPlan's
 //     refusals have — and the sentinel set is DERIVED from castbundle.go, so a
 //     seventh one added tomorrow is covered without editing this file.
-//   - No error minted, anywhere Stream can reach in one call. fmt.Errorf,
+//   - No error minted, anywhere Stream can reach, at any depth. fmt.Errorf,
 //     errors.New and constructing one of this package's own error types are the
 //     ways to make one; the single legal error here came out of the caller's
 //     io.Writer.
@@ -130,9 +138,10 @@ func TestNothingCanBeRefusedOnceTheBundleIsStreaming(t *testing.T) {
 		}
 	}
 
-	// The reachable set: Stream, plus every same-package function it calls. One
-	// level, because one level is where "extract this check to a helper" lands
-	// and a helper that calls a helper has to pass through it.
+	// The reachable set: Stream, plus every same-package function reachable from
+	// it TRANSITIVELY. Depth 1 was not enough — `Stream -> checkEntries ->
+	// entryCountRule{refuse(…)}` cleared it, because the intermediate forwards
+	// and therefore carries no sentinel and mints nothing. See reachableFrom.
 	reach := pkg.reachableFrom(t, fn, "(*Plan).Stream")
 	for _, scope := range reach {
 		found, minted := scope.refusalsIn(sentinels, errorTypes)
@@ -380,11 +389,12 @@ func (p *castbundlePackage) errorTypes() []string {
 	return out
 }
 
-// scope is one function body the fence has to be satisfied about, plus how it
-// was reached, so a failure names the refactor that introduced it.
+// scope is one function body the fence has to be satisfied about, plus the whole
+// call chain it was reached by, so a failure names the refactor that introduced
+// it rather than just the body it landed in.
 type scope struct {
 	what string
-	via  string // "" for Stream itself
+	via  string // "" for Stream itself; otherwise the full chain from it
 	body *ast.BlockStmt
 }
 
@@ -392,8 +402,9 @@ func (s scope) viaNote() string {
 	if s.via == "" {
 		return ""
 	}
-	return "\nIt is reached from " + s.via + ", which is the same thing: a refusal one call deep still fires after the response " +
-		"header is committed. Extracting a check into a helper does not move it to a phase where it can be reported."
+	return "\nIt is reached as " + s.via + ", which is the same thing at any depth: a refusal N calls deep still fires after the " +
+		"response header is committed. Extracting a check into a helper — or into a helper's helper — does not move it to a phase " +
+		"where it can be reported."
 }
 
 // refusalsIn reports the refusal sentinels this scope references and the ways it
@@ -417,57 +428,94 @@ func (s scope) refusalsIn(sentinels, errorTypes []string) (found, minted []strin
 	return found, minted
 }
 
-// reachableFrom is fn's own body plus the body of every same-package function it
-// calls — ONE level, which is where "extract this check to a helper" lands.
+// reachableFrom is fn's own body plus the body of every same-package function
+// reachable from it, TRANSITIVELY.
+//
+// It walked one level, and the reason given for stopping there was wrong: "a
+// helper that calls a helper has to pass through it" is true of control flow and
+// says nothing about this fence, which asks what each body CONTAINS. An
+// intermediate that merely forwards — `Stream` → `checkEntries` →
+// `entryCountRule{refuse(…)}` — carries no sentinel and mints nothing, so at
+// depth 1 the fence was green on a package that refuses mid-stream. Two ordinary
+// extract-method refactors, applied one after the other, defeated it.
+//
+// So the walk is a worklist over FuncDecls rather than one pass over one body.
+// Each callee is resolved against ITS OWN locals and receiver name — a helper's
+// parameter called `refuse` must shadow the package function for that body and
+// not for its caller's — which is the whole reason this cannot be a recursive
+// Inspect over a shared closure.
 //
 // Two call shapes resolve, and they are the two a refactor produces: a bare
 // `helper()` naming a package function, and `p.helper()` naming a method on the
-// receiver's own type. Names bound INSIDE fn are excluded, so the `write := func
-// (…)` closure in Stream is not mistaken for a package function that happens to
-// share its name.
+// receiver's own type. Names bound INSIDE a body are excluded, so the `write :=
+// func (…)` closure in Stream is not mistaken for a package function that
+// happens to share its name.
+//
+// Termination is `seen`, keyed by funcKey, so a cycle (or a diamond) is visited
+// once. `via` records the whole chain rather than the immediate caller, because
+// at depth 2+ "reached from checkEntries" does not tell anyone which edge to
+// look at.
 func (p *castbundlePackage) reachableFrom(t *testing.T, fn *ast.FuncDecl, what string) []scope {
 	t.Helper()
-	out := []scope{{what: what, body: fn.Body}}
-	local := localNamesOf(fn)
-	receiver := ""
-	if fn.Recv != nil && len(fn.Recv.List) == 1 && len(fn.Recv.List[0].Names) == 1 {
-		receiver = fn.Recv.List[0].Names[0].Name
-	}
-	receiverType := ""
-	if fn.Recv != nil && len(fn.Recv.List) == 1 {
-		receiverType = recvTypeName(fn.Recv.List[0].Type)
-	}
 
+	type work struct {
+		fn    *ast.FuncDecl
+		chain string // how it was reached, "" for the root
+	}
+	out := []scope{{what: what, body: fn.Body}}
 	seen := map[string]bool{}
-	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
+	queue := []work{{fn: fn, chain: ""}}
+
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+
+		here := what
+		if cur.chain != "" {
+			here = cur.chain
 		}
-		var key string
-		switch f := call.Fun.(type) {
-		case *ast.Ident:
-			if local[f.Name] {
+		local := localNamesOf(cur.fn)
+		receiver := ""
+		if cur.fn.Recv != nil && len(cur.fn.Recv.List) == 1 && len(cur.fn.Recv.List[0].Names) == 1 {
+			receiver = cur.fn.Recv.List[0].Names[0].Name
+		}
+		receiverType := ""
+		if cur.fn.Recv != nil && len(cur.fn.Recv.List) == 1 {
+			receiverType = recvTypeName(cur.fn.Recv.List[0].Type)
+		}
+
+		ast.Inspect(cur.fn.Body, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
 				return true
 			}
-			key = funcKey("", f.Name)
-		case *ast.SelectorExpr:
-			x, ok := f.X.(*ast.Ident)
-			if !ok || receiver == "" || x.Name != receiver {
+			var key string
+			switch f := call.Fun.(type) {
+			case *ast.Ident:
+				if local[f.Name] {
+					return true
+				}
+				key = funcKey("", f.Name)
+			case *ast.SelectorExpr:
+				x, ok := f.X.(*ast.Ident)
+				if !ok || receiver == "" || x.Name != receiver {
+					return true
+				}
+				key = funcKey(receiverType, f.Sel.Name)
+			default:
 				return true
 			}
-			key = funcKey(receiverType, f.Sel.Name)
-		default:
+			callee, ok := p.funcs[key]
+			if !ok || callee.Body == nil || seen[key] {
+				return true
+			}
+			seen[key] = true
+			chain := here + " -> " + key
+			out = append(out, scope{what: key, via: chain, body: callee.Body})
+			queue = append(queue, work{fn: callee, chain: chain})
 			return true
-		}
-		callee, ok := p.funcs[key]
-		if !ok || callee.Body == nil || seen[key] {
-			return true
-		}
-		seen[key] = true
-		out = append(out, scope{what: key, via: what, body: callee.Body})
-		return true
-	})
+		})
+	}
 	return out
 }
 

@@ -392,8 +392,9 @@ func (r *Registry) Statuses() []Status {
 // life. An age bound cannot expire a signal whose age keeps resetting.
 //
 // The cost was not the word on the card. The console told an operator
-// "Collecting content" and "still showing the last" about a screen showing
-// nothing, and — worse — the fleet roll-up grades `down` on `Live == 0 &&
+// "Collecting content" — and, in the phrasing of the day, that the screen was
+// still showing its last program — about a screen showing nothing, and — worse
+// — the fleet roll-up grades `down` on `Live == 0 &&
 // Fetching == 0` (internal/app/api/diagnostics.go), so a whole site in this
 // state was permanently `degraded` and never `down`. The dark-fleet alarm was
 // off for precisely the failure it exists for.
@@ -411,9 +412,21 @@ func (r *Registry) Statuses() []Status {
 // A second, weaker dependency, stated because it is easy to over-read the field
 // names: the relay does not correlate an ack with the Lease it acknowledges
 // (playerserver's noteLeaseAck). "Unacknowledged" therefore means "the last ack
-// predates the last pull", and unackedPulls means "pulls served since the last
-// ack of any kind". Both are exact for the shipped player and would be loosened
-// by one that acknowledged out of order.
+// predates the last pull", and unackedPulls means "CONTENT-BEARING pulls served
+// since the last ack of any kind". Both are exact for the shipped player and
+// would be loosened by one that acknowledged out of order.
+//
+// The "content-bearing" qualifier is load-bearing in the opposite direction to
+// everything above, and it is the correction this clause needed most. A Lease
+// with no content gets no ack either — the shipped player refuses an empty
+// content array before wvAckLease, exactly as it does a failed fetch — so while
+// blank Leases counted, the two ordinary sources of them (a screen with no
+// program assigned, and any screen scheduled blank overnight) drove the count
+// past the tolerance with NOTHING outstanding. A box roughly six seconds past
+// pairing was already at the bound, and the first program an operator ever
+// assigned read `stale` while it downloaded perfectly normally. The counter is
+// the thing that has to be right here: this clause reads a surplus as failure,
+// so anything counted that cannot be acknowledged is a false failure.
 func reachabilityOf(lastPullAgeMs, lastAckAgeMs int64, unackedPulls int) Reachability {
 	if lastPullAgeMs == NeverObserved {
 		return ReachabilityNeverSeen

@@ -63,9 +63,9 @@ type screenLiveness struct {
 	lastAckMs         int64
 	lastRenderStartMs int64
 
-	// unackedPulls counts program pulls served since the last acknowledgement
-	// this server saw — incremented in noteProgramPullLocked, zeroed in
-	// noteLeaseAck.
+	// unackedPulls counts program pulls that handed over CONTENT and have not
+	// been acknowledged since — incremented in noteProgramPullLocked for a
+	// non-empty Lease only, zeroed in noteLeaseAck.
 	//
 	// It exists because the two ages above cannot answer the question the app
 	// peer's read model actually has to ask. "Is this screen transferring
@@ -80,6 +80,28 @@ type screenLiveness struct {
 	// A count rather than a derived age also survives the case that made this
 	// necessary: the failing screen's pull age RESETS on every retry, so no
 	// bound on it can ever expire. See wire.ScreenFetchingMaxUnackedPulls.
+	//
+	// # Why an EMPTY Lease does not count, which it used to
+	//
+	// Every unacknowledged pull this holds has to be one the screen still owes
+	// an ack for, because the read model reads a surplus as failure. A Lease
+	// with no content carries nothing to confirm and gets no ack: the shipped
+	// player returns from `wvDoProgram` before `wvAckLease` when the content
+	// array is empty (player-v3 Program.brs), exactly as it does when a fetch
+	// fails, and there is no other producer of an ack. So while these counted,
+	// the count climbed on a screen with nothing outstanding.
+	//
+	// Which is not a corner: terminalDefault() — the blank Lease served to any
+	// screen this relay holds no program for (DAT-118) — is what a freshly
+	// paired screen pulls until an operator assigns it something, and a
+	// scheduled `blank` program is the same empty array every night. Two of
+	// those pulls (about six seconds at the player's 2 s/4 s backoff) put the
+	// count at the tolerance, so the FIRST real program a box ever serves read
+	// `stale` while it was genuinely downloading, and a one-screen site graded
+	// `down` (internal/app/api/diagnostics.go) while working perfectly.
+	//
+	// The capability-filtered-to-empty case rides along on the same rule: a
+	// player served nothing it can draw has nothing to fetch either.
 	unackedPulls int
 
 	// lastProgramRevision / lastPriority / lastDisplay are what this server most
@@ -258,11 +280,26 @@ func ageOf(now, stamp int64) int64 {
 func (s *Server) noteProgramPullLocked(screenID string, nowMs int64, lease wire.Lease) {
 	l := s.liveness[screenID]
 	l.lastPullMs = nowMs
-	// One more pull the screen has not confirmed. Counted here rather than
-	// derived at snapshot time because the fact is a COUNT of events and only
-	// the place the events arrive can count them: the ages in a snapshot cannot
-	// tell one outstanding pull from twenty, which is the whole distinction.
-	l.unackedPulls++
+	// One more pull the screen has not confirmed — but only if it was handed
+	// something to confirm. Counted here rather than derived at snapshot time
+	// because the fact is a COUNT of events and only the place the events arrive
+	// can count them: the ages in a snapshot cannot tell one outstanding pull
+	// from twenty, which is the whole distinction.
+	//
+	// The emptiness test is `len(lease.Content)` — the Lease as HANDED OVER,
+	// which is the same fact the next line records, and therefore covers both
+	// ways a screen ends up with nothing to fetch: a program that carries no
+	// content (terminalDefault, a scheduled blank) and one the capability filter
+	// emptied. See screenLiveness.unackedPulls for why an empty Lease that
+	// counted made a first-ever transfer read `stale`.
+	//
+	// It does not RESET on an empty Lease either. That would be an ack the screen
+	// never sent: pulls already outstanding are still outstanding, and a screen
+	// that failed two real transfers has not proved anything by being handed a
+	// blank one.
+	if len(lease.Content) > 0 {
+		l.unackedPulls++
+	}
 	l.lastProgramRevision = lease.ProgramRevision
 	l.lastPriority = lease.Priority
 	l.lastDisplay = lease.Display

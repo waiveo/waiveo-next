@@ -101,36 +101,60 @@ export function formatAge(ms: number): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
-/** Whether the server has EVIDENCE that this screen has something on it.
+/** ScreenStatus fields NO SHIPPED PRODUCER POPULATES, and therefore fields this
+ * panel must not draw a conclusion from.
  *
- * `last_render_start_age_ms` is the only field that is evidence rather than
- * intent: the player reports a render start when it actually begins presenting
- * an item (PLY-110), and `-1` means it never has. `render_asset_ref` is checked
- * alongside it because it is the same report's payload, and a row carrying one
- * without the other is a report this UI should still read generously.
+ * Both have exactly one producer in the whole system: the relay's `noteRenderStart`,
+ * reached only from `POST /player/v1/render/start`. player-v3 never calls it. Its
+ * only three HTTP calls are `/player/v1/pair`, `/player/v1/program` and
+ * `/player/v1/lease/ack` (Pairing.brs, Program.brs). PLY-110 is a MUST the shipped
+ * player does not implement, and until it does these arrive as the never sentinel
+ * (-1) and an absent string on every row from real hardware.
  *
- * Deliberately NOT `content_count > 0`. That is how many items the LAST LEASE
- * carried — intent, and specifically intent about the program the screen is
- * collecting right now, so it is at its most positive exactly when the screen is
- * fetching its first-ever content and the wall is blank. */
-function hasEverRendered(row: ScreenStatus): boolean {
-  return row.last_render_start_age_ms >= 0 || Boolean(row.render_asset_ref);
-}
+ * That is not a reason to delete the fields — the contract requires them and
+ * another track owns the player — but it IS the reason a branch keyed on them
+ * cannot be treated as reachable. A guard that reads "has this screen ever
+ * rendered?" off a field nobody sends does not answer "no, never"; it answers
+ * "nobody said", and phrasing the second as the first is how the cell ended up
+ * telling an operator a week-old wall was blank.
+ *
+ * live-screens-panel.test.tsx pins the consequence and is where this list is
+ * re-armed if the player ever ships PLY-110. */
+export const SCREEN_STATUS_FIELDS_WITH_NO_SHIPPED_PRODUCER = [
+  "last_render_start_age_ms",
+  "render_asset_ref",
+] as const;
 
 /** What a row's "Now playing" cell should say, from the facts the server gives:
- * what the relay last handed the screen, whether the screen reported actually
- * rendering something, and whether it is currently collecting new content.
+ * what the relay last handed the screen, and whether it is currently collecting
+ * new content.
  *
  * Exported and pure so it is testable on its own: the phrasing IS the feature
  * here, and a cell that says "Showing content" for a screen showing nothing is
  * the failure mode.
  *
  * The clause ORDER is load-bearing and was wrong. `fetching` came first and
- * therefore pre-empted `display === "blank"`, and it claimed "still showing the
- * last" unconditionally — including for a screen collecting its first-ever
- * program, whose wall is blank and which has no last to be showing. Both are the
- * same mistake: reporting a transfer state as though it implied something about
- * what is on the screen, which it does not. */
+ * therefore pre-empted `display === "blank"`, so a screen scheduled off was
+ * described as downloading content.
+ *
+ * # Why the fetching clause says nothing about the wall, in EITHER direction
+ *
+ * It used to claim "still showing the last" unconditionally, which was wrong for
+ * a screen collecting its first-ever program. The obvious repair — split on
+ * whether the screen has ever reported a render — was worse, because that
+ * evidence never arrives: see SCREEN_STATUS_FIELDS_WITH_NO_SHIPPED_PRODUCER. On
+ * real hardware the split always took the never-rendered side, so a screen that
+ * had been showing the same program all week and was picking up an update read
+ * "Collecting its first content (nothing on screen yet)" — a positive false claim
+ * about a physical wall, on EVERY update rather than once per screen.
+ *
+ * So this states only what the box actually knows: a transfer is in progress.
+ * What is on the wall meanwhile is a question the relay has no answer to, and the
+ * honest cell is the one that does not pretend otherwise. (What never-wipe
+ * guarantees is that the outgoing program stays up — so "downloading" already
+ * implies the operator should wait rather than drive out, without asserting
+ * anything about which frame is on the glass.) When the player implements
+ * PLY-110, this clause can grow the distinction back, with evidence behind it. */
 export function nowPlayingLabel(row: ScreenStatus): string {
   if (row.reachability === "never_seen") {
     return row.program_revision ? "Waiting to collect its program" : "Nothing assigned";
@@ -141,15 +165,7 @@ export function nowPlayingLabel(row: ScreenStatus): string {
   // happening, and "Blank (scheduled off)" is the answer to the question the
   // operator is actually asking.
   if (row.display === "blank") return "Blank (scheduled off)";
-  // A transferring screen is still showing whatever it had; saying so is the
-  // difference between an operator waiting and an operator driving to the site.
-  // But only if it HAD something — never-wipe keeps the outgoing program on the
-  // wall, and a screen with no outgoing program keeps nothing.
-  if (row.reachability === "fetching") {
-    return hasEverRendered(row)
-      ? "Downloading new content (still showing the last)"
-      : "Collecting its first content (nothing on screen yet)";
-  }
+  if (row.reachability === "fetching") return "Downloading new content";
   if (row.render_asset_ref) {
     return `Rendering ${row.content_count} item${row.content_count === 1 ? "" : "s"}`;
   }

@@ -319,6 +319,77 @@ func TestAScreenThatPullsAndNeverAcksReachesANonFetchingState(t *testing.T) {
 	}
 }
 
+// TestAFirstEverTransferAfterBlankLeasesIsNotStale is the OTHER end of the same
+// count, driven through the same whole stack, and it is the case the bound broke
+// when it was added.
+//
+// A freshly paired screen has no program, so the relay answers every pull with
+// terminalDefault: `display: blank`, empty content (DAT-118). The shipped player
+// refuses an empty content array and returns before `wvAckLease`, exactly as it
+// does on a failed fetch — so those pulls are never acknowledged. While they
+// counted, a box six seconds past pairing (two pulls, at the player's 2 s/4 s
+// backoff) was already at the tolerance, and the very FIRST program an operator
+// assigned — one Lease, one genuine 90-second video download — pushed it over.
+//
+//	PROBE: reachability="stale" last_pull_age_ms=90000 unacked_pulls=3
+//	       live_window=52000 transfer_window=172000 max_unacked=2
+//
+// A one-screen site then graded `down` (internal/app/api/diagnostics.go) on a box
+// that was working perfectly, and the console cell said the opposite of what was
+// happening. Nothing about the screen was wrong; the counter was counting pulls
+// with nothing outstanding to fetch.
+func TestAFirstEverTransferAfterBlankLeasesIsNotStale(t *testing.T) {
+	s := newSSStack(t)
+
+	token, screenID := ssPair(t, s.playerTS)
+
+	// No program assigned yet. The player pulls on its startup backoff and gets
+	// the terminal default each time — nothing to fetch, nothing to acknowledge.
+	s.setNow(1_700_000_002_000)
+	ssPull(t, s.playerTS, token)
+	s.setNow(1_700_000_006_000)
+	ssPull(t, s.playerTS, token)
+
+	// The operator assigns the screen its first program: one video. The screen
+	// collects it, and the download takes 90 seconds — one Lease in flight, well
+	// inside the transfer window, which is precisely `fetching`.
+	s.player.SetProgram(1, screenID, "rev-first", "scheduled", "content", []wire.LeaseContent{
+		{Type: "image", AssetRef: "sha256:aa", URL: "https://origin.example/content/aa"},
+	})
+	s.setNow(1_700_000_010_000)
+	ssPull(t, s.playerTS, token)
+	s.setNow(1_700_000_010_000 + 90_000)
+	s.sendStatus(t)
+
+	var got screens.Status
+	waitFor(t, 5*time.Second, func() bool {
+		st := s.registry.Statuses()
+		if len(st) != 1 {
+			return false
+		}
+		got = st[0]
+		return got.LastPullAgeMs > 0
+	}, "the app peer never held a screen status for the transferring screen")
+
+	if got.UnackedPulls != 1 {
+		t.Fatalf("unacked_pulls = %d during a first-ever transfer, want 1: the two blank Leases served before it are being counted as outstanding pulls, and nothing in them can ever be acknowledged",
+			got.UnackedPulls)
+	}
+	if got.Reachability != screens.ReachabilityFetching {
+		t.Fatalf("a screen 90s into its FIRST content download reads %q, want fetching (unacked_pulls %d, pull age %d, transfer window %d).\n"+
+			"This is a working box on its first program. Reading `stale` here sends an operator to a site with nothing wrong with it, and the "+
+			"fleet roll-up grades a one-screen deployment `down`.",
+			got.Reachability, got.UnackedPulls, got.LastPullAgeMs, screens.ContentTransferWindowMs)
+	}
+	// The fixture has to still be measuring the COUNT, not the age: if the pull
+	// had aged out of the transfer window this case would pass for the wrong
+	// reason and stop proving anything about blank Leases.
+	if got.LastPullAgeMs > screens.ContentTransferWindowMs {
+		t.Fatalf("fixture no longer proves the finding: the pull age (%d) is outside the transfer window (%d), so the age bound decides this case and the blank-Lease count is not what is being measured",
+			got.LastPullAgeMs, screens.ContentTransferWindowMs)
+	}
+}
+
 // TestAReportReplacesTheRelaysWholeView: a screen that has left a relay's view
 // (its session dropped, its program removed) must leave the app peer's view too,
 // which only a full-set replace expresses.
