@@ -230,7 +230,7 @@ func TestTraceID_AbsentIsReplacedAndTheEventStillDelivers(t *testing.T) {
 	log := events.NewEventLog(0)
 	h := New(log, siteScope, seqIDs(), testWallMs, testRelay().Authorizer(), nil)
 	var logged []string
-	h.(*ingest).logf = func(format string, args ...any) { logged = append(logged, format) }
+	h.logf = func(format string, args ...any) { logged = append(logged, format) }
 
 	// The wire shape an older relay produces: no trace_id member at all.
 	entry := telemetry.Entry{Seq: 1, Schema: events.SchemaAutomationRun, Payload: validAutomationRunPayload()}
@@ -274,7 +274,7 @@ func TestTraceID_MalformedIsReplacedNotDropped(t *testing.T) {
 		log := events.NewEventLog(0)
 		h := New(log, siteScope, seqIDs(), testWallMs, testRelay().Authorizer(), nil)
 		var logged int
-		h.(*ingest).logf = func(format string, args ...any) { logged++ }
+		h.logf = func(format string, args ...any) { logged++ }
 
 		postBatch(t, h, telemetry.PushBatch{
 			Entries:     []telemetry.Entry{{Seq: 1, Schema: events.SchemaAutomationRun, Payload: validAutomationRunPayload(), TraceID: bad}},
@@ -304,7 +304,7 @@ func TestTraceID_MalformedIsReplacedNotDropped(t *testing.T) {
 func TestTraceID_MalformedNeverPoisonsAnEnvelope(t *testing.T) {
 	log := events.NewEventLog(0)
 	h := New(log, siteScope, seqIDs(), testWallMs, testRelay().Authorizer(), nil)
-	h.(*ingest).logf = func(format string, args ...any) {}
+	h.logf = func(format string, args ...any) {}
 
 	postBatch(t, h, telemetry.PushBatch{
 		Entries: []telemetry.Entry{

@@ -231,8 +231,11 @@ func (srv *server) fireEventTriggers(ctx context.Context, env events.Envelope) {
 		node := parseFields(row.Body).ScopeNode
 		view := automationScopeView(tree, node)
 		rep := srv.runAutomationNow(ctx, env.TraceID, rule, view, false)
-		log.Printf("event-trigger: %s fired automation %s at %s (%s): %d command(s), %d signage action(s)",
-			env.Schema, row.ID, node, rep.Disposition, len(rep.Commands), len(rep.Signage))
+		// A fired run has no caller to answer, so its effect report — above all
+		// the targets it REFUSED — is published as an events/1 automation.run
+		// (eventtriggers_report.go). Without it a refusal is a screen that did not
+		// change and nothing an operator can read.
+		srv.publishRunReport(row.ID, node, row.Revision, env, rep)
 	}
 }
 
@@ -366,26 +369,30 @@ func (srv *server) scopeTree(ctx context.Context) (datamodel.ScopeTree, error) {
 //     is refused here, per target, and REPORTED as a failed target rather than
 //     silently skipped (relayCommandSink.dispatch, screenOverrideSink.write).
 //
-// A node the tree does not contain has an empty ancestor chain, so it is
-// neither the automation's node nor below it: unknown resolves to refused,
-// which is the fail-closed direction (SEC-005). An automation row carrying no
-// scope_node at all — impossible through this surface, which requires the
-// placement (DAT-006) — authorizes nothing rather than everything, for the same
-// reason.
+// A node the tree does not contain is refused, which is the fail-closed
+// direction (SEC-005) — and that now includes the automation's OWN node. A node
+// below the automation's already failed closed for free, because a node the tree
+// does not contain has an empty ancestor chain; the node ITSELF did not, because
+// the `node == scopeNode` arm compared two strings and never asked the tree
+// anything. So a rule whose placement had since been deleted still authorized
+// itself at that placement — "unknown fails closed" with one hole in it, at
+// exactly the node the rule reaches most often. Both ends are now checked
+// against the tree. An automation row carrying no scope_node at all —
+// impossible through this surface, which requires the placement (DAT-006) —
+// authorizes nothing rather than everything, for the same reason.
 //
-// roleAt answers auth.RoleOwner INSIDE the subtree and "no binding" outside it.
-// The two operations that consult it are the data-subject ones, which no rule
-// action reaches; answering it consistently with the other two members is what
-// keeps a future third consumer from finding a view whose three answers
-// disagree.
+// roleAt answers auth.RoleOperator inside the subtree and "no binding" outside
+// it. Operator, not owner: this view MIRRORS the authority the author had to
+// hold, and what POST /automations requires is canWrite, which auth.CanWrite
+// grants from `operator` upward (auth/role.go). Answering `owner` handed the
+// run a role its author may never have held — three levels above the floor
+// that admitted the write — so any future operation configured above the
+// coarse write floor (the data-subject ones are the two that exist today, and
+// no rule action reaches them) would have been answered yes on authority
+// nobody granted. Grant no more than the authority being mirrored.
 func automationScopeView(tree datamodel.ScopeTree, scopeNode string) scopeView {
 	inSubtree := subtreePredicate(tree)
-	within := func(node string) bool {
-		if scopeNode == "" || node == "" {
-			return false
-		}
-		return node == scopeNode || inSubtree(scopeNode, node)
-	}
+	within := automationSubtreeBound(tree, scopeNode)
 	return scopeView{
 		inSubtree: inSubtree,
 		canRead:   within,
@@ -394,7 +401,32 @@ func automationScopeView(tree datamodel.ScopeTree, scopeNode string) scopeView {
 			if !within(node) {
 				return "", false
 			}
-			return auth.RoleOwner, true
+			return auth.RoleOperator, true
 		},
+	}
+}
+
+// automationSubtreeBound is the containment predicate automationScopeView is
+// built from, and the SAME one the authoring-time target check applies
+// (automationTargetsInScope). One definition, because a rule whose targets
+// authoring accepts and the run then refuses is precisely the
+// accepts-work-it-never-performs shape this file's own doc condemns — and two
+// transcriptions of "is this node within the rule's reach" is how that gap
+// reopens.
+func automationSubtreeBound(tree datamodel.ScopeTree, scopeNode string) func(string) bool {
+	inSubtree := subtreePredicate(tree)
+	return func(node string) bool {
+		if scopeNode == "" || node == "" {
+			return false
+		}
+		// Both ends must be nodes the tree actually holds. A deleted node is not
+		// a node this rule may reach, whichever end of the comparison it is on.
+		if _, ok := tree.KindOf(scopeNode); !ok {
+			return false
+		}
+		if _, ok := tree.KindOf(node); !ok {
+			return false
+		}
+		return node == scopeNode || inSubtree(scopeNode, node)
 	}
 }

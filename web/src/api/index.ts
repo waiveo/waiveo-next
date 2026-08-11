@@ -72,6 +72,7 @@ export {
   type PlaylistUpdate,
   type PlaylistItem,
   type PlaylistItemSource,
+  type PlaylistInlineSlide,
   type ContentUploadResult,
   type ContentAsset,
   type Screen,

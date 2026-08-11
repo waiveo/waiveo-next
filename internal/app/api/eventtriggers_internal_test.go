@@ -176,9 +176,28 @@ func TestAutomationScopeViewIsBoundedByTheAutomationsOwnSubtree(t *testing.T) {
 		if ok != c.want {
 			t.Errorf("roleAt(%s) resolved = %v, want %v — %s", c.node, ok, c.want, c.why)
 		}
-		if c.want && role != auth.RoleOwner {
-			t.Errorf("roleAt(%s) = %q, want %q inside the subtree", c.node, role, auth.RoleOwner)
+		// OPERATOR, not owner. The view mirrors the authority the rule's author
+		// had to hold, and POST /automations requires canWrite, which auth.CanWrite
+		// grants from `operator` upward. Answering `owner` handed the run three
+		// levels more than the write that created it was checked for.
+		if c.want && role != auth.RoleOperator {
+			t.Errorf("roleAt(%s) = %q, want %q inside the subtree — a mirrored authority must not exceed the one it mirrors",
+				c.node, role, auth.RoleOperator)
 		}
+	}
+
+	// A node the tree DOES NOT CONTAIN is refused even when it is the
+	// automation's own placement. The `node == scopeNode` arm used to be a
+	// string comparison that asked the tree nothing, so a rule whose placement
+	// had since been deleted still authorized itself there — "unknown fails
+	// closed" with a hole at the one node a rule reaches most.
+	deletedPlacement := automationScopeView(tree, nowhere)
+	if deletedPlacement.canWrite(nowhere) {
+		t.Error("an automation placed at a node the tree does not contain can still write at that node; " +
+			"a deleted scope_node must fail closed like any other unknown node (SEC-005)")
+	}
+	if _, ok := deletedPlacement.roleAt(nowhere); ok {
+		t.Error("roleAt resolved a binding at an automation's own deleted placement node")
 	}
 
 	// inSubtree is the tree's real containment relation and stays strict, so a

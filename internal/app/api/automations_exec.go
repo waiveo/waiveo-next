@@ -18,6 +18,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/rules/schedule"
 	"github.com/maaxton/waiveo-next/internal/rules/state"
 	"github.com/maaxton/waiveo-next/internal/shared/apiselector"
+	"github.com/maaxton/waiveo-next/internal/shared/ulid"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
@@ -479,18 +480,40 @@ func (s *screenOverrideSink) apply(action string, ref eval.ScreenRef, build func
 
 // screenTarget is one resolved screen row: the id to write and the revision the
 // conditional write is made against.
+//
+// refusal, when non-empty, is a target this run will NOT write and the reason —
+// carried as a target rather than as an action-level error so the report names
+// the screen the author typed. See targets for the one case that produces it.
 type screenTarget struct {
 	ID        string
 	Revision  int64
 	ScopeNode string
+	refusal   string
 }
 
 // targets resolves a ScreenRef (RUL-233) to the screen rows it names, in id
-// order. A `screen_id` naming nothing, or naming a row the caller cannot read,
-// resolves to no targets and is reported as one failed result — an operator
-// pointing an automation at a deleted screen must be told, not silently
-// succeed. A `selector` resolves against the caller's readable screens exactly
-// as the list read does.
+// order. A `selector` resolves against the caller's readable screens exactly as
+// the list read does.
+//
+// A `screen_id` naming nothing the run can reach — no such row, or a row outside
+// the view — resolves to ONE REFUSED TARGET carrying that id, not to an
+// action-level error with no target at all. The distinction is what makes the
+// refusal readable: an action-level error has no screen to hang off, so the
+// effect report (and, for an event-fired run, the automation.run record that is
+// its ONLY reader) said "no screen exists with this identifier" and named
+// nothing. An operator holding a rule with three play_cast actions learned that
+// one of them referred to some screen somewhere.
+//
+// The message deliberately states BOTH possibilities rather than picking one.
+// Asserting non-existence about a screen that exists but sits outside the run's
+// scope is a false statement that sends an operator hunting for a deleted row;
+// asserting the scope reason would disclose the existence of a row the view is
+// not permitted to see, which is the whole point of resolving an invisible row
+// as "not found" everywhere else on this surface (scopeview.go). Naming the two
+// things to check discloses nothing and is true either way.
+//
+// A screen the view can READ but not WRITE is a different case and is already
+// handled one step later, by write, which can and does say exactly why.
 func (s *screenOverrideSink) targets(ref eval.ScreenRef) ([]screenTarget, error) {
 	rows, err := s.srv.store.List(s.ctx, store.KindScreen, store.ListFilter{})
 	if err != nil {
@@ -530,7 +553,20 @@ func (s *screenOverrideSink) targets(ref eval.ScreenRef) ([]screenTarget, error)
 		out = append(out, screenTarget{ID: res.ID, Revision: res.Revision, ScopeNode: f.ScopeNode})
 	}
 	if ref.ScreenID != "" && len(out) == 0 {
-		return nil, fmt.Errorf("no screen exists with this identifier")
+		// Attributed to the authored id — but ONLY when that id is a canonical
+		// ULID. AutomationRunScreen.screen_id is `$ref: Ulid` and required, and
+		// rules/1 does not constrain a ScreenRef's screen_id beyond its TYPE
+		// (RUL-233's MEMBER_TYPE_INVALID is about the JSON type, not the
+		// grammar), so an author can store a `screen_id` that is a perfectly good
+		// string and not an identifier. Echoing that into the report would put a
+		// non-ULID in a field a generated client reads as one — the exact defect
+		// this function's caller was fixed for. A malformed id has nothing useful
+		// to attribute anyway: it names no screen an operator could go look at.
+		if !ulid.Valid(ref.ScreenID) {
+			return nil, fmt.Errorf("no screen exists with this identifier")
+		}
+		return []screenTarget{{ID: ref.ScreenID, refusal: "this run cannot reach a screen with this identifier: " +
+			"either no such screen exists, or it is placed outside the scope this run acts within"}}, nil
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
@@ -540,6 +576,11 @@ func (s *screenOverrideSink) targets(ref eval.ScreenRef) ([]screenTarget, error)
 // update (API-022): the patch carries `override` (or an explicit null to clear
 // it) and nothing else, against the revision the row was read at.
 func (s *screenOverrideSink) write(t screenTarget, override *datamodel.ScreenOverride) eval.ScreenResult {
+	// A target resolution already refused (targets): reported against the id the
+	// author wrote, never silently dropped and never attempted.
+	if t.refusal != "" {
+		return eval.ScreenResult{ScreenID: t.ID, OK: false, Error: t.refusal}
+	}
 	if !s.view.canWrite(t.ScopeNode) {
 		return eval.ScreenResult{ScreenID: t.ID, OK: false,
 			Error: "not authorized to write a screen placed at this scope node"}

@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -105,8 +106,18 @@ func TestATelemetryPushOfAPressRunsTheAutomationAndChangesTheScreen(t *testing.T
 	ingest := eventingest.New(log, ingestSiteScope, ulid.Monotonic(),
 		func() int64 { return fixedNowMs }, relay.Authorizer(), dispatcher.Deliver)
 
+	// The push returns before the rule run finishes — delivery is asynchronous
+	// and the ack cursor trails it, so the push that STARTS a run acks nothing
+	// (eventingest's durability contract). Drain is the point the run concluded;
+	// the ack that follows is what the relay acts on.
+	if ack := pushInteraction(t, ingest, relay, 1, screenID, "call_service"); ack.AckThroughSeq != 0 {
+		t.Fatalf("the push that started the rule run acked through %d, want 0 — nothing may be acked before its delivery concludes", ack.AckThroughSeq)
+	}
+	if err := ingest.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
 	if ack := pushInteraction(t, ingest, relay, 1, screenID, "call_service"); ack.AckThroughSeq != 1 {
-		t.Fatalf("ack_through_seq = %d, want 1", ack.AckThroughSeq)
+		t.Fatalf("after the run concluded, ack_through_seq = %d, want 1", ack.AckThroughSeq)
 	}
 
 	// The durable log holds it (the record half) AND the screen changed (the act

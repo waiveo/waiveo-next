@@ -131,6 +131,44 @@ const (
 // still spelled locally in each projection; a cast is not going to repeat that.
 const PlaylistSourceCast = "cast"
 
+// PlaylistSourcePlayable and PlaylistSourceSlide complete DAT-041's `source`
+// vocabulary: a pack's contributed content by reference (`pack_id` +
+// `content_id`, manifest/1 MAN-080), and one authored layer stack carried
+// INLINE on the item (`slide`).
+//
+// They are spelled here, beside the other two, because DAT-041 states the
+// vocabulary as CLOSED — "`source` MUST be exactly one of `asset`, `playable`,
+// `slide`, or `cast`" — and a closed set nothing enumerates is not closed. The
+// gate that enforces it (PlaylistSources) needs all four names in one place, and
+// having three of them exported and the fourth spelled as a bare literal in
+// each projection is exactly the drift PlaylistSourceCast's own doc set out to
+// stop.
+const (
+	PlaylistSourcePlayable = "playable"
+	PlaylistSourceSlide    = "slide"
+)
+
+// PlaylistSources is DAT-041's CLOSED `source` vocabulary — the whole of it.
+//
+// Nothing enforced this until now, and the cost was not theoretical: an item
+// declaring `source: "hologram"` was accepted 201, stored, and then matched no
+// arm of either content projection's switch, so it contributed nothing to the
+// delivered program. A screen played one item fewer than its playlist says, and
+// the only evidence was in a Lease no operator reads — the
+// accepts-work-it-never-performs shape this contract's own reference
+// implementation keeps re-learning.
+//
+// It is a variable rather than a switch inside the validator so the four names
+// have ONE inventory. A fifth source arrives by adding a constant and this
+// entry; a source added to the projections and not here is refused at the write,
+// which is the failure direction that surfaces loudly instead of silently.
+var PlaylistSources = map[string]bool{
+	PlaylistSourceAsset:    true,
+	PlaylistSourcePlayable: true,
+	PlaylistSourceSlide:    true,
+	PlaylistSourceCast:     true,
+}
+
 // Cast is a cast row (DAT-043) — a "slidecast": the ordered set of authored
 // slides an operator builds once and schedules onto screens, and the unit the
 // legacy system's operators worked in. It is the resource-row baseline

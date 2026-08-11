@@ -133,3 +133,76 @@ func TestAValidInlineSlideIsStillAccepted(t *testing.T) {
 		t.Fatalf("a valid inline slide was refused: status %d (body %s)", resp.StatusCode, raw)
 	}
 }
+
+// TestTheSourceAndItsInlineSlideAreCheckedTogether closes the hole the layer
+// gate above was GUARDED BY rather than covering: it only ran when
+// `item.Slide != nil`, so "a row the store accepted" and "a slide a player will
+// be served" were still different sets in the two directions the gate could not
+// see.
+//
+// Both were 201 before this, both stored, and both projected to nothing:
+//
+//   - `{"source": "slide"}` with no `slide` member. DAT-041 says "when `source`
+//     is `slide`, `slide` MUST be present"; nothing implemented it, and the
+//     projections have no layer stack to draw, so the item silently vanished
+//     from the program.
+//   - `{"source": "hologram"}`. DAT-041 states the vocabulary as CLOSED;
+//     nothing implemented that either, and neither content projection has an
+//     arm for an unrecognised source — same silent disappearance, one field up.
+//
+// The mirror of the first (a `slide` carried on an item whose source is not
+// `slide`) is refused for the same reason and is asserted here too: it is
+// authored work no projection will ever look at.
+func TestTheSourceAndItsInlineSlideAreCheckedTogether(t *testing.T) {
+	okLayers := []wire.Layer{{Kind: wire.LayerKindRect, X: 0, Y: 0, W: 1920, H: 1080, Color: "#101828"}}
+
+	for _, tc := range []struct {
+		name  string
+		item  datamodel.PlaylistItem
+		field string
+		code  string
+	}{
+		{
+			name:  "a slide source with no slide member",
+			item:  datamodel.PlaylistItem{Source: "slide"},
+			field: "items[0].slide",
+			code:  "PLAYLIST_ITEM_SLIDE_INVALID",
+		},
+		{
+			name:  "an inline slide on a source that is not slide",
+			item:  datamodel.PlaylistItem{Source: "cast", CastID: "01J8Z3K4N5P6Q7R8S9T0V1W2X3", Slide: &datamodel.Slide{Layers: okLayers}},
+			field: "items[0].slide",
+			code:  "PLAYLIST_ITEM_SLIDE_INVALID",
+		},
+		{
+			name:  "a source outside the closed set",
+			item:  datamodel.PlaylistItem{Source: "hologram"},
+			field: "items[0].source",
+			code:  "PLAYLIST_ITEM_SOURCE_INVALID",
+		},
+		{
+			name:  "no source at all",
+			item:  datamodel.PlaylistItem{},
+			field: "items[0].source",
+			code:  "PLAYLIST_ITEM_SOURCE_INVALID",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			scopeNode := seedSchedulingScope(t, e)
+			pl := playlistFixture(scopeNode, nil)
+			pl.Items = []datamodel.PlaylistItem{tc.item}
+
+			resp, raw := e.do(t, http.MethodPost, "/api/v1/playlists", rowCreateBody(t, pl), nil)
+			if resp.StatusCode != http.StatusUnprocessableEntity {
+				t.Fatalf("POST a playlist carrying %s: status %d, want 422 — "+
+					"a stored item no projection recognises leaves the screen one item short with no error anywhere (body %s)",
+					tc.name, resp.StatusCode, raw)
+			}
+			p := assertProblem(t, resp, raw, "VALIDATION_FAILED")
+			if !problemCarriesCode(p, tc.field, tc.code) {
+				t.Errorf("want %s on %s, got %s", tc.code, tc.field, raw)
+			}
+		})
+	}
+}

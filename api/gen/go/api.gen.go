@@ -351,6 +351,7 @@ const (
 	PlaylistItemSourceAsset    PlaylistItemSource = "asset"
 	PlaylistItemSourceCast     PlaylistItemSource = "cast"
 	PlaylistItemSourcePlayable PlaylistItemSource = "playable"
+	PlaylistItemSourceSlide    PlaylistItemSource = "slide"
 )
 
 // Valid indicates whether the value is a known member of the PlaylistItemSource enum.
@@ -361,6 +362,8 @@ func (e PlaylistItemSource) Valid() bool {
 	case PlaylistItemSourceCast:
 		return true
 	case PlaylistItemSourcePlayable:
+		return true
+	case PlaylistItemSourceSlide:
 		return true
 	default:
 		return false
@@ -1471,7 +1474,12 @@ type PlaylistCreate struct {
 	ScopeNode Ulid `json:"scope_node"`
 }
 
-// PlaylistItem One entry of a playlist's `items` (DAT-041). `source` selects which content shape the entry uses — `asset` carries `asset_ref`, `playable` carries `pack_id` + `content_id`, `cast` carries `cast_id` — and data-model/1 enforces that pairing with its own per-field codes. A `cast` entry is the one source that is not one-to-one with a played item: it expands, at projection time, into one slide content item per slide of the referenced cast, in authored order.
+// PlaylistInlineSlide A `source: "slide"` playlist item's INLINE authored slide (`data-model/1` DAT-041): one ordered layer stack, carried on the item itself rather than referenced. It is the anonymous twin of a `CastSlide` — no `id`, because nothing outside the item can address it, and no `duration_ms`, because the item's own `duration_seconds` is its dwell time. Its layers pass the SAME authoring gate a cast's slides do, with one difference that follows from having no cast around it: a `nav` layer jumps by cast-local slide id, and an inline slide has no sibling slides to target, so a `nav` layer is refused here (`PLAYLIST_ITEM_SLIDE_LAYERS_INVALID`). A `ping` is legal — pressing it raises a `screen.interaction` event, which needs no slide id-space at all.
+type PlaylistInlineSlide struct {
+	Layers []SlideLayer `json:"layers"`
+}
+
+// PlaylistItem One entry of a playlist's `items` (DAT-041). `source` selects which content shape the entry uses — `asset` carries `asset_ref`, `playable` carries `pack_id` + `content_id`, `slide` carries an inline `slide`, `cast` carries `cast_id` — and data-model/1 enforces that pairing with its own per-field codes. A `cast` entry is the one source that is not one-to-one with a played item: it expands, at projection time, into one slide content item per slide of the referenced cast, in authored order.
 type PlaylistItem struct {
 	AssetRef *string `json:"asset_ref,omitempty"`
 
@@ -1483,13 +1491,18 @@ type PlaylistItem struct {
 	ContentType     *PlaylistItemContentType `json:"content_type,omitempty"`
 	DurationSeconds **int                    `json:"duration_seconds,omitempty"`
 	PackId          *string                  `json:"pack_id,omitempty"`
-	Source          PlaylistItemSource       `json:"source"`
+
+	// Slide A `source: "slide"` playlist item's INLINE authored slide (`data-model/1` DAT-041): one ordered layer stack, carried on the item itself rather than referenced. It is the anonymous twin of a `CastSlide` — no `id`, because nothing outside the item can address it, and no `duration_ms`, because the item's own `duration_seconds` is its dwell time. Its layers pass the SAME authoring gate a cast's slides do, with one difference that follows from having no cast around it: a `nav` layer jumps by cast-local slide id, and an inline slide has no sibling slides to target, so a `nav` layer is refused here (`PLAYLIST_ITEM_SLIDE_LAYERS_INVALID`). A `ping` is legal — pressing it raises a `screen.interaction` event, which needs no slide id-space at all.
+	Slide *PlaylistInlineSlide `json:"slide,omitempty"`
+
+	// Source The CLOSED source vocabulary (DAT-041). `slide` was shipped on the wire and honoured by both content projections before it was declared here, which made this document's `additionalProperties: false` + enum an active lie: a generated client could not express a playlist the server accepts, and the console's own round trip dropped the inline slide. A value outside this set is refused (`PLAYLIST_ITEM_SOURCE_INVALID`) rather than stored, because no projection has an arm for one — the item would be kept and then contribute nothing to the screen.
+	Source PlaylistItemSource `json:"source"`
 }
 
 // PlaylistItemContentType What this `asset` item's bytes ARE, and therefore how a screen presents them: `image` is drawn as a still for the item's dwell time, `video` is played. Optional; an item that states none is served as `image` (`relay/1` REL-061a's stated default for an absent content_type), so every playlist authored before this field existed behaves exactly as it did. Only meaningful on `source: "asset"` — a `cast` item's content type is decided by its source — and stating it on any other source is refused, rather than stored as an intent nothing will honour.
 type PlaylistItemContentType string
 
-// PlaylistItemSource defines model for PlaylistItem.Source.
+// PlaylistItemSource The CLOSED source vocabulary (DAT-041). `slide` was shipped on the wire and honoured by both content projections before it was declared here, which made this document's `additionalProperties: false` + enum an active lie: a generated client could not express a playlist the server accepts, and the console's own round trip dropped the inline slide. A value outside this set is refused (`PLAYLIST_ITEM_SOURCE_INVALID`) rather than stored, because no projection has an arm for one — the item would be kept and then contribute nothing to the screen.
 type PlaylistItemSource string
 
 // PlaylistUpdate Partial update — every member optional, at least one present.

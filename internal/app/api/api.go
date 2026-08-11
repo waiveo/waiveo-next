@@ -149,6 +149,13 @@ type server struct {
 	// signature: a published window the delivery loop did not honour would be
 	// worse than publishing none. Zero means the contract's proposed default.
 	webhookRotationOverlap int64
+	// runEvents publishes an EVENT-FIRED automation run's outcome as an events/1
+	// `automation.run` record (eventtriggers_report.go), wired by WithRunEvents.
+	// Nil leaves such a run reported only in this process's log — a legitimate
+	// state for a bare handler, and not one for a deployment: an event-fired run
+	// has no caller to answer, so this record is the only place its per-target
+	// refusals can be read.
+	runEvents RunEventSink
 	// families is the CRUD resource registry the audit middleware reads a
 	// request's subject metadata out of, keyed by URL path segment. It is
 	// populated by mount() itself, so a family's audit identity and its routes

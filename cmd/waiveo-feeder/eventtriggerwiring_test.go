@@ -20,8 +20,8 @@ import (
 // write, the compiler accepts and the store persists, that fires nothing — with
 // every gate green.
 //
-// The wiring is a THREE-part fact and this asserts all three, because any one of
-// them alone is inert:
+// The wiring is a FOUR-part fact and this asserts all of it, because any one
+// part alone is inert:
 //
 //  1. a dispatcher exists (`eventTriggers := &api.EventTriggerDispatcher{}`);
 //  2. the telemetry ingest DELIVERS to it (eventingest.New's EventDeliverer
@@ -29,6 +29,10 @@ import (
 //  3. api.New BINDS the evaluator into it (api.WithEventTriggers) — without
 //     this it is delivered to and does nothing, which is its documented inert
 //     state and is indistinguishable from working.
+//  4. api.New is given the event log to REPORT each fired run into
+//     (api.WithRunEvents) — without this a run that fires and refuses every
+//     target is indistinguishable, from outside, from a run that never
+//     happened.
 //
 // And it asserts (2) and (3) name the same object. Two dispatchers is the
 // nastiest version of this bug: both lines are present, review reads them as
@@ -111,6 +115,44 @@ func TestMainWiresTheEventTriggerDispatcher(t *testing.T) {
 	}
 	if bindCalls > 1 {
 		t.Errorf("func main calls %s %d times; the evaluator is bound once, at construction", bindCallee, bindCalls)
+	}
+
+	// (4) The RUN REPORT reaches the durable event log. An event-fired run has
+	// no caller to answer, so this option is the only route by which its
+	// per-target refusals become readable — a rule whose target has moved out of
+	// its subtree otherwise produces an unchanged screen and nothing else. It is
+	// exactly as deletable-with-the-suite-green as (2) and (3) were: every
+	// api-layer test that needs the record wires its own sink.
+	//
+	// The sink must be the SAME hub the ingest appends to, or the press and the
+	// run it caused land in two different feeds and no subscriber sees both.
+	const (
+		runEventsCallee = "api.WithRunEvents"
+		wantRunSink     = "eventHub"
+	)
+	runEventCalls := 0
+	ast.Inspect(mainFn, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || calleeName(call) != runEventsCallee {
+			return true
+		}
+		runEventCalls++
+		if len(call.Args) != 1 {
+			t.Errorf("%s is called with %d argument(s), want exactly 1", runEventsCallee, len(call.Args))
+			return true
+		}
+		if got := render(call.Args[0]); got != wantRunSink {
+			t.Errorf("%s publishes to %s, but the ingest appends to %s. Two logs means the press and the run it caused are in different feeds, and the correlation the trace id exists for reaches nobody.",
+				runEventsCallee, got, wantRunSink)
+		}
+		return true
+	})
+	if runEventCalls == 0 {
+		t.Errorf("func main never calls %s. An event-fired run then reports to nothing but this process's log: a target the rule may no longer write is refused, the screen does not change, and there is no record anywhere an operator can read.",
+			runEventsCallee)
+	}
+	if runEventCalls > 1 {
+		t.Errorf("func main calls %s %d times; the sink is set once, at construction", runEventsCallee, runEventCalls)
 	}
 }
 
