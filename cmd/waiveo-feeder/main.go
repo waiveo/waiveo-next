@@ -45,6 +45,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/app/webhookdeliver"
 	"github.com/maaxton/waiveo-next/internal/app/webui"
 	"github.com/maaxton/waiveo-next/internal/app/workspacekey"
+	"github.com/maaxton/waiveo-next/internal/datamodel"
 	"github.com/maaxton/waiveo-next/internal/events"
 	"github.com/maaxton/waiveo-next/internal/feeder/enroll"
 	"github.com/maaxton/waiveo-next/internal/feeder/origin"
@@ -1192,7 +1193,20 @@ func main() {
 	// that generation skips the pull) and sends each nudge on its own
 	// goroutine, so an api write's latency is never coupled to the slowest
 	// relay connection.
-	st.OnCommit(relayConnSrv.NotifyGenerationAdvance)
+	// One hook, two jobs: nudge the relays, and re-arm the override-expiry
+	// wait. OnCommit holds a SINGLE function, so a second OnCommit call would
+	// silently replace the first — which is how one of these two would have
+	// stopped happening with nothing failing.
+	wake, wakeExpiry := armOverrideExpiry()
+	st.OnCommit(func() {
+		relayConnSrv.NotifyGenerationAdvance()
+		wakeExpiry()
+	})
+	// Publish a screen override's TTL lapsing (overrideexpiry.go). Without it
+	// the expiry is evaluated correctly and asked for never: an alert's
+	// self-limiting half does not happen until some unrelated write advances the
+	// generation.
+	go overrideExpiryLoop(context.Background(), st, nowMs, wake)
 
 	cert, err := tls.X509KeyPair(id.TLSCertPEM(), id.TLSKeyPEM())
 	if err != nil {
@@ -1426,12 +1440,31 @@ func startWebhookDelivery(
 }
 
 // desiredStateSource rebuilds the feeder's signed desired-state snapshot from the
-// app store on demand, caching it by the store's generation: a pull for an
-// unchanged generation returns the cached snapshot, and it is rebuilt (via
-// snapshot.BuildFromStore) only when an api write has advanced the generation.
-// This is the seam that makes an authored edit change what the relay pulls, while
-// keeping desired-state derivation entirely store-driven (site_effective comes
-// from the site node, never box-local state).
+// app store on demand, caching it by the store's generation AND by the earliest
+// instant the derivation could change on its own: a pull is answered from cache
+// while both hold, and it is rebuilt (via snapshot.BuildFromStore) when an api
+// write has advanced the generation or that instant has passed. This is the seam
+// that makes an authored edit change what the relay pulls, while keeping
+// desired-state derivation entirely store-driven (site_effective comes from the
+// site node, never box-local state).
+//
+// # Why the generation alone is not a sufficient cache key
+//
+// It was, and the omission shipped: a screen program override carries a TTL
+// (data-model/1 DAT-004c's `expires_at`) whose expiry is evaluated inside the
+// derivation (ScreenOverride.Applies), and the generation only advances on a
+// WRITE. So a sixty-second alert stayed `priority=preempt pinned=true` for as
+// long as nothing else in the store was edited — an hour, a day — while
+// DAT-004d, the openapi description and the operator's own mental model all said
+// it self-limits. The derived snapshot is a function of (rows, generation,
+// INSTANT), and a cache keyed on two of those three serves a stale answer for
+// the third exactly as long as nobody touches the first two.
+//
+// The instant is bounded, not sampled: cachedUntil is the earliest pending
+// `expires_at` over the screens this build read (nextOverrideExpiry), so the
+// cached snapshot is served for precisely as long as it is still correct and
+// rebuilt the first time it is asked for after it stops being. A screen with no
+// TTL'd override leaves it zero and nothing about the old behaviour changes.
 type desiredStateSource struct {
 	store          *store.Store
 	contentBaseURL string
@@ -1452,21 +1485,27 @@ type desiredStateSource struct {
 	cached    wire.StateSnapshotBody
 	cachedGen int64
 	haveCache bool
+	// cachedUntil is the instant the cached snapshot stops being the right
+	// answer for reasons no write will announce: the earliest override
+	// `expires_at` still in the future when it was built. Zero means nothing
+	// pending, so the generation is the only thing that can invalidate it.
+	cachedUntil int64
 }
 
 // current returns the snapshot for the store's current generation, rebuilding it
-// only when the generation has advanced since the last build. Safe for
-// concurrent pulls.
+// when the generation has advanced since the last build OR when the last build's
+// earliest pending override expiry has passed. Safe for concurrent pulls.
 func (d *desiredStateSource) current() (wire.StateSnapshotBody, error) {
 	ctx := context.Background()
 	gen, err := d.store.Generation(ctx)
 	if err != nil {
 		return wire.StateSnapshotBody{}, err
 	}
+	now := d.nowMs()
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.haveCache && d.cachedGen == gen {
+	if d.haveCache && d.cachedGen == gen && (d.cachedUntil == 0 || now < d.cachedUntil) {
 		return d.cached, nil
 	}
 
@@ -1474,7 +1513,7 @@ func (d *desiredStateSource) current() (wire.StateSnapshotBody, error) {
 	if err != nil {
 		return wire.StateSnapshotBody{}, err
 	}
-	snap, degrades, err := snapshot.BuildFromStore(ds, d.contentBaseURL, d.id, d.nowMs(), d.contentURLKey)
+	snap, degrades, err := snapshot.BuildFromStore(ds, d.contentBaseURL, d.id, now, d.contentURLKey)
 	if err != nil {
 		return wire.StateSnapshotBody{}, err
 	}
@@ -1487,8 +1526,37 @@ func (d *desiredStateSource) current() (wire.StateSnapshotBody, error) {
 	}
 	d.cached = snap
 	d.cachedGen = ds.Generation
+	d.cachedUntil = nextOverrideExpiry(ds.Screens, now)
 	d.haveCache = true
 	return snap, nil
+}
+
+// nextOverrideExpiry is the earliest screen-override `expires_at` STRICTLY AFTER
+// nowMs across these screen rows, or zero when none is pending — the one instant
+// at which a desired state nobody has written can stop being the right answer
+// (data-model/1 DAT-004c/DAT-004d).
+//
+// Strictly after, not at-or-after: an override whose expiry equals nowMs has
+// already stopped applying (Applies is `ExpiresAt > tMs`), so it is accounted
+// for by the derivation this instant produced and re-deriving at it would be a
+// deadline already met.
+//
+// It is a pure function of (rows, instant) so both users can be tested without
+// running either of them: the snapshot cache's validity window
+// (desiredStateSource.current) and the timer that publishes the lapse
+// (overrideExpiryLoop).
+func nextOverrideExpiry(screens []datamodel.Screen, nowMs int64) int64 {
+	next := int64(0)
+	for _, s := range screens {
+		o := s.Override
+		if o == nil || o.ExpiresAt <= nowMs {
+			continue
+		}
+		if next == 0 || o.ExpiresAt < next {
+			next = o.ExpiresAt
+		}
+	}
+	return next
 }
 
 // healthzFor answers /healthz with this component's real operational state

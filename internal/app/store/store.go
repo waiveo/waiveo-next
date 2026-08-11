@@ -1085,3 +1085,25 @@ func jsonInt(v int64) json.RawMessage {
 	b, _ := json.Marshal(v)
 	return b
 }
+
+// AdvanceGeneration bumps the desired-state generation with NO row change, and
+// fires the OnCommit hook exactly as a resource write does.
+//
+// It exists for one situation, and should not acquire a second without a reason
+// as specific: a screen's program override has a TTL (data-model/1 DAT-004c's
+// `expires_at`), so the desired state a screen resolves to CHANGES AT AN INSTANT
+// with nothing written. Every other desired-state change is caused by a write
+// and rides that write's generation bump; this one is caused by the clock.
+//
+// The generation is the whole delivery mechanism: a relay pulls only when nudged
+// and answers `state.unchanged` for a generation it already holds (REL-050/051),
+// so a re-derived snapshot at an unchanged generation reaches nobody. Advancing
+// it is what makes the lapse arrive at the screen.
+//
+// This does NOT retire the override, and DAT-004d's "no write required to retire
+// it" is not weakened by it: the row is untouched, the `override` member is
+// still there, and it is `ScreenOverride.Applies` at resolution time — not this
+// call — that stops it applying. This only publishes the fact.
+func (s *Store) AdvanceGeneration(ctx context.Context) error {
+	return s.writeTx(ctx, func(tx *sql.Tx) error { return bumpGeneration(ctx, tx) })
+}
