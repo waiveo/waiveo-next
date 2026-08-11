@@ -174,3 +174,90 @@ func TestValidateAcceptsAWellFormedRule(t *testing.T) {
 		t.Fatalf("well-formed rule rejected: %+v", e)
 	}
 }
+
+// signageRule wraps one signage action in an otherwise-minimal valid rule.
+func signageRule(t *testing.T, action string) model.Rule {
+	t.Helper()
+	return mustRule(t, `{"id":"01J8Z3K4N5P6Q7R8S9T0V1RUL1","mode":"single","triggers":[{"type":"state","entity_id":"01J8Z3K4N5P6Q7R8S9T0V1W2Z2"}],"conditions":[],"actions":[`+action+`]}`)
+}
+
+// TestValidateRejectsASignageActionThatDeclaresNoContent is RUL-234/235's
+// required-member half at the gate that is supposed to enforce it.
+//
+// It was enforced NOWHERE. The executor guarded against both shapes and then
+// returned silently, its own comment asserting "the compile gate is where an
+// author is told" — so an author stored a play_cast naming no cast (201),
+// pressed Run, and was told the rule `ran` with an empty effect report and an
+// unchanged screen. A refusal at authoring is the only point at which the person
+// who made the mistake is still looking at it.
+func TestValidateRejectsASignageActionThatDeclaresNoContent(t *testing.T) {
+	cases := []struct {
+		name   string
+		action string
+		field  string
+	}{
+		{
+			"play_cast with no cast_id",
+			`{"type":"play_cast","screen_id":"01J8Z0D0000000000000000000"}`,
+			"actions[0].cast_id",
+		},
+		{
+			"show_alert with neither cast_id nor message",
+			`{"type":"show_alert","selector":"zone=lobby"}`,
+			"actions[0].cast_id",
+		},
+		{
+			"show_alert with both cast_id and message",
+			`{"type":"show_alert","screen_id":"01J8Z0D0000000000000000000","cast_id":"01J8Z0C0000000000000000000","message":"evacuate"}`,
+			"actions[0].cast_id",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := Validate(signageRule(t, tc.action))
+			if e == nil {
+				t.Fatalf("%s compiled clean, want SIGNAGE_CONTENT_AMBIGUOUS", tc.name)
+			}
+			if e.Code != "SIGNAGE_CONTENT_AMBIGUOUS" {
+				t.Fatalf("code = %q, want SIGNAGE_CONTENT_AMBIGUOUS (%+v)", e.Code, e)
+			}
+			// RUL-006 addressing: the author is told WHICH member of WHICH action.
+			if e.Field != tc.field {
+				t.Errorf("field = %q, want %q — a refusal that does not name the member makes the author hunt for it", e.Field, tc.field)
+			}
+		})
+	}
+}
+
+// TestValidateAcceptsAWellFormedSignageAction is the other side, and the guard
+// against a check that refuses everything: each legal shape still compiles,
+// including dismiss_alert, which declares NEITHER content member on purpose (it
+// clears whatever is there) and must not be held to show_alert's rule.
+func TestValidateAcceptsAWellFormedSignageAction(t *testing.T) {
+	for _, action := range []string{
+		`{"type":"play_cast","screen_id":"01J8Z0D0000000000000000000","cast_id":"01J8Z0C0000000000000000000"}`,
+		`{"type":"show_alert","selector":"zone=lobby","cast_id":"01J8Z0C0000000000000000000"}`,
+		`{"type":"show_alert","screen_id":"01J8Z0D0000000000000000000","message":"evacuate","ttl_seconds":60}`,
+		`{"type":"dismiss_alert","selector":"zone=lobby"}`,
+	} {
+		if e := Validate(signageRule(t, action)); e != nil {
+			t.Errorf("%s was refused: %+v", action, e)
+		}
+	}
+}
+
+// TestValidateReachesASignageActionInsideAChooseBranch: the content check runs
+// wherever an action can appear, not only at the top of the sequence. A `choose`
+// branch is where a real fleet rule puts its signage ("if the alarm is on, show
+// the evacuation cast"), so a check that only walked actions[] would miss the
+// rules most worth catching.
+func TestValidateReachesASignageActionInsideAChooseBranch(t *testing.T) {
+	r := signageRule(t, `{"type":"choose","branches":[{"condition":{"type":"state","entity_id":"01J8Z3K4N5P6Q7R8S9T0V1W2Z2","state":"on"},"actions":[{"type":"play_cast","screen_id":"01J8Z0D0000000000000000000"}]}],"default":[]}`)
+	e := Validate(r)
+	if e == nil || e.Code != "SIGNAGE_CONTENT_AMBIGUOUS" {
+		t.Fatalf("got %+v, want SIGNAGE_CONTENT_AMBIGUOUS", e)
+	}
+	if e.Field != "actions[0].branches[0].actions[0].cast_id" {
+		t.Errorf("field = %q, want the branch action's own address", e.Field)
+	}
+}

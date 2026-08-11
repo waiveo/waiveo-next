@@ -9,8 +9,8 @@ import (
 
 // signage_test.go covers RunActions' dispatch of the three RUL-234/235 signage
 // actions: that each reaches the sink with the members the author declared, that
-// a malformed one is skipped rather than half-performed, and that the outcome is
-// recorded in RUL-236's shape.
+// a malformed one performs no work AND is reported as failed rather than
+// silently skipped, and that the outcome is recorded in RUL-236's shape.
 
 // recordingSignage is a SignageSink that records what it was asked to do and
 // answers with a scripted per-screen result set.
@@ -105,23 +105,50 @@ func TestSignageActionsReachTheSink(t *testing.T) {
 	}
 }
 
-// TestMalformedSignageActionIsSkipped: an action whose own required members do
-// not hold is skipped rather than dispatched with a guessed value. Each of these
-// is refused by the compile gate too, so reaching the evaluator means something
-// upstream is already wrong — the fail-closed answer is to do nothing, never to
-// pick one of the two things the author asked for.
-func TestMalformedSignageActionIsSkipped(t *testing.T) {
-	for _, raw := range []string{
-		`{"type":"play_cast","screen_id":"SCR1"}`,                                 // RUL-234: no cast_id
-		`{"type":"show_alert","screen_id":"SCR1"}`,                                // RUL-235: neither cast_id nor message
-		`{"type":"show_alert","screen_id":"SCR1","cast_id":"C","message":"both"}`, // RUL-235: both
-	} {
+// TestMalformedSignageActionPerformsNoWorkAndSaysSo: an action whose own
+// required members do not hold is not dispatched with a guessed value — AND it
+// is reported as failed rather than skipped silently.
+//
+// Both halves are load-bearing and only the first used to hold. Each of these
+// shapes is refused by the compile gate (compile.validateSignageContent), so
+// reaching the evaluator means something upstream is already wrong: a row
+// written before that gate existed, a hand-edited store. The fail-closed answer
+// is to do nothing, never to pick one of the two things the author asked for —
+// but doing nothing SILENTLY is what made this a defect. The run answered
+// `ran` with an empty `signage` report and an unchanged screen, which is
+// indistinguishable from a run that worked, and left an operator with no
+// diagnostic anywhere in the system.
+func TestMalformedSignageActionPerformsNoWorkAndSaysSo(t *testing.T) {
+	cases := []struct {
+		raw    string
+		action string
+	}{
+		{`{"type":"play_cast","screen_id":"SCR1"}`, "play_cast"},                                  // RUL-234: no cast_id
+		{`{"type":"show_alert","screen_id":"SCR1"}`, "show_alert"},                                // RUL-235: neither cast_id nor message
+		{`{"type":"show_alert","screen_id":"SCR1","cast_id":"C","message":"both"}`, "show_alert"}, // RUL-235: both
+	}
+	for _, tc := range cases {
 		sink := &recordingSignage{}
-		if err := RunActions(ActionContext{Signage: sink}, []model.Member{signageAction(t, raw)}); err != nil {
+		var outcomes []SignageOutcome
+		ctx := ActionContext{Signage: sink, SignageOutcomes: &outcomes}
+		if err := RunActions(ctx, []model.Member{signageAction(t, tc.raw)}); err != nil {
 			t.Fatalf("RunActions: %v", err)
 		}
 		if len(sink.calls) != 0 {
-			t.Fatalf("%s reached the sink as %+v; a malformed signage action must perform no work", raw, sink.calls)
+			t.Fatalf("%s reached the sink as %+v; a malformed signage action must perform no work", tc.raw, sink.calls)
+		}
+		if len(outcomes) != 1 {
+			t.Fatalf("%s recorded %d outcome(s), want exactly 1 — a silent skip reports the run as having done nothing wrong", tc.raw, len(outcomes))
+		}
+		got := outcomes[0]
+		if got.Action != tc.action || got.Outcome != "failed" {
+			t.Errorf("%s recorded %+v, want a failed %s", tc.raw, got, tc.action)
+		}
+		if got.Error == "" {
+			t.Errorf("%s recorded no reason; an operator reading the report has nothing to act on", tc.raw)
+		}
+		if len(got.Screens) != 0 {
+			t.Errorf("%s reported screens %+v; no screen was attempted, and a fabricated entry would carry an empty screen_id", tc.raw, got.Screens)
 		}
 	}
 }

@@ -34,9 +34,9 @@
 //
 //     1b. POWER-ON AUTO-LAUNCH (Config.PowerOnLaunch, parity row 5.6 — the legacy
 //     stack's `routes/autoLaunch.js` + roku-integration's `#autolaunch-delay`
-//     launch param). One settle delay after a screen transitions into PowerOn,
-//     the player channel is foregrounded ONCE, whatever surface the screen
-//     resumed into. This is a DIFFERENT rule from item 2 below and neither
+//     launch param). One settle delay after a screen is OBSERVED to transition
+//     off -> on, the player channel is foregrounded ONCE, whatever surface the
+//     screen resumed into. This is a DIFFERENT rule from item 2 below and neither
 //     subsumes the other: a Roku resumes the app it was last on, so a signage
 //     screen switched off inside somebody's Netflix session comes back up
 //     inside it — never at Home, so item 2's gate never fires, and the screen
@@ -57,6 +57,24 @@
 //     onto. That suppression CONSUMES the edge rather than deferring it —
 //     firing when the blank lifts hours later would steal a foreground a
 //     person may by then be using.
+//
+//     Because it TAKES THE FOREGROUND, rule 1b is armed only by an OBSERVED
+//     off -> on transition, never by an inference. Two readings that LOOK like
+//     the start of one do NOT arm it, and both are ordinary events this relay
+//     sees constantly. FIRST, this screen's first-ever observation (a relay
+//     restart, a deploy, a newly adopted screen): "no prior observation" is not
+//     "was off" — the TV may have been on and in use for hours, and a restart
+//     of OUR process is not a power cycle of THEIR television. SECOND, an
+//     UNAVAILABLE reading (ecppoll's unavailableEntity, produced by any fetch
+//     or parse failure — one dropped packet on a busy LAN): an unavailable poll
+//     is unknown power state, not off, so it neither arms the edge nor disarms
+//     one already armed, and the screen's last CONFIRMED power reading stands
+//     until another confirmed one replaces it. Without that, a single transient
+//     poll failure over an on screen manufactures a fake off -> on edge and
+//     yanks a TV somebody is watching back to the player channel.
+//
+//     See screenState.powerOnArmed. Rule 2 is structurally immune to both (it
+//     needs two consecutive Home readings); rule 1b has to say so explicitly.
 //
 //  2. A HOME-CONFIRMATION STREAK — keepalive's OWN policy, NOT something
 //     PLY-152/153 themselves require. Before attempting a relaunch, this
@@ -243,6 +261,17 @@ const (
 // doc's REG-063 equivalence note).
 const poweredOnRawValue = "PowerOn"
 
+// unknownRawPowerValue is the raw power_mode reading that carries NO
+// information about the screen's power state: ecppoll's unavailableEntity sets
+// every attribute nil on any fetch or parse failure, and attrString renders a
+// nil (or missing) power_mode as the empty string.
+//
+// Rule 3 treats it exactly like a low-power value — fail-closed, no command
+// ever — but rule 1b must NOT, because "the poll failed" and "the television is
+// off" are different facts with opposite consequences for a rule that takes the
+// foreground. See screenState.powerOnArmed.
+const unknownRawPowerValue = ""
+
 // Target names one watched screen's ECP address — the same (Host, Port)
 // shape internal/relay/ecppoll.Target and internal/relay/ecp.Target each
 // declare, kept as its own local type (mirroring how those two packages
@@ -370,20 +399,32 @@ type screenState struct {
 	homeStreak   int
 	launched     bool
 
-	// powerOnConsumed records that the CURRENT power-on edge has already had
-	// rule 1b's auto-launch decided for it — whether that decision was to
-	// dispatch or to suppress. It is reset by the same rule-3 reset every other
-	// field here is, so the NEXT power-on edge gets its own decision and only
-	// its own.
+	// powerOnArmed records that this screen has been OBSERVED powered off since
+	// rule 1b last decided an edge — i.e. that a subsequent PowerOn reading is a
+	// genuine off -> on transition and not merely the first thing this process
+	// happened to see.
 	//
-	// "Consumed", not "launched": a suppressed edge is consumed too. Leaving it
-	// unconsumed would arm a launch that fires whenever the suppression happens
-	// to lift — potentially hours later, at a screen a person is by then using —
-	// which is precisely the foreground theft rule 2's home gate exists to
-	// avoid. A power-on auto-launch is an EDGE-triggered action; if the edge was
-	// not a moment to foreground the channel, there is no later moment to
-	// re-try it at, only the next real power-on.
-	powerOnConsumed bool
+	// It is deliberately DEFAULT-DISARMED and set only by a CONFIRMED off
+	// reading (a real low-power power_mode value from a device that answered),
+	// never by the absence of information:
+	//
+	//   - a screen with no prior observation is not armed. A relay restart or a
+	//     deploy is not a power cycle of the television, and rule 1b steals the
+	//     foreground.
+	//   - an UNAVAILABLE reading (empty power_mode: ecppoll's unavailableEntity,
+	//     produced by ANY fetch/parse failure) leaves it exactly as it was. It
+	//     is unknown state, not off, so it can neither arm a fake edge over an
+	//     on screen nor throw away a real one already armed by a confirmed off.
+	//
+	// It is CLEARED the moment rule 1b decides the edge, whichever way that
+	// decision goes — a suppressed edge is spent too. Leaving it armed would
+	// fire a launch whenever the suppression happens to lift, potentially hours
+	// later at a screen a person is by then using, which is precisely the
+	// foreground theft rule 2's home gate exists to avoid. A power-on
+	// auto-launch is an EDGE-triggered action; if the edge was not a moment to
+	// foreground the channel, there is no later moment to re-try it at, only the
+	// next real power-on.
+	powerOnArmed bool
 }
 
 // Keepalive watches Config.Targets over ECP and dispatches a recovery launch
@@ -634,9 +675,12 @@ func (k *Keepalive) evaluateAll(now time.Time) {
 //     already reading Home.
 //   - Rule 1b (power-on auto-launch, Config.PowerOnLaunch — see the package
 //     doc's item 1b): once past that same delay, the FIRST qualifying poll of
-//     each power-on edge dispatches a launch regardless of appType, then
-//     consumes the edge so the same power-on can never fire twice. Suppressed
-//     — and the edge consumed anyway — by PLY-155's blank active Lease.
+//     each ARMED power-on edge dispatches a launch regardless of appType, then
+//     disarms so the same power-on can never fire twice. Only a CONFIRMED off
+//     reading arms it: neither a first-ever sighting nor a recovery from an
+//     unavailable poll is an off -> on transition, and this rule takes the
+//     foreground. Suppressed — and the edge spent anyway — by PLY-155's blank
+//     active Lease.
 //   - Rule 2 (home-confirmation streak, keepalive's OWN policy — see the
 //     package doc's item 2, NOT a PLY-152/153 requirement): once past the
 //     delay, appType other than the literal "home" or "menu" (a real foreign
@@ -678,7 +722,7 @@ func (k *Keepalive) evaluate(entityID, powerMode, appType string, now time.Time)
 		s.poweredOnAt = time.Time{}
 		s.homeStreak = 0
 		s.launched = false
-		s.powerOnConsumed = false
+		s.powerOnArmed = false
 		return "", false
 	}
 
@@ -689,7 +733,18 @@ func (k *Keepalive) evaluate(entityID, powerMode, appType string, now time.Time)
 		s.poweredOnAt = time.Time{}
 		s.homeStreak = 0
 		s.launched = false
-		s.powerOnConsumed = false
+		if powerMode != unknownRawPowerValue {
+			// A CONFIRMED off: the device answered and reported a low-power
+			// value, so a later PowerOn really is an off -> on transition. This
+			// is the ONLY thing that arms rule 1b (see screenState.powerOnArmed).
+			s.powerOnArmed = true
+		}
+		// An unavailable reading (unknownRawPowerValue) deliberately falls
+		// through with powerOnArmed untouched: a failed poll is unknown power
+		// state, not off. Arming here would let one dropped ECP packet over an
+		// in-use TV manufacture a power-on edge and steal its foreground;
+		// disarming here would throw away a real edge a confirmed off had
+		// already armed just because the next poll happened to miss.
 		return "", false
 	}
 
@@ -702,9 +757,11 @@ func (k *Keepalive) evaluate(entityID, powerMode, appType string, now time.Time)
 		s.poweredOnAt = now
 		s.homeStreak = 0
 		s.launched = false
-		// Rule 1b arms on this SAME edge: a fresh power-on is a fresh
-		// auto-launch opportunity, whatever the previous one decided.
-		s.powerOnConsumed = false
+		// Rule 1b is NOT armed here. This branch fires on every first PowerOn
+		// reading after any non-PowerOn one, and two of those are not power-ons
+		// at all — this screen's first-ever sighting, and a recovery from an
+		// unavailable poll. Arming lives in the confirmed-off branch above,
+		// which is the only place an off -> on transition is actually observed.
 	}
 
 	// Rule 1b — POWER-ON AUTO-LAUNCH (parity row 5.6). Evaluated here, BEFORE
@@ -718,7 +775,7 @@ func (k *Keepalive) evaluate(entityID, powerMode, appType string, now time.Time)
 	// the delay encodes is about the DEVICE (a launch issued into a
 	// still-booting Roku pends without rendering, legacy roku-integration's
 	// `#autolaunch-delay`), not about which rule issued it.
-	if k.powerOnLaunch && !s.powerOnConsumed {
+	if k.powerOnLaunch && s.powerOnArmed {
 		if now.Sub(s.poweredOnAt) < k.launchDelay {
 			// Still settling. Fall through to nothing: rule 2 cannot fire inside
 			// this window either (it checks the same delay below), so returning
@@ -726,8 +783,8 @@ func (k *Keepalive) evaluate(entityID, powerMode, appType string, now time.Time)
 			return "", false
 		}
 		// The edge is decided NOW, once, whichever way it goes (see
-		// screenState.powerOnConsumed).
-		s.powerOnConsumed = true
+		// screenState.powerOnArmed).
+		s.powerOnArmed = false
 		// PLY-155 only. Not the whole EvaluateRecovery verdict: its PLY-152
 		// app_type gate is the very gate this rule deliberately does not apply,
 		// so reading `RecoveryAttempted` here would silently re-impose it and

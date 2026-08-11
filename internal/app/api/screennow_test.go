@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -184,6 +185,57 @@ func TestPushNowRefusesABodyThatNamesNothingUsable(t *testing.T) {
 	}
 }
 
+// TestPushNowEnforcesTheSchemaItDeclaresRatherThanAHandCopyOfIt drives the
+// constraints `api/openapi.yaml` states for ScreenNowRequest that the handler's
+// hand-written checks did not restate.
+//
+// The push body was bounded by hand: a strict decode for member NAMES plus a
+// `ttl_seconds < 0` test. Everything else the document declares for this body
+// was enforced by nobody — most visibly `ttl_seconds: minimum: 1`, so a
+// `ttl_seconds: 0` the schema forbids was accepted, stored, and served back. A
+// hand copy of a schema is a second statement of one rule, and it was already
+// incomplete on the day it was written; the fix is to run the declared schema,
+// so a constraint added to the document is enforced without a second edit here.
+func TestPushNowEnforcesTheSchemaItDeclaresRatherThanAHandCopyOfIt(t *testing.T) {
+	e := newEnv(t)
+	screenID, castID, _ := snFixture(t, e)
+
+	cases := []struct {
+		name string
+		body map[string]any
+	}{
+		// minimum: 1. Zero is neither "no expiry" (that is an ABSENT member) nor
+		// a legal duration, and it was the one this surface accepted.
+		{"ttl_seconds of zero", map[string]any{"mode": "play", "cast_id": castID, "ttl_seconds": 0}},
+		{"a negative ttl_seconds", map[string]any{"mode": "play", "cast_id": castID, "ttl_seconds": -1}},
+		// enum: [play, alert].
+		{"a mode outside the declared enum", map[string]any{"mode": "takeover", "cast_id": castID}},
+		// additionalProperties: false.
+		{"an undeclared member", map[string]any{"mode": "play", "cast_id": castID, "nonsense": 1}},
+		// message: minLength 1 / maxLength 200.
+		{"an empty message", map[string]any{"mode": "alert", "message": ""}},
+		{"a message over the declared maximum", map[string]any{"mode": "alert", "message": strings.Repeat("x", 201)}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, raw := e.do(t, http.MethodPut, "/api/v1/screens/"+screenID+"/now", mustJSON(t, tc.body), nil)
+			if resp.StatusCode != http.StatusUnprocessableEntity {
+				t.Fatalf("PUT now with %s = %d, want 422 (%s)", tc.name, resp.StatusCode, raw)
+			}
+			if got := storedOverride(t, e, screenID); got != nil {
+				t.Fatalf("a refused push stored %+v; the refusal must happen before any write", got)
+			}
+		})
+	}
+
+	// The guard against a gate that refuses everything: the ordinary push, and a
+	// legal ttl, still succeed.
+	if resp, raw := e.do(t, http.MethodPut, "/api/v1/screens/"+screenID+"/now",
+		mustJSON(t, map[string]any{"mode": "play", "cast_id": castID, "ttl_seconds": 60}), nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("a legal push = %d, want 200 (%s)", resp.StatusCode, raw)
+	}
+}
+
 // TestScreenStatusJoinsTheRowTheOverrideAndTheRelaysObservation is 5.8's central
 // case AND the proof that 5.7's console affordance has something to render: one
 // request returns what the screen is, what a relay has observed of it, and
@@ -285,6 +337,69 @@ func TestScreenStatusJoinsTheRowTheOverrideAndTheRelaysObservation(t *testing.T)
 	}
 	if _, has := unseen["now"]; has {
 		t.Errorf("an un-pushed screen carries a `now` member: %v", unseen)
+	}
+}
+
+// TestScreenStatusSelectorFiltersOnTheScreenRowsLabels pins the standard
+// `selector` parameter this operation DECLARES in openapi against the rows it
+// actually returns.
+//
+// A declared filter that matches nothing is worse than an undeclared one: the
+// operator gets 200 and an empty page, and an empty fleet page reads as "every
+// screen is gone", not as "your filter is broken". The labels live on the
+// authored screen row, which this list already reads in full, so there is no
+// second source to consult — only the question of whether they are threaded
+// into the selector at all.
+func TestScreenStatusSelectorFiltersOnTheScreenRowsLabels(t *testing.T) {
+	e := newEnv(t)
+	node := e.placementNode(t)
+
+	lobby := decodeID(t, e.createOK(t, "/api/v1/screens", mustJSON(t,
+		screenFixture(node, "Lobby", map[string]string{"env": "prod", "floor": "1"}))))
+	backOffice := decodeID(t, e.createOK(t, "/api/v1/screens", mustJSON(t,
+		screenFixture(node, "Back Office", map[string]string{"env": "staging"}))))
+
+	statusIDs := func(query string) []string {
+		t.Helper()
+		resp, raw := e.do(t, http.MethodGet, "/api/v1/screen-status"+query, nil, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET screen-status%s = %d, want 200 (%s)", query, resp.StatusCode, raw)
+		}
+		var page struct {
+			Items []struct {
+				ScreenID string `json:"screen_id"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(raw, &page); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		out := make([]string, 0, len(page.Items))
+		for _, it := range page.Items {
+			out = append(out, it.ScreenID)
+		}
+		return out
+	}
+
+	// Unfiltered: both rows, so the assertions below cannot pass by the list
+	// being empty for some unrelated reason.
+	if got := statusIDs(""); len(got) != 2 {
+		t.Fatalf("unfiltered screen-status returned %v, want both screens", got)
+	}
+
+	if got := statusIDs("?selector=" + url.QueryEscape("env=prod")); len(got) != 1 || got[0] != lobby {
+		t.Errorf("selector env=prod returned %v, want [%s] — a label selector that matches nothing makes the fleet page read as an outage", got, lobby)
+	}
+	if got := statusIDs("?selector=" + url.QueryEscape("env=staging")); len(got) != 1 || got[0] != backOffice {
+		t.Errorf("selector env=staging returned %v, want [%s]", got, backOffice)
+	}
+	// A key no row carries still selects nothing — the filter narrows, it does
+	// not simply pass everything through.
+	if got := statusIDs("?selector=" + url.QueryEscape("env=nowhere")); len(got) != 0 {
+		t.Errorf("selector env=nowhere returned %v, want no rows", got)
+	}
+	// Placement terms select too, over the same rows.
+	if got := statusIDs("?selector=" + url.QueryEscape("scope_node="+node)); len(got) != 2 {
+		t.Errorf("selector scope_node=%s returned %v, want both screens", node, got)
 	}
 }
 
