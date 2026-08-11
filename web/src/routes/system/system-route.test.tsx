@@ -4,6 +4,8 @@ import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import SystemRoute, { formatBytes, formatUptime, RESTART_GIVEUP_MS } from "./system-route";
+import restartPanelDoc from "./restart-panel.uis.json";
+import { validatePage } from "@/renderer";
 import { TRACE_ID, problem } from "@/api/test-support";
 import type { PlatformLogPage, PlatformLogRecord, SystemHealth } from "@/api";
 
@@ -425,9 +427,15 @@ describe("SystemRoute — restart", () => {
     const before = probes.n;
     await clickRestartAndConfirm();
 
-    const status = await screen.findByRole("status");
-    expect(status).toHaveTextContent(/Restarting/);
-    expect(status).toHaveTextContent(/systemd will start it again/i);
+    // The panel says "asking" until the 202 lands and "accepted" after it —
+    // because until the 202 nothing HAS been accepted, and this page does not say
+    // a word it cannot stand behind. They are different nodes, so this re-queries
+    // rather than holding the first one it saw.
+    expect(await screen.findByRole("status")).toHaveTextContent(/Restarting/);
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(/systemd will start it again/i),
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(/Restarting/);
 
     // Wait for EVIDENCE that the page went on watching — two probes answered by
     // the same instance — and only then assert it has not claimed a restart.
@@ -510,5 +518,95 @@ describe("SystemRoute — restart", () => {
     } finally {
       vi.restoreAllMocks();
     }
+  }, 20_000);
+});
+
+// ── The panel as a ui-schema/1 document ──────────────────────────────────────
+//
+// The restart panel is authored as `restart-panel.uis.json` and painted by the
+// same PageRenderer an extension page goes through. The cases above already
+// prove the BEHAVIOUR survived that move — they were not changed for it, beyond
+// re-querying one live region across a transition. These add what only the new
+// authoring makes checkable.
+
+describe("SystemRoute — the restart panel is a ui-schema/1 document", () => {
+  it("the document is conformant, so a broken one fails HERE and not as a mystery blank panel", () => {
+    // Without this the renderer would paint its rejection panel, and the restart
+    // cases above would fail with "no button named /restart this box/" — true,
+    // unhelpful, and several inferences away from the actual mistake.
+    const result = validatePage(restartPanelDoc);
+    expect(result.ok ? [] : result.errors).toEqual([]);
+  });
+
+  it("says ASKING until the 202 lands, and only then says accepted", async () => {
+    // The page's honesty rule, now visible as two distinct sentences: before the
+    // acceptance nothing has been accepted, so it does not use the word.
+    const started = 1_752_537_600_000 - 3_723_000;
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    server.use(
+      http.get("*/api/v1/system-health", () =>
+        HttpResponse.json(healthBody({ started_at_ms: started }), { headers: { "Trace-Id": TRACE_ID } }),
+      ),
+      http.get("*/api/v1/platform-logs", () =>
+        HttpResponse.json(logPage(), { headers: { "Trace-Id": TRACE_ID } }),
+      ),
+      http.post("*/api/v1/system/restart", async () => {
+        await held;
+        return acceptance(started);
+      }),
+    );
+    render(<SystemRoute />);
+    await screen.findByRole("button", { name: /restart this box/i });
+    await clickRestartAndConfirm();
+
+    // Pending, and the control is out of reach — a restart cannot be asked twice.
+    expect(await screen.findByRole("status")).toHaveTextContent(/asking this box to stop and start again/i);
+    expect(screen.getByRole("button", { name: /restart this box/i })).toBeDisabled();
+
+    release();
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(/Accepted — systemd will start it again/i),
+    );
+  }, 15_000);
+
+  it("renders the refusal's trace id, so a support conversation has the one identifier that matters", async () => {
+    serveRestart({ onRestart: () => problem(409, "RESTART_BLOCKED", "a media import is running") });
+    render(<SystemRoute />);
+    await screen.findByRole("button", { name: /restart this box/i });
+    await clickRestartAndConfirm();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/a media import is running/);
+    expect(screen.getByText(`trace ${TRACE_ID}`)).toBeInTheDocument();
+  }, 15_000);
+
+  it("stops watching when the page unmounts, rather than polling a downed box to nobody", async () => {
+    // The watcher is a loop inside a promise, not an effect, so it has no cleanup
+    // of its own. This is the case that proves it got one anyway.
+    const started = 1_752_537_600_000 - 3_723_000;
+    const probes = { n: 0 };
+    serveRestart({
+      health: () => healthBody({ started_at_ms: started }),
+      onRestart: () => acceptance(started),
+      probes,
+    });
+    const view = render(<SystemRoute />);
+    await screen.findByRole("button", { name: /restart this box/i });
+    await clickRestartAndConfirm();
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(/systemd will start it again/i),
+    );
+
+    // Wait out one watcher probe so the loop is demonstrably running…
+    const running = probes.n;
+    await waitFor(() => expect(probes.n).toBeGreaterThan(running), { timeout: 8_000 });
+    view.unmount();
+
+    // …then give it two more poll intervals to prove it has stopped.
+    const atUnmount = probes.n;
+    await new Promise((r) => setTimeout(r, 3_500));
+    expect(probes.n).toBe(atUnmount);
   }, 20_000);
 });

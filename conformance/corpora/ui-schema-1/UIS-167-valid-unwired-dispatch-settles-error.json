@@ -1,0 +1,35 @@
+{
+  "case_id": "UIS-167-valid-unwired-dispatch-settles-error",
+  "contract": "ui-schema/1",
+  "req_ids": ["UIS-167"],
+  "description": "A seam verb the host has wired no dispatch for still SETTLES the ActionOutcome the page asked for: the record becomes `{status: \"error\", code: \"ACTION_DISPATCH_UNWIRED\"}`, never `ok` (which would report an act that did not occur) and never left `pending` (which would hang a control on a request nobody sent). The document is conformant — whether a host wired a seam is not a property of the document — so the refusal is a rendered outcome, not a validation rejection.",
+  "input": {
+    "pageType": "dashboard",
+    "tiles": [
+      {
+        "size": "large",
+        "widget": {
+          "type": "section",
+          "children": [
+            {
+              "type": "button",
+              "props": {
+                "labelMsg": "msg:system.restart.button",
+                "disabledIf": { "compute": "eq", "args": ["$ui.restart.status", { "lit": "pending" }] }
+              },
+              "on": { "press": { "verb": "call-action", "action": "system.restart", "outcomeTo": "$ui.restart" } }
+            },
+            {
+              "type": "text",
+              "visibleIf": { "compute": "eq", "args": ["$ui.restart.status", { "lit": "error" }] },
+              "props": { "announce": "assertive", "value": "$ui.restart.code" }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "expected": {
+    "valid": true
+  }
+}

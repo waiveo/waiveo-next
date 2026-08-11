@@ -962,3 +962,202 @@ describe("repeat widget (UIS-070/107 → WIDGET_REQUIRED_FIELD_MISSING / BINDING
     ).toEqual([]);
   });
 });
+
+// ── v1.1: the ActionRef envelope fields (UIS-165/166/167) ────────────────────
+
+/** A settings-form whose SECOND action carries the ActionRef under test; the
+ * first keeps UIS-031's submit requirement satisfied so the only error reported
+ * is the one the case is about. */
+function withAction(press: Record<string, unknown>): Record<string, unknown> {
+  return {
+    pageType: "settings-form",
+    source: "site",
+    sections: [{ fields: [{ type: "text-input", bind: "name", props: { labelMsg: "msg:name" } }] }],
+    actions: [
+      { type: "button", props: { labelMsg: "msg:save" }, on: { press: { verb: "submit" } } },
+      { type: "button", props: { labelMsg: "msg:go" }, on: { press } },
+    ],
+  };
+}
+
+const AT = "actions[1].on.press";
+
+describe("confirm (UIS-165 → ACTION_FIELDS_INVALID)", () => {
+  it("accepts a complete ConfirmSpec on any verb", () => {
+    const spec = {
+      titleMsg: "msg:t",
+      bodyMsg: "msg:b",
+      confirmLabelMsg: "msg:ok",
+      cancelLabelMsg: "msg:no",
+      destructive: true,
+    };
+    for (const press of [
+      { verb: "delete", target: "$root", confirm: spec },
+      { verb: "submit", confirm: spec },
+      { verb: "navigate", to: "/x", confirm: spec },
+      { verb: "set", target: "$ui.a", value: 1, confirm: spec },
+      { verb: "call-action", action: "a.b", confirm: { titleMsg: "msg:t" } },
+    ]) {
+      expect(codes(withAction(press)), JSON.stringify(press.verb)).toEqual([]);
+    }
+  });
+
+  it("rejects a confirm that is not an object", () => {
+    for (const bad of [true, "msg:t", ["msg:t"]]) {
+      const e = errorFor(withAction({ verb: "submit", confirm: bad }), "ACTION_FIELDS_INVALID");
+      expect(e?.path, JSON.stringify(bad)).toBe(`${AT}.confirm`);
+    }
+  });
+
+  it("rejects a confirm with no titleMsg — the dialog would have no accessible name", () => {
+    const e = errorFor(withAction({ verb: "submit", confirm: { bodyMsg: "msg:b" } }), "ACTION_FIELDS_INVALID");
+    expect(e?.path).toBe(`${AT}.confirm.titleMsg`);
+  });
+
+  it("rejects a non-string titleMsg", () => {
+    const e = errorFor(withAction({ verb: "submit", confirm: { titleMsg: 7 } }), "ACTION_FIELDS_INVALID");
+    expect(e?.path).toBe(`${AT}.confirm.titleMsg`);
+  });
+
+  it("rejects an unrecognized ConfirmSpec field — the set is closed (a dropped body warns about less)", () => {
+    const e = errorFor(
+      withAction({ verb: "submit", confirm: { titleMsg: "msg:t", bodyMessage: "msg:b" } }),
+      "ACTION_FIELDS_INVALID",
+    );
+    expect(e?.path).toBe(`${AT}.confirm.bodyMessage`);
+  });
+
+  it("rejects a non-string optional label and a non-boolean destructive", () => {
+    expect(errorFor(withAction({ verb: "submit", confirm: { titleMsg: "msg:t", bodyMsg: 1 } }), "ACTION_FIELDS_INVALID")?.path)
+      .toBe(`${AT}.confirm.bodyMsg`);
+    expect(
+      errorFor(withAction({ verb: "submit", confirm: { titleMsg: "msg:t", confirmLabelMsg: 1 } }), "ACTION_FIELDS_INVALID")?.path,
+    ).toBe(`${AT}.confirm.confirmLabelMsg`);
+    expect(
+      errorFor(withAction({ verb: "submit", confirm: { titleMsg: "msg:t", cancelLabelMsg: 1 } }), "ACTION_FIELDS_INVALID")?.path,
+    ).toBe(`${AT}.confirm.cancelLabelMsg`);
+    expect(
+      errorFor(withAction({ verb: "submit", confirm: { titleMsg: "msg:t", destructive: "yes" } }), "ACTION_FIELDS_INVALID")?.path,
+    ).toBe(`${AT}.confirm.destructive`);
+  });
+
+  it("does not treat confirm/outcomeTo as unrecognized fields on create's CLOSED field set (UIS-164)", () => {
+    const doc = {
+      pageType: "list-detail",
+      list: { source: "items", display: { type: "table", props: { source: "items", columns: [{ headerMsg: "msg:n", cell: "item.n" }] } } },
+      detail: { source: "items[id=$ui.sel]", root: textWidget },
+      newAction: {
+        verb: "create",
+        target: "items",
+        itemDefault: {},
+        confirm: { titleMsg: "msg:t" },
+        outcomeTo: "$ui.newOutcome",
+      },
+    };
+    expect(codes(doc)).toEqual([]);
+    // …and a real misspelling there still fails.
+    const bad = { ...doc, newAction: { ...doc.newAction, scopeForm: "site" } };
+    expect(errorFor(bad, "ACTION_FIELDS_INVALID")?.path).toBe("newAction.scopeForm");
+  });
+});
+
+describe("outcomeTo (UIS-166/167 → BINDING_PATH_INVALID / ACTION_FIELDS_INVALID)", () => {
+  it("accepts a $ui-rooted destination on every seam verb", () => {
+    for (const press of [
+      { verb: "submit", outcomeTo: "$ui.out" },
+      { verb: "create", target: "items", outcomeTo: "$ui.out.nested" },
+      { verb: "delete", target: "$root", outcomeTo: "$ui.deleteOutcome" },
+      { verb: "call-action", action: "a.b", outcomeTo: "$ui.a.b.c" },
+    ]) {
+      expect(codes(withAction(press)), press.verb).toEqual([]);
+    }
+  });
+
+  it("rejects outcomeTo on a verb that produces no outcome (UIS-167)", () => {
+    for (const press of [
+      { verb: "set", target: "$ui.a", value: 1, outcomeTo: "$ui.out" },
+      { verb: "repeat-add", target: "items", outcomeTo: "$ui.out" },
+      { verb: "repeat-remove", target: "item", outcomeTo: "$ui.out" },
+      { verb: "navigate", to: "/x", outcomeTo: "$ui.out" },
+    ]) {
+      const e = errorFor(withAction(press), "ACTION_FIELDS_INVALID");
+      expect(e?.path, press.verb).toBe(`${AT}.outcomeTo`);
+    }
+  });
+
+  it("rejects outcomeTo on a wizard verb", () => {
+    const doc = {
+      pageType: "wizard",
+      steps: [
+        {
+          id: "a",
+          titleMsg: "msg:a",
+          root: {
+            type: "button",
+            props: { labelMsg: "msg:next" },
+            on: { press: { verb: "wizard-next", outcomeTo: "$ui.out" } },
+          },
+        },
+      ],
+      onFinish: { verb: "call-action", action: "done" },
+    };
+    expect(errorFor(doc, "ACTION_FIELDS_INVALID")?.path).toBe("steps[0].root.on.press.outcomeTo");
+  });
+
+  it("rejects a destination outside $ui — an outcome is never written into the bound resource", () => {
+    for (const bad of ["out", "$root.out", "$context.out", "$params.out", "item.out"]) {
+      const e = errorFor(withAction({ verb: "submit", outcomeTo: bad }), "BINDING_PATH_INVALID");
+      expect(e?.path, bad).toBe(`${AT}.outcomeTo`);
+    }
+  });
+
+  it("rejects a bare $ui — the whole ephemeral tree is not a named slot", () => {
+    const e = errorFor(withAction({ verb: "submit", outcomeTo: "$ui" }), "BINDING_PATH_INVALID");
+    expect(e?.path).toBe(`${AT}.outcomeTo`);
+  });
+
+  it("rejects an indexed or predicated destination, and a non-string one", () => {
+    for (const bad of ["$ui.out[0]", "$ui.out[id=1]", 7, null, { path: "$ui.out", live: true }]) {
+      const e = errorFor(withAction({ verb: "submit", outcomeTo: bad }), "BINDING_PATH_INVALID");
+      expect(e?.path, JSON.stringify(bad)).toBe(`${AT}.outcomeTo`);
+    }
+  });
+});
+
+describe("button disabledIf + text announce (UIS-076/077)", () => {
+  it("accepts a BindingExpr disabledIf in each of its three forms", () => {
+    for (const expr of [true, "$ui.busy", { compute: "eq", args: ["$ui.s", { lit: "pending" }] }]) {
+      const doc = {
+        pageType: "settings-form",
+        source: "site",
+        sections: [{ fields: [{ type: "text-input", bind: "name", props: { labelMsg: "msg:name" } }] }],
+        actions: [
+          { type: "button", props: { labelMsg: "msg:save", disabledIf: expr }, on: { press: { verb: "submit" } } },
+        ],
+      };
+      expect(codes(doc), JSON.stringify(expr)).toEqual([]);
+    }
+  });
+
+  it("grammar-checks disabledIf as a BindingExpr, so a malformed Binding is rejected", () => {
+    const doc = {
+      pageType: "settings-form",
+      source: "site",
+      sections: [{ fields: [{ type: "text-input", bind: "name", props: { labelMsg: "msg:name" } }] }],
+      actions: [{ type: "button", props: { labelMsg: "msg:save", disabledIf: "a..b" }, on: { press: { verb: "submit" } } }],
+    };
+    expect(errorFor(doc, "BINDING_PATH_INVALID")?.path).toBe("actions[0].props.disabledIf");
+  });
+
+  it("accepts announce on text and still rejects an undeclared prop beside it", () => {
+    const ok = { pageType: "dashboard", tiles: [{ size: "large", widget: { type: "text", props: { value: "x", announce: "assertive" } } }] };
+    expect(codes(ok)).toEqual([]);
+    const bad = { pageType: "dashboard", tiles: [{ size: "large", widget: { type: "text", props: { value: "x", announceMode: "assertive" } } }] };
+    expect(errorFor(bad, "WIDGET_PROP_UNKNOWN")?.path).toBe("tiles[0].widget.props.announceMode");
+  });
+
+  it("still rejects disabledIf on a widget whose catalog entry does not declare it", () => {
+    const bad = { pageType: "dashboard", tiles: [{ size: "large", widget: { type: "text", props: { value: "x", disabledIf: true } } }] };
+    expect(errorFor(bad, "WIDGET_PROP_UNKNOWN")?.path).toBe("tiles[0].widget.props.disabledIf");
+  });
+});

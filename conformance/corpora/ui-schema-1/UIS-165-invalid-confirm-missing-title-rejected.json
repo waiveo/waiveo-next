@@ -1,0 +1,45 @@
+{
+  "case_id": "UIS-165-invalid-confirm-missing-title-rejected",
+  "contract": "ui-schema/1",
+  "req_ids": ["UIS-165"],
+  "description": "A `confirm` ConfirmSpec omitting `titleMsg` fails validation as ACTION_FIELDS_INVALID at the missing field's own path. The title is the dialog's accessible name and there is nowhere else for one to come from, so it is required for the same reason UIS-075 requires an input's labelMsg — never defaulted at render time.",
+  "input": {
+    "pageType": "settings-form",
+    "source": "site",
+    "sections": [
+      {
+        "fields": [
+          { "type": "text-input", "bind": "displayName", "props": { "labelMsg": "msg:settings.general.displayName" } }
+        ]
+      }
+    ],
+    "actions": [
+      {
+        "type": "button",
+        "props": { "labelMsg": "msg:settings.save" },
+        "on": { "press": { "verb": "submit" } }
+      },
+      {
+        "type": "button",
+        "props": { "labelMsg": "msg:settings.delete", "style": "destructive" },
+        "on": {
+          "press": {
+            "verb": "delete",
+            "target": "$root",
+            "confirm": { "bodyMsg": "msg:settings.delete.confirmBody", "destructive": true }
+          }
+        }
+      }
+    ]
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      {
+        "code": "ACTION_FIELDS_INVALID",
+        "field": "actions[1].on.press.confirm.titleMsg",
+        "message": "a ConfirmSpec requires a `titleMsg` msg reference — it is the dialog's accessible name (UIS-165)"
+      }
+    ]
+  }
+}

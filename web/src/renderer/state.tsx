@@ -10,9 +10,19 @@
 // handler (the action seam), the document's fragments, the host's slot content,
 // and the render environment.
 
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import { ConfirmModal } from "@/components/kit";
 import type { PathLoc, RenderEnv } from "./bindings";
-import type { ActionHandler, WidgetNode } from "./types";
+import type { ActionHandler, ConfirmSpec, WidgetNode } from "./types";
 
 // ── Immutable tree helpers ──────────────────────────────────────────────────
 
@@ -89,6 +99,13 @@ export interface RendererContextValue {
   handler: ActionHandler;
   fragments: Record<string, WidgetNode>;
   slots: Record<string, ReactNode>;
+  /** The confirm gate (UIS-165): an ActionRef declaring `confirm` hands its own
+   * dispatch here instead of running it, and the renderer runs `run` only on the
+   * operator's acknowledgement. It lives on the context rather than as a
+   * parameter threaded through every `runAction` call site so that EVERY event —
+   * a button press, a table `rowPress`, an input `change`, a wizard `onFinish` —
+   * is gated by the same one gate, with no site left un-plumbed. */
+  requestConfirm: (spec: ConfirmSpec, run: () => void) => void;
   /** The page's own primary bound resource path — `submit`'s default target
    * (UIS-160): `source` for settings-form, `detail.source` for list-detail. */
   primarySource: string | undefined;
@@ -211,16 +228,58 @@ export function RendererProvider({
     [],
   );
 
+  // The confirm gate (UIS-165). One pending request at a time: a confirmation is
+  // modal by construction, and a second event cannot reach a control the open
+  // dialog has already taken focus away from.
+  const [pendingConfirm, setPendingConfirm] = useState<{ spec: ConfirmSpec; run: () => void } | null>(null);
+  const requestConfirm = useCallback((spec: ConfirmSpec, run: () => void) => {
+    setPendingConfirm({ spec, run });
+  }, []);
+
   const value: RendererContextValue = {
     env,
     store,
     handler,
     fragments,
     slots,
+    requestConfirm,
     primarySource,
     resource: state.resource,
     ui: state.ui,
   };
 
-  return <RendererContext.Provider value={value}>{children}</RendererContext.Provider>;
+  return (
+    <RendererContext.Provider value={value}>
+      {children}
+      {pendingConfirm ? (
+        // The console's single dialog idiom — deliberately NOT window.confirm,
+        // which blocks the browser-automation harness this project verifies its UI
+        // with, so a control gated behind one is a control nothing can prove works.
+        <ConfirmModal
+          open
+          onOpenChange={(open) => {
+            // Any dismissal — Cancel, Escape, the overlay, the close button —
+            // drops the request. UIS-165: a dismissal dispatches nothing at all.
+            if (!open) setPendingConfirm(null);
+          }}
+          title={env.msg(String(pendingConfirm.spec.titleMsg))}
+          {...(pendingConfirm.spec.bodyMsg
+            ? { description: env.msg(String(pendingConfirm.spec.bodyMsg)) }
+            : {})}
+          {...(pendingConfirm.spec.confirmLabelMsg
+            ? { confirmLabel: env.msg(String(pendingConfirm.spec.confirmLabelMsg)) }
+            : {})}
+          {...(pendingConfirm.spec.cancelLabelMsg
+            ? { cancelLabel: env.msg(String(pendingConfirm.spec.cancelLabelMsg)) }
+            : {})}
+          destructive={pendingConfirm.spec.destructive === true}
+          onConfirm={() => {
+            const { run } = pendingConfirm;
+            setPendingConfirm(null);
+            run();
+          }}
+        />
+      ) : null}
+    </RendererContext.Provider>
+  );
 }

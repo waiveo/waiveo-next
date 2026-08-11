@@ -46,8 +46,8 @@ const pageCases = cases.filter((c) => typeof c.input.pageType === "string");
 const bindingCases = cases.filter((c) => typeof c.input.binding === "string");
 
 describe("ui-schema/1 corpus — validation oracle", () => {
-  it("loads all nine frozen corpus cases (no copies)", () => {
-    expect(cases.length).toBe(9);
+  it("loads all sixteen frozen corpus cases (no copies)", () => {
+    expect(cases.length).toBe(16);
     // Every case is accounted for by exactly one shape (page-document or binding).
     expect(pageCases.length + bindingCases.length).toBe(cases.length);
   });
@@ -95,12 +95,17 @@ describe("ui-schema/1 corpus — validation oracle", () => {
     }
   });
 
-  it("exercises each rejection case (UIS-060, UIS-100, UIS-132-invalid)", () => {
-    const rejections = pageCases.filter((c) => c.expected.valid === false).map((c) => c.case_id);
-    expect(rejections).toContain("UIS-060-invalid-unknown-widget-rejected");
-    expect(rejections).toContain("UIS-100-invalid-malformed-binding-rejected");
-    expect(rejections).toContain("UIS-132-invalid-incomplete-vocab-labels-rejected");
-    expect(rejections.length).toBe(3);
+  it("exercises every rejection case the corpus freezes", () => {
+    const rejections = pageCases.filter((c) => c.expected.valid === false).map((c) => c.case_id).sort();
+    expect(rejections).toEqual([
+      "UIS-060-invalid-unknown-widget-rejected",
+      "UIS-100-invalid-malformed-binding-rejected",
+      "UIS-132-invalid-incomplete-vocab-labels-rejected",
+      "UIS-165-invalid-confirm-missing-title-rejected",
+      "UIS-165-invalid-confirm-unknown-field-rejected",
+      "UIS-166-invalid-outcome-to-outside-ui-rejected",
+      "UIS-167-invalid-outcome-to-on-local-verb-rejected",
+    ]);
   });
 
   it("exercises each valid page type (list-detail, settings-form, dashboard, wizard)", () => {

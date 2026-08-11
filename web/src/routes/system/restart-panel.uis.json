@@ -1,0 +1,144 @@
+{
+  "pageType": "dashboard",
+  "tiles": [
+    {
+      "size": "large",
+      "widget": {
+        "type": "section",
+        "children": [
+          { "type": "text", "props": { "value": { "compute": "msg", "args": ["msg:system.restart.leadIn"] } } },
+          { "type": "text", "props": { "value": { "compute": "msg", "args": ["msg:system.restart.useIt"] } } },
+
+          {
+            "type": "button",
+            "id": "restart-box",
+            "props": {
+              "labelMsg": "msg:system.restart.button",
+              "style": "destructive",
+              "disabledIf": { "compute": "eq", "args": ["$ui.restart.status", { "lit": "pending" }] }
+            },
+            "on": {
+              "press": {
+                "verb": "call-action",
+                "action": "system.restart",
+                "outcomeTo": "$ui.restart",
+                "confirm": {
+                  "titleMsg": "msg:system.restart.confirm.title",
+                  "bodyMsg": "msg:system.restart.confirm.body",
+                  "confirmLabelMsg": "msg:system.restart.confirm.ok",
+                  "cancelLabelMsg": "msg:system.restart.confirm.cancel",
+                  "destructive": true
+                }
+              }
+            }
+          },
+
+          {
+            "type": "text",
+            "id": "restart-asking",
+            "visibleIf": {
+              "compute": "and",
+              "args": [
+                { "compute": "eq", "args": ["$ui.restart.status", { "lit": "pending" }] },
+                { "compute": "not", "args": ["$ui.restart.result.supervisor"] }
+              ]
+            },
+            "props": { "announce": "polite", "value": { "compute": "msg", "args": ["msg:system.restart.asking"] } }
+          },
+          {
+            "type": "text",
+            "id": "restart-accepted",
+            "visibleIf": {
+              "compute": "and",
+              "args": [
+                { "compute": "eq", "args": ["$ui.restart.status", { "lit": "pending" }] },
+                "$ui.restart.result.supervisor"
+              ]
+            },
+            "props": {
+              "announce": "polite",
+              "value": { "compute": "msg", "args": ["msg:system.restart.accepted", "$ui.restart.result.supervisor"] }
+            }
+          },
+
+          {
+            "type": "text",
+            "id": "restart-back",
+            "visibleIf": { "compute": "eq", "args": ["$ui.restart.status", { "lit": "ok" }] },
+            "props": {
+              "announce": "polite",
+              "value": {
+                "compute": "msg",
+                "args": [
+                  "msg:system.restart.back",
+                  { "compute": "formatDate", "args": ["$ui.restart.result.started_at_iso"] }
+                ]
+              }
+            }
+          },
+
+          {
+            "type": "switch",
+            "id": "restart-refusal",
+            "visibleIf": { "compute": "eq", "args": ["$ui.restart.status", { "lit": "error" }] },
+            "props": {
+              "discriminant": "$ui.restart.code",
+              "cases": [
+                {
+                  "when": "RESTART_UNSUPPORTED",
+                  "render": {
+                    "type": "text",
+                    "props": {
+                      "announce": "assertive",
+                      "value": { "compute": "msg", "args": ["msg:system.restart.unsupported", "$ui.restart.detail"] }
+                    }
+                  }
+                },
+                {
+                  "when": "RESTART_IN_PROGRESS",
+                  "render": {
+                    "type": "text",
+                    "props": {
+                      "announce": "assertive",
+                      "value": { "compute": "msg", "args": ["msg:system.restart.inProgress", "$ui.restart.detail"] }
+                    }
+                  }
+                },
+                {
+                  "when": "RESTART_BLOCKED",
+                  "render": {
+                    "type": "text",
+                    "props": {
+                      "announce": "assertive",
+                      "value": { "compute": "msg", "args": ["msg:system.restart.blocked", "$ui.restart.detail"] }
+                    }
+                  }
+                },
+                {
+                  "when": "FORBIDDEN",
+                  "render": {
+                    "type": "text",
+                    "props": {
+                      "announce": "assertive",
+                      "value": { "compute": "msg", "args": ["msg:system.restart.forbidden"] }
+                    }
+                  }
+                }
+              ],
+              "default": {
+                "type": "text",
+                "props": { "announce": "assertive", "value": "$ui.restart.detail" }
+              }
+            }
+          },
+          {
+            "type": "text",
+            "id": "restart-trace",
+            "visibleIf": "$ui.restart.traceId",
+            "props": { "value": { "compute": "msg", "args": ["msg:system.restart.trace", "$ui.restart.traceId"] } }
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,14 +1,14 @@
 # Declarative UI
 
 **Contract:** ui-schema/1
-**Version:** 1.0
+**Version:** 1.1
 **Status:** review
 
 ## Scope
 
 ui-schema/1 defines the declarative document a pack ships for each page it contributes (`manifest/1` MAN-060): the closed set of page types a document may declare, the closed catalog of widgets a page's content is built from, the closed grammar a widget uses to bind to data, and how a document composes reusable fragments and exposes slots for other packs' fragments. A host renders a conformant document directly — no pack-authored rendering code ever runs, mirroring `manifest/1`'s own "entirely before any pack code runs" posture for every other declarative surface.
 
-- In scope: the page-document envelope and its file-location convention; the four page types and their structural schemas, including a keyset-cursor paginated form for a `list-detail` page's list binding; the widget-node envelope; the enumerated widget catalog (props — including every interactive widget's required accessible label, UIS-075 — bindings, events per widget); the binding grammar (data paths, local-scope rules, vocabulary references, option sources, computed values — including locale-formatted date/number rendering, UIS-143 — and an optional live-updating flag, delivered over `events/1`, UIS-109–110); page-scoped ephemeral UI state; context feeds; the closed action-verb grammar a widget event invokes; fragment declaration, reference, and recursion; the `Slot` widget; the validation story (closed-set and grammar-well-formedness checks) and this contract's error taxonomy.
+- In scope: the page-document envelope and its file-location convention; the four page types and their structural schemas, including a keyset-cursor paginated form for a `list-detail` page's list binding; the widget-node envelope; the enumerated widget catalog (props — including every interactive widget's required accessible label, UIS-075, an action control's own bindable disabled state, UIS-076, and a text node's live-region announcement, UIS-077 — bindings, events per widget); the binding grammar (data paths, local-scope rules, vocabulary references, option sources, computed values — including locale-formatted date/number rendering, UIS-143 — and an optional live-updating flag, delivered over `events/1`, UIS-109–110); page-scoped ephemeral UI state; context feeds; the closed action-verb grammar a widget event invokes, together with the two verb-independent envelope fields that gate an invocation behind an operator confirmation (UIS-165) and publish its asynchronous outcome — pending, succeeded, or refused with a code — into page-scoped state a widget can bind (UIS-166–167); fragment declaration, reference, and recursion; the `Slot` widget; the validation story (closed-set and grammar-well-formedness checks) and this contract's error taxonomy.
 - Out of scope: the manifest fields that declare a page's route, title, and slot-contribution eligibility (`manifest/1` MAN-060–062) — this contract defines the page document a `path` resolves to and the `Slot` widget's own rendering behavior, not the pack-manifest fields that register a page or wire a fragment page into a target slot; the automation rule vocabulary itself — triggers, conditions, actions, modes, the Expression grammar (`rules/1`), referenced here only by name as the closed source a vocabulary-reference binding points at; the platform's label-selector grammar's own syntax (`api/1` API-040–046), referenced here only by name; the device-class registry's own state/attribute/command content, referenced here only by name; the pack action-dispatch mechanism a `call-action` verb ultimately resolves to (`ctx/1` CTX-110); the rendering engine's own implementation (a host concern, not a wire or document contract); the `msg:` locale-catalog mechanism itself (`manifest/1` MAN-003/MAN-111), reused here by reference.
 
 ## Definitions
@@ -25,7 +25,9 @@ ui-schema/1 defines the declarative document a pack ships for each page it contr
 - **OptionSource** — the closed grammar (Binding grammar: option sources) a `select`/`multi-select` widget's `options` prop uses to describe its candidate values: `literal`, `vocab`, or `data`.
 - **Context feed** — a page-declared, read-only, named data source (Context feeds) reachable via `$context.<name>`, distinct from the page's own primary bound resource.
 - **Ephemeral UI state (`$ui`)** — page-scoped, renderer-held, never-persisted binding state (Binding grammar: data paths) a page uses for pure interaction bookkeeping (e.g. which row is selected).
-- **ActionRef** — a closed-verb object `{verb, ...fields}` (Actions) a widget event (`on.<event>`) invokes.
+- **ActionRef** — a closed-verb object `{verb, ...fields}` (Actions) a widget event (`on.<event>`) invokes. Two of its fields are **envelope** fields, valid alongside any verb rather than belonging to one: `confirm` (a ConfirmSpec, UIS-165) and `outcomeTo` (UIS-166).
+- **ConfirmSpec** — `{titleMsg, bodyMsg?, confirmLabelMsg?, cancelLabelMsg?, destructive?}` (Actions, UIS-165), the operator acknowledgement an ActionRef's `confirm` field interposes between a widget event and that ActionRef's own dispatch.
+- **ActionOutcome** — `{status, code?, detail?, traceId?, result?}` (Actions, UIS-166), the renderer-written record an ActionRef's `outcomeTo` field publishes into `$ui` across one invocation's lifecycle: `status` one of `pending`, `ok`, `error`.
 - **Fragment** — a named, reusable widget-node subtree declared in a page document's `fragments` map, inserted via a `fragment` widget node (Fragments & slots).
 - **Slot** — a named insertion point (the `slot` widget) where a host renders another pack's fragment-typed page, per `manifest/1`'s own slot-acceptance rules (MAN-062).
 
@@ -102,7 +104,7 @@ ui-schema/1 defines the declarative document a pack ships for each page it contr
 | `switch` | structural | no | `discriminant` (BindingExpr, required), `cases` (non-empty array of `{when, render}`, `when` a JSON literal, `render` a widget node), `default?` (widget node) | none | none |
 | `fragment` | structural | no | `ref` (Kebab identifier, required — a key of this document's `fragments`), `params?` (object of literal/Binding values) | Binding, optional — rescopes (UIS-183) rather than reading a value; same top-level field `repeat` uses for its array | none |
 | `slot` | structural | no | `name` (Kebab identifier, required) | none | none |
-| `text` | display | no | `value` (BindingExpr, required) | none | none |
+| `text` | display | no | `value` (BindingExpr, required), `announce?` (`polite`\|`assertive`, UIS-077) | none | none |
 | `badge` | display | no | `value` (BindingExpr, required), `tone?` (`neutral`\|`positive`\|`warning`\|`critical`, default `neutral`) | none | none |
 | `table` | display | no | `source` (Binding, required, array), `columns` (non-empty array of `{headerMsg, cell}`, `cell` a BindingExpr evaluated per row under an implicit `item` scope, UIS-071) | none | `rowPress?` (ActionRef, `item` in scope) |
 | `stat-tile` | display | no | `labelMsg` (required), `value` (BindingExpr, required), `tone?` (same enum as `badge`) | none | none |
@@ -114,7 +116,7 @@ ui-schema/1 defines the declarative document a pack ships for each page it contr
 | `multi-select` | input | no | `labelMsg` (required, UIS-075), `options` (OptionSource, required) | array of scalar | `change?` |
 | `entity-picker` | input | no | `labelMsg` (required, UIS-075), `bindShape?` (`entityRef`\|`entityId`, default `entityRef`, UIS-073a), `modes?` (non-empty subset of `["entity","selector","deviceClass"]`, default all three) | object — `rules/1` EntityRef shape (UIS-073) — or, when `bindShape` is `entityId`, a scalar entity-id string (UIS-073a) | `change?` |
 | `time-of-day` | input | no | `labelMsg` (required, UIS-075) | string `HH:MM:SS` | `change?` |
-| `button` | action | no | `labelMsg` (required), `style?` (`primary`\|`secondary`\|`destructive`, default `secondary`) | none | `press` (ActionRef, **required** — UIS-074) |
+| `button` | action | no | `labelMsg` (required), `style?` (`primary`\|`secondary`\|`destructive`, default `secondary`), `disabledIf?` (BindingExpr, UIS-076) | none | `press` (ActionRef, **required** — UIS-074) |
 
 **[UIS-071]** `table`'s `columns[].cell` (and `rowPress`, when declared) evaluate under a per-row scope named `item`, established identically to `repeat`'s own item-scope rule (UIS-107) for each element of `source` in array order — `table` is, for binding purposes, `repeat` specialized to a tabular `itemTemplate`.
 
@@ -127,6 +129,18 @@ ui-schema/1 defines the declarative document a pack ships for each page it contr
 **[UIS-074]** A `button` node MUST declare `on.press`; one that does not MUST fail validation as `WIDGET_REQUIRED_FIELD_MISSING` naming `on.press`.
 
 **[UIS-075]** Every **input**-category widget (Widget catalog) — `text-input`, `number-input`, `duration-input`, `toggle`, `select`, `multi-select`, `entity-picker`, `time-of-day` — MUST declare `labelMsg` as a required prop: a `msg:` reference (Definitions), the same reference-catalog convention `manifest/1` MAN-003/MAN-111 already establishes and this contract already requires of `button` (UIS-074) and `stat-tile`. A node of one of these eight types omitting `labelMsg` MUST fail validation as `WIDGET_REQUIRED_FIELD_MISSING` naming `labelMsg` (UIS-062) — packs ship no frontend code of their own (Scope), so `labelMsg` is the only place an accessible name for a form control can come from; there is no default derivation from a nearby `text`/`section` `titleMsg` or from the field's own data-path segment. `labelMsg` is that widget's own accessible label (the a11y-tree/screen-reader name for that one control) and is independent of every other label-shaped prop this contract defines on the same or a different widget: `placeholderMsg` (`text-input`, `select`) is placeholder text shown only in an empty control, never an accessible-name substitute; `onLabelMsg`/`offLabelMsg` (`toggle`) label the two state values, not the field itself; a `section`'s `titleMsg` labels a group, not any one control inside it. This contract does not carve out an exception for a widget whose label might seem derivable from surrounding layout (e.g. two adjacent `time-of-day` fields under one `section` titled "Active hours") — each input-category node still requires its own `labelMsg` (e.g. distinct "Start time"/"End time" references), never a shared reliance on the section's own heading.
+
+**[UIS-076]** A `button` node MAY declare `disabledIf` as a BindingExpr (UIS-141). While it evaluates truthy the control MUST still render, MUST be un-pressable, and MUST be marked disabled to assistive technology; pressing it MUST NOT dispatch its `on.press` ActionRef (UIS-074), and MUST NOT open a `confirm` (UIS-165) either — a disabled control has no path to its verb at all, not merely a path that stops short. `disabledIf`'s absence is equivalent to a literal `false`.
+
+`visibleIf` (UIS-063) is not a substitute for it and this contract does not treat the two as interchangeable. An absent control says *this action does not apply here*; a disabled control says *this action applies, but not right now* — and a page forced to express the second by removing the first would delete and re-insert its own primary control at the moment the operator reaches for it, moving the layout under the cursor and discarding whatever had focus. `disabledIf` is also the only construct in this contract that can make a widget-triggered invocation **non-re-entrant**: an ActionRef publishing an ActionOutcome (UIS-166) is in flight for exactly as long as that outcome reads `pending`, so `disabledIf` bound to `pending` is how a page stops a second press from dispatching a second `delete` or a second `call-action` while the first has not answered. Without it, closing the outcome gap would hand every author a state they can *display* and cannot *act on*.
+
+`disabledIf` is defined on `button` alone. An **input**-category widget's own disabled/read-only state is a different question — whether a value may be edited, not whether an action may fire — and this version does not define it. `disabledIf` is an OPTIONAL prop whose absence preserves UIS-070's existing rendering exactly, so its addition is a ui-schema/1 minor (Negotiation).
+
+**[UIS-077]** A `text` node MAY declare `announce` as one of `polite` or `assertive`; when present the rendered text MUST be an ARIA live region of that politeness, so text that appears — or changes — after the page has already been read is announced rather than silently painted. `announce`'s absence is the default: an ordinary, non-live text node, exactly as UIS-070 has always rendered one.
+
+It exists because closing the outcome gap (UIS-166) without it would produce pages that are *worse* than the ones it replaces. An ActionOutcome's whole purpose is to appear after the operator has acted — a refusal sentence, a "working on it", a completion — and a `visibleIf`-gated `text` node that materializes into an already-read document is, to a screen-reader user, silence. Packs ship no frontend code of their own (Scope), so a live region is not something an author can add outside this catalog; the same reasoning UIS-075 gives for `labelMsg` being the only place an accessible name can come from applies here to the only place an announcement can come from.
+
+A value outside the closed two-member set MUST NOT degrade to a non-live region: a host resolves an unrecognized politeness to `polite`. This contract defines no taxonomy code for a wrong scalar value and does not invent one here (the same presence-only treatment `tone`/`style`/`displayUnit` get), so the failure mode of a typo is chosen deliberately rather than left to a host — an over-announcement is recoverable, an announcement that never happens is exactly the defect the prop exists to prevent, and it is invisible to everyone who can see the screen. `announce` is an OPTIONAL prop, so its addition is a ui-schema/1 minor (Negotiation).
 
 ### Binding grammar: data paths
 
@@ -223,7 +237,7 @@ ui-schema/1 defines the declarative document a pack ships for each page it contr
 
 ### Actions
 
-**[UIS-160]** A widget node's `on.<event>` value MUST be an ActionRef: `{verb, ...fields}`, `verb` one of the closed set below. A `verb` outside this set MUST fail validation as `ACTION_VERB_UNKNOWN`; a `verb`-specific required field's absence, or a field of the wrong shape, MUST fail as `ACTION_FIELDS_INVALID`.
+**[UIS-160]** A widget node's `on.<event>` value MUST be an ActionRef: `{verb, ...fields}`, `verb` one of the closed set below. A `verb` outside this set MUST fail validation as `ACTION_VERB_UNKNOWN`; a `verb`-specific required field's absence, or a field of the wrong shape, MUST fail as `ACTION_FIELDS_INVALID`. Two further fields are **envelope** fields rather than any one verb's own — both OPTIONAL, both governing HOW the named verb is invoked rather than what it does: `confirm` (UIS-165) and `outcomeTo` (UIS-166).
 
 | verb | fields | effect |
 |---|---|---|
@@ -245,7 +259,33 @@ ui-schema/1 defines the declarative document a pack ships for each page it contr
 
 **[UIS-163]** `wizard-next`/`wizard-back`/`wizard-finish` used outside a `wizard` page's own widget-node subtree MUST fail validation as `ACTION_FIELDS_INVALID` naming the verb as invalid outside a wizard context.
 
-**[UIS-164]** A `create` ActionRef (UIS-160), as a `list-detail` page's `newAction` (UIS-021), realizes the **declarative create idiom**: a host renders the "new" affordance as entering a blank detail form bound to a fresh in-memory record — seeded from `itemDefault` plus the universal-envelope defaults below — that `submit` persists through the same create path (UIS-161). Two OPTIONAL envelope-**seed** fields declare where a new row's required envelope values come from: `scopeFrom` — a Binding (UIS-100), resolved **once** against the page's own enclosing Scope at the moment the draft is seeded (the same once-read discipline a bare-string Binding has, UIS-110 — never a LiveBinding, since a one-time seed has nothing to keep live), whose resolved value seeds the new record's `scope_node`; and `lifecycle` — a **literal** string (UIS-108, never the string-is-Binding rule) seeding the new record's `lifecycle_state` for a draft-publish collection. Both are optional: a page that leaves the new row's scope to the host omits `scopeFrom` (the host supplies the current site, and a `scopeFrom` that resolves to absent at draft time seeds no `scope_node` rather than a null), and a collection that is not draft-publish omits `lifecycle`. Because both degrade **silently** to a host default when absent — a typo or a wrong shape does not fail loud the way a missing required field does — a `create` ActionRef's field set is **closed** to exactly `{verb, target, itemDefault?, scopeFrom?, lifecycle?}`: an unrecognized field (e.g. a misspelled `scopeForm`) MUST fail validation as `ACTION_FIELDS_INVALID`, a `scopeFrom` that is not a syntactically valid Binding string MUST fail as `BINDING_PATH_INVALID` (UIS-066), and a non-string `lifecycle` MUST fail as `ACTION_FIELDS_INVALID` (UIS-160) — never accepted unvalidated on the theory the renderer will fall back to a default at render time (UIS-200). These two fields are the ui-schema/1 minor (Negotiation — a new optional field on an existing shape) that the create idiom relies on.
+**[UIS-164]** A `create` ActionRef (UIS-160), as a `list-detail` page's `newAction` (UIS-021), realizes the **declarative create idiom**: a host renders the "new" affordance as entering a blank detail form bound to a fresh in-memory record — seeded from `itemDefault` plus the universal-envelope defaults below — that `submit` persists through the same create path (UIS-161). Two OPTIONAL envelope-**seed** fields declare where a new row's required envelope values come from: `scopeFrom` — a Binding (UIS-100), resolved **once** against the page's own enclosing Scope at the moment the draft is seeded (the same once-read discipline a bare-string Binding has, UIS-110 — never a LiveBinding, since a one-time seed has nothing to keep live), whose resolved value seeds the new record's `scope_node`; and `lifecycle` — a **literal** string (UIS-108, never the string-is-Binding rule) seeding the new record's `lifecycle_state` for a draft-publish collection. Both are optional: a page that leaves the new row's scope to the host omits `scopeFrom` (the host supplies the current site, and a `scopeFrom` that resolves to absent at draft time seeds no `scope_node` rather than a null), and a collection that is not draft-publish omits `lifecycle`. Because both degrade **silently** to a host default when absent — a typo or a wrong shape does not fail loud the way a missing required field does — a `create` ActionRef's field set is **closed** to exactly `{verb, target, itemDefault?, scopeFrom?, lifecycle?}` plus the two verb-independent envelope fields UIS-160 defines (`confirm`, UIS-165; `outcomeTo`, UIS-166), which are valid on every verb and are therefore never "unrecognized" here: an unrecognized field (e.g. a misspelled `scopeForm`) MUST fail validation as `ACTION_FIELDS_INVALID`, a `scopeFrom` that is not a syntactically valid Binding string MUST fail as `BINDING_PATH_INVALID` (UIS-066), and a non-string `lifecycle` MUST fail as `ACTION_FIELDS_INVALID` (UIS-160) — never accepted unvalidated on the theory the renderer will fall back to a default at render time (UIS-200). These two fields are the ui-schema/1 minor (Negotiation — a new optional field on an existing shape) that the create idiom relies on.
+
+**[UIS-165]** An ActionRef of ANY verb (UIS-160) MAY declare `confirm` as a **ConfirmSpec**: `{titleMsg, bodyMsg?, confirmLabelMsg?, cancelLabelMsg?, destructive?}`, where `titleMsg` is a REQUIRED `msg:` reference (Definitions), `bodyMsg`/`confirmLabelMsg`/`cancelLabelMsg` are OPTIONAL `msg:` references, and `destructive` is an OPTIONAL boolean (default `false`) declaring that the guarded verb removes or interrupts something rather than merely writing it. When `confirm` is present the renderer MUST NOT dispatch the ActionRef on the widget event alone: it presents the ConfirmSpec, and dispatches **that same ActionRef, unchanged, in that same Scope** only on the operator's explicit acknowledgement. A dismissal — a cancel, an escape, a close — dispatches nothing at all; a confirm an operator can back out of and still have acted is not a confirm.
+
+`confirm` is a field on the ActionRef and not a widget kind, and the difference is load-bearing rather than stylistic. A confirmation has no place in a content tree: it binds to no data, occupies no position in a layout, and exists only for the duration of one event. Expressing it as a widget would mean re-deriving its state machine in every page (`set $ui.confirming` → a `visibleIf`-gated panel → a second `button` carrying the real verb) and — worse — would **decouple the warning from the act**: nothing in the grammar could then hold the sentence an operator read and the verb that ran to be the same thing, and a page whose dialog says "Delete this screen?" over a button wired to a different `target` would be perfectly conformant. As a field, the two are one node: a reader of the document, and a validator, see the warning and the verb together. It also composes with everything already defined — a `confirm` on a `table`'s `rowPress`, on a `wizard`'s `onFinish`, on a `list-detail`'s `newAction` — with no per-site plumbing.
+
+`confirm`'s own field set is **closed** to exactly `{titleMsg, bodyMsg?, confirmLabelMsg?, cancelLabelMsg?, destructive?}`. A `confirm` that is not an object, an unrecognized key inside it (a misspelled `bodyMessage`), an absent or non-string `titleMsg`, or a non-boolean `destructive` MUST each fail validation as `ACTION_FIELDS_INVALID` at the offending field's own path — never accepted unvalidated on the theory the renderer will fall back at render time (UIS-200). `titleMsg` is required for the same reason UIS-075 requires `labelMsg`: the dialog's title is its accessible name, there is no other place for one to come from, and a modal with no accessible name is a control a screen-reader user cannot identify. `confirm` is an OPTIONAL field on an existing shape, so its addition is a ui-schema/1 minor (Negotiation).
+
+**[UIS-166]** An ActionRef whose verb dispatches through the host's own write/dispatch path — `submit`, `create`, `delete`, `call-action` (UIS-161), the **seam verbs** — MAY declare `outcomeTo` as a Binding (UIS-100) naming where that invocation's **ActionOutcome** is published. `outcomeTo` MUST be rooted at `$ui` and MUST name at least one segment beneath it (`$ui.<name>[.<name>…]`, UIS-104); a non-string, a grammar-malformed path, a bare `$ui`, or a path rooted anywhere else MUST fail validation as `BINDING_PATH_INVALID`. The destination is fixed to `$ui` by the same rule that makes `$ui` what it is: an outcome is page-scoped interaction bookkeeping that is never persisted and never rides in a `submit` payload (UIS-104), and permitting it into the bound resource would let a transient refusal be written back to the server as if it were part of the record.
+
+An **ActionOutcome** is `{status, code?, detail?, traceId?, result?}`:
+
+| field | meaning |
+|---|---|
+| `status` | `pending` while the invocation is in flight, `ok` once it has succeeded, `error` once it has been refused or has failed. Always present. |
+| `code` | On `error`, the refusal's own machine-readable code as the host reported it, or `null` when the failure carries none. |
+| `detail` | On `error`, the human sentence the host reported. While `pending`, the host's own interim description, if it reported one. |
+| `traceId` | On `error`, the failed request's trace identifier, when the host reported one. |
+| `result` | On `ok`, the value the invocation produced. While `pending`, the host's own interim value, if it reported one. |
+
+The renderer writes `{status: "pending"}` at `outcomeTo` at the moment it dispatches, replaces it with `{status: "ok", result}` on success, and with `{status: "error", code, detail, traceId}` on failure. A host MAY report interim `detail`/`result` while the invocation is still in flight; the renderer merges those into the pending record and leaves `status` at `pending`, and MUST ignore any such report arriving after the outcome has settled. That progress channel is a property of the host's own dispatch seam and needs no grammar of its own — this contract fixes only the SHAPE a page binds against, exactly as it declines to specify the rendering engine elsewhere (Scope).
+
+This is deliberately the whole of the asynchronous story: there is no `pending` widget, no lifecycle verb, and no separate error-display kind. `status` is ordinary `$ui` state (UIS-104), so `visibleIf` (UIS-063), a `switch`'s `discriminant` (UIS-070), a `button`'s `disabledIf` (UIS-076) and any `text`/`badge` `value` bind to it with the grammar already defined — a page renders "working", "it failed, and here is which refusal" and "it worked" out of constructs this contract has always had. What was missing was never a lifecycle vocabulary; it was that a dispatched verb's result went nowhere a Binding could reach, so a published error code could not be rendered by a schema-authored page **at all**. `outcomeTo` is an OPTIONAL field on an existing shape, so its addition is a ui-schema/1 minor (Negotiation); an ActionRef that omits it dispatches exactly as it always has, fire-and-forget.
+
+**[UIS-167]** `outcomeTo` (UIS-166) is valid ONLY on a seam verb (`submit`, `create`, `delete`, `call-action`). On any other verb — `navigate`, the local verbs `set`/`repeat-add`/`repeat-remove`, or the wizard verbs — it MUST fail validation as `ACTION_FIELDS_INVALID`, rather than being accepted and never settling. Those verbs complete synchronously against the renderer's own in-memory trees (UIS-162) or the enclosing wizard's step controller (UIS-050); they produce no result and cannot be refused, so an outcome binding on one is a declaration with nothing on the other end — a control gated on `pending` that never leaves it, which is precisely the shape a closed grammar exists to reject statically rather than discover at render time (UIS-200).
+
+For the same reason, a declared `outcomeTo` MUST settle even when the host has wired no dispatch for the verb at all. A seam a host left unwired means the invocation did not happen, so the outcome MUST be written as `{status: "error", code: "ACTION_DISPATCH_UNWIRED"}` — never `ok` (which would report an act that did not occur) and never left `pending` (a control that waits forever on a request nobody sent). An ActionRef with no `outcomeTo` keeps the pre-existing behavior — an unwired seam is a silent no-op — because there is nothing on that page asking whether it happened.
 
 ### Fragments & slots
 
@@ -394,9 +434,67 @@ ui-schema/1 defines the declarative document a pack ships for each page it contr
 { "path": "automations", "paginated": true, "limit": 100 }
 ```
 
+```json
+// ActionRef — a confirmed, outcome-publishing invocation (UIS-165/166): the button
+// that owns it, the confirmation it is gated behind, and the pending state that
+// makes it non-re-entrant (UIS-076)
+{
+  "type": "button",
+  "props": {
+    "labelMsg": "msg:system.restart.button",
+    "style": "destructive",
+    "disabledIf": { "compute": "eq", "args": ["$ui.restart.status", { "lit": "pending" }] }
+  },
+  "on": {
+    "press": {
+      "verb": "call-action",
+      "action": "system.restart",
+      "outcomeTo": "$ui.restart",
+      "confirm": {
+        "titleMsg": "msg:system.restart.confirm.title",
+        "bodyMsg": "msg:system.restart.confirm.body",
+        "confirmLabelMsg": "msg:system.restart.confirm.ok",
+        "cancelLabelMsg": "msg:system.restart.confirm.cancel",
+        "destructive": true
+      }
+    }
+  }
+}
+```
+
+```json
+// Rendering a published refusal code from an ActionOutcome (UIS-166/077) — the
+// switch a page uses to turn each code into its own sentence, announced when it lands
+{
+  "type": "switch",
+  "visibleIf": { "compute": "eq", "args": ["$ui.restart.status", { "lit": "error" }] },
+  "props": {
+    "discriminant": "$ui.restart.code",
+    "cases": [
+      {
+        "when": "RESTART_UNSUPPORTED",
+        "render": {
+          "type": "text",
+          "props": {
+            "announce": "assertive",
+            "value": { "compute": "msg", "args": ["msg:system.restart.unsupported", "$ui.restart.detail"] }
+          }
+        }
+      }
+    ],
+    "default": {
+      "type": "text",
+      "props": { "announce": "assertive", "value": "$ui.restart.detail" }
+    }
+  }
+}
+```
+
 ## Negotiation
 
-ui-schema/1 has no live wire handshake of its own; a pack's bundled page documents (UIS-001) are read directly by the host renderer at install/render time, the same way `manifest/1` is. Compatibility is expressed at the vocabulary level, mirroring `rules/1`'s own policy exactly: adding a page type, a widget type, a vocabRef (or a member to an existing vocabRef's table), a Computed function, an ActionRef verb, or a new **optional** prop, field, or Binding alternate form (e.g. LiveBinding, UIS-109; `entity-picker`'s `bindShape`, UIS-073a) on an existing widget or shape is a ui-schema/1 minor. Removing any of those, narrowing an existing widget's accepted `props`/`bind` shape, adding a new **required** prop or field to an existing widget or shape (the discipline UIS-075's own addition follows), or changing an existing widget's or verb's evaluation semantics is a ui-schema/1 major. `manifest/1`'s `compat.renderer` (MAN-010) is how a pack declares which page types (this contract's own closed set, UIS-002) its bundled UI relies on; a host refuses install on a page type it does not implement, exactly as MAN-010 already states from the manifest side.
+ui-schema/1 has no live wire handshake of its own; a pack's bundled page documents (UIS-001) are read directly by the host renderer at install/render time, the same way `manifest/1` is. Compatibility is expressed at the vocabulary level, mirroring `rules/1`'s own policy exactly: adding a page type, a widget type, a vocabRef (or a member to an existing vocabRef's table), a Computed function, an ActionRef verb, or a new **optional** prop, field, or Binding alternate form (e.g. LiveBinding, UIS-109; `entity-picker`'s `bindShape`, UIS-073a) on an existing widget or shape is a ui-schema/1 minor.
+
+**v1.1** is exactly such a minor, and is recorded here rather than inferred from the diff. It adds four OPTIONAL fields and no new widget type, page type, verb, vocabRef or Computed function: `button.disabledIf` (UIS-076) and `text.announce` (UIS-077), two optional props on existing widgets; and `confirm` (UIS-165) and `outcomeTo` (UIS-166–167), two optional verb-independent ActionRef envelope fields. The widget catalog (UIS-060/070) and the action-verb set (UIS-160) are **unchanged in membership** — a v1.0 document is a valid v1.1 document with identical rendering, and a v1.1 document that declares none of the four is indistinguishable from a v1.0 one. The taxonomy gains one code, `ACTION_DISPATCH_UNWIRED`, which no v1.0 document can provoke (it requires `outcomeTo`), so it widens no existing refusal. Growing the widget catalog to add a confirmation kind, or the verb set to add a lifecycle verb, would have been the other way to close these gaps and was deliberately not taken (UIS-165, UIS-166): a closed catalog is worth more than the convenience, and neither gap turned out to need one. Removing any of those, narrowing an existing widget's accepted `props`/`bind` shape, adding a new **required** prop or field to an existing widget or shape (the discipline UIS-075's own addition follows), or changing an existing widget's or verb's evaluation semantics is a ui-schema/1 major. `manifest/1`'s `compat.renderer` (MAN-010) is how a pack declares which page types (this contract's own closed set, UIS-002) its bundled UI relies on; a host refuses install on a page type it does not implement, exactly as MAN-010 already states from the manifest side.
 
 ## Error taxonomy
 
@@ -407,7 +505,7 @@ ui-schema/1 has no live wire handshake of its own; a pack's bundled page documen
 | `WIDGET_PROP_UNKNOWN` | A widget node's `props` or `on` carries a key its catalog entry does not declare (UIS-062). | no |
 | `WIDGET_REQUIRED_FIELD_MISSING` | A widget node omits a `props`/`on` key its catalog entry marks required (UIS-062, UIS-074, UIS-075). | no |
 | `WIDGET_EVENT_UNKNOWN` | A widget node's `on` names an event its catalog entry does not declare (UIS-062). | no |
-| `BINDING_PATH_INVALID` | A Binding does not match the data-path grammar (UIS-100), or targets a read-only reserved segment such as `$index` (UIS-107). | no |
+| `BINDING_PATH_INVALID` | A Binding does not match the data-path grammar (UIS-100), targets a read-only reserved segment such as `$index` (UIS-107), or names a destination the field it sits in forbids — an `outcomeTo` not rooted at `$ui.<name>` (UIS-166). | no |
 | `BINDING_TYPE_MISMATCH` | A statically-known type mismatch between a widget's bind-shape and the bound field (UIS-066), a bound literal outside a `literal`/`vocab` OptionSource's closed set (UIS-134), or an `entity-picker`'s `bindShape` outside its closed set or `modes` naming a form that `bindShape` cannot carry (UIS-073a). | no |
 | `FRAGMENT_REF_UNDEFINED` | A `fragment` node's `ref` does not resolve to a key in the document's own `fragments` (UIS-180). | no |
 | `FRAGMENT_RECURSION_DEPTH_EXCEEDED` | Rendering a self-referential fragment chain exceeded the renderer's enforced depth ceiling (UIS-182). | no |
@@ -418,13 +516,14 @@ ui-schema/1 has no live wire handshake of its own; a pack's bundled page documen
 | `CURRENCY_CODE_INVALID` | A `formatCurrency` Computed's `currencyCode` argument is absent, non-string, or not a well-formed ISO 4217 code (UIS-144). | no |
 | `CONTEXT_REF_UNDEFINED` | A `$context.<name>` Binding's `<name>` is not a key of the document's own `context` map (UIS-105). | no |
 | `ACTION_VERB_UNKNOWN` | An ActionRef's `verb` is not a member of the UIS-160 table. | no |
-| `ACTION_FIELDS_INVALID` | An ActionRef is missing a verb-required field, carries a wrongly-shaped one (including a non-string `create` `lifecycle` or an unrecognized `create` field, UIS-164), or uses a wizard-only verb outside a wizard (UIS-163). | no |
+| `ACTION_FIELDS_INVALID` | An ActionRef is missing a verb-required field, carries a wrongly-shaped one (including a non-string `create` `lifecycle` or an unrecognized `create` field, UIS-164; a malformed `confirm` ConfirmSpec or one missing `titleMsg`, UIS-165), uses a wizard-only verb outside a wizard (UIS-163), or declares `outcomeTo` on a verb that is not a seam verb (UIS-167). | no |
+| `ACTION_DISPATCH_UNWIRED` | An ActionRef declaring `outcomeTo` (UIS-166) named a seam verb the host has wired no dispatch for, so the invocation did not happen (UIS-167). Reported as the outcome's own `code`, not as a validation rejection — whether a host wired a seam is not a property of the document. | no |
 | `WIZARD_STEP_ID_DUPLICATE` | Two entries in a `wizard` page's `steps` share an `id` (UIS-050). | no |
 
 ## Conformance notes
 
 - Traceability map: `conformance/traceability/ui-schema-1.md` — maps every `UIS-NNN` above to the case(s) that exercise it.
-- Corpus: `conformance/corpora/ui-schema-1/` — one JSON case file per `case-id`, covering a valid document of each page type, an unknown-widget rejection, a malformed-binding rejection, and dedicated cases for the predicate-index selection pattern and a `vocab`-kind OptionSource.
+- Corpus: `conformance/corpora/ui-schema-1/` — one JSON case file per `case-id`, covering a valid document of each page type, an unknown-widget rejection, a malformed-binding rejection, dedicated cases for the predicate-index selection pattern and a `vocab`-kind OptionSource, and the v1.1 additions: a valid confirmed + outcome-publishing destructive action driven through its dialog to its dispatch, a valid `disabledIf`/`announce` pair driven through pending → refused with a rendered code, and four rejections (a `confirm` missing `titleMsg`, a `confirm` carrying an unrecognized key, an `outcomeTo` outside `$ui`, and an `outcomeTo` on a local verb).
 - The automation-builder fixture (`conformance/fixtures/automation-builder/`) is this contract's dedicated stress-test acceptance artifact — a complete, realistic `list-detail` page document expressing an automation-rule editor (trigger add/edit across five trigger kinds, nested `and`/`or`/`not` condition groups via self-referential fragments, an action list including preset-batch selection, and a mode selector with a conditionally-visible `max` field and `for:`/duration inputs) plus a written render-walkthrough asserting every widget and binding construct it uses is defined above. It is a separate mechanism from the `case_id` corpus — verified by its own dependency-free `fixture-lint` script (checked in beside it, asserting every construct it names is defined above) AND by a render driver that paints it against its own sample record through a real renderer (`web/src/renderer/fixture-automation-builder.test.tsx`, asserting the declared structure actually renders), not by the traceability map's per-requirement coverage rows. The two are complementary: the lint checks that the document only names things this contract defines; the render driver checks that a renderer implementing this contract accepts it.
 - The `Automation` resource shape (`api/openapi.yaml`) — `id`, `name`, `scope_node`, `labels`, `enabled`, `mode`, `max`, `triggers`, `conditions`, `actions`, `revision`, `created_at`, `updated_at` — is the concrete record the automation-builder fixture's `detail.source` binds to; the fixture's field names (`name`, `mode`, `max`, `triggers`, `conditions`, `actions`) are taken from that schema exactly, not invented in parallel.
 - Cross-entity dynamic option population (e.g. constraining a `state` trigger's `to`/`from` picker to the specific device class of whatever entity a sibling field currently names) is intentionally not covered by this version's OptionSource grammar (Binding grammar: option sources) — the automation-builder fixture's own state-trigger case uses a `literal` OptionSource populated for its one worked entity's device class instead.

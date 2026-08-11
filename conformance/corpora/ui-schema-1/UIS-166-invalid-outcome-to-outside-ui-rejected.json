@@ -1,0 +1,34 @@
+{
+  "case_id": "UIS-166-invalid-outcome-to-outside-ui-rejected",
+  "contract": "ui-schema/1",
+  "req_ids": ["UIS-166"],
+  "description": "An `outcomeTo` naming a destination outside $ui fails validation as BINDING_PATH_INVALID. An outcome is page-scoped bookkeeping that is never persisted (UIS-104); a destination inside the bound resource would let a transient refusal be written back to the server as if it were part of the record.",
+  "input": {
+    "pageType": "settings-form",
+    "source": "site",
+    "sections": [
+      {
+        "fields": [
+          { "type": "text-input", "bind": "displayName", "props": { "labelMsg": "msg:settings.general.displayName" } }
+        ]
+      }
+    ],
+    "actions": [
+      {
+        "type": "button",
+        "props": { "labelMsg": "msg:settings.save" },
+        "on": { "press": { "verb": "submit", "outcomeTo": "saveOutcome" } }
+      }
+    ]
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      {
+        "code": "BINDING_PATH_INVALID",
+        "field": "actions[0].on.press.outcomeTo",
+        "message": "\"saveOutcome\" is not a legal outcome destination — it must name $ui.<name>[.<name>…] (UIS-166)"
+      }
+    ]
+  }
+}

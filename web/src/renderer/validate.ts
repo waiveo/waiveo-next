@@ -11,9 +11,12 @@
 // MUST NOT render — closed sets are closed, so an unknown member is a typed error,
 // never a silent skip or a best-effort container.
 
+import { parseOutcomeTarget } from "./bindings";
 import {
   ACTION_VERBS,
+  CONFIRM_FIELDS,
   COMPUTE_FNS,
+  OUTCOME_VERBS,
   ENTITY_PICKER_BIND_SHAPES,
   ENTITY_PICKER_SCALAR_MODES,
   ENTITY_PICKER_SCALAR_SHAPE,
@@ -405,7 +408,77 @@ function validateActionParams(value: unknown, path: string, ctx: Ctx): void {
 // optional envelope-seed fields (`scopeFrom`/`lifecycle`) degrade SILENTLY to the
 // host default when absent, so an unrecognized field (a misspelling) is a typed
 // rejection, never accepted unvalidated on the theory the renderer defaults later.
-const CREATE_FIELDS = new Set(["verb", "target", "itemDefault", "scopeFrom", "lifecycle"]);
+// `confirm`/`outcomeTo` (UIS-165/166) are ActionRef ENVELOPE fields, valid on every
+// verb, so they are never an "unrecognized create field" — omitting them here
+// would make the create idiom the one verb that cannot be confirmed or observed.
+const CREATE_FIELDS = new Set(["verb", "target", "itemDefault", "scopeFrom", "lifecycle", "confirm", "outcomeTo"]);
+
+const CONFIRM_FIELD_SET = new Set<string>(CONFIRM_FIELDS);
+
+/** Validate an ActionRef's `confirm` ConfirmSpec (UIS-165): a closed field set, a
+ * REQUIRED `msg:` `titleMsg` (the dialog's accessible name — the same argument
+ * UIS-075 makes for an input's `labelMsg`), and a boolean `destructive`. Every
+ * violation is ACTION_FIELDS_INVALID at the offending field's own path: a confirm
+ * that silently failed to render would hand the operator the verb with no warning,
+ * which is worse than not offering the confirm at all. */
+function validateConfirmSpec(value: unknown, path: string, ctx: Ctx): void {
+  if (!isObject(value)) {
+    fail(ctx, "ACTION_FIELDS_INVALID", path, "`confirm` must be a ConfirmSpec object (UIS-165)");
+    return;
+  }
+  for (const key of Object.keys(value)) {
+    if (!CONFIRM_FIELD_SET.has(key)) {
+      fail(ctx, "ACTION_FIELDS_INVALID", `${path}.${key}`, `a ConfirmSpec has no field "${key}" (UIS-165)`);
+    }
+  }
+  if (typeof value.titleMsg !== "string") {
+    fail(
+      ctx,
+      "ACTION_FIELDS_INVALID",
+      `${path}.titleMsg`,
+      "a ConfirmSpec requires a `titleMsg` msg reference — it is the dialog's accessible name (UIS-165)",
+    );
+  }
+  for (const key of ["bodyMsg", "confirmLabelMsg", "cancelLabelMsg"] as const) {
+    if (value[key] !== undefined && typeof value[key] !== "string") {
+      fail(ctx, "ACTION_FIELDS_INVALID", `${path}.${key}`, `a ConfirmSpec's \`${key}\` must be a msg reference (UIS-165)`);
+    }
+  }
+  if (value.destructive !== undefined && typeof value.destructive !== "boolean") {
+    fail(ctx, "ACTION_FIELDS_INVALID", `${path}.destructive`, "a ConfirmSpec's `destructive` must be a boolean (UIS-165)");
+  }
+}
+
+/** Validate an ActionRef's `outcomeTo` (UIS-166/167): valid only on a seam verb,
+ * and only as a `$ui.<name>[.<name>…]` destination.
+ *
+ * The two rules fail as different codes on purpose. A verb that cannot produce an
+ * outcome is a wrongly-shaped ActionRef (ACTION_FIELDS_INVALID); a destination
+ * outside `$ui` is a Binding naming a place this field forbids, which is the same
+ * shape as writing to `$index` (BINDING_PATH_INVALID, UIS-107). */
+function validateOutcomeTo(value: unknown, verb: string, path: string, ctx: Ctx): void {
+  if (!(OUTCOME_VERBS as readonly string[]).includes(verb)) {
+    fail(
+      ctx,
+      "ACTION_FIELDS_INVALID",
+      path,
+      `"${verb}" completes locally and produces no outcome — \`outcomeTo\` is valid only on ${OUTCOME_VERBS.join("/")} (UIS-167)`,
+    );
+    return;
+  }
+  if (typeof value !== "string") {
+    fail(ctx, "BINDING_PATH_INVALID", path, "`outcomeTo` must be a Binding string rooted at $ui (UIS-166)");
+    return;
+  }
+  if (!isValidBindingPath(value) || parseOutcomeTarget(value) === null) {
+    fail(
+      ctx,
+      "BINDING_PATH_INVALID",
+      path,
+      `"${value}" is not a legal outcome destination — it must name $ui.<name>[.<name>…] (UIS-166)`,
+    );
+  }
+}
 
 function validateActionRef(v: unknown, path: string, ctx: Ctx): void {
   if (!isObject(v) || typeof v.verb !== "string") {
@@ -422,6 +495,11 @@ function validateActionRef(v: unknown, path: string, ctx: Ctx): void {
     fail(ctx, "ACTION_FIELDS_INVALID", `${path}.verb`, `"${verb}" is valid only inside a wizard page (UIS-163)`);
     return;
   }
+  // The two verb-independent ENVELOPE fields (UIS-160), validated before the
+  // per-verb switch so they are checked identically on every verb — including the
+  // wizard verbs and `navigate`, which the switch below has nothing to say about.
+  if (v.confirm !== undefined) validateConfirmSpec(v.confirm, `${path}.confirm`, ctx);
+  if (v.outcomeTo !== undefined) validateOutcomeTo(v.outcomeTo, verb, `${path}.outcomeTo`, ctx);
   const needBinding = (key: string): void => {
     if (v[key] === undefined) {
       fail(ctx, "ACTION_FIELDS_INVALID", `${path}.${key}`, `${verb} requires a "${key}" field (UIS-160)`);

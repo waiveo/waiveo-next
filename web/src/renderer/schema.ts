@@ -25,6 +25,15 @@ export type PageType = (typeof PAGE_TYPES)[number];
  * refusal that is supposed to carry it. */
 export const FRAGMENT_RECURSION_DEPTH_EXCEEDED = "FRAGMENT_RECURSION_DEPTH_EXCEEDED";
 
+/** UIS-167's unwired-seam refusal, named once, for the same reason
+ * FRAGMENT_RECURSION_DEPTH_EXCEEDED is: it is raised by the ACTION DISPATCHER
+ * rather than the validator — whether a host wired a seam is not a property of
+ * the document — so the one place that raises it cannot reach it through the
+ * validator's `fail()`. An ActionRef that asked for an outcome and got silence
+ * cannot tell "the host is not wired" from "it worked", so the refusal is named
+ * rather than left as a bare `status: "error"`. */
+export const ACTION_DISPATCH_UNWIRED = "ACTION_DISPATCH_UNWIRED";
+
 export const ERROR_CODES = [
   "UNKNOWN_PAGE_TYPE",
   "UNKNOWN_WIDGET_TYPE",
@@ -43,6 +52,7 @@ export const ERROR_CODES = [
   "CONTEXT_REF_UNDEFINED",
   "ACTION_VERB_UNKNOWN",
   "ACTION_FIELDS_INVALID",
+  ACTION_DISPATCH_UNWIRED,
   "WIZARD_STEP_ID_DUPLICATE",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -166,6 +176,31 @@ export const ACTION_VERBS = [
 export type ActionVerb = (typeof ACTION_VERBS)[number];
 
 export const WIZARD_ONLY_VERBS: readonly ActionVerb[] = ["wizard-next", "wizard-back", "wizard-finish"];
+
+// ── ActionRef envelope fields (UIS-160/165/166/167) ─────────────────────────
+// Two OPTIONAL fields that belong to no single verb: they govern HOW the named
+// verb is invoked, not what it does. Enumerated here (rather than inline in the
+// validator) because UIS-164's closed `create` field set has to know them — a
+// field valid on every verb is never an "unrecognized create field".
+
+/** The **seam** verbs (UIS-167): the four that dispatch through the host's own
+ * write/dispatch path (UIS-161) and can therefore produce a result or a refusal.
+ * `outcomeTo` is valid on exactly these; on a local/wizard/navigate verb it is a
+ * declaration that could never settle, so it is a static rejection. */
+export const OUTCOME_VERBS: readonly ActionVerb[] = ["submit", "create", "delete", "call-action"];
+
+/** A ConfirmSpec's closed field set (UIS-165). */
+export const CONFIRM_FIELDS = ["titleMsg", "bodyMsg", "confirmLabelMsg", "cancelLabelMsg", "destructive"] as const;
+
+/** The ActionOutcome `status` values (UIS-166). */
+export const OUTCOME_STATUSES = ["pending", "ok", "error"] as const;
+export type OutcomeStatus = (typeof OUTCOME_STATUSES)[number];
+
+/** `text`'s live-region politeness (UIS-077). An unrecognized value resolves to
+ * `polite` rather than to a non-live node — an over-announcement is recoverable,
+ * a missing one is invisible to everyone who can see the screen. */
+export const ANNOUNCE_MODES = ["polite", "assertive"] as const;
+export type AnnounceMode = (typeof ANNOUNCE_MODES)[number];
 
 // ── OptionSource kinds (UIS-130) ────────────────────────────────────────────
 
@@ -291,7 +326,10 @@ export const WIDGET_CATALOG: Record<string, WidgetSpec> = {
     category: "display",
     children: false,
     bind: "none",
-    props: { value: req("bindingExpr") },
+    // `announce` (UIS-077) makes the node an ARIA live region so text that lands
+    // after the page has been read — an ActionOutcome's refusal sentence, most of
+    // all — is announced rather than silently painted.
+    props: { value: req("bindingExpr"), announce: p("enum") },
     events: {},
   },
   badge: {
@@ -383,7 +421,10 @@ export const WIDGET_CATALOG: Record<string, WidgetSpec> = {
     category: "action",
     children: false,
     bind: "none",
-    props: { labelMsg: req("msg"), style: p("enum") },
+    // `disabledIf` (UIS-076) keeps the control present but un-pressable — the only
+    // construct here that can make a widget-triggered invocation non-re-entrant
+    // (bind it to an ActionOutcome's `pending`, UIS-166).
+    props: { labelMsg: req("msg"), style: p("enum"), disabledIf: p("bindingExpr") },
     events: { press: { required: true } },
   },
 };

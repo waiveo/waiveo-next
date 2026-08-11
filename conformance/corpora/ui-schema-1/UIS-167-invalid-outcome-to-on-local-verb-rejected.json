@@ -1,0 +1,39 @@
+{
+  "case_id": "UIS-167-invalid-outcome-to-on-local-verb-rejected",
+  "contract": "ui-schema/1",
+  "req_ids": ["UIS-167"],
+  "description": "`outcomeTo` on a verb that is not a seam verb fails validation as ACTION_FIELDS_INVALID. `set` completes synchronously against the renderer's own in-memory tree and cannot be refused, so an outcome binding there is a declaration with nothing on the other end — a control gated on `pending` that would never leave it, rejected statically rather than discovered at render time.",
+  "input": {
+    "pageType": "settings-form",
+    "source": "site",
+    "sections": [
+      {
+        "fields": [
+          { "type": "text-input", "bind": "displayName", "props": { "labelMsg": "msg:settings.general.displayName" } }
+        ]
+      }
+    ],
+    "actions": [
+      {
+        "type": "button",
+        "props": { "labelMsg": "msg:settings.save" },
+        "on": { "press": { "verb": "submit" } }
+      },
+      {
+        "type": "button",
+        "props": { "labelMsg": "msg:settings.markDirty" },
+        "on": { "press": { "verb": "set", "target": "$ui.dirty", "value": true, "outcomeTo": "$ui.markOutcome" } }
+      }
+    ]
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      {
+        "code": "ACTION_FIELDS_INVALID",
+        "field": "actions[1].on.press.outcomeTo",
+        "message": "\"set\" completes locally and produces no outcome — `outcomeTo` is valid only on submit/create/delete/call-action (UIS-167)"
+      }
+    ]
+  }
+}

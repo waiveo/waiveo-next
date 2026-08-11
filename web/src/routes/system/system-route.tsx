@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, HardDrive, Radio, MonitorPlay } from "lucide-react";
 import {
   Button,
-  ConfirmModal,
   DataTable,
   EmptyState,
   FormField,
@@ -12,6 +11,7 @@ import {
   type ColumnDef,
   type Status,
 } from "@/components/kit";
+import { PageRenderer, type ActionHandler } from "@/renderer";
 import {
   ApiError,
   createApi,
@@ -22,6 +22,7 @@ import {
   type SystemHealth,
   type WaiveoApi,
 } from "@/api";
+import restartPanelDoc from "./restart-panel.uis.json";
 
 /**
  * The System route ("/system") — parity row 7.4, the legacy stack's `/logs` and
@@ -71,6 +72,29 @@ import {
  * And it renders each published refusal as its own sentence, because
  * "unsupervised deployment", "already restarting" and "a job is running" send an
  * operator to three different places.
+ *
+ * ── The Restart panel is a ui-schema/1 DOCUMENT, not React ──────────────────
+ *
+ * `restart-panel.uis.json` is the whole panel — the copy, the destructive
+ * button, the confirmation it is gated behind, the pending line, the per-code
+ * refusal sentences and the completion line — rendered by the same PageRenderer
+ * an extension page goes through. It is the first page in this console that
+ * needed all three of the renderer's v1.1 additions at once, and it is here to
+ * prove they work end to end rather than in a fixture: the confirm is an
+ * ActionRef `confirm` (UIS-165), "working / worked / refused with THIS code" is
+ * an ActionOutcome bound at `$ui.restart` (UIS-166), and the control disables
+ * itself off that outcome's own `pending` (UIS-076) so a second click cannot
+ * ask a box to restart twice.
+ *
+ * What stays in this file is the SEAM, and only the seam: one `call-action`
+ * handler that POSTs the restart and then watches for a different process to
+ * answer. That division is the same one the Screens route already draws — the
+ * document owns what the operator sees, the host owns the api/1 mechanics (here:
+ * a 202 is an acceptance, `started_at_ms` is the only proof of a new process, and
+ * a box that never comes back must say so rather than spin). The watcher's whole
+ * lifecycle rides back into the page through the outcome: the acceptance is
+ * reported as interim progress while `pending`, the return resolves it, and a
+ * refusal or a give-up rejects it.
  */
 
 /** How often the page re-reads while it is mounted. Slow enough not to fight the
@@ -275,28 +299,58 @@ function HealthPanel({ state }: { state: Load<SystemHealth> }) {
 
 // ── Restart ──────────────────────────────────────────────────────────────────
 
-/** The restart panel's state machine. `waiting` and `back` exist as distinct
- * states because "we asked" and "it came back" are different facts and the
- * second is the one the operator is actually waiting for. */
-export type RestartState =
-  | { phase: "idle" }
-  | { phase: "requesting" }
-  | {
-      phase: "waiting";
-      /** The instance identifier the acceptance echoed — the "before" every
-       * subsequent health read is compared against. `-1` means the box publishes
-       * no start time, and the comparison is unavailable (see restartReturned). */
-      wasStartedAtMs: number;
-      supervisor: string;
-      /** Whether any probe has FAILED yet. Only load-bearing in the `-1` case,
-       * where a drop-then-recover is the only evidence available. */
-      sawOutage: boolean;
-      /** When the wait began, for the give-up bound. */
-      since: number;
-    }
-  | { phase: "back"; startedAtMs: number }
-  | { phase: "gaveUp"; wasStartedAtMs: number }
-  | { phase: "refused"; code: string | null; detail: string; traceId: string | null };
+/** The message catalog `restart-panel.uis.json`'s own `msg:` references resolve
+ * against. Every sentence the panel can say lives here, including the four
+ * published refusals — each is its own sentence because "unsupervised
+ * deployment", "already restarting" and "a job is running" send an operator to
+ * three different places, and the server's own `detail` is interpolated as `{0}`
+ * because it carries the specifics this copy cannot know (which job is running). */
+const RESTART_MESSAGES: Record<string, string> = {
+  "msg:system.restart.leadIn":
+    "Restarts the application server — this console and the API — and nothing else. The box is not rebooted, and screens keep playing what their relay already handed them.",
+  "msg:system.restart.useIt":
+    "Use it to finish a staged restore, to pick up an extension that needs a fresh process, or to have an unclaimed box present a new setup code.",
+  "msg:system.restart.button": "Restart this box",
+  "msg:system.restart.confirm.title": "Restart this box?",
+  "msg:system.restart.confirm.body":
+    "The console and the API go away for a few seconds while the application server stops and starts again. Screens keep playing what their relay already handed them, and nothing authored on this box is lost. Anyone else signed in will see the console reconnect.",
+  "msg:system.restart.confirm.ok": "Restart now",
+  "msg:system.restart.confirm.cancel": "Not now",
+  // Two pending sentences, not one: until the 202 lands nothing has been
+  // accepted, and this page does not say a word it cannot stand behind.
+  "msg:system.restart.asking": "Restarting — asking this box to stop and start again.",
+  "msg:system.restart.accepted":
+    "Restarting. Accepted — {0} will start it again, and this page is watching for it to come back.",
+  "msg:system.restart.back":
+    "Back up — this box restarted and is answering again, running since {0}.",
+  "msg:system.restart.unsupported":
+    "This box cannot restart itself: nothing is configured to start it again if it stops, so restarting would take it down and leave it down. This is a deployment setting, not a missing feature. {0}",
+  "msg:system.restart.inProgress": "A restart is already under way — this one was not queued behind it. {0}",
+  "msg:system.restart.blocked": "Not now: this box is busy with work a restart would break rather than resume. {0}",
+  "msg:system.restart.forbidden":
+    "Only the workspace owner can restart this box — it takes the whole deployment's console and API away for a few seconds. Ask an owner.",
+  "msg:system.restart.trace": "trace {0}",
+};
+
+/** The give-up refusal, as a rejection the outcome can carry (UIS-166).
+ *
+ * It deliberately has NO `code`: no contract publishes one for "accepted and
+ * never came back", and inventing a code the registry does not carry is exactly
+ * what api/1 API-011 forbids. The panel's `switch` renders its `detail` through
+ * the default arm, which is what that arm is for. */
+class RestartNotReturned extends Error {
+  readonly detail: string;
+
+  constructor(detail: string) {
+    super(detail);
+    this.name = "RestartNotReturned";
+    this.detail = detail;
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /** Whether a successful health read proves the box we asked to restart is a NEW
  * process.
@@ -318,91 +372,6 @@ export function restartReturned(
 ): boolean {
   if (state.wasStartedAtMs >= 0) return fresh.started_at_ms !== state.wasStartedAtMs;
   return state.sawOutage;
-}
-
-/** The one place a restart refusal becomes a sentence an operator can act on.
- *
- * Each published code names a different situation with a different next move,
- * and collapsing them into the server's `detail` alone would lose the framing —
- * an operator who reads "not implemented" needs to be told this is a deployment
- * configuration, not a missing feature. The server's own detail is appended
- * because it carries the specifics this cannot know (which job is running). */
-export function restartRefusalMessage(code: string | null, detail: string): string {
-  switch (code) {
-    case "RESTART_UNSUPPORTED":
-      return `This box cannot restart itself: nothing is configured to start it again if it stops, so restarting would take it down and leave it down. This is a deployment setting, not a missing feature. ${detail}`;
-    case "RESTART_IN_PROGRESS":
-      return `A restart is already under way — this one was not queued behind it. ${detail}`;
-    case "RESTART_BLOCKED":
-      return `Not now: this box is busy with work a restart would break rather than resume. ${detail}`;
-    case "FORBIDDEN":
-      return "Only the workspace owner can restart this box — it takes the whole deployment's console and API away for a few seconds. Ask an owner.";
-    default:
-      return detail;
-  }
-}
-
-function RestartPanel({
-  state,
-  onAsk,
-}: {
-  state: RestartState;
-  onAsk: () => void;
-}) {
-  const busy = state.phase === "requesting" || state.phase === "waiting";
-  return (
-    <div className="flex flex-col gap-3 rounded-md border border-border bg-[color:var(--wv-surface-2)] p-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-col gap-1">
-          <p className="text-sm">
-            Restarts the <strong>application server</strong> — this console and the API — and
-            nothing else. The box is not rebooted, and screens keep playing what their relay
-            already handed them.
-          </p>
-          <p className="text-sm text-muted-foreground">
-            Use it to finish a staged restore, to pick up an extension that needs a fresh
-            process, or to have an unclaimed box present a new setup code.
-          </p>
-        </div>
-        <Button variant="destructive" disabled={busy} onClick={onAsk}>
-          {busy ? "Restarting…" : "Restart this box"}
-        </Button>
-      </div>
-
-      {state.phase === "waiting" ? (
-        <p className="text-sm" role="status">
-          <StatusBadge status="pending">Restarting</StatusBadge>{" "}
-          Accepted. {state.supervisor} will start it again — watching for it to come back.
-        </p>
-      ) : null}
-
-      {state.phase === "back" ? (
-        <p className="text-sm" role="status">
-          <StatusBadge status="ok">Back up</StatusBadge> This box restarted and is answering
-          again, running since {formatClock(state.startedAtMs)}.
-        </p>
-      ) : null}
-
-      {state.phase === "gaveUp" ? (
-        <p className="text-sm text-[color:var(--wv-err)]" role="alert">
-          This box has not come back in {Math.round(RESTART_GIVEUP_MS / 1000)}s. It accepted the
-          restart, so it did stop; something is preventing it from starting again. Check the box
-          itself — on an appliance, <code>systemctl status waiveo-feeder</code> and its journal.
-        </p>
-      ) : null}
-
-      {state.phase === "refused" ? (
-        <p className="text-sm text-[color:var(--wv-err)]" role="alert">
-          {restartRefusalMessage(state.code, state.detail)}
-          {state.traceId ? (
-            <span className="mt-0.5 block font-mono text-[11px] text-muted-foreground">
-              trace {state.traceId}
-            </span>
-          ) : null}
-        </p>
-      ) : null}
-    </div>
-  );
 }
 
 // ── Logs ─────────────────────────────────────────────────────────────────────
@@ -448,8 +417,11 @@ export default function SystemRoute({ api }: { api?: WaiveoApi }) {
   const [level, setLevel] = useState<LogLevel | "">("");
   const [source, setSource] = useState("");
   const [contains, setContains] = useState("");
-  const [restart, setRestart] = useState<RestartState>({ phase: "idle" });
-  const [confirmingRestart, setConfirmingRestart] = useState(false);
+  // Whether a restart invocation is in flight. The PANEL learns this from its own
+  // ActionOutcome (`$ui.restart.status`, UIS-166) and needs nothing from here;
+  // this flag exists only so the ordinary health refresh below can stand down
+  // while the watcher is probing the same endpoint four times as fast.
+  const [restarting, setRestarting] = useState(false);
 
   // The last successful page is kept so the filter controls (which are built
   // from the WHOLE buffer's source list and level counts) survive a refresh that
@@ -458,6 +430,18 @@ export default function SystemRoute({ api }: { api?: WaiveoApi }) {
   // vanish with the results — the dead end this page must not have.
   const lastPage = useRef<PlatformLogPage | null>(null);
   if (logs.status === "ok") lastPage.current = logs.value;
+
+  // The restart watcher below is a loop inside a promise, not an effect, so it has
+  // no cleanup function of its own — this is what stops it. Without it, navigating
+  // away mid-restart leaves a poll hammering a box that is already down for the
+  // rest of the 90-second bound, with nobody left to tell.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   const load = useCallback(() => {
     client.diagnostics
@@ -480,70 +464,78 @@ export default function SystemRoute({ api }: { api?: WaiveoApi }) {
   // two pollers racing over one box would leave the health panel flickering
   // between "unreachable" and a stale reading while the operator is trying to
   // read the one line that matters.
-  const watching = restart.phase === "requesting" || restart.phase === "waiting";
   useEffect(() => {
-    if (watching) return;
+    if (restarting) return;
     load();
     const t = setInterval(load, REFRESH_MS);
     return () => clearInterval(t);
-  }, [load, watching]);
+  }, [load, restarting]);
 
-  const askRestart = useCallback(() => {
-    setRestart({ phase: "requesting" });
-    client.diagnostics
-      .restart()
-      .then((acc) =>
-        setRestart({
-          phase: "waiting",
-          wasStartedAtMs: acc.started_at_ms,
-          supervisor: acc.supervisor,
-          sawOutage: false,
-          since: Date.now(),
-        }),
-      )
-      .catch((err: unknown) => {
-        const state = errorState<never>(err);
-        setRestart(
-          state.status === "error"
-            ? { phase: "refused", code: state.code, detail: state.detail, traceId: state.traceId }
-            : { phase: "idle" },
-        );
-      });
-  }, [client]);
-
-  // The watcher. It probes health rather than reachability, because the
-  // acceptance's `started_at_ms` is the only signal that distinguishes a box that
-  // came back from one that never went — a probe landing inside the grace window
-  // before the process stops would otherwise report success immediately.
-  useEffect(() => {
-    if (restart.phase !== "waiting") return;
-    let live = true;
-    const t = setInterval(() => {
-      if (Date.now() - restart.since > RESTART_GIVEUP_MS) {
-        if (live) setRestart({ phase: "gaveUp", wasStartedAtMs: restart.wasStartedAtMs });
-        return;
-      }
-      client.diagnostics
-        .health()
-        .then((fresh) => {
-          if (!live) return;
-          if (restartReturned(restart, fresh)) {
-            setRestart({ phase: "back", startedAtMs: fresh.started_at_ms });
-            setHealth({ status: "ok", value: fresh });
+  /**
+   * The restart seam — the ONE `call-action` the panel document dispatches.
+   *
+   * Its promise is the panel's whole state machine, and the mapping is exact:
+   *   • in flight → the outcome reads `pending`, so the button disables itself;
+   *   • the 202 → reported as interim progress, which is the first moment the
+   *     word "accepted" is true and therefore the first moment the panel says it;
+   *   • a different process answering → resolve, and the panel says Back up;
+   *   • a refusal → reject with the ApiError, whose `code` the panel's `switch`
+   *     turns into that refusal's own sentence;
+   *   • ninety seconds of nothing → reject with a codeless give-up.
+   *
+   * It probes health rather than reachability, because the acceptance's
+   * `started_at_ms` is the only signal that distinguishes a box that came back
+   * from one that never went — a probe landing inside the grace window before the
+   * process stops would otherwise report success immediately.
+   */
+  const restartHandler = useMemo<ActionHandler>(
+    () => ({
+      callAction: async (_action, _params, report) => {
+        setRestarting(true);
+        try {
+          const acc = await client.diagnostics.restart();
+          report?.({ result: { supervisor: acc.supervisor } });
+          const since = Date.now();
+          let sawOutage = false;
+          for (;;) {
+            await sleep(RESTART_POLL_MS);
+            if (!mounted.current) {
+              throw new RestartNotReturned("The System page was closed while this box was restarting.");
+            }
+            if (Date.now() - since > RESTART_GIVEUP_MS) {
+              throw new RestartNotReturned(
+                `This box has not come back in ${Math.round(RESTART_GIVEUP_MS / 1000)}s. It accepted the ` +
+                  "restart, so it did stop; something is preventing it from starting again. Check the box " +
+                  "itself — on an appliance, systemctl status waiveo-feeder and its journal.",
+              );
+            }
+            try {
+              const fresh = await client.diagnostics.health();
+              if (restartReturned({ wasStartedAtMs: acc.started_at_ms, sawOutage }, fresh)) {
+                setHealth({ status: "ok", value: fresh });
+                return {
+                  supervisor: acc.supervisor,
+                  // `-1` is the never-observed sentinel: a box that reports no start
+                  // time has not "started in 1969". It reads as unknown, the same
+                  // word formatUptime uses for the same sentinel.
+                  started_at_iso:
+                    fresh.started_at_ms > 0 ? new Date(fresh.started_at_ms).toISOString() : "unknown",
+                };
+              }
+            } catch {
+              // A failed probe is the EXPECTED middle of a restart, not an error to
+              // surface. It is recorded because for a box publishing no start time it
+              // is the only evidence there was an outage at all.
+              sawOutage = true;
+            }
           }
-        })
-        .catch(() => {
-          // A failed probe is the EXPECTED middle of a restart, not an error to
-          // surface. It is recorded because for a box publishing no start time it
-          // is the only evidence there was an outage at all.
-          if (live) setRestart((s) => (s.phase === "waiting" ? { ...s, sawOutage: true } : s));
-        });
-    }, RESTART_POLL_MS);
-    return () => {
-      live = false;
-      clearInterval(t);
-    };
-  }, [client, restart]);
+        } finally {
+          setRestarting(false);
+        }
+      },
+    }),
+    [client],
+  );
 
   const page = logs.status === "ok" ? logs.value : lastPage.current;
   const sources = page?.sources ?? [];
@@ -570,7 +562,13 @@ export default function SystemRoute({ api }: { api?: WaiveoApi }) {
           <h2 id="restart-heading" className="text-lg font-semibold">
             Restart
           </h2>
-          <RestartPanel state={restart} onAsk={() => setConfirmingRestart(true)} />
+          {/* The panel is a ui-schema/1 document (restart-panel.uis.json) rendered
+              through the same PageRenderer an extension page goes through. The
+              card chrome stays here — a `section` widget paints no surface — so
+              the panel looks exactly as it did when it was TSX. */}
+          <div className="flex flex-col gap-3 rounded-md border border-border bg-[color:var(--wv-surface-2)] p-4">
+            <PageRenderer doc={restartPanelDoc} messages={RESTART_MESSAGES} handler={restartHandler} />
+          </div>
         </section>
 
         <section aria-labelledby="logs-heading" className="flex flex-col gap-3">
@@ -700,21 +698,6 @@ export default function SystemRoute({ api }: { api?: WaiveoApi }) {
           )}
         </section>
       </div>
-
-      {/* The console's single dialog idiom, the same one the Extensions page
-          uninstall uses. Deliberately NOT window.confirm: a native dialog blocks
-          the browser-automation harness this project verifies its UI with, so a
-          control gated behind one is a control nothing can prove works. */}
-      <ConfirmModal
-        open={confirmingRestart}
-        onOpenChange={setConfirmingRestart}
-        title="Restart this box?"
-        description="The console and the API go away for a few seconds while the application server stops and starts again. Screens keep playing what their relay already handed them, and nothing authored on this box is lost. Anyone else signed in will see the console reconnect."
-        confirmLabel="Restart now"
-        cancelLabel="Not now"
-        destructive
-        onConfirm={askRestart}
-      />
     </div>
   );
 }
