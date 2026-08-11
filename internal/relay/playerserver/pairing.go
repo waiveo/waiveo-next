@@ -296,6 +296,14 @@ type Server struct {
 	// resolves every live widget to its unavailable placeholder, so a slide
 	// still draws and no construction has to know this field exists.
 	slideLive slidelive.Sources
+
+	// liveness is the per-screen observation record screenstatus.go maintains:
+	// when each screen last pulled a program, last acknowledged a Lease, and last
+	// reported a render start, plus what it was last handed. Keyed by screen_id
+	// and bounded by the screen count, like programs above — see
+	// screenstatus.go's own header for what it is for and what it deliberately
+	// does not claim.
+	liveness map[string]screenLiveness
 }
 
 // SetSlideLive installs the live data source a native slide's `weather` and
@@ -393,6 +401,7 @@ func NewServer(relayCertPEM []byte, grants []wire.PairingGrant, nowMs func() int
 		leaseAcks:      map[string]LeaseAckRequest{},
 		issuedLeases:   map[string][]string{},
 		revokedScreens: map[string]bool{},
+		liveness:       map[string]screenLiveness{},
 	}, nil
 }
 

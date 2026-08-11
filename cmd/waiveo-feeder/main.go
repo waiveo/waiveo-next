@@ -40,6 +40,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/app/eventingest"
 	"github.com/maaxton/waiveo-next/internal/app/eventsse"
 	"github.com/maaxton/waiveo-next/internal/app/packs"
+	"github.com/maaxton/waiveo-next/internal/app/screens"
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/app/webhookdeliver"
 	"github.com/maaxton/waiveo-next/internal/app/webui"
@@ -776,6 +777,18 @@ func main() {
 		log.Printf("waiveo-feeder: restored %d discovered device(s) from the last run", restored)
 	}
 
+	// The LIVE SCREEN STATUS read model (parity row 5.8): what each relay reports
+	// its screens have actually been observed doing. Deliberately NOT persisted
+	// and not restored across a restart, unlike the discovered-device mirror
+	// above: a device sighting stays true while the app is down, but "this screen
+	// polled 4 seconds ago" does not, and serving a restored one would state an
+	// observation nobody made since the process started. It fills within one
+	// report interval of a relay connecting.
+	screenRegistry, err := screens.NewRegistry(nowMs)
+	if err != nil {
+		log.Fatalf("waiveo-feeder: build the screen-status read model: %v", err)
+	}
+
 	relayConnSrv := relayconn.New(
 		src.current,
 		enrollSrv.RelayEnrollmentKey,
@@ -792,6 +805,12 @@ func main() {
 		// redemption and enforces nothing — the site-wide at-most-once
 		// property is the grant's own relay binding (REL-121b/REL-124c).
 		relayconn.WithRedemptionSink(storeRedemptionSink{st: st}),
+		// The screen-liveness read model (parity row 5.8). It takes the app
+		// peer's own clock alongside the sink so each report is anchored to the
+		// instant it ARRIVED here, which is what lets every age it carries keep
+		// growing while a relay is disconnected instead of freezing at whatever
+		// the last report said.
+		relayconn.WithScreenStatusSink(screenRegistry, nowMs),
 	)
 
 	idem := apihttp.NewIdempotencyStore(nowMs, 0)
@@ -1073,6 +1092,9 @@ func main() {
 
 	apiHandler := api.New(st, idem, nowMs, ulid.New, contentStore, contentBaseURL, authn,
 		api.WithDevicePlane(deviceRegistry, relayConnSrv), api.WithJobRunner(jobRunner),
+		// GET /screen-status joins the authored screen rows to what the relays
+		// have observed of them (parity row 5.8, api/screenstatus.go).
+		api.WithScreenStatus(screenRegistry),
 		api.WithPackTrust(packsig.FileAnchors{Path: cfg.packTrustPath}),
 		// The required-pack floor's ONE wiring seam (MKT-093a/MKT-093b). Without
 		// this option the store's roster stays nil, the in-transaction floor check

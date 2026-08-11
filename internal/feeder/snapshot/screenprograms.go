@@ -113,7 +113,7 @@ func DeriveScreenPrograms(rows store.DesiredStateResult, contentBaseURL string, 
 			}
 			continue
 		}
-		programs = append(programs, programFor(screen, state, rowStore, contentBaseURL))
+		programs = append(programs, programFor(screen, state, rowStore, contentBaseURL, rows.ScreenOverrides[screen.ID]))
 	}
 
 	return programs, errs
@@ -145,7 +145,18 @@ func resolutionStore(rows store.DesiredStateResult) (datamodel.RowStore, []datam
 //   - priority is always `scheduled` (leasePriorityScheduled).
 //   - program_revision is derived from the projected program itself
 //     (programRevisionFor).
-func programFor(screen datamodel.Screen, state datamodel.EffectiveState, rowStore datamodel.RowStore, contentBaseURL string) wire.ScreenProgram {
+//
+// UNLESS this screen carries an active push-now override, in which case
+// overrideProgram replaces all of the above (see its own doc). The resolution
+// still runs: it costs nothing an override changes and it keeps the per-screen
+// DAT-034 degrade uniform — a screen whose effective tz will not resolve is
+// omitted from the section whether it is overridden or not, because the reason
+// it is omitted (nothing on this side may substitute box-local state) has
+// nothing to do with what an operator pushed.
+func programFor(screen datamodel.Screen, state datamodel.EffectiveState, rowStore datamodel.RowStore, contentBaseURL string, override store.ScreenOverride) wire.ScreenProgram {
+	if override.ScreenID != "" {
+		return overrideProgram(screen, rowStore, contentBaseURL, override)
+	}
 	content := []wire.ContentRef{}
 	if state.Display == displayContent {
 		content = playlistContent(rowStore, state.PlaylistID, contentBaseURL)
@@ -154,6 +165,66 @@ func programFor(screen datamodel.Screen, state datamodel.EffectiveState, rowStor
 		ScreenID: screen.ID,
 		Priority: leasePriorityScheduled,
 		Display:  state.Display,
+		Content:  content,
+	}
+	prog.ProgramRevision = programRevisionFor(prog)
+	return prog
+}
+
+// leasePriorityPreempt is the REL-061/PLY-108 `priority` a PUSH-NOW override
+// carries: the deliberately-invoked takeover class, as opposed to the
+// `scheduled` class ordinary resolution produces.
+//
+// It is the correct classification rather than a convenient marker, and the
+// distinction does real work at two places downstream. A player treats a
+// preempt Lease as an immediate interrupt rather than waiting for the current
+// item to finish (PLY-100/101), which is what makes "now" mean now on the
+// screen and not at the end of a five-minute slide. And the relay refuses to let
+// a same-generation schedule resolution overwrite a preempt program
+// (playerserver.SetProgram's own priority fence) — without which the relay's
+// 30-second re-resolve tick would quietly put the schedule back within half a
+// minute of every push.
+const leasePriorityPreempt = "preempt"
+
+// overrideProgram projects a screen's active push-now override onto its REL-061
+// entry: `display: content`, `priority: preempt`, and the override's cast or
+// playlist projected through the SAME two functions ordinary resolution uses
+// (castContent / playlistContent), so a cast shown by a push is byte-identical
+// to the same cast shown by a schedule.
+//
+// display is unconditionally `content`, and that is the point of the operation:
+// an operator pushing a cast to a screen is saying "show this", which is not a
+// statement a daypart's display_power can be allowed to override — a screen the
+// schedule had blanked is precisely the screen someone needs to put an emergency
+// notice on. (What the SCREEN then does with a preempt Lease arriving over an
+// active blank is player/1's own PLY-104 question, decided there, not here.)
+//
+// An override whose target row has vanished projects to an EMPTY content array
+// rather than to the schedule. That is deliberate and is the honest reading of
+// the two available answers: the store refuses to write an override naming a
+// missing row and refuses to delete a cast a playlist names, so reaching this
+// state means the referenced row went away underneath a live override — and
+// silently falling back to the schedule would present an operator with a screen
+// that looks like their push was never made, while the override is still very
+// much in force and will keep winning. An empty preempt program is visibly
+// wrong, which is what it is.
+//
+// It takes no duration override: the item-level `duration_seconds` a playlist
+// item can carry (DAT-042) belongs to the playlist item, and a push names a cast
+// directly with no item to carry one — so each slide's own `duration_ms` governs,
+// falling back to the player's default (slideDurationMS with a zero item
+// duration).
+func overrideProgram(screen datamodel.Screen, rowStore datamodel.RowStore, contentBaseURL string, override store.ScreenOverride) wire.ScreenProgram {
+	var content []wire.ContentRef
+	if override.CastID != "" {
+		content = castContent(rowStore, override.CastID, 0, contentBaseURL)
+	} else {
+		content = playlistContent(rowStore, override.PlaylistID, contentBaseURL)
+	}
+	prog := wire.ScreenProgram{
+		ScreenID: screen.ID,
+		Priority: leasePriorityPreempt,
+		Display:  displayContent,
 		Content:  content,
 	}
 	prog.ProgramRevision = programRevisionFor(prog)

@@ -322,6 +322,42 @@ export class ApiClient {
     if (!res.ok) await this.fail(res);
   }
 
+  /** PUT a SINGLETON subresource, with no If-Match and no Idempotency-Key.
+   *
+   * Both omissions are the method's own semantics rather than shortcuts. A
+   * singleton at a fixed path has no revision to condition on — there is no
+   * collection, no id to mint, and no second copy a lost update could destroy —
+   * and PUT is idempotent by definition, so a retry-on-timeout replaces the same
+   * value with the same value. An Idempotency-Key exists to stop a repeated POST
+   * creating a SECOND thing (API-050); here there is no second thing to create.
+   *
+   * The one family on it today is a screen's push-now override
+   * (`PUT /screens/{id}/now`), whose whole semantics are "the latest instruction
+   * wins" — see internal/app/api/screennow.go. Do NOT reach for this for an
+   * ordinary resource update: those carry a revision, and updating one without
+   * If-Match is the unconditional overwrite API-022 forbids. `update` is that
+   * verb. */
+  async replace<T>(path: string, body: unknown): Promise<T> {
+    const res = await this.send("PUT", path, {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) await this.fail(res);
+    return (await res.json()) as T;
+  }
+
+  /** DELETE a SINGLETON subresource expecting 204, with no If-Match.
+   *
+   * The counterpart to `replace`, for the same reason: no revision exists to
+   * condition on, and the operation's contract is the resulting state (the
+   * singleton is not in force), which repeating reaches identically. `remove` —
+   * which REQUIRES an ETag — stays the verb for deleting a versioned resource,
+   * where an unconditional delete would discard a change made elsewhere. */
+  async discard(path: string): Promise<void> {
+    const res = await this.send("DELETE", path);
+    if (!res.ok) await this.fail(res);
+  }
+
   /** POST a non-create mutating action (run, bulk-enable, …); carries an
    * Idempotency-Key so a retry-on-timeout cannot double-fire it. */
   async action<T>(path: string, body?: unknown): Promise<T> {

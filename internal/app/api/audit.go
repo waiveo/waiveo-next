@@ -312,6 +312,30 @@ func (srv *server) auditRouteOf(r *http.Request) (auditRoute, bool) {
 			action: "devices.adopt", resourceType: "devices", id: segs[1], registry: registryDevices,
 		}, true
 
+	// PUT|DELETE /screens/{id}/now — the push-now override (screennow.go): the
+	// operation that changes what a physical display is showing, out of band from
+	// its schedule. It is enumerated here rather than left to the generic reading
+	// for the reason unmountedAuditRoute's own doc gives about /devices/{id}/adopt:
+	// the generic arms only recognise a three-segment path when the method is
+	// POST, so a PUT or DELETE on this shape falls to the default arm and records
+	// `screens.update`/`screens.delete` against the literal target `screens:now` —
+	// an act that did not happen, filed against a subject that does not exist.
+	//
+	// The two are given DISTINCT action names rather than sharing one, because
+	// they are opposite acts with opposite consequences and an audit trail that
+	// spelled both `screens.now` would make "who overrode the lobby screen" and
+	// "who put it back" indistinguishable.
+	case family == "screens" && len(segs) == 3 && segs[2] == "now" &&
+		(r.Method == http.MethodPut || r.Method == http.MethodDelete):
+		action := "screens.push-now"
+		if r.Method == http.MethodDelete {
+			action = "screens.clear-now"
+		}
+		return auditRoute{
+			action: action, resourceType: "screens", kind: store.KindScreen,
+			placement: screensConfig().placement, id: segs[1],
+		}, true
+
 	case family == "packs":
 		return packAuditRoute(r, segs)
 	}

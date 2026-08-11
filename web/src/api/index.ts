@@ -79,6 +79,10 @@ export {
   type ScreenUpdate,
   type PairingCodeResult,
   type ScreensModule,
+  type ScreenNow,
+  type ScreenNowRequest,
+  type ScreenStatus,
+  type ScreenStatusModule,
 } from "./resources";
 
 export {

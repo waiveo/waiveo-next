@@ -472,6 +472,81 @@ func (e ScopeNodeUpdateKind) Valid() bool {
 	}
 }
 
+// Defines values for ScreenNowSource.
+const (
+	ScreenNowSourceCast     ScreenNowSource = "cast"
+	ScreenNowSourcePlaylist ScreenNowSource = "playlist"
+)
+
+// Valid indicates whether the value is a known member of the ScreenNowSource enum.
+func (e ScreenNowSource) Valid() bool {
+	switch e {
+	case ScreenNowSourceCast:
+		return true
+	case ScreenNowSourcePlaylist:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ScreenStatusDisplay.
+const (
+	Blank   ScreenStatusDisplay = "blank"
+	Content ScreenStatusDisplay = "content"
+)
+
+// Valid indicates whether the value is a known member of the ScreenStatusDisplay enum.
+func (e ScreenStatusDisplay) Valid() bool {
+	switch e {
+	case Blank:
+		return true
+	case Content:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ScreenStatusPriority.
+const (
+	Preempt   ScreenStatusPriority = "preempt"
+	Scheduled ScreenStatusPriority = "scheduled"
+)
+
+// Valid indicates whether the value is a known member of the ScreenStatusPriority enum.
+func (e ScreenStatusPriority) Valid() bool {
+	switch e {
+	case Preempt:
+		return true
+	case Scheduled:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ScreenStatusReachability.
+const (
+	Live      ScreenStatusReachability = "live"
+	NeverSeen ScreenStatusReachability = "never_seen"
+	Stale     ScreenStatusReachability = "stale"
+)
+
+// Valid indicates whether the value is a known member of the ScreenStatusReachability enum.
+func (e ScreenStatusReachability) Valid() bool {
+	switch e {
+	case Live:
+		return true
+	case NeverSeen:
+		return true
+	case Stale:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SessionSummaryAal.
 const (
 	Recovery SessionSummaryAal = "recovery"
@@ -1487,6 +1562,103 @@ type ScreenListResponse struct {
 	Items  []Screen `json:"items"`
 }
 
+// ScreenNow A screen's active push-now override. `source` names which id member is populated, so a consumer switches on one closed value rather than inferring intent from which string happens to be empty.
+type ScreenNow struct {
+	// CastId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	CastId *Ulid `json:"cast_id,omitempty"`
+
+	// PlaylistId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	PlaylistId *Ulid `json:"playlist_id,omitempty"`
+
+	// PushedAt A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC 3339 string. The store stamps `created_at`/`updated_at` on every row it writes as an integer millisecond count and returns that value unchanged, so this is what a client reads and what an export/apply round trip carries back. Deliberately not `format: date-time`: the two are not interchangeable, and a client that parsed one as the other would silently read 1970 for every resource on this surface.
+	// The `Job` resource is the one exception on this API and says so at its own `created_at`: a Job's timestamp is minted in Go as a `time.Time` and serialized RFC 3339, because a Job is not a stored row of this baseline.
+	PushedAt Timestamp `json:"pushed_at"`
+
+	// ScreenId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScreenId Ulid            `json:"screen_id"`
+	Source   ScreenNowSource `json:"source"`
+}
+
+// ScreenNowSource defines model for ScreenNow.Source.
+type ScreenNowSource string
+
+// ScreenNowRequest What to show on a screen right now. Exactly one of `cast_id` and `playlist_id` — a push names one thing to show, and a server that resolved "both" by precedence would turn a client bug into the wrong content on a wall.
+type ScreenNowRequest struct {
+	// CastId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	CastId *Ulid `json:"cast_id,omitempty"`
+
+	// PlaylistId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	PlaylistId *Ulid `json:"playlist_id,omitempty"`
+}
+
+// ScreenStatus One screen's authored identity joined to what the relays have observed of it. See `listScreenStatus` for how the ages are to be read and why `reachability` never says "offline".
+type ScreenStatus struct {
+	// ContentCount How many content items that program carried.
+	ContentCount int                  `json:"content_count"`
+	Display      *ScreenStatusDisplay `json:"display,omitempty"`
+
+	// LastAckAgeMs Milliseconds since this screen last acknowledged a Lease, or `-1` if it never has.
+	LastAckAgeMs int `json:"last_ack_age_ms"`
+
+	// LastPullAgeMs Milliseconds since this screen last pulled its program, or `-1` if it never has.
+	LastPullAgeMs int `json:"last_pull_age_ms"`
+
+	// LastRenderStartAgeMs Milliseconds since this screen last reported beginning to present a content item (`player/1` PLY-110) — the only field here that is evidence of playback rather than of intent — or `-1` if it never has.
+	LastRenderStartAgeMs int `json:"last_render_start_age_ms"`
+
+	// LiveWindowMs The staleness threshold `reachability` was decided by, published so a consumer that wants a different line can draw it from the raw ages.
+	LiveWindowMs int `json:"live_window_ms"`
+
+	// Name The screen row's own display name.
+	Name *string `json:"name,omitempty"`
+
+	// Now The operator's active push-now override, absent when the screen is following its schedule.
+	Now *ScreenNow `json:"now,omitempty"`
+
+	// Paired Whether a relay currently holds a live channel-token session for this screen.
+	Paired bool `json:"paired"`
+
+	// Priority That program's `player/1` PLY-108 priority — `preempt` is an operator's push-now takeover.
+	Priority *ScreenStatusPriority `json:"priority,omitempty"`
+
+	// ProgramRevision The `program_revision` this screen was last handed (or, if it has never pulled, the one waiting for it).
+	ProgramRevision *string `json:"program_revision,omitempty"`
+
+	// Reachability `live` — the relay heard from this screen within `live_window_ms`. `stale` — contact was made at some point, but not recently. `never_seen` — no relay has ever observed this screen pull a program.
+	Reachability ScreenStatusReachability `json:"reachability"`
+
+	// RelayId The relay whose report this status came from; absent when no relay has reported this screen.
+	RelayId *string `json:"relay_id,omitempty"`
+
+	// RenderAssetRef The asset this screen last reported actually putting on screen.
+	RenderAssetRef *string `json:"render_asset_ref,omitempty"`
+
+	// ReportAgeMs Milliseconds since the relay report this status came from arrived, or `-1` when no report has. It is what distinguishes a screen that stopped talking to its relay from a relay that stopped talking to this app peer.
+	ReportAgeMs int `json:"report_age_ms"`
+
+	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScopeNode *Ulid `json:"scope_node,omitempty"`
+
+	// ScreenId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScreenId Ulid `json:"screen_id"`
+}
+
+// ScreenStatusDisplay defines model for ScreenStatus.Display.
+type ScreenStatusDisplay string
+
+// ScreenStatusPriority That program's `player/1` PLY-108 priority — `preempt` is an operator's push-now takeover.
+type ScreenStatusPriority string
+
+// ScreenStatusReachability `live` — the relay heard from this screen within `live_window_ms`. `stale` — contact was made at some point, but not recently. `never_seen` — no relay has ever observed this screen pull a program.
+type ScreenStatusReachability string
+
+// ScreenStatusListResponse defines model for ScreenStatusListResponse.
+type ScreenStatusListResponse struct {
+	// Cursor An opaque, URL-safe continuation token. `null` signals no further rows. Never constructed, parsed, or compared for meaning by a client.
+	Cursor Cursor         `json:"cursor"`
+	Items  []ScreenStatus `json:"items"`
+}
+
 // ScreenUpdate Partial update — every field optional, at least one required.
 type ScreenUpdate struct {
 	DeviceId   **string `json:"device_id,omitempty"`
@@ -2394,6 +2566,21 @@ type UpdateScopeNodeParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// ListScreenStatusParams defines parameters for ListScreenStatus.
+type ListScreenStatusParams struct {
+	// Cursor Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client.
+	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Limit Maximum rows to return in this page.
+	Limit *LimitParam `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Selector A label-selector string: comma-separated, ANDed terms (equality, inequality, set-membership, set-exclusion, existence, non-existence, or a `scope_node subtree <ulid>` term). See `contracts/api-1.md#label-selector-grammar` for the full grammar.
+	Selector *SelectorParam `form:"selector,omitempty" json:"selector,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // ListScreensParams defines parameters for ListScreens.
 type ListScreensParams struct {
 	// Cursor Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client.
@@ -2438,6 +2625,18 @@ type UpdateScreenParams struct {
 	// IfMatch The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists.
 	IfMatch IfMatchParam `json:"If-Match"`
 
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// ClearScreenNowParams defines parameters for ClearScreenNow.
+type ClearScreenNowParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// SetScreenNowParams defines parameters for SetScreenNow.
+type SetScreenNowParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
@@ -2627,6 +2826,9 @@ type CreateScreenJSONRequestBody = ScreenCreate
 
 // UpdateScreenJSONRequestBody defines body for UpdateScreen for application/json ContentType.
 type UpdateScreenJSONRequestBody = ScreenUpdate
+
+// SetScreenNowJSONRequestBody defines body for SetScreenNow for application/json ContentType.
+type SetScreenNowJSONRequestBody = ScreenNowRequest
 
 // CreateWebhookEndpointJSONRequestBody defines body for CreateWebhookEndpoint for application/json ContentType.
 type CreateWebhookEndpointJSONRequestBody = WebhookEndpointCreate
@@ -2965,6 +3167,9 @@ type ClientInterface interface {
 
 	UpdateScopeNode(ctx context.Context, scopeNodeId Ulid, params *UpdateScopeNodeParams, body UpdateScopeNodeJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// ListScreenStatus request
+	ListScreenStatus(ctx context.Context, params *ListScreenStatusParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ListScreens request
 	ListScreens(ctx context.Context, params *ListScreensParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -2983,6 +3188,14 @@ type ClientInterface interface {
 	UpdateScreenWithBody(ctx context.Context, screenId Ulid, params *UpdateScreenParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	UpdateScreen(ctx context.Context, screenId Ulid, params *UpdateScreenParams, body UpdateScreenJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ClearScreenNow request
+	ClearScreenNow(ctx context.Context, screenId Ulid, params *ClearScreenNowParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// SetScreenNowWithBody request with any body
+	SetScreenNowWithBody(ctx context.Context, screenId Ulid, params *SetScreenNowParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	SetScreenNow(ctx context.Context, screenId Ulid, params *SetScreenNowParams, body SetScreenNowJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// IssueScreenPairingCode request
 	IssueScreenPairingCode(ctx context.Context, screenId Ulid, params *IssueScreenPairingCodeParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -4113,6 +4326,18 @@ func (c *Client) UpdateScopeNode(ctx context.Context, scopeNodeId Ulid, params *
 	return c.Client.Do(req)
 }
 
+func (c *Client) ListScreenStatus(ctx context.Context, params *ListScreenStatusParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListScreenStatusRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) ListScreens(ctx context.Context, params *ListScreensParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListScreensRequest(c.Server, params)
 	if err != nil {
@@ -4187,6 +4412,42 @@ func (c *Client) UpdateScreenWithBody(ctx context.Context, screenId Ulid, params
 
 func (c *Client) UpdateScreen(ctx context.Context, screenId Ulid, params *UpdateScreenParams, body UpdateScreenJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewUpdateScreenRequest(c.Server, screenId, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ClearScreenNow(ctx context.Context, screenId Ulid, params *ClearScreenNowParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewClearScreenNowRequest(c.Server, screenId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) SetScreenNowWithBody(ctx context.Context, screenId Ulid, params *SetScreenNowParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSetScreenNowRequestWithBody(c.Server, screenId, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) SetScreenNow(ctx context.Context, screenId Ulid, params *SetScreenNowParams, body SetScreenNowJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSetScreenNowRequest(c.Server, screenId, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -8803,6 +9064,99 @@ func NewUpdateScopeNodeRequestWithBody(server string, scopeNodeId Ulid, params *
 	return req, nil
 }
 
+// NewListScreenStatusRequest generates requests for ListScreenStatus
+func NewListScreenStatusRequest(server string, params *ListScreenStatusParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/screen-status")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.Cursor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "cursor", *params.Cursor, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "limit", *params.Limit, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Selector != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "selector", *params.Selector, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
 // NewListScreensRequest generates requests for ListScreens
 func NewListScreensRequest(server string, params *ListScreensParams) (*http.Request, error) {
 	var err error
@@ -9133,6 +9487,117 @@ func NewUpdateScreenRequestWithBody(server string, screenId Ulid, params *Update
 			}
 
 			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewClearScreenNowRequest generates requests for ClearScreenNow
+func NewClearScreenNowRequest(server string, screenId Ulid, params *ClearScreenNowParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "screen_id", screenId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/screens/%s/now", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewSetScreenNowRequest calls the generic SetScreenNow builder with application/json body
+func NewSetScreenNowRequest(server string, screenId Ulid, params *SetScreenNowParams, body SetScreenNowJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewSetScreenNowRequestWithBody(server, screenId, params, "application/json", bodyReader)
+}
+
+// NewSetScreenNowRequestWithBody generates requests for SetScreenNow with any type of body
+func NewSetScreenNowRequestWithBody(server string, screenId Ulid, params *SetScreenNowParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "screen_id", screenId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/screens/%s/now", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPut, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
 		}
 
 	}
@@ -10206,6 +10671,9 @@ type ClientWithResponsesInterface interface {
 
 	UpdateScopeNodeWithResponse(ctx context.Context, scopeNodeId Ulid, params *UpdateScopeNodeParams, body UpdateScopeNodeJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateScopeNodeResponse, error)
 
+	// ListScreenStatusWithResponse request
+	ListScreenStatusWithResponse(ctx context.Context, params *ListScreenStatusParams, reqEditors ...RequestEditorFn) (*ListScreenStatusResponse, error)
+
 	// ListScreensWithResponse request
 	ListScreensWithResponse(ctx context.Context, params *ListScreensParams, reqEditors ...RequestEditorFn) (*ListScreensResponse, error)
 
@@ -10224,6 +10692,14 @@ type ClientWithResponsesInterface interface {
 	UpdateScreenWithBodyWithResponse(ctx context.Context, screenId Ulid, params *UpdateScreenParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateScreenResponse, error)
 
 	UpdateScreenWithResponse(ctx context.Context, screenId Ulid, params *UpdateScreenParams, body UpdateScreenJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateScreenResponse, error)
+
+	// ClearScreenNowWithResponse request
+	ClearScreenNowWithResponse(ctx context.Context, screenId Ulid, params *ClearScreenNowParams, reqEditors ...RequestEditorFn) (*ClearScreenNowResponse, error)
+
+	// SetScreenNowWithBodyWithResponse request with any body
+	SetScreenNowWithBodyWithResponse(ctx context.Context, screenId Ulid, params *SetScreenNowParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SetScreenNowResponse, error)
+
+	SetScreenNowWithResponse(ctx context.Context, screenId Ulid, params *SetScreenNowParams, body SetScreenNowJSONRequestBody, reqEditors ...RequestEditorFn) (*SetScreenNowResponse, error)
 
 	// IssueScreenPairingCodeWithResponse request
 	IssueScreenPairingCodeWithResponse(ctx context.Context, screenId Ulid, params *IssueScreenPairingCodeParams, reqEditors ...RequestEditorFn) (*IssueScreenPairingCodeResponse, error)
@@ -12487,6 +12963,39 @@ func (r UpdateScopeNodeResponse) ContentType() string {
 	return ""
 }
 
+type ListScreenStatusResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *ScreenStatusListResponse
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON429 *TooManyRequests
+}
+
+// Status returns HTTPResponse.Status
+func (r ListScreenStatusResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListScreenStatusResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ListScreenStatusResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type ListScreensResponse struct {
 	Body                      []byte
 	HTTPResponse              *http.Response
@@ -12652,6 +13161,73 @@ func (r UpdateScreenResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r UpdateScreenResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ClearScreenNowResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r ClearScreenNowResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ClearScreenNowResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ClearScreenNowResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type SetScreenNowResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *ScreenNow
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON422 *UnprocessableContent
+}
+
+// Status returns HTTPResponse.Status
+func (r SetScreenNowResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r SetScreenNowResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r SetScreenNowResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -13858,6 +14434,15 @@ func (c *ClientWithResponses) UpdateScopeNodeWithResponse(ctx context.Context, s
 	return ParseUpdateScopeNodeResponse(rsp)
 }
 
+// ListScreenStatusWithResponse request returning *ListScreenStatusResponse
+func (c *ClientWithResponses) ListScreenStatusWithResponse(ctx context.Context, params *ListScreenStatusParams, reqEditors ...RequestEditorFn) (*ListScreenStatusResponse, error) {
+	rsp, err := c.ListScreenStatus(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListScreenStatusResponse(rsp)
+}
+
 // ListScreensWithResponse request returning *ListScreensResponse
 func (c *ClientWithResponses) ListScreensWithResponse(ctx context.Context, params *ListScreensParams, reqEditors ...RequestEditorFn) (*ListScreensResponse, error) {
 	rsp, err := c.ListScreens(ctx, params, reqEditors...)
@@ -13917,6 +14502,32 @@ func (c *ClientWithResponses) UpdateScreenWithResponse(ctx context.Context, scre
 		return nil, err
 	}
 	return ParseUpdateScreenResponse(rsp)
+}
+
+// ClearScreenNowWithResponse request returning *ClearScreenNowResponse
+func (c *ClientWithResponses) ClearScreenNowWithResponse(ctx context.Context, screenId Ulid, params *ClearScreenNowParams, reqEditors ...RequestEditorFn) (*ClearScreenNowResponse, error) {
+	rsp, err := c.ClearScreenNow(ctx, screenId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseClearScreenNowResponse(rsp)
+}
+
+// SetScreenNowWithBodyWithResponse request with arbitrary body returning *SetScreenNowResponse
+func (c *ClientWithResponses) SetScreenNowWithBodyWithResponse(ctx context.Context, screenId Ulid, params *SetScreenNowParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SetScreenNowResponse, error) {
+	rsp, err := c.SetScreenNowWithBody(ctx, screenId, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSetScreenNowResponse(rsp)
+}
+
+func (c *ClientWithResponses) SetScreenNowWithResponse(ctx context.Context, screenId Ulid, params *SetScreenNowParams, body SetScreenNowJSONRequestBody, reqEditors ...RequestEditorFn) (*SetScreenNowResponse, error) {
+	rsp, err := c.SetScreenNow(ctx, screenId, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSetScreenNowResponse(rsp)
 }
 
 // IssueScreenPairingCodeWithResponse request returning *IssueScreenPairingCodeResponse
@@ -17422,6 +18033,53 @@ func ParseUpdateScopeNodeResponse(rsp *http.Response) (*UpdateScopeNodeResponse,
 	return response, nil
 }
 
+// ParseListScreenStatusResponse parses an HTTP response from a ListScreenStatusWithResponse call
+func ParseListScreenStatusResponse(rsp *http.Response) (*ListScreenStatusResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListScreenStatusResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ScreenStatusListResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseListScreensResponse parses an HTTP response from a ListScreensWithResponse call
 func ParseListScreensResponse(rsp *http.Response) (*ListScreensResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -17693,6 +18351,107 @@ func ParseUpdateScreenResponse(rsp *http.Response) (*UpdateScreenResponse, error
 			return nil, err
 		}
 		response.ApplicationproblemJSON428 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseClearScreenNowResponse parses an HTTP response from a ClearScreenNowWithResponse call
+func ParseClearScreenNowResponse(rsp *http.Response) (*ClearScreenNowResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ClearScreenNowResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseSetScreenNowResponse parses an HTTP response from a SetScreenNowWithResponse call
+func ParseSetScreenNowResponse(rsp *http.Response) (*SetScreenNowResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &SetScreenNowResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ScreenNow
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
 
 	}
 
