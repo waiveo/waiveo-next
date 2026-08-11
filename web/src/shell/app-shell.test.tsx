@@ -1,7 +1,7 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, within, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, Routes, Route } from "react-router";
 import { ThemeProvider } from "@/components/theme/theme-provider";
 import { AppShell } from "./app-shell";
 import DesignRoute from "@/routes/design/design-route";
@@ -451,5 +451,64 @@ describe("AppShell — no horizontal PAGE scroll at 360px", () => {
     // viewport width — the structural precondition for no horizontal page scroll.
     const content = container.querySelector('[data-slot="shell-content"]') as HTMLElement;
     expect(content.className).toContain("min-w-0");
+  });
+});
+
+describe("AppShell — a route that THROWS", () => {
+  // These pin the boundary's PLACEMENT and its KEY, which are the two things
+  // reasoning gets wrong and a unit test of the boundary itself cannot see.
+  //
+  // The first draft of this test navigated away from the 404 page and asserted
+  // the 404 text was gone. That test could not fail: a 404 is an ordinary route,
+  // not a caught throw, so it cleared with or without the boundary. A route has
+  // to genuinely throw or neither claim below is being tested at all.
+  beforeEach(() => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  function Boom(): React.ReactNode {
+    throw new Error("this route exploded");
+  }
+
+  function renderRoutes(path: string) {
+    return render(
+      <ThemeProvider>
+        <MemoryRouter initialEntries={[path]}>
+          <Routes>
+            <Route element={<AppShell />}>
+              <Route path="/" element={<div>overview content</div>} />
+              <Route path="/design" element={<Boom />} />
+            </Route>
+          </Routes>
+        </MemoryRouter>
+      </ThemeProvider>,
+    );
+  }
+
+  it("keeps the navigation when the content region throws", async () => {
+    renderRoutes("/design");
+
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(screen.getByText("this route exploded")).toBeInTheDocument();
+    // The whole point of putting the boundary INSIDE the shell: a broken page
+    // must not remove every page the operator could go to instead.
+    const rail = screen.getByRole("navigation", { name: /primary/i });
+    expect(within(rail).getByRole("link", { name: "Overview" })).toBeInTheDocument();
+  });
+
+  it("clears the caught error when the operator navigates away", async () => {
+    const user = userEvent.setup();
+    renderRoutes("/design");
+    await screen.findByRole("alert");
+
+    const rail = screen.getByRole("navigation", { name: /primary/i });
+    await user.click(within(rail).getByRole("link", { name: "Overview" }));
+
+    // Without the pathname key the boundary holds its error state across the
+    // route change, and the next page renders as the previous page's crash —
+    // one broken route becoming a broken console.
+    expect(await screen.findByText("overview content")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });

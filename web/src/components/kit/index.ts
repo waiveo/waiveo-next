@@ -46,6 +46,7 @@ export type {
 
 export { EmptyState } from "./empty-state";
 export type { EmptyStateProps } from "./empty-state";
+export { ErrorBoundary } from "./error-boundary";
 
 export { Toaster, toast } from "./toaster";
 

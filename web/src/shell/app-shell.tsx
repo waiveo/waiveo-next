@@ -9,7 +9,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
 } from "lucide-react";
-import { Button, KitIcon, NavDrawer } from "@/components/kit";
+import { Button, ErrorBoundary, KitIcon, NavDrawer } from "@/components/kit";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
 import { SignOutButton } from "@/auth/sign-out-button";
 import { SecurityLink } from "@/auth/security-link";
@@ -366,6 +366,11 @@ function ExtensionsNav({
 }
 
 export function AppShell({ children, api }: { children?: ReactNode; api?: WaiveoApi }) {
+  // Read reactively from the router, NOT from window.location: the boundary
+  // below is keyed on it, and a global read typechecks fine while never
+  // changing on a client-side navigation — the key would be frozen at whatever
+  // URL first loaded and the error would never clear.
+  const { pathname: contentPathname } = useLocation();
   const [collapsed, setCollapsed] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   // The Extensions nav: installed packs' pages, resolved over the api/1 client.
@@ -468,8 +473,21 @@ export function AppShell({ children, api }: { children?: ReactNode; api?: Waiveo
           </div>
         </header>
 
+        {/* The error boundary sits HERE, around the content region only, and
+            not around the shell. React unwinds to the nearest boundary, so a
+            boundary outside AppShell would take the rail and the header down
+            with the route that threw — answering "this page is broken" by
+            removing every page the operator could go to instead. Inside, a
+            thrown render costs them the content and nothing else: the
+            navigation stays, and leaving the broken page is one click.
+
+            Keyed on the pathname so navigating away CLEARS a caught error.
+            Without the key the boundary holds its error state across the
+            route change and the next page renders as the previous page's
+            crash — a boundary that turns one broken route into a broken
+            console is worse than none. */}
         <div data-slot="shell-content" className="min-w-0 flex-1">
-          {children ?? <Outlet />}
+          <ErrorBoundary key={contentPathname}>{children ?? <Outlet />}</ErrorBoundary>
         </div>
       </div>
     </div>

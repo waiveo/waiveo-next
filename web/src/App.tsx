@@ -1,6 +1,8 @@
 import { BrowserRouter, Routes, Route } from "react-router";
 import { ThemeProvider } from "@/components/theme/theme-provider";
-import { Toaster } from "@/components/kit";
+import { Toaster, EmptyState, Button } from "@/components/kit";
+import { Compass } from "lucide-react";
+import { Link } from "react-router";
 import { SessionGate } from "@/auth/session-gate";
 import { AppShell } from "@/shell/app-shell";
 import LoginRoute from "@/routes/login/login-route";
@@ -132,6 +134,26 @@ export default function App() {
                 a reading of the machine. */}
             <Route path="/backup" element={<BackupRoute />} />
             <Route path="/design" element={<DesignRoute />} />
+            {/* The catch-all, INSIDE the shell on purpose. A mistyped or dead
+                URL is the one moment an operator most needs the navigation —
+                putting the 404 outside the shell would answer "that page does
+                not exist" by removing every route they could go to instead.
+                It sits last because react-router matches in order. */}
+            <Route
+              path="*"
+              element={
+                <EmptyState
+                  icon={Compass}
+                  title="No page at this address"
+                  description="The link may be out of date, or the address mistyped. Nothing is wrong with the box."
+                  action={
+                    <Button variant="secondary" asChild>
+                      <Link to="/">Back to Overview</Link>
+                    </Button>
+                  }
+                />
+              }
+            />
           </Route>
         </Routes>
       </BrowserRouter>

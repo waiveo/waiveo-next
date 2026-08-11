@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
@@ -117,4 +117,27 @@ describe("App — the toast host is MOUNTED", () => {
 
     expect(await screen.findByText("Workspace exported")).toBeInTheDocument();
   });
+});
+
+describe("App — a thrown route keeps the navigation, and leaving it clears the error", () => {
+  // The boundary's PLACEMENT is the whole design, and placement is exactly what
+  // a unit test of the boundary cannot check. Wrapping the shell instead of its
+  // content region would answer "this page is broken" by removing every page the
+  // operator could go to — so these drive the real App.
+  beforeEach(() => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("shows the 404 inside the shell, with the rail still there", async () => {
+    window.history.pushState({}, "", "/no-such-page");
+    render(<App />);
+
+    expect(await screen.findByText("No page at this address")).toBeInTheDocument();
+    // The rail must survive: a dead URL is the moment an operator most needs
+    // somewhere to go.
+    const rail = await screen.findByRole("navigation", { name: /primary/i });
+    expect(within(rail).getByRole("link", { name: "Overview" })).toBeInTheDocument();
+  });
+
 });
