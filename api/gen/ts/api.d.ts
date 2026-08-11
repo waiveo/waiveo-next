@@ -753,6 +753,60 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/screens/{screen_id}/now": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                screen_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Show a cast or playlist on this screen now
+         * @description Installs a push-now override on the screen: it shows the named cast or playlist instead of whatever its schedule resolves, until the override is cleared. The override is durable desired state, not a live command — it rides the next signed snapshot to the site's relays as a `preempt`-priority screen program (`relay/1` REL-061, `player/1` PLY-108), survives a relay restart or an app-peer outage, and outranks the relay's own continuous schedule re-resolution while it stands.
+         *
+         *     Delivery is prompt but not instantaneous, and this operation reports INTENT rather than delivery: persisting the override nudges every connected relay (REL-057), and the screen adopts the new Lease on its next ordinary program poll (~10 seconds, PLY-082) — interrupting whatever it is showing rather than waiting for it to finish, because the Lease is `preempt` (PLY-100/101). Read `/screen-status` for what the fleet has actually observed.
+         *
+         *     Idempotent: pushing the same thing twice leaves one override, and pushing something else replaces it. Exactly one of `cast_id`/`playlist_id` must be set.
+         */
+        put: operations["setScreenNow"];
+        post?: never;
+        /**
+         * Clear this screen's push-now override
+         * @description Removes the screen's push-now override, so it returns to whatever its schedule resolves. Answers `204` whether or not an override was in force: a DELETE's contract is the resulting state, and clearing twice reaches it just as clearing once does.
+         */
+        delete: operations["clearScreenNow"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/screen-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List live screen status
+         * @description Returns one entry per authored screen row, joining what the row says with what the site's relays have observed of it and whether an operator currently has a push-now override on it.
+         *
+         *     Every age is milliseconds before this response, and `-1` means the contact has NEVER been observed — a distinct state from a large age, and the one a screen that was never switched on is in. `reachability` applies a single threshold (`live_window_ms`) to `last_pull_age_ms`; the raw ages are published so a consumer can draw its own line.
+         *
+         *     `reachability` is deliberately never "offline". This platform cannot distinguish a screen that is switched off from one whose network dropped, from one whose player crashed, from one that was never paired — and each sends an operator somewhere different. `report_age_ms` is what separates "this screen stopped talking to its relay" from "this relay stopped talking to us": when a relay disconnects, every screen behind it ages together and `report_age_ms` grows with them.
+         */
+        get: operations["listScreenStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/adopted-devices": {
         parameters: {
             query?: never;
@@ -1588,6 +1642,65 @@ export interface components {
             scope_node?: components["schemas"]["Ulid"];
             device_id?: string | null;
             labels?: components["schemas"]["LabelMap"];
+        };
+        /** @description What to show on a screen right now. Exactly one of `cast_id` and `playlist_id` — a push names one thing to show, and a server that resolved "both" by precedence would turn a client bug into the wrong content on a wall. */
+        ScreenNowRequest: {
+            cast_id?: components["schemas"]["Ulid"];
+            playlist_id?: components["schemas"]["Ulid"];
+        };
+        /** @description A screen's active push-now override. `source` names which id member is populated, so a consumer switches on one closed value rather than inferring intent from which string happens to be empty. */
+        ScreenNow: {
+            screen_id: components["schemas"]["Ulid"];
+            /** @enum {string} */
+            source: "cast" | "playlist";
+            cast_id?: components["schemas"]["Ulid"];
+            playlist_id?: components["schemas"]["Ulid"];
+            pushed_at: components["schemas"]["Timestamp"];
+        };
+        /** @description One screen's authored identity joined to what the relays have observed of it. See `listScreenStatus` for how the ages are to be read and why `reachability` never says "offline". */
+        ScreenStatus: {
+            screen_id: components["schemas"]["Ulid"];
+            /** @description The screen row's own display name. */
+            name?: string;
+            scope_node?: components["schemas"]["Ulid"];
+            /** @description The relay whose report this status came from; absent when no relay has reported this screen. */
+            relay_id?: string;
+            /**
+             * @description `live` — the relay heard from this screen within `live_window_ms`. `stale` — contact was made at some point, but not recently. `never_seen` — no relay has ever observed this screen pull a program.
+             * @enum {string}
+             */
+            reachability: "live" | "stale" | "never_seen";
+            /** @description The staleness threshold `reachability` was decided by, published so a consumer that wants a different line can draw it from the raw ages. */
+            live_window_ms: number;
+            /** @description Whether a relay currently holds a live channel-token session for this screen. */
+            paired: boolean;
+            /** @description Milliseconds since this screen last pulled its program, or `-1` if it never has. */
+            last_pull_age_ms: number;
+            /** @description Milliseconds since this screen last acknowledged a Lease, or `-1` if it never has. */
+            last_ack_age_ms: number;
+            /** @description Milliseconds since this screen last reported beginning to present a content item (`player/1` PLY-110) — the only field here that is evidence of playback rather than of intent — or `-1` if it never has. */
+            last_render_start_age_ms: number;
+            /** @description Milliseconds since the relay report this status came from arrived, or `-1` when no report has. It is what distinguishes a screen that stopped talking to its relay from a relay that stopped talking to this app peer. */
+            report_age_ms: number;
+            /** @description The `program_revision` this screen was last handed (or, if it has never pulled, the one waiting for it). */
+            program_revision?: string;
+            /**
+             * @description That program's `player/1` PLY-108 priority — `preempt` is an operator's push-now takeover.
+             * @enum {string}
+             */
+            priority?: "scheduled" | "preempt";
+            /** @enum {string} */
+            display?: "content" | "blank";
+            /** @description How many content items that program carried. */
+            content_count: number;
+            /** @description The asset this screen last reported actually putting on screen. */
+            render_asset_ref?: string;
+            /** @description The operator's active push-now override, absent when the screen is following its schedule. */
+            now?: components["schemas"]["ScreenNow"];
+        };
+        ScreenStatusListResponse: {
+            items: components["schemas"]["ScreenStatus"][];
+            cursor: components["schemas"]["Cursor"];
         };
         /** @description A freshly minted pairing grant, bound to this screen row (`relay/1` REL-121a) and to the one relay that may redeem it (REL-121b), plus the human-enterable pairing code (`player/1` PLY-024) an operator reads onto the screen. Exactly one of `pairing_code` and `code_unavailable_reason` is present: the grant is minted, bound, and delivered either way, and the reason describes only why the code itself could not be formed for the relay it is bound to. A request with no relay to bind to at all is refused before anything is minted (`503`). */
         PairingCodeResult: {
@@ -3958,6 +4071,102 @@ export interface operations {
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    setScreenNow: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                screen_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScreenNowRequest"];
+            };
+        };
+        responses: {
+            /** @description The override now in force. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScreenNow"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["UnprocessableContent"];
+        };
+    };
+    clearScreenNow: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                screen_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No override is in force. No content. */
+            204: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    listScreenStatus: {
+        parameters: {
+            query?: {
+                /** @description Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client. */
+                cursor?: components["parameters"]["CursorParam"];
+                /** @description Maximum rows to return in this page. */
+                limit?: components["parameters"]["LimitParam"];
+                /** @description A label-selector string: comma-separated, ANDed terms (equality, inequality, set-membership, set-exclusion, existence, non-existence, or a `scope_node subtree <ulid>` term). See `contracts/api-1.md#label-selector-grammar` for the full grammar. */
+                selector?: components["parameters"]["SelectorParam"];
+            };
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of screen statuses. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScreenStatusListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            429: components["responses"]["TooManyRequests"];
         };
     };
     listAdoptedDevices: {

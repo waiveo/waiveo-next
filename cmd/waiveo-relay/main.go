@@ -189,6 +189,28 @@ type config struct {
 	mdnsPatterns []string
 	ssdpAnnounce bool
 	keepaliveOn  bool
+
+	// powerOnLaunchOn enables the keep-alive's POWER-ON AUTO-LAUNCH rule
+	// (keepalive.Config.PowerOnLaunch, parity row 5.6):
+	// WAIVEO_RELAY_POWERON_LAUNCH, a THIRD opt-out switch on the same off-list
+	// as the two above.
+	//
+	// It defaults ON for the reason keepaliveOn does, and is the same class of
+	// decision: the legacy stack foregrounded the channel on every power-on,
+	// unconditionally, and a screen that comes back up inside whatever app it
+	// was last on shows the wrong thing until a human notices. Its blast radius
+	// is bounded by exactly the same adoption gate — the rule lives inside
+	// keepalive and is evaluated after that gate — so a relay that can reach a
+	// Roku it has not adopted still does nothing to it.
+	//
+	// It is a switch of its own rather than being folded into keepaliveOn
+	// because the two capabilities fail differently and an operator may
+	// legitimately want one without the other: rule 2 only ever recovers a
+	// screen sitting idle at Home (it never interrupts anyone), while this rule
+	// deliberately foregrounds over whatever app the screen resumed into. A
+	// deployment that shares its TVs with people has a real reason to disable
+	// this one and keep the other.
+	powerOnLaunchOn bool
 }
 
 // dialAddress is the address a player is told to dial to reach this relay's
@@ -280,6 +302,10 @@ func loadConfig(env func(string) string) (config, error) {
 		mdnsPatterns: parseMDNSPatterns(env("WAIVEO_RELAY_MDNS_PATTERNS")),
 		ssdpAnnounce: env("WAIVEO_RELAY_SSDP_ANNOUNCE") == "1" || env("WAIVEO_RELAY_SSDP_ANNOUNCE") == "true",
 		keepaliveOn:  keepaliveEnabled(env("WAIVEO_RELAY_KEEPALIVE")),
+		// Read through the same opt-out helper the keep-alive switch uses, so
+		// the two honor an identical off-list (see offValue's own doc for why
+		// one list rather than one per switch).
+		powerOnLaunchOn: keepaliveEnabled(env("WAIVEO_RELAY_POWERON_LAUNCH")),
 	}, nil
 }
 
@@ -349,11 +375,21 @@ func discoveryEnabled(raw, listen string) bool {
 	return !offValue(raw)
 }
 
-// keepaliveEnabled reads WAIVEO_RELAY_KEEPALIVE as an OPT-OUT: unset, or any
-// value other than an explicit off, leaves the screen keep-alive capability
-// running (see config.keepaliveOn's own doc for why the default is on).
+// keepaliveEnabled reads WAIVEO_RELAY_KEEPALIVE (and, on the same off-list,
+// WAIVEO_RELAY_POWERON_LAUNCH) as an OPT-OUT: unset, or any value other than an
+// explicit off, leaves the capability running (see config.keepaliveOn and
+// config.powerOnLaunchOn for why each defaults on).
 func keepaliveEnabled(raw string) bool {
 	return !offValue(raw)
+}
+
+// onOff renders a boot-log capability flag as the word an operator scanning the
+// log is looking for, rather than as `true`/`false`.
+func onOff(on bool) string {
+	if on {
+		return "on"
+	}
+	return "off"
 }
 
 // parseMDNSPatterns parses "svc1,svc2" into the mdns package's Config.Patterns
@@ -1015,6 +1051,14 @@ func main() {
 			// makes it flap. Only entities the app peer's signed
 			// `device_inventory` marks adopted + enabled are driven.
 			Adopted: keepaliveAdoption.IsAdopted,
+			// Power-on auto-launch (parity row 5.6, keepalive's rule 1b): on by
+			// default, off with WAIVEO_RELAY_POWERON_LAUNCH=0. It rides INSIDE
+			// keepalive rather than as a second relauncher of its own precisely
+			// so it inherits this same adoption gate, this same settle delay,
+			// this same blank-Lease suppression and this same serialized
+			// dispatch surface — two independent things launching one Roku is
+			// the flap this deployment has already been bitten by.
+			PowerOnLaunch: cfg.powerOnLaunchOn,
 		})
 		keepaliveTargetSink = ka
 		go func() {
@@ -1022,8 +1066,8 @@ func main() {
 				log.Printf("waiveo-relay: screen keep-alive ended: %v", err)
 			}
 		}()
-		log.Printf("waiveo-relay screen keep-alive live (%d target(s) at boot, following the adopted set, every %s)",
-			len(kaTargets), cfg.pollInterval)
+		log.Printf("waiveo-relay screen keep-alive live (%d target(s) at boot, following the adopted set, every %s; power-on auto-launch %s)",
+			len(kaTargets), cfg.pollInterval, onOff(cfg.powerOnLaunchOn))
 	}
 
 	// The periodic join across the device plane: re-derive the drivable set,
@@ -1262,6 +1306,11 @@ func main() {
 				// no view of it until it does (REL-110/111).
 				candStore.SetSite(c.HelloAck().SiteBinding.ScopeNode)
 				reportCandidates(c, candStore)
+				// Same immediacy for screen liveness (parity row 5.8): until
+				// this relay says something, the app peer's view of every
+				// screen behind it is whatever it held before the disconnect,
+				// ageing.
+				reportScreenStatus(c, pairingSrv)
 				// REL-124's "next connection opportunity", taken literally:
 				// every pairing-grant redemption performed while this relay was
 				// disconnected (REL-122) — or before its last restart — is owed
@@ -1297,6 +1346,35 @@ func main() {
 				return
 			case <-tick.C:
 				reportRedemptions(liveConn.get(), pairingSrv)
+			}
+		}
+	}()
+
+	// The LIVE SCREEN STATUS report (parity row 5.8): what every screen behind
+	// this relay has actually been observed doing, pushed upward on its own short
+	// cadence so a console's screens page is describing the fleet as it is rather
+	// than as it was authored.
+	//
+	// Its own loop rather than a rider on the candidate loop above, because the
+	// two are gated differently and answer different questions: candidate
+	// reporting only runs when DISCOVERY is on (a relay with discovery disabled
+	// still serves screens and must still report their liveness), and a candidate
+	// set changes on the minute scale while a screen's liveness is only useful on
+	// the ten-second scale.
+	//
+	// It is also reported immediately on connect (OnConnected above), for the
+	// same reason candidates are: a reconnecting relay's app peer holds nothing
+	// about it until it says something, and waiting out a tick would leave every
+	// screen behind a just-recovered relay reading as stale for that whole tick.
+	go func() {
+		tick := time.NewTicker(screenStatusReportInterval)
+		defer tick.Stop()
+		for {
+			select {
+			case <-rootCtx.Done():
+				return
+			case <-tick.C:
+				reportScreenStatus(liveConn.get(), pairingSrv)
 			}
 		}
 	}()
@@ -2078,6 +2156,64 @@ func reportCandidates(c *relayconn.Client, store *deviceplane.Store) {
 	if n := len(report.Body.Candidates); n > 0 {
 		log.Printf("waiveo-relay discovery: reported %d device candidate(s) to the app peer", n)
 	}
+}
+
+// screenStatusReportInterval is how often a connected relay re-reports what its
+// screens have been observed doing (parity row 5.8). Every report is a full-set
+// replace, so this is idempotent and a lost one costs at most one interval.
+//
+// Ten seconds, matching the player's own program-poll cadence (PLY-082): a
+// faster report would carry no new observation, since nothing new can have been
+// observed between two polls, and a slower one would make every screen's
+// reported staleness lag its real staleness by the difference.
+const screenStatusReportInterval = 10 * time.Second
+
+// reportScreenStatus sends the player server's full current per-screen
+// observation set upward (parity row 5.8, wire.ScreenStatusBody).
+//
+// A nil client is the ordinary offline case, handled exactly as reportCandidates
+// handles it: the relay keeps serving screens and observing them while
+// disconnected, and the next connection reports the accumulated truth — which is
+// what a full-set report makes safe. A send failure is logged at most once per
+// interval and dropped; the connection is already dying and its supervisor will
+// redial.
+func reportScreenStatus(c *relayconn.Client, srv *playerserver.Server) {
+	if c == nil {
+		return
+	}
+	entries := screenStatusEntries(srv)
+	if err := c.SendScreenStatus(wire.ScreenStatusBody{Screens: entries}); err != nil {
+		log.Printf("waiveo-relay: reporting %d screen status entr(ies) failed (retried on the next report): %v", len(entries), err)
+	}
+}
+
+// screenStatusEntries projects the player server's own per-screen observation
+// snapshot onto the wire entries a report carries.
+//
+// It is split out from reportScreenStatus — which needs a live *relayconn.Client
+// and therefore a real connection to drive — so this mapping can be exercised
+// directly. That is worth a function boundary because the mapping is the one
+// place a field can be silently DROPPED on the way upstream, and a dropped field
+// is indistinguishable at the console from a screen that never reported it: a
+// wall rendering perfectly, described as having never rendered anything.
+func screenStatusEntries(srv *playerserver.Server) []wire.ScreenStatusEntry {
+	statuses := srv.ScreenStatuses()
+	entries := make([]wire.ScreenStatusEntry, 0, len(statuses))
+	for _, st := range statuses {
+		entries = append(entries, wire.ScreenStatusEntry{
+			ScreenID:             st.ScreenID,
+			Paired:               st.Paired,
+			LastPullAgeMs:        st.LastPullAgeMs,
+			LastAckAgeMs:         st.LastAckAgeMs,
+			LastRenderStartAgeMs: st.LastRenderStartAgeMs,
+			ProgramRevision:      st.ProgramRevision,
+			Priority:             st.Priority,
+			Display:              st.Display,
+			ContentCount:         st.ContentCount,
+			RenderAssetRef:       st.RenderAssetRef,
+		})
+	}
+	return entries
 }
 
 // redemptionReportInterval is how often a connected relay drains its owed

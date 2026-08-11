@@ -96,6 +96,12 @@ type server struct {
 	// — the routes mount either way, see devices.go.
 	devices  *devices.Registry
 	dispatch CommandDispatcher
+	// screenStatus is the LIVE screen-status read model the relays report into
+	// (screenstatus.go, parity row 5.8). Optional (WithScreenStatus) with the
+	// same degrade the device plane takes — the route mounts either way and
+	// answers `never_seen` for every screen, which is what is true of a
+	// deployment whose relays report nothing.
+	screenStatus ScreenStatusSource
 	// jobs executes the work an async operation accepts with 202 (jobrun.go).
 	// Always non-nil: New builds and starts one when the caller wires none, so
 	// an accepted Job is never a promise nothing is working on.
@@ -338,6 +344,13 @@ func (srv *server) mountAll(rt, rootRT *router, authHandlers *auth.Handlers) {
 	// code (pairingcode.go). `{screen_id}/pairing-code` has the same
 	// two-segment per-row action shape `{id}/run` has.
 	rt.HandleFunc("POST "+apiPrefix+"/screens/{screen_id}/pairing-code", srv.issuePairingCode)
+	// The screens family's other two extra operations: the PUSH-NOW override
+	// singleton (screennow.go) — "show this here now", set with PUT and cleared
+	// with DELETE — and, alongside it, the live per-screen status read model the
+	// relays report into (screenstatus.go). One is what an operator DOES to a
+	// screen out of band; the other is what the fleet actually observes of it.
+	srv.mountScreenNow(rt)
+	srv.mountScreenStatus(rt)
 	rt.HandleFunc("POST "+apiPrefix+"/content", srv.uploadContent)
 	rt.HandleFunc("GET "+apiPrefix+"/content", srv.listContent)
 	// The read half of the async convention: a Job returned by 202 is polled

@@ -17,6 +17,7 @@ import screensPageDoc from "./page.uis.json";
 import { PairingPanel } from "./pairing-panel";
 import { ScopeTreePanel } from "./scope-tree-panel";
 import { BulkAssignPanel } from "./bulk-assign-panel";
+import { LiveScreensPanel } from "./live-screens-panel";
 
 /**
  * The Screens route — the fleet's scope-nodes of kind `screen`, as a DOGFOODED
@@ -301,6 +302,13 @@ export default function ScreensRoute({ api }: { api?: WaiveoApi }) {
             need a site or a group to exist first — on a fresh (or emptied) box
             this is literally the first thing an operator must use. */}
         <ScopeTreePanel api={client} nodes={tree} onChanged={reload} />
+        {/* FLEET OPERATIONS — what every screen is doing right now, and the one
+            out-of-band action an operator takes about it ("show this here now").
+            It sits directly under the tree and above everything that AUTHORS,
+            because an operator arriving at this page is almost always answering
+            "is that wall alright?" before they are answering "what should it show
+            on Tuesday?". */}
+        <LiveScreensPanel api={client} />
         {/* grammar-gap: the list-detail grammar's `newAction` is a bare verb with a
             static itemDefault — it cannot carry the required parent choice, and a
             screen's parent is immutable after create (ScopeNodeUpdate has no

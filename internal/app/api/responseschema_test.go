@@ -710,6 +710,25 @@ var probes = map[string]probe{
 		id := e.mintScreen(t, e.mintOrg(t))
 		return e.do(t, http.MethodPost, "/api/v1/screens/"+id+"/pairing-code", nil, nil)
 	},
+	"setScreenNow": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		node := e.mintOrg(t)
+		return e.do(t, http.MethodPut, "/api/v1/screens/"+e.mintScreen(t, node)+"/now",
+			mustJSON(t, map[string]any{"cast_id": e.mintCast(t, node)}), nil)
+	},
+	"listScreenStatus": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		// A screen WITH an override, so the response exercises the optional
+		// `now` member as well as the never-observed defaults every field takes
+		// when no relay has reported — the shape a deployment sees on its first
+		// page load, which is the one most likely to drift unnoticed.
+		node := e.mintOrg(t)
+		id := e.mintScreen(t, node)
+		resp, raw := e.do(t, http.MethodPut, "/api/v1/screens/"+id+"/now",
+			mustJSON(t, map[string]any{"cast_id": e.mintCast(t, node)}), nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("push now: %d %s", resp.StatusCode, raw)
+		}
+		return e.do(t, http.MethodGet, "/api/v1/screen-status", nil, nil)
+	},
 
 	// --- casts ------------------------------------------------------------
 	"createCast": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {

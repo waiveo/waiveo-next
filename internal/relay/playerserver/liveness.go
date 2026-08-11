@@ -24,6 +24,20 @@ const (
 	DisplayBlank   = "blank"
 )
 
+// priority values a Lease's `priority` field carries (PLY-108): exactly one of
+// scheduled (ordinary schedule resolution) or preempt (a deliberately-invoked
+// takeover — an operator's push-now override, snapshot.overrideProgram).
+//
+// PLY-100/101 give the two an ORDERING at the player: a preempt Lease interrupts
+// the item currently on screen rather than waiting for it to end. SetProgram's
+// own priority fence honours the same ordering on the relay, refusing to let a
+// same-generation `scheduled` write replace a `preempt` program — so the two
+// halves of "a takeover outranks the schedule" read off one pair of names.
+const (
+	PriorityScheduled = "scheduled"
+	PriorityPreempt   = "preempt"
+)
+
 // PowerScheduleOff is the display-power schedule directive that most recently
 // commanded the target device off (PLY-156). The schedule's own row shape is
 // out of player/1's scope (Scope); only the fact that a relay honors its most

@@ -46,6 +46,12 @@ export type AutomationUpdate = components["schemas"]["AutomationUpdate"];
 export type AutomationRunResult = components["schemas"]["AutomationRunResult"];
 
 export type Screen = components["schemas"]["Screen"];
+/** A screen's active push-now override — what an operator put on it out of band. */
+export type ScreenNow = components["schemas"]["ScreenNow"];
+/** The body naming what to push: exactly one of cast_id / playlist_id. */
+export type ScreenNowRequest = components["schemas"]["ScreenNowRequest"];
+/** One screen's authored identity joined to what the relays have observed of it. */
+export type ScreenStatus = components["schemas"]["ScreenStatus"];
 export type ScreenCreate = components["schemas"]["ScreenCreate"];
 export type ScreenUpdate = components["schemas"]["ScreenUpdate"];
 export type PairingCodeResult = components["schemas"]["PairingCodeResult"];
@@ -311,14 +317,65 @@ export interface ScreensModule extends ResourceModule<Screen, ScreenCreate, Scre
    * the relay, so this reports issuance, never a "paired" state the app has
    * no evidence for. */
   issuePairingCode(id: string): Promise<PairingCodeResult>;
+
+  /** PUSH NOW — show this cast (or playlist) on this screen instead of whatever
+   * its schedule resolves, until it is cleared.
+   *
+   * It reports INTENT, not delivery. The server persists the override as desired
+   * state and nudges the site's relays; the screen adopts it on its next
+   * program poll (~10s) and, because the resulting Lease is `preempt`,
+   * interrupts what it is showing rather than waiting for it to finish. A
+   * console must not claim the screen IS showing it — read `screenStatus.list()`
+   * for what the fleet has actually observed. */
+  pushNow(id: string, target: ScreenNowRequest): Promise<ScreenNow>;
+
+  /** Clear this screen's push-now override; it returns to its schedule. Safe to
+   * repeat — clearing nothing succeeds. */
+  clearNow(id: string): Promise<void>;
 }
 
 function screensModule(client: ApiClient): ScreensModule {
   const base = crud<Screen, ScreenCreate, ScreenUpdate>(client, "/screens");
+  const nowPath = (id: string) => `/screens/${encodeURIComponent(id)}/now`;
   return {
     ...base,
     issuePairingCode(id) {
       return client.action<PairingCodeResult>(`/screens/${encodeURIComponent(id)}/pairing-code`);
+    },
+    pushNow(id, target) {
+      return client.replace<ScreenNow>(nowPath(id), target);
+    },
+    clearNow(id) {
+      return client.discard(nowPath(id));
+    },
+  };
+}
+
+// ── Screen status: what the relays have OBSERVED ─────────────────────────────
+
+export interface ScreenStatusModule {
+  /** Every authored screen, joined to what the relays have observed of it and to
+   * any push-now override on it. Paginated like every other list.
+   *
+   * Read the ages, not the words: each `*_age_ms` is milliseconds before the
+   * response and `-1` means NEVER observed, which is a different state from a
+   * large age. `reachability` is `live | stale | never_seen` and deliberately
+   * never "offline" — the platform cannot tell a screen that is switched off
+   * from one whose network dropped from one whose player crashed. */
+  list(params?: ListParams): Promise<Page<ScreenStatus>>;
+}
+
+function screenStatusModule(client: ApiClient): ScreenStatusModule {
+  return {
+    list(params = {}) {
+      // The same query assembly crud() performs, and for the same reason its own
+      // comment gives: an EMPTY cursor is not a keyset position and the server
+      // rejects it (API-035), so the first page omits the key entirely.
+      const query: Record<string, string | number | undefined> = {};
+      if (params.selector) query.selector = params.selector;
+      if (params.limit !== undefined) query.limit = params.limit;
+      if (params.cursor) query.cursor = params.cursor;
+      return client.list<ScreenStatus>("/screen-status", query);
     },
   };
 }
@@ -365,6 +422,11 @@ export interface WaiveoApi {
   /** Screen identity rows (the row a `screen_id` names) — CRUD plus the
    * pairing-code issuance the operator pairing flow drives. */
   screens: ScreensModule;
+  /** What the site's relays have OBSERVED each screen doing — a read model, not
+   * authored state, so list-only (api/screenstatus semantics live on the
+   * module). It is the honest half of the push-now flow: `screens.pushNow`
+   * states intent, this reports what the fleet actually did with it. */
+  screenStatus: ScreenStatusModule;
   schedules: ResourceModule<Schedule, ScheduleCreate, ScheduleUpdate>;
   dayparts: ResourceModule<Daypart, DaypartCreate, DaypartUpdate>;
   playlists: ResourceModule<Playlist, PlaylistCreate, PlaylistUpdate>;
@@ -403,6 +465,7 @@ export function createApi(opts?: ApiClientOptions): WaiveoApi {
     auth: createAuthModule(client),
     scopeNodes: crud<ScopeNode, ScopeNodeCreate, ScopeNodeUpdate>(client, "/scope-nodes"),
     screens: screensModule(client),
+    screenStatus: screenStatusModule(client),
     schedules: crud<Schedule, ScheduleCreate, ScheduleUpdate>(client, "/schedules"),
     dayparts: crud<Daypart, DaypartCreate, DaypartUpdate>(client, "/dayparts"),
     playlists: crud<Playlist, PlaylistCreate, PlaylistUpdate>(client, "/playlists"),

@@ -636,6 +636,36 @@ func (c *Client) SendDeviceCandidates(body wire.DeviceCandidatesBody) error {
 	return nil
 }
 
+// SendScreenStatus sends one `screen.status` report: the relay's FULL current
+// view of what every screen behind it has been observed doing (parity row 5.8,
+// wire/screenstatus.go).
+//
+// One-way and uncorrelated, exactly like SendDeviceCandidates and for the same
+// reasons its doc gives — and, unlike SendPairingRedeemed, deliberately NOT
+// acknowledged: a lost status report loses nothing recomputable, because the
+// next one carries the whole truth again within seconds. Adding an ack would
+// buy durability for data with a ten-second shelf life at the cost of a
+// correlation table and a retry ledger.
+//
+// A nil Screens is normalized to an empty array before the frame is built. The
+// empty report is the one that CLEARS the app peer's view of a relay that no
+// longer knows of any screen, so dropping it to null would leave a console
+// showing screens the relay has forgotten — the same reasoning
+// SendDeviceCandidates applies to its own array, in the same place.
+func (c *Client) SendScreenStatus(body wire.ScreenStatusBody) error {
+	if body.Screens == nil {
+		body.Screens = []wire.ScreenStatusEntry{}
+	}
+	f, err := wire.NewFrame(wire.FrameTypeScreenStatus, ulid.New(), c.relayID, body)
+	if err != nil {
+		return fmt.Errorf("relayconn: SendScreenStatus: %w", err)
+	}
+	if err := c.send(f); err != nil {
+		return fmt.Errorf("relayconn: SendScreenStatus: send: %w", err)
+	}
+	return nil
+}
+
 // SendPairingRedeemed reports one pairing-grant redemption this relay performed
 // upstream (REL-124), as REL-124a's `pairing.redeemed {grant_id, redeemed_at}`.
 //

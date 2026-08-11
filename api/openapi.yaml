@@ -48,6 +48,14 @@ tags:
       placed under: DAT-004 lets a screen row hang off a node of any kind, so
       two screens may share one node and a screen may sit directly under a
       site. Worked fully.
+  - name: screen-status
+    description: >-
+      What the site's relays have OBSERVED each screen doing — when it last
+      pulled a program, acknowledged a Lease and reported a render, what it was
+      last handed, and whether an operator has pushed content to it out of band.
+      A read model of relay reports, not authored state: it has no revision, no
+      write operations, and it is not persisted, so it is empty until the relays
+      next report. Worked fully.
   - name: adopted-devices
     description: >-
       The adopted-device rows the app peer compiles into a relay's desired-state
@@ -2089,6 +2097,139 @@ paths:
           $ref: "#/components/responses/Conflict"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /screens/{screen_id}/now:
+    parameters:
+      - name: screen_id
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/Ulid"
+    put:
+      operationId: setScreenNow
+      summary: Show a cast or playlist on this screen now
+      description: >-
+        Installs a push-now override on the screen: it shows the named cast or
+        playlist instead of whatever its schedule resolves, until the override is
+        cleared. The override is durable desired state, not a live command — it
+        rides the next signed snapshot to the site's relays as a
+        `preempt`-priority screen program (`relay/1` REL-061, `player/1` PLY-108),
+        survives a relay restart or an app-peer outage, and outranks the relay's
+        own continuous schedule re-resolution while it stands.
+
+
+        Delivery is prompt but not instantaneous, and this operation reports
+        INTENT rather than delivery: persisting the override nudges every
+        connected relay (REL-057), and the screen adopts the new Lease on its
+        next ordinary program poll (~10 seconds, PLY-082) — interrupting whatever
+        it is showing rather than waiting for it to finish, because the Lease is
+        `preempt` (PLY-100/101). Read `/screen-status` for what the fleet has
+        actually observed.
+
+
+        Idempotent: pushing the same thing twice leaves one override, and pushing
+        something else replaces it. Exactly one of `cast_id`/`playlist_id` must be
+        set.
+      tags: [screens, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScreenNowRequest"
+      responses:
+        "200":
+          description: The override now in force.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScreenNow"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+    delete:
+      operationId: clearScreenNow
+      summary: Clear this screen's push-now override
+      description: >-
+        Removes the screen's push-now override, so it returns to whatever its
+        schedule resolves. Answers `204` whether or not an override was in force:
+        a DELETE's contract is the resulting state, and clearing twice reaches it
+        just as clearing once does.
+      tags: [screens, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "204":
+          description: No override is in force. No content.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  # ---------------------------------------------------------------------
+  # screen-status — what the relays have OBSERVED each screen doing.
+  # ---------------------------------------------------------------------
+  /screen-status:
+    get:
+      operationId: listScreenStatus
+      summary: List live screen status
+      description: >-
+        Returns one entry per authored screen row, joining what the row says with
+        what the site's relays have observed of it and whether an operator
+        currently has a push-now override on it.
+
+
+        Every age is milliseconds before this response, and `-1` means the
+        contact has NEVER been observed — a distinct state from a large age, and
+        the one a screen that was never switched on is in. `reachability` applies
+        a single threshold (`live_window_ms`) to `last_pull_age_ms`; the raw ages
+        are published so a consumer can draw its own line.
+
+
+        `reachability` is deliberately never "offline". This platform cannot
+        distinguish a screen that is switched off from one whose network dropped,
+        from one whose player crashed, from one that was never paired — and each
+        sends an operator somewhere different. `report_age_ms` is what separates
+        "this screen stopped talking to its relay" from "this relay stopped
+        talking to us": when a relay disconnects, every screen behind it ages
+        together and `report_age_ms` grows with them.
+      tags: [screen-status, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/CursorParam"
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/SelectorParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: A page of screen statuses.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScreenStatusListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
   # ---------------------------------------------------------------------
   # adopted-devices — the rows relay/1 REL-063's device_inventory is compiled from.
   # ---------------------------------------------------------------------
@@ -4266,6 +4407,129 @@ components:
           x-go-type: "*string"
         labels:
           $ref: "#/components/schemas/LabelMap"
+
+    ScreenNowRequest:
+      type: object
+      description: >-
+        What to show on a screen right now. Exactly one of `cast_id` and
+        `playlist_id` — a push names one thing to show, and a server that
+        resolved "both" by precedence would turn a client bug into the wrong
+        content on a wall.
+      additionalProperties: false
+      properties:
+        cast_id:
+          $ref: "#/components/schemas/Ulid"
+        playlist_id:
+          $ref: "#/components/schemas/Ulid"
+
+    ScreenNow:
+      type: object
+      description: >-
+        A screen's active push-now override. `source` names which id member is
+        populated, so a consumer switches on one closed value rather than
+        inferring intent from which string happens to be empty.
+      required: [screen_id, source, pushed_at]
+      additionalProperties: false
+      properties:
+        screen_id:
+          $ref: "#/components/schemas/Ulid"
+        source:
+          type: string
+          enum: [cast, playlist]
+        cast_id:
+          $ref: "#/components/schemas/Ulid"
+        playlist_id:
+          $ref: "#/components/schemas/Ulid"
+        pushed_at:
+          $ref: "#/components/schemas/Timestamp"
+
+    ScreenStatus:
+      type: object
+      description: >-
+        One screen's authored identity joined to what the relays have observed of
+        it. See `listScreenStatus` for how the ages are to be read and why
+        `reachability` never says "offline".
+      required:
+        [screen_id, reachability, live_window_ms, paired, last_pull_age_ms,
+         last_ack_age_ms, last_render_start_age_ms, report_age_ms, content_count]
+      additionalProperties: false
+      properties:
+        screen_id:
+          $ref: "#/components/schemas/Ulid"
+        name:
+          type: string
+          description: The screen row's own display name.
+        scope_node:
+          $ref: "#/components/schemas/Ulid"
+        relay_id:
+          type: string
+          description: The relay whose report this status came from; absent when no relay has reported this screen.
+        reachability:
+          type: string
+          enum: [live, stale, never_seen]
+          description: >-
+            `live` — the relay heard from this screen within `live_window_ms`.
+            `stale` — contact was made at some point, but not recently.
+            `never_seen` — no relay has ever observed this screen pull a program.
+        live_window_ms:
+          type: integer
+          description: >-
+            The staleness threshold `reachability` was decided by, published so a
+            consumer that wants a different line can draw it from the raw ages.
+        paired:
+          type: boolean
+          description: Whether a relay currently holds a live channel-token session for this screen.
+        last_pull_age_ms:
+          type: integer
+          description: Milliseconds since this screen last pulled its program, or `-1` if it never has.
+        last_ack_age_ms:
+          type: integer
+          description: Milliseconds since this screen last acknowledged a Lease, or `-1` if it never has.
+        last_render_start_age_ms:
+          type: integer
+          description: >-
+            Milliseconds since this screen last reported beginning to present a
+            content item (`player/1` PLY-110) — the only field here that is
+            evidence of playback rather than of intent — or `-1` if it never has.
+        report_age_ms:
+          type: integer
+          description: >-
+            Milliseconds since the relay report this status came from arrived, or
+            `-1` when no report has. It is what distinguishes a screen that
+            stopped talking to its relay from a relay that stopped talking to
+            this app peer.
+        program_revision:
+          type: string
+          description: The `program_revision` this screen was last handed (or, if it has never pulled, the one waiting for it).
+        priority:
+          type: string
+          enum: [scheduled, preempt]
+          description: That program's `player/1` PLY-108 priority — `preempt` is an operator's push-now takeover.
+        display:
+          type: string
+          enum: [content, blank]
+        content_count:
+          type: integer
+          description: How many content items that program carried.
+        render_asset_ref:
+          type: string
+          description: The asset this screen last reported actually putting on screen.
+        now:
+          allOf:
+            - $ref: "#/components/schemas/ScreenNow"
+          description: The operator's active push-now override, absent when the screen is following its schedule.
+
+    ScreenStatusListResponse:
+      type: object
+      required: [items, cursor]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScreenStatus"
+        cursor:
+          $ref: "#/components/schemas/Cursor"
 
     PairingCodeResult:
       type: object

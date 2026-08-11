@@ -206,6 +206,39 @@ func terminalDefault() program {
 // at a higher generation silently refuse every other screen's writes at the
 // generation they were legitimately resolved for. Screens do not supersede one
 // another; only a later generation of the SAME screen does.
+//
+// # The priority fence: a preempt program is not overwritten within its generation
+//
+// WITHIN one generation, a `scheduled` write never replaces a `preempt` one.
+// This is what makes a push-now override (an operator's "show this here now",
+// carried as a preempt `screen_programs` entry — snapshot.overrideProgram) hold
+// for longer than half a minute.
+//
+// The hazard is entirely internal to a single generation apply, which is why the
+// generation fence above cannot see it. An apply installs the generation's
+// app-authored baseline first and then lets the schedule resolvers write over
+// it, deliberately, both stamped with the SAME generation (scheduleDriver.apply's
+// own ordering note) — and the resolvers then keep re-resolving on their own
+// 30-second ticker at that same generation for as long as the generation stands
+// (schedulehost.Resolver.Loop). Without this fence, the very first tick after
+// every push silently put the schedule back, and the console would have shown a
+// successful push against a screen that reverted within thirty seconds.
+//
+// It is expressed as a priority comparison, not as an "is this an override"
+// flag, because PLY-108 already gives the two classes an ordering and this IS
+// that ordering: `preempt` is the deliberately-invoked takeover, `scheduled` is
+// ordinary resolution, and ordinary resolution does not get to cancel a
+// takeover. Every existing producer keeps working unchanged — schedulehost
+// writes `scheduled` exclusively, so no schedule resolution is ever fenced by
+// another schedule resolution.
+//
+// A NEWER generation always wins, whatever either priority is, and that is the
+// clearing mechanism: an operator clearing the override produces a new
+// generation whose baseline for that screen is `scheduled` again, at a
+// generation strictly greater than the preempt one, so it installs and the
+// resolvers resume. A preempt program can also be replaced by another preempt
+// program within its own generation, so a second push to the same screen is not
+// blocked by the first.
 func (s *Server) SetProgram(generation int64, screenID, programRevision, priority, display string, content []wire.LeaseContent) {
 	if screenID == "" {
 		return
@@ -214,6 +247,12 @@ func (s *Server) SetProgram(generation int64, screenID, programRevision, priorit
 	defer s.mu.Unlock()
 	if generation < s.programGens[screenID] {
 		return // stale generation's late write — never revert a newer generation's served program for THIS screen (REL-052/056).
+	}
+	if generation == s.programGens[screenID] &&
+		s.programs[screenID].Priority == PriorityPreempt && priority != PriorityPreempt {
+		// The PRIORITY fence, sitting inside the generation fence (see this
+		// method's own doc section below).
+		return
 	}
 	s.programGens[screenID] = generation
 	s.programs[screenID] = program{
@@ -542,6 +581,10 @@ func (s *Server) handleProgram(w http.ResponseWriter, r *http.Request) {
 	// acknowledged.
 	s.mu.Lock()
 	s.rememberIssuedLeaseLocked(screenID, lease.LeaseID)
+	// Record the pull for the screen-status surface (screenstatus.go), under the
+	// same lock and at the same instant the Lease was stamped with — so a status
+	// report can never claim a screen pulled at a time no Lease was issued.
+	s.noteProgramPullLocked(screenID, nowMs, lease)
 	s.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, LeaseResponse{Lease: lease, Signature: signature})
@@ -755,6 +798,10 @@ func (s *Server) handleLeaseAck(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Unlock()
 
+	// The strongest liveness evidence short of a render report: the screen
+	// received, parsed and accepted what it was handed (screenstatus.go).
+	s.noteLeaseAck(screenID)
+
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -796,6 +843,11 @@ func (s *Server) handleRenderStart(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.renderStarts = appendBounded(s.renderStarts, req)
 	s.mu.Unlock()
+
+	// The one observation in the screen-status record that is evidence of
+	// something being ON the screen rather than of the screen having been told
+	// what to show (screenstatus.go).
+	s.noteRenderStart(screenID, req.AssetRef)
 
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
