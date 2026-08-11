@@ -44,11 +44,17 @@ function statusRow(over: Partial<ScreenStatus> = {}): ScreenStatus {
     // that window was withdrawn) is a fixture that stops describing the system.
     live_window_ms: 52_000,
     content_transfer_window_ms: 172_000,
+    // The third line the server draws `fetching` at: at most this many pulls may
+    // be outstanding. Without it a screen that answers every pull and never
+    // acknowledges reads `fetching` forever, which is what it did.
+    fetching_max_unacked_pulls: 2,
     paired: true,
     last_pull_age_ms: 4_000,
     // The ack ANSWERS the pull, so it is the fresher of the two. An ack older
     // than the pull is what the server reads as a transfer in progress.
     last_ack_age_ms: 3_900,
+    // Nothing outstanding: this row's ack answered its pull.
+    unacked_pulls: 0,
     last_render_start_age_ms: 4_500,
     report_age_ms: 2_000,
     program_revision: "rev-1",
@@ -158,6 +164,51 @@ describe("nowPlayingLabel", () => {
     expect(
       nowPlayingLabel(statusRow({ reachability: "never_seen", program_revision: "rev-1" })),
     ).toBe("Waiting to collect its program");
+  });
+
+  it("does not claim a screen fetching its FIRST program is still showing the last", () => {
+    // Never rendered anything: `last_render_start_age_ms` is the never sentinel
+    // and there is no `render_asset_ref`. The wall is blank and the screen is
+    // collecting its first content — "still showing the last" describes a screen
+    // that does not exist, and sends an operator away from a genuinely blank TV.
+    //
+    // `content_count` is 3, deliberately: it is the count of the Lease being
+    // collected RIGHT NOW, so it is at its most positive exactly here. A guard
+    // that accepted it would still be wrong.
+    const firstEver = withoutRender({
+      reachability: "fetching",
+      last_render_start_age_ms: -1,
+      unacked_pulls: 1,
+      content_count: 3,
+    });
+    expect(nowPlayingLabel(firstEver)).toBe("Collecting its first content (nothing on screen yet)");
+  });
+
+  it("still says a screen that HAS rendered keeps showing it through a transfer", () => {
+    // The other side of the same guard — never-wipe means the outgoing program
+    // stays on the wall for the whole download, and saying so is the difference
+    // between an operator waiting and an operator driving to the site.
+    expect(
+      nowPlayingLabel(
+        statusRow({
+          reachability: "fetching",
+          unacked_pulls: 1,
+          render_asset_ref: "sha256:previous",
+          last_render_start_age_ms: 90_000,
+        }),
+      ),
+    ).toBe("Downloading new content (still showing the last)");
+  });
+
+  it("lets a scheduled blank outrank the transfer state", () => {
+    // `fetching` was checked FIRST and pre-empted this, so a screen whose
+    // program is display:blank was described as downloading content — work a
+    // blank program does not involve.
+    expect(
+      nowPlayingLabel(
+        statusRow({ reachability: "fetching", display: "blank", content_count: 0, unacked_pulls: 1 }),
+      ),
+    ).toBe("Blank (scheduled off)");
   });
 });
 

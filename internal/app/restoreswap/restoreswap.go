@@ -39,12 +39,18 @@
 //
 // # A store is a FILE SET, never one file
 //
-// The store this swaps runs in SQLite's WAL mode (internal/app/store's
-// `_pragma=journal_mode(WAL)`), and a WAL-mode database on disk is up to three
-// files: `<store>`, `<store>-wal` and `<store>-shm`. A clean shutdown
-// checkpoints and unlinks the two companions, so an orderly box shows one file
-// — which is exactly why treating the swap as a single-file rename survived
-// review and every test: the tests closed their stores.
+// A store on disk is up to FOUR files: `<store>`, plus every companion SQLite
+// derives from that path — `-wal`, `-shm` and `-journal`, the canonical list
+// being internal/shared/secretfile's SQLiteSidecarSuffixes. The live store runs
+// in WAL mode (internal/app/store's `_pragma=journal_mode(WAL)`) and so grows
+// the first two; a restore's STAGED bytes are `VACUUM INTO` output, which is a
+// rollback-mode database, and rollback mode grows the third. Both modes appear
+// in one swap, which is the whole reason this package reasons about the set and
+// not about a mode.
+//
+// A clean shutdown checkpoints and unlinks the companions, so an orderly box
+// shows one file — which is exactly why treating the swap as a single-file
+// rename survived review and every test: the tests closed their stores.
 //
 // The box a restore is FOR did not shut down cleanly. That is the whole reason
 // somebody is restoring. On that box `<live>-wal` holds committed frames of the
@@ -63,15 +69,17 @@
 //     for carrying them (see Adopt). It is an invariant established at the only
 //     place that can establish it, and it is what the next rule rests on.
 //   - THE LIVE SLOT'S COMPANIONS ARE ALWAYS STALE AT ADOPT TIME. Given the rule
-//     above, anything named `<live>-wal`/`<live>-shm` when Adopt runs belongs to
-//     the store being replaced, so Adopt clears the slot unconditionally before
-//     moving the staged store in.
+//     above, ANY companion in sidecarSuffixes sitting beside `<live>` when Adopt
+//     runs belongs to the store being replaced, so Adopt clears the slot
+//     unconditionally before moving the staged store in.
 //
-// The pre-restore copy gets the live store's WAL CARRIED WITH IT rather than
-// deleted, for the mirror-image reason: `<previous>` without `<previous>-wal`
-// is a database rewound to its last checkpoint, so the safety copy an operator
-// falls back to would be silently missing whatever the box did most recently —
-// the same defect pointed the other way.
+// The pre-restore copy gets the live store's DATA-BEARING companions CARRIED
+// WITH IT rather than deleted (carriedSuffixes: `-wal` and `-journal`), for the
+// mirror-image reason: `<previous>` without them is a database rewound to its
+// last checkpoint, or one nobody can open cleanly, so the safety copy an
+// operator falls back to would be silently missing whatever the box did most
+// recently — the same defect pointed the other way. `-shm` is left behind
+// because it is a rebuildable index and a stale one is worse than none.
 package restoreswap
 
 import (
@@ -80,6 +88,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+
+	"github.com/maaxton/waiveo-next/internal/shared/secretfile"
 )
 
 // File names, all siblings of the live store so a single directory holds the
@@ -90,17 +100,20 @@ const (
 	markerSuffix   = ".restore-pending"
 )
 
-// sidecarSuffixes are every companion file SQLite can leave beside a database:
+// sidecarSuffixes is every companion file SQLite can leave beside a database:
 //
 //	-wal      COMMITTED TRANSACTIONS not yet in the database file (WAL mode)
 //	-shm      a rebuildable index over the -wal
 //	-journal  a ROLLBACK journal (rollback mode), whose presence tells SQLite the
 //	          database was interrupted mid-transaction and must be rolled back
 //
-// They are named here rather than in internal/app/store because this package is
-// the one that MOVES store files around, and a mover that knows about only some
-// of the files is the defect this list exists to prevent. The names are SQLite's
-// own derivation (database path + suffix) and are not configurable.
+// It is internal/shared/secretfile's list, not a second copy. This package's
+// first version DID own one, on the reasoning that a mover that knows about only
+// some of the files is the defect the list exists to prevent — which is true and
+// is exactly why the list must not be per-consumer. secretfile kept its own
+// `{-wal, -shm}` for chmodding the same companions, so when `-journal` was added
+// here it was added in one place of two and the other went on protecting two
+// files out of three. One fact about SQLite, one declaration.
 //
 // # Why -journal is on this list even though the live store runs in WAL mode
 //
@@ -120,12 +133,11 @@ const (
 // moves in. TestAdoptClearsEVERYSidecarBeforeTheStagedStoreMovesIn drives the
 // list rather than naming the suffixes, so a fourth companion is one edit here.
 const (
-	walSuffix     = "-wal"
-	shmSuffix     = "-shm"
-	journalSuffix = "-journal"
+	walSuffix     = secretfile.SQLiteWALSuffix
+	journalSuffix = secretfile.SQLiteJournalSuffix
 )
 
-var sidecarSuffixes = [...]string{walSuffix, shmSuffix, journalSuffix}
+var sidecarSuffixes = secretfile.SQLiteSidecarSuffixes
 
 // carriedSuffixes are the companions that go WITH a database when it is moved
 // aside, because they hold state the database file alone does not: `-wal` holds

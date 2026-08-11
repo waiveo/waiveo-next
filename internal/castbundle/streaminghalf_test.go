@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"strings"
 	"testing"
 
@@ -25,66 +26,97 @@ import (
 // A behavioural test cannot check that: it can only prove the refusals that
 // exist today do not fire late. The property that has to hold is about refusals
 // that do not exist yet, so the test reads the code.
+//
+// # The correction of this round — read this before adding anything to a list
+//
+// The first version of this fence had three holes, and all three were the same
+// hole: it ENUMERATED BY HAND the very sets whose hand-enumeration is the defect
+// the round exists to close.
+//
+//   - It listed the five refusal sentinels in a `var` in this file. A SIXTH
+//     sentinel added to castbundle.go's own `var` block was invisible to it —
+//     which is precisely "a hand-copied subset of this package's refusals,
+//     silently incomplete", the original defect, relocated into its own fence.
+//   - It counted only `return`s with results, so a NAMED result plus a bare
+//     `return` carried a value out invisibly. Combined with the point above,
+//     a refusal could be written into Stream in the same shape as all the
+//     others and the fence stayed green.
+//   - It walked only Stream's OWN body, so moving a refusal one call deep into
+//     a same-package helper — the most ordinary refactor there is — reopened
+//     the zero-byte `.cast` with both packages still testing `ok`.
+//
+// So nothing below is enumerated that can be derived. The refusal sentinels are
+// read out of this package's syntax tree, the error TYPES a refusal can be
+// constructed as are found by their `Error() string` method, and the walk
+// follows same-package calls out of Stream one level deep. The only names still
+// written down are `errors.New` and `fmt.Errorf`, which are facts about the
+// language rather than facts about this package: this package's own minter
+// (`refuse`) is reached by the call walk, and would still be reached if it were
+// renamed.
 
-// refusalSentinels are the error values this package refuses with. None of them
-// may be reachable from the streaming half.
-var refusalSentinels = []string{"ErrTooLarge", "ErrNotABundle", "ErrDamaged", "ErrAssetMismatch", "ErrIncomplete"}
-
-// errorMinters are the ways new error values get made. The streaming half may
-// PROPAGATE an error out of the writer it was handed; it may not invent one,
-// because an invented error at that point is a refusal nobody can act on.
-var errorMinters = []string{"Errorf", "New", "refuse"}
+// stdlibErrorMinters are the two ways the standard library makes an error value.
+// They are the ONLY hand-written names left in this fence, and they are safe to
+// write down because they cannot change when this package does.
+//
+// This package's own minter is deliberately NOT listed. `refuse` builds a
+// *Refusal, so the call walk below reaches it through Stream and flags the
+// composite literal inside it — by shape, not by name — which keeps working when
+// somebody renames it.
+var stdlibErrorMinters = []string{"Errorf", "New"}
 
 // TestNothingCanBeRefusedOnceTheBundleIsStreaming reads (*Plan).Stream's own
-// syntax tree and fails if it grows the ability to say no.
+// syntax tree — and the tree of every same-package function it calls — and fails
+// if the streaming half grows the ability to say no.
 //
-// Three checks, each failing for a different edit:
+// Four checks, each failing for a different edit:
 //
-//   - ONE value-returning statement. A second one is how a refusal gets added:
-//     the natural way to write `if len(x) > cap { return fmt.Errorf(...) }` is
-//     an early return, and there is no early return here to imitate. (The bare
-//     `return` inside the write closure carries no value and cannot refuse
-//     anything, so it is not counted.)
-//   - No refusal sentinel. A refusal expressed by wrapping ErrTooLarge is the
-//     exact shape all five of NewPlan's refusals have.
-//   - No error minted. fmt.Errorf, errors.New and this package's own refuse()
-//     are the only ways to make one; the single legal error here came out of
-//     the caller's io.Writer.
+//   - ONE value-returning statement in Stream. A second one is how a refusal
+//     gets added: the natural way to write `if len(x) > cap { return
+//     fmt.Errorf(...) }` is an early return, and there is no early return here
+//     to imitate. (The bare `return` inside the write closure carries no value
+//     and cannot refuse anything, so it is not counted.)
+//   - NO NAMED RESULT on Stream. A named result turns `return` into a
+//     value-returning statement that the check above cannot see, which is half
+//     of how a refusal was smuggled past the previous version of this fence.
+//   - No refusal sentinel, anywhere Stream can reach in one call. A refusal
+//     expressed by wrapping ErrTooLarge is the exact shape all six of NewPlan's
+//     refusals have — and the sentinel set is DERIVED from castbundle.go, so a
+//     seventh one added tomorrow is covered without editing this file.
+//   - No error minted, anywhere Stream can reach in one call. fmt.Errorf,
+//     errors.New and constructing one of this package's own error types are the
+//     ways to make one; the single legal error here came out of the caller's
+//     io.Writer.
 //
 // If a future change genuinely needs a refusal at stream time, this test is the
 // conversation: there is no such thing, because the response header is already
 // gone. The refusal belongs in NewPlan, which every calling side already runs.
 func TestNothingCanBeRefusedOnceTheBundleIsStreaming(t *testing.T) {
-	fn := findMethod(t, "internal/castbundle/castbundle.go", "Plan", "Stream")
+	pkg := parseCastbundlePackage(t)
+	sentinels := pkg.refusalSentinels(t)
+	errorTypes := pkg.errorTypes()
+	t.Logf("derived from the package: %d refusal sentinel(s) %v; %d error type(s) %v",
+		len(sentinels), sentinels, len(errorTypes), errorTypes)
+
+	fn := pkg.find(t, "Plan", "Stream")
+
+	// A named result makes `return` carry a value. Rejected outright rather than
+	// counted, because the shape has no use here — Stream accumulates one
+	// `failure` and hands it back — and allowing it would mean this fence had to
+	// reason about which bare returns are refusals.
+	if named := namedResultsOf(fn); len(named) > 0 {
+		t.Errorf("(*Plan).Stream declares the NAMED result(s) %v.\n"+
+			"A named result turns every bare `return` into a value-returning statement, which is how a refusal gets out of here "+
+			"without adding a return this fence can count. Declare the result unnamed and hand back the accumulated writer error.", named)
+	}
 
 	var returns []*ast.ReturnStmt
-	var sentinels []string
-	var minted []string
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		switch v := n.(type) {
-		case *ast.ReturnStmt:
+		if v, ok := n.(*ast.ReturnStmt); ok && len(v.Results) > 0 {
 			// Only value-returning statements can carry a refusal out.
-			if len(v.Results) > 0 {
-				returns = append(returns, v)
-			}
-		case *ast.Ident:
-			for _, s := range refusalSentinels {
-				if v.Name == s {
-					sentinels = append(sentinels, s)
-				}
-			}
-		case *ast.CallExpr:
-			if name := calleeName(v.Fun); name != "" {
-				for _, m := range errorMinters {
-					if name == m {
-						minted = append(minted, name)
-					}
-				}
-			}
+			returns = append(returns, v)
 		}
 		return true
 	})
-
 	if len(returns) != 1 {
 		t.Errorf("(*Plan).Stream has %d value-returning statements, want exactly 1.\n"+
 			"A second return is how a refusal is added to the streaming half — and a refusal there reaches an operator "+
@@ -92,17 +124,29 @@ func TestNothingCanBeRefusedOnceTheBundleIsStreaming(t *testing.T) {
 			"Put it in NewPlan: every calling side already runs that, and the export route turns its error into a Problem document.",
 			len(returns))
 	}
-	if len(sentinels) > 0 {
-		t.Errorf("(*Plan).Stream references the refusal sentinel(s) %v. Refusals belong in NewPlan, before any header is committed.", sentinels)
-	}
-	if len(minted) > 0 {
-		t.Errorf("(*Plan).Stream mints an error with %v. The only error this half may return is the one its io.Writer gave it; "+
-			"anything else is a refusal arriving after the response started.", minted)
-	}
 	if len(returns) == 1 {
 		if _, ok := returns[0].Results[0].(*ast.Ident); !ok {
 			t.Errorf("(*Plan).Stream's single return is not a plain identifier; it must hand back the accumulated writer error and nothing else")
 		}
+	}
+
+	// The reachable set: Stream, plus every same-package function it calls. One
+	// level, because one level is where "extract this check to a helper" lands
+	// and a helper that calls a helper has to pass through it.
+	reach := pkg.reachableFrom(t, fn, "(*Plan).Stream")
+	for _, scope := range reach {
+		found, minted := scope.refusalsIn(sentinels, errorTypes)
+		if len(found) > 0 {
+			t.Errorf("%s references the refusal sentinel(s) %v. Refusals belong in NewPlan, before any header is committed.%s",
+				scope.what, found, scope.viaNote())
+		}
+		if len(minted) > 0 {
+			t.Errorf("%s mints an error with %v. The only error the streaming half may return is the one its io.Writer gave it; "+
+				"anything else is a refusal arriving after the response started.%s", scope.what, minted, scope.viaNote())
+		}
+	}
+	if len(reach) == 1 {
+		t.Logf("(*Plan).Stream calls no same-package function; the transitive half of this fence is vacuous today, which is the intended shape")
 	}
 }
 
@@ -110,7 +154,7 @@ func TestNothingCanBeRefusedOnceTheBundleIsStreaming(t *testing.T) {
 // is here because the first one is satisfiable by deleting every refusal in the
 // package. It asserts NewPlan is where they live.
 func TestNewPlanStillHoldsTheRefusals(t *testing.T) {
-	fn := findMethod(t, "internal/castbundle/castbundle.go", "", "NewPlan")
+	fn := parseCastbundlePackage(t).find(t, "", "NewPlan")
 	refusals := 0
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
@@ -192,39 +236,345 @@ func tinyAsset(i int) []byte {
 	return []byte{byte(i), byte(i >> 8), byte(i >> 16)}
 }
 
-// findMethod parses a file in this repository and returns the named function or
-// method declaration, failing with an instruction rather than a nil pointer.
-func findMethod(t *testing.T, relPath, receiverType, name string) *ast.FuncDecl {
+// ---- the package's own syntax tree ------------------------------------------
+
+// castbundlePackage is every non-test source file of this package, parsed once,
+// with its top-level functions indexed.
+//
+// The WHOLE package rather than one file, because both holes this fence had to
+// close are about things a single file's declarations cannot answer: which
+// sentinels exist (any file may declare one) and where a call goes (any file may
+// define the callee).
+type castbundlePackage struct {
+	files []*ast.File
+	// funcs is keyed by funcKey — "" receiver for a plain function, "Type.Name"
+	// for a method — so a call to `refuse()` and a call to `p.something()`
+	// resolve through the same map.
+	funcs map[string]*ast.FuncDecl
+}
+
+func funcKey(receiverType, name string) string {
+	if receiverType == "" {
+		return name
+	}
+	return receiverType + "." + name
+}
+
+// parseCastbundlePackage parses this package's non-test files. The test binary
+// runs in the package directory, so "." is that directory.
+func parseCastbundlePackage(t *testing.T) *castbundlePackage {
 	t.Helper()
-	// The test binary runs in the package directory; the path is stated relative
-	// to the module root so the instruction below names something a human can
-	// open.
-	path := relPath[strings.LastIndex(relPath, "/")+1:]
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+	entries, err := os.ReadDir(".")
 	if err != nil {
-		t.Fatalf("parsing %s: %v — if this file moved, MOVE THIS FENCE, do not delete it", relPath, err)
+		t.Fatalf("reading the package directory: %v — if this package moved, MOVE THIS FENCE, do not delete it", err)
 	}
-	for _, decl := range file.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Name.Name != name {
+	pkg := &castbundlePackage{funcs: map[string]*ast.FuncDecl{}}
+	fset := token.NewFileSet()
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		if receiverType == "" {
-			if fn.Recv == nil {
-				return fn
+		file, err := parser.ParseFile(fset, name, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("parsing %s: %v — if this file moved, MOVE THIS FENCE, do not delete it", name, err)
+		}
+		pkg.files = append(pkg.files, file)
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok {
+				continue
 			}
-			continue
-		}
-		if fn.Recv == nil || len(fn.Recv.List) != 1 {
-			continue
-		}
-		if recvTypeName(fn.Recv.List[0].Type) == receiverType {
-			return fn
+			recv := ""
+			if fn.Recv != nil && len(fn.Recv.List) == 1 {
+				recv = recvTypeName(fn.Recv.List[0].Type)
+			}
+			pkg.funcs[funcKey(recv, fn.Name.Name)] = fn
 		}
 	}
-	t.Fatalf("no %s in %s; the fence around the streaming half can no longer be applied", name, relPath)
-	return nil
+	if len(pkg.files) == 0 {
+		t.Fatal("no non-test source files found in the package directory; the fence around the streaming half can no longer be applied")
+	}
+	return pkg
+}
+
+// find returns the named function or method, failing with an instruction rather
+// than a nil pointer.
+func (p *castbundlePackage) find(t *testing.T, receiverType, name string) *ast.FuncDecl {
+	t.Helper()
+	fn, ok := p.funcs[funcKey(receiverType, name)]
+	if !ok {
+		t.Fatalf("no %s in this package; the fence around the streaming half can no longer be applied", funcKey(receiverType, name))
+	}
+	return fn
+}
+
+// refusalSentinels is the set of package-level error values this package refuses
+// with, READ OUT OF THE PACKAGE rather than listed here.
+//
+// A package-level `var` whose initialiser mints an error is a refusal sentinel:
+// that is the shape all six of castbundle.go's have, and it is the shape a
+// seventh will have. Deriving it is the point — the previous version of this
+// fence carried the five names of the day in a slice, so a sentinel added to
+// castbundle.go's `var` block was one this test had never heard of, which is the
+// hand-maintained-subset defect the whole round exists to close.
+//
+// It FAILS on an empty result. A derivation that silently finds nothing is a
+// fence that passes for the wrong reason, and this package is known to have at
+// least six (TestNewPlanStillHoldsTheRefusals will not let it have fewer).
+func (p *castbundlePackage) refusalSentinels(t *testing.T) []string {
+	t.Helper()
+	var out []string
+	types := p.errorTypes()
+	for _, file := range p.files {
+		for _, decl := range file.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok || gen.Tok != token.VAR {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for i, name := range vs.Names {
+					if i < len(vs.Values) && mintsAnError(vs.Values[i], types) {
+						out = append(out, name.Name)
+					}
+				}
+			}
+		}
+	}
+	if len(out) == 0 {
+		t.Fatal("no refusal sentinels could be derived from this package's syntax tree.\n" +
+			"This package refuses with at least six of them, so finding none means the derivation has stopped matching how they " +
+			"are declared — and a fence whose input set is empty passes everything. Fix the derivation; do not go back to listing " +
+			"the names, which is the defect this round closed.")
+	}
+	return out
+}
+
+// errorTypes is every type this package declares that has an `Error() string`
+// method — i.e. every type a refusal can be CONSTRUCTED as.
+//
+// Derived rather than listed for the same reason the sentinels are. It is what
+// lets this fence see `refuse` as a minter without knowing its name: `refuse`
+// returns a &Refusal{…}, Refusal has an Error method, so building one is minting
+// an error wherever it happens.
+func (p *castbundlePackage) errorTypes() []string {
+	var out []string
+	for _, file := range p.files {
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Name.Name != "Error" || fn.Recv == nil || len(fn.Recv.List) != 1 {
+				continue
+			}
+			if fn.Type.Params != nil && len(fn.Type.Params.List) != 0 {
+				continue
+			}
+			if name := recvTypeName(fn.Recv.List[0].Type); name != "" {
+				out = append(out, name)
+			}
+		}
+	}
+	return out
+}
+
+// scope is one function body the fence has to be satisfied about, plus how it
+// was reached, so a failure names the refactor that introduced it.
+type scope struct {
+	what string
+	via  string // "" for Stream itself
+	body *ast.BlockStmt
+}
+
+func (s scope) viaNote() string {
+	if s.via == "" {
+		return ""
+	}
+	return "\nIt is reached from " + s.via + ", which is the same thing: a refusal one call deep still fires after the response " +
+		"header is committed. Extracting a check into a helper does not move it to a phase where it can be reported."
+}
+
+// refusalsIn reports the refusal sentinels this scope references and the ways it
+// mints a new error.
+func (s scope) refusalsIn(sentinels, errorTypes []string) (found, minted []string) {
+	ast.Inspect(s.body, func(n ast.Node) bool {
+		switch v := n.(type) {
+		case *ast.Ident:
+			for _, name := range sentinels {
+				if v.Name == name {
+					found = append(found, name)
+				}
+			}
+		case *ast.CallExpr, *ast.CompositeLit:
+			if m := mintDescription(v.(ast.Expr), errorTypes); m != "" {
+				minted = append(minted, m)
+			}
+		}
+		return true
+	})
+	return found, minted
+}
+
+// reachableFrom is fn's own body plus the body of every same-package function it
+// calls — ONE level, which is where "extract this check to a helper" lands.
+//
+// Two call shapes resolve, and they are the two a refactor produces: a bare
+// `helper()` naming a package function, and `p.helper()` naming a method on the
+// receiver's own type. Names bound INSIDE fn are excluded, so the `write := func
+// (…)` closure in Stream is not mistaken for a package function that happens to
+// share its name.
+func (p *castbundlePackage) reachableFrom(t *testing.T, fn *ast.FuncDecl, what string) []scope {
+	t.Helper()
+	out := []scope{{what: what, body: fn.Body}}
+	local := localNamesOf(fn)
+	receiver := ""
+	if fn.Recv != nil && len(fn.Recv.List) == 1 && len(fn.Recv.List[0].Names) == 1 {
+		receiver = fn.Recv.List[0].Names[0].Name
+	}
+	receiverType := ""
+	if fn.Recv != nil && len(fn.Recv.List) == 1 {
+		receiverType = recvTypeName(fn.Recv.List[0].Type)
+	}
+
+	seen := map[string]bool{}
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		var key string
+		switch f := call.Fun.(type) {
+		case *ast.Ident:
+			if local[f.Name] {
+				return true
+			}
+			key = funcKey("", f.Name)
+		case *ast.SelectorExpr:
+			x, ok := f.X.(*ast.Ident)
+			if !ok || receiver == "" || x.Name != receiver {
+				return true
+			}
+			key = funcKey(receiverType, f.Sel.Name)
+		default:
+			return true
+		}
+		callee, ok := p.funcs[key]
+		if !ok || callee.Body == nil || seen[key] {
+			return true
+		}
+		seen[key] = true
+		out = append(out, scope{what: key, via: what, body: callee.Body})
+		return true
+	})
+	return out
+}
+
+// localNamesOf is every identifier fn binds itself — parameters, results,
+// receiver, `:=` targets, `var`/`const` declarations and range variables — so a
+// call through one of them is never resolved against the package's functions.
+func localNamesOf(fn *ast.FuncDecl) map[string]bool {
+	local := map[string]bool{}
+	addFields := func(fl *ast.FieldList) {
+		if fl == nil {
+			return
+		}
+		for _, f := range fl.List {
+			for _, n := range f.Names {
+				local[n.Name] = true
+			}
+		}
+	}
+	addFields(fn.Recv)
+	addFields(fn.Type.Params)
+	addFields(fn.Type.Results)
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		switch v := n.(type) {
+		case *ast.AssignStmt:
+			if v.Tok == token.DEFINE {
+				for _, lhs := range v.Lhs {
+					if id, ok := lhs.(*ast.Ident); ok {
+						local[id.Name] = true
+					}
+				}
+			}
+		case *ast.RangeStmt:
+			if v.Tok == token.DEFINE {
+				for _, e := range []ast.Expr{v.Key, v.Value} {
+					if id, ok := e.(*ast.Ident); ok {
+						local[id.Name] = true
+					}
+				}
+			}
+		case *ast.GenDecl:
+			for _, spec := range v.Specs {
+				if vs, ok := spec.(*ast.ValueSpec); ok {
+					for _, n := range vs.Names {
+						local[n.Name] = true
+					}
+				}
+			}
+		case *ast.FuncLit:
+			addFields(v.Type.Params)
+			addFields(v.Type.Results)
+		}
+		return true
+	})
+	return local
+}
+
+// mintsAnError reports whether expr makes a NEW error value.
+func mintsAnError(expr ast.Expr, errorTypes []string) bool {
+	return mintDescription(expr, errorTypes) != ""
+}
+
+// mintDescription names how expr mints an error, or "" if it does not.
+//
+// Two shapes: a call to one of the standard library's error constructors, and a
+// composite literal of a type this package gave an Error method to. The second
+// is what makes `refuse` visible without naming it.
+func mintDescription(expr ast.Expr, errorTypes []string) string {
+	switch v := expr.(type) {
+	case *ast.CallExpr:
+		name := calleeName(v.Fun)
+		for _, m := range stdlibErrorMinters {
+			if name == m {
+				return name
+			}
+		}
+	case *ast.CompositeLit:
+		lit := v.Type
+		if star, ok := lit.(*ast.StarExpr); ok {
+			lit = star.X
+		}
+		if id, ok := lit.(*ast.Ident); ok {
+			for _, tn := range errorTypes {
+				if id.Name == tn {
+					return "a " + tn + " literal"
+				}
+			}
+		}
+	case *ast.UnaryExpr:
+		if v.Op == token.AND {
+			return mintDescription(v.X, errorTypes)
+		}
+	}
+	return ""
+}
+
+// namedResultsOf is the names Stream (or any function) gives its results.
+func namedResultsOf(fn *ast.FuncDecl) []string {
+	var out []string
+	if fn.Type.Results == nil {
+		return nil
+	}
+	for _, f := range fn.Type.Results.List {
+		for _, n := range f.Names {
+			out = append(out, n.Name)
+		}
+	}
+	return out
 }
 
 func recvTypeName(expr ast.Expr) string {

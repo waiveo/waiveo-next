@@ -142,6 +142,16 @@ const (
 	//     capped at maxJSONBodyBytes (1 MiB, internal/app/api), and the manifest
 	//     is that body's slides plus ~100 bytes per asset entry — 512 assets is
 	//     51 KiB. A manifest over 4 MiB is not a cast; it is something else.
+	//
+	//     That sentence had a hole, and closing it was part of making this
+	//     paragraph true rather than plausible: the IMPORT path does not go
+	//     through readBodyLimit for the create body — it assembles one in process
+	//     from the bundle's own manifest (internal/app/api/castbundles.go's
+	//     importCastExec) — so a 4 MiB manifest could author a 4 MiB cast that
+	//     this box would then refuse to export, the disagreement this whole block
+	//     exists to prevent. That path now applies maxJSONBodyBytes to the body it
+	//     builds, so "a cast on this box fits in 1 MiB" holds however the cast
+	//     arrived.
 	//   - It has to be at most half the reserve for the reserve to hold, since
 	//     the framing for MaxAssets entries has to fit beside it —
 	//     TestTheOverheadReserveCoversTheWorstManifestAndFraming checks that
@@ -312,10 +322,16 @@ func entryNameOf(assetRef string) string {
 type Plan struct {
 	manifest []byte
 	entries  []plannedEntry
-	// ContentBytes is what the assets total, the figure the size refusal was
-	// decided against. Published so a caller can report or log it without
-	// re-deriving it from the same map.
-	ContentBytes int64
+	// contentBytes is what the assets total, accumulated as the entries are
+	// resolved and then checked against MaxBundleContentBytes.
+	//
+	// It is UNEXPORTED, and was not: it was published "so a caller can report or
+	// log it", and no caller ever did — not one call site, not one test. An
+	// exported field with a use case and no user is the same shape as the Write
+	// function this file used to carry: a surface justified by a sentence rather
+	// than by a caller. validate-deadcode cannot see it (it reasons about
+	// functions, not fields), so the check is this comment and the compiler.
+	contentBytes int64
 }
 
 // plannedEntry is one asset, resolved to the entry name it will be written as.
@@ -358,7 +374,7 @@ func NewPlan(m Manifest, assets map[string][]byte) (*Plan, error) {
 		if int64(len(body)) > MaxAssetBytes {
 			return nil, refuse(ErrTooLarge, "The image %s is %d bytes, more than the %d-byte limit one bundle entry may be.", ref, len(body), int64(MaxAssetBytes))
 		}
-		plan.ContentBytes += int64(len(body))
+		plan.contentBytes += int64(len(body))
 		m.Assets = append(m.Assets, AssetEntry{AssetRef: ref, SizeBytes: int64(len(body))})
 		plan.entries = append(plan.entries, plannedEntry{name: entryNameOf(ref), body: body})
 	}
@@ -370,9 +386,9 @@ func NewPlan(m Manifest, assets map[string][]byte) (*Plan, error) {
 	// Without it an export is bounded by nothing at all: MaxAssets assets at the
 	// per-upload ceiling is 32 GiB, and an authenticated caller could ask a
 	// Pi-class appliance to marshal that with one GET.
-	if plan.ContentBytes > MaxBundleContentBytes {
+	if plan.contentBytes > MaxBundleContentBytes {
 		return nil, refuse(ErrTooLarge, "This cast's images total %d bytes, more than the %d-byte limit a cast bundle carries.",
-			plan.ContentBytes, int64(MaxBundleContentBytes))
+			plan.contentBytes, int64(MaxBundleContentBytes))
 	}
 
 	// The manifest is encoded to memory, because its SIZE has to be checked
@@ -447,17 +463,23 @@ func (p *Plan) Stream(w io.Writer) error {
 	return failure
 }
 
-// Write plans a bundle and streams it, for a caller with nothing committed yet
-// and nothing to say to an operator — the tests, and any future non-HTTP
-// producer. An HTTP handler must NOT use it: it cannot tell a refusal from a
-// broken socket, which is the distinction the two-phase API exists to preserve.
-func Write(w io.Writer, m Manifest, assets map[string][]byte) error {
-	plan, err := NewPlan(m, assets)
-	if err != nil {
-		return err
-	}
-	return plan.Stream(w)
-}
+// There is deliberately no one-call `Write(w, m, assets)` convenience here, and
+// its absence is load-bearing rather than an omission.
+//
+// One existed. Its own doc said "an HTTP handler must NOT use it: it cannot tell
+// a refusal from a broken socket" — and nothing enforced that. An exported
+// function whose documented purpose is the shape that caused the defect, with a
+// comment asking callers not to, is the defect with a note attached: the next
+// handler to reach for the obvious two-argument helper reopens the zero-byte
+// `.cast` this package was split in two to close. It had no caller outside tests
+// (validate-deadcode said so), and it was three lines of NewPlan + Stream, so
+// deleting it costs nothing and removes the only way to skip the phase boundary.
+//
+// A caller that wants both halves writes both halves:
+//
+//	plan, err := castbundle.NewPlan(m, assets)  // every refusal, nothing committed
+//	if err != nil { … }                         // report it however this caller can
+//	err = plan.Stream(w)                        // bytes only, cannot refuse
 
 // ReferencedAssets returns every distinct asset_ref the slides name, sorted.
 //

@@ -45,6 +45,70 @@ func mustNotExist(t *testing.T, path, why string) {
 	}
 }
 
+// TestTheSidecarListsNameEverySQLiteCompanionLiterally is the one assertion in
+// this file that does NOT iterate the list under test, and it is here because
+// every other one does.
+//
+// A `for _, suffix := range sidecarSuffixes` loop guarantees internal
+// consistency and says nothing about completeness: it protects an ADDITION (a
+// fourth companion added to the list is immediately driven through Stage and
+// Adopt) and is blind to a DELETION (shrink the list and the loop simply runs
+// fewer sub-tests, all green). That is not a hypothetical — the `-journal` fix
+// this file's other tests were written for could be reverted whole, both lists
+// put back to `{-wal, -shm}` / `{-wal}`, and `go test ./internal/app/restoreswap/`
+// still said `ok`. A fix whose removal no test detects is a fix that is one
+// careless edit from being gone.
+//
+// So the suffixes are spelled out here, once, with the reason each one is
+// load-bearing in the failure message. Membership rather than equality, so
+// ADDING a companion is still a one-line edit in restoreswap.go and not a test
+// change too.
+func TestTheSidecarListsNameEverySQLiteCompanionLiterally(t *testing.T) {
+	has := func(list []string, suffix string) bool {
+		for _, s := range list {
+			if s == suffix {
+				return true
+			}
+		}
+		return false
+	}
+	cleared := sidecarSuffixes[:]
+	carried := carriedSuffixes[:]
+
+	for _, tc := range []struct {
+		suffix string
+		why    string
+	}{
+		{"-wal", "a WAL-mode database's committed frames. Leaving the REPLACED store's -wal in the live slot is the original silent non-restore: SQLite recovers it into the freshly adopted database and replays the old workspace over it."},
+		{"-shm", "the shared-memory index over the -wal. Stale, but SQLite opens it, and the single-file invariant Adopt's unconditional clearing rests on is not an invariant if it holds for two companions out of three."},
+		{"-journal", "a ROLLBACK journal. A restore's staged bytes come from VACUUM INTO, which writes a rollback-mode database, so a power cut during the first boot after adoption leaves one on disk — and a LATER restore that moved a database into the live slot beside it would have SQLite take it for that database's own hot journal and roll the restored workspace back into something nobody wrote."},
+	} {
+		if !has(cleared, tc.suffix) {
+			t.Errorf("sidecarSuffixes does not contain %q. It holds %v.\nThat suffix is %s", tc.suffix, cleared, tc.why)
+		}
+	}
+
+	for _, tc := range []struct {
+		suffix string
+		why    string
+	}{
+		{"-wal", "committed frames the database file alone does not hold, so a pre-restore copy without it is silently rewound to its last checkpoint — the same defect as the one above, pointed at the operator's fallback."},
+		{"-journal", "the rollback a hot database needs to reach a consistent state, so a pre-restore copy without it is a database nobody can open cleanly."},
+	} {
+		if !has(carried, tc.suffix) {
+			t.Errorf("carriedSuffixes does not contain %q. It holds %v.\nThat suffix carries %s", tc.suffix, carried, tc.why)
+		}
+	}
+
+	// And the one that must NOT be carried, stated so "carry everything" is not
+	// how a future edit satisfies the two checks above.
+	if has(carried, "-shm") {
+		t.Errorf("carriedSuffixes contains \"-shm\". It holds %v.\n"+
+			"-shm is a rebuildable index and the only genuinely disposable SQLite companion; carrying a stale one beside the "+
+			"pre-restore copy hands SQLite an index describing a -wal it may no longer match.", carried)
+	}
+}
+
 // TestAdoptClearsTheReplacedStoresWriteAheadLog is THE regression test for the
 // silent non-restore.
 //

@@ -32,6 +32,24 @@ var (
 	bundleHero = []byte("waiveo-next: the hero photo a cast layer draws")
 )
 
+// writeBundle produces a real `.cast` for a test that needs one to feed the
+// import route, running both halves of the producer API explicitly.
+//
+// It is spelled out rather than hidden behind a one-call helper in castbundle
+// itself: that helper existed, had no non-test caller, and its own doc had to
+// ask HTTP handlers not to use it — see castbundle.go where it used to be. A
+// test package is exactly the caller it was for, so the two lines live here.
+func writeBundle(t *testing.T, w io.Writer, m castbundle.Manifest, assets map[string][]byte) {
+	t.Helper()
+	plan, err := castbundle.NewPlan(m, assets)
+	if err != nil {
+		t.Fatalf("castbundle.NewPlan: %v", err)
+	}
+	if err := plan.Stream(w); err != nil {
+		t.Fatalf("castbundle Plan.Stream: %v", err)
+	}
+}
+
 // seedBundleCast authors a two-slide cast with two images and returns its id,
 // the scope node it sits at, and its name.
 func seedBundleCast(t *testing.T, e *testEnv, name string) (castID, scopeNode string) {
@@ -168,19 +186,66 @@ func TestAnImportIsHeldToTheSameAuthoringRulesAsTheEditor(t *testing.T) {
 	// A layer that runs off the 1920x1080 canvas — a data-model rule, not a
 	// bundle-format rule, so only the real create path can catch it.
 	var buf bytes.Buffer
-	if err := castbundle.Write(&buf, castbundle.Manifest{Cast: castbundle.CastPayload{
+	writeBundle(t, &buf, castbundle.Manifest{Cast: castbundle.CastPayload{
 		Name: "Off canvas",
 		Slides: []datamodel.CastSlide{{ID: "s1", Layers: []wire.Layer{
 			{Kind: wire.LayerKindRect, X: 9000, Y: 9000, W: 100, H: 100, Color: "#112233"},
 		}}},
-	}}, map[string][]byte{}); err != nil {
-		t.Fatalf("write bundle: %v", err)
-	}
+	}}, map[string][]byte{})
 
 	before := castCount(t, dest)
 	resp, raw := importBundle(t, dest, buf.Bytes(), destNode, "")
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("import of an off-canvas slide = %d, want 422 (body %s)", resp.StatusCode, raw)
+	}
+	if got := castCount(t, dest); got != before {
+		t.Errorf("a refused import stored %d cast(s)", got-before)
+	}
+}
+
+// TestAnImportIsHeldToTheSameBodyCeilingAsTheEditor closes the one route that
+// could author a cast this box cannot export.
+//
+// castbundle.MaxManifestBytes (4 MiB) is argued as safe on the grounds that
+// "nothing this box authors can approach it, because a cast's create body is
+// capped at maxJSONBodyBytes (1 MiB)". That was true of every path except this
+// one: the import assembles its create body IN PROCESS from the bundle's own
+// manifest, so it never passed through readBodyLimit. A bundle carrying a 2 MiB
+// manifest therefore imported cleanly and produced a cast whose own re-export
+// needs a manifest of 2 MiB plus every asset entry — a design an operator can
+// import and cannot get back out, which is precisely the export/import
+// disagreement that limit block exists to make impossible.
+//
+// The refusal is checked rather than the arithmetic, because the arithmetic is
+// what was wrong: a comment claiming a bound that a code path does not apply is
+// the shape of this defect.
+func TestAnImportIsHeldToTheSameBodyCeilingAsTheEditor(t *testing.T) {
+	dest := newEnv(t)
+	destNode := seedSchedulingScope(t, dest)
+
+	// A cast whose SLIDES alone exceed the create-body ceiling, while its
+	// manifest stays inside what castbundle.Read accepts — the window this hole
+	// lived in. One long text layer is the cheapest way there; the bundle format
+	// itself has no objection to it.
+	huge := strings.Repeat("a", 1_500_000)
+	var buf bytes.Buffer
+	writeBundle(t, &buf, castbundle.Manifest{Cast: castbundle.CastPayload{
+		Name: "A cast no box could export again",
+		Slides: []datamodel.CastSlide{{ID: "s1", Layers: []wire.Layer{
+			{Kind: wire.LayerKindText, X: 0, Y: 0, W: 100, H: 100, Text: huge},
+		}}},
+	}}, map[string][]byte{})
+	if buf.Len() > castbundle.MaxBundleBytes {
+		t.Fatalf("fixture is %d bytes, past the %d the import route accepts at all: this would be refused by the body limit rather than by the ceiling under test",
+			buf.Len(), int64(castbundle.MaxBundleBytes))
+	}
+
+	before := castCount(t, dest)
+	resp, raw := importBundle(t, dest, buf.Bytes(), destNode, "")
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("import of a cast larger than the create-body ceiling = %d, want 422.\n"+
+			"Accepting it stores a design this box will refuse to export, which is the disagreement castbundle's size block exists to prevent. Body: %s",
+			resp.StatusCode, raw)
 	}
 	if got := castCount(t, dest); got != before {
 		t.Errorf("a refused import stored %d cast(s)", got-before)

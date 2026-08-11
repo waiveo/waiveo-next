@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -317,6 +318,30 @@ func (srv *server) importCastExec(w http.ResponseWriter, r *http.Request, body [
 	raw, err := json.Marshal(create)
 	if err != nil {
 		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
+		return
+	}
+
+	// The same ceiling `POST /casts` applies to a create body, applied to the one
+	// this route assembles in process.
+	//
+	// It is not defence against a hostile caller — readBodyLimit already bounded
+	// the bundle. It is what keeps castbundle.MaxManifestBytes' justification
+	// TRUE. That limit is argued as safe on the grounds that "nothing this box
+	// authors can approach it, because a cast's create body is capped at
+	// maxJSONBodyBytes", and this path bypassed that cap: a bundle carrying a 4
+	// MiB manifest imported cleanly, producing a cast whose slides alone were 4
+	// MiB, whose re-export would then need a manifest of 4 MiB PLUS the asset
+	// entries — past MaxManifestBytes, refused. An operator would have had a cast
+	// this box imported and cannot export, which is the export/import
+	// disagreement that whole limit block exists to make impossible.
+	//
+	// 422 rather than 400: the request was well-formed and the bundle was
+	// readable. What is wrong is the design inside it, which is what the create
+	// path would say about the same slides.
+	if int64(len(raw)) > maxJSONBodyBytes {
+		writeProblem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Validation Failed",
+			fmt.Sprintf("This bundle's cast describes %d bytes of slides, past the %d-byte limit this deployment accepts for a cast. "+
+				"It was produced by a box with a larger limit; nothing was imported.", len(raw), maxJSONBodyBytes))
 		return
 	}
 

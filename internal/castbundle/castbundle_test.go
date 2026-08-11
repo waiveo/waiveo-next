@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -49,12 +50,28 @@ func fixtureAssets() map[string][]byte {
 	return map[string][]byte{logoRef(): logoBytes, menuRef(): menuBytes}
 }
 
+// writeBundle plans a bundle and streams it, failing the test if either half
+// does — the two-line sequence every producing caller writes now that the
+// one-call Write is gone (see castbundle.go for why it is gone).
+//
+// It is a TEST helper and not a package function on purpose: the whole point of
+// deleting Write was that no non-test caller should be able to run both phases
+// without seeing the refusal boundary between them.
+func writeBundle(t *testing.T, w io.Writer, m Manifest, assets map[string][]byte) {
+	t.Helper()
+	plan, err := NewPlan(m, assets)
+	if err != nil {
+		t.Fatalf("NewPlan: %v", err)
+	}
+	if err := plan.Stream(w); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+}
+
 func writeFixture(t *testing.T) []byte {
 	t.Helper()
 	var buf bytes.Buffer
-	if err := Write(&buf, Manifest{ExportedAtMs: 1_752_537_600_000, SourceCastID: "01J8ZCAST0000000000000001", Cast: twoImageCast()}, fixtureAssets()); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
+	writeBundle(t, &buf, Manifest{ExportedAtMs: 1_752_537_600_000, SourceCastID: "01J8ZCAST0000000000000001", Cast: twoImageCast()}, fixtureAssets())
 	return buf.Bytes()
 }
 
@@ -98,13 +115,11 @@ func TestABundleRoundTripsItsDesignAndItsImages(t *testing.T) {
 func TestTheAssetListIsDERIVEDFromTheSlides(t *testing.T) {
 	var buf bytes.Buffer
 	m := Manifest{Cast: twoImageCast()}
-	// A caller's own (wrong) list, which Write must ignore.
+	// A caller's own (wrong) list, which NewPlan must ignore.
 	m.Assets = []AssetEntry{{AssetRef: "sha256:" + strings.Repeat("ff", 32), SizeBytes: 1}}
 	assets := fixtureAssets()
 	assets["sha256:"+strings.Repeat("ff", 32)] = []byte("an asset nothing references")
-	if err := Write(&buf, m, assets); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
+	writeBundle(t, &buf, m, assets)
 	got, err := Read(buf.Bytes())
 	if err != nil {
 		t.Fatalf("Read: %v", err)
@@ -117,14 +132,14 @@ func TestTheAssetListIsDERIVEDFromTheSlides(t *testing.T) {
 	}
 }
 
-// TestWriteRefusesACastWhoseImageBytesWereNotSupplied. A bundle missing one of
-// its own images imports as a cast with a hole in it; the write must fail rather
-// than produce it.
-func TestWriteRefusesACastWhoseImageBytesWereNotSupplied(t *testing.T) {
-	var buf bytes.Buffer
-	err := Write(&buf, Manifest{Cast: twoImageCast()}, map[string][]byte{logoRef(): logoBytes})
+// TestNewPlanRefusesACastWhoseImageBytesWereNotSupplied. A bundle missing one of
+// its own images imports as a cast with a hole in it; PLANNING must fail rather
+// than produce it — before any caller has committed a byte, which is the whole
+// point of the phase this refusal lives in.
+func TestNewPlanRefusesACastWhoseImageBytesWereNotSupplied(t *testing.T) {
+	_, err := NewPlan(Manifest{Cast: twoImageCast()}, map[string][]byte{logoRef(): logoBytes})
 	if err == nil {
-		t.Fatal("Write succeeded with a referenced image missing")
+		t.Fatal("NewPlan succeeded with a referenced image missing")
 	}
 	if !strings.Contains(err.Error(), menuRef()) {
 		t.Errorf("error = %v, want it to name the missing asset", err)
@@ -420,9 +435,7 @@ func TestABundleAtTheContentCeilingIsReadable(t *testing.T) {
 		Name:   "Two video layers",
 		Slides: []datamodel.CastSlide{{ID: "s1", Layers: layers}},
 	}}
-	if err := Write(&buf, m, assets); err != nil {
-		t.Fatalf("Write a bundle at the content ceiling: %v", err)
-	}
+	writeBundle(t, &buf, m, assets)
 	if int64(buf.Len()) > MaxBundleBytes {
 		t.Fatalf("a bundle at the content ceiling is %d bytes, past the %d-byte limit its own reader enforces — an export nobody could import",
 			buf.Len(), int64(MaxBundleBytes))
@@ -439,18 +452,18 @@ func TestABundleAtTheContentCeilingIsReadable(t *testing.T) {
 	}
 }
 
-// TestWriteRefusesAnAssetLargerThanOneEntryMayBe: the write side of the
+// TestNewPlanRefusesAnAssetLargerThanOneEntryMayBe: the write side of the
 // per-asset ceiling. Producing an entry Read rejects is the export/import
 // disagreement in miniature.
-func TestWriteRefusesAnAssetLargerThanOneEntryMayBe(t *testing.T) {
+func TestNewPlanRefusesAnAssetLargerThanOneEntryMayBe(t *testing.T) {
 	body := make([]byte, MaxAssetBytes+1)
 	ref := AssetRefOf(body)
-	err := Write(&bytes.Buffer{}, Manifest{Cast: CastPayload{
+	_, err := NewPlan(Manifest{Cast: CastPayload{
 		Name:   "One impossible image",
 		Slides: []datamodel.CastSlide{{ID: "s1", Layers: []wire.Layer{{Kind: wire.LayerKindImage, W: 1, H: 1, AssetRef: ref}}}},
 	}}, map[string][]byte{ref: body})
 	if !errors.Is(err, ErrTooLarge) {
-		t.Fatalf("Write of an oversize asset returned %v, want ErrTooLarge", err)
+		t.Fatalf("NewPlan of an oversize asset returned %v, want ErrTooLarge", err)
 	}
 }
 

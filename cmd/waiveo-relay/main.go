@@ -2238,6 +2238,7 @@ func screenStatusEntries(srv *playerserver.Server) []wire.ScreenStatusEntry {
 			LastPullAgeMs:        st.LastPullAgeMs,
 			LastAckAgeMs:         st.LastAckAgeMs,
 			LastRenderStartAgeMs: st.LastRenderStartAgeMs,
+			UnackedPulls:         st.UnackedPulls,
 			ProgramRevision:      st.ProgramRevision,
 			Priority:             st.Priority,
 			Display:              st.Display,

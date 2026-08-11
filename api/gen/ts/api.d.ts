@@ -896,7 +896,9 @@ export interface paths {
          * List live screen status
          * @description Returns one entry per authored screen row, joining what the row says with what the site's relays have observed of it and whether an operator currently has a push-now override on it.
          *
-         *     Every age is milliseconds before this response, and `-1` means the contact has NEVER been observed — a distinct state from a large age, and the one a screen that was never switched on is in. `reachability` applies a single threshold (`live_window_ms`) to `last_pull_age_ms`; the raw ages are published so a consumer can draw its own line.
+         *     Every age is milliseconds before this response, and `-1` means the contact has NEVER been observed — a distinct state from a large age, and the one a screen that was never switched on is in. `reachability` is derived from three observations (`last_pull_age_ms`, `last_ack_age_ms`, `unacked_pulls`) against three published thresholds (`live_window_ms`, `content_transfer_window_ms`, `fetching_max_unacked_pulls`); every input and every line is on the row so a consumer can draw its own.
+         *
+         *     The third of each pair is the one that separates a screen downloading a large video from a screen that answers every program pull, fails every content fetch and never acknowledges anything. Both look identical in the ages — a pull with no ack after it — and the second one keeps producing new ones, which is what `unacked_pulls` counts.
          *
          *     `reachability` is deliberately never "offline". This platform cannot distinguish a screen that is switched off from one whose network dropped, from one whose player crashed, from one that was never paired — and each sends an operator somewhere different. `report_age_ms` is what separates "this screen stopped talking to its relay" from "this relay stopped talking to us": when a relay disconnects, every screen behind it ages together and `report_age_ms` grows with them.
          */
@@ -1852,12 +1854,14 @@ export interface components {
             /** @description The relay whose report this status came from; absent when no relay has reported this screen. */
             relay_id?: string;
             /**
-             * @description `live` — the screen contacted its relay within `live_window_ms` (a program pull, or the acknowledgement that answers one). `fetching` — the relay handed this screen a Lease it has not acknowledged, and the pull is within `content_transfer_window_ms`: the shipped player would still be downloading and verifying the content, during which the PREVIOUS program stays on the wall. Not a fault, and not a confirmation either — nothing has been heard back. `stale` — contact was made at some point, but not recently. `never_seen` — no relay has ever observed this screen pull a program.
+             * @description `live` — the screen contacted its relay within `live_window_ms` (a program pull, or the acknowledgement that answers one). `fetching` — the relay handed this screen a Lease it has not acknowledged, the pull is within `content_transfer_window_ms`, and no more than `fetching_max_unacked_pulls` pulls are outstanding: the shipped player would still be downloading and verifying the content, during which the PREVIOUS program stays on the wall. Not a fault, and not a confirmation either — nothing has been heard back. `stale` — contact was made at some point, but not recently, or the screen is asking again and again and confirming nothing. `never_seen` — no relay has ever observed this screen pull a program.
              * @enum {string}
              */
             reachability: "live" | "fetching" | "stale" | "never_seen";
             /** @description How far past `live_window_ms` an unacknowledged pull is still reported `fetching` rather than `stale` — one whole content-fetch timeout, the player's own limit on a single transfer. Published for the same reason as `live_window_ms`: a consumer that wants to treat `fetching` as `stale` needs to know which line it is disagreeing with. */
             content_transfer_window_ms: number;
+            /** @description The most outstanding pulls a screen may have and still be reported `fetching` rather than `stale`. A screen genuinely materialising content has exactly one (the transfer is serialised inside the player's poll loop); the allowance on top absorbs a single failed iteration. Past it the screen has abandoned more Leases than a transient failure explains, which no age threshold can express — such a screen answers every pull, so its `last_pull_age_ms` resets before any window can expire it. */
+            fetching_max_unacked_pulls: number;
             /** @description The staleness threshold `reachability` was decided by, published so a consumer that wants a different line can draw it from the raw ages. */
             live_window_ms: number;
             /** @description Whether a relay currently holds a live channel-token session for this screen. */
@@ -1868,6 +1872,8 @@ export interface components {
             last_ack_age_ms: number;
             /** @description Milliseconds since this screen last reported beginning to present a content item (`player/1` PLY-110) — the only field here that is evidence of playback rather than of intent — or `-1` if it never has. */
             last_render_start_age_ms: number;
+            /** @description How many program pulls the relay has served this screen since the last acknowledgement it saw: `0` up to date, `1` materialising the Lease it holds, climbing for one that keeps asking and never confirms. It is a COUNT, not an age, and it has no `-1` sentinel — zero is the ordinary healthy answer. For a screen that is not `live` it is the most actionable number on the row: "this wall has failed twenty pulls in a row" and "this wall is downloading a video" are different call-outs and the ages cannot tell them apart. Read it exactly: the relay does not correlate an acknowledgement with the Lease it acknowledges, so this is "pulls served since the last ack of any kind". */
+            unacked_pulls: number;
             /** @description Milliseconds since the relay report this status came from arrived, or `-1` when no report has. It is what distinguishes a screen that stopped talking to its relay from a relay that stopped talking to this app peer. */
             report_age_ms: number;
             /** @description The `program_revision` this screen was last handed (or, if it has never pulled, the one waiting for it). */
@@ -1996,7 +2002,7 @@ export interface components {
         ScreenHealth: {
             total: number;
             live: number;
-            /** @description How many screens were handed a Lease they have not yet acknowledged, recently enough that the player would still be transferring its content. Counted apart from both neighbours: such a screen is still showing its previous program, so it is neither confirmed healthy nor a screen to go and look at. */
+            /** @description How many screens were handed a Lease they have not yet acknowledged, recently enough that the player would still be transferring its content AND without having abandoned more Leases than a single transient failure explains. Counted apart from both neighbours: such a screen is still showing its previous program, so it is neither confirmed healthy nor a screen to go and look at. Both conditions matter to the grade this roll-up carries — a screen that answers every pull and never acknowledges is `stale`, and a whole site of them is `down`, which is what a count bounded on age alone could never reach. */
             fetching: number;
             stale: number;
             never_seen: number;
@@ -2008,6 +2014,11 @@ export interface components {
              * @description The threshold live/stale was decided by, republished so the roll-up can be checked against the line it was drawn at.
              */
             live_window_ms: number;
+            /**
+             * Format: int64
+             * @description The threshold fetching/stale was decided by, republished for the same reason. It was missing: this roll-up published a `fetching` COUNT and no way to redraw the line it was counted at, so a consumer that wanted to treat those screens as stale — a defensible reading, since nothing has been heard back from them — had a number it could not reinterpret. Both lines or neither.
+             */
+            content_transfer_window_ms: number;
         };
         SystemHealth: {
             /**

@@ -452,7 +452,10 @@ func TestAScreenFetchingContentIsItsOwnRowAndItsOwnCount(t *testing.T) {
 		LastPullAgeMs:        screens.LiveWindowMs + 20_000,
 		LastAckAgeMs:         screens.LiveWindowMs + 30_000, // the PREVIOUS cycle's ack
 		LastRenderStartAgeMs: screens.NeverObserved,
-		ProgramRevision:      "rev-new", ContentCount: 1,
+		// ONE outstanding pull: the fetch is serialised inside the player's poll
+		// loop, so a screen materialising content has made no further pull.
+		UnackedPulls:    1,
+		ProgramRevision: "rev-new", ContentCount: 1,
 	}}); err != nil {
 		t.Fatalf("ApplyScreenStatus: %v", err)
 	}
@@ -483,6 +486,15 @@ func TestAScreenFetchingContentIsItsOwnRowAndItsOwnCount(t *testing.T) {
 		t.Errorf("content_transfer_window_ms = %d, want %d — the second line the judgement was drawn at must be publishable, or nobody can check it",
 			got, screens.ContentTransferWindowMs)
 	}
+	// The third line, and the count it is read against. `fetching` is decided by
+	// three inputs now, and a consumer given two of them cannot redraw the line
+	// or tell "downloading a video" from "asking forever and confirming nothing".
+	if got := int64(row["fetching_max_unacked_pulls"].(float64)); got != screens.MaxFetchingUnackedPulls {
+		t.Errorf("fetching_max_unacked_pulls = %d, want %d", got, screens.MaxFetchingUnackedPulls)
+	}
+	if got := int(row["unacked_pulls"].(float64)); got != 1 {
+		t.Errorf("unacked_pulls = %d, want 1 — the observation the bound is applied to, and the number that tells an operator whether a screen is transferring or failing", got)
+	}
 
 	// The fleet roll-up.
 	h := e.health(t)
@@ -496,10 +508,60 @@ func TestAScreenFetchingContentIsItsOwnRowAndItsOwnCount(t *testing.T) {
 	if int(sc["stale"].(float64)) != 0 || int(sc["live"].(float64)) != 0 {
 		t.Errorf("live/stale = %v/%v, want 0/0", sc["live"], sc["stale"])
 	}
+	if got := int64(sc["content_transfer_window_ms"].(float64)); got != screens.ContentTransferWindowMs {
+		t.Errorf("roll-up content_transfer_window_ms = %d, want %d — the roll-up published a `fetching` COUNT and not the line it was counted at, so a consumer that wanted to treat those screens as stale had a number it could not reinterpret",
+			got, screens.ContentTransferWindowMs)
+	}
 	// And the fleet is not `down`: a transferring screen is still talking to its
 	// relay and still showing its previous program.
 	if got := serviceNamed(t, h, "screens")["status"]; got != "degraded" {
 		t.Errorf("screens service with one fetching and one never-seen = %v, want degraded", got)
+	}
+}
+
+// TestAFleetFailingEveryContentFetchIsDOWN is the roll-up's half of the 2026-08
+// finding, and the reason it was not merely a wording bug on a card.
+//
+// `down` is graded on `Live == 0 && Fetching == 0`. While `fetching` meant only
+// "the last pull is unacknowledged", every screen of a site whose content origin
+// was unreachable sat permanently in that state — 200 on every program pull, a
+// failed fetch, no ack, retry at the backoff cap, age reset every time — so the
+// clause could never hold. A whole dark site read `degraded`, indefinitely, and
+// the alarm was off for exactly the failure it exists for.
+func TestAFleetFailingEveryContentFetchIsDown(t *testing.T) {
+	e := newDiagEnv(t)
+	org := e.orgRoot(t)
+	broken := e.createScreenRow(t, org, "Lobby (403 on every content fetch)")
+
+	// The observation such a screen presents at the top of its backoff sawtooth:
+	// a pull comfortably INSIDE the content-transfer window (so no age bound can
+	// expire it), never acknowledged, and a long tail of abandoned Leases.
+	pullAge := screens.LiveWindowMs + 20_000
+	if pullAge > screens.ContentTransferWindowMs {
+		t.Fatalf("fixture no longer models the finding: pull age %d is outside the transfer window %d", pullAge, screens.ContentTransferWindowMs)
+	}
+	if err := e.screens.ApplyScreenStatus(diagRelayA, fixedNowMs, []wire.ScreenStatusEntry{{
+		ScreenID: broken, Paired: true,
+		LastPullAgeMs:        pullAge,
+		LastAckAgeMs:         screens.NeverObserved,
+		LastRenderStartAgeMs: screens.NeverObserved,
+		UnackedPulls:         31,
+		ProgramRevision:      "rev-new", ContentCount: 1,
+	}}); err != nil {
+		t.Fatalf("ApplyScreenStatus: %v", err)
+	}
+
+	h := e.health(t)
+	sc, _ := h["screens"].(map[string]any)
+	if got := int(sc["fetching"].(float64)); got != 0 {
+		t.Fatalf("fetching = %d, want 0: a screen that has abandoned 31 Leases is not collecting content, and while it counted as fetching this fleet could never be graded down", got)
+	}
+	if got := int(sc["stale"].(float64)); got != 1 {
+		t.Fatalf("stale = %d, want 1", got)
+	}
+	svc := serviceNamed(t, h, "screens")
+	if svc["status"] != "down" {
+		t.Errorf("a fleet whose every screen is failing every content fetch = %v, want down: %v", svc["status"], svc["detail"])
 	}
 }
 

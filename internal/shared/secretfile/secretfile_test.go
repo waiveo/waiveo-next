@@ -136,10 +136,21 @@ func TestWriteRejectsAnEmptyDirectory(t *testing.T) {
 // The `-wal` sidecar holds recently-written page images. A reader who cannot
 // open the database can read what was just written to it, so a database at 0600
 // beside a WAL at 0644 protects nothing it meant to.
+//
+// The suffixes are named LITERALLY here rather than driven off
+// SQLiteSidecarSuffixes, and that is the point. This list was `{-wal, -shm}`
+// for a round after internal/app/restoreswap's equivalent list gained
+// `-journal`, and a test that iterated the list under test could never have
+// said so: iterating proves internal consistency and is blind to a missing
+// member. `-journal` holds the ORIGINAL page images of rows being overwritten —
+// the same secret material as the WAL, pointed backwards — and this tree really
+// does produce one, because a restored store arrives as rollback-mode `VACUUM
+// INTO` output.
 func TestTightenSQLiteSidecarsCoversWhatTheDatabaseModeProtects(t *testing.T) {
 	dir := t.TempDir()
 	db := filepath.Join(dir, "x.db")
-	for _, name := range []string{"x.db", "x.db-wal", "x.db-shm"} {
+	companions := []string{"x.db-wal", "x.db-shm", "x.db-journal"}
+	for _, name := range append([]string{"x.db"}, companions...) {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
 			t.Fatalf("seed %s: %v", name, err)
 		}
@@ -153,7 +164,7 @@ func TestTightenSQLiteSidecarsCoversWhatTheDatabaseModeProtects(t *testing.T) {
 	if err := TightenSQLiteSidecars(db, 0o600); err != nil {
 		t.Fatalf("TightenSQLiteSidecars: %v", err)
 	}
-	for _, name := range []string{"x.db-wal", "x.db-shm"} {
+	for _, name := range companions {
 		info, err := os.Stat(filepath.Join(dir, name))
 		if err != nil {
 			t.Fatalf("stat %s: %v", name, err)

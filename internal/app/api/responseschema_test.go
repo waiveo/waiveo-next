@@ -888,14 +888,12 @@ var probes = map[string]probe{
 		// reached through the import path rather than a stub.
 		node := e.mintOrg(t)
 		var buf bytes.Buffer
-		if err := castbundle.Write(&buf, castbundle.Manifest{Cast: castbundle.CastPayload{
+		writeBundle(t, &buf, castbundle.Manifest{Cast: castbundle.CastPayload{
 			Name: "Probed cast",
 			Slides: []datamodel.CastSlide{{ID: "s1", Layers: []wire.Layer{
 				{Kind: wire.LayerKindRect, X: 0, Y: 0, W: 100, H: 100, Color: "#112233"},
 			}}},
-		}}, map[string][]byte{}); err != nil {
-			t.Fatalf("write the probe bundle: %v", err)
-		}
+		}}, map[string][]byte{})
 		return e.do(t, http.MethodPost, "/api/v1/casts/import?scope_node="+node, buf.Bytes(),
 			map[string]string{"Content-Type": "application/octet-stream"})
 	},

@@ -126,62 +126,173 @@ func TestNeverObservedIsPreservedThroughTheArithmetic(t *testing.T) {
 	}
 }
 
-// TestTheLiveWindowBoundary pins BOTH thresholds this model draws, at their
-// edges, over the two ages the judgement is made from.
+// TestTheLiveWindowBoundary pins ALL THREE thresholds this model draws, at their
+// edges, over the three observations the judgement is made from.
 //
-// The table is (pull age, ack age) rather than pull age alone because the
-// judgement is: live if either contact is recent; fetching if the most recent
-// pull is still unacknowledged and the shipped player could still be
-// transferring; stale otherwise. Each row below is the reason one of those
-// clauses exists, named in its own comment — a table that only drove pull age
-// would leave the fetching clause untested at its edges, which is precisely the
-// half-of-a-pair this round is about.
+// The table is (pull age, ack age, unacked pulls) rather than pull age alone
+// because the judgement is: live if either contact is recent; fetching if the
+// most recent pull is still unacknowledged, the shipped player could still be
+// transferring, AND the screen is not simply re-asking forever; stale otherwise.
+// Each row below is the reason one of those clauses exists, named in its own
+// comment — a table that only drove pull age would leave two clauses untested at
+// their edges, which is precisely the half-of-a-pair this round is about.
+//
+// The `unacked` column is the one added this round, and the two rows at its
+// boundary are the ones that would have caught the 2026-08 case: a screen with a
+// pull inside the transfer window and an ack that never comes reads `fetching`
+// while it has an outstanding Lease it might still be working on, and `stale`
+// once it has abandoned more of them than a single transient failure explains.
 func TestTheLiveWindowBoundary(t *testing.T) {
 	now, _ := clockAt(1_000_000)
 	r := mustRegistry(t, now)
 
+	maxUnacked := int(MaxFetchingUnackedPulls)
+
 	cases := []struct {
-		why  string
-		pull int64
-		ack  int64
-		want Reachability
+		why     string
+		pull    int64
+		ack     int64
+		unacked int
+		want    Reachability
 	}{
-		{"just pulled", 0, NeverObserved, ReachabilityLive},
-		{"one ms inside the live window", LiveWindowMs - 1, NeverObserved, ReachabilityLive},
-		{"exactly at the live window", LiveWindowMs, NeverObserved, ReachabilityLive},
-		{"a healthy screen whose ack answered its pull", 3_000, 2_500, ReachabilityLive},
+		{"just pulled", 0, NeverObserved, 1, ReachabilityLive},
+		{"one ms inside the live window", LiveWindowMs - 1, NeverObserved, 1, ReachabilityLive},
+		{"exactly at the live window", LiveWindowMs, NeverObserved, 1, ReachabilityLive},
+		{"a healthy screen whose ack answered its pull", 3_000, 2_500, 0, ReachabilityLive},
+
+		// The live window is judged on contact alone, so even a screen that has
+		// abandoned pull after pull reads live for as long as one of them is
+		// recent. That is correct and deliberate: it IS reachable. The column
+		// this table pins is reachability, not content health.
+		{"failing every pull, but one just landed", 1_000, NeverObserved, 50, ReachabilityLive},
 
 		// The ack is a real round trip from the screen, so a pull that has aged
 		// past the window but was acknowledged INSIDE it is a screen we heard
 		// from inside the window. Without this the console flashes stale for one
 		// poll interval after every long content transfer completes.
-		{"pull past the window, ack inside it", LiveWindowMs + 1, LiveWindowMs, ReachabilityLive},
+		{"pull past the window, ack inside it", LiveWindowMs + 1, LiveWindowMs, 0, ReachabilityLive},
 
 		// Past the live window with the most recent pull still outstanding: the
 		// gap the shipped player only occupies to materialise content.
-		{"one ms past the window, pull unacknowledged", LiveWindowMs + 1, NeverObserved, ReachabilityFetching},
-		{"exactly at the transfer window", ContentTransferWindowMs, NeverObserved, ReachabilityFetching},
-		{"an earlier ack, this pull outstanding", ContentTransferWindowMs, ContentTransferWindowMs + 5_000, ReachabilityFetching},
+		{"one ms past the window, pull unacknowledged", LiveWindowMs + 1, NeverObserved, 1, ReachabilityFetching},
+		{"exactly at the transfer window", ContentTransferWindowMs, NeverObserved, 1, ReachabilityFetching},
+		{"an earlier ack, this pull outstanding", ContentTransferWindowMs, ContentTransferWindowMs + 5_000, 1, ReachabilityFetching},
 
 		// And it expires, or a screen that died between its pull and its ack
 		// would hide in `fetching` forever.
-		{"one ms past the transfer window", ContentTransferWindowMs + 1, NeverObserved, ReachabilityStale},
+		{"one ms past the transfer window", ContentTransferWindowMs + 1, NeverObserved, 1, ReachabilityStale},
+
+		// The progress bound, at its edge. A transfer has ONE pull outstanding;
+		// the allowance on top absorbs a single failed iteration, the same
+		// tolerance the live window makes. Past it the screen is not fetching, it
+		// is failing — and an age bound can never say so, because this screen's
+		// age resets on every retry.
+		{"at the outstanding-pull allowance", LiveWindowMs + 1, NeverObserved, maxUnacked, ReachabilityFetching},
+		{"one pull past the allowance", LiveWindowMs + 1, NeverObserved, maxUnacked + 1, ReachabilityStale},
+		{"the 2026-08 wall: pulling forever, acknowledging never", LiveWindowMs + 1, NeverObserved, 40, ReachabilityStale},
 
 		// Acknowledged and then quiet: nothing is in flight, so no grace.
-		{"pull past the window and acknowledged", LiveWindowMs + 1, LiveWindowMs + 1, ReachabilityStale},
-		{"long gone", 600_000, 599_000, ReachabilityStale},
+		{"pull past the window and acknowledged", LiveWindowMs + 1, LiveWindowMs + 1, 0, ReachabilityStale},
+		{"long gone", 600_000, 599_000, 0, ReachabilityStale},
 
-		{"never pulled", NeverObserved, NeverObserved, ReachabilityNeverSeen},
+		{"never pulled", NeverObserved, NeverObserved, 0, ReachabilityNeverSeen},
 	}
 	for _, tc := range cases {
 		if err := r.ApplyScreenStatus("relay-1", 1_000_000, []wire.ScreenStatusEntry{
-			{ScreenID: "screen-a", LastPullAgeMs: tc.pull, LastAckAgeMs: tc.ack, LastRenderStartAgeMs: NeverObserved},
+			{ScreenID: "screen-a", LastPullAgeMs: tc.pull, LastAckAgeMs: tc.ack,
+				LastRenderStartAgeMs: NeverObserved, UnackedPulls: tc.unacked},
 		}); err != nil {
 			t.Fatalf("ApplyScreenStatus: %v", err)
 		}
 		if got := statusFor(t, r, "screen-a").Reachability; got != tc.want {
-			t.Errorf("%s (pull %d, ack %d) → reachability %q, want %q", tc.why, tc.pull, tc.ack, got, tc.want)
+			t.Errorf("%s (pull %d, ack %d, %d unacked) → reachability %q, want %q", tc.why, tc.pull, tc.ack, tc.unacked, got, tc.want)
 		}
+	}
+}
+
+// TestAScreenFailingEveryPullIsNeverCalledFetching is the 2026-08 case, driven
+// the way it actually happened, and it is the regression test for the finding
+// that `fetching` had permanently captured exactly the screen the live window
+// was retuned for.
+//
+// The wall: a content-URL 403. Every program pull answers 200, so the relay
+// re-stamps `lastPullMs` each time. `wvEnsureContent` then fails and
+// `wvDoProgram` returns at Program.brs:337 — BEFORE `wvAckLease` at :365 — so no
+// ack is ever sent. PlayerTask counts a failure and retries on a backoff that
+// doubles to a 60 000 ms cap, forever.
+//
+// Every sample that screen produces has an unacknowledged pull, and its age
+// never exceeds 60 000 + 8 000 + 10 000 = 78 000 ms, well inside the 172 000 ms
+// transfer window. So the age bound alone could NEVER expire it: the console
+// reported "Collecting content" for the rest of its life, and the fleet roll-up
+// (which grades `down` on live == 0 && fetching == 0) could never call a whole
+// site of them dark.
+//
+// Swept across the full age range rather than sampled at one point, and driven
+// for both an ack that never happened and one that happened long ago, because
+// those are the two shapes the reviewer found neither of which ever reached a
+// non-fetching state.
+func TestAScreenFailingEveryPullIsNeverCalledFetching(t *testing.T) {
+	// The player's retry-backoff cap plus the program request timeout plus one
+	// report interval: the largest age this screen can ever present.
+	const worstAgeMs int64 = 60_000 + 8_000 + 10_000
+	if worstAgeMs > ContentTransferWindowMs {
+		t.Fatalf("fixture no longer models the finding: the worst age a screen in retry backoff presents (%d) is outside the transfer window (%d), so the age bound would expire it on its own",
+			worstAgeMs, ContentTransferWindowMs)
+	}
+
+	for _, ackShape := range []struct {
+		why string
+		ack func(pull int64) int64
+	}{
+		{"never acknowledged anything", func(int64) int64 { return NeverObserved }},
+		{"acknowledged once, long ago", func(pull int64) int64 { return pull + 600_000 }},
+	} {
+		t.Run(ackShape.why, func(t *testing.T) {
+			now, _ := clockAt(1_000_000)
+			r := mustRegistry(t, now)
+			// The counter after a few minutes of 2s/4s/8s/…/60s retries. The
+			// third consecutive unacknowledged pull is enough; this is what the
+			// relay would actually be reporting by the time anyone looked.
+			const unacked = 37
+
+			for pull := int64(0); pull <= worstAgeMs; pull += 1_000 {
+				if err := r.ApplyScreenStatus("relay-1", 1_000_000, []wire.ScreenStatusEntry{{
+					ScreenID: "screen-403", Paired: true,
+					LastPullAgeMs: pull, LastAckAgeMs: ackShape.ack(pull),
+					LastRenderStartAgeMs: NeverObserved, UnackedPulls: unacked,
+					ProgramRevision: "rev-new", ContentCount: 1,
+				}}); err != nil {
+					t.Fatalf("ApplyScreenStatus at pull age %d: %v", pull, err)
+				}
+				got := statusFor(t, r, "screen-403").Reachability
+				if got == ReachabilityFetching {
+					t.Fatalf("a screen that has failed %d consecutive pulls reads `fetching` at pull age %d.\n"+
+						"Nothing is being fetched: the player abandons the Lease before the ack and retries forever, so this state "+
+						"never expires and the console tells an operator a dead wall is downloading. It must read live (a pull did "+
+						"just land) or stale (it has not), never fetching.", unacked, pull)
+				}
+				// And the two it IS allowed to be, so the assertion above cannot
+				// be satisfied by a fourth state appearing.
+				if got != ReachabilityLive && got != ReachabilityStale {
+					t.Fatalf("at pull age %d the screen reads %q, want live or stale", pull, got)
+				}
+			}
+
+			// The one that matters to the roll-up: at the top of its sawtooth it
+			// must reach STALE, or `live == 0 && fetching == 0` never holds and a
+			// dark site is never graded `down`.
+			if err := r.ApplyScreenStatus("relay-1", 1_000_000, []wire.ScreenStatusEntry{{
+				ScreenID: "screen-403", Paired: true,
+				LastPullAgeMs: worstAgeMs, LastAckAgeMs: ackShape.ack(worstAgeMs),
+				LastRenderStartAgeMs: NeverObserved, UnackedPulls: unacked,
+			}}); err != nil {
+				t.Fatalf("ApplyScreenStatus: %v", err)
+			}
+			if got := statusFor(t, r, "screen-403").Reachability; got != ReachabilityStale {
+				t.Fatalf("at the worst age a broken screen presents (%d ms) it reads %q, want stale — this is the sample the fleet-dark alarm depends on reaching", worstAgeMs, got)
+			}
+		})
 	}
 }
 
@@ -211,7 +322,11 @@ func TestAScreenDownloadingNewContentIsNotCalledStale(t *testing.T) {
 			LastPullAgeMs:        atMs - pullAtMs,
 			LastAckAgeMs:         atMs - pullAtMs + 10_000, // the PREVIOUS cycle's ack
 			LastRenderStartAgeMs: NeverObserved,
-			ProgramRevision:      "rev-new", ContentCount: 1,
+			// ONE outstanding pull, which is what a transfer looks like: the
+			// fetch is serialised inside the player's poll loop, so a screen
+			// materialising content has made no further pull to be waiting on.
+			UnackedPulls:    1,
+			ProgramRevision: "rev-new", ContentCount: 1,
 		}}); err != nil {
 			t.Fatalf("ApplyScreenStatus at +%dms: %v", atMs-pullAtMs, err)
 		}
@@ -239,6 +354,7 @@ func TestAScreenDownloadingNewContentIsNotCalledStale(t *testing.T) {
 	if err := r.ApplyScreenStatus("relay-1", done, []wire.ScreenStatusEntry{{
 		ScreenID: "screen-hanger", Paired: true,
 		LastPullAgeMs: done - pullAtMs, LastAckAgeMs: 100, LastRenderStartAgeMs: NeverObserved,
+		UnackedPulls: 0, // the ack cleared it
 	}}); err != nil {
 		t.Fatalf("ApplyScreenStatus after the ack: %v", err)
 	}
@@ -248,11 +364,16 @@ func TestAScreenDownloadingNewContentIsNotCalledStale(t *testing.T) {
 	}
 }
 
-// TestAScreenThatDiedBetweenAPullAndItsAckStillGoesStale is the other half, and
-// it is the reason `fetching` is bounded at all. The observation is IDENTICAL to
-// a transfer in progress — pulled, not acknowledged — so the only thing that can
-// separate them is time, and a state with no expiry would hide a dead screen
-// behind a hopeful word forever.
+// TestAScreenThatDiedBetweenAPullAndItsAckStillGoesStale is the AGE half of the
+// expiry, and it is the reason `fetching` is bounded on time at all. The
+// observation is IDENTICAL to a transfer in progress — pulled once, not
+// acknowledged, nothing since — so the only thing that can separate them is
+// time, and a state with no expiry would hide a dead screen behind a hopeful
+// word forever.
+//
+// Its counterpart is TestAScreenFailingEveryPullIsNeverCalledFetching, which is
+// the case this bound alone cannot reach: a screen that keeps pulling resets its
+// own age and would sit inside this window permanently.
 func TestAScreenThatDiedBetweenAPullAndItsAckStillGoesStale(t *testing.T) {
 	now, set := clockAt(1_000_000)
 	r := mustRegistry(t, now)
@@ -260,6 +381,9 @@ func TestAScreenThatDiedBetweenAPullAndItsAckStillGoesStale(t *testing.T) {
 	if err := r.ApplyScreenStatus("relay-1", 1_000_000, []wire.ScreenStatusEntry{{
 		ScreenID: "screen-dead", Paired: true,
 		LastPullAgeMs: 0, LastAckAgeMs: NeverObserved, LastRenderStartAgeMs: NeverObserved,
+		// One pull outstanding and no more coming: the screen lost power between
+		// the pull and the ack, so the count stops here while the age climbs.
+		UnackedPulls: 1,
 	}}); err != nil {
 		t.Fatalf("ApplyScreenStatus: %v", err)
 	}

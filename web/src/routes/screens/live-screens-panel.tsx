@@ -101,21 +101,55 @@ export function formatAge(ms: number): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
-/** What a row's "Now playing" cell should say, from the three facts the server
- * gives: whether an operator has overridden the screen, what the relay last
- * handed it, and whether the screen reported actually rendering something.
+/** Whether the server has EVIDENCE that this screen has something on it.
+ *
+ * `last_render_start_age_ms` is the only field that is evidence rather than
+ * intent: the player reports a render start when it actually begins presenting
+ * an item (PLY-110), and `-1` means it never has. `render_asset_ref` is checked
+ * alongside it because it is the same report's payload, and a row carrying one
+ * without the other is a report this UI should still read generously.
+ *
+ * Deliberately NOT `content_count > 0`. That is how many items the LAST LEASE
+ * carried — intent, and specifically intent about the program the screen is
+ * collecting right now, so it is at its most positive exactly when the screen is
+ * fetching its first-ever content and the wall is blank. */
+function hasEverRendered(row: ScreenStatus): boolean {
+  return row.last_render_start_age_ms >= 0 || Boolean(row.render_asset_ref);
+}
+
+/** What a row's "Now playing" cell should say, from the facts the server gives:
+ * what the relay last handed the screen, whether the screen reported actually
+ * rendering something, and whether it is currently collecting new content.
  *
  * Exported and pure so it is testable on its own: the phrasing IS the feature
  * here, and a cell that says "Showing content" for a screen showing nothing is
- * the failure mode. */
+ * the failure mode.
+ *
+ * The clause ORDER is load-bearing and was wrong. `fetching` came first and
+ * therefore pre-empted `display === "blank"`, and it claimed "still showing the
+ * last" unconditionally — including for a screen collecting its first-ever
+ * program, whose wall is blank and which has no last to be showing. Both are the
+ * same mistake: reporting a transfer state as though it implied something about
+ * what is on the screen, which it does not. */
 export function nowPlayingLabel(row: ScreenStatus): string {
   if (row.reachability === "never_seen") {
     return row.program_revision ? "Waiting to collect its program" : "Nothing assigned";
   }
+  // Scheduled off is a fact about the program the screen was HANDED, and it
+  // outranks the transfer state: a blank program has nothing to fetch, so
+  // "downloading new content" about one is describing work that is not
+  // happening, and "Blank (scheduled off)" is the answer to the question the
+  // operator is actually asking.
+  if (row.display === "blank") return "Blank (scheduled off)";
   // A transferring screen is still showing whatever it had; saying so is the
   // difference between an operator waiting and an operator driving to the site.
-  if (row.reachability === "fetching") return "Downloading new content (still showing the last)";
-  if (row.display === "blank") return "Blank (scheduled off)";
+  // But only if it HAD something — never-wipe keeps the outgoing program on the
+  // wall, and a screen with no outgoing program keeps nothing.
+  if (row.reachability === "fetching") {
+    return hasEverRendered(row)
+      ? "Downloading new content (still showing the last)"
+      : "Collecting its first content (nothing on screen yet)";
+  }
   if (row.render_asset_ref) {
     return `Rendering ${row.content_count} item${row.content_count === 1 ? "" : "s"}`;
   }

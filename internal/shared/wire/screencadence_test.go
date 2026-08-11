@@ -39,6 +39,12 @@ var derivedConstants = map[string][]string{
 	"HealthyProgramPullCadenceMs":   {"ProgramPollIntervalMs", "ProgramPullRequestTimeoutMs", "LeaseAckRequestTimeoutMs"},
 	"ScreenLiveWindowMs":            {"HealthyProgramPullCadenceMs", "ScreenLiveWindowCadenceMultiple"},
 	"ScreenContentTransferWindowMs": {"ScreenLiveWindowMs", "ProgramContentFetchTimeoutMs"},
+	// The progress bound on `fetching`. Not a duration, but derived for exactly
+	// the same reason the durations are: written as a number it would be a taste,
+	// and the two terms it is built from each say something checkable — one pull
+	// outstanding because the player's fetch is inside its poll loop, plus the
+	// tolerance the live window already gives a failed iteration.
+	"ScreenFetchingMaxUnackedPulls": {"OutstandingPullsWhileTransferring", "ScreenFailedPullTolerance"},
 }
 
 // TestTheHealthyCadenceIsAnEXPRESSIONOverThePlayersTimings is the rail that
@@ -111,15 +117,21 @@ func ageAfterFailedPulls(n int, retryBaseMs, retryCapMs int64) int64 {
 	return age + ScreenStatusReportIntervalMs
 }
 
-// TestTheLiveWindowCoversAHealthyScreenAndOneFailedPull is THE relationship —
-// the one W2-18 was opened about — and it is now computed from the player's
-// behaviour rather than restated from the constants.
+// TestTheLiveWindowCoversAHealthyScreenAndTheFailedPullTolerance is THE
+// relationship — the one W2-18 was opened about — and it is now computed from the
+// player's behaviour rather than restated from the constants.
 //
 // A healthy screen's worst honest age is one whole cadence (the report was taken
 // just before its next pull) plus one whole report interval. The window must
-// clear that, and clear one failed pull on top, or a screen that is merely
-// unlucky reads stale.
-func TestTheLiveWindowCoversAHealthyScreenAndOneFailedPull(t *testing.T) {
+// clear that, and clear ScreenFailedPullTolerance failed pulls on top, or a
+// screen that is merely unlucky reads stale.
+//
+// The tolerance is the CONSTANT rather than a literal 1, and that is the change
+// this round made: ScreenFetchingMaxUnackedPulls is derived from the same
+// tolerance, so the number now has two consumers and both are pinned against the
+// player's own backoff here. Writing 1 in this test and 1 in that constant would
+// be two numbers that merely happen to agree.
+func TestTheLiveWindowCoversAHealthyScreenAndTheFailedPullTolerance(t *testing.T) {
 	base := readBrsInt(t, playerTaskSrc, brsFunctionReturnRe("wvProgramRetryBaseMs"), "wvProgramRetryBaseMs()'s return value")
 	cap := readBrsInt(t, playerTaskSrc, brsFunctionReturnRe("wvProgramRetryCapMs"), "wvProgramRetryCapMs()'s return value")
 
@@ -128,13 +140,13 @@ func TestTheLiveWindowCoversAHealthyScreenAndOneFailedPull(t *testing.T) {
 		t.Fatalf("ScreenLiveWindowMs = %d does not even cover a HEALTHY screen's worst honest age (%d = one pull cadence %d + one report interval %d): every healthy screen will report stale part of every cycle",
 			ScreenLiveWindowMs, healthy, HealthyProgramPullCadenceMs, ScreenStatusReportIntervalMs)
 	}
-	oneFailure := ageAfterFailedPulls(1, base, cap)
-	if ScreenLiveWindowMs <= oneFailure {
-		t.Fatalf("ScreenLiveWindowMs = %d leaves no margin: a screen that fails ONE pull reaches %d (request timeout %d + first backoff %d on top of %d) and flips to stale",
-			ScreenLiveWindowMs, oneFailure, ProgramPullRequestTimeoutMs, base, healthy)
+	tolerated := ageAfterFailedPulls(int(ScreenFailedPullTolerance), base, cap)
+	if ScreenLiveWindowMs <= tolerated {
+		t.Fatalf("ScreenLiveWindowMs = %d leaves no margin: a screen that fails %d pull(s) — the tolerance ScreenFailedPullTolerance states, which ScreenFetchingMaxUnackedPulls is also built from — reaches %d (request timeout %d + first backoff %d on top of %d) and flips to stale",
+			ScreenLiveWindowMs, ScreenFailedPullTolerance, tolerated, ProgramPullRequestTimeoutMs, base, healthy)
 	}
-	t.Logf("healthy worst age %d, one failed pull %d, two failed pulls %d, window %d",
-		healthy, oneFailure, ageAfterFailedPulls(2, base, cap), ScreenLiveWindowMs)
+	t.Logf("healthy worst age %d, %d tolerated failure(s) %d, one more %d, window %d",
+		healthy, ScreenFailedPullTolerance, tolerated, ageAfterFailedPulls(int(ScreenFailedPullTolerance)+1, base, cap), ScreenLiveWindowMs)
 }
 
 // TestTheLiveWindowClearsTheFIELDMeasuredWorstAge is the same relationship
@@ -166,18 +178,54 @@ func TestTheLiveWindowClearsTheFIELDMeasuredWorstAge(t *testing.T) {
 // window without bound — turns the column into one that says `live` about a
 // screen that has been dark all afternoon.
 //
-// Two consecutive failed pulls must go stale. That is the tightest honest
-// statement available: with the ack counted, a window wide enough to survive two
-// failures would also span the player's retry-backoff cap, which is the test
-// below.
+// One failed pull MORE than the tolerance must go stale. That is the tightest
+// honest statement available: with the ack counted, a window wide enough to
+// survive two failures would also span the player's retry-backoff cap, which is
+// the test below.
+//
+// Together with the test above this brackets ScreenFailedPullTolerance from both
+// sides against the player's own backoff — the window covers exactly that many
+// failures and no more — which is what makes the constant a measured property of
+// this pair of numbers rather than a preference, and therefore what makes it fit
+// to be a term in ScreenFetchingMaxUnackedPulls.
 func TestLiveWindowStillDistinguishesAFailedScreen(t *testing.T) {
 	base := readBrsInt(t, playerTaskSrc, brsFunctionReturnRe("wvProgramRetryBaseMs"), "wvProgramRetryBaseMs()'s return value")
 	cap := readBrsInt(t, playerTaskSrc, brsFunctionReturnRe("wvProgramRetryCapMs"), "wvProgramRetryCapMs()'s return value")
-	twoFailures := ageAfterFailedPulls(2, base, cap)
-	if ScreenLiveWindowMs >= twoFailures {
-		t.Fatalf("ScreenLiveWindowMs = %d still reads live for a screen that has failed TWO consecutive pulls (age %d); the window has stopped being a health signal",
-			ScreenLiveWindowMs, twoFailures)
+	pastTolerance := ageAfterFailedPulls(int(ScreenFailedPullTolerance)+1, base, cap)
+	if ScreenLiveWindowMs >= pastTolerance {
+		t.Fatalf("ScreenLiveWindowMs = %d still reads live for a screen that has failed %d consecutive pulls (age %d) — one more than ScreenFailedPullTolerance allows; the window has stopped being a health signal, and the tolerance ScreenFetchingMaxUnackedPulls is built from no longer describes it",
+			ScreenLiveWindowMs, ScreenFailedPullTolerance+1, pastTolerance)
 	}
+}
+
+// TestTheFetchingBoundExpiresAScreenNoAgeBoundCanReach is the arithmetic behind
+// the progress bound, kept as a test so the "just widen the transfer window"
+// answer cannot be re-proposed without meeting it.
+//
+// The 2026-08 wall answers every program pull (so its age resets), fails every
+// content fetch, never acks, and retries at the backoff cap. Its worst age is
+// bounded by that cap, and the whole point of the finding is that the bound sits
+// INSIDE the transfer window — so no age threshold, at any value that is not
+// absurd, can ever expire `fetching` for it. Only a bound on how many pulls have
+// gone unacknowledged can.
+func TestTheFetchingBoundExpiresAScreenNoAgeBoundCanReach(t *testing.T) {
+	retryCap := readBrsInt(t, playerTaskSrc, brsFunctionReturnRe("wvProgramRetryCapMs"), "wvProgramRetryCapMs()'s return value")
+	worstAge := retryCap + ProgramPullRequestTimeoutMs + ScreenStatusReportIntervalMs
+	if worstAge > ScreenContentTransferWindowMs {
+		t.Fatalf("a screen failing every pull now peaks at %d ms, past the %d ms transfer window, so the age bound WOULD expire it on its own.\n"+
+			"That is a better world, but it means ScreenFetchingMaxUnackedPulls' justification has changed: re-derive it or say why it is still needed.",
+			worstAge, ScreenContentTransferWindowMs)
+	}
+	// And the bound it is expired by has to be small enough to reach. A screen in
+	// backoff produces a new unacknowledged pull every retry, so anything finite
+	// works — but a bound at or below the outstanding-pull count of a genuine
+	// transfer would expire the transfer too, which is the state's whole purpose.
+	if ScreenFetchingMaxUnackedPulls < OutstandingPullsWhileTransferring {
+		t.Fatalf("ScreenFetchingMaxUnackedPulls = %d is below the %d pull a genuinely transferring screen has outstanding: a screen downloading a video would read stale, which is W2-18's symptom with a new cause",
+			ScreenFetchingMaxUnackedPulls, OutstandingPullsWhileTransferring)
+	}
+	t.Logf("a broken screen peaks at %d ms inside the %d ms transfer window; %d unacked pull(s) is where `fetching` stops",
+		worstAge, ScreenContentTransferWindowMs, ScreenFetchingMaxUnackedPulls)
 }
 
 // TestAScreenInRetryBackoffIsAllowedToReadStale is the semantic the correction

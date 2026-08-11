@@ -184,6 +184,18 @@ const ScreenStatusReportIntervalMs int64 = 10_000
 // screen whose player is in backoff having failed twice in a row, which is the
 // thing this column is for, and both pins are in screencadence_test.go so the
 // trade cannot be quietly re-made.
+//
+// # This window is only half of "a broken wall reads stale"
+//
+// The second bullet above is a property of the LIVE window, and for one round it
+// was mistaken for a property of the read model. It is not: a screen past this
+// window is not live, but it is only STALE if nothing else claims it first, and
+// `fetching` claimed it. The 2026-08 screen — 200 on every program pull, a 403
+// on every content fetch, never an ack — has a `last_pull_age_ms` that tops out
+// at 78 000 ms, inside ScreenContentTransferWindowMs, with the pull permanently
+// unacknowledged. Bounding `fetching` by pull AGE alone therefore captured it
+// forever, and the tolerance bought by reducing 3 to 2 was handed straight back.
+// ScreenFetchingMaxUnackedPulls is the other half; read its doc with this one.
 const ScreenLiveWindowCadenceMultiple int64 = 2
 
 // ScreenLiveWindowMs is the live/stale threshold applied to the freshest contact
@@ -231,6 +243,18 @@ const ScreenLiveWindowMs int64 = HealthyProgramPullCadenceMs * ScreenLiveWindowC
 // `fetching`: not `live`, because nothing has confirmed anything; not `stale`,
 // because a working wall is mid-transfer.
 //
+// # What "unacknowledged" actually means, since it is weaker than it sounds
+//
+// The relay does NOT correlate an ack with the lease it acknowledges.
+// playerserver's noteLeaseAck stamps `lastAckMs` on ANY arriving ack and reads
+// no `lease_id` from it, so "this pull is unacknowledged" is really "the last
+// ack this relay saw predates the last pull it served". On the shipped player
+// the two coincide — one pull, one ack, in order, on one thread — and that is
+// why the inference is sound today. It is not sound in general: a player that
+// acknowledged out of order, or retried an old ack, would reset the signal.
+// TestTheAckFollowsTheContentFetch pins the ordering the inference rests on; the
+// correlation itself is not pinned because it does not exist yet.
+//
 // # Why it is bounded, and what the bound does not cover
 //
 // Unbounded, `fetching` would swallow the other explanation for that same
@@ -246,4 +270,102 @@ const ScreenLiveWindowMs int64 = HealthyProgramPullCadenceMs * ScreenLiveWindowC
 // covers a whole transfer at the player's own limit, and the alternative is a
 // state with no ceiling. If that case shows up in the field, the fix is a
 // player-side heartbeat during a long fetch, not a bigger number here.
+//
+// # This window is NOT sufficient on its own — see ScreenFetchingMaxUnackedPulls
+//
+// An age bound expires `fetching` for a screen that went quiet. It does nothing
+// at all for a screen that is LOUD: the 2026-08 wall re-pulled every 60 000 ms
+// forever and never acked, so its `last_pull_age_ms` reset before it could ever
+// leave this window. The read model needs a second bound, on how many pulls have
+// gone unacknowledged rather than on how old one of them is.
 const ScreenContentTransferWindowMs int64 = ScreenLiveWindowMs + ProgramContentFetchTimeoutMs
+
+// OutstandingPullsWhileTransferring is how many unacknowledged pulls a screen
+// that is genuinely materialising content has outstanding: exactly ONE.
+//
+// It is a FACT about the shipped player's loop shape, not a tolerance. The
+// transfer is serialised between the pull and the ack — `wvDoProgram` pulls,
+// runs `wvEnsureContent` over every asset, then calls `wvAckLease`, and
+// PlayerTask sleeps only after that returns (Program.brs:337/365) — so a screen
+// in the middle of a download has made no further pull to be waiting on. There
+// is one Lease in flight, ageing, and that is the whole of what `fetching` was
+// ever describing.
+//
+// Which is the observation the 2026-08 case turns on: a screen presenting a
+// SECOND unacknowledged pull is not slow at fetching. It abandoned the first
+// Lease without acknowledging it, which is what the shipped player does when
+// `wvEnsureContent` fails — it returns before the ack (Program.brs:337) and
+// retries on a backoff. That is a failing iteration, not a transfer.
+const OutstandingPullsWhileTransferring int64 = 1
+
+// ScreenFailedPullTolerance is how many consecutive FAILED player iterations
+// this file's judgements give a screen the benefit of the doubt for.
+//
+// ONE, and it is the tolerance the live window already has rather than a second
+// taste: the window (52 000 ms) covers a healthy screen's worst honest age plus
+// one failed pull and its first backoff (46 000 ms) and does NOT cover two
+// (58 000 ms). Both directions are computed from the player's own backoff in
+// screencadence_test.go — TestTheLiveWindowCoversAHealthyScreenAndOneFailedPull
+// and TestLiveWindowStillDistinguishesAFailedScreen — and both are now written
+// in terms of THIS constant, so the number cannot be changed in one place and
+// left in the other.
+//
+// Naming it is the point. A transient failure is worth absorbing, in every
+// judgement here, by the same amount; two different tolerances in two clauses of
+// one function is how a screen ends up live by one rule and fetching by another.
+const ScreenFailedPullTolerance int64 = 1
+
+// ScreenFetchingMaxUnackedPulls is the SECOND bound on `fetching`, and the one
+// that makes the state mean "making progress" rather than "not acknowledged".
+//
+// # Why an age bound was not enough
+//
+// ScreenContentTransferWindowMs expires `fetching` for a screen that stopped.
+// The 2026-08 wall did not stop. It got a 200 on every program pull (so the
+// relay re-stamped `lastPullMs` every time), failed `wvEnsureContent` on a 403,
+// returned before `wvAckLease`, and retried at the 60 000 ms backoff cap —
+// forever. Its app-side age topped out at 78 000 ms (60 000 backoff + 8 000
+// request timeout + 10 000 report interval), comfortably inside the 172 000 ms
+// transfer window, with the last pull permanently unacknowledged. Both clauses
+// of the old rule were satisfied on every single sample, so the console said
+// `fetching` about a wall that had never fetched anything and never would.
+//
+// That was not a cosmetic mislabel. It disabled two things at once: the
+// operator-facing chip said "Collecting content" and "still showing the last"
+// about a screen that was doing neither, and the fleet roll-up
+// (internal/app/api/diagnostics.go) grades `down` on `Live == 0 && Fetching ==
+// 0`, so an entire site in this state read `degraded` forever and never `down`.
+// The fleet-dark alarm was switched off for exactly the failure it exists for.
+//
+// # The bound
+//
+// A screen that is transferring has ONE pull outstanding
+// (OutstandingPullsWhileTransferring — it cannot have two, the fetch is inside
+// the loop). Absorb one failed iteration on top of it, the same tolerance the
+// live window gives (ScreenFailedPullTolerance), and the third consecutive
+// unacknowledged pull is a screen that is failing, which is a screen the console
+// must be allowed to call `stale`.
+//
+// For the 2026-08 wall that is about six seconds: its backoff runs 2 s, 4 s, 8 s
+// … so the third unacknowledged pull lands almost immediately and the screen
+// spends the rest of its broken life judged by age alone — live at the bottom of
+// its sawtooth, stale at the top, which is what a screen in retry backoff is
+// supposed to read (TestAScreenInRetryBackoffIsAllowedToReadStale).
+//
+// # What it costs
+//
+// A screen whose fetch fails twice transiently and then succeeds on a third,
+// long transfer reads `stale` during that transfer instead of `fetching`. That
+// is a screen that has failed two consecutive iterations, which the live window
+// already calls stale on age alone, so the two rules agree — which is the reason
+// the tolerance is shared rather than picked twice.
+//
+// # The counter this is applied to
+//
+// internal/relay/playerserver keeps it: one `unackedPulls` per screen,
+// incremented when a program pull is served and reset to zero when an ack
+// arrives. It rides the `screen.status` frame as `unacked_pulls`. Note the same
+// caveat the age comparison has — noteLeaseAck correlates nothing, so ANY ack
+// resets the counter, and "N unacknowledged pulls" means "N pulls served since
+// the last ack of any kind".
+const ScreenFetchingMaxUnackedPulls int64 = OutstandingPullsWhileTransferring + ScreenFailedPullTolerance

@@ -300,6 +300,14 @@ type screenHealth struct {
 	// for the same reason /screen-status publishes it: a roll-up without the
 	// line it was drawn at is a number nobody can check.
 	LiveWindowMs int64 `json:"live_window_ms"`
+	// ContentTransferWindowMs is the line Fetching/Stale was decided by, and it
+	// was missing: this roll-up published a `fetching` COUNT and no way to redraw
+	// the line it was counted at, so a consumer that wanted to treat those
+	// screens as stale — which is a defensible reading, since nothing has been
+	// heard back from them — had a number it could not reinterpret. Both lines
+	// or neither; publishing one of two is the shape that makes a reader think
+	// they have the whole rule.
+	ContentTransferWindowMs int64 `json:"content_transfer_window_ms"`
 }
 
 // systemHealth is the whole response (openapi SystemHealth).
@@ -478,7 +486,7 @@ func (srv *server) relayHealth() ([]relayHealth, serviceHealth) {
 // relay has ever mentioned is the most alarming row on the page and a count
 // built from reports is silent about exactly it.
 func (srv *server) screenRollup(r *http.Request) (screenHealth, serviceHealth) {
-	out := screenHealth{LiveWindowMs: screens.LiveWindowMs}
+	out := screenHealth{LiveWindowMs: screens.LiveWindowMs, ContentTransferWindowMs: screens.ContentTransferWindowMs}
 	rows, err := srv.store.List(r.Context(), store.KindScreen, store.ListFilter{})
 	if err != nil {
 		return out, serviceHealth{Name: "screens", Status: healthUnknown,
@@ -536,6 +544,17 @@ func (srv *server) screenRollup(r *http.Request) (screenHealth, serviceHealth) {
 		// A FETCHING screen keeps it out of `down` on purpose: that screen is
 		// still talking to its relay and still showing its previous program, so
 		// "the fleet is dark" would be false.
+		//
+		// That last sentence is a DEPENDENCY on internal/app/screens, not an
+		// observation, and it is the load-bearing consumer of the progress bound
+		// added to `fetching` this round. While `fetching` merely meant "the last
+		// pull is unacknowledged", the 2026-08 failure — every screen answering
+		// its program pull and failing every content fetch — pinned every row at
+		// `fetching` permanently, so this clause never fired and a whole dark
+		// site read `degraded` forever. The alarm was off for the exact failure
+		// it exists for. Anything that widens `fetching` again has to come back
+		// here first: this grade is only honest while a fetching screen is one
+		// that is genuinely getting somewhere.
 		return out, serviceHealth{Name: "screens", Status: healthDown,
 			Detail: strconv.Itoa(out.Stale) + " screen(s) were being seen and have gone quiet; none of the " +
 				strconv.Itoa(out.Total) + " authored screen(s) is live."}

@@ -80,6 +80,10 @@ function healthBody(over: Partial<SystemHealth> = {}): SystemHealth {
       // fixture carrying a withdrawn number is a fixture that has stopped
       // describing the system it stands in for.
       live_window_ms: 52_000,
+      // The fetching/stale line, republished alongside the fetching COUNT. The
+      // roll-up carried the count and not the line for a round, which left a
+      // consumer no way to reinterpret it.
+      content_transfer_window_ms: 172_000,
     },
     ...over,
   };

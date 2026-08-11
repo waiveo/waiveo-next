@@ -129,6 +129,7 @@ func (s *ssStack) sendStatus(t *testing.T) {
 			LastPullAgeMs:        st.LastPullAgeMs,
 			LastAckAgeMs:         st.LastAckAgeMs,
 			LastRenderStartAgeMs: st.LastRenderStartAgeMs,
+			UnackedPulls:         st.UnackedPulls,
 			ProgramRevision:      st.ProgramRevision,
 			Priority:             st.Priority,
 			Display:              st.Display,
@@ -241,6 +242,80 @@ func TestTheAppPeersViewOfAScreenAgesWhileTheRelayIsSilent(t *testing.T) {
 	}
 	if got.ReportAgeMs < silence {
 		t.Errorf("report_age = %d, want at least %d — the field that tells an operator the RELAY went quiet rather than the screen", got.ReportAgeMs, silence)
+	}
+}
+
+// TestAScreenThatPullsAndNeverAcksReachesANonFetchingState is the 2026-08 wall,
+// driven through the WHOLE pipeline — real player/1 pulls at a real relay, a
+// real `screen.status` frame over a real connection, the app peer's real read
+// model — because that is where the finding lived and every layer of it had to
+// be wrong at once for the console to say what it said.
+//
+// The screen answers its program pull (so the relay stamps a fresh `lastPullMs`
+// on every retry) and never acknowledges (the shipped player returns before
+// `wvAckLease` when a content fetch fails). Bounded on pull AGE alone, that
+// screen read `fetching` on every sample forever: its age reset before it could
+// expire, and its pull was permanently unacknowledged.
+//
+// Three pulls with no ack is past the tolerance, which is the point of the count
+// — a duration cannot express "and it keeps doing it".
+func TestAScreenThatPullsAndNeverAcksReachesANonFetchingState(t *testing.T) {
+	s := newSSStack(t)
+
+	token, screenID := ssPair(t, s.playerTS)
+	s.player.SetProgram(1, screenID, "rev-new", "scheduled", "content", []wire.LeaseContent{
+		{Type: "image", AssetRef: "sha256:aa", URL: "https://origin.example/content/aa"},
+	})
+
+	// One pull, unacknowledged, reported while it is still young: this is a
+	// screen that could genuinely be materialising the Lease it was just handed,
+	// and it must NOT be called stale.
+	s.setNow(1_700_000_004_000)
+	ssPull(t, s.playerTS, token)
+	s.setNow(1_700_000_004_000 + screens.LiveWindowMs + 1_000)
+	s.sendStatus(t)
+	waitFor(t, 5*time.Second, func() bool { return len(s.registry.Statuses()) == 1 },
+		"the app peer never held a screen status")
+	if got := s.registry.Statuses()[0]; got.Reachability != screens.ReachabilityFetching {
+		t.Fatalf("one outstanding pull past the live window reads %q, want fetching (unacked_pulls %d) — a screen downloading a video must not be reported as a screen to go and look at",
+			got.Reachability, got.UnackedPulls)
+	}
+
+	// It keeps pulling and keeps not acknowledging. Each pull re-stamps the
+	// relay's clock, so the AGE bound is never reached — only the count moves.
+	for i := 0; i < int(screens.MaxFetchingUnackedPulls); i++ {
+		s.setNow(1_700_000_010_000 + int64(i)*60_000)
+		ssPull(t, s.playerTS, token)
+	}
+	// Reported at the top of the screen's own backoff sawtooth, which is where a
+	// broken wall spends most of its samples and the only place the fleet-dark
+	// grade can be reached from.
+	s.setNow(1_700_000_010_000 + int64(screens.MaxFetchingUnackedPulls)*60_000 + screens.LiveWindowMs + 1_000)
+	s.sendStatus(t)
+
+	var got screens.Status
+	waitFor(t, 5*time.Second, func() bool {
+		st := s.registry.Statuses()
+		if len(st) != 1 {
+			return false
+		}
+		got = st[0]
+		return got.UnackedPulls > int(screens.MaxFetchingUnackedPulls)
+	}, "the app peer never saw the unacknowledged-pull count climb past the tolerance")
+
+	if got.Reachability == screens.ReachabilityFetching {
+		t.Fatalf("after %d pulls with no acknowledgement the screen still reads `fetching` (pull age %d, transfer window %d).\n"+
+			"Nothing is being fetched. This is the 2026-08 wall: 200 on every program pull, a failed content fetch, no ack, retry "+
+			"forever — and while `fetching` captured it the console said 'Collecting content' about a dead screen and the fleet "+
+			"roll-up could never grade a whole site of them `down`.", got.UnackedPulls, got.LastPullAgeMs, screens.ContentTransferWindowMs)
+	}
+	if got.Reachability != screens.ReachabilityStale {
+		t.Fatalf("reachability = %q, want stale: the pull is %dms old, past the %dms live window, with %d pulls outstanding",
+			got.Reachability, got.LastPullAgeMs, screens.LiveWindowMs, got.UnackedPulls)
+	}
+	if got.LastPullAgeMs > screens.ContentTransferWindowMs {
+		t.Fatalf("fixture no longer proves the finding: the pull age (%d) is outside the transfer window (%d), so the AGE bound would have expired `fetching` on its own and the count is not what this test is measuring",
+			got.LastPullAgeMs, screens.ContentTransferWindowMs)
 	}
 }
 

@@ -71,10 +71,12 @@ const maxScreenFieldBytes = 256
 //
 //   - Live: the relay heard from this screen recently enough that a poll cannot
 //     have been missed by much.
-//   - Fetching: the relay handed this screen a Lease and the screen has not
-//     acknowledged it, recently enough that the shipped player would still be
-//     transferring its content. See reachabilityOf for why that is a state of
-//     its own and not either of the neighbours.
+//   - Fetching: the relay handed this screen a Lease, the screen has not
+//     acknowledged it, and the screen is still PLAUSIBLY WORKING ON IT —
+//     recently enough that the shipped player would still be transferring, and
+//     without having abandoned Lease after Lease in the meantime. See
+//     reachabilityOf for why that is a state of its own and not either of the
+//     neighbours, and for why both bounds are needed.
 //   - Stale: contact has been made at some point, but not recently. NOT
 //     "offline" — see the package doc.
 //   - NeverSeen: no relay has ever observed this screen pull a program. Usually
@@ -124,6 +126,27 @@ const LiveWindowMs int64 = wire.ScreenLiveWindowMs
 // disagreeing with.
 const ContentTransferWindowMs int64 = wire.ScreenContentTransferWindowMs
 
+// MaxFetchingUnackedPulls is the THIRD threshold, and the one without which the
+// other two do not add up to a health signal.
+//
+// A screen may be Fetching while it has at most this many program pulls
+// outstanding. One is a transfer in progress; the tolerance on top absorbs a
+// single failed iteration, the same allowance the live window makes. Past it,
+// the screen is not slow at fetching — it is asking again and again and
+// confirming nothing, which is a broken screen and must be allowed to read
+// Stale.
+//
+// It is not a number chosen here either: wire.ScreenFetchingMaxUnackedPulls,
+// derived from the shape of the player's own loop. Read that doc before touching
+// this — it is where the 2026-08 case (a screen that read `fetching` forever
+// while showing nothing, and kept a whole dark site out of the `down` grade) is
+// written down.
+//
+// Exported alongside the two windows, and published on the row for the same
+// reason they are: a judgement whose inputs a consumer cannot see is a number
+// nobody can check.
+const MaxFetchingUnackedPulls int64 = wire.ScreenFetchingMaxUnackedPulls
+
 // Status is one screen's merged live status as this app peer currently knows it.
 // Every *AgeMs is milliseconds before the read, INCLUDING the report's own age
 // (see the package doc), or NeverObserved for a contact never made.
@@ -137,6 +160,13 @@ type Status struct {
 	LastPullAgeMs        int64
 	LastAckAgeMs         int64
 	LastRenderStartAgeMs int64
+
+	// UnackedPulls is how many program pulls the relay has served this screen
+	// since the last acknowledgement it saw. Not an age and not merged with the
+	// report's own: it is a count of events at the relay, and it does not go
+	// stale — a relay that stops reporting leaves this frozen at whatever it
+	// last observed, which ReportAgeMs is the field for saying.
+	UnackedPulls int
 
 	// ReportAgeMs is how long ago the REPORT this status came from arrived. It
 	// is published rather than folded away because it is the one number that
@@ -285,6 +315,7 @@ func (r *Registry) Statuses() []Status {
 				LastPullAgeMs:        agePlus(e.LastPullAgeMs, reportAge),
 				LastAckAgeMs:         agePlus(e.LastAckAgeMs, reportAge),
 				LastRenderStartAgeMs: agePlus(e.LastRenderStartAgeMs, reportAge),
+				UnackedPulls:         e.UnackedPulls,
 				ReportAgeMs:          reportAge,
 				ProgramRevision:      e.ProgramRevision,
 				Priority:             e.Priority,
@@ -292,7 +323,7 @@ func (r *Registry) Statuses() []Status {
 				ContentCount:         e.ContentCount,
 				RenderAssetRef:       e.RenderAssetRef,
 			}
-			st.Reachability = reachabilityOf(st.LastPullAgeMs, st.LastAckAgeMs)
+			st.Reachability = reachabilityOf(st.LastPullAgeMs, st.LastAckAgeMs, st.UnackedPulls)
 			if prev, dup := best[e.ScreenID]; dup && prev.ReportAgeMs <= reportAge {
 				continue
 			}
@@ -335,14 +366,37 @@ func (r *Registry) Statuses() []Status {
 // contact has been made. So it gets its own word, and the word says what was
 // measured: the relay handed it a Lease and is waiting to hear back.
 //
-// # Why Fetching expires
+// # Why Fetching expires, and why ONE expiry was not enough
 //
 // A screen that lost power between its pull and its ack produces the identical
 // observation, and this model cannot tell the two apart. An unbounded Fetching
 // would therefore hide a dead screen forever — the withdrawn 180 000 ms window
-// wearing a friendlier label. So the state lasts one whole content-fetch timeout
-// past the live window and then reads Stale like anything else. What that does
-// not cover is written down in wire.ScreenContentTransferWindowMs's own doc.
+// wearing a friendlier label. So the state expires. It takes TWO bounds to do
+// that, and for one round it had only the first:
+//
+//   - AGE. The pull may be at most ContentTransferWindowMs old: one whole
+//     content-fetch timeout past the live window, the player's own statement of
+//     how long a single transfer may take. This expires a screen that went
+//     SILENT.
+//   - PROGRESS. At most MaxFetchingUnackedPulls pulls may be outstanding. This
+//     expires a screen that is failing LOUDLY, and nothing else can.
+//
+// The second was missing, and its absence made this state permanently capture
+// the exact screen the whole cadence file was corrected for. That wall answered
+// every program pull with a 200 (so the relay re-stamped its pull, and the age
+// bound reset), failed every content fetch on a 403, returned before the ack
+// (Program.brs:337, ahead of wvAckLease at :365) and retried at the 60 000 ms
+// backoff cap forever. Its age topped out at 78 000 ms — inside the 172 000 ms
+// window — and its last pull was permanently unacknowledged, so BOTH clauses of
+// the old rule held on every sample and it read `fetching` for the rest of its
+// life. An age bound cannot expire a signal whose age keeps resetting.
+//
+// The cost was not the word on the card. The console told an operator
+// "Collecting content" and "still showing the last" about a screen showing
+// nothing, and — worse — the fleet roll-up grades `down` on `Live == 0 &&
+// Fetching == 0` (internal/app/api/diagnostics.go), so a whole site in this
+// state was permanently `degraded` and never `down`. The dark-fleet alarm was
+// off for precisely the failure it exists for.
 //
 // # The dependency this rests on, named so it cannot break quietly
 //
@@ -353,17 +407,43 @@ func (r *Registry) Statuses() []Status {
 // shipped BrightScript and fails if that order ever inverts, because when it
 // does this clause stops firing and a screen downloading a video goes back to
 // reading Stale with nothing to say so.
-func reachabilityOf(lastPullAgeMs, lastAckAgeMs int64) Reachability {
+//
+// A second, weaker dependency, stated because it is easy to over-read the field
+// names: the relay does not correlate an ack with the Lease it acknowledges
+// (playerserver's noteLeaseAck). "Unacknowledged" therefore means "the last ack
+// predates the last pull", and unackedPulls means "pulls served since the last
+// ack of any kind". Both are exact for the shipped player and would be loosened
+// by one that acknowledged out of order.
+func reachabilityOf(lastPullAgeMs, lastAckAgeMs int64, unackedPulls int) Reachability {
 	if lastPullAgeMs == NeverObserved {
 		return ReachabilityNeverSeen
 	}
 	if freshestContact(lastPullAgeMs, lastAckAgeMs) <= LiveWindowMs {
 		return ReachabilityLive
 	}
-	if pullIsUnacknowledged(lastPullAgeMs, lastAckAgeMs) && lastPullAgeMs <= ContentTransferWindowMs {
+	if isFetching(lastPullAgeMs, lastAckAgeMs, unackedPulls) {
 		return ReachabilityFetching
 	}
 	return ReachabilityStale
+}
+
+// isFetching reports whether a screen past the live window is materialising
+// content rather than failing — all three conditions, spelled out separately
+// because each one expires a different failure and dropping any of them makes
+// this state hide one.
+func isFetching(lastPullAgeMs, lastAckAgeMs int64, unackedPulls int) bool {
+	if !pullIsUnacknowledged(lastPullAgeMs, lastAckAgeMs) {
+		return false
+	}
+	// Silent too long: a screen that lost power between its pull and its ack.
+	if lastPullAgeMs > ContentTransferWindowMs {
+		return false
+	}
+	// Not making progress: a screen that keeps pulling and never confirms. The
+	// count is the relay's, not derived here, because only the place the pulls
+	// arrive can count them — see the doc above for why no function of the two
+	// ages can answer this.
+	return int64(unackedPulls) <= MaxFetchingUnackedPulls
 }
 
 // freshestContact is the smaller (more recent) of the two ages, treating the
@@ -381,6 +461,13 @@ func freshestContact(lastPullAgeMs, lastAckAgeMs int64) int64 {
 // Both ages have had the same report age added to them (agePlus), so comparing
 // them is comparing two instants measured on one clock, which is the only
 // comparison this model is allowed to make.
+//
+// What it does NOT establish, spelled out because the name overstates it: the
+// relay stamps its ack instant on ANY arriving acknowledgement and reads no
+// `lease_id` off it (playerserver's noteLeaseAck). So this really answers "does
+// the last ack this relay saw predate the last pull it served", which coincides
+// with "the outstanding Lease is unconfirmed" only because the shipped player
+// pulls and acks one-for-one, in order, on one thread.
 func pullIsUnacknowledged(lastPullAgeMs, lastAckAgeMs int64) bool {
 	return lastAckAgeMs == NeverObserved || lastAckAgeMs > lastPullAgeMs
 }

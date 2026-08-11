@@ -1917,7 +1917,10 @@ type ScreenCreate struct {
 
 // ScreenHealth The fleet roll-up, built from the SAME join `/screen-status` serves — authored rows filled in by relay reports — rather than from the reports alone. A screen no relay has ever mentioned is the most alarming row there is, and a count built from reports is silent about exactly it.
 type ScreenHealth struct {
-	// Fetching How many screens were handed a Lease they have not yet acknowledged, recently enough that the player would still be transferring its content. Counted apart from both neighbours: such a screen is still showing its previous program, so it is neither confirmed healthy nor a screen to go and look at.
+	// ContentTransferWindowMs The threshold fetching/stale was decided by, republished for the same reason. It was missing: this roll-up published a `fetching` COUNT and no way to redraw the line it was counted at, so a consumer that wanted to treat those screens as stale — a defensible reading, since nothing has been heard back from them — had a number it could not reinterpret. Both lines or neither.
+	ContentTransferWindowMs int64 `json:"content_transfer_window_ms"`
+
+	// Fetching How many screens were handed a Lease they have not yet acknowledged, recently enough that the player would still be transferring its content AND without having abandoned more Leases than a single transient failure explains. Counted apart from both neighbours: such a screen is still showing its previous program, so it is neither confirmed healthy nor a screen to go and look at. Both conditions matter to the grade this roll-up carries — a screen that answers every pull and never acknowledges is `stale`, and a whole site of them is `down`, which is what a count bounded on age alone could never reach.
 	Fetching int `json:"fetching"`
 	Live     int `json:"live"`
 
@@ -2012,6 +2015,9 @@ type ScreenStatus struct {
 	ContentTransferWindowMs int                  `json:"content_transfer_window_ms"`
 	Display                 *ScreenStatusDisplay `json:"display,omitempty"`
 
+	// FetchingMaxUnackedPulls The most outstanding pulls a screen may have and still be reported `fetching` rather than `stale`. A screen genuinely materialising content has exactly one (the transfer is serialised inside the player's poll loop); the allowance on top absorbs a single failed iteration. Past it the screen has abandoned more Leases than a transient failure explains, which no age threshold can express — such a screen answers every pull, so its `last_pull_age_ms` resets before any window can expire it.
+	FetchingMaxUnackedPulls int `json:"fetching_max_unacked_pulls"`
+
 	// LastAckAgeMs Milliseconds since this screen last acknowledged a Lease, or `-1` if it never has.
 	LastAckAgeMs int `json:"last_ack_age_ms"`
 
@@ -2039,7 +2045,7 @@ type ScreenStatus struct {
 	// ProgramRevision The `program_revision` this screen was last handed (or, if it has never pulled, the one waiting for it).
 	ProgramRevision *string `json:"program_revision,omitempty"`
 
-	// Reachability `live` — the screen contacted its relay within `live_window_ms` (a program pull, or the acknowledgement that answers one). `fetching` — the relay handed this screen a Lease it has not acknowledged, and the pull is within `content_transfer_window_ms`: the shipped player would still be downloading and verifying the content, during which the PREVIOUS program stays on the wall. Not a fault, and not a confirmation either — nothing has been heard back. `stale` — contact was made at some point, but not recently. `never_seen` — no relay has ever observed this screen pull a program.
+	// Reachability `live` — the screen contacted its relay within `live_window_ms` (a program pull, or the acknowledgement that answers one). `fetching` — the relay handed this screen a Lease it has not acknowledged, the pull is within `content_transfer_window_ms`, and no more than `fetching_max_unacked_pulls` pulls are outstanding: the shipped player would still be downloading and verifying the content, during which the PREVIOUS program stays on the wall. Not a fault, and not a confirmation either — nothing has been heard back. `stale` — contact was made at some point, but not recently, or the screen is asking again and again and confirming nothing. `never_seen` — no relay has ever observed this screen pull a program.
 	Reachability ScreenStatusReachability `json:"reachability"`
 
 	// RelayId The relay whose report this status came from; absent when no relay has reported this screen.
@@ -2056,6 +2062,9 @@ type ScreenStatus struct {
 
 	// ScreenId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
 	ScreenId Ulid `json:"screen_id"`
+
+	// UnackedPulls How many program pulls the relay has served this screen since the last acknowledgement it saw: `0` up to date, `1` materialising the Lease it holds, climbing for one that keeps asking and never confirms. It is a COUNT, not an age, and it has no `-1` sentinel — zero is the ordinary healthy answer. For a screen that is not `live` it is the most actionable number on the row: "this wall has failed twenty pulls in a row" and "this wall is downloading a video" are different call-outs and the ages cannot tell them apart. Read it exactly: the relay does not correlate an acknowledgement with the Lease it acknowledges, so this is "pulls served since the last ack of any kind".
+	UnackedPulls int `json:"unacked_pulls"`
 }
 
 // ScreenStatusDisplay defines model for ScreenStatus.Display.
@@ -2064,7 +2073,7 @@ type ScreenStatusDisplay string
 // ScreenStatusPriority That program's `player/1` PLY-108 priority — `preempt` is an operator's push-now takeover.
 type ScreenStatusPriority string
 
-// ScreenStatusReachability `live` — the screen contacted its relay within `live_window_ms` (a program pull, or the acknowledgement that answers one). `fetching` — the relay handed this screen a Lease it has not acknowledged, and the pull is within `content_transfer_window_ms`: the shipped player would still be downloading and verifying the content, during which the PREVIOUS program stays on the wall. Not a fault, and not a confirmation either — nothing has been heard back. `stale` — contact was made at some point, but not recently. `never_seen` — no relay has ever observed this screen pull a program.
+// ScreenStatusReachability `live` — the screen contacted its relay within `live_window_ms` (a program pull, or the acknowledgement that answers one). `fetching` — the relay handed this screen a Lease it has not acknowledged, the pull is within `content_transfer_window_ms`, and no more than `fetching_max_unacked_pulls` pulls are outstanding: the shipped player would still be downloading and verifying the content, during which the PREVIOUS program stays on the wall. Not a fault, and not a confirmation either — nothing has been heard back. `stale` — contact was made at some point, but not recently, or the screen is asking again and again and confirming nothing. `never_seen` — no relay has ever observed this screen pull a program.
 type ScreenStatusReachability string
 
 // ScreenStatusListResponse defines model for ScreenStatusListResponse.
