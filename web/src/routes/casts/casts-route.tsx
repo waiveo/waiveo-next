@@ -9,6 +9,7 @@ import {
   FormField,
   Modal,
   PageHeader,
+  StatCard,
   Toaster,
   toast,
   type ColumnDef,
@@ -25,6 +26,8 @@ import {
   type WaiveoApi,
 } from "@/api";
 import { newSlide } from "@/routes/studio/cast-model";
+import { SlideStage } from "@/routes/studio/slide-canvas";
+import { useContentLibrary } from "@/routes/media/media-library";
 import { BUILT_IN_TEMPLATES } from "./cast-templates";
 
 /**
@@ -116,6 +119,11 @@ function startingPoint(source: string, saved: Cast[], nowMs: number): StartingPo
 /** A cast's slide count and its health, for the list. A cast whose slides do not
  * validate is one the projector will DROP — silently, on the TV — so the library
  * is the first place that has to say so. */
+/** The library thumbnail's scale off the 1920x1080 canvas — 80x45, the same
+ * 16:9 the slide really is, so nothing is cropped or letterboxed. The Studio
+ * filmstrip picks its own scale for a taller strip; this is a table row. */
+const THUMB_SCALE = 80 / 1920;
+
 function castHealth(slides: CastSlide[]): { slides: number; problems: number } {
   return { slides: slides.length, problems: validateCastSlides(slides).size };
 }
@@ -169,6 +177,17 @@ export default function CastsRoute({ api }: { api?: WaiveoApi }) {
   // ONE list, split. A template is a cast with the flag set, so reading them
   // separately would be two round trips for one answer — and would let the two
   // halves disagree about a row that changed between them.
+  // The content origin's ref->url listing, for the thumbnails' image layers.
+  // NULL on a failed or in-flight read, exactly as the Studio treats it: a
+  // listing we do not have must never be used to report bytes missing. A
+  // thumbnail then draws its text and shapes and omits the picture, which is a
+  // smaller lie than a BYTES MISSING badge on assets that are present.
+  const { assets: contentAssets, error: contentError } = useContentLibrary(client);
+  const assetUrls = useMemo(() => {
+    if (contentError !== null || contentAssets === null) return null;
+    return new Map(contentAssets.map((a) => [a.asset_ref, a.url]));
+  }, [contentAssets, contentError]);
+
   const templates = useMemo(() => (casts ?? []).filter((c) => c.template === true), [casts]);
   const schedulable = useMemo(() => (casts ?? []).filter((c) => c.template !== true), [casts]);
 
@@ -368,6 +387,44 @@ export default function CastsRoute({ api }: { api?: WaiveoApi }) {
 
   const columns: ColumnDef<Cast>[] = useMemo(
     () => [
+      {
+        id: "thumb",
+        header: "",
+        // The FIRST SLIDE, drawn. Restoring this is the single most-missed thing
+        // about the legacy library: operators name casts badly and recognise them
+        // by picture, so a table of names is a table they have to open one by one.
+        //
+        // It is the SAME renderer the Studio canvas and its filmstrip use, at a
+        // smaller scale — not a screenshot, not a server-rendered preview, and
+        // nothing new to keep in step with how a slide actually draws. A cast
+        // whose first slide changes shows the change here immediately.
+        //
+        // Deliberately not sortable and not searchable: there is no ordering of
+        // pictures an operator means, and `enableSorting: false` on a column with
+        // no accessor is what the header would do anyway.
+        enableSorting: false,
+        cell: ({ row }) => {
+          const first = row.original.slides[0];
+          if (!first) {
+            // An empty cast is a real state (New cast makes one), and a blank box
+            // of the same size keeps the rows from jumping height.
+            return (
+              <div
+                aria-hidden
+                className="h-[45px] w-[80px] rounded-[4px] border border-dashed border-border"
+              />
+            );
+          }
+          return (
+            // w-fit, because SlideStage sizes itself to exactly 1920x1080 *
+            // scale (80x45 here) and a plain block wrapper would stretch to the
+            // column, framing the picture with dead space to its right.
+            <div className="w-fit overflow-hidden rounded-[4px] border border-border">
+              <SlideStage slide={first} scale={THUMB_SCALE} assetUrls={assetUrls} />
+            </div>
+          );
+        },
+      },
       { accessorKey: "name", header: "Name", meta: { searchable: true } },
       {
         id: "slides",
@@ -399,7 +456,7 @@ export default function CastsRoute({ api }: { api?: WaiveoApi }) {
         },
       },
     ],
-    [],
+    [assetUrls],
   );
 
   return (
@@ -435,6 +492,40 @@ export default function CastsRoute({ api }: { api?: WaiveoApi }) {
           <p role="alert" className="text-sm text-[color:var(--wv-err)]">
             Couldn't load casts — {loadError}
           </p>
+        ) : null}
+
+        {/* The library's stats. Legacy carried five tiles here and this console
+            carried none, which is a real part of the owner's "visual differences"
+            note: the page answered "which casts exist" and never "what shape is
+            my library in".
+
+            Every figure is DERIVED from the rows already loaded — no extra
+            request, and nothing here can disagree with the table below it. They
+            are rendered only once the list has actually arrived, because a row of
+            confident zeros during a fetch says the library is empty, which is a
+            statement, not a placeholder. */}
+        {casts !== null ? (
+          <div className="flex flex-wrap gap-4">
+            <StatCard label="Casts" value={String(schedulable.length)} hint="schedulable documents" />
+            <StatCard
+              label="Slides"
+              value={String(schedulable.reduce((n, c) => n + c.slides.length, 0))}
+              hint="across every cast"
+            />
+            <StatCard
+              label="Ready"
+              value={String(schedulable.filter((c) => castHealth(c.slides).problems === 0).length)}
+              hint="every slide validates"
+            />
+            <StatCard
+              label="Needs attention"
+              value={String(schedulable.filter((c) => castHealth(c.slides).problems > 0).length)}
+              // Named for the consequence, not the rule: a slide that fails
+              // validation is DROPPED by the projector, silently, on the TV.
+              hint="a projector would drop slides"
+            />
+            <StatCard label="Templates" value={String(templates.length)} hint="starting points" />
+          </div>
         ) : null}
 
         <DataTable

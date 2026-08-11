@@ -7,7 +7,7 @@ import { MemoryRouter, Route, Routes, useSearchParams } from "react-router";
 import { ThemeProvider } from "@/components/theme/theme-provider";
 import CastsRoute from "./casts-route";
 import { validateSlide, type CastSlide } from "@/api";
-import { TRACE_ID, ULID_A, ULID_B, ULID_ROOT, cast, problem, scopeNode } from "@/api/test-support";
+import { TRACE_ID, ULID_A, ULID_B, ULID_C, ULID_ROOT, cast, problem, scopeNode } from "@/api/test-support";
 
 /**
  * The cast library, driven end to end: create, duplicate, delete, and open in
@@ -73,8 +73,12 @@ describe("Casts library", () => {
 
     expect(await screen.findByText("Lobby loop")).toBeInTheDocument();
     expect(screen.getByText("Broken loop")).toBeInTheDocument();
-    expect(screen.getByText("Ready")).toBeInTheDocument();
-    expect(screen.getByText("1 slide needs attention")).toBeInTheDocument();
+    // Scoped to the TABLE. "Ready" now also names a stat tile above it, and this
+    // assertion is about the row's status cell — an unscoped getByText would
+    // pass on the tile and stop checking the thing it is named for.
+    const table = screen.getByRole("table", { name: "Casts" });
+    expect(within(table).getByText("Ready")).toBeInTheDocument();
+    expect(within(table).getByText("1 slide needs attention")).toBeInTheDocument();
   });
 
   it("finds one cast by NAME in a library too long to scan", async () => {
@@ -499,5 +503,70 @@ describe("Casts library — portability (.cast bundles)", () => {
     renderCasts();
     await userEvent.click(await screen.findByRole("button", { name: /import \.cast/i }));
     expect(screen.getByRole("button", { name: "Import" })).toBeDisabled();
+  });
+});
+
+describe("Casts library — the picture and the shape of the library", () => {
+  // Restoring these was the owner's "visual differences" note at its most
+  // literal: data points per cast had fallen from 9 to 3, and operators name
+  // casts badly and recognise them by picture.
+  it("draws the FIRST SLIDE of each cast, not a placeholder", async () => {
+    server.use(
+      ...listing([
+        cast({
+          name: "Lobby loop",
+          slides: [
+            {
+              id: "s1",
+              layers: [
+                { kind: "rect", x: 0, y: 0, w: 1920, h: 1080, color: "#1B0A2E" },
+                { kind: "text", x: 80, y: 40, w: 1760, h: 80, text: "WELCOME", font_px: 56 },
+              ],
+            },
+            // A SECOND slide, so a pass cannot come from rendering "the only
+            // slide there is" — the column has to pick the first.
+            { id: "s2", layers: [{ kind: "text", x: 0, y: 0, w: 100, h: 40, text: "SECOND" }] },
+          ],
+        }),
+      ]),
+    );
+    renderCasts();
+
+    const table = await screen.findByRole("table", { name: "Casts" });
+    // The real renderer drew the real layer text...
+    expect(within(table).getByText("WELCOME")).toBeInTheDocument();
+    // ...and only the first slide's.
+    expect(within(table).queryByText("SECOND")).not.toBeInTheDocument();
+  });
+
+  it("summarises the library, counting only schedulable casts", async () => {
+    server.use(
+      ...listing([
+        cast({ name: "Lobby loop" }),
+        cast({ id: ULID_B, name: "Broken loop", slides: [{ id: "s1", layers: [] }] }),
+        // A TEMPLATE. It is a cast row carrying template:true, so a tile that
+        // counted rows rather than schedulable ones would say 3.
+        cast({ id: ULID_C, name: "Starting point", template: true }),
+      ]),
+    );
+    renderCasts();
+
+    await screen.findByRole("table", { name: "Casts" });
+    // Look only INSIDE stat cards. A page-wide getByText would also match the
+    // hero's own <h1>Casts</h1>, which is how the first draft of this test
+    // failed — and would have silently asserted against the heading if the tile
+    // had happened to be absent.
+    const tile = (label: string) => {
+      const found = [...document.querySelectorAll('[data-slot="stat-card"]')].find((el) =>
+        within(el as HTMLElement).queryByText(label),
+      );
+      if (!found) throw new Error(`no stat card labelled ${label}`);
+      return found as HTMLElement;
+    };
+
+    expect(within(tile("Casts")).getByText("2")).toBeInTheDocument();
+    expect(within(tile("Ready")).getByText("1")).toBeInTheDocument();
+    expect(within(tile("Needs attention")).getByText("1")).toBeInTheDocument();
+    expect(within(tile("Templates")).getByText("1")).toBeInTheDocument();
   });
 });
