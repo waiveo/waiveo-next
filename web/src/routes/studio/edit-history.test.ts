@@ -14,7 +14,9 @@ import { defaultLayer, type StudioState } from "./cast-model";
 import {
   COALESCE_WINDOW_MS,
   EMPTY_STUDIO_HISTORY,
+  HISTORY_OPEN_LABEL,
   MAX_HISTORY_DEPTH,
+  historyRows,
   isTextEntryTarget,
   matchHistoryShortcut,
   redoLabel,
@@ -556,5 +558,121 @@ describe("the focus guard", () => {
     expect(isTextEntryTarget(el('<div role="button" tabindex="0"></div>'))).toBe(false);
     expect(isTextEntryTarget(el("<button></button>"))).toBe(false);
     expect(isTextEntryTarget(null)).toBe(false);
+  });
+});
+
+/**
+ * The HISTORY PANEL's two supports: the timeline projection the list renders,
+ * and the multi-step jump a click on it performs.
+ *
+ * These are tested here rather than through the panel because the thing that
+ * goes wrong is arithmetic, not markup: `future` is stored with the NEXT redo
+ * last, so a list that maps over it in array order renders a plausible,
+ * completely wrong order — and every row would still be clickable and every
+ * render assertion would still pass.
+ */
+describe("the history timeline", () => {
+  it("always has an opening row, and marks it current in a fresh editor", () => {
+    const rows = historyRows(opened(ONE_SLIDE));
+    expect(rows).toEqual([{ step: 0, label: HISTORY_OPEN_LABEL, position: "current" }]);
+  });
+
+  it("lists past steps oldest-first with the newest as the current position", () => {
+    const after = run(
+      opened(ONE_SLIDE),
+      { type: "rename", name: "Foyer", at: 1_000 },
+      { type: "deleteLayer", index: 1, at: 5_000 },
+    );
+    expect(historyRows(after)).toEqual([
+      { step: 0, label: HISTORY_OPEN_LABEL, position: "past" },
+      { step: 1, label: "rename the cast", position: "past" },
+      { step: 2, label: "delete layer", position: "current" },
+    ]);
+  });
+
+  it("keeps undone steps on the list, in DOCUMENT order, marked as future", () => {
+    // The reversal this pins: `future` holds the next redo LAST, so the row
+    // immediately after the current position is future[last] ("rename the
+    // cast"), not future[0]. Rendering the array as stored puts them backwards.
+    const after = run(
+      opened(ONE_SLIDE),
+      { type: "rename", name: "Foyer", at: 1_000 },
+      { type: "deleteLayer", index: 1, at: 5_000 },
+      { type: "undo" },
+      { type: "undo" },
+    );
+    expect(historyRows(after)).toEqual([
+      { step: 0, label: HISTORY_OPEN_LABEL, position: "current" },
+      { step: 1, label: "rename the cast", position: "future" },
+      { step: 2, label: "delete layer", position: "future" },
+    ]);
+  });
+});
+
+describe("jumping to a point in the history", () => {
+  const three = () =>
+    run(
+      opened(ONE_SLIDE),
+      { type: "rename", name: "Foyer", at: 1_000 },
+      { type: "deleteLayer", index: 1, at: 5_000 },
+      { type: "insertLayer", layer: text({ text: "Third" }), at: 9_000 },
+    );
+
+  it("goes back several steps at once, landing on exactly that document", () => {
+    const after = studioHistoryReducer(three(), { type: "jumpTo", step: 1 });
+    // Step 1 is "after the rename": the name took, the delete has not.
+    expect(after.present.name).toBe("Foyer");
+    expect(after.present.slides[0]?.layers).toHaveLength(2);
+    expect(after.past).toHaveLength(1);
+    expect(after.future).toHaveLength(2);
+  });
+
+  it("goes forward again, and a round trip is the identity", () => {
+    const start = three();
+    const back = studioHistoryReducer(start, { type: "jumpTo", step: 0 });
+    expect(back.present.name).toBe("Lobby loop");
+    const forward = studioHistoryReducer(back, { type: "jumpTo", step: 3 });
+    expect(forward.present).toBe(start.present);
+    expect(forward.past).toHaveLength(3);
+    expect(forward.future).toHaveLength(0);
+  });
+
+  it("reports `dirty` for the point it lands on, not for the point it left", () => {
+    // The property a hand-written slice gets wrong. Step 0 IS the baseline
+    // object, so landing there is CLEAN however many edits were undone to get
+    // there — and stepping forward again is dirty.
+    const start = three();
+    expect(start.present.dirty).toBe(true);
+    const atOpen = studioHistoryReducer(start, { type: "jumpTo", step: 0 });
+    expect(atOpen.present.dirty).toBe(false);
+    expect(studioHistoryReducer(atOpen, { type: "jumpTo", step: 2 }).present.dirty).toBe(true);
+  });
+
+  it("is exactly n undos, including across a save", () => {
+    // A save re-baselines without clearing the stack, so the clean point moves
+    // into the middle of the timeline. A jump has to agree with pressing ⌘Z.
+    const edited = three();
+    const start = run(edited, { type: "saved", cast: castOf(edited.present.slides, { revision: 2 }) });
+    const byJump = studioHistoryReducer(start, { type: "jumpTo", step: 1 });
+    const byPresses = run(start, { type: "undo" }, { type: "undo" });
+    expect(byJump.present).toEqual(byPresses.present);
+    expect(byJump.present.dirty).toBe(byPresses.present.dirty);
+    expect(byJump.past).toHaveLength(byPresses.past.length);
+  });
+
+  it("clamps a step outside the timeline instead of doing nothing", () => {
+    const start = three();
+    expect(studioHistoryReducer(start, { type: "jumpTo", step: 99 }).present).toBe(start.present);
+    expect(studioHistoryReducer(start, { type: "jumpTo", step: -4 }).past).toHaveLength(0);
+  });
+
+  it("ends the coalescing run, so the next edit is its own step", () => {
+    const jumped = studioHistoryReducer(
+      run(opened(ONE_SLIDE), { type: "rename", name: "A", at: 1_000 }),
+      { type: "jumpTo", step: 0 },
+    );
+    expect(jumped.run).toBeNull();
+    const next = run(jumped, { type: "rename", name: "B", at: 1_100 });
+    expect(next.past).toHaveLength(1);
   });
 });

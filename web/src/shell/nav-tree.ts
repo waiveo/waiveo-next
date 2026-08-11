@@ -291,7 +291,7 @@ export const OFF_RAIL_ROUTES: OffRailRoute[] = [
   {
     to: "/studio",
     reachedVia:
-      "Opened on a cast from the Casts library (`/studio?id=…`). It is a tool applied to a cast, not a destination — a rail entry would open it on nothing.",
+      "Opened on a cast from the Casts library (`/studio?id=…`). It is a tool applied to a cast, not a destination — a rail entry would open it on nothing. It is also the one route mounted OUTSIDE this shell while still inside the session gate: a full-screen editor whose canvas and four docked panels want the whole viewport, and whose own header carries the door back (a 'Back to casts' that asks before discarding unsaved work). The rail would be dead weight there — every one of its destinations abandons the cast being edited.",
   },
   {
     to: "/security",

@@ -103,6 +103,23 @@
 //
 // A selection change, a save, a load and either end of a gesture all END the
 // current run, so the next edit starts a fresh step.
+//
+// ── The history PANEL ───────────────────────────────────────────────────────
+//
+// The stack is also a document in its own right, and the Studio shows it: a
+// dock panel listing every step with the current position marked, the way every
+// editor with a history palette does. Two things here serve it.
+//
+// `historyRows` projects the two stacks into ONE ordered timeline, because that
+// is what an operator sees — `past` and `future` are an implementation of "where
+// am I in the list", not two lists. It is a pure function so the panel cannot
+// hold its own idea of the order.
+//
+// `jumpTo` moves several steps at once. It is defined by REPLAYING undo/redo
+// rather than by reaching into the stacks, so a jump can never disagree with
+// pressing ⌘Z n times — including about `dirty`, the coalescing run, and the
+// baseline identity that decides it. A second implementation of the traversal
+// is exactly the drift this file's snapshot argument exists to avoid.
 
 import {
   EMPTY_STUDIO_STATE,
@@ -157,6 +174,9 @@ export interface StudioHistory {
 export type StudioHistoryAction = (
   | { type: "undo" }
   | { type: "redo" }
+  /** Go to the point in the timeline where `step` edits have been applied —
+   * `step` is `historyRows`' index, and 0 is the document as it was opened. */
+  | { type: "jumpTo"; step: number }
   | { type: "gesture"; phase: "begin" | "end" }
   | StudioAction
 ) & { at?: number };
@@ -178,6 +198,51 @@ export function undoLabel(history: StudioHistory): string | null {
 /** What ⌘⇧Z would reapply, or null when there is nothing. */
 export function redoLabel(history: StudioHistory): string | null {
   return history.future[history.future.length - 1]?.label ?? null;
+}
+
+/** Where one row of the history panel sits relative to the operator's position:
+ * already applied, the state they are looking at, or undone and reachable by
+ * redo. */
+export type HistoryPosition = "past" | "current" | "future";
+
+export interface HistoryRow {
+  /** The point in the timeline this row IS — the number of edits applied at it,
+   * and the argument a `jumpTo` takes to land here. Stable while the stack does
+   * not change, so it doubles as the React key. */
+  step: number;
+  label: string;
+  position: HistoryPosition;
+}
+
+/** The label of the row that is not an edit: the document as the box served it.
+ * Photoshop calls this the snapshot; here it is the only row that is always
+ * present, including in an editor where nothing has been done yet. */
+export const HISTORY_OPEN_LABEL = "open the cast";
+
+/**
+ * The two stacks as ONE timeline, oldest first.
+ *
+ * Row 0 is the opened document, then one row per step in `past` (oldest first),
+ * then one per step in `future` — and `future` is traversed BACKWARDS, because
+ * its last entry is the next redo and its first is the furthest one away. That
+ * reversal is the whole reason this is a function and not a `.map()` at the call
+ * site: getting it wrong produces a list that looks plausible and jumps to the
+ * wrong state.
+ */
+export function historyRows(history: StudioHistory): HistoryRow[] {
+  const at = history.past.length;
+  const rows: HistoryRow[] = [
+    { step: 0, label: HISTORY_OPEN_LABEL, position: at === 0 ? "current" : "past" },
+  ];
+  history.past.forEach((entry, i) => {
+    const step = i + 1;
+    rows.push({ step, label: entry.label, position: step === at ? "current" : "past" });
+  });
+  for (let k = 1; k <= history.future.length; k += 1) {
+    const entry = history.future[history.future.length - k];
+    if (entry) rows.push({ step: at + k, label: entry.label, position: "future" });
+  }
+  return rows;
 }
 
 /** Restore a snapshot, correcting only its `dirty` flag — see the note above on
@@ -223,6 +288,37 @@ export function studioHistoryReducer(
         run: null,
         gesture: false,
       };
+    }
+
+    case "jumpTo": {
+      // Defined by REPLAY, not by slicing the stacks. Every property an undo
+      // establishes — the recomputed `dirty`, the cleared run and gesture, the
+      // label that travels with the step — holds for a jump of ten steps
+      // because it is literally ten undos. A hand-written slice would be a
+      // second traversal to keep in agreement with the first, and the one it
+      // would get wrong is `dirty`: the baseline may sit anywhere in the range
+      // being crossed.
+      //
+      // Out-of-range is CLAMPED rather than ignored. The only caller is a list
+      // rendered from this very history, so a step outside it means the list
+      // and the stack disagreed for a frame; landing at the nearest real point
+      // is closer to what was asked than doing nothing.
+      //
+      // And the replay is a COUNTED loop, not `while (past.length !== target)`.
+      // That is not a style preference: `undo` and `redo` both return their
+      // input when the stack they draw from is empty, so a condition phrased
+      // against the stack's length never becomes false once it runs out — the
+      // clamp is what keeps that from happening, and a loop whose termination
+      // depends on a bounds check two lines above it is one edit away from
+      // hanging the editor. Counting the DISTANCE terminates whatever the clamp
+      // does. (Found by deleting the clamp: the tests did not fail, they never
+      // returned.)
+      const target = Math.max(0, Math.min(action.step, history.past.length + history.future.length));
+      const from = history.past.length;
+      let next = history;
+      for (let i = from; i > target; i -= 1) next = studioHistoryReducer(next, { type: "undo" });
+      for (let i = from; i < target; i += 1) next = studioHistoryReducer(next, { type: "redo" });
+      return next;
     }
 
     case "gesture":

@@ -83,6 +83,66 @@ export function resizeLayerBy(
   return clampLayer({ ...layer, x: left, y: top, w: right - left, h: bottom - top });
 }
 
+/**
+ * Where an "Align" command puts the selected layer.
+ *
+ * Alignment here is always against the CANVAS, because the editor has exactly
+ * one selected layer — `StudioState.layerIndex` is a single index, not a set —
+ * and "align these to each other" has no meaning with one of them. That is the
+ * same thing legacy's Arrange ▸ Align does with a single selection, so the
+ * commands mean what an operator coming from it expects.
+ */
+export type AlignTarget = "left" | "hcenter" | "right" | "top" | "vmiddle" | "bottom";
+
+/**
+ * The geometry patch that aligns `layer` to one edge or axis of the canvas.
+ *
+ * A patch rather than a whole layer, so it goes through `patchLayer` and gets
+ * the same clamping, rounding and undo treatment as a drag. Only ONE coordinate
+ * is ever touched: aligning left must not also re-centre vertically, which is
+ * the bug a "set x and y" implementation ships.
+ */
+export function alignPatch(layer: SlideLayer, target: AlignTarget): LayerPatch {
+  switch (target) {
+    case "left":
+      return { x: 0 };
+    case "hcenter":
+      return { x: Math.round((SLIDE_CANVAS_WIDTH - layer.w) / 2) };
+    case "right":
+      return { x: SLIDE_CANVAS_WIDTH - layer.w };
+    case "top":
+      return { y: 0 };
+    case "vmiddle":
+      return { y: Math.round((SLIDE_CANVAS_HEIGHT - layer.h) / 2) };
+    case "bottom":
+      return { y: SLIDE_CANVAS_HEIGHT - layer.h };
+  }
+}
+
+/** How far a duplicated layer is offset from its original, in canvas pixels.
+ * Enough that the copy is visibly a second object rather than looking like
+ * nothing happened, small enough that it is still on the canvas. */
+export const DUPLICATE_OFFSET = 32;
+
+/**
+ * A copy of `layer`, nudged so it does not sit exactly on top of the original.
+ *
+ * The offset is clamped by `clampLayer` like any other geometry, so duplicating
+ * a full-bleed background rectangle produces a copy in the same place rather
+ * than one hanging 32px off the right edge — a duplicate that the server would
+ * refuse is worse than one that overlaps.
+ *
+ * `derived_from` is CARRIED, not cleared. It records which spec the copied
+ * raster was rendered from, and the copy's spec is identical, so the copy is
+ * exactly as current as the original was; clearing it would report a freshly
+ * duplicated layer as never rendered and drop its picture off the wall until
+ * somebody ran the tool. The geometry change is what makes it stale, and
+ * `staleRasterKeys` computes that from the draft rather than from this flag.
+ */
+export function duplicateLayerOf(layer: SlideLayer): SlideLayer {
+  return clampLayer({ ...layer, x: layer.x + DUPLICATE_OFFSET, y: layer.y + DUPLICATE_OFFSET });
+}
+
 /** The default countdown target: the start of the NEXT local day.
  *
  * A countdown's `target_ms` must be a positive absolute instant or the layer is

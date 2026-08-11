@@ -141,3 +141,58 @@ describe("App — a thrown route keeps the navigation, and leaving it clears the
   });
 
 });
+
+/**
+ * The Studio is the one route mounted INSIDE the session gate and OUTSIDE the
+ * shell. Both halves are asserted here, against the real <App/>, because both
+ * are properties of the route TABLE and nothing else can see them: the Studio's
+ * own suite renders the component standalone, where there is no shell to be
+ * outside of and no gate to be inside.
+ */
+describe("App — the Studio is full-screen, and still behind the gate", () => {
+  it("paints without the nav rail", async () => {
+    server.use(
+      http.get("*/api/v1/casts/:id", () =>
+        HttpResponse.json(
+          {
+            id: "01J8Z3K4N5P6Q7R8S9T0V1W2X3",
+            scope_node: "01J8Z3K4N5P6Q7R8S9T0V1W2P0",
+            name: "Lobby loop",
+            slides: [{ id: "s1", layers: [{ kind: "rect", x: 0, y: 0, w: 1920, h: 1080, color: "#101020" }] }],
+            labels: {},
+            revision: 1,
+            created_at: 0,
+            updated_at: 0,
+          },
+          { headers: { ETag: '"1"' } },
+        ),
+      ),
+      http.get("*/api/v1/content", () => HttpResponse.json({ content: [] })),
+      http.get("*/api/v1/entities", empty),
+    );
+    window.history.pushState({}, "", "/studio?id=01J8Z3K4N5P6Q7R8S9T0V1W2X3");
+    render(<App />);
+
+    // The editor is up…
+    expect(await screen.findByRole("menubar", { name: "Studio menu" })).toBeInTheDocument();
+    // …and the shell is not. Asserted on the rail rather than on a class name,
+    // because the rail is the thing that was eating the canvas's width — and it
+    // is the same landmark every other route in this file asserts is PRESENT, so
+    // this cannot pass by querying for something that never existed.
+    expect(screen.queryByRole("navigation", { name: /primary/i })).not.toBeInTheDocument();
+    // The way OUT is the editor's own, since the rail's is gone.
+    expect(screen.getByRole("button", { name: "Back to casts" })).toBeInTheDocument();
+  });
+
+  it("still sends an unauthenticated visitor to sign in", async () => {
+    // Outside the SHELL is not outside the GATE. /setup is genuinely ungated
+    // (nothing has claimed the box yet); the Studio edits a resource behind
+    // SEC-005 and must not paint for an anonymous caller.
+    server.use(http.get("*/api/v1/auth/session", () => new HttpResponse(null, { status: 401 })));
+    window.history.pushState({}, "", "/studio?id=01J8Z3K4N5P6Q7R8S9T0V1W2X3");
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: /sign in/i })).toBeInTheDocument();
+    expect(screen.queryByRole("menubar", { name: "Studio menu" })).not.toBeInTheDocument();
+  });
+});

@@ -5,7 +5,6 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { ImageOff, QrCode, VideoOff } from "lucide-react";
@@ -44,11 +43,6 @@ import { COUNTDOWN_DEFAULT_LAYOUT, formatCountdownLayout, formatGoTimeLayout } f
  * than accumulated frame to frame — accumulating rounds every frame, and the
  * rounding error is exactly what makes a layer creep away from the cursor.
  */
-
-/** How far an arrow key moves the selected layer, in canvas pixels. */
-const NUDGE = 8;
-/** …and with Alt held, for placing something precisely. */
-const NUDGE_FINE = 1;
 
 /**
  * The content origin's `asset_ref` → fetch-`url` map, or `null` when the origin
@@ -570,6 +564,41 @@ export function SlideStage({
   );
 }
 
+/**
+ * The composition guides: centre lines, thirds, and a title-safe inset.
+ *
+ * All three are drawn as PERCENTAGES of the stage, so one component is correct
+ * at every zoom without knowing the scale — and none of them snaps anything.
+ * That is the whole design: a guide that moves a layer is a behaviour with a
+ * right answer and several wrong ones (what counts as near, whether a resize
+ * snaps too, whether the operator can suppress it mid-drag), and this editor's
+ * drag path is the part its test suite proves hardest. These are a straightedge
+ * held up to the artwork, nothing more.
+ *
+ * The title-safe inset is the one that is not decoration. A television overscans
+ * — a real panel can crop several percent off every edge — so text laid flush to
+ * the canvas border can be legitimately unreadable on the wall while looking
+ * perfect in the editor. 5% is the broadcast convention.
+ */
+function CanvasGuides() {
+  const line = "absolute bg-[color:var(--wv-accent)]/25";
+  return (
+    <div data-slot="canvas-guides" aria-hidden="true" className="pointer-events-none absolute inset-0 z-[5]">
+      {/* Thirds. */}
+      <div className={cn(line, "left-1/3 top-0 h-full w-px")} />
+      <div className={cn(line, "left-2/3 top-0 h-full w-px")} />
+      <div className={cn(line, "left-0 top-1/3 h-px w-full")} />
+      <div className={cn(line, "left-0 top-2/3 h-px w-full")} />
+      {/* Centre, brighter than the thirds — it is the one an operator lines
+          things up against most. */}
+      <div className="absolute left-1/2 top-0 h-full w-px bg-[color:var(--wv-accent)]/55" />
+      <div className="absolute left-0 top-1/2 h-px w-full bg-[color:var(--wv-accent)]/55" />
+      {/* Title-safe. */}
+      <div className="absolute inset-[5%] border border-dashed border-[color:var(--wv-warn)]/50" />
+    </div>
+  );
+}
+
 /** Where a grip sits on the selection box, as a fraction of its width/height. */
 const HANDLE_ANCHOR: Record<ResizeHandle, { fx: number; fy: number; cursor: string }> = {
   nw: { fx: 0, fy: 0, cursor: "nwse-resize" },
@@ -599,11 +628,6 @@ export interface SlideCanvasProps {
   onSelect: (index: number | null) => void;
   /** A drag finished a frame: the layer's new absolute canvas geometry. */
   onGeometry: (index: number, geometry: Pick<SlideLayer, "x" | "y" | "w" | "h">) => void;
-  /** A keyboard move, by a canvas-space delta. */
-  onNudge: (index: number, dx: number, dy: number) => void;
-  /** A keyboard resize, by a canvas-space delta on one grip. */
-  onResizeBy: (index: number, handle: ResizeHandle, dx: number, dy: number) => void;
-  onDelete: (index: number) => void;
   /**
    * A pointer gesture started or finished.
    *
@@ -619,6 +643,27 @@ export interface SlideCanvasProps {
   assetUrls?: AssetUrls;
   /** Which layers' drawn rasters are out of date (see StaleRasters). */
   staleRasters?: StaleRasters;
+  /**
+   * The zoom, when the HOST owns it.
+   *
+   * Left out, the canvas measures its column and fits — which is the right
+   * answer for anything that just wants a slide drawn at whatever size it has.
+   * The Studio's viewport is not that: it has an explicit zoom the operator sets
+   * from the tool rail and the keyboard, it can go past 100% (where the stage is
+   * larger than the frame and the viewport scrolls), and its fit is against the
+   * viewport's HEIGHT as well as its width. None of that can be expressed by a
+   * component measuring itself, and two components each deciding the scale is
+   * the way the pointer arithmetic drifts from the drawing.
+   *
+   * Given, it is used verbatim — including a scale above 1 — and the measuring
+   * effect does not run at all.
+   */
+  scale?: number;
+  /** Classes for the stage's own frame, for a host that draws its own (the
+   * Studio's TV bezel supplies the border, so it turns this one off). */
+  stageClassName?: string;
+  /** Draw the composition guides over the artwork (see CanvasGuides). */
+  showGuides?: boolean;
 }
 
 /** What a drag in progress is holding: which layer, which grip (null = move),
@@ -636,30 +681,37 @@ export function SlideCanvas({
   selectedIndex,
   onSelect,
   onGeometry,
-  onNudge,
-  onResizeBy,
-  onDelete,
   onGesture,
   assetUrls = null,
   staleRasters = null,
+  scale: controlledScale,
+  stageClassName,
+  showGuides = false,
 }: SlideCanvasProps) {
   const frameRef = useRef<HTMLDivElement>(null);
-  const [scale, setScale] = useState(1);
+  const [measuredScale, setMeasuredScale] = useState(1);
+  const scale = controlledScale ?? measuredScale;
   // The live scale for the pointer handlers, which are bound once: reading it
   // from a ref keeps them from being torn down and rebound on every resize.
   const scaleRef = useRef(scale);
   scaleRef.current = scale;
   const dragRef = useRef<DragState | null>(null);
   const [dragging, setDragging] = useState(false);
+  // Whether the host owns the zoom, read inside the effect below rather than
+  // listed as a dependency: the effect must not re-run (and re-measure) merely
+  // because a controlled scale changed.
+  const controlledRef = useRef(controlledScale !== undefined);
+  controlledRef.current = controlledScale !== undefined;
 
-  // Fit the canvas to the column. `clientWidth` is 0 in a non-layout environment
-  // (jsdom), where a scale of 0 would collapse the stage and make every pointer
-  // delta infinite — so an unmeasurable frame falls back to 1:1 rather than to
-  // nothing.
+  // Fit the canvas to the column, WHEN the host has not given a scale.
+  // `clientWidth` is 0 in a non-layout environment (jsdom), where a scale of 0
+  // would collapse the stage and make every pointer delta infinite — so an
+  // unmeasurable frame falls back to 1:1 rather than to nothing.
   useLayoutEffect(() => {
     const measure = () => {
+      if (controlledRef.current) return;
       const width = frameRef.current?.clientWidth ?? 0;
-      setScale(width > 0 ? Math.min(width / SLIDE_CANVAS_WIDTH, 1) : 1);
+      setMeasuredScale(width > 0 ? Math.min(width / SLIDE_CANVAS_WIDTH, 1) : 1);
     };
     measure();
     window.addEventListener("resize", measure);
@@ -675,6 +727,20 @@ export function SlideCanvas({
       e.stopPropagation();
       e.preventDefault();
       onSelect(index);
+      // …and put focus where the operator just pressed, BY HAND, because that
+      // `preventDefault` is exactly what stops the browser doing it. Without
+      // this, clicking a layer selected it and left focus wherever it was — so
+      // the selection ring and the focus ring disagreed, and nothing on the
+      // canvas could be operated from the keyboard after a click. (The nudge
+      // itself is bound at the document and acts on the SELECTION, so it works
+      // either way now; this is about the two rings telling the same story, and
+      // about Tab continuing from where the operator is looking.)
+      // Found by index rather than from the event target, because a grip is a
+      // SIBLING of the hit box and not a child of it — `closest` from a grip
+      // would leave focus on a tabIndex -1 handle that Tab cannot return to.
+      frameRef.current
+        ?.querySelector<HTMLElement>(`[data-slot="layer-hit"][data-layer-index="${index}"]`)
+        ?.focus();
       dragRef.current = { index, handle, startX: e.clientX, startY: e.clientY, origin: layer };
       setDragging(true);
       // AFTER the selection, which is not part of the gesture and which ends
@@ -715,38 +781,28 @@ export function SlideCanvas({
     };
   }, [onGeometry, onGesture]);
 
-  const onLayerKeyDown = useCallback(
-    (e: ReactKeyboardEvent, index: number) => {
-      const step = e.altKey ? NUDGE_FINE : NUDGE;
-      const delta: Record<string, [number, number]> = {
-        ArrowLeft: [-step, 0],
-        ArrowRight: [step, 0],
-        ArrowUp: [0, -step],
-        ArrowDown: [0, step],
-      };
-      const d = delta[e.key];
-      if (d) {
-        e.preventDefault();
-        // Shift turns the arrows into a resize from the bottom-right grip, so
-        // the whole geometry is reachable without a pointer.
-        if (e.shiftKey) onResizeBy(index, "se", d[0], d[1]);
-        else onNudge(index, d[0], d[1]);
-        return;
-      }
-      if (e.key === "Delete" || e.key === "Backspace") {
-        e.preventDefault();
-        onDelete(index);
-      }
-    },
-    [onNudge, onResizeBy, onDelete],
-  );
+  // NOTE: the arrow-key nudge and Delete are NOT bound here. They were, on this
+  // element, and that made them unreachable: `beginDrag` preventDefaults its own
+  // pointerdown (so the browser does not drag the artwork), which also stops the
+  // browser moving focus — so clicking a layer selected it without focusing it
+  // and the arrows went nowhere. They are bound at the DOCUMENT now and act on
+  // the SELECTION (studio-shortcuts.matchNudge), which is the thing the operator
+  // can see. This element stays focusable, and focus now follows a click, so the
+  // selection ring and the focus ring agree.
 
   const selected = selectedIndex === null ? undefined : slide.layers[selectedIndex];
 
   return (
-    <div ref={frameRef} data-slot="slide-canvas" className="w-full min-w-0">
+    <div
+      ref={frameRef}
+      data-slot="slide-canvas"
+      className={cn(controlledScale === undefined ? "w-full min-w-0" : "shrink-0")}
+    >
       <div
-        className="relative mx-auto overflow-hidden rounded-panel border border-border bg-black"
+        className={cn(
+          "relative mx-auto overflow-hidden rounded-panel border border-border bg-black",
+          stageClassName,
+        )}
         style={{ width: SLIDE_CANVAS_WIDTH * scale, height: SLIDE_CANVAS_HEIGHT * scale }}
         onPointerDown={() => onSelect(null)}
       >
@@ -758,6 +814,8 @@ export function SlideCanvas({
           staleRasters={staleRasters}
           className="pointer-events-none absolute left-0 top-0"
         />
+
+        {showGuides ? <CanvasGuides /> : null}
 
         {/* The chrome, in screen pixels. One hit target per layer, topmost last
             so the z-order the operator sees is the z-order they click. */}
@@ -772,7 +830,6 @@ export function SlideCanvas({
             aria-pressed={i === selectedIndex}
             aria-label={`Layer ${i + 1}: ${describeLayer(layer)}`}
             onPointerDown={(e) => beginDrag(e, i, null)}
-            onKeyDown={(e) => onLayerKeyDown(e, i)}
             onClick={(e) => {
               e.stopPropagation();
               onSelect(i);

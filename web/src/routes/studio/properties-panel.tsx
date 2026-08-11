@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { AlertTriangle, FileVideo, ImagePlus, Plus, Trash2, Type, X } from "lucide-react";
 import { Button, FormField, KitIcon } from "@/components/kit";
 import {
@@ -83,6 +83,19 @@ export interface PropertiesPanelProps {
    * that dropdown. A menu that jumps to the slide it is on is legal (it re-shows
    * the slide) but is almost never what someone means, so it is worth naming. */
   slideIndex: number;
+  /**
+   * The align / stacking-order bar, rendered by the host and slotted in under
+   * the selected layer's name.
+   *
+   * A slot rather than four more props, because those commands are not
+   * properties of a layer — they are commands ON one, they also live in the
+   * Arrange menu and on the keyboard, and this panel would be the third place
+   * holding an opinion about what "bring to front" means. Rendered HERE rather
+   * than above the panel so the column reads in the order an operator scans it:
+   * the slide's own setting, then which layer is selected, then what can be done
+   * to it, then its numbers.
+   */
+  arrange?: ReactNode;
 }
 
 export function PropertiesPanel({
@@ -97,14 +110,16 @@ export function PropertiesPanel({
   entities,
   slides,
   slideIndex,
+  arrange,
 }: PropertiesPanelProps) {
   const slideProblems = problems.filter((p) => p.index === null);
   const layerProblems = layerIndex === null ? [] : problems.filter((p) => p.index === layerIndex);
 
   return (
+    // No heading of its own: the panel it is docked in is titled "Properties",
+    // and a page-style `<h2>` inside a tool panel is both a second name for the
+    // same region and 20px of the column an editor cannot spare.
     <section aria-label="Properties" className="flex min-w-0 flex-col gap-4">
-      <h2 className="text-sm font-semibold">Properties</h2>
-
       {/* Slide-level: how long this slide holds the screen. */}
       <FormField
         label="Slide duration (seconds)"
@@ -141,6 +156,8 @@ export function PropertiesPanel({
           {layerProblems.map((p, i) => (
             <ProblemNote key={i} message={p.message} />
           ))}
+
+          {arrange}
 
           {/* Geometry — canvas pixels, the same coordinates the player draws in. */}
           <div className="grid grid-cols-2 gap-3">
