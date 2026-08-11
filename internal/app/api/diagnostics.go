@@ -284,8 +284,14 @@ type relayHealth struct {
 
 // screenHealth is the fleet roll-up (openapi ScreenHealth).
 type screenHealth struct {
-	Total      int `json:"total"`
-	Live       int `json:"live"`
+	Total int `json:"total"`
+	Live  int `json:"live"`
+	// Fetching is counted separately from both neighbours for the reason the
+	// read model separates them: a screen mid content transfer is working (the
+	// previous program is still on the wall) but unconfirmed, so folding it into
+	// `live` would overstate the fleet and folding it into `stale` would send an
+	// operator to look at a screen that is doing exactly what it should.
+	Fetching   int `json:"fetching"`
 	Stale      int `json:"stale"`
 	NeverSeen  int `json:"never_seen"`
 	Paired     int `json:"paired"`
@@ -491,6 +497,8 @@ func (srv *server) screenRollup(r *http.Request) (screenHealth, serviceHealth) {
 		switch st.Reachability {
 		case string(screens.ReachabilityLive):
 			out.Live++
+		case string(screens.ReachabilityFetching):
+			out.Fetching++
 		case string(screens.ReachabilityStale):
 			out.Stale++
 		default:
@@ -518,19 +526,23 @@ func (srv *server) screenRollup(r *http.Request) (screenHealth, serviceHealth) {
 	case out.Live == out.Total:
 		return out, serviceHealth{Name: "screens", Status: healthOK,
 			Detail: "All " + strconv.Itoa(out.Total) + " screen(s) are live."}
-	case out.Live == 0 && out.Stale == 0:
+	case out.Live == 0 && out.Stale == 0 && out.Fetching == 0:
 		// Every screen is never-seen: authored and waiting, not broken.
 		return out, serviceHealth{Name: "screens", Status: healthDegraded,
 			Detail: "None of the " + strconv.Itoa(out.Total) + " authored screen(s) has ever been seen — pair them and switch them on."}
-	case out.Live == 0:
-		// At least one screen HAS been seen and none is live now. That is a
-		// fleet that went dark, which is the case `down` exists for.
+	case out.Live == 0 && out.Fetching == 0:
+		// At least one screen HAS been seen and none is live or transferring.
+		// That is a fleet that went dark, which is the case `down` exists for.
+		// A FETCHING screen keeps it out of `down` on purpose: that screen is
+		// still talking to its relay and still showing its previous program, so
+		// "the fleet is dark" would be false.
 		return out, serviceHealth{Name: "screens", Status: healthDown,
 			Detail: strconv.Itoa(out.Stale) + " screen(s) were being seen and have gone quiet; none of the " +
 				strconv.Itoa(out.Total) + " authored screen(s) is live."}
 	default:
 		return out, serviceHealth{Name: "screens", Status: healthDegraded,
-			Detail: strconv.Itoa(out.Total-out.Live) + " of " + strconv.Itoa(out.Total) + " screen(s) are stale or have never been seen."}
+			Detail: strconv.Itoa(out.Total-out.Live) + " of " + strconv.Itoa(out.Total) +
+				" screen(s) are not live (stale, fetching new content, or never seen)."}
 	}
 }
 

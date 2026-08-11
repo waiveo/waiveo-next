@@ -71,6 +71,10 @@ const maxScreenFieldBytes = 256
 //
 //   - Live: the relay heard from this screen recently enough that a poll cannot
 //     have been missed by much.
+//   - Fetching: the relay handed this screen a Lease and the screen has not
+//     acknowledged it, recently enough that the shipped player would still be
+//     transferring its content. See reachabilityOf for why that is a state of
+//     its own and not either of the neighbours.
 //   - Stale: contact has been made at some point, but not recently. NOT
 //     "offline" — see the package doc.
 //   - NeverSeen: no relay has ever observed this screen pull a program. Usually
@@ -80,32 +84,45 @@ type Reachability string
 
 const (
 	ReachabilityLive      Reachability = "live"
+	ReachabilityFetching  Reachability = "fetching"
 	ReachabilityStale     Reachability = "stale"
 	ReachabilityNeverSeen Reachability = "never_seen"
 )
 
-// LiveWindowMs is the staleness threshold separating Live from Stale.
+// LiveWindowMs is the staleness threshold separating Live from everything else.
 //
 // It is not a number chosen here. It is wire.ScreenLiveWindowMs, COMPUTED from
-// the player's own two timings — its poll wait and its program-request timeout,
-// both mirrored against the shipped BrightScript under test — and declared next
-// to the relay's report interval, so the threshold and the rates it has to
-// exceed cannot drift apart. See internal/shared/wire/screencadence.go for the
-// derivation and the pins that hold it.
+// the player's own three loop timings — its poll wait, its program-request
+// timeout and its lease-ack timeout, all mirrored against the shipped
+// BrightScript under test — and declared next to the relay's report interval, so
+// the threshold and the rates it has to exceed cannot drift apart. See
+// internal/shared/wire/screencadence.go for the derivation and the pins that
+// hold it.
 //
 // This used to be a hand-written 45_000, justified against PLY-082's nominal
 // 10-second poll: a number in one file and a justification in another, with
 // nothing able to tell anyone when they stopped matching. Deriving it is what
 // fixes the class, and the derivation is deliberately a BOUND on what a healthy
-// screen can do rather than a measurement of one — read that file's "correction
-// of 2026-08" before changing any of it, because the first attempt at this fix
-// derived the window from a measurement that turned out to be a broken screen's
-// retry backoff, and widened the window to 180 000 ms on the strength of it.
+// screen can do rather than a measurement of one — read that file's two
+// corrections before changing any of it. The first attempt derived the window
+// from a measurement that turned out to be a broken screen's retry backoff and
+// widened it to 180 000 ms; the second omitted a whole synchronous round trip
+// from the loop it claimed to bound.
 //
 // Exported so the API layer can publish the threshold alongside the judgement:
 // a consumer that disagrees with this line can draw its own from the raw age,
 // which every response also carries.
 const LiveWindowMs int64 = wire.ScreenLiveWindowMs
+
+// ContentTransferWindowMs is the second threshold: how far past LiveWindowMs a
+// screen with an UNACKNOWLEDGED Lease is still called Fetching rather than
+// Stale. Also computed — the live window plus one whole content-fetch timeout,
+// which is the player's own statement of how long a single transfer may take.
+//
+// Exported for the same reason as LiveWindowMs, and additionally because a
+// consumer that wants to treat Fetching as Stale needs to know which line it is
+// disagreeing with.
+const ContentTransferWindowMs int64 = wire.ScreenContentTransferWindowMs
 
 // Status is one screen's merged live status as this app peer currently knows it.
 // Every *AgeMs is milliseconds before the read, INCLUDING the report's own age
@@ -275,7 +292,7 @@ func (r *Registry) Statuses() []Status {
 				ContentCount:         e.ContentCount,
 				RenderAssetRef:       e.RenderAssetRef,
 			}
-			st.Reachability = reachabilityOf(st.LastPullAgeMs)
+			st.Reachability = reachabilityOf(st.LastPullAgeMs, st.LastAckAgeMs)
 			if prev, dup := best[e.ScreenID]; dup && prev.ReportAgeMs <= reportAge {
 				continue
 			}
@@ -291,22 +308,81 @@ func (r *Registry) Statuses() []Status {
 	return out
 }
 
-// reachabilityOf applies the ONE threshold this model draws (LiveWindowMs), off
-// the PULL age specifically rather than off whichever contact was most recent.
+// reachabilityOf judges a screen from the two contacts a working player makes
+// every cycle: the program pull and the Lease acknowledgement that follows it.
 //
-// The pull is the right signal because it is the one a working player makes
-// unconditionally, every cycle, forever. An ack only follows a pull; a render
-// start only happens when there is content to render, so a screen correctly
-// showing a blank program would look dead if judged by it.
-func reachabilityOf(lastPullAgeMs int64) Reachability {
-	switch {
-	case lastPullAgeMs == NeverObserved:
+// # Live is judged on the freshest CONTACT, not on the pull alone
+//
+// The pull is the signal that matters because it is the one a player makes
+// unconditionally, forever; the ack only ever happens after a pull, so counting
+// it can make a screen look fresher but never staler, and it IS a real round
+// trip from that screen. A render start is deliberately still excluded: it only
+// happens when there is content to render, so a screen correctly showing a blank
+// program would look dead if judged by it.
+//
+// # Why Fetching exists
+//
+// The gap between a pull and its ack is, in the shipped player, exactly the
+// content-materialisation phase: `wvEnsureContent` fetches every asset the Lease
+// names that this screen does not already hold — up to 120 000 ms EACH, then a
+// whole-file SHA-256 — and only then does `wvAckLease` fire. All of it is
+// serialised into the poll loop, so all of it lands inside `last_pull_age_ms`.
+//
+// A 60 MB video on building wifi therefore takes a perfectly healthy screen past
+// LiveWindowMs while never-wipe keeps the OUTGOING program on the wall the whole
+// time. Reporting that screen `stale` is the wasted investigation this column
+// exists to avoid. Reporting it `live` would be a claim nothing supports — no
+// contact has been made. So it gets its own word, and the word says what was
+// measured: the relay handed it a Lease and is waiting to hear back.
+//
+// # Why Fetching expires
+//
+// A screen that lost power between its pull and its ack produces the identical
+// observation, and this model cannot tell the two apart. An unbounded Fetching
+// would therefore hide a dead screen forever — the withdrawn 180 000 ms window
+// wearing a friendlier label. So the state lasts one whole content-fetch timeout
+// past the live window and then reads Stale like anything else. What that does
+// not cover is written down in wire.ScreenContentTransferWindowMs's own doc.
+//
+// # The dependency this rests on, named so it cannot break quietly
+//
+// "Unacknowledged means transferring" is true only while the player acks AFTER
+// the fetch. player/1's PLY-088 says a player MUST be able to acknowledge a
+// Lease whose assets it cannot yet fetch — which this player does not do today,
+// and a future one might. wire's TestTheAckFollowsTheContentFetch reads the
+// shipped BrightScript and fails if that order ever inverts, because when it
+// does this clause stops firing and a screen downloading a video goes back to
+// reading Stale with nothing to say so.
+func reachabilityOf(lastPullAgeMs, lastAckAgeMs int64) Reachability {
+	if lastPullAgeMs == NeverObserved {
 		return ReachabilityNeverSeen
-	case lastPullAgeMs <= LiveWindowMs:
-		return ReachabilityLive
-	default:
-		return ReachabilityStale
 	}
+	if freshestContact(lastPullAgeMs, lastAckAgeMs) <= LiveWindowMs {
+		return ReachabilityLive
+	}
+	if pullIsUnacknowledged(lastPullAgeMs, lastAckAgeMs) && lastPullAgeMs <= ContentTransferWindowMs {
+		return ReachabilityFetching
+	}
+	return ReachabilityStale
+}
+
+// freshestContact is the smaller (more recent) of the two ages, treating the
+// never-observed sentinel as no contact at all rather than as an enormous one.
+func freshestContact(lastPullAgeMs, lastAckAgeMs int64) int64 {
+	if lastAckAgeMs != NeverObserved && lastAckAgeMs < lastPullAgeMs {
+		return lastAckAgeMs
+	}
+	return lastPullAgeMs
+}
+
+// pullIsUnacknowledged reports whether the screen's most recent pull is still
+// waiting for its ack — an ack OLDER than the pull answered an earlier one.
+//
+// Both ages have had the same report age added to them (agePlus), so comparing
+// them is comparing two instants measured on one clock, which is the only
+// comparison this model is allowed to make.
+func pullIsUnacknowledged(lastPullAgeMs, lastAckAgeMs int64) bool {
+	return lastAckAgeMs == NeverObserved || lastAckAgeMs > lastPullAgeMs
 }
 
 // agePlus adds the report's own age to an age measured inside it, preserving the

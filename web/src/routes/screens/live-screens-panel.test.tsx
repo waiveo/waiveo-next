@@ -37,12 +37,18 @@ function statusRow(over: Partial<ScreenStatus> = {}): ScreenStatus {
     scope_node: "01J8ZS1TE0000000000000001",
     relay_id: "relay-1",
     reachability: "live",
-    // The window the server actually publishes: derived from the player's
-    // measured ~60s pull-to-pull cadence, not the old hand-written 45s.
-    live_window_ms: 180_000,
+    // The windows the server actually publishes, DERIVED from the player's own
+    // loop timings (poll wait + program-request timeout + lease-ack timeout).
+    // These are fixtures, not assertions — but a fixture carrying a number the
+    // server stopped producing (this one said 180_000 for a whole round after
+    // that window was withdrawn) is a fixture that stops describing the system.
+    live_window_ms: 52_000,
+    content_transfer_window_ms: 172_000,
     paired: true,
     last_pull_age_ms: 4_000,
-    last_ack_age_ms: 4_100,
+    // The ack ANSWERS the pull, so it is the fresher of the two. An ack older
+    // than the pull is what the server reads as a transfer in progress.
+    last_ack_age_ms: 3_900,
     last_render_start_age_ms: 4_500,
     report_age_ms: 2_000,
     program_revision: "rev-1",
@@ -173,6 +179,30 @@ describe("LiveScreensPanel — status", () => {
     expect(within(table).getByText("Last check-in 4s ago")).toBeInTheDocument();
     expect(within(table).getByText("Not heard from")).toBeInTheDocument();
     expect(within(table).getByText("Last check-in 3m ago")).toBeInTheDocument();
+  });
+
+  it("names a screen that is downloading content, and does not dress it as a fault", async () => {
+    // The server's third reachability state. A screen mid content transfer is
+    // still showing its previous program (never-wipe), so the row must not read
+    // as a problem — and must not read as confirmed-live either, because nothing
+    // has been heard back. Before the panel learned the word it fell through to
+    // the raw enum and an undefined chip variant, which is the half-of-a-pair
+    // this case exists to prevent.
+    renderPanel([
+      statusRow({
+        reachability: "fetching",
+        last_pull_age_ms: 72_000,
+        last_ack_age_ms: 82_000,
+        render_asset_ref: "",
+      }),
+    ]);
+    const table = await screen.findByRole("table", { name: "Live screens" });
+    expect(within(table).getByText("Collecting content")).toBeInTheDocument();
+    expect(within(table).queryByText("fetching")).not.toBeInTheDocument();
+    expect(within(table).queryByText("Not heard from")).not.toBeInTheDocument();
+    expect(
+      within(table).getByText("Downloading new content (still showing the last)"),
+    ).toBeInTheDocument();
   });
 
   it("never says OFFLINE — the platform cannot tell which failure it is", async () => {

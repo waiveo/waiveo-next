@@ -1852,10 +1852,12 @@ export interface components {
             /** @description The relay whose report this status came from; absent when no relay has reported this screen. */
             relay_id?: string;
             /**
-             * @description `live` — the relay heard from this screen within `live_window_ms`. `stale` — contact was made at some point, but not recently. `never_seen` — no relay has ever observed this screen pull a program.
+             * @description `live` — the screen contacted its relay within `live_window_ms` (a program pull, or the acknowledgement that answers one). `fetching` — the relay handed this screen a Lease it has not acknowledged, and the pull is within `content_transfer_window_ms`: the shipped player would still be downloading and verifying the content, during which the PREVIOUS program stays on the wall. Not a fault, and not a confirmation either — nothing has been heard back. `stale` — contact was made at some point, but not recently. `never_seen` — no relay has ever observed this screen pull a program.
              * @enum {string}
              */
-            reachability: "live" | "stale" | "never_seen";
+            reachability: "live" | "fetching" | "stale" | "never_seen";
+            /** @description How far past `live_window_ms` an unacknowledged pull is still reported `fetching` rather than `stale` — one whole content-fetch timeout, the player's own limit on a single transfer. Published for the same reason as `live_window_ms`: a consumer that wants to treat `fetching` as `stale` needs to know which line it is disagreeing with. */
+            content_transfer_window_ms: number;
             /** @description The staleness threshold `reachability` was decided by, published so a consumer that wants a different line can draw it from the raw ages. */
             live_window_ms: number;
             /** @description Whether a relay currently holds a live channel-token session for this screen. */
@@ -1994,6 +1996,8 @@ export interface components {
         ScreenHealth: {
             total: number;
             live: number;
+            /** @description How many screens were handed a Lease they have not yet acknowledged, recently enough that the player would still be transferring its content. Counted apart from both neighbours: such a screen is still showing its previous program, so it is neither confirmed healthy nor a screen to go and look at. */
+            fetching: number;
             stale: number;
             never_seen: number;
             paired: number;

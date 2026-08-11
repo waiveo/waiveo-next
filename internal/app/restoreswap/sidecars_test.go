@@ -332,19 +332,38 @@ func TestARestoreOverAnUNCLEANLYClosedStoreActuallyRestores(t *testing.T) {
 	}
 	// NO liveDB.Close(): the power went out.
 
-	// The archived workspace, built beside it and cleanly closed — which is what
-	// a restore hands over (workspacerestore.go writes the archive's snapshot
-	// bytes straight to the staged path).
+	// The archived workspace, produced the way production produces it: SQLite's
+	// own `VACUUM INTO` (internal/app/store's SnapshotInto — ARC-083 forbids a
+	// raw file copy), whose bytes workspacerestore.go writes straight to the
+	// staged path.
+	//
+	// The payload matters and this test used to get it wrong. A cleanly CLOSED
+	// WAL-mode database has journal mode 2/2 in its header; `VACUUM INTO` output
+	// is a ROLLBACK-mode database, 1/1. Both reproduce the finding, so the old
+	// fixture was not wrong about the outcome — but the claim attached to it was
+	// "proved with the real driver and pragmas", and a payload production never
+	// produces cannot carry that claim. It also hid a second question: what a
+	// rollback-mode file does when something leaves a stale `-journal` beside it
+	// (see TestAdoptClearsEVERYSidecarBeforeTheStagedStoreMovesIn).
 	archived := filepath.Join(dir, "archived.db")
 	archDB := openLikeTheStore(t, archived)
 	mustExec(t, archDB, `CREATE TABLE workspace (name TEXT PRIMARY KEY)`)
 	mustExec(t, archDB, `INSERT INTO workspace (name) VALUES ('ARCHIVED-WORKSPACE')`)
+	snapshotPath := filepath.Join(dir, "archived-snapshot.db")
+	mustExec(t, archDB, `VACUUM INTO '`+snapshotPath+`'`)
 	if err := archDB.Close(); err != nil {
 		t.Fatalf("close the archived store: %v", err)
 	}
-	snapshot, err := os.ReadFile(archived)
+	snapshot, err := os.ReadFile(snapshotPath)
 	if err != nil {
 		t.Fatalf("read the archived snapshot: %v", err)
+	}
+	// The header's journal-mode bytes (offsets 18 and 19) are 1/1 for a
+	// rollback-mode database and 2/2 for a WAL one. Asserted so this test cannot
+	// quietly go back to staging the wrong kind of file.
+	if len(snapshot) < 20 || snapshot[18] != 1 || snapshot[19] != 1 {
+		t.Fatalf("the staged snapshot's header journal mode is %d/%d, want 1/1 — this fixture is not `VACUUM INTO` output and so is not what a restore actually hands over",
+			snapshot[18], snapshot[19])
 	}
 
 	if err := Stage(live, func(staged string) error { return os.WriteFile(staged, snapshot, 0o600) }); err != nil {
@@ -373,5 +392,155 @@ func TestARestoreOverAnUNCLEANLYClosedStoreActuallyRestores(t *testing.T) {
 	if got := workspaceIn(t, previous); len(got) != 1 || got[0] != "LIVE-WORKSPACE" {
 		t.Fatalf("the pre-restore copy holds %v, want [LIVE-WORKSPACE] — the copy an operator falls back to lost "+
 			"everything committed since the last checkpoint", got)
+	}
+}
+
+// TestTheAdoptedStoreIsCleanFromEitherCrashPoint replaces an ARGUMENT with a
+// test, which is the whole reason it exists.
+//
+// Adopt's doc used to justify the db-then-wal move-aside order by claiming the
+// reverse "leaves the adopted store poisoned". That claim was false — inverting
+// the two lines passes every other test in this package, because
+// `removeSidecars(live)` runs unconditionally afterwards — and a false argument
+// in a comment is worse than none, because the next person weakens the real
+// guarantee while carefully preserving the fake one.
+//
+// So this pins the guarantee that IS real: whichever of the two renames was
+// interrupted, the store that ends up live is the restored one and nothing of
+// the replaced workspace is left beside it to be recovered into it.
+func TestTheAdoptedStoreIsCleanFromEitherCrashPoint(t *testing.T) {
+	const replacedFrames = "committed frames of the workspace being REPLACED"
+	cases := []struct {
+		name string
+		// crash puts the directory into the state that interruption leaves.
+		crash func(t *testing.T, live, previous string)
+	}{
+		{
+			name: "interrupted after the database moved, before its log did",
+			crash: func(t *testing.T, live, previous string) {
+				if err := os.Rename(live, previous); err != nil {
+					t.Fatalf("simulate rename(live, previous): %v", err)
+				}
+				// The log is still in the live slot, orphaned.
+			},
+		},
+		{
+			name: "interrupted after the log moved, before the database did",
+			crash: func(t *testing.T, live, previous string) {
+				if err := os.Rename(live+"-wal", previous+"-wal"); err != nil {
+					t.Fatalf("simulate rename(live-wal, previous-wal): %v", err)
+				}
+				// The database is still in the live slot, without its log.
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			live := swapDir(t)
+			seedSidecars(t, live, replacedFrames)
+			if err := Stage(live, writeStaged(stagedContent)); err != nil {
+				t.Fatalf("Stage: %v", err)
+			}
+			_, _, previous, _ := Paths(live)
+			tc.crash(t, live, previous)
+
+			adopted, err := Adopt(live)
+			if err != nil {
+				t.Fatalf("Adopt after the crash: %v", err)
+			}
+			if !adopted {
+				t.Fatal("the interrupted swap was not finished")
+			}
+			if got := read(t, live); got != stagedContent {
+				t.Errorf("live = %q, want the restored store", got)
+			}
+			for _, suffix := range sidecarSuffixes {
+				mustNotExist(t, live+suffix, "a companion of the REPLACED store left in the live slot is recovered straight over the restored one")
+			}
+		})
+	}
+}
+
+// TestAdoptClearsEVERYSidecarBeforeTheStagedStoreMovesIn drives the whole
+// sidecarSuffixes list rather than naming `-wal`, which is what makes it catch
+// the file the list was missing.
+//
+// `-journal` was not on the list. A restore's staged bytes are `VACUUM INTO`
+// output — a ROLLBACK-mode database (journal_mode 1 in the header, not 2) — so a
+// stray `<live>-journal` beside the newly adopted file is read by SQLite as that
+// database's own hot journal and ROLLED BACK into it. Same defect as the `-wal`
+// one this package was built for, in the other journal mode.
+func TestAdoptClearsEVERYSidecarBeforeTheStagedStoreMovesIn(t *testing.T) {
+	for _, suffix := range sidecarSuffixes {
+		t.Run(suffix, func(t *testing.T) {
+			live := swapDir(t)
+			if err := os.WriteFile(live+suffix, []byte("state belonging to the store being REPLACED"), 0o600); err != nil {
+				t.Fatalf("seed %s: %v", suffix, err)
+			}
+			if err := Stage(live, writeStaged(stagedContent)); err != nil {
+				t.Fatalf("Stage: %v", err)
+			}
+			if _, err := Adopt(live); err != nil {
+				t.Fatalf("Adopt: %v", err)
+			}
+			mustNotExist(t, live+suffix, "SQLite would recover it into the restored database, which is the silent non-restore this package exists to prevent")
+			if got := read(t, live); got != stagedContent {
+				t.Errorf("live = %q, want the restored store", got)
+			}
+		})
+	}
+}
+
+// TestEveryCarriedSidecarFollowsItsDatabase is the other half of knowing about a
+// companion: Adopt must not merely DELETE the ones it recognises, it must carry
+// the data-bearing ones with the database they belong to, or the pre-restore
+// copy an operator falls back to is silently missing whatever the box did most
+// recently.
+//
+// Driven off carriedSuffixes for the same reason as the test above — a companion
+// added to that list and not carried is exactly the half-a-pair this package
+// keeps producing.
+func TestEveryCarriedSidecarFollowsItsDatabase(t *testing.T) {
+	live := swapDir(t)
+	_, _, previous, _ := Paths(live)
+	for _, suffix := range carriedSuffixes {
+		if err := os.WriteFile(live+suffix, []byte("live state in "+suffix), 0o600); err != nil {
+			t.Fatalf("seed %s: %v", suffix, err)
+		}
+	}
+	if err := Stage(live, writeStaged(stagedContent)); err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+	if _, err := Adopt(live); err != nil {
+		t.Fatalf("Adopt: %v", err)
+	}
+	for _, suffix := range carriedSuffixes {
+		if got := read(t, previous+suffix); got != "live state in "+suffix {
+			t.Errorf("%s beside the pre-restore copy = %q, want the live store's own — the safety copy is rewound without it",
+				suffix, got)
+		}
+	}
+}
+
+// TestStageRefusesEVERYSidecarBesideTheStagedStore is Stage's half of the same
+// list. The single-file invariant is what Adopt's unconditional slot-clearing
+// rests on, and an invariant enforced for two of three companions is not one.
+func TestStageRefusesEVERYSidecarBesideTheStagedStore(t *testing.T) {
+	for _, suffix := range sidecarSuffixes {
+		t.Run(suffix, func(t *testing.T) {
+			live := swapDir(t)
+			err := Stage(live, func(p string) error {
+				if err := os.WriteFile(p, []byte(stagedContent), 0o600); err != nil {
+					return err
+				}
+				return os.WriteFile(p+suffix, []byte("left behind by the writer"), 0o600)
+			})
+			if !errors.Is(err, ErrStagedStoreHasSidecars) {
+				t.Fatalf("Stage with a stray %s returned %v, want ErrStagedStoreHasSidecars", suffix, err)
+			}
+			if Pending(live) {
+				t.Error("the restore was marked pending anyway; the refusal has to happen before the marker makes it load-bearing")
+			}
+		})
 	}
 }

@@ -4944,8 +4944,9 @@ components:
         it. See `listScreenStatus` for how the ages are to be read and why
         `reachability` never says "offline".
       required:
-        [screen_id, reachability, live_window_ms, paired, last_pull_age_ms,
-         last_ack_age_ms, last_render_start_age_ms, report_age_ms, content_count]
+        [screen_id, reachability, live_window_ms, content_transfer_window_ms,
+         paired, last_pull_age_ms, last_ack_age_ms, last_render_start_age_ms,
+         report_age_ms, content_count]
       additionalProperties: false
       properties:
         screen_id:
@@ -4960,11 +4961,26 @@ components:
           description: The relay whose report this status came from; absent when no relay has reported this screen.
         reachability:
           type: string
-          enum: [live, stale, never_seen]
+          enum: [live, fetching, stale, never_seen]
           description: >-
-            `live` — the relay heard from this screen within `live_window_ms`.
+            `live` — the screen contacted its relay within `live_window_ms`
+            (a program pull, or the acknowledgement that answers one).
+            `fetching` — the relay handed this screen a Lease it has not
+            acknowledged, and the pull is within `content_transfer_window_ms`:
+            the shipped player would still be downloading and verifying the
+            content, during which the PREVIOUS program stays on the wall. Not a
+            fault, and not a confirmation either — nothing has been heard back.
             `stale` — contact was made at some point, but not recently.
             `never_seen` — no relay has ever observed this screen pull a program.
+        content_transfer_window_ms:
+          type: integer
+          description: >-
+            How far past `live_window_ms` an unacknowledged pull is still
+            reported `fetching` rather than `stale` — one whole content-fetch
+            timeout, the player's own limit on a single transfer. Published for
+            the same reason as `live_window_ms`: a consumer that wants to treat
+            `fetching` as `stale` needs to know which line it is disagreeing
+            with.
         live_window_ms:
           type: integer
           description: >-
@@ -5231,13 +5247,21 @@ components:
         authored rows filled in by relay reports — rather than from the reports
         alone. A screen no relay has ever mentioned is the most alarming row
         there is, and a count built from reports is silent about exactly it.
-      required: [total, live, stale, never_seen, paired, overridden, live_window_ms]
+      required: [total, live, fetching, stale, never_seen, paired, overridden, live_window_ms]
       additionalProperties: false
       properties:
         total:
           type: integer
         live:
           type: integer
+        fetching:
+          type: integer
+          description: >-
+            How many screens were handed a Lease they have not yet acknowledged,
+            recently enough that the player would still be transferring its
+            content. Counted apart from both neighbours: such a screen is still
+            showing its previous program, so it is neither confirmed healthy nor
+            a screen to go and look at.
         stale:
           type: integer
         never_seen:

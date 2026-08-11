@@ -510,6 +510,86 @@ func TestAnExportTooLargeToImportIsRefusedRatherThanProduced(t *testing.T) {
 	}
 }
 
+// TestEveryExportRefusalIsAProblemAndNotAZeroByteCast is the finding this file's
+// second round was opened for, driven through the real mux.
+//
+// The export used to pre-check ONE of the writer's refusals — the asset total —
+// commit `200 application/zip` with a `.cast` filename, and only then call the
+// writer, which has more refusals than that. All of them fire before the first
+// zip byte, so the response was a 200 with a ZERO-BYTE body and the error went
+// to a log line. An operator saved a 0-byte `.cast`, nothing said it had failed,
+// and the receiving box answered "That file is not a cast bundle… a cast bundle
+// is the file a Waiveo box produces from a cast's Export" — false, and pointing
+// them at the wrong box.
+//
+// Each case below is one of those refusals, reached the way it is actually
+// reachable on a box:
+//
+//   - 513 images: nothing caps slides or layers (datamodel validate only rejects
+//     zero slides) and the 1 MiB create-body limit admits thousands of layers,
+//     so this is an ordinary authoring accident, not an exotic input.
+//   - an image past the per-asset ceiling: `POST /content` would not accept one,
+//     but a workspace restore places asset bytes with no per-entry cap
+//     (internal/archive), so the origin can hold one.
+//
+// The assertion is deliberately about the RESPONSE SHAPE rather than the
+// sentence: a Problem document, a Problem content type, and — the part that
+// actually failed — not a zip, and not empty.
+func TestEveryExportRefusalIsAProblemAndNotAZeroByteCast(t *testing.T) {
+	cases := []struct {
+		name       string
+		bodies     [][]byte
+		wantDetail string
+	}{
+		{
+			name: "more images than a bundle may carry",
+			bodies: func() [][]byte {
+				out := make([][]byte, castbundle.MaxAssets+1)
+				for i := range out {
+					out[i] = []byte{byte(i), byte(i >> 8), byte(i >> 16)}
+				}
+				return out
+			}(),
+			wantDetail: "more than the 512 a cast bundle can carry",
+		},
+		{
+			name:       "an image larger than one bundle entry may be",
+			bodies:     [][]byte{bigAsset(castbundle.MaxAssetBytes+1, 0xE7)},
+			wantDetail: "more than the 67108864-byte limit one bundle entry may be",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			content := origin.New()
+			e := newEnvWithContent(t, content)
+			castID, _ := seedCastWithAssets(t, e, content, "Refused export — "+tc.name, tc.bodies)
+
+			resp, raw := e.do(t, http.MethodGet, "/api/v1/casts/"+castID+"/export", nil, nil)
+
+			if ct := resp.Header.Get("Content-Type"); strings.HasPrefix(ct, "application/zip") {
+				t.Fatalf("the export answered %d %s with %d body bytes: a refusal reached the operator as a %s file, which their destination box will blame on itself",
+					resp.StatusCode, ct, len(raw), resp.Header.Get("Content-Disposition"))
+			}
+			if resp.StatusCode != http.StatusConflict {
+				t.Fatalf("export = %d, want 409 (body %q)", resp.StatusCode, raw[:min(len(raw), 300)])
+			}
+			if len(raw) == 0 {
+				t.Fatal("the refusal carried no body at all — the operator is told nothing")
+			}
+			assertProblem(t, resp, raw, "CONFLICT")
+			var p map[string]any
+			mustUnmarshal(t, raw, &p)
+			detail, _ := p["detail"].(string)
+			if !strings.Contains(detail, tc.wantDetail) {
+				t.Errorf("detail = %q, want it to contain %q — the refusal must name what the operator actually hit", detail, tc.wantDetail)
+			}
+			if !strings.Contains(detail, "workspace archive") {
+				t.Errorf("detail = %q, want it to name the instrument that CAN move this design", detail)
+			}
+		})
+	}
+}
+
 // TestExportAndImportAgreeOnOneBundleLimit is the pin that stops the two halves
 // drifting apart again, and it is deliberately behavioural rather than a
 // comparison of constants: it proves the IMPORT ROUTE accepts a body larger than
@@ -538,6 +618,58 @@ func TestExportAndImportAgreeOnOneBundleLimit(t *testing.T) {
 	if !strings.Contains(detail, "not a cast bundle") {
 		t.Errorf("detail = %q, want the not-a-bundle refusal", detail)
 	}
+}
+
+// TestImportingACastStaysInsideItsAllocationBudget is the IMPORT half of the
+// same availability question, and it exists because the export got a measured
+// budget and the import got a paragraph.
+//
+// The import cannot stream: castbundle.Read verifies every asset's hash against
+// the reference it is carried under before anything is written, and a hash over
+// bytes you have not kept is a hash you cannot check. So the whole file really
+// is resident, and the honest thing is to know by how much rather than to guess:
+//
+//	1× the request body   readBodyLimit buffers it (io.ReadAll, which grows by
+//	                      doubling — the transient peak is larger than the file)
+//	1× the decoded assets castbundle.Read materialises each entry to verify it
+//	0× the origin         origin.Add RETAINS the slice Read produced rather than
+//	                      copying it, which is the one place this is cheap
+//
+// The budget below is stated as a multiple of the BUNDLE, measured, with
+// headroom for the doubling. It is a smoke alarm, not a specification: what it
+// catches is a future import that adds another whole copy — a re-encode, a
+// defensive `append([]byte(nil), …)`, a second parse — on a Pi-class appliance
+// where 136 MiB is already most of the machine.
+func TestImportingACastStaysInsideItsAllocationBudget(t *testing.T) {
+	sourceContent := origin.New()
+	source := newEnvWithContent(t, sourceContent)
+	castID, _ := seedCastWithAssets(t, source, sourceContent, "One full-size image",
+		[][]byte{bigAsset(castbundle.MaxAssetBytes, 0xF3)})
+	bundle := exportBundle(t, source, castID)
+
+	dest := newEnvWithContent(t, origin.New())
+	node := seedSchedulingScope(t, dest)
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	resp, raw := importBundle(t, dest, bundle, node, "")
+	runtime.ReadMemStats(&after)
+	allocated := after.TotalAlloc - before.TotalAlloc
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("import = %d, want 201 (body %q)", resp.StatusCode, raw[:min(len(raw), 300)])
+	}
+	// Six copies of the bundle. Measured at a very steady 4.9× (five runs, all
+	// within 0.02%): two doubling-growth reads of ~2× each, plus change. The
+	// slack is one fifth of a copy, which is enough for a runner that chunks the
+	// body differently and nowhere near enough to hide another whole one.
+	budget := uint64(len(bundle)) * 6
+	if allocated > budget {
+		t.Fatalf("importing a %d-byte bundle allocated %d bytes (budget %d, %.1f× the bundle): the import has grown another whole copy of the file",
+			len(bundle), allocated, budget, float64(allocated)/float64(len(bundle)))
+	}
+	t.Logf("import of a %d-byte bundle allocated %d bytes (%.1f× the bundle)", len(bundle), allocated, float64(allocated)/float64(len(bundle)))
 }
 
 // TestExportingACastDoesNotHoldTheWholeBundleInMemory is the availability half

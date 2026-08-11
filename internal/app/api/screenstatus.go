@@ -62,15 +62,21 @@ type screenStatusRow struct {
 	ScopeNode string `json:"scope_node,omitempty"`
 	RelayID   string `json:"relay_id,omitempty"`
 
-	// Reachability is `live` | `stale` | `never_seen` — never "offline". This
-	// surface cannot tell a screen that is switched off from one whose network
-	// dropped from one whose player crashed, and each sends an operator
-	// somewhere different (internal/app/screens' package doc).
+	// Reachability is `live` | `fetching` | `stale` | `never_seen` — never
+	// "offline". This surface cannot tell a screen that is switched off from one
+	// whose network dropped from one whose player crashed, and each sends an
+	// operator somewhere different (internal/app/screens' package doc).
 	Reachability string `json:"reachability"`
 	// LiveWindowMs is the threshold `reachability` was decided by, published
 	// alongside the judgement so a consumer that wants a different line can draw
 	// it from the raw ages rather than being stuck with this one.
 	LiveWindowMs int64 `json:"live_window_ms"`
+	// ContentTransferWindowMs is the SECOND threshold — how far past
+	// LiveWindowMs an unacknowledged pull still reads `fetching`. Published for
+	// the same reason as the first: a judgement without the lines it was drawn
+	// at is a number nobody can check, and a consumer that wants to treat
+	// `fetching` as `stale` needs to know which line it is disagreeing with.
+	ContentTransferWindowMs int64 `json:"content_transfer_window_ms"`
 
 	Paired bool `json:"paired"`
 
@@ -174,12 +180,13 @@ func (srv *server) listScreenStatus(w http.ResponseWriter, r *http.Request) {
 func screenStatusRowOf(row store.Resource, st screens.Status, nowMs int64) screenStatusRow {
 	f := parseFields(row.Body)
 	out := screenStatusRow{
-		ScreenID:     row.ID,
-		Name:         screenNameOf(row.Body),
-		ScopeNode:    f.ScopeNode,
-		labels:       f.Labels,
-		Reachability: string(screens.ReachabilityNeverSeen),
-		LiveWindowMs: screens.LiveWindowMs,
+		ScreenID:                row.ID,
+		Name:                    screenNameOf(row.Body),
+		ScopeNode:               f.ScopeNode,
+		labels:                  f.Labels,
+		Reachability:            string(screens.ReachabilityNeverSeen),
+		LiveWindowMs:            screens.LiveWindowMs,
+		ContentTransferWindowMs: screens.ContentTransferWindowMs,
 		// Never observed, on every axis, until a report says otherwise. Spelled
 		// out rather than left at the struct's zero value, because the zero value
 		// of an age field is 0 — "just now" — which is the single most misleading

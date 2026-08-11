@@ -154,7 +154,7 @@ func TestAScreenObservedAtTheRelayBecomesAStatusRowOnTheAppPeer(t *testing.T) {
 		{Type: "image", AssetRef: "sha256:aa", URL: "https://origin.example/content/aa"},
 	})
 	s.setNow(1_700_000_004_000)
-	ssPull(t, s.playerTS, token)
+	ssAck(t, s.playerTS, token, ssPull(t, s.playerTS, token))
 
 	// The relay reports upward on its own cadence.
 	s.setNow(1_700_000_006_000)
@@ -210,7 +210,12 @@ func TestTheAppPeersViewOfAScreenAgesWhileTheRelayIsSilent(t *testing.T) {
 
 	token, screenID := ssPair(t, s.playerTS)
 	s.player.SetProgram(1, screenID, "rev-live", "scheduled", "content", nil)
-	ssPull(t, s.playerTS, token)
+	// Pull AND acknowledge, which is one whole iteration of the shipped player.
+	// The ack matters to what this case asserts: an unacknowledged pull is how
+	// the read model recognises a screen that is still transferring content, and
+	// a fixture that never acks would be asserting `stale` about a screen this
+	// model correctly calls `fetching`.
+	ssAck(t, s.playerTS, token, ssPull(t, s.playerTS, token))
 	s.sendStatus(t)
 	waitFor(t, 5*time.Second, func() bool { return len(s.registry.Statuses()) == 1 },
 		"the app peer never held a screen status")
@@ -247,7 +252,7 @@ func TestAReportReplacesTheRelaysWholeView(t *testing.T) {
 
 	token, screenID := ssPair(t, s.playerTS)
 	s.player.SetProgram(1, screenID, "rev-live", "scheduled", "content", nil)
-	ssPull(t, s.playerTS, token)
+	ssAck(t, s.playerTS, token, ssPull(t, s.playerTS, token))
 	s.sendStatus(t)
 	waitFor(t, 5*time.Second, func() bool { return len(s.registry.Statuses()) == 1 },
 		"the app peer never held a screen status")
@@ -303,7 +308,9 @@ func ssPair(t *testing.T, ts *httptest.Server) (token, screenID string) {
 }
 
 // ssPull performs one real program pull with token.
-func ssPull(t *testing.T, ts *httptest.Server, token string) {
+// ssPull pulls a program and returns the Lease's own id, so a case can go on to
+// acknowledge it the way the shipped player does.
+func ssPull(t *testing.T, ts *httptest.Server, token string) string {
 	t.Helper()
 	body, err := json.Marshal(playerserver.ProgramPullRequest{
 		Capabilities: playerserver.Capabilities{ContentTypes: []string{"image"}, PlayerVersion: "1.0.0"},
@@ -323,6 +330,44 @@ func ssPull(t *testing.T, ts *httptest.Server, token string) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("program pull status = %d, want 200", resp.StatusCode)
+	}
+	var lease struct {
+		LeaseID string `json:"lease_id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&lease); err != nil {
+		t.Fatalf("decode the Lease: %v", err)
+	}
+	if lease.LeaseID == "" {
+		t.Fatal("the Lease carried no lease_id; nothing can be acknowledged")
+	}
+	return lease.LeaseID
+}
+
+// ssAck acknowledges a Lease (PLY-091), which the shipped player does at the end
+// of every successful iteration (player-v3/source/Program.brs, wvAckLease).
+//
+// Fixtures that pull without acking are not modelling this player, and after the
+// screen-status model learned to tell "pulled, not yet acknowledged" from
+// "quiet" they are not modelling a healthy screen either — an unacknowledged
+// pull is precisely what `fetching` means.
+func ssAck(t *testing.T, ts *httptest.Server, token, leaseID string) {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{"lease_id": leaseID, "accepted": true})
+	if err != nil {
+		t.Fatalf("marshal the ack: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/player/v1/lease/ack", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("build the ack request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /player/v1/lease/ack: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		t.Fatalf("lease ack status = %d, want 200 or 204", resp.StatusCode)
 	}
 }
 

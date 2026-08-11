@@ -34,9 +34,13 @@ import {
  * It never says OFFLINE. The platform genuinely cannot tell a screen that is
  * switched off from one whose network dropped, from one whose player crashed,
  * from one that was never switched on — and an operator told "offline" goes and
- * checks the wrong thing. The server reports `live | stale | never_seen` plus
- * raw ages, and this panel renders exactly that, with the age always visible
- * beside the word so the judgement can always be second-guessed.
+ * checks the wrong thing. The server reports `live | fetching | stale |
+ * never_seen` plus raw ages, and this panel renders exactly that, with the age
+ * always visible beside the word so the judgement can always be second-guessed.
+ * `fetching` is the one that saves a wasted trip: a screen downloading a newly
+ * assigned video is silent for as long as the transfer takes while the previous
+ * program keeps playing, and calling that "not heard from" sends somebody to
+ * look at a wall that is working.
  *
  * It distinguishes "this screen went quiet" from "this RELAY went quiet". Those
  * are different failures with different remedies and every other column renders
@@ -61,15 +65,23 @@ const REFRESH_MS = 10_000;
 /** Which chip a reachability reads as. `stale` is `warn`, never `error`: the
  * platform has not established that anything is broken, only that it has not
  * heard recently, and spending the error colour on an uncertainty is how a
- * status column stops being believed. */
+ * status column stops being believed.
+ *
+ * `fetching` is `pending` for the same discipline pointed the other way. The
+ * screen was handed a program and has not confirmed it, which the server reads
+ * as a content transfer in progress — never-wipe means the PREVIOUS program is
+ * still on the wall throughout, so this is not a fault and must not wear the
+ * warning colour. It is not `ok` either: nothing has been heard back. */
 const REACHABILITY_STATUS: Record<string, Status> = {
   live: "ok",
+  fetching: "pending",
   stale: "warn",
   never_seen: "pending",
 };
 
 const REACHABILITY_LABEL: Record<string, string> = {
   live: "Live",
+  fetching: "Collecting content",
   stale: "Not heard from",
   never_seen: "Never seen",
 };
@@ -100,6 +112,9 @@ export function nowPlayingLabel(row: ScreenStatus): string {
   if (row.reachability === "never_seen") {
     return row.program_revision ? "Waiting to collect its program" : "Nothing assigned";
   }
+  // A transferring screen is still showing whatever it had; saying so is the
+  // difference between an operator waiting and an operator driving to the site.
+  if (row.reachability === "fetching") return "Downloading new content (still showing the last)";
   if (row.display === "blank") return "Blank (scheduled off)";
   if (row.render_asset_ref) {
     return `Rendering ${row.content_count} item${row.content_count === 1 ? "" : "s"}`;

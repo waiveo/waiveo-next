@@ -70,11 +70,16 @@ function healthBody(over: Partial<SystemHealth> = {}): SystemHealth {
     screens: {
       total: 2,
       live: 2,
+      fetching: 0,
       stale: 0,
       never_seen: 0,
       paired: 2,
       overridden: 0,
-      live_window_ms: 180_000,
+      // Derived server-side from the player's own loop timings; see
+      // internal/shared/wire/screencadence.go. Kept current here because a
+      // fixture carrying a withdrawn number is a fixture that has stopped
+      // describing the system it stands in for.
+      live_window_ms: 52_000,
     },
     ...over,
   };

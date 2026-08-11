@@ -132,6 +132,20 @@ const (
 	// few dozen layers; anything approaching this is not one. It is HALF the
 	// overhead reserve so that the manifest plus the zip framing for a maximal
 	// entry count both fit inside it.
+	//
+	// It was 8 MiB before the overhead reserve existed, and halving it to 4 MiB
+	// is a DELIBERATE tightening of what this reader accepts, called out here
+	// because a reader limit that moves quietly is how an operator's file stops
+	// importing for a reason nobody can find. Two things make it safe:
+	//
+	//   - Nothing this box authors can approach it. A cast's create body is
+	//     capped at maxJSONBodyBytes (1 MiB, internal/app/api), and the manifest
+	//     is that body's slides plus ~100 bytes per asset entry — 512 assets is
+	//     51 KiB. A manifest over 4 MiB is not a cast; it is something else.
+	//   - It has to be at most half the reserve for the reserve to hold, since
+	//     the framing for MaxAssets entries has to fit beside it —
+	//     TestTheOverheadReserveCoversTheWorstManifestAndFraming checks that
+	//     arithmetic rather than trusting this sentence.
 	MaxManifestBytes = MaxBundleOverheadBytes / 2
 )
 
@@ -206,7 +220,42 @@ var (
 	ErrDamaged       = errors.New("castbundle: the bundle is damaged or incomplete")
 	ErrTooLarge      = errors.New("castbundle: the bundle exceeds this reader's limits")
 	ErrAssetMismatch = errors.New("castbundle: an asset's bytes do not match the reference it is carried under")
+	// ErrIncomplete is the one PRODUCER-side sentinel: NewPlan was asked to
+	// bundle a cast whose bytes the caller did not supply in full. It is a
+	// sentinel rather than a bare error so the api layer can tell it from a size
+	// refusal — the two send an operator to completely different places ("this
+	// box no longer holds one of these images" versus "this design is too big to
+	// travel this way").
+	ErrIncomplete = errors.New("castbundle: bytes were not supplied for every image the cast references")
 )
+
+// Refusal is one reason NewPlan would not produce a bundle, carrying BOTH the
+// sentinel a caller branches on and the sentence an operator reads.
+//
+// The sentence is a field rather than something a caller reconstructs from the
+// sentinel, because a caller reconstructing it is a caller that has to be kept
+// in step with the refusal set — which is the defect the two-phase API exists to
+// close, wearing different clothes. The api layer adds ADVICE ("move this design
+// with a workspace archive instead") and nothing else; a refusal added here
+// arrives at an operator already worded.
+type Refusal struct {
+	// Kind is the sentinel (ErrTooLarge, ErrIncomplete) errors.Is matches.
+	Kind error
+	// Detail is the operator's sentence: capitalised, ending in a full stop,
+	// naming the actual numbers.
+	Detail string
+}
+
+func (r *Refusal) Error() string { return r.Kind.Error() + ": " + r.Detail }
+
+// Unwrap makes errors.Is(err, ErrTooLarge) work on a Refusal.
+func (r *Refusal) Unwrap() error { return r.Kind }
+
+// refuse builds a Refusal, so every refusal site in NewPlan is one line and
+// they are visibly the same kind of thing.
+func refuse(kind error, format string, args ...any) error {
+	return &Refusal{Kind: kind, Detail: fmt.Sprintf(format, args...)}
+}
 
 // AssetRefOf is the `sha256:<hex>` reference for these bytes — the SAME
 // derivation the content origin performs, so a bundle's references and the
@@ -222,7 +271,61 @@ func entryNameOf(assetRef string) string {
 	return assetPrefix + strings.TrimPrefix(assetRef, "sha256:")
 }
 
-// Write STREAMS a bundle to w.
+// A bundle is produced in TWO phases, and the split is the whole point of this
+// section.
+//
+// # Why a Plan exists at all
+//
+// An export is an HTTP response. The moment a 200 and the zip's first bytes are
+// on the wire there is no way left to say no: the only remaining vocabulary is
+// truncating the stream, and a truncated zip arrives at the destination as
+// "this bundle is damaged" — a sentence that sends an operator to the wrong
+// box entirely.
+//
+// The first version of this API had one function, and the export handler
+// hand-copied a SUBSET of its refusals into a pre-flight before committing the
+// header. It copied one of five. The other four — asset count, per-asset size,
+// manifest size, overhead reserve — all fire before the first zip byte, i.e.
+// after the 200 was already sent, and the handler logged them and hung up. A
+// cast with 513 referenced images (which the create path accepts: nothing caps
+// slides or layers) answered `200 application/zip` with a zero-byte body.
+//
+// A hand-copied subset of another function's refusals is the defect, not the
+// four misses. So the refusals are not copyable any more:
+//
+//	NewPlan  EVERY refusal. Returns an error, or a Plan.
+//	Stream   bytes onto a writer. Cannot refuse anything.
+//
+// A caller that can still write a Problem document calls NewPlan; a caller that
+// has committed a header calls Stream. Adding a new refusal has exactly one
+// place to go, and every calling side gets it for free.
+// TestNothingCanBeRefusedOnceTheBundleIsStreaming is the fence that keeps the
+// second half unable to refuse: it reads Stream's own syntax tree and fails on
+// a second return statement, on any use of this package's refusal sentinels, and
+// on any error this package MINTS rather than propagates.
+
+// Plan is a bundle that has already passed every refusal — a value whose
+// existence is the proof. It holds slice headers into the caller's asset bytes,
+// not copies: the export handler's map comes straight off the content origin's
+// resident store, and a Plan that copied it would put a second whole bundle in
+// memory on a box that already holds one.
+type Plan struct {
+	manifest []byte
+	entries  []plannedEntry
+	// ContentBytes is what the assets total, the figure the size refusal was
+	// decided against. Published so a caller can report or log it without
+	// re-deriving it from the same map.
+	ContentBytes int64
+}
+
+// plannedEntry is one asset, resolved to the entry name it will be written as.
+type plannedEntry struct {
+	name string
+	body []byte
+}
+
+// NewPlan runs EVERY refusal this package makes about a bundle it is asked to
+// produce, and returns the plan for writing one if none fire.
 //
 // assets maps each `sha256:<hex>` the slides reference to its bytes. Every
 // reference must be present: a bundle missing one of its own images is a bundle
@@ -230,17 +333,12 @@ func entryNameOf(assetRef string) string {
 // content origin) is the only layer that can tell the difference between "this
 // asset is missing" and "this asset was never referenced".
 //
-// Streaming is the point of the signature. The export handler passes the
-// http.ResponseWriter directly, so the only whole copy of a bundle that ever
-// exists on the exporting box is the one going out over the socket — an earlier
-// version assembled the zip in a bytes.Buffer first, which put a second copy of
-// every asset in memory on a box that already holds them all resident.
-//
-// It refuses rather than truncates on the two limits it can see: a manifest
-// larger than a reader would accept, and an asset larger than one entry may be.
-// Producing a file this package's own Read would reject is the export/import
-// disagreement the size block above exists to make impossible.
-func Write(w io.Writer, m Manifest, assets map[string][]byte) error {
+// Every refusal below is one Read would apply to the finished file, so a bundle
+// this box produces is always a bundle this box accepts — the export/import
+// disagreement the size block above exists to make impossible. The messages are
+// written as sentences an operator reads, because they reach one: the api layer
+// puts them in the Problem document's `detail` rather than translating them.
+func NewPlan(m Manifest, assets map[string][]byte) (*Plan, error) {
 	m.Format = Format
 	// The asset list is DERIVED from the slides rather than taken from the
 	// caller, so it cannot disagree with what the cast actually references —
@@ -248,69 +346,117 @@ func Write(w io.Writer, m Manifest, assets map[string][]byte) error {
 	// is the failure mode a hand-assembled list has.
 	refs := ReferencedAssets(m.Cast.Slides)
 	if len(refs) > MaxAssets {
-		return fmt.Errorf("%w: the cast references %d assets, more than a bundle may carry (%d)", ErrTooLarge, len(refs), MaxAssets)
+		return nil, refuse(ErrTooLarge, "This cast references %d images, more than the %d a cast bundle can carry.", len(refs), MaxAssets)
 	}
+	plan := &Plan{entries: make([]plannedEntry, 0, len(refs))}
 	m.Assets = make([]AssetEntry, 0, len(refs))
 	for _, ref := range refs {
 		body, ok := assets[ref]
 		if !ok {
-			return fmt.Errorf("castbundle: the cast references %s but no bytes were supplied for it", ref)
+			return nil, refuse(ErrIncomplete, "This cast references the image %s, which this box no longer holds.", ref)
 		}
 		if int64(len(body)) > MaxAssetBytes {
-			return fmt.Errorf("%w: %s is %d bytes, more than one bundle entry may be (%d)", ErrTooLarge, ref, len(body), int64(MaxAssetBytes))
+			return nil, refuse(ErrTooLarge, "The image %s is %d bytes, more than the %d-byte limit one bundle entry may be.", ref, len(body), int64(MaxAssetBytes))
 		}
+		plan.ContentBytes += int64(len(body))
 		m.Assets = append(m.Assets, AssetEntry{AssetRef: ref, SizeBytes: int64(len(body))})
+		plan.entries = append(plan.entries, plannedEntry{name: entryNameOf(ref), body: body})
+	}
+	// The ASSET TOTAL, against the same number the import route accepts and the
+	// reader enforces. It lives here rather than in the caller for the reason
+	// this whole section exists: a refusal a caller has to remember to make is a
+	// refusal one caller will forget.
+	//
+	// Without it an export is bounded by nothing at all: MaxAssets assets at the
+	// per-upload ceiling is 32 GiB, and an authenticated caller could ask a
+	// Pi-class appliance to marshal that with one GET.
+	if plan.ContentBytes > MaxBundleContentBytes {
+		return nil, refuse(ErrTooLarge, "This cast's images total %d bytes, more than the %d-byte limit a cast bundle carries.",
+			plan.ContentBytes, int64(MaxBundleContentBytes))
 	}
 
-	// The manifest is encoded to memory first, because its SIZE has to be
-	// checked before it is committed to the stream: a manifest over
-	// MaxManifestBytes is one Read refuses, and discovering that halfway through
-	// a response is discovering it too late. It is JSON describing slides, so
-	// this buffer is kilobytes.
+	// The manifest is encoded to memory, because its SIZE has to be checked
+	// before anything is committed to a stream: a manifest over MaxManifestBytes
+	// is one Read refuses, and discovering that halfway through a response is
+	// discovering it too late. It is JSON describing slides, so this buffer is
+	// kilobytes.
 	var manifest bytes.Buffer
 	enc := json.NewEncoder(&manifest)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(m); err != nil {
-		return fmt.Errorf("castbundle: encode the manifest: %w", err)
+		return nil, fmt.Errorf("castbundle: encode the manifest: %w", err)
 	}
 	if int64(manifest.Len()) > MaxManifestBytes {
-		return fmt.Errorf("%w: the manifest is %d bytes, more than a reader will accept (%d)", ErrTooLarge, manifest.Len(), int64(MaxManifestBytes))
+		return nil, refuse(ErrTooLarge, "This cast's manifest is %d bytes, more than the %d a bundle reader will accept.", manifest.Len(), int64(MaxManifestBytes))
 	}
 	// The other half of "an export this box permits is an import this box
-	// permits": the caller bounds the ASSET total (it is the one that knows
-	// them before they are read), and this bounds everything else, so the two
-	// together cannot add up past MaxBundleBytes.
+	// permits": the asset total above bounds the content, and this bounds
+	// everything else, so the two together cannot add up past MaxBundleBytes.
 	if overhead := int64(manifest.Len()) + zipFramingBytesFor(len(m.Assets)); overhead > MaxBundleOverheadBytes {
-		return fmt.Errorf("%w: the manifest and container framing come to %d bytes, past the %d reserved for them, so this bundle could exceed the %d-byte limit a reader accepts",
-			ErrTooLarge, overhead, int64(MaxBundleOverheadBytes), int64(MaxBundleBytes))
+		return nil, refuse(ErrTooLarge, "This cast's manifest and container framing come to %d bytes, past the %d reserved for them, so the bundle could exceed the %d-byte limit a reader accepts.",
+			overhead, int64(MaxBundleOverheadBytes), int64(MaxBundleBytes))
 	}
+	plan.manifest = manifest.Bytes()
+	return plan, nil
+}
 
+// Stream writes the planned bundle onto w. It cannot refuse anything: every
+// error it can return came out of w (or out of the zip writer wrapping w), and
+// by then the caller has committed a header anyway.
+//
+// Streaming is the point. The export handler passes the http.ResponseWriter
+// directly, so the only whole copy of a bundle that ever exists on the exporting
+// box is the one going out over the socket — an earlier version assembled the
+// zip in a bytes.Buffer first, which put a second copy of every asset in memory
+// on a box that already holds them all resident.
+//
+// It is deliberately NOT named WriteTo: io.WriterTo's contract is
+// `(int64, error)` and a byte count is not something any caller here wants,
+// while a `WriteTo(io.Writer) error` is a method go vet's stdmethods check
+// correctly refuses.
+//
+// The shape — one accumulated `failure`, one return, no error minted here — is
+// load-bearing and is enforced by TestNothingCanBeRefusedOnceTheBundleIsStreaming.
+// It is what makes "the calling side has already seen every refusal" a property
+// of the code rather than a promise in a comment.
+func (p *Plan) Stream(w io.Writer) error {
+	var failure error
 	zw := zip.NewWriter(w)
-	mf, err := zw.Create(ManifestName)
+	// STORED for assets, deflated for the manifest. A bundle's assets are
+	// already-compressed media — JPEG, PNG, H.264 — so deflate spends a Pi's CPU
+	// on every export to achieve nothing, and it makes the file's size
+	// unpredictable from the content's, which is exactly the property the size
+	// refusals above need. The manifest is JSON, so that one is worth deflating.
+	write := func(name string, body []byte, method uint16) {
+		if failure != nil {
+			return
+		}
+		ew, err := zw.CreateHeader(&zip.FileHeader{Name: name, Method: method})
+		if err == nil {
+			_, err = ew.Write(body)
+		}
+		failure = err
+	}
+	write(ManifestName, p.manifest, zip.Deflate)
+	for _, e := range p.entries {
+		write(e.name, e.body, zip.Store)
+	}
+	if err := zw.Close(); failure == nil {
+		failure = err
+	}
+	return failure
+}
+
+// Write plans a bundle and streams it, for a caller with nothing committed yet
+// and nothing to say to an operator — the tests, and any future non-HTTP
+// producer. An HTTP handler must NOT use it: it cannot tell a refusal from a
+// broken socket, which is the distinction the two-phase API exists to preserve.
+func Write(w io.Writer, m Manifest, assets map[string][]byte) error {
+	plan, err := NewPlan(m, assets)
 	if err != nil {
-		return fmt.Errorf("castbundle: create the manifest entry: %w", err)
+		return err
 	}
-	if _, err := mf.Write(manifest.Bytes()); err != nil {
-		return fmt.Errorf("castbundle: write the manifest: %w", err)
-	}
-	for _, a := range m.Assets {
-		// STORED, not deflated. A bundle's assets are already-compressed media —
-		// JPEG, PNG, H.264 — so deflate spends a Pi's CPU on every export to
-		// achieve nothing, and it makes the file's size unpredictable from the
-		// content's, which is exactly the property the export's own size refusal
-		// needs. The manifest above stays deflated: that one is JSON.
-		ew, err := zw.CreateHeader(&zip.FileHeader{Name: entryNameOf(a.AssetRef), Method: zip.Store})
-		if err != nil {
-			return fmt.Errorf("castbundle: create the entry for %s: %w", a.AssetRef, err)
-		}
-		if _, err := ew.Write(assets[a.AssetRef]); err != nil {
-			return fmt.Errorf("castbundle: write %s: %w", a.AssetRef, err)
-		}
-	}
-	if err := zw.Close(); err != nil {
-		return fmt.Errorf("castbundle: finish the bundle: %w", err)
-	}
-	return nil
+	return plan.Stream(w)
 }
 
 // ReferencedAssets returns every distinct asset_ref the slides name, sorted.

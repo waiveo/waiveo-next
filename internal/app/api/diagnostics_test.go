@@ -430,6 +430,79 @@ func TestTheScreenRollUpCountsAuthoredRowsNotJustReports(t *testing.T) {
 	}
 }
 
+// TestAScreenFetchingContentIsItsOwnRowAndItsOwnCount is the pair-completion for
+// the read model's third reachability state: a state the model can produce and
+// the surfaces cannot name is a state that reaches an operator as whichever
+// neighbour the `default` branch happened to be (here: `never_seen`, for a
+// screen that has demonstrably been seen).
+//
+// It drives ONE fixture through BOTH surfaces — the per-screen list and the
+// fleet roll-up — because those are the two places the enum is consumed.
+func TestAScreenFetchingContentIsItsOwnRowAndItsOwnCount(t *testing.T) {
+	e := newDiagEnv(t)
+	org := e.orgRoot(t)
+	fetching := e.createScreenRow(t, org, "Lobby (downloading a new video)")
+	e.createScreenRow(t, org, "Never switched on")
+
+	// Pulled a Lease well past the live window and not acknowledged it: the
+	// player is downloading and verifying content, and the previous program is
+	// still on the wall.
+	if err := e.screens.ApplyScreenStatus(diagRelayA, fixedNowMs, []wire.ScreenStatusEntry{{
+		ScreenID: fetching, Paired: true,
+		LastPullAgeMs:        screens.LiveWindowMs + 20_000,
+		LastAckAgeMs:         screens.LiveWindowMs + 30_000, // the PREVIOUS cycle's ack
+		LastRenderStartAgeMs: screens.NeverObserved,
+		ProgramRevision:      "rev-new", ContentCount: 1,
+	}}); err != nil {
+		t.Fatalf("ApplyScreenStatus: %v", err)
+	}
+
+	// The per-screen surface.
+	resp, raw := e.do(t, http.MethodGet, "/api/v1/screen-status", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET screen-status = %d (%s)", resp.StatusCode, raw)
+	}
+	var page struct {
+		Items []map[string]any `json:"items"`
+	}
+	mustUnmarshal(t, raw, &page)
+	var row map[string]any
+	for _, it := range page.Items {
+		if it["screen_id"] == fetching {
+			row = it
+		}
+	}
+	if row == nil {
+		t.Fatalf("screen-status did not list %s: %v", fetching, page.Items)
+	}
+	if row["reachability"] != string(screens.ReachabilityFetching) {
+		t.Errorf("reachability = %v, want %q — a screen mid content transfer is neither confirmed live nor a screen to go and look at",
+			row["reachability"], screens.ReachabilityFetching)
+	}
+	if got := int64(row["content_transfer_window_ms"].(float64)); got != screens.ContentTransferWindowMs {
+		t.Errorf("content_transfer_window_ms = %d, want %d — the second line the judgement was drawn at must be publishable, or nobody can check it",
+			got, screens.ContentTransferWindowMs)
+	}
+
+	// The fleet roll-up.
+	h := e.health(t)
+	sc, _ := h["screens"].(map[string]any)
+	if int(sc["fetching"].(float64)) != 1 {
+		t.Errorf("fetching = %v, want 1", sc["fetching"])
+	}
+	if int(sc["never_seen"].(float64)) != 1 {
+		t.Errorf("never_seen = %v, want 1 (the OTHER screen) — a fetching screen counted here is the default-branch bug this test exists for", sc["never_seen"])
+	}
+	if int(sc["stale"].(float64)) != 0 || int(sc["live"].(float64)) != 0 {
+		t.Errorf("live/stale = %v/%v, want 0/0", sc["live"], sc["stale"])
+	}
+	// And the fleet is not `down`: a transferring screen is still talking to its
+	// relay and still showing its previous program.
+	if got := serviceNamed(t, h, "screens")["status"]; got != "degraded" {
+		t.Errorf("screens service with one fetching and one never-seen = %v, want degraded", got)
+	}
+}
+
 // TestHealthMeasuresARealFilesystem. The disk is the failure that actually kills
 // this appliance, and a headroom number nobody measured is worse than none.
 func TestHealthMeasuresARealFilesystem(t *testing.T) {
@@ -565,9 +638,14 @@ func TestAFleetThatHasNeverBeenSeenIsDegradedNotDown(t *testing.T) {
 
 	// Now one of them HAS been seen, and has gone quiet. That is a fleet going
 	// dark, and it is `down`.
+	// The pull is ACKNOWLEDGED (an ack 500 ms after it), which is what a healthy
+	// iteration of the shipped player leaves behind. Without the ack the most
+	// recent pull is outstanding, and an outstanding pull is how the read model
+	// recognises a screen mid content transfer — `fetching`, not `stale`, which
+	// is a different fixture and a different assertion.
 	if err := e.screens.ApplyScreenStatus(diagRelayA, fixedNowMs-screens.LiveWindowMs-60_000, []wire.ScreenStatusEntry{{
 		ScreenID: seen, Paired: true, LastPullAgeMs: 1_000,
-		LastAckAgeMs: screens.NeverObserved, LastRenderStartAgeMs: screens.NeverObserved,
+		LastAckAgeMs: 500, LastRenderStartAgeMs: screens.NeverObserved,
 	}}); err != nil {
 		t.Fatalf("ApplyScreenStatus: %v", err)
 	}

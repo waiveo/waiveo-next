@@ -621,6 +621,7 @@ func (e ScreenStatusPriority) Valid() bool {
 
 // Defines values for ScreenStatusReachability.
 const (
+	Fetching  ScreenStatusReachability = "fetching"
 	Live      ScreenStatusReachability = "live"
 	NeverSeen ScreenStatusReachability = "never_seen"
 	Stale     ScreenStatusReachability = "stale"
@@ -629,6 +630,8 @@ const (
 // Valid indicates whether the value is a known member of the ScreenStatusReachability enum.
 func (e ScreenStatusReachability) Valid() bool {
 	switch e {
+	case Fetching:
+		return true
 	case Live:
 		return true
 	case NeverSeen:
@@ -1914,7 +1917,9 @@ type ScreenCreate struct {
 
 // ScreenHealth The fleet roll-up, built from the SAME join `/screen-status` serves — authored rows filled in by relay reports — rather than from the reports alone. A screen no relay has ever mentioned is the most alarming row there is, and a count built from reports is silent about exactly it.
 type ScreenHealth struct {
-	Live int `json:"live"`
+	// Fetching How many screens were handed a Lease they have not yet acknowledged, recently enough that the player would still be transferring its content. Counted apart from both neighbours: such a screen is still showing its previous program, so it is neither confirmed healthy nor a screen to go and look at.
+	Fetching int `json:"fetching"`
+	Live     int `json:"live"`
 
 	// LiveWindowMs The threshold live/stale was decided by, republished so the roll-up can be checked against the line it was drawn at.
 	LiveWindowMs int64 `json:"live_window_ms"`
@@ -2001,8 +2006,11 @@ type ScreenOverrideMode string
 // ScreenStatus One screen's authored identity joined to what the relays have observed of it. See `listScreenStatus` for how the ages are to be read and why `reachability` never says "offline".
 type ScreenStatus struct {
 	// ContentCount How many content items that program carried.
-	ContentCount int                  `json:"content_count"`
-	Display      *ScreenStatusDisplay `json:"display,omitempty"`
+	ContentCount int `json:"content_count"`
+
+	// ContentTransferWindowMs How far past `live_window_ms` an unacknowledged pull is still reported `fetching` rather than `stale` — one whole content-fetch timeout, the player's own limit on a single transfer. Published for the same reason as `live_window_ms`: a consumer that wants to treat `fetching` as `stale` needs to know which line it is disagreeing with.
+	ContentTransferWindowMs int                  `json:"content_transfer_window_ms"`
+	Display                 *ScreenStatusDisplay `json:"display,omitempty"`
 
 	// LastAckAgeMs Milliseconds since this screen last acknowledged a Lease, or `-1` if it never has.
 	LastAckAgeMs int `json:"last_ack_age_ms"`
@@ -2031,7 +2039,7 @@ type ScreenStatus struct {
 	// ProgramRevision The `program_revision` this screen was last handed (or, if it has never pulled, the one waiting for it).
 	ProgramRevision *string `json:"program_revision,omitempty"`
 
-	// Reachability `live` — the relay heard from this screen within `live_window_ms`. `stale` — contact was made at some point, but not recently. `never_seen` — no relay has ever observed this screen pull a program.
+	// Reachability `live` — the screen contacted its relay within `live_window_ms` (a program pull, or the acknowledgement that answers one). `fetching` — the relay handed this screen a Lease it has not acknowledged, and the pull is within `content_transfer_window_ms`: the shipped player would still be downloading and verifying the content, during which the PREVIOUS program stays on the wall. Not a fault, and not a confirmation either — nothing has been heard back. `stale` — contact was made at some point, but not recently. `never_seen` — no relay has ever observed this screen pull a program.
 	Reachability ScreenStatusReachability `json:"reachability"`
 
 	// RelayId The relay whose report this status came from; absent when no relay has reported this screen.
@@ -2056,7 +2064,7 @@ type ScreenStatusDisplay string
 // ScreenStatusPriority That program's `player/1` PLY-108 priority — `preempt` is an operator's push-now takeover.
 type ScreenStatusPriority string
 
-// ScreenStatusReachability `live` — the relay heard from this screen within `live_window_ms`. `stale` — contact was made at some point, but not recently. `never_seen` — no relay has ever observed this screen pull a program.
+// ScreenStatusReachability `live` — the screen contacted its relay within `live_window_ms` (a program pull, or the acknowledgement that answers one). `fetching` — the relay handed this screen a Lease it has not acknowledged, and the pull is within `content_transfer_window_ms`: the shipped player would still be downloading and verifying the content, during which the PREVIOUS program stays on the wall. Not a fault, and not a confirmation either — nothing has been heard back. `stale` — contact was made at some point, but not recently. `never_seen` — no relay has ever observed this screen pull a program.
 type ScreenStatusReachability string
 
 // ScreenStatusListResponse defines model for ScreenStatusListResponse.

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/maaxton/waiveo-next/internal/app/store"
@@ -115,17 +114,12 @@ func (srv *server) exportCast(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
 		return
 	}
-	// Resolve every asset BEFORE a byte of response is written. Everything that
-	// can refuse this export has to refuse it here, while a Problem document is
-	// still possible: once the 200 and the zip's first bytes are out, the only
-	// way to report a failure is to truncate the stream, and a truncated zip
-	// reaches the destination as "this bundle is damaged" — a sentence that
-	// sends an operator to the wrong box.
+	// Resolve every asset BEFORE a byte of response is written, so that the only
+	// thing left after the header is bytes on a socket.
 	//
 	// Holding the map is free: origin.Store.Serve returns the resident slice it
 	// already holds, so this is slice headers, not copies.
 	assets := map[string][]byte{}
-	var contentBytes int64
 	for _, ref := range refs {
 		if srv.content == nil {
 			writeProblem(w, r, http.StatusServiceUnavailable, "UNAVAILABLE", "Service Unavailable",
@@ -143,34 +137,23 @@ func (srv *server) exportCast(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		assets[ref.Ref] = body
-		contentBytes += int64(len(body))
-	}
-	// The size refusal, against the SAME limit the import route accepts and the
-	// reader enforces — castbundle's size block, which is the one place all
-	// three numbers come from. TestExportAndImportAgreeOnOneBundleLimit drives
-	// the agreement through the routes rather than comparing the constants, so
-	// it catches a route that stops using them at all.
-	//
-	// This is the export half of "a bundle this box produced must be a bundle
-	// this box can import". Without it an export is bounded by nothing at all:
-	// MaxAssets assets at the per-upload ceiling is 32 GiB, and an authenticated
-	// caller could ask a Pi-class appliance to marshal that with one GET.
-	if contentBytes > castbundle.MaxBundleContentBytes {
-		writeProblem(w, r, http.StatusConflict, "CONFLICT", "Conflict",
-			"This cast's images total "+strconv.FormatInt(contentBytes, 10)+" bytes, more than the "+
-				strconv.FormatInt(castbundle.MaxBundleContentBytes, 10)+"-byte limit a cast bundle carries. "+
-				"A bundle larger than that could not be imported anywhere, so it is refused here rather than "+
-				"produced and rejected on arrival. Move this design with a workspace archive instead.")
-		return
 	}
 
-	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+castbundle.FileName(row.Name)+`"`)
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusOK)
-	// Straight to the socket. Every failure mode that could still occur from
-	// here is the connection itself, and there is nothing to report it to.
-	if err := castbundle.Write(w, castbundle.Manifest{
+	// EVERY refusal, in one call, while a Problem document is still possible.
+	//
+	// castbundle.NewPlan is the whole refusal set — asset count, per-asset size,
+	// asset total, manifest size, overhead reserve, and any refusal added later.
+	// This route does not restate any of them, and that is the finding it
+	// closes: the previous version hand-copied ONE of five into a pre-flight
+	// here and then called the streaming writer after committing the 200, so a
+	// cast referencing 513 images (nothing caps slides or layers) answered
+	// `200 application/zip` with a zero-byte body and a `.cast` filename. The
+	// operator saved a file the destination then called "not a cast bundle",
+	// which pointed them at the wrong box for a fault that was on this one.
+	//
+	// A refusal added to NewPlan tomorrow reaches this response for free; there
+	// is nothing here to keep in step. See castbundle's own two-phase note.
+	plan, err := castbundle.NewPlan(castbundle.Manifest{
 		ExportedAtMs: srv.nowMs(),
 		SourceCastID: row.ID,
 		Cast: castbundle.CastPayload{
@@ -180,9 +163,53 @@ func (srv *server) exportCast(w http.ResponseWriter, r *http.Request) {
 			Template:          row.Template,
 			Labels:            row.Labels,
 		},
-	}, assets); err != nil {
+	}, assets)
+	if err != nil {
+		var refusal *castbundle.Refusal
+		if !errors.As(err, &refusal) {
+			// Not a refusal at all — the manifest would not encode. That is this
+			// box malfunctioning, not the operator's design being wrong, and the
+			// two must not read the same.
+			writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
+			return
+		}
+		writeProblem(w, r, http.StatusConflict, "CONFLICT", "Conflict", exportRefusal(refusal))
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+castbundle.FileName(row.Name)+`"`)
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	// Straight to the socket. Stream cannot refuse anything (its own doc, and
+	// the syntax-tree fence in castbundle's tests), so every failure mode that
+	// could still occur from here is the connection itself, and there is nothing
+	// to report it to.
+	if err := plan.Stream(w); err != nil {
 		log.Printf("api: cast export %s failed mid-stream: %v", row.ID, err)
 	}
+}
+
+// exportRefusal turns a castbundle refusal into what the operator reads:
+// castbundle's own already-worded sentence, plus the ADVICE this layer is the
+// one that knows.
+//
+// It deliberately does NOT enumerate the refusals. A switch here would be the
+// hand-copied subset all over again — a refusal added to NewPlan would arrive
+// with no advice, or fall into a default describing the wrong problem — so the
+// only thing branched on is which of the two ADVICE shapes applies, and that is
+// a sentinel test, not a restatement of the refusal set.
+func exportRefusal(refusal *castbundle.Refusal) string {
+	if errors.Is(refusal, castbundle.ErrIncomplete) {
+		// Reachable only if the origin stopped holding bytes between the resolve
+		// loop above and here. Kept because "an image is gone" and "this design
+		// is too big" send an operator to different places, and NewPlan is the
+		// backstop for the race that loop cannot close.
+		return refusal.Detail + " A cast cannot be exported without every image it draws."
+	}
+	return refusal.Detail +
+		" A bundle like that could not be imported anywhere, so it is refused here rather than " +
+		"produced and rejected on arrival. Move this design with a workspace archive instead."
 }
 
 // importCast handles POST /api/v1/casts/import: the bundle's bytes as the

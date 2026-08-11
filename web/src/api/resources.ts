@@ -367,9 +367,13 @@ export interface ScreenStatusModule {
    *
    * Read the ages, not the words: each `*_age_ms` is milliseconds before the
    * response and `-1` means NEVER observed, which is a different state from a
-   * large age. `reachability` is `live | stale | never_seen` and deliberately
-   * never "offline" — the platform cannot tell a screen that is switched off
-   * from one whose network dropped from one whose player crashed. */
+   * large age. `reachability` is `live | fetching | stale | never_seen` and
+   * deliberately never "offline" — the platform cannot tell a screen that is
+   * switched off from one whose network dropped from one whose player crashed.
+   * `fetching` is a screen that was handed a program and has not acknowledged
+   * it inside `content_transfer_window_ms`: it is downloading content while the
+   * previous program stays on the wall, so it is neither healthy-confirmed nor
+   * a screen to go and look at. */
   list(params?: ListParams): Promise<Page<ScreenStatus>>;
 }
 

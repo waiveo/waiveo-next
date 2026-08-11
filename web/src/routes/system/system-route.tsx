@@ -216,7 +216,7 @@ function HealthPanel({ state }: { state: Load<SystemHealth> }) {
           hint={
             h.screens.total === 0
               ? "No screens are authored yet."
-              : `${h.screens.stale} not heard from · ${h.screens.never_seen} never seen · ${h.screens.overridden} overridden`
+              : `${h.screens.fetching} collecting content · ${h.screens.stale} not heard from · ${h.screens.never_seen} never seen · ${h.screens.overridden} overridden`
           }
         />
       </div>

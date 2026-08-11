@@ -90,23 +90,53 @@ const (
 	markerSuffix   = ".restore-pending"
 )
 
-// sidecarSuffixes are SQLite's WAL-mode companions to a database file, in the
-// order they must be handled: `-wal` carries COMMITTED TRANSACTIONS that are not
-// yet in the database file, `-shm` is a rebuildable index over it.
+// sidecarSuffixes are every companion file SQLite can leave beside a database:
+//
+//	-wal      COMMITTED TRANSACTIONS not yet in the database file (WAL mode)
+//	-shm      a rebuildable index over the -wal
+//	-journal  a ROLLBACK journal (rollback mode), whose presence tells SQLite the
+//	          database was interrupted mid-transaction and must be rolled back
 //
 // They are named here rather than in internal/app/store because this package is
-// the one that MOVES store files around, and a mover that knows about only one
-// of the three files is the defect this list exists to prevent. The names are
-// SQLite's own derivation (database path + suffix) and are not configurable.
+// the one that MOVES store files around, and a mover that knows about only some
+// of the files is the defect this list exists to prevent. The names are SQLite's
+// own derivation (database path + suffix) and are not configurable.
+//
+// # Why -journal is on this list even though the live store runs in WAL mode
+//
+// It was not, and that was a hole. A restore's staged bytes come from `VACUUM
+// INTO` (internal/app/store's SnapshotInto), which writes a ROLLBACK-mode
+// database — journal_mode 1 in the file header, not 2. The very first boot after
+// adoption is where SQLite converts it to WAL, and a rollback-mode database
+// being written to has a `-journal` beside it; a power cut in that window leaves
+// `<live>-journal` on disk. A LATER restore would then move the staged
+// rollback-mode database into the live slot with that stale journal still
+// sitting there, SQLite would take it for that database's own hot journal, and
+// the restored workspace would be rolled back into something nobody wrote.
+//
+// That is the same defect as the `-wal` one this package was built for, in the
+// other journal mode, and it is closed the same way: Stage refuses a staged
+// store with one, and Adopt clears the live slot of all three before anything
+// moves in. TestAdoptClearsEVERYSidecarBeforeTheStagedStoreMovesIn drives the
+// list rather than naming the suffixes, so a fourth companion is one edit here.
 const (
-	walSuffix = "-wal"
-	shmSuffix = "-shm"
+	walSuffix     = "-wal"
+	shmSuffix     = "-shm"
+	journalSuffix = "-journal"
 )
 
-var sidecarSuffixes = [...]string{walSuffix, shmSuffix}
+var sidecarSuffixes = [...]string{walSuffix, shmSuffix, journalSuffix}
+
+// carriedSuffixes are the companions that go WITH a database when it is moved
+// aside, because they hold state the database file alone does not: `-wal` holds
+// committed frames, `-journal` holds the rollback a hot database needs to reach
+// a consistent state. `-shm` is deliberately absent — it is a rebuildable index,
+// and a stale one is the only kind of SQLite companion that is genuinely
+// disposable.
+var carriedSuffixes = [...]string{walSuffix, journalSuffix}
 
 // ErrStagedStoreHasSidecars reports a staged store the writer did not leave as a
-// single file — a `<staged>-wal` or `<staged>-shm` beside it.
+// single file — any of sidecarSuffixes beside it.
 //
 // It is a refusal rather than something Adopt carries, and the reason is that no
 // crash-safe ordering for carrying it exists. Moving `<staged>-wal` before
@@ -117,7 +147,7 @@ var sidecarSuffixes = [...]string{walSuffix, shmSuffix}
 // be told apart is not a thing to resolve at boot; it is a thing to make
 // impossible at staging time, while the live store is still untouched and the
 // caller can simply be told to hand over a checkpointed file.
-var ErrStagedStoreHasSidecars = errors.New("restoreswap: the staged store is not a single file — its writer left a SQLite -wal/-shm beside it, which cannot be adopted crash-safely; checkpoint the database and hand over one file")
+var ErrStagedStoreHasSidecars = errors.New("restoreswap: the staged store is not a single file — its writer left a SQLite -wal/-shm/-journal beside it, which cannot be adopted crash-safely; checkpoint the database and hand over one file")
 
 // ErrIncomplete reports a staging directory whose state no boot-time rule
 // covers: the marker says a restore is pending, and neither the staged store
@@ -145,8 +175,9 @@ func Paths(livePath string) (live, staged, previous, marker string) {
 // whose write fails has changed nothing an operator can observe, which is what
 // makes ARC-107's rollback guarantee hold without a rollback step.
 //
-// It returns ErrStagedStoreHasSidecars if the writer left a `-wal`/`-shm` beside
-// the staged store — see that error for why this is the place that has to refuse.
+// It returns ErrStagedStoreHasSidecars if the writer left any SQLite companion
+// beside the staged store — see that error for why this is the place that has to
+// refuse.
 func Stage(livePath string, write func(stagedPath string) error) error {
 	_, staged, _, marker := Paths(livePath)
 	// The WHOLE previous attempt, companions included. Removing only the
@@ -233,26 +264,39 @@ func Discard(livePath string) error {
 //	marker, no staged, no live → ErrIncomplete. Nothing here can tell which
 //	                            store was meant to be running.
 //
-// # Where the WAL goes, and why in this order
+// # Where the WAL goes, and what actually makes this crash-safe
 //
-// The live store's `-wal` is CARRIED to the pre-restore copy, and the live slot
-// is then cleared of companions before anything moves into it. The order within
-// the move-aside is `<live>` first, THEN `<live>-wal`, which looks backwards and
-// is not:
+// The live store's data-bearing companions are CARRIED to the pre-restore copy,
+// and the live slot is then cleared of companions before anything moves into it.
 //
-//   - db-then-wal: a crash between them leaves `<live>` gone and `<live>-wal`
-//     orphaned. The resume sees no live store, skips the move-aside entirely,
-//     and the unconditional slot-clearing below deletes the orphan — so the
-//     restored store is adopted onto a clean slot. Correct.
-//   - wal-then-db: the same crash leaves `<live>` present with its WAL already
-//     removed, i.e. a LIVE store silently rewound to its last checkpoint, which
-//     the resume then promotes to the pre-restore copy. That is the safety copy
-//     being corrupted by the safety mechanism.
+// The thing that makes the ADOPTED store safe is the unconditional
+// `removeSidecars(live)` below — not the order of the two renames above it. That
+// one line runs on every path, so in every interruption state the staged store
+// lands on a slot with no `-wal`, `-shm` or `-journal` beside it, and SQLite has
+// nothing of the replaced workspace left to recover into the restored one. That
+// is the whole guarantee, and it is the one
+// TestTheAdoptedStoreIsCleanFromEitherCrashPoint drives.
 //
-// Both orders cost the same thing in the crash case — a pre-restore copy missing
-// its most recent frames — and only one of them can also leave the adopted store
-// poisoned. The `-shm` is never carried anywhere: it is a rebuildable index, and
-// a stale one is the only kind of SQLite companion that is genuinely disposable.
+// An earlier version of this comment claimed the db-then-wal order was
+// load-bearing — that reversing it "leaves the adopted store poisoned". That was
+// FALSE and is withdrawn. Simulate both interruption points and the outcomes are
+// byte-identical, for two reasons that are both above:
+//
+//   - db-then-wal, interrupted between the renames: `<live>` is already
+//     `<previous>` and `<live>-wal` is orphaned. The resume finds no live store,
+//     skips the move-aside, and `removeSidecars(live)` deletes the orphan.
+//   - wal-then-db, interrupted between the renames: `<previous>-wal` exists and
+//     `<live>` is still there. The resume's `removeStoreFiles(previous)` — which
+//     clears an older attempt's copy — deletes that carried `-wal` again before
+//     `<live>` is renamed over it.
+//
+// Either way the adopted store is clean and the pre-restore copy is rewound to
+// its last checkpoint. The order is KEPT, but for a smaller and true reason: it
+// means no window ever exists in which a `-wal` sits beside no database. Every
+// rule in this package is written in terms of "the companions belonging to the
+// store at this path", and a companion whose database has been renamed away is a
+// file that rule cannot describe — including to an operator reading the
+// directory during an outage.
 //
 // The `marker, no staged, live` branch deliberately touches NO companions. There
 // the adoption already happened, so any `<live>-wal` is the RESTORED store's own,
@@ -293,11 +337,15 @@ func Adopt(livePath string) (bool, error) {
 		if err := os.Rename(live, previous); err != nil {
 			return false, fmt.Errorf("restoreswap: move the live store aside: %w", err)
 		}
-		// The WAL follows the database it belongs to, so the copy an operator
-		// falls back to is the workspace as it actually was, not as it was at
-		// the last checkpoint.
-		if err := renameIfExists(live+walSuffix, previous+walSuffix); err != nil {
-			return false, fmt.Errorf("restoreswap: carry the live store's write-ahead log to the pre-restore copy: %w", err)
+		// The data-bearing companions follow the database they belong to, so the
+		// copy an operator falls back to is the workspace as it actually was,
+		// not as it was at the last checkpoint. Driven off carriedSuffixes
+		// rather than naming `-wal`, so a companion added to that list is
+		// carried as well as cleared — the two halves of knowing about a file.
+		for _, suffix := range carriedSuffixes {
+			if err := renameIfExists(live+suffix, previous+suffix); err != nil {
+				return false, fmt.Errorf("restoreswap: carry the live store's %s to the pre-restore copy: %w", suffix, err)
+			}
 		}
 	}
 	// The live slot must hold NOTHING before the staged store moves in. By
@@ -305,7 +353,7 @@ func Adopt(livePath string) (bool, error) {
 	// being replaced (or is the orphan a crash mid-carry left), and SQLite would
 	// recover one straight over the restored database — the whole defect.
 	if err := removeSidecars(live); err != nil {
-		return false, fmt.Errorf("restoreswap: clear the replaced store's write-ahead log: %w", err)
+		return false, fmt.Errorf("restoreswap: clear the replaced store's journal files: %w", err)
 	}
 	if err := os.Rename(staged, live); err != nil {
 		return false, fmt.Errorf("restoreswap: adopt the staged store: %w", err)
